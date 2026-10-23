@@ -1115,8 +1115,16 @@ export default function AnalysisPage(): React.ReactElement {
                       whole reply; named so they are checked before publishing. */}
                       <SynthesisFieldRepairsNotice metadata={detail.data.metadata} />
                       {/* Issue #769 — a re-synthesis was refused permission to
-                      replace this (reviewed or healthy) set; say so. */}
-                      <RequirementReplacementWithheldNotice metadata={detail.data.metadata} />
+                      replace this (reviewed or healthy) set; say so. #780 —
+                      and let the analyst review, apply or dismiss it. */}
+                      <RequirementReplacementWithheldNotice
+                        metadata={detail.data.metadata}
+                        projectId={projectId}
+                        analysisId={detail.data.id}
+                        invalidateKeys={
+                          selectedAnalysisId ? [queryKeys.analyses.detail(selectedAnalysisId)] : []
+                        }
+                      />
                       {/* Issue #1389 — one notice for every approved requirement a
                       re-synthesis suggested different criteria for. */}
                       <CriteriaProposalsSummary

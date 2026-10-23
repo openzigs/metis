@@ -1013,6 +1013,80 @@ export interface RequirementReplacementWithheld {
   proposedCount: number;
   /** ISO timestamp of the refusal. */
   at: string;
+  /**
+   * Issue #780 — the refused result was kept, so the analyst can compare it
+   * with the current set and apply or dismiss it. Absent on refusals recorded
+   * before #780, which kept nothing.
+   */
+  proposalStored?: boolean;
+}
+
+/** Issue #780 — a requirement field the withheld-replacement comparison shows. */
+export type WithheldReplacementField =
+  "title" | "description" | "priority" | "type" | "acceptanceCriteria";
+
+/** Issue #780 — one field that differs between the current and proposed requirement. */
+export interface WithheldReplacementFieldChange {
+  field: WithheldReplacementField;
+  /** Text fields as written; acceptance criteria as their list. */
+  before: string | string[];
+  after: string | string[];
+}
+
+/**
+ * Issue #780 — what applying a withheld re-synthesis does to one requirement.
+ *
+ * - `add`: a new requirement is created.
+ * - `replace`: a requirement with no review work is replaced, as a re-run does.
+ * - `update`: a reviewed requirement is changed through version history,
+ *   keeping its status, links, comments and other review work.
+ * - `delete`: a requirement with no review work that the new result leaves out.
+ * - `keep`: a reviewed requirement the new result leaves out; never deleted.
+ * - `skip`: the new result restates a requirement someone deleted; not restored.
+ */
+export type WithheldReplacementOutcome = "add" | "replace" | "update" | "delete" | "keep" | "skip";
+
+export interface WithheldReplacementEntry {
+  /** The requirement's title (the current one where there is one). */
+  title: string;
+  outcome: WithheldReplacementOutcome;
+  /** Whether the current requirement carries review work. False for `add`. */
+  reviewed: boolean;
+  /** The current requirement's review status, when it has one. */
+  reviewStatus: string | null;
+  /** Fields that differ; empty for add / delete / keep / skip. */
+  changes: WithheldReplacementFieldChange[];
+  /** For `add`: what the new requirement would hold. */
+  proposed?: {
+    type: string;
+    priority: string;
+    description: string;
+    acceptanceCriteria: string[];
+  };
+}
+
+/**
+ * Issue #780 — `GET /api/projects/:projectId/analyses/:id/withheld-replacement`.
+ * The comparison of the current requirement set with the withheld one.
+ */
+export interface WithheldReplacementDiff {
+  withheld: RequirementReplacementWithheld;
+  added: WithheldReplacementEntry[];
+  changed: WithheldReplacementEntry[];
+  removed: WithheldReplacementEntry[];
+  /** Restatements of deleted requirements, which applying will not restore. */
+  skipped: WithheldReplacementEntry[];
+  /** Current requirements the new result restates without a change. */
+  unchangedCount: number;
+}
+
+/** Issue #780 — the result of applying a withheld re-synthesis. */
+export interface WithheldReplacementApplyResult {
+  added: number;
+  replaced: number;
+  updated: number;
+  deleted: number;
+  kept: number;
 }
 
 function plural(n: number, one: string, many: string): string {

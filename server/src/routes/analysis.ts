@@ -45,6 +45,16 @@ import {
   criteriaProposalUserRateLimiter,
 } from "../middleware/criteria-proposal-rate-limit.js";
 import { dismissAllCriteriaProposals } from "../lib/analysis/analysis-service.js";
+import {
+  withheldReplacementPreAuthRateLimiter,
+  withheldReplacementUserRateLimiter,
+} from "../middleware/withheld-replacement-rate-limit.js";
+import {
+  WithheldReplacementError,
+  applyWithheldReplacement,
+  dismissWithheldReplacement,
+  getWithheldReplacementDiff,
+} from "../lib/analysis/withheld-replacement-service.js";
 import { importedRequirementsRateLimiter } from "../middleware/imported-requirements-rate-limit.js";
 import {
   analysisMatrixPreAuthRateLimiter,
@@ -1422,6 +1432,97 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         metadata: { projectId, dismissedCount },
       });
       res.json(ok({ dismissedCount }));
+    },
+  );
+
+  /**
+   * GET /api/projects/:projectId/analyses/:id/withheld-replacement
+   * Issue #780 — the comparison of the current requirement set with the
+   * re-synthesis #769 withheld: what applying it would add, change, keep and
+   * delete. 404 when there is none to review.
+   */
+  projectScoped.get(
+    "/:id/withheld-replacement",
+    // Ahead of auth: CodeQL js/missing-rate-limiting.
+    withheldReplacementPreAuthRateLimiter,
+    requireAuth,
+    requirePermission("analysis.read"),
+    withheldReplacementUserRateLimiter,
+    async (req: Request, res: Response) => {
+      const analysisId = String(req.params.id);
+      const projectId = String(req.params.projectId);
+      await ensureAnalysisVisible(analysisId, projectId);
+      const diff = await getWithheldReplacementDiff(analysisId);
+      if (!diff) {
+        throw new AppError(
+          404,
+          "NO_WITHHELD_REPLACEMENT",
+          "There is no withheld re-synthesis to review on this analysis",
+        );
+      }
+      res.json(ok(diff));
+    },
+  );
+
+  /**
+   * POST /api/projects/:projectId/analyses/:id/withheld-replacement/:choice
+   * Issue #780 — `apply` writes the withheld re-synthesis without deleting any
+   * review work (reviewed requirements are updated through version history
+   * with the analyst as author, or kept); `dismiss` discards it and changes no
+   * requirement. Body `{ at }` names the refusal the analyst reviewed: a newer
+   * one answers 409. Same permission as answering a #1389 criteria suggestion.
+   */
+  projectScoped.post(
+    "/:id/withheld-replacement/:choice",
+    withheldReplacementPreAuthRateLimiter,
+    requireAuth,
+    requirePermission("project.update"),
+    withheldReplacementUserRateLimiter,
+    async (req: Request, res: Response) => {
+      const analysisId = String(req.params.id);
+      const projectId = String(req.params.projectId);
+      const choice = String(req.params.choice);
+      if (choice !== "apply" && choice !== "dismiss") {
+        throw new AppError(404, "NOT_FOUND", "Not found");
+      }
+      const at = (req.body as { at?: unknown } | undefined)?.at;
+      if (typeof at !== "string" || at.length === 0 || at.length > 64) {
+        throw new AppError(400, "VALIDATION_ERROR", "at must be the withheld re-synthesis time");
+      }
+      await ensureAnalysisVisible(analysisId, projectId);
+      const actor = actorFromReq(req);
+      try {
+        if (choice === "apply") {
+          const result = await applyWithheldReplacement({
+            analysisId,
+            projectId,
+            actorId: actor.id,
+            at,
+          });
+          const { insertedIds: _inserted, ...counts } = result;
+          audit({
+            actor: { id: actor.id },
+            action: "analysis.replacement_withheld.apply",
+            target: { type: "analysis", id: analysisId },
+            metadata: { projectId, ...counts },
+          });
+          res.json(ok(counts));
+          return;
+        }
+        const { discarded } = await dismissWithheldReplacement({ analysisId, at });
+        audit({
+          actor: { id: actor.id },
+          action: "analysis.replacement_withheld.dismiss",
+          target: { type: "analysis", id: analysisId },
+          metadata: { projectId, discarded },
+        });
+        res.json(ok({ discarded }));
+      } catch (err) {
+        if (err instanceof WithheldReplacementError) {
+          throw new AppError(409, err.code, err.message);
+        }
+        throw err;
+      }
     },
   );
 

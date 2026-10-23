@@ -123,6 +123,11 @@ import {
   readCriteriaProposals,
   type CriteriaProposal,
 } from "./approved-criteria-carry-over.js";
+import {
+  WITHHELD_PROPOSAL_KEY,
+  type WithheldProposal,
+  type WithheldProposalRow,
+} from "./withheld-replacement.js";
 
 const log = createChildLogger("analysis-service");
 
@@ -347,7 +352,7 @@ export interface AnalysisEnhancementPatch {
   structuredRunId?: string;
 }
 
-function parseMetadata(raw: string | null): Record<string, unknown> {
+export function parseMetadata(raw: string | null): Record<string, unknown> {
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw) as unknown;
@@ -363,7 +368,10 @@ function parseMetadata(raw: string | null): Record<string, unknown> {
  * {@link lockRequirementSet} takes first, so it serialises with the promotion
  * append and set replacement too, in the same order (no deadlock).
  */
-async function lockAnalysisRow(tx: Prisma.TransactionClient, analysisId: string): Promise<void> {
+export async function lockAnalysisRow(
+  tx: Prisma.TransactionClient,
+  analysisId: string,
+): Promise<void> {
   if (resolveDatabaseProvider() !== "postgresql") return;
   await tx.$queryRaw`SELECT 1 FROM "analyses" WHERE "id" = ${analysisId} FOR NO KEY UPDATE`;
 }
@@ -916,7 +924,7 @@ export interface PersistRequirementsInput {
  */
 export const CHECKPOINT_APPROVED_IDS_KEY = "checkpointApprovedRequirementIds";
 
-function readCheckpointApprovedIds(metadata: Record<string, unknown>): string[] {
+export function readCheckpointApprovedIds(metadata: Record<string, unknown>): string[] {
   const raw = metadata[CHECKPOINT_APPROVED_IDS_KEY];
   return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : [];
 }
@@ -927,7 +935,7 @@ function readCheckpointApprovedIds(metadata: Record<string, unknown>): string[] 
  * of an "immutable" baseline). Scoped by `analysisId` so another analysis's
  * reviewed rows can never protect, or fail to protect, this one.
  */
-function reviewedRequirementWhere(
+export function reviewedRequirementWhere(
   analysisId: string,
   checkpointApprovedIds: string[] = [],
 ): Prisma.RequirementWhereInput {
@@ -1111,11 +1119,26 @@ async function replaceRequirementSet(
       analysisId: input.analysisId,
       ...withheld,
     });
+    // #780 — keep the refused result, so the analyst can compare it with the
+    // current set and apply or dismiss it. A newer refusal supersedes it.
+    const proposal: WithheldProposal = {
+      at: withheld.at,
+      rows: withheldProposalRows(input, metadata),
+      degraded: input.degraded ?? null,
+      ...(input.reviewStatus ? { reviewStatus: input.reviewStatus } : {}),
+    };
+    const record: RequirementReplacementWithheld = { ...withheld, proposalStored: true };
     await tx.analysis.update({
       where: { id: input.analysisId },
-      data: { metadata: JSON.stringify({ ...metadata, requirementReplacementWithheld: withheld }) },
+      data: {
+        metadata: JSON.stringify({
+          ...metadata,
+          requirementReplacementWithheld: record,
+          [WITHHELD_PROPOSAL_KEY]: proposal,
+        }),
+      },
     });
-    input.onWithheld?.(withheld);
+    input.onWithheld?.(record);
     return [];
   }
 
@@ -1124,6 +1147,7 @@ async function replaceRequirementSet(
   // rewritten to match it (the orchestrator no longer writes it beforehand).
   const next: Record<string, unknown> = { ...metadata };
   delete next.requirementReplacementWithheld;
+  delete next[WITHHELD_PROPOSAL_KEY];
   // #939 — the rows it named are deleted below; rewritten after the inserts
   // when this set is itself checkpoint-approved.
   delete next[CHECKPOINT_APPROVED_IDS_KEY];
@@ -1241,6 +1265,38 @@ async function replaceRequirementSet(
     });
   }
   return ids;
+}
+
+/**
+ * Issue #780 — the rows a refused replacement would have inserted, as the
+ * insert writes them (labels with their `finding:` evidence, criteria as JSON,
+ * the #1202 pairing), so applying it later writes what the run produced.
+ */
+function withheldProposalRows(
+  input: PersistRequirementsInput,
+  metadata: Record<string, unknown>,
+): WithheldProposalRow[] {
+  const runSources = readSourceRequirements(metadata);
+  return input.synthesis.requirements.map((r, idx) => {
+    const evidenceIds = r.evidenceFindingIndexes
+      .map((i) => input.findingIdsByIndex[i])
+      .filter((id): id is string => Boolean(id));
+    return {
+      type: r.type,
+      title: r.title.slice(0, 255),
+      body: r.body,
+      priority: r.priority,
+      labels: JSON.stringify(
+        Array.from(new Set([...r.labels, ...evidenceIds.map((id) => `finding:${id}`)])),
+      ),
+      acceptanceCriteria: JSON.stringify(r.acceptanceCriteria ?? []),
+      storyPoints: r.storyPoints ?? null,
+      coverage: input.coverages?.[idx] ?? null,
+      verdict: input.verdicts?.[idx] ?? null,
+      sourceCandidateIds: serializeSourceCandidateIds(r.sourceIds, runSources),
+      ...pairingColumns(input.promotedFrom, idx),
+    };
+  });
 }
 
 /**
@@ -2164,6 +2220,14 @@ interface AnalysisRowWithIncludes {
   }>;
 }
 
+function withoutWithheldProposal(
+  metadata: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!metadata || !(WITHHELD_PROPOSAL_KEY in metadata)) return metadata;
+  const { [WITHHELD_PROPOSAL_KEY]: _omitted, ...rest } = metadata;
+  return rest;
+}
+
 function toSnapshot(
   row: AnalysisRowWithIncludes,
   crossDocFindings: CrossDocFindings | null = null,
@@ -2323,7 +2387,9 @@ function toSnapshot(
     outputTokens: row.outputTokens,
     totalTokens: row.totalTokens,
     errorMessage: row.errorMessage,
-    metadata,
+    // #780 — the withheld result is read through its own route, not shipped
+    // with every snapshot.
+    metadata: withoutWithheldProposal(metadata),
     agents,
     requirements,
     crossDocFindings,
