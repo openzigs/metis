@@ -27,6 +27,7 @@ const { prismaMock, serviceMock } = vi.hoisted(() => ({
     getAnalysisCapability: vi.fn(),
     persistAnalysisCapability: vi.fn(async (_id: string, _capability: unknown) => undefined),
     persistAnalysisEnhancement: vi.fn(async () => undefined),
+    persistAgentResult: vi.fn(async (_input: unknown) => ({ id: "ar_x", findingIds: [] })),
   },
 }));
 
@@ -539,9 +540,10 @@ describe("#1131 Continue re-investigates only the requirements left unreached", 
     { id: "REQ-2", text: "Publishing goes only to the openzigs/flux-v2 repository." },
     { id: "REQ-3", text: "The CLI accepts -flush-sessions to remove every session." },
   ];
+  // REQ-2 was looked at (its finding cites code) but is not settled: inconclusive.
   const BEFORE = [
     { requirementId: "REQ-1", verdict: "implemented" },
-    { requirementId: "REQ-2", verdict: "could-not-verify" },
+    { requirementId: "REQ-2", verdict: "could-not-verify", codeCited: true },
   ];
   const persisted = () =>
     serviceMock.persistAnalysisCapability.mock.calls.at(-1)![1] as AnalysisCapability;
@@ -588,7 +590,10 @@ describe("#1131 Continue re-investigates only the requirements left unreached", 
     orch.readCodeFindingVerdicts = vi
       .fn()
       .mockResolvedValueOnce(BEFORE)
-      .mockResolvedValueOnce([...BEFORE, { requirementId: "REQ-3", verdict: "could-not-verify" }]);
+      .mockResolvedValueOnce([
+        ...BEFORE,
+        { requirementId: "REQ-3", verdict: "could-not-verify", codeCited: true },
+      ]);
     await regenerate(orch, { extendBudget: true });
     expect(persisted()).toMatchObject({
       codeInvestigationContinuations: 1,
@@ -603,7 +608,7 @@ describe("#1131 Continue re-investigates only the requirements left unreached", 
     const orch = threeRequirements();
     orch.readCodeFindingVerdicts = vi.fn(async () => [
       ...BEFORE,
-      { requirementId: "REQ-3", verdict: "could-not-verify" },
+      { requirementId: "REQ-3", verdict: "could-not-verify", codeCited: true },
     ]);
     await regenerate(orch, { extendBudget: true });
     expect(orch.runAgenticCodeAgent).not.toHaveBeenCalled();
@@ -654,27 +659,129 @@ describe("#1131 Continue re-investigates only the requirements left unreached", 
 });
 
 describe("#1131 the persisted code findings a continuation is scoped by", () => {
-  it("reads each completed code finding's requirement and gated verdict", async () => {
+  it("reads each completed code finding's repository, requirement, verdict and code citation", async () => {
     prismaMock.finding.findMany.mockResolvedValue([
-      { evidence: JSON.stringify({ requirementId: "REQ-1", verdict: "could-not-verify" }) },
-      { evidence: JSON.stringify({ citations: [] }) },
-      { evidence: null },
-      { evidence: "{not json" },
-    ]);
+      {
+        evidence: JSON.stringify({
+          requirementId: "REQ-1",
+          verdict: "could-not-verify",
+          citations: [{ filePath: "internal/storage/feed.go", startLine: 1, endLine: 9 }],
+        }),
+        agentResult: { connectorId: "repo_1" },
+      },
+      {
+        evidence: JSON.stringify({ requirementId: "REQ-2", citations: [{ documentId: "d1" }] }),
+        agentResult: { connectorId: null },
+      },
+      { evidence: null, agentResult: null },
+      { evidence: "{not json", agentResult: { connectorId: "repo_2" } },
+    ] as never);
     const orch = new AnalysisOrchestrator({
       provider: { chat: vi.fn() } as never,
       retrieve: async () => [],
     }) as unknown as { readCodeFindingVerdicts: (id: string) => Promise<unknown> };
     await expect(orch.readCodeFindingVerdicts("an_1")).resolves.toEqual([
-      { requirementId: "REQ-1", verdict: "could-not-verify" },
-      { requirementId: null, verdict: null },
-      { requirementId: null, verdict: null },
-      { requirementId: null, verdict: null },
+      {
+        connectorId: "repo_1",
+        requirementId: "REQ-1",
+        verdict: "could-not-verify",
+        codeCited: true,
+      },
+      { connectorId: null, requirementId: "REQ-2", verdict: null, codeCited: false },
+      { connectorId: null, requirementId: null, verdict: null, codeCited: false },
+      { connectorId: "repo_2", requirementId: null, verdict: null, codeCited: false },
     ]);
     expect(prismaMock.finding.findMany).toHaveBeenCalledWith({
       where: { agentResult: { analysisId: "an_1", agentKey: "code", status: "completed" } },
-      select: { evidence: true },
+      select: { evidence: true, agentResult: { select: { connectorId: true } } },
     });
+  });
+});
+
+/**
+ * PR panel (#1131, over-blocking advisory) — the run decides the offer per
+ * repository (one pass each), so the continuation is scoped per repository
+ * too: a requirement one repository settled can still be unreached in another.
+ */
+describe("#1131 a multi-repository continuation is scoped per repository", () => {
+  const TWO = [
+    { id: "REQ-1", text: "A user cannot subscribe to the same feed URL twice." },
+    { id: "REQ-2", text: "Publishing goes only to the openzigs/flux-v2 repository." },
+  ];
+
+  it("re-runs each repository on what its own pass left unreached, and skips one with none", async () => {
+    prismaMock.repoConnection.findMany.mockResolvedValue([
+      { id: "repo_1", label: "api" },
+      { id: "repo_2", label: "web" },
+      { id: "repo_3", label: "docs" },
+    ]);
+    const orch = makeOrchestrator();
+    orch.extractRequirementsFromDocAgent = vi.fn(async () => TWO);
+    orch.readCodeFindingVerdicts = vi.fn(async () => [
+      // repo_1 looked at both; repo_2 reached REQ-1 only; repo_3 reached neither.
+      { connectorId: "repo_1", requirementId: "REQ-1", verdict: "implemented", codeCited: true },
+      {
+        connectorId: "repo_1",
+        requirementId: "REQ-2",
+        verdict: "could-not-verify",
+        codeCited: true,
+      },
+      {
+        connectorId: "repo_2",
+        requirementId: "REQ-1",
+        verdict: "could-not-verify",
+        codeCited: true,
+      },
+      { connectorId: "repo_3", requirementId: "REQ-1", verdict: "could-not-verify" },
+    ]);
+    await regenerate(orch, { extendBudget: true });
+    const calls = orch.runAgenticCodeAgent.mock.calls.map((c) => ({
+      connectorId: c[0].connectorId,
+      ids: c[0].requirements.map((r: { id: string }) => r.id),
+    }));
+    expect(calls).toEqual([
+      { connectorId: "repo_2", ids: ["REQ-2"] },
+      { connectorId: "repo_3", ids: ["REQ-1", "REQ-2"] },
+    ]);
+  });
+});
+
+/**
+ * PR panel (#1131, test-falsifiability advisory) — a failed or cancelled
+ * APPEND must not delete the row whose findings it was adding to.
+ */
+describe("#1131 a failed appended pass keeps the rows it was adding to", () => {
+  it("records the failure row in append mode", async () => {
+    const orch = new AnalysisOrchestrator({
+      provider: { chat: vi.fn() } as never,
+      retrieve: async () => [],
+    }) as unknown as {
+      runAgenticCodeAgent: (input: Record<string, unknown>) => Promise<unknown>;
+      deps: { prepareRepoClone?: unknown };
+    };
+    // The first thing the pass does after starting is resolve the clone: fail there.
+    orch.deps.prepareRepoClone = vi.fn(async () => {
+      throw new Error("clone failed");
+    });
+    for (const persistMode of ["append", undefined] as const) {
+      await expect(
+        orch.runAgenticCodeAgent({
+          analysisId: "an_1",
+          projectId: "pr_1",
+          projectName: "Miniflux",
+          projectDescription: "feed reader",
+          requirements: [],
+          signal: new AbortController().signal,
+          connectorId: "repo_1",
+          ...(persistMode ? { persistMode } : {}),
+        }),
+      ).rejects.toThrow("clone failed");
+    }
+    const modes = serviceMock.persistAgentResult.mock.calls.map((c) => c[0]);
+    expect(modes).toEqual([
+      expect.objectContaining({ status: "failed", mode: "append" }),
+      expect.objectContaining({ status: "failed", mode: "replace" }),
+    ]);
   });
 });
 

@@ -24,6 +24,7 @@ import {
   type AGENT_RESULT_STATUSES,
   type AnalysisAgentEvent,
   type AnalysisCapability,
+  type Citation,
   type AnalysisSourceRequirement,
   type AnalysisCapabilityEvent,
   type AnalysisDatabaseAware,
@@ -1184,10 +1185,11 @@ export class AnalysisOrchestrator {
         opts.agentKey === "code" && opts.extendBudget
           ? await this.planContinuation(
               opts.analysisId,
+              analysis.projectId,
               await this.codeRequirementSet(opts.analysisId, extraInstructions, analysis.metadata),
             )
           : null;
-      if (continuation && continuation.unreached.length === 0) {
+      if (continuation && !continuation.anyUnreached) {
         // Nothing is left unreached (a record written before #1131 counted
         // inconclusive requirements as unreached): spend nothing, and correct
         // the banner so it no longer offers to continue.
@@ -1210,7 +1212,7 @@ export class AnalysisOrchestrator {
                 ...(continuation
                   ? {
                       requirements: continuation.requirements,
-                      continueWith: continuation.unreached,
+                      continueWith: continuation.byConnector,
                       tokenBudget: resolveAgentTokenBudget() * CONTINUE_BUDGET_MULTIPLIER,
                       // A pass that hit its turn cap would otherwise rerun with the
                       // same cap and stop in the same place.
@@ -1248,6 +1250,7 @@ export class AnalysisOrchestrator {
               ? {
                   analysisGap: await this.codeInvestigationGap(
                     opts.analysisId,
+                    analysis.projectId,
                     continuation.requirements,
                   ),
                 }
@@ -1331,70 +1334,124 @@ export class AnalysisOrchestrator {
    * evidence). Read rather than taken from the capability record, so a
    * continuation is scoped by what is actually persisted.
    */
-  private async readCodeFindingVerdicts(
-    analysisId: string,
-  ): Promise<Array<{ requirementId: string | null; verdict: string | null }>> {
+  private async readCodeFindingVerdicts(analysisId: string): Promise<
+    Array<{
+      connectorId: string | null;
+      requirementId: string | null;
+      verdict: string | null;
+      codeCited: boolean;
+    }>
+  > {
     const rows = await prisma.finding.findMany({
       where: { agentResult: { analysisId, agentKey: "code", status: "completed" } },
-      select: { evidence: true },
+      select: { evidence: true, agentResult: { select: { connectorId: true } } },
     });
     return rows.map((row) => {
       const parsed =
         (row.evidence ? safeParse<Record<string, unknown> | null>(row.evidence) : null) ?? {};
+      const citations = Array.isArray(parsed.citations) ? (parsed.citations as unknown[]) : [];
       return {
+        connectorId: row.agentResult?.connectorId ?? null,
         requirementId: typeof parsed.requirementId === "string" ? parsed.requirementId : null,
         verdict: typeof parsed.verdict === "string" ? parsed.verdict : null,
+        // Persisted citations already passed the #734 grounding gate.
+        codeCited: citations.some(
+          (c) => c !== null && typeof c === "object" && isCodeCitation(c as Citation),
+        ),
       };
     });
+  }
+
+  /**
+   * #1131 — the analysis's code findings split per repository, the way the
+   * run's passes were (one per repository, each judged on its own rows; a
+   * connector-less row counts for every repository). Keyed by connector id,
+   * or `null` on a project with at most one repository.
+   */
+  private async continuationSplit(
+    analysisId: string,
+    projectId: string,
+    requirements: ReadonlyArray<{ id: string }>,
+  ): Promise<Map<string | null, { unreached: string[]; inconclusive: string[] }>> {
+    const findings = await this.readCodeFindingVerdicts(analysisId);
+    const connectors = await prisma.repoConnection.findMany({
+      where: { projectId, deletedAt: null },
+      select: { id: true },
+    });
+    const ids = requirements.map((r) => r.id);
+    const out = new Map<string | null, { unreached: string[]; inconclusive: string[] }>();
+    if (connectors.length <= 1) {
+      out.set(connectors[0]?.id ?? null, classifyUnverifiedRequirements(findings, ids));
+      return out;
+    }
+    for (const { id } of connectors) {
+      const own = findings.filter((f) => f.connectorId === id || f.connectorId == null);
+      out.set(id, classifyUnverifiedRequirements(own, ids));
+    }
+    return out;
+  }
+
+  /** #1131 — a per-repository split summed, as the run's tracker sums its passes. */
+  private static gapOf(
+    split: Map<string | null, { unreached: string[]; inconclusive: string[] }>,
+    requirementCount: number,
+  ): CodeInvestigationGap {
+    let unreached = 0;
+    let inconclusive = 0;
+    for (const s of split.values()) {
+      unreached += s.unreached.length;
+      inconclusive += s.inconclusive.length;
+    }
+    return { unreached, inconclusive, total: requirementCount * split.size };
   }
 
   /** #1131 — what the analysis's code findings leave unreached and inconclusive. */
   private async codeInvestigationGap(
     analysisId: string,
+    projectId: string,
     requirements: ReadonlyArray<{ id: string }>,
   ): Promise<CodeInvestigationGap> {
-    const split = classifyUnverifiedRequirements(
-      await this.readCodeFindingVerdicts(analysisId),
-      requirements.map((r) => r.id),
+    return AnalysisOrchestrator.gapOf(
+      await this.continuationSplit(analysisId, projectId, requirements),
+      requirements.length,
     );
-    return {
-      unreached: split.unreached.length,
-      inconclusive: split.inconclusive.length,
-      total: requirements.length,
-    };
   }
 
   /**
-   * #1131 — scope a "Continue with a larger budget": the requirements the code
-   * pass never reached, out of the run's whole set. The live entry carries the
-   * scope so the page can say what the rerun is doing.
+   * #1131 — scope a "Continue with a larger budget": per repository, the
+   * requirements its pass never reached. The live entry carries the scope so
+   * the page can say what the rerun is doing.
    */
   private async planContinuation(
     analysisId: string,
+    projectId: string,
     requirements: Array<{ id: string; text: string }>,
   ): Promise<{
     requirements: Array<{ id: string; text: string }>;
-    unreached: Array<{ id: string; text: string }>;
+    byConnector: Map<string | null, Array<{ id: string; text: string }>>;
+    anyUnreached: boolean;
     gap: CodeInvestigationGap;
   }> {
-    const split = classifyUnverifiedRequirements(
-      await this.readCodeFindingVerdicts(analysisId),
-      requirements.map((r) => r.id),
-    );
-    const unreachedIds = new Set(split.unreached);
-    const unreached = requirements.filter((r) => unreachedIds.has(r.id));
+    const split = await this.continuationSplit(analysisId, projectId, requirements);
+    const byConnector = new Map<string | null, Array<{ id: string; text: string }>>();
+    const union = new Set<string>();
+    for (const [connectorId, s] of split) {
+      const ids = new Set(s.unreached);
+      s.unreached.forEach((id) => union.add(id));
+      byConnector.set(
+        connectorId,
+        requirements.filter((r) => ids.has(r.id)),
+      );
+    }
     setLiveAgentContinuation(analysisId, "code", {
-      requirements: unreached.length,
+      requirements: union.size,
       total: requirements.length,
     });
     return {
       requirements,
-      unreached,
-      gap: {
-        unreached: unreached.length,
-        inconclusive: split.inconclusive.length,
-        total: requirements.length,
-      },
+      byConnector,
+      anyUnreached: union.size > 0,
+      gap: AnalysisOrchestrator.gapOf(split, requirements.length),
     };
   }
 
@@ -1422,11 +1479,13 @@ export class AnalysisOrchestrator {
       /** #1131 — the run's requirement set, when the caller already has it. */
       requirements?: Array<{ id: string; text: string }>;
       /**
-       * #1131 — continue the agentic pass on these requirements only (the ones
-       * it never reached), APPENDING its rows so the findings already made are
-       * kept. A pass that is not agentic cannot be scoped and re-runs whole.
+       * #1131 — continue the agentic pass, per repository (keyed by connector
+       * id, or `null` with at most one), on the requirements that repository's
+       * pass never reached, APPENDING its rows so the findings already made are
+       * kept. A repository with nothing unreached is not re-run. A pass that is
+       * not agentic cannot be scoped and re-runs whole.
        */
-      continueWith?: Array<{ id: string; text: string }>;
+      continueWith?: ReadonlyMap<string | null, Array<{ id: string; text: string }>>;
     } = {},
   ): Promise<AgentRunResult> {
     const totalBudget = opts.tokenBudget ?? resolveAgentTokenBudget();
@@ -1446,8 +1505,17 @@ export class AnalysisOrchestrator {
         knownRequirementIds: allRequirements.map((r) => r.id),
       });
     }
-    const continuing = opts.continueWith !== undefined;
-    const requirements = opts.continueWith ?? allRequirements;
+    const continueWith = opts.continueWith;
+    const continuing = continueWith !== undefined;
+    const continuedIds = new Set(
+      [...(continueWith?.values() ?? [])].flatMap((list) => list.map((r) => r.id)),
+    );
+    // The union, for the seeds and the escalation; each repository gets its own list.
+    const requirements = continueWith
+      ? allRequirements.filter((r) => continuedIds.has(r.id))
+      : allRequirements;
+    const scopeFor = (connectorId: string | null) =>
+      continueWith ? (continueWith.get(connectorId) ?? []) : requirements;
 
     const startedAt = new Date();
     const connectors = await prisma.repoConnection.findMany({
@@ -1496,21 +1564,27 @@ export class AnalysisOrchestrator {
     const results: AgentRunResult[] = [];
     const ranConnectorIds: string[] = [];
     if (connectors.length <= 1) {
-      if (connectors[0]) ranConnectorIds.push(connectors[0].id);
-      results.push(
-        await this.runAgenticCodeAgent({
-          ...shared,
-          projectName: input.projectName,
-          connectorId: connectors[0]?.id,
-          tokenBudget: totalBudget,
-          turnMultiplier: opts.turnMultiplier,
-          ...(persistMode ? { persistMode } : {}),
-        }),
-      );
+      // A continuation whose repository changed since its scope was read has
+      // nothing to continue here.
+      if (!continuing || scopeFor(connectors[0]?.id ?? null).length > 0) {
+        if (connectors[0]) ranConnectorIds.push(connectors[0].id);
+        results.push(
+          await this.runAgenticCodeAgent({
+            ...shared,
+            requirements: scopeFor(connectors[0]?.id ?? null),
+            projectName: input.projectName,
+            connectorId: connectors[0]?.id,
+            tokenBudget: totalBudget,
+            turnMultiplier: opts.turnMultiplier,
+            ...(persistMode ? { persistMode } : {}),
+          }),
+        );
+      }
     } else {
       // Repos the budget cannot fit keep whatever rows they already have.
+      // #1131 — a continuation re-runs only the repositories with something unreached.
       const { effectiveConnectors, effectiveBudget } = capConnectorsForBudget(
-        connectors,
+        connectors.filter((c) => scopeFor(c.id).length > 0),
         totalBudget,
       );
       for (const connector of effectiveConnectors) {
@@ -1519,6 +1593,7 @@ export class AnalysisOrchestrator {
         results.push(
           await this.runAgenticCodeAgent({
             ...shared,
+            requirements: scopeFor(connector.id),
             projectName: `${input.projectName} [repo: ${connector.label}]`,
             connectorId: connector.id,
             tokenBudget: effectiveBudget,
@@ -3711,8 +3786,15 @@ export class AnalysisOrchestrator {
             passHealth.exhausted === true
               ? {
                   ...assessedHealth,
+                  // Reached = CHECKED against the code (#1388's test): an uncited
+                  // could-not-verify is the prompt's placeholder for "not reached".
                   unreachedRequirements: classifyUnverifiedRequirements(
-                    validated.findings,
+                    validated.findings.map((f) => ({
+                      requirementId: f.requirementId,
+                      verdict: f.verdict,
+                      codeCited:
+                        f.requirementId != null && checkedRequirementIds.has(f.requirementId),
+                    })),
                     passRequirements.map((r) => r.id),
                   ).unreached.length,
                 }

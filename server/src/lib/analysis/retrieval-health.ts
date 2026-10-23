@@ -681,20 +681,41 @@ export function unverifiedRequirementIds(
 }
 
 /**
+ * #1131 — a finding the classifier below can judge "reached" by: its gated
+ * verdict, and whether it kept a grounded code citation.
+ */
+export interface ReachBearingFinding extends VerdictBearingFinding {
+  /** The finding cites code that survived the #734 grounding gate. */
+  codeCited?: boolean;
+}
+
+/**
  * #1131 — {@link unverifiedRequirementIds}, split by whether the pass REACHED
- * the requirement. `unreached`: the pass reported nothing for it, so a
- * continuation can still investigate it. `inconclusive`: it carries a finding
- * of its own and still reads `could-not-verify` — the agent looked and the code
- * did not settle it, which a larger budget does not change. Input order.
+ * the requirement. `inconclusive`: a finding about it cites code the agent
+ * read (or settles it), yet it still reads `could-not-verify` — the agent
+ * looked and the code did not settle it, which a larger budget does not
+ * change. `unreached`: everything else, INCLUDING a requirement whose only
+ * finding is an uncited could-not-verify: the agentic prompt tells the model
+ * to write exactly that placeholder for a requirement it ran out of budget
+ * before reaching (`VERDICT_RULE` in `prompts.ts`), so a finding's presence is
+ * no evidence of a look. The same test #1388's `checkedRequirementIds` uses.
+ * Input order.
  */
 export function classifyUnverifiedRequirements(
-  findings: readonly VerdictBearingFinding[],
+  findings: readonly ReachBearingFinding[],
   requirementIds: Iterable<string>,
 ): { unreached: string[]; inconclusive: string[] } {
   const ids = [...requirementIds];
   const reached = new Set<string>();
   for (const finding of findings) {
-    if (finding.requirementId) reached.add(finding.requirementId);
+    if (!finding.requirementId) continue;
+    if (
+      finding.codeCited === true ||
+      finding.verdict === "implemented" ||
+      finding.verdict === "gap-confirmed"
+    ) {
+      reached.add(finding.requirementId);
+    }
   }
   const unreached: string[] = [];
   const inconclusive: string[] = [];

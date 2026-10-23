@@ -29,7 +29,19 @@ vi.mock("../prisma.js", () => ({
     codeGraph: { findFirst: vi.fn(async () => ({ id: "cg_1" })) },
     databaseConnection: { count: vi.fn(async () => 0) },
     codeSymbol: {
-      findMany: vi.fn(async () => []),
+      // The one search the model makes finds this, so a finding may cite it.
+      findMany: vi.fn(async () => [
+        {
+          id: "sym_1",
+          name: "FlushAllSessions",
+          qualifiedName: "internal/storage/web_session.go::FlushAllSessions",
+          kind: "function",
+          filePath: "internal/storage/web_session.go",
+          startLine: 250,
+          endLine: 262,
+          language: "go",
+        },
+      ]),
       findFirst: vi.fn(async () => null),
       count: vi.fn(async () => 0),
     },
@@ -102,22 +114,41 @@ const { AnalysisOrchestrator } = await import("./orchestrator.js");
 const DOC_ANSWER = JSON.stringify({ summary: "ok", findings: [], notes: [] });
 const TOOL_CALL = JSON.stringify({ tool: "search_code_graph", args: { query: "sessions" } });
 
-/** The requirements the model's final answer writes a could-not-verify finding for. */
-let answered: string[] = [];
+/**
+ * The requirements the model's final answer writes a could-not-verify finding
+ * for: `cited` ones cite the code it read (it looked, and the code did not
+ * settle them); `placeholders` cite nothing, as the agentic prompt tells it to
+ * write for a requirement it ran out of budget before reaching.
+ */
+let cited: string[] = [];
+let placeholders: string[] = [];
+const CITATION = { filePath: "internal/storage/web_session.go", startLine: 250, endLine: 262 };
 const answer = () =>
   JSON.stringify({
     agentKey: "code",
     summary: "Some requirements could not be verified.",
-    findings: answered.map((id) => ({
-      category: "other",
-      severity: "info",
-      title: `${id} could not be verified`,
-      body: "The code read does not settle this.",
-      tags: [],
-      citations: [],
-      requirementId: id,
-      verdict: "could-not-verify",
-    })),
+    findings: [
+      ...cited.map((id) => ({
+        category: "other",
+        severity: "info",
+        title: `${id} could not be verified`,
+        body: "The code read does not settle this.",
+        tags: [],
+        citations: [CITATION],
+        requirementId: id,
+        verdict: "could-not-verify",
+      })),
+      ...placeholders.map((id) => ({
+        category: "other",
+        severity: "info",
+        title: `Could not verify: ${id}`,
+        body: "Not reached: the investigation was cut short.",
+        tags: [],
+        citations: [],
+        requirementId: id,
+        verdict: "could-not-verify",
+      })),
+    ],
     notes: [],
   });
 
@@ -167,7 +198,8 @@ async function runPipeline(): Promise<AnalysisCapability> {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  answered = [];
+  cited = [];
+  placeholders = [];
   process.env.ANALYSIS_FUSED_CODE_RETRIEVAL = "false";
   process.env.ANALYSIS_AGENT_TOKEN_BUDGET = "100000";
   // A small, unscaled turn cap the scripted model always runs into.
@@ -186,7 +218,7 @@ afterEach(() => {
 
 describe("#1131 — a cut-short pass whose only gaps are inconclusive", () => {
   it("offers no Continue and names the requirements as inconclusive", async () => {
-    answered = REQUIREMENTS.map((r) => r.id);
+    cited = REQUIREMENTS.map((r) => r.id);
     const capability = await runPipeline();
     expect(capability.codeInvestigationCutShort).toBe(true);
     expect(capability.reasons).not.toContain("code-investigation-cut-short");
@@ -201,13 +233,32 @@ describe("#1131 — a cut-short pass whose only gaps are inconclusive", () => {
 
 describe("#1131 — a cut-short pass that left requirements unreached", () => {
   it("offers Continue, and counts unreached and inconclusive apart", async () => {
-    answered = ["REQ-004"];
+    cited = ["REQ-004"];
     const capability = await runPipeline();
     expect(capability.reasons).toContain("code-investigation-cut-short");
     expect(capability.reasons).not.toContain("code-investigation-inconclusive");
     expect(capability.codeInvestigationUnreached).toEqual({
       unreached: 3,
       inconclusive: 1,
+      total: 4,
+    });
+  });
+});
+
+/**
+ * PR panel (#1131) — the agentic prompt tells the model to write an uncited
+ * could-not-verify finding for every requirement it ran out of budget before
+ * reaching (`VERDICT_RULE`, prompts.ts). Those are unreached, not inconclusive.
+ */
+describe("#1131 — the prompt's could-not-verify placeholders are unreached", () => {
+  it("still offers Continue when the model wrote a placeholder for each requirement", async () => {
+    placeholders = REQUIREMENTS.map((r) => r.id);
+    const capability = await runPipeline();
+    expect(capability.reasons).toContain("code-investigation-cut-short");
+    expect(capability.reasons).not.toContain("code-investigation-inconclusive");
+    expect(capability.codeInvestigationUnreached).toEqual({
+      unreached: 4,
+      inconclusive: 0,
       total: 4,
     });
   });

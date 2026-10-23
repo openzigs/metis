@@ -21,7 +21,7 @@ describe("classifyUnverifiedRequirements", () => {
     const out = classifyUnverifiedRequirements(
       [
         { requirementId: "REQ-1", verdict: "implemented" },
-        { requirementId: "REQ-2", verdict: "could-not-verify" },
+        { requirementId: "REQ-2", verdict: "could-not-verify", codeCited: true },
         { requirementId: "REQ-9", verdict: "implemented" }, // outside the set
         { requirementId: null, verdict: "gap-confirmed" },
       ],
@@ -30,11 +30,27 @@ describe("classifyUnverifiedRequirements", () => {
     expect(out).toEqual({ unreached: ["REQ-3", "REQ-4"], inconclusive: ["REQ-2"] });
   });
 
-  it("counts a finding with no verdict as reached, so the requirement is inconclusive", () => {
-    expect(classifyUnverifiedRequirements([{ requirementId: "REQ-1" }], ["REQ-1"])).toEqual({
-      unreached: [],
-      inconclusive: ["REQ-1"],
-    });
+  it("counts an uncited could-not-verify as unreached: the prompt's placeholder", () => {
+    // VERDICT_RULE (prompts.ts) has the model write exactly this for a
+    // requirement it ran out of budget before reaching.
+    expect(
+      classifyUnverifiedRequirements(
+        [{ requirementId: "REQ-1", verdict: "could-not-verify" }, { requirementId: "REQ-2" }],
+        ["REQ-1", "REQ-2"],
+      ),
+    ).toEqual({ unreached: ["REQ-1", "REQ-2"], inconclusive: [] });
+  });
+
+  it("counts a requirement reached by a settled finding, even beside a placeholder", () => {
+    expect(
+      classifyUnverifiedRequirements(
+        [
+          { requirementId: "REQ-1", verdict: "could-not-verify" },
+          { requirementId: "REQ-1", verdict: "implemented" },
+        ],
+        ["REQ-1"],
+      ),
+    ).toEqual({ unreached: [], inconclusive: ["REQ-1"] });
   });
 
   it("reports nothing when every requirement has a grounded verdict", () => {
