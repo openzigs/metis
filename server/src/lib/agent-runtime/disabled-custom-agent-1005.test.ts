@@ -1,0 +1,272 @@
+/**
+ * #1005 — a custom agent turned OFF for a project is never offered to that
+ * project's chat (the model's sub-agent tools and the session agent picker),
+ * a session bound to it fails closed, a delegation to it that was offered
+ * before it was turned off is refused BEFORE anyone is asked to approve it
+ * (no two-minute approval wait), and turning it back on restores all of it.
+ *
+ * The rule: an explicit enablement row for (agent, project) decides, either
+ * way. With no row, only the project that OWNS the agent may use it.
+ */
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { PrismaClient } from "@prisma/client";
+
+const rows = vi.hoisted(() => ({
+  custom: [] as Array<Record<string, unknown>>,
+  enablement: [] as Array<{ customAgentId: string; projectId: string; enabled: boolean }>,
+}));
+
+interface Where {
+  projectId?: string;
+  enabled?: boolean;
+  id?: string | { in: string[] };
+  OR?: Where[];
+  customAgentId_projectId?: { customAgentId: string; projectId: string };
+}
+
+function matches(r: Record<string, unknown>, w: Where): boolean {
+  if (w.OR && !w.OR.some((c) => matches(r, c))) return false;
+  if ("projectId" in w && r.projectId !== w.projectId) return false;
+  if ("enabled" in w && r.enabled !== w.enabled) return false;
+  if (typeof w.id === "string" && r.id !== w.id) return false;
+  if (w.id && typeof w.id === "object" && !w.id.in.includes(r.id as string)) return false;
+  return true;
+}
+
+const fakeDb = vi.hoisted(() => ({}) as Record<string, unknown>);
+Object.assign(fakeDb, {
+  customAgent: {
+    findUnique: vi.fn(
+      async ({ where }: { where: { id: string } }) =>
+        rows.custom.find((r) => r.id === where.id) ?? null,
+    ),
+    findMany: vi.fn(async ({ where }: { where: Where }) =>
+      rows.custom.filter((r) => matches(r, where)),
+    ),
+  },
+  customAgentEnablement: {
+    findUnique: vi.fn(async ({ where }: { where: Where }) => {
+      const k = where.customAgentId_projectId!;
+      return (
+        rows.enablement.find(
+          (e) => e.customAgentId === k.customAgentId && e.projectId === k.projectId,
+        ) ?? null
+      );
+    }),
+    findMany: vi.fn(async ({ where }: { where: Where }) =>
+      rows.enablement.filter((e) => matches(e as unknown as Record<string, unknown>, where)),
+    ),
+  },
+  projectAgentAllowlist: { findMany: vi.fn(async () => []) },
+  agent: { findMany: vi.fn(async () => []), findUnique: vi.fn(async () => null) },
+  skill: { findMany: vi.fn(async () => []) },
+  aIToolApproval: { create: vi.fn(async () => ({})), findFirst: vi.fn(async () => null) },
+});
+
+vi.mock("../prisma.js", () => ({ prisma: fakeDb }));
+vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
+
+import {
+  customAgentUsableInProject,
+  isCustomAgentUsableInProject,
+  listCallableAgents,
+  loadAgentDefinition,
+} from "./definition.js";
+import { listBindableAgents, loadBoundCustomAgent } from "./session-agent.js";
+import { SubAgentBudget, subAgentTools, type AgentToolsContext } from "./subagents.js";
+import { ApprovalGateService } from "../ai/approval-policy.js";
+import { executeToolCall } from "../ai/tool-runtime/executor.js";
+import { makeToolset } from "../ai/tool-runtime/toolset.js";
+import type { AIProvider } from "../ai/types.js";
+
+const db = fakeDb as unknown as PrismaClient;
+
+function agentRow(id: string, projectId: string | null, name = `Agent ${id}`) {
+  return {
+    id,
+    projectId,
+    name,
+    description: "",
+    systemPrompt: "",
+    tools: "[]",
+    model: null,
+    reasoningEffort: null,
+    skillKeys: "[]",
+    approvalPolicy: null,
+    version: "1.0.0",
+  };
+}
+
+function setEnabled(customAgentId: string, projectId: string, enabled: boolean): void {
+  const row = rows.enablement.find(
+    (e) => e.customAgentId === customAgentId && e.projectId === projectId,
+  );
+  if (row) row.enabled = enabled;
+  else rows.enablement.push({ customAgentId, projectId, enabled });
+}
+
+beforeEach(() => {
+  rows.custom.length = 0;
+  rows.enablement.length = 0;
+  rows.custom.push(
+    agentRow("own", "p1", "Go SQL reviewer"),
+    agentRow("own2", "p1", "Helper"),
+    agentRow("shared", null, "Shared"),
+    agentRow("foreign", "p2", "Foreign"),
+  );
+});
+
+describe("customAgentUsableInProject — the one rule", () => {
+  it("an explicit row decides either way; with none, only the owner may use it", () => {
+    expect(customAgentUsableInProject("p1", "p1", null)).toBe(true);
+    expect(customAgentUsableInProject("p1", "p1", { enabled: false })).toBe(false);
+    expect(customAgentUsableInProject("p1", "p1", { enabled: true })).toBe(true);
+    expect(customAgentUsableInProject(null, "p1", null)).toBe(false);
+    expect(customAgentUsableInProject(null, "p1", { enabled: true })).toBe(true);
+    expect(customAgentUsableInProject("p2", "p1", { enabled: false })).toBe(false);
+  });
+});
+
+describe("isCustomAgentUsableInProject", () => {
+  const own = { kind: "custom" as const, id: "own", projectId: "p1" };
+
+  it("refuses an agent the project OWNS once it is turned off for the project", async () => {
+    setEnabled("own", "p1", false);
+    expect(await isCustomAgentUsableInProject(own, "p1", db)).toBe(false);
+  });
+
+  it("an owned agent never toggled stays usable; turning it back on restores it", async () => {
+    expect(await isCustomAgentUsableInProject(own, "p1", db)).toBe(true);
+    setEnabled("own", "p1", false);
+    setEnabled("own", "p1", true);
+    expect(await isCustomAgentUsableInProject(own, "p1", db)).toBe(true);
+  });
+
+  it("another project's agent needs an enabled row; a library ref is never custom-usable", async () => {
+    const shared = { kind: "custom" as const, id: "shared", projectId: null };
+    expect(await isCustomAgentUsableInProject(shared, "p1", db)).toBe(false);
+    setEnabled("shared", "p1", true);
+    expect(await isCustomAgentUsableInProject(shared, "p1", db)).toBe(true);
+    expect(
+      await isCustomAgentUsableInProject({ kind: "library", id: "x", projectId: null }, "p1", db),
+    ).toBe(false);
+  });
+});
+
+describe("the offer: chat's sub-agent tools and the session agent picker", () => {
+  const callableRefs = async () => (await listCallableAgents("p1", { db })).map((d) => d.ref);
+  const bindableRefs = async () =>
+    (await listBindableAgents("p1", db)).filter((a) => a.kind === "custom").map((a) => a.ref);
+
+  it("an owned agent turned off for the project is offered to neither", async () => {
+    setEnabled("own", "p1", false);
+    expect(await callableRefs()).not.toContain("custom:own");
+    expect(await bindableRefs()).not.toContain("custom:own");
+    // The project's other agents are unaffected.
+    expect(await callableRefs()).toContain("custom:own2");
+    expect(await bindableRefs()).toContain("custom:own2");
+  });
+
+  it("turning it back on offers it again", async () => {
+    setEnabled("own", "p1", false);
+    setEnabled("own", "p1", true);
+    expect(await callableRefs()).toContain("custom:own");
+    expect(await bindableRefs()).toContain("custom:own");
+  });
+
+  it("a shared agent is offered only while enabled, and never another project's own agent", async () => {
+    expect(await callableRefs()).not.toContain("custom:shared");
+    setEnabled("shared", "p1", true);
+    expect(await callableRefs()).toContain("custom:shared");
+    expect(await bindableRefs()).toContain("custom:shared");
+    setEnabled("shared", "p1", false);
+    expect(await callableRefs()).not.toContain("custom:shared");
+    expect(await callableRefs()).not.toContain("custom:foreign");
+    // Turned off for ANOTHER project: still offered here.
+    setEnabled("own", "p2", false);
+    expect(await callableRefs()).toContain("custom:own");
+  });
+
+  it("a session bound to an agent that was turned off fails closed", async () => {
+    setEnabled("own", "p1", false);
+    expect(await loadBoundCustomAgent("custom:own", "p1", db)).toBeNull();
+    setEnabled("own", "p1", true);
+    expect((await loadBoundCustomAgent("custom:own", "p1", db))?.ref).toBe("custom:own");
+  });
+});
+
+describe("a delegation offered before the agent was turned off", () => {
+  async function offeredTool() {
+    const def = (await loadAgentDefinition("custom:own", db))!;
+    const ctx: AgentToolsContext = {
+      provider: { key: "offline-stub" } as unknown as AIProvider,
+      model: "m",
+      session: { id: "s1", userId: "u1", projectId: "p1" },
+      callable: [def],
+      limits: { maxDepth: 2, tokenBudget: 1000, maxTurns: 6 },
+      budget: new SubAgentBudget(1000),
+      db,
+      isCallable: async (ref) =>
+        (await listCallableAgents("p1", { db })).some((d) => d.ref === ref),
+    };
+    const [tool] = subAgentTools(
+      ctx,
+      {
+        depth: 0,
+        runId: null,
+        allowlist: null,
+        baseToolset: makeToolset([]),
+        policy: { low: "always-prompt", medium: "always-prompt", high: "always-prompt" },
+      },
+      new Set(),
+    );
+    return tool!;
+  }
+
+  it("is refused at once, before anyone is asked to approve it, in words an analyst reads", async () => {
+    const tool = await offeredTool();
+    setEnabled("own", "p1", false); // turned off mid-turn, after the offer was built
+    // A prompter nobody answers: reaching it is the two-minute stall of #1005.
+    const ask = vi.fn(() => new Promise<never>(() => {}));
+    const gate = new ApprovalGateService({
+      sessionId: "s1",
+      userId: "u1",
+      policy: { low: "always-prompt", medium: "always-prompt", high: "always-prompt" },
+      prompter: { ask },
+    });
+    const execute = vi.spyOn(tool, "execute");
+    const out = await executeToolCall(
+      { id: "call_1", name: tool.wireName, args: { task: "review the SQL" } },
+      {
+        toolset: makeToolset([tool]),
+        gate,
+        ctx: { sessionId: "s1", userId: "u1", projectId: "p1" },
+      },
+    );
+    expect(ask).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ isError: true, executed: false, errorCode: "TOOL_UNAVAILABLE" });
+    expect(out.text).toContain('"Go SQL reviewer" agent is turned off for this project');
+  });
+
+  it("an agent still on goes to the approval gate as before", async () => {
+    const tool = await offeredTool();
+    const ask = vi.fn(async () => "deny" as const);
+    const gate = new ApprovalGateService({
+      sessionId: "s1",
+      userId: "u1",
+      policy: { low: "always-prompt", medium: "always-prompt", high: "always-prompt" },
+      prompter: { ask },
+    });
+    const out = await executeToolCall(
+      { id: "call_1", name: tool.wireName, args: { task: "review the SQL" } },
+      {
+        toolset: makeToolset([tool]),
+        gate,
+        ctx: { sessionId: "s1", userId: "u1", projectId: "p1" },
+      },
+    );
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(out.errorCode).toBe("TOOL_DENIED");
+  });
+});

@@ -194,6 +194,18 @@ const prisma = {
     ),
   },
   customAgentEnablement: {
+    findUnique: vi.fn(
+      async ({
+        where,
+      }: {
+        where: { customAgentId_projectId: { customAgentId: string; projectId: string } };
+      }) =>
+        enablements.find(
+          (e) =>
+            e.customAgentId === where.customAgentId_projectId.customAgentId &&
+            e.projectId === where.customAgentId_projectId.projectId,
+        ) ?? null,
+    ),
     findMany: vi.fn(async ({ where }: { where: { projectId: string; enabled: boolean } }) =>
       enablements
         .filter((e) => e.projectId === where.projectId && e.enabled === where.enabled)

@@ -2799,6 +2799,16 @@ them; past that the rest are not offered and the server logs which. An approval 
 low-risk tools") also applies to every agent it hands off to, at every level.
 Turn hand-offs off with `CHAT_SUBAGENTS=false`.
 
+**Turning an agent off for a project** (#1005). **Disable** on the project's
+**Custom agents** card turns that agent off for the project everywhere — even
+an agent the project owns. The chat stops offering it, both in the agent
+picker and as a hand-off target, and a chat already running under it loses its
+persona and tools. A hand-off the chat had already offered before you turned
+the agent off is refused at once, reading "Turned off for this project — it did
+not run", rather than waiting for an approval. The playground says the agent is
+turned off. **Enable** brings it back on the next message. An agent the project
+owns and has never switched either way stays usable in chat and the playground.
+
 **Agents and skills — local-model smoke run (manual).** The CI end-to-end test
 (`e2e/tests/agents-skills.spec.ts`) drives this flow with a scripted model. To
 see it with a real local model (Ollama):

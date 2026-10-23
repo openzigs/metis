@@ -191,9 +191,25 @@ export async function loadAgentDefinition(
 }
 
 /**
- * #236 — may `projectId` use this CUSTOM agent? Only when the project OWNS it
- * or has ENABLED it (the invoke / ACP / sub-agent rule). Always scoped on BOTH
- * the agent and the project: another project's agent is never usable here.
+ * #1005 — THE rule for whether `projectId` may use a custom agent, in one
+ * place. An explicit enablement row for (agent, project) decides, either way:
+ * an agent the project OWNS that was turned off for it is off — ownership does
+ * not override the switch. With no row, only the owning project may use it
+ * (a freshly authored agent works in its own project's playground and chat).
+ */
+export function customAgentUsableInProject(
+  agentProjectId: string | null,
+  projectId: string,
+  enablement: { enabled: boolean } | null | undefined,
+): boolean {
+  if (enablement) return enablement.enabled;
+  return agentProjectId === projectId;
+}
+
+/**
+ * #236 / #1005 — may `projectId` use this CUSTOM agent? See
+ * {@link customAgentUsableInProject}. Always scoped on BOTH the agent and the
+ * project: another project's agent is never usable here unless enabled for it.
  */
 export async function isCustomAgentUsableInProject(
   def: Pick<AgentDefinitionDto, "kind" | "id" | "projectId">,
@@ -201,12 +217,40 @@ export async function isCustomAgentUsableInProject(
   db: PrismaClient = defaultPrisma,
 ): Promise<boolean> {
   if (def.kind !== "custom") return false;
-  if (def.projectId === projectId) return true;
   const row = await db.customAgentEnablement.findUnique({
     where: { customAgentId_projectId: { customAgentId: def.id, projectId } },
     select: { enabled: true },
   });
-  return Boolean(row?.enabled);
+  return customAgentUsableInProject(def.projectId, projectId, row);
+}
+
+/**
+ * #1005 — every custom agent row `projectId` may use, by name: the ones it
+ * owns and has not turned off, and the ones it has turned on. The ONE list
+ * behind chat's sub-agent tools ({@link listCallableAgents}) and the session
+ * agent picker (`listBindableAgents`), so neither can offer a switched-off
+ * agent.
+ */
+export async function listUsableCustomAgentRows(
+  projectId: string,
+  db: PrismaClient = defaultPrisma,
+): Promise<CustomAgentRow[]> {
+  const [on, off] = await Promise.all([
+    db.customAgentEnablement.findMany({
+      where: { projectId, enabled: true },
+      select: { customAgentId: true },
+    }),
+    db.customAgentEnablement.findMany({
+      where: { projectId, enabled: false },
+      select: { customAgentId: true },
+    }),
+  ]);
+  const turnedOff = new Set(off.map((e) => e.customAgentId));
+  const rows = await db.customAgent.findMany({
+    where: { OR: [{ projectId }, { id: { in: on.map((e) => e.customAgentId) } }] },
+    orderBy: { name: "asc" },
+  });
+  return rows.filter((r) => !turnedOff.has(r.id));
 }
 
 /**
@@ -240,7 +284,8 @@ export async function listProjectLibraryAgents(
 
 /**
  * The agents a project's chat may call as sub-agents (#147):
- *   • custom agents OWNED by the project or ENABLED for it (the invoke/ACP rule);
+ *   • custom agents the project may use ({@link listUsableCustomAgentRows}:
+ *     owned and not turned off, or turned on — the invoke/ACP rule, #1005);
  *   • library agents with an explicit, enabled `ProjectAgentAllowlist` row.
  *     The library's "no rows ⇒ everything" picker default is deliberately NOT
  *     used here: exposing every library agent as a tool is an opt-in, not a
@@ -255,16 +300,7 @@ export async function listCallableAgents(
   opts: { db?: PrismaClient } = {},
 ): Promise<AgentDefinitionDto[]> {
   const db = opts.db ?? defaultPrisma;
-  const enabledCustom = await db.customAgentEnablement.findMany({
-    where: { projectId, enabled: true },
-    select: { customAgentId: true },
-  });
-  const custom = await db.customAgent.findMany({
-    where: {
-      OR: [{ projectId }, { id: { in: enabledCustom.map((e) => e.customAgentId) } }],
-    },
-    orderBy: { name: "asc" },
-  });
+  const custom = await listUsableCustomAgentRows(projectId, db);
   const library = await listProjectLibraryAgents(projectId, db);
   return [...library, ...custom.map(customDefinition)];
 }

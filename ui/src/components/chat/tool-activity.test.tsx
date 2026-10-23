@@ -105,4 +105,45 @@ describe("TranscriptToolCalls", () => {
     expect(screen.getByText("approved by you")).toBeTruthy();
     expect(screen.getByText("denied")).toBeTruthy();
   });
+
+  it("#1005 — a delegation to an agent turned off for the project says so, not just 'not run'", () => {
+    render(
+      <TranscriptToolCalls
+        calls={[
+          {
+            id: "c1",
+            name: "agent:custom:abc",
+            isError: true,
+            executed: false,
+            errorCode: "TOOL_UNAVAILABLE",
+            resultPreview: "",
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText("Turned off for this project — it did not run.")).toBeTruthy();
+    expect(screen.queryByText("not run")).toBeNull();
+  });
+});
+
+describe("ToolActivityList — #1005", () => {
+  it("a live delegation refused because the agent is turned off reads in plain words", () => {
+    render(
+      <ToolActivityList
+        items={[
+          {
+            callId: "c1",
+            name: "agent:custom:abc",
+            risk: "medium",
+            source: "agent",
+            phase: "error",
+            code: "TOOL_UNAVAILABLE",
+          },
+        ]}
+        onDecide={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Turned off for this project — it did not run.")).toBeTruthy();
+    expect(screen.queryByText(/No answer in time/)).toBeNull();
+  });
 });

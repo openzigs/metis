@@ -369,6 +369,7 @@ function makeSubAgentTool(
     },
     risk: "medium",
     source: "agent",
+    unavailableNow: async () => (await currentSubAgent(ctx, snapshot)).refusal,
     validate(args) {
       if (!args || typeof args !== "object" || Array.isArray(args)) return { ok: false };
       const a = args as Record<string, unknown>;
@@ -380,6 +381,31 @@ function makeSubAgentTool(
     execute: (args, rctx) =>
       runSubAgent(ctx, owner, snapshot, (args as { task: string }).task, rctx),
   };
+}
+
+/**
+ * Re-read an offered agent at call time — the tool list in the prompt is a
+ * snapshot. `refusal` is the model-facing text when it can no longer run:
+ * gone, or turned off for the project since the offer was built (#1005).
+ */
+async function currentSubAgent(
+  ctx: AgentToolsContext,
+  snapshot: AgentDefinitionDto,
+): Promise<{ def: AgentDefinitionDto; refusal: null } | { def: null; refusal: string }> {
+  const def = await loadAgentDefinition(snapshot.ref, ctx.db ?? defaultPrisma);
+  if (!def) {
+    return {
+      def: null,
+      refusal: `Error: the "${snapshot.name}" agent is no longer available, so it did not run. Do not call it again in this reply; answer without it.`,
+    };
+  }
+  if (ctx.isCallable && !(await ctx.isCallable(def.ref))) {
+    return {
+      def: null,
+      refusal: `Error: the "${snapshot.name}" agent is turned off for this project, so it did not run. Do not call it again in this reply; answer without it.`,
+    };
+  }
+  return { def, refusal: null };
 }
 
 const ZERO: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -397,11 +423,11 @@ async function runSubAgent(
   if (depth > ctx.limits.maxDepth) {
     return { text: "Error: sub-agents cannot be nested this deep.", isError: true };
   }
-  // Re-read at call time: the tool list in the prompt is a snapshot.
-  const def = await loadAgentDefinition(snapshot.ref, db);
-  if (!def || (ctx.isCallable && !(await ctx.isCallable(def.ref)))) {
-    return { text: `Error: the "${snapshot.name}" agent is no longer available.`, isError: true };
-  }
+  // Re-read again here: the agent may have been turned off while its call
+  // waited for approval (`unavailableNow` already refused it before that).
+  const current = await currentSubAgent(ctx, snapshot);
+  if (!current.def) return { text: current.refusal, isError: true };
+  const def = current.def;
   const run = await store.create({
     sessionId: ctx.session.id,
     parentRunId: owner.runId,

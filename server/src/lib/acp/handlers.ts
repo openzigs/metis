@@ -26,6 +26,7 @@ import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
 import { assertLiveProjectAccess } from "../custom-agents/authz.js";
+import { isCustomAgentUsableInProject } from "../agent-runtime/definition.js";
 import type { VerifiedToken } from "./api-tokens.js";
 import {
   ACP_METHOD_SCOPES,
@@ -361,8 +362,9 @@ function parseRunAgentParams(params: unknown): RunAgentParams {
  * Resolve a custom agent by name WITHIN a project's scope. Mirrors the REST
  * twin's "owned by this project OR enabled for this project" rule
  * (custom-agents.ts:285-286): an agent is runnable in `projectId` when it is
- * owned by that project, or a foreign/built-in agent explicitly enabled for it
- * via `CustomAgentEnablement`. A bare global name lookup is never used.
+ * owned by that project and not turned off for it (#1005), or a foreign/built-in
+ * agent explicitly enabled for it via `CustomAgentEnablement`. A bare global
+ * name lookup is never used.
  */
 async function resolveAgentForProject(
   projectId: string,
@@ -372,7 +374,14 @@ async function resolveAgentForProject(
     where: { projectId, name: agentKey },
     select: { id: true, name: true },
   });
-  if (owned) return owned;
+  // #1005 — an owned agent turned off for this project is not runnable here
+  // (its disabled row also keeps it out of the enabled lookup below).
+  if (
+    owned &&
+    (await isCustomAgentUsableInProject({ kind: "custom", id: owned.id, projectId }, projectId))
+  ) {
+    return owned;
+  }
 
   const enablements = await prisma.customAgentEnablement.findMany({
     where: { projectId, enabled: true },

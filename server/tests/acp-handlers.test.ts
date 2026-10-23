@@ -19,6 +19,7 @@ const projects: Array<{
 const skills: Array<{ id: string; name: string; description: string; deletedAt: Date | null }> = [];
 const agents: Array<{ id: string; name: string; description: string; updatedAt: Date }> = [];
 const bgRuns: Array<{ id: string; payload: string; kind: string; projectId: string }> = [];
+const turnedOff = new Set<string>();
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
@@ -47,7 +48,14 @@ vi.mock("../src/lib/prisma.js", () => ({
           agents.find((a) => a.name === where.name) ?? null,
       ),
     },
-    customAgentEnablement: { findMany: vi.fn(async () => []) },
+    customAgentEnablement: {
+      findMany: vi.fn(async () => []),
+      // #1005 — an agent id in `turnedOff` has a disabled row for every project.
+      findUnique: vi.fn(
+        async ({ where }: { where: { customAgentId_projectId: { customAgentId: string } } }) =>
+          turnedOff.has(where.customAgentId_projectId.customAgentId) ? { enabled: false } : null,
+      ),
+    },
     projectSkillAllowlist: { findMany: vi.fn(async () => []) },
     backgroundRun: {
       create: vi.fn(
@@ -69,6 +77,7 @@ beforeEach(() => {
   skills.length = 0;
   agents.length = 0;
   bgRuns.length = 0;
+  turnedOff.clear();
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -146,6 +155,30 @@ describe("dispatchAcp", () => {
     const payload = JSON.parse(bgRuns[0].payload);
     expect(payload.agentKey).toBe("smoke");
     expect(payload.acp.tokenId).toBe("tok_1");
+  });
+
+  it("#1005 — run-agent refuses the project's own agent once it is turned off (AGENT_NOT_FOUND, no enqueue)", async () => {
+    projects.push({
+      id: "p1",
+      name: "P",
+      slug: "p",
+      status: "active",
+      workspaceId: null,
+      deletedAt: null,
+    });
+    agents.push({ id: "a1", name: "smoke", description: "", updatedAt: new Date() });
+    turnedOff.add("a1");
+    const r = await dispatchAcp(
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "run-agent",
+        params: { projectId: "p1", agentKey: "smoke", prompt: "hi" },
+      },
+      { auth },
+    );
+    expect("error" in r && r.error.code).toBe(ACP_ERR.AGENT_NOT_FOUND);
+    expect(bgRuns).toHaveLength(0);
   });
 
   it("run-agent returns INVALID_PARAMS when missing projectId/agentKey", async () => {
