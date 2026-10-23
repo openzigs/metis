@@ -104,9 +104,17 @@ export const BRD_MAIN_MAX_CHARS = 60_000;
 export const BRD_MAIN_MIN_CHARS = 40_000;
 
 /**
+ * #1427 — how far above the floor the main sections are asked for together:
+ * 5%, which covers the rounding of each length note to 50 words (at most 25
+ * words, 150 characters, a section) with room to spare.
+ */
+export const BRD_MAIN_FLOOR_MARGIN = 1.05;
+
+/**
  * #1427 — the most a main section's length note divides its target by for a
- * model's measured overrun (`length-calibration.ts`): 48k / 40k = 1.2, so the
- * main sections are together asked for at least the 40k floor.
+ * model's measured overrun (`length-calibration.ts`): 48k / (40k × 1.05) ≈
+ * 1.14, so the main sections are together asked for 42k, 5% above the floor
+ * (42,000 characters once each note is rounded to 50 words).
  *
  * DeepSeek's 1.5 was measured on batched catalogue sections. Applied to the
  * main sections (#1352) it asked them for 32k together, below the floor, so
@@ -114,11 +122,13 @@ export const BRD_MAIN_MIN_CHARS = 40_000;
  * more: on 2026-10-22 it overran 1.52× (48,880 characters), on 2026-10-23
  * 1.12× (35,996) with the same length notes. The two errors do not cost the
  * same: text past the ask is cut at assembly ({@link mainFitCap}, the summary
- * sections first), and a section written short cannot be lengthened. At 1.2
- * a model that keeps to its ask lands on the floor, and one that overruns by
- * DeepSeek's 1.5 on the 60k top.
+ * sections first), and a section written short cannot be lengthened. At this
+ * cap a model that keeps to its ask writes 42k, above the floor; one that
+ * overruns by DeepSeek's 1.5 writes about 63k, and the fit trims the summary
+ * sections to the 60k top.
  */
-export const BRD_MAIN_MAX_OVERRUN = BRD_MAIN_TARGET_CHARS / BRD_MAIN_MIN_CHARS;
+export const BRD_MAIN_MAX_OVERRUN =
+  BRD_MAIN_TARGET_CHARS / (BRD_MAIN_MIN_CHARS * BRD_MAIN_FLOOR_MARGIN);
 
 /**
  * #1427 — the overrun a main section's length note is corrected for: the

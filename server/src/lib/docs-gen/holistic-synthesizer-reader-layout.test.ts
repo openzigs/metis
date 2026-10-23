@@ -671,9 +671,9 @@ describe("#1427 — the words a main section is asked for, under a model's measu
         batchWordBudget(BRD_MAIN_SECTION_TARGETS[id] / 1.5),
       );
     }
-    // Together the floor, to the 50-word rounding of each note.
+    // Together at least the floor, after each note's rounding to 50 words (42,000).
     const total = MAIN_IDS.reduce((n, id) => n + asked(provider, id) * 6, 0);
-    expect(total).toBeGreaterThanOrEqual(BRD_MAIN_MIN_CHARS - MAIN_IDS.length * 25 * 6);
+    expect(total).toBeGreaterThanOrEqual(BRD_MAIN_MIN_CHARS);
   });
 
   it("leaves the appendix's single-call section corrected for the model's whole factor", async () => {
