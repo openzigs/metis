@@ -28,7 +28,8 @@ const requireFromBotbuilder = createRequire(createRequire(import.meta.url).resol
 /** The exact zod copy botbuilder loads at runtime — not the one server/ declares. */
 const botbuilderZodVersion = (requireFromBotbuilder("zod/package.json") as { version: string })
   .version;
-const bz = requireFromBotbuilder("zod") as typeof import("zod");
+// Typed with zod 4's bundled v3 API surface, which is the shape botbuilder's 3.25.76 exposes.
+const bz = requireFromBotbuilder("zod") as typeof import("zod/v3");
 
 const CREDS = {
   appId: "11111111-2222-3333-4444-555555555555",
