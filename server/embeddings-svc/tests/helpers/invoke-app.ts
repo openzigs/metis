@@ -47,6 +47,11 @@ export interface InvokeOptions {
   url: string;
   /** Sent as JSON when present. `content-type`/`content-length` are set for you. */
   json?: unknown;
+  /**
+   * Raw request bytes, sent verbatim (#1458: a compressed body). Only `content-length`
+   * is set for you; pass `content-type` / `content-encoding` in `headers`.
+   */
+  raw?: Buffer;
   /** Extra request headers. Keys are lower-cased, as Node's parser would deliver them. */
   headers?: Record<string, string>;
 }
@@ -102,8 +107,9 @@ function decodeChunked(buf: Buffer): Buffer {
  * machine.
  */
 export function invoke(app: Express, options: InvokeOptions): Promise<InvokeResult> {
-  const { method = "GET", url, json, headers = {} } = options;
+  const { method = "GET", url, json, raw, headers = {} } = options;
   const payload = json === undefined ? undefined : Buffer.from(JSON.stringify(json), "utf8");
+  const body = payload ?? raw;
 
   // `new PassThrough()` allocates no file descriptor — it is the whole point.
   const socket = new PassThrough();
@@ -119,7 +125,9 @@ export function invoke(app: Express, options: InvokeOptions): Promise<InvokeResu
     host: "127.0.0.1",
     ...(payload
       ? { "content-type": "application/json", "content-length": String(payload.byteLength) }
-      : {}),
+      : raw
+        ? { "content-length": String(raw.byteLength) }
+        : {}),
     ...Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v])),
   };
 
@@ -153,7 +161,7 @@ export function invoke(app: Express, options: InvokeOptions): Promise<InvokeResu
     });
 
     app(req, res);
-    if (payload) req.push(payload);
+    if (body) req.push(body);
     req.push(null);
   });
 }

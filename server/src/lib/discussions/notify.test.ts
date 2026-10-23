@@ -97,7 +97,8 @@ describe("discussion mention notifications", () => {
 
     expect(notificationCreate).toHaveBeenCalledTimes(1);
     const data = notificationCreate.mock.calls[0][0].data;
-    expect(data).toMatchObject({ userId: "bob", type: "discussion_mention" });
+    // #1447 — the row records its project, so every read re-checks access.
+    expect(data).toMatchObject({ userId: "bob", type: "discussion_mention", projectId: "p1" });
     // #980 — the link opens the thread itself, and the text names the author.
     expect(data.href).toBe("/projects/p1/discussions/t1");
     expect(data.title).toBe("Alice Author mentioned you in a discussion");
