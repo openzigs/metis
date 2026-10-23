@@ -58,6 +58,8 @@ interface ReviewNotification {
   title: string;
   message: string;
   reviewId: string;
+  /** #1447 — the review's project, stored so every read re-checks access. */
+  projectId: string;
   /** Extra event fields carried on the stored/emitted payload. */
   extra?: Record<string, unknown>;
 }
@@ -90,6 +92,7 @@ async function persistAndEmit(n: ReviewNotification): Promise<void> {
         message: n.message,
         href,
         payload: JSON.stringify(payload),
+        projectId: n.projectId,
       },
       select: { id: true },
     });
@@ -157,6 +160,7 @@ export async function notifyReviewSubmitted(input: ReviewSubmittedInput): Promis
             title: "Review requested",
             message: `You are assigned as a reviewer on "${input.title}"`,
             reviewId: input.reviewId,
+            projectId: input.projectId,
             extra: { projectId: input.projectId },
           });
         } catch (err) {
@@ -218,6 +222,7 @@ export async function notifyReviewDecision(input: ReviewDecisionInput): Promise<
       title: `Reviewer ${input.decision} your review`,
       message: `${input.reviewerName} ${input.decision} "${input.title}"`,
       reviewId: input.reviewId,
+      projectId: input.projectId,
       extra: { projectId: input.projectId, reviewerId: input.reviewerId, decision: input.decision },
     });
 
@@ -232,6 +237,7 @@ export async function notifyReviewDecision(input: ReviewDecisionInput): Promise<
           ? `"${input.title}" was approved${baselineId ? " — a baseline was created" : ""}`
           : `"${input.title}" was rejected`,
         reviewId: input.reviewId,
+        projectId: input.projectId,
         extra: { projectId: input.projectId, baselineId },
       });
     }

@@ -5132,6 +5132,12 @@ model Notification {
   /// deleting that comment can rewrite the stored excerpt. Not a foreign key:
   /// comments are soft-deleted, and the row must outlive that. Null otherwise.
   commentId String?
+  /// #1447 — the project the notification is about. Every read re-checks the
+  /// reader's current access to it and redacts the row when they can no longer
+  /// open it. Not a foreign key: the row outlives a project's deletion, and is
+  /// then redacted. Null only on a row the #1447 backfill could not resolve,
+  /// which is redacted for everyone.
+  projectId String?
   read      Boolean  @default(false)
   createdAt DateTime @default(now())
 
@@ -5140,6 +5146,7 @@ model Notification {
   @@index([userId])
   @@index([userId, read])
   @@index([commentId])
+  @@index([projectId])
   @@map("notifications")
 }
 

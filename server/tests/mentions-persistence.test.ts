@@ -61,6 +61,8 @@ describe("fanOutMentions — Issue #416 persistence", () => {
           userId: "user-bob",
           type: "mention",
           title: expect.stringContaining("mentioned"),
+          // #1447 — the row records its project, so every read re-checks access.
+          projectId: "p-1",
         }),
       }),
     );

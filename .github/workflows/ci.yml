@@ -1147,6 +1147,13 @@ jobs:
         working-directory: server
         run: pnpm test:integration user-identity-1395-postgres
 
+      # Issue #1447 — the notification projectId backfill, run verbatim over
+      # seeded legacy rows of every type (scratch schema): its payload regexes
+      # have no SQLite twin to cover them.
+      - name: Prove the notification project backfill on real Postgres
+        working-directory: server
+        run: pnpm test:integration notification-project-1447-postgres
+
       # Issue #492 — the partial (live-rows-only) repo label index on real
       # Postgres: delete-then-re-add under one label succeeds, a rename onto a
       # live label is a 409 through the real router, including a lost race.
