@@ -13,7 +13,7 @@ const mockIoTo = vi.fn(() => ({ emit: mockEmit }));
 const mockPrisma = {
   user: { findMany: vi.fn() },
   mention: { upsert: vi.fn(), updateMany: vi.fn() },
-  notification: { create: vi.fn() },
+  notification: { create: vi.fn(), findMany: vi.fn(), updateMany: vi.fn() },
   notificationPreference: { findMany: vi.fn() },
   comment: { findUnique: vi.fn() },
   userRole: { findFirst: vi.fn() },
@@ -28,7 +28,14 @@ vi.mock("../src/lib/discussions/access.js", () => ({
   canAccessProjectDiscussions: (...a: unknown[]) => canAccessProjectDiscussions(...a),
 }));
 
-const { fanOutMentions, commentExcerpt } = await import("../src/lib/collaboration/mentions.js");
+const {
+  fanOutMentions,
+  commentExcerpt,
+  refreshCommentMentionExcerpts,
+  retractCommentMentionExcerpts,
+  DELETED_COMMENT_MESSAGE,
+  EDITED_COMMENT_MESSAGE,
+} = await import("../src/lib/collaboration/mentions.js");
 
 function onRequirement(title = "Login lockout") {
   mockPrisma.comment.findUnique.mockResolvedValue({
@@ -168,5 +175,99 @@ describe("commentExcerpt (#1318)", () => {
 
   it("returns an empty string for a blank body", () => {
     expect(commentExcerpt("   ")).toBe("");
+  });
+
+  /** Any UTF-16 surrogate without its partner. */
+  const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+  it("never splits an emoji at the cut (counts characters, not UTF-16 units)", () => {
+    const out = commentExcerpt(`${"a".repeat(138)}😀😀 tail`);
+    expect(out).toBe(`“${"a".repeat(138)}😀…”`);
+    expect(LONE_SURROGATE.test(out)).toBe(false);
+  });
+
+  it("keeps a joined emoji sequence whole", () => {
+    const family = "👩‍👩‍👧‍👦";
+    const out = commentExcerpt(`${"a".repeat(138)}${family}${family} tail`);
+    expect(out).toBe(`“${"a".repeat(138)}${family}…”`);
+  });
+
+  it("leaves a body of exactly 140 characters uncut", () => {
+    const body = `${"a".repeat(139)}😀`;
+    expect(commentExcerpt(body)).toBe(`“${body}”`);
+  });
+});
+
+describe("excerpt retention (#1318)", () => {
+  beforeEach(() => {
+    mockPrisma.notification.updateMany.mockResolvedValue({ count: 1 });
+  });
+
+  it("saves the comment id on the notification", async () => {
+    await fanOutMentions("c-1", "@bob hi", "author-1");
+    expect(mockPrisma.notification.create.mock.calls[0][0].data.commentId).toBe("c-1");
+  });
+
+  it("retract replaces only that comment's mention excerpts", async () => {
+    await retractCommentMentionExcerpts("c-1");
+    expect(mockPrisma.notification.updateMany).toHaveBeenCalledWith({
+      where: { commentId: "c-1", type: "mention" },
+      data: { message: DELETED_COMMENT_MESSAGE },
+    });
+  });
+
+  it("retract never throws", async () => {
+    mockPrisma.notification.updateMany.mockRejectedValue(new Error("db down"));
+    await expect(retractCommentMentionExcerpts("c-1")).resolves.toBeUndefined();
+  });
+
+  it("refresh re-quotes recipients who can still open the project and neutralises the rest", async () => {
+    mockPrisma.notification.findMany.mockResolvedValue([
+      { id: "n-bob", userId: "user-bob" },
+      { id: "n-eve", userId: "user-eve" },
+    ]);
+    canAccessProjectDiscussions.mockImplementation(
+      async (actor: { id: string }) => actor.id === "user-bob",
+    );
+
+    await refreshCommentMentionExcerpts("c-1", "@bob @eve new text");
+
+    expect(mockPrisma.notification.findMany).toHaveBeenCalledWith({
+      where: { commentId: "c-1", type: "mention" },
+      select: { id: true, userId: true },
+    });
+    expect(mockPrisma.notification.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["n-bob"] } },
+      data: { message: "“@bob @eve new text”" },
+    });
+    expect(mockPrisma.notification.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["n-eve"] } },
+      data: { message: EDITED_COMMENT_MESSAGE },
+    });
+  });
+
+  it("refresh neutralises everyone when the comment's location cannot be resolved", async () => {
+    mockPrisma.notification.findMany.mockResolvedValue([{ id: "n-bob", userId: "user-bob" }]);
+    mockPrisma.comment.findUnique.mockResolvedValue(null);
+
+    await refreshCommentMentionExcerpts("c-1", "@bob new");
+
+    expect(canAccessProjectDiscussions).not.toHaveBeenCalled();
+    expect(mockPrisma.notification.updateMany).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.notification.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["n-bob"] } },
+      data: { message: EDITED_COMMENT_MESSAGE },
+    });
+  });
+
+  it("refresh does nothing when no notification quotes the comment", async () => {
+    mockPrisma.notification.findMany.mockResolvedValue([]);
+    await refreshCommentMentionExcerpts("c-1", "@bob new");
+    expect(mockPrisma.notification.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("refresh never throws", async () => {
+    mockPrisma.notification.findMany.mockRejectedValue(new Error("db down"));
+    await expect(refreshCommentMentionExcerpts("c-1", "x")).resolves.toBeUndefined();
   });
 });

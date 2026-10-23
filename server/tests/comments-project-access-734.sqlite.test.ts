@@ -568,6 +568,79 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const rows = await db.notification.findMany({ where: { type: "mention" } });
         expect(rows.map((r) => r.userId)).toEqual(["u-admin"]);
       });
+
+      // ── #1318 — the stored excerpt follows the comment ──────────────────────
+      describe("excerpt retention (#1318)", () => {
+        const AUTHOR = () => developer("u-author", [WS]);
+
+        it("records the comment the notification quotes", async () => {
+          const t = await seedThreads();
+          await fanOutMentions(t.reqCommentId, "@u-member look", "u-author");
+
+          const [row] = await db.notification.findMany({ where: { type: "mention" } });
+          expect(row!.commentId).toBe(t.reqCommentId);
+        });
+
+        it("a deleted comment's notifications keep title and link but no longer quote it", async () => {
+          const t = await seedThreads();
+          await fanOutMentions(t.reqCommentId, "@u-member the secret launch date", "u-author");
+          const [before] = await db.notification.findMany({ where: { type: "mention" } });
+
+          const res = await call("delete", `/api/comments/${t.reqCommentId}`, AUTHOR());
+          expect(res.status).toBe(200);
+
+          const [after] = await db.notification.findMany({ where: { type: "mention" } });
+          expect(after!.message).toBe("The comment was deleted.");
+          expect(after!.message).not.toContain("secret");
+          expect(after!.title).toBe(before!.title);
+          expect(after!.href).toBe(before!.href);
+        });
+
+        it("an edited comment's notifications quote the new text", async () => {
+          const t = await seedThreads();
+          await fanOutMentions(t.reqCommentId, "@u-member first draft", "u-author");
+
+          const res = await call("patch", `/api/comments/${t.reqCommentId}`, AUTHOR(), {
+            body: "@u-member  revised\nwording",
+          });
+          expect(res.status).toBe(200);
+
+          const [row] = await db.notification.findMany({ where: { type: "mention" } });
+          expect(row!.message).toBe("“@u-member revised wording”");
+        });
+
+        it("an edit does not re-quote to a recipient who can no longer open the project", async () => {
+          const t = await seedThreads();
+          await fanOutMentions(t.reqCommentId, "@u-member first draft", "u-author");
+          await db.workspaceMember.deleteMany({ where: { workspaceId: WS, userId: "u-member" } });
+          try {
+            const res = await call("patch", `/api/comments/${t.reqCommentId}`, AUTHOR(), {
+              body: "@u-member the new secret",
+            });
+            expect(res.status).toBe(200);
+
+            const [row] = await db.notification.findMany({ where: { type: "mention" } });
+            expect(row!.message).toBe("The comment was edited.");
+          } finally {
+            await db.workspaceMember.create({
+              data: { workspaceId: WS, userId: "u-member", role: "member" },
+            });
+          }
+        });
+
+        it("leaves another comment's notifications alone", async () => {
+          const t = await seedThreads();
+          await fanOutMentions(t.reqCommentId, "@u-member on the requirement", "u-author");
+          await fanOutMentions(t.artifactCommentId, "@u-member on the artifact", "u-author");
+
+          await call("delete", `/api/comments/${t.reqCommentId}`, AUTHOR());
+
+          const other = await db.notification.findFirst({
+            where: { commentId: t.artifactCommentId },
+          });
+          expect(other!.message).toBe("“@u-member on the artifact”");
+        });
+      });
     });
   },
 );

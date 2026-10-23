@@ -10,7 +10,7 @@
  * the API. The coordinator's socket is confirmed authenticated before the post,
  * so the item the drawer shows is the live event, not the history re-read.
  */
-import { test, expect, type APIRequestContext } from "@playwright/test";
+import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 import {
   REQUESTER,
   REVIEWER,
@@ -24,6 +24,19 @@ import { seedRequirementViaCli } from "../../fixtures/seed-helpers.js";
 import { LoginPage } from "../../pages/login.page.js";
 import { NotificationsDrawerPage } from "../../pages/notifications-drawer.page.js";
 import { CommentPanelPage } from "../../pages/CommentPanel.page.js";
+
+/** Is this the drawer's `GET /api/notifications` history read? */
+function isDrawerHistoryRead(url: string, method: string): boolean {
+  return method === "GET" && new URL(url).pathname === "/api/notifications";
+}
+
+/** Resolves on the drawer's next successful history read. */
+function drawerHistoryRead(page: Page): Promise<unknown> {
+  return page.waitForResponse(
+    (res) => isDrawerHistoryRead(res.url(), res.request().method()) && res.ok(),
+    { timeout: 30_000 },
+  );
+}
 
 /** The title `e2e-seed-requirement.ts` gives the seeded requirement. */
 const REQUIREMENT_TITLE = "E2E seeded — full-flow drafts can be generated";
@@ -68,13 +81,23 @@ test.describe("#1318 — live comment mention notification", () => {
         );
       const login = new LoginPage(page);
       await login.goto();
+      // The drawer reads the saved history once as the app shell mounts. Waited
+      // for, so that read is over before the mention exists (#1318 review).
+      const historyRead = drawerHistoryRead(page);
       await login.login(REVIEWER.username, REVIEWER.password);
-      await socketReady;
+      await Promise.all([socketReady, historyRead]);
     });
 
     const drawer = new NotificationsDrawerPage(page);
     // Opened before the mention is posted, so the item can only arrive live.
     await drawer.open();
+
+    // Any later history read (a reconnect re-reads it) could also produce the
+    // item; count them, and require none before the item is asserted.
+    let historyReadsAfterPost = 0;
+    page.on("request", (req) => {
+      if (isDrawerHistoryRead(req.url(), req.method())) historyReadsAfterPost += 1;
+    });
 
     await test.step("the admin mentions the coordinator on the requirement", async () => {
       const res = await adminApi.post(`/api/requirements/${requirementId}/comments`, {
@@ -89,6 +112,8 @@ test.describe("#1318 — live comment mention notification", () => {
 
     await test.step("the drawer shows who, where and an excerpt — once", async () => {
       await expect(item).toHaveCount(1, { timeout: 15_000 });
+      // Only the live socket event can have put it there.
+      expect(historyReadsAfterPost, "a history re-read happened before the item showed").toBe(0);
       await expect(item).toContainText(`System Admin mentioned you on "${REQUIREMENT_TITLE}"`);
       await expect(item).not.toContainText("mentioned in comment");
       await expect(drawer.openLink(item)).toHaveAttribute(

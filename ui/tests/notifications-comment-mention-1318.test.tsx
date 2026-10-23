@@ -124,6 +124,28 @@ describe("mentionEventToNotification (#1318)", () => {
     }
   });
 
+  // Rolling deploy: a server from before #1318 sends only the identifiers.
+  it("gives an old-shape event a generic title and no link — never the raw id", () => {
+    const draft = mentionEventToNotification({ commentId: "c-9", mentionedUserId: "u-1", ts: 1 });
+    expect(draft).toEqual({
+      level: "info",
+      source: "mention",
+      title: "You were mentioned in a comment",
+      message: "",
+      href: undefined,
+    });
+    expect(JSON.stringify(draft)).not.toContain("c-9");
+  });
+
+  it("shows an old-shape event in the drawer with the fallback title", async () => {
+    renderDrawer();
+    act(() => socket.fire("comment:mention", { commentId: "c-9", mentionedUserId: "u-1", ts: 1 }));
+    fireEvent.click(screen.getByTestId("notifications-bell"));
+    await screen.findByTestId("notifications-drawer");
+    expect(screen.getByText("You were mentioned in a comment")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /open/i })).not.toBeInTheDocument();
+  });
+
   it("leaves the id to the store when the server could not save the row", () => {
     const draft = mentionEventToNotification(commentMention({ notificationId: null }));
     expect(draft).not.toHaveProperty("id");
