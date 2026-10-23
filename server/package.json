@@ -127,7 +127,7 @@
     "tree-sitter-scala": "0.24.0",
     "tree-sitter-typescript": "0.23.2",
     "ulid": "^3.0.2",
-    "undici": "^8.11.2",
+    "undici": "^8.12.2",
     "vectordb": "^0.21.2",
     "web-tree-sitter": "0.27.0",
     "winston": "^3.19.0",

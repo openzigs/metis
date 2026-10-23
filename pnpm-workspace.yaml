@@ -189,8 +189,14 @@ overrides:
   # transitive pinning e.g. 7.10.0 would otherwise slip the override and re-breach.
   # GHSA-rfgv-xxqx-mfg5 (CVSS 7.5) and GHSA-w293-vg96-wgc3 (CVSS 7.4), published
   # 2026-09-29 (#374): fixed 7.29.1 / 8.10.2, so both floors AND upper bounds move.
-  undici@>=7.0.0 <7.29.1: ^7.29.1
-  undici@>=8.0.0 <8.10.2: ^8.10.2
+  # GHSA-xjj6-f33q-929c (CVSS 7.5, DoS from an unhandled error on excessive
+  # content-encodings), published 2026-10-23T22:14Z (#1464): introduced 7.18.0 /
+  # 8.0.0, fixed 7.30.1 / 8.12.2. Floors and upper bounds move together (#1208).
+  # 7.30.1 and 8.12.2 were published 2026-10-15, clear of minimumReleaseAge; 8.12.3
+  # (10-19) is not. Verified against api.osv.dev on 2026-10-23: both return zero
+  # vulns. Guarded by scripts/lib/dependency-audit-1464-advisories.test.mjs.
+  undici@>=7.0.0 <7.30.1: ^7.30.1
+  undici@>=8.0.0 <8.12.2: ^8.12.2
   # GHSA-2m8v-j782-fhvr (CVSS 7.5): NEW override — socket.io-parser had none and
   # resolved 4.2.6 via socket.io/socket.io-client. Scoped to the 4.x band on
   # purpose: a bare `<4.2.7` selector also matches the 3.x line the advisory lists
