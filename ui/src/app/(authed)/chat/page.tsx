@@ -83,7 +83,7 @@ const SUGGESTED_PROMPTS: { title: string; prompt: string }[] = [
 
 /** #1412 — shown when a `?sessionId=` link names a chat that cannot be opened. */
 const CHAT_NOT_FOUND =
-  "Chat not found. It may have been deleted, or you no longer have access to it.";
+  "Chat not found. It may have been deleted, or you no longer have access to it. Start a new chat below.";
 
 function fromServer(rows: DisplayTurn[]): DisplayMessage[] {
   return rows.map((m) => ({ ...m, id: `o${m.ordinal}` }));
@@ -228,6 +228,10 @@ export default function ChatPage() {
     // A compaction note belongs to the session it happened in.
     setCompactionNote(null);
     setReadOnlyReason(null);
+    // #1412 review — an error (a "Chat not found" link above all) belongs to
+    // the chat it was raised for. Next.js does not remount on a query-string
+    // change, so without this the next chat opened here showed under it.
+    setError(null);
     resetToolActivity();
     const firstRun = !mountedOnceRef.current;
     mountedOnceRef.current = true;

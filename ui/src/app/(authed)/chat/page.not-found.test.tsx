@@ -79,6 +79,65 @@ describe("chat page — a chat that cannot be opened (#1412)", () => {
     expect(screen.queryByText(/Chat not found/)).toBeNull();
   });
 
+  it("the notice clears when the page then opens a chat that exists (no remount on a query change)", async () => {
+    nav.query = "sessionId=sess-gone";
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path === "/ai/sessions/sess-gone/resume") {
+        throw new ApiError(404, "Session not found", "AI_SESSION_NOT_FOUND");
+      }
+      if (path === "/ai/sessions/sess-ok/resume") {
+        return {
+          session: { id: "sess-ok", readOnlyReason: null },
+          messages: [
+            {
+              id: "m1",
+              ordinal: 1,
+              role: "user",
+              kind: "message",
+              parts: [{ type: "text", text: "a question that is still here" }],
+              tokens: {
+                estimated: 1,
+                input: null,
+                output: null,
+                cacheRead: null,
+                cacheWrite: null,
+              },
+              provider: null,
+              model: null,
+              finishReason: null,
+              compactedAt: null,
+              compactedIntoId: null,
+              summaryOf: null,
+              incomplete: null,
+              createdAt: "2026-01-01T00:00:00.000Z",
+            },
+          ],
+          hasMore: false,
+        };
+      }
+      if (path === "/ai/sessions/sess-ok") {
+        return {
+          session: {
+            id: "sess-ok",
+            title: "t",
+            provider: "offline-stub",
+            model: "m",
+            projectId: null,
+          },
+        };
+      }
+      return {};
+    });
+    const view = render(<ChatPage />);
+    expect(await screen.findByText(/Chat not found/)).toBeInTheDocument();
+
+    // Same component instance, new query string — as a client-side navigation.
+    nav.query = "sessionId=sess-ok";
+    view.rerender(<ChatPage />);
+    expect(await screen.findByText("a question that is still here")).toBeInTheDocument();
+    expect(screen.queryByText(/Chat not found/)).toBeNull();
+  });
+
   it("the chat last open on this device is resumed quietly: no alert when it is gone", async () => {
     nav.query = "";
     render(<ChatPage />);
