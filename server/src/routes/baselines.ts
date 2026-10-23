@@ -27,6 +27,10 @@ import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
 import { assertResourceProjectAccess } from "../lib/auth/resource-project-access.js";
 import {
+  baselineScopePreAuthRateLimiter,
+  baselineScopeUserRateLimiter,
+} from "../middleware/baseline-scope-rate-limit.js";
+import {
   compareBaselines,
   createManualBaseline,
   getBaselineContents,
@@ -93,8 +97,10 @@ export function projectBaselinesRouter(): Router {
   // and what it leaves out, shown before the admin creates it.
   r.get(
     "/scope",
+    baselineScopePreAuthRateLimiter,
     requireAuth,
     requirePermission("review.admin"),
+    baselineScopeUserRateLimiter,
     async (req: Request, res: Response) => {
       const data = await previewManualBaseline(String(req.params.projectId));
       res.json({ success: true, data });
