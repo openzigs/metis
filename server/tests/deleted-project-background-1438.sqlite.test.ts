@@ -36,7 +36,8 @@ vi.mock("../src/lib/docs-gen/approved-requirements-staleness.js", () => ({
   noteRequirementCodeLinksChanged,
 }));
 const { syncMergedPR } = await import("../src/lib/living-spec/requirement-sync.js");
-const { findProjectForRepo } = await import("../src/routes/webhooks-github.js");
+const { findProjectForRepo, resolveProjectForQueuedReview } =
+  await import("../src/routes/webhooks-github.js");
 const { AsyncRunner } = await import("../src/lib/async/runner.js");
 const { SchedulerService } = await import("../src/lib/scheduler/scheduler-service.js");
 const { bootstrapScheduler } = await import("../src/lib/scheduler/index.js");
@@ -80,7 +81,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         data: { id: p, name: p, slug: `slug-${p}`, createdById: "u1", autoReviewPrs: true },
       });
       await db.repoConnection.create({
-        data: { projectId: p, label: "main", ownerOrOrg: owner, repoName: "app", isPrimary: true },
+        data: {
+          id: `repo_${p}`,
+          projectId: p,
+          label: "main",
+          ownerOrOrg: owner,
+          repoName: "app",
+          isPrimary: true,
+        },
+      });
+      await db.databaseConnection.create({
+        data: { id: `db_${p}`, projectId: p, label: "warehouse", driver: "postgres" },
       });
       await db.analysis.create({ data: { id: `an_${p}`, projectId: p, startedById: "u1" } });
       await db.requirement.create({
@@ -104,6 +115,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       const batch = await db.publishBatch.create({
         data: {
+          id: `batch_${p}`,
           projectId: p,
           targetOwner: owner,
           targetRepo: "app",
@@ -334,6 +346,183 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           expect(handler).toHaveBeenCalledTimes(1);
         } finally {
           await boot.shutdown();
+        }
+      });
+    });
+    /**
+     * #1438 review — the `projectId` column is optional. These task types name
+     * their project only through their payload (or a connector or batch of the
+     * project), so a gate keyed on the column alone let them run.
+     */
+    describe("task types that name their project only through the payload", () => {
+      const cases: Array<{
+        type: string;
+        override:
+          "rerunAnalysis" | "refreshRepoConnector" | "refreshDbConnectorSchema" | "publishBatch";
+        payload: (p: string) => Record<string, unknown>;
+      }> = [
+        {
+          type: "rerun-analysis",
+          override: "rerunAnalysis",
+          payload: (p) => ({ projectId: p }),
+        },
+        {
+          type: "refresh-repo-connector",
+          override: "refreshRepoConnector",
+          payload: (p) => ({ connectorId: `repo_${p}` }),
+        },
+        {
+          type: "refresh-db-connector-schema",
+          override: "refreshDbConnectorSchema",
+          payload: (p) => ({ connectorId: `db_${p}` }),
+        },
+        {
+          type: "publish-batch",
+          override: "publishBatch",
+          payload: (p) => ({ batchId: `batch_${p}` }),
+        },
+      ];
+
+      it.each(cases)(
+        "the production queue cancels a $type task with a null projectId for a deleted project; a live one runs",
+        async ({ type, override, payload }) => {
+          const handler = vi.fn(async () => ({}));
+          const boot = bootstrapScheduler({
+            config: { ...loadSchedulerConfig({}), enabled: false },
+            handlerOverrides: { [override]: handler },
+          });
+          try {
+            const del = await boot.queue.enqueue({
+              type,
+              payload: payload(DELETED),
+            });
+            expect(del.projectId).toBeNull();
+            const delRow = await waitFor(
+              () => db.task.findUniqueOrThrow({ where: { id: del.id } }),
+              (t) => t.status !== "pending" && t.status !== "running",
+            );
+            expect(delRow.status).toBe("cancelled");
+            expect(delRow.errorMessage).toBe("project deleted");
+            expect(handler).not.toHaveBeenCalled();
+
+            const live = await boot.queue.enqueue({ type, payload: payload(LIVE) });
+            const liveRow = await waitFor(
+              () => db.task.findUniqueOrThrow({ where: { id: live.id } }),
+              (t) => t.status !== "pending" && t.status !== "running",
+            );
+            expect(liveRow.status).toBe("completed");
+            expect(handler).toHaveBeenCalledTimes(1);
+          } finally {
+            await boot.shutdown();
+          }
+        },
+      );
+
+      it.each(cases)(
+        "a $type job with a null projectId does not fire for a deleted project; a live one fires",
+        async ({ type, payload }) => {
+          const enqueue = vi.fn(async () => ({}));
+          const events: Array<{ jobId: string; status: string }> = [];
+          const svc = new SchedulerService({
+            queue: { enqueue } as any,
+            registry: { get: () => undefined, list: () => [] } as any,
+            emitter: {
+              schedulerStatus: (e: any) => events.push(e),
+              taskStatus() {},
+              taskProgress() {},
+            },
+            config: loadSchedulerConfig({}),
+          });
+          const fire = (id: string) => (svc as any).fireScheduledJob(id) as Promise<void>;
+          const delJob = await db.scheduledJob.create({
+            data: {
+              key: `null-del-${type}`,
+              name: "n",
+              cron: "* * * * *",
+              taskType: type,
+              payload: JSON.stringify(payload(DELETED)),
+            },
+          });
+          const liveJob = await db.scheduledJob.create({
+            data: {
+              key: `null-live-${type}`,
+              name: "n",
+              cron: "* * * * *",
+              taskType: type,
+              payload: JSON.stringify(payload(LIVE)),
+            },
+          });
+          await fire(delJob.id);
+          expect(enqueue).not.toHaveBeenCalled();
+          expect(events).toContainEqual(
+            expect.objectContaining({ jobId: delJob.id, status: "skipped" }),
+          );
+          await expect(svc.runNow(delJob.id, { id: "u1", role: "admin" })).rejects.toMatchObject({
+            status: 410,
+          });
+          await fire(liveJob.id);
+          expect(enqueue).toHaveBeenCalledTimes(1);
+          await svc.stop();
+        },
+      );
+    });
+
+    describe("queued PR review (resolveProjectForQueuedReview)", () => {
+      const job = (projectId: string, owner: string) => ({
+        deliveryId: "d1",
+        projectId,
+        owner,
+        repo: "app",
+        prNumber: 7,
+      });
+
+      it("control: a job runs for the live project it was enqueued for", async () => {
+        expect(await resolveProjectForQueuedReview(job(LIVE, "live-org"))).toMatchObject({
+          id: LIVE,
+        });
+      });
+
+      it("never runs a job for a different project than it was enqueued for", async () => {
+        // Enqueued for the (now deleted) project; the repo now resolves to another live one.
+        await db.project.create({
+          data: {
+            id: "pOther",
+            name: "other",
+            slug: "slug-other",
+            createdById: "u1",
+            autoReviewPrs: true,
+          },
+        });
+        await db.repoConnection.create({
+          data: {
+            projectId: "pOther",
+            label: "o",
+            ownerOrOrg: "deleted-org",
+            repoName: "app",
+          },
+        });
+        try {
+          expect(await findProjectForRepo("deleted-org/app")).toMatchObject({
+            id: "pOther",
+          });
+          expect(await resolveProjectForQueuedReview(job(DELETED, "deleted-org"))).toBeNull();
+        } finally {
+          await db.project.delete({ where: { id: "pOther" } });
+        }
+      });
+
+      it("drops a job whose project switched auto-review off after it was enqueued", async () => {
+        await db.project.update({
+          where: { id: LIVE },
+          data: { autoReviewPrs: false },
+        });
+        try {
+          expect(await resolveProjectForQueuedReview(job(LIVE, "live-org"))).toBeNull();
+        } finally {
+          await db.project.update({
+            where: { id: LIVE },
+            data: { autoReviewPrs: true },
+          });
         }
       });
     });

@@ -1190,7 +1190,8 @@ scheduled jobs are skipped at each tick (the Scheduler page reports the tick as
 skipped, "project deleted"), and work already queued for it before the delete —
 background runs, scheduled or manual tasks, imports, document regenerations and
 PR auto-reviews — is cancelled instead of run. A merged pull request no longer
-marks its requirements implemented. Its triggers and schedules are left exactly
+marks its requirements implemented. Nothing is posted to Teams or paged in PagerDuty on
+its behalf, and its MCP servers are no longer health-checked or restarted. Its triggers and schedules are left exactly
 as they were, switched on or off, so nothing needs re-enabling if the project
 is ever restored. An administrator who starts a background run or runs a
 scheduled job now for a deleted project is told the project has been deleted

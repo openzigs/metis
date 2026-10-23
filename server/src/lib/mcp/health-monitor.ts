@@ -6,6 +6,7 @@
  */
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
+import { softDeletedProjectIds } from "../projects/deleted-project-guard.js";
 import type { MCPLifecycleManager } from "./lifecycle-manager.js";
 
 const log = createChildLogger("mcp-health");
@@ -64,8 +65,16 @@ export class MCPHealthMonitor {
   async tick(): Promise<void> {
     const now = this.nowFn();
     const snapshots = this.lifecycle.list();
+    // #1438 — a soft-deleted project's servers are neither pinged nor restarted
+    // (and so never page anyone). One query per tick, only when a
+    // project-scoped server is in the list.
+    const projectIds = snapshots
+      .filter(({ config }) => config.scope === "project" && config.projectId)
+      .map(({ config }) => config.projectId);
+    const deleted = projectIds.length > 0 ? await softDeletedProjectIds(projectIds) : new Set();
     for (const { config, state } of snapshots) {
       if (!config.enabled) continue;
+      if (config.projectId && deleted.has(config.projectId)) continue;
       if (state.status !== "ready" && state.status !== "error") continue;
       const dueAt =
         (state.lastHealthCheckAt?.getTime() ?? 0) + config.healthCheckIntervalSec * 1000;

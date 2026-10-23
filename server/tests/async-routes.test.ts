@@ -259,7 +259,11 @@ import { getPermissionsForRole } from "@metis/shared";
 import { errorHandler } from "../src/middleware/error-handler.js";
 import { issueTokens } from "../src/lib/auth/jwt.js";
 import { backgroundRunsRouter } from "../src/routes/background-runs.js";
-import { projectTriggersRouter, triggersWebhookRouter } from "../src/routes/triggers.js";
+import {
+  __resetTriggerSkipAudit,
+  projectTriggersRouter,
+  triggersWebhookRouter,
+} from "../src/routes/triggers.js";
 import { __resetWebhookReceiverRateLimiter } from "../src/middleware/webhook-receiver-rate-limit.js";
 
 let adminToken: string;
@@ -292,6 +296,7 @@ beforeAll(() => {
 beforeEach(() => {
   vi.clearAllMocks();
   reset();
+  __resetTriggerSkipAudit();
 });
 afterEach(() => reset());
 
@@ -862,6 +867,16 @@ describe("trigger receivers skip a soft-deleted project (#1438)", () => {
         }),
       }),
     );
+
+    // A sender that keeps delivering gets a 410 every time, but the audit
+    // records the trigger once per window, not once per delivery.
+    const again = await fire("tg-del");
+    expect(again.status).toBe(410);
+    await flushAudit();
+    const skipAudits = (prisma as any).auditLog.create.mock.calls.filter(
+      (c: any[]) => c[0]?.data?.action === "trigger.skipped_project_deleted",
+    );
+    expect(skipAudits).toHaveLength(1);
 
     const live = await fire("tg-live");
     expect(live.status).toBe(202);

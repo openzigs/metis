@@ -58,7 +58,7 @@ import {
   type PrReviewWorkerHandle,
 } from "./lib/agents/pr-reviewer/worker.js";
 import { setPrReviewWorker } from "./lib/agents/pr-reviewer/worker-singleton.js";
-import { findProjectForRepo } from "./routes/webhooks-github.js";
+import { resolveProjectForQueuedReview } from "./routes/webhooks-github.js";
 import { registerSocketServer } from "./lib/socket/registry.js";
 import {
   resolveSocketClusterAdapter,
@@ -487,8 +487,7 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   // `opts.prReviewProcessorDeps`.
   const userDeps = opts.prReviewProcessorDeps ?? {};
   const processorDeps: PrReviewProcessorDeps = {
-    resolveProject:
-      userDeps.resolveProject ?? (async (job) => findProjectForRepo(`${job.owner}/${job.repo}`)),
+    resolveProject: userDeps.resolveProject ?? resolveProjectForQueuedReview,
     resolveJudge: userDeps.resolveJudge ?? (async () => null),
     resolveOctokit: userDeps.resolveOctokit ?? (async () => null),
     ...(userDeps.resolveBudget ? { resolveBudget: userDeps.resolveBudget } : {}),

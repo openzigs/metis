@@ -1201,9 +1201,12 @@ describe("TaskQueue deleted-project gate (#1438)", () => {
       handler,
       onCancelledBeforeRun,
     });
-    const isProjectDeleted = vi.fn(async (id: string) => id === "p-del");
+    // The gate is given the whole task: here it reads the column OR the payload.
+    const deletedProjectOf = vi.fn(async (task: TaskRecord) =>
+      task.projectId === "p-del" || task.payload.projectId === "p-del" ? "p-del" : null,
+    );
     const queue = new TaskQueue(store, registry, makeEmitter().emitter, baseConfig, {
-      isProjectDeleted,
+      deletedProjectOf,
     });
 
     const del = await queue.enqueue({ type: "gated", projectId: "p-del" });
@@ -1223,11 +1226,12 @@ describe("TaskQueue deleted-project gate (#1438)", () => {
     expect(rows.get(live.id)?.status).toBe("completed");
     expect(handler).toHaveBeenCalledTimes(1);
 
-    // A system task (no project) is never asked about.
-    await queue.enqueue({ type: "gated" });
+    // A null `projectId` column does not exempt a task whose payload names the project.
+    const viaPayload = await queue.enqueue({ type: "gated", payload: { projectId: "p-del" } });
     await settle();
-    expect(isProjectDeleted).not.toHaveBeenCalledWith(null);
-    expect(isProjectDeleted).toHaveBeenCalledTimes(2);
+    expect(rows.get(viaPayload.id)?.status).toBe("cancelled");
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(deletedProjectOf).toHaveBeenCalledWith(expect.objectContaining({ id: viaPayload.id }));
     await queue.shutdown();
   });
 
@@ -1237,7 +1241,7 @@ describe("TaskQueue deleted-project gate (#1438)", () => {
     const handler = vi.fn(async () => ({}));
     registry.register({ type: "gated", description: "", handler });
     const queue = new TaskQueue(store, registry, makeEmitter().emitter, baseConfig, {
-      isProjectDeleted: async () => {
+      deletedProjectOf: async () => {
         throw new Error("db down");
       },
     });

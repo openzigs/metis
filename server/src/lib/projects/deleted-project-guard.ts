@@ -61,6 +61,73 @@ export async function assertProjectNotSoftDeleted(
   }
 }
 
+/** What the scheduler knows about a unit of work: a task row, or a job about to enqueue one. */
+export interface TaskProjectRef {
+  type: string;
+  projectId: string | null | undefined;
+  payload: Record<string, unknown> | null | undefined;
+}
+
+function payloadString(payload: Record<string, unknown> | null | undefined, key: string): string {
+  const v = payload?.[key];
+  return typeof v === "string" ? v.trim() : "";
+}
+
+/**
+ * #1438 — every project a scheduler task acts for. The `projectId` column is
+ * optional, and several task types name their project only through their
+ * payload: `rerun-analysis` falls back to `payload.projectId`, the connector
+ * refreshes to the connector's project, `publish-batch` to the batch's,
+ * `import.run` to the import source's. Every one of them is returned, so a
+ * gate that refuses when ANY is soft-deleted cannot be bypassed by a task
+ * whose column is null or disagrees with what its handler will act on.
+ */
+export async function taskProjectIds(task: TaskProjectRef): Promise<string[]> {
+  const ids = new Set<string>();
+  if (task.projectId) ids.add(task.projectId);
+  const fromPayload = payloadString(task.payload, "projectId");
+  if (fromPayload) ids.add(fromPayload);
+  const connectorId = payloadString(task.payload, "connectorId");
+  const batchId = payloadString(task.payload, "batchId");
+  const importSourceId = payloadString(task.payload, "importSourceId");
+  let owner: { projectId: string } | null = null;
+  if (task.type === "refresh-repo-connector" && connectorId) {
+    owner = await prisma.repoConnection.findUnique({
+      where: { id: connectorId },
+      select: { projectId: true },
+    });
+  } else if (task.type === "refresh-db-connector-schema" && connectorId) {
+    owner = await prisma.databaseConnection.findUnique({
+      where: { id: connectorId },
+      select: { projectId: true },
+    });
+  } else if (task.type === "publish-batch" && batchId) {
+    owner = await prisma.publishBatch.findUnique({
+      where: { id: batchId },
+      select: { projectId: true },
+    });
+  } else if (task.type === "import.run" && importSourceId) {
+    owner = await prisma.importSource.findUnique({
+      where: { id: importSourceId },
+      select: { projectId: true },
+    });
+  }
+  if (owner?.projectId) ids.add(owner.projectId);
+  return [...ids];
+}
+
+/**
+ * #1438 — the soft-deleted project a scheduler task (or job) would act for,
+ * or `null` when every project it names is live. The single check behind
+ * both the job-firing gate and the task-queue gate.
+ */
+export async function deletedProjectOfTask(task: TaskProjectRef): Promise<string | null> {
+  const ids = await taskProjectIds(task);
+  if (ids.length === 0) return null;
+  const deleted = await softDeletedProjectIds(ids);
+  return ids.find((id) => deleted.has(id)) ?? null;
+}
+
 /** The background paths that consult this guard — the `path` field of every skip log line. */
 export type BackgroundPath =
   | "trigger.webhook"
@@ -69,7 +136,9 @@ export type BackgroundPath =
   | "scheduler.fire"
   | "scheduler.task"
   | "async-runner"
-  | "pr-review";
+  | "pr-review"
+  | "mcp-health"
+  | "notification";
 
 /** One structured log line per skipped unit of work, so a skip is never silent. */
 export function logDeletedProjectSkip(input: {

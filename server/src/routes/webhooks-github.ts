@@ -344,6 +344,36 @@ async function runDriftReconcile(input: {
 }
 
 /**
+ * #1438 — the queued PR-review worker's project resolver. A job re-resolves
+ * its repo when it runs, which by then may name a different project than the
+ * one it was enqueued for (the original was deleted, or another project
+ * connected the same repo). A job runs only for the project it was enqueued
+ * for, and only while that project still has auto-review switched on.
+ */
+export async function resolveProjectForQueuedReview(job: {
+  deliveryId: string;
+  projectId: string;
+  owner: string;
+  repo: string;
+  prNumber: number;
+}): Promise<Awaited<ReturnType<typeof findProjectForRepo>>> {
+  const project = await findProjectForRepo(`${job.owner}/${job.repo}`);
+  if (!project) return null;
+  if (project.id !== job.projectId || !project.autoReviewPrs) {
+    log.warn("pr_review.queued_project_changed", {
+      deliveryId: job.deliveryId,
+      repo: `${job.owner}/${job.repo}`,
+      prNumber: job.prNumber,
+      enqueuedFor: job.projectId,
+      resolvedTo: project.id,
+      autoReviewPrs: project.autoReviewPrs,
+    });
+    return null;
+  }
+  return project;
+}
+
+/**
  * Resolve the Metis project + per-repo PR-review config for a webhook
  * payload. Exported so the worker singleton (set up in `server.ts`)
  * can re-resolve from a queued job — the inline webhook path and the

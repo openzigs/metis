@@ -10,7 +10,7 @@ import type { MetisIOServer } from "../socket/server.js";
 import { loadSchedulerConfig } from "./config.js";
 import { InMemoryTaskHandlerRegistry, registerBuiltInHandlers } from "./task-handlers.js";
 import { TaskQueue } from "./task-queue.js";
-import { isProjectSoftDeleted } from "../projects/deleted-project-guard.js";
+import { deletedProjectOfTask } from "../projects/deleted-project-guard.js";
 import { createPrismaTaskStore, readTaskRecord } from "./task-store.js";
 import { SchedulerService } from "./scheduler-service.js";
 import { createSchedulerEmitter, NOOP_SCHEDULER_EMITTER } from "./socket-emitter.js";
@@ -89,7 +89,7 @@ export function bootstrapScheduler(opts: BootstrapSchedulerOptions = {}): Schedu
   const store = createPrismaTaskStore();
   // #1438 — a task of a soft-deleted project is cancelled, never run.
   const queue = new TaskQueue(store, registry, emitter, config, {
-    isProjectDeleted: isProjectSoftDeleted,
+    deletedProjectOf: deletedProjectOfTask,
   });
   const scheduler = new SchedulerService({ queue, registry, emitter, config });
   active = {

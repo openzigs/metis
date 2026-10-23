@@ -144,9 +144,36 @@ async function spawnTriggerRun(
 }
 
 /**
+ * #1438 — a sender that keeps delivering to a deleted project's trigger would
+ * otherwise write one audit row per delivery. The audit is the durable record
+ * that deliveries are still arriving, so one row per trigger per window says
+ * that; every delivery is still logged. Bounded: the oldest entry is evicted.
+ */
+const SKIP_AUDIT_WINDOW_MS = 60 * 60 * 1000;
+const SKIP_AUDIT_MAX_TRACKED = 10_000;
+const lastSkipAuditAt = new Map<string, number>();
+
+function shouldAuditSkip(triggerId: string, now = Date.now()): boolean {
+  const last = lastSkipAuditAt.get(triggerId);
+  if (last !== undefined && now - last < SKIP_AUDIT_WINDOW_MS) return false;
+  lastSkipAuditAt.delete(triggerId);
+  lastSkipAuditAt.set(triggerId, now);
+  if (lastSkipAuditAt.size > SKIP_AUDIT_MAX_TRACKED) {
+    const oldest = lastSkipAuditAt.keys().next().value;
+    if (oldest !== undefined) lastSkipAuditAt.delete(oldest);
+  }
+  return true;
+}
+
+/** Test seam — forget which skips were audited. */
+export function __resetTriggerSkipAudit(): void {
+  lastSkipAuditAt.clear();
+}
+
+/**
  * #1438 — a verified delivery for a trigger of a soft-deleted project runs
- * nothing. Logged and audited per trigger, so the owner can see deliveries
- * still arriving for a project they deleted.
+ * nothing. Logged per delivery and audited at most once per trigger per hour,
+ * so the owner can see deliveries still arriving for a project they deleted.
  */
 function recordDeletedProjectSkip(
   path: BackgroundPath,
@@ -158,6 +185,7 @@ function recordDeletedProjectSkip(
     sourceType: "trigger",
     sourceId: trigger.id,
   });
+  if (!shouldAuditSkip(trigger.id)) return;
   audit({
     action: "trigger.skipped_project_deleted",
     target: { type: "trigger", id: trigger.id },

@@ -4,8 +4,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const updates: Array<{ where: { id: string }; data: Record<string, unknown> }> = [];
+// #1438 — `p-del` is the only soft-deleted project.
+const projectFindMany = vi.hoisted(() =>
+  vi.fn(async (args: { where: { id: { in: string[] } } }) =>
+    args.where.id.in.filter((id) => id === "p-del").map((id) => ({ id })),
+  ),
+);
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
+    project: { findMany: projectFindMany },
     auditLog: { create: vi.fn(async () => ({})) },
     mCPServer: {
       update: vi.fn(async (args: { where: { id: string }; data: Record<string, unknown> }) => {
@@ -88,6 +95,28 @@ describe("MCPHealthMonitor.tick", () => {
     await mon.tick();
     const last = updates[updates.length - 1];
     expect(last.data.status).toBe("error");
+  });
+
+  it("neither probes nor restarts a soft-deleted project's server; a live project's server is probed (#1438)", async () => {
+    const transports: MCPTransportClient[] = [];
+    const lifecycle = new MCPLifecycleManager({
+      resolveEnv: async (e) => e,
+      transportFactory: () => {
+        const t = transport();
+        transports.push(t);
+        return t;
+      },
+    });
+    await lifecycle.start(config({ id: "srv-del", scope: "project", projectId: "p-del" }));
+    await lifecycle.start(config({ id: "srv-live", scope: "project", projectId: "p-live" }));
+    const probe = vi.spyOn(lifecycle, "probe");
+    const mon = new MCPHealthMonitor(lifecycle, { now: () => Date.now() + 999_999 });
+    await mon.tick();
+    expect(probe.mock.calls.map((c) => c[0])).toEqual(["srv-live"]);
+    expect(updates.map((u) => u.where.id)).toEqual(["srv-live"]);
+    expect(projectFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ deletedAt: { not: null } }) }),
+    );
   });
 
   it("skips disabled servers", async () => {

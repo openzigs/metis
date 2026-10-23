@@ -75,10 +75,13 @@ export interface TaskStore {
  */
 export interface TaskQueueGates {
   /**
-   * Whether the task's project is soft-deleted. A task of a deleted project is
-   * cancelled instead of run, including one queued before the delete.
+   * The soft-deleted project the task would act for, or `null`. Given the
+   * whole task, not its optional `projectId` column: several task types name
+   * their project only through their payload (a connector, a batch). A task
+   * of a deleted project is cancelled instead of run, including one queued
+   * before the delete.
    */
-  isProjectDeleted?: (projectId: string) => Promise<boolean>;
+  deletedProjectOf?: (task: TaskRecord) => Promise<string | null>;
 }
 
 interface RunningEntry {
@@ -388,11 +391,12 @@ export class TaskQueue {
       // #1438 — judged at run time, not enqueue time, so a task queued (or
       // retrying) before its project was deleted is caught too. A gate error
       // takes the ordinary retry path below rather than running the handler.
-      if (running.projectId && (await this.gates.isProjectDeleted?.(running.projectId))) {
+      const deletedProjectId = (await this.gates.deletedProjectOf?.(running)) ?? null;
+      if (deletedProjectId) {
         clearTimeout(timeoutHandle);
         logDeletedProjectSkip({
           path: "scheduler.task",
-          projectId: running.projectId,
+          projectId: deletedProjectId,
           sourceType: running.type,
           sourceId: running.id,
         });
