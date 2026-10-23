@@ -364,8 +364,50 @@ export async function compareBaselines(
 export interface CreateBaselineInput {
   name: string;
   description?: string;
-  /** Optional subset; omitted = every non-deleted requirement in the project. */
+  /**
+   * Optional explicit subset, pinned whatever its review status. Omitted = every
+   * non-deleted APPROVED requirement in the project (#1137).
+   */
   requirementIds?: string[];
+}
+
+/**
+ * #1137 — the requirements a baseline pins when none are chosen: the approved
+ * ones. A baseline is a snapshot of signed-off requirements; pinning every row
+ * also pinned hundreds of tracker items imported and never reviewed.
+ */
+export const DEFAULT_BASELINE_STATUS = "approved";
+
+function defaultBaselineWhere(projectId: string) {
+  return { projectId, deletedAt: null, reviewStatus: DEFAULT_BASELINE_STATUS };
+}
+
+/** What New baseline will pin, and what it leaves out, before it is created. */
+export interface BaselineScopePreview {
+  /** Requirements New baseline pins: the approved ones. */
+  pinCount: number;
+  /** The review status pinned. */
+  status: typeof DEFAULT_BASELINE_STATUS;
+  /** Live requirements left out; `imported` of them came from a tracker import. */
+  excluded: { total: number; imported: number };
+}
+
+export async function previewManualBaseline(projectId: string): Promise<BaselineScopePreview> {
+  const live = { projectId, deletedAt: null };
+  const notApproved = {
+    ...live,
+    OR: [{ reviewStatus: null }, { reviewStatus: { not: DEFAULT_BASELINE_STATUS } }],
+  };
+  const [pinCount, excludedTotal, excludedImported] = await Promise.all([
+    prisma.requirement.count({ where: defaultBaselineWhere(projectId) }),
+    prisma.requirement.count({ where: notApproved }),
+    prisma.requirement.count({ where: { ...notApproved, importSourceId: { not: null } } }),
+  ]);
+  return {
+    pinCount,
+    status: DEFAULT_BASELINE_STATUS,
+    excluded: { total: excludedTotal, imported: excludedImported },
+  };
 }
 
 export async function createManualBaseline(
@@ -383,7 +425,7 @@ export async function createManualBaseline(
   const where =
     input.requirementIds && input.requirementIds.length > 0
       ? { id: { in: [...new Set(input.requirementIds)] }, projectId, deletedAt: null }
-      : { projectId, deletedAt: null };
+      : defaultBaselineWhere(projectId);
   const requirements = (await prisma.requirement.findMany({
     where,
     select: { id: true, version: true },
@@ -404,7 +446,7 @@ export async function createManualBaseline(
     throw new AppError(
       400,
       "EMPTY_BASELINE",
-      "A baseline needs at least one requirement to pin — this project has none",
+      "A baseline pins approved requirements, and this project has none approved yet. Approve requirements first.",
     );
   }
 

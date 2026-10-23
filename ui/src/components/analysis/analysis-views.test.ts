@@ -13,6 +13,7 @@ import {
   findingFiltersParams,
   NO_FINDING_FILTERS,
   paginate,
+  serverPage,
   parseAnalysisTab,
   parseFindingFilters,
   requirementPage,
@@ -699,5 +700,27 @@ describe("deepDiveGate (#909)", () => {
 
   it("stays enabled when there is no gate to read (approvals not requested)", () => {
     expect(deepDiveGate({ loading: false, ticketStatus: undefined }).disabled).toBe(false);
+  });
+});
+
+describe("#1137 — serverPage", () => {
+  it("maps a server's 1-based page onto the pager's shape", () => {
+    expect(serverPage({ page: 4, pageSize: 10, total: 33 }, 3)).toEqual({
+      items: [],
+      page: 3,
+      pageCount: 4,
+      total: 33,
+      from: 31,
+      to: 33,
+    });
+  });
+
+  it("reads an empty list as one empty page", () => {
+    expect(serverPage({ page: 1, pageSize: 10, total: 0 }, 0)).toMatchObject({
+      page: 0,
+      pageCount: 1,
+      from: 0,
+      to: 0,
+    });
   });
 });

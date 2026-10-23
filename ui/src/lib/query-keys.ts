@@ -123,6 +123,7 @@ export const queryKeys = {
   baselines: {
     all: ["baselines"] as const,
     list: (projectId: string) => [...queryKeys.baselines.all, "list", projectId] as const,
+    scope: (projectId: string) => [...queryKeys.baselines.all, "scope", projectId] as const,
     detail: (id: string) => [...queryKeys.baselines.all, "detail", id] as const,
     compare: (idA: string, idB: string) =>
       [...queryKeys.baselines.all, "compare", idA, idB] as const,

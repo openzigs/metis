@@ -39,6 +39,8 @@ const SUMMARY: WorkspaceTraceabilitySummary = {
       projectId: "projA",
       name: "Alpha",
       requirements: 4,
+      analysedRequirements: 4,
+      importedUnanalysed: 0,
       linkedCrossProject: 1,
       specCoverage: 0.5,
       codeCoverage: 0.25,
@@ -50,6 +52,8 @@ const SUMMARY: WorkspaceTraceabilitySummary = {
       projectId: "projB",
       name: "Beta",
       requirements: 2,
+      analysedRequirements: 2,
+      importedUnanalysed: 0,
       linkedCrossProject: 1,
       specCoverage: 1,
       codeCoverage: 0,
@@ -118,6 +122,8 @@ describe("buildCrossProjectLinkMermaid", () => {
           projectId: "p-1",
           name: 'A"B',
           requirements: 1,
+          analysedRequirements: 1,
+          importedUnanalysed: 0,
           linkedCrossProject: 1,
           specCoverage: 0,
           codeCoverage: 0,
@@ -189,6 +195,43 @@ describe("WorkspaceTraceabilityRollup", () => {
     // No mapped code: the fraction has no denominator, so no percentage is shown.
     expect(beta).toHaveTextContent("No mapped code");
     expect(beta).not.toHaveTextContent("%");
+  });
+
+  it("#1137 — states the denominator and counts imported, never-analysed items apart", async () => {
+    workspaceSummary.mockResolvedValue({
+      projects: [
+        {
+          ...SUMMARY.projects[0],
+          name: "Miniflux",
+          requirements: 285,
+          analysedRequirements: 19,
+          importedUnanalysed: 266,
+          codeCoverage: 17 / 19,
+        },
+      ],
+      crossProjectLinks: [],
+    });
+    renderRollup();
+    const table = await screen.findByTestId("rollup-summary-table");
+    const row = within(table).getByTestId("rollup-project-row");
+    expect(row).toHaveTextContent("19");
+    expect(within(row).getByTestId("rollup-imported-unanalysed")).toHaveTextContent(
+      "+ 266 imported, not analysed",
+    );
+    const code = within(row).getByTestId("rollup-code-cell");
+    expect(within(code).getByText("89%")).toBeInTheDocument();
+    expect(code).toHaveTextContent("89% of the 19 analysed requirements.");
+    expect(screen.getByTestId("rollup-denominator-note")).toHaveTextContent(
+      /counted apart and left out of the percentages/,
+    );
+  });
+
+  it("#1137 — names no imported items when there are none", async () => {
+    workspaceSummary.mockResolvedValue({ projects: SUMMARY.projects, crossProjectLinks: [] });
+    renderRollup();
+    await screen.findByTestId("rollup-summary-table");
+    expect(screen.queryByTestId("rollup-imported-unanalysed")).not.toBeInTheDocument();
+    expect(screen.getByTestId("rollup-denominator-note")).not.toHaveTextContent(/imported/);
   });
 
   it("shows a no-links message when there are no cross-project links", async () => {

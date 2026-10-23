@@ -109,19 +109,64 @@ describe("TraceabilityMatrix", () => {
     });
     renderMatrix();
     const row = await screen.findByTestId("traceability-row-req-1");
-    const withRelation = within(row).getByText("server/src/auth.test.ts").closest("li");
-    expect(withRelation).toHaveTextContent("server/src/auth.test.ts · Calls the code");
+    const [withRelation, bare, inferred] = within(row).getAllByTestId("traceability-matrix-test");
+    // #1137 — each test row names the test as well as its file.
+    expect(withRelation).toHaveTextContent(
+      "login suite in server/src/auth.test.ts · Calls the code",
+    );
     expect(withRelation).toHaveAttribute(
       "title",
       "Calls the code: This test calls the code mapped to this requirement.",
     );
     // #1034 — a call bound by name after ingest says so.
-    const inferred = within(row).getByText("internal/api/user_test.go").closest("li");
-    expect(inferred).toHaveTextContent("internal/api/user_test.go · Inferred call");
-    // A pre-#815 link with no relation renders the bare path, no suffix.
-    const bare = within(row).getByText("server/src/legacy.test.ts").closest("li");
-    expect(bare).toHaveTextContent(/^server\/src\/legacy\.test\.ts$/);
+    expect(inferred).toHaveTextContent(
+      "TestCreateUserHandler in internal/api/user_test.go · Inferred call",
+    );
+    // A pre-#815 link with no relation renders no suffix.
+    expect(bare).toHaveTextContent(/^legacy in server\/src\/legacy\.test\.ts$/);
     expect(bare).not.toHaveAttribute("title");
+  });
+
+  it("#1137 — strips the file prefix from a qualified test symbol, and shows a file-only hit once", async () => {
+    getTraceability.mockResolvedValue({
+      ...MATRIX,
+      rows: [
+        {
+          ...MATRIX.rows[0],
+          tests: [
+            {
+              filePath: "client/client_test.go",
+              symbol: "client/client_test.go::TestMarkAllAsRead",
+              relation: "exercises",
+            },
+            { filePath: "e2e/flow.spec.ts", symbol: "e2e/flow.spec.ts", relation: "direct" },
+          ],
+        },
+      ],
+    });
+    renderMatrix();
+    const row = await screen.findByTestId("traceability-row-req-1");
+    const [named, fileOnly] = within(row).getAllByTestId("traceability-matrix-test");
+    expect(named).toHaveTextContent(/^TestMarkAllAsRead in client\/client_test\.go · /);
+    expect(fileOnly).toHaveTextContent(/^e2e\/flow\.spec\.ts · /);
+  });
+
+  it("#1137 — pages a long matrix, 25 requirements at a time", async () => {
+    const rows = Array.from({ length: 33 }, (_, i) => ({
+      ...MATRIX.rows[1]!,
+      requirementId: `req-${i}`,
+      title: `Requirement ${i}`,
+    }));
+    getTraceability.mockResolvedValue({ ...MATRIX, rows });
+    renderMatrix();
+    await screen.findByTestId("traceability-row-req-0");
+    expect(screen.getAllByTestId(/^traceability-row-/)).toHaveLength(25);
+    expect(screen.getByTestId("traceability-matrix-pager-range")).toHaveTextContent(
+      "Showing 1–25 of 33 requirements",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getAllByTestId(/^traceability-row-/)).toHaveLength(8);
+    expect(screen.getByTestId("traceability-row-req-32")).toBeInTheDocument();
   });
 
   it("shows explicit empty cells for a requirement with no trace", async () => {

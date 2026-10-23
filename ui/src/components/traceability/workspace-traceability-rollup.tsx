@@ -102,6 +102,31 @@ export function testedTooltip(p: WorkspaceProjectTraceability): string {
   );
 }
 
+/**
+ * #1137 — a spec or code coverage figure with its denominator: the analysed
+ * requirements, which leave out imported items no analysis has mapped.
+ */
+export function coverageTooltip(fraction: number, p: WorkspaceProjectTraceability): string {
+  const n = p.analysedRequirements;
+  return `${formatCoveragePct(fraction)} of the ${n} analysed ${n === 1 ? "requirement" : "requirements"}.`;
+}
+
+function CoverageCell({
+  fraction,
+  p,
+}: {
+  fraction: number;
+  p: WorkspaceProjectTraceability;
+}): React.ReactElement {
+  const tip = coverageTooltip(fraction, p);
+  return (
+    <span title={tip}>
+      <CoverageBadge fraction={fraction} />
+      <span className="sr-only">{tip}</span>
+    </span>
+  );
+}
+
 function TestedCell({ p }: { p: WorkspaceProjectTraceability }): React.ReactElement {
   // No mapped code means no denominator: a 0% here would read as "untested".
   if (p.codeMappedRequirements === 0) {
@@ -121,37 +146,57 @@ function SummaryTable({
 }: {
   projects: WorkspaceProjectTraceability[];
 }): React.ReactElement {
+  const anyImported = projects.some((p) => p.importedUnanalysed > 0);
   return (
-    <table className="w-full text-sm" data-testid="rollup-summary-table">
-      <thead>
-        <tr className="border-b text-left text-xs text-muted-foreground">
-          <th className="py-2 pr-4 font-medium">Project</th>
-          <th className="py-2 pr-4 font-medium">Requirements</th>
-          <th className="py-2 pr-4 font-medium">Cross-project links</th>
-          <th className="py-2 pr-4 font-medium">Spec coverage</th>
-          <th className="py-2 pr-4 font-medium">Code coverage</th>
-          <th className="py-2 font-medium">Tested</th>
-        </tr>
-      </thead>
-      <tbody>
-        {projects.map((p) => (
-          <tr key={p.projectId} data-testid="rollup-project-row" className="border-b">
-            <td className="py-2 pr-4 font-medium">{p.name}</td>
-            <td className="py-2 pr-4 tabular-nums">{p.requirements}</td>
-            <td className="py-2 pr-4 tabular-nums">{p.linkedCrossProject}</td>
-            <td className="py-2 pr-4">
-              <CoverageBadge fraction={p.specCoverage} />
-            </td>
-            <td className="py-2 pr-4">
-              <CoverageBadge fraction={p.codeCoverage} />
-            </td>
-            <td className="py-2" data-testid="rollup-tested-cell">
-              <TestedCell p={p} />
-            </td>
+    <>
+      <table className="w-full text-sm" data-testid="rollup-summary-table">
+        <thead>
+          <tr className="border-b text-left text-xs text-muted-foreground">
+            <th className="py-2 pr-4 font-medium">Project</th>
+            <th className="py-2 pr-4 font-medium">Analysed requirements</th>
+            <th className="py-2 pr-4 font-medium">Cross-project links</th>
+            <th className="py-2 pr-4 font-medium">Spec coverage</th>
+            <th className="py-2 pr-4 font-medium">Code coverage</th>
+            <th className="py-2 font-medium">Tested</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {projects.map((p) => (
+            <tr key={p.projectId} data-testid="rollup-project-row" className="border-b">
+              <td className="py-2 pr-4 font-medium">{p.name}</td>
+              <td className="py-2 pr-4 tabular-nums">
+                {p.analysedRequirements}
+                {p.importedUnanalysed > 0 ? (
+                  <span
+                    className="block text-xs text-muted-foreground"
+                    data-testid="rollup-imported-unanalysed"
+                  >
+                    + {p.importedUnanalysed} imported, not analysed
+                  </span>
+                ) : null}
+              </td>
+              <td className="py-2 pr-4 tabular-nums">{p.linkedCrossProject}</td>
+              <td className="py-2 pr-4" data-testid="rollup-spec-cell">
+                <CoverageCell fraction={p.specCoverage} p={p} />
+              </td>
+              <td className="py-2 pr-4" data-testid="rollup-code-cell">
+                <CoverageCell fraction={p.codeCoverage} p={p} />
+              </td>
+              <td className="py-2" data-testid="rollup-tested-cell">
+                <TestedCell p={p} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="text-xs text-muted-foreground" data-testid="rollup-denominator-note">
+        Spec and code coverage are out of the analysed requirements.
+        {anyImported
+          ? " Items imported from a tracker that no analysis has mapped are counted apart and left out of the percentages."
+          : ""}{" "}
+        Tested is out of the requirements with mapped code.
+      </p>
+    </>
   );
 }
 

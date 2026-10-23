@@ -14,6 +14,7 @@
  * downloadable attachment. The table scrolls horizontally within its own
  * container so a wide matrix never breaks the page layout.
  */
+import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { analysisApi, type TraceabilityRow } from "@/lib/analysis-api";
 import { triggerDownload } from "@/lib/plugins-api";
@@ -21,6 +22,8 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { CoverageBadge } from "@/components/analysis/CoverageBadge";
 import { VerdictBadge } from "@/components/analysis/VerdictBadge";
+import { ListPager } from "@/components/analysis/ListPager";
+import { paginate } from "@/components/analysis/analysis-views";
 import {
   TEST_RELATION_DESCRIPTION,
   TEST_RELATION_LABEL,
@@ -31,6 +34,19 @@ interface Props {
   analysisId: string;
   /** Only fetch once the run has completed (requirements exist). */
   enabled?: boolean;
+}
+
+/** #1137 — rows per page: the matrix of a large run was one very long table. */
+export const MATRIX_PAGE_SIZE = 25;
+
+/**
+ * #1137 — the test's own name: its qualified symbol without the
+ * `filePath::` prefix, or null for a file-only hit whose symbol is the path.
+ */
+export function testName(t: { filePath: string; symbol: string }): string | null {
+  if (!t.symbol || t.symbol === t.filePath) return null;
+  const prefix = `${t.filePath}::`;
+  return t.symbol.startsWith(prefix) ? t.symbol.slice(prefix.length) || null : t.symbol;
 }
 
 /** Render a code location as `filePath:start-end` with a provenance suffix. */
@@ -56,9 +72,12 @@ export function TraceabilityMatrix({
     onSuccess: ({ blob, filename }) => triggerDownload(blob, filename),
   });
 
+  const [page, setPage] = useState(0);
+
   if (!enabled) return null;
 
   const rows = query.data?.rows ?? [];
+  const view = paginate(rows, page, MATRIX_PAGE_SIZE);
 
   return (
     <section data-testid="traceability-matrix" className="space-y-2">
@@ -123,7 +142,7 @@ export function TraceabilityMatrix({
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {view.items.map((row) => (
                 <tr
                   key={row.requirementId}
                   data-testid={`traceability-row-${row.requirementId}`}
@@ -184,13 +203,19 @@ export function TraceabilityMatrix({
                           // #816 — how the resolver linked the test, when it says.
                           const relation = t.relation ? TEST_RELATION_LABEL[t.relation] : null;
                           const meaning = t.relation ? TEST_RELATION_DESCRIPTION[t.relation] : null;
+                          // #1137 — name the test, not only its file.
+                          const name = testName(t);
                           return (
                             <li
                               key={`${t.filePath}:${t.symbol}`}
+                              data-testid="traceability-matrix-test"
                               className="text-foreground"
                               title={relation && meaning ? `${relation}: ${meaning}` : undefined}
                             >
-                              <span className="font-mono">{t.filePath}</span>
+                              {name ? <span className="font-mono">{name}</span> : null}
+                              <span className="font-mono text-muted-foreground">
+                                {name ? ` in ${t.filePath}` : t.filePath}
+                              </span>
                               {relation ? (
                                 <span className="text-muted-foreground"> · {relation}</span>
                               ) : null}
@@ -206,6 +231,12 @@ export function TraceabilityMatrix({
           </table>
         </Card>
       )}
+      <ListPager
+        page={view}
+        noun="requirements"
+        onPageChange={setPage}
+        testId="traceability-matrix-pager"
+      />
     </section>
   );
 }

@@ -5,18 +5,34 @@
  *
  * `POST /api/projects/:projectId/baselines` (review.admin) had no caller, so a
  * project whose requirements were never approved through a review could not
- * get a baseline from the UI. This pins the CURRENT version of every
- * requirement in the project under a name; the server refuses an empty project.
+ * get a baseline from the UI. This pins the CURRENT version of every APPROVED
+ * requirement in the project under a name (#1137 — it used to pin every row,
+ * including hundreds of unreviewed tracker imports), and says how many it will
+ * pin and what it leaves out before it is created. The server refuses a
+ * project with nothing approved.
  */
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
-import { baselinesApi } from "@/lib/baselines-api";
+import { baselinesApi, type BaselineScopePreview } from "@/lib/baselines-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+
+/** #1137 — the sentence saying what New baseline pins and what it leaves out. */
+export function describeBaselineScope(scope: BaselineScopePreview): string {
+  const n = scope.pinCount;
+  const pins =
+    n === 0
+      ? "No requirement in this project is approved yet, so there is nothing to pin."
+      : `Pins the current version of the ${n} approved ${n === 1 ? "requirement" : "requirements"} in this project.`;
+  const { total, imported } = scope.excluded;
+  if (total === 0) return pins;
+  const importedNote = imported > 0 ? `, ${imported} of them imported from a tracker` : "";
+  return `${pins} ${total} not yet approved ${total === 1 ? "is" : "are"} left out${importedNote}.`;
+}
 
 export function NewBaselineForm({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
@@ -24,6 +40,12 @@ export function NewBaselineForm({ projectId }: { projectId: string }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  const scope = useQuery({
+    queryKey: queryKeys.baselines.scope(projectId),
+    queryFn: () => baselinesApi.scope(projectId),
+    enabled: open,
+  });
 
   const create = useMutation({
     mutationFn: () =>
@@ -37,6 +59,7 @@ export function NewBaselineForm({ projectId }: { projectId: string }) {
       setDescription("");
       setError(null);
       await qc.invalidateQueries({ queryKey: queryKeys.baselines.list(projectId) });
+      await qc.invalidateQueries({ queryKey: queryKeys.baselines.scope(projectId) });
     },
     onError: (err: unknown) => {
       setError(err instanceof ApiError ? err.message : "Could not create the baseline");
@@ -61,8 +84,12 @@ export function NewBaselineForm({ projectId }: { projectId: string }) {
         }}
       >
         <h2 className="text-sm font-semibold">New baseline</h2>
-        <p className="text-xs text-muted-foreground">
-          Pins the current version of every requirement in this project.
+        <p className="text-xs text-muted-foreground" data-testid="new-baseline-scope">
+          {scope.data
+            ? describeBaselineScope(scope.data)
+            : scope.isError
+              ? "Pins the current version of every approved requirement in this project."
+              : "Counting the approved requirements…"}
         </p>
         <div className="space-y-1">
           <Label htmlFor="baseline-name">Name</Label>
@@ -88,7 +115,11 @@ export function NewBaselineForm({ projectId }: { projectId: string }) {
           </p>
         ) : null}
         <div className="flex gap-2">
-          <Button type="submit" size="sm" disabled={!name.trim() || create.isPending}>
+          <Button
+            type="submit"
+            size="sm"
+            disabled={!name.trim() || create.isPending || scope.data?.pinCount === 0}
+          >
             {create.isPending ? "Creating…" : "Create baseline"}
           </Button>
           <Button

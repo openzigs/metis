@@ -24,6 +24,8 @@ import {
 } from "@/lib/analysis-api";
 import { Card } from "@/components/ui/card";
 import { CodeCitation } from "@/components/findings/code-citation";
+import { ListPager } from "@/components/analysis/ListPager";
+import { serverPage } from "@/components/analysis/analysis-views";
 
 interface Props {
   projectId: string;
@@ -274,6 +276,8 @@ export function RequirementDiff({
 }: Props): React.ReactElement | null {
   // Undefined ⇒ let the server default to the previous completed run.
   const [baseId, setBaseId] = useState<string | undefined>(undefined);
+  // #1137 — one page of changed requirements at a time (1-based, server-paged).
+  const [page, setPage] = useState(1);
 
   const baseOptions = useMemo(
     () => analyses.filter((a) => a.id !== analysisId && a.status === "completed"),
@@ -281,8 +285,8 @@ export function RequirementDiff({
   );
 
   const query = useQuery({
-    queryKey: ["requirement-diff", projectId, analysisId, baseId ?? "auto"],
-    queryFn: () => analysisApi.getRequirementDiff(projectId, analysisId, baseId),
+    queryKey: ["requirement-diff", projectId, analysisId, baseId ?? "auto", page],
+    queryFn: () => analysisApi.getRequirementDiff(projectId, analysisId, baseId, page),
     enabled,
   });
 
@@ -309,7 +313,10 @@ export function RequirementDiff({
             data-testid="diff-base-picker"
             className="rounded border border-border bg-muted px-2 py-1 text-xs text-foreground"
             value={baseId ?? ""}
-            onChange={(e) => setBaseId(e.target.value || undefined)}
+            onChange={(e) => {
+              setBaseId(e.target.value || undefined);
+              setPage(1);
+            }}
           >
             <option value="">Previous run (auto)</option>
             {baseOptions.map((a) => (
@@ -344,6 +351,14 @@ export function RequirementDiff({
               entry={entry}
             />
           ))}
+          {diff?.page ? (
+            <ListPager
+              page={serverPage(diff.page, entries.length)}
+              noun="changed requirements"
+              onPageChange={(zeroBased) => setPage(zeroBased + 1)}
+              testId="requirement-diff-pager"
+            />
+          ) : null}
         </div>
       )}
     </section>

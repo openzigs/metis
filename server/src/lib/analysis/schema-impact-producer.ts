@@ -45,6 +45,7 @@ import type { PrismaClient } from "@prisma/client";
 import {
   type AnalysisDatabaseAware,
   type DatabaseAwareAnalysisSetting,
+  type GapReportRequirementDatabaseChanges,
   type SqlLineageCoverage,
   DATABASE_AWARE_ANALYSIS_SETTINGS,
   DEFAULT_DATABASE_AWARE_ANALYSIS_SETTING,
@@ -54,7 +55,7 @@ import { getConfigService } from "../config/config-service.js";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { getAnalysisSnapshot } from "./analysis-service.js";
 import type { GapReportDeps } from "./gap-report-service.js";
-import type { GapReportSchemaImpactInput } from "./gap-report.js";
+import { buildDatabaseChanges, type GapReportSchemaImpactInput } from "./gap-report.js";
 import {
   computeProjectImpact,
   PrismaCodeGraphDataSource,
@@ -140,6 +141,12 @@ export interface SchemaImpactProducerDeps {
   enumerateConsumers?: typeof enumerateSchemaConsumers;
   /** Cost cap on requirements crossed. Defaults to the configured/50 max. */
   maxRequirements?: number;
+  /**
+   * #1137 — cross only these requirements. The gap report fetches one
+   * requirement's database changes when the analyst opens them, instead of
+   * crossing every requirement on every load.
+   */
+  requirementIds?: readonly string[];
 }
 
 /**
@@ -195,7 +202,10 @@ export async function loadAnalysisSchemaImpact(
       DEFAULT_SCHEMA_IMPACT_MAX_REQUIREMENTS,
     );
 
-  const requirements = snapshot.requirements.slice(0, Math.max(0, maxRequirements));
+  const only = deps.requirementIds ? new Set(deps.requirementIds) : null;
+  const requirements = (
+    only ? snapshot.requirements.filter((r) => only.has(r.id)) : snapshot.requirements
+  ).slice(0, Math.max(0, maxRequirements));
 
   for (const r of requirements) {
     try {
@@ -401,5 +411,33 @@ export async function resolveGapReportDeps(
     loadSchemaImpact: (analysisId) => loadAnalysisSchemaImpact(analysisId, deps),
     databaseAware,
     sqlLineageCoverage,
+  };
+}
+
+/**
+ * #1137 — one requirement's database changes for the gap report, computed when
+ * the analyst opens them. The report itself no longer crosses every
+ * requirement into the schema graph on each load (3.6 s and 487 KB of its
+ * 588 KB for a 33-requirement run). Same gate as the report: when the
+ * per-project decision is off, the list is empty and `databaseAware` says why.
+ * The caller has already checked the requirement belongs to the analysis.
+ */
+export async function getRequirementDatabaseChanges(
+  analysisId: string,
+  projectId: string,
+  requirementId: string,
+  deps?: SchemaImpactProducerDeps,
+): Promise<GapReportRequirementDatabaseChanges> {
+  const prisma = (deps?.prisma ?? (defaultPrisma as unknown as ProducerPrisma)) as ProducerPrisma;
+  const databaseAware = await resolveProjectDatabaseAware(projectId, prisma);
+  if (!databaseAware.enabled) return { requirementId, databaseChanges: [], databaseAware };
+  const impact = await loadAnalysisSchemaImpact(analysisId, {
+    ...deps,
+    requirementIds: [requirementId],
+  });
+  return {
+    requirementId,
+    databaseChanges: buildDatabaseChanges(impact.get(requirementId)),
+    databaseAware,
   };
 }

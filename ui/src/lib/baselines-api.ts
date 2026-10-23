@@ -101,8 +101,15 @@ export interface BaselineCompareResult {
 export interface CreateBaselineInput {
   name: string;
   description?: string;
-  /** Optional subset; omitted = every requirement in the project. */
+  /** Optional subset; omitted = every approved requirement in the project (#1137). */
   requirementIds?: string[];
+}
+
+/** #1137 — what New baseline pins (the approved requirements) and what it leaves out. */
+export interface BaselineScopePreview {
+  pinCount: number;
+  status: "approved";
+  excluded: { total: number; imported: number };
 }
 
 // ---- API --------------------------------------------------------------------
@@ -123,6 +130,11 @@ export const baselinesApi = {
   /** Compare two baselines (A → B): added / removed / changed / unchanged. */
   compare(baselineIdA: string, baselineIdB: string): Promise<BaselineCompareResult> {
     return apiFetch<BaselineCompareResult>(`/baselines/${baselineIdA}/compare/${baselineIdB}`);
+  },
+
+  /** #1137 — what a manual baseline would pin, before it is created (review.admin only). */
+  scope(projectId: string): Promise<BaselineScopePreview> {
+    return apiFetch<BaselineScopePreview>(`/projects/${projectId}/baselines/scope`);
   },
 
   /** Manual baseline pinning CURRENT versions (review.admin only). */

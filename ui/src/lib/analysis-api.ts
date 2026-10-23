@@ -29,6 +29,7 @@ import type {
   WithheldReplacementDiff,
   TraceabilityMatrix,
   GapReport,
+  GapReportRequirementDatabaseChanges,
   RequirementDiff,
   SpecKitHandoffRecord,
   LedgerTokens,
@@ -77,6 +78,7 @@ export type {
 // consumers.
 export type {
   GapReportDatabaseChange,
+  GapReportRequirementDatabaseChanges,
   GapReportSchemaConsumer,
   GapReportRiskClass,
   GapReportConsumerUsage,
@@ -588,8 +590,17 @@ export const analysisApi = {
   // ── Issue #742 — per-requirement gap report ───────────────────────────────
 
   /** Fetch the per-requirement gap report (current impl + gap + effort). */
-  getGapReport: (projectId: string, analysisId: string) =>
-    apiFetch<GapReport>(`/projects/${projectId}/analyses/${analysisId}/gap-report`),
+  /** #1137 — one page (1-based) of the report; database changes are fetched per requirement. */
+  getGapReport: (projectId: string, analysisId: string, page = 1) =>
+    apiFetch<GapReport>(`/projects/${projectId}/analyses/${analysisId}/gap-report`, {
+      params: { page },
+    }),
+
+  /** #1137 — one requirement's database changes, fetched when the analyst opens them. */
+  getGapReportDatabaseChanges: (projectId: string, analysisId: string, requirementId: string) =>
+    apiFetch<GapReportRequirementDatabaseChanges>(
+      `/projects/${projectId}/analyses/${analysisId}/gap-report/requirements/${encodeURIComponent(requirementId)}/database-changes`,
+    ),
 
   // ── Issue #743 — diff-style current-vs-proposed view ──────────────────────
 
@@ -598,12 +609,10 @@ export const analysisApi = {
    * a base run and this head run. `baseAnalysisId` defaults (server-side) to the
    * project's previous completed run; pass it to compare against a specific run.
    */
-  getRequirementDiff: (projectId: string, analysisId: string, baseAnalysisId?: string) => {
-    const suffix = baseAnalysisId ? `?base=${encodeURIComponent(baseAnalysisId)}` : "";
-    return apiFetch<RequirementDiff>(
-      `/projects/${projectId}/analyses/${analysisId}/requirement-diff${suffix}`,
-    );
-  },
+  getRequirementDiff: (projectId: string, analysisId: string, baseAnalysisId?: string, page = 1) =>
+    apiFetch<RequirementDiff>(`/projects/${projectId}/analyses/${analysisId}/requirement-diff`, {
+      params: { base: baseAnalysisId, page },
+    }),
 
   /**
    * Download the matrix as a server-serialized CSV or markdown attachment. The

@@ -74,9 +74,27 @@ export interface BuildTraceabilityMatrixInput {
   testsByRequirement?: ReadonlyMap<string, TraceabilityTestLink[]>;
 }
 
-/** Stable de-dupe key for a code location (path + range + provenance). */
+/**
+ * Stable de-dupe key for a code location: path + range. #1137 — provenance is
+ * not part of it, so a range a finding cites and a mapping also names is listed
+ * once (it was listed twice, once per source).
+ */
 function codeLocationKey(loc: TraceabilityCodeLocation): string {
-  return `${loc.source}::${loc.filePath}:${loc.startLine ?? ""}-${loc.endLine ?? ""}`;
+  return `${loc.filePath}:${loc.startLine ?? ""}-${loc.endLine ?? ""}`;
+}
+
+/** Add `loc` unless its range is already listed; keep the first source, fill a missing symbol. */
+function addCodeLocation(
+  codeByKey: Map<string, TraceabilityCodeLocation>,
+  loc: TraceabilityCodeLocation,
+): void {
+  const key = codeLocationKey(loc);
+  const kept = codeByKey.get(key);
+  if (!kept) {
+    codeByKey.set(key, loc);
+    return;
+  }
+  if (!kept.symbolId && loc.symbolId) codeByKey.set(key, { ...kept, symbolId: loc.symbolId });
 }
 
 /**
@@ -103,14 +121,14 @@ export function buildTraceabilityMatrix(input: BuildTraceabilityMatrixInput): Tr
           source: "citation",
           ...(citation.symbolId ? { symbolId: citation.symbolId } : {}),
         };
-        codeByKey.set(codeLocationKey(loc), loc);
+        addCodeLocation(codeByKey, loc);
       }
     }
 
-    // Fold in persisted deterministic-mapping spine locations (additive; usually
-    // empty). Deduped against citation locations by (source, path, range).
+    // Fold in persisted deterministic-mapping spine locations (additive).
+    // Deduped against citation locations by (path, range), #1137.
     for (const loc of input.deterministicByRequirement?.get(req.id) ?? []) {
-      codeByKey.set(codeLocationKey(loc), loc);
+      addCodeLocation(codeByKey, loc);
     }
 
     return {

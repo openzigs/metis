@@ -26,6 +26,7 @@ import {
   type GapReportRequirementInput,
   type GapReportSchemaImpactInput,
 } from "./gap-report.js";
+import { sliceListPage, type ListPageRequest } from "./list-page.js";
 
 export interface GapReportDeps {
   /** Injectable snapshot loader (tests). Defaults to the shared read path. */
@@ -59,6 +60,11 @@ export interface GapReportDeps {
    * `analysisId`.
    */
   sqlLineageCoverage?: SqlLineageCoverage | null;
+  /**
+   * #1137 — build only this page of the requirements and say which page it is.
+   * Omitted (the export) ⇒ every requirement, no `page`.
+   */
+  page?: ListPageRequest;
 }
 
 const SEVERITY_SET = new Set<string>(FINDING_SEVERITIES);
@@ -80,16 +86,19 @@ export async function getGapReport(
 
   const snapshot = await loadSnapshot(analysisId);
   if (!snapshot) return null;
-  const requirements: GapReportRequirementInput[] = snapshot.requirements.map((r) => ({
-    id: r.id,
-    title: r.title,
-    body: r.body,
-    priority: r.priority,
-    coverage: r.coverage ?? null,
-    verdict: r.verdict ?? null,
-    storyPoints: r.storyPoints,
-    evidenceFindingIds: r.evidenceFindingIds,
-  }));
+  const paged = deps.page ? sliceListPage(snapshot.requirements, deps.page) : null;
+  const requirements: GapReportRequirementInput[] = (paged?.items ?? snapshot.requirements).map(
+    (r) => ({
+      id: r.id,
+      title: r.title,
+      body: r.body,
+      priority: r.priority,
+      coverage: r.coverage ?? null,
+      verdict: r.verdict ?? null,
+      storyPoints: r.storyPoints,
+      evidenceFindingIds: r.evidenceFindingIds,
+    }),
+  );
 
   const findingsById = new Map<string, GapReportFindingInput>();
   for (const agent of snapshot.agents) {
@@ -106,7 +115,7 @@ export async function getGapReport(
     }
   }
 
-  return buildGapReport({
+  const report = buildGapReport({
     analysisId: snapshot.id,
     projectId: snapshot.projectId,
     requirements,
@@ -125,4 +134,5 @@ export async function getGapReport(
     // it (byte-identical to pre-#895).
     sqlLineageCoverage: deps.sqlLineageCoverage,
   });
+  return paged ? { ...report, page: paged.page } : report;
 }

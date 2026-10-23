@@ -107,6 +107,28 @@ describe("getGapReport", () => {
     expect(r.noEvidence).toBe(false);
   });
 
+  it("#1137 — builds only the requested page and says which page it is", async () => {
+    const base = snapshot().requirements[0]!;
+    const requirements = Array.from({ length: 33 }, (_, i) => ({ ...base, id: `req-${i}` }));
+    const report = await getGapReport("an-1", {
+      loadSnapshot: vi.fn().mockResolvedValue(snapshot({ requirements })),
+      page: { page: 4, pageSize: 10 },
+    });
+    expect(report!.requirements.map((r) => r.requirementId)).toEqual([
+      "req-30",
+      "req-31",
+      "req-32",
+    ]);
+    expect(report!.page).toEqual({ page: 4, pageSize: 10, total: 33 });
+  });
+
+  it("#1137 — an unpaged report (the export) carries every requirement and no page", async () => {
+    const report = await getGapReport("an-1", {
+      loadSnapshot: vi.fn().mockResolvedValue(snapshot()),
+    });
+    expect(report!.page).toBeUndefined();
+  });
+
   it("coerces an unknown finding severity to 'info' and a missing coverage to null", async () => {
     const snap = snapshot();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

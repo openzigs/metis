@@ -14,6 +14,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { GapReport as TGapReport } from "@metis/shared";
 
 const getGapReport = vi.fn();
+const getGapReportDatabaseChanges = vi.fn();
 const exportAnalysisReport = vi.fn();
 vi.mock("@/lib/analysis-api", async (importActual) => {
   const actual = await importActual<typeof import("@/lib/analysis-api")>();
@@ -21,6 +22,7 @@ vi.mock("@/lib/analysis-api", async (importActual) => {
     ...actual,
     analysisApi: {
       getGapReport: (...args: unknown[]) => getGapReport(...args),
+      getGapReportDatabaseChanges: (...args: unknown[]) => getGapReportDatabaseChanges(...args),
       exportAnalysisReport: (...args: unknown[]) => exportAnalysisReport(...args),
     },
   };
@@ -383,6 +385,94 @@ describe("GapReport — could-not-verify (#773)", () => {
  * section's own states are covered in gap-report-schema-section.test.tsx).
  */
 describe("GapReport — database changes composition (#827)", () => {
+  it("#1137 — fetches page 1 and pages through the report", async () => {
+    const page = (n: number) => ({
+      ...REPORT,
+      requirements: [
+        { ...REPORT.requirements[0]!, requirementId: `req-p${n}`, title: `Page ${n}` },
+      ],
+      page: { page: n, pageSize: 10, total: 33 },
+    });
+    getGapReport.mockImplementation(async (_p: string, _a: string, n: number) => page(n));
+    renderPanel();
+    await screen.findByText("Page 1");
+    expect(getGapReport).toHaveBeenCalledWith("proj-1", "an-1", 1);
+    expect(screen.getByTestId("gap-report-pager-range")).toHaveTextContent(
+      "Showing 1–1 of 33 requirements",
+    );
+    fireEvent.click(
+      within(screen.getByTestId("gap-report-pager")).getByRole("button", { name: "Next" }),
+    );
+    await screen.findByText("Page 2");
+    expect(getGapReport).toHaveBeenCalledWith("proj-1", "an-1", 2);
+  });
+
+  it("#1137 — fetches a requirement's database changes only when asked", async () => {
+    getGapReport.mockResolvedValue({
+      ...REPORT,
+      requirements: [REPORT.requirements[0], REPORT.requirements[1]],
+      databaseAware: { setting: "on", enabled: true, ran: true, reason: "on" },
+    });
+    getGapReportDatabaseChanges.mockImplementation(async (_p: string, _a: string, id: string) => ({
+      requirementId: id,
+      databaseAware: null,
+      databaseChanges:
+        id === "req-1"
+          ? [
+              {
+                tableName: "orders",
+                columnName: null,
+                changeKind: "add-table",
+                reconciliation: "matched",
+                confidence: 0.9,
+                suggestedDdl: "CREATE TABLE orders (id INT);",
+                identityResolved: false,
+              },
+            ]
+          : [],
+    }));
+    renderPanel();
+
+    const card = await screen.findByTestId("gap-report-card-req-1");
+    expect(within(card).queryByTestId("gap-database-changes")).not.toBeInTheDocument();
+    expect(getGapReportDatabaseChanges).not.toHaveBeenCalled();
+
+    fireEvent.click(within(card).getByTestId("gap-db-changes-show"));
+    expect(await within(card).findByTestId("gap-database-changes")).toBeInTheDocument();
+    expect(getGapReportDatabaseChanges).toHaveBeenCalledWith("proj-1", "an-1", "req-1");
+    expect(getGapReportDatabaseChanges).toHaveBeenCalledTimes(1);
+
+    const other = screen.getByTestId(`gap-report-card-${REPORT.requirements[1]!.requirementId}`);
+    fireEvent.click(within(other).getByTestId("gap-db-changes-show"));
+    expect(await within(other).findByTestId("gap-db-changes-none")).toHaveTextContent(
+      "No database changes for this requirement.",
+    );
+  });
+
+  it("#1137 — offers no database changes when database-aware analysis is off", async () => {
+    getGapReport.mockResolvedValue({
+      ...REPORT,
+      databaseAware: { setting: "off", enabled: false, ran: false, reason: "off" },
+    });
+    renderPanel();
+    await screen.findByTestId("gap-report-card-req-1");
+    expect(screen.queryByTestId("gap-db-changes-show")).not.toBeInTheDocument();
+  });
+
+  it("#1137 — says so when a requirement's database changes fail to load", async () => {
+    getGapReport.mockResolvedValue({
+      ...REPORT,
+      databaseAware: { setting: "on", enabled: true, ran: true, reason: "on" },
+    });
+    getGapReportDatabaseChanges.mockRejectedValue(new Error("boom"));
+    renderPanel();
+    const card = await screen.findByTestId("gap-report-card-req-1");
+    fireEvent.click(within(card).getByTestId("gap-db-changes-show"));
+    expect(await within(card).findByRole("alert")).toHaveTextContent(
+      "Could not load the database changes.",
+    );
+  });
+
   it("renders the database-changes section on a requirement that has one, and not on one that doesn't", async () => {
     getGapReport.mockResolvedValue({
       ...REPORT,

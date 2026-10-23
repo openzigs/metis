@@ -174,12 +174,33 @@ describe("GET /api/projects/:projectId/analyses/:id/requirement-diff", () => {
       "/api/projects/proj-1/analyses/analysis-1/requirement-diff?base=analysis-0",
     );
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ success: true, data: DIFF });
+    expect(res.body).toEqual({
+      success: true,
+      data: { ...DIFF, page: { page: 1, pageSize: 10, total: 1 } },
+    });
     expect(getRequirementDiff).toHaveBeenCalledWith({
       projectId: "proj-1",
       headAnalysisId: "analysis-1",
       baseAnalysisId: "analysis-0",
     });
+  });
+
+  it("#1137 — returns one page of the changed requirements; the summary still counts all", async () => {
+    analysisFindFirst.mockResolvedValueOnce({ id: "analysis-1", projectId: "proj-1" });
+    const entries = Array.from({ length: 23 }, (_, i) => ({
+      ...DIFF.entries[0]!,
+      diffSummary: `change ${i}`,
+    }));
+    const summary = { total: 23, added: 0, removed: 0, modified: 23 };
+    getRequirementDiff.mockResolvedValueOnce({ ...DIFF, entries, summary });
+    const res = await request(app).get(
+      "/api/projects/proj-1/analyses/analysis-1/requirement-diff?page=3&pageSize=10",
+    );
+    expect(res.status).toBe(200);
+    const data = res.body.data as RequirementDiff;
+    expect(data.entries.map((e) => e.diffSummary)).toEqual(["change 20", "change 21", "change 22"]);
+    expect(data.page).toEqual({ page: 3, pageSize: 10, total: 23 });
+    expect(data.summary).toEqual(summary);
   });
 
   it("defaults the base to null when no ?base is supplied", async () => {
