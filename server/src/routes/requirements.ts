@@ -56,6 +56,10 @@ import {
 import { visibleRequirementLabels } from "../lib/analysis/requirement-labels.js";
 import { audit } from "../lib/audit/audit-service.js";
 import {
+  eligibleAssigneeIds,
+  isEligibleAssignee,
+} from "../lib/requirements/assignee-eligibility.js";
+import {
   ACCEPTANCE_CRITERIA_CLEARED,
   ACCEPTANCE_CRITERIA_MAX_ITEMS,
   ACCEPTANCE_CRITERION_MAX_LENGTH,
@@ -188,7 +192,25 @@ export function requirementsCollaborationRouter(): Router {
         },
         orderBy: { createdAt: "asc" },
       });
-      res.json({ success: true, data: assignments });
+      // #1432 — a row written before assignees were checked, or whose assignee
+      // has since left, must not reveal who that user is: keep the row (it can
+      // still be removed) but drop the name of anyone no longer eligible.
+      const owner = await prisma.requirement.findUnique({
+        where: { id: requirementId },
+        select: { projectId: true },
+      });
+      const eligible = owner
+        ? await eligibleAssigneeIds(
+            assignments.map((a) => a.assigneeId),
+            owner.projectId,
+          )
+        : new Set<string>();
+      const data = assignments.map((a) =>
+        eligible.has(a.assigneeId)
+          ? a
+          : { ...a, assignee: { id: a.assigneeId, username: null, displayName: null } },
+      );
+      res.json({ success: true, data });
     },
   );
 
@@ -209,9 +231,16 @@ export function requirementsCollaborationRouter(): Router {
 
       const reqRow = await prisma.requirement.findUnique({
         where: { id: requirementId, ...requirementScopeWhere(req) },
-        select: { id: true },
+        select: { id: true, projectId: true },
       });
       if (!reqRow) throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+
+      // #1432 — only an active member who can open the requirement's project.
+      // An unknown id and an ineligible one get the same 404, and nothing is
+      // written, so this is not a cross-workspace user lookup.
+      if (!(await isEligibleAssignee(parsed.data.assigneeId, reqRow.projectId))) {
+        throw new AppError(404, "ASSIGNEE_NOT_FOUND", "Assignee not found");
+      }
 
       const assignment = await prisma.assignment.upsert({
         where: {

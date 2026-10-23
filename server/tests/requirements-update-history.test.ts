@@ -13,6 +13,11 @@ const mockPrisma = {
 };
 
 vi.mock("../src/lib/prisma.js", () => ({ prisma: mockPrisma }));
+// Assignee eligibility (#1432) has its own real-database test; open it here.
+vi.mock("../src/lib/requirements/assignee-eligibility.js", () => ({
+  isEligibleAssignee: vi.fn(async () => true),
+  eligibleAssigneeIds: vi.fn(async (ids: string[]) => new Set(ids)),
+}));
 
 vi.mock("../src/middleware/auth.js", () => ({
   requireAuth: (req: unknown, _res: unknown, next: () => void) => {

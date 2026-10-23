@@ -11,12 +11,16 @@
  *   2. The project coordinator's personal room (`user:{project.createdById}`)
  *      — only when different from the assignee.
  *
+ * Each recipient must still be able to open the requirement's project (#1432,
+ * `isEligibleAssignee`); one who cannot is skipped, and the row is still marked.
+ *
  * Sets `notifiedAt` to prevent duplicate notifications.
  */
 import { userRoom } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getSocketServer } from "../socket/registry.js";
+import { isEligibleAssignee } from "../requirements/assignee-eligibility.js";
 
 const log = createChildLogger("collaboration:sla-checker");
 
@@ -25,6 +29,20 @@ const DEFAULT_INTERVAL_MS = 5 * 60 * 1_000;
 
 export interface SlaCheckerHandle {
   stop(): void;
+}
+
+/**
+ * May `userId` be told about a requirement in `projectId`? The assignee rule
+ * (#1432). Fails CLOSED: a lookup error suppresses a notification rather than
+ * risk sending a title to someone who cannot open the project.
+ */
+async function mayNotify(userId: string, projectId: string): Promise<boolean> {
+  try {
+    return await isEligibleAssignee(userId, projectId);
+  } catch (err) {
+    log.warn("SLA recipient check failed; not notifying", { userId, projectId, err });
+    return false;
+  }
 }
 
 /**
@@ -48,6 +66,7 @@ export async function runSlaCheck(): Promise<void> {
         select: {
           id: true,
           title: true,
+          projectId: true,
           project: { select: { createdById: true } },
         },
       },
@@ -68,34 +87,46 @@ export async function runSlaCheck(): Promise<void> {
         ts: Date.now(),
       };
 
-      // Notify the assignee.
-      if (io) {
-        io.to(userRoom(assignment.assigneeId)).emit("sla:deadline_expired", payload);
-      }
+      const projectId = assignment.requirement.projectId;
 
-      // Issue #416 — persist SLA notification for the assignee. Best-effort.
-      try {
-        await prisma.notification.create({
-          data: {
+      // Notify the assignee — only while they can still open the project
+      // (#1432): the payload carries the requirement title, and the row may
+      // predate assignee checks or outlive the assignee's membership.
+      if (await mayNotify(assignment.assigneeId, projectId)) {
+        if (io) {
+          io.to(userRoom(assignment.assigneeId)).emit("sla:deadline_expired", payload);
+        }
+
+        // Issue #416 — persist SLA notification for the assignee. Best-effort.
+        try {
+          await prisma.notification.create({
+            data: {
+              userId: assignment.assigneeId,
+              type: "sla_deadline",
+              title: `SLA deadline expired: ${assignment.requirement.title}`,
+              message: `Assignment ${assignment.id} SLA deadline has passed`,
+              href: `/requirements/${encodeURIComponent(assignment.requirement.id)}`,
+              payload: JSON.stringify(payload),
+            },
+          });
+        } catch (persistErr) {
+          log.warn("Failed to persist SLA notification for assignee", {
+            assignmentId: assignment.id,
             userId: assignment.assigneeId,
-            type: "sla_deadline",
-            title: `SLA deadline expired: ${assignment.requirement.title}`,
-            message: `Assignment ${assignment.id} SLA deadline has passed`,
-            href: `/requirements/${encodeURIComponent(assignment.requirement.id)}`,
-            payload: JSON.stringify(payload),
-          },
-        });
-      } catch (persistErr) {
-        log.warn("Failed to persist SLA notification for assignee", {
-          assignmentId: assignment.id,
-          userId: assignment.assigneeId,
-          err: persistErr,
-        });
+            err: persistErr,
+          });
+        }
       }
 
-      // Notify the project coordinator if different from the assignee.
+      // Notify the project coordinator if different from the assignee (and,
+      // like the assignee, still able to open the project — #1432).
       const coordinatorId = assignment.requirement.project?.createdById;
-      if (coordinatorId && coordinatorId !== assignment.assigneeId && io) {
+      if (
+        coordinatorId &&
+        coordinatorId !== assignment.assigneeId &&
+        io &&
+        (await mayNotify(coordinatorId, projectId))
+      ) {
         io.to(userRoom(coordinatorId)).emit("sla:deadline_expired", payload);
 
         // Issue #416 — persist SLA notification for the coordinator too.

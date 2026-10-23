@@ -23,6 +23,13 @@ vi.mock("../src/lib/socket/registry.js", () => ({
   getSocketServer: () => mockIo,
 }));
 
+// #1432 — the recipient rule; real-database coverage is in
+// requirement-assignee-scope-1432.sqlite.test.ts.
+const mockEligible = vi.fn<(userId: string, projectId: string) => Promise<boolean>>();
+vi.mock("../src/lib/requirements/assignee-eligibility.js", () => ({
+  isEligibleAssignee: (userId: string, projectId: string) => mockEligible(userId, projectId),
+}));
+
 const { runSlaCheck } = await import("../src/lib/collaboration/sla-checker.js");
 
 // ---- Helpers ----------------------------------------------------------------
@@ -35,6 +42,7 @@ function makeAssignment(overrides: object = {}) {
     requirement: {
       id: "req-1",
       title: "My Requirement",
+      projectId: "proj-1",
       project: { createdById: "user-coordinator" },
     },
     ...overrides,
@@ -47,6 +55,7 @@ describe("runSlaCheck", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAssignment.update.mockResolvedValue({});
+    mockEligible.mockReset().mockResolvedValue(true);
   });
 
   it("does nothing when no overdue assignments", async () => {
@@ -94,6 +103,30 @@ describe("runSlaCheck", () => {
         data: expect.objectContaining({ notifiedAt: expect.any(Date) }),
       }),
     );
+  });
+
+  it("skips a recipient who can no longer open the project, still marking the row (#1432)", async () => {
+    mockEligible.mockImplementation(async (userId: string) => userId !== "user-assignee");
+    mockAssignment.findMany.mockResolvedValue([makeAssignment()]);
+
+    await runSlaCheck();
+
+    expect(mockEligible).toHaveBeenCalledWith("user-assignee", "proj-1");
+    expect(mockIoTo).not.toHaveBeenCalledWith("user:user-assignee");
+    expect(mockIoTo).toHaveBeenCalledWith("user:user-coordinator");
+    expect(mockAssignment.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "assign-1" } }),
+    );
+  });
+
+  it("fails closed when the recipient check errors (#1432)", async () => {
+    mockEligible.mockRejectedValue(new Error("db down"));
+    mockAssignment.findMany.mockResolvedValue([makeAssignment()]);
+
+    await runSlaCheck();
+
+    expect(mockIoTo).not.toHaveBeenCalled();
+    expect(mockAssignment.update).toHaveBeenCalled();
   });
 
   it("continues processing remaining assignments when one fails", async () => {

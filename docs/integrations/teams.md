@@ -207,6 +207,25 @@ is just a Teams-side cache of "this AAD subject is that METIS user".
 - **Unmapped senders are never silently attributed:** the resolver returns
   `null` (also for bindings to disabled/soft-deleted users) — later phases (#551
   inbound) must reject or flag these senders, never post them as a METIS user.
+- **Targets stay in the bot's workspace (#1437, OWASP A01):** resolving the
+  sender is not enough, because that user may belong to other workspaces too.
+  Every surface that reaches a project checks it against the bot's workspace
+  (`Project.workspaceId` equal to it, so a workspace-less project is out),
+  before the user's own project access:
+
+  | Surface | Target | Refusal when outside the workspace |
+  |---------|--------|-------------------------------------|
+  | `/metis status <ref>` | explicit project ref | "No access" (as an unknown or inaccessible project) |
+  | `/metis status` | the channel link's project | "No access" |
+  | `/metis approve <draft>` | the draft's project | "Not found" (as an unknown draft) |
+  | Approve submit | the draft's project (card value, untrusted) | "Not found"; nothing approved |
+  | Promote submit | the thread's project (card value, untrusted) | "That discussion no longer exists"; nothing created |
+  | Inbound sync | the channel link's thread | skipped as `thread-not-found`; nothing ingested |
+
+  The link-reached surfaces are checked too, although a link's thread was in the
+  workspace when the link was made: a project can move workspaces afterwards
+  (`PUT /projects/:id/workspace`, #731). Rules:
+  `server/src/lib/workspaces/chatops-project-scope.ts`.
 
 ---
 

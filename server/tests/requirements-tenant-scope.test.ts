@@ -99,6 +99,13 @@ vi.mock("../src/lib/prisma.js", async () => {
   };
 });
 
+// Assignee eligibility (#1432) is a different axis from the caller's tenancy,
+// pinned against a real database in requirement-assignee-scope-1432.sqlite.test.ts.
+vi.mock("../src/lib/requirements/assignee-eligibility.js", () => ({
+  isEligibleAssignee: vi.fn(async () => true),
+  eligibleAssigneeIds: vi.fn(async (ids: string[]) => new Set(ids)),
+}));
+
 // The approval gate is orthogonal to tenancy — keep the export happy path open.
 vi.mock("../src/lib/reviews/approval-gate.js", () => ({
   assertRequirementsExportable: vi.fn(async () => undefined),
