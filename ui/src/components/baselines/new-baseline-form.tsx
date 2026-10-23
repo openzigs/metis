@@ -5,11 +5,10 @@
  *
  * `POST /api/projects/:projectId/baselines` (review.admin) had no caller, so a
  * project whose requirements were never approved through a review could not
- * get a baseline from the UI. This pins the CURRENT version of every APPROVED
- * requirement in the project under a name (#1137 — it used to pin every row,
- * including hundreds of unreviewed tracker imports), and says how many it will
- * pin and what it leaves out before it is created. The server refuses a
- * project with nothing approved.
+ * get a baseline from the UI. This pins the CURRENT version of the project's
+ * requirements under a name, except items imported from a tracker that nobody
+ * has approved (#1137 — it pinned hundreds of those), and says how many it will
+ * pin, of which status, and what it leaves out before it is created.
  */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -24,14 +23,14 @@ import { Label } from "@/components/ui/label";
 /** #1137 — the sentence saying what New baseline pins and what it leaves out. */
 export function describeBaselineScope(scope: BaselineScopePreview): string {
   const n = scope.pinCount;
+  const notApproved = n - scope.approved;
   const pins =
     n === 0
-      ? "No requirement in this project is approved yet, so there is nothing to pin."
-      : `Pins the current version of the ${n} approved ${n === 1 ? "requirement" : "requirements"} in this project.`;
-  const { total, imported } = scope.excluded;
-  if (total === 0) return pins;
-  const importedNote = imported > 0 ? `, ${imported} of them imported from a tracker` : "";
-  return `${pins} ${total} not yet approved ${total === 1 ? "is" : "are"} left out${importedNote}.`;
+      ? "There is nothing to pin yet."
+      : `Pins the current version of ${n} ${n === 1 ? "requirement" : "requirements"} in this project: ${scope.approved} approved, ${notApproved} not yet approved.`;
+  const x = scope.excludedImported;
+  if (x === 0) return pins;
+  return `${pins} ${x} ${x === 1 ? "item" : "items"} imported from a tracker and not approved ${x === 1 ? "is" : "are"} left out.`;
 }
 
 export function NewBaselineForm({ projectId }: { projectId: string }) {
@@ -88,8 +87,8 @@ export function NewBaselineForm({ projectId }: { projectId: string }) {
           {scope.data
             ? describeBaselineScope(scope.data)
             : scope.isError
-              ? "Pins the current version of every approved requirement in this project."
-              : "Counting the approved requirements…"}
+              ? "Pins the current version of the project's requirements, except unapproved imported items."
+              : "Counting the requirements…"}
         </p>
         <div className="space-y-1">
           <Label htmlFor="baseline-name">Name</Label>

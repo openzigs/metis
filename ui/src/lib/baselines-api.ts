@@ -101,15 +101,16 @@ export interface BaselineCompareResult {
 export interface CreateBaselineInput {
   name: string;
   description?: string;
-  /** Optional subset; omitted = every approved requirement in the project (#1137). */
+  /** Optional subset; omitted = the project's requirements less unapproved imports (#1137). */
   requirementIds?: string[];
 }
 
-/** #1137 — what New baseline pins (the approved requirements) and what it leaves out. */
+/** #1137 — what New baseline pins and the unapproved imported items it leaves out. */
 export interface BaselineScopePreview {
   pinCount: number;
-  status: "approved";
-  excluded: { total: number; imported: number };
+  /** How many of `pinCount` are approved. */
+  approved: number;
+  excludedImported: number;
 }
 
 // ---- API --------------------------------------------------------------------

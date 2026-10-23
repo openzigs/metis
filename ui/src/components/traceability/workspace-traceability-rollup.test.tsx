@@ -214,7 +214,7 @@ describe("WorkspaceTraceabilityRollup", () => {
     renderRollup();
     const table = await screen.findByTestId("rollup-summary-table");
     const row = within(table).getByTestId("rollup-project-row");
-    expect(row).toHaveTextContent("19");
+    expect(within(row).getByTestId("rollup-analysed-count")).toHaveTextContent(/^19$/);
     expect(within(row).getByTestId("rollup-imported-unanalysed")).toHaveTextContent(
       "+ 266 imported, not analysed",
     );

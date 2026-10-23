@@ -165,7 +165,7 @@ function SummaryTable({
             <tr key={p.projectId} data-testid="rollup-project-row" className="border-b">
               <td className="py-2 pr-4 font-medium">{p.name}</td>
               <td className="py-2 pr-4 tabular-nums">
-                {p.analysedRequirements}
+                <span data-testid="rollup-analysed-count">{p.analysedRequirements}</span>
                 {p.importedUnanalysed > 0 ? (
                   <span
                     className="block text-xs text-muted-foreground"

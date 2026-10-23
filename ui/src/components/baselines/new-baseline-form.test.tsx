@@ -1,6 +1,7 @@
 /**
- * #1137 — New baseline says how many requirements it will pin, and of which
- * status, before it is created; it pins the approved ones only.
+ * #1137 — New baseline says how many requirements it will pin, of which
+ * status, and how many unapproved imported items it leaves out, before it is
+ * created.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -26,35 +27,22 @@ function renderForm() {
   );
 }
 
+const RUN8_SENTENCE =
+  "Pins the current version of 30 requirements in this project: 19 approved, 11 not yet approved. 266 items imported from a tracker and not approved are left out.";
+
 describe("describeBaselineScope", () => {
-  it("names the approved count and what is left out", () => {
-    expect(
-      describeBaselineScope({
-        pinCount: 19,
-        status: "approved",
-        excluded: { total: 277, imported: 266 },
-      }),
-    ).toBe(
-      "Pins the current version of the 19 approved requirements in this project. 277 not yet approved are left out, 266 of them imported from a tracker.",
+  it("names the count, the statuses and the imported items left out", () => {
+    expect(describeBaselineScope({ pinCount: 30, approved: 19, excludedImported: 266 })).toBe(
+      RUN8_SENTENCE,
     );
   });
 
   it("handles one, none and nothing left out", () => {
-    expect(
-      describeBaselineScope({
-        pinCount: 1,
-        status: "approved",
-        excluded: { total: 0, imported: 0 },
-      }),
-    ).toBe("Pins the current version of the 1 approved requirement in this project.");
-    expect(
-      describeBaselineScope({
-        pinCount: 0,
-        status: "approved",
-        excluded: { total: 1, imported: 0 },
-      }),
-    ).toBe(
-      "No requirement in this project is approved yet, so there is nothing to pin. 1 not yet approved is left out.",
+    expect(describeBaselineScope({ pinCount: 1, approved: 0, excludedImported: 0 })).toBe(
+      "Pins the current version of 1 requirement in this project: 0 approved, 1 not yet approved.",
+    );
+    expect(describeBaselineScope({ pinCount: 0, approved: 0, excludedImported: 1 })).toBe(
+      "There is nothing to pin yet. 1 item imported from a tracker and not approved is left out.",
     );
   });
 });
@@ -66,20 +54,14 @@ describe("NewBaselineForm", () => {
   afterEach(() => cleanup());
 
   it("fetches the scope only once opened, and shows it before creating", async () => {
-    scope.mockResolvedValue({
-      pinCount: 19,
-      status: "approved",
-      excluded: { total: 266, imported: 266 },
-    });
+    scope.mockResolvedValue({ pinCount: 30, approved: 19, excludedImported: 266 });
     create.mockResolvedValue({ id: "b-1" });
     renderForm();
     expect(scope).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByTestId("new-baseline"));
     await waitFor(() =>
-      expect(screen.getByTestId("new-baseline-scope")).toHaveTextContent(
-        "Pins the current version of the 19 approved requirements in this project. 266 not yet approved are left out, 266 of them imported from a tracker.",
-      ),
+      expect(screen.getByTestId("new-baseline-scope")).toHaveTextContent(RUN8_SENTENCE),
     );
     expect(scope).toHaveBeenCalledWith("proj-1");
 
@@ -88,12 +70,8 @@ describe("NewBaselineForm", () => {
     await waitFor(() => expect(create).toHaveBeenCalledWith("proj-1", { name: "Run 8" }));
   });
 
-  it("disables Create when nothing is approved", async () => {
-    scope.mockResolvedValue({
-      pinCount: 0,
-      status: "approved",
-      excluded: { total: 3, imported: 0 },
-    });
+  it("disables Create when there is nothing to pin", async () => {
+    scope.mockResolvedValue({ pinCount: 0, approved: 0, excludedImported: 3 });
     renderForm();
     fireEvent.click(screen.getByTestId("new-baseline"));
     await screen.findByText(/nothing to pin/);
@@ -107,22 +85,18 @@ describe("NewBaselineForm", () => {
     fireEvent.click(screen.getByTestId("new-baseline"));
     await waitFor(() =>
       expect(screen.getByTestId("new-baseline-scope")).toHaveTextContent(
-        "Pins the current version of every approved requirement in this project.",
+        "Pins the current version of the project's requirements, except unapproved imported items.",
       ),
     );
   });
 
   it("sends the description, shows a refusal, and closes on Cancel", async () => {
     const { ApiError } = await import("@/lib/api-client");
-    scope.mockResolvedValue({
-      pinCount: 2,
-      status: "approved",
-      excluded: { total: 0, imported: 0 },
-    });
-    create.mockRejectedValue(new ApiError(400, "Nothing approved", "EMPTY_BASELINE"));
+    scope.mockResolvedValue({ pinCount: 2, approved: 2, excludedImported: 0 });
+    create.mockRejectedValue(new ApiError(400, "Name taken", "BASELINE_NAME_TAKEN"));
     renderForm();
     fireEvent.click(screen.getByTestId("new-baseline"));
-    await screen.findByText(/the 2 approved requirements/);
+    await screen.findByText(/2 requirements in this project/);
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "B" } });
     fireEvent.change(screen.getByLabelText("Description (optional)"), {
       target: { value: "  sign-off  " },
@@ -131,7 +105,7 @@ describe("NewBaselineForm", () => {
     await waitFor(() =>
       expect(create).toHaveBeenCalledWith("proj-1", { name: "B", description: "sign-off" }),
     );
-    expect(await screen.findByRole("alert")).toHaveTextContent("Nothing approved");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Name taken");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.getByTestId("new-baseline")).toBeInTheDocument();
   });
