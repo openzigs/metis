@@ -22,7 +22,6 @@ vi.mock("./api-client", () => ({
 const {
   resumeChatSession,
   CHAT_NOT_FOUND_RESULT,
-  openChatSession,
   storeActiveSessionId,
   loadActiveSessionId,
   transcriptToDisplay,
@@ -179,11 +178,13 @@ describe("resumeChatSession (#1367, #139)", () => {
   it("#1412 — a 404 is told apart from any other failure", async () => {
     const { ApiError } = await import("./api-client");
     apiFetch.mockRejectedValue(new ApiError(404, "Session not found", "AI_SESSION_NOT_FOUND"));
-    expect(await openChatSession("sess_gone")).toBe(CHAT_NOT_FOUND_RESULT);
-    // `resumeChatSession` keeps its contract: null for any failure.
+    expect(await resumeChatSession("sess_gone", { tellNotFound: true })).toBe(
+      CHAT_NOT_FOUND_RESULT,
+    );
+    // Without the option the contract is unchanged: null for any failure.
     expect(await resumeChatSession("sess_gone")).toBeNull();
     apiFetch.mockRejectedValue(new ApiError(500, "boom"));
-    expect(await openChatSession("sess_gone")).toBeNull();
+    expect(await resumeChatSession("sess_gone", { tellNotFound: true })).toBeNull();
   });
 
   it("a session with no turns resumes as an empty transcript", async () => {

@@ -27,7 +27,7 @@ import {
   lastHeldOrdinal,
   mergeTranscriptDelta,
   loadActiveSessionId,
-  openChatSession,
+  resumeChatSession,
   CHAT_NOT_FOUND_RESULT,
   storeActiveSessionId,
   streamChat,
@@ -245,7 +245,11 @@ export default function ChatPage() {
     setReady(false);
     void (async () => {
       try {
-        const restored = await openChatSession(restoreId);
+        // #1412 — only a chat link (`?sessionId=`) is told a 404 apart; the
+        // chat last open here is resumed quietly, as before.
+        const restored = resumeSessionId
+          ? await resumeChatSession(restoreId, { tellNotFound: true })
+          : await resumeChatSession(restoreId);
         if (cancelled) return;
         if (!restored || restored === CHAT_NOT_FOUND_RESULT) {
           // #1412 — a chat named by a link that the server answers 404 for

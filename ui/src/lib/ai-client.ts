@@ -419,18 +419,28 @@ export function mergeTranscriptDelta<T extends { ordinal?: number; compacted?: b
   );
 }
 
-/** Resume a chat; `null` when it cannot be resumed, for whatever reason. */
-export async function resumeChatSession(id: string): Promise<ResumedChat | null> {
+/**
+ * Resume a chat; `null` when it cannot be resumed, for whatever reason.
+ *
+ * #1412 — with `{ tellNotFound: true }` the server's 404 (unknown, deleted,
+ * someone else's, or in a project deleted since) is answered with
+ * {@link CHAT_NOT_FOUND_RESULT} instead, so a chat link can say "Chat not
+ * found" without saying it for a network error or a 5xx.
+ */
+export async function resumeChatSession(id: string): Promise<ResumedChat | null>;
+export async function resumeChatSession(
+  id: string,
+  opts: { tellNotFound: true },
+): Promise<ResumedChat | typeof CHAT_NOT_FOUND_RESULT | null>;
+export async function resumeChatSession(
+  id: string,
+  opts?: { tellNotFound: true },
+): Promise<ResumedChat | typeof CHAT_NOT_FOUND_RESULT | null> {
   const opened = await openChatSession(id);
-  return opened === CHAT_NOT_FOUND_RESULT ? null : opened;
+  return opened === CHAT_NOT_FOUND_RESULT && !opts?.tellNotFound ? null : opened;
 }
 
-/**
- * #1412 — {@link resumeChatSession}, telling the server's 404 apart
- * ({@link CHAT_NOT_FOUND_RESULT}) from any other failure (`null`), so a chat
- * link can say "Chat not found" without saying it for a network error.
- */
-export async function openChatSession(
+async function openChatSession(
   id: string,
 ): Promise<ResumedChat | typeof CHAT_NOT_FOUND_RESULT | null> {
   try {
