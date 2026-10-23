@@ -26,6 +26,8 @@ vi.mock("../src/lib/prisma.js", () => ({
       update: vi.fn(),
       updateMany: vi.fn(),
     },
+    // #1447 — the batched access check for each page.
+    project: { findMany: vi.fn() },
   },
 }));
 
@@ -42,6 +44,7 @@ import { prisma } from "../src/lib/prisma.js";
 
 // Typed handles to the mock functions.
 // `prisma` is vi.mock'ed: these delegates are the in-memory mocks, not the fluent client.
+const mockProject = prisma.project as unknown as { findMany: ReturnType<typeof vi.fn> };
 const mockNotification = prisma.notification as unknown as {
   findMany: ReturnType<typeof vi.fn>;
   count: ReturnType<typeof vi.fn>;
@@ -75,12 +78,14 @@ describe("GET /notifications", () => {
         message: "Comment c-1",
         href: "/comments/c-1",
         payload: null,
+        projectId: "p-1",
         read: false,
         createdAt: new Date().toISOString(),
       },
     ];
     mockNotification.findMany.mockResolvedValue(items);
     mockNotification.count.mockResolvedValue(1);
+    mockProject.findMany.mockResolvedValue([{ id: "p-1" }]);
 
     const res = await request(makeApp()).get("/notifications");
 
@@ -90,6 +95,12 @@ describe("GET /notifications", () => {
     expect(res.body.success).toBe(true);
     expect(res.body.data.notifications).toHaveLength(1);
     expect(res.body.data.notifications[0].id).toBe("n-1");
+    expect(res.body.data.notifications[0]).toMatchObject({
+      title: "You were mentioned",
+      href: "/comments/c-1",
+      redacted: false,
+    });
+    expect(res.body.data.notifications[0]).not.toHaveProperty("projectId");
     expect(res.body.data.unreadCount).toBe(1);
 
     // Must scope query to current user only.
@@ -114,6 +125,70 @@ describe("GET /notifications", () => {
   });
 });
 
+describe("GET /notifications — #1447 access re-check", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const row = (id: string, projectId: string | null) => ({
+    id,
+    userId: "u-alice",
+    type: "review_rejected",
+    title: `title ${id}`,
+    message: `message ${id}`,
+    href: `/reviews/${id}`,
+    payload: "{}",
+    commentId: null,
+    projectId,
+    read: false,
+    createdAt: new Date().toISOString(),
+  });
+
+  it("checks the page's distinct projects in ONE query and redacts what it cannot open", async () => {
+    mockNotification.findMany.mockResolvedValue([
+      row("n-1", "p-open"),
+      row("n-2", "p-open"),
+      row("n-3", "p-gone"),
+      row("n-4", null),
+    ]);
+    mockNotification.count.mockResolvedValue(4);
+    mockProject.findMany.mockResolvedValue([{ id: "p-open" }]);
+
+    const res = await request(makeApp()).get("/notifications");
+
+    expect(res.status).toBe(200);
+    expect(mockProject.findMany).toHaveBeenCalledTimes(1);
+    const where = mockProject.findMany.mock.calls[0][0].where;
+    expect(where.id).toEqual({ in: ["p-open", "p-gone"] });
+    // The canonical non-admin predicate: deleted projects closed (#1430).
+    expect(where.deletedAt).toBeNull();
+
+    const [a, b, c, d] = res.body.data.notifications;
+    expect(a).toMatchObject({ title: "title n-1", redacted: false });
+    expect(b).toMatchObject({ title: "title n-2", redacted: false });
+    for (const hidden of [c, d]) {
+      expect(hidden).toMatchObject({
+        type: "unavailable",
+        title: "Notification unavailable",
+        message: "",
+        href: null,
+        payload: null,
+        commentId: null,
+        redacted: true,
+      });
+    }
+    // Redacted, not hidden: the count still matches the list.
+    expect(res.body.data.unreadCount).toBe(4);
+  });
+
+  it("skips the project query entirely for an empty page", async () => {
+    mockNotification.findMany.mockResolvedValue([]);
+    mockNotification.count.mockResolvedValue(0);
+
+    await request(makeApp()).get("/notifications");
+
+    expect(mockProject.findMany).not.toHaveBeenCalled();
+  });
+});
+
 describe("PATCH /notifications/:id/read", () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -124,6 +199,9 @@ describe("PATCH /notifications/:id/read", () => {
       type: "mention",
       title: "t",
       message: "m",
+      href: null,
+      payload: null,
+      projectId: "p-1",
       read: false,
       createdAt: new Date().toISOString(),
     };
@@ -131,6 +209,7 @@ describe("PATCH /notifications/:id/read", () => {
     mockNotification.findFirst.mockResolvedValue(existing);
     mockNotification.update.mockResolvedValue(updated);
     mockNotification.count.mockResolvedValue(0);
+    mockProject.findMany.mockResolvedValue([{ id: "p-1" }]);
 
     const res = await request(makeApp()).patch("/notifications/n-1/read");
 

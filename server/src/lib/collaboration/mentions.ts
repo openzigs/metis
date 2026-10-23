@@ -271,6 +271,8 @@ export async function fanOutMentions(
                 payload: JSON.stringify(mentionPayload),
                 // #1318 — so an edit or delete of the comment can rewrite the excerpt.
                 commentId,
+                // #1447 — so every read re-checks the reader's access to it.
+                projectId: context.projectId,
               },
               select: { id: true },
             });

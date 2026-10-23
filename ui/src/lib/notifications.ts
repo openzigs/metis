@@ -90,8 +90,26 @@ export class NotificationStore {
       href?: string | null;
       read: boolean;
       createdAt: string;
+      /** #1447 — the reader can no longer open this row's project. */
+      redacted?: boolean;
     }>,
   ): void {
+    // #1447 — a live item the server now redacts (the reader lost access to its
+    // project since it arrived) takes the redacted text, so the drawer never
+    // keeps showing what the history read withholds.
+    let redactedLive = false;
+    for (const s of serverItems) {
+      if (!s.redacted) continue;
+      const live = this.items.find((n) => n.id === s.id);
+      if (!live) continue;
+      live.title = s.title;
+      live.message = s.message;
+      live.href = undefined;
+      live.source = s.type;
+      live.level = "info";
+      redactedLive = true;
+    }
+
     const existingIds = new Set(this.items.map((n) => n.id));
     const newItems: Notification[] = serverItems
       .filter((s) => !existingIds.has(s.id))
@@ -108,7 +126,10 @@ export class NotificationStore {
         read: s.read,
       }));
 
-    if (newItems.length === 0) return;
+    if (newItems.length === 0) {
+      if (redactedLive) this.emit();
+      return;
+    }
 
     // Merge: existing items (real-time) at front, server items appended.
     this.items = [...this.items, ...newItems].slice(0, MAX_NOTIFICATIONS);
