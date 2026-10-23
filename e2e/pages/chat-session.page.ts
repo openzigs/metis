@@ -26,8 +26,11 @@ export class ChatSessionPage {
     });
   }
 
-  /** A message of the conversation, by its text. */
+  /**
+   * A message of the conversation, by its exact text. Exact: the offline stub
+   * model's reply quotes the prompt, so a substring match finds both.
+   */
   message(text: string): Locator {
-    return this.transcript.getByText(text);
+    return this.transcript.getByText(text, { exact: true });
   }
 }
