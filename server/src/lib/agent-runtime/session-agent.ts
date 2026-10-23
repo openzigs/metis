@@ -21,6 +21,7 @@ import {
   customDefinition,
   isCustomAgentUsableInProject,
   libraryDefinition,
+  listUsableCustomAgentRows,
   loadAgentDefinition,
   parseAgentRef,
 } from "./definition.js";
@@ -159,7 +160,8 @@ export interface BindableAgent {
 /**
  * The agents a chat session may bind: every enabled library agent (the library
  * binding rule is unchanged), then — for a project session — the custom agents
- * the project owns or has enabled. ONE list for the one picker.
+ * the project may use: owned and not turned off, or turned on (#1005). ONE
+ * list for the one picker.
  */
 export async function listBindableAgents(
   projectId: string | null,
@@ -174,15 +176,7 @@ export async function listBindableAgents(
     return { ref: d.ref, kind: "library", key: d.key, name: d.name, description: d.description };
   });
   if (!projectId) return out;
-  const enabled = await db.customAgentEnablement.findMany({
-    where: { projectId, enabled: true },
-    select: { customAgentId: true },
-  });
-  const custom = await db.customAgent.findMany({
-    where: { OR: [{ projectId }, { id: { in: enabled.map((e) => e.customAgentId) } }] },
-    orderBy: { name: "asc" },
-  });
-  for (const r of custom) {
+  for (const r of await listUsableCustomAgentRows(projectId, db)) {
     const d = customDefinition(r);
     out.push({ ref: d.ref, kind: "custom", key: d.key, name: d.name, description: d.description });
   }

@@ -62,6 +62,14 @@ export interface RuntimeTool {
    * `forcePrompt` is not already set; a failed read forces the prompt.
    */
   forcePromptNow?: () => Promise<boolean>;
+  /**
+   * #1005 — re-read, per call and BEFORE the approval gate, whether the tool
+   * can still run here (a sub-agent turned off for the project mid-turn).
+   * Returns the model-facing refusal text, or `null` when it can run. Nobody
+   * is asked to approve a call that could not run; a failed read falls
+   * through to the gate (and `execute` re-checks).
+   */
+  unavailableNow?: () => Promise<string | null>;
   /** Validate raw model arguments BEFORE anyone is asked to approve them. */
   validate(args: unknown): { ok: true; args: unknown } | { ok: false };
   execute(args: unknown, ctx: RuntimeToolContext): Promise<RuntimeToolResult>;
@@ -76,6 +84,7 @@ export const TOOL_ERROR_MESSAGES = {
   TOOL_APPROVAL_EXPIRED: "The approval request expired before anyone answered it.",
   TOOL_NOT_ALLOWED: "This tool is not allowed in this session.",
   TOOL_UNKNOWN: "The model asked for a tool that does not exist.",
+  TOOL_UNAVAILABLE: "The tool is no longer available in this project, so it did not run.",
   TOOL_INVALID_ARGS: "The model sent arguments the tool does not accept.",
   TOOL_FAILED: "The tool failed while running.",
   TOOL_CALL_LIMIT: "The model asked for more tool calls than one reply may make.",

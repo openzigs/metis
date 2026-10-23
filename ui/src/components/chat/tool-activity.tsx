@@ -151,7 +151,7 @@ export function TranscriptToolCalls({
                 <span
                   className={`ml-2 ${c.executed && !c.isError ? "text-muted-foreground" : "text-destructive"}`}
                 >
-                  {c.errorCode && c.executed
+                  {c.errorCode && (c.executed || c.errorCode === "TOOL_UNAVAILABLE")
                     ? toolErrorText(c.errorCode as never)
                     : decisionLabel(c.decision, c.executed)}
                 </span>

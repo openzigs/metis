@@ -26,7 +26,7 @@ import { parseStrictMs } from "../../config/env-ms.js";
 import { getMCPRegistry } from "../../mcp/mcp-service.js";
 import { formatToolSchemas } from "../../analysis/agent-loop.js";
 import { getChatCodeTools, type ChatCodeToolDeps } from "../../analysis/tools/index.js";
-import { listCallableAgents } from "../../agent-runtime/definition.js";
+import { isAgentCallable, listCallableAgents } from "../../agent-runtime/definition.js";
 import { loadSessionAgent as loadBoundSessionAgent } from "../../agent-runtime/session-agent.js";
 import { effectivePolicy } from "../../agent-runtime/policy.js";
 import {
@@ -323,10 +323,9 @@ export async function resolveSessionTools(
           budget: new SubAgentBudget(limits.tokenBudget),
           approvalTimeoutMs: approvalTimeoutMs(),
           ...(skillAllowlist ? { allowlist: skillAllowlist } : {}),
-          // Re-checked when a sub-agent is CALLED: it may have been disabled
+          // Re-checked when a sub-agent is CALLED: it may have been turned off
           // for the project since the tool list was built.
-          isCallable: async (ref) =>
-            (input.agents?.callable ?? (await safeCallable(projectId))).some((d) => d.ref === ref),
+          isCallable: callableCheck(projectId, input.agents?.callable),
         };
         const tools = subAgentTools(
           ctx,
@@ -380,6 +379,25 @@ export async function resolveSessionTools(
   };
 }
 
+/**
+ * #1005 — the call-time "may this project still call `ref`?" check handed to
+ * the sub-agent tools. Deliberately NOT {@link safeCallable}: a failed read
+ * REJECTS, so it is reported as a check that could not be made — never as the
+ * agent being turned off. `fixed` is an injected list (tests, playground).
+ */
+export function callableCheck(
+  projectId: string,
+  fixed?: readonly AgentDefinitionDto[],
+): (ref: string) => Promise<boolean> {
+  return async (ref) =>
+    fixed ? fixed.some((d) => d.ref === ref) : isAgentCallable(projectId, ref);
+}
+
+/**
+ * The OFFER: an unreadable list offers no sub-agents (nothing is lost by not
+ * offering). Never use it to answer "may this agent still run?" — there an
+ * empty list would read as "turned off" ({@link isAgentCallable} rejects).
+ */
 async function safeCallable(projectId: string): Promise<AgentDefinitionDto[]> {
   try {
     return await listCallableAgents(projectId);

@@ -332,6 +332,7 @@ export interface AiToolEvent {
     | "TOOL_APPROVAL_EXPIRED"
     | "TOOL_NOT_ALLOWED"
     | "TOOL_UNKNOWN"
+    | "TOOL_UNAVAILABLE"
     | "TOOL_INVALID_ARGS"
     | "TOOL_FAILED"
     | "TOOL_CALL_LIMIT";

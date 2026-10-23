@@ -205,6 +205,22 @@ export async function executeToolCall(
     });
   }
 
+  // #1005 — a tool that can no longer run here (a sub-agent turned off for the
+  // project since the offer was built) is refused before anyone is asked to
+  // approve it: asking would only stall the turn until the approval expires.
+  if (tool.unavailableNow) {
+    let why: string | null = null;
+    try {
+      why = await tool.unavailableNow();
+    } catch (err) {
+      log.warn("Tool availability unreadable; leaving it to the gate", {
+        tool: tool.name,
+        error: (err as Error).message,
+      });
+    }
+    if (why) return refuse("TOOL_UNAVAILABLE", { modelText: why });
+  }
+
   // ── The gate. Nothing below runs unless it allowed THIS call. ──────────
   let forcePrompt = tool.forcePrompt === true;
   if (!forcePrompt && tool.forcePromptNow) {

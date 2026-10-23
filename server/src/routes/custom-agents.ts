@@ -14,7 +14,6 @@ import {
   deleteAgent,
   getAgent,
   importAgent,
-  isAgentEnabledForProject,
   listAgents,
   listEnabledAgentsForProject,
   setAgentEnabledForProject,
@@ -30,6 +29,7 @@ import {
   invokeCustomAgent,
 } from "../lib/custom-agents/invoke.js";
 import { auditInvocation } from "../lib/custom-agents/invocation-audit.js";
+import { isCustomAgentUsableInProject } from "../lib/agent-runtime/definition.js";
 import {
   AgentImportError,
   exportAgent,
@@ -333,7 +333,26 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
     // the agent is owned by this exact project. Otherwise treat as not found
     // (do not leak that the agent exists in another scope — IDOR guard).
     const ownedByProject = agent.projectId === projectId;
-    const enabled = ownedByProject || (await isAgentEnabledForProject(agentId, projectId));
+    const enabled = await isCustomAgentUsableInProject(
+      { kind: "custom", id: agentId, projectId: agent.projectId },
+      projectId,
+    );
+    if (!enabled && ownedByProject) {
+      // #1005 — the project's own agent, turned off for it. Its members can see
+      // it, so say why instead of pretending it does not exist.
+      auditInvocation({
+        actorId: req.user.userId,
+        agentId,
+        projectId,
+        outcome: "denied",
+        error: "agent turned off for project",
+      });
+      throw new AppError(
+        409,
+        "AGENT_DISABLED",
+        `"${agent.name}" is turned off for this project. Turn it on under Custom agents to use it.`,
+      );
+    }
     if (!enabled) {
       // Audit the denied attempt for SOC 2 before masking existence as 404.
       auditInvocation({

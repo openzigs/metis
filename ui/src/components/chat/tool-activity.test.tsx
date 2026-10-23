@@ -105,4 +105,61 @@ describe("TranscriptToolCalls", () => {
     expect(screen.getByText("approved by you")).toBeTruthy();
     expect(screen.getByText("denied")).toBeTruthy();
   });
+
+  // #1005 — the same code covers an agent turned off for the project and one
+  // deleted since it was offered: the wording must be true of both.
+  it("#1005 — a delegation to an agent turned off, or deleted, says it is no longer available, not just 'not run'", () => {
+    render(
+      <TranscriptToolCalls
+        calls={[
+          {
+            id: "c1",
+            name: "agent:custom:turnedoff",
+            isError: true,
+            executed: false,
+            errorCode: "TOOL_UNAVAILABLE",
+            resultPreview: "",
+          },
+          {
+            id: "c2",
+            name: "agent:custom:deleted",
+            isError: true,
+            executed: false,
+            errorCode: "TOOL_UNAVAILABLE",
+            resultPreview: "",
+          },
+        ]}
+      />,
+    );
+    expect(
+      screen.getAllByText("No longer available in this project — it did not run."),
+    ).toHaveLength(2);
+    expect(screen.queryByText("not run")).toBeNull();
+    expect(screen.queryByText(/Turned off/)).toBeNull();
+  });
+});
+
+describe("ToolActivityList — #1005", () => {
+  it.each([
+    ["turned off for the project", "agent:custom:turnedoff"],
+    ["deleted since it was offered", "agent:custom:deleted"],
+  ])("a live delegation to an agent %s reads in plain, accurate words", (_case, name) => {
+    render(
+      <ToolActivityList
+        items={[
+          {
+            callId: "c1",
+            name,
+            risk: "medium",
+            source: "agent",
+            phase: "error",
+            code: "TOOL_UNAVAILABLE",
+          },
+        ]}
+        onDecide={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("No longer available in this project — it did not run.")).toBeTruthy();
+    expect(screen.queryByText(/No answer in time|Turned off/)).toBeNull();
+  });
 });

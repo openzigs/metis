@@ -13,7 +13,7 @@
  * (all import the same `../prisma.js` module), so the genuine `assertProjectAccess`
  * runs unmocked.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 interface ProjectRow {
   id: string;
@@ -178,7 +178,13 @@ const prisma = {
     findMany: vi.fn(async ({ where }: { where: W }) =>
       agents.filter((a) => {
         if (Array.isArray(where.OR))
-          return (where.OR as W[]).some((c) => matchesProjectIdClause(c, a.projectId));
+          return (where.OR as W[]).some(
+            (c) =>
+              matchesProjectIdClause(c, a.projectId) ||
+              // #1005 — `listUsableCustomAgentRows`' `{ id: { in } }` clause.
+              (c.id !== undefined &&
+                ((((c.id as W).in as string[]) ?? []) as string[]).includes(a.id)),
+          );
         return true; // admin `{}`
       }),
     ),
@@ -194,10 +200,33 @@ const prisma = {
     ),
   },
   customAgentEnablement: {
-    findMany: vi.fn(async ({ where }: { where: { projectId: string; enabled: boolean } }) =>
-      enablements
-        .filter((e) => e.projectId === where.projectId && e.enabled === where.enabled)
-        .map((e) => ({ customAgentId: e.customAgentId })),
+    findUnique: vi.fn(
+      async ({
+        where,
+      }: {
+        where: { customAgentId_projectId: { customAgentId: string; projectId: string } };
+      }) =>
+        enablements.find(
+          (e) =>
+            e.customAgentId === where.customAgentId_projectId.customAgentId &&
+            e.projectId === where.customAgentId_projectId.projectId,
+        ) ?? null,
+    ),
+    findMany: vi.fn(
+      async ({
+        where,
+      }: {
+        where: { projectId?: string; enabled: boolean; customAgentId?: { in: string[] } };
+      }) =>
+        enablements
+          .filter(
+            (e) =>
+              (where.projectId === undefined || e.projectId === where.projectId) &&
+              (where.customAgentId === undefined ||
+                where.customAgentId.in.includes(e.customAgentId)) &&
+              e.enabled === where.enabled,
+          )
+          .map((e) => ({ ...e })),
     ),
   },
   projectSkillAllowlist: {
@@ -279,6 +308,54 @@ describe("list handlers — tenant scoping (BOLA)", () => {
     const rows = (res as { result: Array<{ id: string; key: string }> }).result;
     const ids = rows.map((r) => r.id).sort();
     expect(ids).toEqual(["a-builtin", "a-own"]); // a-foreign hidden despite name collision
+  });
+
+  describe("list-agents — #1005: only what run-agent would run", () => {
+    const listed = async (
+      params: Record<string, string>,
+      user = "u-low",
+      scopes: string[] = READ,
+    ) =>
+      (
+        (await call("list-agents", params, user, scopes)) as { result: Array<{ id: string }> }
+      ).result
+        .map((r) => r.id)
+        .sort();
+    const run = async (agentKey: string) =>
+      (await call("run-agent", { projectId: "p-own", agentKey }, "u-low", RUN)) as {
+        result?: unknown;
+        error?: { code: number };
+      };
+    afterEach(() => {
+      enablements.length = 0;
+    });
+
+    it("for a project: owned agents, plus agents turned on for it — never one turned off", async () => {
+      expect(await listed({ projectId: "p-own" })).toEqual(["a-own"]);
+      enablements.push({ customAgentId: "a-builtin", projectId: "p-own", enabled: true });
+      expect(await listed({ projectId: "p-own" })).toEqual(["a-builtin", "a-own"]);
+      enablements.push({ customAgentId: "a-own", projectId: "p-own", enabled: false });
+      expect(await listed({ projectId: "p-own" })).toEqual(["a-builtin"]);
+      // Admin too: the per-project list is the project's, not the caller's.
+      expect(await listed({ projectId: "p-own" }, "u-admin", ALL)).toEqual(["a-builtin"]);
+    });
+
+    it("matches run-agent for the same project, agent by agent", async () => {
+      enablements.push({ customAgentId: "a-own", projectId: "p-own", enabled: false });
+      expect(await listed({ projectId: "p-own" })).not.toContain("a-own");
+      expect((await run("deployer")).error?.code).toBe(ACP_ERR.AGENT_NOT_FOUND);
+      enablements.length = 0;
+      expect(await listed({ projectId: "p-own" })).toContain("a-own");
+      expect((await run("deployer")).result).toBeDefined();
+    });
+
+    it("the catalog (no project) drops an agent turned off for its own project; another project's switch does not", async () => {
+      enablements.push({ customAgentId: "a-own", projectId: "p-other", enabled: false });
+      expect(await listed({})).toEqual(["a-builtin", "a-own"]);
+      enablements.push({ customAgentId: "a-own", projectId: "p-own", enabled: false });
+      expect(await listed({})).toEqual(["a-builtin"]);
+      expect(await listed({}, "u-admin", ALL)).toEqual(["a-builtin", "a-foreign"]);
+    });
   });
 
   it("list-skills: a low-priv user sees the shared library + accessible-project skills, not foreign-project skills", async () => {

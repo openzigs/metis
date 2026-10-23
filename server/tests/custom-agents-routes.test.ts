@@ -344,6 +344,46 @@ describe("POST /custom-agents/:id/invoke (#80/#83)", () => {
     expect(res.status).toBe(200);
   });
 
+  it("#1005 — refuses the project's own agent once turned off, says why, and runs again once turned on", async () => {
+    seedProject("p1", "w1");
+    seedMember("w1", "u1", "admin");
+    const agent = seedAgent({ projectId: "p1", name: "Go SQL reviewer" });
+    await request(createApp())
+      .put(`/custom-agents/${agent.id}/enablement`)
+      .send({ projectId: "p1", enabled: false });
+    const off = await request(createApp())
+      .post(`/custom-agents/${agent.id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(off.status).toBe(409);
+    expect(off.body.error.code).toBe("AGENT_DISABLED");
+    expect(off.body.error.message).toContain('"Go SQL reviewer" is turned off for this project');
+    expect(chatMock).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(auditRows.find((a) => a.action === "custom_agent.invoke_denied")).toBeTruthy();
+
+    await request(createApp())
+      .put(`/custom-agents/${agent.id}/enablement`)
+      .send({ projectId: "p1", enabled: true });
+    const on = await request(createApp())
+      .post(`/custom-agents/${agent.id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(on.status).toBe(200);
+  });
+
+  it("#1005 — a shared agent turned off again is a 404 like any agent not enabled here", async () => {
+    seedProject("p1", "w1");
+    seedMember("w1", "u1", "admin");
+    const agent = seedAgent({ projectId: null, isBuiltIn: false });
+    await request(createApp())
+      .put(`/custom-agents/${agent.id}/enablement`)
+      .send({ projectId: "p1", enabled: false });
+    const res = await request(createApp())
+      .post(`/custom-agents/${agent.id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(res.status).toBe(404);
+    expect(chatMock).not.toHaveBeenCalled();
+  });
+
   it("rejects an empty input with 400 before invoking", async () => {
     seedProject("p1", "w1");
     const agent = seedAgent({ projectId: "p1" });
