@@ -169,6 +169,13 @@ vi.mock("../src/lib/prisma.js", () => ({
         const r = tables.projects.get(where.id);
         return r && !r.deletedAt ? r : null;
       }),
+      // #1438 — the webhook receivers ask which verified triggers' projects are soft-deleted.
+      findMany: vi.fn(async ({ where }: any) =>
+        [...tables.projects.values()].filter(
+          (p) =>
+            where.id.in.includes(p.id) && (where.deletedAt?.not === null ? !!p.deletedAt : true),
+        ),
+      ),
     },
     aISession: {
       findUnique: vi.fn(async ({ where }: any) => tables.aISessions.get(where.id) ?? null),
@@ -788,5 +795,152 @@ describe("triggers routes (#147)", () => {
       delete process.env.WEBHOOK_RECEIVER_LIMIT_MAX;
       __resetWebhookReceiverRateLimiter();
     }
+  });
+});
+/**
+ * #1438 — a trigger of a soft-deleted project never fires. Each receiver is
+ * exercised against a deleted project's trigger and, as the control, a live
+ * project's trigger configured identically.
+ */
+describe("trigger receivers skip a soft-deleted project (#1438)", () => {
+  function seedTrigger(id: string, projectId: string, source: string, config: object): void {
+    tables.triggers.set(id, {
+      id,
+      projectId,
+      name: id,
+      source,
+      config: JSON.stringify(config),
+      enabled: true,
+      lastFiredAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+  }
+  function seedDeletedProject(): void {
+    tables.projects.set("p-del", {
+      id: "p-del",
+      ownerId: "u1",
+      deletedAt: new Date(),
+      contextCompactionThreshold: null,
+    });
+  }
+  function signGeneric(secret: string, body: string) {
+    const ts = String(Math.floor(Date.now() / 1000));
+    const sig =
+      "sha256=" + crypto.createHmac("sha256", secret).update(`${ts}.${body}`).digest("hex");
+    return { ts, sig };
+  }
+  const flushAudit = () => new Promise((r) => setTimeout(r, 0));
+
+  it("generic /:id/fire answers 410 for a deleted project's trigger and fires nothing; a live one fires", async () => {
+    const app = makeApp();
+    seedDeletedProject();
+    seedTrigger("tg-del", "p-del", "webhook", { secret: "shh", kind: "chat" });
+    seedTrigger("tg-live", "p1", "webhook", { secret: "shh", kind: "chat" });
+    const body = JSON.stringify({ payload: { msg: "hi" } });
+    const { ts, sig } = signGeneric("shh", body);
+    const fire = (id: string) =>
+      request(app)
+        .post(`/api/triggers/${id}/fire`)
+        .set("Content-Type", "application/json")
+        .set("x-metis-signature", sig)
+        .set("x-metis-timestamp", ts)
+        .send(body);
+
+    const deleted = await fire("tg-del");
+    expect(deleted.status).toBe(410);
+    expect(JSON.stringify(deleted.body)).toContain("PROJECT_DELETED");
+    expect(submitMock).not.toHaveBeenCalled();
+    expect(tables.triggers.get("tg-del").lastFiredAt).toBeNull();
+    await flushAudit();
+    const { prisma } = await import("../src/lib/prisma.js");
+    expect((prisma as any).auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: "trigger.skipped_project_deleted",
+          targetId: "tg-del",
+        }),
+      }),
+    );
+
+    const live = await fire("tg-live");
+    expect(live.status).toBe(202);
+    expect(submitMock).toHaveBeenCalledTimes(1);
+    expect(submitMock).toHaveBeenCalledWith(expect.objectContaining({ projectId: "p1" }));
+  });
+
+  it("generic /:id/fire judges the signature before the project: a bad signature is 401, not 410", async () => {
+    const app = makeApp();
+    seedDeletedProject();
+    seedTrigger("tg-del", "p-del", "webhook", { secret: "shh", kind: "chat" });
+    const res = await request(app)
+      .post(`/api/triggers/tg-del/fire`)
+      .set("Content-Type", "application/json")
+      .set("x-metis-signature", "sha256=deadbeef")
+      .set("x-metis-timestamp", String(Math.floor(Date.now() / 1000)))
+      .send(JSON.stringify({}));
+    expect(res.status).toBe(401);
+  });
+
+  it("GitHub receiver: 410 when every verified trigger's project is deleted; a live trigger alongside still fires", async () => {
+    const app = makeApp();
+    seedDeletedProject();
+    const secret = "gh-secret";
+    const cfg = { secret, repo: "acme/app", event: "issues", kind: "analysis" };
+    seedTrigger("tg-del", "p-del", "github", cfg);
+    const body = JSON.stringify({
+      repository: { full_name: "acme/app" },
+      action: "opened",
+    });
+    const sig = "sha256=" + crypto.createHmac("sha256", secret).update(body).digest("hex");
+    const send = () =>
+      request(app)
+        .post(`/api/triggers/github`)
+        .set("Content-Type", "application/json")
+        .set("x-github-event", "issues")
+        .set("x-hub-signature-256", sig)
+        .send(body);
+
+    const onlyDeleted = await send();
+    expect(onlyDeleted.status).toBe(410);
+    expect(submitMock).not.toHaveBeenCalled();
+
+    seedTrigger("tg-live", "p1", "github", cfg);
+    const mixed = await send();
+    expect(mixed.status).toBe(200);
+    expect(mixed.body.data.fired).toHaveLength(1);
+    expect(mixed.body.data.skippedDeletedProject).toBe(1);
+    expect(submitMock).toHaveBeenCalledTimes(1);
+    expect(submitMock).toHaveBeenCalledWith(expect.objectContaining({ projectId: "p1" }));
+  });
+
+  it("Slack receiver: 410 when every verified trigger's project is deleted; a live trigger alongside still fires", async () => {
+    const app = makeApp();
+    seedDeletedProject();
+    const secret = "slack-secret";
+    const cfg = { secret, channel: "C123", command: "/run", kind: "analysis" };
+    seedTrigger("tg-del", "p-del", "slack", cfg);
+    const ts = String(Math.floor(Date.now() / 1000));
+    const body = JSON.stringify({ channel_id: "C123", command: "/run" });
+    const sig =
+      "v0=" + crypto.createHmac("sha256", secret).update(`v0:${ts}:${body}`).digest("hex");
+    const send = () =>
+      request(app)
+        .post(`/api/triggers/slack`)
+        .set("Content-Type", "application/json")
+        .set("x-slack-signature", sig)
+        .set("x-slack-request-timestamp", ts)
+        .send(body);
+
+    const onlyDeleted = await send();
+    expect(onlyDeleted.status).toBe(410);
+    expect(submitMock).not.toHaveBeenCalled();
+
+    seedTrigger("tg-live", "p1", "slack", cfg);
+    const mixed = await send();
+    expect(mixed.status).toBe(200);
+    expect(mixed.body.data.fired).toHaveLength(1);
+    expect(mixed.body.data.skippedDeletedProject).toBe(1);
+    expect(submitMock).toHaveBeenCalledWith(expect.objectContaining({ projectId: "p1" }));
   });
 });

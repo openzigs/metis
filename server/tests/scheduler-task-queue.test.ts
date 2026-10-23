@@ -1184,3 +1184,74 @@ describe("TaskQueue abort provenance (#201)", () => {
     expect(taskAbortSource(controller.signal)).toBeUndefined();
   });
 });
+/** #1438 — the queue's deleted-project gate (the production wiring is proven in the SQLite suite). */
+describe("TaskQueue deleted-project gate (#1438)", () => {
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+  }
+
+  it("cancels a deleted project's task, settles it through onCancelledBeforeRun, and runs a live one", async () => {
+    const { store, rows } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    const handler = vi.fn(async () => ({ ran: true }));
+    const onCancelledBeforeRun = vi.fn(async () => {});
+    registry.register({
+      type: "gated",
+      description: "",
+      handler,
+      onCancelledBeforeRun,
+    });
+    const isProjectDeleted = vi.fn(async (id: string) => id === "p-del");
+    const queue = new TaskQueue(store, registry, makeEmitter().emitter, baseConfig, {
+      isProjectDeleted,
+    });
+
+    const del = await queue.enqueue({ type: "gated", projectId: "p-del" });
+    await settle();
+    expect(rows.get(del.id)).toMatchObject({
+      status: "cancelled",
+      errorMessage: "project deleted",
+    });
+    expect(handler).not.toHaveBeenCalled();
+    expect(onCancelledBeforeRun).toHaveBeenCalledWith(
+      expect.objectContaining({ id: del.id }),
+      "project deleted",
+    );
+
+    const live = await queue.enqueue({ type: "gated", projectId: "p-live" });
+    await settle();
+    expect(rows.get(live.id)?.status).toBe("completed");
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    // A system task (no project) is never asked about.
+    await queue.enqueue({ type: "gated" });
+    await settle();
+    expect(isProjectDeleted).not.toHaveBeenCalledWith(null);
+    expect(isProjectDeleted).toHaveBeenCalledTimes(2);
+    await queue.shutdown();
+  });
+
+  it("a gate error never runs the handler: the task takes the retry path", async () => {
+    const { store, rows } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    const handler = vi.fn(async () => ({}));
+    registry.register({ type: "gated", description: "", handler });
+    const queue = new TaskQueue(store, registry, makeEmitter().emitter, baseConfig, {
+      isProjectDeleted: async () => {
+        throw new Error("db down");
+      },
+    });
+    const task = await queue.enqueue({
+      type: "gated",
+      projectId: "p1",
+      maxAttempts: 1,
+    });
+    await settle();
+    expect(handler).not.toHaveBeenCalled();
+    expect(rows.get(task.id)).toMatchObject({
+      status: "failed",
+      errorMessage: "db down",
+    });
+    await queue.shutdown();
+  });
+});

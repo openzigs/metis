@@ -31,6 +31,7 @@ import { getPrReviewWorker } from "../lib/agents/pr-reviewer/worker-singleton.js
 import { executePrReviewJob } from "../lib/agents/pr-reviewer/pr-review-job.js";
 import { createChildLogger } from "../lib/logger.js";
 import { recordJobScope } from "../lib/socket/job-scope-store.js";
+import { logDeletedProjectSkip } from "../lib/projects/deleted-project-guard.js";
 
 const log = createChildLogger("webhooks-github");
 
@@ -367,8 +368,25 @@ export async function findProjectForRepo(repoFullName: string): Promise<{
     include: { project: true },
     orderBy: { isPrimary: "desc" }, // primary connections first
   });
-  const conn = conns[0];
-  if (!conn?.project) return null;
+  // #1438 — a soft-deleted project is never reviewed for. Filtered here rather
+  // than in the query so the skip can be logged, and so a live project sharing
+  // the repo still wins over a deleted primary. The queued worker re-resolves
+  // through this function, so a review queued before the delete is dropped too.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const conn = conns.find((c: any) => c.project && !c.project.deletedAt);
+  if (!conn) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const deleted = conns.find((c: any) => c.project?.deletedAt);
+    if (deleted) {
+      logDeletedProjectSkip({
+        path: "pr-review",
+        projectId: deleted.project.id,
+        sourceType: "repo",
+        sourceId: repoFullName,
+      });
+    }
+    return null;
+  }
   return {
     id: conn.project.id,
     autoReviewPrs: !!conn.project.autoReviewPrs,

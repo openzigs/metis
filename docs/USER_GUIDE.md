@@ -1183,6 +1183,17 @@ that never existed. So nothing more is published, queried, ingested or spent
 on a model on its behalf by its members. Nothing is erased: the project is
 soft-deleted, and an administrator still reaches what hangs off it.
 
+**Nothing runs in the background for a deleted project either (#1438).** Its
+webhook triggers no longer fire: a signed delivery is answered **410 Gone**
+(`PROJECT_DELETED`), so the sending system's delivery log shows why. Its
+scheduled jobs are skipped at each tick (the Scheduler page reports the tick as
+skipped, "project deleted"), and work already queued for it before the delete —
+background runs, scheduled or manual tasks, imports, document regenerations and
+PR auto-reviews — is cancelled instead of run. A merged pull request no longer
+marks its requirements implemented. Its triggers and schedules are left exactly
+as they were, switched on or off, so nothing needs re-enabling if the project
+is ever restored.
+
 ### 9.7 Project Overview (AST-Derived)
 
 After METIS ingests a repository for **Code Discovery**, you can view a deterministic, AI-free summary of the codebase computed straight from the AST CodeGraph.

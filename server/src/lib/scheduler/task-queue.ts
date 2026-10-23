@@ -24,6 +24,7 @@
 import { createChildLogger } from "../logger.js";
 import { isDurableTask } from "./durable-task-types.js";
 import { TaskAbortError } from "./task-abort.js";
+import { logDeletedProjectSkip } from "../projects/deleted-project-guard.js";
 import {
   isRetryWindowBounded,
   isWithinRetryWindow,
@@ -68,6 +69,18 @@ export interface TaskStore {
   updateProgress(taskId: string, progress: number): Promise<void>;
 }
 
+/**
+ * #1438 — checks the queue runs before a handler, injected so the queue still
+ * imports no Prisma. `bootstrapScheduler` wires the production one.
+ */
+export interface TaskQueueGates {
+  /**
+   * Whether the task's project is soft-deleted. A task of a deleted project is
+   * cancelled instead of run, including one queued before the delete.
+   */
+  isProjectDeleted?: (projectId: string) => Promise<boolean>;
+}
+
 interface RunningEntry {
   task: TaskRecord;
   controller: AbortController;
@@ -94,6 +107,7 @@ export class TaskQueue {
     private readonly registry: TaskHandlerRegistry,
     private readonly emitter: SchedulerEmitter,
     private readonly config: SchedulerConfig,
+    private readonly gates: TaskQueueGates = {},
   ) {}
 
   /** Enqueue a new task. Persists immediately and dispatches if a slot is free. */
@@ -371,6 +385,23 @@ export class TaskQueue {
     this.emitStatus(running);
 
     try {
+      // #1438 — judged at run time, not enqueue time, so a task queued (or
+      // retrying) before its project was deleted is caught too. A gate error
+      // takes the ordinary retry path below rather than running the handler.
+      if (running.projectId && (await this.gates.isProjectDeleted?.(running.projectId))) {
+        clearTimeout(timeoutHandle);
+        logDeletedProjectSkip({
+          path: "scheduler.task",
+          projectId: running.projectId,
+          sourceType: running.type,
+          sourceId: running.id,
+        });
+        const cancelled = await this.store.markCancelled(running.id, "project deleted", new Date());
+        this.emitStatus(cancelled);
+        // The handler never ran: let it settle state it owns, as for a user cancel.
+        await this.settleCancelledBeforeRun(running, "project deleted");
+        return;
+      }
       const result = (await reg.handler(ctx)) ?? null;
       clearTimeout(timeoutHandle);
       if (controller.signal.aborted) {

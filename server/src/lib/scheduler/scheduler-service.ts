@@ -38,6 +38,7 @@ import { audit } from "../audit/audit-service.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { readTaskRecord } from "./task-store.js";
+import { isProjectSoftDeleted, logDeletedProjectSkip } from "../projects/deleted-project-guard.js";
 import { DURABLE_TASK_TYPES } from "./durable-task-types.js";
 import type { ScheduledJob as PrismaScheduledJob } from "@prisma/client";
 import type { TaskQueue } from "./task-queue.js";
@@ -585,6 +586,26 @@ export class SchedulerService {
     const job = await prisma.scheduledJob.findUnique({ where: { id: jobId } });
     if (!job || job.deletedAt || !job.enabled) {
       this.unregisterCron(jobId);
+      return;
+    }
+    // #1438 — a job of a soft-deleted project does not fire. The cron stays
+    // registered and the job row untouched, so a restored project's schedule
+    // resumes as it was; no fire slot is claimed, so nothing is enqueued.
+    if (job.projectId && (await isProjectSoftDeleted(job.projectId))) {
+      logDeletedProjectSkip({
+        path: "scheduler.fire",
+        projectId: job.projectId,
+        sourceType: "scheduled-job",
+        sourceId: job.id,
+      });
+      this.deps.emitter.schedulerStatus({
+        jobId: job.id,
+        key: job.key,
+        status: "skipped",
+        enabled: job.enabled,
+        message: "project deleted",
+        ts: Date.now(),
+      });
       return;
     }
     // Truncate to the second so two ticks arriving microseconds apart for the
