@@ -110,6 +110,8 @@ function harness(
     user?: ResolvedMetisUser | null;
     access?: { ok: boolean; projectId?: string; reason?: "not_found" | "forbidden" };
     aiResponseMode?: string | null;
+    /** #1437 — is the linked thread in the bot's workspace? (default: yes) */
+    inWorkspace?: boolean;
     /** Override the tenant allowlist env string (default: allow-all). */
     allowedTenants?: string;
     /** Override the inbound rate-limit decision (default: always allowed). */
@@ -128,11 +130,16 @@ function harness(
   const createMessage = vi.fn().mockResolvedValue({ id: "msg-7" });
   const respondAsAI = vi.fn().mockResolvedValue({ outcome: "responded", messageId: "ai-1" });
   // Thread lookup for the AI step's aiResponseMode (default on_mention).
-  const findThread = vi
-    .fn()
-    .mockResolvedValue(
-      over.aiResponseMode === null ? null : { aiResponseMode: over.aiResponseMode ?? "on_mention" },
-    );
+  // The #1437 workspace-scope lookup (it filters on `project`) answers apart.
+  const findThread = vi.fn(async (args?: { where?: { project?: unknown } }) =>
+    args?.where?.project
+      ? over.inWorkspace === false
+        ? null
+        : { id: THREAD }
+      : over.aiResponseMode === null
+        ? null
+        : { aiResponseMode: over.aiResponseMode ?? "on_mention" },
+  );
   const db = {
     discussionThread: { findFirst: findThread },
   } as unknown as InboundSyncOptions["db"];
@@ -410,6 +417,20 @@ describe("ingestTeamsActivity", () => {
     const { context } = fakeContext({ text: "@AI summarize" });
     await ingestTeamsActivity(context, h.opts);
     expect(h.respondAsAI).not.toHaveBeenCalled();
+  });
+
+  it("refuses a linked thread outside the bot's workspace like a missing one (#1437)", async () => {
+    const h = harness({ inWorkspace: false });
+    const { context } = fakeContext({ text: "hello" });
+    const res = await ingestTeamsActivity(context, h.opts);
+    expect(res.outcome).toBe("thread-not-found");
+    expect(h.findThread).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: THREAD, deletedAt: null, project: { workspaceId: WS } },
+      }),
+    );
+    expect(h.authorize).not.toHaveBeenCalled();
+    expect(h.createMessage).not.toHaveBeenCalled();
   });
 
   it("skips the AI participant when the thread row is gone at read time", async () => {

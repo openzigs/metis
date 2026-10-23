@@ -48,8 +48,13 @@ const HEALTH: ProjectHealthSummary = {
 function fakeDb(opts: {
   role?: string | null;
   draft?: { id: string; projectId: string; title: string } | null;
+  /** #1437 — is the project in the install's workspace? (default: yes) */
+  inWorkspace?: boolean;
 }) {
   return {
+    project: {
+      findFirst: vi.fn(async () => (opts.inWorkspace === false ? null : { id: "proj-1" })),
+    },
     userRole: {
       findFirst: vi.fn(async () =>
         opts.role === undefined
@@ -118,6 +123,48 @@ describe("/metis status (#579)", () => {
     expect(reply.responseType).toBe("ephemeral");
     expect(JSON.stringify(reply.blocks)).toContain("Acme Project");
     expect(summarize).toHaveBeenCalledWith("proj-1", expect.anything());
+  });
+
+  it("refuses a project outside the install's workspace before authorizing (#1437)", async () => {
+    const db = fakeDb({ role: "admin", inWorkspace: false });
+    const reply = await handleSlackStatusCommand(
+      ACTOR,
+      { projectRef: "proj-9" },
+      {
+        resolver: resolver(true),
+        db,
+        authorizeProject: authorizeProject as never,
+        summarize: summarize as never,
+      },
+    );
+    expect(reply.outcome).toBe("forbidden");
+    expect(JSON.stringify(reply.blocks)).toContain("No access");
+    const scope = (db as unknown as { project: { findFirst: ReturnType<typeof vi.fn> } }).project
+      .findFirst;
+    expect(scope).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "proj-9", workspaceId: ACTOR.workspaceId } }),
+    );
+    expect(authorizeProject).not.toHaveBeenCalled();
+    expect(summarize).not.toHaveBeenCalled();
+  });
+
+  it("looks drafts up only within the install's workspace (#1437)", async () => {
+    const db = fakeDb({ draft: { id: "draft-1", projectId: "proj-1", title: "x" } });
+    await handleSlackApproveCommand(
+      ACTOR,
+      { draftRef: "draft-1" },
+      { resolver: resolver(true), db, authorizeProject: authorizeProject as never },
+    );
+    const find = (db as unknown as { issueDraft: { findFirst: ReturnType<typeof vi.fn> } })
+      .issueDraft.findFirst;
+    expect(find).toHaveBeenCalledTimes(2);
+    for (const [arg] of find.mock.calls) {
+      expect(arg.where).toEqual({
+        id: "draft-1",
+        deletedAt: null,
+        project: { workspaceId: ACTOR.workspaceId },
+      });
+    }
   });
 
   it("refuses an unmapped Slack user", async () => {
