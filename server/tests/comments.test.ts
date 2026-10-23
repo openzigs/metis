@@ -45,9 +45,14 @@ vi.mock("../src/middleware/auth.js", () => ({
 vi.mock("../src/middleware/require-permission.js", () => ({
   requirePermission: () => (_req: unknown, _res: unknown, next: () => void) => next(),
 }));
+const refreshCommentMentionExcerpts = vi.fn().mockResolvedValue(undefined);
+const retractCommentMentionExcerpts = vi.fn().mockResolvedValue(undefined);
 vi.mock("../src/lib/collaboration/mentions.js", () => ({
   fanOutMentions: vi.fn().mockResolvedValue(undefined),
   dispatchMentions: vi.fn(),
+  // #1318 — edit/delete rewrite the excerpt their mention notifications quote.
+  refreshCommentMentionExcerpts: (...a: unknown[]) => refreshCommentMentionExcerpts(...a),
+  retractCommentMentionExcerpts: (...a: unknown[]) => retractCommentMentionExcerpts(...a),
 }));
 
 const { requirementCommentsRouter, commentsRouter, specKitArtifactCommentsRouter } =
@@ -283,6 +288,8 @@ describe("comments router", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.data.body).toBe("Updated body");
+      // #1318 — the comment's mention notifications quote the new text.
+      expect(refreshCommentMentionExcerpts).toHaveBeenCalledWith("c-1", "Updated body");
     });
 
     it("returns 403 when editing another user's comment", async () => {
@@ -338,6 +345,8 @@ describe("comments router", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.data.deleted).toBe(true);
+      // #1318 — the comment's mention notifications stop quoting it.
+      expect(retractCommentMentionExcerpts).toHaveBeenCalledWith("c-1");
     });
 
     it("returns 403 when deleting another user's comment", async () => {

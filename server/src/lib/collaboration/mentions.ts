@@ -10,7 +10,7 @@
  * Fan-out is fire-and-forget (non-blocking). Failures are logged but never
  * propagate to the caller.
  */
-import { userRoom } from "@metis/shared";
+import { userRoom, type CommentMentionEvent } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getSocketServer } from "../socket/registry.js";
@@ -71,11 +71,45 @@ export interface CommentMentionContext {
   projectId: string;
   /** In-app link to the requirement or artifact that holds the comment (#735). */
   href: string;
-  /** e.g. `Alice mentioned you on "Feeds refresh on schedule"`. */
-  message: string;
+  /** Who and where, e.g. `Alice mentioned you on "Feeds refresh on schedule"` (#1318). */
+  title: string;
 }
 
 const MAX_TITLE_IN_MESSAGE = 120;
+const MAX_EXCERPT = 140;
+
+/** Message of a mention notification whose comment was deleted (#1318). */
+export const DELETED_COMMENT_MESSAGE = "The comment was deleted.";
+/** Message of a mention notification whose comment was edited and cannot be re-quoted (#1318). */
+export const EDITED_COMMENT_MESSAGE = "The comment was edited.";
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/**
+ * `text` cut to at most `max` user-perceived characters, ending in `…` when
+ * cut. Counted in graphemes, never UTF-16 units, so the cut cannot split a
+ * surrogate pair or an emoji sequence (#1318).
+ */
+function truncateGraphemes(text: string, max: number): string {
+  const parts = Array.from(graphemes.segment(text), (s) => s.segment);
+  if (parts.length <= max) return text;
+  return `${parts
+    .slice(0, max - 1)
+    .join("")
+    .trimEnd()}…`;
+}
+
+/**
+ * #1318 — a short quoted excerpt of a comment for its mention notification:
+ * whitespace collapsed, cut at {@link MAX_EXCERPT} characters. Only ever sent
+ * to a user who may open the comment's project, so it shows nothing they could
+ * not read on the thread itself.
+ */
+export function commentExcerpt(body: string): string {
+  const flat = body.replace(/\s+/g, " ").trim();
+  if (!flat) return "";
+  return `“${truncateGraphemes(flat, MAX_EXCERPT)}”`;
+}
 
 /**
  * Resolve the project, link and notification text for a comment. #735 — the
@@ -104,10 +138,7 @@ export async function resolveCommentMentionContext(
   const enc = encodeURIComponent;
   const requirement = row.thread.requirement;
   if (requirement) {
-    const title =
-      requirement.title.length > MAX_TITLE_IN_MESSAGE
-        ? `${requirement.title.slice(0, MAX_TITLE_IN_MESSAGE - 1)}…`
-        : requirement.title;
+    const title = truncateGraphemes(requirement.title, MAX_TITLE_IN_MESSAGE);
     return {
       projectId: requirement.projectId,
       href:
@@ -115,7 +146,7 @@ export async function resolveCommentMentionContext(
         `?analysisId=${enc(requirement.analysisId)}&requirementId=${enc(requirement.id)}` +
         // Opens the requirement's comment panel, not just its card (#735).
         `&comments=1`,
-      message: `${who} mentioned you on "${title}"`,
+      title: `${who} mentioned you on "${title}"`,
     };
   }
   const { specKitProjectId, specKitArtifactName } = row.thread;
@@ -126,7 +157,7 @@ export async function resolveCommentMentionContext(
       href:
         `/projects/${enc(specKitProjectId)}/spec-kit` +
         (specKitArtifactName ? `?artifact=${enc(specKitArtifactName)}` : ""),
-      message: `${who} mentioned you on ${artifact}`,
+      title: `${who} mentioned you on ${artifact}`,
     };
   }
   return null;
@@ -212,37 +243,52 @@ export async function fanOutMentions(
           if (!(await shouldNotify(u.id, "inApp", "mention"))) return;
 
           const mentionPayload = {
+            kind: "mention" as const,
             commentId,
             mentionedUserId: u.id,
             ts: Date.now(),
           };
-
-          // Emit in-app notification via Socket.IO to the user's personal
-          // room (user:{userId}). The room is auto-joined on connect from the
-          // verified JWT only (OWASP A01 — no client-supplied room id).
-          if (io) {
-            io.to(userRoom(u.id)).emit("comment:mention", mentionPayload);
-          }
+          // #1318 — the text and link the drawer shows, identical live and
+          // saved: who mentioned you and where, an excerpt, and the thread.
+          const shown = {
+            title: context.title,
+            message: commentExcerpt(body) || context.title,
+            href: context.href,
+          };
+          // #104/#1318 — the persisted row's id, so the drawer's live item and
+          // its hydrated copy are one item. Null when persisting failed.
+          let notificationId: string | null = null;
 
           // Issue #416 — persist the notification so the drawer hydrates
-          // across reloads/reconnects. Best-effort: never break the emit.
+          // across reloads/reconnects. Persisted first so the event can carry
+          // its id. Best-effort: never break the emit.
           try {
-            await prisma.notification.create({
+            const row = await prisma.notification.create({
               data: {
                 userId: u.id,
                 type: "mention",
-                title: "You were mentioned in a comment",
-                message: context.message,
-                href: context.href,
+                ...shown,
                 payload: JSON.stringify(mentionPayload),
+                // #1318 — so an edit or delete of the comment can rewrite the excerpt.
+                commentId,
               },
+              select: { id: true },
             });
+            notificationId = row?.id ?? null;
           } catch (persistErr) {
             log.warn("Failed to persist mention notification", {
               commentId,
               userId: u.id,
               err: persistErr,
             });
+          }
+
+          // Emit in-app notification via Socket.IO to the user's personal
+          // room (user:{userId}). The room is auto-joined on connect from the
+          // verified JWT only (OWASP A01 — no client-supplied room id).
+          if (io) {
+            const event: CommentMentionEvent = { ...mentionPayload, ...shown, notificationId };
+            io.to(userRoom(u.id)).emit("comment:mention", event);
           }
 
           // Mark as notified.
@@ -280,5 +326,69 @@ export function dispatchMentions(commentId: string, body: string, authorId: stri
     });
   } catch (err) {
     log.error("dispatchMentions: synchronous fan-out failure", { commentId, err });
+  }
+}
+
+/**
+ * #1318 — a deleted comment's mention notifications stop quoting it. The
+ * message becomes {@link DELETED_COMMENT_MESSAGE}; the title (who, and where)
+ * and the link stay, so the recipient still knows they were mentioned. Never
+ * throws: the comment is already deleted, and a failure is logged.
+ */
+export async function retractCommentMentionExcerpts(commentId: string): Promise<void> {
+  try {
+    await prisma.notification.updateMany({
+      where: { commentId, type: "mention" },
+      data: { message: DELETED_COMMENT_MESSAGE },
+    });
+  } catch (err) {
+    log.error("Failed to retract a deleted comment's mention excerpts", { commentId, err });
+  }
+}
+
+/**
+ * #1318 — an edited comment's mention notifications quote the new text. Access
+ * is re-checked per recipient: one who can no longer open the comment's
+ * project gets {@link EDITED_COMMENT_MESSAGE} instead of the new text, and so
+ * does everyone if the comment's location cannot be resolved. Never throws.
+ */
+export async function refreshCommentMentionExcerpts(
+  commentId: string,
+  body: string,
+): Promise<void> {
+  try {
+    const rows = await prisma.notification.findMany({
+      where: { commentId, type: "mention" },
+      select: { id: true, userId: true },
+    });
+    if (rows.length === 0) return;
+    const excerpt = commentExcerpt(body);
+    const context = excerpt ? await resolveCommentMentionContext(commentId) : null;
+    const userIds = [...new Set(rows.map((r) => r.userId))];
+    const allowed = new Set<string>();
+    if (context) {
+      const verdicts = await Promise.all(
+        userIds.map((id) => canOpenProject(id, context.projectId)),
+      );
+      userIds.forEach((id, i) => {
+        if (verdicts[i]) allowed.add(id);
+      });
+    }
+    const requote = rows.filter((r) => allowed.has(r.userId)).map((r) => r.id);
+    const neutral = rows.filter((r) => !allowed.has(r.userId)).map((r) => r.id);
+    if (requote.length > 0) {
+      await prisma.notification.updateMany({
+        where: { id: { in: requote } },
+        data: { message: excerpt },
+      });
+    }
+    if (neutral.length > 0) {
+      await prisma.notification.updateMany({
+        where: { id: { in: neutral } },
+        data: { message: EDITED_COMMENT_MESSAGE },
+      });
+    }
+  } catch (err) {
+    log.error("Failed to refresh an edited comment's mention excerpts", { commentId, err });
   }
 }
