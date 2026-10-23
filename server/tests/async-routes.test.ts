@@ -914,6 +914,30 @@ describe("trigger receivers skip a soft-deleted project (#1438)", () => {
     expect(submitMock).toHaveBeenCalledWith(expect.objectContaining({ projectId: "p1" }));
   });
 
+  it("an admin's run or run group for a deleted project is refused 410 at submit, not accepted and dropped", async () => {
+    const app = makeApp();
+    seedDeletedProject();
+    const run = await request(app)
+      .post("/api/runs/background")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ projectId: "p-del", kind: "chat", payload: {} });
+    expect(run.status).toBe(410);
+    expect(JSON.stringify(run.body)).toContain("PROJECT_DELETED");
+    const group = await request(app)
+      .post("/api/runs/group")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ projectId: "p-del", kind: "chat", n: 2, payload: {} });
+    expect(group.status).toBe(410);
+    expect(submitMock).not.toHaveBeenCalled();
+
+    // Control: the same admin submit for a live project is accepted.
+    const live = await request(app)
+      .post("/api/runs/background")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ projectId: "p1", kind: "chat", payload: {} });
+    expect(live.status).toBe(202);
+  });
+
   it("Slack receiver: 410 when every verified trigger's project is deleted; a live trigger alongside still fires", async () => {
     const app = makeApp();
     seedDeletedProject();

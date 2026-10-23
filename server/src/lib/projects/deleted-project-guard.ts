@@ -20,6 +20,7 @@
  */
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
+import { AppError } from "../../middleware/error-handler.js";
 
 const log = createChildLogger("deleted-project-guard");
 
@@ -44,6 +45,20 @@ export async function softDeletedProjectIds(
 export async function isProjectSoftDeleted(projectId: string | null | undefined): Promise<boolean> {
   if (!projectId) return false;
   return (await softDeletedProjectIds([projectId])).has(projectId);
+}
+
+/**
+ * #1438 — refuse, at submit time, work an administrator asks to start for a
+ * soft-deleted project (#1430 keeps the project open to admins, so the access
+ * check alone admits it). Without this the request would be accepted (202) and
+ * then cancelled by the firing-time guard, which reads as success.
+ */
+export async function assertProjectNotSoftDeleted(
+  projectId: string | null | undefined,
+): Promise<void> {
+  if (await isProjectSoftDeleted(projectId)) {
+    throw new AppError(410, "PROJECT_DELETED", "The project has been deleted");
+  }
 }
 
 /** The background paths that consult this guard — the `path` field of every skip log line. */

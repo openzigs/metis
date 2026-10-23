@@ -20,6 +20,7 @@ import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
 import { getAsyncRunner } from "../lib/async/runner.js";
 import { submitGroup } from "../lib/async/best-of-n.js";
+import { assertProjectNotSoftDeleted } from "../lib/projects/deleted-project-guard.js";
 import {
   authorizeBackgroundRun,
   authorizeRunGroup,
@@ -89,6 +90,8 @@ export function backgroundRunsRouter(): Router {
       if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
       actorId(req); // auth gate
       await authorizeRunProject(req.user, parsed.data.projectId);
+      // #1438 — an admin still reaches a deleted project, but no run starts for it.
+      await assertProjectNotSoftDeleted(parsed.data.projectId);
       const runner = getAsyncRunner();
       const out = await runner.submit({
         projectId: parsed.data.projectId,
@@ -201,6 +204,7 @@ export function backgroundRunsRouter(): Router {
       if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
       actorId(req);
       await authorizeRunProject(req.user, parsed.data.projectId);
+      await assertProjectNotSoftDeleted(parsed.data.projectId); // #1438
       const out = await submitGroup({
         projectId: parsed.data.projectId,
         kind: parsed.data.kind,

@@ -1192,7 +1192,9 @@ background runs, scheduled or manual tasks, imports, document regenerations and
 PR auto-reviews — is cancelled instead of run. A merged pull request no longer
 marks its requirements implemented. Its triggers and schedules are left exactly
 as they were, switched on or off, so nothing needs re-enabling if the project
-is ever restored.
+is ever restored. An administrator who starts a background run or runs a
+scheduled job now for a deleted project is told the project has been deleted
+instead of the work being queued.
 
 ### 9.7 Project Overview (AST-Derived)
 

@@ -283,6 +283,30 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ projectId: LIVE }));
         await svc.stop();
       });
+
+      it("refuses an admin's run-now of a deleted project's job with 410; a live job runs", async () => {
+        const enqueue = vi.fn(async () => ({ id: "t1" }));
+        const svc = new SchedulerService({
+          queue: { enqueue } as any,
+          registry: { get: () => undefined, list: () => [] } as any,
+          emitter: { schedulerStatus() {}, taskStatus() {}, taskProgress() {} },
+          config: loadSchedulerConfig({}),
+        });
+        const admin = { id: "u1", role: "admin" as const };
+        const delJob = await db.scheduledJob.create({
+          data: { key: "del-now", name: "del-now", cron: "* * * * *", projectId: DELETED },
+        });
+        const liveJob = await db.scheduledJob.create({
+          data: { key: "live-now", name: "live-now", cron: "* * * * *", projectId: LIVE },
+        });
+        await expect(svc.runNow(delJob.id, admin)).rejects.toMatchObject({
+          status: 410,
+          code: "PROJECT_DELETED",
+        });
+        expect(enqueue).not.toHaveBeenCalled();
+        await svc.runNow(liveJob.id, admin);
+        expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ projectId: LIVE }));
+      });
     });
 
     describe("scheduler tasks (the production TaskQueue from bootstrapScheduler)", () => {

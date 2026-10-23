@@ -451,6 +451,10 @@ export class SchedulerService {
         throw new SchedulerError(404, "JOB_NOT_FOUND", `scheduled job ${id} not found`);
       }
     }
+    // #1438 — an admin still reaches a deleted project's job, but it does not run.
+    if (job.projectId && (await isProjectSoftDeleted(job.projectId))) {
+      throw new SchedulerError(410, "PROJECT_DELETED", "The job's project has been deleted");
+    }
     audit({
       action: "scheduled-job.run-now",
       actor: actorObj?.id ?? null,
