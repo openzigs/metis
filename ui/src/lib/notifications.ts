@@ -29,6 +29,8 @@ export interface Notification {
   /** Optional source label, e.g. `mention`, `sla_deadline`. */
   source?: string;
   read: boolean;
+  /** #1447 — the server withheld it: the reader can no longer open its project. */
+  redacted?: boolean;
 }
 
 /** A notification before the store stamps it; `id` only when the server persisted it. */
@@ -90,8 +92,29 @@ export class NotificationStore {
       href?: string | null;
       read: boolean;
       createdAt: string;
+      /** #1447 — the reader can no longer open this row's project. */
+      redacted?: boolean;
     }>,
   ): void {
+    // #1447 — the server's access check wins over an item already held, in both
+    // directions: a held item the server now redacts (the reader lost access
+    // since it arrived) takes the redacted text, and a held REDACTED item the
+    // server now returns in full (access restored) takes the full text back.
+    // Otherwise a held item still wins over its saved copy (#104).
+    let changedHeld = false;
+    for (const s of serverItems) {
+      const held = this.items.find((n) => n.id === s.id);
+      if (!held || (!s.redacted && !held.redacted)) continue;
+      held.title = s.title;
+      held.message = s.message;
+      held.href = s.redacted ? undefined : safeInAppHref(s.href);
+      held.source = s.type;
+      held.level = !s.redacted && WARN_TYPES.has(s.type) ? "warn" : "info";
+      if (s.redacted) held.redacted = true;
+      else delete held.redacted;
+      changedHeld = true;
+    }
+
     const existingIds = new Set(this.items.map((n) => n.id));
     const newItems: Notification[] = serverItems
       .filter((s) => !existingIds.has(s.id))
@@ -106,9 +129,13 @@ export class NotificationStore {
         href: safeInAppHref(s.href),
         source: s.type,
         read: s.read,
+        ...(s.redacted ? { redacted: true } : {}),
       }));
 
-    if (newItems.length === 0) return;
+    if (newItems.length === 0) {
+      if (changedHeld) this.emit();
+      return;
+    }
 
     // Merge: existing items (real-time) at front, server items appended.
     this.items = [...this.items, ...newItems].slice(0, MAX_NOTIFICATIONS);

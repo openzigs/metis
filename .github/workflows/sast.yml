@@ -208,6 +208,28 @@ jobs:
                             "patched 3.x; botbuilder breaks on zod 4; not reachable "
                             "pre-auth (#1453).",
               },
+              # body-parser GHSA-27r3-jxmh-p828 (HIGH, CVSS 7.5), `>=2.0.0 <2.4.0`:
+              # DoS via trailing bytes after a COMPRESSED request body. 2.4.0 was
+              # published 2026-10-22T11:39Z and minimumReleaseAge holds it until
+              # 2026-10-29T11:39Z; we wait rather than bypass. Mitigated meanwhile:
+              # body-parser@2.2.2 has two consumers, the API (server/) and the
+              # embeddings sidecar (server/embeddings-svc/), both via express 5.2.1.
+              # Every parser in both is built with `inflate: false`
+              # (server/src/middleware/body-parsers.ts; the sidecar's app.ts), so a
+              # gzip/deflate/br body is refused 415 before any zlib stream exists;
+              # guarded by server/tests/body-parser-inflate-1458.test.ts,
+              # server/embeddings-svc/tests/body-inflate-1458.test.ts and the
+              # inventory scan in server/src/middleware/body-parsers.inflate.test.ts.
+              # Scoped to the one resolved copy. Expires the day after the release age clears: upgrade
+              # and DELETE this entry, never re-date it.
+              "GHSA-27r3-jxmh-p828": {
+                  "expires": "2026-10-30",
+                  "packages": ["body-parser@2.2.2"],
+                  "reason": "body-parser@2.2.2 only: 2.4.0 held by minimumReleaseAge "
+                            "until 2026-10-29; every parser in the API and the "
+                            "embeddings sidecar sets inflate: false, so the "
+                            "compressed-body path is unreachable (#1458).",
+              },
           }
           today = datetime.date.today()
 

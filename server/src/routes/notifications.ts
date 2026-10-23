@@ -8,11 +8,19 @@
  *
  * All routes are scoped to `req.user.userId` from the verified JWT — a user
  * can NEVER read or mutate another user's notifications (OWASP A01).
+ *
+ * #1447 — every row returned is re-checked against the reader's CURRENT access
+ * to its project (`applyNotificationAccess`, one project query per response):
+ * a row whose project they can no longer open — removed from the workspace,
+ * project moved or soft-deleted — comes back redacted, never with its title,
+ * message or link. Redacted rather than hidden, so `unreadCount` still counts
+ * exactly the rows the list can return.
  */
 import { Router, type Request, type Response } from "express";
 import { requireAuth } from "../middleware/auth.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
+import { applyNotificationAccess } from "../lib/notifications/visibility.js";
 
 const PAGE_SIZE = 50;
 
@@ -29,7 +37,7 @@ export function notificationsRouter(): Router {
       if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
       const userId = req.user.userId;
 
-      const [notifications, unreadCount] = await Promise.all([
+      const [rows, unreadCount] = await Promise.all([
         prisma.notification.findMany({
           where: { userId },
           orderBy: { createdAt: "desc" },
@@ -39,6 +47,8 @@ export function notificationsRouter(): Router {
           where: { userId, read: false },
         }),
       ]);
+      // #1447 — one batched access check for the page; inaccessible rows redacted.
+      const notifications = await applyNotificationAccess(req.user, rows);
 
       // Standard { success, data } envelope so the UI's apiFetch (which returns
       // `payload.data`) hydrates the drawer correctly — a bare body resolves to
@@ -77,7 +87,11 @@ export function notificationsRouter(): Router {
         where: { userId, read: false },
       });
 
-      res.json({ success: true, data: { notification: updated, unreadCount } });
+      // #1447 — the same redaction as the list: marking a row read must not
+      // hand back what the list withholds.
+      const [notification] = await applyNotificationAccess(req.user, [updated]);
+
+      res.json({ success: true, data: { notification, unreadCount } });
     } catch (err) {
       next(err);
     }

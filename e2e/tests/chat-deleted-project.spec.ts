@@ -52,11 +52,22 @@ async function chatWithOneTurn(
   expect(session.projectId).toBe(projectId);
   const turn = await api.post("/api/ai/chat", { data: { sessionId: session.id, message } });
   expect(turn.status(), await turn.text()).toBe(200);
+  // The browser later looks for this exact text, so prove it was stored
+  // verbatim: the chat input guardrail rewrites some text before it is
+  // persisted (#1446), and a rewrite should fail here, by name, rather than
+  // as a 15 s wait for a transcript line that will never appear.
+  const transcript = await api.get(`/api/ai/sessions/${session.id}/messages`);
+  expect(transcript.status(), await transcript.text()).toBe(200);
+  expect(await transcript.text(), "the turn is persisted verbatim").toContain(message);
   return session.id;
 }
 
 test.describe("Chat in a deleted project (#1412)", () => {
-  const stamp = Date.now();
+  // Base 36, never the bare `Date.now()`: 13 digits that pass the Luhn check
+  // (about one run in ten) are masked as a card number by the chat input
+  // guardrail (`server/src/lib/safety/regex-blocklist.ts`), so the transcript
+  // read "[REDACTED:CREDIT_CARD]" and the exact-text wait timed out (#1446).
+  const stamp = Date.now().toString(36);
   const devMessage = `Developer question before the delete ${stamp}`;
   const adminMessage = `Admin question before the delete ${stamp}`;
   let adminApi: APIRequestContext;
