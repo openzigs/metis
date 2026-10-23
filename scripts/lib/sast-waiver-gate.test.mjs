@@ -287,6 +287,36 @@ describe.skipIf(!PYTHON3)("sast.yml OSV threshold gate (Issue #1215)", () => {
   });
 
   /**
+   * A `packages`-scoped waiver (#1453) covers the listed `name@version` copies only. The
+   * advisory, its bytes and the waiver are held constant; only the copy moves. A gate
+   * that matched on the advisory ID alone would pass both arms — which is exactly how a
+   * waiver for an unfixable zod 3 copy would mute a regression on the fixed zod 4 line.
+   */
+  it("suppresses a scoped waiver only for the package copies it lists", () => {
+    const scoped = [
+      "WAIVERS = {",
+      `    ${JSON.stringify(FIXTURE_WAIVER_ID)}: {`,
+      '        "expires": "2030-01-01",',
+      '        "packages": ["scoped-pkg@3.0.0"],',
+      '        "reason": "fixture scoped waiver",',
+      "    },",
+      "}",
+    ].join("\n");
+    const fixture = { waivers: scoped, today: "2026-01-01" };
+    const copy = (version) =>
+      advisory({ name: "scoped-pkg", version, id: FIXTURE_WAIVER_ID, maxSeverity: "8.2" });
+
+    const listed = runGate(copy("3.0.0"), fixture);
+    expect(listed.status).toBe(0);
+    expect(listed.output).toContain("WAIVED:");
+
+    const unlisted = runGate(copy("4.0.0"), fixture);
+    expect(unlisted.status).toBe(1);
+    expect(unlisted.output).toContain("covers only scoped-pkg@3.0.0");
+    expect(unlisted.output).not.toContain("EXPIRED");
+  });
+
+  /**
    * The expiry mechanism itself, which nothing covered before: the same advisory, the
    * same waiver, and only the clock moved past `expires`. This is the whole point of a
    * time-boxed waiver, and it was previously asserted by nothing.

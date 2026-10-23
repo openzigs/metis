@@ -206,7 +206,12 @@ describe("syncMergedPR", () => {
     );
     expect(out.requirementsUpdated).toBe(0);
     expect(prisma.publishedIssue.findMany).toHaveBeenCalledWith({
-      where: { issueNumber: { in: [5] }, destination: "github" },
+      // #1438 — a soft-deleted project's issues are never matched.
+      where: {
+        issueNumber: { in: [5] },
+        destination: "github",
+        draft: { project: { deletedAt: null } },
+      },
       include: { draft: true, batch: { select: { targetOwner: true, targetRepo: true } } },
     });
   });

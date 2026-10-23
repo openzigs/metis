@@ -32,6 +32,7 @@ import type { Activity } from "botbuilder";
 
 import { prisma as defaultPrisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
+import { logDeletedProjectSkip } from "../projects/deleted-project-guard.js";
 import { shouldNotify } from "../notifications/preferences.js";
 import {
   renderAnalysisCompleteCard,
@@ -70,8 +71,18 @@ async function resolveProjectWorkspace(
 ): Promise<{ projectName: string; workspaceId: string } | null> {
   const project = await db.project.findFirst({
     where: { id: projectId },
-    select: { name: true, workspaceId: true },
+    select: { name: true, workspaceId: true, deletedAt: true },
   });
+  // #1438 — nothing is posted to Teams on behalf of a soft-deleted project.
+  if (project?.deletedAt) {
+    logDeletedProjectSkip({
+      path: "notification",
+      projectId,
+      sourceType: "teams-card",
+      sourceId: projectId,
+    });
+    return null;
+  }
   if (!project || !project.workspaceId) return null;
   return { projectName: project.name, workspaceId: project.workspaceId };
 }
