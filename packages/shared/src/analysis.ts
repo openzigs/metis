@@ -1443,6 +1443,11 @@ export interface AnalysisLiveAgent {
   rerun: boolean;
   /** `synthesizing` once a re-run's agent is done and the run is re-synthesised. */
   phase: "investigating" | "synthesizing";
+  /**
+   * #1131 — set on a "Continue with a larger budget" rerun once its scope is
+   * known: it re-investigates `requirements` of the run's `total`.
+   */
+  continuation?: { requirements: number; total: number };
 }
 
 /**
@@ -1481,6 +1486,11 @@ export interface AnalysisSnapshot {
   droppedCitations?: AnalysisDroppedCitations[];
   /** Issue #766 — agents running right now ({@link AnalysisLiveAgent}); empty when none is. */
   liveAgents?: AnalysisLiveAgent[];
+  /**
+   * Issue #1131 — the budget "Continue with a larger budget" would run with,
+   * present only while it is offered ({@link codeInvestigationContinueOffered}).
+   */
+  codeContinuation?: AnalysisCodeContinuationQuote | null;
   metadata: Record<string, unknown> | null;
   agents: Array<{
     agentKey: AnalysisResultAgentKey;
@@ -1911,6 +1921,13 @@ export interface AnalysisRetrievalHealth {
    * Report-side only: set after verdicts are gated, it never changes one.
    */
   unverifiedRequirements?: number;
+  /**
+   * #1131 — of {@link unverifiedRequirements}, how many the pass reported
+   * NOTHING for (never reached). The rest carry a finding of their own and are
+   * inconclusive, which a larger budget does not change. Recorded on a pass
+   * that was `exhausted`; absent otherwise and on pre-#1131 records.
+   */
+  unreachedRequirements?: number;
   /**
    * #1236 — the loop ran out of TURNS or TOKENS. Retrieval worked; the
    * investigation was merely cut short, so the requirements it never reached are
@@ -2639,6 +2656,14 @@ export const ANALYSIS_CAPABILITY_REASONS = [
    */
   "code-investigation-cut-short",
   /**
+   * Issue #1131 — the agentic code pass ran out of budget, but it REACHED every
+   * requirement: the ones still `could-not-verify` each carry a finding of
+   * their own (the agent looked; the code it read did not settle them). A
+   * larger budget would not change that, so — unlike
+   * `code-investigation-cut-short` — no Continue is offered.
+   */
+  "code-investigation-inconclusive",
+  /**
    * Issue #1143 — an agent wrote citations that matched no citation shape even
    * after repair, so they were dropped and the findings kept without them.
    * {@link AnalysisCapability.droppedCitations} names each agent and the count.
@@ -2832,11 +2857,17 @@ export interface AnalysisCapability {
    */
   codeInvestigationContinuations?: number;
   /**
-   * Issue #1062 — what the latest code pass left unreached when it too ran out
-   * of budget: `unreached` of `total` requirements are `could-not-verify`. Set
-   * only while `codeInvestigationCutShort` is true and the pass reported counts.
+   * Issue #1062 — what the latest code pass left unreached when it ran out of
+   * budget. Set only while `codeInvestigationCutShort` is true and the pass
+   * reported counts.
+   *
+   * #1131 — `unreached` counts only requirements the code agent reported
+   * NOTHING for; `inconclusive` counts those it reached that still read
+   * `could-not-verify` (they carry a finding of their own). Records written
+   * before #1131 carry no `inconclusive`, and their `unreached` is every
+   * `could-not-verify` requirement.
    */
-  codeInvestigationUnreached?: { unreached: number; total: number };
+  codeInvestigationUnreached?: CodeInvestigationGap;
   /**
    * Issue #1143 — the citations each agent wrote that were dropped as malformed.
    * Absent when none were (and on every run persisted before #1143).
@@ -2863,6 +2894,54 @@ export function codeInvestigationContinueLimitReached(
   capability: Pick<AnalysisCapability, "codeInvestigationContinuations"> | null | undefined,
 ): boolean {
   return (capability?.codeInvestigationContinuations ?? 0) >= MAX_CODE_INVESTIGATION_CONTINUATIONS;
+}
+
+/**
+ * Issue #1131 — what a code pass that ran out of budget left behind (see
+ * {@link AnalysisCapability.codeInvestigationUnreached}).
+ */
+export interface CodeInvestigationGap {
+  /** Requirements the code agent reported nothing for: a continuation can reach them. */
+  unreached: number;
+  /** Requirements the agent reached that are still `could-not-verify`. Absent on pre-#1131 records. */
+  inconclusive?: number;
+  total: number;
+}
+
+/**
+ * Issue #1001 / #1131 — how much larger than `ANALYSIS_AGENT_TOKEN_BUDGET` the
+ * code pass's budget (and turn cap) is on "Continue with a larger budget". The
+ * server runs with it and the page quotes the resulting token budget.
+ */
+export const CODE_CONTINUE_BUDGET_MULTIPLIER = 2;
+
+/**
+ * Issue #1131 — "Continue with a larger budget" is offered only when it can
+ * help: the run's code pass ran out of budget with requirements it never
+ * reached (`code-investigation-cut-short`, which an inconclusive-only or fully
+ * grounded pass no longer raises), and the continuation limit is not used up.
+ */
+export function codeInvestigationContinueOffered(
+  capability:
+    Pick<AnalysisCapability, "reasons" | "codeInvestigationContinuations"> | null | undefined,
+): boolean {
+  if (!capability) return false;
+  return (
+    capability.reasons.includes("code-investigation-cut-short") &&
+    !codeInvestigationContinueLimitReached(capability)
+  );
+}
+
+/**
+ * Issue #1131 — what the page quotes before "Continue with a larger budget"
+ * starts: the code pass's token budget for the continuation. Carried on the
+ * snapshot only while Continue is offered.
+ */
+export interface AnalysisCodeContinuationQuote {
+  /** The continuation's code-pass token budget (`ANALYSIS_AGENT_TOKEN_BUDGET` × the multiplier). */
+  tokenBudget: number;
+  /** {@link CODE_CONTINUE_BUDGET_MULTIPLIER}, as the server ran with it. */
+  budgetMultiplier: number;
 }
 
 /**
@@ -2928,6 +3007,8 @@ export interface CapabilityReasonInput {
   requirementInputAccount?: RequirementInputAccount | null;
   /** #1001 — the agentic code pass ran out of turn/token budget before covering every requirement. */
   codeInvestigationCutShort?: boolean;
+  /** #1131 — what that pass left unreached and inconclusive; absent ⇒ unknown. */
+  codeInvestigationUnreached?: CodeInvestigationGap;
   /** #1143 — citations an agent wrote that were dropped as malformed. */
   droppedCitations?: readonly AnalysisDroppedCitations[];
 }
@@ -3013,7 +3094,16 @@ export function deriveCapabilityReasons(input: CapabilityReasonInput): AnalysisC
     // #1001 — the budget ran out before every requirement was searched for. Those
     // requirements are `could-not-verify` with no code link; the banner offers to
     // continue the code agent with a larger budget.
-    if (input.codeInvestigationCutShort) reasons.push("code-investigation-cut-short");
+    // #1131 — only requirements the pass never REACHED are the budget's doing.
+    // Reached-but-inconclusive ones are named as such, with no Continue, and a
+    // pass whose every requirement got a grounded verdict raises nothing. A
+    // record with no counts (pre-#1131, or a pass that reported none) keeps the
+    // old reason.
+    if (input.codeInvestigationCutShort) {
+      const gap = input.codeInvestigationUnreached;
+      if (!gap || gap.unreached > 0) reasons.push("code-investigation-cut-short");
+      else if ((gap.inconclusive ?? 0) > 0) reasons.push("code-investigation-inconclusive");
+    }
   }
   if (input.databaseAnalysisRequested && !input.schemaContextEnabled) {
     reasons.push("schema-context-disabled");

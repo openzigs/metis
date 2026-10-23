@@ -112,7 +112,12 @@
  *
  * Pure + dependency-free: same tool calls in ⇒ same health out.
  */
-import type { AnalysisRetrievalHealth, RequirementVerdict, SearchedQuery } from "@metis/shared";
+import type {
+  AnalysisRetrievalHealth,
+  CodeInvestigationGap,
+  RequirementVerdict,
+  SearchedQuery,
+} from "@metis/shared";
 import { deriveRequirementVerdict, type VerdictFindingInput } from "./requirement-verdict.js";
 import { isErroredCall, type ToolCallRecord } from "./tool-telemetry.js";
 
@@ -595,6 +600,12 @@ export function mergeRetrievalHealth(
           unverifiedRequirements: passes.reduce((n, p) => n + (p.unverifiedRequirements ?? 0), 0),
         }
       : {}),
+    // #1131 — likewise, so a record with no count still reads "unknown".
+    ...(passes.some((p) => p.unreachedRequirements !== undefined)
+      ? {
+          unreachedRequirements: passes.reduce((n, p) => n + (p.unreachedRequirements ?? 0), 0),
+        }
+      : {}),
     degraded: passes.some((p) => p.degraded),
     searchedScope,
   };
@@ -667,6 +678,61 @@ export function unverifiedRequirementIds(
     if (verdict === "could-not-verify") unverified.push(id);
   }
   return unverified;
+}
+
+/**
+ * #1131 — {@link unverifiedRequirementIds}, split by whether the pass REACHED
+ * the requirement. `unreached`: the pass reported nothing for it, so a
+ * continuation can still investigate it. `inconclusive`: it carries a finding
+ * of its own and still reads `could-not-verify` — the agent looked and the code
+ * did not settle it, which a larger budget does not change. Input order.
+ */
+export function classifyUnverifiedRequirements(
+  findings: readonly VerdictBearingFinding[],
+  requirementIds: Iterable<string>,
+): { unreached: string[]; inconclusive: string[] } {
+  const ids = [...requirementIds];
+  const reached = new Set<string>();
+  for (const finding of findings) {
+    if (finding.requirementId) reached.add(finding.requirementId);
+  }
+  const unreached: string[] = [];
+  const inconclusive: string[] = [];
+  for (const id of unverifiedRequirementIds(findings, ids)) {
+    (reached.has(id) ? inconclusive : unreached).push(id);
+  }
+  return { unreached, inconclusive };
+}
+
+/**
+ * #1131 — what a pass cut short by its budget left behind, from its reported
+ * health: `undefined` unless the pass was `exhausted` AND counted what it never
+ * reached (pre-#1131 records and single-shot passes did not).
+ */
+export function investigationGapFromHealth(
+  health: AnalysisRetrievalHealth,
+): CodeInvestigationGap | undefined {
+  if (health.exhausted !== true || health.unreachedRequirements === undefined) return undefined;
+  const unreached = Math.max(0, health.unreachedRequirements);
+  return {
+    unreached,
+    inconclusive: Math.max(0, (health.unverifiedRequirements ?? 0) - unreached),
+    total: health.requirementCount,
+  };
+}
+
+/** #1131 — two gaps added together (the passes of one run); either may be absent. */
+export function addInvestigationGaps(
+  a: CodeInvestigationGap | undefined,
+  b: CodeInvestigationGap | undefined,
+): CodeInvestigationGap | undefined {
+  if (!a) return b && { ...b };
+  if (!b) return { ...a };
+  return {
+    unreached: a.unreached + b.unreached,
+    inconclusive: (a.inconclusive ?? 0) + (b.inconclusive ?? 0),
+    total: a.total + b.total,
+  };
 }
 
 const REQUIREMENT_VERDICTS: ReadonlySet<string> = new Set<RequirementVerdict>([

@@ -10,6 +10,7 @@ import {
   readLiveAgents,
   recordLiveToolCall,
   resetLiveAgentsForTests,
+  setLiveAgentContinuation,
 } from "./live-agent-progress.js";
 
 const NOW = new Date("2026-10-21T10:00:00.000Z");
@@ -78,5 +79,14 @@ describe("live agent progress (#766)", () => {
     beginLiveAgent("an_1", "code", { rerun: false });
     readLiveAgents("an_1")[0].toolCalls = 99;
     expect(readLiveAgents("an_1")[0].toolCalls).toBe(0);
+  });
+
+  it("#1131 — records a continuation's scope, and copies it out", () => {
+    setLiveAgentContinuation("an_1", "code", { requirements: 3, total: 19 });
+    expect(readLiveAgents("an_1")).toEqual([]);
+    beginLiveAgent("an_1", "code", { rerun: true });
+    setLiveAgentContinuation("an_1", "code", { requirements: 3, total: 19 });
+    readLiveAgents("an_1")[0].continuation!.requirements = 99;
+    expect(readLiveAgents("an_1")[0].continuation).toEqual({ requirements: 3, total: 19 });
   });
 });

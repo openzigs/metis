@@ -21,6 +21,7 @@ import {
   type AnalysisCapabilityPreview,
   type AnalysisDroppedCitations,
   type AnalysisSkippedRepo,
+  type CodeInvestigationGap,
   type RequirementInputAccount,
   deriveCapabilityReasons,
 } from "@metis/shared";
@@ -127,6 +128,12 @@ export interface CapabilityTracker {
    * retrieval health (`exhausted`).
    */
   codeInvestigationCutShort: boolean;
+  /**
+   * #1131 — summed over the passes that ran out of budget and counted: how
+   * many requirements they never reached, and how many they reached that are
+   * still inconclusive. Absent when no such pass reported counts.
+   */
+  codeInvestigationGap?: CodeInvestigationGap;
   /**
    * #1388 — a code pass stopped early on its own with working retrieval, so its
    * `code-agent-degraded` reason stands in for #19's coverage-only
@@ -238,6 +245,10 @@ export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapabili
       ? { requirementInputAccount: tracker.requirementInputAccount }
       : {}),
     codeInvestigationCutShort: tracker.codeInvestigationCutShort,
+    // #1131 — omitted unless a cut-short pass counted, so other records are unchanged.
+    ...(tracker.codeInvestigationCutShort && tracker.codeInvestigationGap
+      ? { codeInvestigationUnreached: { ...tracker.codeInvestigationGap } }
+      : {}),
     // #1388 — omitted unless set, so a plain run's record is unchanged.
     ...(codeAgentStoppedEarly ? { codeAgentStoppedEarly: true } : {}),
     // #1143 — omitted when nothing was dropped, so a clean run's record is unchanged.
@@ -261,6 +272,9 @@ export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapabili
       newRequirementsProvided: tracker.newRequirementsProvided,
       requirementInputAccount: tracker.requirementInputAccount,
       codeInvestigationCutShort: tracker.codeInvestigationCutShort,
+      codeInvestigationUnreached: tracker.codeInvestigationCutShort
+        ? tracker.codeInvestigationGap
+        : undefined,
       codeAgentStoppedEarly,
       droppedCitations: tracker.droppedCitations,
     }),

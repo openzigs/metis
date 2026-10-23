@@ -64,6 +64,20 @@ export function recordLiveToolCall(analysisId: string, agentKey: string): void {
   if (entry) entry.toolCalls++;
 }
 
+/**
+ * #1131 — a "Continue with a larger budget" rerun knows its scope: it
+ * re-investigates `requirements` of the run's `total`. A no-op for an agent
+ * that is not tracked.
+ */
+export function setLiveAgentContinuation(
+  analysisId: string,
+  agentKey: string,
+  scope: { requirements: number; total: number },
+): void {
+  const entry = registry.get(analysisId)?.get(agentKey);
+  if (entry) entry.continuation = { ...scope };
+}
+
 /** The re-run's own agent is done; the run is re-synthesising its findings. */
 export function markLiveAgentSynthesizing(analysisId: string, agentKey: string): void {
   const entry = registry.get(analysisId)?.get(agentKey);
@@ -81,7 +95,12 @@ export function endLiveAgent(analysisId: string, agentKey: string): void {
 /** A copy of the agents running on `analysisId`; empty when none is. */
 export function readLiveAgents(analysisId: string): AnalysisLiveAgent[] {
   const agents = registry.get(analysisId);
-  return agents ? [...agents.values()].map((entry) => ({ ...entry })) : [];
+  return agents
+    ? [...agents.values()].map((entry) => ({
+        ...entry,
+        ...(entry.continuation ? { continuation: { ...entry.continuation } } : {}),
+      }))
+    : [];
 }
 
 /** Test seam: forget everything. */

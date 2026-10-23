@@ -19,6 +19,7 @@ const { prismaMock, serviceMock } = vi.hoisted(() => ({
   prismaMock: {
     repoConnection: { findMany: vi.fn() },
     agentResult: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+    finding: { findMany: vi.fn(async () => [] as Array<{ evidence: string | null }>) },
   },
   serviceMock: {
     finalizeAnalysisDelta: vi.fn(async () => undefined),
@@ -40,6 +41,7 @@ vi.mock("../socket/job-events.js", () => ({
 const {
   AnalysisOrchestrator,
   CodeInvestigationContinueLimitError,
+  CodeInvestigationContinueNotOfferedError,
   CONTINUE_BUDGET_MULTIPLIER,
   resolvePassTurnCaps,
 } = await import("./orchestrator.js");
@@ -69,6 +71,7 @@ type Stubbed = {
   computeEscalations: ReturnType<typeof vi.fn>;
   resolveDatabaseAware: ReturnType<typeof vi.fn>;
   computeAffectedSchema: ReturnType<typeof vi.fn>;
+  readCodeFindingVerdicts: ReturnType<typeof vi.fn>;
 };
 
 const health = (exhausted: boolean): AnalysisRetrievalHealth => ({
@@ -111,6 +114,9 @@ function makeOrchestrator(passHealth?: AnalysisRetrievalHealth) {
   orch.computeEscalations = vi.fn(async () => undefined);
   orch.resolveDatabaseAware = vi.fn(async () => ({ enabled: false }));
   orch.computeAffectedSchema = vi.fn(async () => ({ block: "", tokens: 0, rows: [] }));
+  // #1131 — the persisted code findings a continuation scopes itself by. None
+  // by default: every requirement is unreached.
+  orch.readCodeFindingVerdicts = vi.fn(async () => []);
   return orch;
 }
 
@@ -399,12 +405,14 @@ describe("#1062 a rerun that is cut short too says so, and Continue is limited",
     };
 
   it("records what the continued pass left unreached when it ran out again", async () => {
+    // #1131 — counted over the whole analysis's code findings after the rerun,
+    // not over the rerun's own (smaller) requirement set.
     const orch = makeOrchestrator({ ...health(true), unverifiedRequirements: 9 });
     await regenerate(orch, { extendBudget: true });
     expect(persisted()).toMatchObject({
       codeInvestigationCutShort: true,
       codeInvestigationContinuations: 1,
-      codeInvestigationUnreached: { unreached: 9, total: 16 },
+      codeInvestigationUnreached: { unreached: 1, inconclusive: 0, total: 1 },
       reasons: ["code-investigation-cut-short"],
     });
   });
@@ -423,11 +431,22 @@ describe("#1062 a rerun that is cut short too says so, and Continue is limited",
     expect(next.reasons).toEqual([]);
   });
 
-  it("records no gap when the cut-short pass reported no unverified count", async () => {
+  it("records the analysis's gap even when the cut-short pass reported no count", async () => {
+    // #1131 — read from the persisted findings, not from the pass's own report.
     const orch = makeOrchestrator(health(true));
     await regenerate(orch, { extendBudget: true });
-    expect(persisted()).not.toHaveProperty("codeInvestigationUnreached");
+    expect(persisted().codeInvestigationUnreached).toEqual({
+      unreached: 1,
+      inconclusive: 0,
+      total: 1,
+    });
     expect(persisted().codeInvestigationContinuations).toBe(1);
+  });
+
+  it("an ordinary regenerate that ran out records no gap when its pass counted none", async () => {
+    const orch = makeOrchestrator(health(true));
+    await regenerate(orch);
+    expect(persisted()).not.toHaveProperty("codeInvestigationUnreached");
   });
 
   it("an ordinary regenerate is not counted as a continuation", async () => {
@@ -506,5 +525,185 @@ describe("#1062 a rerun that is cut short too says so, and Continue is limited",
     ).rejects.toBeInstanceOf(CodeInvestigationContinueLimitError);
     expect(stub.runAgenticCodeAgent).not.toHaveBeenCalled();
     expect(stub.runOneAgent).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #1131 — #706 run 8: Continue re-ran the whole code pass and synthesis, and
+ * in one case cost more than the run it continued. It now re-investigates only
+ * the requirements the pass never reached, keeping the findings it has.
+ */
+describe("#1131 Continue re-investigates only the requirements left unreached", () => {
+  const THREE = [
+    { id: "REQ-1", text: "A user cannot subscribe to the same feed URL twice." },
+    { id: "REQ-2", text: "Publishing goes only to the openzigs/flux-v2 repository." },
+    { id: "REQ-3", text: "The CLI accepts -flush-sessions to remove every session." },
+  ];
+  const BEFORE = [
+    { requirementId: "REQ-1", verdict: "implemented" },
+    { requirementId: "REQ-2", verdict: "could-not-verify" },
+  ];
+  const persisted = () =>
+    serviceMock.persistAnalysisCapability.mock.calls.at(-1)![1] as AnalysisCapability;
+  const threeRequirements = (passHealth?: AnalysisRetrievalHealth) => {
+    const orch = makeOrchestrator(passHealth);
+    orch.extractRequirementsFromDocAgent = vi.fn(async () => THREE);
+    return orch;
+  };
+
+  it("runs the code pass on the unreached requirements alone, appending its findings", async () => {
+    const orch = threeRequirements();
+    orch.readCodeFindingVerdicts = vi.fn(async () => BEFORE);
+    await regenerate(orch, { extendBudget: true });
+    const input = orch.runAgenticCodeAgent.mock.calls[0][0];
+    expect(input.requirements.map((r: { id: string }) => r.id)).toEqual(["REQ-3"]);
+    expect(input.persistMode).toBe("append");
+    // The earlier rows hold the findings it keeps: nothing is deleted.
+    expect(prismaMock.agentResult.deleteMany).not.toHaveBeenCalled();
+    // Synthesis runs again, over every finding, so the new ones reach requirements.
+    expect(orch.runSynthesisAndPersist).toHaveBeenCalledTimes(1);
+  });
+
+  it("escalates only the requirements it re-investigates", async () => {
+    const orch = threeRequirements();
+    orch.readCodeFindingVerdicts = vi.fn(async () => BEFORE);
+    await regenerate(orch, { extendBudget: true });
+    expect(orch.computeEscalations.mock.calls[0][2].map((r: { id: string }) => r.id)).toEqual([
+      "REQ-3",
+    ]);
+  });
+
+  it("an ordinary regenerate still re-runs every requirement and replaces the rows", async () => {
+    const orch = threeRequirements();
+    orch.readCodeFindingVerdicts = vi.fn(async () => BEFORE);
+    await regenerate(orch);
+    const input = orch.runAgenticCodeAgent.mock.calls[0][0];
+    expect(input.requirements).toHaveLength(3);
+    expect(input.persistMode).toBeUndefined();
+    expect(orch.readCodeFindingVerdicts).not.toHaveBeenCalled();
+  });
+
+  it("records the whole analysis's gap after the rerun, inconclusive apart", async () => {
+    const orch = threeRequirements({ ...health(true), unverifiedRequirements: 1 });
+    orch.readCodeFindingVerdicts = vi
+      .fn()
+      .mockResolvedValueOnce(BEFORE)
+      .mockResolvedValueOnce([...BEFORE, { requirementId: "REQ-3", verdict: "could-not-verify" }]);
+    await regenerate(orch, { extendBudget: true });
+    expect(persisted()).toMatchObject({
+      codeInvestigationContinuations: 1,
+      codeInvestigationUnreached: { unreached: 0, inconclusive: 2, total: 3 },
+      // Every requirement was reached: no Continue, and they are named inconclusive.
+      reasons: ["code-investigation-inconclusive"],
+    });
+  });
+
+  it("spends nothing when no requirement is unreached, and corrects the banner", async () => {
+    // A record written before #1131 counted inconclusive requirements as unreached.
+    const orch = threeRequirements();
+    orch.readCodeFindingVerdicts = vi.fn(async () => [
+      ...BEFORE,
+      { requirementId: "REQ-3", verdict: "could-not-verify" },
+    ]);
+    await regenerate(orch, { extendBudget: true });
+    expect(orch.runAgenticCodeAgent).not.toHaveBeenCalled();
+    expect(orch.runOneAgent).not.toHaveBeenCalled();
+    expect(orch.runSynthesisAndPersist).not.toHaveBeenCalled();
+    expect(persisted()).toMatchObject({
+      codeInvestigationUnreached: { unreached: 0, inconclusive: 2, total: 3 },
+      reasons: ["code-investigation-inconclusive"],
+    });
+    // Not counted: nothing was spent.
+    expect(persisted()).not.toHaveProperty("codeInvestigationContinuations");
+    expect(serviceMock.finalizeAnalysisDelta).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "completed" }),
+    );
+  });
+
+  it("shows the rerun's scope on the live entry while it runs", async () => {
+    const { readLiveAgents } = await import("./live-agent-progress.js");
+    const orch = threeRequirements();
+    orch.readCodeFindingVerdicts = vi.fn(async () => BEFORE);
+    let seen: unknown;
+    orch.runAgenticCodeAgent.mockImplementation(async () => {
+      seen = readLiveAgents("an_1");
+      return { agentKey: "code", output: OUTPUT, usage: USAGE, durationMs: 1 };
+    });
+    await regenerate(orch, { extendBudget: true });
+    expect(seen).toEqual([
+      expect.objectContaining({
+        agentKey: "code",
+        rerun: true,
+        continuation: { requirements: 1, total: 3 },
+      }),
+    ]);
+  });
+
+  it("a single-shot code pass cannot be scoped, so it re-runs whole as before", async () => {
+    const orch = threeRequirements();
+    orch.detectAgentMode = vi.fn(async () => "single-shot");
+    orch.readCodeFindingVerdicts = vi.fn(async () => BEFORE);
+    await regenerate(orch, { extendBudget: true });
+    expect(orch.runOneAgent).toHaveBeenCalledTimes(1);
+    expect(orch.runOneAgent.mock.calls[0][0].knownRequirementIds).toEqual([
+      "REQ-1",
+      "REQ-2",
+      "REQ-3",
+    ]);
+  });
+});
+
+describe("#1131 the persisted code findings a continuation is scoped by", () => {
+  it("reads each completed code finding's requirement and gated verdict", async () => {
+    prismaMock.finding.findMany.mockResolvedValue([
+      { evidence: JSON.stringify({ requirementId: "REQ-1", verdict: "could-not-verify" }) },
+      { evidence: JSON.stringify({ citations: [] }) },
+      { evidence: null },
+      { evidence: "{not json" },
+    ]);
+    const orch = new AnalysisOrchestrator({
+      provider: { chat: vi.fn() } as never,
+      retrieve: async () => [],
+    }) as unknown as { readCodeFindingVerdicts: (id: string) => Promise<unknown> };
+    await expect(orch.readCodeFindingVerdicts("an_1")).resolves.toEqual([
+      { requirementId: "REQ-1", verdict: "could-not-verify" },
+      { requirementId: null, verdict: null },
+      { requirementId: null, verdict: null },
+      { requirementId: null, verdict: null },
+    ]);
+    expect(prismaMock.finding.findMany).toHaveBeenCalledWith({
+      where: { agentResult: { analysisId: "an_1", agentKey: "code", status: "completed" } },
+      select: { evidence: true },
+    });
+  });
+});
+
+describe("#1131 Continue is refused where a larger budget cannot help", () => {
+  const asOrch = (orch: Stubbed) =>
+    orch as unknown as { assertCanContinueInvestigation: (id: string) => Promise<void> };
+
+  it("refuses an inconclusive-only run, naming why", async () => {
+    serviceMock.getAnalysisCapability.mockResolvedValue({
+      ...CUT_SHORT,
+      codeInvestigationUnreached: { unreached: 0, inconclusive: 3, total: 19 },
+      reasons: ["code-investigation-inconclusive"],
+    });
+    await expect(
+      asOrch(makeOrchestrator()).assertCanContinueInvestigation("an_1"),
+    ).rejects.toMatchObject({
+      code: "CODE_INVESTIGATION_CONTINUE_NOT_OFFERED",
+      message: expect.stringContaining("inconclusive"),
+    });
+  });
+
+  it("refuses a run that was not cut short at all", async () => {
+    serviceMock.getAnalysisCapability.mockResolvedValue({
+      ...CUT_SHORT,
+      codeInvestigationCutShort: false,
+      reasons: [],
+    });
+    await expect(
+      asOrch(makeOrchestrator()).assertCanContinueInvestigation("an_1"),
+    ).rejects.toBeInstanceOf(CodeInvestigationContinueNotOfferedError);
   });
 });

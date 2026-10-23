@@ -71,7 +71,10 @@ import {
   type SpecKitHandoffRecord,
   type SynthesisFieldRepairs,
   type UnreadAnalysisSteps,
+  CODE_CONTINUE_BUDGET_MULTIPLIER,
+  codeInvestigationContinueOffered,
 } from "@metis/shared";
+import { resolveAgentTokenBudget } from "./agent-token-budget.js";
 import type { Prisma } from "@prisma/client";
 import { prisma, resolveDatabaseProvider } from "../prisma.js";
 import {
@@ -1832,6 +1835,13 @@ export async function getAnalysisSnapshot(id: string): Promise<AnalysisSnapshot 
     ledgerUsage: await readAnalysisLedgerUsage(row.projectId, id),
     // #766 — a Regenerate in progress, shown on the agent's card.
     liveAgents: readLiveAgents(id),
+    // #1131 — the budget Continue would run with, quoted before it starts.
+    codeContinuation: codeInvestigationContinueOffered(snapshot.capability)
+      ? {
+          tokenBudget: resolveAgentTokenBudget() * CODE_CONTINUE_BUDGET_MULTIPLIER,
+          budgetMultiplier: CODE_CONTINUE_BUDGET_MULTIPLIER,
+        }
+      : null,
   };
 }
 

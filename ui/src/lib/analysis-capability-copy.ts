@@ -116,6 +116,14 @@ export const CAPABILITY_REASON_COPY: Record<AnalysisCapabilityReason, Capability
     action:
       "Re-run the code investigation with a larger token and turn budget, or ask an administrator to raise ANALYSIS_AGENT_TOKEN_BUDGET for future runs.",
   },
+  // Issue #1131 — reached, but not settled: no Continue, because more budget
+  // would not change them.
+  "code-investigation-inconclusive": {
+    title:
+      "Code analysis ran out of its budget, but it reached every requirement — the ones still marked “Could not verify” are inconclusive: the code it read did not settle them.",
+    action:
+      "A larger budget would not change that, so Continue is not offered. Check these requirements by hand, or add context that points the analysis at the right code and start a new analysis.",
+  },
   "repo-clone-unavailable": {
     title:
       "The repository is indexed but not checked out on the server, so code was analyzed from the code graph alone — without reading the source files.",

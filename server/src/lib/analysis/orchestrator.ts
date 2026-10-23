@@ -36,7 +36,9 @@ import {
   ANALYSIS_RETRIEVE_K,
   analysisRoom,
   ANALYSIS_SPECIALIST_AGENT_KEYS,
+  CODE_CONTINUE_BUDGET_MULTIPLIER,
   codeInvestigationContinueLimitReached,
+  type CodeInvestigationGap,
   deriveCapabilityReasons,
   isCodeCitation,
   MAX_REQUIREMENTS_FOR_RETRIEVAL,
@@ -126,8 +128,11 @@ import { applySupportPanel, collectPanelEvidence } from "./support-panel.js";
 import {
   absenceIsConfirmable,
   assessInvestigationCoverage,
+  classifyUnverifiedRequirements,
   countUnverifiedRequirements,
   absenceIsConfirmableForClaim,
+  addInvestigationGaps,
+  investigationGapFromHealth,
   mergeRetrievalHealth,
   noRetrievalHealth,
   summarizeRetrievalEvidence,
@@ -198,6 +203,7 @@ import {
   endLiveAgent,
   markLiveAgentSynthesizing,
   recordLiveToolCall,
+  setLiveAgentContinuation,
 } from "./live-agent-progress.js";
 import { readSourceRequirements, toSynthesisSourceItems } from "./source-items.js";
 import { assessShallowCodePass, buildCodePassContinuation } from "./code-pass-coverage.js";
@@ -548,7 +554,23 @@ interface SynthesisOutcome {
  * an operator continues a code investigation that ran out of budget. Bounded,
  * and the monthly cap pre-flight still applies to the continued run.
  */
-export const CONTINUE_BUDGET_MULTIPLIER = 2;
+export const CONTINUE_BUDGET_MULTIPLIER = CODE_CONTINUE_BUDGET_MULTIPLIER;
+
+/**
+ * #1131 — "Continue with a larger budget" was asked for on an analysis where a
+ * larger budget cannot help: its code pass was not cut short, or it reached
+ * every requirement and the ones still `could-not-verify` are inconclusive.
+ */
+export class CodeInvestigationContinueNotOfferedError extends Error {
+  readonly code = "CODE_INVESTIGATION_CONTINUE_NOT_OFFERED";
+  constructor(readonly analysisId: string) {
+    super(
+      "Continue is not offered for this analysis: its code analysis left no requirement unreached. " +
+        "Requirements it reached that still read “Could not verify” are inconclusive, and a larger budget would not change them.",
+    );
+    this.name = "CodeInvestigationContinueNotOfferedError";
+  }
+}
 
 /**
  * #1062 — "Continue with a larger budget" was asked for again on an analysis
@@ -1008,6 +1030,12 @@ export class AnalysisOrchestrator {
         capability?.codeInvestigationContinuations ?? 0,
       );
     }
+    // #1131 — offered only on a cut-short pass that left requirements unreached
+    // (an inconclusive-only or fully grounded pass no longer raises the reason).
+    // A run with no capability record keeps the pre-#1131 behaviour.
+    if (capability && !capability.reasons.includes("code-investigation-cut-short")) {
+      throw new CodeInvestigationContinueNotOfferedError(analysisId);
+    }
   }
 
   /**
@@ -1150,47 +1178,82 @@ export class AnalysisOrchestrator {
         signal: controller.signal,
         actorId: opts.actorId,
       };
-      // #766 — the code agent regenerates through the mode the run would pick,
-      // not always single-shot: a run whose code pass was agentic re-ran as one
-      // retrieval-only call that could not see the files the requirements are about.
-      const result =
-        opts.agentKey === "code"
-          ? await this.regenerateCodeAgent(agentInput, {
-              // #1098 — scope the set to the imported items, as the run did.
-              importedIds: importedCandidateIds(readSourceRequirements(analysis.metadata)),
-              importedItems: importedItemRefs(readSourceRequirements(analysis.metadata)),
-              databaseAwareSetting:
-                (analysis.project as { databaseAwareAnalysis?: string | null })
-                  .databaseAwareAnalysis ?? undefined,
-              ...(opts.extendBudget
-                ? {
-                    tokenBudget: resolveAgentTokenBudget() * CONTINUE_BUDGET_MULTIPLIER,
-                    // A pass that hit its turn cap would otherwise rerun with the
-                    // same cap and stop in the same place.
-                    turnMultiplier: CONTINUE_BUDGET_MULTIPLIER,
-                  }
-                : {}),
-            })
-          : await this.runOneAgent(agentInput);
-      delta.promptTokens += result.usage.promptTokens;
-      delta.completionTokens += result.usage.completionTokens;
-      delta.totalTokens += result.usage.totalTokens;
-      markLiveAgentSynthesizing(opts.analysisId, opts.agentKey);
-      // Re-run synthesis using all currently-persisted findings.
-      await this.runSynthesisAndPersist({
-        analysisId: opts.analysisId,
-        projectId: analysis.projectId,
-        projectName: analysis.project.name,
-        model,
-        signal: controller.signal,
-        accumulator: delta,
-        sourceRequirements: readSourceRequirements(analysis.metadata),
-      });
-      // #1001 — the regenerated code pass replaced the code findings, so the
-      // run's retrieval health and "cut short" reason must describe IT, not the
-      // pass it replaced — otherwise a continued run keeps offering to continue.
-      if (opts.agentKey === "code") {
-        await this.refreshCodeInvestigation(opts.analysisId, opts.extendBudget === true);
+      // #1131 — a continuation re-investigates only the requirements the code
+      // pass never reached; the ones it reached keep their findings.
+      const continuation =
+        opts.agentKey === "code" && opts.extendBudget
+          ? await this.planContinuation(
+              opts.analysisId,
+              await this.codeRequirementSet(opts.analysisId, extraInstructions, analysis.metadata),
+            )
+          : null;
+      if (continuation && continuation.unreached.length === 0) {
+        // Nothing is left unreached (a record written before #1131 counted
+        // inconclusive requirements as unreached): spend nothing, and correct
+        // the banner so it no longer offers to continue.
+        await this.refreshCodeInvestigation(opts.analysisId, {
+          analysisGap: continuation.gap,
+        });
+      } else {
+        // #766 — the code agent regenerates through the mode the run would pick,
+        // not always single-shot: a run whose code pass was agentic re-ran as one
+        // retrieval-only call that could not see the files the requirements are about.
+        const result =
+          opts.agentKey === "code"
+            ? await this.regenerateCodeAgent(agentInput, {
+                // #1098 — scope the set to the imported items, as the run did.
+                importedIds: importedCandidateIds(readSourceRequirements(analysis.metadata)),
+                importedItems: importedItemRefs(readSourceRequirements(analysis.metadata)),
+                databaseAwareSetting:
+                  (analysis.project as { databaseAwareAnalysis?: string | null })
+                    .databaseAwareAnalysis ?? undefined,
+                ...(continuation
+                  ? {
+                      requirements: continuation.requirements,
+                      continueWith: continuation.unreached,
+                      tokenBudget: resolveAgentTokenBudget() * CONTINUE_BUDGET_MULTIPLIER,
+                      // A pass that hit its turn cap would otherwise rerun with the
+                      // same cap and stop in the same place.
+                      turnMultiplier: CONTINUE_BUDGET_MULTIPLIER,
+                    }
+                  : {}),
+              })
+            : await this.runOneAgent(agentInput);
+        delta.promptTokens += result.usage.promptTokens;
+        delta.completionTokens += result.usage.completionTokens;
+        delta.totalTokens += result.usage.totalTokens;
+        markLiveAgentSynthesizing(opts.analysisId, opts.agentKey);
+        // Re-run synthesis using all currently-persisted findings. #1131 — a
+        // continuation needs it too: requirements (their verdicts and evidence
+        // links) are written by synthesis from the whole finding set, so without
+        // it the newly reached requirements would not change on the page.
+        await this.runSynthesisAndPersist({
+          analysisId: opts.analysisId,
+          projectId: analysis.projectId,
+          projectName: analysis.project.name,
+          model,
+          signal: controller.signal,
+          accumulator: delta,
+          sourceRequirements: readSourceRequirements(analysis.metadata),
+        });
+        // #1001 — the regenerated code pass replaced the code findings, so the
+        // run's retrieval health and "cut short" reason must describe IT, not the
+        // pass it replaced — otherwise a continued run keeps offering to continue.
+        // #1131 — a continuation added to them instead, so what is left
+        // unreached is counted over the whole analysis's code findings.
+        if (opts.agentKey === "code") {
+          await this.refreshCodeInvestigation(opts.analysisId, {
+            continued: opts.extendBudget === true,
+            ...(continuation
+              ? {
+                  analysisGap: await this.codeInvestigationGap(
+                    opts.analysisId,
+                    continuation.requirements,
+                  ),
+                }
+              : {}),
+          });
+        }
       }
       this.emitCompleted(opts.analysisId);
     } catch (err) {
@@ -1245,6 +1308,97 @@ export class AnalysisOrchestrator {
   }
 
   /**
+   * #1098 / #768 — the requirement set the run's code agent investigated:
+   * the document agent's requirements merged with the operator's new ones,
+   * scoped to the imported items the run started from.
+   */
+  private async codeRequirementSet(
+    analysisId: string,
+    extraInstructions: string | undefined,
+    metadata: string | null,
+  ): Promise<Array<{ id: string; text: string }>> {
+    return codeAgentRequirementSet(
+      await this.extractRequirementsFromDocAgent(analysisId),
+      await extractNewRequirementCandidates(extraInstructions),
+      importedCandidateIds(readSourceRequirements(metadata)),
+      importedItemRefs(readSourceRequirements(metadata)),
+    ).requirements;
+  }
+
+  /**
+   * #1131 — the requirement-level outcome of every completed code row of the
+   * analysis (`requirementId` and gated `verdict`, from the finding's stored
+   * evidence). Read rather than taken from the capability record, so a
+   * continuation is scoped by what is actually persisted.
+   */
+  private async readCodeFindingVerdicts(
+    analysisId: string,
+  ): Promise<Array<{ requirementId: string | null; verdict: string | null }>> {
+    const rows = await prisma.finding.findMany({
+      where: { agentResult: { analysisId, agentKey: "code", status: "completed" } },
+      select: { evidence: true },
+    });
+    return rows.map((row) => {
+      const parsed =
+        (row.evidence ? safeParse<Record<string, unknown> | null>(row.evidence) : null) ?? {};
+      return {
+        requirementId: typeof parsed.requirementId === "string" ? parsed.requirementId : null,
+        verdict: typeof parsed.verdict === "string" ? parsed.verdict : null,
+      };
+    });
+  }
+
+  /** #1131 — what the analysis's code findings leave unreached and inconclusive. */
+  private async codeInvestigationGap(
+    analysisId: string,
+    requirements: ReadonlyArray<{ id: string }>,
+  ): Promise<CodeInvestigationGap> {
+    const split = classifyUnverifiedRequirements(
+      await this.readCodeFindingVerdicts(analysisId),
+      requirements.map((r) => r.id),
+    );
+    return {
+      unreached: split.unreached.length,
+      inconclusive: split.inconclusive.length,
+      total: requirements.length,
+    };
+  }
+
+  /**
+   * #1131 — scope a "Continue with a larger budget": the requirements the code
+   * pass never reached, out of the run's whole set. The live entry carries the
+   * scope so the page can say what the rerun is doing.
+   */
+  private async planContinuation(
+    analysisId: string,
+    requirements: Array<{ id: string; text: string }>,
+  ): Promise<{
+    requirements: Array<{ id: string; text: string }>;
+    unreached: Array<{ id: string; text: string }>;
+    gap: CodeInvestigationGap;
+  }> {
+    const split = classifyUnverifiedRequirements(
+      await this.readCodeFindingVerdicts(analysisId),
+      requirements.map((r) => r.id),
+    );
+    const unreachedIds = new Set(split.unreached);
+    const unreached = requirements.filter((r) => unreachedIds.has(r.id));
+    setLiveAgentContinuation(analysisId, "code", {
+      requirements: unreached.length,
+      total: requirements.length,
+    });
+    return {
+      requirements,
+      unreached,
+      gap: {
+        unreached: unreached.length,
+        inconclusive: split.inconclusive.length,
+        total: requirements.length,
+      },
+    };
+  }
+
+  /**
    * #766 — regenerate the code agent the way the pipeline runs it.
    *
    * `runOneAgent` is the single-shot path, so a regenerate of an AGENTIC code
@@ -1265,20 +1419,35 @@ export class AnalysisOrchestrator {
       /** #1098 — the `NR-*` ids of the imported items the run was started from. */
       importedIds?: ReadonlySet<string>;
       importedItems?: readonly RequirementRef[];
+      /** #1131 — the run's requirement set, when the caller already has it. */
+      requirements?: Array<{ id: string; text: string }>;
+      /**
+       * #1131 — continue the agentic pass on these requirements only (the ones
+       * it never reached), APPENDING its rows so the findings already made are
+       * kept. A pass that is not agentic cannot be scoped and re-runs whole.
+       */
+      continueWith?: Array<{ id: string; text: string }>;
     } = {},
   ): Promise<AgentRunResult> {
     const totalBudget = opts.tokenBudget ?? resolveAgentTokenBudget();
     // #1098 — the same set the pipeline gave the code agent.
-    const requirements = codeAgentRequirementSet(
-      await this.extractRequirementsFromDocAgent(input.analysisId),
-      await extractNewRequirementCandidates(input.extraInstructions),
-      opts.importedIds ?? new Set(),
-      opts.importedItems,
-    ).requirements;
-    const mode = await this.detectAgentMode(input.projectId, "code", requirements);
+    const allRequirements =
+      opts.requirements ??
+      codeAgentRequirementSet(
+        await this.extractRequirementsFromDocAgent(input.analysisId),
+        await extractNewRequirementCandidates(input.extraInstructions),
+        opts.importedIds ?? new Set(),
+        opts.importedItems,
+      ).requirements;
+    const mode = await this.detectAgentMode(input.projectId, "code", allRequirements);
     if (mode !== "agentic") {
-      return this.runOneAgent({ ...input, knownRequirementIds: requirements.map((r) => r.id) });
+      return this.runOneAgent({
+        ...input,
+        knownRequirementIds: allRequirements.map((r) => r.id),
+      });
     }
+    const continuing = opts.continueWith !== undefined;
+    const requirements = opts.continueWith ?? allRequirements;
 
     const startedAt = new Date();
     const connectors = await prisma.repoConnection.findMany({
@@ -1322,8 +1491,12 @@ export class AnalysisOrchestrator {
       escalation,
     };
 
+    // #1131 — a continuation appends beside the rows it continues.
+    const persistMode = continuing ? ("append" as const) : undefined;
     const results: AgentRunResult[] = [];
+    const ranConnectorIds: string[] = [];
     if (connectors.length <= 1) {
+      if (connectors[0]) ranConnectorIds.push(connectors[0].id);
       results.push(
         await this.runAgenticCodeAgent({
           ...shared,
@@ -1331,6 +1504,7 @@ export class AnalysisOrchestrator {
           connectorId: connectors[0]?.id,
           tokenBudget: totalBudget,
           turnMultiplier: opts.turnMultiplier,
+          ...(persistMode ? { persistMode } : {}),
         }),
       );
     } else {
@@ -1341,6 +1515,7 @@ export class AnalysisOrchestrator {
       );
       for (const connector of effectiveConnectors) {
         if (input.signal.aborted) break;
+        ranConnectorIds.push(connector.id);
         results.push(
           await this.runAgenticCodeAgent({
             ...shared,
@@ -1348,6 +1523,7 @@ export class AnalysisOrchestrator {
             connectorId: connector.id,
             tokenBudget: effectiveBudget,
             turnMultiplier: opts.turnMultiplier,
+            ...(persistMode ? { persistMode } : {}),
           }),
         );
       }
@@ -1355,14 +1531,16 @@ export class AnalysisOrchestrator {
 
     // Each agentic row replaces its own connector's row (#763). A connector-less
     // `code` row from an earlier single-shot regenerate would otherwise survive
-    // beside them and double the agent's findings.
-    if (connectors.length > 0 && results.length > 0) {
+    // beside them and double the agent's findings. #1131 — so would a row a
+    // continuation appended for a repository this pass re-ran. A continuation
+    // itself deletes nothing: the rows before it hold the findings it keeps.
+    if (!continuing && connectors.length > 0 && results.length > 0) {
       await prisma.agentResult.deleteMany({
         where: {
           analysisId: input.analysisId,
           agentKey: "code",
-          connectorId: null,
           createdAt: { lt: startedAt },
+          OR: [{ connectorId: null }, { connectorId: { in: ranConnectorIds } }],
         },
       });
     }
@@ -1672,13 +1850,22 @@ export class AnalysisOrchestrator {
    * counted on the record (the limit reads the count), and when the rerun was cut
    * short as well, what it left unreached is recorded so the banner can say so
    * instead of silently offering to continue again.
+   *
+   * #1131 — `analysisGap` is what the analysis's code findings as a whole leave
+   * unreached and inconclusive. A continuation adds to the findings rather than
+   * replacing them, so its own pass's counts describe only the requirements it
+   * re-investigated; this one is recorded instead.
    */
-  private async refreshCodeInvestigation(analysisId: string, continued = false): Promise<void> {
+  private async refreshCodeInvestigation(
+    analysisId: string,
+    opts: { continued?: boolean; analysisGap?: CodeInvestigationGap } = {},
+  ): Promise<void> {
+    const continued = opts.continued === true;
     const health = mergeRetrievalHealth(this.retrievalHealths.get(analysisId) ?? []);
     this.retrievalHealths.delete(analysisId);
     // Single-shot regenerates record no retrieval health; leave the record alone
     // — unless this was a continuation, which is counted whatever it recorded.
-    if (!health && !continued) return;
+    if (!health && !continued && !opts.analysisGap) return;
     if (health) {
       try {
         await persistAnalysisEnhancement(analysisId, { retrieval: health });
@@ -1716,12 +1903,17 @@ export class AnalysisOrchestrator {
       delete next.codeInvestigationUnreached;
       // #1388 — the stand-in described the replaced pass; show retrieval plainly.
       delete next.codeAgentStoppedEarly;
-      if (health.exhausted === true && health.unverifiedRequirements !== undefined) {
-        next.codeInvestigationUnreached = {
-          unreached: health.unverifiedRequirements,
-          total: health.requirementCount,
-        };
-      }
+      // #1131 — unreached and inconclusive apart when the pass counted them;
+      // a pass that did not keeps the pre-#1131 reading.
+      const gap =
+        investigationGapFromHealth(health) ??
+        (health.exhausted === true && health.unverifiedRequirements !== undefined
+          ? { unreached: health.unverifiedRequirements, total: health.requirementCount }
+          : undefined);
+      if (gap) next.codeInvestigationUnreached = gap;
+    }
+    if (opts.analysisGap && next.codeInvestigationCutShort === true) {
+      next.codeInvestigationUnreached = { ...opts.analysisGap };
     }
     await this.persistAndEmitCapability(analysisId, {
       ...next,
@@ -3506,12 +3698,25 @@ export class AnalysisOrchestrator {
           // clears the (deliberately scale-free) verdict threshold above, so without
           // this it was persisted as healthy and raised no banner. `passHealth` —
           // the record the verdicts read — is left untouched.
-          const reportedHealth = assessInvestigationCoverage(passHealth, {
+          const assessedHealth = assessInvestigationCoverage(passHealth, {
             unverifiedRequirements: countUnverifiedRequirements(
               validated.findings,
               passRequirements.map((r) => r.id),
             ),
           });
+          // #1131 — a pass cut short by its budget records how many requirements
+          // it never reached: only those are what a larger budget can still
+          // reach. The rest of its could-not-verify ones are inconclusive.
+          const reportedHealth: AnalysisRetrievalHealth =
+            passHealth.exhausted === true
+              ? {
+                  ...assessedHealth,
+                  unreachedRequirements: classifyUnverifiedRequirements(
+                    validated.findings,
+                    passRequirements.map((r) => r.id),
+                  ).unreached.length,
+                }
+              : assessedHealth;
           if (reportedHealth.degraded && !passHealth.degraded) {
             log.warn("Agentic code pass investigated too little to report as healthy", {
               analysisId: input.analysisId,
@@ -3741,6 +3946,9 @@ export class AnalysisOrchestrator {
           // #763 — keep the failure row scoped to its connector too, so a failed
           // connector's row replaces only its own prior attempt.
           connectorId: input.connectorId,
+          // #1131 — a failed or cancelled APPEND (a resume or a continuation)
+          // must not delete the row whose findings it was adding to.
+          mode: input.persistMode ?? "replace",
         });
         this.emit({
           analysisId: input.analysisId,
@@ -4996,6 +5204,10 @@ export class AnalysisOrchestrator {
     if (health.degraded) tracker.codeRetrievalDegraded = true;
     // #1001 — the pass ran out of turns/tokens before reaching every requirement.
     if (health.exhausted) tracker.codeInvestigationCutShort = true;
+    // #1131 — what it left unreached and inconclusive, so only the former
+    // offers Continue (summed over the run's code passes, one per repository).
+    const gap = investigationGapFromHealth(health);
+    if (gap) tracker.codeInvestigationGap = addInvestigationGaps(tracker.codeInvestigationGap, gap);
   }
 
   /**
