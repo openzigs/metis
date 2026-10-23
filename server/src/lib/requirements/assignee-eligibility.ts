@@ -7,46 +7,40 @@
  * username and display name (a cross-workspace user lookup), and the SLA
  * checker later sent them a notification carrying the requirement's title.
  *
- * An eligible assignee is an ACTIVE, non-deleted user who
- *   - is a live member of the project's workspace, when it has one — a system
- *     admin included: being able to open every project does not put someone in
- *     this workspace, and an assignment is a workspace act (the same line #1431
- *     draws for ChatOps bindings); and
- *   - can open the project by the project-access rule
- *     (`canAccessProjectDiscussions` → `assertProjectAccess`, plus "not
- *     soft-deleted" for non-admins), keyed by the assignee — the predicate
- *     mentions and discussion notifications already use for a third party.
+ * An eligible assignee is an ACTIVE, non-deleted user who can open the
+ * requirement's project by the project-access rule, keyed by the assignee
+ * (`canAccessProjectDiscussions` → `assertProjectAccess`, plus "not
+ * soft-deleted" for non-admins). That rule reads the assignee's LIVE workspace
+ * memberships from the database (`readLiveWorkspaceIds`), so for a workspace
+ * project it means a live member of that workspace. It is the same audience the
+ * assignee picker offers (`GET /api/users?projectId=`, `mentionAudienceWhere`)
+ * and the one mentions and discussion notifications are delivered to:
  *
- * A legacy workspace-less project keeps its open rule: every active user can
- * open it, so every active user is eligible.
+ *   - system admins are eligible everywhere — they open every project, and the
+ *     user search already lists them to every caller, so neither the reply nor
+ *     an SLA notification tells anyone something they could not already see;
+ *   - a soft-deleted project offers system admins only;
+ *   - a legacy workspace-less project is open, so every active user qualifies.
  *
  * Every refusal is the same `false`; callers answer it like an unknown user.
  */
 import { prisma } from "../prisma.js";
 import { canAccessProjectDiscussions } from "../discussions/access.js";
-import { isActiveWorkspaceMember } from "../workspaces/chatops-identity-scope.js";
 
 /** May `userId` be assigned work in `projectId`? */
 export async function isEligibleAssignee(userId: string, projectId: string): Promise<boolean> {
   if (!userId || !projectId) return false;
-  const [user, project] = await Promise.all([
+  const [user, adminRole] = await Promise.all([
     prisma.user.findFirst({
       where: { id: userId, deletedAt: null, status: "active" },
       select: { id: true },
     }),
-    prisma.project.findUnique({ where: { id: projectId }, select: { workspaceId: true } }),
+    prisma.userRole.findFirst({
+      where: { userId, role: { key: "admin" } },
+      select: { userId: true },
+    }),
   ]);
-  if (!user || !project) return false;
-  if (
-    project.workspaceId &&
-    !(await isActiveWorkspaceMember(prisma, project.workspaceId, userId))
-  ) {
-    return false;
-  }
-  const adminRole = await prisma.userRole.findFirst({
-    where: { userId, role: { key: "admin" } },
-    select: { userId: true },
-  });
+  if (!user) return false;
   // No audit context: an ineligible assignee is not an access attempt by them.
   return canAccessProjectDiscussions(
     { id: userId, role: adminRole ? "admin" : "reader" },

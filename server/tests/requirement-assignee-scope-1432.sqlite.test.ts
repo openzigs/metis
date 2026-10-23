@@ -10,10 +10,11 @@
  *
  * Pinned here, against a real SQLite database built from the migration chain,
  * through the real router, JWT auth and access rule:
- *   - a member of another workspace, a system admin who is not a member, a
- *     disabled or deleted member and an unknown id are all refused with the SAME
- *     404 body, and nothing is written;
- *   - a legacy workspace-less project keeps its open rule;
+ *   - a member of another workspace, a disabled or deleted member and an
+ *     unknown id are all refused with the SAME 404 body, and nothing is written;
+ *   - the audience is the assignee picker's (`GET /users?projectId=`): system
+ *     admins, who open every project, qualify; a soft-deleted project takes
+ *     system admins only; a legacy workspace-less project keeps its open rule;
  *   - an assignment that already names an ineligible user (written before the
  *     fix, or whose assignee has since left) is listed without that user's
  *     name, and the SLA checker does not notify them;
@@ -66,6 +67,7 @@ const WS_A = "ws-1432-a";
 const WS_B = "ws-1432-b";
 const REQ_A = "req-1432-a";
 const REQ_L = "req-1432-legacy";
+const REQ_GONE = "req-1432-gone";
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   "#1432 — requirement assignees are scoped to the requirement's project",
@@ -82,10 +84,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       a.use(errorHandler);
       return a;
     };
-    const assign = (requirementId: string, assigneeId: string) =>
+    let ADMIN_TOKEN = "";
+    const assign = (requirementId: string, assigneeId: string, bearer = TOKEN) =>
       request(app())
         .post(`/api/requirements/${requirementId}/assignments`)
-        .set("Authorization", `Bearer ${TOKEN}`)
+        .set("Authorization", `Bearer ${bearer}`)
         .send({ assigneeId });
     const list = (requirementId: string) =>
       request(app())
@@ -125,6 +128,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       for (const [projectId, workspaceId, requirementId] of [
         ["p-1432-a", WS_A, REQ_A],
         ["p-1432-legacy", null, REQ_L],
+        ["p-1432-gone", WS_A, REQ_GONE],
       ] as const) {
         await db.project.create({
           data: {
@@ -133,6 +137,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             slug: projectId,
             createdById: "alice",
             ...(workspaceId ? { workspaceId } : {}),
+            ...(requirementId === REQ_GONE ? { deletedAt: new Date() } : {}),
           },
         });
         await db.analysis.create({
@@ -155,6 +160,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         permissions: getPermissionsForRole("coordinator"),
         workspaces: [WS_A],
       }).accessToken;
+      ADMIN_TOKEN = issueTokens({
+        userId: "sysadm",
+        username: "sysadm",
+        role: "admin",
+        permissions: getPermissionsForRole("admin"),
+        workspaces: [],
+      }).accessToken;
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
@@ -172,7 +184,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const unknown = await assign(REQ_A, "u-nope");
         expect(unknown.status).toBe(404);
 
-        for (const assigneeId of ["mallory", "sysadm", "disabled", "gone"]) {
+        for (const assigneeId of ["mallory", "disabled", "gone"]) {
           const res = await assign(REQ_A, assigneeId);
           expect({ assigneeId, status: res.status }).toEqual({ assigneeId, status: 404 });
           expect(res.body).toEqual(unknown.body);
@@ -192,9 +204,21 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(await db.assignment.count()).toBe(1);
       });
 
+      it("a system admin, who opens every project, is assignable like the picker offers", async () => {
+        expect((await assign(REQ_A, "sysadm")).status).toBe(201);
+      });
+
       it("a legacy workspace-less project keeps its open rule: any active user", async () => {
         expect((await assign(REQ_L, "mallory")).status).toBe(201);
         expect((await assign(REQ_L, "disabled")).status).toBe(404);
+      });
+
+      it("a soft-deleted project takes no non-admin assignee, even a member", async () => {
+        // Only a system admin reaches a soft-deleted project's requirement.
+        const res = await assign(REQ_GONE, "bob", ADMIN_TOKEN);
+        expect(res.status).toBe(404);
+        expect(res.body.error.code).toBe("ASSIGNEE_NOT_FOUND");
+        expect((await assign(REQ_GONE, "sysadm", ADMIN_TOKEN)).status).toBe(201);
       });
     });
 
