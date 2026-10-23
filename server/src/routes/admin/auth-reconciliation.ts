@@ -1,5 +1,6 @@
-import { Router, json, type RequestHandler } from "express";
+import { Router, type RequestHandler } from "express";
 import { requireAuth } from "../../middleware/auth.js";
+import { jsonBodyParser } from "../../middleware/body-parsers.js";
 import { AppError } from "../../middleware/error-handler.js";
 import {
   confirmRolesForAdmin,
@@ -8,7 +9,7 @@ import {
   reconciliationTargetSchema,
 } from "../../lib/auth/role-reconciliation.js";
 
-const parseJson = json({ limit: "4kb" });
+const parseJson = jsonBodyParser({ limit: "4kb" });
 /** Also mounted ahead of the application's larger global parser for chunked bodies. */
 export const reconciliationJson: RequestHandler = (req, res, next) => {
   const tooLarge = () =>
