@@ -1646,24 +1646,29 @@ describe("resolveTestedBy — a shared entry point is not evidence (#1108)", () 
   const relations = (tests: Array<{ name: string; relation: string }>) =>
     Object.fromEntries(tests.map((t) => [t.name, t.relation]));
 
-  it("demotes the run-7 setup callers and keeps NewHandler's own two tests (review)", async () => {
-    // Since the #1435 review a test that NAMES the callee keeps its relation, so
-    // the two TestNewHandler… tests still count: the run-7 router requirements
-    // are strictly tested through them, and only the three
-    // TestGetEntryIDsHandler… tests are demoted.
-    const out = await all(routerFixture(ROUTER_TITLES));
-    for (const id of ["r0", "r1"]) {
-      expect(relations(out.get(id)!)).toEqual({
-        TestNewHandlerHandlesOptionsRequests: "exercises",
-        TestNewHandlerSupportsBasePathStripping: "exercises",
-        TestGetEntryIDsHandlerRequiresAuthentication: "entry-point",
-        TestGetEntryIDsHandlerRejectsInvalidStarredParam: "entry-point",
-        TestGetEntryIDsHandlerRejectsInvalidStatusParam: "entry-point",
-      });
-      const demoted = out.get(id)!.find((t) => t.relation === "entry-point")!;
-      expect(demoted.subject).toEqual({ filePath: API, symbol: `${API}::NewHandler` });
-      expect(demoted.score).toBeLessThanOrEqual(0.4);
+  it("reports every NewHandler test of the run-7 and run-9 router requirements as entry-point", async () => {
+    // TestNewHandler… NAME the callee, but `NewHandler` is `new` + `handler`, two
+    // constructor/router stop-words, so the callee's name shares nothing with any
+    // route title and its own tests are demoted with the setup callers.
+    const titles = [...ROUTER_TITLES, "Expose GET /v1/feeds API", "Expose POST /v1/discover API"];
+    const out = await all(routerFixture(titles));
+    for (const id of ["r0", "r1", "r2", "r3"]) {
+      const tests = out.get(id)!;
+      expect(tests).toHaveLength(5);
+      expect(new Set(tests.map((t) => t.relation))).toEqual(new Set(["entry-point"]));
+      expect(tests[0].subject).toEqual({ filePath: API, symbol: `${API}::NewHandler` });
+      expect(tests[0].score).toBeLessThanOrEqual(0.4);
     }
+    const gaps = await listUntestedRequirements(P, undefined, deps(routerFixture(titles)).deps);
+    expect(gaps.tested).toBe(0);
+    expect(gaps.untested.map((g) => g.reason)).toEqual(Array(4).fill("entry-point-only"));
+  });
+
+  it("never lets `new` or `handler` tie NewHandler's tests to a title", async () => {
+    // Without the stop-words, "New feed handler endpoint" shares `new` and
+    // `handler` with TestNewHandler… and with NewHandler itself.
+    const out = (await all(routerFixture(["New feed handler endpoint"]))).get("r0")!;
+    expect(new Set(out.map((t) => t.relation))).toEqual(new Set(["entry-point"]));
   });
 
   it("lists a requirement reached only by setup callers as entry-point-only", async () => {
@@ -1701,7 +1706,7 @@ describe("resolveTestedBy — a shared entry point is not evidence (#1108)", () 
     });
   });
 
-  it("keeps ParseFeed's own tests whatever the title; stems 'Parsing feeds' (review)", async () => {
+  describe("ParseFeed: a test named for the callee, and the callee's own words (review)", () => {
     // The reviewer's case: ParseFeed is built by format tests not named for it,
     // and two tests that are.
     const PARSER = "internal/reader/parser/parser.go";
@@ -1716,39 +1721,60 @@ describe("resolveTestedBy — a shared entry point is not evidence (#1108)", () 
       "TestParseFeedRSS",
       "TestParseFeedAtom",
     ].map((name, i) => sym(`t-pf-${i}`, PARSER_TEST, name, { startLine: 10 + 20 * i }));
-    const f: Fixture = {
-      requirements: [req("r0", "Parsing feeds"), req("r1", "Support syndication formats")],
-      codeMappings: [fileMap("r0", PARSER, "p-feed"), fileMap("r1", PARSER, "p-feed")],
-      symbols: [sym("p-feed", PARSER, "ParseFeed", { startLine: 20 }), ...callers],
-      edges: callers.map((c) => ({
-        projectId: P,
-        kind: "calls",
-        fromSymbolId: c.id,
-        toSymbolId: "p-feed",
-      })),
-    };
-    const out = await all(f);
-    // "Parsing feeds" stems to `pars feed`, so every caller is about it.
-    expect(new Set(out.get("r0")!.map((t) => t.relation))).toEqual(new Set(["exercises"]));
-    const r1 = relations(out.get("r1")!);
-    expect(r1.TestParseFeedRSS).toBe("exercises");
-    expect(r1.TestParseFeedAtom).toBe("exercises");
-    expect(r1.TestParseAtom03Feed).toBe("entry-point");
+    const parseFeed = async (title: string) =>
+      relations(
+        (
+          await all({
+            requirements: [req("r0", title)],
+            codeMappings: [fileMap("r0", PARSER, "p-feed")],
+            symbols: [sym("p-feed", PARSER, "ParseFeed", { startLine: 20 }), ...callers],
+            edges: callers.map((c) => ({
+              projectId: P,
+              kind: "calls",
+              fromSymbolId: c.id,
+              toSymbolId: "p-feed",
+            })),
+          })
+        ).get("r0")!,
+      );
+
+    it("'Parsing feeds' stems to `pars feed`: every caller is about it", async () => {
+      expect(new Set(Object.values(await parseFeed("Parsing feeds")))).toEqual(
+        new Set(["exercises"]),
+      );
+    });
+
+    it("keeps the named tests when only the callee's name meets the title", async () => {
+      // One shared word (`feed`) is not enough for a four-word title, so only
+      // the clause for tests NAMED for ParseFeed keeps TestParseFeedRSS/Atom.
+      const r = await parseFeed("Feeds survive malformed input");
+      expect(r.TestParseFeedRSS).toBe("exercises");
+      expect(r.TestParseFeedAtom).toBe("exercises");
+      expect(r.TestParseAtom03Feed).toBe("entry-point");
+    });
+
+    it("demotes them for 'Support syndication formats' (a known limit)", async () => {
+      const r = await parseFeed("Support syndication formats");
+      expect(r.TestParseFeedRSS).toBe("entry-point");
+      expect(r.TestParseFeedAtom).toBe("entry-point");
+    });
   });
 
   it("demotes a naming match to a short-named entry point the same way", async () => {
-    // `Run` is too short to be named by a test name (#1435 review), so a sibling
-    // test named for it is judged like any setup caller.
+    // `Tag` is too short to be named by a test name (#1435 review), so a sibling
+    // test named for it is judged like any setup caller, although the callee's
+    // own name meets the title (`tag`). (`Run` would not do: `run` is a
+    // stop-word, which would hide this rule.)
     const POOL = "internal/worker/pool.go";
     const POOL_TEST = "internal/worker/pool_test.go";
     const setup = ["TestAlphaJob", "TestBetaJob", "TestGammaJob", "TestDeltaJob", "TestEpsilonJob"];
     const f: Fixture = {
-      requirements: [req("r0", "Feed counters endpoint")],
+      requirements: [req("r0", "Tag feed counters")],
       codeMappings: [fileMap("r0", POOL, "w-run")],
       symbols: [
-        sym("w-run", POOL, "Run", { startLine: 20 }),
+        sym("w-run", POOL, "Tag", { startLine: 20 }),
         ...setup.map((n, i) => sym(`t-w-${i}`, POOL_TEST, n, { startLine: 100 + 20 * i })),
-        sym("t-w-named", POOL_TEST, "TestRunDrainsQueue", { startLine: 400 }),
+        sym("t-w-named", POOL_TEST, "TestTagDrainsQueue", { startLine: 400 }),
       ],
       edges: setup.map((_, i) => ({
         projectId: P,
@@ -1758,7 +1784,7 @@ describe("resolveTestedBy — a shared entry point is not evidence (#1108)", () 
       })),
     };
     const out = (await all(f)).get("r0")!;
-    expect(out.find((t) => t.name === "TestRunDrainsQueue")?.relation).toBe("entry-point");
+    expect(out.find((t) => t.name === "TestTagDrainsQueue")?.relation).toBe("entry-point");
     expect(out.every((t) => t.relation === "entry-point")).toBe(true);
   });
 

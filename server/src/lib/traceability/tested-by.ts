@@ -88,6 +88,9 @@
  *    requirement by the same word rule into the weakest relation, `entry-point`
  *    (0.4). It is shown, never strict, and alone it leaves the requirement in
  *    the gap list as `entry-point-only` (see {@link isSharedEntryPoint}).
+ *    A test named for the callee is kept when the callee's own name shares a
+ *    title word; constructor/router words (`new`, `handler`, …) never count
+ *    ({@link ENTRY_POINT_STOP_WORDS}).
  *
  * Within a relation, tests are ordered by BM25 relevance of `name + qualifiedName`
  * against `denoiseRequirementQuery(title + body)`, folded into `score`. Results
@@ -394,11 +397,40 @@ export function namesCallee(testName: string, calleeName: string): boolean {
  * `TestValidatePassword`), two for a longer title, so one common word such as
  * `config` cannot carry a link through a hub.
  */
-function sharesRequirementWords(name: string, requirementWords: ReadonlySet<string>): boolean {
+function sharesRequirementWords(
+  name: string,
+  requirementWords: ReadonlySet<string>,
+  ignore?: ReadonlySet<string>,
+): boolean {
   if (requirementWords.size === 0) return false;
   const needed = requirementWords.size <= 2 ? 1 : 2;
   let shared = 0;
-  for (const w of words(name)) if (requirementWords.has(w) && ++shared >= needed) return true;
+  for (const w of words(name)) {
+    if (ignore?.has(w)) continue;
+    if (requirementWords.has(w) && ++shared >= needed) return true;
+  }
+  return false;
+}
+
+/**
+ * #1108 — stemmed words a constructor's or router's name is made of, which say
+ * nothing about a requirement: `NewHandler`'s `new` and `handler` must not tie
+ * it to "New feed handler endpoint". Ignored by the entry-point checks only.
+ */
+export const ENTRY_POINT_STOP_WORDS: ReadonlySet<string> = new Set(
+  ["new", "get", "set", "make", "init", "handle", "handler", "run"].map(stemWord),
+);
+
+/**
+ * True when the callee's OWN name shares at least one non-stop word with the
+ * requirement title (`ParseFeed` → `pars feed` for "Feeds survive malformed
+ * input"). Lets a test named for the callee keep its relation (#1435 review)
+ * without letting `TestNewHandler…` back in for every route `NewHandler` registers.
+ */
+function calleeNameSharesTitle(calleeName: string, requirementWords: ReadonlySet<string>): boolean {
+  for (const w of words(calleeName)) {
+    if (!ENTRY_POINT_STOP_WORDS.has(w) && requirementWords.has(w)) return true;
+  }
   return false;
 }
 
@@ -817,10 +849,18 @@ function resolveOne(
     // #1108 — a shared entry point (a constructor or router the tests build to
     // reach something else) says nothing about one requirement: a link through
     // it that is not about the requirement is reported, never counted.
-    // A test that NAMES the callee is a test of it (`TestParseFeedRSS` of
-    // `ParseFeed`) and keeps its relation, title words or not (#1108 review).
+    // Constructor and router words (`new`, `handler`) never count here.
+    // A test that NAMES the callee keeps its relation when the callee's own name
+    // shares a word with the title (`TestParseFeedRSS` of `ParseFeed` for
+    // "Parsing feeds"); `TestNewHandler…` for "Expose GET /v1/feeds API" does not
+    // (#1435 review).
+    const aboutIgnoringStopWords = (from: SymbolRow, ts: SymbolRow): boolean =>
+      sharesRequirementWords(from.name, requirementWords, ENTRY_POINT_STOP_WORDS) ||
+      sharesRequirementWords(ts.name, requirementWords, ENTRY_POINT_STOP_WORDS);
     const throughEntryPoint = (from: SymbolRow, ts: SymbolRow): boolean =>
-      entryPoint(ts) && !about(from, ts) && !namesCallee(from.name, ts.name);
+      entryPoint(ts) &&
+      !aboutIgnoringStopWords(from, ts) &&
+      !(namesCallee(from.name, ts.name) && calleeNameSharesTitle(ts.name, requirementWords));
     const offerCalls = (
       calls: ReadonlyArray<{ from: SymbolRow; ts: SymbolRow }>,
       relation: TestLinkRelation,
