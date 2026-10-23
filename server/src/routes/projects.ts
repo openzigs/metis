@@ -915,8 +915,9 @@ export function projectsRouter(): Router {
     requirePermission("project.update"),
     async (req: Request, res: Response) => {
       const actor = actorFromReq(req);
+      const projectId = String(req.params.id);
       const entryId = String(req.params.entryId);
-      const ok2 = await forgetEntry(entryId, { id: actor.id });
+      const ok2 = await forgetEntry(projectId, entryId, { id: actor.id });
       if (!ok2) throw new AppError(404, "CHRONICLE_NOT_FOUND", "Entry not found");
       res.status(204).end();
     },

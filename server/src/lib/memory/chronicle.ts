@@ -129,11 +129,18 @@ export async function getEntries(
   return rows.map(toDto);
 }
 
+/**
+ * Delete one entry of `projectId`. The entry is looked up by `{ id, projectId }`
+ * (#1429): the route authorizes the project in the path, so an entry id that
+ * belongs to any other project must read as unknown — `false`, the caller's
+ * 404 — and never be deleted.
+ */
 export async function forgetEntry(
+  projectId: string,
   entryId: string,
   actor: { id: string } | null = null,
 ): Promise<boolean> {
-  const row = await prisma.chronicleEntry.findFirst({ where: { id: entryId } });
+  const row = await prisma.chronicleEntry.findFirst({ where: { id: entryId, projectId } });
   if (!row) return false;
   await prisma.chronicleEntry.delete({ where: { id: entryId } });
   audit({
