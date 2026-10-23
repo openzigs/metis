@@ -5,13 +5,15 @@
  * `backgroundRunsRouter()` is not mounted under `/projects/:projectId`, so the
  * `requireProjectAccess()` chokepoint (#674) cannot be used: every route
  * addresses a run (or run group) by primary key alone. The owning project has
- * to be resolved from the row first, then authorized through the same
- * `assertProjectAccess` seam that #674, #1052, #1053 and #1055 standardized on.
+ * to be resolved from the row first, then authorized through the same seam
+ * that #674, #1052, #1053 and #1055 standardized on, in its live form
+ * (`assertLiveProjectAccess`, #1430: a soft-deleted project is a 404 for a
+ * non-admin).
  *
  * The resolved projectId is returned so the caller can thread it into the
  * follow-up query — that way the tenant scope lives in the Prisma `where`, not
  * only at the router. `undefined` means "system admin, no narrowing", mirroring
- * the admin bypass inside `assertProjectAccess` (and keeping the extra query
+ * the admin bypass inside `assertLiveProjectAccess` (and keeping the extra query
  * off the admin path).
  *
  * Out-of-tenant ids and unknown ids produce the *same* 404 envelope — including
@@ -21,7 +23,7 @@
 import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
-import { assertProjectAccess } from "../custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../custom-agents/authz.js";
 import { workspaceScopeWhere, type WorkspaceScopeWhere } from "../auth/project-scope.js";
 
 /** Prisma `where` fragment narrowing runs/groups to the caller's projects. */
@@ -39,7 +41,7 @@ async function authorizeRow(
   if (!row) throw notFound();
 
   try {
-    await assertProjectAccess(user, row.projectId);
+    await assertLiveProjectAccess(user, row.projectId);
   } catch (err) {
     // "project missing" and "caller is not a workspace member" both surface as
     // a 404 from the seam — collapse them into the run-level 404 so an
@@ -98,7 +100,7 @@ export async function authorizeRunProject(
   projectId: string,
 ): Promise<void> {
   if (!user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-  await assertProjectAccess(user, projectId);
+  await assertLiveProjectAccess(user, projectId);
 }
 
 /**

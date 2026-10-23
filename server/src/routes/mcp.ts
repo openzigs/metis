@@ -9,7 +9,8 @@
  * #305 — role permissions are not a grant over every workspace's projects.
  * Any route that takes a project id (the per-project allow-list routes, the
  * `?projectId=` list filter, and every create that binds a server to a
- * project) also passes `assertProjectAccess` for that id: 404 without access.
+ * project) also passes `assertLiveProjectAccess` for that id: 404 without
+ * access or when the project is soft-deleted (#1430).
  *
  * #311 — every route that acts on an EXISTING server by id resolves the server
  * first (`assertServerAccess`). A `scope: "project"` server is reached only
@@ -66,7 +67,7 @@ import { assertBindingWriteWindowOpen } from "../lib/vault/binding-write-mark.js
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
-import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { workspaceScopeWhere } from "../lib/auth/project-scope.js";
 import {
   assertMcpCreateSecretBinding,
@@ -88,12 +89,13 @@ function actorFromReq(req: Request) {
  * #305 — `/api/mcp` is mounted outside `/api/projects`, so the
  * `/projects/:id/:sub` chokepoint never reaches it. Every route here that acts
  * on a caller-supplied project id checks it through the canonical seam
- * (`assertProjectAccess`): admins bypass, a caller outside the project's
- * workspace gets the same 404 as an unknown id, and nothing is read or written.
+ * (`assertLiveProjectAccess`): admins bypass, a caller outside the project's
+ * workspace, or a non-admin on a soft-deleted project (#1430), gets the same
+ * 404 as an unknown id, and nothing is read or written.
  */
 async function assertCallerProjectAccess(req: Request, projectId: string): Promise<void> {
   if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-  await assertProjectAccess(req.user, projectId);
+  await assertLiveProjectAccess(req.user, projectId);
 }
 
 /**
@@ -121,7 +123,7 @@ async function assertProjectScopedCreate(
 /**
  * #311 — resolve an existing server by id for a route that acts on it. A
  * `scope: "project"` server is reachable only by a caller who passes
- * `assertProjectAccess` for the server's own project (admins bypass); a
+ * `assertLiveProjectAccess` for the server's own project (admins bypass); a
  * project server with no project is never reachable by a non-admin. Unknown,
  * soft-deleted and unreachable servers all answer this one 404, so a probe
  * cannot tell them apart. Global servers stay role-gated.
@@ -142,7 +144,7 @@ async function assertServerAccess(req: Request, id: string): Promise<void> {
   if (server.scope !== "project") return;
   if (!server.projectId) throw notFound();
   try {
-    await assertProjectAccess(req.user, server.projectId);
+    await assertLiveProjectAccess(req.user, server.projectId);
   } catch (err) {
     if (err instanceof AppError && err.statusCode === 404) throw notFound();
     throw err;

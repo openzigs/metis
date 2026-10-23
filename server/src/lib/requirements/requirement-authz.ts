@@ -26,7 +26,7 @@ import type { Request, RequestHandler } from "express";
 import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
-import { assertProjectAccess } from "../custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../custom-agents/authz.js";
 import { audit } from "../audit/audit-service.js";
 
 /** A request that has passed {@link requireRequirementAccess}. */
@@ -66,7 +66,7 @@ export async function assertRequirementAccessible(
   if (!row) throw requirementNotFound();
 
   try {
-    await assertProjectAccess(user, row.projectId);
+    await assertLiveProjectAccess(user, row.projectId);
   } catch (err) {
     // "project missing" and "caller is not a workspace member" both surface as a
     // 404 from the seam — collapse them into the requirement-level 404 so an

@@ -18,7 +18,7 @@
  */
 import type { AuthPayload } from "@metis/shared";
 import { AppError } from "../../middleware/error-handler.js";
-import { assertProjectAccess } from "../custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../custom-agents/authz.js";
 
 export async function assertResourceProjectAccess(
   user: AuthPayload | undefined,
@@ -29,7 +29,7 @@ export async function assertResourceProjectAccess(
   if (user.role === "admin") return;
   if (!projectId) throw notFound();
   try {
-    await assertProjectAccess(user, projectId);
+    await assertLiveProjectAccess(user, projectId);
   } catch (err) {
     if (err instanceof AppError && err.statusCode === 404) throw notFound();
     throw err;

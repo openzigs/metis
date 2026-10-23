@@ -5,15 +5,17 @@
  * module is it. Everything that scopes a project list must build on
  * `workspaceScopeWhere` rather than hand-rolling the fragment again:
  *
- *   • admin                        → every project (no workspace filter at all)
+ *   • admin                        → every project (no workspace filter at all,
+ *                                    soft-deleted ones included)
  *   • workspace-less project       → open to any authenticated user
  *                                    (pre-migration rows, Epic #759)
  *   • everyone else                → projects in workspaces they belong to
+ *   • soft-deleted project         → closed to everyone but admins (#1430)
  *
- * This mirrors the single-project twin `assertProjectAccess`
+ * This mirrors the single-project twin `assertLiveProjectAccess`
  * (`lib/custom-agents/authz.ts`), which the `requireProjectAccess` middleware
  * (`middleware/require-project-access.ts`) applies to every
- * `/projects/:projectId/**` route. Both let workspace-less projects through.
+ * `/projects/:projectId/**` route. Both let live workspace-less projects through.
  *
  * ## Why this module exists
  *
@@ -40,7 +42,7 @@
  * | A bare workspace predicate to merge into your own `where` | `workspaceScopeWhere` (here) |
  * | A ready `where` for `prisma.project` (adds `deletedAt: null`) | `accessibleProjectWhere` (`lib/acp/authz.ts`) |
  * | The concrete list of ids                              | `listAccessibleProjectIds` (`lib/acp/authz.ts`) |
- * | Guard one project by id on a request                  | `assertProjectAccess` / `requireProjectAccess` |
+ * | Guard one project by id on a request                  | `assertLiveProjectAccess` / `requireProjectAccess` |
  *
  * `lib/scheduler/project-access.ts` used to export a same-named, creator-only
  * `listAccessibleProjectIds`; it was removed in #1232. Its list form of this
@@ -72,6 +74,8 @@ export interface LiveMembershipWhere {
 export type WorkspaceScopeWhere =
   | Record<string, never>
   | {
+      /** #1430 — a soft-deleted project is closed to non-admins. */
+      deletedAt: null;
       OR: Array<
         { workspaceId: null } | { workspaceId: { in: string[] }; workspace: LiveMembershipWhere }
       >;
@@ -96,6 +100,10 @@ export function workspaceScopeWhere(actor: ProjectScopeActor): WorkspaceScopeWhe
   // can name a workspace soft-deleted since (#549) or one the actor has since
   // been removed from (#561). Both are checked against the row, not the claim.
   return {
+    // #1430 — a soft-deleted project is closed to non-admins, as by id
+    // (`assertLiveProjectAccess`): a list must not show a row that 404s when
+    // opened. Admins (above) still see it.
+    deletedAt: null,
     OR: [
       { workspaceId: null },
       {

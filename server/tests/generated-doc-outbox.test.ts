@@ -148,7 +148,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
       // Minimal real schema, including SQL constraints and defaults used by Prisma.
       for (const sql of [
         `CREATE TABLE workspaces (id TEXT PRIMARY KEY, deletedAt DATETIME)`,
-        `CREATE TABLE projects (id TEXT PRIMARY KEY, workspaceId TEXT NOT NULL)`,
+        `CREATE TABLE projects (id TEXT PRIMARY KEY, workspaceId TEXT NOT NULL, deletedAt DATETIME)`,
         `CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT NOT NULL, status TEXT DEFAULT 'active', deletedAt DATETIME, authRolesInitializedAt DATETIME DEFAULT CURRENT_TIMESTAMP, authRoleAuthority TEXT DEFAULT 'explicit')`,
         `CREATE TABLE roles (id TEXT PRIMARY KEY, key TEXT UNIQUE NOT NULL, name TEXT NOT NULL, description TEXT DEFAULT '', isSystem BOOLEAN DEFAULT true, createdAt DATETIME DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP)`,
         `CREATE TABLE user_roles (userId TEXT REFERENCES users(id), roleId TEXT REFERENCES roles(id), source TEXT DEFAULT 'local', assignedAt DATETIME DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(userId,roleId))`,

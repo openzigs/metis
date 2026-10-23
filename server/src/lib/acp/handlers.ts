@@ -25,7 +25,7 @@
 import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
-import { assertProjectAccess } from "../custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../custom-agents/authz.js";
 import type { VerifiedToken } from "./api-tokens.js";
 import {
   ACP_METHOD_SCOPES,
@@ -195,7 +195,7 @@ async function handleListSkills(params: unknown, ctx: AuthedAcpContext): Promise
   const projectId = pickStringParam(params, "projectId");
   // A specific project filter must be one the caller can reach (404-equivalent
   // otherwise — no existence oracle).
-  if (projectId) await assertProjectAccess(ctx.actor, projectId);
+  if (projectId) await assertLiveProjectAccess(ctx.actor, projectId);
 
   let where: Record<string, unknown>;
   if (isAdminActor(ctx.actor)) {
@@ -243,7 +243,7 @@ interface AgentSummary {
 
 async function handleListAgents(params: unknown, ctx: AuthedAcpContext): Promise<AgentSummary[]> {
   const projectId = pickStringParam(params, "projectId");
-  if (projectId) await assertProjectAccess(ctx.actor, projectId);
+  if (projectId) await assertLiveProjectAccess(ctx.actor, projectId);
 
   let where: Record<string, unknown>;
   if (isAdminActor(ctx.actor)) {
@@ -287,7 +287,7 @@ async function handleRunAgent(params: unknown, ctx: AuthedAcpContext): Promise<{
   // (custom-agents.ts:277): the caller must be able to reach the target
   // project. Non-members get a 404-equivalent (AppError 404 → PROJECT_NOT_FOUND
   // in dispatch) so project existence is never leaked.
-  await assertProjectAccess(ctx.actor, p.projectId);
+  await assertLiveProjectAccess(ctx.actor, p.projectId);
 
   // Resolve the agent SCOPED TO THE PROJECT — never a global name lookup.
   // Mirror the REST twin's "owned by this project OR enabled for this project"

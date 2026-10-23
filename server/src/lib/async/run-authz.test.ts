@@ -1,7 +1,7 @@
 /**
  * Unit coverage for the `/api/runs` authorization seam (Issue #1056) — the
  * paths the route-level regression suite cannot reach: a missing `req.user`,
- * and a non-404 rejection from `assertProjectAccess` (which must propagate
+ * and a non-404 rejection from `assertLiveProjectAccess` (which must propagate
  * unchanged rather than be flattened into a run-level 404).
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,9 +14,9 @@ const { prismaMock } = vi.hoisted(() => ({
 }));
 vi.mock("../prisma.js", () => ({ prisma: prismaMock }));
 
-const assertProjectAccessMock = vi.fn(async () => undefined);
+const assertLiveProjectAccessMock = vi.fn(async () => undefined);
 vi.mock("../custom-agents/authz.js", () => ({
-  assertProjectAccess: (...args: unknown[]) => assertProjectAccessMock(...(args as [])),
+  assertLiveProjectAccess: (...args: unknown[]) => assertLiveProjectAccessMock(...(args as [])),
 }));
 
 import { getPermissionsForRole, type AuthPayload } from "@metis/shared";
@@ -38,7 +38,7 @@ const member: AuthPayload = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  assertProjectAccessMock.mockResolvedValue(undefined);
+  assertLiveProjectAccessMock.mockResolvedValue(undefined);
   prismaMock.backgroundRun.findUnique.mockResolvedValue({ projectId: "proj_a" });
   prismaMock.runGroup.findUnique.mockResolvedValue({ projectId: "proj_a" });
 });
@@ -55,13 +55,13 @@ describe("missing authenticated user", () => {
     });
     expect(() => runProjectScope(undefined)).toThrow(AppError);
     expect(prismaMock.backgroundRun.findUnique).not.toHaveBeenCalled();
-    expect(assertProjectAccessMock).not.toHaveBeenCalled();
+    expect(assertLiveProjectAccessMock).not.toHaveBeenCalled();
   });
 });
 
 describe("non-404 denials propagate unchanged", () => {
   it("keeps a 403 from the project seam instead of masking it as RUN_NOT_FOUND", async () => {
-    assertProjectAccessMock.mockRejectedValue(new AppError(403, "FORBIDDEN", "nope"));
+    assertLiveProjectAccessMock.mockRejectedValue(new AppError(403, "FORBIDDEN", "nope"));
     await expect(authorizeBackgroundRun(member, "run_1")).rejects.toMatchObject({
       statusCode: 403,
       code: "FORBIDDEN",
@@ -69,7 +69,7 @@ describe("non-404 denials propagate unchanged", () => {
   });
 
   it("keeps a non-AppError failure unchanged", async () => {
-    assertProjectAccessMock.mockRejectedValue(new Error("db down"));
+    assertLiveProjectAccessMock.mockRejectedValue(new Error("db down"));
     await expect(authorizeRunGroup(member, "grp_1")).rejects.toThrow("db down");
   });
 });
@@ -79,6 +79,7 @@ describe("runProjectScope", () => {
     const noWorkspaces: AuthPayload = { ...member, workspaces: undefined };
     expect(runProjectScope(noWorkspaces)).toEqual({
       project: {
+        deletedAt: null,
         OR: [
           { workspaceId: null },
           {

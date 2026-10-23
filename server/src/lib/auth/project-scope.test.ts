@@ -17,6 +17,8 @@ interface Row {
   workspaceId: string | null;
   /** User ids holding a membership row in the project's workspace. */
   members: string[];
+  /** #1430 — soft-deleted when set. */
+  deleted?: boolean;
 }
 
 const U = "user-1";
@@ -35,6 +37,8 @@ const ALL_ROWS: Row[] = [OPEN, IN_WS1, IN_WS2];
  */
 function matchesScope(where: WorkspaceScopeWhere, row: Row): boolean {
   if (!("OR" in where)) return true;
+  // `{ deletedAt: null }` matches only rows whose column IS NULL (#1430).
+  if ("deletedAt" in where && where.deletedAt === null && row.deleted) return false;
   return where.OR.some((clause) => {
     if (clause.workspaceId === null) return row.workspaceId === null;
     const memberId = clause.workspace?.members?.some.userId;
@@ -61,6 +65,7 @@ describe("workspaceScopeWhere", () => {
   it("a member sees workspace-less open projects PLUS their own workspaces", () => {
     const where = workspaceScopeWhere({ userId: U, role: "developer", workspaces: ["ws-1"] });
     expect(where).toEqual({
+      deletedAt: null,
       OR: [{ workspaceId: null }, { workspaceId: { in: ["ws-1"] }, workspace: LIVE_MEMBER }],
     });
     // The regression #1066 guards: open projects must NOT disappear for a user
@@ -86,6 +91,7 @@ describe("workspaceScopeWhere", () => {
   it("treats a missing `workspaces` array as no memberships", () => {
     const where = workspaceScopeWhere({ userId: U, role: "developer" });
     expect(where).toEqual({
+      deletedAt: null,
       OR: [{ workspaceId: null }, { workspaceId: { in: [] }, workspace: LIVE_MEMBER }],
     });
     expect(visible(where)).toEqual(["legacy-open"]);
@@ -115,15 +121,35 @@ describe("#561 — a claim that outlived a removal", () => {
   });
 });
 
+describe("#1430 — a soft-deleted project", () => {
+  const GONE_OPEN: Row = { id: "legacy-gone", workspaceId: null, members: [], deleted: true };
+  const GONE_WS1: Row = { id: "p-ws1-gone", workspaceId: "ws-1", members: [U], deleted: true };
+  const rows = [...ALL_ROWS, GONE_OPEN, GONE_WS1];
+
+  it("is left out of a member's list, open or in their own workspace", () => {
+    const where = workspaceScopeWhere({ userId: U, role: "developer", workspaces: ["ws-1"] });
+    expect(visible(where, rows)).toEqual(["legacy-open", "p-ws1"]);
+  });
+
+  it("is still listed to an admin", () => {
+    const where = workspaceScopeWhere({ userId: U, role: "admin", workspaces: [] });
+    expect(visible(where, rows)).toEqual(rows.map((r) => r.id));
+  });
+});
+
 describe("the Prisma semantics the old #1066 comment got wrong", () => {
   it("`{ workspaceId: null }` matches open projects — it is not a deny-all sentinel", () => {
-    const legacyFragment = { OR: [{ workspaceId: null as null }] } satisfies WorkspaceScopeWhere;
+    const legacyFragment = {
+      deletedAt: null,
+      OR: [{ workspaceId: null as null }],
+    } satisfies WorkspaceScopeWhere;
     expect(visible(legacyFragment)).toEqual(["legacy-open"]);
     expect(visible(legacyFragment)).not.toEqual([]);
   });
 
   it("`{ workspaceId: { in: [] } }` is the fragment that really matches nothing", () => {
     const denyAll = {
+      deletedAt: null,
       OR: [{ workspaceId: { in: [] }, workspace: LIVE_MEMBER }],
     } satisfies WorkspaceScopeWhere;
     expect(visible(denyAll)).toEqual([]);

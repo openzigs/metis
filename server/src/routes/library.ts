@@ -80,9 +80,9 @@ export function projectLibraryRouter(): Router {
    * NOTE: this is deliberately NOT an authorization check — that is the
    * router-level `requireProjectAccess()` above. It was previously named
    * `ensureProjectAccess`, a name that promised a membership check its `where`
-   * clause never performed (#1074). What it does carry, and what the access
-   * guard does not, is the `deletedAt: null` filter: `assertProjectAccess`
-   * resolves a project without consulting soft-delete state.
+   * clause never performed (#1074). Its `deletedAt: null` filter also refuses
+   * a soft-deleted project to an ADMIN, whom the access guard lets through
+   * (#1430: the guard refuses it to everyone else).
    */
   async function ensureProjectExists(
     req: Request,

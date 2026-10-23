@@ -21,7 +21,7 @@ vi.mock("../../../src/lib/prisma.js", () => ({
 }));
 
 vi.mock("../../../src/lib/custom-agents/authz.js", () => ({
-  assertProjectAccess: vi.fn(async (_user: AuthPayload, projectId: string) => {
+  assertLiveProjectAccess: vi.fn(async (_user: AuthPayload, projectId: string) => {
     if (!accessible.has(projectId)) throw new Error("Project not found");
   }),
 }));
