@@ -44,10 +44,12 @@ Collected from #1212 / PR #1219 and #1221 / PR #1233 and their reviews (2026-10-
 
 `assertProjectAccess` reads live membership and the workspace's `deletedAt`, but not the project's `deletedAt`. Any rule built only on it still admits members to a soft-deleted project. The socket rooms used it through `canReachProject` until #1290. They now use `canReadProject` (`room-access.ts`, which is `canAccessProjectDiscussions`). Use that rule whenever deleting a project must close access.
 
-**Still open after #1413 (2026-10-22).** A soft-deleted project is closed by
-`accessibleProjectWhere` (lists) and `canAccessProjectDiscussions` (by id), but not by
-`assertProjectAccess` (`server/src/lib/custom-agents/authz.ts`). #1413 closed run and
-chat-turn lists (#1122). Any route gated only by `assertProjectAccess` still admits members
-to a soft-deleted project: look for a `deletedAt` term. `loadAuthorizedSession`
-(`ai/conversation/session-access.ts`) is gated only by it, so a chat session in a
-soft-deleted project still opens for a non-admin (#1412, open on 2026-10-22).
+**Closed for chat sessions by #1412 (2026-10-23).** `assertLiveProjectAccess`
+(`custom-agents/authz.ts`) is `assertProjectAccess` plus `project.deletedAt` for a non-admin,
+in the same single lookup, with one `projectNotFound()` 404. `loadAuthorizedSession` and the
+runs lists' `?projectId=` use it; the session lists add `deletedAt: null` on the project
+(`reachableSessionWhere`). `assertProjectAccess` itself (and so `requireProjectAccess` on the
+`/projects/:projectId/**` subtree) STILL admits a soft-deleted project: use the live variant
+whenever deleting a project must close a by-id path. `task:` and `publish:` socket rooms now
+take `canReadProject` and are re-judged with the project-data rooms (#1297); a test that
+joined `task:{id}` "on role alone" as a stand-in room must use `scheduler:status` instead.
