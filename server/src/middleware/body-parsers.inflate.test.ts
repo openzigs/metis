@@ -169,9 +169,12 @@ describe("urlencodedBodyParser refuses compressed request bodies (#1458)", () =>
   });
 });
 
-describe("every body parser in server/src goes through the inflate-off helpers (#1458)", () => {
+describe("no body parser in server/src or the embeddings sidecar can inflate (#1458)", () => {
   const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const SIDECAR_SRC = resolve(SRC, "..", "embeddings-svc", "src");
   const HELPER = join("middleware", "body-parsers.ts");
+  const PARSER_KINDS = ["json", "urlencoded", "raw", "text"];
+  const PARSER_MODULE = String.raw`["'](?:express|body-parser)["']`;
 
   function sourceFiles(dir: string): string[] {
     return readdirSync(dir).flatMap((name) => {
@@ -181,34 +184,115 @@ describe("every body parser in server/src goes through the inflate-off helpers (
     });
   }
 
-  // `express.json(`, `bodyParser.raw(`, or a bare `json(` / `urlencoded(` / `raw(` /
-  // `text(` imported from express or body-parser. `res.json(` is a response, not a parser.
-  const DIRECT_PARSER = /\b(?:express|bodyParser)\.(?:json|urlencoded|raw|text)\s*\(/;
-  const PARSER_IMPORT =
-    /import\s*\{[^}]*\b(?:json|urlencoded|raw|text)\b[^}]*\}\s*from\s*["'](?:express|body-parser)["']/;
-  const BODY_PARSER_IMPORT = /from\s*["']body-parser["']|require\(\s*["']body-parser["']\s*\)/;
-
   /** Comments name `express.json()` freely; only code may construct a parser. */
   function stripComments(text: string): string {
     return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   }
 
-  it("finds the parsers it is meant to police (the scan is not vacuous)", () => {
-    const helper = stripComments(readFileSync(join(SRC, HELPER), "utf8"));
-    expect(helper).toMatch(DIRECT_PARSER);
-    expect(helper).toMatch(/inflate:\s*false/);
+  /** The argument text of the call whose `(` is at `open`, by paren matching. */
+  function callArgs(text: string, open: number): string {
+    let depth = 0;
+    for (let i = open; i < text.length; i += 1) {
+      if (text[i] === "(") depth += 1;
+      else if (text[i] === ")" && (depth -= 1) === 0) return text.slice(open + 1, i);
+    }
+    return text.slice(open + 1);
+  }
+
+  /**
+   * Every body-parser construction in `text`, whatever the local names: a default or
+   * namespace import of express / body-parser under any name (`import e from "express";
+   * e.json()`), a `require`, or a named import, aliased or not (`{ json as j }`).
+   * `res.json(` is a response method, not a parser, and never matches.
+   */
+  function parserCalls(source: string): Array<{ call: string; args: string }> {
+    const text = stripComments(source);
+    const objects = new Set<string>();
+    const functions = new Set<string>();
+    const add = (re: RegExp, into: Set<string>) => {
+      for (const m of text.matchAll(re)) into.add(m[1]);
+    };
+    add(
+      new RegExp(String.raw`import\s+(\w+)\s*(?:,\s*\{[^}]*\})?\s*from\s*${PARSER_MODULE}`, "g"),
+      objects,
+    );
+    add(new RegExp(String.raw`import\s*\*\s*as\s+(\w+)\s+from\s*${PARSER_MODULE}`, "g"), objects);
+    add(
+      new RegExp(
+        String.raw`(?:const|let|var)\s+(\w+)\s*=\s*require\(\s*${PARSER_MODULE}\s*\)`,
+        "g",
+      ),
+      objects,
+    );
+    for (const m of text.matchAll(
+      new RegExp(String.raw`import\s*(?:\w+\s*,\s*)?\{([^}]*)\}\s*from\s*${PARSER_MODULE}`, "g"),
+    )) {
+      for (const spec of m[1].split(",")) {
+        const [imported, local] = spec
+          .trim()
+          .replace(/^type\s+/, "")
+          .split(/\s+as\s+/);
+        if (PARSER_KINDS.includes(imported)) functions.add(local ?? imported);
+      }
+    }
+    const kinds = PARSER_KINDS.join("|");
+    const patterns = [
+      ...[...objects].map((o) => new RegExp(String.raw`\b${o}\.(?:${kinds})\s*\(`, "g")),
+      ...[...functions].map((f) => new RegExp(String.raw`(?<![.\w])${f}\s*\(`, "g")),
+    ];
+    return patterns.flatMap((re) =>
+      [...text.matchAll(re)].map((m) => {
+        const open = (m.index ?? 0) + m[0].length - 1;
+        return { call: m[0], args: callArgs(text, open) };
+      }),
+    );
+  }
+
+  const inflateOff = (args: string) => /\binflate\s*:\s*false\b/.test(args);
+
+  it("detects renamed and aliased parser imports, and ignores res.json()", () => {
+    expect(parserCalls('import e from "express";\nconst p = e.json({ limit: 1 });')).toHaveLength(
+      1,
+    );
+    expect(parserCalls('import * as bp from "body-parser";\nbp.raw();')).toHaveLength(1);
+    expect(parserCalls('const x = require("express");\nx.urlencoded({});')).toHaveLength(1);
+    expect(
+      parserCalls('import { Router, json as j, text } from "express";\nj({});\ntext();'),
+    ).toHaveLength(2);
+    expect(parserCalls('import express from "express";\nres.json({ ok: true });')).toEqual([]);
+    expect(parserCalls('// express.json()\nimport express from "express";')).toEqual([]);
+    const [call] = parserCalls(
+      'import ex from "express";\nex.json({ limit: f(1), inflate: false });',
+    );
+    expect(inflateOff(call.args)).toBe(true);
   });
 
-  it("has no direct parser construction outside middleware/body-parsers.ts", () => {
+  it("finds the parsers it is meant to police (the scan is not vacuous)", () => {
+    const helper = parserCalls(readFileSync(join(SRC, HELPER), "utf8"));
+    expect(helper).toHaveLength(2);
+    expect(helper.every((c) => inflateOff(c.args))).toBe(true);
+    const sidecar = sourceFiles(SIDECAR_SRC).flatMap((f) => parserCalls(readFileSync(f, "utf8")));
+    expect(sidecar.length, "the embeddings sidecar's parser was not found").toBeGreaterThan(0);
+  });
+
+  it("server/src has no parser construction outside middleware/body-parsers.ts", () => {
     const offenders = sourceFiles(SRC)
       .filter((file) => relative(SRC, file) !== HELPER)
       .filter((file) => {
-        const text = stripComments(readFileSync(file, "utf8"));
-        return (
-          DIRECT_PARSER.test(text) || PARSER_IMPORT.test(text) || BODY_PARSER_IMPORT.test(text)
-        );
+        const text = readFileSync(file, "utf8");
+        return parserCalls(text).length > 0 || /from\s*["']body-parser["']/.test(text);
       })
       .map((file) => relative(SRC, file));
     expect(offenders, "build body parsers with jsonBodyParser / urlencodedBodyParser").toEqual([]);
+  });
+
+  it("every parser in the embeddings sidecar (server/embeddings-svc/src) passes inflate: false", () => {
+    // The sidecar is its own package and cannot import the server's helper.
+    const offenders = sourceFiles(SIDECAR_SRC).flatMap((file) =>
+      parserCalls(readFileSync(file, "utf8"))
+        .filter((c) => !inflateOff(c.args))
+        .map((c) => `${relative(SIDECAR_SRC, file)}: ${c.call}${c.args})`),
+    );
+    expect(offenders).toEqual([]);
   });
 });

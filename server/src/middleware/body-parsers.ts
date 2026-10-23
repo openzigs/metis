@@ -14,7 +14,13 @@
  *
  * Construct parsers through these helpers only — the guard test
  * `body-parsers.inflate.test.ts` fails on a direct `express.json()` /
- * `urlencoded()` / `raw()` / `text()` call anywhere else in `server/src`.
+ * `urlencoded()` / `raw()` / `text()` call anywhere else in `server/src`, under any
+ * import name.
+ *
+ * The one other body-parser consumer is the embeddings sidecar
+ * (`server/embeddings-svc/src/app.ts`), a separate package that cannot import this
+ * module: its single `express.json()` passes `inflate: false` itself, and the same
+ * guard test fails if any parser there omits it.
  */
 import express from "express";
 

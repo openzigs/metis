@@ -16,9 +16,11 @@ import { resolvedLockfileVersions, resolvedVersionMeetsFloor } from "./pnpm-over
  * `minimumReleaseAge` holds it until 2026-10-29T11:39Z. We do not bypass that gate.
  * Instead, until the upgrade:
  *
- *   - MITIGATED: every server body parser is built with `inflate: false`, so the
- *     compressed-body path never runs (server/src/middleware/body-parsers.ts; behaviour
- *     in server/tests/body-parser-inflate-1458.test.ts, inventory in
+ *   - MITIGATED: every body parser in the API and the embeddings sidecar (the two
+ *     body-parser consumers) is built with `inflate: false`, so the compressed-body path
+ *     never runs (server/src/middleware/body-parsers.ts, server/embeddings-svc/src/app.ts;
+ *     behaviour in server/tests/body-parser-inflate-1458.test.ts and
+ *     server/embeddings-svc/tests/body-inflate-1458.test.ts, inventory in
  *     server/src/middleware/body-parsers.inflate.test.ts).
  *   - WAIVED in sast.yml, scoped to the exact vulnerable copies the lockfile resolves and
  *     dated to expire the day after the release age clears.
@@ -39,6 +41,11 @@ const lockfile = readFileSync(resolve(REPO_ROOT, "pnpm-lock.yaml"), "utf8");
 const workflowText = readFileSync(resolve(REPO_ROOT, ".github", "workflows", "sast.yml"), "utf8");
 const parsersSource = readFileSync(
   resolve(REPO_ROOT, "server", "src", "middleware", "body-parsers.ts"),
+  "utf8",
+);
+
+const sidecarSource = readFileSync(
+  resolve(REPO_ROOT, "server", "embeddings-svc", "src", "app.ts"),
   "utf8",
 );
 
@@ -143,5 +150,14 @@ describe("body-parser GHSA-27r3-jxmh-p828 is fixed or mitigated-and-scoped-waive
     expect(parsersSource).toMatch(
       /express\.urlencoded\(\{\s*\.\.\.options,\s*inflate:\s*false\s*\}\)/,
     );
+  });
+
+  it("keeps the embeddings sidecar's parser on inflate: false too (the second consumer)", () => {
+    if (liveWaiver() === undefined) return;
+    // Code only: the sidecar's comments quote `express.json(...)` without the flag.
+    const code = sidecarSource.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    const calls = [...code.matchAll(/express\.json\(([^)]*)\)/g)].map((m) => m[1]);
+    expect(calls.length, "the sidecar's express.json() parser was not found").toBeGreaterThan(0);
+    for (const args of calls) expect(args).toMatch(/\binflate:\s*false\b/);
   });
 });
