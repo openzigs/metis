@@ -169,3 +169,30 @@ describe("default alerter singleton", () => {
     ).resolves.toBeUndefined();
   });
 });
+
+/** #1438 — nobody is paged on behalf of a soft-deleted project. */
+describe("pagerDutyPublishRollback for a soft-deleted project (#1438)", () => {
+  it("does not page; a live project's rollback still pages", async () => {
+    const alerter = makeAlerter();
+    const db = {
+      project: {
+        findFirst: vi.fn(async () => ({
+          name: "Gone",
+          workspaceId: "ws-9",
+          deletedAt: new Date(),
+        })),
+      },
+    };
+    await pagerDutyPublishRollback(
+      { batchId: "b1", projectId: "p1", reason: "auto-rollback", repo: "o/r" },
+      { alerter: alerter as never, db: db as never },
+    );
+    expect(alerter.publishRollback).not.toHaveBeenCalled();
+
+    await pagerDutyPublishRollback(
+      { batchId: "b1", projectId: "p1", reason: "auto-rollback", repo: "o/r" },
+      { alerter: alerter as never, db: makeDb({ name: "Live", workspaceId: "ws-9" }) as never },
+    );
+    expect(alerter.publishRollback).toHaveBeenCalledTimes(1);
+  });
+});

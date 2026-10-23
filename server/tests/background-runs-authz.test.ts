@@ -46,6 +46,8 @@ const { prismaMock } = vi.hoisted(() => ({
             workspace: { deletedAt: null, members: [{ id: "member-row" }] },
           }) as ProjectAccessRow | null,
       ),
+      // #1438 — submit refuses a soft-deleted project; none is deleted here.
+      findMany: vi.fn(async () => [] as Array<{ id: string }>),
     },
     backgroundRun: {
       findUnique: vi.fn(async () => ({ projectId: "proj_a" }) as { projectId: string } | null),

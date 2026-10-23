@@ -1184,3 +1184,78 @@ describe("TaskQueue abort provenance (#201)", () => {
     expect(taskAbortSource(controller.signal)).toBeUndefined();
   });
 });
+/** #1438 — the queue's deleted-project gate (the production wiring is proven in the SQLite suite). */
+describe("TaskQueue deleted-project gate (#1438)", () => {
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+  }
+
+  it("cancels a deleted project's task, settles it through onCancelledBeforeRun, and runs a live one", async () => {
+    const { store, rows } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    const handler = vi.fn(async () => ({ ran: true }));
+    const onCancelledBeforeRun = vi.fn(async () => {});
+    registry.register({
+      type: "gated",
+      description: "",
+      handler,
+      onCancelledBeforeRun,
+    });
+    // The gate is given the whole task: here it reads the column OR the payload.
+    const deletedProjectOf = vi.fn(async (task: TaskRecord) =>
+      task.projectId === "p-del" || task.payload.projectId === "p-del" ? "p-del" : null,
+    );
+    const queue = new TaskQueue(store, registry, makeEmitter().emitter, baseConfig, {
+      deletedProjectOf,
+    });
+
+    const del = await queue.enqueue({ type: "gated", projectId: "p-del" });
+    await settle();
+    expect(rows.get(del.id)).toMatchObject({
+      status: "cancelled",
+      errorMessage: "project deleted",
+    });
+    expect(handler).not.toHaveBeenCalled();
+    expect(onCancelledBeforeRun).toHaveBeenCalledWith(
+      expect.objectContaining({ id: del.id }),
+      "project deleted",
+    );
+
+    const live = await queue.enqueue({ type: "gated", projectId: "p-live" });
+    await settle();
+    expect(rows.get(live.id)?.status).toBe("completed");
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    // A null `projectId` column does not exempt a task whose payload names the project.
+    const viaPayload = await queue.enqueue({ type: "gated", payload: { projectId: "p-del" } });
+    await settle();
+    expect(rows.get(viaPayload.id)?.status).toBe("cancelled");
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(deletedProjectOf).toHaveBeenCalledWith(expect.objectContaining({ id: viaPayload.id }));
+    await queue.shutdown();
+  });
+
+  it("a gate error never runs the handler: the task takes the retry path", async () => {
+    const { store, rows } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    const handler = vi.fn(async () => ({}));
+    registry.register({ type: "gated", description: "", handler });
+    const queue = new TaskQueue(store, registry, makeEmitter().emitter, baseConfig, {
+      deletedProjectOf: async () => {
+        throw new Error("db down");
+      },
+    });
+    const task = await queue.enqueue({
+      type: "gated",
+      projectId: "p1",
+      maxAttempts: 1,
+    });
+    await settle();
+    expect(handler).not.toHaveBeenCalled();
+    expect(rows.get(task.id)).toMatchObject({
+      status: "failed",
+      errorMessage: "db down",
+    });
+    await queue.shutdown();
+  });
+});

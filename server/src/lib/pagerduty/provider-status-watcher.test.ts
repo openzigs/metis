@@ -152,3 +152,28 @@ describe("PagerDutyProviderStatusWatcher", () => {
     await expect(w.onStatus(ev({ status: "error", lastError: "e" }))).resolves.toBeUndefined();
   });
 });
+
+/** #1438 — a soft-deleted project's MCP server pages nobody, not even the ops workspace. */
+describe("PagerDutyProviderStatusWatcher and a soft-deleted project (#1438)", () => {
+  const origOps = process.env.PAGERDUTY_OPS_WORKSPACE_ID;
+  afterEach(() => {
+    if (origOps === undefined) delete process.env.PAGERDUTY_OPS_WORKSPACE_ID;
+    else process.env.PAGERDUTY_OPS_WORKSPACE_ID = origOps;
+  });
+
+  it("does not page (nor fall back to the ops workspace); a live project's server still pages", async () => {
+    process.env.PAGERDUTY_OPS_WORKSPACE_ID = "ws-ops";
+    const hooks = makeHooks();
+    const db = {
+      project: { findFirst: vi.fn(async () => ({ workspaceId: "ws-9", deletedAt: new Date() })) },
+    };
+    const w = new PagerDutyProviderStatusWatcher({ db: db as never, ...hooks });
+    await w.onStatus(ev({ status: "error", lastError: "transport_closed" }));
+    expect(hooks.down).not.toHaveBeenCalled();
+
+    const live = new PagerDutyProviderStatusWatcher({ db: makeDb("ws-9") as never, ...hooks });
+    await live.onStatus(ev({ status: "error", lastError: "transport_closed" }));
+    expect(hooks.down).toHaveBeenCalledTimes(1);
+    expect(hooks.down.mock.calls[0][0]).toMatchObject({ workspaceId: "ws-9" });
+  });
+});

@@ -64,6 +64,8 @@ vi.mock("../src/lib/prisma.js", async () => {
     project: {
       findUnique: vi.fn(async () => ({ workspaceId: null })),
       findFirst: vi.fn(async () => ({ id: "proj_1", name: "Test", description: "" })),
+      // #1438 — the bootstrapped queue asks whether a task's project is soft-deleted.
+      findMany: vi.fn(async () => []),
     },
     generatedDocument: {
       findMany: vi.fn(
