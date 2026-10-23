@@ -297,3 +297,29 @@ describe("notifications routes — failure paths", () => {
     expect((await request(app).post("/notifications/read-all")).status).toBe(401);
   });
 });
+
+describe("applyNotificationAccess — project-less carve-out (#1447)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const orphan = {
+    id: "n-x",
+    type: "account_alert",
+    title: "Your password was changed",
+    message: "m",
+    href: null,
+    payload: null,
+    projectId: null,
+  };
+
+  it("shows a project-less row only when its type opted in", async () => {
+    const { applyNotificationAccess } = await import("../src/lib/notifications/visibility.js");
+    const actor = { userId: "u-alice", role: "developer", workspaces: [] };
+
+    const [optedIn] = await applyNotificationAccess(actor, [orphan], new Set(["account_alert"]));
+    expect(optedIn).toMatchObject({ title: "Your password was changed", redacted: false });
+
+    const [defaulted] = await applyNotificationAccess(actor, [orphan]);
+    expect(defaulted).toMatchObject({ title: "Notification unavailable", redacted: true });
+    expect(mockProject.findMany).not.toHaveBeenCalled();
+  });
+});

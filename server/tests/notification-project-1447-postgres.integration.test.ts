@@ -114,7 +114,27 @@ describe.runIf(enabled)("#1447 notification projectId backfill on real Postgres"
     await insertLegacy("n-gone", "discussion_mention", JSON.stringify({ threadId: "dt-gone" }));
     await insertLegacy("n-null-payload", "sla_deadline", null);
     await insertLegacy("n-other", "something_else", JSON.stringify({ projectId: "p-req" }));
+    // A key planted inside a user-controlled string is never read: the real
+    // top-level key wins even when the planted one comes first...
+    await insertLegacy(
+      "n-sla-planted-first",
+      "sla_deadline",
+      JSON.stringify({ requirementTitle: 'x "requirementId":"req-1" y', requirementId: "req-sla" }),
+    );
+    // ...and a payload whose ONLY occurrence is planted resolves to nothing,
+    // including one shaped like a whole object or a `,`-led key.
+    await insertLegacy(
+      "n-sla-planted-only",
+      "sla_deadline",
+      JSON.stringify({ requirementTitle: '{"requirementId":"req-1"}', assignmentId: "a-1" }),
+    );
+    await insertLegacy(
+      "n-disc-planted-only",
+      "discussion_mention",
+      JSON.stringify({ kind: "discussion_mention", title: 'a,"threadId":"dt-1"' }),
+    );
 
+    before = await versions();
     await q(readFileSync(MIGRATION, "utf8"));
   });
 
@@ -123,6 +143,15 @@ describe.runIf(enabled)("#1447 notification projectId backfill on real Postgres"
     await client.end();
   });
 
+  /** Each row's `xmin`: it changes exactly when the row is rewritten. */
+  async function versions(): Promise<Record<string, string>> {
+    const { rows } = await q<{ id: string; v: string }>(
+      `SELECT "id", xmin::text AS "v" FROM "notifications"`,
+    );
+    return Object.fromEntries(rows.map((r) => [r.id, r.v]));
+  }
+  let before: Record<string, string> = {};
+
   const projectIds = async () => {
     const { rows } = await q<{ id: string; projectId: string | null }>(
       `SELECT "id", "projectId" FROM "notifications"`,
@@ -130,7 +159,7 @@ describe.runIf(enabled)("#1447 notification projectId backfill on real Postgres"
     return Object.fromEntries(rows.map((r) => [r.id, r.projectId]));
   };
 
-  const EXPECTED = {
+  const RESOLVED = {
     "n-mention-col": "p-req",
     "n-mention-payload": "p-spec",
     "n-disc": "p-disc",
@@ -139,6 +168,12 @@ describe.runIf(enabled)("#1447 notification projectId backfill on real Postgres"
     "n-review_approved": "p-review",
     "n-review_rejected": "p-review",
     "n-sla": "p-sla",
+    "n-sla-planted-first": "p-sla",
+  };
+  const EXPECTED = {
+    ...RESOLVED,
+    "n-sla-planted-only": null,
+    "n-disc-planted-only": null,
     "n-bad-json": null,
     "n-gone": null,
     "n-null-payload": null,
@@ -149,8 +184,16 @@ describe.runIf(enabled)("#1447 notification projectId backfill on real Postgres"
     expect(await projectIds()).toEqual(EXPECTED);
   });
 
-  it("is re-runnable: a second pass changes nothing", async () => {
+  it("writes ONLY the rows that resolve to a project — never rewrites the rest", async () => {
+    const after = await versions();
+    const rewritten = Object.keys(after).filter((id) => after[id] !== before[id]);
+    expect(rewritten.sort()).toEqual(Object.keys(RESOLVED).sort());
+  });
+
+  it("is re-runnable: a second pass rewrites no row at all", async () => {
+    const first = await versions();
     await q(readFileSync(MIGRATION, "utf8"));
     expect(await projectIds()).toEqual(EXPECTED);
+    expect(await versions()).toEqual(first);
   });
 });

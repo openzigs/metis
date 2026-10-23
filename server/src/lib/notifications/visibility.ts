@@ -26,6 +26,16 @@
  * - Fail closed: a row with no project (written before #1447 and not
  *   recoverable by the backfill, e.g. its target since hard-deleted) is
  *   redacted for everyone, admins included.
+ *
+ * ## Rule for writers
+ *
+ * **Every `prisma.notification.create` MUST set `projectId`.** A row written
+ * without one is unreadable: it reads "Notification unavailable" to every
+ * reader, admins included. A genuinely project-less notification type (an
+ * account or system alert) must opt in deliberately by adding its type to
+ * {@link PROJECTLESS_NOTIFICATION_TYPES}, which is then shown to its recipient
+ * without a project check. `server/tests/notification-writers-1447.test.ts`
+ * enumerates every writer and fails on one that does neither.
  */
 import { prisma } from "../prisma.js";
 import { workspaceScopeWhere, type ProjectScopeActor } from "../auth/project-scope.js";
@@ -34,6 +44,14 @@ import { workspaceScopeWhere, type ProjectScopeActor } from "../auth/project-sco
 export const REDACTED_TITLE = "Notification unavailable";
 /** The type a redacted notification reports in place of its own. */
 export const REDACTED_TYPE = "unavailable";
+
+/**
+ * Notification types that are not about a project, shown to their recipient
+ * with no project check. Empty: every type written today is about a project.
+ * Adding one is a security decision — its title, message and link must name
+ * nothing a former project member should not keep seeing.
+ */
+export const PROJECTLESS_NOTIFICATION_TYPES: ReadonlySet<string> = new Set<string>();
 
 /** The columns this module reads and rewrites on a stored notification. */
 export interface StoredNotification {
@@ -92,13 +110,18 @@ function redact<T extends StoredNotification>(row: T): VisibleNotification<T> {
 export async function applyNotificationAccess<T extends StoredNotification>(
   actor: ProjectScopeActor,
   rows: readonly T[],
+  projectless: ReadonlySet<string> = PROJECTLESS_NOTIFICATION_TYPES,
 ): Promise<Array<VisibleNotification<T>>> {
   const open = await openableProjectIds(
     actor,
     rows.flatMap((r) => (r.projectId ? [r.projectId] : [])),
   );
   return rows.map((row) => {
-    if (row.projectId && open.has(row.projectId)) {
+    const visible = row.projectId
+      ? open.has(row.projectId)
+      : // A row with no project: only a type that opted out of the check.
+        projectless.has(row.type);
+    if (visible) {
       const { projectId: _projectId, ...rest } = row;
       return { ...rest, redacted: false };
     }

@@ -367,11 +367,56 @@ describe.skipIf(!isSqlite)("#1447 — migration backfills each notification's pr
     insertLegacy("n-gone", "discussion_mention", JSON.stringify({ threadId: "dt-gone" }));
     insertLegacy("n-null-payload", "sla_deadline", null);
     insertLegacy("n-other", "something_else", JSON.stringify({ projectId: "p-req" }));
+    // A key planted inside a user-controlled string is never read: the real
+    // top-level key wins even when the planted one comes first...
+    insertLegacy(
+      "n-sla-planted-first",
+      "sla_deadline",
+      JSON.stringify({ requirementTitle: 'x "requirementId":"req-1" y', requirementId: "req-sla" }),
+    );
+    // ...and a payload whose ONLY occurrence is planted resolves to nothing.
+    insertLegacy(
+      "n-sla-planted-only",
+      "sla_deadline",
+      JSON.stringify({ requirementTitle: '{"requirementId":"req-1"}', assignmentId: "a-1" }),
+    );
+
+    // Every row the migration writes is logged, so the test can tell "left
+    // alone" from "rewritten to NULL".
+    sqlite.exec(`CREATE TABLE "t1447_updated" ("id" TEXT)`);
+    sqlite.exec(
+      `CREATE TRIGGER "t1447_log" AFTER UPDATE ON "notifications"
+       BEGIN INSERT INTO "t1447_updated" VALUES (NEW."id"); END`,
+    );
 
     sqlite.apply(MIGRATION);
   }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
   afterAll(() => sqlite?.cleanup());
+
+  const RESOLVED = {
+    "n-mention-col": "p-req",
+    "n-mention-payload": "p-spec",
+    "n-disc": "p-disc",
+    "n-review_requested": "p-review",
+    "n-review_decided": "p-review",
+    "n-review_approved": "p-review",
+    "n-review_rejected": "p-review",
+    "n-sla": "p-sla",
+    "n-sla-planted-first": "p-sla",
+  };
+
+  it("writes ONLY the rows that resolve to a project — never rewrites the rest", () => {
+    const conn = new Database(sqlite.dbFile, { readonly: true });
+    try {
+      const updated = conn.prepare(`SELECT "id" FROM "t1447_updated"`).all() as Array<{
+        id: string;
+      }>;
+      expect(updated.map((r) => r.id).sort()).toEqual(Object.keys(RESOLVED).sort());
+    } finally {
+      conn.close();
+    }
+  });
 
   it("gives every resolvable row its project and leaves the rest NULL", () => {
     const conn = new Database(sqlite.dbFile, { readonly: true });
@@ -382,14 +427,8 @@ describe.skipIf(!isSqlite)("#1447 — migration backfills each notification's pr
       }>;
       const got = Object.fromEntries(rows.map((r) => [r.id, r.projectId]));
       expect(got).toEqual({
-        "n-mention-col": "p-req",
-        "n-mention-payload": "p-spec",
-        "n-disc": "p-disc",
-        "n-review_requested": "p-review",
-        "n-review_decided": "p-review",
-        "n-review_approved": "p-review",
-        "n-review_rejected": "p-review",
-        "n-sla": "p-sla",
+        ...RESOLVED,
+        "n-sla-planted-only": null,
         "n-bad-json": null,
         "n-gone": null,
         "n-null-payload": null,

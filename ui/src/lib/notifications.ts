@@ -29,6 +29,8 @@ export interface Notification {
   /** Optional source label, e.g. `mention`, `sla_deadline`. */
   source?: string;
   read: boolean;
+  /** #1447 — the server withheld it: the reader can no longer open its project. */
+  redacted?: boolean;
 }
 
 /** A notification before the store stamps it; `id` only when the server persisted it. */
@@ -94,20 +96,23 @@ export class NotificationStore {
       redacted?: boolean;
     }>,
   ): void {
-    // #1447 — a live item the server now redacts (the reader lost access to its
-    // project since it arrived) takes the redacted text, so the drawer never
-    // keeps showing what the history read withholds.
-    let redactedLive = false;
+    // #1447 — the server's access check wins over an item already held, in both
+    // directions: a held item the server now redacts (the reader lost access
+    // since it arrived) takes the redacted text, and a held REDACTED item the
+    // server now returns in full (access restored) takes the full text back.
+    // Otherwise a held item still wins over its saved copy (#104).
+    let changedHeld = false;
     for (const s of serverItems) {
-      if (!s.redacted) continue;
-      const live = this.items.find((n) => n.id === s.id);
-      if (!live) continue;
-      live.title = s.title;
-      live.message = s.message;
-      live.href = undefined;
-      live.source = s.type;
-      live.level = "info";
-      redactedLive = true;
+      const held = this.items.find((n) => n.id === s.id);
+      if (!held || (!s.redacted && !held.redacted)) continue;
+      held.title = s.title;
+      held.message = s.message;
+      held.href = s.redacted ? undefined : safeInAppHref(s.href);
+      held.source = s.type;
+      held.level = !s.redacted && WARN_TYPES.has(s.type) ? "warn" : "info";
+      if (s.redacted) held.redacted = true;
+      else delete held.redacted;
+      changedHeld = true;
     }
 
     const existingIds = new Set(this.items.map((n) => n.id));
@@ -124,10 +129,11 @@ export class NotificationStore {
         href: safeInAppHref(s.href),
         source: s.type,
         read: s.read,
+        ...(s.redacted ? { redacted: true } : {}),
       }));
 
     if (newItems.length === 0) {
-      if (redactedLive) this.emit();
+      if (changedHeld) this.emit();
       return;
     }
 

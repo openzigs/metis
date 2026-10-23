@@ -70,6 +70,58 @@ describe("NotificationStore.hydrate — redacted rows (#1447)", () => {
     });
   });
 
+  it("restores a held redacted item when the server returns it in full again", () => {
+    // Redacted on one read...
+    store.hydrate([{ id: "n-5", createdAt: new Date().toISOString(), ...REDACTED }]);
+    const listener = vi.fn();
+    store.subscribe(listener);
+    listener.mockClear();
+
+    // ...and returned in full on the next (access restored).
+    store.hydrate([
+      {
+        id: "n-5",
+        type: "review_rejected",
+        title: "Review rejected",
+        message: '"Plan" was rejected',
+        href: "/reviews/r-5",
+        read: false,
+        createdAt: new Date().toISOString(),
+        redacted: false,
+      },
+    ]);
+
+    const [item] = store.list();
+    expect(item).toMatchObject({
+      id: "n-5",
+      title: "Review rejected",
+      message: '"Plan" was rejected',
+      href: "/reviews/r-5",
+      source: "review_rejected",
+      level: "warn",
+    });
+    expect(item).not.toHaveProperty("redacted");
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks a hydrated redacted row, and only that row, as redacted", () => {
+    store.hydrate([
+      { id: "n-6", createdAt: new Date().toISOString(), ...REDACTED },
+      {
+        id: "n-7",
+        type: "mention",
+        title: "t",
+        message: "m",
+        read: false,
+        createdAt: new Date().toISOString(),
+        redacted: false,
+      },
+    ]);
+    const byId = Object.fromEntries(store.list().map((n) => [n.id, n]));
+    expect(byId["n-6"]?.redacted).toBe(true);
+    expect(byId["n-7"]).not.toHaveProperty("redacted");
+  });
+
   it("still lets a live item win over an un-redacted server copy (#104)", () => {
     store.push({ id: "n-4", level: "info", title: "live text", message: "m" });
 
