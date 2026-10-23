@@ -419,7 +419,30 @@ export function mergeTranscriptDelta<T extends { ordinal?: number; compacted?: b
   );
 }
 
-export async function resumeChatSession(id: string): Promise<ResumedChat | null> {
+/**
+ * Resume a chat; `null` when it cannot be resumed, for whatever reason.
+ *
+ * #1412 — with `{ tellNotFound: true }` the server's 404 (unknown, deleted,
+ * someone else's, or in a project deleted since) is answered with
+ * {@link CHAT_NOT_FOUND_RESULT} instead, so a chat link can say "Chat not
+ * found" without saying it for a network error or a 5xx.
+ */
+export async function resumeChatSession(id: string): Promise<ResumedChat | null>;
+export async function resumeChatSession(
+  id: string,
+  opts: { tellNotFound: true },
+): Promise<ResumedChat | typeof CHAT_NOT_FOUND_RESULT | null>;
+export async function resumeChatSession(
+  id: string,
+  opts?: { tellNotFound: true },
+): Promise<ResumedChat | typeof CHAT_NOT_FOUND_RESULT | null> {
+  const opened = await openChatSession(id);
+  return opened === CHAT_NOT_FOUND_RESULT && !opts?.tellNotFound ? null : opened;
+}
+
+async function openChatSession(
+  id: string,
+): Promise<ResumedChat | typeof CHAT_NOT_FOUND_RESULT | null> {
   try {
     // Encoded: `id` reaches here from a `?sessionId=` query param, and an
     // unencoded value could otherwise steer the request at a different route.
@@ -442,10 +465,16 @@ export async function resumeChatSession(id: string): Promise<ResumedChat | null>
       messages,
       readOnlyReason: res.session?.readOnlyReason ?? null,
     };
-  } catch {
+  } catch (err) {
+    // #1412 — the server's 404 (unknown, deleted, someone else's, or in a
+    // project deleted since) is told apart from any other failure.
+    if (err instanceof ApiError && err.status === 404) return CHAT_NOT_FOUND_RESULT;
     return null;
   }
 }
+
+/** #1412 — what {@link resumeChatSession} returns when the server answers 404. */
+export const CHAT_NOT_FOUND_RESULT = "not_found" as const;
 
 /**
  * #142 — answer a pending tool approval. Only the session's owner can; an

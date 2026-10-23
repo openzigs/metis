@@ -82,12 +82,49 @@ export async function assertProjectAccess(
   projectId: string,
   db: Pick<Prisma.TransactionClient, "project"> = prisma,
 ): Promise<void> {
+  await checkProjectAccess(user, projectId, db, false);
+}
+
+/**
+ * #1412 / #1297 — {@link assertProjectAccess}, plus "the project is not
+ * soft-deleted" for a non-admin, read in the SAME project lookup: a
+ * soft-deleted project answers exactly the 404 of an unknown one, from the
+ * same single query, so neither the body nor the query count tells them apart.
+ * An admin is unaffected: a deleted project stays open to them, as on the
+ * socket rooms, scheduler, discussions and the runs lists.
+ *
+ * Use it wherever deleting a project must close what hangs off it — the chat
+ * session (`loadAuthorizedSession`) and the runs lists' `?projectId=`.
+ * `assertProjectAccess` alone still admits a soft-deleted project.
+ *
+ * @throws AppError 404 — unknown or soft-deleted project, or caller has no access
+ */
+export async function assertLiveProjectAccess(
+  user: AuthPayload,
+  projectId: string,
+  db: Pick<Prisma.TransactionClient, "project"> = prisma,
+): Promise<void> {
+  await checkProjectAccess(user, projectId, db, true);
+}
+
+/** #1412 — the one 404 every project-access refusal answers with. */
+export function projectNotFound(): AppError {
+  return new AppError(404, "NOT_FOUND", "Project not found");
+}
+
+async function checkProjectAccess(
+  user: AuthPayload,
+  projectId: string,
+  db: Pick<Prisma.TransactionClient, "project">,
+  refuseDeleted: boolean,
+): Promise<void> {
   if (user.role === "admin") return;
 
   const project = await db.project.findUnique({
     where: { id: projectId },
     select: {
       workspaceId: true,
+      ...(refuseDeleted ? { deletedAt: true } : {}),
       workspace: {
         select: {
           deletedAt: true,
@@ -97,8 +134,10 @@ export async function assertProjectAccess(
       },
     },
   });
-  if (!project) {
-    throw new AppError(404, "NOT_FOUND", "Project not found");
+  // `deletedAt` is selected only when it is judged, so the plain rule's query
+  // is unchanged; both refusals below are the one `projectNotFound()`.
+  if (!project || (refuseDeleted && (project as { deletedAt?: Date | null }).deletedAt)) {
+    throw projectNotFound();
   }
   // Pre-migration projects with no workspace are open to authenticated users.
   // The reachable list-scoping predicates agree — `accessibleProjectWhere`
@@ -117,6 +156,6 @@ export async function assertProjectAccess(
     !project.workspace?.members?.length ||
     !workspaces.includes(project.workspaceId)
   ) {
-    throw new AppError(404, "NOT_FOUND", "Project not found");
+    throw projectNotFound();
   }
 }

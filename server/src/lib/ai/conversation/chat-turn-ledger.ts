@@ -48,9 +48,9 @@
  * (#1212, #1221, #1251), and here too (#1122): the route narrows a non-admin
  * to `listAccessibleProjectIds`, which leaves it out, and answers 404 for it
  * as an explicit `?projectId=` — the same rule as `GET /api/runs`. An admin
- * still sees their own turns in it. Not yet on the chat session itself:
- * `loadAuthorizedSession` checks `assertProjectAccess`, which does not read
- * `project.deletedAt`, so such a chat still opens (#1412).
+ * still sees their own turns in it. The chat session itself is closed the
+ * same way (#1412): `loadAuthorizedSession` checks `assertLiveProjectAccess`,
+ * so such a chat no longer opens, reads or takes a turn for a non-admin.
  *
  * Chat in a session with no project is not in the project ledger (it is in
  * `ai_token_usages` alone) and is not listed.

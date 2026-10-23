@@ -171,6 +171,23 @@ vi.mock("../src/lib/prisma.js", () => ({
         args.where.id === "ia1" ? { id: "ia1" } : null,
       ),
     },
+    // #1297 — `subscribe:task` / `subscribe:publish` authorize like their REST
+    // reads: `t1` / `b1` belong to `p1`, `t-gone` / `b-gone` to the soft-deleted
+    // `p-gone`, `t-sys` is a system task (no project); nothing else exists.
+    task: {
+      findUnique: vi.fn(async (args: { where: { id: string } }) => {
+        if (args.where.id === "t-boom") throw new Error("db down");
+        const projectId = { t1: "p1", "t-gone": "p-gone", "t-sys": null }[args.where.id];
+        return projectId === undefined ? null : { projectId };
+      }),
+    },
+    publishBatch: {
+      findUnique: vi.fn(async (args: { where: { id: string } }) => {
+        if (args.where.id === "b-boom") throw new Error("db down");
+        const projectId = { b1: "p1", "b-gone": "p-gone" }[args.where.id];
+        return projectId === undefined ? null : { projectId };
+      }),
+    },
     // #674 — the durable scope of a row-less job: `rec-p1` is a spec-kit job
     // in `p1`; `rec-expired` lapsed; `rec-bogus` names no known kind.
     jobScopeRecord: {
@@ -448,6 +465,79 @@ describe("Socket.IO server", () => {
       socket.emit("unsubscribe:task", { taskId: "t1" });
       await vi.waitFor(() => expect(roomsOf(socket)).toEqual(base));
       socket.close();
+    });
+  });
+
+  describe("#1297 task and publish rooms authorize against the resource's project", () => {
+    type Ev = "subscribe:task" | "subscribe:publish";
+    const FIELD: Record<Ev, string> = {
+      "subscribe:task": "taskId",
+      "subscribe:publish": "batchId",
+    };
+    const ROOM: Record<Ev, (id: string) => string> = {
+      "subscribe:task": taskRoom,
+      "subscribe:publish": publishRoom,
+    };
+    const DENIAL: Record<Ev, string> = {
+      "subscribe:task": "FORBIDDEN: no access to task",
+      "subscribe:publish": "FORBIDDEN: no access to publish batch",
+    };
+
+    /** Subscribe and settle on the denial or the join — never on a fixed sleep. */
+    async function subscribe(
+      userId: string,
+      event: Ev,
+      id: string,
+    ): Promise<{ joined: boolean; errors: SocketAuthErrorEvent[] }> {
+      const socket = await connectAs(userId, userId);
+      const errors: SocketAuthErrorEvent[] = [];
+      socket.on("auth:error", (payload: SocketAuthErrorEvent) => errors.push(payload));
+      const room = ROOM[event](id);
+      (socket.emit as (ev: string, ...args: unknown[]) => void)(event, { [FIELD[event]]: id });
+      await vi.waitFor(() =>
+        expect(
+          errors.length > 0 || (io.sockets.adapter.rooms.get(room)?.has(socket.id!) ?? false),
+        ).toBe(true),
+      );
+      const joined = io.sockets.adapter.rooms.get(room)?.has(socket.id!) ?? false;
+      socket.close();
+      return { joined, errors };
+    }
+    const denied = (event: Ev, id: string) => ({
+      joined: false,
+      errors: [{ message: DENIAL[event], room: ROOM[event](id) }],
+    });
+
+    it.each<[Ev, string, string]>([
+      ["subscribe:task", "t1", "t-gone"],
+      ["subscribe:publish", "b1", "b-gone"],
+    ])(
+      "%s: a member joins %s; an outsider, an unknown id, a failed lookup and a soft-deleted project (%s) are refused alike",
+      async (event, id, goneId) => {
+        expect(await subscribe("u1", event, id)).toEqual({ joined: true, errors: [] });
+        // Every refusal is the same `{ message, room }`, so none is an oracle.
+        expect(await subscribe("u2", event, id)).toEqual(denied(event, id));
+        expect(await subscribe("u1", event, `${id}-missing`)).toEqual(
+          denied(event, `${id}-missing`),
+        );
+        const boom = event === "subscribe:task" ? "t-boom" : "b-boom";
+        expect(await subscribe("u1", event, boom)).toEqual(denied(event, boom));
+        expect(await subscribe("u1", event, goneId)).toEqual(denied(event, goneId));
+      },
+    );
+
+    it.each<[Ev, string]>([
+      ["subscribe:task", "t-gone"],
+      ["subscribe:publish", "b-gone"],
+      ["subscribe:task", "t-sys"],
+    ])("%s %s: an admin still joins (a soft-deleted project, a system task)", async (ev, id) => {
+      expect(await subscribe("u-admin", ev, id)).toEqual({ joined: true, errors: [] });
+    });
+
+    it("a system task (no project) is refused to a non-admin", async () => {
+      expect(await subscribe("u1", "subscribe:task", "t-sys")).toEqual(
+        denied("subscribe:task", "t-sys"),
+      );
     });
   });
 

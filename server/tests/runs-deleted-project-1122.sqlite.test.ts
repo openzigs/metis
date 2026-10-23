@@ -4,7 +4,7 @@
  * against a real SQLite database built by the migration chain.
  *
  * The rule (the one the socket rooms, scheduler and discussions already
- * apply, #1212/#1221/#1251; the chat session itself not yet, #1412): a soft-deleted project is
+ * apply, #1212/#1221/#1251, and the chat session itself since #1412): a soft-deleted project is
  * closed to non-admins and open to admins. Both lists apply it the same way:
  *   • a non-admin's unfiltered list leaves the project's rows out;
  *   • a non-admin's explicit `?projectId=` naming it answers the same 404 as a
@@ -122,6 +122,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // A legacy, workspace-less project: open to every signed-in user while live.
       await project("pGoneOpen");
       await project("pTie", "wsD");
+      // Another workspace's live project: a deleted project's 404 must be its 404 too.
+      await db.workspace.create({ data: { id: "wsF", name: "wsF", slug: "wsF" } });
+      await project("pForeign", "wsF");
 
       const session = (id: string, userId: string, projectId: string) =>
         db.aISession.create({
@@ -214,7 +217,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       it("chat turns: an explicit ?projectId= of it is a 404, the body of an unknown project", async () => {
         const unknown = await get("/api/runs/chat-turns?projectId=no-such-project", "mem");
         expect(unknown.status).toBe(404);
-        for (const projectId of ["pGone", "pGoneOpen"]) {
+        for (const projectId of ["pGone", "pGoneOpen", "pForeign"]) {
           const res = await get(`/api/runs/chat-turns?projectId=${projectId}`, "mem");
           expect(res.status).toBe(404);
           expect(res.body).toEqual(unknown.body);
@@ -232,7 +235,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       it("runs: an explicit ?projectId= of it is a 404, the body of an unknown project", async () => {
         const unknown = await get("/api/runs?projectId=no-such-project", "mem");
         expect(unknown.status).toBe(404);
-        for (const projectId of ["pGone", "pGoneOpen"]) {
+        for (const projectId of ["pGone", "pGoneOpen", "pForeign"]) {
           const res = await get(`/api/runs?projectId=${projectId}`, "mem");
           expect(res.status).toBe(404);
           expect(res.body).toEqual(unknown.body);

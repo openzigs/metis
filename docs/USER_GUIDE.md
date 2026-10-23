@@ -2053,7 +2053,7 @@ secondary token for copy / deep-link purposes; it is no longer the primary label
 
 A turn's row holds the chat model's own calls. A turn that used a sub-agent or `apply_diff`, or that was followed by a conversation summary (compaction), spent more than its row shows: those calls are recorded against the chat session, not against a turn, so they cannot be placed on one row. The **Session totals** table under the turns gives, for each session listed, its chat turns, its **Sub-agents, apply-diff, summaries** (number of calls, tokens, cost) and the **Session total**, which is the session's chat spend as the ledger has it.
 
-**You see only your own chat sessions here**, in the projects you can open. Chat sessions are private to their owner throughout METIS, and that holds for administrators on this page too; another member of the project does not see your turns, and you do not see theirs. A project's spend per user is on its Usage page (group by user). **A chat you have deleted is still listed here**, to you only: you can no longer open it, but what it spent is still your spend and still in the project's usage, so its turns and its session total stay in these tables. **A deleted project is different (#1122):** once a project is deleted, its chat turns and runs are no longer listed to anyone but an administrator, and asking for that project by name answers "Project not found". Chat in a session that belongs to no project is not in a project's ledger and is not listed, and neither is a session that has been permanently removed. However many chat sessions you have, the table shows your newest turns across all of them.
+**You see only your own chat sessions here**, in the projects you can open. Chat sessions are private to their owner throughout METIS, and that holds for administrators on this page too; another member of the project does not see your turns, and you do not see theirs. A project's spend per user is on its Usage page (group by user). **A chat you have deleted is still listed here**, to you only: you can no longer open it, but what it spent is still your spend and still in the project's usage, so its turns and its session total stay in these tables. **A deleted project is different (#1122):** once a project is deleted, its chat turns and runs are no longer listed to anyone but an administrator (who, here as everywhere, sees only their own chat turns, not other users'), and asking for that project by id answers "Project not found", exactly as for a project that does not exist. Its chats themselves no longer open either (see "Chats in a deleted project" in [Using the AI Chat](#14-using-the-ai-chat)). Chat in a session that belongs to no project is not in a project's ledger and is not listed, and neither is a session that has been permanently removed. However many chat sessions you have, the table shows your newest turns across all of them.
 
 Permission required: `analysis.run` to trigger, `analysis.read` to view results.
 
@@ -2537,6 +2537,17 @@ saved only when you send its first message, so opening Chat or clicking
 **New chat** does not add an empty "New Chat" to your session list. Recent
 lists each chat under the title saved with it: a new chat is named after its
 first question, and keeps that name.
+
+**Chats in a deleted project (#1412).** When an administrator deletes a
+project, its chats close to everyone but administrators. A chat you had in that
+project leaves your session lists, and a link to it shows **Chat not found**,
+exactly as a chat that never existed: you can no longer open, read, continue,
+fork or compact it, answer its tool approvals, or load skills into it. The
+project's live updates stop too: a chat's tool activity, and the progress of
+its scheduled tasks and issue-publish batches. Nothing is erased: the project
+is soft-deleted, so an administrator still opens their own chats in it (chats
+stay private to their owner, administrators included), and what the chats spent
+stays in an administrator's usage pages.
 
 If the connection to the AI model drops part-way through an answer, METIS asks
 the model again once, from the last step it completed. The chat says it is

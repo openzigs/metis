@@ -11,6 +11,10 @@
  * - `connector:{id}` — a connector's ingest and test progress
  *   (`canJoinConnectorRoom`);
  * - `run:{id}` — a background run's steps (`canJoinBgRunRoom`);
+ * - `task:{id}` — a scheduled task's status and progress (`canJoinTaskRoom`,
+ *   #1297);
+ * - `publish:{batchId}` — a publish batch's status and counts
+ *   (`canJoinPublishRoom`, #1297);
  * - `thread:{id}` — a discussion's messages, typing and presence
  *   (`canAccessThread`; joined by `subscribe:thread` and `presence:thread:join`);
  * - `presence:{type}:{id}` — who is viewing a discussion or Spec Kit artifact
@@ -30,7 +34,9 @@ import {
   bgRunRoom,
   connectorRoom,
   isPresenceArtifactType,
+  publishRoom,
   sessionRoom,
+  taskRoom,
   threadRoom,
   type AuthPayload,
 } from "@metis/shared";
@@ -43,7 +49,9 @@ import {
   canJoinBgRunRoom,
   canJoinConnectorRoom,
   canJoinPresenceRoom,
+  canJoinPublishRoom,
   canJoinSessionRoom,
+  canJoinTaskRoom,
 } from "./room-access.js";
 import { rememberRoomProject, roomEvicted } from "./room-scope.js";
 import type { MetisIOServer } from "./server.js";
@@ -86,6 +94,8 @@ const KINDS: readonly ProjectDataRoomKind[] = [
   { prefix: sessionRoom(""), allowed: (user, id) => canJoinSessionRoom(user, id) },
   { prefix: connectorRoom(""), allowed: (user, id) => canJoinConnectorRoom(user, id) },
   { prefix: bgRunRoom(""), allowed: (user, id) => canJoinBgRunRoom(user, id) },
+  { prefix: taskRoom(""), allowed: (user, id) => canJoinTaskRoom(user, id) },
+  { prefix: publishRoom(""), allowed: (user, id) => canJoinPublishRoom(user, id) },
   { prefix: threadRoom(""), allowed: (user, id) => canJoinThreadRoom(user, id) },
   { prefix: PRESENCE_ROOM_PREFIX, allowed: (user, id) => canJoinPresence(user, id) },
 ];

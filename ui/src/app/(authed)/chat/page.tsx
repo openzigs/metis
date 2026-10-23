@@ -28,6 +28,7 @@ import {
   mergeTranscriptDelta,
   loadActiveSessionId,
   resumeChatSession,
+  CHAT_NOT_FOUND_RESULT,
   storeActiveSessionId,
   streamChat,
 } from "@/lib/ai-client";
@@ -79,6 +80,10 @@ const SUGGESTED_PROMPTS: { title: string; prompt: string }[] = [
   },
   { title: "Draft a plan", prompt: "Help me draft an implementation plan for a new feature." },
 ];
+
+/** #1412 — shown when a `?sessionId=` link names a chat that cannot be opened. */
+const CHAT_NOT_FOUND =
+  "Chat not found. It may have been deleted, or you no longer have access to it. Start a new chat below.";
 
 function fromServer(rows: DisplayTurn[]): DisplayMessage[] {
   return rows.map((m) => ({ ...m, id: `o${m.ordinal}` }));
@@ -223,6 +228,10 @@ export default function ChatPage() {
     // A compaction note belongs to the session it happened in.
     setCompactionNote(null);
     setReadOnlyReason(null);
+    // #1412 review — an error (a "Chat not found" link above all) belongs to
+    // the chat it was raised for. Next.js does not remount on a query-string
+    // change, so without this the next chat opened here showed under it.
+    setError(null);
     resetToolActivity();
     const firstRun = !mountedOnceRef.current;
     mountedOnceRef.current = true;
@@ -240,8 +249,19 @@ export default function ChatPage() {
     setReady(false);
     void (async () => {
       try {
-        const restored = await resumeChatSession(restoreId);
-        if (!restored || cancelled) return;
+        // #1412 — only a chat link (`?sessionId=`) is told a 404 apart; the
+        // chat last open here is resumed quietly, as before.
+        const restored = resumeSessionId
+          ? await resumeChatSession(restoreId, { tellNotFound: true })
+          : await resumeChatSession(restoreId);
+        if (cancelled) return;
+        if (!restored || restored === CHAT_NOT_FOUND_RESULT) {
+          // #1412 — a chat named by a link that the server answers 404 for
+          // (deleted, in a project that was deleted, or not yours) says so,
+          // instead of showing an empty chat as if it were new.
+          if (resumeSessionId && restored === CHAT_NOT_FOUND_RESULT) setError(CHAT_NOT_FOUND);
+          return;
+        }
         // #1139 — the session last open here is resumed only when it belongs
         // to the scope the page opened on: chat opens on the project active in
         // the top bar, not on whichever project the previous chat was in.

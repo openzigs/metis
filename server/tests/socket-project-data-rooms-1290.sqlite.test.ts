@@ -3,7 +3,7 @@
  * access can be lost, as `project:{id}` (#1212) and `job:{id}` (#1251) are:
  *
  *   `analysis:{id}`, `session:{id}`, `connector:{id}`, `run:{id}`,
- *   `thread:{id}` (joined by `subscribe:thread` and by `presence:thread:join`)
+ *   `task:{id}` and `publish:{batchId}` (#1297), `thread:{id}` (joined by `subscribe:thread` and by `presence:thread:join`)
  *   and `presence:{type}:{id}` (a discussion and a Spec Kit artifact).
  *
  * For each kind: a member removed through the real `DELETE
@@ -31,7 +31,9 @@ import {
   connectorRoom,
   getPermissionsForRole,
   presenceRoom,
+  publishRoom,
   sessionRoom,
+  taskRoom,
   threadRoom,
   userRoom,
   type AuthPayload,
@@ -64,8 +66,13 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 const { workspacesRouter } = await import("../src/routes/workspaces.js");
 const { canJoinAnalysisRoom } = await import("../src/lib/socket/analysis-room-access.js");
-const { canJoinBgRunRoom, canJoinConnectorRoom, canJoinSessionRoom } =
-  await import("../src/lib/socket/room-access.js");
+const {
+  canJoinBgRunRoom,
+  canJoinConnectorRoom,
+  canJoinPublishRoom,
+  canJoinSessionRoom,
+  canJoinTaskRoom,
+} = await import("../src/lib/socket/room-access.js");
 const { wireThreadRoomHandlers } = await import("../src/lib/socket/discussion-rooms.js");
 const { createThreadPresence, wireDiscussionPresenceHandlers } =
   await import("../src/lib/socket/discussion-presence.js");
@@ -164,6 +171,9 @@ interface ProjectFixtures {
   connector: string;
   run: string;
   thread: string;
+  /** #1297 — a scheduled task and a publish batch in the project. */
+  task: string;
+  batch: string;
   /** Each user's own chat session in the project (a session is its owner's alone). */
   session: Record<Who, string>;
 }
@@ -276,6 +286,18 @@ const KINDS: Kind[] = [
     room: (_w, p) => bgRunRoom(fx[p].run),
     join: (c, p) => c.viaRule(bgRunRoom(fx[p].run), canJoinBgRunRoom(payload(c.who), fx[p].run)),
   },
+  // #1297 — joined on the role alone until then.
+  {
+    name: "task:{id}",
+    room: (_w, p) => taskRoom(fx[p].task),
+    join: (c, p) => c.viaRule(taskRoom(fx[p].task), canJoinTaskRoom(payload(c.who), fx[p].task)),
+  },
+  {
+    name: "publish:{batchId}",
+    room: (_w, p) => publishRoom(fx[p].batch),
+    join: (c, p) =>
+      c.viaRule(publishRoom(fx[p].batch), canJoinPublishRoom(payload(c.who), fx[p].batch)),
+  },
   viaHandler(
     "thread:{id} (subscribe:thread)",
     (p) => threadRoom(fx[p].thread),
@@ -368,6 +390,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           connector: (await db.repoConnection.create({ data: { projectId: id, label: "repo" } }))
             .id,
           run: (await db.backgroundRun.create({ data: { projectId: id, kind: "analysis" } })).id,
+          task: (await db.task.create({ data: { projectId: id, type: "analysis" } })).id,
+          batch: (
+            await db.publishBatch.create({
+              data: { projectId: id, targetOwner: "o", targetRepo: "r", startedById: "olga" },
+            })
+          ).id,
           thread: (
             await db.discussionThread.create({ data: { projectId: id, createdById: "olga" } })
           ).id,

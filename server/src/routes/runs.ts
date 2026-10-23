@@ -20,7 +20,7 @@ import { requirePermission } from "../middleware/require-permission.js";
 import { requireRunProjectAccess } from "../middleware/require-run-project-access.js";
 import { listRuns } from "../lib/replay/runs-service.js";
 import { listChatTurns } from "../lib/ai/conversation/chat-turn-ledger.js";
-import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { assertLiveProjectAccess, projectNotFound } from "../lib/custom-agents/authz.js";
 import { isAdminActor, listAccessibleProjectIds } from "../lib/acp/authz.js";
 import { AppError } from "../middleware/error-handler.js";
 import { getSandboxSessionRepo } from "../lib/sandbox/repos/sandbox-session.repo.js";
@@ -51,11 +51,11 @@ function parseLimit(value: unknown): number | undefined {
  * #1122 — the project scope both lists apply, in one place. A non-admin is
  * narrowed to `listAccessibleProjectIds`, which leaves out a soft-deleted
  * project, and an explicit `?projectId=` outside that set answers
- * `assertProjectAccess`'s 404 — a soft-deleted project too, which
- * `assertProjectAccess` alone still admits, so it is not an empty 200. An
- * admin is not narrowed: a soft-deleted project stays open to them, as on
- * the socket rooms, scheduler and discussions. (The chat session itself does
- * not yet close a soft-deleted project to a non-admin: #1412.)
+ * `assertLiveProjectAccess`'s 404 — a soft-deleted project included, judged
+ * in the same project lookup as an unknown one (#1412), so it is not an
+ * empty 200. An admin is not narrowed: a soft-deleted project stays open to
+ * them, as on the socket rooms, scheduler, discussions and the chat session
+ * itself (`loadAuthorizedSession`, #1412).
  *
  * Returns the project ids to narrow to; `undefined` for an admin.
  */
@@ -63,12 +63,11 @@ async function listProjectScope(
   user: AuthPayload,
   projectId: string | undefined,
 ): Promise<string[] | undefined> {
-  if (projectId) await assertProjectAccess(user, projectId);
+  if (projectId) await assertLiveProjectAccess(user, projectId);
   if (isAdminActor(user)) return undefined;
   const accessible = await listAccessibleProjectIds(user);
-  if (projectId && !accessible.includes(projectId)) {
-    throw new AppError(404, "NOT_FOUND", "Project not found");
-  }
+  // The two rules agree today; this keeps the list's own rule authoritative.
+  if (projectId && !accessible.includes(projectId)) throw projectNotFound();
   return accessible;
 }
 
