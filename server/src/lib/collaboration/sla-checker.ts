@@ -13,6 +13,8 @@
  *
  * Each recipient must still be able to open the requirement's project (#1432,
  * `isEligibleAssignee`); one who cannot is skipped, and the row is still marked.
+ * If that check fails (a DB error), the row is neither sent nor marked, so the
+ * next run retries it.
  *
  * Sets `notifiedAt` to prevent duplicate notifications.
  */
@@ -32,16 +34,23 @@ export interface SlaCheckerHandle {
 }
 
 /**
- * May `userId` be told about a requirement in `projectId`? The assignee rule
- * (#1432). Fails CLOSED: a lookup error suppresses a notification rather than
- * risk sending a title to someone who cannot open the project.
+ * Whether a recipient may be told about a requirement: `"unknown"` when the
+ * check itself failed, which is not the same answer as `"ineligible"`.
  */
-async function mayNotify(userId: string, projectId: string): Promise<boolean> {
+export type RecipientStatus = "eligible" | "ineligible" | "unknown";
+
+/**
+ * May `userId` be told about a requirement in `projectId`? The assignee rule
+ * (#1432). A lookup error is `"unknown"`: the caller sends nothing (never risk
+ * a title to someone who cannot open the project) and leaves the row unmarked,
+ * so the next run retries instead of dropping a legitimate reminder for good.
+ */
+async function recipientStatus(userId: string, projectId: string): Promise<RecipientStatus> {
   try {
-    return await isEligibleAssignee(userId, projectId);
+    return (await isEligibleAssignee(userId, projectId)) ? "eligible" : "ineligible";
   } catch (err) {
-    log.warn("SLA recipient check failed; not notifying", { userId, projectId, err });
-    return false;
+    log.warn("SLA recipient check failed; will retry next run", { userId, projectId, err });
+    return "unknown";
   }
 }
 
@@ -88,11 +97,25 @@ export async function runSlaCheck(): Promise<void> {
       };
 
       const projectId = assignment.requirement.projectId;
+      const coordinatorId = assignment.requirement.project?.createdById;
+      const notifyCoordinator = !!coordinatorId && coordinatorId !== assignment.assigneeId && !!io;
 
-      // Notify the assignee — only while they can still open the project
-      // (#1432): the payload carries the requirement title, and the row may
-      // predate assignee checks or outlive the assignee's membership.
-      if (await mayNotify(assignment.assigneeId, projectId)) {
+      // Each recipient only while they can still open the project (#1432): the
+      // payload carries the requirement title, and the row may predate assignee
+      // checks or outlive a recipient's membership. Both are decided BEFORE any
+      // send, so a row is either handled whole or left whole for the next run.
+      const [assigneeStatus, coordinatorStatus] = await Promise.all([
+        recipientStatus(assignment.assigneeId, projectId),
+        notifyCoordinator
+          ? recipientStatus(coordinatorId, projectId)
+          : Promise.resolve<RecipientStatus>("ineligible"),
+      ]);
+      if (assigneeStatus === "unknown" || coordinatorStatus === "unknown") {
+        // Not sent, not marked: retried on the next tick.
+        continue;
+      }
+
+      if (assigneeStatus === "eligible") {
         if (io) {
           io.to(userRoom(assignment.assigneeId)).emit("sla:deadline_expired", payload);
         }
@@ -120,13 +143,7 @@ export async function runSlaCheck(): Promise<void> {
 
       // Notify the project coordinator if different from the assignee (and,
       // like the assignee, still able to open the project — #1432).
-      const coordinatorId = assignment.requirement.project?.createdById;
-      if (
-        coordinatorId &&
-        coordinatorId !== assignment.assigneeId &&
-        io &&
-        (await mayNotify(coordinatorId, projectId))
-      ) {
+      if (notifyCoordinator && coordinatorStatus === "eligible" && io && coordinatorId) {
         io.to(userRoom(coordinatorId)).emit("sla:deadline_expired", payload);
 
         // Issue #416 — persist SLA notification for the coordinator too.

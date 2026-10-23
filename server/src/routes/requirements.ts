@@ -193,23 +193,26 @@ export function requirementsCollaborationRouter(): Router {
         orderBy: { createdAt: "asc" },
       });
       // #1432 — a row written before assignees were checked, or whose assignee
-      // has since left, must not reveal who that user is: keep the row (it can
-      // still be removed) but drop the name of anyone no longer eligible.
+      // or assigner has since left, must not reveal who that user is: keep the
+      // row (it can still be removed) but drop the name of anyone — assignee or
+      // assignedBy — no longer eligible for the project. One check per distinct
+      // user, run in parallel.
       const owner = await prisma.requirement.findUnique({
         where: { id: requirementId },
         select: { projectId: true },
       });
       const eligible = owner
         ? await eligibleAssigneeIds(
-            assignments.map((a) => a.assigneeId),
+            assignments.flatMap((a) => [a.assigneeId, a.assignedById]),
             owner.projectId,
           )
         : new Set<string>();
-      const data = assignments.map((a) =>
-        eligible.has(a.assigneeId)
-          ? a
-          : { ...a, assignee: { id: a.assigneeId, username: null, displayName: null } },
-      );
+      const anonymous = (id: string) => ({ id, username: null, displayName: null });
+      const data = assignments.map((a) => ({
+        ...a,
+        assignee: eligible.has(a.assigneeId) ? a.assignee : anonymous(a.assigneeId),
+        assignedBy: eligible.has(a.assignedById) ? a.assignedBy : anonymous(a.assignedById),
+      }));
       res.json({ success: true, data });
     },
   );

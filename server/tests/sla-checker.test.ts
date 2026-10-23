@@ -119,14 +119,48 @@ describe("runSlaCheck", () => {
     );
   });
 
-  it("fails closed when the recipient check errors (#1432)", async () => {
-    mockEligible.mockRejectedValue(new Error("db down"));
+  it("sends nothing and leaves the row unmarked when the assignee check errors, then retries (#1432)", async () => {
+    mockEligible.mockRejectedValueOnce(new Error("db down"));
     mockAssignment.findMany.mockResolvedValue([makeAssignment()]);
 
     await runSlaCheck();
 
     expect(mockIoTo).not.toHaveBeenCalled();
-    expect(mockAssignment.update).toHaveBeenCalled();
+    expect(mockAssignment.update).not.toHaveBeenCalled();
+
+    // The next run, with the database back, delivers and marks the same row.
+    await runSlaCheck();
+    expect(mockIoTo).toHaveBeenCalledWith("user:user-assignee");
+    expect(mockIoTo).toHaveBeenCalledWith("user:user-coordinator");
+    expect(mockAssignment.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "assign-1" } }),
+    );
+  });
+
+  it("does not notify the assignee alone when only the coordinator check errors (#1432)", async () => {
+    mockEligible.mockImplementation(async (userId: string) => {
+      if (userId === "user-coordinator") throw new Error("db down");
+      return true;
+    });
+    mockAssignment.findMany.mockResolvedValue([makeAssignment()]);
+
+    await runSlaCheck();
+
+    // Whole row deferred: a partial send would re-send the assignee next run.
+    expect(mockIoTo).not.toHaveBeenCalled();
+    expect(mockAssignment.update).not.toHaveBeenCalled();
+  });
+
+  it("still marks a row whose recipients are known to be ineligible (#1432)", async () => {
+    mockEligible.mockResolvedValue(false);
+    mockAssignment.findMany.mockResolvedValue([makeAssignment()]);
+
+    await runSlaCheck();
+
+    expect(mockIoTo).not.toHaveBeenCalled();
+    expect(mockAssignment.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "assign-1" } }),
+    );
   });
 
   it("continues processing remaining assignments when one fails", async () => {

@@ -48,14 +48,12 @@ export async function isEligibleAssignee(userId: string, projectId: string): Pro
   );
 }
 
-/** The subset of `userIds` eligible in `projectId` (each id checked once). */
+/** The subset of `userIds` eligible in `projectId` (each distinct id checked once, in parallel). */
 export async function eligibleAssigneeIds(
   userIds: readonly string[],
   projectId: string,
 ): Promise<Set<string>> {
-  const eligible = new Set<string>();
-  for (const id of new Set(userIds)) {
-    if (await isEligibleAssignee(id, projectId)) eligible.add(id);
-  }
-  return eligible;
+  const distinct = [...new Set(userIds)];
+  const verdicts = await Promise.all(distinct.map((id) => isEligibleAssignee(id, projectId)));
+  return new Set(distinct.filter((_, i) => verdicts[i]));
 }

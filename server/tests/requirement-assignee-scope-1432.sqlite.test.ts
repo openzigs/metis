@@ -246,6 +246,39 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(JSON.stringify(res.body)).not.toContain("mallory-handle");
       });
 
+      it("GET drops the name of an assigner who can no longer open the project", async () => {
+        // A row assigned BY an outsider (pre-fix shape); no deadline, so the SLA
+        // test below is unaffected.
+        await db.assignment.create({
+          data: { requirementId: REQ_A, assigneeId: "sysadm", assignedById: "mallory" },
+        });
+        const res = await list(REQ_A);
+        expect(res.status).toBe(200);
+        const rows = res.body.data as Array<{
+          assigneeId: string;
+          assignee: unknown;
+          assignedBy: unknown;
+        }>;
+        const byAssignee = Object.fromEntries(rows.map((a) => [a.assigneeId, a]));
+        expect(byAssignee.sysadm.assignee).toEqual({
+          id: "sysadm",
+          username: "sysadm-handle",
+          displayName: "sysadm Display",
+        });
+        expect(byAssignee.sysadm.assignedBy).toEqual({
+          id: "mallory",
+          username: null,
+          displayName: null,
+        });
+        // Positive control: an eligible assigner keeps their name.
+        expect(byAssignee.bob.assignedBy).toEqual({
+          id: "alice",
+          username: "alice-handle",
+          displayName: "alice Display",
+        });
+        expect(JSON.stringify(res.body)).not.toContain("mallory-handle");
+      });
+
       it("the SLA checker notifies the member and not the outsider, and marks both handled", async () => {
         state.rooms.length = 0;
         await runSlaCheck();
