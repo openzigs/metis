@@ -25,7 +25,9 @@ import {
   type WithheldReplacementFieldChange,
   type RequirementReplacementWithheld,
 } from "@metis/shared";
+import { createHash } from "node:crypto";
 import { normalizeCriterion } from "./approved-criteria-carry-over.js";
+import type { AmbiguousPromotionMatch, SharedPromotionMatch } from "./approved-requirement-set.js";
 
 /** Analysis-metadata key of the stored {@link WithheldProposal}. */
 export const WITHHELD_PROPOSAL_KEY = "withheldReplacementProposal";
@@ -67,6 +69,17 @@ export interface WithheldProposal {
    * the set's degradation marker as it is, as a replacement does.
    */
   degraded?: SynthesisDegradation | null;
+  /**
+   * #723 / #909 — the promotion the refused write would have recorded: the
+   * extraction run and the approved structured ids (possibly none). Present
+   * only when the rows came from the approval checkpoint (`promotedFrom`).
+   */
+  promotion?: { runId: string | null; structuredIds: string[] };
+  /**
+   * #1203 / #1204 — the promotion's matching notes, index-aligned with `rows`
+   * through `approvedIndex`, so applying records them for the rows it writes.
+   */
+  matches?: { ambiguous: AmbiguousPromotionMatch[]; shared: SharedPromotionMatch[] };
   /** The status the rows would have been inserted with (#939). */
   reviewStatus?: "approved";
 }
@@ -123,7 +136,40 @@ export function readWithheldProposal(metadata: Record<string, unknown>): Withhel
     at: p.at,
     rows,
     ...(degraded !== undefined ? { degraded } : {}),
+    ...readPromotion(p.promotion),
+    ...readMatches(p.matches),
     ...(p.reviewStatus === "approved" ? { reviewStatus: "approved" as const } : {}),
+  };
+}
+
+function readPromotion(raw: unknown): Pick<WithheldProposal, "promotion"> {
+  if (!raw || typeof raw !== "object") return {};
+  const r = raw as { runId?: unknown; structuredIds?: unknown };
+  if (!Array.isArray(r.structuredIds) || !r.structuredIds.every(isString)) return {};
+  return {
+    promotion: {
+      runId: isString(r.runId) ? r.runId : null,
+      structuredIds: r.structuredIds as string[],
+    },
+  };
+}
+
+const hasApprovedIndex = (v: unknown): boolean =>
+  !!v &&
+  typeof v === "object" &&
+  typeof (v as { approvedIndex?: unknown }).approvedIndex === "number";
+
+function readMatches(raw: unknown): Pick<WithheldProposal, "matches"> {
+  if (!raw || typeof raw !== "object") return {};
+  const r = raw as { ambiguous?: unknown; shared?: unknown };
+  const ambiguous = Array.isArray(r.ambiguous) ? r.ambiguous.filter(hasApprovedIndex) : [];
+  const shared = Array.isArray(r.shared) ? r.shared.filter(hasApprovedIndex) : [];
+  if (ambiguous.length === 0 && shared.length === 0) return {};
+  return {
+    matches: {
+      ambiguous: ambiguous as AmbiguousPromotionMatch[],
+      shared: shared as SharedPromotionMatch[],
+    },
   };
 }
 
@@ -143,6 +189,8 @@ export function readWithheldRecord(
 /** A current requirement row as the comparison needs it. */
 export interface CurrentRequirementRow {
   id: string;
+  /** The optimistic-lock version (#871): bumped by every content edit. */
+  version: number;
   type: string;
   title: string;
   body: string;
@@ -292,6 +340,31 @@ export function planWithheldApply(
   return steps;
 }
 
+/**
+ * Issue #780 — what the analyst confirmed. A digest of every planned step:
+ * which requirement, at which version, what happens to it and which fields
+ * change. The comparison returns it and Apply recomputes it under the lock:
+ * a requirement edited, or one that gained review work, between Review and
+ * Apply changes the digest, so Apply refuses instead of writing something the
+ * confirmation did not show.
+ */
+export function fingerprintWithheldPlan(steps: readonly WithheldApplyStep[]): string {
+  const parts = steps.map((s) => {
+    const fields =
+      s.kind === "update" || s.kind === "replace"
+        ? fieldChanges(s.current, s.proposed).map((c) => c.field)
+        : [];
+    return JSON.stringify([
+      s.kind,
+      "current" in s ? s.current.id : null,
+      "current" in s ? s.current.version : null,
+      "proposed" in s ? s.proposed.title : null,
+      fields,
+    ]);
+  });
+  return createHash("sha256").update(parts.sort().join("\n")).digest("hex").slice(0, 32);
+}
+
 /** The analyst-facing comparison of `current` with the withheld `proposal`. */
 export function diffWithheldReplacement(
   withheld: RequirementReplacementWithheld,
@@ -302,6 +375,7 @@ export function diffWithheldReplacement(
   const matchedIds = new Set([...matches.values()].map((c) => c.id));
   const diff: WithheldReplacementDiff = {
     withheld,
+    fingerprint: fingerprintWithheldPlan(planWithheldApply(current, proposed)),
     added: [],
     changed: [],
     removed: [],

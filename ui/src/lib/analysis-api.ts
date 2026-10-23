@@ -783,10 +783,15 @@ export const analysisApi = {
    * Issue #780 — apply (without deleting review work) or dismiss the withheld
    * re-synthesis. `at` names the one the analyst reviewed.
    */
-  applyWithheldReplacement: (projectId: string, analysisId: string, at: string) =>
+  applyWithheldReplacement: (
+    projectId: string,
+    analysisId: string,
+    at: string,
+    fingerprint: string,
+  ) =>
     apiFetch<WithheldReplacementApplyResult>(
       `/projects/${projectId}/analyses/${analysisId}/withheld-replacement/apply`,
-      { method: "POST", body: { at } },
+      { method: "POST", body: { at, fingerprint } },
     ),
 
   dismissWithheldReplacement: (projectId: string, analysisId: string, at: string) =>

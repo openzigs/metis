@@ -248,6 +248,8 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
     ...(reviewed ? { reviewStatus: "approved" as const } : {}),
     // #1202 — each row records the structured requirement it IS.
     ...(plan ? { promotedFrom: { runId: structuredRunId, pairings: plan.pairings } } : {}),
+    // #780 — kept with a withheld replacement for when it is applied.
+    promotionMatches: { ambiguous, shared },
   });
   // #769 — the replacement was refused to protect review work on the existing
   // set; nothing was written, so nothing is recorded as promoted.

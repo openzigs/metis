@@ -20,7 +20,10 @@ const api = vi.hoisted(() => ({
 vi.mock("@/lib/analysis-api", () => ({ analysisApi: api }));
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
 vi.mock("sonner", () => ({ toast }));
+const auth = vi.hoisted(() => ({ role: "coordinator", permissions: ["project.update"] }));
+vi.mock("@/lib/auth-context", () => ({ useAuth: () => ({ user: auth }) }));
 
+import { ApiError } from "@/lib/api-client";
 import {
   RequirementReplacementWithheldNotice,
   summarizeWithheldReplacement,
@@ -36,6 +39,7 @@ const withheld = {
 
 const DIFF: WithheldReplacementDiff = {
   withheld: { ...withheld, proposalStored: true },
+  fingerprint: "fp-1",
   added: [
     {
       title: "Export feeds as OPML",
@@ -103,7 +107,16 @@ describe("RequirementReplacementWithheldNotice", () => {
     for (const fn of Object.values(api)) fn.mockReset();
     toast.success.mockReset();
     toast.error.mockReset();
+    auth.role = "coordinator";
+    auth.permissions = ["project.update"];
   });
+
+  /** Open the comparison, then ask to dismiss: the confirmation that follows. */
+  async function openDismissConfirmation() {
+    fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Dismiss changes" }));
+    return screen.findByRole("alertdialog", { name: "Dismiss the new result?" });
+  }
 
   it("renders nothing when no replacement was withheld", () => {
     for (const metadata of [{}, null, undefined, { requirementReplacementWithheld: "x" }]) {
@@ -219,7 +232,7 @@ describe("RequirementReplacementWithheldNotice", () => {
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply changes" }));
     await waitFor(() =>
-      expect(api.applyWithheldReplacement).toHaveBeenCalledWith("p-1", "an-1", withheld.at),
+      expect(api.applyWithheldReplacement).toHaveBeenCalledWith("p-1", "an-1", withheld.at, "fp-1"),
     );
     await waitFor(() =>
       expect(toast.success).toHaveBeenCalledWith(
@@ -241,10 +254,23 @@ describe("RequirementReplacementWithheldNotice", () => {
     expect(api.applyWithheldReplacement).not.toHaveBeenCalled();
   });
 
+  it("Dismiss is offered only once the comparison is open, and asks first", async () => {
+    api.getWithheldReplacement.mockResolvedValue(DIFF);
+    renderActionable();
+    expect(screen.queryByRole("button", { name: "Dismiss changes" })).not.toBeInTheDocument();
+    const dialog = await openDismissConfirmation();
+    expect(dialog).toHaveTextContent(/cannot be brought back/);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(api.dismissWithheldReplacement).not.toHaveBeenCalled();
+  });
+
   it("Dismiss changes keeps the current requirements and refreshes the analysis", async () => {
+    api.getWithheldReplacement.mockResolvedValue(DIFF);
     api.dismissWithheldReplacement.mockResolvedValue({ discarded: 30 });
     const { invalidate } = renderActionable();
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss changes" }));
+    const dialog = await openDismissConfirmation();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Dismiss changes" }));
     await waitFor(() =>
       expect(api.dismissWithheldReplacement).toHaveBeenCalledWith("p-1", "an-1", withheld.at),
     );
@@ -258,11 +284,73 @@ describe("RequirementReplacementWithheldNotice", () => {
   });
 
   it("a refused answer (a newer re-synthesis) is shown and the analysis re-read", async () => {
+    api.getWithheldReplacement.mockResolvedValue(DIFF);
     api.dismissWithheldReplacement.mockRejectedValue(new Error("A newer re-synthesis arrived"));
     const { invalidate } = renderActionable();
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss changes" }));
+    const dialog = await openDismissConfirmation();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Dismiss changes" }));
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     expect(invalidate).toHaveBeenCalledWith({ queryKey: KEY });
+  });
+
+  it("requirements changed since the review: says so, applies nothing and reloads the comparison", async () => {
+    api.getWithheldReplacement
+      .mockResolvedValueOnce(DIFF)
+      .mockResolvedValue({ ...DIFF, fingerprint: "fp-2", changed: [] });
+    api.applyWithheldReplacement.mockRejectedValue(
+      new ApiError(409, "The requirements changed since you reviewed this comparison.", "STALE"),
+    );
+    renderActionable();
+    fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Apply changes" }));
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply changes" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /requirements changed after you opened this comparison, so nothing was applied/,
+    );
+    await waitFor(() => expect(api.getWithheldReplacement).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("region", { name: "Changed requirements" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    // The next Apply sends the refreshed comparison's fingerprint.
+    api.applyWithheldReplacement.mockResolvedValue({
+      added: 1,
+      replaced: 0,
+      updated: 0,
+      deleted: 1,
+      kept: 1,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Apply changes" }),
+    );
+    await waitFor(() =>
+      expect(api.applyWithheldReplacement).toHaveBeenLastCalledWith(
+        "p-1",
+        "an-1",
+        withheld.at,
+        "fp-2",
+      ),
+    );
+  });
+
+  it("a developer can review the changes but is told to ask a project owner to answer them", async () => {
+    auth.role = "developer";
+    auth.permissions = ["analysis.run", "analysis.read"];
+    api.getWithheldReplacement.mockResolvedValue(DIFF);
+    renderActionable();
+    expect(screen.getByTestId("requirement-replacement-withheld")).not.toHaveTextContent(
+      /apply it or keep/,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+    const panel = await screen.findByRole("region", { name: "Changes the new result would make" });
+    await within(panel).findByText("Ask a project owner to apply or dismiss these changes.");
+    expect(within(panel).getByRole("region", { name: "Changed requirements" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Apply changes" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Dismiss changes" })).not.toBeInTheDocument();
   });
 
   it("says when the comparison cannot be loaded", async () => {

@@ -29,6 +29,7 @@ import {
   WITHHELD_PROPOSAL_KEY,
   diffWithheldReplacement,
   fieldChanges,
+  fingerprintWithheldPlan,
   planWithheldApply,
   readWithheldProposal,
   readWithheldRecord,
@@ -43,7 +44,12 @@ import {
 import { noteProjectRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import { applyClarificationsToRequirements } from "./clarification-enrichment.js";
-import { promotionMatchingRecord, readPromotionMatchingRecord } from "./promotion-matching.js";
+import {
+  ambiguousPromotionRecords,
+  promotionMatchingRecord,
+  readPromotionMatchingRecord,
+  sharedCriteriaRecords,
+} from "./promotion-matching.js";
 
 const log = createChildLogger("withheld-replacement");
 
@@ -63,6 +69,8 @@ export class WithheldReplacementError extends Error {
 const NO_PROPOSAL_MESSAGE = "There is no withheld re-synthesis to review on this analysis";
 const STALE_MESSAGE =
   "A newer re-synthesis replaced the one you reviewed. Reload to see the current changes.";
+const CHANGED_MESSAGE =
+  "The requirements changed since you reviewed this comparison. Review the changes again before applying them.";
 
 /** The refusal and its stored result, when both exist and belong together. */
 function readPair(metadata: Record<string, unknown>) {
@@ -81,6 +89,7 @@ async function readCurrentRows(
     where: { analysisId },
     select: {
       id: true,
+      version: true,
       type: true,
       title: true,
       body: true,
@@ -100,6 +109,7 @@ async function readCurrentRows(
   const reviewedIds = new Set(reviewed.map((r) => r.id));
   return rows.map((r) => ({
     id: r.id,
+    version: r.version,
     type: r.type,
     title: r.title,
     body: r.body,
@@ -162,6 +172,8 @@ export async function applyWithheldReplacement(input: {
   projectId: string;
   actorId: string;
   at: string;
+  /** The comparison's `fingerprint`: what the analyst saw and confirmed. */
+  fingerprint: string;
 }): Promise<ApplyWithheldReplacementOutcome> {
   let proposal: WithheldProposal | null = null;
   const outcome = await prisma.$transaction(
@@ -176,6 +188,14 @@ export async function applyWithheldReplacement(input: {
       proposal = pair.proposal;
       const current = await readCurrentRows(tx, input.analysisId, metadata);
       const steps = planWithheldApply(current, pair.proposal.rows);
+      // #780 — apply only what the confirmation showed: a requirement edited,
+      // or one that gained review work, since the comparison changes the plan.
+      if (fingerprintWithheldPlan(steps) !== input.fingerprint) {
+        throw new WithheldReplacementError("STALE", CHANGED_MESSAGE);
+      }
+      /** Proposal row index → the requirement row now holding it (#1203/#1204 notes). */
+      const rowIdByIndex: Array<string | undefined> = [];
+      const indexOf = (row: WithheldProposalRow) => pair.proposal.rows.indexOf(row);
 
       const result: ApplyWithheldReplacementOutcome = {
         added: 0,
@@ -204,6 +224,7 @@ export async function applyWithheldReplacement(input: {
           if (await updateReviewed(tx, step.current, step.proposed, input.actorId)) {
             result.updated++;
           }
+          rowIdByIndex[indexOf(step.proposed)] = step.current.id;
           // #1202 — the row now IS the newer run's structured requirement, so
           // a later append of that run finds it. Not content: no version.
           if (step.proposed.promotedStructuredId) {
@@ -234,6 +255,7 @@ export async function applyWithheldReplacement(input: {
             select: { id: true },
           });
           result.insertedIds.push(row.id);
+          rowIdByIndex[indexOf(step.proposed)] = row.id;
           if (step.kind === "insert") result.added++;
           else if (step.changed) result.replaced++;
         }
@@ -258,18 +280,27 @@ export async function applyWithheldReplacement(input: {
       else if (pair.proposal.degraded === null) delete next.synthesisDegraded;
       // #723 / #909 — record the promotion the orchestrator and checkpoint
       // promotion record after a replacement they were allowed to make, so a
-      // later approval in the same extraction run appends instead of replacing.
-      const promotedRows = pair.proposal.rows.filter((r) => r.promotedStructuredId);
-      if (pair.proposal.reviewStatus && promotedRows.length > 0) {
-        next.promotedStructuredIds = [...new Set(promotedRows.map((r) => r.promotedStructuredId!))];
-        next.promotedStructuredRunId = promotedRows[0]!.promotedStructuredRunId ?? null;
+      // later approval in the same extraction run appends instead of replacing
+      // — including when the reviewed run approved nothing.
+      if (pair.proposal.promotion) {
+        next.promotedStructuredIds = pair.proposal.promotion.structuredIds;
+        next.promotedStructuredRunId = pair.proposal.promotion.runId;
       }
-      // #1203 / #1204 — notes about rows deleted here go with them.
+      // #1203 / #1204 — the applied run's own notes for the rows it wrote, plus
+      // the earlier notes on rows it neither deleted nor rewrote.
       const matching = readPromotionMatchingRecord(next.promotionMatching);
-      if (matching && deleted.size > 0) {
+      const written = new Set(rowIdByIndex.filter((id): id is string => Boolean(id)));
+      const untouched = (id: string) => !deleted.has(id) && !written.has(id);
+      if (matching || pair.proposal.matches) {
         next.promotionMatching = promotionMatchingRecord(
-          matching.ambiguous.filter((a) => !deleted.has(a.requirementId)),
-          (matching.shared ?? []).filter((s) => !deleted.has(s.requirementId)),
+          [
+            ...(matching?.ambiguous ?? []).filter((a) => untouched(a.requirementId)),
+            ...ambiguousPromotionRecords(pair.proposal.matches?.ambiguous ?? [], rowIdByIndex),
+          ],
+          [
+            ...(matching?.shared ?? []).filter((x) => untouched(x.requirementId)),
+            ...sharedCriteriaRecords(pair.proposal.matches?.shared ?? [], rowIdByIndex),
+          ],
         );
       }
       await tx.analysis.update({
@@ -290,7 +321,7 @@ export async function applyWithheldReplacement(input: {
       requirementIds: outcome.insertedIds,
     }),
   );
-  const promoted = (proposal as WithheldProposal | null)?.rows.some((r) => r.promotedStructuredId);
+  const promoted = Boolean((proposal as WithheldProposal | null)?.promotion);
   if (promoted && outcome.insertedIds.length > 0) {
     await bestEffort("clarification re-application", () =>
       applyClarificationsToRequirements(input.analysisId),

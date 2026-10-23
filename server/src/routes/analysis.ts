@@ -1489,6 +1489,13 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       if (typeof at !== "string" || at.length === 0 || at.length > 64) {
         throw new AppError(400, "VALIDATION_ERROR", "at must be the withheld re-synthesis time");
       }
+      const fingerprint = (req.body as { fingerprint?: unknown } | undefined)?.fingerprint;
+      if (
+        choice === "apply" &&
+        (typeof fingerprint !== "string" || fingerprint.length === 0 || fingerprint.length > 64)
+      ) {
+        throw new AppError(400, "VALIDATION_ERROR", "fingerprint must be the comparison's");
+      }
       await ensureAnalysisVisible(analysisId, projectId);
       const actor = actorFromReq(req);
       try {
@@ -1498,13 +1505,14 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
             projectId,
             actorId: actor.id,
             at,
+            fingerprint: fingerprint as string,
           });
           const { insertedIds: _inserted, ...counts } = result;
           audit({
             actor: { id: actor.id },
             action: "analysis.replacement_withheld.apply",
             target: { type: "analysis", id: analysisId },
-            metadata: { projectId, ...counts },
+            metadata: { projectId, at, ...counts },
           });
           res.json(ok(counts));
           return;
@@ -1514,7 +1522,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           actor: { id: actor.id },
           action: "analysis.replacement_withheld.dismiss",
           target: { type: "analysis", id: analysisId },
-          metadata: { projectId, discarded },
+          metadata: { projectId, at, discarded },
         });
         res.json(ok({ discarded }));
       } catch (err) {

@@ -14,7 +14,10 @@
  * kept, **Review changes** compares it with the current requirements,
  * **Apply changes** (after a confirmation naming every reviewed requirement it
  * rewords) writes it without deleting any review work, and **Dismiss changes**
- * keeps the current requirements as they are.
+ * (after a confirmation) keeps the current requirements as they are. Both
+ * answers are offered only to `project.update` holders and only once the
+ * comparison is open; Apply sends the comparison's fingerprint, so a
+ * requirement changed since is never written unconfirmed.
  */
 import * as React from "react";
 import { useQuery, useQueryClient, type QueryKey } from "@tanstack/react-query";
@@ -27,6 +30,7 @@ import {
 } from "@metis/shared";
 import { Button } from "@/components/ui/button";
 import {
+  ConfirmDialog,
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -37,6 +41,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { analysisApi } from "@/lib/analysis-api";
+import { ApiError } from "@/lib/api-client";
+import { useAuth } from "@/lib/auth-context";
 import { useAppMutation } from "@/lib/use-app-mutation";
 
 /**
@@ -131,8 +137,14 @@ function WithheldReplacementActions({
 }): React.ReactElement {
   const [open, setOpen] = React.useState(false);
   const [confirming, setConfirming] = React.useState(false);
+  const [confirmingDismiss, setConfirmingDismiss] = React.useState(false);
+  const [changedSinceReview, setChangedSinceReview] = React.useState(false);
   const queryClient = useQueryClient();
   const panelId = React.useId();
+  const { user } = useAuth();
+  // #780 — the server's gate for both answers; Review stays open to everyone
+  // who can read the analysis.
+  const canAnswer = user?.permissions.includes("project.update") ?? false;
 
   const diff = useQuery({
     queryKey: ["analyses", "withheld-replacement", analysisId, withheld.at],
@@ -148,15 +160,26 @@ function WithheldReplacementActions({
   };
 
   const apply = useAppMutation({
-    mutationFn: () => analysisApi.applyWithheldReplacement(projectId, analysisId, withheld.at),
+    mutationFn: (fingerprint: string) =>
+      analysisApi.applyWithheldReplacement(projectId, analysisId, withheld.at, fingerprint),
     successMessage: (r) =>
       `Applied the new requirements: ${r.added} added, ${r.updated + r.replaced} changed, ` +
       `${r.deleted} removed${r.kept > 0 ? `, ${r.kept} reviewed kept` : ""}`,
     onSuccess: () => {
       setConfirming(false);
+      setChangedSinceReview(false);
       refresh();
     },
-    onError: refresh,
+    onError: (error) => {
+      setConfirming(false);
+      // The requirements changed after the comparison was loaded: show the
+      // current one, and say so, rather than applying what was not confirmed.
+      if (error instanceof ApiError && error.code === "STALE") {
+        setChangedSinceReview(true);
+        void diff.refetch();
+      }
+      refresh();
+    },
   });
   const dismiss = useAppMutation({
     mutationFn: () => analysisApi.dismissWithheldReplacement(projectId, analysisId, withheld.at),
@@ -169,8 +192,9 @@ function WithheldReplacementActions({
   return (
     <div className="mt-2 space-y-2 text-foreground">
       <p className="text-xs text-muted-foreground">
-        You can see what the new result would change, then apply it or keep your current
-        requirements. Applying never deletes review work.
+        {canAnswer
+          ? "You can see what the new result would change, then apply it or keep your current requirements. Applying never deletes review work."
+          : "You can see what the new result would change."}
       </p>
       <div className="flex flex-wrap gap-2">
         <Button
@@ -181,9 +205,6 @@ function WithheldReplacementActions({
           onClick={() => setOpen((v) => !v)}
         >
           {open ? "Hide changes" : "Review changes"}
-        </Button>
-        <Button size="sm" variant="outline" disabled={busy} onClick={() => dismiss.mutate()}>
-          Dismiss changes
         </Button>
       </div>
       {open ? (
@@ -199,19 +220,50 @@ function WithheldReplacementActions({
               page.
             </p>
           ) : null}
+          {changedSinceReview ? (
+            <p role="alert" className="text-xs text-warning">
+              The requirements changed after you opened this comparison, so nothing was applied. The
+              comparison below is up to date: review it again before applying.
+            </p>
+          ) : null}
           {diff.data ? (
             <>
               <WithheldReplacementComparison diff={diff.data} />
-              <div className="flex flex-wrap gap-2">
-                <Button size="sm" disabled={busy} onClick={() => setConfirming(true)}>
-                  Apply changes
-                </Button>
-              </div>
+              {canAnswer ? (
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" disabled={busy} onClick={() => setConfirming(true)}>
+                    Apply changes
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => setConfirmingDismiss(true)}
+                  >
+                    Dismiss changes
+                  </Button>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Ask a project owner to apply or dismiss these changes.
+                </p>
+              )}
               <ApplyConfirmation
                 diff={diff.data}
                 open={confirming}
                 onOpenChange={setConfirming}
-                onConfirm={() => apply.mutate()}
+                onConfirm={() => apply.mutate(diff.data!.fingerprint)}
+              />
+              <ConfirmDialog
+                open={confirmingDismiss}
+                onOpenChange={setConfirmingDismiss}
+                title="Dismiss the new result?"
+                description={
+                  "Your current requirements stay exactly as they are. The new result is " +
+                  "discarded and cannot be brought back; run Regenerate again to get a new one."
+                }
+                confirmLabel="Dismiss changes"
+                onConfirm={() => dismiss.mutate()}
               />
             </>
           ) : null}

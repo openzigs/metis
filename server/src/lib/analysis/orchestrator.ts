@@ -4443,6 +4443,8 @@ export class AnalysisOrchestrator {
         ...(plan
           ? {
               promotedFrom: { runId: refined?.runId ?? null, pairings: plan.pairings },
+              // #780 — kept with a withheld replacement for when it is applied.
+              promotionMatches: { ambiguous: plan.ambiguous, shared: plan.shared },
               // #1389 — the user approved each of these in the checkpoint, as
               // `promoteApprovedRequirements` records (#939). A regenerate
               // re-creating the set left every row unreviewed.

@@ -1071,6 +1071,12 @@ export interface WithheldReplacementEntry {
  */
 export interface WithheldReplacementDiff {
   withheld: RequirementReplacementWithheld;
+  /**
+   * What the analyst is shown, as a digest: Apply sends it back and is refused
+   * (409 `STALE`) when the requirements changed since, so nothing is written
+   * that the confirmation did not name.
+   */
+  fingerprint: string;
   added: WithheldReplacementEntry[];
   changed: WithheldReplacementEntry[];
   removed: WithheldReplacementEntry[];

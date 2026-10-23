@@ -19,7 +19,10 @@
  *     before / after, kept because reviewed), with no ids.
  *   - Apply changes asks for confirmation naming the reviewed requirement it
  *     rewords, sends the refusal it answers, and clears the notice.
- *   - Dismiss changes sends the refusal it answers and clears the notice.
+ *   - Apply sends the comparison's fingerprint, so the server can refuse a
+ *     comparison that went stale.
+ *   - Dismiss changes is offered once the comparison is open, asks first, sends
+ *     the refusal it answers and clears the notice.
  */
 import { test, expect, request, type Page, type Request } from "@playwright/test";
 import { primeAdminUser } from "../fixtures/seed-user.js";
@@ -82,8 +85,11 @@ function snapshot(projectId: string, withheld: boolean): Record<string, unknown>
   };
 }
 
+const FINGERPRINT = "fp-e2e-780";
+
 const DIFF = {
   withheld: WITHHELD,
+  fingerprint: FINGERPRINT,
   added: [
     {
       title: "Export feeds as OPML",
@@ -249,7 +255,7 @@ test.describe("Withheld re-synthesis: review, apply or dismiss (#780)", () => {
       await expect(pom.notice).toBeHidden();
       expect(answers).toHaveLength(1);
       expect(answers[0]!.url()).toMatch(/\/withheld-replacement\/apply$/);
-      expect(answers[0]!.postDataJSON()).toEqual({ at: WITHHELD_AT });
+      expect(answers[0]!.postDataJSON()).toEqual({ at: WITHHELD_AT, fingerprint: FINGERPRINT });
       await expect(
         page.getByText(/Applied the new requirements: 1 added, 1 changed/),
       ).toBeVisible();
@@ -261,8 +267,11 @@ test.describe("Withheld re-synthesis: review, apply or dismiss (#780)", () => {
     const pom = new WithheldReplacementPage(page);
     await pom.goto(projectId);
 
-    await expect(pom.dismissButton).toBeVisible();
+    await pom.reviewChanges();
     await pom.dismissButton.click();
+    await expect(pom.dismissDialog).toContainText("cannot be brought back");
+    expect(answers).toHaveLength(0);
+    await pom.confirmDismissButton.click();
 
     await expect(pom.notice).toBeHidden();
     expect(answers).toHaveLength(1);

@@ -17,18 +17,25 @@ export class WithheldReplacementPage {
   readonly applyButton: Locator;
   readonly confirmDialog: Locator;
   readonly confirmApplyButton: Locator;
+  readonly dismissDialog: Locator;
+  readonly confirmDismissButton: Locator;
 
   constructor(page: Page) {
     this.page = page;
     this.notice = page.getByTestId("requirement-replacement-withheld");
     this.reviewButton = this.notice.getByRole("button", { name: "Review changes" });
-    this.dismissButton = this.notice.getByRole("button", { name: "Dismiss changes" });
     this.comparison = this.notice.getByRole("region", {
       name: "Changes the new result would make",
     });
+    // Offered only once the comparison is open, and only to project.update holders.
+    this.dismissButton = this.comparison.getByRole("button", { name: "Dismiss changes" });
     this.applyButton = this.comparison.getByRole("button", { name: "Apply changes" });
     this.confirmDialog = page.getByRole("alertdialog", { name: "Apply the new requirements?" });
     this.confirmApplyButton = this.confirmDialog.getByRole("button", { name: "Apply changes" });
+    this.dismissDialog = page.getByRole("alertdialog", { name: "Dismiss the new result?" });
+    this.confirmDismissButton = this.dismissDialog.getByRole("button", {
+      name: "Dismiss changes",
+    });
   }
 
   async goto(projectId: string): Promise<void> {
@@ -46,11 +53,5 @@ export class WithheldReplacementPage {
   async reviewChanges(): Promise<void> {
     await this.reviewButton.click();
     await expect(this.comparison).toBeVisible();
-  }
-
-  async applyAndConfirm(): Promise<void> {
-    await this.applyButton.click();
-    await expect(this.confirmDialog).toBeVisible();
-    await this.confirmApplyButton.click();
   }
 }

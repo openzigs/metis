@@ -10,6 +10,7 @@ import {
   matchWithheldProposal,
   normalizeTitle,
   planWithheldApply,
+  fingerprintWithheldPlan,
   readWithheldProposal,
   readWithheldRecord,
   type CurrentRequirementRow,
@@ -39,6 +40,7 @@ const current = (
   extra: Partial<CurrentRequirementRow> = {},
 ): CurrentRequirementRow => ({
   id,
+  version: 0,
   type: "feature",
   title,
   body: `${title} body`,
@@ -242,5 +244,58 @@ describe("planWithheldApply / diffWithheldReplacement (#780)", () => {
     ]);
     expect(diff.skipped.map((e) => e.title)).toEqual(["Deleted"]);
     expect(diff.unchangedCount).toBe(1);
+    expect(diff.fingerprint).toBe(fingerprintWithheldPlan(planWithheldApply(rows, next)));
+  });
+});
+
+describe("fingerprintWithheldPlan (#780)", () => {
+  const rows = [
+    current("a", "A", { reviewed: true, reviewStatus: "approved" }),
+    current("b", "B"),
+    current("c", "C"),
+  ];
+  const next = [proposed("A", { body: "new" }), proposed("B")];
+  const fp = (r: CurrentRequirementRow[]) => fingerprintWithheldPlan(planWithheldApply(r, next));
+
+  it("is stable for the same plan, whatever the row order", () => {
+    expect(fp(rows)).toBe(fp([...rows].reverse()));
+    expect(fp(rows)).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it("changes when a requirement's version, review state or changed fields change", () => {
+    const base = fp(rows);
+    expect(fp([{ ...rows[0]!, version: 1 }, rows[1]!, rows[2]!])).not.toBe(base);
+    expect(fp([rows[0]!, rows[1]!, { ...rows[2]!, reviewed: true }])).not.toBe(base);
+    expect(fp([{ ...rows[0]!, body: "new" }, rows[1]!, rows[2]!])).not.toBe(base);
+  });
+});
+
+describe("readWithheldProposal promotion and matches (#780)", () => {
+  it("reads the promotion record and keeps only matching notes with an index", () => {
+    const p = readWithheldProposal({
+      [WITHHELD_PROPOSAL_KEY]: {
+        at: "t",
+        rows: [],
+        promotion: { runId: "run-2", structuredIds: [] },
+        matches: { ambiguous: [{ approvedIndex: 0, structuredId: "R" }, { bad: 1 }], shared: "x" },
+      },
+    });
+    expect(p!.promotion).toEqual({ runId: "run-2", structuredIds: [] });
+    expect(p!.matches!.ambiguous).toHaveLength(1);
+    expect(p!.matches!.shared).toEqual([]);
+    const none = readWithheldProposal({
+      [WITHHELD_PROPOSAL_KEY]: {
+        at: "t",
+        rows: [],
+        promotion: { runId: 5, structuredIds: [1] },
+        matches: { ambiguous: [], shared: [] },
+      },
+    });
+    expect(none).toEqual({ at: "t", rows: [] });
+    expect(
+      readWithheldProposal({
+        [WITHHELD_PROPOSAL_KEY]: { at: "t", rows: [], promotion: { structuredIds: ["A"] } },
+      })!.promotion,
+    ).toEqual({ runId: null, structuredIds: ["A"] });
   });
 });

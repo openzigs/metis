@@ -45,6 +45,8 @@ const { persistRequirements, getAnalysisSnapshot } =
 const { APPLIED_WITHHELD_REPLACEMENT_REASON, WITHHELD_PROPOSAL_KEY } =
   await import("../src/lib/analysis/withheld-replacement.js");
 const { initAnalysisRouter } = await import("../src/routes/analysis.js");
+const { updateRequirementWithHistory } =
+  await import("../src/lib/requirements/requirement-version-service.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 
@@ -122,6 +124,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         .post(`${base(project)}/withheld-replacement/${choice}`)
         .set("Authorization", `Bearer ${token}`)
         .send(body);
+    /** Review, then apply what the review showed: the UI's sequence. */
+    const apply = async (at: string) => {
+      const diff = await getDiff();
+      return answer("apply", { at, fingerprint: diff.body.data?.fingerprint ?? "none" });
+    };
 
     beforeAll(async () => {
       sqlite = createMigratedSqlite("780-withheld-replacement");
@@ -301,7 +308,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     it("apply: never deletes review work — the reviewed one is updated through history, the rest as a re-run", async () => {
       const { at, approvedId, linkId } = await seedWithheld();
-      const res = await answer("apply", { at });
+      const res = await apply(at);
       expect(res.status).toBe(200);
       expect(res.body.data).toEqual({ added: 1, replaced: 0, updated: 1, deleted: 1, kept: 1 });
 
@@ -343,7 +350,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       );
       // Answered: nothing left to review or apply.
       expect((await getDiff()).status).toBe(404);
-      expect((await answer("apply", { at })).body.error.code).toBe("NO_PROPOSAL");
+      expect((await apply(at)).body.error.code).toBe("NO_PROPOSAL");
     });
 
     it("apply: a re-synthesis that gave no criteria leaves a reviewed requirement's criteria alone", async () => {
@@ -363,7 +370,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const diff = (await getDiff()).body.data as WithheldReplacementDiff;
       expect(diff.changed).toEqual([]);
       expect(diff.unchangedCount).toBe(1);
-      expect((await answer("apply", { at })).body.data.updated).toBe(0);
+      expect((await apply(at)).body.data.updated).toBe(0);
       const after = await db.requirement.findUniqueOrThrow({ where: { id: row.id } });
       expect(JSON.parse(after.acceptanceCriteria)).toEqual(["Keep me."]);
       expect(await db.requirementVersion.count({ where: { requirementId: row.id } })).toBe(0);
@@ -389,7 +396,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(auditSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           action: "analysis.replacement_withheld.dismiss",
-          metadata: { projectId: PROJECT, discarded: 4 },
+          metadata: { projectId: PROJECT, at, discarded: 4 },
         }),
       );
       const again = await answer("dismiss", { at });
@@ -399,10 +406,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     it("refuses a stale answer, another project, a reader, a bad body and an unknown choice", async () => {
       const { at } = await seedWithheld();
-      const stale = await answer("apply", { at: "2020-01-01T00:00:00.000Z" });
+      const stale = await answer("apply", { at: "2020-01-01T00:00:00.000Z", fingerprint: "x" });
       expect(stale.status).toBe(409);
       expect(stale.body.error.code).toBe("STALE");
-      expect((await answer("apply", { at }, OTHER_PROJECT)).status).toBe(404);
+      expect((await answer("apply", { at, fingerprint: "x" }, OTHER_PROJECT)).status).toBe(404);
       expect((await getDiff(OTHER_PROJECT)).status).toBe(404);
       // A project the analyst can reach, but not this analysis's: only the
       // analysis↔project check refuses it, with the unknown-analysis 404.
@@ -410,14 +417,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(sibling.status).toBe(404);
       expect(sibling.body.error.code).toBe("ANALYSIS_NOT_FOUND");
       for (const choice of ["apply", "dismiss"]) {
-        const res = await answer(choice, { at }, SIBLING_PROJECT);
+        const res = await answer(choice, { at, fingerprint: "x" }, SIBLING_PROJECT);
         expect(res.status).toBe(404);
         expect(res.body.error.code).toBe("ANALYSIS_NOT_FOUND");
       }
-      expect((await answer("apply", { at }, PROJECT, READER_TOKEN)).status).toBe(403);
+      expect((await answer("apply", { at, fingerprint: "x" }, PROJECT, READER_TOKEN)).status).toBe(
+        403,
+      );
       expect((await answer("dismiss", { at }, PROJECT, READER_TOKEN)).status).toBe(403);
       expect((await answer("apply", {})).status).toBe(400);
       expect((await answer("apply", { at: 5 })).status).toBe(400);
+      expect((await answer("apply", { at })).status).toBe(400);
       expect((await answer("replace-everything", { at })).status).toBe(404);
       // Nothing was answered.
       expect((await metadata())[WITHHELD_PROPOSAL_KEY]).toBeDefined();
@@ -438,7 +448,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         },
       });
       expect(newer).not.toBe(at);
-      expect((await answer("apply", { at })).body.error.code).toBe("STALE");
+      expect((await apply(at)).body.error.code).toBe("STALE");
       const diff = (await getDiff()).body.data as WithheldReplacementDiff;
       expect(diff.added.map((e) => e.title)).toEqual(["Only"]);
 
@@ -490,7 +500,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect((await metadata()).requirementReplacementWithheld).toMatchObject({
         reason: "degraded-synthesis",
       });
-      const res = await answer("apply", { at });
+      const res = await apply(at);
       expect(res.body.data).toEqual({ added: 1, replaced: 0, updated: 0, deleted: 2, kept: 0 });
       const titles = (
         await db.requirement.findMany({ where: { analysisId: ANALYSIS }, select: { title: true } })
@@ -522,7 +532,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           at = w.at;
         },
       });
-      expect((await answer("apply", { at })).body.data.added).toBe(1);
+      expect((await apply(at)).body.data.added).toBe(1);
       const added = (await byTitle("Added"))!;
       expect(added.reviewStatus).toBe("approved");
       const ids = (await metadata()).checkpointApprovedRequirementIds as string[];
@@ -539,7 +549,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(postLimited.status).toBe(429);
         expect(postLimited.body.error.code).toBe("WITHHELD_REPLACEMENT_RATE_LIMITED");
         // B spends its one on a refused POST: the GET is refused by the limiter.
-        expect((await answer("apply", { at: "stale" }, PROJECT, LIMITED_B_TOKEN)).status).toBe(409);
+        expect(
+          (await answer("apply", { at: "stale", fingerprint: "x" }, PROJECT, LIMITED_B_TOKEN))
+            .status,
+        ).toBe(409);
         const getLimited = await getDiff(PROJECT, LIMITED_B_TOKEN);
         expect(getLimited.status).toBe(429);
         expect(getLimited.body.error.code).toBe("WITHHELD_REPLACEMENT_RATE_LIMITED");
@@ -573,7 +586,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       const diff = (await getDiff()).body.data as WithheldReplacementDiff;
       expect(diff.changed[0]!.changes.map((c) => c.field)).toEqual(["description"]);
-      expect((await answer("apply", { at })).body.data.replaced).toBe(1);
+      expect((await apply(at)).body.data.replaced).toBe(1);
       const row = (await byTitle("Unreviewed"))!;
       expect(row.body).toBe("New body");
       expect(JSON.parse(row.acceptanceCriteria)).toEqual(["Keep me."]);
@@ -600,24 +613,31 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         },
       });
       expect((await metadata())[WITHHELD_PROPOSAL_KEY]).not.toHaveProperty("degraded");
-      expect((await answer("apply", { at })).status).toBe(200);
+      expect((await apply(at)).status).toBe(200);
       expect((await metadata()).synthesisDegraded).toEqual(DEGRADED);
     });
 
-    it("apply on a promoted set records the newer run's promotion and prunes notes on deleted rows", async () => {
+    it("apply on a promoted set records the newer run's promotion and its own matching notes", async () => {
       const pairing = (structuredId: string) => ({ structuredId, synthesisKeys: [] });
       await persistRequirements({
         analysisId: ANALYSIS,
         projectId: PROJECT,
-        synthesis: synthesis([{ title: "Kept" }, { title: "Gone" }]),
+        synthesis: synthesis([{ title: "Kept" }, { title: "Gone" }, { title: "Untouched" }]),
         findingIdsByIndex: [],
         reviewStatus: "approved",
-        promotedFrom: { runId: "run-1", pairings: [pairing("REQ-1"), pairing("REQ-2")] },
+        promotedFrom: {
+          runId: "run-1",
+          pairings: [pairing("REQ-1"), pairing("REQ-2"), pairing("REQ-9")],
+        },
       });
       const kept = (await byTitle("Kept"))!;
       const gone = (await byTitle("Gone"))!;
-      // A person's review on Kept withholds the next replacement.
-      await db.requirement.update({ where: { id: kept.id }, data: { reviewStatus: "rejected" } });
+      const untouched = (await byTitle("Untouched"))!;
+      // A person's review on Kept and Untouched withholds the next replacement.
+      await db.requirement.updateMany({
+        where: { id: { in: [kept.id, untouched.id] } },
+        data: { reviewStatus: "rejected" },
+      });
       const meta = await metadata();
       const note = (requirementId: string) => ({
         requirementId,
@@ -629,11 +649,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         data: {
           metadata: JSON.stringify({
             ...meta,
-            promotedStructuredIds: ["REQ-1", "REQ-2"],
+            promotedStructuredIds: ["REQ-1", "REQ-2", "REQ-9"],
             promotedStructuredRunId: "run-1",
             promotionMatching: {
-              ambiguousCount: 2,
-              ambiguous: [note(kept.id), note(gone.id)],
+              ambiguousCount: 3,
+              ambiguous: [note(kept.id), note(gone.id), note(untouched.id)],
               shared: [],
               updatedAt: "2026-10-01T00:00:00.000Z",
             },
@@ -648,12 +668,24 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         findingIdsByIndex: [],
         reviewStatus: "approved",
         promotedFrom: { runId: "run-2", pairings: [pairing("REQ-1"), pairing("REQ-3")] },
+        // The run's own note: the title join could not decide REQ-3 (#1204).
+        promotionMatches: {
+          ambiguous: [
+            {
+              structuredId: "REQ-3",
+              approvedIndex: 1,
+              candidates: [{ title: "Added", acceptanceCriteria: [] }],
+              synthesizedIndexes: [1],
+            },
+          ],
+          shared: [],
+        },
         onWithheld: (w) => {
           at = w.at;
         },
       });
-      const res = await answer("apply", { at });
-      expect(res.body.data).toMatchObject({ added: 1, updated: 1, deleted: 1 });
+      const res = await apply(at);
+      expect(res.body.data).toMatchObject({ added: 1, updated: 1, deleted: 1, kept: 1 });
       const after = await metadata();
       expect(after.promotedStructuredIds).toEqual(["REQ-1", "REQ-3"]);
       expect(after.promotedStructuredRunId).toBe("run-2");
@@ -664,9 +696,96 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         promotedStructuredId: "REQ-1",
         promotedStructuredRunId: "run-2",
       });
-      expect((await byTitle("Added"))!.promotedStructuredRunId).toBe("run-2");
-      const matching = after.promotionMatching as { ambiguous: Array<{ requirementId: string }> };
-      expect(matching.ambiguous.map((a) => a.requirementId)).toEqual([kept.id]);
+      const added = (await byTitle("Added"))!;
+      expect(added.promotedStructuredRunId).toBe("run-2");
+      // Notes: the untouched row's earlier one stays, the deleted and rewritten
+      // rows' earlier ones go, and the applied run's own one names its row.
+      const matching = after.promotionMatching as {
+        ambiguous: Array<{ requirementId: string; structuredId: string }>;
+      };
+      expect(matching.ambiguous.map((a) => [a.requirementId, a.structuredId])).toEqual([
+        [untouched.id, "REQ-x"],
+        [added.id, "REQ-3"],
+      ]);
+    });
+
+    it("apply records a reviewed run that approved nothing, so the run's next approval appends", async () => {
+      await persist([{ title: "Old" }]);
+      const old = (await byTitle("Old"))!;
+      await db.requirement.update({ where: { id: old.id }, data: { reviewStatus: "approved" } });
+      const meta = await metadata();
+      await db.analysis.update({
+        where: { id: ANALYSIS },
+        data: {
+          metadata: JSON.stringify({
+            ...meta,
+            promotedStructuredIds: ["REQ-1"],
+            promotedStructuredRunId: "run-1",
+          }),
+        },
+      });
+      let at = "";
+      // The orchestrator's reviewed path with nothing approved: no rows, but a
+      // promotion for run-2 all the same.
+      await persistRequirements({
+        analysisId: ANALYSIS,
+        projectId: PROJECT,
+        synthesis: synthesis([]),
+        findingIdsByIndex: [],
+        reviewStatus: "approved",
+        promotedFrom: { runId: "run-2", pairings: [] },
+        onWithheld: (w) => {
+          at = w.at;
+        },
+      });
+      expect((await apply(at)).status).toBe(200);
+      const after = await metadata();
+      expect(after.promotedStructuredIds).toEqual([]);
+      expect(after.promotedStructuredRunId).toBe("run-2");
+      expect((await byTitle("Old"))!.reviewStatus).toBe("approved");
+    });
+
+    it("apply refuses (409) when a reviewed requirement was edited after the review, and writes nothing", async () => {
+      const { at, approvedId } = await seedWithheld();
+      const review = await getDiff();
+      const fingerprint = review.body.data.fingerprint as string;
+      // Someone edits the approved requirement between Review and Apply.
+      await updateRequirementWithHistory(db as never, {
+        requirementId: approvedId,
+        patch: { body: "Edited after the review." },
+        actorId: READER,
+      });
+      const before = await db.requirement.findMany({
+        where: { analysisId: ANALYSIS },
+        orderBy: { id: "asc" },
+      });
+      const res = await answer("apply", { at, fingerprint });
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("STALE");
+      expect(res.body.error.message).toMatch(/changed since you reviewed/);
+      expect(
+        await db.requirement.findMany({ where: { analysisId: ANALYSIS }, orderBy: { id: "asc" } }),
+      ).toEqual(before);
+      expect((await metadata())[WITHHELD_PROPOSAL_KEY]).toBeDefined();
+      expect(auditSpy).not.toHaveBeenCalled();
+      // A fresh review sees the edit, and its fingerprint applies.
+      expect((await apply(at)).status).toBe(200);
+    });
+
+    it("apply refuses (409) when an unreviewed requirement gained review work after the review", async () => {
+      const { at } = await seedWithheld();
+      const fingerprint = (await getDiff()).body.data.fingerprint as string;
+      // "Dropped" had no review work: the plan deleted it. A comment makes it
+      // reviewed, so applying would now do something the confirmation did not say.
+      const dropped = (await byTitle("Dropped"))!;
+      await db.commentThread.create({
+        data: { requirementId: dropped.id },
+      });
+      const res = await answer("apply", { at, fingerprint });
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("STALE");
+      expect(await db.requirement.findUnique({ where: { id: dropped.id } })).not.toBeNull();
+      expect((await metadata())[WITHHELD_PROPOSAL_KEY]).toBeDefined();
     });
   },
 );

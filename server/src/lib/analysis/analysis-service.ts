@@ -915,6 +915,12 @@ export interface PersistRequirementsInput {
    * checkpoint; its rows record no pairing and are matched by title.
    */
   promotedFrom?: PromotedFrom;
+  /**
+   * Issue #780 — the promotion's #1203/#1204 matching notes. Only kept with a
+   * withheld replacement, so applying it later records them for its rows; the
+   * caller writes them itself after a replacement that was allowed.
+   */
+  promotionMatches?: WithheldProposal["matches"];
 }
 
 /**
@@ -1125,6 +1131,15 @@ async function replaceRequirementSet(
       at: withheld.at,
       rows: withheldProposalRows(input, metadata),
       ...(input.degraded !== undefined ? { degraded: input.degraded } : {}),
+      ...(input.promotedFrom
+        ? {
+            promotion: {
+              runId: input.promotedFrom.runId,
+              structuredIds: input.promotedFrom.pairings.map((p) => p.structuredId),
+            },
+          }
+        : {}),
+      ...(input.promotionMatches ? { matches: input.promotionMatches } : {}),
       ...(input.reviewStatus ? { reviewStatus: input.reviewStatus } : {}),
     };
     const record: RequirementReplacementWithheld = { ...withheld, proposalStored: true };
