@@ -261,8 +261,6 @@ describe("getWorkspaceTraceabilitySummary", () => {
     links: ReturnType<typeof edge>[];
     projects: Array<{ id: string; name: string }>;
     reqs: Record<string, string[]>;
-    /** Requirement titles by id; `req <id>` when absent. */
-    titles?: Record<string, string>;
     spec: Record<string, Array<string | { requirementId: string; specDocumentId: string }>>;
     code: Record<string, Array<string | CodeRow>>;
     specCode?: Record<string, Array<CodeRow & { specDocumentId: string }>>;
@@ -315,11 +313,7 @@ describe("getWorkspaceTraceabilitySummary", () => {
       project: { findMany: vi.fn(async () => opts.projects) },
       requirement: {
         findMany: vi.fn(async (a: { where: { projectId: string; deletedAt: null } }) =>
-          (opts.reqs[a.where.projectId] ?? []).map((id) => ({
-            id,
-            title: opts.titles?.[id] ?? `req ${id}`,
-            body: "",
-          })),
+          (opts.reqs[a.where.projectId] ?? []).map((id) => ({ id, title: `req ${id}`, body: "" })),
         ),
       },
       requirementSpecMapping: {
@@ -502,8 +496,6 @@ describe("getWorkspaceTraceabilitySummary", () => {
       links: [],
       projects: projectIds.map((id) => ({ id, name: id })),
       reqs: Object.fromEntries(projectIds.map((p) => [p, reqs])),
-      // R2's row is the whole file: a test there needs the title's words (#955).
-      titles: { R2: "Password validation" },
       spec: { projA: [{ requirementId: "R3", specDocumentId: "S1" }] },
       specCode: { projA: [{ specDocumentId: "S1", ...row("", "src/d.ts", "s-d") }] },
       code: {

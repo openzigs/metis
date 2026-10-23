@@ -76,13 +76,15 @@
  *    default.
  *
  * Two more keep a link to tests that are about the requirement (#955, #1108):
- *  - A rangeless whole-file target (no symbol, no range) cites no lines, so a
+ *  - An `analysis-grounding` rangeless whole-file target (no symbol, no range:
+ *    the seeder's row for a finding that cites a file with no lines) cites no lines, so a
  *    symbol of the file is not evidence: an `exercises` link through it, and a
- *    `naming` match to it, need the hub guard's title-word overlap.
+ *    `naming` match to it, need the hub guard's title-word overlap (and a test
+ *    so rejected is not let back in by the one-token `naming` fallback).
  *  - A **shared entry point** — a mapped symbol called by at least
  *    `TESTED_BY_ENTRY_POINT_MIN_TEST_CALLERS` (default 5) test-file symbols,
  *    most of which do not name it (a constructor or router the tests build, Go
- *    `NewHandler`) — turns an `exercises` or `naming` link that is not about the
+ *    `NewHandler`) — turns an `exercises`, `inferred-call` or `naming` link that is not about the
  *    requirement by the same word rule into the weakest relation, `entry-point`
  *    (0.4). It is shown, never strict, and alone it leaves the requirement in
  *    the gap list as `entry-point-only` (see {@link isSharedEntryPoint}).
@@ -752,8 +754,10 @@ function resolveOne(
     // calls is only "in the file": every own-package helper test would link
     // (`TestTruncateStringForTSVectorField` for five mark-as-read requirements).
     // A call through it counts when the test or the callee is about the
-    // requirement, by the hub guard's word rule.
-    const wholeFile = fileOnly && t.startLine == null;
+    // requirement, by the hub guard's word rule. Only the seeder's document-
+    // citation rows: a person who maps a whole file means the whole file, and
+    // every rangeless row measured on six walkthrough projects is this shape.
+    const wholeFile = fileOnly && t.startLine == null && t.source === ANALYSIS_GROUNDING_SOURCE;
     const about = (from: SymbolRow, ts: SymbolRow): boolean =>
       sharesRequirementWords(from.name, requirementWords) ||
       sharesRequirementWords(ts.name, requirementWords);
@@ -769,8 +773,9 @@ function resolveOne(
       for (const { from, ts } of calls) {
         if (wholeFile && !about(from, ts)) continue;
         if (hub && !about(from, ts)) continue;
-        // An inferred call is already weaker than an entry-point one.
-        const generic = relation === "exercises" && throughEntryPoint(from, ts);
+        // An inferred call through an entry point is demoted too: it counts as
+        // tested, and an ingest-bound call to the same callee does not.
+        const generic = throughEntryPoint(from, ts);
         offer(
           testNodeFromSymbol(from, generic ? "entry-point" : relation, {
             filePath: ts.filePath,
@@ -798,7 +803,13 @@ function resolveOne(
               symbol: matched.qualifiedName,
             }),
           );
-        } else if (fileOnly && nameTokens(sym.name).some((tok) => queryTokens.has(tok))) {
+        } else if (
+          fileOnly &&
+          // #955 — a test named for another symbol of the whole file is about that
+          // symbol; one shared token must not bring it back as `naming`.
+          !(wholeFile && named) &&
+          nameTokens(sym.name).some((tok) => queryTokens.has(tok))
+        ) {
           offer(testNodeFromSymbol(sym, "naming", { filePath: t.filePath, symbol: null }));
         }
       }

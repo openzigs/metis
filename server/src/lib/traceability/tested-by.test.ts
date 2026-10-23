@@ -298,10 +298,9 @@ describe("matchTestSubject", () => {
 
 describe("resolveTestedBy", () => {
   it("links a file-only mapping by naming, ranking the requirement's own test first", async () => {
-    // Ranged: a rangeless whole-file row needs the title's words (#955, below).
     const { deps: d } = deps({
       requirements: [req("r1", "Password must be at least 6 characters")],
-      codeMappings: [rangeMap("r1", USER, 1, 40)],
+      codeMappings: [fileMap("r1", USER)],
       symbols: validatorSymbols,
     });
     const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
@@ -324,7 +323,7 @@ describe("resolveTestedBy", () => {
   it("prefers exercises over naming for the same test and dedupes it", async () => {
     const { deps: d } = deps({
       requirements: [req("r1", "Password must be at least 6 characters")],
-      codeMappings: [rangeMap("r1", USER, 1, 40)],
+      codeMappings: [fileMap("r1", USER)],
       symbols: validatorSymbols,
       edges: [{ projectId: P, kind: "calls", fromSymbolId: "t-pw", toSymbolId: "v-pw" }],
     });
@@ -372,7 +371,7 @@ describe("resolveTestedBy", () => {
   it("caps a file-only target's symbol expansion", async () => {
     const f: Fixture = {
       requirements: [req("r1", "x")],
-      codeMappings: [rangeMap("r1", "pkg/a.ts", 1, 10)],
+      codeMappings: [fileMap("r1", "pkg/a.ts")],
       symbols: [
         sym("a1", "pkg/a.ts", "first", { startLine: 1 }),
         sym("a2", "pkg/a.ts", "second", { startLine: 2 }),
@@ -448,7 +447,7 @@ describe("resolveTestedBy", () => {
   it("honours limit", async () => {
     const { deps: d } = deps({
       requirements: [req("r1", "x")],
-      codeMappings: [rangeMap("r1", USER, 1, 40)],
+      codeMappings: [fileMap("r1", USER)],
       symbols: validatorSymbols,
     });
     expect((await resolveTestedBy(P, ["r1"], { limit: 1 }, d)).get("r1")).toHaveLength(1);
@@ -1504,7 +1503,7 @@ describe("resolveTestedBy — a rangeless whole-file mapping (#955, #1004)", () 
     const FINDER_TEST = "internal/reader/icon/finder_test.go";
     const out = await resolve({
       requirements: [req("r1", "Parse base64 image data URLs in icon finder")],
-      codeMappings: [fileMap("r1", FINDER)],
+      codeMappings: [{ ...fileMap("r1", FINDER), source: "analysis-grounding" }],
       symbols: [
         sym("f-parse", FINDER, "parseImageDataURL", { startLine: 300 }),
         sym("f-other", FINDER, "resizeIcon", { startLine: 100 }),
@@ -1516,12 +1515,9 @@ describe("resolveTestedBy — a rangeless whole-file mapping (#955, #1004)", () 
         { projectId: P, kind: "calls", fromSymbolId: "t-other", toSymbolId: "f-other" },
       ],
     });
-    // TestResizeIcon still shares the token "icon": the weak whole-file `naming`
-    // rule (#814) is unchanged, and it is never a strict link.
-    expect(out.map((t) => [t.name, t.relation])).toEqual([
-      ["TestParseImageDataURL", "exercises"],
-      ["TestResizeIcon", "naming"],
-    ]);
+    // TestResizeIcon shares the token "icon", but it is named for another symbol
+    // of the file, so the one-token `naming` fallback does not let it back in.
+    expect(out.map((t) => [t.name, t.relation])).toEqual([["TestParseImageDataURL", "exercises"]]);
   });
 
   it("keeps a callee named for the requirement although its test is not", async () => {
@@ -1540,7 +1536,12 @@ describe("resolveTestedBy — a rangeless whole-file mapping (#955, #1004)", () 
       symbols: entrySymbols,
       edges: [truncCall],
     };
-    for (const mapping of [rangeMap("r1", ENTRY, 40, 70), fileMap("r1", ENTRY, "e-trunc")]) {
+    for (const mapping of [
+      rangeMap("r1", ENTRY, 40, 70),
+      fileMap("r1", ENTRY, "e-trunc"),
+      // A person who maps a whole file means it: only the seeder's rows are judged.
+      { ...fileMap("r1", ENTRY), source: "manual" },
+    ]) {
       const out = await resolve({ ...base, codeMappings: [mapping] });
       expect(out.map((t) => [t.name, t.relation])).toEqual([
         ["TestTruncateStringForTSVectorField", "exercises"],
@@ -1705,6 +1706,38 @@ describe("resolveTestedBy — a shared entry point is not evidence (#1108)", () 
     );
     const out = (await all(f)).get("r0")!;
     expect(out.map((t) => t.relation)).toEqual(Array(5).fill("exercises"));
+  });
+
+  it("is not one at exactly half: three of six callers name it", async () => {
+    const f = routerFixture(ROUTER_TITLES);
+    f.symbols = [
+      ...f.symbols!.map((s) =>
+        s.id === "t-api-2" ? { ...s, name: "TestNewHandlerRejectsUnknownRoutes" } : s,
+      ),
+      sym("t-api-5", API_TEST, "TestGetFeedsHandler", { startLine: 400 }),
+    ];
+    f.edges!.push(callsNewHandler("t-api-5"));
+    const out = (await all(f)).get("r0")!;
+    expect(out.map((t) => t.relation)).toEqual(Array(6).fill("exercises"));
+  });
+
+  it("demotes an inferred call into the entry point too", async () => {
+    // A same-package test calling `h.NewHandler(…)` that ingest left unresolved:
+    // bound by name, then judged like the ingest's own five callers.
+    const f = routerFixture(["Feed counters endpoint"]);
+    f.symbols!.push(sym("t-inferred", API_TEST, "TestCountersRoute", { startLine: 500 }));
+    f.edges!.push({
+      projectId: P,
+      kind: "calls",
+      fromSymbolId: "t-inferred",
+      toSymbolId: null,
+      toQualifiedName: "NewHandler",
+      filePath: API_TEST,
+    } as never);
+    const out = (await all(f)).get("r0")!;
+    expect(out.find((t) => t.name === "TestCountersRoute")?.relation).toBe("entry-point");
+    const gaps = await listUntestedRequirements(P, undefined, deps(f).deps);
+    expect(gaps.untested.map((g) => g.reason)).toEqual(["entry-point-only"]);
   });
 
   it("reads a legacy method name: ScheduleNextCheck stored without its Feed receiver", async () => {

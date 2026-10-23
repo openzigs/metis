@@ -1612,7 +1612,7 @@ Each requirement's card on an analysis's **Requirements** tab shows its traceabi
 | **Inferred call** | Go only. The test calls a method whose name matches the mapped code, but METIS could not see which object the call was made on, so it matched by name. It is shown only when the name is distinctive (two words or more, and not a common Go library name such as `Close` or `WithTimeout`) or the test is named for the method. A weak signal: read the test before relying on it. |
 | **Shared entry point** | The test calls mapped code that many tests call to set themselves up, such as a constructor or a router (Miniflux's `NewHandler`), and neither the test's name nor the code's shares the requirement's words. The call is real, but it says nothing about this requirement, so it does not count as a test of it. |
 
-A requirement mapped to a whole file, with no line range, is linked only to tests whose name, or the name of the code they call, shares the requirement's words. Other tests of that file are about something else in it.
+A requirement that METIS mapped to a whole file from an analysis citation, with no line range, is linked only to tests whose name, or the name of the code they call, shares the requirement's words. Other tests of that file are about something else in it.
 
 Mapped code that is itself a test carries a small **test** badge in the chain.
 

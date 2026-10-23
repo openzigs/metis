@@ -147,19 +147,21 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const deleted = await requirement("Deleted requirement", "gone");
       await db.requirement.update({ where: { id: deleted }, data: { deletedAt: new Date() } });
 
-      const fileOnly = (requirementId: string, filePath: string) =>
+      const fileOnly = (requirementId: string, filePath: string, startLine: number | null = null) =>
         db.requirementCodeMapping.create({
           data: {
             requirementId,
             projectId: PROJ,
             codeSymbolId: null,
             filePath,
-            startLine: null,
-            endLine: null,
+            startLine,
+            endLine: startLine == null ? null : startLine + 40,
             source: "analysis-grounding",
           },
         });
-      await fileOnly(ids.pw, USER_GO);
+      // Ranged over both validators: a rangeless whole-file row would need the
+      // title's words for each test it links (#955), which this case is not about.
+      await fileOnly(ids.pw, USER_GO, 1);
       await fileOnly(ids.oidc, OIDC_GO);
       await fileOnly(deleted, OIDC_GO);
 
