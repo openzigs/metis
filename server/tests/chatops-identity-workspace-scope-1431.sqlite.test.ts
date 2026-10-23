@@ -125,6 +125,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ] as const) {
         await db.workspaceMember.create({ data: { workspaceId, userId, role } });
       }
+      // The commands' target: a project of workspace A (#1437 scopes it to the bot's).
+      await db.project.create({
+        data: {
+          id: "proj-x",
+          name: "proj-x",
+          slug: "proj-x",
+          createdById: "u-admin-a",
+          workspaceId: WS_A,
+        },
+      });
       ADMIN_A = developer("u-admin-a", [WS_A]);
       ADMIN_B = developer("u-admin-b", [WS_B]);
       SYSADMIN = issueTokens({

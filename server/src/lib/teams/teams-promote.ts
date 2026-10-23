@@ -52,6 +52,7 @@ import type { PrismaClient } from "@prisma/client";
 import { createChildLogger } from "../logger.js";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { canAccessThread } from "../discussions/access.js";
+import { isThreadInWorkspace } from "../workspaces/chatops-project-scope.js";
 import { promoteMessageToRequirement, PromoteError } from "../discussions/promote.js";
 import {
   getTeamsAadIdentityResolver,
@@ -270,6 +271,14 @@ export async function handleTeamsPromoteSubmit(
       ),
     );
     return { outcome: "unmapped-sender" };
+  }
+
+  // 2b. SCOPE (#1437) — the threadId is untrusted card input, so it may name a
+  // thread in another workspace the user also belongs to. Only a thread of THIS
+  // bot's workspace; any other is answered like a missing one.
+  if (!(await isThreadInWorkspace(deps.db, deps.workspaceId, threadId))) {
+    await safeSend(context, buildErrorCard("That discussion no longer exists."));
+    return { outcome: "thread-not-found" };
   }
 
   // 3. AUTHORIZE at the lowest privilege — access must be earned, not fabricated.

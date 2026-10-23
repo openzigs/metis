@@ -84,6 +84,8 @@ function makeDeps(over: Partial<PromoteHandlerDeps> = {}): TestDeps {
       analysisIdSource: "latest-analysis" as const,
     })),
     db: {
+      // #1437 — the bot-workspace scope lookup; found = in the bot's workspace.
+      discussionThread: { findFirst: vi.fn(async () => ({ id: THREAD })) },
       discussionMessage: {
         findFirst: vi.fn(async () => ({ id: MSG, body: "Build the export feature for finance" })),
       },
@@ -154,6 +156,7 @@ describe("handleTeamsPromoteSubmit — authorized member (happy path)", () => {
     const { context } = makeContext({});
     const deps = makeDeps({
       db: {
+        discussionThread: { findFirst: vi.fn(async () => ({ id: THREAD })) },
         discussionMessage: {
           findFirst: vi.fn(async () => ({
             id: MSG,
@@ -208,6 +211,28 @@ describe("handleTeamsPromoteSubmit — refusals (never promote)", () => {
     expect(sent).toHaveLength(1);
   });
 
+  it("refuses a thread outside the bot's workspace like a missing one, before authorizing (#1437)", async () => {
+    const { context, sent } = makeContext({});
+    const findFirst = vi.fn(async () => null);
+    const deps = makeDeps({
+      db: {
+        discussionThread: { findFirst },
+        discussionMessage: { findFirst: vi.fn(async () => ({ id: MSG, body: "x" })) },
+      } as unknown as PromoteHandlerDeps["db"],
+    });
+
+    const res = await handleTeamsPromoteSubmit(context, deps);
+    expect(res.outcome).toBe("thread-not-found");
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: THREAD, deletedAt: null, project: { workspaceId: WS } },
+      }),
+    );
+    expect(deps.authorize).not.toHaveBeenCalled();
+    expect(deps.promote).not.toHaveBeenCalled();
+    expect(JSON.stringify(sent[0])).toContain("no longer exists");
+  });
+
   it("gracefully errors when the submit value omits the correlation ids", async () => {
     const { context, sent } = makeContext({ value: { metisAction: "promote" } });
     const deps = makeDeps();
@@ -222,6 +247,7 @@ describe("handleTeamsPromoteSubmit — refusals (never promote)", () => {
     const { context, sent } = makeContext({});
     const deps = makeDeps({
       db: {
+        discussionThread: { findFirst: vi.fn(async () => ({ id: THREAD })) },
         discussionMessage: { findFirst: vi.fn(async () => null) },
       } as unknown as PromoteHandlerDeps["db"],
     });

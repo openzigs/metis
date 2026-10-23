@@ -61,6 +61,10 @@ import { hasPermission, type RoleKey } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { actorHasProjectAccess } from "../scheduler/project-access.js";
+import {
+  draftInWorkspaceWhere,
+  isProjectInWorkspace,
+} from "../workspaces/chatops-project-scope.js";
 import { approveDraft } from "../publishing/publishing-service.js";
 import { PublishError } from "../publishing/types.js";
 import {
@@ -485,12 +489,17 @@ export async function handleTeamsStatusCommand(
     projectId = link.projectId;
   }
 
+  // SCOPE (#1437) — only a project of THIS bot's workspace, checked for a linked
+  // project too (it may have moved since). An out-of-workspace or unknown project
+  // gets the refusal an inaccessible one gets, for every actor, admins included.
   // AUTHORIZE — project membership (admins see all). Identity ≠ authorization.
-  const allowed = await deps.authorizeProject({ id: pre.userId, role: pre.role }, projectId, {
-    resource: "project",
-    resourceId: projectId,
-    action: "teams.chatops.status",
-  });
+  const allowed =
+    (await isProjectInWorkspace(deps.db, deps.workspaceId, projectId)) &&
+    (await deps.authorizeProject({ id: pre.userId, role: pre.role }, projectId, {
+      resource: "project",
+      resourceId: projectId,
+      action: "teams.chatops.status",
+    }));
   if (!allowed) {
     await safeSend(
       context,
@@ -539,7 +548,7 @@ export async function handleTeamsApproveCommand(
   // authorizeDraftAccess returned null → the draft is loaded + authorized; reload
   // its title for the prompt (cheap, already validated to exist + be accessible).
   const draft = await deps.db.issueDraft.findFirst({
-    where: { id: draftId, deletedAt: null },
+    where: draftInWorkspaceWhere(draftId, deps.workspaceId),
     select: { id: true, title: true },
   });
   if (!draft) {
@@ -643,8 +652,10 @@ async function authorizeDraftAccess(
     return { outcome: "forbidden", draftId };
   }
 
+  // SCOPE (#1437) — a draft whose project is outside this bot's workspace is not
+  // found, exactly like an unknown one.
   const draft = await deps.db.issueDraft.findFirst({
-    where: { id: draftId, deletedAt: null },
+    where: draftInWorkspaceWhere(draftId, deps.workspaceId),
     select: { id: true, projectId: true },
   });
   if (!draft) {

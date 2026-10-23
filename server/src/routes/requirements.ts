@@ -56,6 +56,10 @@ import {
 import { visibleRequirementLabels } from "../lib/analysis/requirement-labels.js";
 import { audit } from "../lib/audit/audit-service.js";
 import {
+  eligibleAssigneeIds,
+  isEligibleAssignee,
+} from "../lib/requirements/assignee-eligibility.js";
+import {
   ACCEPTANCE_CRITERIA_CLEARED,
   ACCEPTANCE_CRITERIA_MAX_ITEMS,
   ACCEPTANCE_CRITERION_MAX_LENGTH,
@@ -188,7 +192,28 @@ export function requirementsCollaborationRouter(): Router {
         },
         orderBy: { createdAt: "asc" },
       });
-      res.json({ success: true, data: assignments });
+      // #1432 — a row written before assignees were checked, or whose assignee
+      // or assigner has since left, must not reveal who that user is: keep the
+      // row (it can still be removed) but drop the name of anyone — assignee or
+      // assignedBy — no longer eligible for the project. One check per distinct
+      // user, run in parallel.
+      const owner = await prisma.requirement.findUnique({
+        where: { id: requirementId },
+        select: { projectId: true },
+      });
+      const eligible = owner
+        ? await eligibleAssigneeIds(
+            assignments.flatMap((a) => [a.assigneeId, a.assignedById]),
+            owner.projectId,
+          )
+        : new Set<string>();
+      const anonymous = (id: string) => ({ id, username: null, displayName: null });
+      const data = assignments.map((a) => ({
+        ...a,
+        assignee: eligible.has(a.assigneeId) ? a.assignee : anonymous(a.assigneeId),
+        assignedBy: eligible.has(a.assignedById) ? a.assignedBy : anonymous(a.assignedById),
+      }));
+      res.json({ success: true, data });
     },
   );
 
@@ -209,9 +234,16 @@ export function requirementsCollaborationRouter(): Router {
 
       const reqRow = await prisma.requirement.findUnique({
         where: { id: requirementId, ...requirementScopeWhere(req) },
-        select: { id: true },
+        select: { id: true, projectId: true },
       });
       if (!reqRow) throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+
+      // #1432 — only an active member who can open the requirement's project.
+      // An unknown id and an ineligible one get the same 404, and nothing is
+      // written, so this is not a cross-workspace user lookup.
+      if (!(await isEligibleAssignee(parsed.data.assigneeId, reqRow.projectId))) {
+        throw new AppError(404, "ASSIGNEE_NOT_FOUND", "Assignee not found");
+      }
 
       const assignment = await prisma.assignment.upsert({
         where: {

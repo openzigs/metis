@@ -1149,7 +1149,7 @@ Every authenticated socket auto-joins a personal room `user:{userId}` in `attach
 
 Four server modules emit to these rooms:
 - `mentions.ts`: `comment:mention` → `user:{mentionedUserId}`
-- `sla-checker.ts`: `sla:deadline_expired` → `user:{assigneeId}` and (if different) `user:{coordinatorId}`
+- `sla-checker.ts`: `sla:deadline_expired` → `user:{assigneeId}` and (if different) `user:{coordinatorId}`, each only while `isEligibleAssignee` (`lib/requirements/assignee-eligibility.ts`) still holds for the requirement's project (#1432). If that check throws, the row is neither sent nor marked `notifiedAt`, so the next run retries it; a known-ineligible recipient is skipped and the row is marked. The same rule gates `POST /api/requirements/:requirementId/assignments`: an active, non-deleted user who passes the project-access rule keyed by that user (`canAccessProjectDiscussions`: a live member of the project's workspace, any system admin, anyone for a legacy workspace-less project, system admins only for a soft-deleted one), the same audience the assignee picker offers (`GET /api/users?projectId=`). Anyone else, an unknown id included, is `404 ASSIGNEE_NOT_FOUND`; the GET list blanks the name of an assignee or `assignedBy` user who no longer qualifies (one parallel check per distinct user)
 - `discussions/notify.ts`: `discussion:mention` → `user:{mentionedUserId}` (#489)
 - `reviews/notify.ts`: `review:notification` → each reviewer on submit, the requester on each decision and outcome (#621)
 
@@ -5816,7 +5816,7 @@ the same `postgres`-scheme check, with a SQLite-safe fallback.
 |---|---|---|---|
 | **User** | `users` | User accounts | Stores username, display name, email, role, last login; `authSource` = the provider kind the account belongs to (#1395) |
 | **UserIdentity** | `user_identities` | Sign-in identities (#1395) | (provider, issuer, subject) unique, bound to one user. Every login resolves its account by this key first; a username held by another provider's identity is refused with 409 `ACCOUNT_LINK_REQUIRED` (`server/src/lib/auth/login-identity.ts`) |
-| **TeamsUserIdentity** / **SlackUserIdentity** | `teams_user_identities` / `slack_user_identities` | ChatOps sender bindings | A chat account bound to a METIS user within one workspace, unique on (workspaceId, external key) since #1431. A binding may name only an active member of its workspace (a system-admin member only for a system-admin caller), and resolves only for that workspace's bot while the user is still a member (`server/src/lib/workspaces/chatops-identity-scope.ts`) |
+| **TeamsUserIdentity** / **SlackUserIdentity** | `teams_user_identities` / `slack_user_identities` | ChatOps sender bindings | A chat account bound to a METIS user within one workspace, unique on (workspaceId, external key) since #1431. A binding may name only an active member of its workspace (a system-admin member only for a system-admin caller), and resolves only for that workspace's bot while the user is still a member (`server/src/lib/workspaces/chatops-identity-scope.ts`). A command then acts only on a project, draft or thread whose project is in that workspace (#1437, `chatops-project-scope.ts`) |
 | **Session** | `sessions` | Auth sessions | Stores JWT tokens with expiration, linked to user |
 | **Project** | `projects` | Analysis projects | Name, description, status, GitHub repo link, linked to creator |
 | **Document** | `documents` | Uploaded files | Filename, type, size, storage path, linked to project + uploader |

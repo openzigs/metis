@@ -24,6 +24,11 @@ vi.mock("../src/lib/prisma.js", () => ({ prisma: mockPrisma }));
 vi.mock("../src/lib/socket/registry.js", () => ({
   getSocketServer: () => mockIo,
 }));
+// Recipient eligibility (#1432) is covered in sla-checker.test.ts and against a
+// real database in requirement-assignee-scope-1432.sqlite.test.ts.
+vi.mock("../src/lib/requirements/assignee-eligibility.js", () => ({
+  isEligibleAssignee: vi.fn(async () => true),
+}));
 
 const { runSlaCheck } = await import("../src/lib/collaboration/sla-checker.js");
 

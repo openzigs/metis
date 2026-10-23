@@ -49,6 +49,7 @@ import {
   type ResolvedMetisUser,
 } from "./aad-identity-resolver.js";
 import { canAccessThread } from "../discussions/access.js";
+import { isThreadInWorkspace } from "../workspaces/chatops-project-scope.js";
 import { createHumanDiscussionMessage } from "../discussions/create-message.js";
 import { maybeRespondAsAI } from "./ai-participant.js";
 import { prisma as defaultPrisma } from "../prisma.js";
@@ -274,6 +275,17 @@ export async function ingestTeamsActivity(
   if (!user) {
     await postUnmappedHint(context, deps.workspaceId);
     return { outcome: "unmapped-sender" };
+  }
+
+  // 3b. SCOPE (#1437) — the link's thread was checked against this workspace when
+  // the link was made, but its project can move workspaces since (#731). Only a
+  // thread of THIS bot's workspace; any other is treated like a missing one.
+  if (!(await isThreadInWorkspace(deps.db, deps.workspaceId, link.threadId))) {
+    log.warn("Teams linked thread is outside the bot's workspace", {
+      workspaceId: deps.workspaceId,
+      threadId: link.threadId,
+    });
+    return { outcome: "thread-not-found" };
   }
 
   // 4. MEMBER/TENANT authorization — identity is not authorization. The resolved

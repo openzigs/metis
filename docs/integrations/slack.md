@@ -151,6 +151,15 @@ the sender resolves only through the install workspace's binding and only while
 the user is still a member of it; otherwise the command is refused as unlinked.
 There is no HTTP link route for Slack today.
 
+**Target projects are scoped to the install's workspace (#1437).** Once the
+sender resolves, `status` (an explicit ref or the default project) and `approve`
+(prompt and button) act only on a project, or a draft whose project, is in the
+install's workspace: `Project.workspaceId` must equal it, so a workspace-less
+project is out too. Anything else gets the reply an unknown id gets ("No access"
+for status, "Not found" for a draft), for every actor, a system admin or a
+member of both workspaces included. Rules:
+`server/src/lib/workspaces/chatops-project-scope.ts`.
+
 **Upgrade note (#1431), for operators:** after upgrading, two kinds of sender see
 "Account not linked" until they are linked again in that workspace: people
 linked only in another workspace, and links that name someone who is not a

@@ -1005,7 +1005,7 @@ The bell icon in the header opens a side **notifications drawer** with these ale
 
 - **Mention** — you were @mentioned in a comment. Click **Open →** to jump directly to that comment.
 - **Discussion mention** — someone @mentioned you in a project discussion, e.g. *"Alex mentioned you in a discussion"*. Click **Open →** to go to that discussion thread.
-- **SLA deadline expired** — an assignment's SLA deadline has passed. Click **Open →** to navigate to the requirement.
+- **SLA deadline expired** — an assignment's SLA deadline has passed. Click **Open →** to navigate to the requirement. It goes only to people who can still open the project. A requirement can be assigned only to someone the assignee picker offers: an active member of the project's workspace, or a system admin. Anyone else gets "Assignee not found" (#1432).
 - **Review lifecycle** — for the formal review workflow (the Reviews page, sidebar → Activity → Reviews): as an **assigned reviewer** you are notified when a review is submitted and awaits your decision; as the **requester** you are notified of each reviewer's decision and of the final outcome (approved — including when a baseline was auto-created — or rejected). Each notification deep-links to the review's detail page. These are governed by the **Requirements approved × In-app** toggle in Settings → Notifications.
 
 The badge shows your unread count; opening the drawer marks all items read. Use **Clear all** to dismiss the list. Discussion mentions and review notifications arrive **live** while you are signed in: the badge updates without a reload, and the item reads the same as it will after a reload. Notifications are **persisted server-side**, so they survive page reloads and reconnects and you do not miss an alert sent while you were offline. Each notification links to the item it is about where there is one.
@@ -3511,6 +3511,12 @@ is a system admin can be linked only by a system admin. Each workspace keeps its
 own links, so linking a person in your workspace never changes another
 workspace's link. If a linked user later leaves the workspace, their commands are
 refused as "Account not linked" until an admin links the account again (#1431).
+
+**Commands stay in their workspace.** A `/metis` command acts only on projects in
+the workspace that installed the bot (Teams) or the Slack app. Naming a project
+or draft from another workspace gets the same reply as one that doesn't exist,
+even if you belong to both workspaces. A project with no workspace can't be used
+from chat either. To use it, move it into a workspace first (#1437).
 
 ### 20.6 Vault (`/vault`)
 

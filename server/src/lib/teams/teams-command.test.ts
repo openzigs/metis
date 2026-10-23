@@ -91,6 +91,8 @@ function makeOpts(over: Partial<CommandOptions> & { roleKey?: string } = {}): Co
     } as unknown as CommandOptions["linkStore"],
     db: {
       userRole: { findFirst: vi.fn(async () => ({ role: { key: roleKey } })) },
+      // #1437 — the bot-workspace scope lookup; found = in the bot's workspace.
+      project: { findFirst: vi.fn(async () => ({ id: PROJECT })) },
       issueDraft: {
         findFirst: vi.fn(async () => ({ id: DRAFT, projectId: PROJECT, title: "Export feature" })),
       },
@@ -202,6 +204,36 @@ describe("/metis status", () => {
     const res = await handleTeamsStatusCommand(context, { projectRef: null }, opts);
     expect(res.outcome).toBe("forbidden");
     expect(opts.summarize).not.toHaveBeenCalled();
+  });
+
+  it("refuses a project outside the bot's workspace before authorizing (#1437)", async () => {
+    const { context, sent } = makeContext({ text: "/metis status project-9" });
+    const findFirst = vi.fn(async () => null);
+    const opts = makeOpts({
+      db: {
+        userRole: { findFirst: vi.fn(async () => ({ role: { key: "admin" } })) },
+        project: { findFirst },
+      } as unknown as CommandOptions["db"],
+    });
+    const res = await handleTeamsStatusCommand(context, { projectRef: "project-9" }, opts);
+    expect(res.outcome).toBe("forbidden");
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "project-9", workspaceId: WS } }),
+    );
+    expect(opts.authorizeProject).not.toHaveBeenCalled();
+    expect(opts.summarize).not.toHaveBeenCalled();
+    expect(JSON.stringify(sent)).toContain("No access");
+  });
+
+  it("looks drafts up only within the bot's workspace (#1437)", async () => {
+    const opts = makeOpts();
+    const { context } = makeContext({ text: "/metis approve draft-1" });
+    await handleTeamsApproveCommand(context, { draftRef: DRAFT }, opts);
+    const db = opts.db as unknown as { issueDraft: { findFirst: ReturnType<typeof vi.fn> } };
+    for (const [arg] of db.issueDraft.findFirst.mock.calls) {
+      expect(arg.where).toEqual({ id: DRAFT, deletedAt: null, project: { workspaceId: WS } });
+    }
+    expect(db.issueDraft.findFirst).toHaveBeenCalledTimes(2);
   });
 
   it("reports project-not-found when summarize returns null", async () => {

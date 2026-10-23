@@ -43,6 +43,10 @@ import { hasPermission, type RoleKey } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { actorHasProjectAccess } from "../scheduler/project-access.js";
+import {
+  draftInWorkspaceWhere,
+  isProjectInWorkspace,
+} from "../workspaces/chatops-project-scope.js";
 import { approveDraft } from "../publishing/publishing-service.js";
 import { PublishError } from "../publishing/types.js";
 import { summarizeProjectHealth } from "../teams/project-health.js";
@@ -239,12 +243,16 @@ export async function handleSlackStatusCommand(
     );
   }
 
+  // SCOPE (#1437) — only a project of the install's workspace. An out-of-workspace
+  // or unknown project gets the refusal an inaccessible one gets, for every actor.
   // AUTHORIZE — project membership (admins see all). Identity ≠ authorization.
-  const allowed = await deps.authorizeProject({ id: pre.userId, role: pre.role }, projectId, {
-    resource: "project",
-    resourceId: projectId,
-    action: "slack.chatops.status",
-  });
+  const allowed =
+    (await isProjectInWorkspace(deps.db, actor.workspaceId, projectId)) &&
+    (await deps.authorizeProject({ id: pre.userId, role: pre.role }, projectId, {
+      resource: "project",
+      resourceId: projectId,
+      action: "slack.chatops.status",
+    }));
   if (!allowed) {
     return ephemeral(
       "forbidden",
@@ -291,11 +299,11 @@ export async function handleSlackApproveCommand(
     );
   }
 
-  const refusal = await authorizeDraftAccess(deps, pre, draftId);
+  const refusal = await authorizeDraftAccess(deps, pre, draftId, actor.workspaceId);
   if (refusal) return refusal;
 
   const draft = await deps.db.issueDraft.findFirst({
-    where: { id: draftId, deletedAt: null },
+    where: draftInWorkspaceWhere(draftId, actor.workspaceId),
     select: { id: true, title: true },
   });
   if (!draft) {
@@ -339,7 +347,7 @@ export async function handleSlackApproveAction(
   const pre = await preflight(actor, deps);
   if (!pre.ok) return pre.reply;
 
-  const refusal = await authorizeDraftAccess(deps, pre, draftId);
+  const refusal = await authorizeDraftAccess(deps, pre, draftId, actor.workspaceId);
   if (refusal) return refusal;
 
   try {
@@ -393,6 +401,7 @@ async function authorizeDraftAccess(
   deps: SlackCommandDeps,
   actor: { userId: string; role: RoleKey },
   draftId: string,
+  workspaceId: string,
 ): Promise<SlackReply | null> {
   // Role-permission gate first (cheap, no DB) — identical to `requirePermission("issue.draft")`.
   if (!hasPermission(actor.role, "issue.draft")) {
@@ -406,8 +415,10 @@ async function authorizeDraftAccess(
     );
   }
 
+  // SCOPE (#1437) — a draft whose project is outside the install's workspace is
+  // not found, exactly like an unknown one.
   const draft = await deps.db.issueDraft.findFirst({
-    where: { id: draftId, deletedAt: null },
+    where: draftInWorkspaceWhere(draftId, workspaceId),
     select: { id: true, projectId: true },
   });
   if (!draft) {
