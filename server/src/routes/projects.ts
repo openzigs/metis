@@ -181,8 +181,9 @@ export function projectsRouter(): Router {
     // Epic #671 / #673 — object-level workspace scope on top of the role
     // (`project.read`) layer. A caller who is not a member of the project's
     // workspace gets a 404 (no existence oracle) BEFORE the by-id lookup runs.
-    // Reuses the canonical `assertProjectAccess` seam shared with
-    // custom-agents invoke + comments (admins bypass; unassigned projects open).
+    // Reuses the canonical seam in its live form, `assertLiveProjectAccess`
+    // (#1430: a soft-deleted project 404s for a non-admin; admins bypass;
+    // unassigned projects open while live).
     await assertLiveProjectAccess(req.user, String(req.params.id));
     const project = await getProject(String(req.params.id));
     if (!project) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");

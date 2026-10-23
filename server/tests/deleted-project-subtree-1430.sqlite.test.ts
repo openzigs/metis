@@ -58,6 +58,8 @@ const { errorHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { apiRouter } = await import("../src/routes/index.js");
 const { deleteProject } = await import("../src/lib/projects/project-service.js");
+const { setMCPRegistry, MCPRegistryService } = await import("../src/lib/mcp/mcp-service.js");
+const { MCPLifecycleManager } = await import("../src/lib/mcp/lifecycle-manager.js");
 
 type Kind = "ws" | "legacy";
 type Who = "mem" | "adm";
@@ -173,6 +175,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite = createMigratedSqlite("1430-deleted-project-subtree");
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
+      // The MCP list routes read through the registry; no server is started.
+      setMCPRegistry(
+        new MCPRegistryService(
+          new MCPLifecycleManager({
+            resolveEnv: async (e) => e,
+            transportFactory: () => {
+              throw new Error("no MCP transport in this test");
+            },
+          }),
+        ),
+      );
 
       for (const id of ["uMem", "uAdm"]) {
         await db.user.create({
@@ -251,6 +264,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             createdById: "uMem",
           },
         });
+        await db.reviewRequest.create({
+          data: { id: `rr-${id}`, projectId: id, title: `rr-${id}`, requestedById: "uMem" },
+        });
+        await db.mCPServer.create({
+          data: {
+            id: `mcp-${id}`,
+            label: `mcp-${id}`,
+            transport: "http",
+            url: "https://mcp.example.test",
+            scope: "project",
+            projectId: id,
+          },
+        });
       }
 
       // The project service's own soft delete: every row hanging off it stays.
@@ -277,6 +303,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
+      setMCPRegistry(null);
       await db?.$disconnect();
       sqlite?.cleanup();
     });
@@ -322,5 +349,51 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }
       });
     }
+
+    // The unfiltered lists narrow with `workspaceScopeWhere`: a member must not
+    // be listed a row that answers 404 when opened. Admins still see it.
+    describe("unfiltered lists leave a soft-deleted project's rows out for a member", () => {
+      const listed = async (path: string, who: Who, pick: (body: unknown) => string[]) => {
+        const res = await request(app).get(path).set("Authorization", `Bearer ${token[who]}`);
+        expect(res.status).toBe(200);
+        return pick(res.body);
+      };
+      const reviewIds = (b: unknown) =>
+        (b as { data: { reviews: Array<{ id: string }> } }).data.reviews.map((r) => r.id).sort();
+      const mcpIds = (b: unknown) =>
+        (b as { data: { items: Array<{ id: string }> } }).data.items.map((s) => s.id).sort();
+      // The export is keyed by the server's label, which is its id here.
+      const exportIds = (b: unknown) =>
+        (JSON.stringify(b).match(/mcp-p[A-Za-z]+/g) ?? [])
+          .filter((v, i, a) => a.indexOf(v) === i)
+          .sort();
+
+      it("GET /api/reviews", async () => {
+        expect(await listed("/api/reviews", "mem", reviewIds)).toEqual(
+          [`rr-${FIX.legacy.live}`, `rr-${FIX.ws.live}`].sort(),
+        );
+        expect(await listed("/api/reviews", "adm", reviewIds)).toEqual(
+          expect.arrayContaining([`rr-${FIX.ws.gone}`, `rr-${FIX.legacy.gone}`]),
+        );
+      });
+
+      it("GET /api/mcp", async () => {
+        expect(await listed("/api/mcp", "mem", mcpIds)).toEqual(
+          [`mcp-${FIX.legacy.live}`, `mcp-${FIX.ws.live}`].sort(),
+        );
+        expect(await listed("/api/mcp", "adm", mcpIds)).toEqual(
+          expect.arrayContaining([`mcp-${FIX.ws.gone}`, `mcp-${FIX.legacy.gone}`]),
+        );
+      });
+
+      it("GET /api/mcp/export", async () => {
+        expect(await listed("/api/mcp/export", "mem", exportIds)).toEqual(
+          [`mcp-${FIX.legacy.live}`, `mcp-${FIX.ws.live}`].sort(),
+        );
+        expect(await listed("/api/mcp/export", "adm", exportIds)).toEqual(
+          expect.arrayContaining([`mcp-${FIX.ws.gone}`, `mcp-${FIX.legacy.gone}`]),
+        );
+      });
+    });
   },
 );

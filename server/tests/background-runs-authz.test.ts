@@ -285,6 +285,8 @@ describe("caller-supplied projectId routes", () => {
     expect(res.status).toBe(200);
     const where = prismaMock.backgroundRun.findMany.mock.calls[0]![0].where;
     expect(where.project).toEqual({
+      // #1430 — a soft-deleted project's runs are not listed to a non-admin.
+      deletedAt: null,
       OR: [
         { workspaceId: null },
         {

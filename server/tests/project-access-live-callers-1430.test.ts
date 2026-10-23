@@ -1,5 +1,5 @@
 /**
- * Issue #1430 — every project guard calls the LIVE project-access seam.
+ * Issue #1430 — every project guard uses the LIVE project-access seam.
  *
  * `assertProjectAccess` admits a soft-deleted project; `assertLiveProjectAccess`
  * answers it with the 404 of an unknown one for a non-admin. The route-level
@@ -9,10 +9,13 @@
  * the plain variant with no behavioural test going red: every route test that
  * stubs the seam stubs both names alike.
  *
- * So this pins the caller set structurally: the only production modules that
- * may still call the plain variant are the two that refuse a soft-deleted
- * project in their own lookup immediately before the call. Adding a caller —
- * or reverting one of #1430's — fails here and names the file.
+ * So this pins the plain variant's reach structurally. Outside the module that
+ * defines it, the only production modules that may NAME it at all — import it
+ * (aliased or not, statically or dynamically), re-export it, reach it through a
+ * namespace import, or call it — are the two that refuse a soft-deleted project
+ * in their own lookup immediately before the call. Matching the identifier
+ * rather than call sites is what catches `import { assertProjectAccess as
+ * assertLiveProjectAccess }`, whose calls all read like the live variant.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
@@ -20,6 +23,9 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
+
+/** Where the plain variant is defined. */
+const DEFINITION = "lib/custom-agents/authz.ts";
 
 /** Each refuses a soft-deleted project itself, just before the call. */
 const PLAIN_VARIANT_ALLOWED = new Set([
@@ -41,40 +47,62 @@ function sourceFiles(dir: string): string[] {
   return out;
 }
 
-/** Lines of `source` that CALL `assertProjectAccess(` (comments ignored). */
-function plainVariantCalls(source: string): number[] {
+/**
+ * Blank out comments, keeping line breaks so line numbers survive. Line
+ * comments are taken only where `//` is not part of a `://` URL.
+ */
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, " "))
+    .replace(/(^|[^:])\/\/.*$/gm, "$1");
+}
+
+/** 1-based lines whose CODE names the plain `assertProjectAccess`. */
+function plainVariantReferences(source: string): number[] {
   const lines: number[] = [];
-  source.split("\n").forEach((line, i) => {
-    const code = line.trim();
-    if (code.startsWith("*") || code.startsWith("//") || code.startsWith("/*")) return;
-    if (
-      /(?<![\w.])assertProjectAccess\s*\(/.test(code) &&
-      !/function\s+assertProjectAccess/.test(code)
-    ) {
-      lines.push(i + 1);
-    }
-  });
+  stripComments(source)
+    .split("\n")
+    .forEach((line, i) => {
+      if (/\bassertProjectAccess\b/.test(line)) lines.push(i + 1);
+    });
   return lines;
 }
 
 describe("#1430 — project guards use assertLiveProjectAccess", () => {
-  it("detects a call and ignores comments and the definition", () => {
-    expect(plainVariantCalls("  await assertProjectAccess(user, id);")).toEqual([1]);
-    expect(plainVariantCalls(" * `assertProjectAccess(user, id)` in prose")).toEqual([]);
-    expect(plainVariantCalls("// assertProjectAccess(user, id)")).toEqual([]);
-    expect(plainVariantCalls("export async function assertProjectAccess(")).toEqual([]);
-    expect(plainVariantCalls("await assertLiveProjectAccess(user, id);")).toEqual([]);
+  it("flags every form of reference, and ignores comments and the live name", () => {
+    const flagged = (src: string) => plainVariantReferences(src).length > 0;
+    expect(flagged("  await assertProjectAccess(user, id);")).toBe(true);
+    expect(flagged('import { assertProjectAccess } from "../custom-agents/authz.js";')).toBe(true);
+    expect(
+      flagged('import { assertProjectAccess as assertLiveProjectAccess } from "../x/authz.js";'),
+    ).toBe(true);
+    expect(flagged("import {\n  foo,\n  assertProjectAccess as check,\n} from './authz.js';")).toBe(
+      true,
+    );
+    expect(flagged('const { assertProjectAccess: c } = await import("./authz.js");')).toBe(true);
+    expect(flagged("await authz.assertProjectAccess(user, id);")).toBe(true);
+    expect(flagged('export { assertProjectAccess } from "./authz.js";')).toBe(true);
+    expect(flagged("/**\n * `assertProjectAccess(user, id)` in prose\n */")).toBe(false);
+    expect(flagged("// assertProjectAccess(user, id)")).toBe(false);
+    expect(flagged("foo(); // assertProjectAccess")).toBe(false);
+    expect(flagged("/* assertProjectAccess */ foo();")).toBe(false);
+    expect(flagged('const u = "https://x"; await assertProjectAccess(u, id);')).toBe(true);
+    expect(flagged("await assertLiveProjectAccess(user, id);")).toBe(false);
+    expect(
+      plainVariantReferences("a\n/*\n assertProjectAccess\n*/\nassertProjectAccess();"),
+    ).toEqual([5]);
   });
 
-  it("only the two self-checking modules call the plain variant", () => {
+  it("only the two self-checking modules name the plain variant", () => {
     const offenders: string[] = [];
     const seenAllowed = new Set<string>();
     for (const file of sourceFiles(SRC)) {
       const rel = relative(SRC, file).split(sep).join("/");
-      const calls = plainVariantCalls(readFileSync(file, "utf8"));
-      if (calls.length === 0) continue;
+      if (rel === DEFINITION) continue;
+      const refs = plainVariantReferences(readFileSync(file, "utf8"));
+      if (refs.length === 0) continue;
       if (PLAIN_VARIANT_ALLOWED.has(rel)) seenAllowed.add(rel);
-      else offenders.push(...calls.map((n) => `${rel}:${n}`));
+      else offenders.push(...refs.map((n) => `${rel}:${n}`));
     }
     expect(offenders).toEqual([]);
     // A stale allowlist entry would hide a future offender of the same name.
