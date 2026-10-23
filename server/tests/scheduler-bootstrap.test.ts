@@ -36,6 +36,8 @@ function makeRow(input: Record<string, unknown>): Record<string, unknown> {
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
+    // #1438 — the bootstrapped queue asks whether a task's project is soft-deleted.
+    project: { findMany: vi.fn(async () => []) },
     task: {
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => makeRow(data)),
       updateMany: vi.fn(async ({ where, data }) => {

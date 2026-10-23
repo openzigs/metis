@@ -12,6 +12,20 @@
 import http from "node:http";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { io as ioClient, type Socket as ClientSocket } from "socket.io-client";
+import type { CommentMentionEvent } from "@metis/shared";
+
+/** #1318 — a `comment:mention` carries the saved notification's text and link. */
+function mentionEvent(ids: { commentId: string; mentionedUserId: string }): CommentMentionEvent {
+  return {
+    kind: "mention",
+    ...ids,
+    ts: Date.now(),
+    notificationId: null,
+    title: 'Alex mentioned you on "Login lockout"',
+    message: "“@carol hi”",
+    href: "/projects/p-1/analysis?analysisId=a-1&requirementId=r-1&comments=1",
+  };
+}
 
 // Minimal prisma mock to satisfy project-access checks.
 vi.mock("../src/lib/prisma.js", () => ({
@@ -134,7 +148,7 @@ describe("Issue #416 — socket user-room auto-join", () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
-    const mentionPayload = { commentId: "c-1", mentionedUserId: "u-carol", ts: Date.now() };
+    const mentionPayload = mentionEvent({ commentId: "c-1", mentionedUserId: "u-carol" });
 
     const received = new Promise<typeof mentionPayload>((resolve) => {
       socket.on("comment:mention", resolve);
@@ -186,11 +200,10 @@ describe("Issue #416 — socket user-room auto-join", () => {
     s2.on("comment:mention", (e) => frankReceived.push(e));
 
     // Emit only to u-eve.
-    io.to("user:u-eve").emit("comment:mention", {
-      commentId: "c-secret",
-      mentionedUserId: "u-eve",
-      ts: Date.now(),
-    });
+    io.to("user:u-eve").emit(
+      "comment:mention",
+      mentionEvent({ commentId: "c-secret", mentionedUserId: "u-eve" }),
+    );
 
     await new Promise((r) => setTimeout(r, 80));
 

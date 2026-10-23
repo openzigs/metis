@@ -66,9 +66,9 @@ export function NotificationsDrawer() {
   useEffect(() => {
     if (!socket) return;
 
+    // #1318 — like the #104 events, carries the saved row's id, text and link.
     const onMention = (event: MentionEventPayload) => {
-      const draft = mentionEventToNotification(event);
-      store.push(draft);
+      store.push(mentionEventToNotification(event));
     };
 
     const onSlaExpired = (event: SlaDeadlineEventPayload) => {

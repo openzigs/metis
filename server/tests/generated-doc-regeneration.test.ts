@@ -82,6 +82,8 @@ vi.mock("../src/lib/docs-gen/source-preflight.js", () => ({
 vi.mock("../src/lib/prisma.js", () => {
   const prisma = {
     project: {
+      // #1438 — the bootstrapped queue asks whether a task's project is soft-deleted.
+      findMany: vi.fn(async () => []),
       findFirst: vi.fn(async () => ({ id: "p", name: "Project", description: "System" })),
       // #1252 — in workspace `ws-p`, whose only member is `u` (the route's access check).
       findUnique: vi.fn(

@@ -197,6 +197,13 @@ vi.mock("../src/lib/prisma.js", () => ({
     },
     project: {
       findUnique: vi.fn(async ({ where }: any) => tables.projects.get(where.id) ?? null),
+      // #1438 — the runner asks which of a run's projects are soft-deleted.
+      findMany: vi.fn(async ({ where }: any) =>
+        [...tables.projects.values()].filter(
+          (p) =>
+            where.id.in.includes(p.id) && (where.deletedAt?.not === null ? !!p.deletedAt : true),
+        ),
+      ),
     },
   },
 }));

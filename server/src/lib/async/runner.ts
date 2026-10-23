@@ -20,6 +20,7 @@ import PQueue from "p-queue";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getHookBus } from "../hooks/bus.js";
+import { isProjectSoftDeleted, logDeletedProjectSkip } from "../projects/deleted-project-guard.js";
 
 const log = createChildLogger("async-runner");
 
@@ -220,6 +221,28 @@ export class AsyncRunner {
   private async execute(runId: string): Promise<void> {
     const row = await prisma.backgroundRun.findUnique({ where: { id: runId } });
     if (!row || row.status !== "queued") return;
+    // #1438 — a run of a soft-deleted project never starts, including one
+    // queued (or recovered after a restart) before the delete. Cancelled, not
+    // failed: nothing went wrong with the run itself.
+    if (await isProjectSoftDeleted(row.projectId)) {
+      logDeletedProjectSkip({
+        path: "async-runner",
+        projectId: row.projectId,
+        sourceType: "background-run",
+        sourceId: runId,
+      });
+      await prisma.backgroundRun.update({
+        where: { id: runId },
+        data: { status: "cancelled", error: "PROJECT_DELETED", completedAt: new Date() },
+      });
+      this.emitter.status({
+        id: runId,
+        projectId: row.projectId,
+        status: "cancelled",
+        error: "PROJECT_DELETED",
+      });
+      return;
+    }
     const handler = this.handlers.get(row.kind);
     if (!handler) {
       await prisma.backgroundRun.update({

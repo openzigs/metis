@@ -20,6 +20,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
+    // #1438 — submit refuses a soft-deleted project; none is deleted here.
+    project: { findMany: vi.fn(async () => []) },
     backgroundRun: {
       findMany: vi.fn(async () => []),
       findFirst: vi.fn(async () => ({ id: "run_1", status: "running", messages: [] })),

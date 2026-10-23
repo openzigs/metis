@@ -284,3 +284,36 @@ describe("notifyBudgetExceeded (#67)", () => {
     ).not.toThrow();
   });
 });
+
+/** #1438 — nothing is posted to Teams on behalf of a soft-deleted project. */
+describe("a soft-deleted project gets no Teams card (#1438)", () => {
+  const deleted = () =>
+    ({
+      project: {
+        findFirst: vi.fn(async () => ({
+          name: "Gone",
+          workspaceId: "ws-1",
+          deletedAt: new Date(),
+        })),
+      },
+    }) as unknown as PrismaClient;
+
+  it("analysis-complete, publish-rolled-back and budget-exceeded all no-op; a live project still posts", async () => {
+    const s = scheduler();
+    await notifyAnalysisComplete(
+      { analysisId: "an-1", projectId: "pr-1" },
+      { db: deleted(), schedule: s.schedule },
+    );
+    await notifyPublishRolledBack(
+      { batchId: "b-1", projectId: "pr-1", reason: "r", repo: "a/b" },
+      { db: deleted(), schedule: s.schedule },
+    );
+    expect(s.schedule).not.toHaveBeenCalled();
+
+    await notifyAnalysisComplete(
+      { analysisId: "an-1", projectId: "pr-1" },
+      { db: dbWithProject({ name: "Live", workspaceId: "ws-1" }), schedule: s.schedule },
+    );
+    expect(s.schedule).toHaveBeenCalledTimes(1);
+  });
+});

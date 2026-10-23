@@ -82,7 +82,12 @@ async function resolveLinkedRequirements(
 ): Promise<Array<{ id: string; projectId: string }>> {
   if (closedIssueNumbers.length === 0 || !repository) return [];
   const published = await prisma.publishedIssue.findMany({
-    where: { issueNumber: { in: closedIssueNumbers }, destination: "github" },
+    // #1438 — a merged PR changes nothing in a soft-deleted project.
+    where: {
+      issueNumber: { in: closedIssueNumbers },
+      destination: "github",
+      draft: { project: { deletedAt: null } },
+    },
     include: { draft: true, batch: { select: { targetOwner: true, targetRepo: true } } },
   });
   const requirementIds = new Set<string>();

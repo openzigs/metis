@@ -270,17 +270,17 @@ describe("resolveCommentMentionContext (#735)", () => {
     await expect(resolveCommentMentionContext("c-1")).resolves.toEqual({
       projectId: "p-1",
       href: "/projects/p-1/analysis?analysisId=a-1&requirementId=req-1&comments=1",
-      message: 'Alice mentioned you on "Login works"',
+      title: 'Alice mentioned you on "Login works"',
     });
   });
 
-  it("shortens a long requirement title in the message", async () => {
+  it("shortens a long requirement title in the title", async () => {
     requirementComment("x".repeat(300));
 
     const ctx = await resolveCommentMentionContext("c-1");
 
-    expect(ctx?.message.length).toBeLessThan(160);
-    expect(ctx?.message.endsWith('…"')).toBe(true);
+    expect(ctx?.title.length).toBeLessThan(160);
+    expect(ctx?.title.endsWith('…"')).toBe(true);
   });
 
   it("links an artifact comment to the Spec Kit artifact", async () => {
@@ -292,7 +292,7 @@ describe("resolveCommentMentionContext (#735)", () => {
     await expect(resolveCommentMentionContext("c-1")).resolves.toEqual({
       projectId: "p 1",
       href: "/projects/p%201/spec-kit?artifact=plan.md",
-      message: "alice mentioned you on plan.md",
+      title: "alice mentioned you on plan.md",
     });
   });
 

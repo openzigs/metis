@@ -5130,6 +5130,10 @@ model Notification {
   href      String?
   /// Full event payload stored for client use (JSON).
   payload   String?
+  /// #1318 — the comment a `mention` notification quotes, so editing or
+  /// deleting that comment can rewrite the stored excerpt. Not a foreign key:
+  /// comments are soft-deleted, and the row must outlive that. Null otherwise.
+  commentId String?
   read      Boolean  @default(false)
   createdAt DateTime @default(now())
 
@@ -5137,6 +5141,7 @@ model Notification {
 
   @@index([userId])
   @@index([userId, read])
+  @@index([commentId])
   @@map("notifications")
 }
 
