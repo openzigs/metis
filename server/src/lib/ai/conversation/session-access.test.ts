@@ -6,9 +6,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const findFirst = vi.hoisted(() => vi.fn());
-const assertProjectAccess = vi.hoisted(() => vi.fn());
+const assertLiveProjectAccess = vi.hoisted(() => vi.fn());
 vi.mock("../../prisma.js", () => ({ prisma: { aISession: { findFirst } } }));
-vi.mock("../../custom-agents/authz.js", () => ({ assertProjectAccess }));
+vi.mock("../../custom-agents/authz.js", () => ({ assertLiveProjectAccess }));
 
 const { loadAuthorizedSession, SESSION_NOT_FOUND } = await import("./session-access.js");
 const { AppError } = await import("../../../middleware/error-handler.js");
@@ -17,7 +17,7 @@ const user = { userId: "u1", username: "u", role: "developer" as const, permissi
 
 beforeEach(() => {
   findFirst.mockReset();
-  assertProjectAccess.mockReset();
+  assertLiveProjectAccess.mockReset();
 });
 
 describe("loadAuthorizedSession", () => {
@@ -37,22 +37,22 @@ describe("loadAuthorizedSession", () => {
   it("an unscoped session needs no project check", async () => {
     findFirst.mockResolvedValue({ id: "s", projectId: null });
     await expect(loadAuthorizedSession(user, "s")).resolves.toMatchObject({ id: "s" });
-    expect(assertProjectAccess).not.toHaveBeenCalled();
+    expect(assertLiveProjectAccess).not.toHaveBeenCalled();
   });
 
   it("a project the caller cannot reach answers the same 404 as an unknown session", async () => {
     findFirst.mockResolvedValue({ id: "s", projectId: "p" });
-    assertProjectAccess.mockRejectedValue(new AppError(404, "NOT_FOUND", "Project not found"));
+    assertLiveProjectAccess.mockRejectedValue(new AppError(404, "NOT_FOUND", "Project not found"));
     await expect(loadAuthorizedSession(user, "s")).rejects.toMatchObject({
       statusCode: 404,
       code: SESSION_NOT_FOUND,
     });
-    expect(assertProjectAccess).toHaveBeenCalledWith(user, "p");
+    expect(assertLiveProjectAccess).toHaveBeenCalledWith(user, "p");
   });
 
   it("any other failure is not disguised", async () => {
     findFirst.mockResolvedValue({ id: "s", projectId: "p" });
-    assertProjectAccess.mockRejectedValue(new Error("db down"));
+    assertLiveProjectAccess.mockRejectedValue(new Error("db down"));
     await expect(loadAuthorizedSession(user, "s")).rejects.toThrow("db down");
   });
 });

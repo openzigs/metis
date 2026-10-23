@@ -5,18 +5,25 @@
  *
  *   1. the caller owns it (`ai_sessions.userId`) and it is not deleted; and
  *   2. when it is bound to a project, the caller can STILL reach that project
- *      — checked through `assertProjectAccess`, the canonical object-level
- *      project-scope seam (#673). Losing workspace membership therefore also
- *      loses the project's chats, including their retrieved project content.
+ *      — checked through `assertLiveProjectAccess`, the canonical object-level
+ *      project-scope seam (#673) plus "the project is not soft-deleted" for a
+ *      non-admin (#1412). Losing workspace membership therefore also loses the
+ *      project's chats, including their retrieved project content; so does
+ *      the project being deleted, on every path that loads a session — open,
+ *      read, send, resume, fork, compact, approvals, skills, plan, model —
+ *      while an admin keeps them. The session lists apply the same rule
+ *      (`reachableSessionWhere`, `session-snapshot.ts`), and so does the
+ *      `session:{id}` socket room (`canJoinSessionRoom`, #1290).
  *
  * Every failure answers 404 with the same code, so a probe cannot tell
- * "another user's session", "a project you left" and "no such id" apart.
+ * "another user's session", "a project you left", "a deleted project" and
+ * "no such id" apart.
  */
 import type { AISession } from "@prisma/client";
 import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../../prisma.js";
 import { AppError } from "../../../middleware/error-handler.js";
-import { assertProjectAccess } from "../../custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../../custom-agents/authz.js";
 import { isRetiredProviderKey, retiredProviderMessage } from "../retired-providers.js";
 
 export const SESSION_NOT_FOUND = "AI_SESSION_NOT_FOUND";
@@ -36,7 +43,7 @@ export async function loadAuthorizedSession(
   if (!session) throw notFound();
   if (session.projectId) {
     try {
-      await assertProjectAccess(user, session.projectId);
+      await assertLiveProjectAccess(user, session.projectId);
     } catch (err) {
       if (err instanceof AppError && err.statusCode === 404) throw notFound();
       throw err;

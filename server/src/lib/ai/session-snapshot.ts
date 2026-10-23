@@ -51,11 +51,14 @@ function toListDto(r: SessionListRow): ResumableSessionDto {
  * #305 — a Prisma `where` fragment keeping only sessions the user may still
  * open: project-less chats, and chats whose project the user can still reach
  * (the `loadAuthorizedSession` rule, as a list predicate). Admins: no narrowing.
+ * #1412 — "reach" includes "not soft-deleted" (`accessibleProjectWhere`'s shape), so a
+ * deleted project's chats leave a non-admin's lists, as they no longer open.
  */
 function reachableSessionWhere(user: AuthPayload): Record<string, unknown> {
-  const scope = workspaceScopeWhere(user);
-  if (Object.keys(scope).length === 0) return {};
-  return { OR: [{ projectId: null }, { project: scope }] };
+  if (user.role === "admin") return {};
+  return {
+    OR: [{ projectId: null }, { project: { deletedAt: null, ...workspaceScopeWhere(user) } }],
+  };
 }
 
 export async function listResumable(user: AuthPayload): Promise<ResumableSessionDto[]> {

@@ -785,9 +785,18 @@ no new managed service.
   four at a time): a tick that fires while a pass is running only queues one
   more pass, so the worst case is the interval, plus the rest of the running
   pass, plus one full pass. The cost, per pod per interval, is one pass: the
-  handshake's live-identity read for each connected user. Once a pass takes
-  longer than the interval, passes run back to back, a constant four reads at a
-  time per pod.
+  handshake's live-identity read for each connected user, **plus a re-judgement
+  of every project-scoped room each of that user's sockets is in** (#1212,
+  #1251, #1290, #1297) with the room's own join rule — `project:{id}`,
+  `job:{id}`, and the analysis, session, connector, run, task, publish-batch,
+  thread and presence rooms. For a non-admin that is about four queries per room
+  (the resource's row, the live-project check, the user's live workspaces, the
+  project-access read): three for `project:{id}`, up to seven for a `job:{id}`
+  this pod has seen no event for. For an admin it is the resource's row alone.
+  A user with one tab open on a project page holds a handful of such rooms, so
+  budget roughly 4 × rooms + 1 reads per connected user per pass. Once a pass
+  takes longer than the interval, passes run back to back, users re-read four at
+  a time per pod.
 - **Sweep interval override:** set `METIS_SOCKET_REVALIDATE_INTERVAL_MS` on the
   server (`server.env` in the Helm values) to change the 60 s interval. It takes
   plain decimal milliseconds, minimum `10000` (10 s); any other value is ignored

@@ -16,7 +16,7 @@ const mockPrisma = {
 
 vi.mock("../src/lib/prisma.js", () => ({ prisma: mockPrisma }));
 
-const { assertWorkspaceAdminForProject, assertProjectAccess } =
+const { assertWorkspaceAdminForProject, assertProjectAccess, assertLiveProjectAccess } =
   await import("../src/lib/custom-agents/authz.js");
 const { AppError } = await import("../src/middleware/error-handler.js");
 
@@ -116,5 +116,41 @@ describe("assertProjectAccess (#80)", () => {
       workspace: { deletedAt: null, members: [{ id: "member-row" }] },
     });
     await expect(assertProjectAccess(member, "p1")).rejects.toMatchObject({ statusCode: 404 });
+  });
+});
+
+describe("assertLiveProjectAccess (#1412)", () => {
+  const inWs = { ...member, workspaces: ["w1"] };
+  const row = (deletedAt: Date | null, workspaceId: string | null = "w1") => ({
+    workspaceId,
+    deletedAt,
+    workspace: workspaceId ? { deletedAt: null, members: [{ id: "member-row" }] } : null,
+  });
+
+  it("reads deletedAt in the same single project lookup", async () => {
+    mockPrisma.project.findUnique.mockResolvedValue(row(null));
+    await expect(assertLiveProjectAccess(inWs, "p1")).resolves.toBeUndefined();
+    expect(mockPrisma.project.findUnique).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.project.findUnique.mock.calls[0][0].select.deletedAt).toBe(true);
+  });
+
+  it.each([
+    ["a workspace project", "w1"],
+    ["a legacy workspace-less project", null],
+  ])("refuses a soft-deleted %s with the 404 of an unknown one", async (_l, workspaceId) => {
+    mockPrisma.project.findUnique.mockResolvedValue(null);
+    const unknown = await assertLiveProjectAccess(inWs, "nope").catch((e: unknown) => e);
+    mockPrisma.project.findUnique.mockResolvedValue(row(new Date(), workspaceId));
+    const gone = await assertLiveProjectAccess(inWs, "p1").catch((e: unknown) => e);
+    expect(gone).toBeInstanceOf(AppError);
+    expect(gone).toMatchObject({ statusCode: 404, code: "NOT_FOUND" });
+    expect((gone as Error).message).toBe((unknown as Error).message);
+    // The plain rule still admits it: it guards the project subtree, not this.
+    await expect(assertProjectAccess(inWs, "p1")).resolves.toBeUndefined();
+  });
+
+  it("an admin is unaffected and costs no lookup", async () => {
+    await expect(assertLiveProjectAccess(sysAdmin, "p1")).resolves.toBeUndefined();
+    expect(mockPrisma.project.findUnique).not.toHaveBeenCalled();
   });
 });

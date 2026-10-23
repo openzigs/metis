@@ -1,7 +1,8 @@
 /**
  * #655 — who may join a `connector:{id}`, `run:{id}` or `job:{id}` room,
- * (#679) a `presence:{type}:{id}` room, (#1212) a `project:{id}` room and
- * (#1290) a `session:{id}` room.
+ * (#679) a `presence:{type}:{id}` room, (#1212) a `project:{id}` room,
+ * (#1290) a `session:{id}` room and (#1297) a `task:{id}` or
+ * `publish:{batchId}` room.
  *
  * Each room carries reads of the resource it is named after, so joining it
  * takes the same rule as the REST read of that resource: the resource exists,
@@ -28,9 +29,12 @@
 import {
   bgRunRoom,
   connectorRoom,
+  hasPermission,
   isSpecKitArtifactName,
   presenceRoom,
+  publishRoom,
   sessionRoom,
+  taskRoom,
   type AuthPayload,
   type PresenceArtifactType,
 } from "@metis/shared";
@@ -141,6 +145,43 @@ export async function canJoinSessionRoom(user: AuthPayload, sessionId: string): 
   if (!session) return false;
   rememberRoomProject(sessionRoom(sessionId), session.projectId);
   return session.projectId === null || canReadProject(user, session.projectId);
+}
+
+/**
+ * #1297 — `task:{id}` carries a scheduled task's status and progress: the rule
+ * of `GET /api/tasks/:id` (`actorHasProjectAccess`) — the `task.read` role, the
+ * task exists, and its project is one the caller can read
+ * ({@link canReadProject}, so a soft-deleted project is closed to a non-admin);
+ * a task with no project is a system task, admin-only. It used to join on the
+ * role alone, so any `task.read` holder could follow any task id.
+ */
+export async function canJoinTaskRoom(user: AuthPayload, taskId: string): Promise<boolean> {
+  if (!hasPermission(user.role, "task.read")) return false;
+  const task = await prisma.task.findUnique({ where: { id: taskId }, select: { projectId: true } });
+  if (!task) return false;
+  rememberRoomProject(taskRoom(taskId), task.projectId);
+  if (task.projectId === null) return user.role === "admin";
+  return canReadProject(user, task.projectId);
+}
+
+/**
+ * #1297 — `publish:{batchId}` carries a publish batch's live status and
+ * counts: the rule of `GET /projects/:projectId/publishing/batches/:id` — the
+ * `issue.publish` or `issue.preview` role, the batch exists, and its project is
+ * one the caller can read ({@link canReadProject}). It used to join on the role
+ * alone.
+ */
+export async function canJoinPublishRoom(user: AuthPayload, batchId: string): Promise<boolean> {
+  if (!hasPermission(user.role, "issue.publish") && !hasPermission(user.role, "issue.preview")) {
+    return false;
+  }
+  const batch = await prisma.publishBatch.findUnique({
+    where: { id: batchId },
+    select: { projectId: true },
+  });
+  if (!batch) return false;
+  rememberRoomProject(publishRoom(batchId), batch.projectId);
+  return canReadProject(user, batch.projectId);
 }
 
 /**

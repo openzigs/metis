@@ -80,6 +80,10 @@ const SUGGESTED_PROMPTS: { title: string; prompt: string }[] = [
   { title: "Draft a plan", prompt: "Help me draft an implementation plan for a new feature." },
 ];
 
+/** #1412 — shown when a `?sessionId=` link names a chat that cannot be opened. */
+const CHAT_NOT_FOUND =
+  "Chat not found. It may have been deleted, or you no longer have access to it.";
+
 function fromServer(rows: DisplayTurn[]): DisplayMessage[] {
   return rows.map((m) => ({ ...m, id: `o${m.ordinal}` }));
 }
@@ -241,7 +245,14 @@ export default function ChatPage() {
     void (async () => {
       try {
         const restored = await resumeChatSession(restoreId);
-        if (!restored || cancelled) return;
+        if (cancelled) return;
+        if (!restored) {
+          // #1412 — a chat named by a link that cannot be opened (deleted, in a
+          // project that was deleted, or no longer yours) says so, instead of
+          // showing an empty chat as if it were new.
+          if (resumeSessionId) setError(CHAT_NOT_FOUND);
+          return;
+        }
         // #1139 — the session last open here is resumed only when it belongs
         // to the scope the page opened on: chat opens on the project active in
         // the top bar, not on whichever project the previous chat was in.

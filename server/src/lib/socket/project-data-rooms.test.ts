@@ -15,6 +15,8 @@ const rules = vi.hoisted(() => ({
   run: vi.fn(),
   presence: vi.fn(),
   thread: vi.fn(),
+  task: vi.fn(),
+  publish: vi.fn(),
 }));
 vi.mock("./analysis-room-access.js", () => ({ canJoinAnalysisRoom: rules.analysis }));
 vi.mock("./room-access.js", () => ({
@@ -22,6 +24,8 @@ vi.mock("./room-access.js", () => ({
   canJoinConnectorRoom: rules.connector,
   canJoinBgRunRoom: rules.run,
   canJoinPresenceRoom: rules.presence,
+  canJoinTaskRoom: rules.task,
+  canJoinPublishRoom: rules.publish,
 }));
 vi.mock("../discussions/access.js", () => ({ canAccessThread: rules.thread }));
 
@@ -55,6 +59,8 @@ const ALL = [
   "session:s1",
   "connector:c1",
   "run:r1",
+  "task:k1",
+  "publish:b1",
   "thread:t1",
   "presence:discussion:t1",
   "presence:spec-kit-artifact:p1:spec.md",
@@ -68,7 +74,7 @@ beforeEach(() => {
 describe("project-data room names", () => {
   it("recognises every project-data kind and no other room", () => {
     for (const room of ALL) expect(isProjectDataRoom(room), room).toBe(true);
-    for (const room of ["project:p1", "job:j1", "user:u", "mcp:status", "task:t", "publish:b"]) {
+    for (const room of ["project:p1", "job:j1", "user:u", "mcp:status", "scheduler:status"]) {
       expect(isProjectDataRoom(room), room).toBe(false);
     }
     // A bare prefix names no resource.
@@ -83,6 +89,9 @@ describe("rejudgeProjectDataRooms", () => {
     rules.session.mockResolvedValue(true);
     rules.connector.mockResolvedValue(false);
     rules.run.mockResolvedValue(true);
+    // #1297 — the task and publish rooms are re-judged with their join rules too.
+    rules.task.mockResolvedValue(false);
+    rules.publish.mockResolvedValue(true);
     rules.thread.mockResolvedValue({ ok: false, reason: "forbidden" });
     rules.presence.mockImplementation(async (_u: unknown, type: string) => type === "discussion");
     const s = socket(ALL);
@@ -92,6 +101,8 @@ describe("rejudgeProjectDataRooms", () => {
     expect(rules.session).toHaveBeenCalledWith(user, "s1");
     expect(rules.connector).toHaveBeenCalledWith(user, "c1");
     expect(rules.run).toHaveBeenCalledWith(user, "r1");
+    expect(rules.task).toHaveBeenCalledWith(user, "k1");
+    expect(rules.publish).toHaveBeenCalledWith(user, "b1");
     expect(rules.thread).toHaveBeenCalledWith({ id: "bob", role: "coordinator" }, "t1");
     expect(rules.presence).toHaveBeenCalledWith(user, "discussion", "t1");
     expect(rules.presence).toHaveBeenCalledWith(user, "spec-kit-artifact", "p1:spec.md");
@@ -104,6 +115,7 @@ describe("rejudgeProjectDataRooms", () => {
         "mcp:status",
         "session:s1",
         "run:r1",
+        "publish:b1",
         "presence:discussion:t1",
       ].sort(),
     );

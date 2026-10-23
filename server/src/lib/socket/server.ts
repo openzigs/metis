@@ -88,7 +88,9 @@ import { canJoinAnalysisRoom } from "./analysis-room-access.js";
 import {
   canJoinBgRunRoom,
   canJoinConnectorRoom,
+  canJoinPublishRoom,
   canJoinSessionRoom,
+  canJoinTaskRoom,
   resolveJobRoomScope,
 } from "./room-access.js";
 import {
@@ -1038,16 +1040,24 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
   onRoomJoin(socket, "subscribe:publish", publishRoomOf, (payload) => {
     const batchId: unknown = payload?.batchId;
     if (!batchId || typeof batchId !== "string") return;
-    if (!hasPermission(user.role, "issue.publish") && !hasPermission(user.role, "issue.preview")) {
-      socket.emit("auth:error", { message: "FORBIDDEN" });
-      return;
-    }
-    return socket.join(publishRoom(batchId));
+    // #1297 — the batch's project must be readable too (`canJoinPublishRoom`,
+    // the rule of the batch's REST read), not the role alone; re-judged with
+    // the other project-data rooms (`project-data-rooms.ts`).
+    let evictionEpoch = 0;
+    return joinIfAuthorized(
+      publishRoom(batchId),
+      () => {
+        evictionEpoch = evictionEpochOf(socket);
+        return canJoinPublishRoom(user, batchId);
+      },
+      "FORBIDDEN: no access to publish batch",
+      () => recheckJoinAfterEviction(socket, user, publishRoom(batchId), evictionEpoch),
+    );
   });
   onClientEvent(socket, "unsubscribe:publish", (payload) => {
     const batchId: unknown = payload?.batchId;
     if (!batchId || typeof batchId !== "string") return;
-    return socket.leave(publishRoom(batchId));
+    return leaveRoom(publishRoom(batchId));
   });
 
   // Phase 11 — scheduler + tasks rooms.
@@ -1070,12 +1080,24 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
       socket.emit("auth:error", { message: "FORBIDDEN: subscribe:task requires task.read" });
       return;
     }
-    return socket.join(taskRoom(taskId));
+    // #1297 — the task's project must be readable too (`canJoinTaskRoom`, the
+    // rule of `GET /api/tasks/:id`), not the role alone; re-judged with the
+    // other project-data rooms (`project-data-rooms.ts`).
+    let evictionEpoch = 0;
+    return joinIfAuthorized(
+      taskRoom(taskId),
+      () => {
+        evictionEpoch = evictionEpochOf(socket);
+        return canJoinTaskRoom(user, taskId);
+      },
+      "FORBIDDEN: no access to task",
+      () => recheckJoinAfterEviction(socket, user, taskRoom(taskId), evictionEpoch),
+    );
   });
   onClientEvent(socket, "unsubscribe:task", (payload) => {
     const taskId: unknown = payload?.taskId;
     if (!taskId || typeof taskId !== "string") return;
-    return socket.leave(taskRoom(taskId));
+    return leaveRoom(taskRoom(taskId));
   });
 
   // Epic #238 (#239) — unified job-lifecycle rooms (`job:{jobId}`).
