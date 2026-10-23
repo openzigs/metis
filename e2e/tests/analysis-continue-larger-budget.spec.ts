@@ -127,19 +127,19 @@ test.describe("Continue with a larger budget (#1131)", () => {
     await expect(analysis.capabilityBanner).toBeVisible({ timeout: 90_000 });
 
     await test.step("the first click asks, with the scope and the estimate", async () => {
-      await page.getByRole("button", { name: "Continue with a larger budget…" }).click();
-      const confirm = page.getByRole("group", { name: "Continue the code analysis" });
+      await analysis.continueButton.click();
+      const confirm = analysis.continueConfirm;
       await expect(confirm).toContainText(
         "only the 3 of 19 requirements the code analysis did not reach",
       );
       await expect(confirm).toContainText("2 inconclusive requirements are not re-run");
-      await expect(confirm).toContainText("up to 200.0k tokens");
+      await expect(confirm).toContainText("budgeted at 200.0k tokens");
       await expect(confirm).toContainText("about $0.0542");
       expect(continueBody).toBeNull();
     });
 
     await test.step("confirming starts the continuation", async () => {
-      await page.getByRole("button", { name: "Start the continuation" }).click();
+      await analysis.startContinuationButton.click();
       await expect.poll(() => continueBody, { timeout: 10_000 }).toEqual({ extendBudget: true });
     });
   });
@@ -167,9 +167,7 @@ test.describe("Continue with a larger budget (#1131)", () => {
       { timeout: 90_000 },
     );
     await expect(analysis.capabilityBanner).toContainText("12 steps so far");
-    await expect(page.getByRole("button", { name: /Continue with a larger budget/ })).toHaveCount(
-      0,
-    );
+    await expect(analysis.continueButton).toHaveCount(0);
   });
 
   test("Continue - is not offered when the only gaps are inconclusive", async ({ page }) => {
@@ -184,8 +182,6 @@ test.describe("Continue with a larger budget (#1131)", () => {
       timeout: 90_000,
     });
     await expect(analysis.capabilityBanner).toContainText(/a larger budget would not change/i);
-    await expect(page.getByRole("button", { name: /Continue with a larger budget/ })).toHaveCount(
-      0,
-    );
+    await expect(analysis.continueButton).toHaveCount(0);
   });
 });

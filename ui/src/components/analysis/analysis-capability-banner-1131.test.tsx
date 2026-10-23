@@ -60,7 +60,11 @@ describe("#1131 Continue asks for confirmation with what it re-runs and an estim
       "only the 3 of 19 requirements the code analysis did not reach",
     );
     expect(confirm).toHaveTextContent("2 inconclusive requirements are not re-run");
-    expect(confirm).toHaveTextContent("up to 200.0k tokens (2× the configured budget)");
+    expect(confirm).toHaveTextContent("budgeted at 200.0k tokens (2× the configured budget)");
+    // A budget, not a cap: the recovery calls and the rebuild are named.
+    expect(confirm).toHaveTextContent(
+      "The final answer retry and evidence salvage can add a little, and rebuilding the requirements is extra.",
+    );
     // 200k tokens at this run's $0.1084 / 400k.
     expect(confirm).toHaveTextContent("about $0.0542");
     expect(confirm).toHaveTextContent("This run so far: 400.0k tokens, $0.1084.");

@@ -46,6 +46,11 @@ export class AnalysisPage {
   // ── Capability signals (#733) ──────────────────────────────────────────
   readonly capabilityHint: Locator;
   readonly capabilityBanner: Locator;
+  // Issue #1131 — "Continue with a larger budget" and its confirmation step.
+  readonly continueButton: Locator;
+  readonly continueConfirm: Locator;
+  readonly startContinuationButton: Locator;
+  readonly notNowButton: Locator;
 
   // ── Database-aware status indicator (#859) ─────────────────────────────
   readonly databaseAwareIndicator: Locator;
@@ -81,6 +86,10 @@ export class AnalysisPage {
 
     this.capabilityHint = page.getByTestId("analysis-capability-hint");
     this.capabilityBanner = page.getByTestId("analysis-capability-banner");
+    this.continueButton = page.getByRole("button", { name: /Continue with a larger budget/ });
+    this.continueConfirm = page.getByRole("group", { name: "Continue the code analysis" });
+    this.startContinuationButton = page.getByRole("button", { name: "Start the continuation" });
+    this.notNowButton = page.getByRole("button", { name: "Not now" });
 
     this.databaseAwareIndicator = page.getByTestId("analysis-database-aware-indicator");
     this.databaseAwareBadge = page.getByTestId("database-aware-badge");

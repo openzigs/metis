@@ -132,8 +132,9 @@ import {
   classifyUnverifiedRequirements,
   countUnverifiedRequirements,
   absenceIsConfirmableForClaim,
-  addInvestigationGaps,
+  type CodePassReach,
   investigationGapFromHealth,
+  summarizePassReaches,
   mergeRetrievalHealth,
   noRetrievalHealth,
   summarizeRetrievalEvidence,
@@ -887,6 +888,8 @@ export class AnalysisOrchestrator {
    * provenance and the `code-retrieval-degraded` capability reason.
    */
   private readonly retrievalHealths = new Map<string, AnalysisRetrievalHealth[]>();
+  /** #1131 — per-run record of what each agentic code pass reached. */
+  private readonly passReaches = new Map<string, CodePassReach[]>();
 
   constructor(deps: OrchestratorDeps) {
     // #724 — every model call the analysis family makes through this provider
@@ -1247,13 +1250,11 @@ export class AnalysisOrchestrator {
           await this.refreshCodeInvestigation(opts.analysisId, {
             continued: opts.extendBudget === true,
             ...(continuation
-              ? {
-                  analysisGap: await this.codeInvestigationGap(
-                    opts.analysisId,
-                    analysis.projectId,
-                    continuation.requirements,
-                  ),
-                }
+              ? await this.codeInvestigationGap(
+                  opts.analysisId,
+                  analysis.projectId,
+                  continuation.requirements,
+                ).then(({ gap, scope }) => ({ analysisGap: gap, analysisScope: scope }))
               : {}),
           });
         }
@@ -1279,6 +1280,7 @@ export class AnalysisOrchestrator {
       try {
         // A failed regenerate leaves no tracker to finalize its pass health.
         this.retrievalHealths.delete(opts.analysisId);
+        this.passReaches.delete(opts.analysisId);
         await closeFollowUpRun(opts.analysisId, reopened, outcome, delta);
         // Atomic write — increments columns server-side so two concurrent
         // regenerates can't lose tokens to a read/modify/write race.
@@ -1391,18 +1393,82 @@ export class AnalysisOrchestrator {
     return out;
   }
 
-  /** #1131 — a per-repository split summed, as the run's tracker sums its passes. */
+  /**
+   * #1131 — once a continuation's appended pass for one repository has
+   * SUCCEEDED, delete the earlier pass's uncited could-not-verify findings for
+   * the requirements it re-investigated. They are the placeholders the agentic
+   * prompt's `VERDICT_RULE` has the model write for a requirement it never
+   * reached, and they would outlive the new findings: `could-not-verify` ranks
+   * above `implemented` (`deriveRequirementVerdict`), so a requirement the
+   * continuation confirmed would still read "Could not verify". Only rows
+   * written before `before`, of this repository (or of every code row on a
+   * project without one), and only findings that cite no code. Never called on
+   * a failed or cancelled pass, which throws before it.
+   */
+  private async deleteSupersededPlaceholders(
+    analysisId: string,
+    connectorId: string | null,
+    requirements: ReadonlyArray<{ id: string }>,
+    before: Date,
+  ): Promise<void> {
+    const scope = new Set(requirements.map((r) => r.id));
+    if (scope.size === 0) return;
+    const rows = await prisma.finding.findMany({
+      where: {
+        agentResult: {
+          analysisId,
+          agentKey: "code",
+          createdAt: { lt: before },
+          ...(connectorId ? { connectorId } : {}),
+        },
+      },
+      select: { id: true, evidence: true },
+    });
+    const superseded = rows
+      .filter((row) => {
+        const parsed =
+          (row.evidence ? safeParse<Record<string, unknown> | null>(row.evidence) : null) ?? {};
+        const citations = Array.isArray(parsed.citations) ? (parsed.citations as unknown[]) : [];
+        return (
+          typeof parsed.requirementId === "string" &&
+          scope.has(parsed.requirementId) &&
+          parsed.verdict === "could-not-verify" &&
+          !citations.some(
+            (c) => c !== null && typeof c === "object" && isCodeCitation(c as Citation),
+          )
+        );
+      })
+      .map((row) => row.id);
+    if (superseded.length === 0) return;
+    await prisma.finding.deleteMany({ where: { id: { in: superseded } } });
+    log.info("Continuation superseded the earlier pass's could-not-verify placeholders", {
+      analysisId,
+      connectorId,
+      deleted: superseded.length,
+    });
+  }
+
+  /**
+   * #1131 — a per-repository split in DISTINCT requirements, as the run's own
+   * record counts them (`summarizePassReaches`), with the per-repository scope.
+   */
   private static gapOf(
     split: Map<string | null, { unreached: string[]; inconclusive: string[] }>,
     requirementCount: number,
-  ): CodeInvestigationGap {
-    let unreached = 0;
-    let inconclusive = 0;
-    for (const s of split.values()) {
-      unreached += s.unreached.length;
-      inconclusive += s.inconclusive.length;
+  ): { gap: CodeInvestigationGap; scope: Record<string, string[]> } {
+    const unreached = new Set<string>();
+    const inconclusive = new Set<string>();
+    const scope: Record<string, string[]> = {};
+    for (const [connectorId, s] of split) {
+      s.unreached.forEach((id) => unreached.add(id));
+      s.inconclusive.forEach((id) => inconclusive.add(id));
+      if (s.unreached.length > 0) scope[connectorId ?? ""] = [...s.unreached];
     }
-    return { unreached, inconclusive, total: requirementCount * split.size };
+    for (const id of unreached) inconclusive.delete(id);
+    return {
+      gap: { unreached: unreached.size, inconclusive: inconclusive.size, total: requirementCount },
+      scope,
+    };
   }
 
   /** #1131 — what the analysis's code findings leave unreached and inconclusive. */
@@ -1410,7 +1476,7 @@ export class AnalysisOrchestrator {
     analysisId: string,
     projectId: string,
     requirements: ReadonlyArray<{ id: string }>,
-  ): Promise<CodeInvestigationGap> {
+  ): Promise<{ gap: CodeInvestigationGap; scope: Record<string, string[]> }> {
     return AnalysisOrchestrator.gapOf(
       await this.continuationSplit(analysisId, projectId, requirements),
       requirements.length,
@@ -1419,7 +1485,10 @@ export class AnalysisOrchestrator {
 
   /**
    * #1131 — scope a "Continue with a larger budget": per repository, the
-   * requirements its pass never reached. The live entry carries the scope so
+   * requirements its pass never reached. Taken from the run's record
+   * (`codeInvestigationScope`), which is what the page quoted, so the scope
+   * shown is the scope run; a record without one (written before it) is scoped
+   * from the persisted findings instead. The live entry carries the scope so
    * the page can say what the rerun is doing.
    */
   private async planContinuation(
@@ -1432,27 +1501,39 @@ export class AnalysisOrchestrator {
     anyUnreached: boolean;
     gap: CodeInvestigationGap;
   }> {
-    const split = await this.continuationSplit(analysisId, projectId, requirements);
     const byConnector = new Map<string | null, Array<{ id: string; text: string }>>();
     const union = new Set<string>();
-    for (const [connectorId, s] of split) {
-      const ids = new Set(s.unreached);
-      s.unreached.forEach((id) => union.add(id));
-      byConnector.set(
-        connectorId,
-        requirements.filter((r) => ids.has(r.id)),
-      );
+    const scopeOf = (scope: Record<string, string[]>) => {
+      for (const [repo, ids] of Object.entries(scope)) {
+        const wanted = new Set(ids);
+        const list = requirements.filter((r) => wanted.has(r.id));
+        if (list.length === 0) continue;
+        byConnector.set(repo === "" ? null : repo, list);
+        list.forEach((r) => union.add(r.id));
+      }
+    };
+    let recorded: AnalysisCapability | null = null;
+    try {
+      recorded = await getAnalysisCapability(analysisId);
+    } catch (err) {
+      log.warn("Capability read failed", { analysisId, error: (err as Error).message });
+    }
+    if (recorded?.codeInvestigationScope) scopeOf(recorded.codeInvestigationScope);
+    let gap: CodeInvestigationGap = recorded?.codeInvestigationUnreached ?? {
+      unreached: union.size,
+      total: requirements.length,
+    };
+    if (union.size === 0) {
+      // No recorded scope (or none of it is in the set any more): derive it.
+      const derived = await this.codeInvestigationGap(analysisId, projectId, requirements);
+      scopeOf(derived.scope);
+      gap = derived.gap;
     }
     setLiveAgentContinuation(analysisId, "code", {
       requirements: union.size,
       total: requirements.length,
     });
-    return {
-      requirements,
-      byConnector,
-      anyUnreached: union.size > 0,
-      gap: AnalysisOrchestrator.gapOf(split, requirements.length),
-    };
+    return { requirements, byConnector, anyUnreached: union.size > 0, gap };
   }
 
   /**
@@ -1579,6 +1660,14 @@ export class AnalysisOrchestrator {
             ...(persistMode ? { persistMode } : {}),
           }),
         );
+        if (continuing && !input.signal.aborted) {
+          await this.deleteSupersededPlaceholders(
+            input.analysisId,
+            connectors[0]?.id ?? null,
+            scopeFor(connectors[0]?.id ?? null),
+            startedAt,
+          );
+        }
       }
     } else {
       // Repos the budget cannot fit keep whatever rows they already have.
@@ -1601,6 +1690,14 @@ export class AnalysisOrchestrator {
             ...(persistMode ? { persistMode } : {}),
           }),
         );
+        if (continuing && !input.signal.aborted) {
+          await this.deleteSupersededPlaceholders(
+            input.analysisId,
+            connector.id,
+            scopeFor(connector.id),
+            startedAt,
+          );
+        }
       }
     }
 
@@ -1933,11 +2030,16 @@ export class AnalysisOrchestrator {
    */
   private async refreshCodeInvestigation(
     analysisId: string,
-    opts: { continued?: boolean; analysisGap?: CodeInvestigationGap } = {},
+    opts: {
+      continued?: boolean;
+      analysisGap?: CodeInvestigationGap;
+      analysisScope?: Record<string, string[]>;
+    } = {},
   ): Promise<void> {
     const continued = opts.continued === true;
     const health = mergeRetrievalHealth(this.retrievalHealths.get(analysisId) ?? []);
     this.retrievalHealths.delete(analysisId);
+    const reach = this.takePassReaches(analysisId);
     // Single-shot regenerates record no retrieval health; leave the record alone
     // — unless this was a continuation, which is counted whatever it recorded.
     if (!health && !continued && !opts.analysisGap) return;
@@ -1976,19 +2078,28 @@ export class AnalysisOrchestrator {
       if (!continued) delete next.codeInvestigationContinuations;
       // The counts describe the pass that now owns the findings, or nothing.
       delete next.codeInvestigationUnreached;
+      delete next.codeInvestigationScope;
       // #1388 — the stand-in described the replaced pass; show retrieval plainly.
       delete next.codeAgentStoppedEarly;
-      // #1131 — unreached and inconclusive apart when the pass counted them;
-      // a pass that did not keeps the pre-#1131 reading.
+      // #1131 — unreached and inconclusive apart, in distinct requirements,
+      // from what the passes reached; a pass that counted nothing keeps the
+      // pre-#1131 reading.
       const gap =
+        reach?.gap ??
         investigationGapFromHealth(health) ??
         (health.exhausted === true && health.unverifiedRequirements !== undefined
           ? { unreached: health.unverifiedRequirements, total: health.requirementCount }
           : undefined);
       if (gap) next.codeInvestigationUnreached = gap;
+      if (reach && Object.keys(reach.scope).length > 0) next.codeInvestigationScope = reach.scope;
     }
     if (opts.analysisGap && next.codeInvestigationCutShort === true) {
       next.codeInvestigationUnreached = { ...opts.analysisGap };
+      if (opts.analysisScope && Object.keys(opts.analysisScope).length > 0) {
+        next.codeInvestigationScope = opts.analysisScope;
+      } else {
+        delete next.codeInvestigationScope;
+      }
     }
     await this.persistAndEmitCapability(analysisId, {
       ...next,
@@ -3782,22 +3893,27 @@ export class AnalysisOrchestrator {
           // #1131 — a pass cut short by its budget records how many requirements
           // it never reached: only those are what a larger budget can still
           // reach. The rest of its could-not-verify ones are inconclusive.
+          // #1131 — which requirements this pass REACHED. Reached = CHECKED
+          // against the code (#1388's test): an uncited could-not-verify is the
+          // prompt's placeholder for "not reached". Recorded per pass, so the run
+          // can quote, and a continuation can run, the same distinct scope.
+          const reach = classifyUnverifiedRequirements(
+            validated.findings.map((f) => ({
+              requirementId: f.requirementId,
+              verdict: f.verdict,
+              codeCited: f.requirementId != null && checkedRequirementIds.has(f.requirementId),
+            })),
+            passRequirements.map((r) => r.id),
+          );
+          this.recordPassReach(input.analysisId, {
+            repo: input.connectorId ?? "",
+            ids: passRequirements.map((r) => r.id),
+            ...reach,
+            exhausted: passHealth.exhausted === true,
+          });
           const reportedHealth: AnalysisRetrievalHealth =
             passHealth.exhausted === true
-              ? {
-                  ...assessedHealth,
-                  // Reached = CHECKED against the code (#1388's test): an uncited
-                  // could-not-verify is the prompt's placeholder for "not reached".
-                  unreachedRequirements: classifyUnverifiedRequirements(
-                    validated.findings.map((f) => ({
-                      requirementId: f.requirementId,
-                      verdict: f.verdict,
-                      codeCited:
-                        f.requirementId != null && checkedRequirementIds.has(f.requirementId),
-                    })),
-                    passRequirements.map((r) => r.id),
-                  ).unreached.length,
-                }
+              ? { ...assessedHealth, unreachedRequirements: reach.unreached.length }
               : assessedHealth;
           if (reportedHealth.degraded && !passHealth.degraded) {
             log.warn("Agentic code pass investigated too little to report as healthy", {
@@ -5286,10 +5402,20 @@ export class AnalysisOrchestrator {
     if (health.degraded) tracker.codeRetrievalDegraded = true;
     // #1001 — the pass ran out of turns/tokens before reaching every requirement.
     if (health.exhausted) tracker.codeInvestigationCutShort = true;
-    // #1131 — what it left unreached and inconclusive, so only the former
-    // offers Continue (summed over the run's code passes, one per repository).
-    const gap = investigationGapFromHealth(health);
-    if (gap) tracker.codeInvestigationGap = addInvestigationGaps(tracker.codeInvestigationGap, gap);
+  }
+
+  /** #1131 — record what one agentic code pass reached (see {@link summarizePassReaches}). */
+  private recordPassReach(analysisId: string, reach: CodePassReach): void {
+    const existing = this.passReaches.get(analysisId) ?? [];
+    existing.push(reach);
+    this.passReaches.set(analysisId, existing);
+  }
+
+  /** #1131 — the run's pass reaches, summarized and forgotten. */
+  private takePassReaches(analysisId: string): ReturnType<typeof summarizePassReaches> {
+    const summary = summarizePassReaches(this.passReaches.get(analysisId) ?? []);
+    this.passReaches.delete(analysisId);
+    return summary;
   }
 
   /**
@@ -5451,6 +5577,13 @@ export class AnalysisOrchestrator {
       } catch (err) {
         log.warn("Code-agent outcome read failed", { analysisId, error: (err as Error).message });
       }
+    }
+    // #1131 — what the budget-cut passes left unreached and inconclusive, in
+    // distinct requirements, and the per-repository scope Continue would run.
+    const reach = this.takePassReaches(analysisId);
+    if (reach) {
+      tracker.codeInvestigationGap = reach.gap;
+      tracker.codeInvestigationScope = reach.scope;
     }
     const capability = finalizeCapability(tracker);
     try {

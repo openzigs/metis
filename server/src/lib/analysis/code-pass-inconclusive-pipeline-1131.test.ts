@@ -228,6 +228,8 @@ describe("#1131 — a cut-short pass whose only gaps are inconclusive", () => {
       inconclusive: 4,
       total: 4,
     });
+    // Nothing for a continuation to run.
+    expect(capability).not.toHaveProperty("codeInvestigationScope");
   });
 });
 
@@ -242,6 +244,8 @@ describe("#1131 — a cut-short pass that left requirements unreached", () => {
       inconclusive: 1,
       total: 4,
     });
+    // The scope Continue runs is the one quoted: the same three requirements.
+    expect(capability.codeInvestigationScope).toEqual({ "": ["REQ-001", "REQ-002", "REQ-003"] });
   });
 });
 

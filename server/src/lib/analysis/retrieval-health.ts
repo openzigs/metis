@@ -746,17 +746,52 @@ export function investigationGapFromHealth(
   };
 }
 
-/** #1131 — two gaps added together (the passes of one run); either may be absent. */
-export function addInvestigationGaps(
-  a: CodeInvestigationGap | undefined,
-  b: CodeInvestigationGap | undefined,
-): CodeInvestigationGap | undefined {
-  if (!a) return b && { ...b };
-  if (!b) return { ...a };
+/**
+ * #1131 — what one agentic code pass reached, by requirement id: the input to
+ * {@link summarizePassReaches}. `repo` is the pass's connector id, or `""`.
+ */
+export interface CodePassReach {
+  repo: string;
+  /** Every requirement the pass was given. */
+  ids: string[];
+  unreached: string[];
+  inconclusive: string[];
+  /** The pass ran out of its turn or token budget. */
+  exhausted: boolean;
+}
+
+/**
+ * #1131 — a run's code passes summed in DISTINCT requirements, so the banner's
+ * "N of M" and the continuation's scope count the same thing (a requirement
+ * investigated in two repositories is one requirement):
+ *
+ *   - `gap.unreached`: requirements some budget-cut pass never reached;
+ *   - `gap.inconclusive`: requirements a budget-cut pass reached without
+ *     settling, and that no budget-cut pass left unreached;
+ *   - `gap.total`: the distinct requirements the run's passes were given;
+ *   - `scope`: per repository, the requirements its budget-cut passes never
+ *     reached — exactly what "Continue with a larger budget" re-investigates.
+ *
+ * `undefined` when no pass was cut short by its budget.
+ */
+export function summarizePassReaches(
+  reaches: readonly CodePassReach[],
+): { gap: CodeInvestigationGap; scope: Record<string, string[]> } | undefined {
+  const cut = reaches.filter((r) => r.exhausted);
+  if (cut.length === 0) return undefined;
+  const unreached = new Set(cut.flatMap((r) => r.unreached));
+  const inconclusive = new Set(
+    cut.flatMap((r) => r.inconclusive).filter((id) => !unreached.has(id)),
+  );
+  const total = new Set(reaches.flatMap((r) => r.ids));
+  const scope: Record<string, string[]> = {};
+  for (const r of cut) {
+    if (r.unreached.length === 0) continue;
+    scope[r.repo] = [...new Set([...(scope[r.repo] ?? []), ...r.unreached])];
+  }
   return {
-    unreached: a.unreached + b.unreached,
-    inconclusive: (a.inconclusive ?? 0) + (b.inconclusive ?? 0),
-    total: a.total + b.total,
+    gap: { unreached: unreached.size, inconclusive: inconclusive.size, total: total.size },
+    scope,
   };
 }
 

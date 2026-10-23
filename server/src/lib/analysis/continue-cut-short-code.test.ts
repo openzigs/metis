@@ -19,7 +19,10 @@ const { prismaMock, serviceMock } = vi.hoisted(() => ({
   prismaMock: {
     repoConnection: { findMany: vi.fn() },
     agentResult: { deleteMany: vi.fn(async () => ({ count: 0 })) },
-    finding: { findMany: vi.fn(async () => [] as Array<{ evidence: string | null }>) },
+    finding: {
+      findMany: vi.fn(async (_args?: unknown) => [] as Array<{ evidence: string | null }>),
+      deleteMany: vi.fn(async (_args?: unknown) => ({ count: 0 })),
+    },
   },
   serviceMock: {
     finalizeAnalysisDelta: vi.fn(async () => undefined),
@@ -49,6 +52,7 @@ const {
 const { MAX_CODE_INVESTIGATION_CONTINUATIONS } = await import("@metis/shared");
 const { resolveAgenticMaxTurns } = await import("./agentic-pass-context.js");
 const { createCapabilityTracker, finalizeCapability } = await import("./analysis-capability.js");
+const { classifyUnverifiedRequirements } = await import("./retrieval-health.js");
 
 const USAGE = { promptTokens: 10, completionTokens: 5, totalTokens: 15 };
 const OUTPUT = { agentKey: "code", summary: "s", findings: [], notes: [] };
@@ -541,9 +545,12 @@ describe("#1131 Continue re-investigates only the requirements left unreached", 
     { id: "REQ-3", text: "The CLI accepts -flush-sessions to remove every session." },
   ];
   // REQ-2 was looked at (its finding cites code) but is not settled: inconclusive.
+  // REQ-3 was never reached: the agentic prompt's VERDICT_RULE still has the
+  // model write an uncited could-not-verify placeholder for it (review of #1451).
   const BEFORE = [
     { requirementId: "REQ-1", verdict: "implemented" },
     { requirementId: "REQ-2", verdict: "could-not-verify", codeCited: true },
+    { requirementId: "REQ-3", verdict: "could-not-verify", codeCited: false },
   ];
   const persisted = () =>
     serviceMock.persistAnalysisCapability.mock.calls.at(-1)![1] as AnalysisCapability;
@@ -655,6 +662,194 @@ describe("#1131 Continue re-investigates only the requirements left unreached", 
       "REQ-2",
       "REQ-3",
     ]);
+  });
+});
+
+/**
+ * Review of PR #1451 (blocking) — a continuation APPENDS, so the first pass's
+ * uncited could-not-verify placeholder for a re-investigated requirement stayed
+ * beside the new finding, and could-not-verify outranks implemented
+ * (`deriveRequirementVerdict`): a requirement the continuation confirmed still
+ * read "Could not verify", and the record called it inconclusive. Driven
+ * against an in-memory finding store through the real reader.
+ */
+describe("#1131 a successful continuation supersedes the placeholders it re-investigated", () => {
+  type Row = {
+    id: string;
+    connectorId: string | null;
+    createdAt: Date;
+    evidence: string;
+  };
+  let rows: Row[] = [];
+  const OLD = new Date(0);
+  const row = (id: string, evidence: Record<string, unknown>, createdAt = OLD): Row => ({
+    id,
+    connectorId: "repo_1",
+    createdAt,
+    evidence: JSON.stringify(evidence),
+  });
+  const CITE = [{ filePath: "internal/storage/feed.go", startLine: 1, endLine: 9 }];
+  const THREE = [
+    { id: "REQ-1", text: "A user cannot subscribe to the same feed URL twice." },
+    { id: "REQ-2", text: "Publishing goes only to the openzigs/flux-v2 repository." },
+    { id: "REQ-3", text: "The CLI accepts -flush-sessions to remove every session." },
+  ];
+
+  beforeEach(() => {
+    rows = [
+      row("f1", { requirementId: "REQ-1", verdict: "implemented", citations: CITE }),
+      row("f2", { requirementId: "REQ-2", verdict: "could-not-verify", citations: CITE }),
+      // The placeholder the first pass wrote for the requirement it never reached.
+      row("f3", { requirementId: "REQ-3", verdict: "could-not-verify", citations: [] }),
+    ];
+    prismaMock.finding.findMany.mockImplementation((async (args: {
+      where: { agentResult: { createdAt?: { lt: Date }; connectorId?: string } };
+    }) => {
+      const lt = args.where.agentResult.createdAt?.lt;
+      const only = args.where.agentResult.connectorId;
+      return rows
+        .filter((r) => (lt ? r.createdAt < lt : true))
+        .filter((r) => (only ? r.connectorId === only : true))
+        .map((r) => ({
+          id: r.id,
+          evidence: r.evidence,
+          agentResult: { connectorId: r.connectorId },
+        }));
+    }) as never);
+    prismaMock.finding.deleteMany.mockImplementation((async (args: {
+      where: { id: { in: string[] } };
+    }) => {
+      const before = rows.length;
+      rows = rows.filter((r) => !args.where.id.in.includes(r.id));
+      return { count: before - rows.length };
+    }) as never);
+  });
+
+  const continuingOrchestrator = (newFinding: Record<string, unknown> | null) => {
+    // The rerun is cut short as well, so the record keeps counting what is left.
+    const orch = makeOrchestrator(health(true));
+    orch.extractRequirementsFromDocAgent = vi.fn(async () => THREE);
+    // Use the REAL reader over the in-memory store.
+    delete (orch as Partial<Stubbed>).readCodeFindingVerdicts;
+    const recordHealth = orch.runAgenticCodeAgent.getMockImplementation() as (input: {
+      analysisId: string;
+    }) => Promise<unknown>;
+    orch.runAgenticCodeAgent.mockImplementation(async (input: { analysisId: string }) => {
+      if (newFinding) rows.push(row("f_new", newFinding, new Date(Date.now() + 60_000)));
+      return recordHealth(input);
+    });
+    return orch;
+  };
+
+  it("a requirement the continuation confirmed is no longer inconclusive", async () => {
+    const orch = continuingOrchestrator({
+      requirementId: "REQ-3",
+      verdict: "implemented",
+      citations: CITE,
+    });
+    await regenerate(orch, { extendBudget: true });
+    expect(
+      orch.runAgenticCodeAgent.mock.calls[0][0].requirements.map((r: { id: string }) => r.id),
+    ).toEqual(["REQ-3"]);
+    // The placeholder is gone; the first pass's other findings are kept.
+    expect(rows.map((r) => r.id).sort()).toEqual(["f1", "f2", "f_new"]);
+    const persisted = serviceMock.persistAnalysisCapability.mock.calls.at(
+      -1,
+    )![1] as AnalysisCapability;
+    // The rerun ran out too, but REQ-3 is settled: only REQ-2 is left, inconclusive.
+    expect(persisted.codeInvestigationUnreached).toEqual({
+      unreached: 0,
+      inconclusive: 1,
+      total: 3,
+    });
+    expect(persisted.reasons).toEqual(["code-investigation-inconclusive"]);
+  });
+
+  it("the reader then classifies the confirmed requirement as settled", async () => {
+    const orch = continuingOrchestrator({
+      requirementId: "REQ-3",
+      verdict: "implemented",
+      citations: CITE,
+    });
+    await regenerate(orch, { extendBudget: true });
+    const reader = (
+      orch as unknown as {
+        readCodeFindingVerdicts: (
+          id: string,
+        ) => Promise<Parameters<typeof classifyUnverifiedRequirements>[0]>;
+      }
+    ).readCodeFindingVerdicts.bind(orch);
+    expect(
+      classifyUnverifiedRequirements(await reader("an_1"), ["REQ-1", "REQ-2", "REQ-3"]),
+    ).toEqual({
+      unreached: [],
+      inconclusive: ["REQ-2"],
+    });
+  });
+
+  it("deletes nothing when the continuation pass fails", async () => {
+    const orch = continuingOrchestrator(null);
+    orch.runAgenticCodeAgent.mockRejectedValue(new Error("model down"));
+    await regenerate(orch, { extendBudget: true });
+    expect(prismaMock.finding.deleteMany).not.toHaveBeenCalled();
+    expect(rows.map((r) => r.id)).toEqual(["f1", "f2", "f3"]);
+  });
+
+  it("deletes nothing when the continuation is cancelled", async () => {
+    const orch = continuingOrchestrator({
+      requirementId: "REQ-3",
+      verdict: "implemented",
+      citations: CITE,
+    });
+    const controller = new AbortController();
+    const pass = orch.runAgenticCodeAgent.getMockImplementation() as (input: {
+      analysisId: string;
+    }) => Promise<unknown>;
+    orch.runAgenticCodeAgent.mockImplementation(async (input: { analysisId: string }) => {
+      const out = await pass(input);
+      controller.abort();
+      return out;
+    });
+    await orch.regenerateLoadedAgent(
+      { analysisId: "an_1", agentKey: "code", actorId: "u1", extendBudget: true },
+      ANALYSIS,
+      controller,
+    );
+    expect(prismaMock.finding.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("keeps a cited could-not-verify, and the placeholder of a requirement it did not re-run", async () => {
+    rows.push(row("f4", { requirementId: "REQ-9", verdict: "could-not-verify", citations: [] }));
+    const orch = continuingOrchestrator({
+      requirementId: "REQ-3",
+      verdict: "implemented",
+      citations: CITE,
+    });
+    await regenerate(orch, { extendBudget: true });
+    expect(rows.map((r) => r.id).sort()).toEqual(["f1", "f2", "f4", "f_new"]);
+  });
+});
+
+/**
+ * Review of PR #1451 — the scope the page quotes (the run's record) is the
+ * scope that runs, whatever the persisted findings would suggest.
+ */
+describe("#1131 a continuation runs the scope the run recorded", () => {
+  it("re-investigates the recorded requirements, per repository", async () => {
+    serviceMock.getAnalysisCapability.mockResolvedValue({
+      ...CUT_SHORT,
+      codeInvestigationUnreached: { unreached: 1, inconclusive: 0, total: 1 },
+      codeInvestigationScope: { repo_1: ["REQ-1"] },
+    });
+    const orch = makeOrchestrator();
+    // The persisted findings would call REQ-1 settled; the record wins.
+    orch.readCodeFindingVerdicts = vi.fn(async () => [
+      { requirementId: "REQ-1", verdict: "implemented", codeCited: true },
+    ]);
+    await regenerate(orch, { extendBudget: true });
+    expect(
+      orch.runAgenticCodeAgent.mock.calls[0][0].requirements.map((r: { id: string }) => r.id),
+    ).toEqual(["REQ-1"]);
   });
 });
 

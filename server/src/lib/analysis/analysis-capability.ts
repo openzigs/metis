@@ -129,11 +129,13 @@ export interface CapabilityTracker {
    */
   codeInvestigationCutShort: boolean;
   /**
-   * #1131 — summed over the passes that ran out of budget and counted: how
-   * many requirements they never reached, and how many they reached that are
-   * still inconclusive. Absent when no such pass reported counts.
+   * #1131 — over the passes that ran out of budget, in distinct requirements
+   * (`summarizePassReaches`): how many they never reached, and how many they
+   * reached that are still inconclusive. Absent when no pass was cut short.
    */
   codeInvestigationGap?: CodeInvestigationGap;
+  /** #1131 — per repository, the requirement ids a budget-cut pass never reached. */
+  codeInvestigationScope?: Record<string, string[]>;
   /**
    * #1388 — a code pass stopped early on its own with working retrieval, so its
    * `code-agent-degraded` reason stands in for #19's coverage-only
@@ -248,6 +250,11 @@ export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapabili
     // #1131 — omitted unless a cut-short pass counted, so other records are unchanged.
     ...(tracker.codeInvestigationCutShort && tracker.codeInvestigationGap
       ? { codeInvestigationUnreached: { ...tracker.codeInvestigationGap } }
+      : {}),
+    ...(tracker.codeInvestigationCutShort &&
+    tracker.codeInvestigationScope &&
+    Object.keys(tracker.codeInvestigationScope).length > 0
+      ? { codeInvestigationScope: structuredClone(tracker.codeInvestigationScope) }
       : {}),
     // #1388 — omitted unless set, so a plain run's record is unchanged.
     ...(codeAgentStoppedEarly ? { codeAgentStoppedEarly: true } : {}),

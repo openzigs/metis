@@ -56,14 +56,18 @@ export function continuationEstimate(input: {
   if (!quote) {
     budget = "It runs with a larger token and turn budget than the first pass.";
   } else {
-    budget = `The code pass may use up to ${formatTokens(quote.tokenBudget)} tokens (${quote.budgetMultiplier}× the configured budget)`;
+    // Review of #1451 — a budget, not a hard cap: once the loop's budget is
+    // spent, the final-answer retry and the evidence salvage still make calls.
+    budget = `The code pass is budgeted at ${formatTokens(quote.tokenBudget)} tokens (${quote.budgetMultiplier}× the configured budget)`;
     if (counted && counted.costUsd !== null) {
       const estimate = (quote.tokenBudget * counted.costUsd) / counted.totalTokens;
-      budget += `: about ${usd(estimate)} at this run's average price, plus rebuilding the requirements.`;
+      budget += `: about ${usd(estimate)} at this run's average price per token. The final answer retry and evidence salvage can add a little, and rebuilding the requirements is extra.`;
     } else if (counted) {
-      budget += "; no price is set for this run's model, so there is no cost estimate.";
+      budget +=
+        "; no price is set for this run's model, so there is no cost estimate. The final answer retry and evidence salvage can add a little, and rebuilding the requirements is extra.";
     } else {
-      budget += ".";
+      budget +=
+        ". The final answer retry and evidence salvage can add a little, and rebuilding the requirements is extra.";
     }
   }
 

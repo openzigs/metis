@@ -56,6 +56,8 @@ vi.mock("../prisma.js", () => ({
     agentResult: {
       findFirst: vi.fn(async () => null),
       delete: vi.fn(async () => ({ id: "x" })),
+      // #1131 — replace removes every prior row in scope; none exist here.
+      deleteMany: vi.fn(async () => ({ count: 0 })),
       create: vi.fn(async ({ data }: { data: Partial<AgentResultRow> }) => {
         const row: AgentResultRow = {
           id: `ar_${++store.seq}`,

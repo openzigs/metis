@@ -760,18 +760,19 @@ export async function persistAgentResult(
   // no longer deletes repo N-1's `code` row. Callers with no connector
   // (doc/synthesis/security agents, single-repo regenerate #57) keep the original
   // whole-`agentKey` replace.
+  //
+  // Issue #1131 — EVERY prior row in that scope goes, not the first one found:
+  // a "Continue with a larger budget" appends a second `code` row beside the
+  // first, and a later replace (a single-shot regenerate) that deleted only
+  // one of them left the other's findings doubled beside the new ones.
   if ((input.mode ?? "replace") === "replace") {
-    const existing = await prisma.agentResult.findFirst({
+    await prisma.agentResult.deleteMany({
       where: {
         analysisId: input.analysisId,
         agentKey: input.agentKey,
         ...(input.connectorId ? { connectorId: input.connectorId } : {}),
       },
-      select: { id: true },
     });
-    if (existing) {
-      await prisma.agentResult.delete({ where: { id: existing.id } });
-    }
   }
 
   // #774 — the loop's tool-call summary rides in the existing output JSON column

@@ -8,10 +8,10 @@
 import { describe, expect, it } from "vitest";
 import type { AnalysisRetrievalHealth } from "@metis/shared";
 import {
-  addInvestigationGaps,
   classifyUnverifiedRequirements,
   investigationGapFromHealth,
   mergeRetrievalHealth,
+  summarizePassReaches,
 } from "./retrieval-health.js";
 
 const IDS = ["REQ-1", "REQ-2", "REQ-3", "REQ-4"];
@@ -92,14 +92,39 @@ describe("investigation gaps", () => {
       investigationGapFromHealth({ ...exhausted, unreachedRequirements: undefined }),
     ).toBeUndefined();
   });
+});
 
-  it("adds the passes of one run, either of which may be absent", () => {
-    const a = { unreached: 1, inconclusive: 2, total: 5 };
-    const b = { unreached: 3, total: 4 };
-    expect(addInvestigationGaps(undefined, undefined)).toBeUndefined();
-    expect(addInvestigationGaps(undefined, b)).toEqual(b);
-    expect(addInvestigationGaps(a, undefined)).toEqual(a);
-    expect(addInvestigationGaps(a, b)).toEqual({ unreached: 4, inconclusive: 2, total: 9 });
+/**
+ * PR #1451 review — the banner's "N of M" and the continuation's scope count
+ * the same unit: distinct requirements, whatever the number of repositories.
+ */
+describe("summarizePassReaches", () => {
+  const pass = (repo: string, unreached: string[], inconclusive: string[], exhausted = true) => ({
+    repo,
+    ids: ["REQ-1", "REQ-2", "REQ-3"],
+    unreached,
+    inconclusive,
+    exhausted,
+  });
+
+  it("counts distinct requirements across repositories, with each one's scope", () => {
+    expect(
+      summarizePassReaches([
+        pass("repo_1", ["REQ-1"], ["REQ-2"]),
+        pass("repo_2", ["REQ-1", "REQ-2"], []),
+      ]),
+    ).toEqual({
+      // REQ-2 is unreached in repo_2, so it is not inconclusive overall.
+      gap: { unreached: 2, inconclusive: 0, total: 3 },
+      scope: { repo_1: ["REQ-1"], repo_2: ["REQ-1", "REQ-2"] },
+    });
+  });
+
+  it("ignores passes that finished within budget, and is undefined without a cut-short one", () => {
+    expect(summarizePassReaches([pass("", ["REQ-1"], [], false)])).toBeUndefined();
+    expect(
+      summarizePassReaches([pass("", [], ["REQ-3"]), pass("repo_x", ["REQ-2"], [], false)]),
+    ).toEqual({ gap: { unreached: 0, inconclusive: 1, total: 3 }, scope: {} });
   });
 });
 

@@ -1922,10 +1922,11 @@ export interface AnalysisRetrievalHealth {
    */
   unverifiedRequirements?: number;
   /**
-   * #1131 — of {@link unverifiedRequirements}, how many the pass reported
-   * NOTHING for (never reached). The rest carry a finding of their own and are
-   * inconclusive, which a larger budget does not change. Recorded on a pass
-   * that was `exhausted`; absent otherwise and on pre-#1131 records.
+   * #1131 — of {@link unverifiedRequirements}, how many the pass never
+   * REACHED: no finding about them cites grounded code or settles them (an
+   * uncited could-not-verify is the prompt's placeholder for "not reached").
+   * The rest are inconclusive, which a larger budget does not change. Recorded
+   * on a pass that was `exhausted`; absent otherwise and on pre-#1131 records.
    */
   unreachedRequirements?: number;
   /**
@@ -2657,9 +2658,9 @@ export const ANALYSIS_CAPABILITY_REASONS = [
   "code-investigation-cut-short",
   /**
    * Issue #1131 — the agentic code pass ran out of budget, but it REACHED every
-   * requirement: the ones still `could-not-verify` each carry a finding of
-   * their own (the agent looked; the code it read did not settle them). A
-   * larger budget would not change that, so — unlike
+   * requirement: the ones still `could-not-verify` were checked against the
+   * code (a finding cites code the agent read) and the code did not settle
+   * them. A larger budget would not change that, so — unlike
    * `code-investigation-cut-short` — no Continue is offered.
    */
   "code-investigation-inconclusive",
@@ -2861,13 +2862,20 @@ export interface AnalysisCapability {
    * budget. Set only while `codeInvestigationCutShort` is true and the pass
    * reported counts.
    *
-   * #1131 — `unreached` counts only requirements the code agent reported
-   * NOTHING for; `inconclusive` counts those it reached that still read
-   * `could-not-verify` (they carry a finding of their own). Records written
-   * before #1131 carry no `inconclusive`, and their `unreached` is every
-   * `could-not-verify` requirement.
+   * #1131 — counted in DISTINCT requirements: `unreached` are those a
+   * budget-cut pass never reached, `inconclusive` those it reached that still
+   * read `could-not-verify`, `total` the run's requirements. A requirement is REACHED when a finding about it cites grounded code or settles it (#1388's `checkedRequirementIds`); an uncited `could-not-verify` — the placeholder the agentic prompt's `VERDICT_RULE` has the model write for a requirement it ran out of budget before reaching — does not count.
+   * Records written before #1131 carry no `inconclusive`, and their
+   * `unreached` is every `could-not-verify` requirement (per repository).
    */
   codeInvestigationUnreached?: CodeInvestigationGap;
+  /**
+   * Issue #1131 — per repository (connector id, or `""` with none), the
+   * requirement ids its budget-cut pass never reached: exactly what "Continue
+   * with a larger budget" re-investigates, so the scope the page quotes is the
+   * scope that runs. Absent on records written before it.
+   */
+  codeInvestigationScope?: Record<string, string[]>;
   /**
    * Issue #1143 — the citations each agent wrote that were dropped as malformed.
    * Absent when none were (and on every run persisted before #1143).
@@ -2901,10 +2909,11 @@ export function codeInvestigationContinueLimitReached(
  * {@link AnalysisCapability.codeInvestigationUnreached}).
  */
 export interface CodeInvestigationGap {
-  /** Requirements the code agent reported nothing for: a continuation can reach them. */
+  /** Requirements a budget-cut pass never reached: a continuation re-investigates them. */
   unreached: number;
-  /** Requirements the agent reached that are still `could-not-verify`. Absent on pre-#1131 records. */
+  /** Requirements reached but still `could-not-verify`. Absent on pre-#1131 records. */
   inconclusive?: number;
+  /** The run's distinct requirements. */
   total: number;
 }
 

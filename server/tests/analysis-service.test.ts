@@ -179,6 +179,28 @@ vi.mock("../src/lib/prisma.js", () => ({
         agentResults.delete(where.id);
         return null;
       }),
+      // #1131 — replace removes EVERY prior row in its (analysis, agent[, connector]) scope.
+      deleteMany: vi.fn(
+        async ({
+          where,
+        }: {
+          where: { analysisId: string; agentKey: string; connectorId?: string };
+        }) => {
+          let count = 0;
+          for (const [id, a] of agentResults) {
+            if (
+              a.analysisId === where.analysisId &&
+              a.agentKey === where.agentKey &&
+              (where.connectorId === undefined ||
+                (a as { connectorId?: string | null }).connectorId === where.connectorId)
+            ) {
+              agentResults.delete(id);
+              count++;
+            }
+          }
+          return { count };
+        },
+      ),
       create: vi.fn(async ({ data }: { data: Partial<AgentResultRow> }) => {
         const row: AgentResultRow = {
           id: nid("agr"),
