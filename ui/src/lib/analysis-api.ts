@@ -25,6 +25,8 @@ import type {
   RequirementVerdict,
   SynthesisDegradation,
   RequirementReplacementWithheld,
+  WithheldReplacementApplyResult,
+  WithheldReplacementDiff,
   TraceabilityMatrix,
   GapReport,
   RequirementDiff,
@@ -766,6 +768,36 @@ export const analysisApi = {
     apiFetch<{ dismissedCount: number }>(
       `/projects/${projectId}/analyses/${analysisId}/criteria-proposals/dismiss-all`,
       { method: "POST", body: {} },
+    ),
+
+  /**
+   * Issue #780 — compare the current requirements with the re-synthesis that
+   * was withheld to protect review work.
+   */
+  getWithheldReplacement: (projectId: string, analysisId: string) =>
+    apiFetch<WithheldReplacementDiff>(
+      `/projects/${projectId}/analyses/${analysisId}/withheld-replacement`,
+    ),
+
+  /**
+   * Issue #780 — apply (without deleting review work) or dismiss the withheld
+   * re-synthesis. `at` names the one the analyst reviewed.
+   */
+  applyWithheldReplacement: (
+    projectId: string,
+    analysisId: string,
+    at: string,
+    fingerprint: string,
+  ) =>
+    apiFetch<WithheldReplacementApplyResult>(
+      `/projects/${projectId}/analyses/${analysisId}/withheld-replacement/apply`,
+      { method: "POST", body: { at, fingerprint } },
+    ),
+
+  dismissWithheldReplacement: (projectId: string, analysisId: string, at: string) =>
+    apiFetch<{ discarded: number }>(
+      `/projects/${projectId}/analyses/${analysisId}/withheld-replacement/dismiss`,
+      { method: "POST", body: { at } },
     ),
 
   /**
