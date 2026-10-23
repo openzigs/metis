@@ -24,6 +24,7 @@ import { MAX_DOCUMENT_BYTES } from "@metis/shared";
 import { requestLogger } from "./middleware/request-logger.js";
 import { csrfProtection } from "./middleware/csrf-protection.js";
 import { errorHandler, notFoundHandler } from "./middleware/error-handler.js";
+import { jsonBodyParser, urlencodedBodyParser } from "./middleware/body-parsers.js";
 import { apiRouter } from "./routes/index.js";
 import { reconciliationJson } from "./routes/admin/auth-reconciliation.js";
 import { deepHandler, liveHandler } from "./routes/health.js";
@@ -129,8 +130,10 @@ export function createApp(opts: CreateAppOptions = {}): Application {
     console.warn(`Slack receiver not mounted: ${(err as Error).message}`);
   }
   app.use("/api/admin/auth/role-reconciliation", reconciliationJson);
+  // #1458 — both global parsers refuse compressed bodies (415) rather than
+  // inflate them: body-parser GHSA-27r3-jxmh-p828. See middleware/body-parsers.ts.
   app.use(
-    express.json({
+    jsonBodyParser({
       limit: JSON_LIMIT,
       // Capture raw body for HMAC-signed webhook routes (Epic #156).
       verify: (req: express.Request & { rawBody?: string }, _res, buf) => {
@@ -143,7 +146,7 @@ export function createApp(opts: CreateAppOptions = {}): Application {
       },
     }),
   );
-  app.use(express.urlencoded({ extended: true, limit: JSON_LIMIT }));
+  app.use(urlencodedBodyParser({ extended: true, limit: JSON_LIMIT }));
   app.use(cookieParser());
   // #913 — a state-changing request authenticated by a session cookie (not a
   // bearer header) must carry X-METIS-CSRF and not come from another origin.
