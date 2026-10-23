@@ -31,6 +31,7 @@ import { getPrReviewWorker } from "../lib/agents/pr-reviewer/worker-singleton.js
 import { executePrReviewJob } from "../lib/agents/pr-reviewer/pr-review-job.js";
 import { createChildLogger } from "../lib/logger.js";
 import { recordJobScope } from "../lib/socket/job-scope-store.js";
+import { logDeletedProjectSkip } from "../lib/projects/deleted-project-guard.js";
 
 const log = createChildLogger("webhooks-github");
 
@@ -343,6 +344,36 @@ async function runDriftReconcile(input: {
 }
 
 /**
+ * #1438 — the queued PR-review worker's project resolver. A job re-resolves
+ * its repo when it runs, which by then may name a different project than the
+ * one it was enqueued for (the original was deleted, or another project
+ * connected the same repo). A job runs only for the project it was enqueued
+ * for, and only while that project still has auto-review switched on.
+ */
+export async function resolveProjectForQueuedReview(job: {
+  deliveryId: string;
+  projectId: string;
+  owner: string;
+  repo: string;
+  prNumber: number;
+}): Promise<Awaited<ReturnType<typeof findProjectForRepo>>> {
+  const project = await findProjectForRepo(`${job.owner}/${job.repo}`);
+  if (!project) return null;
+  if (project.id !== job.projectId || !project.autoReviewPrs) {
+    log.warn("pr_review.queued_project_changed", {
+      deliveryId: job.deliveryId,
+      repo: `${job.owner}/${job.repo}`,
+      prNumber: job.prNumber,
+      enqueuedFor: job.projectId,
+      resolvedTo: project.id,
+      autoReviewPrs: project.autoReviewPrs,
+    });
+    return null;
+  }
+  return project;
+}
+
+/**
  * Resolve the Metis project + per-repo PR-review config for a webhook
  * payload. Exported so the worker singleton (set up in `server.ts`)
  * can re-resolve from a queued job — the inline webhook path and the
@@ -367,8 +398,25 @@ export async function findProjectForRepo(repoFullName: string): Promise<{
     include: { project: true },
     orderBy: { isPrimary: "desc" }, // primary connections first
   });
-  const conn = conns[0];
-  if (!conn?.project) return null;
+  // #1438 — a soft-deleted project is never reviewed for. Filtered here rather
+  // than in the query so the skip can be logged, and so a live project sharing
+  // the repo still wins over a deleted primary. The queued worker re-resolves
+  // through this function, so a review queued before the delete is dropped too.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const conn = conns.find((c: any) => c.project && !c.project.deletedAt);
+  if (!conn) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const deleted = conns.find((c: any) => c.project?.deletedAt);
+    if (deleted) {
+      logDeletedProjectSkip({
+        path: "pr-review",
+        projectId: deleted.project.id,
+        sourceType: "repo",
+        sourceId: repoFullName,
+      });
+    }
+    return null;
+  }
   return {
     id: conn.project.id,
     autoReviewPrs: !!conn.project.autoReviewPrs,

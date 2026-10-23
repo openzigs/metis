@@ -19,7 +19,11 @@ import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
-import { dispatchMentions } from "../lib/collaboration/mentions.js";
+import {
+  dispatchMentions,
+  refreshCommentMentionExcerpts,
+  retractCommentMentionExcerpts,
+} from "../lib/collaboration/mentions.js";
 import { emitCommentChanged } from "../lib/collaboration/comment-events.js";
 import type { RoleKey } from "@metis/shared";
 import { canAccessProjectDiscussions } from "../lib/discussions/access.js";
@@ -478,6 +482,8 @@ export function commentsRouter(): Router {
         data: { body: parsed.data.body, editedAt: new Date() },
         include: commentInclude,
       });
+      // #1318 — mention notifications quote the comment; quote the new text.
+      await refreshCommentMentionExcerpts(commentId, parsed.data.body);
       emitCommentChanged(existing.thread);
 
       res.json({ success: true, data: commentView(updated) });
@@ -519,6 +525,8 @@ export function commentsRouter(): Router {
         where: { id: commentId },
         data: { deletedAt: new Date() },
       });
+      // #1318 — mention notifications stop quoting a deleted comment.
+      await retractCommentMentionExcerpts(commentId);
       emitCommentChanged(existing.thread);
 
       res.json({ success: true, data: { id: commentId, deleted: true } });

@@ -188,25 +188,23 @@ describe("NotificationStore", () => {
 });
 
 describe("mentionEventToNotification", () => {
-  it("returns info-level notification with comment href", () => {
+  // #1318 — the server's text and thread link, never the raw comment id.
+  it("returns an info-level notification with the server's text and thread link", () => {
     const draft = mentionEventToNotification({
+      kind: "mention",
       commentId: "c-abc",
       mentionedUserId: "u-1",
       ts: Date.now(),
+      notificationId: "n-1",
+      title: 'Alex mentioned you on "Login lockout"',
+      message: "“@bob hi”",
+      href: "/projects/p-1/spec-kit?artifact=plan.md",
     });
     expect(draft.level).toBe("info");
     expect(draft.source).toBe("mention");
-    expect(draft.href).toContain("c-abc");
-    expect(draft.title).toMatch(/mentioned/i);
-  });
-
-  it("URL-encodes the commentId in the href", () => {
-    const draft = mentionEventToNotification({
-      commentId: "c with space",
-      mentionedUserId: "u-1",
-      ts: Date.now(),
-    });
-    expect(draft.href).toBe("/comments/c%20with%20space");
+    expect(draft.title).toBe('Alex mentioned you on "Login lockout"');
+    expect(draft.message).not.toContain("c-abc");
+    expect(draft.href).toBe("/projects/p-1/spec-kit?artifact=plan.md");
   });
 });
 

@@ -38,6 +38,7 @@ import { audit } from "../audit/audit-service.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { readTaskRecord } from "./task-store.js";
+import { deletedProjectOfTask, logDeletedProjectSkip } from "../projects/deleted-project-guard.js";
 import { DURABLE_TASK_TYPES } from "./durable-task-types.js";
 import type { ScheduledJob as PrismaScheduledJob } from "@prisma/client";
 import type { TaskQueue } from "./task-queue.js";
@@ -450,6 +451,10 @@ export class SchedulerService {
         throw new SchedulerError(404, "JOB_NOT_FOUND", `scheduled job ${id} not found`);
       }
     }
+    // #1438 — an admin still reaches a deleted project's job, but it does not run.
+    if (await deletedProjectOfTask(jobTaskRef(job))) {
+      throw new SchedulerError(410, "PROJECT_DELETED", "The job's project has been deleted");
+    }
     audit({
       action: "scheduled-job.run-now",
       actor: actorObj?.id ?? null,
@@ -587,6 +592,27 @@ export class SchedulerService {
       this.unregisterCron(jobId);
       return;
     }
+    // #1438 — a job of a soft-deleted project does not fire. The cron stays
+    // registered and the job row untouched, so a restored project's schedule
+    // resumes as it was; no fire slot is claimed, so nothing is enqueued.
+    const deletedProjectId = await deletedProjectOfTask(jobTaskRef(job));
+    if (deletedProjectId) {
+      logDeletedProjectSkip({
+        path: "scheduler.fire",
+        projectId: deletedProjectId,
+        sourceType: "scheduled-job",
+        sourceId: job.id,
+      });
+      this.deps.emitter.schedulerStatus({
+        jobId: job.id,
+        key: job.key,
+        status: "skipped",
+        enabled: job.enabled,
+        message: "project deleted",
+        ts: Date.now(),
+      });
+      return;
+    }
     // Truncate to the second so two ticks arriving microseconds apart for the
     // same scheduled instant collapse to the same key.
     const now = new Date();
@@ -655,6 +681,15 @@ export class SchedulerService {
     });
     return result.count === 1;
   }
+}
+
+/**
+ * #1438 — a job as the task it would enqueue, for the deleted-project gate:
+ * the job's own `projectId` is optional, and its payload may name the project
+ * (or a connector or batch of it) instead.
+ */
+function jobTaskRef(job: { taskType: string; projectId: string | null; payload: string }) {
+  return { type: job.taskType, projectId: job.projectId, payload: parsePayload(job.payload) };
 }
 
 function parsePayload(raw: string): Record<string, unknown> {

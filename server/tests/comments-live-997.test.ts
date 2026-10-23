@@ -36,6 +36,8 @@ vi.mock("../src/middleware/require-permission.js", () => ({
 }));
 vi.mock("../src/lib/collaboration/mentions.js", () => ({
   dispatchMentions: vi.fn(),
+  refreshCommentMentionExcerpts: vi.fn().mockResolvedValue(undefined),
+  retractCommentMentionExcerpts: vi.fn().mockResolvedValue(undefined),
 }));
 
 const emit = vi.fn();

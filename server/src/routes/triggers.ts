@@ -16,6 +16,13 @@ import {
   verifySlackWebhook,
 } from "../lib/async/triggers.js";
 import { webhookReceiverRateLimiter } from "../middleware/webhook-receiver-rate-limit.js";
+import { audit } from "../lib/audit/audit-service.js";
+import {
+  isProjectSoftDeleted,
+  logDeletedProjectSkip,
+  softDeletedProjectIds,
+  type BackgroundPath,
+} from "../lib/projects/deleted-project-guard.js";
 
 // #680 — cap the number of triggers fired per delivery so one webhook cannot
 // spawn unbounded async runs (defence-in-depth beside the rate limiter).
@@ -134,6 +141,79 @@ async function spawnTriggerRun(
     data: { lastFiredAt: new Date() },
   });
   return { runId: out.id };
+}
+
+/**
+ * #1438 — a sender that keeps delivering to a deleted project's trigger would
+ * otherwise write one audit row per delivery. The audit is the durable record
+ * that deliveries are still arriving, so one row per trigger per window says
+ * that; every delivery is still logged. Bounded: the oldest entry is evicted.
+ */
+const SKIP_AUDIT_WINDOW_MS = 60 * 60 * 1000;
+const SKIP_AUDIT_MAX_TRACKED = 10_000;
+const lastSkipAuditAt = new Map<string, number>();
+
+function shouldAuditSkip(triggerId: string, now = Date.now()): boolean {
+  const last = lastSkipAuditAt.get(triggerId);
+  if (last !== undefined && now - last < SKIP_AUDIT_WINDOW_MS) return false;
+  lastSkipAuditAt.delete(triggerId);
+  lastSkipAuditAt.set(triggerId, now);
+  if (lastSkipAuditAt.size > SKIP_AUDIT_MAX_TRACKED) {
+    const oldest = lastSkipAuditAt.keys().next().value;
+    if (oldest !== undefined) lastSkipAuditAt.delete(oldest);
+  }
+  return true;
+}
+
+/** Test seam — forget which skips were audited. */
+export function __resetTriggerSkipAudit(): void {
+  lastSkipAuditAt.clear();
+}
+
+/**
+ * #1438 — a verified delivery for a trigger of a soft-deleted project runs
+ * nothing. Logged per delivery and audited at most once per trigger per hour,
+ * so the owner can see deliveries still arriving for a project they deleted.
+ */
+function recordDeletedProjectSkip(
+  path: BackgroundPath,
+  trigger: { id: string; projectId: string },
+): void {
+  logDeletedProjectSkip({
+    path,
+    projectId: trigger.projectId,
+    sourceType: "trigger",
+    sourceId: trigger.id,
+  });
+  if (!shouldAuditSkip(trigger.id)) return;
+  audit({
+    action: "trigger.skipped_project_deleted",
+    target: { type: "trigger", id: trigger.id },
+    metadata: { projectId: trigger.projectId, path },
+  });
+}
+
+/** #1438 — the answer to a sender whose every verified trigger belongs to a deleted project. */
+function projectDeletedError(): AppError {
+  return new AppError(410, "PROJECT_DELETED", "The trigger's project has been deleted");
+}
+
+/**
+ * #1438 — split verified triggers into those whose project is live and those
+ * whose project is soft-deleted (logged and audited here). One query per
+ * delivery, whatever the fan-out.
+ */
+async function liveTriggers<T extends { id: string; projectId: string }>(
+  path: BackgroundPath,
+  verified: T[],
+): Promise<{ live: T[]; skipped: number }> {
+  const deleted = await softDeletedProjectIds(verified.map((t) => t.projectId));
+  const live: T[] = [];
+  for (const t of verified) {
+    if (deleted.has(t.projectId)) recordDeletedProjectSkip(path, t);
+    else live.push(t);
+  }
+  return { live, skipped: verified.length - live.length };
 }
 
 /**
@@ -266,6 +346,12 @@ export function triggersWebhookRouter(): Router {
       timestamp: req.header("x-metis-timestamp") ?? undefined,
     });
     if (!verdict.ok) throw new AppError(401, "BAD_SIGNATURE", verdict.reason ?? "rejected");
+    // #1438 — judged only AFTER the signature, so an unsigned caller holding a
+    // trigger id learns nothing about its project; the secret holder gets 410.
+    if (await isProjectSoftDeleted(trigger.projectId)) {
+      recordDeletedProjectSkip("trigger.webhook", trigger);
+      throw projectDeletedError();
+    }
     const out = await spawnTriggerRun(trigger, {
       body: req.body,
     });
@@ -300,13 +386,23 @@ export function triggersWebhookRouter(): Router {
       const secret = String(cfg.secret ?? "");
       return verifyGithubWebhook(rawBody(req), secret, sig).ok;
     });
+    // #1438 — a trigger of a soft-deleted project never fires. When that leaves
+    // nothing to fire for a verified delivery, say so with a 410.
+    const { live, skipped } = await liveTriggers("trigger.github", verified);
+    if (verified.length > 0 && live.length === 0) throw projectDeletedError();
     const fired: string[] = [];
     // #680 — bound the fan-out per delivery.
-    for (const t of verified.slice(0, maxTriggerFanout())) {
+    for (const t of live.slice(0, maxTriggerFanout())) {
       const r = await spawnTriggerRun(t, { event, body });
       fired.push(r.runId);
     }
-    res.json(ok({ matched: matched.length, fired }));
+    res.json(
+      ok({
+        matched: matched.length,
+        fired,
+        ...(skipped ? { skippedDeletedProject: skipped } : {}),
+      }),
+    );
   });
 
   // Slack: POST /api/webhooks/slack
@@ -340,13 +436,22 @@ export function triggersWebhookRouter(): Router {
         timestamp: ts ?? undefined,
       }).ok;
     });
+    // #1438 — see the GitHub receiver above.
+    const { live, skipped } = await liveTriggers("trigger.slack", verified);
+    if (verified.length > 0 && live.length === 0) throw projectDeletedError();
     const fired: string[] = [];
     // #680 — bound the fan-out per delivery.
-    for (const t of verified.slice(0, maxTriggerFanout())) {
+    for (const t of live.slice(0, maxTriggerFanout())) {
       const r = await spawnTriggerRun(t, { body });
       fired.push(r.runId);
     }
-    res.json(ok({ matched: matched.length, fired }));
+    res.json(
+      ok({
+        matched: matched.length,
+        fired,
+        ...(skipped ? { skippedDeletedProject: skipped } : {}),
+      }),
+    );
   });
 
   return r;

@@ -1003,12 +1003,12 @@ See §19 for full details on each sub-page.
 
 The bell icon in the header opens a side **notifications drawer** with these alerts:
 
-- **Mention** — you were @mentioned in a comment. Click **Open →** to jump directly to that comment.
+- **Mention** — someone @mentioned you in a comment, e.g. *Alex mentioned you on "Login lockout"*, with the start of the comment underneath. Click **Open →** to open that requirement (or Spec Kit artifact) with its comments showing. The quote follows the comment: if its author edits it, the notification quotes the new text (or reads *The comment was edited.* if you can no longer open the project); if they delete it, the notification keeps who and where but reads *The comment was deleted.* An item already showing in an open drawer updates on the next reload.
 - **Discussion mention** — someone @mentioned you in a project discussion, e.g. *"Alex mentioned you in a discussion"*. Click **Open →** to go to that discussion thread.
 - **SLA deadline expired** — an assignment's SLA deadline has passed. Click **Open →** to navigate to the requirement. It goes only to people who can still open the project. A requirement can be assigned only to someone the assignee picker offers: an active member of the project's workspace, or a system admin. Anyone else gets "Assignee not found" (#1432).
 - **Review lifecycle** — for the formal review workflow (the Reviews page, sidebar → Activity → Reviews): as an **assigned reviewer** you are notified when a review is submitted and awaits your decision; as the **requester** you are notified of each reviewer's decision and of the final outcome (approved — including when a baseline was auto-created — or rejected). Each notification deep-links to the review's detail page. These are governed by the **Requirements approved × In-app** toggle in Settings → Notifications.
 
-The badge shows your unread count; opening the drawer marks all items read. Use **Clear all** to dismiss the list. Discussion mentions and review notifications arrive **live** while you are signed in: the badge updates without a reload, and the item reads the same as it will after a reload. Notifications are **persisted server-side**, so they survive page reloads and reconnects and you do not miss an alert sent while you were offline. Each notification links to the item it is about where there is one.
+The badge shows your unread count; opening the drawer marks all items read. Use **Clear all** to dismiss the list. Comment mentions, discussion mentions and review notifications arrive **live** while you are signed in: the badge updates without a reload, and the item reads the same as it will after a reload. Notifications are **persisted server-side**, so they survive page reloads and reconnects and you do not miss an alert sent while you were offline. Each notification links to the item it is about where there is one.
 
 **Comment threads update live.** When a requirement's or a Spec Kit artifact's **Comments** panel is open, a comment, reply, edit or delete by anyone else on the project appears in it within a moment; you do not need to reload the page. Only people who can open the project see the update, the same people who can read the comments.
 
@@ -1182,6 +1182,20 @@ the run, requirement, baseline or connection was not found), exactly as for one
 that never existed. So nothing more is published, queried, ingested or spent
 on a model on its behalf by its members. Nothing is erased: the project is
 soft-deleted, and an administrator still reaches what hangs off it.
+
+**Nothing runs in the background for a deleted project either (#1438).** Its
+webhook triggers no longer fire: a signed delivery is answered **410 Gone**
+(`PROJECT_DELETED`), so the sending system's delivery log shows why. Its
+scheduled jobs are skipped at each tick (the Scheduler page reports the tick as
+skipped, "project deleted"), and work already queued for it before the delete —
+background runs, scheduled or manual tasks, imports, document regenerations and
+PR auto-reviews — is cancelled instead of run. A merged pull request no longer
+marks its requirements implemented. Nothing is posted to Teams or paged in PagerDuty on
+its behalf, and its MCP servers are no longer health-checked or restarted. Its triggers and schedules are left exactly
+as they were, switched on or off, so nothing needs re-enabling if the project
+is ever restored. An administrator who starts a background run or runs a
+scheduled job now for a deleted project is told the project has been deleted
+instead of the work being queued.
 
 ### 9.7 Project Overview (AST-Derived)
 

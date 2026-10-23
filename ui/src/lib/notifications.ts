@@ -10,6 +10,7 @@
  */
 
 import type {
+  CommentMentionEvent,
   DiscussionMentionEvent,
   InAppNotificationFields,
   ReviewNotificationEvent,
@@ -171,12 +172,19 @@ export function _resetNotificationStoreForTests(): void {
 // Event → Notification mappers (replaces the old auditEventToNotification)
 // ---------------------------------------------------------------------------
 
-/** Payload shape emitted by the server for comment:mention events. */
-export interface MentionEventPayload {
-  commentId: string;
-  mentionedUserId: string;
-  ts: number;
-}
+/**
+ * Payload of a `comment:mention` event (#1318). During a rolling deploy a
+ * server from before #1318 still sends only `{ commentId, mentionedUserId, ts }`,
+ * so the text, link and id may be absent.
+ */
+export type MentionEventPayload = Pick<
+  CommentMentionEvent,
+  "commentId" | "mentionedUserId" | "ts"
+> &
+  Partial<Omit<CommentMentionEvent, "commentId" | "mentionedUserId" | "ts">>;
+
+/** Title of a comment mention whose event carried no text (an older server). */
+export const FALLBACK_MENTION_TITLE = "You were mentioned in a comment";
 
 /** Payload shape emitted by the server for sla:deadline_expired events. */
 export interface SlaDeadlineEventPayload {
@@ -188,18 +196,26 @@ export interface SlaDeadlineEventPayload {
 }
 
 /**
- * Map a `comment:mention` event payload into a Notification draft.
+ * Map a `comment:mention` event into a Notification draft. #1318 — the event
+ * carries the saved row's id, text (who and where, plus an excerpt) and the
+ * link to the comment's thread; it used to show the raw comment id and link to
+ * `/comments/<id>`, which has no page.
+ *
+ * An old-shape event (rolling deploy) gets a generic title and no link — never
+ * the raw comment id or the dead `/comments/<id>` route; the saved row, with
+ * its real text and link, arrives on the next history read.
  */
-export function mentionEventToNotification(
-  event: MentionEventPayload,
-): Omit<Notification, "id" | "createdAt" | "read"> {
-  return {
-    level: "info",
-    title: "You were mentioned in a comment",
-    message: `You were mentioned in comment ${event.commentId}`,
-    source: "mention",
-    href: `/comments/${encodeURIComponent(event.commentId)}`,
-  };
+export function mentionEventToNotification(event: MentionEventPayload): NotificationDraft {
+  return inAppDraft(
+    {
+      notificationId: event.notificationId ?? null,
+      title: event.title || FALLBACK_MENTION_TITLE,
+      message: event.message ?? "",
+      href: event.href ?? "",
+    },
+    "mention",
+    "info",
+  );
 }
 
 /**

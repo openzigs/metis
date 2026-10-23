@@ -155,6 +155,15 @@ overrides:
   #   minimumReleaseAge and returns zero vulns on api.osv.dev (2026-10-20). Guarded by
   #   scripts/lib/dependency-audit-ghsa-587h-vite.test.mjs.
   vite: ^8.3.4
+  # zod GHSA-mrhx-c7xc-m3w5 (HIGH, CVSS 8.2, modified 2026-10-23): oversized
+  #   constrained collections exhaust memory; `introduced 0, fixed 4.6.6` (#1453).
+  #   4.6.6 (2026-10-11) cleared minimumReleaseAge and returns zero vulns on
+  #   api.osv.dev (2026-10-23). Scoped to the 4.x band on purpose: botbuilder
+  #   4.23.3 cannot load on zod 4 (`.nonstrict is not a function` at import), so
+  #   the zod@3.25.76 copy is a scoped, dated waiver in sast.yml instead. Bound
+  #   and floor move together (#1208). Guarded by
+  #   scripts/lib/dependency-audit-1453-zod.test.mjs.
+  zod@>=4.0.0 <4.6.6: ^4.6.6
   postcss@<8.5.18: ^8.5.18
   uuid@<14.0.0: ">=14.0.0"
   "@grpc/grpc-js@<1.14.4": ^1.14.4

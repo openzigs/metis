@@ -23,6 +23,7 @@ import type { PrismaClient } from "@prisma/client";
 
 import { prisma as defaultPrisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
+import { logDeletedProjectSkip } from "../projects/deleted-project-guard.js";
 import type { MCPStatusEvent } from "../mcp/types.js";
 import { opsWorkspaceId } from "./ops-workspace.js";
 import { pagerDutyProviderDown, pagerDutyProviderRecovered } from "./alerting-hooks.js";
@@ -99,8 +100,19 @@ export class PagerDutyProviderStatusWatcher {
     if (event.scope === "project" && event.projectId) {
       const project = await this.db.project.findFirst({
         where: { id: event.projectId },
-        select: { workspaceId: true },
+        select: { workspaceId: true, deletedAt: true },
       });
+      // #1438 — a soft-deleted project's server pages nobody, and does NOT fall
+      // through to the ops workspace below.
+      if (project?.deletedAt) {
+        logDeletedProjectSkip({
+          path: "notification",
+          projectId: event.projectId,
+          sourceType: "mcp-server",
+          sourceId: event.serverId,
+        });
+        return null;
+      }
       if (project?.workspaceId) return project.workspaceId;
       // A project with no workspace falls through to the ops workspace.
     }
