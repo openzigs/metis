@@ -265,6 +265,8 @@ describe("fingerprintWithheldPlan (#780)", () => {
   it("changes when a requirement's version, review state or changed fields change", () => {
     const base = fp(rows);
     expect(fp([{ ...rows[0]!, version: 1 }, rows[1]!, rows[2]!])).not.toBe(base);
+    // A verdict change does not bump the version (#1162).
+    expect(fp([{ ...rows[0]!, reviewStatus: "rejected" }, rows[1]!, rows[2]!])).not.toBe(base);
     expect(fp([rows[0]!, rows[1]!, { ...rows[2]!, reviewed: true }])).not.toBe(base);
     expect(fp([{ ...rows[0]!, body: "new" }, rows[1]!, rows[2]!])).not.toBe(base);
   });

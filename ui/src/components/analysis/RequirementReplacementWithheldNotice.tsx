@@ -138,7 +138,11 @@ function WithheldReplacementActions({
   const [open, setOpen] = React.useState(false);
   const [confirming, setConfirming] = React.useState(false);
   const [confirmingDismiss, setConfirmingDismiss] = React.useState(false);
-  const [changedSinceReview, setChangedSinceReview] = React.useState(false);
+  /**
+   * Why the last answer was refused: the requirements changed since the
+   * comparison was loaded, or a newer re-synthesis replaced the one reviewed.
+   */
+  const [refused, setRefused] = React.useState<"changed" | "superseded" | null>(null);
   const queryClient = useQueryClient();
   const panelId = React.useId();
   const { user } = useAuth();
@@ -158,6 +162,11 @@ function WithheldReplacementActions({
   const refresh = () => {
     for (const key of invalidateKeys) void queryClient.invalidateQueries({ queryKey: key });
   };
+  // A newer re-synthesis replaced the one reviewed: re-reading the analysis
+  // brings its notice, and the comparison (keyed by its time) reloads with it.
+  const noteSuperseded = (error: unknown) => {
+    if (error instanceof ApiError && error.code === "STALE") setRefused("superseded");
+  };
 
   const apply = useAppMutation({
     mutationFn: (fingerprint: string) =>
@@ -167,17 +176,18 @@ function WithheldReplacementActions({
       `${r.deleted} removed${r.kept > 0 ? `, ${r.kept} reviewed kept` : ""}`,
     onSuccess: () => {
       setConfirming(false);
-      setChangedSinceReview(false);
+      setRefused(null);
       refresh();
     },
     onError: (error) => {
       setConfirming(false);
       // The requirements changed after the comparison was loaded: show the
       // current one, and say so, rather than applying what was not confirmed.
-      if (error instanceof ApiError && error.code === "STALE") {
-        setChangedSinceReview(true);
+      if (error instanceof ApiError && error.code === "CHANGED_SINCE_REVIEW") {
+        setRefused("changed");
         void diff.refetch();
       }
+      noteSuperseded(error);
       refresh();
     },
   });
@@ -185,7 +195,10 @@ function WithheldReplacementActions({
     mutationFn: () => analysisApi.dismissWithheldReplacement(projectId, analysisId, withheld.at),
     successMessage: "Kept your current requirements. The new result was discarded.",
     onSuccess: refresh,
-    onError: refresh,
+    onError: (error) => {
+      noteSuperseded(error);
+      refresh();
+    },
   });
   const busy = apply.isPending || dismiss.isPending;
 
@@ -220,7 +233,13 @@ function WithheldReplacementActions({
               page.
             </p>
           ) : null}
-          {changedSinceReview ? (
+          {refused === "superseded" ? (
+            <p role="alert" className="text-xs text-warning">
+              A newer re-synthesis replaced the one you were reviewing, so nothing was changed. This
+              notice now describes the newest one: review its changes before answering.
+            </p>
+          ) : null}
+          {refused === "changed" ? (
             <p role="alert" className="text-xs text-warning">
               The requirements changed after you opened this comparison, so nothing was applied. The
               comparison below is up to date: review it again before applying.
@@ -245,7 +264,8 @@ function WithheldReplacementActions({
                 </div>
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  Ask a project owner to apply or dismiss these changes.
+                  Ask someone who can edit this project (a coordinator or admin) to apply or dismiss
+                  these changes.
                 </p>
               )}
               <ApplyConfirmation

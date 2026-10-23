@@ -761,7 +761,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       const res = await answer("apply", { at, fingerprint });
       expect(res.status).toBe(409);
-      expect(res.body.error.code).toBe("STALE");
+      expect(res.body.error.code).toBe("CHANGED_SINCE_REVIEW");
       expect(res.body.error.message).toMatch(/changed since you reviewed/);
       expect(
         await db.requirement.findMany({ where: { analysisId: ANALYSIS }, orderBy: { id: "asc" } }),
@@ -783,8 +783,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       const res = await answer("apply", { at, fingerprint });
       expect(res.status).toBe(409);
-      expect(res.body.error.code).toBe("STALE");
+      expect(res.body.error.code).toBe("CHANGED_SINCE_REVIEW");
       expect(await db.requirement.findUnique({ where: { id: dropped.id } })).not.toBeNull();
+      expect((await metadata())[WITHHELD_PROPOSAL_KEY]).toBeDefined();
+    });
+
+    it("apply refuses (409) when a reviewed requirement's status changed after the review", async () => {
+      const { at, approvedId } = await seedWithheld();
+      const fingerprint = (await getDiff()).body.data.fingerprint as string;
+      // A verdict change is not versioned (#1162): approved → rejected leaves
+      // `version` as it was, and the confirmation named it "Approved".
+      const before = await db.requirement.findUniqueOrThrow({ where: { id: approvedId } });
+      await db.requirement.update({
+        where: { id: approvedId },
+        data: { reviewStatus: "rejected" },
+      });
+      expect((await db.requirement.findUniqueOrThrow({ where: { id: approvedId } })).version).toBe(
+        before.version,
+      );
+      const res = await answer("apply", { at, fingerprint });
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("CHANGED_SINCE_REVIEW");
+      const after = await db.requirement.findUniqueOrThrow({ where: { id: approvedId } });
+      expect(after.body).toBe(before.body);
       expect((await metadata())[WITHHELD_PROPOSAL_KEY]).toBeDefined();
     });
   },

@@ -58,8 +58,13 @@ const APPLY_TIMEOUT_MS = 60_000;
 
 /** Why a withheld re-synthesis could not be answered. */
 export class WithheldReplacementError extends Error {
-  readonly code: "NO_PROPOSAL" | "STALE";
-  constructor(code: "NO_PROPOSAL" | "STALE", message: string) {
+  /**
+   * `STALE`: a newer re-synthesis replaced the one answered (`at`).
+   * `CHANGED_SINCE_REVIEW`: the same one, but the requirements changed since
+   * the comparison was loaded (its fingerprint).
+   */
+  readonly code: "NO_PROPOSAL" | "STALE" | "CHANGED_SINCE_REVIEW";
+  constructor(code: "NO_PROPOSAL" | "STALE" | "CHANGED_SINCE_REVIEW", message: string) {
     super(message);
     this.name = "WithheldReplacementError";
     this.code = code;
@@ -191,7 +196,7 @@ export async function applyWithheldReplacement(input: {
       // #780 — apply only what the confirmation showed: a requirement edited,
       // or one that gained review work, since the comparison changes the plan.
       if (fingerprintWithheldPlan(steps) !== input.fingerprint) {
-        throw new WithheldReplacementError("STALE", CHANGED_MESSAGE);
+        throw new WithheldReplacementError("CHANGED_SINCE_REVIEW", CHANGED_MESSAGE);
       }
       /** Proposal row index → the requirement row now holding it (#1203/#1204 notes). */
       const rowIdByIndex: Array<string | undefined> = [];

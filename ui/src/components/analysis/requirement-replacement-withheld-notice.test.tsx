@@ -298,7 +298,11 @@ describe("RequirementReplacementWithheldNotice", () => {
       .mockResolvedValueOnce(DIFF)
       .mockResolvedValue({ ...DIFF, fingerprint: "fp-2", changed: [] });
     api.applyWithheldReplacement.mockRejectedValue(
-      new ApiError(409, "The requirements changed since you reviewed this comparison.", "STALE"),
+      new ApiError(
+        409,
+        "The requirements changed since you reviewed this comparison.",
+        "CHANGED_SINCE_REVIEW",
+      ),
     );
     renderActionable();
     fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
@@ -337,7 +341,39 @@ describe("RequirementReplacementWithheldNotice", () => {
     );
   });
 
-  it("a developer can review the changes but is told to ask a project owner to answer them", async () => {
+  it("a newer re-synthesis replaced the reviewed one: says so, not that the requirements changed", async () => {
+    api.getWithheldReplacement.mockResolvedValue(DIFF);
+    api.applyWithheldReplacement.mockRejectedValue(
+      new ApiError(409, "A newer re-synthesis replaced the one you reviewed.", "STALE"),
+    );
+    api.dismissWithheldReplacement.mockRejectedValue(
+      new ApiError(409, "A newer re-synthesis replaced the one you reviewed.", "STALE"),
+    );
+    const { invalidate } = renderActionable();
+    fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Apply changes" }));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Apply changes" }),
+    );
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      /A newer re-synthesis replaced the one you were reviewing, so nothing was changed/,
+    );
+    expect(alert).not.toHaveTextContent(/requirements changed after you opened/);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: KEY });
+    // Dismiss refused the same way says the same.
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss changes" }));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog", { name: "Dismiss the new result?" })).getByRole(
+        "button",
+        { name: "Dismiss changes" },
+      ),
+    );
+    await waitFor(() => expect(api.dismissWithheldReplacement).toHaveBeenCalled());
+    expect(await screen.findByRole("alert")).toHaveTextContent(/A newer re-synthesis replaced/);
+  });
+
+  it("a developer can review the changes but is told to ask someone who can edit the project", async () => {
     auth.role = "developer";
     auth.permissions = ["analysis.run", "analysis.read"];
     api.getWithheldReplacement.mockResolvedValue(DIFF);
@@ -347,7 +383,9 @@ describe("RequirementReplacementWithheldNotice", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
     const panel = await screen.findByRole("region", { name: "Changes the new result would make" });
-    await within(panel).findByText("Ask a project owner to apply or dismiss these changes.");
+    await within(panel).findByText(
+      /Ask someone who can edit this project \(a coordinator or admin\) to apply or dismiss these changes\./,
+    );
     expect(within(panel).getByRole("region", { name: "Changed requirements" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Apply changes" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Dismiss changes" })).not.toBeInTheDocument();

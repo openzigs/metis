@@ -358,6 +358,9 @@ export function fingerprintWithheldPlan(steps: readonly WithheldApplyStep[]): st
       s.kind,
       "current" in s ? s.current.id : null,
       "current" in s ? s.current.version : null,
+      // A review status is not versioned (#1162), so a change of verdict
+      // (approved → rejected) does not bump `version`: hash it too.
+      "current" in s ? s.current.reviewStatus : null,
       "proposed" in s ? s.proposed.title : null,
       fields,
     ]);
