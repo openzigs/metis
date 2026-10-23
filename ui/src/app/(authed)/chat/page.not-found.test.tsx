@@ -65,6 +65,20 @@ describe("chat page — a chat that cannot be opened (#1412)", () => {
     expect(apiFetch).toHaveBeenCalledWith("/ai/sessions/sess-gone/resume", { method: "POST" });
   });
 
+  it("a link whose resume fails for another reason (a 500, the network) does not claim 'not found'", async () => {
+    nav.query = "sessionId=sess-flaky";
+    apiFetch.mockImplementation(async (path: string) => {
+      if (path.endsWith("/resume")) throw new ApiError(500, "boom", "INTERNAL");
+      return {};
+    });
+    render(<ChatPage />);
+    await waitFor(() =>
+      expect(apiFetch).toHaveBeenCalledWith("/ai/sessions/sess-flaky/resume", { method: "POST" }),
+    );
+    await screen.findByText("Ask a question, or start from one of these:");
+    expect(screen.queryByText(/Chat not found/)).toBeNull();
+  });
+
   it("the chat last open on this device is resumed quietly: no alert when it is gone", async () => {
     nav.query = "";
     render(<ChatPage />);

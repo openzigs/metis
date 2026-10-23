@@ -21,6 +21,8 @@ vi.mock("./api-client", () => ({
 
 const {
   resumeChatSession,
+  CHAT_NOT_FOUND_RESULT,
+  openChatSession,
   storeActiveSessionId,
   loadActiveSessionId,
   transcriptToDisplay,
@@ -172,6 +174,16 @@ describe("resumeChatSession (#1367, #139)", () => {
   it("returns null when the session expired or is unknown, so the caller creates a new one", async () => {
     apiFetch.mockRejectedValue(new Error("Session has expired and cannot be resumed"));
     expect(await resumeChatSession("sess_old")).toBeNull();
+  });
+
+  it("#1412 — a 404 is told apart from any other failure", async () => {
+    const { ApiError } = await import("./api-client");
+    apiFetch.mockRejectedValue(new ApiError(404, "Session not found", "AI_SESSION_NOT_FOUND"));
+    expect(await openChatSession("sess_gone")).toBe(CHAT_NOT_FOUND_RESULT);
+    // `resumeChatSession` keeps its contract: null for any failure.
+    expect(await resumeChatSession("sess_gone")).toBeNull();
+    apiFetch.mockRejectedValue(new ApiError(500, "boom"));
+    expect(await openChatSession("sess_gone")).toBeNull();
   });
 
   it("a session with no turns resumes as an empty transcript", async () => {

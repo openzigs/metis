@@ -419,7 +419,20 @@ export function mergeTranscriptDelta<T extends { ordinal?: number; compacted?: b
   );
 }
 
+/** Resume a chat; `null` when it cannot be resumed, for whatever reason. */
 export async function resumeChatSession(id: string): Promise<ResumedChat | null> {
+  const opened = await openChatSession(id);
+  return opened === CHAT_NOT_FOUND_RESULT ? null : opened;
+}
+
+/**
+ * #1412 — {@link resumeChatSession}, telling the server's 404 apart
+ * ({@link CHAT_NOT_FOUND_RESULT}) from any other failure (`null`), so a chat
+ * link can say "Chat not found" without saying it for a network error.
+ */
+export async function openChatSession(
+  id: string,
+): Promise<ResumedChat | typeof CHAT_NOT_FOUND_RESULT | null> {
   try {
     // Encoded: `id` reaches here from a `?sessionId=` query param, and an
     // unencoded value could otherwise steer the request at a different route.
@@ -442,10 +455,16 @@ export async function resumeChatSession(id: string): Promise<ResumedChat | null>
       messages,
       readOnlyReason: res.session?.readOnlyReason ?? null,
     };
-  } catch {
+  } catch (err) {
+    // #1412 — the server's 404 (unknown, deleted, someone else's, or in a
+    // project deleted since) is told apart from any other failure.
+    if (err instanceof ApiError && err.status === 404) return CHAT_NOT_FOUND_RESULT;
     return null;
   }
 }
+
+/** #1412 — what {@link resumeChatSession} returns when the server answers 404. */
+export const CHAT_NOT_FOUND_RESULT = "not_found" as const;
 
 /**
  * #142 — answer a pending tool approval. Only the session's owner can; an

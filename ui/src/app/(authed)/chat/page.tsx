@@ -27,7 +27,8 @@ import {
   lastHeldOrdinal,
   mergeTranscriptDelta,
   loadActiveSessionId,
-  resumeChatSession,
+  openChatSession,
+  CHAT_NOT_FOUND_RESULT,
   storeActiveSessionId,
   streamChat,
 } from "@/lib/ai-client";
@@ -244,13 +245,13 @@ export default function ChatPage() {
     setReady(false);
     void (async () => {
       try {
-        const restored = await resumeChatSession(restoreId);
+        const restored = await openChatSession(restoreId);
         if (cancelled) return;
-        if (!restored) {
-          // #1412 — a chat named by a link that cannot be opened (deleted, in a
-          // project that was deleted, or no longer yours) says so, instead of
-          // showing an empty chat as if it were new.
-          if (resumeSessionId) setError(CHAT_NOT_FOUND);
+        if (!restored || restored === CHAT_NOT_FOUND_RESULT) {
+          // #1412 — a chat named by a link that the server answers 404 for
+          // (deleted, in a project that was deleted, or not yours) says so,
+          // instead of showing an empty chat as if it were new.
+          if (resumeSessionId && restored === CHAT_NOT_FOUND_RESULT) setError(CHAT_NOT_FOUND);
           return;
         }
         // #1139 — the session last open here is resumed only when it belongs
