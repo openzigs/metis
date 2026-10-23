@@ -24,7 +24,7 @@ import type {
 import { ApiError } from "@/lib/api-client";
 import { traceabilityApi } from "@/lib/traceability-api";
 import { Badge } from "@/components/ui/badge";
-import { TEST_RELATION_LABEL } from "./test-relation";
+import { TEST_RELATION_DESCRIPTION, TEST_RELATION_LABEL } from "./test-relation";
 
 export interface TraceabilityViewProps {
   projectId: string;
@@ -83,7 +83,9 @@ function TestRow({ t }: { t: TraceabilityTestNode }): React.ReactElement {
         </span>
         <span>{t.name}</span>
       </span>
-      <Badge variant="secondary">{TEST_RELATION_LABEL[t.relation]}</Badge>
+      <Badge variant="secondary" title={TEST_RELATION_DESCRIPTION[t.relation]}>
+        {TEST_RELATION_LABEL[t.relation]}
+      </Badge>
     </li>
   );
 }
@@ -96,17 +98,26 @@ function TestedBy({
   hasCode: boolean;
 }): React.ReactElement {
   const headingId = React.useId();
+  // #1108 review — a test that only calls a shared entry point does not test
+  // this requirement: it is not counted in the heading and is listed apart.
+  const counted = tests.filter((t) => t.relation !== "entry-point");
+  const entryOnly = tests.filter((t) => t.relation === "entry-point");
   return (
     <section aria-labelledby={headingId} className="space-y-1">
       <h4 id={headingId} className="text-sm font-medium">
-        {tests.length > 0 ? `Tested by (${tests.length})` : "Tested by"}
+        {counted.length > 0 ? `Tested by (${counted.length})` : "Tested by"}
       </h4>
-      {tests.length > 0 ? (
+      {counted.length > 0 ? (
         <ul className="rounded-md border p-2">
-          {tests.map((t) => (
+          {counted.map((t) => (
             <TestRow key={t.symbol} t={t} />
           ))}
         </ul>
+      ) : entryOnly.length > 0 ? (
+        <p data-testid="traceability-entry-point-only" className="text-sm text-muted-foreground">
+          No test checks this requirement directly. The tests below only call shared setup code. Map
+          the requirement to the code that implements it, or add a test for it.
+        </p>
       ) : hasCode ? (
         <p data-testid="traceability-no-test" className="text-sm text-muted-foreground">
           No linked test
@@ -116,6 +127,18 @@ function TestedBy({
           No code mapped yet, so tests can&apos;t be linked
         </p>
       )}
+      {entryOnly.length > 0 ? (
+        <div data-testid="traceability-entry-point-tests" className="space-y-1">
+          <h5 className="text-xs font-medium text-muted-foreground">
+            {`Only calls shared setup code (${entryOnly.length}), not counted`}
+          </h5>
+          <ul className="rounded-md border border-dashed p-2">
+            {entryOnly.map((t) => (
+              <TestRow key={t.symbol} t={t} />
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </section>
   );
 }

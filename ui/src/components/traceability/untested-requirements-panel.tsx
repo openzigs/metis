@@ -107,8 +107,9 @@ export function UntestedRequirementsPanel({
                     data-testid="untested-entry-point-only"
                     className="text-xs text-muted-foreground"
                   >
-                    Tested only through a shared entry point: its tests call code that many tests
-                    call, and none of them is about this requirement.
+                    Tested only through a shared entry point: its linked tests only call setup code
+                    that many tests use, and none of the tests mention this requirement&apos;s
+                    terms. Map it to the code that implements it, or add a test for it.
                   </p>
                 ) : null}
               </li>

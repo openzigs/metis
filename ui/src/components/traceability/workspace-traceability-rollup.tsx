@@ -9,9 +9,10 @@
  * scopes everything to the caller's accessible projects, so this component just
  * renders whatever the summary endpoint returns.
  *
- * #816 — a Tested column shows `testCoverage` (any "Tested by" relation, #815)
- * over the requirements that have mapped code; its tooltip gives the strict
- * figure (direct + exercises only) and names that denominator.
+ * #816 — a Tested column shows `testCoverage` (any "Tested by" relation but a
+ * shared entry point, #815, #1108) over the requirements that have mapped code;
+ * its tooltip gives the strict figure (direct + exercises only) and names that
+ * denominator.
  */
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";

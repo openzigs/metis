@@ -319,19 +319,73 @@ function nameTokens(name: string): string[] {
 }
 
 /**
- * The words of an identifier or sentence, split at every case, digit and
- * underscore boundary (`OAuth2UserCreation`, `OAUTH2_USER_CREATION` and
- * "oauth2 user creation" all give `oauth2 user creation`). Used only by the hub
- * relevance check (#860), which compares requirement words against names;
+ * The raw lower-case tokens of an identifier or sentence, split at every case,
+ * digit and underscore boundary (`OAuth2UserCreation`, `OAUTH2_USER_CREATION`
+ * and "oauth2 user creation" all give `oauth2 user creation`).
  * `tokenizeCodeRoots` keeps `snake_case` whole and so cannot.
  */
-function words(text: string): Set<string> {
-  const split = text
+function rawTokens(text: string): string[] {
+  return text
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
     .toLowerCase()
-    .split(/[^a-z0-9]+/);
-  return new Set(split.filter((w) => w.length >= MIN_SUBJECT_LENGTH && !TEST_NAME_TOKENS.has(w)));
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length > 0);
+}
+
+/** Letters whose doubling an `-ing`/`-ed` strip leaves behind (`running` → `run`). */
+const UNDOUBLE = /([^aeiouslz])\1$/;
+
+/**
+ * A light, deterministic stem (#1108 review): plural, then `-ing`/`-ed`, then a
+ * final `e`, so "Parsing feeds", `TestParseFeedRSS` and `parsed` all meet at
+ * `pars feed`. Not a linguistic stemmer: it only has to send a title's words and
+ * an identifier's words to the same key, and both sides go through it.
+ */
+export function stemWord(word: string): string {
+  let w = word;
+  if (w.length > 4 && w.endsWith("ies")) w = `${w.slice(0, -3)}y`;
+  else if (w.length > 4 && /(ches|shes|xes|sses|zes)$/.test(w)) w = w.slice(0, -2);
+  else if (w.length > 3 && w.endsWith("s") && !/(ss|us|is)$/.test(w)) w = w.slice(0, -1);
+  if (w.length > 5 && w.endsWith("ing")) w = w.slice(0, -3).replace(UNDOUBLE, "$1");
+  else if (w.length > 4 && w.endsWith("ed")) w = w.slice(0, -2).replace(UNDOUBLE, "$1");
+  if (w.length > 3 && w.endsWith("e")) w = w.slice(0, -1);
+  return w;
+}
+
+/**
+ * The stemmed words of an identifier or sentence (see {@link rawTokens},
+ * {@link stemWord}). Used by the title-word checks (#860, #955, #1108), which
+ * compare requirement words against names.
+ */
+function words(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const raw of rawTokens(text)) {
+    if (TEST_NAME_TOKENS.has(raw)) continue;
+    const w = stemWord(raw);
+    if (w.length >= MIN_SUBJECT_LENGTH && !TEST_NAME_TOKENS.has(w)) out.add(w);
+  }
+  return out;
+}
+
+/** Shortest folded callee name a test name can be said to name (`Get` cannot, #1108 review). */
+const MIN_NAMED_CALLEE_LENGTH = 4;
+
+/**
+ * True when the test's name NAMES the callee: the callee's tokens appear, in
+ * order and contiguous, among the test name's tokens (`TestFeedScheduleNextCheck…`
+ * names `ScheduleNextCheck`; `TestTargetURL` does not name `Get`). A callee
+ * shorter than {@link MIN_NAMED_CALLEE_LENGTH} folded is never named.
+ */
+export function namesCallee(testName: string, calleeName: string): boolean {
+  if (fold(calleeName).length < MIN_NAMED_CALLEE_LENGTH) return false;
+  const callee = rawTokens(calleeName);
+  const test = rawTokens(testName);
+  if (callee.length === 0) return false;
+  for (let i = 0; i + callee.length <= test.length; i++) {
+    if (callee.every((tok, j) => test[i + j] === tok)) return true;
+  }
+  return false;
 }
 
 /**
@@ -654,17 +708,16 @@ interface ResolveRules {
  * else (`NewHandler`: 5 test callers, 3 of them `TestGetEntryIDsHandler…`). A
  * callee its callers name is their subject however many there are
  * (`ScheduleNextCheck`: 11 callers, every one `TestFeedScheduleNextCheck…`).
- * "Names it" is containment, not {@link matchTestSubject}'s prefix rule: a graph
- * ingested before #1071 stores that method as `feed.go::ScheduleNextCheck`, with
- * no `Feed` for the test's prefix to match. Counted on the ingest's edges only,
- * like the hub guard.
+ * "Names it" is {@link namesCallee}'s token match anywhere in the test name, not
+ * {@link matchTestSubject}'s prefix rule: a graph ingested before #1071 stores
+ * that method as `feed.go::ScheduleNextCheck`, with no `Feed` for the test's
+ * prefix to match. Counted on the ingest's edges only, like the hub guard.
  */
 function isSharedEntryPoint(ts: SymbolRow, graph: GraphRows, threshold: number): boolean {
   const callers = new Map((graph.edgesInto.get(ts.id) ?? []).map((s) => [s.id, s]));
   if (callers.size < threshold) return false;
-  const callee = fold(ts.name);
   let unnamed = 0;
-  for (const from of callers.values()) if (!fold(from.name).includes(callee)) unnamed++;
+  for (const from of callers.values()) if (!namesCallee(from.name, ts.name)) unnamed++;
   return unnamed * 2 > callers.size;
 }
 
@@ -764,8 +817,10 @@ function resolveOne(
     // #1108 — a shared entry point (a constructor or router the tests build to
     // reach something else) says nothing about one requirement: a link through
     // it that is not about the requirement is reported, never counted.
+    // A test that NAMES the callee is a test of it (`TestParseFeedRSS` of
+    // `ParseFeed`) and keeps its relation, title words or not (#1108 review).
     const throughEntryPoint = (from: SymbolRow, ts: SymbolRow): boolean =>
-      entryPoint(ts) && !about(from, ts);
+      entryPoint(ts) && !about(from, ts) && !namesCallee(from.name, ts.name);
     const offerCalls = (
       calls: ReadonlyArray<{ from: SymbolRow; ts: SymbolRow }>,
       relation: TestLinkRelation,

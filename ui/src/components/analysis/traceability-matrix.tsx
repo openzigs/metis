@@ -21,7 +21,10 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { CoverageBadge } from "@/components/analysis/CoverageBadge";
 import { VerdictBadge } from "@/components/analysis/VerdictBadge";
-import { TEST_RELATION_LABEL } from "@/components/traceability/test-relation";
+import {
+  TEST_RELATION_DESCRIPTION,
+  TEST_RELATION_LABEL,
+} from "@/components/traceability/test-relation";
 
 interface Props {
   projectId: string;
@@ -180,11 +183,12 @@ export function TraceabilityMatrix({
                         {row.tests.map((t) => {
                           // #816 — how the resolver linked the test, when it says.
                           const relation = t.relation ? TEST_RELATION_LABEL[t.relation] : null;
+                          const meaning = t.relation ? TEST_RELATION_DESCRIPTION[t.relation] : null;
                           return (
                             <li
                               key={`${t.filePath}:${t.symbol}`}
                               className="text-foreground"
-                              title={relation ?? undefined}
+                              title={relation && meaning ? `${relation}: ${meaning}` : undefined}
                             >
                               <span className="font-mono">{t.filePath}</span>
                               {relation ? (

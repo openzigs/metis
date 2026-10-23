@@ -12,6 +12,7 @@ import {
   buildTraceabilityMatrix,
   escapeMarkdownCell,
   formatCodeLocationCell,
+  formatTestsCell,
   isDocumentationFilePath,
   isTestFilePath,
   serializeTraceabilityCsv,
@@ -343,6 +344,35 @@ describe("serializeTraceabilityMarkdown", () => {
 describe("escapeMarkdownCell", () => {
   it("escapes backslashes, pipes, and newlines", () => {
     expect(escapeMarkdownCell("a\\b|c\r\nd")).toBe("a\\\\b\\|c<br>d");
+  });
+});
+
+describe("formatTestsCell (#1108 review)", () => {
+  const t = (symbol: string, relation?: TraceabilityTestLink["relation"]) => ({
+    filePath: "internal/api/api_test.go",
+    symbol,
+    relation,
+  });
+
+  it("does not count an entry-point test, and says so", () => {
+    expect(
+      formatTestsCell([t("TestFeedCounters", "exercises"), t("TestGetEntryIDs", "entry-point")]),
+    ).toBe(
+      "internal/api/api_test.go::TestFeedCounters; not counted, only calls a shared entry point: internal/api/api_test.go::TestGetEntryIDs",
+    );
+  });
+
+  it("reads none detected when every link is through a shared entry point", () => {
+    expect(formatTestsCell([t("TestA", "entry-point"), t("TestB", "entry-point")])).toBe(
+      "none detected; not counted, only calls a shared entry point: internal/api/api_test.go::TestA, internal/api/api_test.go::TestB",
+    );
+  });
+
+  it("is unchanged when there is no entry-point link", () => {
+    expect(formatTestsCell([t("TestA", "naming"), t("TestB")])).toBe(
+      "internal/api/api_test.go::TestA; internal/api/api_test.go::TestB",
+    );
+    expect(formatTestsCell([])).toBe("none detected");
   });
 });
 

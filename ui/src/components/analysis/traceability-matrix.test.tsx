@@ -111,7 +111,10 @@ describe("TraceabilityMatrix", () => {
     const row = await screen.findByTestId("traceability-row-req-1");
     const withRelation = within(row).getByText("server/src/auth.test.ts").closest("li");
     expect(withRelation).toHaveTextContent("server/src/auth.test.ts · Calls the code");
-    expect(withRelation).toHaveAttribute("title", "Calls the code");
+    expect(withRelation).toHaveAttribute(
+      "title",
+      "Calls the code: This test calls the code mapped to this requirement.",
+    );
     // #1034 — a call bound by name after ingest says so.
     const inferred = within(row).getByText("internal/api/user_test.go").closest("li");
     expect(inferred).toHaveTextContent("internal/api/user_test.go · Inferred call");

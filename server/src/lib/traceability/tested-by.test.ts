@@ -1114,9 +1114,12 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
 
   it("keeps a foreign caller whose TEST name shares two title words", async () => {
     const { deps: d } = deps(minifluxFixture(constructorRow, "Invidious video link rewriting"));
-    // Two of `invidious`, `video`, `link`; `TestInvidiousIFrame` and
+    // Two of `invidious`, `video`, `link`, `rewrit` (stemmed, #1435 review: so the
+    // `TestRewrite…Link` tests now count); `TestInvidiousIFrame` and
     // `TestAddYoutubeVideoFromId` share one each.
     expect(await names(d)).toEqual([
+      "TestRewriteIncorrectYoutubeLink",
+      "TestRewriteYoutubeShortLink",
       "TestRewriteYoutubeShortLinkUsingInvidious",
       "TestRewriteYoutubeVideoLink",
       "TestRewriteYoutubeVideoLinkUsingInvidious",
@@ -1627,19 +1630,46 @@ describe("resolveTestedBy — a shared entry point is not evidence (#1108)", () 
       deps(f, extra).deps,
     );
 
-  it("reports every NewHandler test of the two run-7 router requirements as entry-point", async () => {
+  // The same router with its two own tests swapped for two more setup callers:
+  // all five callers build NewHandler to reach another handler.
+  const setupOnlyFixture = (titles: string[]): Fixture => {
+    const f = routerFixture(titles);
+    f.symbols = f.symbols!.map((s) =>
+      s.id === "t-api-3"
+        ? { ...s, name: "TestVersionRouteRequiresAuthentication" }
+        : s.id === "t-api-4"
+          ? { ...s, name: "TestPreflightRequests" }
+          : s,
+    );
+    return f;
+  };
+  const relations = (tests: Array<{ name: string; relation: string }>) =>
+    Object.fromEntries(tests.map((t) => [t.name, t.relation]));
+
+  it("demotes the run-7 setup callers and keeps NewHandler's own two tests (review)", async () => {
+    // Since the #1435 review a test that NAMES the callee keeps its relation, so
+    // the two TestNewHandler… tests still count: the run-7 router requirements
+    // are strictly tested through them, and only the three
+    // TestGetEntryIDsHandler… tests are demoted.
     const out = await all(routerFixture(ROUTER_TITLES));
     for (const id of ["r0", "r1"]) {
-      const tests = out.get(id)!;
-      expect(tests).toHaveLength(5);
-      expect(new Set(tests.map((t) => t.relation))).toEqual(new Set(["entry-point"]));
-      expect(tests[0].subject).toEqual({ filePath: API, symbol: `${API}::NewHandler` });
-      expect(tests[0].score).toBeLessThanOrEqual(0.4);
+      expect(relations(out.get(id)!)).toEqual({
+        TestNewHandlerHandlesOptionsRequests: "exercises",
+        TestNewHandlerSupportsBasePathStripping: "exercises",
+        TestGetEntryIDsHandlerRequiresAuthentication: "entry-point",
+        TestGetEntryIDsHandlerRejectsInvalidStarredParam: "entry-point",
+        TestGetEntryIDsHandlerRejectsInvalidStatusParam: "entry-point",
+      });
+      const demoted = out.get(id)!.find((t) => t.relation === "entry-point")!;
+      expect(demoted.subject).toEqual({ filePath: API, symbol: `${API}::NewHandler` });
+      expect(demoted.score).toBeLessThanOrEqual(0.4);
     }
   });
 
-  it("lists them as entry-point-only: not tested, and not silently untested", async () => {
-    const { deps: d } = deps(routerFixture(ROUTER_TITLES));
+  it("lists a requirement reached only by setup callers as entry-point-only", async () => {
+    const out = await all(setupOnlyFixture(ROUTER_TITLES));
+    expect(new Set(out.get("r0")!.map((t) => t.relation))).toEqual(new Set(["entry-point"]));
+    const { deps: d } = deps(setupOnlyFixture(ROUTER_TITLES));
     const gaps = await listUntestedRequirements(P, undefined, d);
     expect(gaps.tested).toBe(0);
     expect(gaps.untested.map((g) => [g.requirementId, g.reason])).toEqual([
@@ -1659,40 +1689,112 @@ describe("resolveTestedBy — a shared entry point is not evidence (#1108)", () 
     expect(gaps).toMatchObject({ tested: 3, untested: [] });
   });
 
-  it("keeps a test of the entry point whose name is about the requirement", async () => {
-    const out = (await all(routerFixture(["Base path stripping"]))).get("r0")!;
-    expect(out[0]).toMatchObject({
-      name: "TestNewHandlerSupportsBasePathStripping",
-      relation: "exercises",
+  it("keeps a setup caller whose name is about the requirement", async () => {
+    const out = (await all(setupOnlyFixture(["Reject invalid entry query params"]))).get("r0")!;
+    // `reject` and `invalid` rescue the two param tests; the others share at most one word.
+    expect(relations(out)).toEqual({
+      TestGetEntryIDsHandlerRequiresAuthentication: "entry-point",
+      TestGetEntryIDsHandlerRejectsInvalidStarredParam: "exercises",
+      TestGetEntryIDsHandlerRejectsInvalidStatusParam: "exercises",
+      TestVersionRouteRequiresAuthentication: "entry-point",
+      TestPreflightRequests: "entry-point",
     });
-    expect(out.slice(1).every((t) => t.relation === "entry-point")).toBe(true);
   });
 
-  it("demotes a naming match to the entry point the same way", async () => {
-    // The two TestNewHandler… tests make no call here: they reach the
-    // requirement only by being named for NewHandler, in its sibling test file.
-    const f = routerFixture(ROUTER_TITLES);
-    f.symbols!.push(
-      sym("t-more-0", API_TEST, "TestAlphaRoute", { startLine: 300 }),
-      sym("t-more-1", API_TEST, "TestBetaRoute", { startLine: 320 }),
-    );
-    f.edges = [
-      ...routerEdges.slice(0, 3),
-      callsNewHandler("t-more-0"),
-      callsNewHandler("t-more-1"),
-    ];
+  it("keeps ParseFeed's own tests whatever the title; stems 'Parsing feeds' (review)", async () => {
+    // The reviewer's case: ParseFeed is built by format tests not named for it,
+    // and two tests that are.
+    const PARSER = "internal/reader/parser/parser.go";
+    const PARSER_TEST = "internal/reader/parser/parser_test.go";
+    const callers = [
+      "TestParseAtom03Feed",
+      "TestParseAtom10Feed",
+      "TestParseRSSFeed",
+      "TestParseRDFFeed",
+      "TestParseJSONFeed",
+      "TestParseUnknownFeed",
+      "TestParseFeedRSS",
+      "TestParseFeedAtom",
+    ].map((name, i) => sym(`t-pf-${i}`, PARSER_TEST, name, { startLine: 10 + 20 * i }));
+    const f: Fixture = {
+      requirements: [req("r0", "Parsing feeds"), req("r1", "Support syndication formats")],
+      codeMappings: [fileMap("r0", PARSER, "p-feed"), fileMap("r1", PARSER, "p-feed")],
+      symbols: [sym("p-feed", PARSER, "ParseFeed", { startLine: 20 }), ...callers],
+      edges: callers.map((c) => ({
+        projectId: P,
+        kind: "calls",
+        fromSymbolId: c.id,
+        toSymbolId: "p-feed",
+      })),
+    };
+    const out = await all(f);
+    // "Parsing feeds" stems to `pars feed`, so every caller is about it.
+    expect(new Set(out.get("r0")!.map((t) => t.relation))).toEqual(new Set(["exercises"]));
+    const r1 = relations(out.get("r1")!);
+    expect(r1.TestParseFeedRSS).toBe("exercises");
+    expect(r1.TestParseFeedAtom).toBe("exercises");
+    expect(r1.TestParseAtom03Feed).toBe("entry-point");
+  });
+
+  it("demotes a naming match to a short-named entry point the same way", async () => {
+    // `Run` is too short to be named by a test name (#1435 review), so a sibling
+    // test named for it is judged like any setup caller.
+    const POOL = "internal/worker/pool.go";
+    const POOL_TEST = "internal/worker/pool_test.go";
+    const setup = ["TestAlphaJob", "TestBetaJob", "TestGammaJob", "TestDeltaJob", "TestEpsilonJob"];
+    const f: Fixture = {
+      requirements: [req("r0", "Feed counters endpoint")],
+      codeMappings: [fileMap("r0", POOL, "w-run")],
+      symbols: [
+        sym("w-run", POOL, "Run", { startLine: 20 }),
+        ...setup.map((n, i) => sym(`t-w-${i}`, POOL_TEST, n, { startLine: 100 + 20 * i })),
+        sym("t-w-named", POOL_TEST, "TestRunDrainsQueue", { startLine: 400 }),
+      ],
+      edges: setup.map((_, i) => ({
+        projectId: P,
+        kind: "calls",
+        fromSymbolId: `t-w-${i}`,
+        toSymbolId: "w-run",
+      })),
+    };
     const out = (await all(f)).get("r0")!;
-    const named = out.filter((t) => t.name.startsWith("TestNewHandler"));
-    expect(named.map((t) => t.relation)).toEqual(["entry-point", "entry-point"]);
+    expect(out.find((t) => t.name === "TestRunDrainsQueue")?.relation).toBe("entry-point");
     expect(out.every((t) => t.relation === "entry-point")).toBe(true);
+  });
+
+  it("does not read `Get` as named by TestTargetURL: whole tokens only (review)", async () => {
+    const H = "internal/http/client.go";
+    const HT = "internal/http/client_test.go";
+    const callers = [
+      "TestTargetURL",
+      "TestBudgetLimit",
+      "TestWidgetRender",
+      "TestGadgetList",
+      "TestForgetPassword",
+    ].map((n, i) => sym(`t-g-${i}`, HT, n, { startLine: 10 + 20 * i }));
+    const f: Fixture = {
+      requirements: [req("r0", "Feed counters endpoint")],
+      codeMappings: [fileMap("r0", H, "h-get")],
+      symbols: [sym("h-get", H, "Get", { startLine: 5 }), ...callers],
+      edges: callers.map((c) => ({
+        projectId: P,
+        kind: "calls",
+        fromSymbolId: c.id,
+        toSymbolId: "h-get",
+      })),
+    };
+    // Substring containment would call every one of them "named" for `Get`, so
+    // `Get` would never be an entry point.
+    const out = (await all(f)).get("r0")!;
+    expect(out.map((t) => t.relation)).toEqual(Array(5).fill("entry-point"));
   });
 
   it("is an entry point at exactly DEFAULT_TESTED_BY_ENTRY_POINT_MIN_TEST_CALLERS (5) callers", async () => {
     expect(DEFAULT_TESTED_BY_ENTRY_POINT_MIN_TEST_CALLERS).toBe(5);
-    const at = (await all(routerFixture(ROUTER_TITLES))).get("r0")!;
+    const at = (await all(setupOnlyFixture(ROUTER_TITLES))).get("r0")!;
     expect(at.every((t) => t.relation === "entry-point")).toBe(true);
     // One more caller required than NewHandler has: every call counts again.
-    const above = (await all(routerFixture(ROUTER_TITLES), { entryPointMinTestCallers: 6 })).get(
+    const above = (await all(setupOnlyFixture(ROUTER_TITLES), { entryPointMinTestCallers: 6 })).get(
       "r0",
     )!;
     expect(above.map((t) => t.relation)).toEqual(Array(5).fill("exercises"));
@@ -1724,7 +1826,7 @@ describe("resolveTestedBy — a shared entry point is not evidence (#1108)", () 
   it("demotes an inferred call into the entry point too", async () => {
     // A same-package test calling `h.NewHandler(…)` that ingest left unresolved:
     // bound by name, then judged like the ingest's own five callers.
-    const f = routerFixture(["Feed counters endpoint"]);
+    const f = setupOnlyFixture(["Feed counters endpoint"]);
     f.symbols!.push(sym("t-inferred", API_TEST, "TestCountersRoute", { startLine: 500 }));
     f.edges!.push({
       projectId: P,

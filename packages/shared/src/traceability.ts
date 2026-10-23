@@ -380,9 +380,15 @@ export interface WorkspaceProjectTraceability {
    * drag them down.
    */
   codeMappedRequirements: number;
-  /** #815 — fraction (0–1) of `codeMappedRequirements` with ≥1 `testedBy` of any relation. */
+  /**
+   * #815 — fraction (0–1) of `codeMappedRequirements` with ≥1 `testedBy` link of
+   * any relation except `entry-point` (#1108), which does not count as tested.
+   */
   testCoverage: number;
-  /** #815 — as `testCoverage`, counting only `direct` and `exercises` links (not `naming`). */
+  /**
+   * #815 — as `testCoverage`, counting only `direct` and `exercises` links (not
+   * `naming`, `inferred-call` or `entry-point`).
+   */
   strictTestCoverage: number;
 }
 
