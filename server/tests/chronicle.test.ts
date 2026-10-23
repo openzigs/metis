@@ -37,7 +37,12 @@ vi.mock("../src/lib/prisma.js", () => ({
     chronicleEntry: {
       findFirst: vi.fn(
         async ({ where }: { where: { id?: string; projectId?: string; key?: string } }) => {
-          if (where.id) return entries.get(where.id) ?? null;
+          if (where.id) {
+            const r = entries.get(where.id) ?? null;
+            // Honour a projectId alongside the id, as Prisma does (#1429).
+            if (r && where.projectId !== undefined && r.projectId !== where.projectId) return null;
+            return r;
+          }
           for (const r of entries.values()) {
             if (r.projectId === where.projectId && r.key === where.key) return r;
           }
@@ -213,15 +218,26 @@ describe("getEntries / purgeExpired", () => {
 
 describe("forgetEntry", () => {
   it("returns false on unknown id", async () => {
-    expect(await forgetEntry("nope")).toBe(false);
+    expect(await forgetEntry("p1", "nope")).toBe(false);
   });
 
   it("deletes a known entry", async () => {
     projects.set("p1", { chronicleEnabled: true, chronicleTtlDays: 7, deletedAt: null });
     const entry = await recordEntry("p1", "k", "v");
     expect(entry).not.toBeNull();
-    expect(await forgetEntry(entry!.id, { id: "actor1" })).toBe(true);
+    expect(await forgetEntry("p1", entry!.id, { id: "actor1" })).toBe(true);
     expect(entries.size).toBe(0);
+  });
+
+  it("#1429 — refuses another project's entry exactly like an unknown id, and keeps it", async () => {
+    projects.set("p1", { chronicleEnabled: true, chronicleTtlDays: 7, deletedAt: null });
+    projects.set("p2", { chronicleEnabled: true, chronicleTtlDays: 7, deletedAt: null });
+    const theirs = await recordEntry("p2", "k", "v");
+    expect(await forgetEntry("p1", theirs!.id, { id: "actor1" })).toBe(false);
+    expect(entries.has(theirs!.id)).toBe(true);
+    // Positive control: the same id under its own project is deleted.
+    expect(await forgetEntry("p2", theirs!.id)).toBe(true);
+    expect(entries.has(theirs!.id)).toBe(false);
   });
 });
 
