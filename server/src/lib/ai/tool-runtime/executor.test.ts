@@ -338,6 +338,37 @@ describe("executeToolCall — the gate runs before execute, on every path", () =
   });
 });
 
+describe("unavailableNow (#1005) — refused before anyone is asked", () => {
+  it("a tool that can no longer run is refused as TOOL_UNAVAILABLE; no prompt, no execute, audited", async () => {
+    const ask = vi.fn(async () => true);
+    const t = tool({ unavailableNow: async () => "Error: turned off here." });
+    const { out, events } = await run(t, gate(ALWAYS, { ask }));
+    expect(ask).not.toHaveBeenCalled();
+    expect(t.execute).not.toHaveBeenCalled();
+    expect(out).toMatchObject({
+      executed: false,
+      isError: true,
+      errorCode: "TOOL_UNAVAILABLE",
+      text: "Error: turned off here.",
+    });
+    expect(events.at(-1)).toMatchObject({ phase: "error", code: "TOOL_UNAVAILABLE" });
+    expect(auditCalls[0]).toMatchObject({
+      metadata: { outcome: "TOOL_UNAVAILABLE", executed: false },
+    });
+  });
+
+  it("an available tool, or an unreadable availability, goes to the gate as before", async () => {
+    const available = tool({ unavailableNow: async () => null });
+    expect((await run(available, gate(ALL_AUTO))).out.executed).toBe(true);
+    const unreadable = tool({
+      unavailableNow: async () => {
+        throw new Error("db down");
+      },
+    });
+    expect((await run(unreadable, gate(ALL_AUTO))).out.executed).toBe(true);
+  });
+});
+
 describe("prompt-once is remembered per SESSION (across turns)", () => {
   it("a person's earlier approval in this session is remembered by a new gate", async () => {
     const policy: ApprovalPolicy = { low: "auto", medium: "prompt-once", high: "always-prompt" };
