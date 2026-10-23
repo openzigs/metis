@@ -172,6 +172,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ],
       });
       await db.requirementCodeMapping.create({ data: mapTo(MIXED, "mixed-imp-mapped") });
+      // A deleted requirement whose mapping row survived: in neither count.
+      await db.requirement.create({
+        data: {
+          id: "mixed-deleted",
+          projectId: MIXED,
+          analysisId: mixed.analysedRun,
+          title: "Deleted",
+          body: "",
+          deletedAt: new Date(),
+        },
+      });
+      await db.requirementCodeMapping.create({ data: mapTo(MIXED, "mixed-deleted") });
 
       // Nothing but unapproved imports.
       const only = await makeProject(IMPORTS_ONLY);
@@ -211,6 +223,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(row.analysedRequirements).toBe(2);
       // The mapped import is in both the numerator and the denominator.
       expect(row.codeCoverage).toBe(0.5);
+    });
+
+    it("the scope preview is for review administrators only", async () => {
+      const reader = issueTokens({
+        userId: USER,
+        username: USER,
+        role: "reader",
+        permissions: [],
+        workspaces: [WS],
+      }).accessToken;
+      const res = await request(app())
+        .get(`/api/projects/${RUN8}/baselines/scope`)
+        .set("Authorization", `Bearer ${reader}`);
+      expect(res.status).toBe(403);
     });
 
     it("New baseline previews the 19 it pins and the 266 imported it leaves out", async () => {
