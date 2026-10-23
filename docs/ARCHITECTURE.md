@@ -5816,6 +5816,7 @@ the same `postgres`-scheme check, with a SQLite-safe fallback.
 |---|---|---|---|
 | **User** | `users` | User accounts | Stores username, display name, email, role, last login; `authSource` = the provider kind the account belongs to (#1395) |
 | **UserIdentity** | `user_identities` | Sign-in identities (#1395) | (provider, issuer, subject) unique, bound to one user. Every login resolves its account by this key first; a username held by another provider's identity is refused with 409 `ACCOUNT_LINK_REQUIRED` (`server/src/lib/auth/login-identity.ts`) |
+| **TeamsUserIdentity** / **SlackUserIdentity** | `teams_user_identities` / `slack_user_identities` | ChatOps sender bindings | A chat account bound to a METIS user within one workspace, unique on (workspaceId, external key) since #1431. A binding may name only an active member of its workspace (a system-admin member only for a system-admin caller), and resolves only for that workspace's bot while the user is still a member (`server/src/lib/workspaces/chatops-identity-scope.ts`) |
 | **Session** | `sessions` | Auth sessions | Stores JWT tokens with expiration, linked to user |
 | **Project** | `projects` | Analysis projects | Name, description, status, GitHub repo link, linked to creator |
 | **Document** | `documents` | Uploaded files | Filename, type, size, storage path, linked to project + uploader |

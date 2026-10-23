@@ -3481,6 +3481,15 @@ see a read-only view.
 Secrets are managed server-side (see §17 Vault); this page never displays the
 Slack bot token or PagerDuty routing key.
 
+**Linking chat accounts to METIS users.** `/metis` commands in Teams or Slack run
+as the METIS user the sender's chat account is linked to. A workspace admin can
+link an account only to a **member of that workspace**. Linking someone outside
+it fails with the same "no matching user" error as an unknown user. A member who
+is a system admin can be linked only by a system admin. Each workspace keeps its
+own links, so linking a person in your workspace never changes another
+workspace's link. If a linked user later leaves the workspace, their commands are
+refused as "Account not linked" until an admin links the account again (#1431).
+
 ### 20.6 Vault (`/vault`)
 
 Linked from the hub. Full coverage in §17.

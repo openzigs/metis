@@ -192,7 +192,13 @@ async function preflight(
   actor: SlackActorContext,
   deps: SlackCommandDeps,
 ): Promise<{ ok: true; userId: string; role: RoleKey } | { ok: false; reply: SlackReply }> {
-  const resolved = await deps.resolver.resolveUserFromSlackId(actor.slackTeamId, actor.slackUserId);
+  // Workspace-scoped (#1431): only the install workspace's binding, naming a user
+  // who is still a member of it — a binding to anyone else is refused as unlinked.
+  const resolved = await deps.resolver.resolveUserFromSlackId(
+    actor.slackTeamId,
+    actor.slackUserId,
+    actor.workspaceId,
+  );
   if (!resolved) {
     return {
       ok: false,

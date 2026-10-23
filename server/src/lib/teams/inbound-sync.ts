@@ -268,6 +268,7 @@ export async function ingestTeamsActivity(
   const user: ResolvedMetisUser | null = await deps.identityResolver.resolveUserFromAadObjectId(
     tenantId,
     aadObjectId,
+    deps.workspaceId,
   );
 
   if (!user) {

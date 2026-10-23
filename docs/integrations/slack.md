@@ -142,6 +142,22 @@ matched (case-insensitively) against `User.email`. An unmapped Slack user is
 **refused** — never silently attributed. Bindings are team-scoped, so a user id
 from another team can never resolve to a local user.
 
+Bindings are also workspace-scoped (#1431), with the same rules as Teams: the
+target must be an active member of the binding's workspace (email matching
+searches only its members), a system-admin member only for a system-admin
+caller, and the key is `(workspaceId, slackTeamId, slackUserId)`, so one
+workspace can neither overwrite nor unlink another's binding. At command time
+the sender resolves only through the install workspace's binding and only while
+the user is still a member of it; otherwise the command is refused as unlinked.
+There is no HTTP link route for Slack today.
+
+**Upgrade note (#1431), for operators:** after upgrading, two kinds of sender see
+"Account not linked" until they are linked again in that workspace: people
+linked only in another workspace, and links that name someone who is not a
+member. Also review existing `slack_user_identities` rows whose `userId` holds
+the `admin` role. They predate the system-admin rule, which applies only when a
+link is made, so they still resolve.
+
 ---
 
 ## Commands

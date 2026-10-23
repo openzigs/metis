@@ -39,8 +39,10 @@ vi.mock("../../lib/prisma.js", () => ({
 
 // canAccessThread is the member-only gate; drive it deterministically.
 let threadAccess:
-  | { ok: true; projectId: string }
-  | { ok: false; reason: "not_found" | "forbidden" } = { ok: true, projectId: "pr-1" };
+  { ok: true; projectId: string } | { ok: false; reason: "not_found" | "forbidden" } = {
+  ok: true,
+  projectId: "pr-1",
+};
 vi.mock("../../lib/discussions/access.js", () => ({
   canAccessThread: vi.fn(async () => threadAccess),
 }));
@@ -262,18 +264,34 @@ describe("Teams link + identity routes (#549)", () => {
 
     it("returns 404 AAD_USER_UNMAPPED when no METIS user matches (never silently attributed)", async () => {
       const resolver = stubResolver({
-        linkByEmail: vi.fn(
-          async (): Promise<LinkOutcome> => ({
-            ok: false,
-            reason: "no_matching_user",
-          }),
-        ),
+        linkByEmail: vi.fn(async (): Promise<LinkOutcome> => ({
+          ok: false,
+          reason: "no_matching_user",
+        })),
       });
       const res = await request(createApp(stubLinkStore(), resolver))
         .post("/api/integrations/teams/workspaces/ws-1/identities")
         .send({ tenantId: "tenant-a", aadObjectId: "aad-1", email: "ghost@corp.com" });
       expect(res.status).toBe(404);
       expect(res.body.error.code).toBe("AAD_USER_UNMAPPED");
+    });
+
+    it("#1431 — scopes the bind to the route's workspace; a system-admin target needs a system-admin caller", async () => {
+      const resolver = stubResolver();
+      await request(createApp(stubLinkStore(), resolver))
+        .post("/api/integrations/teams/workspaces/ws-1/identities")
+        .send({ tenantId: "tenant-a", aadObjectId: "aad-1", userId: "u-alice" });
+      expect(resolver.linkExplicit).toHaveBeenLastCalledWith(
+        expect.objectContaining({ workspaceId: "ws-1", allowSystemAdminTarget: false }),
+      );
+
+      currentUser = { userId: "u-root", role: "admin" };
+      await request(createApp(stubLinkStore(), resolver))
+        .post("/api/integrations/teams/workspaces/ws-1/identities")
+        .send({ tenantId: "tenant-a", aadObjectId: "aad-1", email: "alice@corp.com" });
+      expect(resolver.linkByEmail).toHaveBeenLastCalledWith(
+        expect.objectContaining({ workspaceId: "ws-1", allowSystemAdminTarget: true }),
+      );
     });
 
     it("requires either email or userId → 400", async () => {

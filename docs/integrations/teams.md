@@ -124,8 +124,9 @@ Phase 1 (#549) adds two more (same durable-data choice):
   Teams channel within a workspace. Holds `threadId`, denormalized `projectId`
   (for authz), `conversationId`, `channelId`, `tenantId`, `status`.
 - **`TeamsUserIdentity`** (`teams_user_identities`) — binds a Teams sender's
-  `(tenantId, aadObjectId)` to a METIS `userId` (plus the `email` captured at
-  bind time, for provenance).
+  `(tenantId, aadObjectId)` to a METIS `userId` within one workspace (plus the
+  `email` captured at bind time, for provenance). Unique on
+  `(workspaceId, tenantId, aadObjectId)` since #1431.
 
 Phase 2 (#550) adds one column (no new model):
 
@@ -156,7 +157,7 @@ Phase 2 (#550) adds one column (no new model):
 
 ### AAD → METIS user mapping
 
-`resolveUserFromAadObjectId(tenantId, aadObjectId)` →
+`resolveUserFromAadObjectId(tenantId, aadObjectId, workspaceId)` →
 `server/src/lib/teams/aad-identity-resolver.ts`.
 
 METIS SSO has **no stored external-subject id**: both OIDC and SAML map an
@@ -174,10 +175,35 @@ is just a Teams-side cache of "this AAD subject is that METIS user".
   `{ tenantId, aadObjectId, email }` (SSO email match) **or**
   `{ tenantId, aadObjectId, userId }` (explicit). No active matching user →
   `404 AAD_USER_UNMAPPED`.
-- **Cross-tenant isolation (OWASP A01):** the binding key is
-  `(tenantId, aadObjectId)` and the resolver **requires a non-empty `tenantId`**,
-  so an `aadObjectId` from a different tenant can never resolve to a local user,
-  and a tenant-less sender resolves to `null`.
+- **Members of the workspace only (#1431, OWASP A01):** the target must be an
+  active member of `:workspaceId`; linking by email searches only that
+  workspace's members. A non-member gets the same `404 AAD_USER_UNMAPPED` as an
+  unknown user, so the route never reveals whether someone exists elsewhere.
+  A system admin is bindable only if a member, and then only by a caller who is
+  a system admin too — a workspace admin cannot pick up platform-wide rights
+  through a Teams account. Rules: `server/src/lib/workspaces/chatops-identity-scope.ts`.
+- **One binding per workspace (#1431):** the key is
+  `(workspaceId, tenantId, aadObjectId)`. Two workspaces can each bind the same
+  person; a link or unlink only ever touches the caller's workspace's row, so
+  one workspace can neither overwrite nor remove another's binding.
+- **Command time (#1431):** the resolver looks the sender up in the bot's own
+  workspace and also requires the bound user to still be an active member of
+  it. A binding to someone who has left — or one the pre-#1431 route wrote
+  naming a non-member — resolves to `null`, so the command is refused as
+  "Account not linked".
+- **Upgrade note (#1431), for operators:** after upgrading, two kinds of sender
+  see "Account not linked" until a workspace admin links them again in that
+  workspace: people linked only in another workspace (before #1431, one link
+  resolved through every workspace's bot), and links that name someone who is
+  not a member. Also review existing links to members who are system admins. A
+  workspace admin could create those before this fix, and they still resolve,
+  because the system-admin rule applies only when a link is made. To list them:
+  `teams_user_identities` rows whose `userId` holds the `admin` role in
+  `user_roles`.
+- **Cross-tenant isolation (OWASP A01):** the key includes `tenantId` and the
+  resolver **requires a non-empty `tenantId`**, so an `aadObjectId` from a
+  different tenant can never resolve to a local user, and a tenant-less sender
+  resolves to `null`.
 - **Unmapped senders are never silently attributed:** the resolver returns
   `null` (also for bindings to disabled/soft-deleted users) — later phases (#551
   inbound) must reject or flag these senders, never post them as a METIS user.
@@ -295,8 +321,8 @@ or the realtime emit, and the two entry points can never drift apart.
    No active link → the channel is not bridged → ignored.
 4. **Text.** The leading bot `@mention` markup is stripped (other users'
    mentions preserved); an empty / mention-only message is skipped.
-5. **Resolve the sender.** `resolveUserFromAadObjectId(tenantId, aadObjectId)`
-   (#549), with `tenantId` taken from the activity's `channelData.tenant.id`,
+5. **Resolve the sender.** `resolveUserFromAadObjectId(tenantId, aadObjectId, workspaceId)`
+   (#549, workspace-scoped since #1431), with `tenantId` taken from the activity's `channelData.tenant.id`,
    then `conversation.tenantId`, then the link's recorded tenant.
 6. **Unmapped sender → never attributed to nobody.** When the resolver returns
    `null`, ingestion is **skipped** and a one-time, per-conversation, best-effort
@@ -459,8 +485,8 @@ as `empty-text`.
 
 1. **Correlate.** Read `{ threadId, messageId }` from the (untrusted) submit
    `value`. A submit missing either id → graceful error card (`bad-correlation`).
-2. **Resolve the acting user.** `resolveUserFromAadObjectId(tenantId, aadObjectId)`
-   (#549), tenant-scoped (`channelData.tenant.id`, then `conversation.tenantId`).
+2. **Resolve the acting user.** `resolveUserFromAadObjectId(tenantId, aadObjectId, workspaceId)`
+   (#549), workspace-scoped (#1431) and tenant-scoped (`channelData.tenant.id`, then `conversation.tenantId`).
    An **unmapped/anonymous** sender → refusal card; **never promote on behalf of
    nobody**.
 3. **Authorize.** `canAccessThread` at the **lowest privilege** (`role: "reader"`),
@@ -599,8 +625,9 @@ rest of the bridge, in this order — **before** any data is read or written:
 2. **Inbound rate limit** (#554, OWASP A04) — the per-`(workspace, conversation)`
    cap applies to commands too, so an abusive channel cannot flood ChatOps;
    **fails open** on a limiter store error.
-3. **Identity** (#549) — the actor is resolved tenant-scoped; an **unmapped**
-   sender is refused (never act as nobody).
+3. **Identity** (#549) — the actor is resolved tenant- and workspace-scoped; an
+   **unmapped** sender, or one bound to a user who is not a member of the bot's
+   workspace (#1431), is refused (never act as nobody).
 4. **Authorization** — role permission + project membership (above); identity is
    never authorization.
 
