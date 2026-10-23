@@ -372,7 +372,8 @@ export async function getWorkspaceTraceabilitySummary(
         if ((targets.get(r.id) ?? []).length === 0) continue;
         codeMappedRequirements++;
         const strongest = tests.get(r.id)?.[0];
-        if (!strongest) continue;
+        // #1108 — reached only through a shared entry point is not tested.
+        if (!strongest || strongest.relation === "entry-point") continue;
         tested++;
         // Named, not "anything but naming": a weak relation added later
         // (`inferred-call`, #1034) must not become strict by default.

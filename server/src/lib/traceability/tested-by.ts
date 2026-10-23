@@ -75,6 +75,18 @@
  *    directory) is a single foreign directory and never forms a hub at the
  *    default.
  *
+ * Two more keep a link to tests that are about the requirement (#955, #1108):
+ *  - A rangeless whole-file target (no symbol, no range) cites no lines, so a
+ *    symbol of the file is not evidence: an `exercises` link through it, and a
+ *    `naming` match to it, need the hub guard's title-word overlap.
+ *  - A **shared entry point** — a mapped symbol called by at least
+ *    `TESTED_BY_ENTRY_POINT_MIN_TEST_CALLERS` (default 5) test-file symbols,
+ *    most of which do not name it (a constructor or router the tests build, Go
+ *    `NewHandler`) — turns an `exercises` or `naming` link that is not about the
+ *    requirement by the same word rule into the weakest relation, `entry-point`
+ *    (0.4). It is shown, never strict, and alone it leaves the requirement in
+ *    the gap list as `entry-point-only` (see {@link isSharedEntryPoint}).
+ *
  * Within a relation, tests are ordered by BM25 relevance of `name + qualifiedName`
  * against `denoiseRequirementQuery(title + body)`, folded into `score`. Results
  * are deduplicated by `(filePath, qualifiedName)`, keeping the strongest relation.
@@ -118,6 +130,8 @@ export interface TestedByDeps {
   maxSymbolsPerFile?: number;
   /** Overrides `TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS`. */
   hubMinForeignTestDirs?: number;
+  /** Overrides `TESTED_BY_ENTRY_POINT_MIN_TEST_CALLERS`. */
+  entryPointMinTestCallers?: number;
 }
 
 /** Default cap on the symbols a file-only target expands to. */
@@ -128,6 +142,13 @@ export const DEFAULT_TESTED_BY_MAX_SYMBOLS_PER_FILE = 500;
  * `NewConfigOptions` has 2 (a hub), `NewConfigParser` 10, `SanitizeHTML` 0.
  */
 export const DEFAULT_TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS = 2;
+/**
+ * Default number of distinct test-file symbols calling one mapped symbol that
+ * makes it a shared entry point (#1108). Measured on the Miniflux 2.3.3 graph
+ * (see {@link resolveOne}): `NewHandler` has 5 test callers, the
+ * `configOptions` getters the config requirements map to have 1 or 2.
+ */
+export const DEFAULT_TESTED_BY_ENTRY_POINT_MIN_TEST_CALLERS = 5;
 export const DEFAULT_TESTED_BY_LIMIT = 10;
 
 const BASE_SCORE: Record<TestLinkRelation, number> = {
@@ -135,12 +156,14 @@ const BASE_SCORE: Record<TestLinkRelation, number> = {
   exercises: 0.8,
   naming: 0.6,
   "inferred-call": 0.5,
+  "entry-point": 0.4,
 };
 const RELATION_RANK: Record<TestLinkRelation, number> = {
   direct: 0,
   exercises: 1,
   naming: 2,
   "inferred-call": 3,
+  "entry-point": 4,
 };
 /** Name tokens that mark a test rather than say what it tests. */
 const TEST_NAME_TOKENS = new Set(["test", "tests", "benchmark", "fuzz", "example", "spec"]);
@@ -157,6 +180,16 @@ function maxSymbolsPerFile(deps?: TestedByDeps): number {
     getConfigService().getNumber(
       "TESTED_BY_MAX_SYMBOLS_PER_FILE",
       DEFAULT_TESTED_BY_MAX_SYMBOLS_PER_FILE,
+    )
+  );
+}
+
+function entryPointMinTestCallers(deps?: TestedByDeps): number {
+  return (
+    deps?.entryPointMinTestCallers ??
+    getConfigService().getNumber(
+      "TESTED_BY_ENTRY_POINT_MIN_TEST_CALLERS",
+      DEFAULT_TESTED_BY_ENTRY_POINT_MIN_TEST_CALLERS,
     )
   );
 }
@@ -604,13 +637,50 @@ function coversSpan(t: TestedByTarget, sym: Pick<SymbolRow, "startLine" | "endLi
 }
 
 /** Resolve one requirement's tests from its targets against the loaded graph. */
+interface ResolveRules {
+  limit: number;
+  hubThreshold: number;
+  entryPointThreshold: number;
+  /** {@link isSharedEntryPoint} per symbol id, filled lazily across the batch. */
+  entryPoints: Map<string, boolean>;
+}
+
+/**
+ * #1108 — whether a mapped symbol is a SHARED ENTRY POINT: at least `threshold`
+ * distinct test-file symbols call it, and most of them do not name it. Such a
+ * callee is setup — a constructor or router the tests build to reach something
+ * else (`NewHandler`: 5 test callers, 3 of them `TestGetEntryIDsHandler…`). A
+ * callee its callers name is their subject however many there are
+ * (`ScheduleNextCheck`: 11 callers, every one `TestFeedScheduleNextCheck…`).
+ * "Names it" is containment, not {@link matchTestSubject}'s prefix rule: a graph
+ * ingested before #1071 stores that method as `feed.go::ScheduleNextCheck`, with
+ * no `Feed` for the test's prefix to match. Counted on the ingest's edges only,
+ * like the hub guard.
+ */
+function isSharedEntryPoint(ts: SymbolRow, graph: GraphRows, threshold: number): boolean {
+  const callers = new Map((graph.edgesInto.get(ts.id) ?? []).map((s) => [s.id, s]));
+  if (callers.size < threshold) return false;
+  const callee = fold(ts.name);
+  let unnamed = 0;
+  for (const from of callers.values()) if (!fold(from.name).includes(callee)) unnamed++;
+  return unnamed * 2 > callers.size;
+}
+
 function resolveOne(
   requirement: TestedByRequirement,
   targets: TestedByTarget[],
   graph: GraphRows,
-  limit: number,
-  hubThreshold: number,
+  rules: ResolveRules,
 ): TraceabilityTestNode[] {
+  const { limit, hubThreshold, entryPointThreshold, entryPoints } = rules;
+  const entryPoint = (ts: SymbolRow): boolean => {
+    let known = entryPoints.get(ts.id);
+    if (known === undefined) {
+      known = isSharedEntryPoint(ts, graph, entryPointThreshold);
+      entryPoints.set(ts.id, known);
+    }
+    return known;
+  };
   const query = denoiseRequirementQuery(`${requirement.title} ${requirement.body ?? ""}`);
   const queryTokens = new Set(nameTokens(query));
   // #860 — the hub guard matches the TITLE only: body prose brings in common
@@ -678,20 +748,34 @@ function resolveOne(
       exercised.filter((x) => isForeign(x.from)).map((x) => dirname(x.from.filePath)),
     );
     const hub = foreignDirs.size >= hubThreshold;
+    // #955 — a rangeless whole-file target cites no lines, so the symbol a test
+    // calls is only "in the file": every own-package helper test would link
+    // (`TestTruncateStringForTSVectorField` for five mark-as-read requirements).
+    // A call through it counts when the test or the callee is about the
+    // requirement, by the hub guard's word rule.
+    const wholeFile = fileOnly && t.startLine == null;
+    const about = (from: SymbolRow, ts: SymbolRow): boolean =>
+      sharesRequirementWords(from.name, requirementWords) ||
+      sharesRequirementWords(ts.name, requirementWords);
+    // #1108 — a shared entry point (a constructor or router the tests build to
+    // reach something else) says nothing about one requirement: a link through
+    // it that is not about the requirement is reported, never counted.
+    const throughEntryPoint = (from: SymbolRow, ts: SymbolRow): boolean =>
+      entryPoint(ts) && !about(from, ts);
     const offerCalls = (
       calls: ReadonlyArray<{ from: SymbolRow; ts: SymbolRow }>,
       relation: TestLinkRelation,
     ): void => {
       for (const { from, ts } of calls) {
-        if (
-          hub &&
-          !sharesRequirementWords(from.name, requirementWords) &&
-          !sharesRequirementWords(ts.name, requirementWords)
-        ) {
-          continue;
-        }
+        if (wholeFile && !about(from, ts)) continue;
+        if (hub && !about(from, ts)) continue;
+        // An inferred call is already weaker than an entry-point one.
+        const generic = relation === "exercises" && throughEntryPoint(from, ts);
         offer(
-          testNodeFromSymbol(from, relation, { filePath: ts.filePath, symbol: ts.qualifiedName }),
+          testNodeFromSymbol(from, generic ? "entry-point" : relation, {
+            filePath: ts.filePath,
+            symbol: ts.qualifiedName,
+          }),
         );
       }
     };
@@ -702,10 +786,14 @@ function resolveOne(
       for (const sym of graph.siblingSymbolsByFile.get(p) ?? []) {
         const c = classifyTestSymbol(sym);
         if (!c.isTestSymbol) continue;
-        const matched = matchTestSubject(sym.name, c.subjectHint, targetSymbols);
+        const named = matchTestSubject(sym.name, c.subjectHint, targetSymbols);
+        // #955 — named for some symbol of a whole file is not named for the requirement.
+        const matched = named && (!wholeFile || about(sym, named)) ? named : null;
         if (matched) {
+          // #1108 — `TestNewHandlerSupportsBasePathStripping` is about NewHandler,
+          // and so about every route NewHandler registers only by way of it.
           offer(
-            testNodeFromSymbol(sym, "naming", {
+            testNodeFromSymbol(sym, throughEntryPoint(sym, matched) ? "entry-point" : "naming", {
               filePath: matched.filePath,
               symbol: matched.qualifiedName,
             }),
@@ -806,10 +894,15 @@ export async function resolveTestedByForTargets(
   const limit = opts?.limit ?? DEFAULT_TESTED_BY_LIMIT;
   const all = requirements.flatMap((r) => targetsByRequirement.get(r.id) ?? []);
   const graph = await loadGraph(prisma, projectId, all, maxSymbolsPerFile(deps));
-  const hubThreshold = hubMinForeignTestDirs(deps);
+  const rules: ResolveRules = {
+    limit,
+    hubThreshold: hubMinForeignTestDirs(deps),
+    entryPointThreshold: entryPointMinTestCallers(deps),
+    entryPoints: new Map(),
+  };
   const out = new Map<string, TraceabilityTestNode[]>();
   for (const r of requirements) {
-    out.set(r.id, resolveOne(r, targetsByRequirement.get(r.id) ?? [], graph, limit, hubThreshold));
+    out.set(r.id, resolveOne(r, targetsByRequirement.get(r.id) ?? [], graph, rules));
   }
   return out;
 }
@@ -887,16 +980,18 @@ export async function listUntestedRequirements(
   const untested: RequirementTestGap[] = [];
   for (const r of requirements) {
     const mappedFiles = new Set((targets.get(r.id) ?? []).map((t) => t.filePath)).size;
+    const strongest = tests.get(r.id)?.[0];
     if (mappedFiles === 0) {
       noCode++;
-    } else if ((tests.get(r.id) ?? []).length > 0) {
+    } else if (strongest && strongest.relation !== "entry-point") {
       tested++;
     } else {
       untested.push({
         requirementId: r.id,
         title: r.title,
         analysisId: r.analysisId ?? null,
-        reason: "no-test",
+        // #1108 — reached only through a shared entry point: said so, not "no test".
+        reason: strongest ? "entry-point-only" : "no-test",
         mappedFiles,
       });
     }

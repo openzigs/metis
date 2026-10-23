@@ -11,4 +11,6 @@ export const TEST_RELATION_LABEL: Record<TestLinkRelation, string> = {
   naming: "Naming convention",
   // #1034 — bound by callee name after ingest: a guess, and labelled as one.
   "inferred-call": "Inferred call",
+  // #1108 — calls a constructor or router many tests build; not about this requirement.
+  "entry-point": "Shared entry point",
 };

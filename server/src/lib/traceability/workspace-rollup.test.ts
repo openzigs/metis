@@ -261,6 +261,8 @@ describe("getWorkspaceTraceabilitySummary", () => {
     links: ReturnType<typeof edge>[];
     projects: Array<{ id: string; name: string }>;
     reqs: Record<string, string[]>;
+    /** Requirement titles by id; `req <id>` when absent. */
+    titles?: Record<string, string>;
     spec: Record<string, Array<string | { requirementId: string; specDocumentId: string }>>;
     code: Record<string, Array<string | CodeRow>>;
     specCode?: Record<string, Array<CodeRow & { specDocumentId: string }>>;
@@ -313,7 +315,11 @@ describe("getWorkspaceTraceabilitySummary", () => {
       project: { findMany: vi.fn(async () => opts.projects) },
       requirement: {
         findMany: vi.fn(async (a: { where: { projectId: string; deletedAt: null } }) =>
-          (opts.reqs[a.where.projectId] ?? []).map((id) => ({ id, title: `req ${id}`, body: "" })),
+          (opts.reqs[a.where.projectId] ?? []).map((id) => ({
+            id,
+            title: opts.titles?.[id] ?? `req ${id}`,
+            body: "",
+          })),
         ),
       },
       requirementSpecMapping: {
@@ -496,6 +502,8 @@ describe("getWorkspaceTraceabilitySummary", () => {
       links: [],
       projects: projectIds.map((id) => ({ id, name: id })),
       reqs: Object.fromEntries(projectIds.map((p) => [p, reqs])),
+      // R2's row is the whole file: a test there needs the title's words (#955).
+      titles: { R2: "Password validation" },
       spec: { projA: [{ requirementId: "R3", specDocumentId: "S1" }] },
       specCode: { projA: [{ specDocumentId: "S1", ...row("", "src/d.ts", "s-d") }] },
       code: {
@@ -582,6 +590,34 @@ describe("getWorkspaceTraceabilitySummary", () => {
       expect(result.projects[0]).toMatchObject({
         codeMappedRequirements: 1,
         testCoverage: 1,
+        strictTestCoverage: 0,
+      });
+    });
+
+    it("#1108 — reached only through a shared entry point counts as neither tested nor strict", async () => {
+      listMemberProjectsInWorkspace.mockResolvedValue(["projA"]);
+      const base = fixture(["projA"], ["R8"]);
+      // `NewHandler`, built by five tests that are each about another handler.
+      const callers = ["A", "B", "C", "D", "E"].map((n) =>
+        sym(`t-h${n}`, "internal/api/api_test.go", `TestGet${n}Handler`),
+      );
+      const prisma = summaryPrisma({
+        ...base,
+        code: { projA: [row("R8", "internal/api/api.go", "s-h")] },
+        symbols: [sym("s-h", "internal/api/api.go", "NewHandler"), ...callers],
+        edges: callers.map((c) => ({
+          projectId: "projA",
+          kind: "calls",
+          fromSymbolId: c.id,
+          toSymbolId: "s-h",
+        })),
+      });
+      const result = await getWorkspaceTraceabilitySummary(actor, "ws1", {
+        prisma: prisma as never,
+      });
+      expect(result.projects[0]).toMatchObject({
+        codeMappedRequirements: 1,
+        testCoverage: 0,
         strictTestCoverage: 0,
       });
     });

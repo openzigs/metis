@@ -11,6 +11,9 @@
  *
  * Named "Untested requirements" so it is never confused with `GapReport`
  * (#742), which reports *implementation* gaps.
+ *
+ * #1108 — a requirement whose only tests call a shared entry point (a
+ * constructor or router many tests build) is listed too, and says so.
  */
 import * as React from "react";
 import Link from "next/link";
@@ -58,7 +61,7 @@ export function UntestedRequirementsPanel({
   const first = query.data?.pages[0];
   const untested = (query.data?.pages ?? [])
     .flatMap((p) => p.untested)
-    .filter((g) => g.reason === "no-test");
+    .filter((g) => g.reason === "no-test" || g.reason === "entry-point-only");
 
   let body: React.ReactNode;
   if (query.isLoading) {
@@ -99,6 +102,15 @@ export function UntestedRequirementsPanel({
                 >
                   {g.title}
                 </Link>
+                {g.reason === "entry-point-only" ? (
+                  <p
+                    data-testid="untested-entry-point-only"
+                    className="text-xs text-muted-foreground"
+                  >
+                    Tested only through a shared entry point: its tests call code that many tests
+                    call, and none of them is about this requirement.
+                  </p>
+                ) : null}
               </li>
             ))}
           </ul>
