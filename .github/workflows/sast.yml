@@ -178,14 +178,48 @@ jobs:
           # The braces entry, GHSA-vfj7-8cjw-p6xm, was deleted rather than
           # re-dated once ui dropped the unused eslint-config-next, braces' only
           # route into the tree (#1306).
-          WAIVERS = {}
+          #
+          # `packages` SCOPES a waiver to exact `name@version` copies (#1453). An
+          # advisory ID alone is too wide when the tree holds a fixed copy AND an
+          # unfixable one of the same package: waiving the ID would also mute the
+          # fixed line if it ever regressed. A scoped waiver suppresses only the
+          # listed copies; every other copy the advisory names still breaches.
+          WAIVERS = {
+              # zod GHSA-mrhx-c7xc-m3w5 (HIGH, CVSS 8.2), `introduced 0, fixed 4.6.6`.
+              # The 4.x line IS fixed (pnpm-workspace.yaml override, 4.6.7 resolved);
+              # this covers ONLY zod@3.25.76, for which no patched 3.x exists. Two
+              # consumers, both pinned to `^3`:
+              #   botbuilder* 4.23.3 (Teams) — cannot run on zod 4: importing it
+              #     throws `z.object(...).nonstrict is not a function` (measured), and
+              #     its latest release (2025-08-27) still declares `zod ^3.23.8`.
+              #     Before Bot Framework JWT auth, CloudAdapter.process runs only
+              #     `z.record(z.unknown())` on req.body and `z.string()` on the auth
+              #     header: no array schema, no per-element failure, so an oversized
+              #     body yields one issue, not one per element (asserted by
+              #     server/src/lib/teams/botbuilder-zod3-reachability.test.ts).
+              #   chromium-bidi 17.0.2 via puppeteer (docs export) — puppeteer-core
+              #     imports it only for `protocol: 'webDriverBiDi'`; METIS launches
+              #     Chrome with the CDP default, so it is never loaded.
+              # Expires at review: re-check botbuilder for a zod-4 release then.
+              "GHSA-mrhx-c7xc-m3w5": {
+                  "expires": "2027-01-23",
+                  "packages": ["zod@3.25.76"],
+                  "reason": "zod@3.25.76 only (botbuilder 4.23.3, chromium-bidi): no "
+                            "patched 3.x; botbuilder breaks on zod 4; not reachable "
+                            "pre-auth (#1453).",
+              },
+          }
           today = datetime.date.today()
 
-          def waiver_for(ids):
-              """Return (ghsa_id, waiver) when an advisory in `ids` has a LIVE waiver."""
+          def waiver_for(ids, name=None, version=None):
+              """Return (ghsa_id, waiver) when an advisory in `ids` has a LIVE waiver
+              that covers this `name@version` (any copy, when it lists no `packages`)."""
               for advisory_id in ids:
                   w = WAIVERS.get(advisory_id)
                   if not w:
+                      continue
+                  scope = w.get("packages")
+                  if scope is not None and f"{name}@{version}" not in scope:
                       continue
                   if today < datetime.date.fromisoformat(w["expires"]):
                       return advisory_id, w
@@ -248,7 +282,7 @@ jobs:
                       findings.append((name, version, ids, raw, score, basis))
                       # `or` short-circuits, so `score` is never compared while None.
                       if basis == "unknown" or score >= THRESHOLD:
-                          advisory_id, w = waiver_for(id_list)
+                          advisory_id, w = waiver_for(id_list, name, version)
                           if w:
                               waived.append((name, version, ids, score, advisory_id, w))
                           else:
@@ -307,7 +341,14 @@ jobs:
                   print(f"  - {name}@{version} {why} {ids}")
                   for advisory_id in ids.split(","):
                       w = WAIVERS.get(advisory_id)
-                      if w:
+                      if not w:
+                          continue
+                      scope = w.get("packages")
+                      if scope is not None and f"{name}@{version}" not in scope:
+                          print(f"      NOTE: waiver {advisory_id} covers only "
+                                f"{', '.join(scope)} — {name}@{version} must be "
+                                "upgraded, not waived.")
+                      else:
                           print(f"      NOTE: waiver {advisory_id} EXPIRED on "
                                 f"{w['expires']} — upgrade now; do not extend it "
                                 "without a deliberate decision.")
