@@ -75,7 +75,8 @@ describe("fanOutMentions — Issue #416 persistence", () => {
     expect(createCall.data.href).toBe(
       "/projects/p-1/analysis?analysisId=a-1&requirementId=req-1&comments=1",
     );
-    expect(createCall.data.message).toBe('Alice mentioned you on "Login works"');
+    expect(createCall.data.title).toBe('Alice mentioned you on "Login works"');
+    expect(createCall.data.message).toBe("“@carol hi”");
   });
 
   it("still emits the socket event even when persistence fails", async () => {

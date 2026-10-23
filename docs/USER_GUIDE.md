@@ -1003,12 +1003,12 @@ See §19 for full details on each sub-page.
 
 The bell icon in the header opens a side **notifications drawer** with these alerts:
 
-- **Mention** — you were @mentioned in a comment. Click **Open →** to jump directly to that comment.
+- **Mention** — someone @mentioned you in a comment, e.g. *Alex mentioned you on "Login lockout"*, with the start of the comment underneath. Click **Open →** to open that requirement (or Spec Kit artifact) with its comments showing.
 - **Discussion mention** — someone @mentioned you in a project discussion, e.g. *"Alex mentioned you in a discussion"*. Click **Open →** to go to that discussion thread.
 - **SLA deadline expired** — an assignment's SLA deadline has passed. Click **Open →** to navigate to the requirement.
 - **Review lifecycle** — for the formal review workflow (the Reviews page, sidebar → Activity → Reviews): as an **assigned reviewer** you are notified when a review is submitted and awaits your decision; as the **requester** you are notified of each reviewer's decision and of the final outcome (approved — including when a baseline was auto-created — or rejected). Each notification deep-links to the review's detail page. These are governed by the **Requirements approved × In-app** toggle in Settings → Notifications.
 
-The badge shows your unread count; opening the drawer marks all items read. Use **Clear all** to dismiss the list. Discussion mentions and review notifications arrive **live** while you are signed in: the badge updates without a reload, and the item reads the same as it will after a reload. Notifications are **persisted server-side**, so they survive page reloads and reconnects and you do not miss an alert sent while you were offline. Each notification links to the item it is about where there is one.
+The badge shows your unread count; opening the drawer marks all items read. Use **Clear all** to dismiss the list. Comment mentions, discussion mentions and review notifications arrive **live** while you are signed in: the badge updates without a reload, and the item reads the same as it will after a reload. Notifications are **persisted server-side**, so they survive page reloads and reconnects and you do not miss an alert sent while you were offline. Each notification links to the item it is about where there is one.
 
 **Comment threads update live.** When a requirement's or a Spec Kit artifact's **Comments** panel is open, a comment, reply, edit or delete by anyone else on the project appears in it within a moment; you do not need to reload the page. Only people who can open the project see the update, the same people who can read the comments.
 

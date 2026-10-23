@@ -444,8 +444,11 @@ export interface ServerToClientEvents {
     isTyping: boolean;
     ts: number;
   }) => void;
-  /** Epic #728 — a user was @mentioned in a comment. */
-  "comment:mention": (data: { commentId: string; mentionedUserId: string; ts: number }) => void;
+  /**
+   * Epic #728 — a user was @mentioned in a comment. #1318 — carries the saved
+   * notification's id, text and link, as `discussion:mention` does (#104).
+   */
+  "comment:mention": (data: CommentMentionEvent) => void;
   /**
    * #997 — a comment on a requirement or a Spec Kit artifact was posted,
    * replied to, edited or deleted. Sent to the `project:{id}` room, whose join
@@ -499,6 +502,14 @@ export interface InAppNotificationFields {
   message: string;
   /** A relative in-app path, e.g. `/reviews/{id}`. */
   href: string;
+}
+
+/** Payload of `comment:mention` (#1318). */
+export interface CommentMentionEvent extends InAppNotificationFields {
+  kind: "mention";
+  commentId: string;
+  mentionedUserId: string;
+  ts: number;
 }
 
 /** Payload of `discussion:mention`. */

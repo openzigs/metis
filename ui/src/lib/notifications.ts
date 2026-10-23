@@ -10,6 +10,7 @@
  */
 
 import type {
+  CommentMentionEvent,
   DiscussionMentionEvent,
   InAppNotificationFields,
   ReviewNotificationEvent,
@@ -171,12 +172,8 @@ export function _resetNotificationStoreForTests(): void {
 // Event → Notification mappers (replaces the old auditEventToNotification)
 // ---------------------------------------------------------------------------
 
-/** Payload shape emitted by the server for comment:mention events. */
-export interface MentionEventPayload {
-  commentId: string;
-  mentionedUserId: string;
-  ts: number;
-}
+/** Payload shape emitted by the server for comment:mention events (#1318). */
+export type MentionEventPayload = CommentMentionEvent;
 
 /** Payload shape emitted by the server for sla:deadline_expired events. */
 export interface SlaDeadlineEventPayload {
@@ -188,18 +185,13 @@ export interface SlaDeadlineEventPayload {
 }
 
 /**
- * Map a `comment:mention` event payload into a Notification draft.
+ * Map a `comment:mention` event into a Notification draft. #1318 — the event
+ * carries the saved row's id, text (who and where, plus an excerpt) and the
+ * link to the comment's thread; it used to show the raw comment id and link to
+ * `/comments/<id>`, which has no page.
  */
-export function mentionEventToNotification(
-  event: MentionEventPayload,
-): Omit<Notification, "id" | "createdAt" | "read"> {
-  return {
-    level: "info",
-    title: "You were mentioned in a comment",
-    message: `You were mentioned in comment ${event.commentId}`,
-    source: "mention",
-    href: `/comments/${encodeURIComponent(event.commentId)}`,
-  };
+export function mentionEventToNotification(event: MentionEventPayload): NotificationDraft {
+  return inAppDraft(event, "mention", "info");
 }
 
 /**

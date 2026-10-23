@@ -544,7 +544,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(rows[0]!.href).toBe(
           `/projects/${PROJECT}/analysis?analysisId=${ANALYSIS}&requirementId=${REQ}&comments=1`,
         );
-        expect(rows[0]!.message).toBe(`Alice Author mentioned you on "Feeds refresh on schedule"`);
+        expect(rows[0]!.title).toBe(`Alice Author mentioned you on "Feeds refresh on schedule"`);
+        expect(rows[0]!.message).toBe("“@u-member @u-out please look”");
       });
 
       it("links an artifact comment mention to the artifact", async () => {
@@ -555,7 +556,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const rows = await db.notification.findMany({ where: { type: "mention" } });
         expect(rows).toHaveLength(1);
         expect(rows[0]!.href).toBe(`/projects/${PROJECT}/spec-kit?artifact=${ARTIFACT}`);
-        expect(rows[0]!.message).toBe(`Alice Author mentioned you on ${ARTIFACT}`);
+        expect(rows[0]!.title).toBe(`Alice Author mentioned you on ${ARTIFACT}`);
+        expect(rows[0]!.message).toBe("“@u-member see this”");
       });
 
       it("notifies a system admin who is not a workspace member", async () => {

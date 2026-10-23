@@ -10,7 +10,7 @@
  * Fan-out is fire-and-forget (non-blocking). Failures are logged but never
  * propagate to the caller.
  */
-import { userRoom } from "@metis/shared";
+import { userRoom, type CommentMentionEvent } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getSocketServer } from "../socket/registry.js";
@@ -71,11 +71,25 @@ export interface CommentMentionContext {
   projectId: string;
   /** In-app link to the requirement or artifact that holds the comment (#735). */
   href: string;
-  /** e.g. `Alice mentioned you on "Feeds refresh on schedule"`. */
-  message: string;
+  /** Who and where, e.g. `Alice mentioned you on "Feeds refresh on schedule"` (#1318). */
+  title: string;
 }
 
 const MAX_TITLE_IN_MESSAGE = 120;
+const MAX_EXCERPT = 140;
+
+/**
+ * #1318 — a short quoted excerpt of a comment for its mention notification:
+ * whitespace collapsed, cut at {@link MAX_EXCERPT} characters. Only ever sent
+ * to a user who may open the comment's project, so it shows nothing they could
+ * not read on the thread itself.
+ */
+export function commentExcerpt(body: string): string {
+  const flat = body.replace(/\s+/g, " ").trim();
+  if (!flat) return "";
+  const cut = flat.length > MAX_EXCERPT ? `${flat.slice(0, MAX_EXCERPT - 1).trimEnd()}…` : flat;
+  return `“${cut}”`;
+}
 
 /**
  * Resolve the project, link and notification text for a comment. #735 — the
@@ -115,7 +129,7 @@ export async function resolveCommentMentionContext(
         `?analysisId=${enc(requirement.analysisId)}&requirementId=${enc(requirement.id)}` +
         // Opens the requirement's comment panel, not just its card (#735).
         `&comments=1`,
-      message: `${who} mentioned you on "${title}"`,
+      title: `${who} mentioned you on "${title}"`,
     };
   }
   const { specKitProjectId, specKitArtifactName } = row.thread;
@@ -126,7 +140,7 @@ export async function resolveCommentMentionContext(
       href:
         `/projects/${enc(specKitProjectId)}/spec-kit` +
         (specKitArtifactName ? `?artifact=${enc(specKitArtifactName)}` : ""),
-      message: `${who} mentioned you on ${artifact}`,
+      title: `${who} mentioned you on ${artifact}`,
     };
   }
   return null;
@@ -212,37 +226,50 @@ export async function fanOutMentions(
           if (!(await shouldNotify(u.id, "inApp", "mention"))) return;
 
           const mentionPayload = {
+            kind: "mention" as const,
             commentId,
             mentionedUserId: u.id,
             ts: Date.now(),
           };
-
-          // Emit in-app notification via Socket.IO to the user's personal
-          // room (user:{userId}). The room is auto-joined on connect from the
-          // verified JWT only (OWASP A01 — no client-supplied room id).
-          if (io) {
-            io.to(userRoom(u.id)).emit("comment:mention", mentionPayload);
-          }
+          // #1318 — the text and link the drawer shows, identical live and
+          // saved: who mentioned you and where, an excerpt, and the thread.
+          const shown = {
+            title: context.title,
+            message: commentExcerpt(body) || context.title,
+            href: context.href,
+          };
+          // #104/#1318 — the persisted row's id, so the drawer's live item and
+          // its hydrated copy are one item. Null when persisting failed.
+          let notificationId: string | null = null;
 
           // Issue #416 — persist the notification so the drawer hydrates
-          // across reloads/reconnects. Best-effort: never break the emit.
+          // across reloads/reconnects. Persisted first so the event can carry
+          // its id. Best-effort: never break the emit.
           try {
-            await prisma.notification.create({
+            const row = await prisma.notification.create({
               data: {
                 userId: u.id,
                 type: "mention",
-                title: "You were mentioned in a comment",
-                message: context.message,
-                href: context.href,
+                ...shown,
                 payload: JSON.stringify(mentionPayload),
               },
+              select: { id: true },
             });
+            notificationId = row?.id ?? null;
           } catch (persistErr) {
             log.warn("Failed to persist mention notification", {
               commentId,
               userId: u.id,
               err: persistErr,
             });
+          }
+
+          // Emit in-app notification via Socket.IO to the user's personal
+          // room (user:{userId}). The room is auto-joined on connect from the
+          // verified JWT only (OWASP A01 — no client-supplied room id).
+          if (io) {
+            const event: CommentMentionEvent = { ...mentionPayload, ...shown, notificationId };
+            io.to(userRoom(u.id)).emit("comment:mention", event);
           }
 
           // Mark as notified.
