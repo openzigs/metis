@@ -31,14 +31,13 @@
  *    queries list only the columns the connecting role has a privilege on, so
  *    with column-level grants (or a column-level DENY) a real column is absent
  *    from a table that was returned;
- *  - on Oracle the introspection is cut at `maxRows: 10_000`, one row per
- *    column, without an error (`connectors/db/drivers/oracle.ts`): the last
- *    table returned has a prefix of its columns and every later table is
- *    missing.
+ *  - on Oracle the catalog is paged to the end, but one read stops at a row
+ *    ceiling (`ORACLE_INTROSPECTION_ROW_CEILING`, #1096); a read that stopped
+ *    there says so, with the tables read and the tables there are.
  *
  * So the inventory carries no "current" or "complete" flag. It records, per
  * database connector, HOW it was read, WHICH schemas returned tables and
- * whether the read may have been cut short ({@link SchemaInventoryRead}); that
+ * whether the driver reported the read as cut ({@link SchemaInventoryRead}); that
  * record is what the prompt's coverage statement and the section's note say.
  * A connector that returned nothing is `unread`.
  *
@@ -51,7 +50,7 @@
  * `schema-inventory-loader.ts`, kept apart so the synthesizer does not load the
  * connector stack.
  */
-import type { DbTableInfo, SchemaGraph } from "@metis/shared";
+import type { DbIntrospectionTruncation, DbTableInfo, SchemaGraph } from "@metis/shared";
 import { scrubWriterFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
 import { DYNAMIC_PLACEHOLDER_PREFIX } from "../code-graph/schema-graph.js";
 import {
@@ -109,11 +108,74 @@ export interface SchemaInventoryRead {
   /** For `stored`: the day the graph was generated, when known. */
   storedOn?: string;
   /**
-   * For `live`: the read reached the driver's row limit, so it may have been
-   * cut short (Oracle; see `ORACLE_INTROSPECTION_ROW_CAP` in the loader).
-   * Tables and columns can then be missing from it.
+   * #1096 — the driver reported the read as cut at its row ceiling, so tables
+   * are missing from it. For `stored`, the read the stored graph was built
+   * from was cut. Absent for a complete read.
    */
-  possiblyTruncated?: boolean;
+  truncation?: SchemaReadTruncation;
+}
+
+/** #1096 — how much of a cut read was read: N of M tables. */
+export interface SchemaReadTruncation {
+  tablesRead: number;
+  /** Absent when the driver could not count the tables. */
+  tablesTotal?: number;
+}
+
+/** The part of a driver's truncation report the inventory keeps. */
+export function schemaReadTruncation(
+  truncation: DbIntrospectionTruncation | undefined,
+): SchemaReadTruncation | undefined {
+  if (!truncation) return undefined;
+  return {
+    tablesRead: truncation.tablesRead,
+    ...(truncation.tablesTotal === undefined ? {} : { tablesTotal: truncation.tablesTotal }),
+  };
+}
+
+const isCount = (value: unknown): value is number =>
+  typeof value === "number" && Number.isInteger(value) && value >= 0;
+
+/**
+ * #1096 — the truncation a stored {@link SchemaGraph} records, if any. The
+ * graph is read back from JSON, so every field is checked.
+ */
+export function truncationOfSchemaGraph(graph: unknown): SchemaReadTruncation | undefined {
+  const truncation = (graph as { truncation?: Partial<DbIntrospectionTruncation> } | null)
+    ?.truncation;
+  if (!truncation || typeof truncation !== "object" || !isCount(truncation.tablesRead)) {
+    return undefined;
+  }
+  return {
+    tablesRead: truncation.tablesRead,
+    ...(isCount(truncation.tablesTotal) ? { tablesTotal: truncation.tablesTotal } : {}),
+  };
+}
+
+/** `1,200 of 4,000 tables`, or `1,200 tables` when the total is not known. */
+export function describeTablesRead(truncation: SchemaReadTruncation): string {
+  const read = truncation.tablesRead.toLocaleString("en-US");
+  return truncation.tablesTotal === undefined
+    ? `${read} tables (the total could not be counted)`
+    : `${read} of ${truncation.tablesTotal.toLocaleString("en-US")} tables`;
+}
+
+/**
+ * #1096 — the line the Schema Reference opens with when a read was cut, so a
+ * partial schema is never read as the whole one. Empty when every read was
+ * complete.
+ */
+export function renderPartialReadNotice(inventory: Pick<SchemaInventory, "reads">): string {
+  const cut = inventory.reads.filter((read) => read.truncation);
+  if (cut.length === 0) return "";
+  const which = cut
+    .map((read) => `"${read.connector}": ${describeTablesRead(read.truncation!)}`)
+    .join("; ");
+  return (
+    `> **The schema was read partially.** The database catalog held more rows than one read ` +
+    `takes, so only some tables were read (${which}). The tables that were not read are ` +
+    `missing here and may still exist.`
+  );
 }
 
 /**
@@ -359,6 +421,13 @@ export function plainConnectorLabel(value: string): string {
   return breakAutolinks(cut);
 }
 
+function partialReadSentence(read: SchemaInventoryRead): string {
+  return read.truncation
+    ? ` This read was cut at the driver's row ceiling: only ${describeTablesRead(read.truncation)} ` +
+        `were read, so tables are missing from it and may still exist.`
+    : "";
+}
+
 function readSummary(read: SchemaInventoryRead): string {
   const schemas = read.schemas.map(plainSchemaText).filter(Boolean);
   const which =
@@ -366,17 +435,13 @@ function readSummary(read: SchemaInventoryRead): string {
       ? "its tables"
       : `schema${schemas.length === 1 ? "" : "s"} ${schemas.join(", ")}`;
   if (read.how === "live") {
-    return (
-      `"${read.connector}": ${which}, read from the database now.` +
-      (read.possiblyTruncated
-        ? " This read reached the driver's row limit and may have been cut short: tables and columns can be missing from it."
-        : "")
-    );
+    return `"${read.connector}": ${which}, read from the database now.` + partialReadSentence(read);
   }
   if (read.how === "stored") {
     return (
       `"${read.connector}": ${which}, from a schema graph stored` +
-      `${read.storedOn ? ` on ${read.storedOn}` : " earlier"}; it may be out of date.`
+      `${read.storedOn ? ` on ${read.storedOn}` : " earlier"}; it may be out of date.` +
+      partialReadSentence(read)
     );
   }
   return `"${read.connector}": NOT read.`;
@@ -530,6 +595,8 @@ export function renderSchemaReference(
     `> Rendered from ${inventory.label}, not written by the model.`,
     "",
   ];
+  const partial = renderPartialReadNotice(inventory);
+  if (partial) out.push(partial, "");
   // Keys and relationships only: every column is in the tables that follow.
   const keyed = tables.slice(0, MAX_TABLES_ER).map((table, at) => {
     const source = inventory.tables[at];

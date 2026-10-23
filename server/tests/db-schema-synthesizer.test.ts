@@ -56,6 +56,11 @@ import {
   DEFAULT_LLM_CALL_BUDGET,
   DEFAULT_LLM_TOKEN_BUDGET,
 } from "../src/lib/docs-gen/db-schema-synthesizer.js";
+import {
+  deriveDocStatus,
+  SCHEMA_READ_SECTION,
+  summarizeWarnings,
+} from "../src/lib/docs-gen/grounding/degraded-warnings.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -730,5 +735,72 @@ describe("synthesizeDbSchemaDocument — schema graph", () => {
     mockInspect.mockRejectedValue(new Error("boom"));
     const { schemaGraph } = await synthesizeDbSchemaDocument("proj_1", "db_1", "system", "Bad");
     expect(schemaGraph).toBeNull();
+  });
+});
+
+describe("synthesizeDbSchemaDocument — a schema read partially (#1096)", () => {
+  beforeEach(() => {
+    mockGetConnector.mockResolvedValue({ id: "db_1", projectId: "proj_1", label: "Oracle EBS" });
+  });
+  afterEach(() => {
+    vi.resetAllMocks();
+  });
+
+  const truncation = { rowsRead: 250_000, rowCeiling: 250_000, tablesRead: 2, tablesTotal: 4_100 };
+  const tables = [
+    makeTable("A", [{ name: "id", dataType: "NUMBER", isPrimaryKey: true }]),
+    makeTable("B", [{ name: "id", dataType: "NUMBER", isPrimaryKey: true }]),
+  ];
+
+  it("says N of M tables in the overview, the stored graph and a status-bearing warning", async () => {
+    mockInspect.mockResolvedValue({ ...makeSnapshot(tables), driver: "oracle", truncation });
+    const { markdown, schemaGraph, warnings } = await synthesizeDbSchemaDocument(
+      "proj_1",
+      "db_1",
+      "system",
+      "EBS",
+    );
+
+    const overview = markdown.slice(markdown.indexOf("## Overview"), markdown.indexOf("## Entity"));
+    expect(overview).toContain(
+      "> **Warning:** The schema was read partially: 2 of 4,100 tables. The database catalog " +
+        "held more than 250,000 column rows",
+    );
+    expect(schemaGraph?.truncation).toEqual(truncation);
+    expect(warnings).toEqual([
+      expect.objectContaining({
+        kind: "source-unavailable",
+        section: SCHEMA_READ_SECTION,
+        severity: "warning",
+      }),
+    ]);
+    expect(warnings[0].message).toContain("2 of 4,100 tables");
+    // Not `ready` without saying so: the warning makes the document degraded,
+    // and the one-line summary names the cause rather than unread source code.
+    expect(deriveDocStatus(warnings)).toBe("degraded");
+    const summary = summarizeWarnings(warnings);
+    expect(summary).toContain("the database schema was read partially");
+    expect(summary).not.toContain("re-ingest");
+  });
+
+  it("says the total is unknown when it could not be counted", async () => {
+    const { tablesTotal: _omit, ...uncounted } = truncation;
+    mockInspect.mockResolvedValue({ ...makeSnapshot(tables), truncation: uncounted });
+    const { markdown, warnings } = await synthesizeDbSchemaDocument("proj_1", "db_1", "s", "X");
+    expect(markdown).toContain("read partially: 2 tables (the total could not be counted)");
+    expect(warnings[0].message).toContain("2 tables (the total could not be counted)");
+  });
+
+  it("adds nothing for a complete read", async () => {
+    mockInspect.mockResolvedValue(makeSnapshot(tables));
+    const { markdown, schemaGraph, warnings } = await synthesizeDbSchemaDocument(
+      "proj_1",
+      "db_1",
+      "system",
+      "EBS",
+    );
+    expect(markdown).not.toContain("read partially");
+    expect(schemaGraph).not.toHaveProperty("truncation");
+    expect(warnings).toEqual([]);
   });
 });

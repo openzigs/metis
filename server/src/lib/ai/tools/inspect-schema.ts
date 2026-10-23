@@ -86,9 +86,21 @@ export function createInspectSchemaTool(): ToolDefinition<typeof inspectSchemaSc
                     .join(", ")})`,
               )
               .join("\n");
+      // #1096 — a read the driver cut is said to the model, so it does not
+      // answer "that table does not exist" from a partial list.
+      const cut = snapshot.truncation;
+      const partial = cut
+        ? `NOTE: the schema was read partially (${cut.tablesRead} of ` +
+          `${cut.tablesTotal ?? "an uncounted number of"} tables); tables not listed may still exist.\n`
+        : "";
       return {
-        text,
-        data: { connectorId: snapshot.connectorId, driver: snapshot.driver, tables },
+        text: `${partial}${text}`,
+        data: {
+          connectorId: snapshot.connectorId,
+          driver: snapshot.driver,
+          tables,
+          ...(cut ? { truncation: cut } : {}),
+        },
       };
     },
   };
