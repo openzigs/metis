@@ -258,3 +258,42 @@ describe("POST /notifications/read-all", () => {
     );
   });
 });
+
+describe("notifications routes — failure paths", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("passes a failed access check to the error handler, never the rows unchecked (#1447)", async () => {
+    mockNotification.findMany.mockResolvedValue([
+      {
+        id: "n-1",
+        type: "mention",
+        title: "secret",
+        message: "secret",
+        href: "/x",
+        payload: null,
+        projectId: "p-1",
+        read: false,
+      },
+    ]);
+    mockNotification.count.mockResolvedValue(1);
+    mockProject.findMany.mockRejectedValue(new Error("db down"));
+
+    const res = await request(makeApp()).get("/notifications");
+
+    expect(res.status).toBe(500);
+    expect(JSON.stringify(res.body)).not.toContain("secret");
+  });
+
+  it("returns 401 on every route when no user is attached", async () => {
+    const { requireAuth } = await import("../src/middleware/auth.js");
+    const passThrough = (_req: unknown, _res: unknown, next: () => void) => next();
+    vi.mocked(requireAuth).mockImplementationOnce(passThrough as never);
+    vi.mocked(requireAuth).mockImplementationOnce(passThrough as never);
+    vi.mocked(requireAuth).mockImplementationOnce(passThrough as never);
+
+    const app = makeApp();
+    expect((await request(app).get("/notifications")).status).toBe(401);
+    expect((await request(app).patch("/notifications/n-1/read")).status).toBe(401);
+    expect((await request(app).post("/notifications/read-all")).status).toBe(401);
+  });
+});

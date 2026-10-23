@@ -341,7 +341,9 @@ describe.skipIf(!isSqlite)("#1447 — migration backfills each notification's pr
     }
 
     // #1318-era mention: commentId column set.
-    insertLegacy("n-mention-col", "mention", JSON.stringify({ commentId: "c-req" }), "c-req");
+    // The column alone names the comment (the payload does not), so the
+    // backfill must read the column.
+    insertLegacy("n-mention-col", "mention", JSON.stringify({ kind: "mention" }), "c-req");
     // Pre-#1318 mention: commentId only in the payload, Spec Kit thread.
     insertLegacy("n-mention-payload", "mention", JSON.stringify({ commentId: "c-spec" }));
     insertLegacy("n-disc", "discussion_mention", JSON.stringify({ threadId: "dt-1" }));
