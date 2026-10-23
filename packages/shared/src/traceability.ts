@@ -230,8 +230,20 @@ export interface RequirementTraceabilityChain {
  *   and it was bound afterwards by callee NAME, so it is a guess. The weakest
  *   relation, and never a strict (`direct` / `exercises`) link. Since #1071 a
  *   call ingest binds by the declared types is an `exercises` link.
+ * - `entry-point` — #1108: the test calls mapped code that many tests call (a
+ *   constructor or router every test of a package builds, such as Go
+ *   `NewHandler`), and neither the test's name nor the callee's shares the
+ *   requirement title's words. The call is real; it says nothing about THIS
+ *   requirement. Never strict, and on its own it does not make a requirement
+ *   tested: the gap list reports it as `entry-point-only`.
  */
-export const TEST_LINK_RELATIONS = ["direct", "exercises", "naming", "inferred-call"] as const;
+export const TEST_LINK_RELATIONS = [
+  "direct",
+  "exercises",
+  "naming",
+  "inferred-call",
+  "entry-point",
+] as const;
 export type TestLinkRelation = (typeof TEST_LINK_RELATIONS)[number];
 
 /** A test that covers a requirement, resolved from its mapped code. */
@@ -256,8 +268,12 @@ export interface RequirementTestGap {
   requirementId: string;
   title: string;
   analysisId: string | null;
-  /** `no-code` = no mapped code, so testedness cannot be told (never listed as untested). */
-  reason: "no-test" | "no-code";
+  /**
+   * `no-code` = no mapped code, so testedness cannot be told (never listed as untested).
+   * `entry-point-only` (#1108) = its only links are `entry-point` ones: tests that
+   * call a shared entry point it is mapped to, none of them about it.
+   */
+  reason: "no-test" | "no-code" | "entry-point-only";
   /** Distinct mapped files (direct + via specs). */
   mappedFiles: number;
 }
@@ -364,9 +380,15 @@ export interface WorkspaceProjectTraceability {
    * drag them down.
    */
   codeMappedRequirements: number;
-  /** #815 — fraction (0–1) of `codeMappedRequirements` with ≥1 `testedBy` of any relation. */
+  /**
+   * #815 — fraction (0–1) of `codeMappedRequirements` with ≥1 `testedBy` link of
+   * any relation except `entry-point` (#1108), which does not count as tested.
+   */
   testCoverage: number;
-  /** #815 — as `testCoverage`, counting only `direct` and `exercises` links (not `naming`). */
+  /**
+   * #815 — as `testCoverage`, counting only `direct` and `exercises` links (not
+   * `naming`, `inferred-call` or `entry-point`).
+   */
   strictTestCoverage: number;
 }
 

@@ -318,7 +318,16 @@ export function createGetRequirementTool(
       }
       if (chain.testedBy.length) {
         out.push(
-          `Tested by:\n${chain.testedBy.map((t) => `- ${t.filePath} (${t.name})`).join("\n")}`,
+          `Tested by:\n${chain.testedBy
+            .map(
+              (t) =>
+                `- ${t.filePath} (${t.name})` +
+                // #1108 — a weak link must not read as coverage to the model.
+                (t.relation === "entry-point"
+                  ? " — only calls a shared entry point; not evidence this requirement is tested"
+                  : ""),
+            )
+            .join("\n")}`,
         );
       }
       return {

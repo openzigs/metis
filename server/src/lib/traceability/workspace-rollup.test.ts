@@ -586,6 +586,34 @@ describe("getWorkspaceTraceabilitySummary", () => {
       });
     });
 
+    it("#1108 — reached only through a shared entry point counts as neither tested nor strict", async () => {
+      listMemberProjectsInWorkspace.mockResolvedValue(["projA"]);
+      const base = fixture(["projA"], ["R8"]);
+      // `NewHandler`, built by five tests that are each about another handler.
+      const callers = ["A", "B", "C", "D", "E"].map((n) =>
+        sym(`t-h${n}`, "internal/api/api_test.go", `TestGet${n}Handler`),
+      );
+      const prisma = summaryPrisma({
+        ...base,
+        code: { projA: [row("R8", "internal/api/api.go", "s-h")] },
+        symbols: [sym("s-h", "internal/api/api.go", "NewHandler"), ...callers],
+        edges: callers.map((c) => ({
+          projectId: "projA",
+          kind: "calls",
+          fromSymbolId: c.id,
+          toSymbolId: "s-h",
+        })),
+      });
+      const result = await getWorkspaceTraceabilitySummary(actor, "ws1", {
+        prisma: prisma as never,
+      });
+      expect(result.projects[0]).toMatchObject({
+        codeMappedRequirements: 1,
+        testCoverage: 0,
+        strictTestCoverage: 0,
+      });
+    });
+
     it("reports 1, not more, when every code-mapped requirement is tested", async () => {
       listMemberProjectsInWorkspace.mockResolvedValue(["projA"]);
       const result = await getWorkspaceTraceabilitySummary(actor, "ws1", {

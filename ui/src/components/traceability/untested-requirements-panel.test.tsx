@@ -171,4 +171,26 @@ describe("UntestedRequirementsPanel", () => {
     expect(await screen.findByRole("link", { name: "Listed" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Not listed" })).toBeNull();
   });
+
+  it("#1108 — lists a requirement tested only through a shared entry point, and says so", async () => {
+    testGaps.mockResolvedValue({
+      total: 2,
+      tested: 0,
+      noCode: 0,
+      untested: [
+        gap("r-n", "No test at all"),
+        { ...gap("r-e", "Feed counters endpoint"), reason: "entry-point-only" as const },
+      ],
+      nextCursor: null,
+    });
+    renderPanel();
+    const entry = (await screen.findByRole("link", { name: "Feed counters endpoint" })).closest(
+      "li",
+    )!;
+    expect(within(entry).getByTestId("untested-entry-point-only")).toHaveTextContent(
+      /only through a shared entry point/,
+    );
+    const plain = screen.getByRole("link", { name: "No test at all" }).closest("li")!;
+    expect(within(plain).queryByTestId("untested-entry-point-only")).toBeNull();
+  });
 });

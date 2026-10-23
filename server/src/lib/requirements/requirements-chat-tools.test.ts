@@ -361,6 +361,34 @@ describe("get_requirement (#1030)", () => {
     expect(res.text).not.toContain("finding:");
   });
 
+  it("#1108 — says a test through a shared entry point is not evidence of testing", async () => {
+    const { prisma } = stubPrisma([row({ id: "r1" })]);
+    const test = (name: string, relation: string) =>
+      ({
+        codeSymbolId: null,
+        filePath: "internal/api/api_test.go",
+        symbol: `internal/api/api_test.go::${name}`,
+        name,
+        relation,
+      }) as unknown as RequirementTraceabilityChain["testedBy"][number];
+    const tool = createGetRequirementTool({
+      prisma,
+      chain: async (_p, id) => ({
+        ...emptyChain(id),
+        testedBy: [
+          test("TestFeedCounters", "exercises"),
+          test("TestGetEntryIDsHandlerRequiresAuthentication", "entry-point"),
+        ],
+      }),
+    });
+    const res = await tool.exec({ requirementId: "r1" }, ctx);
+    const lines = res.text.split("\n");
+    expect(lines.find((l) => l.includes("TestGetEntryIDsHandlerRequiresAuthentication"))).toMatch(
+      /only calls a shared entry point; not evidence this requirement is tested/,
+    );
+    expect(lines.find((l) => l.includes("TestFeedCounters"))).not.toMatch(/shared entry point/);
+  });
+
   it("says plainly when acceptance criteria and links are absent", async () => {
     const { prisma } = stubPrisma([row({ id: "r1" })]);
     const tool = createGetRequirementTool({ prisma, chain: async (_p, id) => emptyChain(id) });

@@ -690,6 +690,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "How many distinct FOREIGN test directories (not the mapped code's own directory or its conventional sibling test directory) must exercise one requirement→code mapping before it is treated as a hub (a config constructor other packages' tests call for setup) when resolving \"Tested by\" (#860, `lib/traceability/tested-by.ts`). Through a hub, an `exercises` link, from a foreign or the code's own directory (#905), counts only when the test or the symbol it calls shares the requirement title's words. Default 2.",
     sensitive: false,
   },
+  TESTED_BY_ENTRY_POINT_MIN_TEST_CALLERS: {
+    tier: "tunable",
+    valueType: "int",
+    // At least 2: with 1, a function's only test would make it an entry point.
+    schema: z.coerce.number().int().min(2),
+    description:
+      "How many distinct test-file symbols must call one mapped symbol before it is treated as a shared entry point (a constructor or router every test of a package builds, such as Go `NewHandler`) when resolving \"Tested by\" (#1108, `lib/traceability/tested-by.ts`). A test calling a shared entry point counts only when its name or the callee's shares the requirement title's words; otherwise it is listed as `entry-point` and does not make the requirement tested. Minimum 2. Default 5, measured on Miniflux 2.3.3.",
+    sensitive: false,
+  },
   // ── Epic #820 Phase 1 / Issue #824 — deterministic AFFECTED SCHEMA prompt block ─
   ANALYSIS_AFFECTED_SCHEMA_MAPPING: {
     tier: "tunable",

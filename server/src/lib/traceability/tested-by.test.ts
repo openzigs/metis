@@ -7,6 +7,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import {
+  DEFAULT_TESTED_BY_ENTRY_POINT_MIN_TEST_CALLERS,
   DEFAULT_TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS,
   listUntestedRequirements,
   matchTestSubject,
@@ -224,6 +225,12 @@ const fileMap = (requirementId: string, filePath: string, codeSymbolId: string |
   projectId: P,
   codeSymbolId,
   filePath,
+});
+/** A file-level row carrying a line range: the cited lines, not the whole file (#955). */
+const rangeMap = (requirementId: string, filePath: string, startLine: number, endLine: number) => ({
+  ...fileMap(requirementId, filePath),
+  startLine,
+  endLine,
 });
 
 const USER = "internal/validator/user.go";
@@ -1084,9 +1091,11 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
       hubMinForeignTestDirs: DEFAULT_TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS,
     });
     expect(await names(atDefault)).toEqual([]);
-    // One more required directory than Miniflux has: not a hub, all 14 callers count.
+    // One more required directory than Miniflux has: not a hub, all 14 callers
+    // count. (The #1108 entry-point rule, off here, would demote all 14 as well.)
     const { deps: above } = deps(minifluxFixture(constructorRow, OAUTH_TITLE), {
       hubMinForeignTestDirs: 3,
+      entryPointMinTestCallers: 1000,
     });
     const out = await resolve(above);
     expect(out).toHaveLength(14);
@@ -1105,9 +1114,12 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
 
   it("keeps a foreign caller whose TEST name shares two title words", async () => {
     const { deps: d } = deps(minifluxFixture(constructorRow, "Invidious video link rewriting"));
-    // Two of `invidious`, `video`, `link`; `TestInvidiousIFrame` and
+    // Two of `invidious`, `video`, `link`, `rewrit` (stemmed, #1435 review: so the
+    // `TestRewrite…Link` tests now count); `TestInvidiousIFrame` and
     // `TestAddYoutubeVideoFromId` share one each.
     expect(await names(d)).toEqual([
+      "TestRewriteIncorrectYoutubeLink",
+      "TestRewriteYoutubeShortLink",
       "TestRewriteYoutubeShortLinkUsingInvidious",
       "TestRewriteYoutubeVideoLink",
       "TestRewriteYoutubeVideoLinkUsingInvidious",
@@ -1436,6 +1448,451 @@ describe("resolveTestedBy — config hubs do not fan out (#860)", () => {
     });
     const out = (await resolveTestedBy(P, ["r1"], undefined, d)).get("r1")!;
     expect(out.map((t) => t.relation)).toEqual(["direct"]);
+  });
+});
+
+describe("resolveTestedBy — a rangeless whole-file mapping (#955, #1004)", () => {
+  // Miniflux 2.3.3, #706 run 4: five age-based mark-as-read requirements carry the
+  // seeder's `internal/storage/entry.go:` row (analysis-grounding, no symbol, no
+  // range), and the only test reaching that file is an unrelated helper's.
+  const ENTRY = "internal/storage/entry.go";
+  const ENTRY_TEST = "internal/storage/entry_test.go";
+  const entrySymbols = [
+    sym("e-mod", ENTRY, "entry.go", { kind: "module", qualifiedName: ENTRY, endLine: 900 }),
+    sym("e-trunc", ENTRY, "truncateStringForTSVectorField", { startLine: 40, endLine: 70 }),
+    sym("e-mark", ENTRY, "MarkAllAsReadBeforeDate", { startLine: 500, endLine: 540 }),
+    sym("t-trunc", ENTRY_TEST, "TestTruncateStringForTSVectorField", { startLine: 10 }),
+  ];
+  const truncCall = {
+    projectId: P,
+    kind: "calls",
+    fromSymbolId: "t-trunc",
+    toSymbolId: "e-trunc",
+  };
+  const wholeFile = { ...fileMap("r1", ENTRY), source: "analysis-grounding" };
+  const AGE_TITLE = "Mark entries older than N days as read";
+  const resolve = async (f: Fixture) =>
+    (await resolveTestedBy(P, ["r1"], { limit: 50 }, deps(f).deps)).get("r1") ?? [];
+
+  it("does not link an own-package helper test through the whole file", async () => {
+    const f: Fixture = {
+      requirements: [req("r1", AGE_TITLE)],
+      codeMappings: [wholeFile],
+      symbols: entrySymbols,
+      edges: [truncCall],
+    };
+    expect(await resolve(f)).toEqual([]);
+    const gaps = await listUntestedRequirements(P, undefined, deps(f).deps);
+    expect(gaps).toMatchObject({
+      tested: 0,
+      untested: [{ requirementId: "r1", reason: "no-test" }],
+    });
+  });
+
+  it("does not name-match the helper's own test to the whole file either", async () => {
+    // No call edge: `TestTruncateStringForTSVectorField` is named for a symbol of
+    // the file, which is not the same as being named for the requirement.
+    const out = await resolve({
+      requirements: [req("r1", AGE_TITLE)],
+      codeMappings: [wholeFile],
+      symbols: entrySymbols,
+    });
+    expect(out).toEqual([]);
+  });
+
+  it("keeps a test whose name, or its callee's, is about the requirement", async () => {
+    // The #955 true positive, Miniflux's icon finder.
+    const FINDER = "internal/reader/icon/finder.go";
+    const FINDER_TEST = "internal/reader/icon/finder_test.go";
+    const out = await resolve({
+      requirements: [req("r1", "Parse base64 image data URLs in icon finder")],
+      codeMappings: [{ ...fileMap("r1", FINDER), source: "analysis-grounding" }],
+      symbols: [
+        sym("f-parse", FINDER, "parseImageDataURL", { startLine: 300 }),
+        sym("f-other", FINDER, "resizeIcon", { startLine: 100 }),
+        sym("t-parse", FINDER_TEST, "TestParseImageDataURL"),
+        sym("t-other", FINDER_TEST, "TestResizeIcon", { startLine: 40 }),
+      ],
+      edges: [
+        { projectId: P, kind: "calls", fromSymbolId: "t-parse", toSymbolId: "f-parse" },
+        { projectId: P, kind: "calls", fromSymbolId: "t-other", toSymbolId: "f-other" },
+      ],
+    });
+    // TestResizeIcon shares the token "icon", but it is named for another symbol
+    // of the file, so the one-token `naming` fallback does not let it back in.
+    expect(out.map((t) => [t.name, t.relation])).toEqual([["TestParseImageDataURL", "exercises"]]);
+  });
+
+  it("keeps a callee named for the requirement although its test is not", async () => {
+    const out = await resolve({
+      requirements: [req("r1", "Mark all as read before a date")],
+      codeMappings: [wholeFile],
+      symbols: [...entrySymbols, sym("t-x", ENTRY_TEST, "TestStorageScenario", { startLine: 90 })],
+      edges: [{ projectId: P, kind: "calls", fromSymbolId: "t-x", toSymbolId: "e-mark" }],
+    });
+    expect(out.map((t) => [t.name, t.relation])).toEqual([["TestStorageScenario", "exercises"]]);
+  });
+
+  it("leaves a ranged or a symbol mapping of the same file alone", async () => {
+    const base: Fixture = {
+      requirements: [req("r1", AGE_TITLE)],
+      symbols: entrySymbols,
+      edges: [truncCall],
+    };
+    for (const mapping of [
+      rangeMap("r1", ENTRY, 40, 70),
+      fileMap("r1", ENTRY, "e-trunc"),
+      // A person who maps a whole file means it: only the seeder's rows are judged.
+      { ...fileMap("r1", ENTRY), source: "manual" },
+    ]) {
+      const out = await resolve({ ...base, codeMappings: [mapping] });
+      expect(out.map((t) => [t.name, t.relation])).toEqual([
+        ["TestTruncateStringForTSVectorField", "exercises"],
+      ]);
+    }
+  });
+});
+
+describe("resolveTestedBy — a shared entry point is not evidence (#1108)", () => {
+  // Miniflux 2.3.3 `internal/api/api_test.go`: ten tests, five of which build the
+  // router with `handler := NewHandler(nil, nil)` — three named for another
+  // handler, two for NewHandler itself. The run-7 mapper bound "Feed counters
+  // endpoint" and "Mark all as read endpoint response" to `api.go::NewHandler`.
+  const API = "internal/api/api.go";
+  const API_TEST = "internal/api/api_test.go";
+  const routerCallers = [
+    "TestGetEntryIDsHandlerRequiresAuthentication",
+    "TestGetEntryIDsHandlerRejectsInvalidStarredParam",
+    "TestGetEntryIDsHandlerRejectsInvalidStatusParam",
+    "TestNewHandlerHandlesOptionsRequests",
+    "TestNewHandlerSupportsBasePathStripping",
+  ].map((name, i) => sym(`t-api-${i}`, API_TEST, name, { startLine: 16 + 20 * i }));
+  const apiSymbols = [
+    sym("a-new", API, "NewHandler", { startLine: 20, endLine: 120 }),
+    ...routerCallers,
+    sym("t-version", API_TEST, "TestVersionHandler", { startLine: 45 }),
+  ];
+  const callsNewHandler = (fromSymbolId: string) => ({
+    projectId: P,
+    kind: "calls",
+    fromSymbolId,
+    toSymbolId: "a-new",
+  });
+  const routerEdges = routerCallers.map((t) => callsNewHandler(t.id));
+  const newHandlerRow = (id: string) => ({
+    ...fileMap(id, API, "a-new"),
+    startLine: 20,
+    endLine: 120,
+  });
+  const routerFixture = (titles: string[]): Fixture => ({
+    requirements: titles.map((t, i) => req(`r${i}`, t)),
+    codeMappings: titles.map((_, i) => newHandlerRow(`r${i}`)),
+    symbols: [...apiSymbols],
+    edges: [...routerEdges],
+  });
+  const ROUTER_TITLES = ["Feed counters endpoint", "Mark all as read endpoint response"];
+
+  // The config getters the other run-7 requirements map to: one test each.
+  const OPTIONS = "internal/config/options.go";
+  const OPTIONS_TEST = "internal/config/options_parsing_test.go";
+  const getter = (id: string, name: string, startLine: number) =>
+    sym(id, OPTIONS, name, { qualifiedName: `${OPTIONS}::configOptions::${name}`, startLine });
+  const getterFixture: Fixture = {
+    requirements: [
+      req("g0", "Metrics endpoint disabled by default"),
+      req("g1", "OAuth2 automatic user creation"),
+      req("g2", "OIDC provider display name"),
+    ],
+    codeMappings: [
+      fileMap("g0", OPTIONS, "c-metrics"),
+      fileMap("g1", OPTIONS, "c-oauth"),
+      fileMap("g2", OPTIONS, "c-oidc"),
+    ],
+    symbols: [
+      getter("c-metrics", "HasMetricsCollector", 700),
+      getter("c-oauth", "IsOAuth2UserCreationAllowed", 829),
+      getter("c-oidc", "OAuth2OIDCProviderName", 850),
+      sym("tc-metrics", OPTIONS_TEST, "TestMetricsCollectorOptionParsing", { startLine: 10 }),
+      sym("tc-oauth", OPTIONS_TEST, "TestOAuth2UserCreationOptionParsing", { startLine: 30 }),
+      sym("tc-oidc", OPTIONS_TEST, "TestOAuth2OIDCProviderNameOptionParsing", { startLine: 50 }),
+    ],
+    edges: [
+      { projectId: P, kind: "calls", fromSymbolId: "tc-metrics", toSymbolId: "c-metrics" },
+      { projectId: P, kind: "calls", fromSymbolId: "tc-oauth", toSymbolId: "c-oauth" },
+      { projectId: P, kind: "calls", fromSymbolId: "tc-oidc", toSymbolId: "c-oidc" },
+    ],
+  };
+  const all = async (f: Fixture, extra: Partial<TestedByDeps> = {}) =>
+    resolveTestedBy(
+      P,
+      (f.requirements ?? []).map((r) => r.id),
+      { limit: 50 },
+      deps(f, extra).deps,
+    );
+
+  // The same router with its two own tests swapped for two more setup callers:
+  // all five callers build NewHandler to reach another handler.
+  const setupOnlyFixture = (titles: string[]): Fixture => {
+    const f = routerFixture(titles);
+    f.symbols = f.symbols!.map((s) =>
+      s.id === "t-api-3"
+        ? { ...s, name: "TestVersionRouteRequiresAuthentication" }
+        : s.id === "t-api-4"
+          ? { ...s, name: "TestPreflightRequests" }
+          : s,
+    );
+    return f;
+  };
+  const relations = (tests: Array<{ name: string; relation: string }>) =>
+    Object.fromEntries(tests.map((t) => [t.name, t.relation]));
+
+  it("reports every NewHandler test of the run-7 and run-9 router requirements as entry-point", async () => {
+    // TestNewHandler… NAME the callee, but `NewHandler` is `new` + `handler`, two
+    // constructor/router stop-words, so the callee's name shares nothing with any
+    // route title and its own tests are demoted with the setup callers.
+    const titles = [...ROUTER_TITLES, "Expose GET /v1/feeds API", "Expose POST /v1/discover API"];
+    const out = await all(routerFixture(titles));
+    for (const id of ["r0", "r1", "r2", "r3"]) {
+      const tests = out.get(id)!;
+      expect(tests).toHaveLength(5);
+      expect(new Set(tests.map((t) => t.relation))).toEqual(new Set(["entry-point"]));
+      expect(tests[0].subject).toEqual({ filePath: API, symbol: `${API}::NewHandler` });
+      expect(tests[0].score).toBeLessThanOrEqual(0.4);
+    }
+    const gaps = await listUntestedRequirements(P, undefined, deps(routerFixture(titles)).deps);
+    expect(gaps.tested).toBe(0);
+    expect(gaps.untested.map((g) => g.reason)).toEqual(Array(4).fill("entry-point-only"));
+  });
+
+  it("never lets `new` or `handler` tie NewHandler's tests to a title", async () => {
+    // Without the stop-words, "New feed handler endpoint" shares `new` and
+    // `handler` with TestNewHandler… and with NewHandler itself.
+    const out = (await all(routerFixture(["New feed handler endpoint"]))).get("r0")!;
+    expect(new Set(out.map((t) => t.relation))).toEqual(new Set(["entry-point"]));
+  });
+
+  it("lists a requirement reached only by setup callers as entry-point-only", async () => {
+    const out = await all(setupOnlyFixture(ROUTER_TITLES));
+    expect(new Set(out.get("r0")!.map((t) => t.relation))).toEqual(new Set(["entry-point"]));
+    const { deps: d } = deps(setupOnlyFixture(ROUTER_TITLES));
+    const gaps = await listUntestedRequirements(P, undefined, d);
+    expect(gaps.tested).toBe(0);
+    expect(gaps.untested.map((g) => [g.requirementId, g.reason])).toEqual([
+      ["r0", "entry-point-only"],
+      ["r1", "entry-point-only"],
+    ]);
+  });
+
+  it("keeps the three config-option requirements strictly tested", async () => {
+    const out = await all(getterFixture);
+    expect(["g0", "g1", "g2"].map((id) => out.get(id)!.map((t) => [t.name, t.relation]))).toEqual([
+      [["TestMetricsCollectorOptionParsing", "exercises"]],
+      [["TestOAuth2UserCreationOptionParsing", "exercises"]],
+      [["TestOAuth2OIDCProviderNameOptionParsing", "exercises"]],
+    ]);
+    const gaps = await listUntestedRequirements(P, undefined, deps(getterFixture).deps);
+    expect(gaps).toMatchObject({ tested: 3, untested: [] });
+  });
+
+  it("keeps a setup caller whose name is about the requirement", async () => {
+    const out = (await all(setupOnlyFixture(["Reject invalid entry query params"]))).get("r0")!;
+    // `reject` and `invalid` rescue the two param tests; the others share at most one word.
+    expect(relations(out)).toEqual({
+      TestGetEntryIDsHandlerRequiresAuthentication: "entry-point",
+      TestGetEntryIDsHandlerRejectsInvalidStarredParam: "exercises",
+      TestGetEntryIDsHandlerRejectsInvalidStatusParam: "exercises",
+      TestVersionRouteRequiresAuthentication: "entry-point",
+      TestPreflightRequests: "entry-point",
+    });
+  });
+
+  describe("ParseFeed: a test named for the callee, and the callee's own words (review)", () => {
+    // The reviewer's case: ParseFeed is built by format tests not named for it,
+    // and two tests that are.
+    const PARSER = "internal/reader/parser/parser.go";
+    const PARSER_TEST = "internal/reader/parser/parser_test.go";
+    const callers = [
+      "TestParseAtom03Feed",
+      "TestParseAtom10Feed",
+      "TestParseRSSFeed",
+      "TestParseRDFFeed",
+      "TestParseJSONFeed",
+      "TestParseUnknownFeed",
+      "TestParseFeedRSS",
+      "TestParseFeedAtom",
+    ].map((name, i) => sym(`t-pf-${i}`, PARSER_TEST, name, { startLine: 10 + 20 * i }));
+    const parseFeed = async (title: string) =>
+      relations(
+        (
+          await all({
+            requirements: [req("r0", title)],
+            codeMappings: [fileMap("r0", PARSER, "p-feed")],
+            symbols: [sym("p-feed", PARSER, "ParseFeed", { startLine: 20 }), ...callers],
+            edges: callers.map((c) => ({
+              projectId: P,
+              kind: "calls",
+              fromSymbolId: c.id,
+              toSymbolId: "p-feed",
+            })),
+          })
+        ).get("r0")!,
+      );
+
+    it("'Parsing feeds' stems to `pars feed`: every caller is about it", async () => {
+      expect(new Set(Object.values(await parseFeed("Parsing feeds")))).toEqual(
+        new Set(["exercises"]),
+      );
+    });
+
+    it("keeps the named tests when only the callee's name meets the title", async () => {
+      // One shared word (`feed`) is not enough for a four-word title, so only
+      // the clause for tests NAMED for ParseFeed keeps TestParseFeedRSS/Atom.
+      const r = await parseFeed("Feeds survive malformed input");
+      expect(r.TestParseFeedRSS).toBe("exercises");
+      expect(r.TestParseFeedAtom).toBe("exercises");
+      expect(r.TestParseAtom03Feed).toBe("entry-point");
+    });
+
+    it("demotes them for 'Support syndication formats' (a known limit)", async () => {
+      const r = await parseFeed("Support syndication formats");
+      expect(r.TestParseFeedRSS).toBe("entry-point");
+      expect(r.TestParseFeedAtom).toBe("entry-point");
+    });
+  });
+
+  it("demotes a naming match to a short-named entry point the same way", async () => {
+    // `Tag` is too short to be named by a test name (#1435 review), so a sibling
+    // test named for it is judged like any setup caller, although the callee's
+    // own name meets the title (`tag`). (`Run` would not do: `run` is a
+    // stop-word, which would hide this rule.)
+    const POOL = "internal/worker/pool.go";
+    const POOL_TEST = "internal/worker/pool_test.go";
+    const setup = ["TestAlphaJob", "TestBetaJob", "TestGammaJob", "TestDeltaJob", "TestEpsilonJob"];
+    const f: Fixture = {
+      requirements: [req("r0", "Tag feed counters")],
+      codeMappings: [fileMap("r0", POOL, "w-run")],
+      symbols: [
+        sym("w-run", POOL, "Tag", { startLine: 20 }),
+        ...setup.map((n, i) => sym(`t-w-${i}`, POOL_TEST, n, { startLine: 100 + 20 * i })),
+        sym("t-w-named", POOL_TEST, "TestTagDrainsQueue", { startLine: 400 }),
+      ],
+      edges: setup.map((_, i) => ({
+        projectId: P,
+        kind: "calls",
+        fromSymbolId: `t-w-${i}`,
+        toSymbolId: "w-run",
+      })),
+    };
+    const out = (await all(f)).get("r0")!;
+    expect(out.find((t) => t.name === "TestTagDrainsQueue")?.relation).toBe("entry-point");
+    expect(out.every((t) => t.relation === "entry-point")).toBe(true);
+  });
+
+  it("does not read `Get` as named by TestTargetURL: whole tokens only (review)", async () => {
+    const H = "internal/http/client.go";
+    const HT = "internal/http/client_test.go";
+    const callers = [
+      "TestTargetURL",
+      "TestBudgetLimit",
+      "TestWidgetRender",
+      "TestGadgetList",
+      "TestForgetPassword",
+    ].map((n, i) => sym(`t-g-${i}`, HT, n, { startLine: 10 + 20 * i }));
+    const f: Fixture = {
+      requirements: [req("r0", "Feed counters endpoint")],
+      codeMappings: [fileMap("r0", H, "h-get")],
+      symbols: [sym("h-get", H, "Get", { startLine: 5 }), ...callers],
+      edges: callers.map((c) => ({
+        projectId: P,
+        kind: "calls",
+        fromSymbolId: c.id,
+        toSymbolId: "h-get",
+      })),
+    };
+    // Substring containment would call every one of them "named" for `Get`, so
+    // `Get` would never be an entry point.
+    const out = (await all(f)).get("r0")!;
+    expect(out.map((t) => t.relation)).toEqual(Array(5).fill("entry-point"));
+  });
+
+  it("is an entry point at exactly DEFAULT_TESTED_BY_ENTRY_POINT_MIN_TEST_CALLERS (5) callers", async () => {
+    expect(DEFAULT_TESTED_BY_ENTRY_POINT_MIN_TEST_CALLERS).toBe(5);
+    const at = (await all(setupOnlyFixture(ROUTER_TITLES))).get("r0")!;
+    expect(at.every((t) => t.relation === "entry-point")).toBe(true);
+    // One more caller required than NewHandler has: every call counts again.
+    const above = (await all(setupOnlyFixture(ROUTER_TITLES), { entryPointMinTestCallers: 6 })).get(
+      "r0",
+    )!;
+    expect(above.map((t) => t.relation)).toEqual(Array(5).fill("exercises"));
+  });
+
+  it("is not one when most of its callers name it, however many there are", async () => {
+    // Rename one router test: now three of the five name NewHandler.
+    const f = routerFixture(ROUTER_TITLES);
+    f.symbols = f.symbols!.map((s) =>
+      s.id === "t-api-2" ? { ...s, name: "TestNewHandlerRejectsUnknownRoutes" } : s,
+    );
+    const out = (await all(f)).get("r0")!;
+    expect(out.map((t) => t.relation)).toEqual(Array(5).fill("exercises"));
+  });
+
+  it("is not one at exactly half: three of six callers name it", async () => {
+    const f = routerFixture(ROUTER_TITLES);
+    f.symbols = [
+      ...f.symbols!.map((s) =>
+        s.id === "t-api-2" ? { ...s, name: "TestNewHandlerRejectsUnknownRoutes" } : s,
+      ),
+      sym("t-api-5", API_TEST, "TestGetFeedsHandler", { startLine: 400 }),
+    ];
+    f.edges!.push(callsNewHandler("t-api-5"));
+    const out = (await all(f)).get("r0")!;
+    expect(out.map((t) => t.relation)).toEqual(Array(6).fill("exercises"));
+  });
+
+  it("demotes an inferred call into the entry point too", async () => {
+    // A same-package test calling `h.NewHandler(…)` that ingest left unresolved:
+    // bound by name, then judged like the ingest's own five callers.
+    const f = setupOnlyFixture(["Feed counters endpoint"]);
+    f.symbols!.push(sym("t-inferred", API_TEST, "TestCountersRoute", { startLine: 500 }));
+    f.edges!.push({
+      projectId: P,
+      kind: "calls",
+      fromSymbolId: "t-inferred",
+      toSymbolId: null,
+      toQualifiedName: "NewHandler",
+      filePath: API_TEST,
+    } as never);
+    const out = (await all(f)).get("r0")!;
+    expect(out.find((t) => t.name === "TestCountersRoute")?.relation).toBe("entry-point");
+    const gaps = await listUntestedRequirements(P, undefined, deps(f).deps);
+    expect(gaps.untested.map((g) => g.reason)).toEqual(["entry-point-only"]);
+  });
+
+  it("reads a legacy method name: ScheduleNextCheck stored without its Feed receiver", async () => {
+    // A graph ingested before #1071 holds `feed.go::ScheduleNextCheck`; its 11
+    // callers are all `TestFeedScheduleNextCheck…`, the method's own tests.
+    const FEED = "internal/model/feed.go";
+    const FEED_TEST = "internal/model/feed_test.go";
+    const callers = Array.from({ length: 11 }, (_, i) =>
+      sym(`t-sched-${i}`, FEED_TEST, `TestFeedScheduleNextCheckCase${"ABCDEFGHIJK"[i]}`, {
+        startLine: 10 + 20 * i,
+      }),
+    );
+    const out = (
+      await all({
+        requirements: [req("r0", "Selectable polling scheduler")],
+        codeMappings: [fileMap("r0", FEED, "f-sched")],
+        symbols: [sym("f-sched", FEED, "ScheduleNextCheck", { startLine: 120 }), ...callers],
+        edges: callers.map((c) => ({
+          projectId: P,
+          kind: "calls",
+          fromSymbolId: c.id,
+          toSymbolId: "f-sched",
+        })),
+      })
+    ).get("r0")!;
+    expect(out).toHaveLength(11);
+    expect(out.every((t) => t.relation === "exercises")).toBe(true);
   });
 });
 

@@ -75,6 +75,23 @@
  *    directory) is a single foreign directory and never forms a hub at the
  *    default.
  *
+ * Two more keep a link to tests that are about the requirement (#955, #1108):
+ *  - An `analysis-grounding` rangeless whole-file target (no symbol, no range:
+ *    the seeder's row for a finding that cites a file with no lines) cites no lines, so a
+ *    symbol of the file is not evidence: an `exercises` link through it, and a
+ *    `naming` match to it, need the hub guard's title-word overlap (and a test
+ *    so rejected is not let back in by the one-token `naming` fallback).
+ *  - A **shared entry point** — a mapped symbol called by at least
+ *    `TESTED_BY_ENTRY_POINT_MIN_TEST_CALLERS` (default 5) test-file symbols,
+ *    most of which do not name it (a constructor or router the tests build, Go
+ *    `NewHandler`) — turns an `exercises`, `inferred-call` or `naming` link that is not about the
+ *    requirement by the same word rule into the weakest relation, `entry-point`
+ *    (0.4). It is shown, never strict, and alone it leaves the requirement in
+ *    the gap list as `entry-point-only` (see {@link isSharedEntryPoint}).
+ *    A test named for the callee is kept when the callee's own name shares a
+ *    title word; constructor/router words (`new`, `handler`, …) never count
+ *    ({@link ENTRY_POINT_STOP_WORDS}).
+ *
  * Within a relation, tests are ordered by BM25 relevance of `name + qualifiedName`
  * against `denoiseRequirementQuery(title + body)`, folded into `score`. Results
  * are deduplicated by `(filePath, qualifiedName)`, keeping the strongest relation.
@@ -118,6 +135,8 @@ export interface TestedByDeps {
   maxSymbolsPerFile?: number;
   /** Overrides `TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS`. */
   hubMinForeignTestDirs?: number;
+  /** Overrides `TESTED_BY_ENTRY_POINT_MIN_TEST_CALLERS`. */
+  entryPointMinTestCallers?: number;
 }
 
 /** Default cap on the symbols a file-only target expands to. */
@@ -128,6 +147,13 @@ export const DEFAULT_TESTED_BY_MAX_SYMBOLS_PER_FILE = 500;
  * `NewConfigOptions` has 2 (a hub), `NewConfigParser` 10, `SanitizeHTML` 0.
  */
 export const DEFAULT_TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS = 2;
+/**
+ * Default number of distinct test-file symbols calling one mapped symbol that
+ * makes it a shared entry point (#1108). Measured on the Miniflux 2.3.3 graph
+ * (see {@link resolveOne}): `NewHandler` has 5 test callers, the
+ * `configOptions` getters the config requirements map to have 1 or 2.
+ */
+export const DEFAULT_TESTED_BY_ENTRY_POINT_MIN_TEST_CALLERS = 5;
 export const DEFAULT_TESTED_BY_LIMIT = 10;
 
 const BASE_SCORE: Record<TestLinkRelation, number> = {
@@ -135,12 +161,14 @@ const BASE_SCORE: Record<TestLinkRelation, number> = {
   exercises: 0.8,
   naming: 0.6,
   "inferred-call": 0.5,
+  "entry-point": 0.4,
 };
 const RELATION_RANK: Record<TestLinkRelation, number> = {
   direct: 0,
   exercises: 1,
   naming: 2,
   "inferred-call": 3,
+  "entry-point": 4,
 };
 /** Name tokens that mark a test rather than say what it tests. */
 const TEST_NAME_TOKENS = new Set(["test", "tests", "benchmark", "fuzz", "example", "spec"]);
@@ -157,6 +185,16 @@ function maxSymbolsPerFile(deps?: TestedByDeps): number {
     getConfigService().getNumber(
       "TESTED_BY_MAX_SYMBOLS_PER_FILE",
       DEFAULT_TESTED_BY_MAX_SYMBOLS_PER_FILE,
+    )
+  );
+}
+
+function entryPointMinTestCallers(deps?: TestedByDeps): number {
+  return (
+    deps?.entryPointMinTestCallers ??
+    getConfigService().getNumber(
+      "TESTED_BY_ENTRY_POINT_MIN_TEST_CALLERS",
+      DEFAULT_TESTED_BY_ENTRY_POINT_MIN_TEST_CALLERS,
     )
   );
 }
@@ -284,19 +322,73 @@ function nameTokens(name: string): string[] {
 }
 
 /**
- * The words of an identifier or sentence, split at every case, digit and
- * underscore boundary (`OAuth2UserCreation`, `OAUTH2_USER_CREATION` and
- * "oauth2 user creation" all give `oauth2 user creation`). Used only by the hub
- * relevance check (#860), which compares requirement words against names;
+ * The raw lower-case tokens of an identifier or sentence, split at every case,
+ * digit and underscore boundary (`OAuth2UserCreation`, `OAUTH2_USER_CREATION`
+ * and "oauth2 user creation" all give `oauth2 user creation`).
  * `tokenizeCodeRoots` keeps `snake_case` whole and so cannot.
  */
-function words(text: string): Set<string> {
-  const split = text
+function rawTokens(text: string): string[] {
+  return text
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
     .toLowerCase()
-    .split(/[^a-z0-9]+/);
-  return new Set(split.filter((w) => w.length >= MIN_SUBJECT_LENGTH && !TEST_NAME_TOKENS.has(w)));
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length > 0);
+}
+
+/** Letters whose doubling an `-ing`/`-ed` strip leaves behind (`running` → `run`). */
+const UNDOUBLE = /([^aeiouslz])\1$/;
+
+/**
+ * A light, deterministic stem (#1108 review): plural, then `-ing`/`-ed`, then a
+ * final `e`, so "Parsing feeds", `TestParseFeedRSS` and `parsed` all meet at
+ * `pars feed`. Not a linguistic stemmer: it only has to send a title's words and
+ * an identifier's words to the same key, and both sides go through it.
+ */
+export function stemWord(word: string): string {
+  let w = word;
+  if (w.length > 4 && w.endsWith("ies")) w = `${w.slice(0, -3)}y`;
+  else if (w.length > 4 && /(ches|shes|xes|sses|zes)$/.test(w)) w = w.slice(0, -2);
+  else if (w.length > 3 && w.endsWith("s") && !/(ss|us|is)$/.test(w)) w = w.slice(0, -1);
+  if (w.length > 5 && w.endsWith("ing")) w = w.slice(0, -3).replace(UNDOUBLE, "$1");
+  else if (w.length > 4 && w.endsWith("ed")) w = w.slice(0, -2).replace(UNDOUBLE, "$1");
+  if (w.length > 3 && w.endsWith("e")) w = w.slice(0, -1);
+  return w;
+}
+
+/**
+ * The stemmed words of an identifier or sentence (see {@link rawTokens},
+ * {@link stemWord}). Used by the title-word checks (#860, #955, #1108), which
+ * compare requirement words against names.
+ */
+function words(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const raw of rawTokens(text)) {
+    if (TEST_NAME_TOKENS.has(raw)) continue;
+    const w = stemWord(raw);
+    if (w.length >= MIN_SUBJECT_LENGTH && !TEST_NAME_TOKENS.has(w)) out.add(w);
+  }
+  return out;
+}
+
+/** Shortest folded callee name a test name can be said to name (`Get` cannot, #1108 review). */
+const MIN_NAMED_CALLEE_LENGTH = 4;
+
+/**
+ * True when the test's name NAMES the callee: the callee's tokens appear, in
+ * order and contiguous, among the test name's tokens (`TestFeedScheduleNextCheck…`
+ * names `ScheduleNextCheck`; `TestTargetURL` does not name `Get`). A callee
+ * shorter than {@link MIN_NAMED_CALLEE_LENGTH} folded is never named.
+ */
+export function namesCallee(testName: string, calleeName: string): boolean {
+  if (fold(calleeName).length < MIN_NAMED_CALLEE_LENGTH) return false;
+  const callee = rawTokens(calleeName);
+  const test = rawTokens(testName);
+  if (callee.length === 0) return false;
+  for (let i = 0; i + callee.length <= test.length; i++) {
+    if (callee.every((tok, j) => test[i + j] === tok)) return true;
+  }
+  return false;
 }
 
 /**
@@ -305,11 +397,40 @@ function words(text: string): Set<string> {
  * `TestValidatePassword`), two for a longer title, so one common word such as
  * `config` cannot carry a link through a hub.
  */
-function sharesRequirementWords(name: string, requirementWords: ReadonlySet<string>): boolean {
+function sharesRequirementWords(
+  name: string,
+  requirementWords: ReadonlySet<string>,
+  ignore?: ReadonlySet<string>,
+): boolean {
   if (requirementWords.size === 0) return false;
   const needed = requirementWords.size <= 2 ? 1 : 2;
   let shared = 0;
-  for (const w of words(name)) if (requirementWords.has(w) && ++shared >= needed) return true;
+  for (const w of words(name)) {
+    if (ignore?.has(w)) continue;
+    if (requirementWords.has(w) && ++shared >= needed) return true;
+  }
+  return false;
+}
+
+/**
+ * #1108 — stemmed words a constructor's or router's name is made of, which say
+ * nothing about a requirement: `NewHandler`'s `new` and `handler` must not tie
+ * it to "New feed handler endpoint". Ignored by the entry-point checks only.
+ */
+export const ENTRY_POINT_STOP_WORDS: ReadonlySet<string> = new Set(
+  ["new", "get", "set", "make", "init", "handle", "handler", "run"].map(stemWord),
+);
+
+/**
+ * True when the callee's OWN name shares at least one non-stop word with the
+ * requirement title (`ParseFeed` → `pars feed` for "Feeds survive malformed
+ * input"). Lets a test named for the callee keep its relation (#1435 review)
+ * without letting `TestNewHandler…` back in for every route `NewHandler` registers.
+ */
+function calleeNameSharesTitle(calleeName: string, requirementWords: ReadonlySet<string>): boolean {
+  for (const w of words(calleeName)) {
+    if (!ENTRY_POINT_STOP_WORDS.has(w) && requirementWords.has(w)) return true;
+  }
   return false;
 }
 
@@ -604,13 +725,49 @@ function coversSpan(t: TestedByTarget, sym: Pick<SymbolRow, "startLine" | "endLi
 }
 
 /** Resolve one requirement's tests from its targets against the loaded graph. */
+interface ResolveRules {
+  limit: number;
+  hubThreshold: number;
+  entryPointThreshold: number;
+  /** {@link isSharedEntryPoint} per symbol id, filled lazily across the batch. */
+  entryPoints: Map<string, boolean>;
+}
+
+/**
+ * #1108 — whether a mapped symbol is a SHARED ENTRY POINT: at least `threshold`
+ * distinct test-file symbols call it, and most of them do not name it. Such a
+ * callee is setup — a constructor or router the tests build to reach something
+ * else (`NewHandler`: 5 test callers, 3 of them `TestGetEntryIDsHandler…`). A
+ * callee its callers name is their subject however many there are
+ * (`ScheduleNextCheck`: 11 callers, every one `TestFeedScheduleNextCheck…`).
+ * "Names it" is {@link namesCallee}'s token match anywhere in the test name, not
+ * {@link matchTestSubject}'s prefix rule: a graph ingested before #1071 stores
+ * that method as `feed.go::ScheduleNextCheck`, with no `Feed` for the test's
+ * prefix to match. Counted on the ingest's edges only, like the hub guard.
+ */
+function isSharedEntryPoint(ts: SymbolRow, graph: GraphRows, threshold: number): boolean {
+  const callers = new Map((graph.edgesInto.get(ts.id) ?? []).map((s) => [s.id, s]));
+  if (callers.size < threshold) return false;
+  let unnamed = 0;
+  for (const from of callers.values()) if (!namesCallee(from.name, ts.name)) unnamed++;
+  return unnamed * 2 > callers.size;
+}
+
 function resolveOne(
   requirement: TestedByRequirement,
   targets: TestedByTarget[],
   graph: GraphRows,
-  limit: number,
-  hubThreshold: number,
+  rules: ResolveRules,
 ): TraceabilityTestNode[] {
+  const { limit, hubThreshold, entryPointThreshold, entryPoints } = rules;
+  const entryPoint = (ts: SymbolRow): boolean => {
+    let known = entryPoints.get(ts.id);
+    if (known === undefined) {
+      known = isSharedEntryPoint(ts, graph, entryPointThreshold);
+      entryPoints.set(ts.id, known);
+    }
+    return known;
+  };
   const query = denoiseRequirementQuery(`${requirement.title} ${requirement.body ?? ""}`);
   const queryTokens = new Set(nameTokens(query));
   // #860 — the hub guard matches the TITLE only: body prose brings in common
@@ -678,20 +835,47 @@ function resolveOne(
       exercised.filter((x) => isForeign(x.from)).map((x) => dirname(x.from.filePath)),
     );
     const hub = foreignDirs.size >= hubThreshold;
+    // #955 — a rangeless whole-file target cites no lines, so the symbol a test
+    // calls is only "in the file": every own-package helper test would link
+    // (`TestTruncateStringForTSVectorField` for five mark-as-read requirements).
+    // A call through it counts when the test or the callee is about the
+    // requirement, by the hub guard's word rule. Only the seeder's document-
+    // citation rows: a person who maps a whole file means the whole file, and
+    // every rangeless row measured on six walkthrough projects is this shape.
+    const wholeFile = fileOnly && t.startLine == null && t.source === ANALYSIS_GROUNDING_SOURCE;
+    const about = (from: SymbolRow, ts: SymbolRow): boolean =>
+      sharesRequirementWords(from.name, requirementWords) ||
+      sharesRequirementWords(ts.name, requirementWords);
+    // #1108 — a shared entry point (a constructor or router the tests build to
+    // reach something else) says nothing about one requirement: a link through
+    // it that is not about the requirement is reported, never counted.
+    // Constructor and router words (`new`, `handler`) never count here.
+    // A test that NAMES the callee keeps its relation when the callee's own name
+    // shares a word with the title (`TestParseFeedRSS` of `ParseFeed` for
+    // "Parsing feeds"); `TestNewHandler…` for "Expose GET /v1/feeds API" does not
+    // (#1435 review).
+    const aboutIgnoringStopWords = (from: SymbolRow, ts: SymbolRow): boolean =>
+      sharesRequirementWords(from.name, requirementWords, ENTRY_POINT_STOP_WORDS) ||
+      sharesRequirementWords(ts.name, requirementWords, ENTRY_POINT_STOP_WORDS);
+    const throughEntryPoint = (from: SymbolRow, ts: SymbolRow): boolean =>
+      entryPoint(ts) &&
+      !aboutIgnoringStopWords(from, ts) &&
+      !(namesCallee(from.name, ts.name) && calleeNameSharesTitle(ts.name, requirementWords));
     const offerCalls = (
       calls: ReadonlyArray<{ from: SymbolRow; ts: SymbolRow }>,
       relation: TestLinkRelation,
     ): void => {
       for (const { from, ts } of calls) {
-        if (
-          hub &&
-          !sharesRequirementWords(from.name, requirementWords) &&
-          !sharesRequirementWords(ts.name, requirementWords)
-        ) {
-          continue;
-        }
+        if (wholeFile && !about(from, ts)) continue;
+        if (hub && !about(from, ts)) continue;
+        // An inferred call through an entry point is demoted too: it counts as
+        // tested, and an ingest-bound call to the same callee does not.
+        const generic = throughEntryPoint(from, ts);
         offer(
-          testNodeFromSymbol(from, relation, { filePath: ts.filePath, symbol: ts.qualifiedName }),
+          testNodeFromSymbol(from, generic ? "entry-point" : relation, {
+            filePath: ts.filePath,
+            symbol: ts.qualifiedName,
+          }),
         );
       }
     };
@@ -702,15 +886,25 @@ function resolveOne(
       for (const sym of graph.siblingSymbolsByFile.get(p) ?? []) {
         const c = classifyTestSymbol(sym);
         if (!c.isTestSymbol) continue;
-        const matched = matchTestSubject(sym.name, c.subjectHint, targetSymbols);
+        const named = matchTestSubject(sym.name, c.subjectHint, targetSymbols);
+        // #955 — named for some symbol of a whole file is not named for the requirement.
+        const matched = named && (!wholeFile || about(sym, named)) ? named : null;
         if (matched) {
+          // #1108 — `TestNewHandlerSupportsBasePathStripping` is about NewHandler,
+          // and so about every route NewHandler registers only by way of it.
           offer(
-            testNodeFromSymbol(sym, "naming", {
+            testNodeFromSymbol(sym, throughEntryPoint(sym, matched) ? "entry-point" : "naming", {
               filePath: matched.filePath,
               symbol: matched.qualifiedName,
             }),
           );
-        } else if (fileOnly && nameTokens(sym.name).some((tok) => queryTokens.has(tok))) {
+        } else if (
+          fileOnly &&
+          // #955 — a test named for another symbol of the whole file is about that
+          // symbol; one shared token must not bring it back as `naming`.
+          !(wholeFile && named) &&
+          nameTokens(sym.name).some((tok) => queryTokens.has(tok))
+        ) {
           offer(testNodeFromSymbol(sym, "naming", { filePath: t.filePath, symbol: null }));
         }
       }
@@ -806,10 +1000,15 @@ export async function resolveTestedByForTargets(
   const limit = opts?.limit ?? DEFAULT_TESTED_BY_LIMIT;
   const all = requirements.flatMap((r) => targetsByRequirement.get(r.id) ?? []);
   const graph = await loadGraph(prisma, projectId, all, maxSymbolsPerFile(deps));
-  const hubThreshold = hubMinForeignTestDirs(deps);
+  const rules: ResolveRules = {
+    limit,
+    hubThreshold: hubMinForeignTestDirs(deps),
+    entryPointThreshold: entryPointMinTestCallers(deps),
+    entryPoints: new Map(),
+  };
   const out = new Map<string, TraceabilityTestNode[]>();
   for (const r of requirements) {
-    out.set(r.id, resolveOne(r, targetsByRequirement.get(r.id) ?? [], graph, limit, hubThreshold));
+    out.set(r.id, resolveOne(r, targetsByRequirement.get(r.id) ?? [], graph, rules));
   }
   return out;
 }
@@ -887,16 +1086,18 @@ export async function listUntestedRequirements(
   const untested: RequirementTestGap[] = [];
   for (const r of requirements) {
     const mappedFiles = new Set((targets.get(r.id) ?? []).map((t) => t.filePath)).size;
+    const strongest = tests.get(r.id)?.[0];
     if (mappedFiles === 0) {
       noCode++;
-    } else if ((tests.get(r.id) ?? []).length > 0) {
+    } else if (strongest && strongest.relation !== "entry-point") {
       tested++;
     } else {
       untested.push({
         requirementId: r.id,
         title: r.title,
         analysisId: r.analysisId ?? null,
-        reason: "no-test",
+        // #1108 — reached only through a shared entry point: said so, not "no test".
+        reason: strongest ? "entry-point-only" : "no-test",
         mappedFiles,
       });
     }

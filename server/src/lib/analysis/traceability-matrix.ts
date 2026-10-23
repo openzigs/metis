@@ -145,6 +145,22 @@ export function formatTestCell(test: TraceabilityTestLink): string {
   return `${test.filePath}::${test.symbol}`;
 }
 
+/**
+ * The Tests cell (#1108 review). A test linked only through a shared entry point
+ * (a constructor or router many tests build) does not count as testing the
+ * requirement, so it is not listed as one: the counted tests come first ("none
+ * detected" when there are none), then the entry-point ones under a note that
+ * says they were not counted.
+ */
+export function formatTestsCell(tests: readonly TraceabilityTestLink[]): string {
+  const counted = tests.filter((t) => t.relation !== "entry-point").map(formatTestCell);
+  const entry = tests.filter((t) => t.relation === "entry-point").map(formatTestCell);
+  const head = joinCell(counted, "none detected");
+  return entry.length > 0
+    ? `${head}; not counted, only calls a shared entry point: ${entry.join(", ")}`
+    : head;
+}
+
 /** Human-readable coverage label; a null coverage renders as an explicit dash. */
 export function formatCoverageCell(coverage: RequirementCoverage | null): string {
   return coverage ?? "—";
@@ -197,7 +213,7 @@ function rowCells(row: TraceabilityRow): string[] {
       "none",
     ),
     joinCell(row.codeLocations.map(formatCodeLocationCell), "none"),
-    joinCell(row.tests.map(formatTestCell), "none detected"),
+    formatTestsCell(row.tests),
   ];
 }
 

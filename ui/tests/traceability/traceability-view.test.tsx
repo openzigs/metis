@@ -208,6 +208,66 @@ describe("TraceabilityView — Tested by (#816)", () => {
     expect(screen.queryByTestId("traceability-no-code")).toBeNull();
   });
 
+  describe("#1108 review — shared entry point tests are not counted", () => {
+    const test = (name: string, relation: "exercises" | "entry-point") => ({
+      codeSymbolId: `t-${name}`,
+      filePath: "internal/api/api_test.go",
+      symbol: `internal/api/api_test.go::${name}`,
+      name,
+      startLine: 10,
+      convention: "go-testing",
+      relation,
+      subject: { filePath: "internal/api/api.go", symbol: "NewHandler" },
+      score: relation === "entry-point" ? 0.4 : 0.8,
+    });
+
+    it("does not say 'Tested by (n)' when every link is through an entry point", async () => {
+      traceabilityApi.chain.mockResolvedValue(
+        chain({
+          directCode: [CODE],
+          testedBy: [
+            test("TestGetEntryIDsA", "entry-point"),
+            test("TestGetEntryIDsB", "entry-point"),
+          ],
+        }),
+      );
+      renderView();
+      const section = await screen.findByRole("region", { name: /^Tested by/ });
+      expect(within(section).getByRole("heading", { name: "Tested by" })).toBeInTheDocument();
+      expect(within(section).queryByRole("heading", { name: /Tested by \(/ })).toBeNull();
+      expect(screen.getByTestId("traceability-entry-point-only")).toHaveTextContent(
+        "No test checks this requirement directly",
+      );
+      const listed = screen.getByTestId("traceability-entry-point-tests");
+      expect(listed).toHaveTextContent("Only calls shared setup code (2), not counted");
+      const badge = within(listed).getAllByText("Shared entry point")[0];
+      expect(badge).toHaveAttribute(
+        "title",
+        expect.stringContaining("does not count as testing this requirement"),
+      );
+      expect(screen.queryByTestId("traceability-no-test")).toBeNull();
+    });
+
+    it("counts only the real tests and lists the entry-point ones apart", async () => {
+      traceabilityApi.chain.mockResolvedValue(
+        chain({
+          directCode: [CODE],
+          testedBy: [
+            test("TestFeedCounters", "exercises"),
+            test("TestGetEntryIDsA", "entry-point"),
+          ],
+        }),
+      );
+      renderView();
+      const section = await screen.findByRole("region", { name: /^Tested by/ });
+      expect(within(section).getByRole("heading", { name: "Tested by (1)" })).toBeInTheDocument();
+      expect(screen.queryByTestId("traceability-entry-point-only")).toBeNull();
+      const listed = screen.getByTestId("traceability-entry-point-tests");
+      expect(listed).toHaveTextContent("TestGetEntryIDsA");
+      expect(listed).not.toHaveTextContent("TestFeedCounters");
+    });
+  });
+
   it("says 'No linked test' when code is mapped but no test resolves", async () => {
     traceabilityApi.chain.mockResolvedValue(chain({ directCode: [CODE] }));
     renderView();
