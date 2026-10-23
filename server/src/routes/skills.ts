@@ -19,7 +19,7 @@ import {
 } from "../lib/library/index.js";
 import { RepoLoader } from "../lib/library/import.js";
 import { openRepoContentFetcher } from "../lib/connectors/repo/repo-service.js";
-import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { skillRepoImportRateLimiter } from "../middleware/skill-import-rate-limit.js";
 import { FrontmatterError } from "../lib/library/frontmatter.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -255,7 +255,7 @@ export function skillsRouter(): Router {
         });
       }
       const { projectId, connectorId, path } = parsed.data;
-      await assertProjectAccess(req.user!, projectId);
+      await assertLiveProjectAccess(req.user!, projectId);
       const { fetcher, label } = await openRepoContentFetcher(projectId, connectorId);
       const loader = new RepoLoader(fetcher, path ?? "", label, "skills");
       const result = await new LibraryImporter().importSkills(loader, actorFromReq(req));

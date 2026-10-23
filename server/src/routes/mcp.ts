@@ -66,7 +66,7 @@ import { assertBindingWriteWindowOpen } from "../lib/vault/binding-write-mark.js
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
-import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { workspaceScopeWhere } from "../lib/auth/project-scope.js";
 import {
   assertMcpCreateSecretBinding,
@@ -93,7 +93,7 @@ function actorFromReq(req: Request) {
  */
 async function assertCallerProjectAccess(req: Request, projectId: string): Promise<void> {
   if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-  await assertProjectAccess(req.user, projectId);
+  await assertLiveProjectAccess(req.user, projectId);
 }
 
 /**
@@ -142,7 +142,7 @@ async function assertServerAccess(req: Request, id: string): Promise<void> {
   if (server.scope !== "project") return;
   if (!server.projectId) throw notFound();
   try {
-    await assertProjectAccess(req.user, server.projectId);
+    await assertLiveProjectAccess(req.user, server.projectId);
   } catch (err) {
     if (err instanceof AppError && err.statusCode === 404) throw notFound();
     throw err;

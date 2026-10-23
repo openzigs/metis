@@ -10,21 +10,23 @@
  * alone admitted the request.
  *
  * This middleware routes every such route through the canonical
- * `assertProjectAccess(user, projectId)` seam established by #673 — the SAME
- * object-level check used by `GET/PATCH /projects/:id`, the custom-agents invoke
- * route, and the comments routes. It resolves the target project's workspace and
- * intersects it with the caller's memberships:
+ * project-access seam established by #673, in its live form
+ * (`assertLiveProjectAccess`, #1430) — the SAME object-level check used by
+ * `GET/PATCH/DELETE /projects/:id`, the custom-agents invoke route, and the
+ * comments routes. It resolves the target project's workspace and intersects it
+ * with the caller's memberships:
  *
  *   • non-member (or unknown project)  → 404 (NOT 403 — no existence oracle)
- *   • system admin                     → bypass
- *   • pre-migration null-workspace     → open to any authenticated user
+ *   • soft-deleted project, non-admin  → that same 404 (#1430), one lookup
+ *   • system admin                     → bypass, deleted project included
+ *   • pre-migration null-workspace     → open to any authenticated user while live
  *
  * The existing `requirePermission(...)` role layer is retained; this workspace
  * scope is the NEW object-level layer that runs first (so a wrong-tenant caller
  * gets a 404 regardless of role, keeping denials indistinguishable).
  */
 import type { Request, Response, NextFunction } from "express";
-import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { AppError } from "./error-handler.js";
 
 /**
@@ -52,7 +54,7 @@ export function requireProjectAccess(paramName = "projectId") {
       next(new AppError(400, "PROJECT_REQUIRED", "projectId path parameter is required"));
       return;
     }
-    assertProjectAccess(req.user, String(projectId))
+    assertLiveProjectAccess(req.user, String(projectId))
       .then(() => next())
       .catch(next);
   };

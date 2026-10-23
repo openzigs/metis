@@ -29,7 +29,7 @@ import {
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
-import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { seedDefaultTemplates } from "../lib/publishing/template-service.js";
@@ -183,7 +183,7 @@ export function projectsRouter(): Router {
     // workspace gets a 404 (no existence oracle) BEFORE the by-id lookup runs.
     // Reuses the canonical `assertProjectAccess` seam shared with
     // custom-agents invoke + comments (admins bypass; unassigned projects open).
-    await assertProjectAccess(req.user, String(req.params.id));
+    await assertLiveProjectAccess(req.user, String(req.params.id));
     const project = await getProject(String(req.params.id));
     if (!project) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
     res.json(ok(project));
@@ -279,7 +279,7 @@ export function projectsRouter(): Router {
     // the same canonical seam as the read. This closes the cross-tenant path
     // for the `assertCanMutate` coordinator short-circuit: a coordinator in
     // workspace A gets a 404 for a workspace-B project before the mutate runs.
-    await assertProjectAccess(req.user, String(req.params.id));
+    await assertLiveProjectAccess(req.user, String(req.params.id));
     const actor = actorFromReq(req);
     try {
       const project = await updateProject(parsed.data, actor);
@@ -358,7 +358,7 @@ export function projectsRouter(): Router {
       // project id 404s (not 403) exactly like GET/PATCH/archive, closing the
       // last existence oracle on the same resource. `req.user` is guaranteed by
       // requireAuth.
-      await assertProjectAccess(req.user!, String(req.params.id));
+      await assertLiveProjectAccess(req.user!, String(req.params.id));
       const actor = actorFromReq(req);
       try {
         await deleteProject(String(req.params.id), actor);

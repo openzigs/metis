@@ -21,7 +21,7 @@
 import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
-import { assertProjectAccess } from "../custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../custom-agents/authz.js";
 import { workspaceScopeWhere, type WorkspaceScopeWhere } from "../auth/project-scope.js";
 
 /** Prisma `where` fragment narrowing runs/groups to the caller's projects. */
@@ -39,7 +39,7 @@ async function authorizeRow(
   if (!row) throw notFound();
 
   try {
-    await assertProjectAccess(user, row.projectId);
+    await assertLiveProjectAccess(user, row.projectId);
   } catch (err) {
     // "project missing" and "caller is not a workspace member" both surface as
     // a 404 from the seam — collapse them into the run-level 404 so an
@@ -98,7 +98,7 @@ export async function authorizeRunProject(
   projectId: string,
 ): Promise<void> {
   if (!user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-  await assertProjectAccess(user, projectId);
+  await assertLiveProjectAccess(user, projectId);
 }
 
 /**

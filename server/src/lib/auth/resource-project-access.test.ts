@@ -7,8 +7,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AuthPayload } from "@metis/shared";
 
-const assertProjectAccess = vi.hoisted(() => vi.fn());
-vi.mock("../custom-agents/authz.js", () => ({ assertProjectAccess }));
+const assertLiveProjectAccess = vi.hoisted(() => vi.fn());
+vi.mock("../custom-agents/authz.js", () => ({ assertLiveProjectAccess }));
 
 const { assertResourceProjectAccess } = await import("./resource-project-access.js");
 const { AppError } = await import("../../middleware/error-handler.js");
@@ -32,12 +32,14 @@ describe("assertResourceProjectAccess", () => {
 
   it("propagates a non-404 failure unchanged", async () => {
     const boom = new Error("database unavailable");
-    assertProjectAccess.mockRejectedValueOnce(boom);
+    assertLiveProjectAccess.mockRejectedValueOnce(boom);
     await expect(assertResourceProjectAccess(member, "p", notFound)).rejects.toBe(boom);
   });
 
   it("remaps the project check's 404 onto the route's own not-found", async () => {
-    assertProjectAccess.mockRejectedValueOnce(new AppError(404, "NOT_FOUND", "Project not found"));
+    assertLiveProjectAccess.mockRejectedValueOnce(
+      new AppError(404, "NOT_FOUND", "Project not found"),
+    );
     await expect(assertResourceProjectAccess(member, "p", notFound)).rejects.toMatchObject({
       statusCode: 404,
       code: "THING_NOT_FOUND",

@@ -75,18 +75,18 @@ vi.mock("../middleware/require-permission.js", () => ({
 }));
 
 // #88 — the drift reads gate on `sync.read` alone, so they must ALSO go through
-// the canonical object-level project-scope seam (`assertProjectAccess`, the same
+// the canonical object-level project-scope seam (`assertLiveProjectAccess`, the same
 // predicate `requireProjectAccess` applies to `/projects/:projectId/*`). A
 // non-member gets 404, never 403, so route probing cannot enumerate projects.
 let accessibleProjectIds: string[] = ["proj-1"];
-const assertProjectAccess = vi.fn(async (_user: unknown, projectId: string) => {
+const assertLiveProjectAccess = vi.fn(async (_user: unknown, projectId: string) => {
   if (!accessibleProjectIds.includes(projectId)) {
     const { AppError } = await import("../middleware/error-handler.js");
     throw new AppError(404, "NOT_FOUND", "Project not found");
   }
 });
 vi.mock("../lib/custom-agents/authz.js", () => ({
-  assertProjectAccess: (...args: [unknown, string]) => assertProjectAccess(...args),
+  assertLiveProjectAccess: (...args: [unknown, string]) => assertLiveProjectAccess(...args),
 }));
 
 vi.mock("../middleware/error-handler.js", () => {
@@ -254,13 +254,13 @@ describe("Drift management routes", () => {
       expect(count.status).toBe(401);
       expect(vi.mocked(listDriftEvents)).not.toHaveBeenCalled();
       expect(vi.mocked(getDriftCount)).not.toHaveBeenCalled();
-      expect(assertProjectAccess).not.toHaveBeenCalled();
+      expect(assertLiveProjectAccess).not.toHaveBeenCalled();
     });
 
     it("asserts access against the project id the caller actually asked for", async () => {
       const app = createApp();
       await request(app).get("/sync/drift?projectId=proj-1");
-      expect(assertProjectAccess).toHaveBeenCalledWith(
+      expect(assertLiveProjectAccess).toHaveBeenCalledWith(
         expect.objectContaining({ userId: "user-1" }),
         "proj-1",
       );
@@ -318,7 +318,7 @@ describe("Drift management routes", () => {
       const res = await request(app).post("/sync/drift/no-such/resolve").send({ action: "adopt" });
 
       expect(res.status).toBe(404);
-      expect(assertProjectAccess).not.toHaveBeenCalled();
+      expect(assertLiveProjectAccess).not.toHaveBeenCalled();
       expect(vi.mocked(resolveDriftEvent)).not.toHaveBeenCalled();
     });
 
@@ -330,7 +330,7 @@ describe("Drift management routes", () => {
         .send({ action: "adopt", projectId: "proj-other" });
 
       expect(vi.mocked(getDriftEventProjectId)).toHaveBeenCalledWith("drift-1");
-      expect(assertProjectAccess).toHaveBeenCalledWith(
+      expect(assertLiveProjectAccess).toHaveBeenCalledWith(
         expect.objectContaining({ userId: "user-1" }),
         "proj-1",
       );
@@ -338,7 +338,7 @@ describe("Drift management routes", () => {
 
     it("propagates a scope-seam failure that is not a 404", async () => {
       const { resolveDriftEvent } = await import("../lib/sync/index.js");
-      assertProjectAccess.mockRejectedValueOnce(new Error("db down"));
+      assertLiveProjectAccess.mockRejectedValueOnce(new Error("db down"));
       const app = createApp();
       const res = await request(app).post("/sync/drift/drift-1/resolve").send({ action: "adopt" });
 

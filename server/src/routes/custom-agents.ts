@@ -20,7 +20,10 @@ import {
   setAgentEnabledForProject,
   updateAgent,
 } from "../lib/custom-agents/index.js";
-import { assertProjectAccess, assertWorkspaceAdminForProject } from "../lib/custom-agents/authz.js";
+import {
+  assertLiveProjectAccess,
+  assertWorkspaceAdminForProject,
+} from "../lib/custom-agents/authz.js";
 import {
   InvocationError,
   MAX_INVOKE_PAYLOAD_CHARS,
@@ -134,7 +137,7 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
     // projectId the list is the built-ins alone, open to any signed-in user.
     if (projectId !== null) {
       if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-      await assertProjectAccess(req.user, projectId);
+      await assertLiveProjectAccess(req.user, projectId);
     }
     try {
       const agents = await listAgents({ projectId, includeBuiltIns });
@@ -183,7 +186,7 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
     const agent = await getAgent(String(req.params.id));
     if (!agent) throw new AppError(404, "NOT_FOUND", "Custom agent not found");
     if (agent.projectId !== null) {
-      await assertProjectAccess(req.user, agent.projectId);
+      await assertLiveProjectAccess(req.user, agent.projectId);
     }
     return agent;
   }
@@ -237,7 +240,7 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
   r.get("/projects/:projectId/enabled", requireAuth, async (req: Request, res: Response) => {
     if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
     const projectId = String(req.params.projectId);
-    await assertProjectAccess(req.user, projectId);
+    await assertLiveProjectAccess(req.user, projectId);
     try {
       const agents = await listEnabledAgentsForProject(projectId);
       res.json(ok(agents));
@@ -321,7 +324,7 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
     const { projectId, input } = parsed.data;
 
     // The caller must be able to reach the project context they invoke under.
-    await assertProjectAccess(req.user, projectId);
+    await assertLiveProjectAccess(req.user, projectId);
 
     const agent = await getAgent(agentId);
     if (!agent) throw new AppError(404, "NOT_FOUND", "Custom agent not found");

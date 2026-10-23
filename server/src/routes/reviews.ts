@@ -26,7 +26,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
-import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { workspaceScopeWhere } from "../lib/auth/project-scope.js";
 import {
   closeReview,
@@ -92,7 +92,7 @@ async function assertReviewAccess(req: Request, reviewId: string): Promise<void>
   });
   if (!row) throw notFound();
   try {
-    await assertProjectAccess(req.user, row.projectId);
+    await assertLiveProjectAccess(req.user, row.projectId);
   } catch (err) {
     if (err instanceof AppError && err.statusCode === 404) throw notFound();
     throw err;
@@ -176,7 +176,7 @@ export function reviewsRouter(): Router {
   r.get("/", requireAuth, requirePermission("review.read"), async (req: Request, res: Response) => {
     const { userId } = requireUser(req);
     const query = parseListQuery(req);
-    if (query.projectId) await assertProjectAccess(req.user!, query.projectId);
+    if (query.projectId) await assertLiveProjectAccess(req.user!, query.projectId);
     const data = await listReviews(userId, {
       ...query,
       projectScope: workspaceScopeWhere(req.user!),

@@ -20,7 +20,7 @@ import { resolveDriftSchema, type ApiResponse } from "@metis/shared";
 import { ZodError } from "zod";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
-import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { AppError } from "../middleware/error-handler.js";
 import { webhookReceiverRateLimiter } from "../middleware/webhook-receiver-rate-limit.js";
 import { recordDelivery } from "../lib/agents/pr-reviewer/webhook-dedup.js";
@@ -133,7 +133,7 @@ export function syncDriftRouter(): Router {
       const projectId = req.query.projectId as string;
       if (!projectId) throw new AppError(400, "INVALID_REQUEST", "projectId query param required");
       if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-      await assertProjectAccess(req.user, projectId);
+      await assertLiveProjectAccess(req.user, projectId);
 
       const status = req.query.status as string | undefined;
       const requirementId = req.query.requirementId as string | undefined;
@@ -163,7 +163,7 @@ export function syncDriftRouter(): Router {
         if (!projectId)
           throw new AppError(400, "INVALID_REQUEST", "projectId query param required");
         if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-        await assertProjectAccess(req.user, projectId);
+        await assertLiveProjectAccess(req.user, projectId);
 
         const count = await getDriftCount(projectId);
         res.json(ok({ count }));
@@ -196,7 +196,7 @@ export function syncDriftRouter(): Router {
         const projectId = await getDriftEventProjectId(id);
         if (!projectId) throw new Error("DRIFT_NOT_FOUND");
         try {
-          await assertProjectAccess(req.user, projectId);
+          await assertLiveProjectAccess(req.user, projectId);
         } catch (err) {
           if (err instanceof AppError && err.statusCode === 404) throw new Error("DRIFT_NOT_FOUND");
           throw err;

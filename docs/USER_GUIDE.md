@@ -1171,6 +1171,18 @@ Every transition is recorded in the **audit trail**, so there's always a record 
 
 When you no longer need to actively work on a project, you can **archive** it. This is a "soft delete" — the project isn't destroyed; it's just moved to the Archived status where it won't clutter your active project list. Archived projects can still be viewed for historical reference.
 
+**Deleting a project is different (#1430).** When a project is deleted, it
+closes to everyone but administrators, everywhere in METIS: its documents,
+analyses, generated docs, Spec Kit artifacts, connectors, imports, publishing,
+triggers, hooks, templates, budgets and settings, its runs, requirements,
+baselines and Jira connections, and its chats (see "Chats in a deleted
+project" in [Using the AI Chat](#14-using-the-ai-chat)). A member who opens a
+link into it, or calls the API for it, is told **Project not found** (or that
+the run, requirement, baseline or connection was not found), exactly as for one
+that never existed. So nothing more is published, queried, ingested or spent
+on a model on its behalf by its members. Nothing is erased: the project is
+soft-deleted, and an administrator still reaches what hangs off it.
+
 ### 9.7 Project Overview (AST-Derived)
 
 After METIS ingests a repository for **Code Discovery**, you can view a deterministic, AI-free summary of the codebase computed straight from the AST CodeGraph.

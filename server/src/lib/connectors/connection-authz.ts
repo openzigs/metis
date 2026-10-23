@@ -20,7 +20,7 @@
 import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
-import { assertProjectAccess } from "../custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../custom-agents/authz.js";
 
 async function authorizeConnection(
   user: AuthPayload | undefined,
@@ -36,7 +36,7 @@ async function authorizeConnection(
   if (!row) throw notFound();
 
   try {
-    await assertProjectAccess(user, row.projectId);
+    await assertLiveProjectAccess(user, row.projectId);
   } catch (err) {
     // "project missing" and "caller is not a workspace member" both surface as
     // a 404 from the seam — collapse them into the connection-level 404 so an

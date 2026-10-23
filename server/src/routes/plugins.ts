@@ -10,7 +10,7 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
-import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { assertResourceProjectAccess } from "../lib/auth/resource-project-access.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
@@ -239,7 +239,7 @@ export function pluginsRouter(): Router {
 
       // Object-level authorization before any work: non-members and unknown
       // project ids get 404 alike, so route probing cannot enumerate projects.
-      await assertProjectAccess(req.user!, projectId);
+      await assertLiveProjectAccess(req.user!, projectId);
 
       let env: PluginEnvelope;
       try {

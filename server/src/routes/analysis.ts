@@ -38,7 +38,7 @@ import { requireProjectAccess } from "../middleware/require-project-access.js";
 import { optimisticLock, sendVersionConflict } from "../middleware/optimistic-lock.js";
 // Issue #1099 — the top-level `/api/analyses` router has no path project to
 // mount `requireProjectAccess` on; it authorizes through this seam instead.
-import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { analysisDeepDiveRateLimiter } from "../middleware/analysis-deepdive-rate-limit.js";
 import {
   criteriaProposalPreAuthRateLimiter,
@@ -305,7 +305,7 @@ async function ensureAnalysisAccessible(req: Request, analysisId: string) {
     // `req.user!`: every caller sits behind `requireAuth` + `requirePermission`,
     // both of which 401 on a missing user before the handler runs. Same
     // narrowing convention as `routes/plugins.ts` and `routes/projects.ts`.
-    await assertProjectAccess(req.user!, analysis.projectId);
+    await assertLiveProjectAccess(req.user!, analysis.projectId);
   } catch (err) {
     if (err instanceof AppError && err.statusCode === 404) {
       throw new AppError(404, "ANALYSIS_NOT_FOUND", "Analysis not found");

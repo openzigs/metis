@@ -66,11 +66,19 @@ export async function assertWorkspaceAdminForProject(
  * enabled", scoped to a project the caller can actually reach.
  *
  * THIS FUNCTION IS THE RULE, not a copy of one stated elsewhere. It is the
- * canonical object-level project-scope seam (#673): the `requireProjectAccess`
- * middleware (`middleware/require-project-access.ts`) is a thin wrapper that
- * calls it for every `/projects/:projectId/**` route, so changing the predicate
- * here changes route-level enforcement across the API. Non-members get 404,
- * never 403, so route probing cannot enumerate project or workspace ids.
+ * canonical object-level project-scope seam (#673), and every guard calls it
+ * through its live variant, {@link assertLiveProjectAccess} (#1430): the
+ * `requireProjectAccess` middleware (`middleware/require-project-access.ts`) is
+ * a thin wrapper over that for every `/projects/:projectId/**` route, so
+ * changing the predicate here changes route-level enforcement across the API.
+ * Non-members get 404, never 403, so route probing cannot enumerate project or
+ * workspace ids.
+ *
+ * This variant alone ADMITS a soft-deleted project. A new caller wants
+ * `assertLiveProjectAccess`. The two production callers left on this one
+ * refuse a soft-deleted project in their own lookup just before the call:
+ * `discussions/access.ts` (`canAccessProjectDiscussions`, to non-admins) and
+ * `docs-gen/evidence-policy.ts` (to everyone, admins included).
  *
  * The equivalent rule for LIST queries is `accessibleProjectWhere`
  * (`lib/acp/authz.ts`); keep the two in step.
@@ -93,9 +101,12 @@ export async function assertProjectAccess(
  * An admin is unaffected: a deleted project stays open to them, as on the
  * socket rooms, scheduler, discussions and the runs lists.
  *
- * Use it wherever deleting a project must close what hangs off it — the chat
- * session (`loadAuthorizedSession`) and the runs lists' `?projectId=`.
- * `assertProjectAccess` alone still admits a soft-deleted project.
+ * Every project guard uses it (#1430): `requireProjectAccess` for the whole
+ * `/projects/:projectId/**` subtree and the base `/projects/:id` verbs, the
+ * row-resolving helpers (runs, requirements, resources, Jira connections), the
+ * chat session (`loadAuthorizedSession`), and each route that
+ * checks a body or query `projectId`. `assertProjectAccess` alone still admits
+ * a soft-deleted project.
  *
  * @throws AppError 404 — unknown or soft-deleted project, or caller has no access
  */

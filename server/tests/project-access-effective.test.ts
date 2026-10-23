@@ -47,11 +47,15 @@ const { accessChecks, currentUser } = vi.hoisted(() => ({
 // that still answers from a handler bypassed the seam.
 vi.mock("../src/lib/custom-agents/authz.js", async () => {
   const { AppError } = await import("../src/middleware/error-handler.js");
+  const deny = vi.fn(async (_user: unknown, projectId: string) => {
+    accessChecks.push(projectId);
+    throw new AppError(404, "NOT_FOUND", DENIED_MESSAGE);
+  });
   return {
-    assertProjectAccess: vi.fn(async (_user: unknown, projectId: string) => {
-      accessChecks.push(projectId);
-      throw new AppError(404, "NOT_FOUND", DENIED_MESSAGE);
-    }),
+    // #1430 — the guards call the live variant; both deny alike here.
+    assertProjectAccess: deny,
+    assertLiveProjectAccess: deny,
+    projectNotFound: () => new AppError(404, "NOT_FOUND", DENIED_MESSAGE),
     assertWorkspaceAdminForProject: vi.fn(async (_user: unknown, projectId: string) => {
       accessChecks.push(projectId);
       throw new AppError(404, "NOT_FOUND", DENIED_MESSAGE);

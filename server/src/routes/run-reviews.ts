@@ -31,7 +31,7 @@ import {
 } from "../lib/agents/pr-reviewer/agent.js";
 import type { OctokitLike } from "../lib/agents/pr-reviewer/github-review-poster.js";
 import { recordStep, startRun, finishRun } from "../lib/replay/runs-service.js";
-import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { assertResourceProjectAccess } from "../lib/auth/resource-project-access.js";
 
 const runNotFound = () => new AppError(404, "RUN_NOT_FOUND", "Run not found");
@@ -69,7 +69,7 @@ export function runReviewsRouter(deps: RunReviewsRouterDeps = {}): Router {
     // against. Check the caller can reach it before anything else (the budget
     // 429 would otherwise disclose another project's spend); an unreachable
     // project answers the same 404 as an unknown one.
-    await assertProjectAccess(req.user, parsed.data.projectId);
+    await assertLiveProjectAccess(req.user, parsed.data.projectId);
     const judge = deps.judge;
     const octokit = deps.octokit;
     if (!judge || !octokit) {

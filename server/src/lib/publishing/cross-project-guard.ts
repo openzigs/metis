@@ -18,7 +18,7 @@
  * parameter; the page offers a confirm and sets the flag itself.
  */
 import type { AuthPayload } from "@metis/shared";
-import { assertProjectAccess } from "../custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../custom-agents/authz.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { prisma } from "../prisma.js";
 import { PublishError } from "./types.js";
@@ -127,7 +127,7 @@ export async function nameableProjects(
   const visible: string[] = [];
   for (const id of projectIds) {
     try {
-      await assertProjectAccess(user, id);
+      await assertLiveProjectAccess(user, id);
       visible.push(id);
     } catch {
       // Not reachable by this caller (or the lookup failed): stays unnamed.

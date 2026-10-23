@@ -152,7 +152,7 @@ import {
 } from "../lib/agent-runtime/skills.js";
 import { listBindableAgents, loadBoundCustomAgent } from "../lib/agent-runtime/session-agent.js";
 import { agentSelectableTools } from "../lib/agent-runtime/tool-refs.js";
-import { assertProjectAccess } from "../lib/custom-agents/authz.js";
+import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { assertSecretUsable, canUseSecret } from "../lib/vault/secret-access.js";
 import { resolveDurableRole } from "../lib/auth/durable-roles.js";
 import { getSubAgentRun } from "../lib/agent-runtime/subagents.js";
@@ -987,7 +987,7 @@ export function aiRouter(): Router {
         // (the project routes' own check). No access reads as 404 NOT_FOUND
         // and nothing is created — never a session bound to another
         // workspace's knowledge base, code graph, skills or provider.
-        await assertProjectAccess(req.user!, effectiveProjectId);
+        await assertLiveProjectAccess(req.user!, effectiveProjectId);
         if (project.aiProviderId && isRetiredProviderKey(project.aiProviderId)) {
           // #149 — a project still overriding to a removed provider. Refused by
           // name: binding the session to it would create a chat that can never
@@ -1186,7 +1186,7 @@ export function aiRouter(): Router {
       userIdOrThrow(req);
       const raw = req.query.projectId;
       const projectId = typeof raw === "string" && raw.length > 0 ? raw.slice(0, 120) : null;
-      if (projectId) await assertProjectAccess(req.user!, projectId);
+      if (projectId) await assertLiveProjectAccess(req.user!, projectId);
       res.json(ok({ items: await listBindableAgents(projectId) }));
     },
   );
