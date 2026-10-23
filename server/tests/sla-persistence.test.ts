@@ -40,6 +40,7 @@ function makeAssignment(overrides: object = {}) {
     requirement: {
       id: "req-1",
       title: "My Requirement",
+      projectId: "proj-sla",
       project: { createdById: "user-coordinator" },
     },
     ...overrides,
@@ -63,6 +64,8 @@ describe("runSlaCheck — Issue #416 persistence", () => {
     expect(assigneeNotif).toBeDefined();
     expect(assigneeNotif?.type).toBe("sla_deadline");
     expect(assigneeNotif?.title).toContain("My Requirement");
+    // #1447 — the row records its project, so every read re-checks access.
+    expect(assigneeNotif?.projectId).toBe("proj-sla");
   });
 
   it("persists a Notification for the coordinator when different from assignee", async () => {
@@ -74,6 +77,7 @@ describe("runSlaCheck — Issue #416 persistence", () => {
     const coordNotif = calls.find((d) => d.userId === "user-coordinator");
     expect(coordNotif).toBeDefined();
     expect(coordNotif?.type).toBe("sla_deadline");
+    expect(coordNotif?.projectId).toBe("proj-sla"); // #1447
   });
 
   it("does NOT persist a coordinator notification when assignee === coordinator", async () => {

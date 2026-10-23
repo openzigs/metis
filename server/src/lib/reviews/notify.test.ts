@@ -112,6 +112,8 @@ describe("notifyReviewSubmitted", () => {
     for (const row of rows) {
       expect(row.type).toBe("review_requested");
       expect(row.href).toBe("/reviews/rev-1");
+      // #1447 — the row records its project, so every read re-checks access.
+      expect(row.projectId).toBe("proj-1");
       expect(String(row.message)).toContain("Sprint 4 sign-off");
       const payload = JSON.parse(String(row.payload));
       expect(payload.kind).toBe("review_requested");
@@ -247,6 +249,8 @@ describe("notifyReviewDecision", () => {
     const rows = createdRows();
     expect(rows).toHaveLength(2);
     expect(rows.map((r) => r.type)).toEqual(["review_decided", "review_approved"]);
+    // #1447 — both rows record the review's project.
+    expect(rows.map((r) => r.projectId)).toEqual(["proj-1", "proj-1"]);
     const terminal = rows[1];
     expect(terminal.userId).toBe("user-req");
     expect(String(terminal.message)).toContain("approved");
