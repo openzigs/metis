@@ -257,7 +257,11 @@ export async function handleTeamsPromoteSubmit(
 
   // 2. RESOLVE the acting user (tenant-scoped). Never promote on behalf of nobody.
   const aadObjectId = activity.from?.aadObjectId ?? null;
-  const acting = await deps.resolver.resolveUserFromAadObjectId(tenantId, aadObjectId);
+  const acting = await deps.resolver.resolveUserFromAadObjectId(
+    tenantId,
+    aadObjectId,
+    deps.workspaceId,
+  );
   if (!acting) {
     await safeSend(
       context,

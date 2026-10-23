@@ -389,22 +389,31 @@ export function teamsIntegrationRouter(
         throw new AppError(400, "VALIDATION_ERROR", "Provide either email or userId to link");
       }
 
+      // #1431 — the target must be an active member of THIS workspace (by id, or
+      // by email among its members); a system-admin target only for a system-admin
+      // caller. The binding is keyed on this workspace, so another workspace's
+      // binding of the same identity is never overwritten.
+      const allowSystemAdminTarget = req.user?.role === "admin";
       const outcome = body.userId
         ? await identityResolver.linkExplicit({
             workspaceId,
             tenantId: body.tenantId,
             aadObjectId: body.aadObjectId,
             userId: body.userId,
+            allowSystemAdminTarget,
           })
         : await identityResolver.linkByEmail({
             workspaceId,
             tenantId: body.tenantId,
             aadObjectId: body.aadObjectId,
             email: body.email as string,
+            allowSystemAdminTarget,
           });
 
       if (!outcome.ok) {
-        // Never silently attribute: a no-match is an explicit, clear failure.
+        // Never silently attribute: a no-match is an explicit, clear failure. A
+        // non-member target gets this same answer, so the route never reveals
+        // whether the user exists in some other workspace (#1431).
         throw new AppError(
           404,
           "AAD_USER_UNMAPPED",

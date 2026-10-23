@@ -427,8 +427,14 @@ async function preflight(
   }
 
   // 3. IDENTITY (#549) — resolve the acting user tenant-scoped; never act as nobody.
+  // Workspace-scoped too (#1431): only THIS workspace's binding, naming a user who
+  // is still a member of it — a binding to anyone else is refused as unlinked.
   const aadObjectId = activity.from?.aadObjectId ?? null;
-  const acting = await deps.resolver.resolveUserFromAadObjectId(tenantId, aadObjectId);
+  const acting = await deps.resolver.resolveUserFromAadObjectId(
+    tenantId,
+    aadObjectId,
+    deps.workspaceId,
+  );
   if (!acting) {
     await safeSend(
       context,

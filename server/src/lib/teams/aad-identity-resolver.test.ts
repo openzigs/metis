@@ -44,53 +44,80 @@ class FakeDb {
   identities: IdRow[] = [];
   seq = 0;
 
-  user = {
+  /** Workspace memberships (#1431) — a binding may only name a member. */
+  members: Array<{ workspaceId: string; userId: string }> = [];
+  /** System role assignments (#1431) — `admin` targets need a system-admin caller. */
+  roles: Array<{ userId: string; key: string }> = [];
+
+  private activeUser(id: string): UserRow | undefined {
+    return this.users.find((u) => u.id === id && u.deletedAt === null && u.status === "active");
+  }
+
+  workspaceMember = {
     findFirst: async (args: {
-      where: {
-        id?: string;
-        email?: { equals: string };
-        deletedAt: null;
-        status: string;
-      };
-      select?: unknown;
-    }): Promise<UserRow | null> => {
-      const w = args.where;
-      return (
-        this.users.find(
-          (u) =>
-            u.deletedAt === null &&
-            u.status === w.status &&
-            (w.id === undefined || u.id === w.id) &&
-            (w.email === undefined || u.email === w.email.equals),
-        ) ?? null
+      where: { workspaceId: string; userId: string };
+    }): Promise<{ userId: string; user: { id: string; email: string } } | null> => {
+      const m = this.members.find(
+        (x) => x.workspaceId === args.where.workspaceId && x.userId === args.where.userId,
       );
+      const u = m ? this.activeUser(m.userId) : undefined;
+      return u ? { userId: u.id, user: { id: u.id, email: u.email } } : null;
     },
-    findMany: async (_args: unknown): Promise<UserRow[]> =>
-      this.users.filter((u) => u.deletedAt === null && u.status === "active"),
+    findMany: async (args: {
+      where: { workspaceId: string };
+    }): Promise<Array<{ user: { id: string; email: string } }>> =>
+      this.members
+        .filter((x) => x.workspaceId === args.where.workspaceId)
+        .map((x) => this.activeUser(x.userId))
+        .filter((u): u is UserRow => u !== undefined)
+        .map((u) => ({ user: { id: u.id, email: u.email } })),
   };
+
+  userRole = {
+    findFirst: async (args: {
+      where: { userId: string; role: { key: string } };
+    }): Promise<{ userId: string } | null> =>
+      this.roles.find((r) => r.userId === args.where.userId && r.key === args.where.role.key) ??
+      null,
+  };
+
+  private findKey(k: { workspaceId: string; tenantId: string; aadObjectId: string }) {
+    return this.identities.find(
+      (r) =>
+        r.workspaceId === k.workspaceId &&
+        r.tenantId === k.tenantId &&
+        r.aadObjectId === k.aadObjectId,
+    );
+  }
 
   teamsUserIdentity = {
     findUnique: async (args: {
-      where: { tenantId_aadObjectId: { tenantId: string; aadObjectId: string } };
+      where: {
+        workspaceId_tenantId_aadObjectId: {
+          workspaceId: string;
+          tenantId: string;
+          aadObjectId: string;
+        };
+      };
       include?: { user: true };
     }): Promise<(IdRow & { user: UserRow | null }) | null> => {
-      const { tenantId, aadObjectId } = args.where.tenantId_aadObjectId;
-      const row = this.identities.find(
-        (r) => r.tenantId === tenantId && r.aadObjectId === aadObjectId,
-      );
+      const row = this.findKey(args.where.workspaceId_tenantId_aadObjectId);
       if (!row) return null;
       const user = this.users.find((u) => u.id === row.userId) ?? null;
       return { ...row, user };
     },
     upsert: async (args: {
-      where: { tenantId_aadObjectId: { tenantId: string; aadObjectId: string } };
+      where: {
+        workspaceId_tenantId_aadObjectId: {
+          workspaceId: string;
+          tenantId: string;
+          aadObjectId: string;
+        };
+      };
       create: Omit<IdRow, "id" | "createdAt" | "updatedAt">;
       update: Partial<IdRow>;
     }): Promise<IdRow> => {
-      const { tenantId, aadObjectId } = args.where.tenantId_aadObjectId;
-      const existing = this.identities.find(
-        (r) => r.tenantId === tenantId && r.aadObjectId === aadObjectId,
-      );
+      const existing = this.findKey(args.where.workspaceId_tenantId_aadObjectId);
       if (existing) {
         Object.assign(existing, args.update, { updatedAt: new Date() });
         return existing;
@@ -105,12 +132,11 @@ class FakeDb {
       return row;
     },
     deleteMany: async (args: {
-      where: { tenantId: string; aadObjectId: string };
+      where: { workspaceId: string; tenantId: string; aadObjectId: string };
     }): Promise<{ count: number }> => {
       const before = this.identities.length;
-      this.identities = this.identities.filter(
-        (r) => !(r.tenantId === args.where.tenantId && r.aadObjectId === args.where.aadObjectId),
-      );
+      const hit = this.findKey(args.where);
+      this.identities = this.identities.filter((r) => r !== hit);
       return { count: before - this.identities.length };
     },
   };
@@ -125,9 +151,11 @@ function makeResolver(): { resolver: TeamsAadIdentityResolver; db: FakeDb } {
     status: "active",
     deletedAt: null,
   });
+  db.members.push({ workspaceId: WS, userId: "u-alice" });
   return { resolver: new TeamsAadIdentityResolver(db as unknown as PrismaClient), db };
 }
 
+const WS = "ws-1";
 const T = "tenant-a";
 const OID = "aad-alice";
 
@@ -148,12 +176,12 @@ describe("TeamsAadIdentityResolver (#549)", () => {
     });
     expect(linked).toEqual({ ok: true, userId: "u-alice" });
 
-    const user = await resolver.resolveUserFromAadObjectId(T, OID);
+    const user = await resolver.resolveUserFromAadObjectId(T, OID, WS);
     expect(user).toEqual({ userId: "u-alice", username: "alice", email: "alice@corp.com" });
   });
 
   it("returns null for an UNMAPPED sender (never silently attributed)", async () => {
-    expect(await resolver.resolveUserFromAadObjectId(T, "aad-unknown")).toBeNull();
+    expect(await resolver.resolveUserFromAadObjectId(T, "aad-unknown", WS)).toBeNull();
   });
 
   it("does NOT resolve a cross-tenant aadObjectId (tenant isolation boundary)", async () => {
@@ -164,7 +192,7 @@ describe("TeamsAadIdentityResolver (#549)", () => {
       email: "alice@corp.com",
     });
     // Same oid, DIFFERENT tenant → must not match the binding.
-    expect(await resolver.resolveUserFromAadObjectId("tenant-evil", OID)).toBeNull();
+    expect(await resolver.resolveUserFromAadObjectId("tenant-evil", OID, WS)).toBeNull();
   });
 
   it("returns null when tenantId or aadObjectId is missing", async () => {
@@ -174,10 +202,10 @@ describe("TeamsAadIdentityResolver (#549)", () => {
       aadObjectId: OID,
       email: "alice@corp.com",
     });
-    expect(await resolver.resolveUserFromAadObjectId(null, OID)).toBeNull();
-    expect(await resolver.resolveUserFromAadObjectId("", OID)).toBeNull();
-    expect(await resolver.resolveUserFromAadObjectId(T, null)).toBeNull();
-    expect(await resolver.resolveUserFromAadObjectId(T, "  ")).toBeNull();
+    expect(await resolver.resolveUserFromAadObjectId(null, OID, WS)).toBeNull();
+    expect(await resolver.resolveUserFromAadObjectId("", OID, WS)).toBeNull();
+    expect(await resolver.resolveUserFromAadObjectId(T, null, WS)).toBeNull();
+    expect(await resolver.resolveUserFromAadObjectId(T, "  ", WS)).toBeNull();
   });
 
   it("does NOT resolve a binding to a disabled or soft-deleted user", async () => {
@@ -188,10 +216,10 @@ describe("TeamsAadIdentityResolver (#549)", () => {
       email: "alice@corp.com",
     });
     db.users[0].status = "disabled";
-    expect(await resolver.resolveUserFromAadObjectId(T, OID)).toBeNull();
+    expect(await resolver.resolveUserFromAadObjectId(T, OID, WS)).toBeNull();
     db.users[0].status = "active";
     db.users[0].deletedAt = new Date();
-    expect(await resolver.resolveUserFromAadObjectId(T, OID)).toBeNull();
+    expect(await resolver.resolveUserFromAadObjectId(T, OID, WS)).toBeNull();
   });
 
   it("linkByEmail reuses the SSO email match and is case-insensitive", async () => {
@@ -202,7 +230,7 @@ describe("TeamsAadIdentityResolver (#549)", () => {
       email: "ALICE@CORP.COM",
     });
     expect(out).toEqual({ ok: true, userId: "u-alice" });
-    expect((await resolver.resolveUserFromAadObjectId(T, OID))?.userId).toBe("u-alice");
+    expect((await resolver.resolveUserFromAadObjectId(T, OID, WS))?.userId).toBe("u-alice");
   });
 
   it("linkByEmail with NO matching user persists nothing and reports no_matching_user", async () => {
@@ -214,7 +242,7 @@ describe("TeamsAadIdentityResolver (#549)", () => {
     });
     expect(out).toEqual({ ok: false, reason: "no_matching_user" });
     expect(db.identities).toHaveLength(0);
-    expect(await resolver.resolveUserFromAadObjectId(T, OID)).toBeNull();
+    expect(await resolver.resolveUserFromAadObjectId(T, OID, WS)).toBeNull();
   });
 
   it("linkExplicit binds a known user id and rejects an unknown/disabled one", async () => {
@@ -243,6 +271,7 @@ describe("TeamsAadIdentityResolver (#549)", () => {
       status: "active",
       deletedAt: null,
     });
+    db.members.push({ workspaceId: WS, userId: "u-bob" });
     await resolver.linkExplicit({
       workspaceId: "ws-1",
       tenantId: T,
@@ -256,7 +285,7 @@ describe("TeamsAadIdentityResolver (#549)", () => {
       userId: "u-bob",
     });
     expect(db.identities).toHaveLength(1);
-    expect((await resolver.resolveUserFromAadObjectId(T, OID))?.userId).toBe("u-bob");
+    expect((await resolver.resolveUserFromAadObjectId(T, OID, WS))?.userId).toBe("u-bob");
   });
 
   it("linkByEmail falls back to a case-insensitive scan when the stored email is mixed-case", async () => {
@@ -269,6 +298,7 @@ describe("TeamsAadIdentityResolver (#549)", () => {
       status: "active",
       deletedAt: null,
     });
+    db.members.push({ workspaceId: WS, userId: "u-carol" });
     const out = await resolver.linkByEmail({
       workspaceId: "ws-1",
       tenantId: T,
@@ -276,7 +306,7 @@ describe("TeamsAadIdentityResolver (#549)", () => {
       email: "carol@corp.com",
     });
     expect(out).toEqual({ ok: true, userId: "u-carol" });
-    expect((await resolver.resolveUserFromAadObjectId(T, "aad-carol"))?.userId).toBe("u-carol");
+    expect((await resolver.resolveUserFromAadObjectId(T, "aad-carol", WS))?.userId).toBe("u-carol");
   });
 
   it("the resolveUserFromAadObjectId free function delegates to the shared singleton", async () => {
@@ -291,11 +321,81 @@ describe("TeamsAadIdentityResolver (#549)", () => {
     const spy = vi
       .spyOn(singleton, "resolveUserFromAadObjectId")
       .mockResolvedValue({ userId: "u-z", username: "z", email: "z@corp.com" });
-    const out = await resolveUserFromAadObjectId("tenant-z", "aad-z");
-    expect(spy).toHaveBeenCalledWith("tenant-z", "aad-z");
+    const out = await resolveUserFromAadObjectId("tenant-z", "aad-z", "ws-z");
+    expect(spy).toHaveBeenCalledWith("tenant-z", "aad-z", "ws-z");
     expect(out).toEqual({ userId: "u-z", username: "z", email: "z@corp.com" });
     spy.mockRestore();
     __resetTeamsAadIdentityResolver();
+  });
+
+  it("#1431 — refuses to bind a non-member, by id and by email, persisting nothing", async () => {
+    db.users.push({
+      id: "u-out",
+      username: "out",
+      email: "out@corp.com",
+      status: "active",
+      deletedAt: null,
+    });
+    db.members.push({ workspaceId: "ws-other", userId: "u-out" });
+    const byId = await resolver.linkExplicit({
+      workspaceId: WS,
+      tenantId: T,
+      aadObjectId: OID,
+      userId: "u-out",
+    });
+    const byEmail = await resolver.linkByEmail({
+      workspaceId: WS,
+      tenantId: T,
+      aadObjectId: OID,
+      email: "out@corp.com",
+    });
+    expect(byId).toEqual({ ok: false, reason: "no_matching_user" });
+    expect(byEmail).toEqual({ ok: false, reason: "no_matching_user" });
+    expect(db.identities).toHaveLength(0);
+  });
+
+  it("#1431 — refuses a system-admin member unless the caller is a system admin", async () => {
+    db.roles.push({ userId: "u-alice", key: "admin" });
+    const params = { workspaceId: WS, tenantId: T, aadObjectId: OID, userId: "u-alice" };
+    expect(await resolver.linkExplicit(params)).toEqual({ ok: false, reason: "no_matching_user" });
+    expect(await resolver.linkExplicit({ ...params, allowSystemAdminTarget: true })).toEqual({
+      ok: true,
+      userId: "u-alice",
+    });
+  });
+
+  it("#1431 — a binding resolves only in its own workspace and only for a current member", async () => {
+    await resolver.linkExplicit({
+      workspaceId: WS,
+      tenantId: T,
+      aadObjectId: OID,
+      userId: "u-alice",
+    });
+    expect(await resolver.resolveUserFromAadObjectId(T, OID, "ws-other")).toBeNull();
+    expect(await resolver.resolveUserFromAadObjectId(T, OID, "")).toBeNull();
+
+    db.members = [];
+    expect(await resolver.resolveUserFromAadObjectId(T, OID, WS)).toBeNull();
+  });
+
+  it("#1431 — another workspace's binding of the same identity is never overwritten or unlinked", async () => {
+    db.members.push({ workspaceId: "ws-other", userId: "u-alice" });
+    await resolver.linkExplicit({
+      workspaceId: "ws-other",
+      tenantId: T,
+      aadObjectId: OID,
+      userId: "u-alice",
+    });
+    await resolver.linkExplicit({
+      workspaceId: WS,
+      tenantId: T,
+      aadObjectId: OID,
+      userId: "u-alice",
+    });
+    expect(db.identities.map((r) => r.workspaceId).sort()).toEqual([WS, "ws-other"]);
+
+    expect(await resolver.unlink(WS, T, OID)).toBe(true);
+    expect(db.identities.map((r) => r.workspaceId)).toEqual(["ws-other"]);
   });
 
   it("unlink removes a binding and is idempotent", async () => {
@@ -305,8 +405,8 @@ describe("TeamsAadIdentityResolver (#549)", () => {
       aadObjectId: OID,
       userId: "u-alice",
     });
-    expect(await resolver.unlink(T, OID)).toBe(true);
-    expect(await resolver.unlink(T, OID)).toBe(false);
-    expect(await resolver.resolveUserFromAadObjectId(T, OID)).toBeNull();
+    expect(await resolver.unlink(WS, T, OID)).toBe(true);
+    expect(await resolver.unlink(WS, T, OID)).toBe(false);
+    expect(await resolver.resolveUserFromAadObjectId(T, OID, WS)).toBeNull();
   });
 });

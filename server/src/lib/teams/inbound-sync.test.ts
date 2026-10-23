@@ -332,14 +332,14 @@ describe("ingestTeamsActivity", () => {
     const res = await ingestTeamsActivity(context, h.opts);
     // No from.id → not flagged as the bot's own message; resolver gets null aad.
     expect(res.outcome).toBe("unmapped-sender");
-    expect(h.resolver.resolveUserFromAadObjectId).toHaveBeenCalledWith(TENANT, null);
+    expect(h.resolver.resolveUserFromAadObjectId).toHaveBeenCalledWith(TENANT, null, WS);
   });
 
   it("passes a null aadObjectId when the sender carries none", async () => {
     const h = harness({ user: null });
     const { context } = fakeContext({ from: { id: "29:teams-user", aadObjectId: undefined } });
     await ingestTeamsActivity(context, h.opts);
-    expect(h.resolver.resolveUserFromAadObjectId).toHaveBeenCalledWith(TENANT, null);
+    expect(h.resolver.resolveUserFromAadObjectId).toHaveBeenCalledWith(TENANT, null, WS);
   });
 
   it("wires real default collaborators when only some are injected", async () => {
@@ -362,6 +362,7 @@ describe("ingestTeamsActivity", () => {
     expect(h.resolver.resolveUserFromAadObjectId).toHaveBeenCalledWith(
       "tenant-from-activity",
       USER_AAD,
+      WS,
     );
   });
 
@@ -369,7 +370,7 @@ describe("ingestTeamsActivity", () => {
     const h = harness();
     const { context } = fakeContext({ channelData: undefined, conversation: { id: CONVO } });
     await ingestTeamsActivity(context, h.opts);
-    expect(h.resolver.resolveUserFromAadObjectId).toHaveBeenCalledWith(TENANT, USER_AAD);
+    expect(h.resolver.resolveUserFromAadObjectId).toHaveBeenCalledWith(TENANT, USER_AAD, WS);
   });
 
   it("uses the conversation tenantId when channelData is absent", async () => {
@@ -382,6 +383,7 @@ describe("ingestTeamsActivity", () => {
     expect(h.resolver.resolveUserFromAadObjectId).toHaveBeenCalledWith(
       "tenant-from-convo",
       USER_AAD,
+      WS,
     );
   });
 

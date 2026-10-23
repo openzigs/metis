@@ -5341,9 +5341,11 @@ model TeamsUserIdentity {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  /// One binding per (tenant, aadObjectId): the resolver key. Tenant-scoped so a
-  /// foreign-tenant aadObjectId cannot collide with a local user's binding.
-  @@unique([tenantId, aadObjectId])
+  /// One binding per (workspace, tenant, aadObjectId): the resolver key. Tenant-
+  /// scoped so a foreign-tenant aadObjectId cannot collide with a local user's
+  /// binding; workspace-scoped (#1431) so one workspace's link can never
+  /// overwrite, unlink or resolve another workspace's binding of the same person.
+  @@unique([workspaceId, tenantId, aadObjectId])
   @@index([workspaceId])
   @@index([userId])
   @@map("teams_user_identities")
@@ -5519,9 +5521,11 @@ model SlackUserIdentity {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  /// One binding per (team, user): the resolver key. Team-scoped so a
-  /// foreign-team slackUserId cannot collide with a local user's binding.
-  @@unique([slackTeamId, slackUserId])
+  /// One binding per (workspace, team, user): the resolver key. Team-scoped so a
+  /// foreign-team slackUserId cannot collide with a local user's binding;
+  /// workspace-scoped (#1431) so one workspace's link can never overwrite, unlink
+  /// or resolve another workspace's binding of the same person.
+  @@unique([workspaceId, slackTeamId, slackUserId])
   @@index([workspaceId])
   @@index([userId])
   @@map("slack_user_identities")

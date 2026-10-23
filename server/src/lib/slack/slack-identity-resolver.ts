@@ -9,10 +9,14 @@
  * match (or explicit admin linking), then resolve future senders against it.
  * This mirrors the #549 Teams AAD resolver exactly, swapping AAD keys for Slack.
  *
- * SECURITY — team-scoped, no cross-team leakage:
- *   - The binding key is `(slackTeamId, slackUserId)` (unique). A `slackUserId`
- *     from a DIFFERENT team can never collide with a local user's binding, so a
- *     foreign-team sender resolves to `null`.
+ * SECURITY — team- and workspace-scoped (#1431), no cross-team leakage:
+ *   - A binding belongs to ONE workspace and may only name an active member of
+ *     it (`../workspaces/chatops-identity-scope.ts`); it resolves only for that
+ *     workspace's Slack install, and only while the user is still a member.
+ *   - The binding key is `(workspaceId, slackTeamId, slackUserId)` (unique). A
+ *     `slackUserId` from a DIFFERENT team can never collide with a local user's
+ *     binding, so a foreign-team sender resolves to `null`; another workspace's
+ *     link of the same person is a different row, never overwritten.
  *   - `resolveUserFromSlackId` REQUIRES a non-empty `slackTeamId`; a missing team
  *     resolves to `null` (we never match a team-less sender).
  *   - An unbound sender resolves to `null` — callers (the ChatOps handlers) MUST
@@ -23,6 +27,10 @@ import type { PrismaClient } from "@prisma/client";
 
 import { prisma as defaultPrisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
+import {
+  findBindableWorkspaceUser,
+  isActiveWorkspaceMember,
+} from "../workspaces/chatops-identity-scope.js";
 
 const log = createChildLogger("slack-identity");
 
@@ -44,23 +52,34 @@ export class SlackIdentityResolver {
   }
 
   /**
-   * Resolve a Slack sender to a METIS user by `(slackTeamId, slackUserId)`.
+   * Resolve a Slack sender to a METIS user by `(workspaceId, slackTeamId,
+   * slackUserId)`, where `workspaceId` owns the Slack install the request came
+   * through.
    *
    * Returns `null` (never throws, never guesses) when:
-   *   - `slackTeamId` or `slackUserId` is missing/blank,
-   *   - no binding exists for the pair (unmapped sender), OR
-   *   - the bound user has since been soft-deleted/disabled.
+   *   - any of the three is missing/blank,
+   *   - this workspace has no binding for the pair (unmapped sender),
+   *   - the bound user has since been soft-deleted/disabled, OR
+   *   - the bound user is no longer an active member of the workspace (#1431).
    */
   async resolveUserFromSlackId(
     slackTeamId: string | null | undefined,
     slackUserId: string | null | undefined,
+    workspaceId: string,
   ): Promise<ResolvedMetisUser | null> {
     const tid = (slackTeamId ?? "").trim();
     const uid = (slackUserId ?? "").trim();
-    if (!tid || !uid) return null;
+    const ws = (workspaceId ?? "").trim();
+    if (!tid || !uid || !ws) return null;
 
     const binding = await this.db.slackUserIdentity.findUnique({
-      where: { slackTeamId_slackUserId: { slackTeamId: tid, slackUserId: uid } },
+      where: {
+        workspaceId_slackTeamId_slackUserId: {
+          workspaceId: ws,
+          slackTeamId: tid,
+          slackUserId: uid,
+        },
+      },
       include: { user: true },
     });
     if (!binding) return null;
@@ -68,22 +87,32 @@ export class SlackIdentityResolver {
     const user = binding.user;
     // Defence-in-depth: a binding to a removed/disabled user must not resolve.
     if (!user || user.deletedAt !== null || user.status !== "active") return null;
+    if (!(await isActiveWorkspaceMember(this.db, ws, user.id))) {
+      log.warn("Slack binding names a user outside the install's workspace — refused", {
+        workspaceId: ws,
+      });
+      return null;
+    }
 
     return { userId: user.id, username: user.username, email: user.email };
   }
 
   /**
-   * Bind `(slackTeamId, slackUserId)` to a METIS user, REUSING the existing SSO
-   * email linkage: the Slack user's email is matched against `User.email`. On a
-   * match the binding is upserted; on no match nothing is persisted and
-   * `{ ok: false, reason: "no_matching_user" }` is returned so the caller can flag
-   * the sender as external. Idempotent on the `(slackTeamId, slackUserId)` key.
+   * Bind `(slackTeamId, slackUserId)` in `workspaceId` to a METIS user, REUSING
+   * the existing SSO email linkage: the Slack user's email is matched
+   * (case-insensitively) against the `User.email` of the workspace's MEMBERS only
+   * (#1431). On a match the binding is upserted; on no match nothing is
+   * persisted and `{ ok: false, reason: "no_matching_user" }` is returned — the
+   * same answer whether the email is unknown or belongs to a non-member.
+   * Idempotent on the workspace-scoped key.
    */
   async linkByEmail(params: {
     workspaceId: string;
     slackTeamId: string;
     slackUserId: string;
     email: string;
+    /** Only a system-admin caller may bind a member who is a system admin. */
+    allowSystemAdminTarget?: boolean;
   }): Promise<LinkOutcome> {
     const slackTeamId = params.slackTeamId.trim();
     const slackUserId = params.slackUserId.trim();
@@ -91,59 +120,60 @@ export class SlackIdentityResolver {
     if (!slackTeamId || !slackUserId || !email) {
       return { ok: false, reason: "no_matching_user" };
     }
-
-    // Reuse the SSO identity-by-email match (case-insensitive).
-    const user = await this.db.user.findFirst({
-      where: { email: { equals: email }, deletedAt: null, status: "active" },
-      select: { id: true, email: true },
+    const user = await findBindableWorkspaceUser(this.db, {
+      workspaceId: params.workspaceId,
+      email,
+      allowSystemAdminTarget: params.allowSystemAdminTarget,
     });
     if (!user) {
-      // Case-insensitive fallback for IdPs/Slack profiles with differently-cased email.
-      const all = await this.db.user.findMany({
-        where: { deletedAt: null, status: "active" },
-        select: { id: true, email: true },
+      log.info("Slack email matched no bindable workspace member — sender left unmapped", {
+        workspaceId: params.workspaceId,
+        slackTeamId,
       });
-      const ci = all.find((u) => u.email.toLowerCase() === email);
-      if (!ci) {
-        log.info("Slack email did not match any METIS user — sender left unmapped", {
-          workspaceId: params.workspaceId,
-          slackTeamId,
-        });
-        return { ok: false, reason: "no_matching_user" };
-      }
-      return this.upsertBinding(params.workspaceId, slackTeamId, slackUserId, ci.id, ci.email);
+      return { ok: false, reason: "no_matching_user" };
     }
-
     return this.upsertBinding(params.workspaceId, slackTeamId, slackUserId, user.id, user.email);
   }
 
   /**
-   * Bind `(slackTeamId, slackUserId)` to an explicit METIS user id (admin linking
-   * path). Validates the user is active. Idempotent upsert on the key.
+   * Bind `(slackTeamId, slackUserId)` in `workspaceId` to an explicit METIS user
+   * id (admin linking path). The user must be an active member of `workspaceId`
+   * (#1431) — a system admin only when `allowSystemAdminTarget`. Idempotent
+   * upsert on the workspace-scoped key.
    */
   async linkExplicit(params: {
     workspaceId: string;
     slackTeamId: string;
     slackUserId: string;
     userId: string;
+    /** Only a system-admin caller may bind a member who is a system admin. */
+    allowSystemAdminTarget?: boolean;
   }): Promise<LinkOutcome> {
     const slackTeamId = params.slackTeamId.trim();
     const slackUserId = params.slackUserId.trim();
     if (!slackTeamId || !slackUserId || !params.userId) {
       return { ok: false, reason: "no_matching_user" };
     }
-    const user = await this.db.user.findFirst({
-      where: { id: params.userId, deletedAt: null, status: "active" },
-      select: { id: true, email: true },
+    const user = await findBindableWorkspaceUser(this.db, {
+      workspaceId: params.workspaceId,
+      userId: params.userId,
+      allowSystemAdminTarget: params.allowSystemAdminTarget,
     });
     if (!user) return { ok: false, reason: "no_matching_user" };
     return this.upsertBinding(params.workspaceId, slackTeamId, slackUserId, user.id, user.email);
   }
 
-  /** Remove a binding (e.g. when a user leaves). Idempotent. */
-  async unlink(slackTeamId: string, slackUserId: string): Promise<boolean> {
+  /**
+   * Remove `workspaceId`'s binding of `(slackTeamId, slackUserId)` (e.g. when a
+   * user leaves). Never touches another workspace's binding. Idempotent.
+   */
+  async unlink(workspaceId: string, slackTeamId: string, slackUserId: string): Promise<boolean> {
     const res = await this.db.slackUserIdentity.deleteMany({
-      where: { slackTeamId: slackTeamId.trim(), slackUserId: slackUserId.trim() },
+      where: {
+        workspaceId: workspaceId.trim(),
+        slackTeamId: slackTeamId.trim(),
+        slackUserId: slackUserId.trim(),
+      },
     });
     return res.count > 0;
   }
@@ -156,9 +186,11 @@ export class SlackIdentityResolver {
     email: string | null,
   ): Promise<LinkOutcome> {
     await this.db.slackUserIdentity.upsert({
-      where: { slackTeamId_slackUserId: { slackTeamId, slackUserId } },
+      where: {
+        workspaceId_slackTeamId_slackUserId: { workspaceId, slackTeamId, slackUserId },
+      },
       create: { workspaceId, slackTeamId, slackUserId, userId, email },
-      update: { workspaceId, userId, email },
+      update: { userId, email },
     });
     return { ok: true, userId };
   }
