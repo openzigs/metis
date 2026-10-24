@@ -221,8 +221,10 @@ Full workflow: `.github/skills/adversarial-review/SKILL.md`.
    `scripts/lib/adversarial-tally-core.mjs` takes the changed paths, labels and PR title and
    returns `{ required, reasons }`. It fires on auth modules, middleware, route handlers,
    permission/role logic, session and identity handling, secrets and crypto, SSRF and
-   sanitisation guards, rate limiting, tenant/project scoping, and schema migrations. If it
-   is not required, record that and go to Step 5.6.
+   sanitisation guards, rate limiting, tenant/project scoping, and schema migrations — and,
+   from the diff's added imports, on any file newly importing a credential or egress module
+   (#1476; use the adversarial-review skill's snippet, which pipes the diff). If it is not
+   required, record that and go to Step 5.6.
 2. **Dispatch three `adversarial-reviewer` agents in a single message** so they run in
    parallel — one per lens:
    - `over-blocking` — does this refuse work it should allow?

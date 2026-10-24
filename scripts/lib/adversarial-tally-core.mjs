@@ -1232,12 +1232,214 @@ export const SECURITY_TITLE_PATTERN =
   /\b(security|authz|authorization|idor|bola|ssrf|xss|injection|csrf)\b/i;
 
 /**
+ * Modules whose **import** makes a change security-relevant, wherever the importing file lives
+ * (#1476).
+ *
+ * ## Why an import arm, and not more path words
+ *
+ * Every arm above reads the *name* of a changed file. #1474's
+ * `server/src/lib/agents/pr-reviewer/production-deps.ts` reads a vault secret and builds a
+ * credentialed outbound GitHub client, carries no security word in its path, and so returned
+ * `required: false` — after which review found two Medium security issues in it. That is
+ * #1275's lesson one level further again: an arm indexed on a file's name is blind to the
+ * *consumer* of a control, and the consumer is where a credential is mishandled. No path word
+ * could have caught `production-deps.ts` without also firing on every `*-deps.ts` in the tree;
+ * the import list is the one cheap, syntactic fact that says what the file actually touches.
+ *
+ * ## What is matched, and how
+ *
+ * A specifier is compared **by whole path segment, extension stripped**
+ * ({@link importSegments}), never by substring: `../../connectors/vault-resolver.js` matches
+ * `vault-resolver`; `./vault-resolver-helpers.js`, `../net/safe-fetch.errors.js` and a
+ * `node-vault` package do not. The **final segment** is matched, so a sibling import
+ * (`./vault-resolver.js` from inside `connectors/`) fires exactly as a deep one does. Every
+ * basename below is unique among tracked files except `secret-binding`, whose two homes
+ * (`vault/`, `mcp/`) are both in class.
+ *
+ * {@link CREDENTIAL_IMPORT_DIRECTORIES} adds one directory: **any** segment `vault` fires, so
+ * every module under `server/src/lib/vault/` (and a bare `../vault` index import) is covered
+ * without listing each file — the issue's `vault/`.
+ *
+ * ## Measured cost (all 237 non-merge commits on `main` after the 20da3eab import snapshot)
+ *
+ * Measured with {@link addedImportSpecifiers} over each commit's own `git show`, 2026-10-24:
+ *
+ *   - **Per commit: 7 of 237 fire, 1 new to the gate.** The other 6 already fired on a path
+ *     arm. The one is 9af4d2c29 (#1276, publish drafts), on `./octokit-factory.js` newly
+ *     imported by a publishing test — a change to what reaches GitHub, so in class.
+ *   - **Per file: 19 files newly import one of these modules, 15 of them path-dark** — every
+ *     one in class. Three are #1474's own (`production-deps.ts`, its test, and
+ *     `octokit-factory.ts` newly importing `builtin-fetch-dispatcher`); four are production
+ *     consumers wiring a vault read into a non-security-named file (`scheduler-service.ts`,
+ *     `webhook-handler.ts`, `analysed-repo-guard.ts`, `taskstoissues-github.ts`); the rest
+ *     are tests that seed a vault secret or drive the credentialed client. That last class is
+ *     accepted, not suppressed: a test of credential handling is what `test-falsifiability`
+ *     exists for. Zero were prose or homographs — a specifier is not prose.
+ *
+ * `safe-fetch`, `proxy-fetch`, `egress-defaults`, `network-allowlist`, `vault-key-cipher` and
+ * the two `*-secret-binding` modules fired on **0** commits in that window, so they are free
+ * today; they are listed because each is an egress guard or a secret binder by construction.
+ *
+ * ## What is deliberately NOT here
+ *
+ *   - **`node:crypto` / `crypto`** — newly imported by **26 of the 237 commits, 5 new to the
+ *     gate**, and all 5 are ids or hashes (#930's race test, #1097's hybrid search, #935's
+ *     extractor version, #909's and #779's requirement sets) — zero in class. Per file, 31 of
+ *     39 importers are path-dark. Cryptographic *material* is already carried by the
+ *     `crypto|cipher` path arm and by `vault-key-cipher` here.
+ *   - **`auth/jwt`, `jsonwebtoken`, `argon2`** — **43 of 237 commits, 0 new to the gate**: 60
+ *     of the 62 importing files are tests minting a session for a route test, in commits that
+ *     already fire on the route. Pure cost per file, nothing gained per commit. Named so a
+ *     later widening argues with this paragraph rather than re-deriving it.
+ *   - **`@octokit/rest`** — the raw package; 0 commits. The credentialed, host-pinned client is
+ *     `octokit-factory`, which is listed; a file importing the raw package also has to obtain a
+ *     token, and that read is what fires.
+ *   - **`safe-fetch.errors`** — error classes only; importing them performs no egress.
+ *
+ * @type {ReadonlyMap<string, string>} final specifier segment → what the module does
+ */
+export const CREDENTIAL_IMPORT_MODULES = new Map([
+  // the issue's named set
+  ["vault-resolver", "reads a bound secret from the vault"],
+  ["network-allowlist", "connector egress allowlist"],
+  ["host-allowlist", "publishing host allowlist (pins where a credential is sent)"],
+  ["octokit-factory", "builds a credentialed outbound GitHub client"],
+  // the secret readers and binders outside `vault/`
+  ["connector-secret-binding", "binds a connector to a vault secret"],
+  ["publish-secret-binding", "binds a publish target to a vault secret"],
+  ["secret-binding", "binds a consumer to a vault secret"],
+  ["vault-key-cipher", "encrypts or decrypts vault key material"],
+  // the egress layer: SSRF-guarded fetch and the dispatchers that route outbound traffic
+  ["safe-fetch", "SSRF-guarded outbound fetch"],
+  ["builtin-fetch-dispatcher", "outbound fetch dispatcher (egress proxy routing)"],
+  ["proxy-fetch", "outbound fetch through the egress proxy"],
+  ["egress-defaults", "sandbox egress policy"],
+]);
+
+/**
+ * Directory segments whose every module counts as a credential import. See
+ * {@link CREDENTIAL_IMPORT_MODULES}.
+ *
+ * @type {ReadonlySet<string>}
+ */
+export const CREDENTIAL_IMPORT_DIRECTORIES = new Set(["vault"]);
+
+/** A JS/TS module extension, stripped before a specifier is compared. */
+const MODULE_EXTENSION = /\.[cm]?[jt]sx?$/i;
+
+/**
+ * The segments of an import specifier, query and extension stripped, `.`/`..` dropped.
+ *
+ * @param {string} specifier
+ * @returns {string[]}
+ */
+function importSegments(specifier) {
+  const bare = specifier.split(/[?#]/, 1)[0].replace(MODULE_EXTENSION, "");
+  return bare.split("/").filter((s) => s !== "" && s !== "." && s !== "..");
+}
+
+/**
+ * The credential/egress module a specifier names, or `null`.
+ *
+ * @param {string} specifier
+ * @returns {string | null}
+ */
+function matchCredentialImport(specifier) {
+  const segments = importSegments(specifier);
+  const last = segments.at(-1);
+  if (last !== undefined && CREDENTIAL_IMPORT_MODULES.has(last)) {
+    return `${last}: ${CREDENTIAL_IMPORT_MODULES.get(last)}`;
+  }
+  const dir = segments.find((s) => CREDENTIAL_IMPORT_DIRECTORIES.has(s));
+  return dir === undefined ? null : `${dir}/: the secret store`;
+}
+
+/** Files whose import statements are read. Prose that quotes an import is not one. */
+const CODE_FILE = /\.[cm]?[jt]sx?$/i;
+
+/**
+ * A static or re-export specifier — `import … from`, `export … from`, a multi-line import's
+ * `} from` tail, or a side-effect `import "…"`. **Anchored to the start of the statement**, so
+ * a string literal or comment that merely *quotes* an import (as this module's own tests do)
+ * is not read as one.
+ */
+const STATIC_IMPORT =
+  /^\s*(?:(?:import|export)\b[^"'`]*?\bfrom|\}\s*from|import)\s*(["'])([^"'\n]+)\1/;
+
+/**
+ * A dynamic `import("…")` or `require("…")`: expressions, so they may sit anywhere on a line.
+ * `vi.mock("…")` is deliberately absent: a mock replaces the module rather than using it.
+ */
+const EXPRESSION_IMPORT = /(?:^|[^\w$.])(?:import|require)\s*\(\s*(["'])([^"'\n]+)\1/g;
+
+/**
+ * @param {string} line
+ * @returns {string[]}
+ */
+function specifiersOnLine(line) {
+  const out = [...line.matchAll(EXPRESSION_IMPORT)].map((m) => m[2]);
+  const statement = STATIC_IMPORT.exec(line);
+  return statement ? [statement[2], ...out] : out;
+}
+
+/**
+ * The import specifiers a unified diff **newly** adds, for {@link shouldRunAdversarialPass}'s
+ * `addedImports` (#1476).
+ *
+ * Per file, a specifier counts when it appears on an added line and on no removed line of the
+ * same file, so reordering an import or adding a name to an existing one is not "new". Only
+ * JS/TS files are read. Feed it `git diff origin/main...HEAD` (any context width).
+ *
+ * @param {string} diff
+ * @returns {string[]} distinct specifiers, in first-seen order
+ */
+export function addedImportSpecifiers(diff) {
+  if (typeof diff !== "string") {
+    throw new TypeError(`addedImportSpecifiers: diff must be a string, got ${typeof diff}.`);
+  }
+  /** @type {Map<string, { added: Set<string>, removed: Set<string> }>} */
+  const files = new Map();
+  /** @type {{ added: Set<string>, removed: Set<string> } | null} */
+  let current = null;
+  // `---`/`+++` are headers only between `diff --git` and the first `@@`; inside a hunk they
+  // are content (a removed `-- sql comment`, an added `++i`), so the state is tracked.
+  let inHeader = false;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      current = null;
+      inHeader = true;
+    } else if (inHeader && line.startsWith("+++ ")) {
+      const path = line.slice(4).replace(/^b\//, "").trimEnd();
+      current = CODE_FILE.test(path) ? { added: new Set(), removed: new Set() } : null;
+      if (current) files.set(path, current);
+    } else if (line.startsWith("@@")) {
+      inHeader = false;
+    } else if (inHeader) {
+      // `index`, `new file mode`, `--- a/…`: nothing to collect
+    } else if (current && line.startsWith("+")) {
+      for (const s of specifiersOnLine(line.slice(1))) current.added.add(s);
+    } else if (current && line.startsWith("-")) {
+      for (const s of specifiersOnLine(line.slice(1))) current.removed.add(s);
+    }
+  }
+  /** @type {Set<string>} */
+  const out = new Set();
+  for (const { added, removed } of files.values()) {
+    for (const s of added) if (!removed.has(s)) out.add(s);
+  }
+  return [...out];
+}
+
+/**
  * Decide whether a change warrants the adversarial panel.
  *
  * Returns reasons rather than a bare boolean so the answer explains itself in the PR body —
  * "required because it touched a route handler" is auditable; `true` is not.
  *
- * @param {{ changedPaths?: string[], labels?: string[], title?: string }} input
+ * `addedImports` (#1476) is optional — the import specifiers the change newly adds, from
+ * {@link addedImportSpecifiers}. A caller passing only paths gets exactly the old answer.
+ *
+ * @param {{ changedPaths?: string[], labels?: string[], title?: string, addedImports?: string[] }} input
  * @returns {{ required: boolean, reasons: string[] }}
  */
 export function shouldRunAdversarialPass(input = {}) {
@@ -1255,7 +1457,7 @@ export function shouldRunAdversarialPass(input = {}) {
   // and that is the shape most call sites have. Only a value with content that cannot
   // be read throws — the same line `verifyChangelogFragments` draws on `baseFragments`,
   // and for the same reason: silence here is indistinguishable from a clean answer.
-  for (const field of /** @type {const} */ (["changedPaths", "labels"])) {
+  for (const field of /** @type {const} */ (["changedPaths", "labels", "addedImports"])) {
     const value = /** @type {unknown} */ (input[field]);
     if (value !== undefined && value !== null && !Array.isArray(value)) {
       throw new TypeError(
@@ -1277,6 +1479,7 @@ export function shouldRunAdversarialPass(input = {}) {
   const changedPaths = Array.isArray(input.changedPaths) ? input.changedPaths : [];
   const labels = Array.isArray(input.labels) ? input.labels : [];
   const title = typeof input.title === "string" ? input.title : "";
+  const addedImports = Array.isArray(input.addedImports) ? input.addedImports : [];
 
   /** @type {string[]} */
   const reasons = [];
@@ -1284,6 +1487,18 @@ export function shouldRunAdversarialPass(input = {}) {
   for (const signal of PATH_SIGNALS) {
     const hit = changedPaths.find((p) => typeof p === "string" && signal.match(p));
     if (hit) reasons.push(`${hit} — ${signal.reason}`);
+  }
+
+  // One reason per distinct module, so ten importers of `vault-service` read as one fact.
+  /** @type {Set<string>} */
+  const importHits = new Set();
+  for (const specifier of addedImports) {
+    if (typeof specifier !== "string") continue;
+    const module = matchCredentialImport(specifier);
+    if (module && !importHits.has(module)) {
+      importHits.add(module);
+      reasons.push(`newly imports \`${specifier}\` — credential or egress module (${module})`);
+    }
   }
 
   const securityLabel = labels.find((l) => typeof l === "string" && matchesSecurityLabel(l));

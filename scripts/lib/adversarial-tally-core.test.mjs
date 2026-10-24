@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_TRANSCRIPT_READERS,
   AI_CONFIG_TERMS,
+  CREDENTIAL_IMPORT_DIRECTORIES,
+  CREDENTIAL_IMPORT_MODULES,
   DEPENDENCY_MANIFEST_FILES,
   IDENTITY_ANCHORS,
   LENSES,
@@ -14,6 +16,7 @@ import {
   SECURITY_LABEL_WORDS,
   SECURITY_TITLE_PATTERN,
   UNTRUSTED_PARSER_TERMS,
+  addedImportSpecifiers,
   exitCodeFor,
   formatReport,
   isCodeCitation,
@@ -2951,5 +2954,267 @@ describe("an unrecognised key with content is unparsed, not ignored (Issue #1215
     );
     expect(tally.outcome).toBe("CLEAR");
     expect(exitCodeFor(tally)).toBe(0);
+  });
+});
+
+/**
+ * The import arm, #1476. #1474's `production-deps.ts` reads a vault secret and builds a
+ * credentialed GitHub client, carries no security word in its path, and returned
+ * `required: false`. The fixture is that file's real diff from 7c59c455, not a paraphrase.
+ */
+describe("shouldRunAdversarialPass — the import arm (#1476)", () => {
+  const PRODUCTION_DEPS = "server/src/lib/agents/pr-reviewer/production-deps.ts";
+  const productionDepsDiff = readFileSync(
+    fileURLToPath(new URL("./fixtures/1474-production-deps.diff", import.meta.url)),
+    "utf8",
+  );
+
+  it("pins the hole: the path alone does not fire", () => {
+    expect(shouldRunAdversarialPass({ changedPaths: [PRODUCTION_DEPS] })).toEqual({
+      required: false,
+      reasons: [],
+    });
+  });
+
+  it("fires on #1474's production-deps.ts diff, naming each credential module once", () => {
+    const addedImports = addedImportSpecifiers(productionDepsDiff);
+    const result = shouldRunAdversarialPass({ changedPaths: [PRODUCTION_DEPS], addedImports });
+    expect(result.required).toBe(true);
+    expect(result.reasons).toEqual([
+      "newly imports `../../connectors/vault-resolver.js` — credential or egress module " +
+        "(vault-resolver: reads a bound secret from the vault)",
+      "newly imports `../../publishing/octokit-factory.js` — credential or egress module " +
+        "(octokit-factory: builds a credentialed outbound GitHub client)",
+      "newly imports `../../publishing/host-allowlist.js` — credential or egress module " +
+        "(host-allowlist: publishing host allowlist (pins where a credential is sent))",
+      "newly imports `../../vault/vault-service.js` — credential or egress module " +
+        "(vault/: the secret store)",
+    ]);
+  });
+
+  it("does not fire on an unrelated file's imports", () => {
+    const diff = [
+      "diff --git a/ui/src/components/spinner.tsx b/ui/src/components/spinner.tsx",
+      "--- a/ui/src/components/spinner.tsx",
+      "+++ b/ui/src/components/spinner.tsx",
+      "@@ -1,2 +1,4 @@",
+      '+import { cn } from "@/lib/utils";',
+      '+import { Loader2 } from "lucide-react";',
+      '+import type { SpinnerProps } from "./types.js";',
+    ].join("\n");
+    const addedImports = addedImportSpecifiers(diff);
+    expect(addedImports).toEqual(["@/lib/utils", "lucide-react", "./types.js"]);
+    expect(
+      shouldRunAdversarialPass({ changedPaths: ["ui/src/components/spinner.tsx"], addedImports }),
+    ).toEqual({ required: false, reasons: [] });
+  });
+
+  it.each([
+    ["a sibling import from inside connectors/", "./vault-resolver.js"],
+    ["a deep relative import", "../../../src/lib/publishing/octokit-factory.js"],
+    ["a TypeScript extension", "../net/safe-fetch.ts"],
+    ["an extensionless alias", "@/lib/connectors/network-allowlist"],
+    ["any module under vault/", "../vault/bound-secret.js"],
+    ["the vault/ index", "../../vault"],
+    ["a query suffix", "./host-allowlist.js?raw"],
+  ])("fires on %s (%s)", (_label, specifier) => {
+    expect(shouldRunAdversarialPass({ addedImports: [specifier] }).required).toBe(true);
+  });
+
+  it.each([
+    ["a longer basename", "./vault-resolver-helpers.js"],
+    ["a prefixed basename", "./my-host-allowlist.js"],
+    ["a dotted sibling module", "../net/safe-fetch.errors.js"],
+    ["a package containing the word", "node-vault"],
+    ["a directory containing the word", "../vaulted/store.js"],
+    ["a scoped package", "@acme/octokit-factory-mock"],
+    ["node:crypto, measured and excluded", "node:crypto"],
+    ["auth/jwt, measured and excluded", "../src/lib/auth/jwt.js"],
+    ["the raw Octokit package", "@octokit/rest"],
+  ])("does not fire on %s (%s)", (_label, specifier) => {
+    expect(shouldRunAdversarialPass({ addedImports: [specifier] })).toEqual({
+      required: false,
+      reasons: [],
+    });
+  });
+
+  it.each([...CREDENTIAL_IMPORT_MODULES.keys()])("fires on every listed module: %s", (name) => {
+    const [reason] = shouldRunAdversarialPass({ addedImports: [`./${name}.js`] }).reasons;
+    expect(reason).toContain(`(${name}: `);
+  });
+
+  it.each([
+    ["vault-resolver", "server/src/lib/connectors/vault-resolver.ts"],
+    ["network-allowlist", "server/src/lib/connectors/network-allowlist.ts"],
+    ["host-allowlist", "server/src/lib/publishing/host-allowlist.ts"],
+    ["octokit-factory", "server/src/lib/publishing/octokit-factory.ts"],
+    ["connector-secret-binding", "server/src/lib/connectors/connector-secret-binding.ts"],
+    ["publish-secret-binding", "server/src/lib/publishing/publish-secret-binding.ts"],
+    ["secret-binding", "server/src/lib/vault/secret-binding.ts"],
+    ["vault-key-cipher", "server/src/lib/portability/vault-key-cipher.ts"],
+    ["safe-fetch", "server/src/lib/net/safe-fetch.ts"],
+    ["builtin-fetch-dispatcher", "server/src/lib/net/builtin-fetch-dispatcher.ts"],
+    ["proxy-fetch", "server/src/lib/rag/backends/proxy-fetch.ts"],
+    ["egress-defaults", "server/src/lib/sandbox/egress-defaults.ts"],
+  ])("lists %s, which exists at %s (a rename must update the list)", (name, path) => {
+    expect(CREDENTIAL_IMPORT_MODULES.has(name)).toBe(true);
+    expect(existsSync(fileURLToPath(new URL(`../../${path}`, import.meta.url)))).toBe(true);
+  });
+
+  it("lists exactly the modules pinned above", () => {
+    expect(CREDENTIAL_IMPORT_MODULES.size).toBe(12);
+    expect([...CREDENTIAL_IMPORT_DIRECTORIES]).toEqual(["vault"]);
+  });
+
+  it("keeps callers that pass only paths, labels and title on the old answer", () => {
+    expect(
+      shouldRunAdversarialPass({ changedPaths: ["server/src/routes/analysis.ts"] }).reasons,
+    ).toHaveLength(1);
+    expect(shouldRunAdversarialPass({ addedImports: null })).toEqual({
+      required: false,
+      reasons: [],
+    });
+  });
+
+  it("THROWS on addedImports of the wrong type rather than coercing it to empty", () => {
+    expect(() => shouldRunAdversarialPass({ addedImports: "../vault/vault-service.js" })).toThrow(
+      /`addedImports` must be an array/,
+    );
+  });
+
+  it("gives one reason per module, however many specifiers reach it", () => {
+    const { reasons } = shouldRunAdversarialPass({
+      addedImports: [
+        "./vault-resolver.js",
+        "../connectors/vault-resolver.js",
+        "../vault/vault-service.js",
+        "../vault/bound-secret.js",
+      ],
+    });
+    expect(reasons).toHaveLength(2);
+    expect(reasons[0]).toContain("`./vault-resolver.js`");
+    expect(reasons[1]).toContain("`../vault/vault-service.js`");
+  });
+
+  it("ignores non-string entries in addedImports", () => {
+    expect(shouldRunAdversarialPass({ addedImports: [null, 7, {}] }).required).toBe(false);
+  });
+});
+
+describe("addedImportSpecifiers (#1476)", () => {
+  const file = (path, ...lines) => [
+    `diff --git a/${path} b/${path}`,
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    "@@ -1 +1 @@",
+    ...lines,
+  ];
+
+  it("reads static, side-effect, re-export, dynamic and require imports", () => {
+    const diff = file(
+      "server/src/a.ts",
+      '+import { a } from "./a.js";',
+      "+import './side-effect.js';",
+      '+export { b } from "./b.js";',
+      '+const c = await import("./c.js");',
+      '+const d = require("./d.cjs");',
+      '+} from "./multi-line-tail.js";',
+    ).join("\n");
+    expect(addedImportSpecifiers(diff)).toEqual([
+      "./a.js",
+      "./side-effect.js",
+      "./b.js",
+      "./c.js",
+      "./d.cjs",
+      "./multi-line-tail.js",
+    ]);
+  });
+
+  it("does not count a specifier the same file also removed (a reorder or a widened import)", () => {
+    const diff = file(
+      "server/src/a.ts",
+      '-import { x } from "../vault/vault-service.js";',
+      '+import { x, y } from "../vault/vault-service.js";',
+    ).join("\n");
+    expect(addedImportSpecifiers(diff)).toEqual([]);
+  });
+
+  it("counts a specifier removed from one file and added to another", () => {
+    const diff = [
+      ...file("server/src/a.ts", '-import { x } from "../vault/vault-service.js";'),
+      ...file("server/src/b.ts", '+import { x } from "../vault/vault-service.js";'),
+    ].join("\n");
+    expect(addedImportSpecifiers(diff)).toEqual(["../vault/vault-service.js"]);
+  });
+
+  it("ignores context lines, removed-only lines and a deleted file", () => {
+    const diff = [
+      ...file("server/src/a.ts", ' import { x } from "../vault/vault-service.js";'),
+      "diff --git a/server/src/gone.ts b/server/src/gone.ts",
+      "--- a/server/src/gone.ts",
+      "+++ /dev/null",
+      '-import { y } from "../vault/vault-service.js";',
+    ].join("\n");
+    expect(addedImportSpecifiers(diff)).toEqual([]);
+  });
+
+  it("ignores prose: a markdown file quoting an import, and comment text without a quote", () => {
+    const diff = [
+      ...file("docs/ARCHITECTURE.md", '+import { x } from "../vault/vault-service.js";'),
+      ...file("server/src/a.ts", "+ * from the project's own configuration, per job:"),
+    ].join("\n");
+    expect(addedImportSpecifiers(diff)).toEqual([]);
+  });
+
+  it("does not read a string literal that quotes an import statement (this file's own tests)", () => {
+    const diff = file(
+      "scripts/lib/a.test.mjs",
+      `+      '+import { x } from "../vault/vault-service.js";',`,
+      '+  const s = `export { y } from "../connectors/vault-resolver.js"`;',
+    ).join("\n");
+    expect(addedImportSpecifiers(diff)).toEqual([]);
+  });
+
+  it("reads indented, typed, default and namespace imports and export-star", () => {
+    const diff = file(
+      "server/src/a.ts",
+      '+  import type { A } from "./a.js";',
+      '+import B, { c } from "./b.js";',
+      '+import * as d from "./d.js";',
+      '+export * from "./e.js";',
+      '+}from "./f.js";',
+    ).join("\n");
+    expect(addedImportSpecifiers(diff)).toEqual(["./a.js", "./b.js", "./d.js", "./e.js", "./f.js"]);
+  });
+
+  it("does not count vi.mock, which replaces a module rather than using it", () => {
+    const diff = file("server/src/a.test.ts", '+vi.mock("../vault/vault-service.js");').join("\n");
+    expect(addedImportSpecifiers(diff)).toEqual([]);
+  });
+
+  it("does not read the +++ header or a property named import", () => {
+    const diff = file("server/src/a.ts", '+obj.import("./not-an-import.js");').join("\n");
+    expect(addedImportSpecifiers(diff)).toEqual([]);
+  });
+
+  it("returns each specifier once across files", () => {
+    const diff = [
+      ...file("server/src/a.ts", '+import "./x.js";'),
+      ...file("server/src/b.ts", '+import "./x.js";'),
+    ].join("\n");
+    expect(addedImportSpecifiers(diff)).toEqual(["./x.js"]);
+  });
+
+  it("throws on a non-string diff", () => {
+    expect(() => addedImportSpecifiers(undefined)).toThrow(/must be a string/);
+  });
+
+  it("keeps reading a file after an added line that starts with `++` (content, not a header)", () => {
+    const diff = file(
+      "server/src/a.ts",
+      "+++ counter.md",
+      '+import { x } from "../vault/vault-service.js";',
+    ).join("\n");
+    expect(addedImportSpecifiers(diff)).toEqual(["../vault/vault-service.js"]);
   });
 });

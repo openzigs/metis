@@ -25,10 +25,12 @@ convention.
 Whether a change warrants a panel is not a judgement call — it is computed:
 
 ```bash
-node -e '
-import("./scripts/lib/adversarial-tally-core.mjs").then(({ shouldRunAdversarialPass }) => {
+git diff origin/main...HEAD | node -e '
+import("./scripts/lib/adversarial-tally-core.mjs").then(({ shouldRunAdversarialPass, addedImportSpecifiers }) => {
+  const diff = require("node:fs").readFileSync(0, "utf8");
   console.log(shouldRunAdversarialPass({
     changedPaths: process.argv.slice(1),
+    addedImports: addedImportSpecifiers(diff),
     title: process.env.PR_TITLE ?? "",
   }));
 });' $(git diff --name-only origin/main...HEAD)
@@ -42,6 +44,15 @@ limiting, tenant/project scoping, and schema migrations — plus a `security` **
 (`area:auth` and `area:security` both count) or a title naming security work. Route handlers
 count because in this repository every router is an authorization surface; epic #1051 found
 five unguarded ones and baselined twenty-three more.
+
+The diff on stdin feeds the one **content** signal (#1476): a JS/TS file that newly imports a
+credential or egress module — anything under `vault/`, `vault-resolver`, `network-allowlist`,
+`host-allowlist`, `octokit-factory`, `safe-fetch`, the fetch dispatchers and the secret
+binders — fires wherever it lives. #1474's `pr-reviewer/production-deps.ts` read a vault
+secret and built a credentialed GitHub client under a path no word arm could see, and review
+then found two Medium issues in it. Leaving `addedImports` out still works and silently drops
+that signal, so pipe the diff. `node:crypto` and `auth/jwt` are measured and excluded; the
+figures are on `CREDENTIAL_IMPORT_MODULES`.
 
 Paths and labels are matched as **whole words**, not substrings, so `edge-auth.ts` fires and
 `AgentAuthoringWizard.tsx` does not (#1172, #1190). Do not "fix" a missed path by loosening a
