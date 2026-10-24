@@ -132,6 +132,19 @@ describe("computeAdversarialRequirement (#1476)", () => {
     expect(result.addedImports).toContain("../../vault/vault-service.js");
   });
 
+  it("reads the real source under a textconv driver that blanks *.ts (headers intact)", () => {
+    // A textconv filter rewrites hunk bodies and leaves every header alone, so the
+    // parsed-paths cross-check cannot see it: `--no-textconv` is the only defence (#1482 panel).
+    const dir = repoWith({
+      ".gitattributes": "*.ts diff=blank\n",
+      [PRODUCTION_DEPS]: productionDepsSource,
+    });
+    git(dir, "config", "diff.blank.textconv", "true");
+    const result = computeAdversarialRequirement({ git: execGit(dir), base: "main" });
+    expect(result.addedImports).toContain("../../vault/vault-service.js");
+    expect(result.required).toBe(true);
+  });
+
   it("still sees the whole change when run from a subdirectory under diff.relative=true", () => {
     const dir = repoWith({ [PRODUCTION_DEPS]: productionDepsSource, "ui/x.ts": "" });
     git(dir, "config", "diff.relative", "true");
@@ -232,7 +245,15 @@ describe("computeAdversarialRequirement (#1476)", () => {
 
   it("pins every diff option that config can override", () => {
     expect(DIFF_FORMAT_FLAGS).toEqual(
-      expect.arrayContaining(["--no-color", "--no-ext-diff", "--src-prefix=a/", "--no-renames"]),
+      expect.arrayContaining([
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--no-relative",
+        "--no-renames",
+      ]),
     );
   });
 });
