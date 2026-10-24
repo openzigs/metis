@@ -3902,9 +3902,10 @@ When the **Closed Loop** is enabled, METIS treats your GitHub pull requests as t
 
 ### Enable it
 
-1. On a project, set `autoReviewPrs = true` (Project Settings → Closed Loop).
-2. Configure the GitHub webhook on your repository to `POST` `pull_request` events to `https://<your-metis-host>/api/webhooks/github/pr`. Use a secret matching `GITHUB_WEBHOOK_SECRET`.
-3. (Sandbox test re-runs through the `copilot-svc` sidecar were removed with that sidecar in #150; they were never wired into the reviewer.)
+1. Connect the project to a GitHub (or GitHub Enterprise) repository in **Connections**.
+2. In **Project settings**, switch on **Automatic PR review** (#1169). The switch is greyed out, with the reason shown, until a GitHub repository is connected, and for anyone without permission to change the project (`project.update`). It is off by default because **every pull request opened or updated in the repository is reviewed by the AI model, and each review spends model budget**. Switching it off stops new reviews straight away, including ones already queued. Over the API it is `PATCH /api/projects/:id` with `{ "autoReviewPrs": true }`; every change is written to the audit log as `project.autoReviewPrs.update`.
+3. Configure the GitHub webhook on your repository to `POST` `pull_request` events to `https://<your-metis-host>/api/webhooks/github/pr`. Use a secret matching `GITHUB_WEBHOOK_SECRET`.
+4. (Sandbox test re-runs through the `copilot-svc` sidecar were removed with that sidecar in #150; they were never wired into the reviewer.)
 
 ### What you'll see
 
@@ -3930,7 +3931,7 @@ Open `/projects/[id]/pulls` to see every PR review the agent has ever posted for
 - **Updated** — local timestamp of the most recent review
 - **Run** — pivot to `/runs/[runId]` for the live conversation that produced the verdict
 
-The page reads from the `PrReviewState` table, which is upserted on every webhook delivery. Empty until the first PR is reviewed.
+The page reads from the `PrReviewState` table, which is upserted on every webhook delivery. Empty until the first PR is reviewed. While automatic PR review is off for the project, the page says so and links to Project settings: GitHub's deliveries still arrive, but no review is made.
 
 Click any row to open the **PR-review detail page** (`/projects/[id]/pulls/[prNumber]`), which lists every acceptance-criterion verdict (with reasoning and evidence files) plus a **Re-run review** button (requires the `pr.review.manage` permission). Re-running now shows **live progress** instead of asking you to refresh: a spinner and progress bar track the review in real time over the realtime job bus, and the moment it finishes the new verdict appears **automatically** — no manual reload. If the re-review fails, a clear error toast is shown (with a generic, non-revealing message). [Epic #406, #421]
 

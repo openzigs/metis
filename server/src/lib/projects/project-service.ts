@@ -156,6 +156,10 @@ export async function updateProject(input: UpdateProjectInput, actor: ProjectAct
       data.aiModel = next;
     }
   }
+  const previousAutoReview = Boolean((project as { autoReviewPrs?: boolean | null }).autoReviewPrs);
+  if (input.autoReviewPrs !== undefined && input.autoReviewPrs !== previousAutoReview) {
+    data.autoReviewPrs = input.autoReviewPrs;
+  }
   const updated = await prisma.project.update({
     where: { id: input.id },
     data,
@@ -169,6 +173,15 @@ export async function updateProject(input: UpdateProjectInput, actor: ProjectAct
         previous: (project as { aiProviderId?: string | null }).aiProviderId ?? null,
         next: data.aiProviderId,
       },
+    });
+  }
+  if (data.autoReviewPrs !== undefined) {
+    // #1169 — every reviewed PR spends model budget, so who switched it is recorded.
+    audit({
+      actor: { id: actor.id },
+      action: "project.autoReviewPrs.update",
+      target: { type: "project", id: input.id },
+      metadata: { previous: previousAutoReview, next: data.autoReviewPrs },
     });
   }
   if (data.aiModel !== undefined) {

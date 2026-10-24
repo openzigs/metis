@@ -17,6 +17,7 @@ import { Card } from "@/components/ui/card";
 import { AiProviderPicker } from "@/components/projects/ai-provider-picker";
 import { AiModelPicker } from "@/components/projects/ai-model-picker";
 import { PrimaryRepoCard } from "@/components/projects/primary-repo-card";
+import { AutoReviewPrsSettingsCard } from "@/components/projects/auto-review-prs-settings-card";
 import { WorkspaceAssignCard } from "@/components/projects/workspace-assign-card";
 import { SafetySettingsCard } from "@/components/projects/safety-settings-card";
 import { BudgetSettingsCard } from "@/components/projects/budget-settings-card";
@@ -36,7 +37,8 @@ export default function ProjectSettingsPage() {
   const { user } = useAuth();
   const canEditBudget = user?.role === "admin";
   // #469 — the per-project skill allowlist lives in Library; the link is shown
-  // only to users the server's `project.update` gate would let save it.
+  // only to users the server's `project.update` gate would let save it. #1169 —
+  // the same gate decides whether the automatic PR review switch is enabled.
   const canManageSkills = user?.permissions.includes("project.update") ?? false;
 
   const project = useQuery({
@@ -92,6 +94,11 @@ export default function ProjectSettingsPage() {
         <AiModelPicker projectId={id} current={p.aiModel} />
         <WorkspaceAssignCard projectId={id} workspaceId={p.workspaceId} />
         <PrimaryRepoCard projectId={id} />
+        <AutoReviewPrsSettingsCard
+          projectId={id}
+          enabled={p.autoReviewPrs}
+          canEdit={canManageSkills}
+        />
         <InferenceProfileCard projectId={id} />
         <SafetySettingsCard projectId={id} current={p.safetyMode} />
         <BudgetSettingsCard projectId={id} current={p.monthlyTokenBudget} canEdit={canEditBudget} />

@@ -12,6 +12,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { prReviewsApi, type PrReviewStateView } from "@/lib/pr-reviews-api";
+import { projectsApi } from "@/lib/projects-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
@@ -92,6 +93,14 @@ export default function ProjectPullsPage(): React.ReactElement {
     enabled: Boolean(id),
     refetchOnWindowFocus: false,
   });
+  // #1169 — a delivery for a project with automatic review off is stored and
+  // answered 200 but never reviewed; say so instead of promising a review.
+  const projectQuery = useQuery({
+    queryKey: queryKeys.projects.detail(id),
+    queryFn: () => projectsApi.get(id),
+    enabled: Boolean(id),
+  });
+  const reviewOff = projectQuery.data ? !projectQuery.data.autoReviewPrs : false;
 
   if (!id) {
     return <p className="p-4 text-sm text-muted-foreground">Loading project…</p>;
@@ -104,16 +113,34 @@ export default function ProjectPullsPage(): React.ReactElement {
         description="History of automated PR reviews triggered by the GitHub webhook."
       />
 
+      {reviewOff ? (
+        <p
+          className="rounded-md border border-border bg-muted p-3 text-sm"
+          data-testid="auto-review-off"
+        >
+          Automatic PR review is off for this project, so pull requests are not reviewed. Turn it on
+          in{" "}
+          <Link className="text-info hover:underline" href={`/projects/${id}/settings`}>
+            Project settings
+          </Link>
+          .
+        </p>
+      ) : null}
+
       <Card className="overflow-hidden">
         {reviewsQuery.isLoading ? (
           <p className="p-6 text-sm text-muted-foreground">Loading reviews…</p>
         ) : reviewsQuery.isError ? (
           <p className="p-6 text-sm text-destructive">Failed to load reviews. Try again later.</p>
         ) : (reviewsQuery.data?.items.length ?? 0) === 0 ? (
-          <p className="p-6 text-sm text-muted-foreground">
-            No PR reviews recorded yet. They will appear here once the GitHub webhook fires for a
-            connected repository.
-          </p>
+          reviewOff ? (
+            <p className="p-6 text-sm text-muted-foreground">No PR reviews recorded yet.</p>
+          ) : (
+            <p className="p-6 text-sm text-muted-foreground">
+              No PR reviews recorded yet. They will appear here once the GitHub webhook fires for a
+              connected repository.
+            </p>
+          )
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left">

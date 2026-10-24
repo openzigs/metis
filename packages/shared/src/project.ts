@@ -43,6 +43,12 @@ export const projectSchema = z
      * Defaults to false.
      */
     allowCredentialScan: z.boolean().optional().default(false),
+    /**
+     * #1169 — automatic PR review: a GitHub `pull_request` webhook for a repo
+     * connected to this project queues a model-backed review. Off by default
+     * because every reviewed PR spends model budget.
+     */
+    autoReviewPrs: z.boolean().optional().default(false),
     createdById: idSchema,
     deletedAt: dateSchema.nullable(),
   })
@@ -78,7 +84,11 @@ export type CreateProjectWithRepoInput = z.infer<typeof createProjectWithRepoSch
 
 // #346 — `patchSchemaOf`, not `.partial()`: zod 4 would fill `description: ""`
 // into every PATCH that omitted it.
-export const updateProjectSchema = patchSchemaOf(createProjectSchema).extend({ id: idSchema });
+// #1169 — `autoReviewPrs` is a settings toggle, not a create-time field.
+export const updateProjectSchema = patchSchemaOf(createProjectSchema).extend({
+  id: idSchema,
+  autoReviewPrs: z.boolean().optional(),
+});
 export type UpdateProjectInput = z.infer<typeof updateProjectSchema>;
 
 /** Epic #701 — toggle credential extraction during repo scans. */

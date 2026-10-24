@@ -32,13 +32,22 @@ vi.mock("@/lib/pr-reviews-api", () => ({
   },
 }));
 
+// #1169 — the page reads the project to say whether automatic review is off.
+vi.mock("@/lib/projects-api", () => ({
+  projectsApi: { get: vi.fn() },
+}));
+
 import { prReviewsApi } from "@/lib/pr-reviews-api";
+import { projectsApi } from "@/lib/projects-api";
 import ProjectPullsPage from "@/app/(authed)/projects/[id]/pulls/page";
 
 const list = prReviewsApi.list as unknown as ReturnType<typeof vi.fn>;
+const getProject = projectsApi.get as unknown as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   list.mockReset();
+  getProject.mockReset();
+  getProject.mockResolvedValue({ id: "p1", autoReviewPrs: true });
   useParamsMock.mockReset();
   useParamsMock.mockReturnValue({ id: "p1" });
 });
@@ -75,6 +84,32 @@ function renderPage() {
 }
 
 describe("Project pulls (PR-review history) page", () => {
+  it("#1169 — says review is off, and where to turn it on, when the project has it off", async () => {
+    getProject.mockResolvedValue({ id: "p1", autoReviewPrs: false });
+    list.mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByTestId("auto-review-off")).toHaveTextContent(
+        /Automatic PR review is off/i,
+      );
+    });
+    expect(screen.getByRole("link", { name: /project settings/i })).toHaveAttribute(
+      "href",
+      "/projects/p1/settings",
+    );
+    // The "once the webhook fires" promise is not made while review is off.
+    expect(screen.queryByText(/once the GitHub webhook fires/i)).toBeNull();
+  });
+
+  it("#1169 — makes no 'review is off' claim while it is on", async () => {
+    list.mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByText(/No PR reviews recorded yet/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("auto-review-off")).toBeNull();
+  });
+
   it("shows the loading state while the query is in flight", () => {
     list.mockReturnValue(new Promise(() => undefined));
     renderPage();

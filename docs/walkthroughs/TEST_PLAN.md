@@ -493,12 +493,12 @@ Run this phase only after Phase 9's documents finish: a repo refresh during docs
 ### Phase 14 — Spec Kit (see dedicated section below)
 
 ### Phase 15 — PR reviews and change analysis
-- **Steps 1–2 run on a sandbox project, never the main one.** `/projects/:id/pulls` lists only reviews that the `pull_request` webhook created, and `miniflux/v2` must never be wired to a webhook. **Record steps 1–2 as blocked until #1169 lands**: `Project.autoReviewPrs` has no UI or API setter, so no webhook review is ever made. Once it lands, use a sandbox project whose repo connector is `openzigs/flux-v2`, and **delete that connector before wave F**, or J1.8's publish fails with `REPO_CROSS_PROJECT` (#1171).
+- **Steps 1–2 run on a sandbox project, never the main one.** `/projects/:id/pulls` lists only reviews that the `pull_request` webhook created, and `miniflux/v2` must never be wired to a webhook. Use a sandbox project whose repo connector is `openzigs/flux-v2`, and switch on **Automatic PR review** in its Project settings first (#1169; `PATCH /api/projects/:id { "autoReviewPrs": true }`) — with it off, `/pulls` says review is off and a delivery makes no review. Open a sandbox PR so the webhook creates the review. Switch it off again and **delete that connector before wave F**, or J1.8's publish fails with `REPO_CROSS_PROJECT` (#1171).
 - **Steps:**
   1. *(Sandbox project.)* In `/projects/:id/pulls`, open a PR review at `/projects/:id/pulls/:prNumber` (`GET /api/projects/:id/pr-reviews/:prNumber`).
   2. *(Sandbox project.)* Click **re-review** (`POST …/:prNumber/re-review`). Do not post the review to GitHub.
   3. On the main project, in `/projects/:id/changes`, run a change analysis (`POST /api/projects/:id/change-analyses`).
-- **Works:** the review renders inline comments in METIS only, and the change analysis completes. Steps 1–2 need #1169 and a public webhook; record them as blocked otherwise (runs 3, 4 and 9).
+- **Works:** the review renders inline comments in METIS only, and the change analysis completes. Steps 1–2 need a public webhook; record them as blocked without one (runs 3, 4 and 9 were also blocked by #1169, now fixed).
 - **Useful:** at least one review comment points at a real changed line and makes a substantive point, such as a missing test, an SQL error-handling gap or a migration ordering issue.
 
 ### Phase 16 — Impact analysis

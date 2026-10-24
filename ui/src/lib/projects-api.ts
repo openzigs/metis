@@ -33,6 +33,8 @@ export interface Project {
   autopilotCostCeilingCents?: number | null;
   /** Epic #701 — opt-in to credential extraction from dev files. */
   allowCredentialScan?: boolean;
+  /** #1169 — a GitHub pull-request webhook queues a model-backed review. */
+  autoReviewPrs?: boolean;
   /** Epic #852 — per-project database-aware analysis intent (`auto`/`on`/`off`). */
   databaseAwareAnalysis?: DatabaseAwareAnalysisSetting;
   /** Epic #882 — per-project SQL-lineage extraction intent (`auto`/`on`/`off`). */
@@ -149,6 +151,7 @@ export const projectsApi = {
       status: string;
       aiProviderId: string | null;
       aiModel: string | null;
+      autoReviewPrs: boolean;
     }>,
   ) => apiFetch<Project>(`/projects/${id}`, { method: "PATCH", body: input }),
   archive: (id: string) => apiFetch<Project>(`/projects/${id}/archive`, { method: "POST" }),
