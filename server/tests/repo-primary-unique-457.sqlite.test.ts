@@ -97,10 +97,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // p4's single primary is not a duplicate.
       repo("r_solo", "p4", true, T1);
       sqlite.apply(MIGRATION);
-      // The client reads every repo_connections column, so add the one #1475
-      // introduced; the rest of the chain stays unapplied (#492 would change
-      // the label-clash case below).
+      // The client reads every repo_connections column, so add the ones #1475
+      // and #1488 introduced; the rest of the chain stays unapplied (#492 would
+      // change the label-clash case below).
       sqlite.apply("20261030001475_issue1475_repo_webhook_secret");
+      sqlite.apply("20261101001488_issue1488_repo_permission");
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
