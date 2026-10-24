@@ -19,6 +19,10 @@ import type { ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
+import {
+  prReviewsPreAuthRateLimiter,
+  prReviewsUserRateLimiter,
+} from "../middleware/pr-reviews-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
   getPrReviewState,
@@ -106,8 +110,9 @@ export interface PrReviewsRouterDeps {
 export function prReviewsRouter(deps: PrReviewsRouterDeps = {}): Router {
   const r = Router({ mergeParams: true });
   const resolveQueue = deps.resolveQueue ?? (() => getPrReviewWorker()?.queue ?? null);
-  // #1472 — object-level project scope (OWASP A01) ahead of every handler.
-  r.use(requireAuth, requireProjectAccess());
+  // #1472 — object-level project scope (OWASP A01) ahead of every handler,
+  // behind the router's own limiters (the scope check reads the project row).
+  r.use(prReviewsPreAuthRateLimiter, requireAuth, prReviewsUserRateLimiter, requireProjectAccess());
 
   r.get(
     "/",
