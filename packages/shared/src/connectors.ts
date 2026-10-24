@@ -93,9 +93,10 @@ export const repoConnectorSchema = z
     // #1483 — the same secret's receiver path for `issues` events.
     issuesWebhookPath: z.string().nullable().default(null),
     // #1488 — the repository permission the connector's credential had at its
-    // last successful Test (`none` = no token); null = not recorded since #1488.
+    // last successful Test (`none` = no token, `unknown` = GitHub reported no
+    // permissions for it); null = not recorded since #1488.
     // Only admin or push takes deliveries signed with the shared webhook secret.
-    repoPermission: z.enum(["admin", "push", "read", "none"]).nullable().default(null),
+    repoPermission: z.enum(["admin", "push", "read", "unknown", "none"]).nullable().default(null),
     status: z.enum(CONNECTOR_STATUSES).default("pending"),
     errorMessage: z.string().nullable().default(null),
     lastTestedAt: dateSchema.nullable().default(null),

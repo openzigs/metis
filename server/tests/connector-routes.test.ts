@@ -136,10 +136,19 @@ vi.mock("../src/lib/prisma.js", async () => {
           where,
           data,
         }: {
-          where: { id?: string; updatedAt?: Date };
+          where: { id?: string; updatedAt?: Date } & Record<string, unknown>;
           data: Partial<RepoRow>;
         }) => {
-          if (!where.updatedAt) return { count: 0 };
+          if (!where.updatedAt) {
+            // #1488 — a Test's binding-guarded write: every field must match.
+            const r = where.id ? repos.get(where.id) : undefined;
+            const rec = r as unknown as Record<string, unknown> | undefined;
+            if (!r || !Object.entries(where).every(([k, v]) => (rec![k] ?? null) === v)) {
+              return { count: 0 };
+            }
+            repos.set(r.id, { ...r, ...data, updatedAt: new Date() } as RepoRow);
+            return { count: 1 };
+          }
           const r = where.id ? repos.get(where.id) : undefined;
           if (!r || r.updatedAt.getTime() !== where.updatedAt.getTime()) return { count: 0 };
           repos.set(r.id, { ...r, ...data, updatedAt: new Date() } as RepoRow);

@@ -11,7 +11,7 @@
  */
 
 /** Recorded on `repo_connections.repoPermission`. NULL = not recorded. */
-export const REPO_PERMISSIONS = ["admin", "push", "read", "none"] as const;
+export const REPO_PERMISSIONS = ["admin", "push", "read", "unknown", "none"] as const;
 export type RepoPermission = (typeof REPO_PERMISSIONS)[number];
 
 /** `repos.get` → `permissions`, present only on an authenticated request. */
@@ -26,17 +26,19 @@ export interface GithubRepoPermissions {
 /**
  * The permission to record after a successful `repos.get`. An unauthenticated
  * request is `none` whatever the response says. An authenticated one with no
- * `permissions` object (GitHub omits it for some token types) is `read`: the
- * read succeeded and nothing proves more.
+ * `permissions` object is `unknown`: the read succeeded, GitHub said nothing
+ * about the token's role, and nothing proves more. Both are ineligible; they
+ * are kept apart so the card does not call an unreported token read-only.
  */
 export function repoPermissionOf(
   authenticated: boolean,
   permissions: GithubRepoPermissions | null | undefined,
 ): RepoPermission {
   if (!authenticated) return "none";
-  if (permissions?.admin === true) return "admin";
+  if (!permissions) return "unknown";
+  if (permissions.admin === true) return "admin";
   // `maintain` is a superset of `push` on GitHub's role ladder.
-  if (permissions?.push === true || permissions?.maintain === true) return "push";
+  if (permissions.push === true || permissions.maintain === true) return "push";
   return "read";
 }
 
@@ -66,7 +68,7 @@ function header(err: GithubErrorLike, name: string): string | undefined {
 
 /**
  * Is this GitHub failure about the server rather than the connector — a rate
- * limit (primary or secondary), a 5xx, or no HTTP answer at all? Such a failure
+ * limit (primary or secondary), a 5xx, or an aborted request? Such a failure
  * says nothing about the credential, so a Test that hits one must not mark the
  * connector `error`: on #1488 an attacker who spent the server IP's 60/hour
  * unauthenticated quota made the incumbent's refresh write `error`, handing its
@@ -81,10 +83,12 @@ export function isTransientGithubFailure(err: unknown): boolean {
   const e = err as GithubErrorLike;
   const status = typeof e.status === "number" ? e.status : undefined;
   if (status === undefined) {
-    // No HTTP status: a network failure (reset, timeout, DNS) before GitHub
-    // answered. Errors this server raises itself (`ConnectorError`) always
-    // carry a status, so they never land here.
-    return true;
+    // No HTTP status. `@octokit/request` already turns a failed fetch (reset,
+    // DNS, TLS) into a status-500 `RequestError`, handled below; what lands
+    // here is an aborted request (transient) or a non-HTTP error raised after
+    // the request (a database failure, an unexpected response shape), which
+    // is not a GitHub failure and must not be reported as a temporary one.
+    return (e as { name?: unknown }).name === "AbortError";
   }
   if (status >= 500 || status === 429) return true;
   if (status !== 403) return false;

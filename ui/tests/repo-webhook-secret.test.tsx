@@ -204,8 +204,9 @@ describe("RepoWebhookSecret (#1475)", () => {
   describe("#1488 — why a connected connection gets no shared-secret reviews", () => {
     it.each([
       ["none", /no access token/],
-      ["read", /did not report push or admin access/],
-      [null, /has not been checked/],
+      ["read", /can only read the repository/],
+      ["unknown", /did not report this token's permissions/],
+      [null, /has not been checked.*checked once when the server restarts/],
     ] as const)("explains a %s permission", (repoPermission, copy) => {
       renderIt({ provider: "github", webhookSecretConfigured: false, repoPermission });
       expect(screen.getByTestId("webhook-ineligible-r1")).toHaveTextContent(copy);

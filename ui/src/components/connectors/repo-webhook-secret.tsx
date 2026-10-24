@@ -82,9 +82,11 @@ function sharedSecretIneligibleReason(permission: Connector["repoPermission"]): 
     case "none":
       return "This connection has no access token, so it does not receive shared-secret reviews: anyone can read a public repository, so that proves nothing. Add a token with push or admin access to the repository and click Test, or create a secret for this connection.";
     case "read":
-      return "GitHub did not report push or admin access for this connection's token, so it does not receive shared-secret reviews. Use a token with push or admin access and click Test, or create a secret for this connection.";
+      return "GitHub reports that this connection's token can only read the repository, so it does not receive shared-secret reviews. Use a token with push or admin access and click Test, or create a secret for this connection.";
+    case "unknown":
+      return "GitHub did not report this token's permissions on the repository (some token types don't), so this connection does not receive shared-secret reviews. Create a secret for this connection, or use a token GitHub reports push or admin access for and click Test.";
     default:
-      return "This connection's token access has not been checked since METIS began requiring push or admin access for shared-secret reviews, so it does not receive them yet. Click Test (a scheduled refresh also re-checks it).";
+      return "This connection's token access has not been checked since METIS began requiring push or admin access for shared-secret reviews, so it does not receive them yet. Click Test. A connection with a token is also checked once when the server restarts, and by its scheduled refresh if one is set up.";
   }
 }
 

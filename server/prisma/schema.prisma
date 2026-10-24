@@ -1042,7 +1042,7 @@ model RepoConnection {
   /// connector takes shared-secret deliveries. NULL reads as createdAt.
   repoBoundAt   DateTime?
   /// #1488 — the repository permission the connector's credential had at its
-  /// last successful Test: admin | push | read | none (no token). Only admin or
+  /// last successful Test: admin | push | read | unknown | none (no token). Only admin or
   /// push takes shared-secret webhook deliveries. NULL = not recorded since
   /// #1488 (or reset by a repoint or credential change): ineligible until tested.
   repoPermission String?

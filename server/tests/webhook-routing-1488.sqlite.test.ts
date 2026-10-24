@@ -89,6 +89,8 @@ const PERMISSIONS: Record<string, Record<string, boolean>> = {
 
 /** How the fake GitHub answers the next `repos.get`: normally, or with a failure. */
 let failure: null | (() => Error) = null;
+/** Runs inside the next `repos.get`, before it answers: a PATCH racing a Test. */
+let duringGet: null | (() => Promise<void>) = null;
 const rateLimited = () =>
   Object.assign(new Error("API rate limit exceeded for 192.0.2.10."), {
     status: 403,
@@ -102,6 +104,11 @@ function fakeGithub(args: { token?: string }) {
     rest: {
       repos: {
         get: async () => {
+          if (duringGet) {
+            const hook = duringGet;
+            duringGet = null;
+            await hook();
+          }
           if (failure) throw failure();
           const permissions = args.token ? PERMISSIONS[args.token] : undefined;
           return {
@@ -117,6 +124,13 @@ function fakeGithub(args: { token?: string }) {
               ...(permissions ? { permissions } : {}),
             },
           };
+        },
+        // The rest of a metadata sync's reads: an empty repository.
+        listLanguages: async () => ({ data: {} }),
+        listCommits: async () => ({ data: [{ sha: "a".repeat(40) }] }),
+        getContent: async () => ({ data: [] }),
+        getReadme: async () => {
+          throw Object.assign(new Error("Not Found"), { status: 404 });
         },
       },
       git: { getRef: async () => ({ data: {} }) },
@@ -299,6 +313,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       process.env.GITHUB_WEBHOOK_SECRET = DEPLOYMENT_SECRET;
       process.env.VAULT_MASTER_KEY = MASTER_KEY;
       failure = null;
+      duringGet = null;
       enqueued.length = 0;
     });
 
@@ -353,6 +368,89 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(await deliveredTo(4)).toEqual([]);
         await clickTest(OWNER_P, asOwner());
         expect(await deliveredTo(5)).toEqual([OWNER_P]);
+      });
+    });
+
+    describe("a Test racing a PATCH (review of #1494)", () => {
+      it("an admin read of the attacker's own repository never lands on a row repointed at the victim's", async () => {
+        // The attacker's connector names their OWN repository, with an admin token.
+        await connect(OTHER_P, T_EARLY, ownerSecretId);
+        await db.repoConnection.update({
+          where: { id: `repo-${OTHER_P}` },
+          data: { ownerOrOrg: "attacker-1488", repoName: "own" },
+        });
+        // While Test waits on GitHub, the connector is repointed at the victim's
+        // public repository and its token removed.
+        duringGet = async () => {
+          const patch = await request(api)
+            .patch(`/api/projects/${OTHER_P}/connectors/repos/repo-${OTHER_P}`)
+            .set("Authorization", asOther())
+            .send({ ownerOrOrg: ORG, repoName: "public-app", secretRef: "" });
+          expect(patch.status, patch.text).toBe(200);
+        };
+        const res = await clickTest(OTHER_P, asOther());
+        expect(duringGet).toBeNull(); // the PATCH ran inside the Test
+        // Before the fix, Test wrote `connected` + `admin` onto the repointed row,
+        // and the next shared-secret delivery for the victim's repository went to it.
+        expect(await deliveredTo(30)).toEqual([]);
+        const row = await db.repoConnection.findUnique({ where: { id: `repo-${OTHER_P}` } });
+        expect(row).toMatchObject({
+          ownerOrOrg: ORG,
+          repoName: "public-app",
+          secretId: null,
+          status: "pending",
+          repoPermission: null,
+        });
+        expect(res.body.data).toMatchObject({ ok: false, code: "REPO_CONNECTOR_CHANGED" });
+      });
+
+      it("a failing Test never marks a connector that was changed under it", async () => {
+        await connect(OWNER_P, T_EARLY, ownerSecretId);
+        await clickTest(OWNER_P, asOwner());
+        duringGet = async () => {
+          await db.repoConnection.update({
+            where: { id: `repo-${OWNER_P}` },
+            data: { secretId: readerSecretId },
+          });
+        };
+        failure = badCredentials;
+        await clickTest(OWNER_P, asOwner());
+        failure = null;
+        // The 401 was for the old token; the row now holds another one.
+        const row = await db.repoConnection.findUnique({ where: { id: `repo-${OWNER_P}` } });
+        expect(row?.status).toBe("connected");
+      });
+    });
+
+    describe("a sync after an error (review of #1494)", () => {
+      it("an errored connector made connected again by a metadata sync carries the permission that sync read", async () => {
+        await connect(OTHER_P, T_EARLY, readerSecretId);
+        await connect(OWNER_P, T_LATE, ownerSecretId);
+        // Plant the stale state the review describes: once admin, then errored.
+        await db.repoConnection.update({
+          where: { id: `repo-${OTHER_P}` },
+          data: { status: "error", repoPermission: "admin" },
+        });
+        await clickTest(OWNER_P, asOwner());
+        const sync = await request(api)
+          .post(`/api/projects/${OTHER_P}/connectors/repos/repo-${OTHER_P}/metadata`)
+          .set("Authorization", asOther());
+        expect(sync.status, sync.text).toBeLessThan(500);
+        const row = await db.repoConnection.findUnique({ where: { id: `repo-${OTHER_P}` } });
+        expect(row).toMatchObject({ status: "connected", repoPermission: "read" });
+        expect(await deliveredTo(31)).toEqual([OWNER_P]);
+      });
+
+      it("a Test that marks a connector error forgets its permission", async () => {
+        await connect(OWNER_P, T_EARLY, ownerSecretId);
+        await clickTest(OWNER_P, asOwner());
+        failure = badCredentials;
+        await clickTest(OWNER_P, asOwner());
+        failure = null;
+        expect(await card(OWNER_P, asOwner())).toMatchObject({
+          status: "error",
+          repoPermission: null,
+        });
       });
     });
 

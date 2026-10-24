@@ -20,9 +20,10 @@ describe("#1488 repoPermissionOf", () => {
     expect(repoPermissionOf(true, { triage: true })).toBe("read");
   });
 
-  it("is read for a token GitHub reports no permissions for", () => {
-    expect(repoPermissionOf(true, undefined)).toBe("read");
-    expect(repoPermissionOf(true, null)).toBe("read");
+  it("is unknown for a token GitHub reports no permissions for", () => {
+    expect(repoPermissionOf(true, undefined)).toBe("unknown");
+    expect(repoPermissionOf(true, null)).toBe("unknown");
+    expect(isSharedWebhookEligible("unknown")).toBe(false);
   });
 });
 
@@ -42,7 +43,8 @@ describe("#1488 isSharedWebhookEligible", () => {
 
 describe("#1488 repoPermissionDto", () => {
   it("passes the four recorded values and nulls anything else", () => {
-    for (const v of ["admin", "push", "read", "none"]) expect(repoPermissionDto(v)).toBe(v);
+    for (const v of ["admin", "push", "read", "unknown", "none"])
+      expect(repoPermissionDto(v)).toBe(v);
     expect(repoPermissionDto(null)).toBeNull();
     expect(repoPermissionDto(undefined)).toBeNull();
     expect(repoPermissionDto("owner")).toBeNull();
@@ -72,11 +74,18 @@ describe("#1488 isTransientGithubFailure", () => {
     expect(isTransientGithubFailure(httpError(429, "Too Many Requests"))).toBe(true);
   });
 
-  it("a 5xx, or no HTTP answer at all, is transient", () => {
+  it("a 5xx (which is also how Octokit reports a failed fetch) is transient", () => {
     expect(isTransientGithubFailure(httpError(500))).toBe(true);
     expect(isTransientGithubFailure(httpError(502))).toBe(true);
     expect(isTransientGithubFailure(httpError(503))).toBe(true);
-    expect(isTransientGithubFailure(new Error("ECONNRESET"))).toBe(true);
+  });
+
+  it("with no HTTP status, only an aborted request is transient", () => {
+    const abort = Object.assign(new Error("The operation was aborted"), { name: "AbortError" });
+    expect(isTransientGithubFailure(abort)).toBe(true);
+    // Not GitHub failures: a database error after the request, a bad response shape.
+    expect(isTransientGithubFailure(new Error("ECONNRESET"))).toBe(false);
+    expect(isTransientGithubFailure(new TypeError("cannot read 'default_branch'"))).toBe(false);
   });
 
   it("a 403 that is not a rate limit is a refusal of the credential", () => {

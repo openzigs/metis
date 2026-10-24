@@ -81,6 +81,19 @@ vi.mock("../src/lib/prisma.js", () => ({
         rows.set(where.id, next);
         return next;
       }),
+      // #1488 — the binding-guarded write: every `where` field must match exactly.
+      updateMany: vi.fn(
+        async ({ where, data }: { where: Record<string, unknown>; data: Partial<RepoRow> }) => {
+          let count = 0;
+          for (const r of [...rows.values()]) {
+            const rec = r as unknown as Record<string, unknown>;
+            if (!Object.entries(where).every(([k, v]) => (rec[k] ?? null) === v)) continue;
+            rows.set(r.id, { ...r, ...data, updatedAt: new Date() } as RepoRow);
+            count += 1;
+          }
+          return { count };
+        },
+      ),
       count: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
         let count = 0;
         for (const r of rows.values()) {
@@ -767,7 +780,7 @@ describe("#1488 — Test records the token's repository permission", () => {
     [{ admin: true, push: true, pull: true }, "admin"],
     [{ admin: false, push: true, pull: true }, "push"],
     [{ admin: false, push: false, pull: true }, "read"],
-    [undefined, "read"],
+    [undefined, "unknown"],
   ] as const)("records %o for a token as %s", async (permissions, expected) => {
     __setOctokitFactory(() => repoWith(permissions));
     const c = await create(`tok-${expected}-${String(Boolean(permissions))}`, "${vault:gh-pat}");
@@ -858,7 +871,8 @@ describe("#1488 — a failure that is not about the credential leaves the status
     ["a 429", httpError(429, "Too Many Requests")],
     ["a 500", httpError(500, "server kaboom")],
     ["a 503", httpError(503, "unavailable")],
-    ["a dropped connection", new Error("socket hang up")],
+    ["an aborted request", Object.assign(new Error("aborted"), { name: "AbortError" })],
+    ["a failed fetch (Octokit reports it as a 500)", httpError(500, "socket hang up")],
   ])("%s keeps a connected connector connected, with its permission", async (_n, err) => {
     const id = await connectedAdmin(`tr-${_n}`);
     failWith(err);
@@ -896,6 +910,17 @@ describe("#1488 — a failure that is not about the credential leaves the status
       code: "PIN_UNAVAILABLE",
     });
     expect((await getRepoConnector("proj_1", id)).status).toBe("error");
+  });
+
+  it("a non-HTTP error after the request is not called a temporary GitHub failure", async () => {
+    const id = await connectedAdmin("te-nonhttp");
+    failWith(new TypeError("cannot read properties of undefined"));
+    await expect(testRepoConnector("proj_1", id, "user_1")).rejects.not.toMatchObject({
+      message: expect.stringMatching(/temporary GitHub failure/),
+    });
+    const read = await getRepoConnector("proj_1", id);
+    expect(read.status).toBe("error");
+    expect(read.repoPermission).toBeNull();
   });
 
   it("a failure reading the credential, before GitHub is asked, still marks it error", async () => {
