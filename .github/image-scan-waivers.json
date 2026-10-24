@@ -15,6 +15,11 @@
     "image labels: server, ui, embeddings-svc, sql-lineage; absent = all), allowFixed (optional,",
     "for a fix that exists but cannot be installed yet — keep that window short).",
     "`expired` entries: id, retired (YYYY-MM-DD), reason, images (optional).",
+    "`allowFixed` entries must also list `packages` (exact name@installed copies), so they cannot",
+    "hide a different copy of the same package that CAN take the fix (#1489). An npm finding that",
+    "the OSV Dependency-audit gate already waives under a GHSA carries `mirrors` (that GHSA) and",
+    "`guards` (its reachability tests): it must match the sast.yml WAIVERS entry's expires and",
+    "packages exactly (scripts/lib/image-scan-waivers-mirror.test.mjs). Retire both together.",
     "An empty `waivers` list is the goal."
   ],
   "expired": [],
@@ -58,6 +63,53 @@
       "id": "CVE-2026-9538",
       "expires": "2027-01-19",
       "reason": "perl-base (Archive::Tar): Debian marks it fix_deferred on 2026-10-21. perl-base is an essential package of the Debian base; no service in the images runs perl or extracts tar archives with it."
+    },
+    {
+      "id": "CVE-2026-109461",
+      "mirrors": "GHSA-xcx6-jx8p-x3h5",
+      "expires": "2027-01-23",
+      "allowFixed": true,
+      "images": ["server"],
+      "packages": ["@azure/msal-node@5.3.0"],
+      "reason": "@azure/msal-node@5.3.0 only (via @azure/identity 4.13.1, botframework-connector 4.23.3): the fix is 7.1.0 and no parent accepts 7.x (@azure/identity 4.14.0 moves only to ^6), so it cannot be installed. METIS never runs the MSAL authorization-code flow (#1464). Mirrors the sast.yml waiver; re-check @azure/identity for a ^7 release on the review date.",
+      "guards": ["server/src/lib/teams/msal-auth-code-reachability.test.ts"]
+    },
+    {
+      "id": "CVE-2026-111181",
+      "mirrors": "GHSA-27r3-jxmh-p828",
+      "expires": "2026-10-30",
+      "allowFixed": true,
+      "images": ["server", "embeddings-svc"],
+      "packages": ["body-parser@2.2.2"],
+      "reason": "body-parser@2.2.2 only (express 5.2.1 in the API and the embeddings sidecar): 2.4.0 is held by pnpm minimumReleaseAge until 2026-10-29T11:39Z. Every parser in both services sets inflate: false, so the compressed-body path is unreachable (#1458). Upgrade in #1460 and move this entry to `expired`; never re-date it.",
+      "guards": [
+        "server/tests/body-parser-inflate-1458.test.ts",
+        "server/embeddings-svc/tests/body-inflate-1458.test.ts",
+        "server/src/middleware/body-parsers.inflate.test.ts"
+      ]
+    },
+    {
+      "id": "CVE-2026-113872",
+      "mirrors": "GHSA-q7qp-rjg7-q26m",
+      "expires": "2026-10-30",
+      "allowFixed": true,
+      "images": ["server"],
+      "packages": ["multer@2.4.0"],
+      "reason": "multer@2.4.0 only: 2.5.0 is held by pnpm minimumReleaseAge until 2026-10-29T11:58Z. No METIS upload sets a fileFilter, so the async-fileFilter crash is unreachable (#1464). Upgrade in #1460 and move this entry to `expired`; never re-date it.",
+      "guards": ["scripts/lib/dependency-audit-1464-advisories.test.mjs"]
+    },
+    {
+      "id": "CVE-2023-54404",
+      "mirrors": "GHSA-mrhx-c7xc-m3w5",
+      "expires": "2027-01-23",
+      "allowFixed": true,
+      "images": ["server"],
+      "packages": ["zod@3.25.76"],
+      "reason": "zod@3.25.76 only (botbuilder 4.23.3, chromium-bidi via puppeteer): the fix is 4.6.6 and no patched 3.x exists; botbuilder cannot load on zod 4, and the 4.x line is already fixed by override. Not reachable pre-auth; chromium-bidi is never loaded (CDP launch) (#1453). Mirrors the sast.yml waiver; re-check botbuilder for a zod-4 release on the review date.",
+      "guards": [
+        "server/src/lib/teams/botbuilder-zod3-reachability.test.ts",
+        "scripts/lib/dependency-audit-1453-zod.test.mjs"
+      ]
     }
   ]
 }
