@@ -81,6 +81,24 @@ function parseConfig(raw: unknown): Record<string, unknown> {
 }
 
 /**
+ * #1504 — a GitHub trigger's `event` is matched against the bare GitHub event
+ * name (`issues`, `push`), never `event.action`, so a dotted value such as
+ * `issues.opened` can never fire. Refuse it on save with the name that works.
+ * Returns the refusal message, or null when the config is acceptable.
+ */
+function githubEventConfigError(source: unknown, config: unknown): string | null {
+  if (source !== "github") return null;
+  const event = parseConfig(config).event;
+  if (typeof event !== "string" || !event.includes(".")) return null;
+  const bare = event.slice(0, event.indexOf("."));
+  const use = bare ? `use "${bare}"` : 'use the bare GitHub event name, such as "issues"';
+  return (
+    `GitHub trigger event "${event}" never matches: the event is the bare GitHub event name, ` +
+    `so ${use}; action filtering isn't supported.`
+  );
+}
+
+/**
  * #1064 — `config` keys that must never leave the server.
  *
  * `config` is documented in the schema as `{ secret?, repo?, event?, channel?,
@@ -333,6 +351,8 @@ export function projectTriggersRouter(): Router {
     async (req: Request, res: Response) => {
       const parsed = upsertSchema.safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+      const eventError = githubEventConfigError(parsed.data.source, parsed.data.config);
+      if (eventError) throw new AppError(400, "INVALID_TRIGGER_EVENT", eventError);
       const projectId = (req.params as { projectId: string }).projectId;
       actorId(req);
       const created = await prisma.trigger.create({
@@ -361,8 +381,24 @@ export function projectTriggersRouter(): Router {
       if (parsed.data.source !== undefined) data.source = parsed.data.source;
       if (parsed.data.enabled !== undefined) data.enabled = parsed.data.enabled;
       if (parsed.data.config !== undefined) data.config = JSON.stringify(parsed.data.config);
+      const where = await triggerInPathProject(req);
+      // #1504 — validate the source/config pair the row WILL hold, but only when
+      // this PATCH changes one of them: a rename or enable/disable of a trigger
+      // already stored with a dotted event stays possible (the settings page
+      // flags that trigger instead), and its stored config is never rewritten.
+      if (parsed.data.source !== undefined || parsed.data.config !== undefined) {
+        const stored = await prisma.trigger.findFirst({
+          where,
+          select: { source: true, config: true },
+        });
+        const eventError = githubEventConfigError(
+          parsed.data.source ?? stored?.source,
+          parsed.data.config ?? stored?.config,
+        );
+        if (eventError) throw new AppError(400, "INVALID_TRIGGER_EVENT", eventError);
+      }
       const updated = await prisma.trigger.update({
-        where: await triggerInPathProject(req),
+        where,
         data,
         select: TRIGGER_SELECT,
       });
