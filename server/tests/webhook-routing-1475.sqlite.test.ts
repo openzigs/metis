@@ -520,6 +520,37 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect([...state.touched]).toEqual([]);
       });
 
+      it("a project's own secret on another GitHub server does not exclude it from a github.com merge", async () => {
+        await db.repoConnection.create({
+          data: {
+            id: "repo-a-ghe-1475",
+            projectId: PA,
+            label: "ghe",
+            provider: "github_enterprise",
+            apiBaseUrl: "https://ghe.example.test/api/v3",
+            ownerOrOrg: OWNER,
+            repoName: "app",
+            status: "connected",
+          },
+        });
+        try {
+          await ownSecret("repo-a-ghe-1475", "nonce-ghe");
+          const res = await deliver(
+            DEPLOYMENT_SECRET,
+            payloadOf(REPO, 19, "closed", {
+              merged: true,
+              merged_at: "2026-10-20T00:00:00.000Z",
+              merge_commit_sha: "merge-19",
+            }),
+          );
+          expect(res.status).toBe(200);
+          const a = await db.requirement.findUnique({ where: { id: `req-${PA}` } });
+          expect(a?.implementedAt).not.toBeNull();
+        } finally {
+          await db.repoConnection.delete({ where: { id: "repo-a-ghe-1475" } });
+        }
+      });
+
       it("a deployment-signed merge leaves the requirements of projects with their own secret alone", async () => {
         await ownSecret(`repo-${PA}`, "nonce-a");
         const res = await deliver(
@@ -554,6 +585,41 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           200,
         );
         expect(enqueuedFor()).toEqual([PB]);
+      });
+
+      it("repointing a connector drops its own secret; once connected it takes part in shared routing for the new repository", async () => {
+        const NEW_REPO = `${OWNER}/moved-1475`;
+        const secretB = await ownSecret(`repo-${PB}`, "nonce-b");
+        try {
+          await updateRepoConnector(PB, `repo-${PB}`, { repoName: "moved-1475" }, "u-b");
+          const row = await db.repoConnection.findUnique({ where: { id: `repo-${PB}` } });
+          expect(row?.webhookSecretNonce).toBeNull();
+          expect(row?.webhookSecretCheck).toBeNull();
+          const card = await request(api)
+            .get(`/api/projects/${PB}/connectors/repos/repo-${PB}`)
+            .set("Authorization", memberB());
+          expect(card.body.data.webhookSecretConfigured).toBe(false);
+          expect(card.body.data.webhookSecretNeedsRenewal).toBe(false);
+
+          // The old secret works for neither the new repository nor the old one.
+          for (const repo of [NEW_REPO, REPO]) {
+            const old = await deliver(secretB, payloadOf(repo, 70), connUrl(`repo-${PB}`));
+            expect(old.status).toBe(401);
+          }
+          expect(enqueuedFor()).toEqual([]);
+
+          await db.repoConnection.update({
+            where: { id: `repo-${PB}` },
+            data: { status: "connected" },
+          });
+          await deliver(DEPLOYMENT_SECRET, payloadOf(NEW_REPO, 71));
+          expect(enqueuedFor()).toEqual([PB]);
+        } finally {
+          await db.repoConnection.update({
+            where: { id: `repo-${PB}` },
+            data: { repoName: "app" },
+          });
+        }
       });
 
       it("one project's secret is refused at another project's URL", async () => {

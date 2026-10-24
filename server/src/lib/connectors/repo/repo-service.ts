@@ -625,13 +625,16 @@ export async function updateRepoConnector(
   // #1475 — naming another repository (or server) starts a new binding: the
   // connector counts from now, and its `connected` status, earned against the
   // old repository, is no proof it reaches the new one, so it goes back to
-  // pending until it is tested again.
+  // pending until it is tested again. Its own webhook secret was issued for the
+  // old repository's hook, so it is dropped: the old secret stops working.
   const rebinds = (["provider", "ownerOrOrg", "repoName", "apiBaseUrl"] as const).some(
     (k) => k in data && (data[k] ?? null) !== (existing[k] ?? null),
   );
   if (rebinds) {
     data.repoBoundAt = new Date();
     data.status = "pending";
+    data.webhookSecretNonce = null;
+    data.webhookSecretCheck = null;
   }
   if (patch.secretRef !== undefined) {
     // #480 — a re-sent `${vault:<bound id>}` keeps the binding as it is,

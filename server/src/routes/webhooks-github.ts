@@ -135,7 +135,9 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
           repo,
           ...(signer.kind === "connector"
             ? { projectId: signer.projectId }
-            : { excludeProjectIds: await projectsWithOwnSecret(repo.full_name ?? "") }),
+            : {
+                excludeProjectIds: await projectsWithOwnSecret(repo.full_name ?? "", repo.html_url),
+              }),
         });
       },
       onReviewable: async ({ pr, repo, action }) => {
@@ -546,9 +548,15 @@ function connectorHost(c: { provider: string; apiBaseUrl: string | null }): stri
 }
 
 /** #1475 — the live projects that took their own (still verifying) secret for a repository. */
-async function projectsWithOwnSecret(repoFullName: string): Promise<string[]> {
+async function projectsWithOwnSecret(
+  repoFullName: string,
+  repoHtmlUrl?: string | null,
+): Promise<string[]> {
   const [owner, name] = repoFullName.split("/");
   if (!owner || !name) return [];
+  // The same host rule as `findProjectForRepo`: a GHE connector's own secret
+  // says nothing about deliveries from github.com, and vice versa.
+  const host = githubHost(repoHtmlUrl) ?? "github.com";
   const conns = await prisma.repoConnection.findMany({
     where: {
       ownerOrOrg: owner,
@@ -560,6 +568,8 @@ async function projectsWithOwnSecret(repoFullName: string): Promise<string[]> {
     select: {
       id: true,
       projectId: true,
+      provider: true,
+      apiBaseUrl: true,
       webhookSecretNonce: true,
       webhookSecretCheck: true,
     },
@@ -567,7 +577,9 @@ async function projectsWithOwnSecret(repoFullName: string): Promise<string[]> {
   const root = webhookSecretRootKey();
   return [
     ...new Set(
-      conns.filter((c) => connectorSecretState(c, root) === "active").map((c) => c.projectId),
+      conns
+        .filter((c) => connectorHost(c) === host && connectorSecretState(c, root) === "active")
+        .map((c) => c.projectId),
     ),
   ];
 }
