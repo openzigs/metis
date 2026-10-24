@@ -493,7 +493,7 @@ Run this phase only after Phase 9's documents finish: a repo refresh during docs
 ### Phase 14 — Spec Kit (see dedicated section below)
 
 ### Phase 15 — PR reviews and change analysis
-- **Steps 1–2 run on a sandbox project, never the main one.** `/projects/:id/pulls` lists only reviews that the `pull_request` webhook created, and `miniflux/v2` must never be wired to a webhook. Use a sandbox project whose repo connector is `openzigs/flux-v2`, and switch on **Automatic PR review** in its Project settings first (#1169; `PATCH /api/projects/:id { "autoReviewPrs": true }`) — with it off, `/pulls` says review is off and a delivery makes no review. Open a sandbox PR so the webhook creates the review. Switch it off again and **delete that connector before wave F**, or J1.8's publish fails with `REPO_CROSS_PROJECT` (#1171).
+- **Steps 1–2 run on a sandbox project, never the main one.** `/projects/:id/pulls` lists only reviews that the `pull_request` webhook created, and `miniflux/v2` must never be wired to a webhook. Use a sandbox project whose repo connector is `openzigs/flux-v2`, and switch on **Automatic PR review** in its Project settings first (#1169; `PATCH /api/projects/:id { "autoReviewPrs": true }`) — with it off, `/projects/:id/pulls` says review is off and a delivery makes no review. Open a sandbox PR so the webhook creates the review. Switch it off again and **delete that connector before wave F**, or J1.8's publish fails with `REPO_CROSS_PROJECT` (#1171).
 - **Steps:**
   1. *(Sandbox project.)* In `/projects/:id/pulls`, open a PR review at `/projects/:id/pulls/:prNumber` (`GET /api/projects/:id/pr-reviews/:prNumber`).
   2. *(Sandbox project.)* Click **re-review** (`POST …/:prNumber/re-review`). Do not post the review to GitHub.
