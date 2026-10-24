@@ -5,11 +5,11 @@
  * budget 429 even disclosed that project's spend — with no check on the
  * caller's access to the project.
  *
- * TODAY `pr.review` and `pr.review.read` are held by the `admin` role only
- * (`packages/shared/src/rbac.ts`), and admins bypass the project check by
- * design, so the ROLE gate alone keeps a non-admin out. The project check is
- * the object-level rule that must hold the moment either permission is granted
- * to another role. To reach it at all, this file widens ONLY the role gate for
+ * `pr.review` is held by the `admin` role only (`packages/shared/src/rbac.ts`),
+ * and admins bypass the project check by design, so for `POST /` the ROLE gate
+ * alone keeps a non-admin out. `pr.review.read` is every role's since #1472,
+ * so for `GET /:runId` the project check below is the live rule. To exercise
+ * both with a non-admin caller, this file widens ONLY the role gate for
  * the two `pr.review*` permissions (to any authenticated caller); everything
  * else is real — the router, `assertProjectAccess`, JWTs from `issueTokens`,
  * and a SQLite database built from the migration chain. The first test pins
@@ -155,12 +155,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       budgetCheck.mockClear();
     });
 
-    it("the real role map grants pr.review / pr.review.read to admin only (why the gate is widened here)", () => {
-      for (const p of ["pr.review", "pr.review.read"] as const) {
-        expect(hasPermission("admin", p)).toBe(true);
-        for (const role of ["coordinator", "developer", "reader"] as const) {
-          expect(hasPermission(role, p)).toBe(false);
-        }
+    it("the real role map: pr.review is admin-only (why the gate is widened here); pr.review.read is every role's (#1472)", () => {
+      expect(hasPermission("admin", "pr.review")).toBe(true);
+      for (const role of ["coordinator", "developer", "reader"] as const) {
+        expect(hasPermission(role, "pr.review")).toBe(false);
+        // GET /:runId is reachable by every role since #1472, so the project
+        // check below is what keeps a non-admin to their own projects' runs.
+        expect(hasPermission(role, "pr.review.read")).toBe(true);
       }
     });
 

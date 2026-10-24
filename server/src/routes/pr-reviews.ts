@@ -6,7 +6,10 @@
  *
  * Both endpoints are gated on the existing `pr.review.read` permission
  * so the same RBAC rule that protects `/api/run-reviews/:runId` covers
- * the list view too. The detail endpoint returns the persisted
+ * the list view too. Every role holds it since #1472, so the router also
+ * runs its own `requireProjectAccess()`: a caller outside the project's
+ * workspace, or a non-admin on a deleted project, gets 404 before any role
+ * check, whatever the mount order upstream. The detail endpoint returns the persisted
  * `PrReviewState` row plus a deep-link to the AgentRun the review was
  * recorded under (so the UI can pivot to `/runs/[runId]/review`).
  */
@@ -15,6 +18,7 @@ import { randomUUID } from "node:crypto";
 import type { ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { requireProjectAccess } from "../middleware/require-project-access.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
   getPrReviewState,
@@ -102,6 +106,8 @@ export interface PrReviewsRouterDeps {
 export function prReviewsRouter(deps: PrReviewsRouterDeps = {}): Router {
   const r = Router({ mergeParams: true });
   const resolveQueue = deps.resolveQueue ?? (() => getPrReviewWorker()?.queue ?? null);
+  // #1472 — object-level project scope (OWASP A01) ahead of every handler.
+  r.use(requireAuth, requireProjectAccess());
 
   r.get(
     "/",

@@ -110,9 +110,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       };
       return `Bearer ${issueTokens(payload).accessToken}`;
     };
-    /** A coordinator in the project's workspace — no `pr.review.read` (admin-only today). */
+    /** A coordinator in the project's workspace (holds `pr.review.read` since #1472). */
     const member = () => bearer("u-owner", "coordinator", [WS]);
-    /** `pr.review.read` is held by `admin` alone (`packages/shared/src/rbac.ts`). */
+    /** A system admin: reads every project's reviews, deleted ones included. */
     const reader = () => bearer("u-admin", "admin", []);
 
     const webhookApp = () => {
@@ -511,10 +511,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       it("a deleted project's reviews are a 404 for a member, like an unknown project; an admin still reads them", async () => {
         await deliver(GONE_OWNER, 41, "Closes #5");
         expect(await rowOf(GONE, GONE_OWNER, 41)).toMatchObject({ lastStatus: "reviewed" });
-        // While live, the member is let through the project scope (and stopped only
-        // by the role check), so the 404 below is the deleted-project rule.
+        // While live, the member reads the list (#1472), so the 404 below is the
+        // deleted-project rule.
         const before = await listPulls(GONE, member());
-        expect(before.status).toBe(403);
+        expect(before.status).toBe(200);
+        expect(before.body.data.items).toHaveLength(1);
         expect((await listPulls(GONE, reader())).body.data.items).toHaveLength(1);
 
         await deleteProject(GONE, { id: "u-admin", role: "admin" } as Parameters<

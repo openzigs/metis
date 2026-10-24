@@ -9,19 +9,21 @@
  * `/projects/[id]/pulls/[prNumber]?owner=…&repo=…` so the list page
  * can deep-link straight in.
  *
- * Permission surface:
- *   - Reading the detail requires `pr.review.read`.
- *   - Re-running the review requires `pr.review.manage`.
+ * Permission surface (#1472):
+ *   - Reading the detail requires `pr.review.read` (every role).
+ *   - Re-running the review requires `pr.review.manage` (admin, coordinator).
+ *     The Re-run button is shown only to a role that holds it.
  *
  * 403 from either endpoint is rendered as a clear "you don't have
- * permission" message — NOT a generic error toast — so the page is
- * usable for read-only roles too (the Re-run button is shown but
- * surfaces a friendly message on click).
+ * permission" message — NOT a generic error toast — for a session whose
+ * role changed after the page loaded.
  */
 import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { hasPermission } from "@metis/shared";
+import { useAuth } from "@/lib/auth-context";
 import { prReviewsApi, type PrReviewStateView, type PrReviewVerdict } from "@/lib/pr-reviews-api";
 import { queryKeys } from "@/lib/query-keys";
 import { useJobLifecycle } from "@/hooks/use-job-events";
@@ -152,6 +154,8 @@ export default function ProjectPullDetailPage(): React.ReactElement {
   const prNumber = Number(params?.prNumber ?? "0");
   const owner = search?.get("owner") ?? "";
   const repo = search?.get("repo") ?? "";
+  const { user } = useAuth();
+  const canReRun = user ? hasPermission(user.role, "pr.review.manage") : false;
 
   // `denied`/`err` are surfaced inline (read-only roles + enqueue failures).
   // The old `ok` path ("Refresh in a moment…") is GONE — success now drives a
@@ -293,17 +297,19 @@ export default function ProjectPullDetailPage(): React.ReactElement {
         }
         actions={
           <div className="flex flex-col items-end gap-2">
-            <Button
-              type="button"
-              onClick={() => {
-                setReRunMessage(null);
-                reRun.mutate();
-              }}
-              disabled={reRun.isPending || activeJobId !== null}
-              data-testid="re-run-button"
-            >
-              {reRun.isPending || activeJobId !== null ? "Re-running…" : "Re-run review"}
-            </Button>
+            {canReRun && (
+              <Button
+                type="button"
+                onClick={() => {
+                  setReRunMessage(null);
+                  reRun.mutate();
+                }}
+                disabled={reRun.isPending || activeJobId !== null}
+                data-testid="re-run-button"
+              >
+                {reRun.isPending || activeJobId !== null ? "Re-running…" : "Re-run review"}
+              </Button>
+            )}
             {/* LIVE progress while a re-review job is in flight (#421). */}
             {activeJobId !== null && (
               <ReReviewProgress
