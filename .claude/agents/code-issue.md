@@ -82,9 +82,10 @@ say so in your report: a skipped procedure costs more than an eager read.
 Invoke the `/adversarial-review` skill for the procedure (same fallback as above).
 
 **Whether it applies is computed, not judged** — `shouldRunAdversarialPass` in
-`scripts/lib/adversarial-tally-core.mjs` decides from the changed paths, labels and title,
-and returns the reasons. It fires on auth, middleware, routes, permissions, sessions,
-secrets, SSRF/sanitisation, rate limiting, tenant scoping and migrations.
+`scripts/lib/adversarial-tally-core.mjs` decides from the changed paths, labels, title and the
+diff's newly added imports, and returns the reasons. It fires on auth, middleware, routes,
+permissions, sessions, secrets, SSRF/sanitisation, rate limiting, tenant scoping and
+migrations, and on a file newly importing a credential or egress module (#1476).
 
 When it applies, dispatch **three `adversarial-reviewer` agents in one message** so they run
 in parallel — one per lens, `over-blocking`, `test-falsifiability`, `instruction-correctness`.

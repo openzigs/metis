@@ -1252,9 +1252,11 @@ export const SECURITY_TITLE_PATTERN =
  * ({@link importSegments}), never by substring: `../../connectors/vault-resolver.js` matches
  * `vault-resolver`; `./vault-resolver-helpers.js`, `../net/safe-fetch.errors.js` and a
  * `node-vault` package do not. The **final segment** is matched, so a sibling import
- * (`./vault-resolver.js` from inside `connectors/`) fires exactly as a deep one does. Every
- * basename below is unique among tracked files except `secret-binding`, whose two homes
- * (`vault/`, `mcp/`) are both in class.
+ * (`./vault-resolver.js` from inside `connectors/`) fires exactly as a deep one does. A basename
+ * with several homes fires on all of them, and every such home is in class: `secret-binding`
+ * (`vault/`, `mcp/`), `vault-key-cipher` (`scripts/lib/`, `server/src/lib/portability/`), and
+ * the `eval-data/corpus/` fixture copies of `safe-fetch`, `network-allowlist` and
+ * `octokit-factory` — the same accepted fixture class as the path arms'.
  *
  * {@link CREDENTIAL_IMPORT_DIRECTORIES} adds one directory: **any** segment `vault` fires, so
  * every module under `server/src/lib/vault/` (and a bare `../vault` index import) is covered
