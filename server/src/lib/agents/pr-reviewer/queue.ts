@@ -18,7 +18,11 @@
  *     emitted so operators can replay manually.
  *   - The processor is injected so the unit tests can drive the queue
  *     without booting the real review agent.
+ *   - #1478 — a non-retryable `PublishError` (the GitHub client refusing a
+ *     redirect off the origin) dead-letters at once: it fails the same way
+ *     every time, and a retry re-runs the whole review, model call included.
  */
+import { PublishError } from "../../publishing/types.js";
 
 export interface PrReviewJobPayload {
   /** Stable id for logs / dedup audit — typically the X-GitHub-Delivery UUID. */
@@ -310,7 +314,8 @@ export function createPrReviewQueue(opts: PrReviewQueueOptions): PrReviewQueue {
       trackTerminal(job);
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
-      if (job.attempt >= maxAttempts) {
+      const deterministic = err instanceof PublishError && !err.retryable;
+      if (job.attempt >= maxAttempts || deterministic) {
         const entry = { job, error: error.message };
         dlq.push(entry);
         trackTerminal(job);

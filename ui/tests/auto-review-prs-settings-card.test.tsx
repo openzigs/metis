@@ -204,6 +204,21 @@ describe("AutoReviewPrsSettingsCard", () => {
       expect(screen.queryByTestId("auto-review-prs-unpriced")).toBeNull();
     });
 
+    it("#1478 — a cap of 0 is no limit: no unpriced notice, and the spend reads 'no limit'", async () => {
+      listRepos.mockResolvedValue([githubRepo]);
+      getBudget.mockResolvedValue({
+        ...budget({ capCents: 0, spentCents: 40 }),
+        modelPriced: false,
+      });
+      renderCard();
+      await waitFor(() =>
+        expect(screen.getByTestId("auto-review-prs-spend")).toHaveTextContent(
+          "Spent on automatic PR reviews this month: $0.40 (no limit).",
+        ),
+      );
+      expect(screen.queryByTestId("auto-review-prs-unpriced")).toBeNull();
+    });
+
     it("shows the saved limit in dollars and this month's spend against it", async () => {
       listRepos.mockResolvedValue([githubRepo]);
       getBudget.mockResolvedValue(budget({ capCents: 2500, spentCents: 123 }));

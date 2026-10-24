@@ -2059,6 +2059,7 @@ import {
   __testing as publisherTesting,
 } from "../src/lib/publishing/publisher.js";
 import { resolvePublishTarget } from "../src/lib/publishing/host-allowlist.js";
+import { PublishError } from "../src/lib/publishing/types.js";
 
 describe("F1 — sub-issue retry uses full backoff (no /100 divider)", () => {
   it("passes the documented exponential backoff into sleep", async () => {
@@ -2093,6 +2094,44 @@ describe("F1 — sub-issue retry uses full backoff (no /100 divider)", () => {
     ).rejects.toBeTruthy();
     // 3 retries → 2 sleeps (between attempts). First sleep = 60_000, second = 120_000.
     expect(calls).toEqual([60_000, 120_000]);
+  });
+
+  it("#1478 — does not retry a non-retryable PublishError (a refused redirect)", async () => {
+    const sleeps: number[] = [];
+    let attempts = 0;
+    const refused = new PublishError(
+      502,
+      "GITHUB_REDIRECT_REFUSED",
+      "GitHub redirected the request to another origin; it was not followed",
+    );
+    const client = fakeOctokit({
+      request: vi.fn(async () => {
+        attempts += 1;
+        throw refused;
+      }),
+    });
+    await expect(
+      publisherTesting.attachSubIssueWithRetry({
+        client,
+        target: { owner: "acme", repo: "metis" },
+        parentNumber: 1,
+        childRestId: 4_993_133_002,
+        childNumber: 2,
+        rateLimit: {
+          delayMs: 0,
+          jitterMs: 0,
+          secondaryBackoffBaseMs: 60_000,
+          secondaryBackoffMaxMs: 600_000,
+          maxRetries: 3,
+          backoffBudgetMs: 30 * 60_000,
+        },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+      }),
+    ).rejects.toBe(refused);
+    expect(attempts).toBe(1);
+    expect(sleeps).toEqual([]);
   });
 });
 

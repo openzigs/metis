@@ -21,7 +21,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { projectsApi } from "@/lib/projects-api";
-import { PR_REVIEW_UNPRICED_LIMIT_TEXT } from "@/lib/pr-review-copy";
+import { PR_REVIEW_UNPRICED_LIMIT_TEXT, prReviewLimitIsSet } from "@/lib/pr-review-copy";
 import { repoConnectorsApi } from "@/lib/connectors-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
@@ -222,7 +222,7 @@ export function AutoReviewPrsSettingsCard({
         {budget.data ? (
           <p className="text-xs text-muted-foreground" data-testid="auto-review-prs-spend">
             Spent on automatic PR reviews this month: {formatUsd(budget.data.spentCents)}
-            {budget.data.capCents != null
+            {prReviewLimitIsSet(budget.data.capCents)
               ? ` of ${formatUsd(budget.data.capCents)}.`
               : " (no limit)."}
           </p>
@@ -238,7 +238,9 @@ export function AutoReviewPrsSettingsCard({
             the limit.
           </p>
         ) : null}
-        {budget.data && budget.data.capCents != null && budget.data.modelPriced === false ? (
+        {budget.data &&
+        prReviewLimitIsSet(budget.data.capCents) &&
+        budget.data.modelPriced === false ? (
           <p
             className="rounded border border-warning/40 bg-warning-muted p-2 text-xs text-warning"
             role="alert"

@@ -13,7 +13,7 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { prReviewsApi, type PrReviewStateView } from "@/lib/pr-reviews-api";
 import { projectsApi } from "@/lib/projects-api";
-import { PR_REVIEW_UNPRICED_LIMIT_TEXT } from "@/lib/pr-review-copy";
+import { PR_REVIEW_UNPRICED_LIMIT_TEXT, prReviewLimitIsSet } from "@/lib/pr-review-copy";
 import { queryKeys } from "@/lib/query-keys";
 import { ApiError } from "@/lib/api-client";
 import { Card } from "@/components/ui/card";
@@ -190,7 +190,7 @@ export default function ProjectPullsPage(): React.ReactElement {
   // #1471 — with a limit set, an unpriced model is never reviewed (`budget_unpriced`).
   const unpricedLimit =
     !reviewOff && budgetQuery.data
-      ? budgetQuery.data.capCents != null && budgetQuery.data.modelPriced === false
+      ? prReviewLimitIsSet(budgetQuery.data.capCents) && budgetQuery.data.modelPriced === false
       : false;
 
   if (!id) {
