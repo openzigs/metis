@@ -177,6 +177,53 @@ describe("TeamsIntegrationPage", () => {
     );
   });
 
+  it("says a managed-identity bot needs a tenant id, in plain words (#1466)", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.selectOptions(await screen.findByTestId("teams-app-type"), "UserAssignedMsi");
+    expect(screen.getByTestId("teams-tenant-required")).toHaveTextContent(
+      "A managed-identity bot requires a tenant id.",
+    );
+  });
+
+  it("shows a Needs reinstall banner saying why and what to do (#1466)", async () => {
+    teamsApi.getInstallation.mockResolvedValue({
+      ...INSTALLED,
+      appType: "UserAssignedMsi",
+      needsReinstall: true,
+      reinstallReason: "legacy-app-type",
+    });
+    renderPage();
+    const banner = await screen.findByTestId("teams-needs-reinstall");
+    expect(banner).toHaveAttribute("role", "alert");
+    expect(banner).toHaveTextContent("Needs reinstall");
+    expect(banner).toHaveTextContent(/really been signing in with its password/);
+    expect(banner).toHaveTextContent(/as MultiTenant if it uses a client secret/);
+  });
+
+  it("names the operator allowlist when a managed identity is not allowed (#1466)", async () => {
+    teamsApi.getInstallation.mockResolvedValue({
+      ...INSTALLED,
+      needsReinstall: true,
+      reinstallReason: "msi-not-allowed",
+    });
+    renderPage();
+    expect(await screen.findByTestId("teams-needs-reinstall")).toHaveTextContent(
+      "TEAMS_MSI_CLIENT_IDS",
+    );
+  });
+
+  it("shows no banner for a sound installation", async () => {
+    teamsApi.getInstallation.mockResolvedValue({
+      ...INSTALLED,
+      needsReinstall: false,
+      reinstallReason: null,
+    });
+    renderPage();
+    await screen.findByTestId("teams-installed-view");
+    expect(screen.queryByTestId("teams-needs-reinstall")).not.toBeInTheDocument();
+  });
+
   it("shows the connected view + disconnects", async () => {
     teamsApi.getInstallation.mockResolvedValue(INSTALLED);
     const user = userEvent.setup();

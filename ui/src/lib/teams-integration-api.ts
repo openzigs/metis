@@ -21,6 +21,10 @@ import { apiFetch } from "@/lib/api-client";
 export const TEAMS_APP_TYPES = ["MultiTenant", "SingleTenant", "UserAssignedMsi"] as const;
 export type TeamsAppType = (typeof TEAMS_APP_TYPES)[number];
 
+/** Why an installation needs reinstalling (mirror of the server's `TeamsReinstallReason`). */
+export type TeamsReinstallReason =
+  "unknown-app-type" | "msi-not-allowed" | "msi-in-use" | "msi-missing-tenant" | "legacy-app-type";
+
 /** Secret-free view of a Teams installation (mirror of `InstallationSummary`). */
 export interface TeamsInstallationSummary {
   id: string;
@@ -30,6 +34,9 @@ export interface TeamsInstallationSummary {
   appType: string;
   status: string;
   label: string | null;
+  /** True when the bot must be reinstalled before it works as configured (#1466). */
+  needsReinstall?: boolean;
+  reinstallReason?: TeamsReinstallReason | null;
   createdAt: string;
   updatedAt: string;
 }

@@ -39,7 +39,7 @@ function makeTarget(over: Partial<ResolvedNotificationTarget> = {}): ResolvedNot
     updatedAt: new Date(),
     reference: {
       conversation: { id: "convo-1", isGroup: true, conversationType: "channel", name: "General" },
-      serviceUrl: "https://svc",
+      serviceUrl: "https://smba.trafficmanager.net/amer/",
     },
     ...over,
   };
@@ -107,7 +107,7 @@ describe("sendEventNotification (#67)", () => {
     expect(h.continueSpy.mock.calls[0][0]).toBe("app-1");
     expect(h.continueSpy.mock.calls[0][1]).toEqual({
       conversation: { id: "convo-1", isGroup: true, conversationType: "channel", name: "General" },
-      serviceUrl: "https://svc",
+      serviceUrl: "https://smba.trafficmanager.net/amer/",
     });
     expect(h.sentActivities).toEqual([activity]);
   });
@@ -116,6 +116,19 @@ describe("sendEventNotification (#67)", () => {
     const h = harness({ target: null, creds });
     const res = await sendEventNotification("ws-1", "analysis-complete", activity, h.deps);
     expect(res).toEqual({ sent: false, reason: "no-target" });
+    expect(h.resolveSpy).not.toHaveBeenCalled();
+    expect(h.continueSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not send, or resolve credentials, when the target's serviceUrl is untrusted (#1466)", async () => {
+    const h = harness({
+      target: makeTarget({
+        reference: { conversation: { id: "convo-1" }, serviceUrl: "https://attacker.example.com/" },
+      } as Partial<ResolvedNotificationTarget>),
+      creds,
+    });
+    const res = await sendEventNotification("ws-1", "analysis-complete", activity, h.deps);
+    expect(res).toEqual({ sent: false, reason: "untrusted-service-url" });
     expect(h.resolveSpy).not.toHaveBeenCalled();
     expect(h.continueSpy).not.toHaveBeenCalled();
   });

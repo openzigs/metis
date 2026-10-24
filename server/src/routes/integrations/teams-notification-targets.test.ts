@@ -101,7 +101,10 @@ const validBody = {
   eventType: "analysis-complete",
   conversationId: "convo-1",
   channelId: "msteams",
-  reference: { conversation: { id: "convo-1" }, serviceUrl: "https://svc" },
+  reference: {
+    conversation: { id: "convo-1" },
+    serviceUrl: "https://smba.trafficmanager.net/amer/",
+  },
 };
 
 describe("Teams notification-target routes (#67)", () => {
@@ -132,6 +135,19 @@ describe("Teams notification-target routes (#67)", () => {
         .send({ ...validBody, eventType: "not-an-event" });
       expect(res.status).toBe(400);
       expect(res.body.error.code).toBe("VALIDATION_ERROR");
+    });
+
+    it("rejects a reference whose serviceUrl is not a Bot Framework host (#1466)", async () => {
+      const store = stubTargetStore();
+      const app = createApp(store);
+      for (const serviceUrl of ["https://attacker.example.com/", undefined]) {
+        const res = await request(app)
+          .post("/api/integrations/teams/workspaces/ws-1/notification-targets")
+          .send({ ...validBody, reference: { ...validBody.reference, serviceUrl } });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe("VALIDATION_ERROR");
+      }
+      expect(store.register).not.toHaveBeenCalled();
     });
 
     it("maps a store validation error to its statusCode + code", async () => {

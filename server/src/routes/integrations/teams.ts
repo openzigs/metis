@@ -39,6 +39,7 @@ import {
 } from "../../lib/teams/installation-store.js";
 import { getConversationReferenceStore } from "../../lib/teams/conversation-reference-store.js";
 import { getBotAdapterFactory } from "../../lib/teams/bot-adapter.js";
+import { isTrustedBotServiceUrl } from "../../lib/teams/service-url.js";
 import { runFoundationTurn } from "../../lib/teams/bot-handler.js";
 import { buildTeamsManifest, botMessagingEndpoint } from "../../lib/teams/manifest.js";
 import {
@@ -155,7 +156,13 @@ const notificationTargetSchema = z.object({
    * for the proactive send. Captured by the operator from a channel the bot is
    * installed in (the same reference the #548 store records on inbound activity).
    */
-  reference: z.record(z.string(), z.unknown()),
+  reference: z
+    .record(z.string(), z.unknown())
+    .refine((ref) => isTrustedBotServiceUrl(ref.serviceUrl), {
+      // A proactive send posts a bearer token for the bot's identity here (#1466).
+      message: "reference.serviceUrl must be an https Bot Framework / Teams connector URL",
+      path: ["serviceUrl"],
+    }),
 });
 
 const linkIdentitySchema = z.object({

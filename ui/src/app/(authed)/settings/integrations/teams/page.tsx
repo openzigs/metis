@@ -28,7 +28,22 @@ import {
   teamsIntegrationApi,
   type TeamsAppType,
   type TeamsManifestResult,
+  type TeamsReinstallReason,
 } from "@/lib/teams-integration-api";
+
+/** Why the connected bot needs reinstalling, and what to do about it (#1466). */
+const REINSTALL_MESSAGES: Record<TeamsReinstallReason, string> = {
+  "legacy-app-type":
+    "This bot was saved as a managed identity under an old setting that never took effect, so it has really been signing in with its password. Disconnect it and reconnect it: as UserAssignedMsi with no password if it is a managed identity, or as MultiTenant if it uses a client secret.",
+  "msi-not-allowed":
+    "This managed identity is not on your deployment's allowed list, so the bot cannot sign in. Ask your METIS operator to add its client ID to TEAMS_MSI_CLIENT_IDS, or reconnect the bot with a password.",
+  "msi-in-use":
+    "This managed identity is already connected to another workspace, so the bot cannot sign in here. Disconnect it from the other workspace, or reconnect this one with a different bot.",
+  "msi-missing-tenant":
+    "This managed-identity bot has no tenant ID, so it cannot sign in. Disconnect it and reconnect it with its tenant ID and no password.",
+  "unknown-app-type":
+    "This bot's app type is not one Teams recognises, so it cannot sign in. Disconnect it and reconnect it with a supported app type.",
+};
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -236,6 +251,16 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
 
       {summary ? (
         <div className="space-y-3" data-testid="teams-installed-view">
+          {summary.needsReinstall ? (
+            <div
+              role="alert"
+              className="space-y-1 rounded border border-destructive/40 bg-destructive/10 p-3 text-sm"
+              data-testid="teams-needs-reinstall"
+            >
+              <p className="font-medium text-destructive">Needs reinstall</p>
+              <p>{REINSTALL_MESSAGES[summary.reinstallReason ?? "unknown-app-type"]}</p>
+            </div>
+          ) : null}
           <dl className="grid grid-cols-[max-content,1fr] gap-x-4 gap-y-1 text-sm">
             <dt className="text-muted-foreground">App ID</dt>
             <dd className="font-mono text-xs">{summary.appId}</dd>
@@ -290,7 +315,8 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
           {managedIdentity ? (
             <p className="text-xs text-muted-foreground" data-testid="teams-msi-note">
               A user-assigned managed identity signs in as itself, so there is no password. Use the
-              identity&apos;s client ID as the Bot App ID.
+              identity&apos;s client ID as the Bot App ID. Your METIS operator must first allow that
+              client ID for this deployment.
             </p>
           ) : (
             <div className="space-y-1">
@@ -339,7 +365,9 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
             />
             {tenantMissing ? (
               <p className="text-xs text-destructive" data-testid="teams-tenant-required">
-                A {appType} bot requires a tenant id.
+                {managedIdentity
+                  ? "A managed-identity bot requires a tenant id."
+                  : "A single-tenant bot requires a tenant id."}
               </p>
             ) : null}
           </div>

@@ -190,14 +190,37 @@ describe("METIS never runs the MSAL authorization-code flow (GHSA-xcx6-jx8p-x3h5
       expect(chain).not.toContain("BrokerCredential");
       expect(chain).toContain("UnavailableDefaultCredential");
 
-      // The VS Code credential is built, but refuses before reaching MSAL: no plugin.
+      // The broker stand-in carries the "plugin missing" reason, not some other failure.
+      // The stand-in yields no token (null) and records why it was skipped.
+      const broker = (
+        provider._sources as Array<{
+          credentialName?: string;
+          credentialUnavailableErrorMessage?: string;
+          getToken(scope: string): Promise<unknown>;
+        }>
+      ).find((c) => c.credentialName === "createDefaultBrokerCredential");
+      expect(broker, "the broker credential is no longer a skipped stand-in").toBeDefined();
+      expect(broker!.credentialUnavailableErrorMessage).toMatch(/@azure\/identity-broker/);
+      await expect(broker!.getToken("https://api.botframework.com/.default")).resolves.toBeNull();
+
+      // The VS Code credential is built, but refuses before reaching MSAL because no
+      // plugin is registered. Match that reason: the same error type is also thrown
+      // for a missing authentication record WITH the plugin installed, which would
+      // already mean MSAL is armed.
       const vscode = provider._sources.find(
         (c) => c instanceof identity.VisualStudioCodeCredential,
       ) as { getToken(scope: string): Promise<unknown> } | undefined;
       expect(vscode, "DefaultAzureCredential no longer builds a VS Code credential").toBeDefined();
       await expect(vscode!.getToken("https://api.botframework.com/.default")).rejects.toMatchObject(
-        { name: "CredentialUnavailableError" },
+        {
+          name: "CredentialUnavailableError",
+          message: expect.stringMatching(/Visual Studio Code Authentication is not available/),
+        },
       );
+      // And the plugin genuinely cannot be loaded from where @azure/identity runs.
+      for (const plugin of ["@azure/identity-vscode", "@azure/identity-broker"]) {
+        expect(() => createRequire(identityEntry).resolve(plugin), `${plugin} resolves`).toThrow();
+      }
     } finally {
       if (saved === undefined) delete process.env.AZURE_TOKEN_CREDENTIALS;
       else process.env.AZURE_TOKEN_CREDENTIALS = saved;

@@ -60,12 +60,15 @@ function stored(): StoredConversationReference {
     installationId: "inst-1",
     workspaceId: WS,
     conversationId: CONVO,
-    serviceUrl: "https://smba.example/teams",
+    serviceUrl: "https://smba.trafficmanager.net/amer/",
     tenantId: "tenant-a",
     channelId: "msteams",
     aadObjectId: "aad-1",
     userId: "29:user",
-    reference: { conversation: { id: CONVO } } as StoredConversationReference["reference"],
+    reference: {
+      conversation: { id: CONVO },
+      serviceUrl: "https://smba.trafficmanager.net/amer/",
+    } as StoredConversationReference["reference"],
   };
 }
 
@@ -309,6 +312,16 @@ describe("mirrorMessageToTeams — no-op paths", () => {
     const h = makeHarness({ refResult: null });
     const res = await mirrorMessageToTeams(THREAD, humanMessage(), h.deps);
     expect(res).toEqual({ mirrored: false, reason: "no-reference" });
+    expect(h.sendActivity).not.toHaveBeenCalled();
+  });
+
+  it("does not send, or resolve credentials, when the reference's serviceUrl is untrusted (#1466)", async () => {
+    const ref = stored();
+    ref.reference = { ...ref.reference, serviceUrl: "https://attacker.example.com/" };
+    const h = makeHarness({ refResult: ref });
+    const res = await mirrorMessageToTeams(THREAD, humanMessage(), h.deps);
+    expect(res).toEqual({ mirrored: false, reason: "untrusted-service-url" });
+    expect(h.resolveAppPassword).not.toHaveBeenCalled();
     expect(h.sendActivity).not.toHaveBeenCalled();
   });
 });
