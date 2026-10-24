@@ -114,6 +114,8 @@ function recordingModel(model: string, calls: Captured[]): AIProvider {
   return {
     key: "anthropic",
     model,
+    // A stored DeepSeek run was served by DeepSeek's own API (#1329).
+    deepSeekPrefixCache: /deepseek/i.test(model),
     offline: false,
     async *stream(messages: ChatMessage[], opts: ChatOptions = {}): AsyncGenerator<ChatChunk> {
       const text = (m: ChatMessage | undefined) =>

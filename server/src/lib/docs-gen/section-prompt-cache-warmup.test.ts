@@ -24,6 +24,14 @@ vi.mock("./grounding/citation-validator.js", async (importOriginal) => {
   return { ...actual, scoreFaithfulness: scoreFaithfulnessMock };
 });
 
+const logInfoMock = vi.hoisted(() => vi.fn());
+vi.mock("../logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../logger.js")>();
+  const quiet = () => {};
+  const child = { info: logInfoMock, warn: quiet, debug: quiet, error: quiet, verbose: quiet };
+  return { ...actual, createChildLogger: () => ({ ...child, child: () => child }) };
+});
+
 const recordUsageMock = vi.hoisted(() => vi.fn());
 vi.mock("../finops/index.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../finops/index.js")>();
@@ -32,11 +40,15 @@ vi.mock("../finops/index.js", async (importOriginal) => {
 
 import type { AIProvider, ChatChunk, ChatMessage, ChatOptions } from "../ai/types.js";
 import { PREFIX_WARM_UP_MAX_TOKENS } from "../ai/prompt-cache-warmup.js";
+import { UnpublishableGenerationError } from "./generation-checkpoint.js";
+import { GenerationControl } from "./generation-control.js";
+import { withGenerationScope } from "./generation-scope.js";
 import { buildGroundingContext, type GroundingContext } from "./grounding/grounding-context.js";
 import {
   docsGenTuning,
   sectionGroupsFor,
   synthesizeFinalDocument,
+  type GenerationStepHook,
   type ModuleFacts,
   type Phase2Router,
 } from "./holistic-synthesizer.js";
@@ -88,12 +100,16 @@ interface FakeProvider {
   key: string;
   model: string;
   servesRouterModel?: (m: string) => boolean;
+  /** The adapter points at DeepSeek's own API (`AIProvider.deepSeekPrefixCache`). */
+  deepSeekPrefixCache?: boolean;
   /** The warm-up call (1 output token) fails with a 400. */
   failWarmUp?: boolean;
+  /** Called when the warm-up call starts; what it throws, the stream throws. */
+  onWarmUp?: () => void;
 }
 
 function recordingModel(rec: Recording, provider: FakeProvider): AIProvider {
-  const { failWarmUp, ...identity } = provider;
+  const { failWarmUp, onWarmUp, ...identity } = provider;
   return {
     ...identity,
     offline: false,
@@ -104,6 +120,13 @@ function recordingModel(rec: Recording, provider: FakeProvider): AIProvider {
       const index = rec.calls.length;
       rec.calls.push({ index, section, system: text(messages[0]), user, opts });
       rec.events.push(`start:${index}`);
+      if (opts.maxTokens === PREFIX_WARM_UP_MAX_TOKENS) {
+        try {
+          onWarmUp?.();
+        } finally {
+          if (onWarmUp) rec.events.push(`end:${index}`);
+        }
+      }
       if (failWarmUp && opts.maxTokens === PREFIX_WARM_UP_MAX_TOKENS) {
         rec.events.push(`end:${index}`);
         throw Object.assign(new Error("max_tokens too small"), { status: 400 });
@@ -158,6 +181,17 @@ async function generate(
   grounding: GroundingContext | null = repositoryGrounding(),
 ): Promise<Recording> {
   const rec: Recording = { calls: [], events: [] };
+  await generateInto(rec, provider, undefined, grounding);
+  return rec;
+}
+
+/** {@link generate}, recording into `rec` so a run that throws still leaves its calls. */
+async function generateInto(
+  rec: Recording,
+  provider: FakeProvider,
+  beforeStep?: GenerationStepHook,
+  grounding: GroundingContext | null = repositoryGrounding(),
+): Promise<void> {
   const model = recordingModel(rec, provider);
   const kind = provider.key === "bedrock-gateway" ? "bedrock" : "anthropic";
   const tuning = docsGenTuning(kind, provider.model);
@@ -173,8 +207,11 @@ async function generate(
     router,
     "p1",
     grounding ?? undefined,
+    undefined,
+    undefined,
+    undefined,
+    beforeStep ? { beforeStep } : undefined,
   );
-  return rec;
 }
 
 const RULES = sectionGroupsFor("business-requirements").find((g) => g.id === "rules")!;
@@ -214,7 +251,8 @@ afterEach(() => {
 });
 
 describe("DeepSeek: a warm-up writes the batches' shared prefix before they fan out (#1329)", () => {
-  const DEEPSEEK = { key: "anthropic", model: "deepseek-flash" };
+  // An adapter pointed at DeepSeek's own API (PR #1516 review: by host, not model id).
+  const DEEPSEEK = { key: "anthropic", model: "deepseek-flash", deepSeekPrefixCache: true };
 
   it("sends one capped call holding exactly the shared prefix, and every batch shares all of it", async () => {
     const { calls } = await generate(DEEPSEEK);
@@ -227,12 +265,86 @@ describe("DeepSeek: a warm-up writes the batches' shared prefix before they fan 
     // The warm-up holds the retrieved excerpts and stops before any batch's own facts.
     for (const source of repositoryGrounding().sources) expect(warmUp.user).toContain(source.text);
     expect(warmUp.user).not.toContain("=== EXTRACTED MODULE FACTS ===");
-    expect(warmUp.user.trimEnd().endsWith("=== END GROUNDING SOURCES ===")).toBe(true);
+    // Its own telemetry bucket, not the section drafts'.
+    expect(warmUp.opts.callType).toBe("warmup");
+    for (const batch of batches) expect(batch.opts.callType).toBe("synthesis");
     // Its whole prompt is a prefix of every batch's: the length each batch reads back.
     for (const batch of batches) {
       expect(batch.system).toBe(warmUp.system);
       expect(batch.user.startsWith(warmUp.user)).toBe(true);
       expect(commonPrefix(stream(warmUp), stream(batch))).toBe(stream(warmUp).length);
+    }
+  });
+
+  // PR #1516 review — a tokenizer merges a run of newlines, so the warm-up
+  // must not end on one the parts continue: it ends on the fence's `===`, and
+  // every part goes on with the blank line and its own facts.
+  it("ends the warm-up on the closing fence, with the newline on every part's side", async () => {
+    const { calls } = await generate(DEEPSEEK);
+    const rules = calls.filter((c) => c.section === RULES.label);
+    const warmUp = rules.find(isWarmUp)!;
+    // The exact last bytes: the fence, and no trailing whitespace.
+    expect(warmUp.user.endsWith("\n\n=== END GROUNDING SOURCES ===")).toBe(true);
+    expect(warmUp.user).toBe(warmUp.user.trimEnd());
+    for (const batch of rules.filter((c) => !isWarmUp(c))) {
+      expect(batch.user.slice(warmUp.user.length, warmUp.user.length + 32)).toBe(
+        "\n\n=== EXTRACTED MODULE FACTS ===",
+      );
+    }
+  });
+
+  it("counts the warm-up among the section's calls in its log", async () => {
+    logInfoMock.mockClear();
+    const { calls } = await generate(DEEPSEEK);
+    const rules = calls.filter((c) => c.section === RULES.label);
+    const line = logInfoMock.mock.calls.find(
+      (c) =>
+        c[0] === "Batched section synthesized" &&
+        (c[1] as { group?: string } | undefined)?.group === RULES.id,
+    );
+    expect(line, "no 'Batched section synthesized' line for rules").toBeDefined();
+    expect((line![1] as { calls: number }).calls).toBe(rules.length);
+  });
+
+  it("rethrows a run stop raised by the warm-up's pre-call check and sends no part", async () => {
+    const stop = new UnpublishableGenerationError("aborted", "Generation was cancelled");
+    const beforeStep: GenerationStepHook = async (step) => {
+      if (step.kind === "batch" && step.section === RULES.label) throw stop;
+    };
+    const rec: Recording = { calls: [], events: [] };
+    await expect(generateInto(rec, DEEPSEEK, beforeStep)).rejects.toBe(stop);
+    expect(rec.calls.filter((c) => c.section === RULES.label)).toEqual([]);
+  });
+
+  it("rethrows a run stop raised while the warm-up streams, never the soft warning path", async () => {
+    const control = new GenerationControl("doc-warm-up-stop", "p1");
+    const aborted = new Error("warm-up stream aborted");
+    const rec: Recording = { calls: [], events: [] };
+    const run = withGenerationScope(control, () =>
+      generateInto(rec, {
+        ...DEEPSEEK,
+        onWarmUp: () => {
+          control.stop("aborted");
+          throw aborted;
+        },
+      }),
+    );
+    // The warm-up's own error surfaces (a soft catch would go on and fail at
+    // the first part's stop check with the run's stop error instead).
+    await expect(run).rejects.toBe(aborted);
+    const rules = rec.calls.filter((c) => c.section === RULES.label);
+    expect(rules).toHaveLength(1);
+    expect(isWarmUp(rules[0])).toBe(true);
+  });
+
+  it("sends no warm-up for a DeepSeek model served by another host", async () => {
+    for (const host of [
+      { key: "bedrock-gateway", model: "us.deepseek.r1-v1:0" },
+      { key: "anthropic", model: "deepseek-flash" },
+    ]) {
+      const { calls } = await generate(host);
+      expect(calls.filter((c) => c.section === RULES.label).length).toBeGreaterThan(1);
+      expect(calls.filter(isWarmUp)).toHaveLength(0);
     }
   });
 

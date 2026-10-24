@@ -71,14 +71,17 @@ export const PREFIX_WARM_UP_MAX_TOKENS = 1;
  * every part sent after it reads the prefix (the guide's `A + B` then
  * `A + B + C`).
  *
- * By model id only: a `claude-*` name sent to DeepSeek's Anthropic endpoint is
- * not recognised here and gets no warm-up.
+ * By endpoint, not model id (PR #1516 review): the cache is DeepSeek's API's,
+ * so only an adapter pointed at a `deepseek.com` host warms up
+ * ({@link AIProvider.deepSeekPrefixCache}) — whatever model name it is sent,
+ * `claude-*` aliases included. A DeepSeek model behind the Bedrock gateway,
+ * Azure or another OpenAI-compatible host gets no warm-up: nothing there would
+ * read it back.
  */
 export function needsPrefixCacheWarmUp(
-  provider: Pick<AIProvider, "key" | "model">,
+  provider: Pick<AIProvider, "deepSeekPrefixCache">,
   sharedUserLead: string,
 ): boolean {
-  if (provider.key === "local-gemma") return false;
-  if (!/deepseek/i.test(provider.model)) return false;
+  if (provider.deepSeekPrefixCache !== true) return false;
   return estimatePromptTokens(sharedUserLead) >= PREFIX_WARM_UP_MIN_TOKENS;
 }

@@ -965,6 +965,29 @@ describe("AnthropicProvider logs the output budget (#1257)", () => {
     expect(meta.op).toBe("stream");
     expect(meta.thinkingTokens).toBe(8_308);
   });
+
+  // #1329 — the docs-gen warm-up stops at its 1-token cap by design.
+  it("does not WARN when a warm-up call reaches its cap, and still logs at DEBUG", async () => {
+    const capped = () =>
+      fakeStreamHandle(
+        [{ type: "content_block_delta", delta: { type: "text_delta", text: "x" } }],
+        fakeMessage({ usage: usage(1), stop_reason: "max_tokens" }),
+      );
+    streamSpy.mockReturnValue(capped());
+    for await (const _ of provider().stream(messages, { maxTokens: 1, callType: "warmup" })) {
+      /* drain */
+    }
+    expect(logWarnSpy.mock.calls.filter((c) => /output cap reached/i.test(String(c[0])))).toEqual(
+      [],
+    );
+    expect(logDebugSpy.mock.calls.some((c) => /output budget/i.test(String(c[0])))).toBe(true);
+    // Any other call that hits the cap still warns.
+    streamSpy.mockReturnValue(capped());
+    for await (const _ of provider().stream(messages, { maxTokens: 1, callType: "synthesis" })) {
+      /* drain */
+    }
+    expect(logWarnSpy.mock.calls.some((c) => /output cap reached/i.test(String(c[0])))).toBe(true);
+  });
 });
 
 /**

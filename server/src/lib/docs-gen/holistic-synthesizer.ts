@@ -64,7 +64,7 @@ import {
   BedrockDirectProvider,
   OpenAICompatibleProvider,
 } from "../ai/providers/bedrock-direct-provider.js";
-import type { AIProvider, ChatChunk, ChatMessage } from "../ai/types.js";
+import type { AIProvider, CacheTelemetryCallType, ChatChunk, ChatMessage } from "../ai/types.js";
 import {
   hasExplicitPromptCache,
   needsPrefixCacheWarmUp,
@@ -4126,12 +4126,18 @@ async function synthesizeBatchedSection(input: {
   // #1329 — DeepSeek writes a cache unit only when a call ends, so the first
   // wave of parallel batches would each pay for the shared lead in full. One
   // short call holding exactly the shared prefix goes first, and the batches
-  // are sent once it has finished.
+  // are sent once it has finished. It is counted in the section's `calls`.
+  // Deliberately NOT gated on `bundle.supportsCaching` (PR #1516 review):
+  // DeepSeek's API caches every prompt whatever METIS or a gateway's
+  // ENABLE_PROMPT_CACHING says, and its cache writes are free, so the flag
+  // has nothing to turn off there. The gate is DeepSeek's own host
+  // (`needsPrefixCacheWarmUp`), where the read-back is real.
   if (
     concurrency > 1 &&
     plan.batches.length > 1 &&
     needsPrefixCacheWarmUp(bundle.provider, sharedPrompts.sharedUserLead)
   ) {
+    calls += 1;
     await warmSectionPrefix({
       provider: bundle.provider,
       supportsCaching: bundle.supportsCaching,
@@ -7598,7 +7604,8 @@ export interface SectionPrompts {
   /**
    * #1329 — the leading part of {@link userMessage} that every batch of the
    * section sends: the document lead, the flow graph, the section label and
-   * the retrieved grounding. Always a prefix of `userMessage`.
+   * the retrieved grounding. Always a prefix of `userMessage`, ending on a
+   * non-whitespace character (the newline after it is the part's).
    */
   sharedUserLead: string;
 }
@@ -7728,7 +7735,16 @@ RULES:
   // DeepSeek warm-up sends exactly it, and on Anthropic a cache breakpoint
   // ends it. The user message is that lead and the batch's own part, joined
   // with nothing in between, so splitting it changes no byte.
-  const sharedUserLead = `Project: **${meta.name}**
+  //
+  // PR #1516 review — the lead ENDS ON A NON-WHITESPACE CHARACTER: `===` (the
+  // retrieved block's closing fence) or `**` (the section label), and the
+  // newline after it belongs to the part. A tokenizer merges a run of
+  // newlines into one token, so a lead ending `===\n` would tokenize as
+  // `===` + `\n` in the warm-up and `===` + `\n\n` in every part, and the
+  // cache unit written at the end of the warm-up's input would be a prefix of
+  // no part. Punctuation and a following newline are separate pre-tokens in
+  // both, so the boundary after `===` is a token boundary everywhere.
+  const leadThroughNewline = `Project: **${meta.name}**
 Primary language: ${meta.language}
 Source files analyzed: ${meta.totalFiles}
 Code symbols: ${meta.totalSymbols}
@@ -7736,7 +7752,8 @@ Document title (already rendered as H1, do NOT repeat): "${title}"
 Document type: ${docTypeLabel(docType)}
 ${flowSection}Section group: **${group.label}**
 ${grounding.shared ? `\n${grounding.shared}\n` : ""}`;
-  const userMessage = `${sharedUserLead}
+  const sharedUserLead = leadThroughNewline.slice(0, -1);
+  const userMessage = `${leadThroughNewline}
 === EXTRACTED MODULE FACTS ===
 
 ${data(factsBlob)}
@@ -7799,6 +7816,9 @@ async function warmSectionPrefix(input: {
       supportsCaching: input.supportsCaching,
       projectId: input.projectId,
       maxTokens: PREFIX_WARM_UP_MAX_TOKENS,
+      // Its own telemetry bucket: the "synthesis" share is what it raises,
+      // and its ~25k mostly-uncached prompt would read as a section draft's.
+      callType: "warmup",
     });
     log.info("Section prefix-cache warm-up sent", logFields);
   } catch (err) {
@@ -8054,6 +8074,8 @@ async function streamSectionContent(
     userLead?: string;
     /** #1329 — the OUTPUT cap, in place of the section's (the warm-up's 1 token). */
     maxTokens?: number;
+    /** #1329 — the telemetry bucket; `"synthesis"` unless set (the warm-up's is `"warmup"`). */
+    callType?: CacheTelemetryCallType;
   },
 ): Promise<SectionStreamResult> {
   const messages: ChatMessage[] = [
@@ -8082,7 +8104,7 @@ async function streamSectionContent(
       disableTools: true,
       maxTokens,
       // #390 — tag prompt-cache hit-ratio telemetry by workload.
-      callType: "synthesis",
+      callType: opts.callType ?? "synthesis",
       ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
       // Cache ONLY the shared section-writer system prompt (reused across all ~6
       // sections). The large per-section facts/grounding blob in the user turn is

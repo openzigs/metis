@@ -230,6 +230,11 @@ export class AnthropicProvider implements AIProvider {
   private readonly streamMaxTokens: number;
   /** #25 — `baseUrl` is DeepSeek's Anthropic-compatible endpoint. */
   private readonly deepSeekEndpoint: boolean;
+
+  /** #1329 — {@link AIProvider.deepSeekPrefixCache}: DeepSeek's own host, by URL. */
+  get deepSeekPrefixCache(): boolean {
+    return this.deepSeekEndpoint;
+  }
   /** #512 — `baseUrl` is Anthropic's own API (unset, or api.anthropic.com). */
   private readonly anthropicApiEndpoint: boolean;
   private readonly config?: ConfigService;
@@ -548,7 +553,7 @@ export class AnthropicProvider implements AIProvider {
       emitCacheTelemetry(usage, final.model ?? model, opts);
       // #1257 — streaming is NOT subject to the SDK's non-streaming bound, but
       // it spends thinking from the same budget, so the accounting is the same.
-      logOutputBudget("stream", params.max_tokens, usage, final.stop_reason);
+      logOutputBudget("stream", params.max_tokens, usage, final.stop_reason, opts.callType);
       // #724 — the served model, so a metered stream is priced as `chat()` is.
       usageYielded = true;
       yield final.model ? { type: "usage", usage, model: final.model } : { type: "usage", usage };
@@ -1043,6 +1048,7 @@ function logOutputBudget(
   maxTokens: unknown,
   usage: TokenUsage,
   finishReason: string | null | undefined,
+  callType?: ChatOptions["callType"],
 ): void {
   if (usage.thinkingTokens === undefined) return;
   const meta = {
@@ -1052,7 +1058,9 @@ function logOutputBudget(
     thinkingTokens: usage.thinkingTokens,
     finishReason: finishReason ?? "unknown",
   };
-  if (finishReason === "max_tokens") {
+  // #1329 — the docs-gen warm-up is capped at one token on purpose: reaching
+  // that cap is its normal end, not the #1223 truncation this warns about.
+  if (finishReason === "max_tokens" && callType !== "warmup") {
     log.warn(
       "Anthropic output cap reached — thinking spent part of the SAME budget as the answer, " +
         "so the payload was truncated by however much the model chose to think on this run. " +

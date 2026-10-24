@@ -695,10 +695,15 @@ export class FaithfulnessJudge {
     const separators = (blocks.length - 1) * EVIDENCE_SEPARATOR.length;
     let remaining = this.charBudget - separators;
     // Smallest first, so a short source is shown whole and its unused share
-    // goes to the larger ones.
+    // goes to the larger ones. #1329 (PR #1516 review) — equal lengths in the
+    // context's order, then mined lines in theirs, as before the display order
+    // put retrieved sources first: each source's share is exactly what it was.
+    const contextRank = new Map(usable.map((s, i) => [s.sourceId, i]));
+    const rankOf = (i: number): number =>
+      contextRank.get(selected[i].sourceId) ?? usable.length + i;
     const order = blocks
       .map((_, i) => i)
-      .sort((a, b) => blocks[a].text.length - blocks[b].text.length);
+      .sort((a, b) => blocks[a].text.length - blocks[b].text.length || rankOf(a) - rankOf(b));
     const bodies: string[] = new Array(blocks.length).fill("");
     order.forEach((i, rank) => {
       const share = Math.floor(remaining / (order.length - rank)) - blocks[i].header.length;

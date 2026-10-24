@@ -43,6 +43,9 @@ export type CacheTelemetryCallType =
   // real input:output ratio and cache-hit rate surface distinctly in the #699
   // admin telemetry endpoint, validating the cached-Sonnet-vs-Haiku decision.
   | "claim-extraction"
+  // #1329 — the docs-gen prefix-cache warm-up: one short call per section
+  // written in parts, kept out of the "synthesis" share it exists to raise.
+  | "warmup"
   | "chat"
   | "discussion"
   | "spec-kit"
@@ -368,7 +371,9 @@ export interface ChatOptions {
    *     rest uncached, so calls that share the lead but differ after it read
    *     each other's write. Independent of `system` / `messages`. Ignored unless
    *     it is a strict, non-empty prefix of that turn's plain-string content.
-   *     Every other provider ignores it and sends the turn unchanged.
+   *     Every other provider ignores it and sends the turn unchanged. It is
+   *     prompt text (repository text, for docs-gen): log its length only
+   *     (`describePromptCaching`), never the value — likewise `systemPrefix`.
    */
   promptCaching?: {
     system?: boolean;
@@ -645,6 +650,14 @@ export interface AIProvider {
    */
   readonly routerModelsInferred?: boolean;
   /**
+   * #1329 — `true` when this adapter points at DeepSeek's own API (a
+   * `deepseek.com` host, `isDeepSeekEndpoint`), whose automatic prefix cache
+   * makes a prompt readable once the call that sent it ends. A DeepSeek model
+   * served anywhere else (the Bedrock gateway, Azure, another OpenAI-compatible
+   * host) has no such cache. Absent: `false`.
+   */
+  readonly deepSeekPrefixCache?: boolean;
+  /**
    * #1077 — the output-token limit a `chat()` call on this adapter gets when
    * the caller sets no `maxTokens`. It depends on the adapter AND on where it
    * points (4,096 on an OpenAI-compatible host, 65,536 on DeepSeek's, 16,000 on
@@ -703,3 +716,22 @@ export interface ModelSelection {
 
 /** User override for model selection (#599). */
 export type ModelOverride = "auto" | "force-haiku" | "force-sonnet" | "force-fable" | "force-opus";
+
+/**
+ * #1329 — {@link ChatOptions.promptCaching} in the form a log line may carry:
+ * the flags, and the LENGTH of any prefix. `systemPrefix` / `userPrefix` are
+ * prompt text (repository text, for docs-gen) and must never reach a log.
+ */
+export function describePromptCaching(
+  pc: ChatOptions["promptCaching"],
+):
+  | { system?: boolean; messages?: boolean; systemPrefixChars?: number; userPrefixChars?: number }
+  | undefined {
+  if (!pc) return undefined;
+  return {
+    ...(pc.system !== undefined ? { system: pc.system } : {}),
+    ...(pc.messages !== undefined ? { messages: pc.messages } : {}),
+    ...(pc.systemPrefix !== undefined ? { systemPrefixChars: pc.systemPrefix.length } : {}),
+    ...(pc.userPrefix !== undefined ? { userPrefixChars: pc.userPrefix.length } : {}),
+  };
+}

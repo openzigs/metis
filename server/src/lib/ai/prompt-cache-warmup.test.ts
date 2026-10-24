@@ -11,7 +11,10 @@ import {
   PREFIX_WARM_UP_MAX_TOKENS,
   PREFIX_WARM_UP_MIN_TOKENS,
 } from "./prompt-cache-warmup.js";
-import type { ProviderKey } from "./types.js";
+import { scopedToGeneration } from "../docs-gen/generation-control.js";
+import { AnthropicProvider } from "./providers/anthropic-provider.js";
+import { OpenAICompatibleProvider } from "./providers/bedrock-direct-provider.js";
+import type { AIProvider, ProviderKey } from "./types.js";
 
 const prefixOf = (tokens: number) => "x".repeat(tokens * 4);
 const provider = (key: ProviderKey, model: string, serves?: boolean) => ({
@@ -102,36 +105,62 @@ describe("hasExplicitPromptCache (#1329)", () => {
 describe("needsPrefixCacheWarmUp (#1329)", () => {
   const lead = (tokens: number) => "x".repeat(tokens * 4);
 
-  it("warms a DeepSeek lead at or over the minimum, on any provider but a local runtime", () => {
-    for (const key of ["anthropic", "openai", "bedrock-gateway"] as ProviderKey[]) {
-      expect(
-        needsPrefixCacheWarmUp(provider(key, "deepseek-flash"), lead(PREFIX_WARM_UP_MIN_TOKENS)),
-      ).toBe(true);
+  // PR #1516 review — the cache is DeepSeek's API's, so the gate is the host the
+  // adapter points at, never the model id.
+  const anthropicAt = (baseUrl: string | undefined) =>
+    new AnthropicProvider({
+      apiKey: "k",
+      model: "deepseek-flash",
+      ...(baseUrl ? { baseUrl } : {}),
+    });
+  const openAiAt = (baseUrl: string, providerKey: ProviderKey) =>
+    new OpenAICompatibleProvider({ baseUrl, apiKey: "k", model: "deepseek-flash", providerKey });
+
+  it("warms a lead at or over the minimum on an adapter pointed at DeepSeek's own API", () => {
+    for (const p of [
+      anthropicAt("https://api.deepseek.com/anthropic"),
+      openAiAt("https://api.deepseek.com/v1", "openai"),
+    ]) {
+      expect(p.deepSeekPrefixCache).toBe(true);
+      expect(needsPrefixCacheWarmUp(p, lead(PREFIX_WARM_UP_MIN_TOKENS))).toBe(true);
     }
+    // Docs-gen reaches the adapter through the run's generation proxy.
+    expect(
+      scopedToGeneration(anthropicAt("https://api.deepseek.com/anthropic")).deepSeekPrefixCache,
+    ).toBe(true);
+    // A Claude alias sent to DeepSeek's endpoint is DeepSeek's cache too.
     expect(
       needsPrefixCacheWarmUp(
-        provider("anthropic", "DeepSeek-V4-Pro"),
+        new AnthropicProvider({
+          apiKey: "k",
+          model: "claude-haiku-4-5",
+          baseUrl: "https://api.deepseek.com/anthropic",
+        }),
         lead(PREFIX_WARM_UP_MIN_TOKENS),
       ),
     ).toBe(true);
-    expect(
-      needsPrefixCacheWarmUp(
-        provider("local-gemma", "deepseek-r1:8b"),
-        lead(PREFIX_WARM_UP_MIN_TOKENS),
-      ),
-    ).toBe(false);
   });
 
-  it("skips a short lead, and every model that is not DeepSeek", () => {
+  it("never warms a DeepSeek model served by another host: the gateway, Azure, Anthropic, a local runtime", () => {
+    for (const p of [
+      openAiAt("https://gateway.example.internal/api/v1", "bedrock-gateway"),
+      openAiAt("https://contoso.openai.azure.com/openai/v1", "openai"),
+      openAiAt("https://openrouter.ai/api/v1", "openai"),
+      openAiAt("http://127.0.0.1:11434/v1", "local-gemma"),
+      anthropicAt(undefined),
+    ]) {
+      expect(p.deepSeekPrefixCache).toBe(false);
+      expect(needsPrefixCacheWarmUp(p, lead(50_000))).toBe(false);
+    }
+    // A test double that does not declare it is not DeepSeek's API either.
+    const undeclared: Pick<AIProvider, "deepSeekPrefixCache"> = {};
+    expect(needsPrefixCacheWarmUp(undeclared, lead(50_000))).toBe(false);
+  });
+
+  it("skips a lead under the minimum", () => {
     expect(
-      needsPrefixCacheWarmUp(
-        provider("anthropic", "deepseek-flash"),
-        lead(PREFIX_WARM_UP_MIN_TOKENS - 1),
-      ),
+      needsPrefixCacheWarmUp({ deepSeekPrefixCache: true }, lead(PREFIX_WARM_UP_MIN_TOKENS - 1)),
     ).toBe(false);
-    expect(needsPrefixCacheWarmUp(provider("anthropic", "claude-sonnet-5-5"), lead(50_000))).toBe(
-      false,
-    );
   });
 
   it("caps the warm-up's reply at one token", () => {
