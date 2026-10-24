@@ -2845,8 +2845,13 @@ marked "from another project", so it can be switched off where it is used.
 Once switched off, such an agent **leaves the card** (#1500): the card lists
 only this project's own agents, built-ins and agents enabled here, so a
 borrowed agent you turned off is no longer shown and is no longer used by
-chat or analysis. To use it again, enable it from a project that can reach its
-home project (switching an agent on needs access to the project that owns it).
+chat or analysis. The card cannot switch it back on, because it no longer
+lists it (and **Enable** on the home project's own card turns it on for the home
+project, not for yours). Switching it on again for your project needs access to
+both projects: a system admin, or an admin of your project's workspace who is
+also a member of the agent's home workspace, can send
+`PUT /api/custom-agents/<agent id>/enablement` with
+`{"projectId": "<your project id>", "enabled": true}`.
 The card shows only each agent's name, description and owner; the definition
 itself (persona, tools, model) is shown only to the owning project.
 The one exception is the wizard's playground: a workspace admin (who could
