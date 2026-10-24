@@ -67,6 +67,17 @@ function CopyField({ id, label, value }: { id: string; label: string; value: str
   );
 }
 
+/** #1483 — once a connection has its own secret, issue events reach its project only at its issues URL. */
+function IssuesHint({ id }: { id: string }) {
+  return (
+    <p data-testid={`webhook-issues-hint-${id}`}>
+      Issue events (task sync and drift) reach this project only at the issue events path, signed
+      with this same secret: point the issue webhook of each repository this project publishes
+      issues to at it.
+    </p>
+  );
+}
+
 export function RepoWebhookSecret({
   projectId,
   connector,
@@ -200,13 +211,7 @@ export function RepoWebhookSecret({
             server&apos;s public address followed by this path, and the Secret to this secret. Until
             you do, that webhook&apos;s deliveries no longer reach this project.
           </p>
-          {connector.issuesWebhookPath ? (
-            <p data-testid={`webhook-issues-hint-${connector.id}`}>
-              Issue events (task sync and drift) now reach this project only at the issue events
-              path, signed with this same secret: point the issue webhook of each repository this
-              project publishes issues to at it.
-            </p>
-          ) : null}
+          {connector.issuesWebhookPath ? <IssuesHint id={connector.id} /> : null}
         </div>
       ) : configured && connector.webhookPath ? (
         <div className="space-y-1 text-muted-foreground">
@@ -214,9 +219,12 @@ export function RepoWebhookSecret({
             Payload URL path: <code>{connector.webhookPath}</code>
           </p>
           {connector.issuesWebhookPath ? (
-            <p>
-              Issue events payload URL path: <code>{connector.issuesWebhookPath}</code>
-            </p>
+            <>
+              <p>
+                Issue events payload URL path: <code>{connector.issuesWebhookPath}</code>
+              </p>
+              <IssuesHint id={connector.id} />
+            </>
           ) : null}
         </div>
       ) : null}

@@ -194,5 +194,8 @@ describe("RepoWebhookSecret (#1475)", () => {
     renderIt({ provider: "github", webhookSecretConfigured: true });
     expect(screen.getByText(PATH)).toBeInTheDocument();
     expect(screen.getByText(ISSUES_PATH)).toBeInTheDocument();
+    expect(screen.getByTestId("webhook-issues-hint-r1")).toHaveTextContent(
+      /only at the issue events/,
+    );
   });
 });

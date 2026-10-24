@@ -171,7 +171,11 @@ export function signedGithubEvent(payload: unknown): SignedGithubEvent | null {
     return "pull_request";
   }
   if (isObject(payload.issue)) {
-    return isObject(payload.comment) ? "issue_comment" : "issues";
+    if (isObject(payload.comment)) return "issue_comment";
+    // An `issues` event always carries its action and repository. Requiring
+    // both keeps another event that happens to embed an `issue` object from
+    // reading as `issues`.
+    return typeof payload.action === "string" && isObject(payload.repository) ? "issues" : null;
   }
   return null;
 }

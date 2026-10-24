@@ -528,6 +528,50 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           }),
         ).toBe(1);
       });
+
+      it("a body signed with a connection's own secret is not acted on at that connection's other receiver", async () => {
+        const secretA = await ownSecret(`repo-${PA}`, "nonce-a");
+        const codeRepo = `acme-1483/code-${PA}`;
+        const prUrl = `/api/webhooks/github/pr/c/repo-${PA}`;
+
+        // A pull-request body, accepted at /github/pr/c/A, replayed to /github/issues/c/A.
+        const pr = JSON.stringify({
+          action: "closed",
+          pull_request: { number: 40, merged: false, updated_at: new Date().toISOString() },
+          repository: { full_name: codeRepo, html_url: `https://github.com/${codeRepo}` },
+          nonce: ++seq,
+        });
+        const atPr = await deliver(secretA, pr, prUrl, "pull_request");
+        expect(atPr.status).toBe(200);
+        const replayedToIssues = await deliver(secretA, pr, issuesUrl(`repo-${PA}`), "issues");
+        expect(replayedToIssues.status).toBe(200);
+        expect(
+          await db.webhookPayloadDigest.count({
+            where: { receiver: `github-issues:c:repo-${PA}` },
+          }),
+        ).toBe(0);
+        expect(replayedToIssues.body).toMatchObject({ handled: false, reason: "NOT_ISSUES_EVENT" });
+
+        // An `issues` body, accepted at /github/issues/c/A, replayed to /github/pr/c/A.
+        await exportTask(PA, 41, T1);
+        const issue = issuesBody(41, {
+          extra: {
+            repository: { full_name: codeRepo, html_url: `https://github.com/${codeRepo}` },
+          },
+        });
+        const atIssues = await deliver(secretA, issue, issuesUrl(`repo-${PA}`));
+        expect(atIssues.body).toMatchObject({ handled: false, reason: "NO_TASK_EXPORT" });
+        const replayedToPr = await deliver(secretA, issue, prUrl, "pull_request");
+        expect(replayedToPr.status).toBe(200);
+        expect(
+          await db.webhookPayloadDigest.count({ where: { receiver: `github-pr:c:repo-${PA}` } }),
+        ).toBe(1); // only the pull-request body above
+        expect(replayedToPr.body).toMatchObject({
+          handled: false,
+          reason: "NOT_PULL_REQUEST_EVENT",
+        });
+        expect(await checked(PA)).toBe(false);
+      });
     });
   },
 );

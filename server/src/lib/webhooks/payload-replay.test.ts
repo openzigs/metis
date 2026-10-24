@@ -116,7 +116,7 @@ describe("signedGithubEvent (#1483)", () => {
       "pull_request_review_comment",
     );
     expect(signedGithubEvent({ pull_request: {}, thread: {} })).toBe("pull_request_review_thread");
-    expect(signedGithubEvent({ action: "closed", issue: {} })).toBe("issues");
+    expect(signedGithubEvent({ action: "closed", issue: {}, repository: {} })).toBe("issues");
     expect(signedGithubEvent({ action: "edited", issue: {}, comment: {} })).toBe("issue_comment");
   });
 
@@ -130,6 +130,17 @@ describe("signedGithubEvent (#1483)", () => {
       { zen: "ping" },
       { issue: "x" },
       { issue: [] },
+    ]) {
+      expect(signedGithubEvent(p)).toBeNull();
+    }
+  });
+
+  it("is `issues` only with an action and a repository", () => {
+    for (const p of [
+      { issue: {}, repository: {} },
+      { action: "closed", issue: {} },
+      { action: 1, issue: {}, repository: {} },
+      { action: "closed", issue: {}, repository: "acme/x" },
     ]) {
       expect(signedGithubEvent(p)).toBeNull();
     }

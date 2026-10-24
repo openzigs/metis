@@ -846,6 +846,17 @@ export async function findProjectForRepo(
  * repository issues are published to, not on the connected one, so a
  * per-repository rule would leave the shared secret able to forge an issue
  * event into a project that took its own.
+ *
+ * Cost per shared-secret `issues` delivery: one query returning only the
+ * connectors that have an own secret (`webhookSecretNonce` set; a few per
+ * deployment, not every connector), selecting four short columns, plus one
+ * truncated HMAC per row for `connectorSecretState`. It runs after the
+ * signature verifies and is throttled by the issues receiver's limiters.
+ *
+ * Only `active` secrets exclude. After a `VAULT_MASTER_KEY` rotation every own
+ * secret reads `stale`, and its project takes shared-secret deliveries again
+ * until the secret is replaced: the same lapse #1475 has for pull requests,
+ * and documented in the USER_GUIDE.
  */
 async function projectsWithAnyOwnSecret(): Promise<string[]> {
   const conns = await prisma.repoConnection.findMany({

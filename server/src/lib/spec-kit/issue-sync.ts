@@ -332,6 +332,11 @@ async function defaultFindExport(input: FindExportInput): Promise<ExportRow | nu
       ...(projectId === undefined ? {} : { projectId }),
     },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    // The cap applies BEFORE the deleted-project filter below (the table has no
+    // `project` relation to filter on in this query). So a live project's
+    // export is missed only if 50 earlier exports of this same repository and
+    // issue number all belong to deleted projects. The event is then dropped,
+    // never written to a deleted or wrong project.
     take: MAX_EXPORT_CANDIDATES,
     select: { projectId: true, featureSlug: true, taskId: true },
   });

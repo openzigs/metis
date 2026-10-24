@@ -139,8 +139,7 @@ export type BackgroundPath =
   | "pr-review"
   | "mcp-health"
   | "notification"
-  | "spec-kit.issue-sync"
-  | "drift.reconcile";
+  | "spec-kit.issue-sync";
 
 /** One structured log line per skipped unit of work, so a skip is never silent. */
 export function logDeletedProjectSkip(input: {
