@@ -234,6 +234,24 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await permissionOf("c-bound-a")).toBe("read");
     });
 
+    it.each([
+      ["an undoable rotation (connector discovery's in-place write)", "rotateUndoable"],
+      ["the undo of a rotation", "undoRotation"],
+      ["a create-or-rotate by label", "upsert"],
+    ] as const)("%s forgets it too", async (_name, write) => {
+      const vault = getVaultService();
+      // The undo case needs a rotation to undo; take it before planting the record.
+      const undo =
+        write === "undoRotation" ? await vault.rotateUndoable(rotatedSecretId, READ_TOKEN) : null;
+      await connect("c-bound", P1, rotatedSecretId, "admin");
+      await connect("c-other", P2, otherSecretId, "push");
+      if (write === "rotateUndoable") await vault.rotateUndoable(rotatedSecretId, READ_TOKEN);
+      if (write === "undoRotation") expect(await vault.undoRotation(undo!)).toBe(true);
+      if (write === "upsert") await vault.upsert("rotated-pat-1499", READ_TOKEN, "global");
+      expect(await permissionOf("c-bound")).toBeNull();
+      expect(await permissionOf("c-other")).toBe("push");
+    });
+
     it("a Test in flight when the secret is rotated records nothing", async () => {
       await connect("c-inflight", P1, rotatedSecretId, "read");
       await db.repoConnection.update({

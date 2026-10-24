@@ -9,5 +9,5 @@ section: Security
   already in flight when the secret rotates records nothing.
 - A metadata sync that overlaps a change to its connection now ingests nothing.
 - The boot re-check of repository access skips connections that another
-  replica has already re-checked. A DNS or connection failure at boot no longer
-  marks a connection as errored.
+  replica has already re-checked, and a DNS failure while it pins the GitHub
+  host no longer marks a connection as errored.

@@ -983,11 +983,16 @@ export async function getPrimaryRepo(projectId: string) {
 export interface TestRepoConnectorOptions {
   /**
    * #1499 — nobody clicked Test (the boot re-check). A network failure before
-   * any HTTP answer (a DNS blip at startup, a refused or reset connection)
-   * then leaves the connector as it was instead of marking it `error`: an
-   * unattended check has no user to see the error and retry, and the failure
-   * says nothing about the credential. A clicked Test still reports it as
-   * `error`, as before.
+   * any HTTP answer then leaves the connector as it was instead of marking it
+   * `error`: an unattended check has no user to see the error and retry, and
+   * the failure says nothing about the credential. A clicked Test still
+   * reports it as `error`, as before.
+   *
+   * Scope, measured: the first DNS lookup (`assertHostFromBaseUrl`) runs
+   * before the `try` and so never wrote `error`, and Octokit reports a failed
+   * fetch as a status-500 `RequestError`, already transient. What this adds is
+   * the host-pinning lookup in `acquireOctokitWithAuth` failing after the
+   * first succeeded, and a network error that reaches here unwrapped.
    */
   unattended?: boolean;
 }
