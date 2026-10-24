@@ -40,6 +40,11 @@ export type DeliveryReceiver = "github-pr" | "github-issues" | "jira-issues";
  * The dedup key for `rawId` at `receiver` under `signer`. An empty (or
  * whitespace) id returns `""`, which `recordDelivery` treats as "no id": never
  * recorded, never deduped, as before.
+ *
+ * `signer.connectorId` MUST be the verified connector's database id (`conn.id`
+ * after the signature checked out, a cuid with no `:`), never the raw
+ * `:connectorId` path parameter: the segments are joined unescaped, and an
+ * unverified id would let a sender write under another signer's prefix.
  */
 export function deliveryDedupKey(
   receiver: DeliveryReceiver,

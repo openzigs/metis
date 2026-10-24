@@ -55,6 +55,13 @@ const PC = "project-c-1506"; // its own hook: /github/pr/c/repo-project-c-1506
 const CB = `repo-${PB}`;
 const CC = `repo-${PC}`;
 const REPO = "acme-1506/app";
+// #1506 review — one project (D) with TWO connectors on this repository: its
+// own-secret one (D1) and an older one with no own secret (D2).
+const PD = "project-d-1506";
+const D1 = "repo-d1-1506";
+const D2 = "repo-d2-1506";
+const REPO_D = "acme-1506/other";
+const TASKS = "# Tasks\n\n- [ ] T01 Build the thing\n";
 
 const hmac = (secret: string, body: string) =>
   crypto.createHmac("sha256", secret).update(body).digest("hex");
@@ -109,7 +116,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       return a;
     };
 
-    const prBody = (n: number) =>
+    const prBody = (n: number, repo = REPO) =>
       JSON.stringify({
         action: "opened",
         pull_request: {
@@ -118,16 +125,36 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           body: "",
           updated_at: new Date().toISOString(),
           head: { sha: `sha-${n}`, ref: "feature" },
-          html_url: `https://github.com/${REPO}/pull/${n}`,
+          html_url: `https://github.com/${repo}/pull/${n}`,
+        },
+        repository: { full_name: repo, html_url: `https://github.com/${repo}` },
+      });
+    const issuesBody = (n: number, action = "edited") =>
+      JSON.stringify({
+        action,
+        issue: {
+          number: n,
+          node_id: `node-${n}`,
+          title: "[T01] Build the thing",
+          body: "b",
+          state: action === "closed" ? "closed" : "open",
+          updated_at: new Date().toISOString(),
+          labels: [],
+          assignees: [],
         },
         repository: { full_name: REPO, html_url: `https://github.com/${REPO}` },
       });
-    const issuesBody = (n: number) =>
-      JSON.stringify({
-        action: "edited",
-        issue: { number: n, title: "T", updated_at: new Date().toISOString() },
-        repository: { full_name: REPO, html_url: `https://github.com/${REPO}` },
+
+    /** Whether project `id`'s Spec Kit `tasks.md` has T01 ticked (the issue-sync's write). */
+    const ticked = async (id: string) => {
+      const feature = await db.specKitFeature.findUniqueOrThrow({
+        where: { projectId_slug: { projectId: id, slug: "001-feat" } },
       });
+      const art = await db.specKitFeatureArtifact.findUniqueOrThrow({
+        where: { featureId_key: { featureId: feature.id, key: "tasks.md" } },
+      });
+      return art.content.includes("[x] T01");
+    };
 
     /** Where a hook points, and the secret GitHub signs with for it. */
     type Hook = { path: string; secret: string };
@@ -201,8 +228,49 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           },
         });
       }
-      // Projects B and C each registered their own webhook (#1475).
-      for (const c of [CB, CC]) {
+      for (const id of [PA, PB]) {
+        const feature = await db.specKitFeature.create({
+          data: { projectId: id, slug: "001-feat", title: "Feat", status: "tasked" },
+        });
+        await db.specKitFeatureArtifact.create({
+          data: { featureId: feature.id, key: "tasks.md", content: TASKS, version: 1 },
+        });
+      }
+      await db.project.create({
+        data: {
+          id: PD,
+          name: PD,
+          slug: PD,
+          createdById: "u-1",
+          workspaceId: WS,
+          status: "active",
+          autoReviewPrs: true,
+        },
+      });
+      const [dOwner, dRepo] = REPO_D.split("/");
+      for (const [id, label, isPrimary, createdAt] of [
+        // D2 is bound FIRST: by bind order alone it would win the shared hook.
+        [D2, "legacy", false, new Date("2026-01-01T00:00:00.000Z")],
+        [D1, "app", true, new Date("2026-02-01T00:00:00.000Z")],
+      ] as const) {
+        await db.repoConnection.create({
+          data: {
+            id,
+            projectId: PD,
+            label,
+            ownerOrOrg: dOwner,
+            repoName: dRepo,
+            isPrimary,
+            status: "connected",
+            repoPermission: "admin",
+            provider: "github",
+            createdAt,
+          },
+        });
+      }
+      // Projects B and C each registered their own webhook (#1475), and D did
+      // through D1 only.
+      for (const c of [CB, CC, D1]) {
         await db.repoConnection.update({
           where: { id: c },
           data: { webhookSecretNonce: `nonce-${c}`, webhookSecretCheck: checkOf(c, `nonce-${c}`) },
@@ -223,6 +291,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       failNextEnqueue = false;
       await db.webhookPayloadDigest.deleteMany({});
       await db.prReviewWebhookDelivery.deleteMany({});
+      await db.specKitTaskExport.deleteMany({});
+      await db.specKitFeatureArtifact.updateMany({ data: { content: TASKS } });
     });
     afterEach(() => {
       delete process.env.GITHUB_WEBHOOK_SECRET;
@@ -292,14 +362,48 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(retry.body).toEqual({ ok: true, handled: false, reason: "DUPLICATE_DELIVERY" });
     });
 
-    it("issues: the same GUID at /github/issues and /github/issues/c/:id is processed by each, and a resend is deduped", async () => {
-      const body = issuesBody(7);
-      const shared = await deliver(issuesHook(), body, "guid-7", "issues");
-      const own = await deliver(issuesHook(CB), body, "guid-7", "issues");
+    it("a project with an own-secret connector never also wins the shared hook through another connector: reviewed once", async () => {
+      const body = prBody(10, REPO_D);
+      const shared = await deliver(prHook(), body, "guid-10");
+      const own = await deliver(prHook(D1), body, "guid-10");
       expect(shared.status).toBe(200);
+      expect(own.body).toMatchObject({ ok: true, handled: true });
+      // D2 (no own secret, bound first) would have won the shared hook for D,
+      // and D would have been reviewed twice for one event.
+      expect(enqueued.map((j) => j.projectId)).toEqual([PD]);
+    });
+
+    it("issues: the same GUID at /github/issues and /github/issues/c/:id is processed by each, and a resend is deduped", async () => {
+      // B (own secret) exported the task EARLIER than A: by row order alone the
+      // shared hook would pick B. It must pick A, and B takes it at its own hook.
+      for (const [projectId, createdAt] of [
+        [PB, new Date("2026-01-01T00:00:00.000Z")],
+        [PA, new Date("2026-02-01T00:00:00.000Z")],
+      ] as const) {
+        const [repoOwner, repoName] = REPO.split("/");
+        await db.specKitTaskExport.create({
+          data: {
+            projectId,
+            featureSlug: "001-feat",
+            taskId: "T01",
+            issueNumber: 7,
+            repoOwner,
+            repoName,
+            createdAt,
+          },
+        });
+      }
+      const body = issuesBody(7, "closed");
+      const shared = await deliver(issuesHook(), body, "guid-7", "issues");
+      expect(shared.status).toBe(200);
+      expect(shared.body).toMatchObject({ ok: true, handled: true });
+      expect(await ticked(PA)).toBe(true);
+      expect(await ticked(PB)).toBe(false);
+
+      const own = await deliver(issuesHook(CB), body, "guid-7", "issues");
       expect(own.status).toBe(200);
-      expect(shared.body.reason).not.toBe("DUPLICATE_DELIVERY");
-      expect(own.body.reason).not.toBe("DUPLICATE_DELIVERY");
+      expect(own.body).toMatchObject({ ok: true, handled: true });
+      expect(await ticked(PB)).toBe(true);
       expect(await keys()).toEqual([
         `github-issues:c:${CB}:guid-7`,
         "github-issues:deployment:guid-7",

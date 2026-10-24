@@ -770,8 +770,9 @@ async function projectsWithOwnSecret(
  * reached the repository), whose credential was seen to have admin or push
  * permission on it at its last successful Test (#1488: reading a public
  * repository needs no credential, so `connected` alone let any workspace
- * squat on it), a GitHub connector for the delivery's host, and without an
- * own secret that still verifies. While the earliest such
+ * squat on it), a GitHub connector for the delivery's host, and in a project
+ * with no connector to the repository holding an own secret that still
+ * verifies (#1506: per project, as for merges). While the earliest such
  * connector stays connected, a newcomer can neither take its deliveries nor
  * stop them: it gets none, and is logged. If the earliest one's Test fails
  * (`error`), the next connected one takes them until it passes again — an
@@ -797,16 +798,26 @@ export async function findProjectForRepo(
   const live = conns.filter((c) => c.project && !c.project.deletedAt);
   const host = githubHost(repoHtmlUrl) ?? "github.com";
   const root = webhookSecretRootKey();
+  // #1506 — per PROJECT, the rule `projectsWithOwnSecret` applies to merges: a
+  // project that took its own (still verifying) secret for this repository on
+  // this host takes only what that secret signs, through ANY of its
+  // connectors. Per connector, a second connector of that project without an
+  // own secret could win the shared hook, and the project was reviewed twice.
+  const ownSecretProjects = new Set(
+    live
+      .filter((c) => connectorHost(c) === host && connectorSecretState(c, root) === "active")
+      .map((c) => c.projectId),
+  );
   const eligible = live
     .filter(
       (c) =>
+        !ownSecretProjects.has(c.projectId) &&
         c.status === "connected" &&
         // #1488 — `connected` proves only a read, which a public repository
         // grants with no credential: the connector's token must also have been
         // seen to write to the repository, as only an admin registers a hook.
         isSharedWebhookEligible(c.repoPermission) &&
-        connectorHost(c) === host &&
-        connectorSecretState(c, root) !== "active",
+        connectorHost(c) === host,
     )
     .sort((a, b) => {
       const at = (a.repoBoundAt ?? a.createdAt).getTime();

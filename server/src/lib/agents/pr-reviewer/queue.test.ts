@@ -11,11 +11,17 @@ import {
 } from "./queue.js";
 
 function makePayload(
-  overrides: Partial<{ deliveryId: string; owner: string; repo: string; prNumber: number }> = {},
+  overrides: Partial<{
+    deliveryId: string;
+    projectId: string;
+    owner: string;
+    repo: string;
+    prNumber: number;
+  }> = {},
 ) {
   return {
     deliveryId: overrides.deliveryId ?? "d1",
-    projectId: "p1",
+    projectId: overrides.projectId ?? "p1",
     owner: overrides.owner ?? "acme",
     repo: overrides.repo ?? "site",
     prNumber: overrides.prNumber ?? 1,
@@ -648,6 +654,50 @@ describe("createPrReviewQueue", () => {
       await new Promise((r) => setImmediate(r));
       expect(runs).toEqual(["old#1", "new#1"]);
       expect(q.depth()).toBe(0);
+      expect(q.deadLetters()).toHaveLength(0);
+    });
+
+    it("#1506 — two projects' jobs for one PR both run; one project's newer job still supersedes its own", async () => {
+      const { q, order, release } = gatedQueue();
+      q.enqueue(makePayload({ deliveryId: "a", projectId: "p1", prNumber: 9 }));
+      q.enqueue(makePayload({ deliveryId: "b", projectId: "p1", prNumber: 9 })); // superseded by d
+      q.enqueue(makePayload({ deliveryId: "c", projectId: "p2", prNumber: 9 }));
+      q.enqueue(makePayload({ deliveryId: "d", projectId: "p1", prNumber: 9 }));
+      await new Promise((r) => setImmediate(r));
+      // p2's job is not p1's PR job: it runs alongside, and is not superseded.
+      expect(order).toEqual(["start:a", "start:c"]);
+      await release("a");
+      expect(order).toEqual(["start:a", "start:c", "end:a", "start:d"]);
+      await release("c");
+      await release("d");
+      await q.drain();
+      expect(order).not.toContain("start:b");
+      expect(q.depth()).toBe(0);
+    });
+
+    it("#1506 — another project's job for the same PR never drops this project's retry", async () => {
+      const timers: Array<() => void> = [];
+      const runs: string[] = [];
+      const q = createPrReviewQueue({
+        maxAttempts: 3,
+        backoffMs: [10],
+        setTimer: (cb) => {
+          timers.push(cb);
+          return 0;
+        },
+        processor: async (job) => {
+          runs.push(`${job.deliveryId}#${job.attempt}`);
+          if (job.deliveryId === "a" && job.attempt === 1) throw new Error("transient");
+        },
+      });
+      q.enqueue(makePayload({ deliveryId: "a", projectId: "p1", prNumber: 9 }));
+      await new Promise((r) => setImmediate(r));
+      expect(timers).toHaveLength(1);
+      q.enqueue(makePayload({ deliveryId: "b", projectId: "p2", prNumber: 9 }));
+      await new Promise((r) => setImmediate(r));
+      timers[0]();
+      await new Promise((r) => setImmediate(r));
+      expect(runs).toEqual(["a#1", "b#1", "a#2"]);
       expect(q.deadLetters()).toHaveLength(0);
     });
 
