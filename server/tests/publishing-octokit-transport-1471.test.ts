@@ -9,7 +9,7 @@
  * `getaddrinfo ENOTFOUND` (system DNS), a 302 was followed, and a hang hung.
  */
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import net, { type AddressInfo } from "node:net";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   __resetPublishOctokitCache,
@@ -26,7 +26,14 @@ let server: http.Server;
 let port = 0;
 let otherPort = 0;
 const saved: Record<string, string | undefined> = {};
-const PROXY_ENV = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"];
+const PROXY_ENV = [
+  "HTTPS_PROXY",
+  "https_proxy",
+  "HTTP_PROXY",
+  "http_proxy",
+  "NO_PROXY",
+  "no_proxy",
+];
 
 beforeAll(async () => {
   for (const k of PROXY_ENV) {
@@ -95,7 +102,7 @@ describe("#1471 — the real publish client's transport", () => {
     expect(seen[0].headers["x-github-api-version"]).toBeTruthy();
   });
 
-  it("refuses a redirect instead of following it", async () => {
+  it("refuses a redirect to another host instead of following it", async () => {
     handler = (_req, res) => {
       res.writeHead(302, { location: `http://127.0.0.1:${otherPort}/elsewhere` });
       res.end();
@@ -104,6 +111,79 @@ describe("#1471 — the real publish client's transport", () => {
     await expect(gh.request({ method: "GET", url: "/repos/acme/site" })).rejects.toBeTruthy();
     expect(seen).toHaveLength(1);
     expect(otherHits).toBe(0);
+  });
+
+  it("follows a same-host redirect (a renamed or transferred repository), still pinned", async () => {
+    handler = (req, res) => {
+      if (req.url === "/repos/acme/old-name") {
+        res.writeHead(301, { location: "/repos/acme/new-name" });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ full_name: "acme/new-name" }));
+    };
+    const gh = await client("t-moved");
+    const res = await gh.request<{ full_name: string }>({
+      method: "GET",
+      url: "/repos/acme/old-name",
+    });
+    expect(res.data.full_name).toBe("acme/new-name");
+    expect(seen.map((r) => r.url)).toEqual(["/repos/acme/old-name", "/repos/acme/new-name"]);
+    expect(seen[1].headers.authorization).toBe("token t-moved");
+  });
+
+  it("gives up after too many same-host redirects", async () => {
+    handler = (_req, res) => {
+      res.writeHead(307, { location: "/repos/acme/loop" });
+      res.end();
+    };
+    const gh = await client("t-loop");
+    await expect(gh.request({ method: "GET", url: "/repos/acme/loop" })).rejects.toBeTruthy();
+    expect(seen.length).toBeLessThanOrEqual(6);
+  });
+
+  it("sends an unpinned (public) host's requests through the egress proxy", async () => {
+    const proxyHits: string[] = [];
+    const proxy = http.createServer((req, res) => {
+      proxyHits.push(`request ${req.url}`);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ full_name: "via-proxy" }));
+    });
+    proxy.on("connect", (req, socket) => {
+      proxyHits.push(`connect ${req.url}`);
+      const upstream = net.connect(port, "127.0.0.1", () => {
+        socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        upstream.pipe(socket);
+        socket.pipe(upstream);
+      });
+      upstream.on("error", () => socket.destroy());
+    });
+    await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", () => r()));
+    process.env.HTTPS_PROXY = `http://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+    try {
+      handler = (_req, res) => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ full_name: "via-tunnel" }));
+      };
+      // No pinned address: the host is never resolved here; only the proxy can reach it.
+      const gh = await acquirePublishOctokit({
+        owner: "acme",
+        baseUrl: `http://unpinned-1471.invalid:${port}`,
+        token: "t-proxy",
+      });
+      const res = await gh.request<{ full_name: string }>({
+        method: "GET",
+        url: "/repos/acme/site",
+      });
+      expect(["via-proxy", "via-tunnel"]).toContain(res.data.full_name);
+      expect(proxyHits.length).toBeGreaterThanOrEqual(1);
+      expect(proxyHits[0]).toContain("unpinned-1471.invalid");
+    } finally {
+      delete process.env.HTTPS_PROXY;
+      proxy.closeAllConnections();
+      await new Promise<void>((r) => proxy.close(() => r()));
+    }
   });
 
   it("aborts a request that hangs past the deadline", async () => {

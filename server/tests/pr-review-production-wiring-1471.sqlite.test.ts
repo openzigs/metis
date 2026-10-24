@@ -16,15 +16,18 @@
  * row, the posted review and the `TokenUsage` spend row, all read back from
  * the database.
  *
- * The stub's certificate is self-signed, made per run with `openssl`, so TLS
- * verification is switched off for this file only (`NODE_TLS_REJECT_UNAUTHORIZED`).
- * The suite is skipped where `openssl` is unavailable.
+ * The stub's certificate is self-signed, made per run with `openssl`, and
+ * added to this process's default trust store (`tls.setDefaultCACertificates`)
+ * for the file's duration, so certificate verification stays ON: the client
+ * checks the chain and the `localhost` name as it would against a real
+ * Enterprise host. The suite is skipped where `openssl` is unavailable.
  */
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import https from "node:https";
+import tls from "node:tls";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -108,6 +111,8 @@ function selfSignedLocalhost(): { key: string; cert: string } {
       "-nodes",
       "-subj",
       "/CN=localhost",
+      "-addext",
+      "subjectAltName=DNS:localhost",
       "-days",
       "1",
       "-keyout",
@@ -136,6 +141,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite" || !hasOpenssl)(
     let prHeadSha = "sha-current-1471";
     const PR_BASE_SHA = "sha-base-1471";
     const savedEnv: Record<string, string | undefined> = {};
+    const savedCAs = tls.getCACertificates("default");
     const ENV = [
       "AI_OFFLINE",
       "AI_PROVIDER",
@@ -145,7 +151,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite" || !hasOpenssl)(
       "VAULT_MASTER_KEY",
       "AI_RETRY_BASE_DELAY_MS",
       "ANTHROPIC_BASE_URL_BILLS_AS",
-      "NODE_TLS_REJECT_UNAUTHORIZED",
       "HTTPS_PROXY",
       "https_proxy",
       "HTTP_PROXY",
@@ -296,9 +301,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite" || !hasOpenssl)(
       for (const k of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]) {
         delete process.env[k];
       }
-      // The GitHub stub's certificate is self-signed (see the file comment).
-      process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
-      githubServer = https.createServer(selfSignedLocalhost(), (req, res) => {
+      // The GitHub stub's self-signed certificate is trusted, not unchecked
+      // (see the file comment).
+      const tlsPair = selfSignedLocalhost();
+      tls.setDefaultCACertificates([...savedCAs, tlsPair.cert]);
+      githubServer = https.createServer(tlsPair, (req, res) => {
         const url = req.url ?? "";
         const accept = req.headers.accept ?? "";
         const auth = String(req.headers.authorization ?? "");
@@ -376,6 +383,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite" || !hasOpenssl)(
       await server?.io.close();
       __resetPublishOctokitCache();
       __resetVaultSingleton();
+      tls.setDefaultCACertificates(savedCAs);
       githubServer?.closeAllConnections();
       await new Promise<void>((r) => (githubServer ? githubServer.close(() => r()) : r()));
       modelServer?.closeAllConnections();

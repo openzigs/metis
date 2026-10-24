@@ -14,7 +14,7 @@
  *   - DNS pinning for GHE hosts through our own `fetch` with a pinned undici
  *     dispatcher, so the hostname we resolved is the address we connect to
  *     (TOCTOU defence reused from the connector subsystem), or the corporate
- *     egress proxy when the network requires one; redirects refused and a
+ *     egress proxy when the network requires one; redirects to another host refused and a
  *     per-request deadline (`buildPublishFetch`, #1471).
  *   - `X-GitHub-Api-Version` header (#69 AC).
  *
@@ -192,6 +192,9 @@ export async function acquirePublishOctokit(
 /** #1471 — a GitHub request that has not completed in this long is aborted. */
 export const PUBLISH_REQUEST_TIMEOUT_MS = 20_000;
 
+/** #1471 — same-origin redirects followed per request before giving up. */
+const PUBLISH_MAX_REDIRECTS = 5;
+
 /**
  * #1471 — the `fetch` every publish client sends through.
  *
@@ -205,7 +208,8 @@ export const PUBLISH_REQUEST_TIMEOUT_MS = 20_000;
  *   - the dispatcher is `resolveConnectorDispatcher` — the pinned address, or
  *     the corporate egress proxy when the network requires one — for a pinned
  *     (Enterprise) host, and the egress proxy alone for public github.com;
- *   - `redirect: "error"` — a 3xx is a failure, never followed;
+ *   - redirects followed only on the same origin (GitHub renames and transfers
+ *     answer with one), never to another host;
  *   - an `AbortSignal` deadline, combined with any signal the caller passed;
  *   - the `X-GitHub-Api-Version` header (#69), which also used to sit in the
  *     ignored `request` options.
@@ -231,20 +235,47 @@ async function buildPublishFetch(args: OctokitFactoryArgs): Promise<typeof fetch
     }
   }
   const timeoutMs = args.timeoutMs ?? PUBLISH_REQUEST_TIMEOUT_MS;
-  const publishFetch = (input: string | URL, init: RequestInit = {}) => {
+  const publishFetch = async (input: string | URL, init: RequestInit = {}) => {
     const deadline = AbortSignal.timeout(timeoutMs);
     const signal = init.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
     const headers = new Headers(init.headers);
     if (!headers.has("x-github-api-version")) {
       headers.set("x-github-api-version", GITHUB_API_VERSION);
     }
-    return undiciFetch(String(input), {
-      ...init,
-      headers: Object.fromEntries(headers.entries()),
-      redirect: "error",
-      signal,
-      ...(dispatcher ? { dispatcher } : {}),
-    } as Parameters<typeof undiciFetch>[1]);
+    let url = new URL(String(input));
+    const origin = url.origin;
+    let method = (init.method ?? "GET").toUpperCase();
+    let body = init.body;
+    // Redirects are followed by hand, and only on the origin that was checked
+    // and pinned: GitHub answers a renamed or transferred repository or issue
+    // with a same-host 301/307, which publishing relies on (#1106), while a
+    // redirect to another host would take the request off the pin.
+    for (let hop = 0; ; hop += 1) {
+      const res = await undiciFetch(url.toString(), {
+        ...init,
+        method,
+        body,
+        headers: Object.fromEntries(headers.entries()),
+        redirect: "manual",
+        signal,
+        ...(dispatcher ? { dispatcher } : {}),
+      } as Parameters<typeof undiciFetch>[1]);
+      const location = res.headers.get("location");
+      if (res.status < 300 || res.status >= 400 || res.status === 304 || !location) return res;
+      const next = new URL(location, url);
+      await res.body?.cancel();
+      if (next.origin !== origin) {
+        throw new Error("GitHub redirected the request to another host; it was not followed");
+      }
+      if (hop >= PUBLISH_MAX_REDIRECTS) {
+        throw new Error("GitHub redirected the request too many times");
+      }
+      if (res.status === 303 || ((res.status === 301 || res.status === 302) && method === "POST")) {
+        method = "GET";
+        body = undefined;
+      }
+      url = next;
+    }
   };
   return publishFetch as unknown as typeof fetch;
 }
@@ -259,7 +290,7 @@ async function defaultOctokit(args: OctokitFactoryArgs): Promise<PublishOctokitL
     baseUrl: args.baseUrl,
     auth: args.token,
     userAgent: "metis-publisher/1.0",
-    request: { fetch: await buildPublishFetch(args), redirect: "error" },
+    request: { fetch: await buildPublishFetch(args) },
     throttle: buildThrottleHooks(args.rateLimit),
     retry: {
       enabled: true,
