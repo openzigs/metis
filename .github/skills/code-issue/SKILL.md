@@ -217,14 +217,16 @@ finds is never the agent that judges.**
 
 Full workflow: `.github/skills/adversarial-review/SKILL.md`.
 
-1. **Decide — in code, not by judgement.** `shouldRunAdversarialPass` in
-   `scripts/lib/adversarial-tally-core.mjs` takes the changed paths, labels and PR title and
-   returns `{ required, reasons }`. It fires on auth modules, middleware, route handlers,
-   permission/role logic, session and identity handling, secrets and crypto, SSRF and
-   sanitisation guards, rate limiting, tenant/project scoping, and schema migrations — and,
-   from the diff's added imports, on any file newly importing a credential or egress module
-   (#1476; use the adversarial-review skill's snippet, which pipes the diff). If it is not
-   required, record that and go to Step 5.6.
+1. **Decide — in code, not by judgement.** Run
+   `pnpm review:adversarial-required --title "<PR title>"` (add `--label <l>` per label). It
+   computes `shouldRunAdversarialPass` (`scripts/lib/adversarial-tally-core.mjs`) from the
+   branch's own git diff and prints `{ required, reasons }`. It fires on auth modules,
+   middleware, route handlers, permission/role logic, session and identity handling, secrets
+   and crypto, SSRF and sanitisation guards, rate limiting, tenant/project scoping, and schema
+   migrations. It also fires, from the diff's added imports, on any file newly importing a
+   credential or egress module (#1476). **Exit 2 is "no answer", never "not required"**: fix
+   what it names (an unfetched or shallow `origin/main`, an unreadable diff) and re-run. If it
+   is not required, record that and go to Step 5.6.
 2. **Dispatch three `adversarial-reviewer` agents in a single message** so they run in
    parallel — one per lens:
    - `over-blocking` — does this refuse work it should allow?

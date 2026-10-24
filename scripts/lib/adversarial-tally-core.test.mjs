@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_TRANSCRIPT_READERS,
   AI_CONFIG_TERMS,
+  CREDENTIAL_IMPORT_BARRELS,
   CREDENTIAL_IMPORT_DIRECTORIES,
   CREDENTIAL_IMPORT_MODULES,
   DEPENDENCY_MANIFEST_FILES,
@@ -17,6 +18,7 @@ import {
   SECURITY_TITLE_PATTERN,
   UNTRUSTED_PARSER_TERMS,
   addedImportSpecifiers,
+  changedPathsFromDiff,
   exitCodeFor,
   formatReport,
   isCodeCitation,
@@ -3064,6 +3066,39 @@ describe("shouldRunAdversarialPass — the import arm (#1476)", () => {
   it("lists exactly the modules pinned above", () => {
     expect(CREDENTIAL_IMPORT_MODULES.size).toBe(12);
     expect([...CREDENTIAL_IMPORT_DIRECTORIES]).toEqual(["vault"]);
+    expect([...CREDENTIAL_IMPORT_BARRELS.keys()]).toEqual(["connectors", "publishing"]);
+  });
+
+  it.each([
+    ["../connectors/index.js", "connectors"],
+    ["../../lib/connectors", "connectors"],
+    ["../publishing", "publishing"],
+    ["../publishing/index", "publishing"],
+    ["../lib/publishing/index.ts", "publishing"],
+  ])("fires on the barrel %s, which re-exports a listed module", (specifier, barrel) => {
+    expect(shouldRunAdversarialPass({ addedImports: [specifier] }).reasons).toEqual([
+      `newly imports \`${specifier}\` — credential or egress module ` +
+        `(${barrel}/index: ${CREDENTIAL_IMPORT_BARRELS.get(barrel)})`,
+    ]);
+  });
+
+  it.each([
+    ["a sibling module of the barrel", "../connectors/pii-redactor.js"],
+    ["an index elsewhere", "../ai/index.js"],
+    ["a sub-barrel", "../connectors/jira/index.js"],
+    ["the publishing router (measured, 7d7c8c168)", "../src/routes/publishing.js"],
+    ["an extensionless router", "../routes/connectors"],
+    ["a sibling file named like the barrel", "./publishing.js"],
+  ])("does not fire on %s (%s)", (_label, specifier) => {
+    expect(shouldRunAdversarialPass({ addedImports: [specifier] }).required).toBe(false);
+  });
+
+  it.each([
+    ["connectors", "server/src/lib/connectors/index.ts", ["network-allowlist", "vault-resolver"]],
+    ["publishing", "server/src/lib/publishing/index.ts", ["host-allowlist", "octokit-factory"]],
+  ])("the %s barrel really re-exports what it is listed for", (_name, path, modules) => {
+    const source = readFileSync(fileURLToPath(new URL(`../../${path}`, import.meta.url)), "utf8");
+    for (const m of modules) expect(source).toContain(`export * from "./${m}.js";`);
   });
 
   it("keeps callers that pass only paths, labels and title on the old answer", () => {
@@ -3187,6 +3222,82 @@ describe("addedImportSpecifiers (#1476)", () => {
     expect(addedImportSpecifiers(diff)).toEqual(["./a.js", "./b.js", "./d.js", "./e.js", "./f.js"]);
   });
 
+  it("reads a multi-line import whose last names share the brace's line", () => {
+    const diff = file(
+      "server/src/a.ts",
+      "+import {",
+      "+  readBoundSecret,",
+      '+  other } from "../connectors/vault-resolver.js";',
+      '+  type Y, z as Z } from "./z.js";',
+    ).join("\n");
+    expect(addedImportSpecifiers(diff)).toEqual(["../connectors/vault-resolver.js", "./z.js"]);
+  });
+
+  it("reads prettier's multi-line dynamic import and require", () => {
+    const diff = file(
+      "server/src/a.ts",
+      "+  const { getVaultService } = await import(",
+      '+    "../vault/vault-service.js"',
+      "+  );",
+      "+  const b = require(",
+      "+    './b.cjs',",
+      "+  );",
+    ).join("\n");
+    expect(addedImportSpecifiers(diff)).toEqual(["../vault/vault-service.js", "./b.cjs"]);
+  });
+
+  it("reads a template-literal specifier only when it has no interpolation", () => {
+    const diff = file(
+      "server/src/a.ts",
+      "+const a = await import(`../vault/vault-service.js`);",
+      "+const b = await import(`./plugins/${name}.js`);",
+      "+const c = await import(",
+      "+  `./more/${name}.js`",
+      "+);",
+    ).join("\n");
+    expect(addedImportSpecifiers(diff)).toEqual(["../vault/vault-service.js"]);
+  });
+
+  it("does not take a string on the line after an ordinary call", () => {
+    const diff = file("server/src/a.ts", "+log(", '+  "../vault/vault-service.js"', "+);").join(
+      "\n",
+    );
+    expect(addedImportSpecifiers(diff)).toEqual([]);
+  });
+
+  it("reads a file whose path git quoted (space, octal UTF-8, escaped quote)", () => {
+    const quoted = (p) => [
+      `diff --git "a/${p}" "b/${p}"`,
+      `--- "a/${p}"`,
+      `+++ "b/${p}"`,
+      "@@ -0,0 +1 @@",
+      '+import "../vault/x.js";',
+    ];
+    const diff = [
+      ...quoted("server/src/my file.ts"),
+      ...quoted("server/src/caf\\303\\251.ts"),
+      ...quoted('server/src/say \\"hi\\".ts'),
+    ].join("\n");
+    expect(changedPathsFromDiff(diff)).toEqual([
+      "server/src/my file.ts",
+      "server/src/café.ts",
+      'server/src/say "hi".ts',
+    ]);
+    expect(addedImportSpecifiers(diff)).toEqual(["../vault/x.js"]);
+  });
+
+  it("strips git's trailing tab and a CR from header paths", () => {
+    const diff = [
+      "diff --git a/server/src/my file.ts b/server/src/my file.ts",
+      "--- a/server/src/my file.ts\t",
+      "+++ b/server/src/my file.ts\t\r",
+      "@@ -0,0 +1 @@",
+      '+import "../vault/x.js";\r',
+    ].join("\n");
+    expect(changedPathsFromDiff(diff)).toEqual(["server/src/my file.ts"]);
+    expect(addedImportSpecifiers(diff)).toEqual(["../vault/x.js"]);
+  });
+
   it("does not count vi.mock, which replaces a module rather than using it", () => {
     const diff = file("server/src/a.test.ts", '+vi.mock("../vault/vault-service.js");').join("\n");
     expect(addedImportSpecifiers(diff)).toEqual([]);
@@ -3207,6 +3318,46 @@ describe("addedImportSpecifiers (#1476)", () => {
 
   it("throws on a non-string diff", () => {
     expect(() => addedImportSpecifiers(undefined)).toThrow(/must be a string/);
+    expect(() => changedPathsFromDiff(7)).toThrow(/must be a string/);
+  });
+
+  it("lists every section's path: added, deleted, binary, mode-only, renamed", () => {
+    const diff = [
+      ...file("server/src/a.ts", "+x"),
+      "diff --git a/gone.ts b/gone.ts",
+      "deleted file mode 100644",
+      "--- a/gone.ts",
+      "+++ /dev/null",
+      "@@ -1 +0,0 @@",
+      "-x",
+      "diff --git a/logo.png b/logo.png",
+      "Binary files a/logo.png and b/logo.png differ",
+      "diff --git a/run.sh b/run.sh",
+      "old mode 100644",
+      "new mode 100755",
+      "diff --git a/old.ts b/new.ts",
+      "similarity index 100%",
+      "rename from old.ts",
+      "rename to new.ts",
+      'diff --git "a/x y.png" "b/x y.png"',
+      'Binary files "a/x y.png" and "b/x y.png" differ',
+    ].join("\n");
+    expect(changedPathsFromDiff(diff)).toEqual([
+      "server/src/a.ts",
+      "gone.ts",
+      "logo.png",
+      "run.sh",
+      "new.ts",
+      "x y.png",
+    ]);
+  });
+
+  it("ignores a commit preamble before the first section, as in `git show`", () => {
+    const diff = ["commit abc", 'Subject: import "../vault/x.js"', ...file("a.ts", "+x")].join(
+      "\n",
+    );
+    expect(changedPathsFromDiff(diff)).toEqual(["a.ts"]);
+    expect(addedImportSpecifiers(diff)).toEqual([]);
   });
 
   it("keeps reading a file after an added line that starts with `++` (content, not a header)", () => {

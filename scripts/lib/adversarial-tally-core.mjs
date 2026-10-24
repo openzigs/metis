@@ -1278,6 +1278,10 @@ export const SECURITY_TITLE_PATTERN =
  *     accepted, not suppressed: a test of credential handling is what `test-falsifiability`
  *     exists for. Zero were prose or homographs — a specifier is not prose.
  *
+ * Re-measured after the review of #1482 widened the parser (multi-line `import(`, `x } from`
+ * tails, template literals, quoted paths) and added the two barrels: identical figures — 7 / 1
+ * per commit, 19 / 15 per file, 0 barrel imports.
+ *
  * `safe-fetch`, `proxy-fetch`, `egress-defaults`, `network-allowlist`, `vault-key-cipher` and
  * the two `*-secret-binding` modules fired on **0** commits in that window, so they are free
  * today; they are listed because each is an egress guard or a secret binder by construction.
@@ -1297,6 +1301,14 @@ export const SECURITY_TITLE_PATTERN =
  *     `octokit-factory`, which is listed; a file importing the raw package also has to obtain a
  *     token, and that read is what fires.
  *   - **`safe-fetch.errors`** — error classes only; importing them performs no egress.
+ *   - **Wrappers, past one hop.** The rule reads a specifier, not the module graph, so a file
+ *     that imports a module which *itself* wraps a listed one does not fire: `publisher.ts`,
+ *     `finding-publish-ports.ts`, `publishing-service.ts`, `draft-pull-request.ts` and
+ *     `connectors/db/db-service.ts` all reach a vault read or the credentialed client, and a
+ *     new caller of any of them is invisible here. Only the two barrels are resolved
+ *     ({@link CREDENTIAL_IMPORT_BARRELS}), because a barrel is a pure re-export and a wrapper is
+ *     not; following wrappers means walking the import graph, which #1476 did not ask for and
+ *     this module, given only a diff, cannot do. A known gap, named so it is not a surprise.
  *
  * @type {ReadonlyMap<string, string>} final specifier segment → what the module does
  */
@@ -1326,6 +1338,22 @@ export const CREDENTIAL_IMPORT_MODULES = new Map([
  */
 export const CREDENTIAL_IMPORT_DIRECTORIES = new Set(["vault"]);
 
+/**
+ * Barrels that re-export a listed module, so importing the barrel imports the module (see
+ * {@link isBarrelImport} for the exact shapes). One hop, resolved by hand —
+ * `connectors/index.ts` re-exports `network-allowlist` and `vault-resolver`;
+ * `publishing/index.ts` re-exports `host-allowlist` and `octokit-factory`, and a test pins both.
+ * Measured: **0** importers of either barrel in tracked code or in the 237-commit window, so
+ * this is free today and only decides the first route that takes the barrel's own advice
+ * ("Routes import from this barrel").
+ *
+ * @type {ReadonlyMap<string, string>} directory segment → what its index re-exports
+ */
+export const CREDENTIAL_IMPORT_BARRELS = new Map([
+  ["connectors", "barrel re-exporting vault-resolver and network-allowlist"],
+  ["publishing", "barrel re-exporting host-allowlist and octokit-factory"],
+]);
+
 /** A JS/TS module extension, stripped before a specifier is compared. */
 const MODULE_EXTENSION = /\.[cm]?[jt]sx?$/i;
 
@@ -1341,6 +1369,28 @@ function importSegments(specifier) {
 }
 
 /**
+ * Does this specifier import one of {@link CREDENTIAL_IMPORT_BARRELS}' index files?
+ *
+ * Either explicitly (`…/connectors/index.js`), or as a directory import — extensionless, with
+ * the barrel directly under `lib/` or reached by `./`/`../` alone. The second condition is what
+ * keeps `../src/routes/publishing.js` (the router, a file with an extension) and
+ * `../routes/connectors` out: measured, the bare-name form fired once in history, on exactly
+ * that router import in `publishing-cross-project-1180.sqlite.test.ts`.
+ *
+ * @param {string} specifier
+ * @param {string[]} segments
+ * @returns {boolean}
+ */
+function isBarrelImport(specifier, segments) {
+  const last = segments.at(-1);
+  const parent = segments.at(-2);
+  if (last === "index") return parent !== undefined && CREDENTIAL_IMPORT_BARRELS.has(parent);
+  if (last === undefined || !CREDENTIAL_IMPORT_BARRELS.has(last)) return false;
+  const extensionless = !MODULE_EXTENSION.test(specifier.split(/[?#]/, 1)[0]);
+  return extensionless && (parent === undefined || parent === "lib");
+}
+
+/**
  * The credential/egress module a specifier names, or `null`.
  *
  * @param {string} specifier
@@ -1352,6 +1402,10 @@ function matchCredentialImport(specifier) {
   if (last !== undefined && CREDENTIAL_IMPORT_MODULES.has(last)) {
     return `${last}: ${CREDENTIAL_IMPORT_MODULES.get(last)}`;
   }
+  if (isBarrelImport(specifier, segments)) {
+    const barrel = /** @type {string} */ (last === "index" ? segments.at(-2) : last);
+    return `${barrel}/index: ${CREDENTIAL_IMPORT_BARRELS.get(barrel)}`;
+  }
   const dir = segments.find((s) => CREDENTIAL_IMPORT_DIRECTORIES.has(s));
   return dir === undefined ? null : `${dir}/: the secret store`;
 }
@@ -1360,28 +1414,194 @@ function matchCredentialImport(specifier) {
 const CODE_FILE = /\.[cm]?[jt]sx?$/i;
 
 /**
- * A static or re-export specifier — `import … from`, `export … from`, a multi-line import's
- * `} from` tail, or a side-effect `import "…"`. **Anchored to the start of the statement**, so
- * a string literal or comment that merely *quotes* an import (as this module's own tests do)
- * is not read as one.
+ * A static or re-export specifier — `import … from`, `export … from`, a side-effect
+ * `import "…"`, or a multi-line import's tail (`} from "…"`, and `  y } from "…"` when the last
+ * names share the brace's line). **Anchored to the start of the statement**, so a string
+ * literal or comment that merely *quotes* an import (as this module's own tests do) is not
+ * read as one: the tail form admits only names, commas, `*` and whitespace before the brace.
  */
 const STATIC_IMPORT =
-  /^\s*(?:(?:import|export)\b[^"'`]*?\bfrom|\}\s*from|import)\s*(["'])([^"'\n]+)\1/;
+  /^\s*(?:(?:import|export)\b[^"'`]*?\bfrom|[\w$\s,*]*\}\s*from|import)\s*(["'])([^"'\n]+)\1/;
 
 /**
  * A dynamic `import("…")` or `require("…")`: expressions, so they may sit anywhere on a line.
- * `vi.mock("…")` is deliberately absent: a mock replaces the module rather than using it.
+ * A template literal counts only without interpolation — `import(\`./x.js\`)` names a module;
+ * `import(\`./${name}.js\`)` names none we can read. `vi.mock("…")` is deliberately absent: a
+ * mock replaces the module rather than using it.
  */
-const EXPRESSION_IMPORT = /(?:^|[^\w$.])(?:import|require)\s*\(\s*(["'])([^"'\n]+)\1/g;
+const EXPRESSION_IMPORT = /(?:^|[^\w$.])(?:import|require)\s*\(\s*(["'`])([^"'`\n]+)\1/g;
+
+/** A line that opens `import(` / `require(` and leaves the specifier to the next line. */
+const OPEN_CALL = /(?:^|[^\w$.])(?:import|require)\s*\(\s*$/;
+
+/** The specifier line that follows {@link OPEN_CALL}, as prettier formats it. */
+const CALL_ARGUMENT = /^\s*(["'`])([^"'`\n]+)\1/;
+
+/**
+ * @param {string} quote
+ * @param {string} specifier
+ * @returns {boolean}
+ */
+function isLiteralSpecifier(quote, specifier) {
+  return quote !== "`" || !specifier.includes("${");
+}
 
 /**
  * @param {string} line
+ * @param {boolean} afterOpenCall the previous hunk line ended in `import(` / `require(`
  * @returns {string[]}
  */
-function specifiersOnLine(line) {
-  const out = [...line.matchAll(EXPRESSION_IMPORT)].map((m) => m[2]);
+function specifiersOnLine(line, afterOpenCall) {
+  /** @type {string[]} */
+  const out = [];
+  if (afterOpenCall) {
+    const arg = CALL_ARGUMENT.exec(line);
+    if (arg && isLiteralSpecifier(arg[1], arg[2])) out.push(arg[2]);
+  }
   const statement = STATIC_IMPORT.exec(line);
-  return statement ? [statement[2], ...out] : out;
+  if (statement) out.push(statement[2]);
+  for (const m of line.matchAll(EXPRESSION_IMPORT)) {
+    if (isLiteralSpecifier(m[1], m[2])) out.push(m[2]);
+  }
+  return out;
+}
+
+/** C-style escapes git uses inside a quoted path (`core.quotePath`). */
+const GIT_PATH_ESCAPES = /** @type {Record<string, number>} */ ({
+  a: 7,
+  b: 8,
+  t: 9,
+  n: 10,
+  v: 11,
+  f: 12,
+  r: 13,
+  '"': 34,
+  "\\": 92,
+});
+
+/**
+ * Undo git's path quoting: `"b/my \"file\".ts"` and octal UTF-8 bytes (`"b/caf\303\251.ts"`).
+ * An unquoted path is returned as-is.
+ *
+ * @param {string} raw
+ * @returns {{ path: string, rest: string }} the path, and whatever followed the closing quote
+ */
+function readGitPath(raw) {
+  if (!raw.startsWith('"')) return { path: raw, rest: "" };
+  /** @type {number[]} */
+  const bytes = [];
+  let i = 1;
+  while (i < raw.length && raw[i] !== '"') {
+    if (raw[i] === "\\" && /^[0-7]{3}$/.test(raw.slice(i + 1, i + 4))) {
+      bytes.push(parseInt(raw.slice(i + 1, i + 4), 8));
+      i += 4;
+    } else if (raw[i] === "\\" && i + 1 < raw.length) {
+      const next = raw[i + 1];
+      bytes.push(GIT_PATH_ESCAPES[next] ?? next.charCodeAt(0));
+      i += 2;
+    } else {
+      bytes.push(...Buffer.from(raw[i], "utf8"));
+      i += 1;
+    }
+  }
+  return { path: Buffer.from(bytes).toString("utf8"), rest: raw.slice(i + 1) };
+}
+
+/**
+ * A `---`/`+++`/`rename to` operand: unquoted, `a/`/`b/` prefix and git's trailing tab or CR
+ * stripped. `null` for `/dev/null`.
+ *
+ * @param {string} operand
+ * @param {string} prefix `a/`, `b/` or `""`
+ * @returns {string | null}
+ */
+function headerPath(operand, prefix) {
+  const trimmed = operand.replace(/[\t\r]+$/, "");
+  if (trimmed === "/dev/null") return null;
+  const { path } = readGitPath(trimmed);
+  return prefix && path.startsWith(prefix) ? path.slice(prefix.length) : path;
+}
+
+/**
+ * The path in a `diff --git a/X b/Y` line, for a section with no `---`/`+++` (a binary or a
+ * mode-only change). Unquoted, both halves are the same path for anything but a rename, which
+ * fixes where the separator is even when the path contains ` b/`.
+ *
+ * @param {string} rest the line after `diff --git `
+ * @returns {string | null}
+ */
+function pathFromGitHeader(rest) {
+  const line = rest.replace(/\r$/, "");
+  if (line.startsWith('"')) {
+    const first = readGitPath(line);
+    const second = first.rest.trimStart();
+    const target = second.startsWith('"') ? readGitPath(second).path : second;
+    return target.startsWith("b/") ? target.slice(2) : target;
+  }
+  const half = (line.length - 1) / 2;
+  if (!Number.isInteger(half)) return null;
+  const a = line.slice(0, half);
+  const b = line.slice(half + 1);
+  return a.startsWith("a/") && b.startsWith("b/") && a.slice(2) === b.slice(2) ? b.slice(2) : null;
+}
+
+/**
+ * Walk a unified diff file by file.
+ *
+ * `---`/`+++` are headers only between `diff --git` and the first `@@`; inside a hunk they are
+ * content (a removed `-- sql comment`, an added `++i`), so the state is tracked.
+ *
+ * @param {string} diff
+ * @returns {Array<{ path: string | null, lines: Array<{ sign: string, text: string }> }>}
+ */
+function diffSections(diff) {
+  /** @type {Array<{ path: string | null, lines: Array<{ sign: string, text: string }> }>} */
+  const sections = [];
+  /** @type {{ header: string, plus?: string | null, minus?: string | null, renamed?: string, lines: Array<{ sign: string, text: string }> } | null} */
+  let current = null;
+  let inHeader = false;
+  const close = () => {
+    if (!current) return;
+    const path =
+      current.plus ?? current.renamed ?? current.minus ?? pathFromGitHeader(current.header) ?? null;
+    sections.push({ path, lines: current.lines });
+  };
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      close();
+      current = { header: line.slice("diff --git ".length), lines: [] };
+      inHeader = true;
+    } else if (!current) {
+      // preamble before the first section (e.g. `git show`'s commit header)
+    } else if (inHeader && line.startsWith("+++ ")) {
+      current.plus = headerPath(line.slice(4), "b/");
+    } else if (inHeader && line.startsWith("--- ")) {
+      current.minus = headerPath(line.slice(4), "a/");
+    } else if (inHeader && /^(?:rename|copy) to /.test(line)) {
+      current.renamed = headerPath(line.replace(/^(?:rename|copy) to /, ""), "") ?? undefined;
+    } else if (line.startsWith("@@")) {
+      inHeader = false;
+    } else if (!inHeader && /^[+\- ]/.test(line)) {
+      current.lines.push({ sign: line[0], text: line.slice(1) });
+    }
+  }
+  close();
+  return sections;
+}
+
+/**
+ * Every path a unified diff touches — the post-image path, or the pre-image one for a
+ * deletion. `pnpm review:adversarial-required` compares this with `git diff --name-only` over
+ * the same range, so a diff it cannot parse fails loudly instead of reporting no imports.
+ *
+ * @param {string} diff
+ * @returns {string[]}
+ */
+export function changedPathsFromDiff(diff) {
+  if (typeof diff !== "string") {
+    throw new TypeError(`changedPathsFromDiff: diff must be a string, got ${typeof diff}.`);
+  }
+  return diffSections(diff).flatMap((s) => (s.path === null ? [] : [s.path]));
 }
 
 /**
@@ -1390,7 +1610,8 @@ function specifiersOnLine(line) {
  *
  * Per file, a specifier counts when it appears on an added line and on no removed line of the
  * same file, so reordering an import or adding a name to an existing one is not "new". Only
- * JS/TS files are read. Feed it `git diff origin/main...HEAD` (any context width).
+ * JS/TS files are read. Compute it with `pnpm review:adversarial-required`, which fails closed
+ * when git cannot produce a readable diff.
  *
  * @param {string} diff
  * @returns {string[]} distinct specifiers, in first-seen order
@@ -1399,34 +1620,22 @@ export function addedImportSpecifiers(diff) {
   if (typeof diff !== "string") {
     throw new TypeError(`addedImportSpecifiers: diff must be a string, got ${typeof diff}.`);
   }
-  /** @type {Map<string, { added: Set<string>, removed: Set<string> }>} */
-  const files = new Map();
-  /** @type {{ added: Set<string>, removed: Set<string> } | null} */
-  let current = null;
-  // `---`/`+++` are headers only between `diff --git` and the first `@@`; inside a hunk they
-  // are content (a removed `-- sql comment`, an added `++i`), so the state is tracked.
-  let inHeader = false;
-  for (const line of diff.split("\n")) {
-    if (line.startsWith("diff --git ")) {
-      current = null;
-      inHeader = true;
-    } else if (inHeader && line.startsWith("+++ ")) {
-      const path = line.slice(4).replace(/^b\//, "").trimEnd();
-      current = CODE_FILE.test(path) ? { added: new Set(), removed: new Set() } : null;
-      if (current) files.set(path, current);
-    } else if (line.startsWith("@@")) {
-      inHeader = false;
-    } else if (inHeader) {
-      // `index`, `new file mode`, `--- a/…`: nothing to collect
-    } else if (current && line.startsWith("+")) {
-      for (const s of specifiersOnLine(line.slice(1))) current.added.add(s);
-    } else if (current && line.startsWith("-")) {
-      for (const s of specifiersOnLine(line.slice(1))) current.removed.add(s);
-    }
-  }
   /** @type {Set<string>} */
   const out = new Set();
-  for (const { added, removed } of files.values()) {
+  for (const { path, lines } of diffSections(diff)) {
+    if (path === null || !CODE_FILE.test(path)) continue;
+    /** @type {Set<string>} */
+    const added = new Set();
+    /** @type {Set<string>} */
+    const removed = new Set();
+    let afterOpenCall = false;
+    // A CRLF diff needs no special case: every pattern ends at the closing quote or at `\s*$`.
+    for (const { sign, text } of lines) {
+      const found = specifiersOnLine(text, afterOpenCall);
+      if (sign === "+") for (const s of found) added.add(s);
+      if (sign === "-") for (const s of found) removed.add(s);
+      afterOpenCall = OPEN_CALL.test(text);
+    }
     for (const s of added) if (!removed.has(s)) out.add(s);
   }
   return [...out];

@@ -25,35 +25,40 @@ convention.
 Whether a change warrants a panel is not a judgement call — it is computed:
 
 ```bash
-git diff origin/main...HEAD | node -e '
-import("./scripts/lib/adversarial-tally-core.mjs").then(({ shouldRunAdversarialPass, addedImportSpecifiers }) => {
-  const diff = require("node:fs").readFileSync(0, "utf8");
-  console.log(shouldRunAdversarialPass({
-    changedPaths: process.argv.slice(1),
-    addedImports: addedImportSpecifiers(diff),
-    title: process.env.PR_TITLE ?? "",
-  }));
-});' $(git diff --name-only origin/main...HEAD)
+pnpm review:adversarial-required --title "$PR_TITLE"     # --base <ref> (default origin/main), --label <l>...
 ```
 
-It returns `required` plus the **reasons**, so "we ran a panel because this touched a route
-handler" is auditable and "we skipped it" is a claim with a basis. The signals are security
-and authorization surfaces: auth modules, middleware, route handlers, permission and role
-logic, identity and session handling, secrets and crypto, SSRF and sanitisation guards, rate
-limiting, tenant/project scoping, and schema migrations — plus a `security` **or `auth`** label
-(`area:auth` and `area:security` both count) or a title naming security work. Route handlers
-count because in this repository every router is an authorization surface; epic #1051 found
-five unguarded ones and baselined twenty-three more.
+It prints `required` plus the **reasons** as JSON, so "we ran a panel because this touched a
+route handler" is auditable and "we skipped it" is a claim with a basis. The signals are
+security and authorization surfaces: auth modules, middleware, route handlers, permission and
+role logic, identity and session handling, secrets and crypto, SSRF and sanitisation guards,
+rate limiting, tenant/project scoping, and schema migrations — plus a `security` **or `auth`**
+label (`area:auth` and `area:security` both count) or a title naming security work. Route
+handlers count because in this repository every router is an authorization surface; epic #1051
+found five unguarded ones and baselined twenty-three more.
 
-The diff on stdin feeds the one **content** signal (#1476): a JS/TS file that newly imports a
-credential or egress module — anything under `vault/`, `vault-resolver`, `network-allowlist`,
-`host-allowlist`, `octokit-factory`, `safe-fetch`, the fetch dispatchers and the secret
-binders — fires wherever it lives. #1474's `pr-reviewer/production-deps.ts` read a vault
-secret and built a credentialed GitHub client under a path no word arm could see, and review
-then found two Medium issues in it. Leaving `addedImports` out still works and silently drops
-that signal, so pipe the diff. `node:crypto` and `auth/jwt` are measured and excluded; the
-figures are on `CREDENTIAL_IMPORT_MODULES`.
+**Exit 2 means no answer, never "not required".** The script runs git itself and fails
+closed. It exits 2 with a message in these cases:
 
+- the base or head ref does not resolve to a commit (an unfetched `origin/main`, a single-branch
+  clone);
+- there is no merge base (a shallow clone: `git fetch --unshallow`);
+- paths changed but the diff came back empty;
+- the paths it reads out of the diff disagree with `git diff --name-only`.
+
+It pins colour, external diff drivers, textconv, prefixes, `diff.relative` and renames, so no
+config can make the diff unreadable without tripping that last check. The `node -e` one-liner
+this replaced (#1482 review) printed `{ required: false }` and exited 0 for all of those.
+
+The diff also feeds the one **content** signal (#1476): a JS/TS file that newly imports a
+credential or egress module fires wherever it lives. That covers anything under `vault/`,
+`vault-resolver`, `network-allowlist`, `host-allowlist`, `octokit-factory`, `safe-fetch`, the
+fetch dispatchers, the secret binders, and the `connectors`/`publishing` barrels that re-export
+them. #1474's `pr-reviewer/production-deps.ts` read a vault secret and built a credentialed
+GitHub client under a path no word arm could see, and review then found two Medium issues in
+it. `node:crypto` and `auth/jwt` were measured and excluded. A wrapper more than one import
+away (e.g. `publisher.ts`) is a known gap. The figures for both are on
+`CREDENTIAL_IMPORT_MODULES`.
 Paths and labels are matched as **whole words**, not substrings, so `edge-auth.ts` fires and
 `AgentAuthoringWizard.tsx` does not (#1172, #1190). Do not "fix" a missed path by loosening a
 pattern: measured over every tracked path, dropping the word split costs 93 false fires and
@@ -82,7 +87,9 @@ the lens into the dispatch; name the slug and let the agent read its own instruc
 
 ### 1. Decide
 
-Compute `shouldRunAdversarialPass`. If not required, record that and move on.
+Run `pnpm review:adversarial-required`. If it says not required, record that and move on. If
+it exits 2, there is no answer: fix the cause it names (usually `git fetch origin main`) and
+re-run. Never read exit 2 as "not required".
 
 ### 2. Dispatch three voters in parallel
 
