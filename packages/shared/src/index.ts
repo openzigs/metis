@@ -80,3 +80,4 @@ export interface PackageMetadata {
 export function describePackage(meta: PackageMetadata): string {
   return `${meta.name}@${meta.version}`;
 }
+export * from "./schema-check.js";

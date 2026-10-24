@@ -11,6 +11,8 @@ import {
   type CodeIdentifierReport,
 } from "./main-part-language.js";
 import {
+  NOT_CHECKED_REASONS,
+  optionalSchemaClaimFields,
   SCHEMA_CLAIM_NAME_MAX_CHARS,
   SCHEMA_CLAIMS_LISTED_MAX,
   type SchemaClaimsRecord,
@@ -150,7 +152,16 @@ const sectionManifestSchema = z
         unmatched: z
           .array(z.string().min(1).max(SCHEMA_CLAIM_NAME_MAX_CHARS))
           .max(SCHEMA_CLAIMS_LISTED_MAX),
+        /** #1469 — the true unmatched count; `unmatched` is capped. Absent before #1469. */
+        unmatchedCount: z.number().int().min(0).optional(),
         notChecked: z.number().int().min(0),
+        /** #1469 — why names were not checked, each reason once. Absent before #1469. */
+        notCheckedWhy: z
+          .array(z.enum(NOT_CHECKED_REASONS))
+          .max(NOT_CHECKED_REASONS.length)
+          .optional(),
+        /** #1469 — what the names were compared with. Absent before #1469. */
+        source: z.enum(["live-schema", "schema-graph", "repository-sql", "none"]).optional(),
       })
       .strict()
       .optional(),
@@ -769,6 +780,7 @@ export function buildGeneratedDocVersionManifest(input: {
             schemaClaims: {
               judged: section.schemaClaims.judged,
               unmatched: [...section.schemaClaims.unmatched],
+              ...optionalSchemaClaimFields(section.schemaClaims),
               notChecked: section.schemaClaims.notChecked,
             },
           }

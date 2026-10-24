@@ -127,6 +127,11 @@
  * through maps, and there is no backtracking pattern.
  */
 import {
+  NOT_CHECKED_REASON_WORDS,
+  NOT_CHECKED_REASONS,
+  type NotCheckedReason,
+} from "@metis/shared";
+import {
   describeTablesRead,
   isTypedInventory,
   plainSchemaText,
@@ -148,9 +153,11 @@ import {
  *    the table, listed once): none of its columns is judged;
  *  - `dataset` — a name the code's data lineage knows as a dataset, which the
  *    repository-SQL prompt asks to be written as an entity. Not a table.
+ *
+ * The reasons and their words live in `@metis/shared` (#1469), so the note and
+ * the Provenance panel say each one the same way.
  */
-export type NotCheckedReason =
-  "unread" | "not-a-column" | "view" | "diagram-line" | "no-columns" | "dataset";
+export { NOT_CHECKED_REASONS, type NotCheckedReason };
 
 export interface SchemaCheckReport {
   /** False when there was no inventory to check against. */
@@ -1907,7 +1914,15 @@ const NO_WORDS: ReadonlySet<string> = new Set();
  * The words that deny the table or column word right after them: "not a
  * table", "no table", "isn't a table" (`isn` `t` `a`), "never a column".
  */
-const NEGATIONS = new Set(["not", "no", "never", "t"]);
+const NEGATIONS = new Set([
+  "not",
+  "no",
+  "never",
+  // The tail of a contraction: `isWordChar` has no apostrophe, so "isn't",
+  // "aren't" and "wasn't" read as `isn` `t`, `aren` `t`, `wasn` `t`, and the
+  // denial is the lone `t` before the article.
+  "t",
+]);
 
 /**
  * Whether the table or column word at `w` is DENIED: "not a table: `x`" says
@@ -1997,18 +2012,242 @@ const NOT_COLUMN_CONTEXT = new Set([
   "method",
 ]);
 
+/** How many words may stand between a bare dotted name and the column word that cues it. */
+const MAX_COLUMN_CUE_WORDS = 4;
 /**
- * #1133 review — whether a bare dotted name on this line may be read as
- * `table.column`: only when the line speaks of columns, and of nothing a dotted
- * name is just as often (a config key, an API field, a struct member).
+ * Words that start another clause: a column word past one belongs to that
+ * clause, not to the name ("Set `users.max_count` to 10 so the username column
+ * stays short").
  */
-function bareColumnsAllowed(words: readonly ProseWord[]): boolean {
-  let column = false;
-  for (const { word } of words) {
-    if (NOT_COLUMN_CONTEXT.has(word)) return false;
-    if (word === "column" || word === "columns") column = true;
+const CLAUSE_WORDS = new Set([
+  "so",
+  "but",
+  "because",
+  "while",
+  "whereas",
+  "although",
+  "though",
+  "when",
+  "whenever",
+  "if",
+  "unless",
+  "until",
+  "since",
+  "then",
+  "yet",
+]);
+
+/** Punctuation that ends a clause: a column word past one is in another sentence. */
+function endsClause(line: string, from: number, to: number): boolean {
+  for (let i = from; i < to; i++) {
+    const c = line[i];
+    if (c === "." || c === ";" || c === ":" || c === "!" || c === "?") return true;
   }
-  return column;
+  return false;
+}
+
+/** Index of the first word starting at or after `at`, or `words.length`. Binary search. */
+function firstWordFrom(words: readonly ProseWord[], at: number): number {
+  let lo = 0;
+  let hi = words.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (words[mid].start < at) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * #1469 review — the words that open a noun phrase. "and"/"or" right before
+ * one starts another clause ("to 10 and the username column stays short", "or
+ * the column will overflow"); and the words between one and the column word
+ * describe the column ("a new nullable text column"), so they do not count
+ * toward {@link MAX_COLUMN_CUE_WORDS}.
+ */
+const DETERMINERS = new Set([
+  "the",
+  "a",
+  "an",
+  "this",
+  "that",
+  "these",
+  "those",
+  "every",
+  "each",
+  "its",
+  "their",
+]);
+/** How many words may describe the column between a determiner and the column word. */
+const MAX_COLUMN_MODIFIERS = 3;
+
+/** "and" or "or" opening another clause: followed by a determiner. */
+function opensClause(words: readonly ProseWord[], w: number): boolean {
+  const word = words[w].word;
+  return (word === "and" || word === "or") && DETERMINERS.has(words[w + 1]?.word ?? "");
+}
+
+/** Only spaces and emphasis in `line[from, to)`. */
+function onlySpacing(line: string, from: number, to: number): boolean {
+  for (let i = from; i < to; i++) {
+    const c = line[i];
+    if (c !== " " && c !== "*" && c !== "_") return false;
+  }
+  return true;
+}
+
+/**
+ * #1469 review — "`users.alpha`: a text column": a colon right after the name,
+ * then a short noun phrase that ENDS with the column word (an optional
+ * determiner first, at most {@link MAX_COLUMN_MODIFIERS} words describing it,
+ * no other determiner, clause word or "and"/"or"), is a definition of the name.
+ * "`users.max_count` limits logins: the column `username` is short" is not:
+ * there the colon is not right after the name, and the column word is followed
+ * by another name.
+ */
+function definesColumn(
+  line: string,
+  words: readonly ProseWord[],
+  first: number,
+  limit: number,
+): boolean {
+  let modifiers = 0;
+  let at = -1;
+  for (let j = first; j < words.length && words[j].start < limit; j++) {
+    const word = words[j];
+    if (at >= 0 && endsClause(line, at, word.start)) return false;
+    at = word.end;
+    if (roleOf(word.word) === "column") {
+      // The phrase ends here: punctuation, or the end of the line, before
+      // anything else (a word or a code span) follows.
+      const stop = Math.min(words[j + 1]?.start ?? line.length, limit);
+      if (stop === line.length && onlySpacing(line, word.end, stop)) return true;
+      for (let i = word.end; i < stop; i++) {
+        const c = line[i];
+        // "(" too: "`users.a1`: a column (text)." gives the type after the phrase.
+        if (".,;!?()".includes(c)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    if (DETERMINERS.has(word.word) && j === first) continue;
+    if (DETERMINERS.has(word.word) || CLAUSE_WORDS.has(word.word)) return false;
+    if (word.word === "and" || word.word === "or") return false;
+    if (++modifiers > MAX_COLUMN_MODIFIERS) return false;
+  }
+  return false;
+}
+
+/**
+ * #1469 — whether a column word AFTER span `k` cues it: within
+ * {@link MAX_COLUMN_CUE_WORDS} words (not counting up to
+ * {@link MAX_COLUMN_MODIFIERS} describing words between a determiner and the
+ * column word), in the same clause, and with no other code span between, which
+ * the word would belong to instead ("so the `username` column"). Reads at most
+ * the text up to the next span, which no other span's forward read covers, so
+ * a line is still read in linear time.
+ */
+function columnWordAfter(
+  line: string,
+  spans: readonly ProseSpan[],
+  words: readonly ProseWord[],
+  k: number,
+): boolean {
+  const span = spans[k];
+  // The next span bounds the search: a word past it is that span's.
+  const limit = spans[k + 1]?.open ?? line.length;
+  const first = firstWordFrom(words, span.close + 1);
+  const firstStart = Math.min(words[first]?.start ?? line.length, limit);
+  // Bounded by the first word, so a line is read once: never `indexOf` to its end.
+  let colon = span.close + 1;
+  while (colon < firstStart && line[colon] !== ":") colon++;
+  if (colon < firstStart && onlySpacing(line, span.close + 1, colon)) {
+    return !endsClause(line, colon + 1, firstStart) && definesColumn(line, words, first, limit);
+  }
+  let at = span.close + 1;
+  let determiner = -1;
+  for (let j = first; j < words.length; j++) {
+    const word = words[j];
+    if (word.start >= limit || endsClause(line, at, word.start)) return false;
+    const before = j - first;
+    if (roleOf(word.word) === "column") {
+      if (before <= MAX_COLUMN_CUE_WORDS) return true;
+      return (
+        determiner >= 0 &&
+        determiner - first <= MAX_COLUMN_CUE_WORDS &&
+        j - determiner - 1 <= MAX_COLUMN_MODIFIERS
+      );
+    }
+    if (CLAUSE_WORDS.has(word.word) || opensClause(words, j)) return false;
+    if (DETERMINERS.has(word.word)) determiner = j;
+    at = word.end;
+  }
+  return false;
+}
+
+/**
+ * #1469 — whether a column word BEFORE span `k` cues it ("a column,
+ * `users.ghost`, is added"): within {@link MAX_COLUMN_CUE_WORDS} words, in the
+ * same clause, with no other code span between.
+ */
+function columnWordBefore(
+  line: string,
+  spans: readonly ProseSpan[],
+  words: readonly ProseWord[],
+  k: number,
+): boolean {
+  const span = spans[k];
+  const limit = spans[k - 1]?.close ?? -1;
+  let at = span.open;
+  for (let w = firstWordFrom(words, span.open) - 1, between = 0; w >= 0; w--, between++) {
+    const word = words[w];
+    if (word.end <= limit || endsClause(line, word.end, at)) return false;
+    if (roleOf(word.word) === "column") return true;
+    if (between >= MAX_COLUMN_CUE_WORDS || CLAUSE_WORDS.has(word.word)) return false;
+    if (opensClause(words, w)) return false;
+    at = word.start;
+  }
+  return false;
+}
+
+/**
+ * #1133 review, #1469 — the spans (by where each opens) whose bare dotted name
+ * may be read as `table.column`: only on a line that speaks of nothing a dotted
+ * name is just as often (a config key, an API field, a struct member), and only
+ * when a column word stands BESIDE that name (`columnWordAfter`,
+ * `columnWordBefore`), not anywhere on the line.
+ *
+ * A name in a list before the predicate shares the cue of the name after it:
+ * "`users.alpha`, `users.beta` and `users.gamma` are new columns" cues all
+ * three. Spans are walked right to left once, so this stays linear.
+ */
+function bareColumnSpans(
+  line: string,
+  spans: readonly ProseSpan[],
+  words: readonly ProseWord[],
+): Set<number> {
+  const allowed = new Set<number>();
+  if (words.some(({ word }) => NOT_COLUMN_CONTEXT.has(word))) return allowed;
+  if (!words.some(({ word }) => roleOf(word) === "column")) return allowed;
+  /** Spans `k` and `k + 1` are two names of one list: only list words between, in one clause. */
+  const listedWithNext = (k: number): boolean =>
+    spans[k + 1].depth === spans[k].depth &&
+    gapIs(line, spans[k].close + 1, spans[k + 1].open, LIST_WORDS) &&
+    !endsClause(line, spans[k].close + 1, spans[k + 1].open);
+  // A column word AFTER a list cues every name of it, right to left...
+  let cuedAfter = false;
+  for (let k = spans.length - 1; k >= 0; k--) {
+    cuedAfter = (cuedAfter && listedWithNext(k)) || columnWordAfter(line, spans, words, k);
+    if (cuedAfter) allowed.add(spans[k].open);
+  }
+  // ...and one BEFORE it, left to right: "Two columns (`users.a1` and `users.a2`)".
+  let cuedBefore = false;
+  for (let k = 0; k < spans.length; k++) {
+    cuedBefore = (cuedBefore && listedWithNext(k - 1)) || columnWordBefore(line, spans, words, k);
+    if (cuedBefore) allowed.add(spans[k].open);
+  }
+  return allowed;
 }
 
 /** An ATX heading line, or the text line of a setext heading (`next` is its underline). */
@@ -2030,7 +2269,7 @@ function isHeadingLine(line: string, next: string | undefined): boolean {
  * the words beside them, keyed by where each opens. Nothing else is a claim.
  * See `checkProseSchemaClaims`.
  */
-function proseClaims(line: string): { claims: Map<number, ProseRole>; bareColumns: boolean } {
+function proseClaims(line: string): { claims: Map<number, ProseRole>; bareColumns: Set<number> } {
   const { spans, words } = proseTokens(line);
   const claims = new Map<number, ProseRole>();
   const claim = (span: ProseSpan, role: ProseRole): void => {
@@ -2095,7 +2334,7 @@ function proseClaims(line: string): { claims: Map<number, ProseRole>; bareColumn
     if (!gapIs(line, open + 1, spans[inside].open, NO_WORDS)) return;
     list(inside, 1, "table");
   });
-  return { claims, bareColumns: bareColumnsAllowed(words) };
+  return { claims, bareColumns: bareColumnSpans(line, spans, words) };
 }
 
 /**
@@ -2121,9 +2360,11 @@ function proseClaims(line: string): { claims: Map<number, ProseRole>; bareColumn
  *     resolves; `table.go` and other file names are not columns. And, with no
  *     word beside it, a dotted name whose first part is EXACTLY a table of the
  *     schema and whose second is a lower-case name that is no file extension
- *     (`entries.status`), but only on a line that speaks of columns and of no
- *     key, field, config, setting, request or response (`bareColumnsAllowed`):
- *     `users.max_count` in a config file is not a column.
+ *     (`entries.status`), but only with a column word near it, in its clause
+ *     and with no other code name between (#1469), and on a line that speaks
+ *     of no key, field, config, setting, request or response
+ *     (`bareColumnSpans`): `users.max_count` in a config file is not a column,
+ *     nor in "set `users.max_count` to 10 so the `username` column stays short".
  *
  * A heading line is never judged, and a table word denied right before it
  * ("not a table: `x`") makes no claim.
@@ -2185,12 +2426,21 @@ export function checkDataArchitectureText(
   const unmatched = schemaCheckUnmatched(report).length;
   const names = judged === 1 ? "1 table or column name" : `${judged} table and column names`;
   const compared = `${SCHEMA_NOTE_LEAD} ${names} in this section ${judged === 1 ? "was" : "were"} compared with ${inventory.label}`;
+  // #1469 — "every one matched" only when nothing in the section went unchecked.
+  const notChecked = report.notChecked.length;
+  const unchecked =
+    notChecked === 0
+      ? ""
+      : `${notChecked} more could not be checked (${notCheckedWords(report).join("; ")}).`;
   const line =
     unmatched === 0
-      ? `${compared}, and every one matched.`
+      ? notChecked === 0
+        ? `${compared}, and every one matched.`
+        : `${compared}; ${judged} matched; ${unchecked}`
       : `${compared}; ${unmatched} could not be matched and ${unmatched === 1 ? "is" : "are"} ` +
         `marked **not in schema** where ${unmatched === 1 ? "it stands" : "they stand"}. ` +
-        `${schemaCaveat(inventory)}, so a marked name is one to verify, not necessarily a mistake.`;
+        `${schemaCaveat(inventory)}, so a marked name is one to verify, not necessarily a mistake.` +
+        (unchecked ? ` ${unchecked}` : "");
   const h2 = lines.findIndex((l) => l.startsWith("## "));
   if (h2 < 0) lines.unshift(line, "");
   else {
@@ -2237,7 +2487,8 @@ function prosePass(markdown: string, state: CheckState, inventory: SchemaInvento
       const end = span.close + 1;
       if (line.startsWith(MARKED, end) || !isQualifiedIdentifier(span.text)) continue;
       const role =
-        claimed.get(span.open) ?? (bareColumns ? bareColumn(span.text, exactTables) : null);
+        claimed.get(span.open) ??
+        (bareColumns.has(span.open) ? bareColumn(span.text, exactTables) : null);
       if (!role) continue;
       const marker =
         role === "table" ? judgeProseTable(span.text, state) : judgeProseColumn(span.text, state);
@@ -2317,20 +2568,50 @@ export const SCHEMA_CLAIM_NAME_MAX_CHARS = IDENTIFIER_MAX;
  * #1133 — what the check found in one section, as its provenance records it:
  * how many names were judged, which did not match (listed, capped), and how
  * many were not checked. Numbers and names only, no document text.
+ *
+ * #1469 — and what the panel needs to say it truly: the unmatched count before
+ * the cap, why names were not checked (each reason once), and what the names
+ * were compared with. Optional because a version recorded before #1469 has
+ * none of them; every new record carries all three.
  */
 export interface SchemaClaimsRecord {
   judged: number;
   unmatched: string[];
+  /** How many did not match; `unmatched` lists at most {@link SCHEMA_CLAIMS_LISTED_MAX}. */
+  unmatchedCount?: number;
   notChecked: number;
+  notCheckedWhy?: NotCheckedReason[];
+  source?: SchemaInventory["source"];
 }
 
-export function schemaClaimsRecord(report: SchemaCheckReport): SchemaClaimsRecord {
+export function schemaClaimsRecord(
+  report: SchemaCheckReport,
+  inventory: Pick<SchemaInventory, "source">,
+): SchemaClaimsRecord {
+  const unmatched = schemaCheckUnmatched(report);
   return {
     judged: schemaCheckJudged(report),
-    unmatched: schemaCheckUnmatched(report)
+    unmatched: unmatched
       .slice(0, SCHEMA_CLAIMS_LISTED_MAX)
       .map((name) => name.slice(0, SCHEMA_CLAIM_NAME_MAX_CHARS)),
+    unmatchedCount: unmatched.length,
     notChecked: report.notChecked.length,
+    notCheckedWhy: notCheckedReasons(report),
+    source: inventory.source,
+  };
+}
+
+/**
+ * #1469 — a record's optional fields, copied, and left out when absent (a
+ * version recorded before #1469), so a copy never adds an `undefined` key.
+ */
+export function optionalSchemaClaimFields(
+  record: SchemaClaimsRecord,
+): Pick<SchemaClaimsRecord, "unmatchedCount" | "notCheckedWhy" | "source"> {
+  return {
+    ...(record.unmatchedCount === undefined ? {} : { unmatchedCount: record.unmatchedCount }),
+    ...(record.notCheckedWhy === undefined ? {} : { notCheckedWhy: [...record.notCheckedWhy] }),
+    ...(record.source === undefined ? {} : { source: record.source }),
   };
 }
 
@@ -2373,16 +2654,24 @@ function reportOf(found: Findings): SchemaCheckReport {
 const SCHEMA_NOTE_LEAD = "> **Schema check.**";
 const SCHEMA_NOT_VERIFIED_LEAD = "> **Schema not verified.**";
 
-const NOT_CHECKED_WHY: Array<[NotCheckedReason, string]> = [
-  ["unread", "outside the schemas that were read"],
-  [
-    "not-a-column",
-    "an index, constraint, key or relation row, or a name that is not a plain column name",
-  ],
-  ["view", "described as a view, which the schema that was read does not list as one"],
-  ["diagram-line", "a diagram line whose column name could not be told from its type"],
-  ["dataset", "a dataset in the code's data lineage, not a database table"],
-];
+/**
+ * The reasons the note lists by name, in its order. `no-columns` is said on a
+ * line of its own ("Columns not checked (no column list for this table)").
+ */
+const NOT_CHECKED_WHY: Array<[NotCheckedReason, string]> = NOT_CHECKED_REASONS.filter(
+  (why) => why !== "no-columns",
+).map((why) => [why, NOT_CHECKED_REASON_WORDS[why]]);
+
+/** #1469 — each reason a name in `report` was not checked, once, in the note's order. */
+function notCheckedReasons(report: SchemaCheckReport): NotCheckedReason[] {
+  const seen = new Set(report.notChecked.map((entry) => entry.why));
+  return NOT_CHECKED_REASONS.filter((why) => seen.has(why));
+}
+
+/** #1469 — those reasons in words, for the one line of `checkDataArchitectureText`. */
+function notCheckedWords(report: SchemaCheckReport): string[] {
+  return notCheckedReasons(report).map((why) => NOT_CHECKED_REASON_WORDS[why]);
+}
 
 /** Why a mark is not a verdict, in the words that fit what was compared with. */
 function schemaCaveat(inventory: Pick<SchemaInventory, "source">): string {

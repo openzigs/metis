@@ -149,6 +149,33 @@ describe("cachedProvenanceSummary", () => {
     ).toEqual([]);
   });
 
+  it("passes the schema check's true count, reasons and source through, and reads an older record (#1469)", async () => {
+    const stored = JSON.parse(manifest(5));
+    stored.sections[0].schemaClaims = { judged: 3, unmatched: ["ghosts"], notChecked: 0 };
+    stored.sections[1].schemaClaims = {
+      judged: 0,
+      unmatched: [],
+      unmatchedCount: 0,
+      notChecked: 2,
+      notCheckedWhy: ["unread", "no-columns"],
+      source: "repository-sql",
+    };
+    const summary = await cachedProvenanceSummary(row(), async () => JSON.stringify(stored));
+    expect(summary?.schemaClaims).toEqual([
+      // Recorded before #1469: none of the new fields, and none invented.
+      { section: "S 0", judged: 3, unmatched: ["ghosts"], notChecked: 0 },
+      {
+        section: "S 1",
+        judged: 0,
+        unmatched: [],
+        unmatchedCount: 0,
+        notChecked: 2,
+        notCheckedWhy: ["unread", "no-columns"],
+        source: "repository-sql",
+      },
+    ]);
+  });
+
   it("returns null for an unreadable manifest and remembers that", async () => {
     const load = vi.fn(async () => "{not json");
     expect(await cachedProvenanceSummary(row(), load)).toBeNull();
