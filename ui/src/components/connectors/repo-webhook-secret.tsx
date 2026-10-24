@@ -20,7 +20,12 @@ import { Input } from "@/components/ui/input";
 
 type Connector = Pick<
   RepoConnector,
-  "id" | "provider" | "webhookSecretConfigured" | "webhookSecretNeedsRenewal" | "webhookPath"
+  | "id"
+  | "provider"
+  | "status"
+  | "webhookSecretConfigured"
+  | "webhookSecretNeedsRenewal"
+  | "webhookPath"
 >;
 
 async function copy(text: string): Promise<void> {
@@ -157,6 +162,13 @@ export function RepoWebhookSecret({
           With the shared secret, this project gets the repository&apos;s deliveries only if no
           other project connected it earlier on the same secret, because METIS cannot tell the
           webhooks apart. Create a secret for this connection to be sure.
+        </p>
+      ) : null}
+      {/* Depends on this connection's own status only. */}
+      {!hasOwn && !shown && connector.status !== "connected" ? (
+        <p className="font-medium text-warning" data-testid={`webhook-needs-test-${connector.id}`}>
+          Shared-secret deliveries reach this connection only after a successful Test. Click Test,
+          or create a secret for this connection.
         </p>
       ) : null}
       {shown ? (

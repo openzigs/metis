@@ -580,10 +580,14 @@ async function projectsWithOwnSecret(repoFullName: string): Promise<string[]> {
  * earliest-bound (`repoBoundAt`, else `createdAt`; then id) connector for the
  * repository that is live, in a live project, `connected` (its credential
  * reached the repository), a GitHub connector for the delivery's host, and
- * without an own secret that still verifies. A newcomer therefore cannot take
- * an existing project's deliveries, nor stop them: it gets none, and is
- * logged. A connector repointed at the repository counts from the repoint.
- * Never "the first primary connector found".
+ * without an own secret that still verifies. While the earliest such
+ * connector stays connected, a newcomer can neither take its deliveries nor
+ * stop them: it gets none, and is logged. If the earliest one's Test fails
+ * (`error`), the next connected one takes them until it passes again — an
+ * errored connector is not counted, or one bound early with a bad token would
+ * block every later project for good. A connector repointed at the repository
+ * counts from the repoint, and is pending until re-tested. Never "the first
+ * primary connector found".
  */
 export async function findProjectForRepo(
   repoFullName: string,
@@ -630,7 +634,23 @@ export async function findProjectForRepo(
     }
     return toConfig(winner.project);
   }
-  if (live.length === 0) {
+  if (live.length > 0) {
+    // Connected to the repository but none may take this delivery: say why,
+    // per connector, so the operator can tell the project to click Test.
+    log.warn("pr_review.webhook_no_eligible_connector", {
+      deliveryId,
+      repo: repoFullName,
+      host,
+      connectors: live.map((c) => ({
+        id: c.id,
+        projectId: c.projectId,
+        status: c.status,
+        provider: c.provider,
+        ownSecret: connectorSecretState(c, root),
+      })),
+      hint: "a connection takes shared-secret deliveries only while its Test succeeds (status connected)",
+    });
+  } else {
     const deleted = conns.find((c) => c.project?.deletedAt);
     if (deleted) {
       logDeletedProjectSkip({

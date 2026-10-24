@@ -386,6 +386,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(enqueuedFor()).toEqual([PA]);
       });
 
+      it("while the earlier connection's Test is failing, the next connected one gets the deliveries", async () => {
+        // Documented limit: ownership follows `connected`. Counting an errored
+        // connector instead would let one bound earlier with a bad token block
+        // every later project for good.
+        await db.repoConnection.update({ where: { id: `repo-${PA}` }, data: { status: "error" } });
+        await deliver(DEPLOYMENT_SECRET, payloadOf(REPO, 16));
+        expect(enqueuedFor()).toEqual([PB]);
+        enqueued.length = 0;
+        await db.repoConnection.update({
+          where: { id: `repo-${PA}` },
+          data: { status: "connected" },
+        });
+        await deliver(DEPLOYMENT_SECRET, payloadOf(REPO, 17));
+        expect(enqueuedFor()).toEqual([PA]);
+      });
+
       it("a pending connector never counts, even one bound to the repository earlier", async () => {
         await db.repoConnection.update({
           where: { id: `repo-${PB}` },
@@ -574,6 +590,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         // a replaced secret
         await ownSecret(`repo-${PB}`, "nonce-b2");
         answers.push(await deliver(secretB, payloadOf(REPO, 25), connUrl(`repo-${PB}`)));
+        // a connector switched to another provider, which keeps its nonce
+        const secretGl = await ownSecret(`repo-${PB}`, "nonce-gl");
+        await db.repoConnection.update({
+          where: { id: `repo-${PB}` },
+          data: { provider: "gitlab" },
+        });
+        answers.push(await deliver(secretGl, payloadOf(REPO, 25), connUrl(`repo-${PB}`)));
+        await db.repoConnection.update({
+          where: { id: `repo-${PB}` },
+          data: { provider: "github" },
+        });
         // a deleted connector, and a deleted project
         const secretB3 = await ownSecret(`repo-${PB}`, "nonce-b3");
         await db.repoConnection.update({

@@ -30,6 +30,7 @@ function renderIt(
     provider: string;
     webhookSecretConfigured: boolean;
     webhookSecretNeedsRenewal?: boolean;
+    status?: string;
   },
   onChanged = vi.fn(),
 ) {
@@ -41,6 +42,7 @@ function renderIt(
         connector={
           {
             id: "r1",
+            status: "connected",
             webhookSecretNeedsRenewal: false,
             webhookPath: connector.provider.startsWith("github") ? PATH : null,
             ...connector,
@@ -159,6 +161,16 @@ describe("RepoWebhookSecret (#1475)", () => {
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith("Could not remove the webhook secret"),
     );
+  });
+
+  it("tells a shared-secret connection that is not connected to run Test", () => {
+    renderIt({ provider: "github", webhookSecretConfigured: false, status: "pending" });
+    expect(screen.getByTestId("webhook-needs-test-r1")).toHaveTextContent(/successful Test/);
+  });
+
+  it("says nothing about Test for a connected one, or one with its own secret", () => {
+    renderIt({ provider: "github", webhookSecretConfigured: false });
+    expect(screen.queryByTestId("webhook-needs-test-r1")).toBeNull();
   });
 
   it("renders nothing for a connection GitHub does not deliver to", () => {
