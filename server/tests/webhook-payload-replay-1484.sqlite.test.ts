@@ -344,6 +344,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(replay.body).toEqual({ ok: true, handled: false, reason: "DUPLICATE_PAYLOAD" });
     });
 
+    it("the issues receiver refuses an event whose signed updated_at is past the window", async () => {
+      const old = new Date(Date.now() - SIGNED_EVENT_MAX_AGE_MS - DAY).toISOString();
+      const body = JSON.stringify({
+        action: "edited",
+        issue: { number: 12, title: "T", updated_at: old },
+        repository: { full_name: REPO },
+      });
+      const res = await post(
+        "/api/webhooks/github/issues",
+        body,
+        SECRET,
+        { "X-GitHub-Delivery": "issues-stale" },
+        "issues",
+      );
+      expect(res.body).toEqual({ ok: true, handled: false, reason: "STALE_DELIVERY" });
+      expect(await digestRows()).toBe(0);
+      expect(await db.prReviewWebhookDelivery.count()).toBe(0);
+    });
+
     it("the Jira receiver: same body + new webhook id is not processed twice", async () => {
       const body = JSON.stringify({ webhookEvent: "jira:worklog_updated", timestamp: Date.now() });
       const jira = (id: string) =>

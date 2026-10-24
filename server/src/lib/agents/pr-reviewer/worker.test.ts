@@ -9,6 +9,16 @@
  *   - An audit error inside `onDeadLetter` does not crash the worker.
  */
 import { describe, expect, it, vi } from "vitest";
+
+const purges = vi.hoisted(() => ({
+  deliveries: vi.fn(async () => 2),
+  digests: vi.fn(async () => 5),
+}));
+vi.mock("./webhook-dedup.js", () => ({ purgeOldDeliveries: purges.deliveries }));
+vi.mock("../../webhooks/payload-replay.js", () => ({
+  purgeOldPayloadDigests: purges.digests,
+}));
+
 import { startWorker, DEFAULT_PURGE_INTERVAL_MS } from "./worker.js";
 import type { PrReviewJob } from "./queue.js";
 
@@ -72,6 +82,23 @@ describe("startWorker", () => {
       clearInterval: () => undefined,
     });
     expect(scheduledMs).toBe(12_345);
+    await w.shutdown();
+  });
+
+  it("#1484 — the default purge prunes the delivery ids AND the signed-body claims", async () => {
+    let intervalCb: (() => void) | null = null;
+    const w = startWorker({
+      processor: async () => {},
+      setInterval: (cb) => {
+        intervalCb = cb;
+        return 0;
+      },
+      clearInterval: () => undefined,
+    });
+    intervalCb!();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(purges.deliveries).toHaveBeenCalledTimes(1);
+    expect(purges.digests).toHaveBeenCalledTimes(1);
     await w.shutdown();
   });
 
