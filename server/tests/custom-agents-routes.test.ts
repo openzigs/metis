@@ -420,7 +420,10 @@ describe("POST /custom-agents/:id/invoke (#80/#83)", () => {
       .send({ projectId: "p1", input: "hello" });
     expect(off.status).toBe(409);
     expect(off.body.error.code).toBe("AGENT_DISABLED");
-    expect(off.body.error.message).toContain('"Go SQL reviewer" is turned off for this project');
+    // #1500 — says who can switch it back on, in the session notice's words.
+    expect(off.body.error.message).toBe(
+      '"Go SQL reviewer" is turned off for this project. Ask a workspace admin to switch it back on under Custom agents.',
+    );
     expect(chatMock).not.toHaveBeenCalled();
     await new Promise((r) => setTimeout(r, 0));
     expect(auditRows.find((a) => a.action === "custom_agent.invoke_denied")).toBeTruthy();
@@ -527,6 +530,21 @@ describe("POST /custom-agents/:id/invoke (#80/#83)", () => {
     // #1500 — there only a system admin can enable it, and the message says so.
     expect(res.body.error.message).toBe(
       '"Open draft" is off for this project until a system admin enables it under Custom agents.',
+    );
+    expect(chatMock).not.toHaveBeenCalled();
+  });
+
+  it("#1500 — a switched-off agent on a project with no workspace names a system admin", async () => {
+    seedProject("p-open", null);
+    const agent = seedAgent({ projectId: "p-open", name: "Open off" });
+    enableFor(agent.id, "p-open");
+    for (const row of enablements.values()) if (row.customAgentId === agent.id) row.enabled = false;
+    const res = await request(createApp())
+      .post(`/custom-agents/${agent.id}/invoke`)
+      .send({ projectId: "p-open", input: "hello" });
+    expect(res.status).toBe(409);
+    expect(res.body.error.message).toBe(
+      '"Open off" is turned off for this project. Ask a system admin to switch it back on under Custom agents.',
     );
     expect(chatMock).not.toHaveBeenCalled();
   });

@@ -177,7 +177,7 @@ describe("<CustomAgentsEnablementCard /> (#85)", () => {
     await waitFor(() => expect(screen.getByTestId("ca-edit-prompt")).toHaveValue("Own persona"));
   });
 
-  it("#1500 — an own agent known only from an /enabled summary offers no Edit (a summary is not a definition)", async () => {
+  it("#1500 — an own agent known only from an /enabled summary offers no Edit (a summary is not a definition), but still Delete", async () => {
     // e.g. created after the candidates were fetched: /enabled lists it first.
     listAgents.mockResolvedValue([]);
     listEnabledAgents.mockResolvedValue([
@@ -188,7 +188,8 @@ describe("<CustomAgentsEnablementCard /> (#85)", () => {
     await waitFor(() => expect(screen.getByTestId("ca-enablement-row-late")).toBeInTheDocument());
     expect(screen.getByTestId("ca-enablement-toggle-late")).toHaveTextContent(/disable/i);
     expect(screen.queryByTestId("ca-edit-open-late")).toBeNull();
-    expect(screen.queryByTestId("ca-delete-late")).toBeNull();
+    // Delete needs only the id, so it stays available.
+    expect(screen.getByTestId("ca-delete-late")).toBeInTheDocument();
   });
 
   it("#1445 review — a refused switch says why instead of failing silently", async () => {

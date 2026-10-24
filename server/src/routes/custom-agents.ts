@@ -439,12 +439,12 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
           error: switchedOff ? "agent turned off for project" : "agent not yet enabled for project",
         });
         // #1500 — on a project with no workspace only a system admin can enable it.
-        const who = switchedOff ? null : await customAgentEnablerForProject(projectId);
+        const who = await customAgentEnablerForProject(projectId);
         throw new AppError(
           409,
           "AGENT_DISABLED",
           switchedOff
-            ? `"${agent.name}" is turned off for this project. Turn it on under Custom agents to use it.`
+            ? `"${agent.name}" is turned off for this project. Ask ${who} to switch it back on under Custom agents.`
             : `"${agent.name}" is off for this project until ${who} enables it under Custom agents.`,
         );
       }

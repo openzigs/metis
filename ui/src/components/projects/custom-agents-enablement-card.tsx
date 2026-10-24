@@ -226,17 +226,21 @@ export function CustomAgentsEnablementCard({ projectId }: Props) {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {!agent.isBuiltIn && agent.projectId === projectId && ownDefinition && (
+                  {!agent.isBuiltIn && agent.projectId === projectId && (
                     <>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => setEditing(ownDefinition)}
-                        data-testid={`ca-edit-open-${agent.id}`}
-                      >
-                        Edit
-                      </Button>
+                      {/* #1500 — Edit needs the full definition (from the
+                          candidates); Delete needs only the id. */}
+                      {ownDefinition ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setEditing(ownDefinition)}
+                          data-testid={`ca-edit-open-${agent.id}`}
+                        >
+                          Edit
+                        </Button>
+                      ) : null}
                       <ConfirmDialog
                         title={`Delete agent ${agent.name}?`}
                         description="Its enablement in every project is removed with it. This cannot be undone."
