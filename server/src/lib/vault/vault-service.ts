@@ -24,6 +24,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
 import { isUniqueViolation } from "../db/prisma-errors.js";
 import { concurrentUpdateError } from "../connectors/types.js";
+import { AppError } from "../../middleware/error-handler.js";
 
 const log = createChildLogger("vault");
 
@@ -61,6 +62,52 @@ async function forgetRecordedRepoPermissions(
   return count;
 }
 
+/** How long a vault write waits to START its transaction, by default. */
+const DEFAULT_WRITE_TX_MAX_WAIT_MS = 30_000;
+/** How long a started vault write transaction may run: two small statements. */
+const DEFAULT_WRITE_TX_TIMEOUT_MS = 15_000;
+
+function positiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+/**
+ * #1499 — the vault write transaction's options. On SQLite the driver adapter
+ * runs one interactive transaction at a time, and `withVectorSql` holds one
+ * for a reindex cutover or a quarantine approval (minutes, by design:
+ * `project-vector-write.ts`). With Prisma's default 2 s `maxWait`, any vault
+ * value write in that window failed. 30 s outlasts a typical cutover batch;
+ * `VAULT_WRITE_TX_MAX_WAIT_MS` / `VAULT_WRITE_TX_TIMEOUT_MS` override.
+ * Exported for the test that pins them.
+ */
+export function vaultWriteTransactionOptions(): { maxWait: number; timeout: number } {
+  return {
+    maxWait: positiveIntEnv("VAULT_WRITE_TX_MAX_WAIT_MS", DEFAULT_WRITE_TX_MAX_WAIT_MS),
+    timeout: positiveIntEnv("VAULT_WRITE_TX_TIMEOUT_MS", DEFAULT_WRITE_TX_TIMEOUT_MS),
+  };
+}
+
+/**
+ * Prisma's interactive-transaction API error (`P2028`): the transaction could
+ * not start within `maxWait`, or expired. Raised before anything committed.
+ */
+function isTransactionApiError(err: unknown): boolean {
+  return !!err && typeof err === "object" && (err as { code?: unknown }).code === "P2028";
+}
+
+/** The vault value write that could not get a transaction: retryable, not a fault. */
+export const DATABASE_BUSY = "DATABASE_BUSY";
+function databaseBusyError(): AppError {
+  return new AppError(
+    503,
+    DATABASE_BUSY,
+    "The database is busy with another long write, so nothing was saved. Try again in a moment.",
+  );
+}
+
 /**
  * #1499 — run one secret value write and the clear of the recorded repository
  * permissions bound to that secret in one interactive transaction. `write`
@@ -71,12 +118,25 @@ async function forgetRecordedRepoPermissions(
 async function writeValueAndForget<T>(
   write: (tx: Prisma.TransactionClient) => Promise<{ result: T; secretId: string | null }>,
 ): Promise<T> {
-  const { result, secretId, forgotten } = await prisma.$transaction(async (tx) => {
-    const written = await write(tx);
-    const forgotten =
-      written.secretId === null ? 0 : await forgetRecordedRepoPermissions(tx, written.secretId);
-    return { ...written, forgotten };
-  });
+  let outcome: { result: T; secretId: string | null; forgotten: number };
+  try {
+    outcome = await prisma.$transaction(async (tx) => {
+      const written = await write(tx);
+      const forgotten =
+        written.secretId === null ? 0 : await forgetRecordedRepoPermissions(tx, written.secretId);
+      return { ...written, forgotten };
+    }, vaultWriteTransactionOptions());
+  } catch (err) {
+    if (isTransactionApiError(err)) {
+      log.warn("Vault write could not get a transaction; nothing was written", {
+        code: "P2028",
+        error: (err as Error).message,
+      });
+      throw databaseBusyError();
+    }
+    throw err;
+  }
+  const { result, secretId, forgotten } = outcome;
   if (forgotten > 0) {
     log.info("Recorded repository permissions forgotten", { secretId, count: forgotten });
   }

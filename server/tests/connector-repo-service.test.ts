@@ -1910,26 +1910,36 @@ describe("#1499 — a check whose binding changed under it records nothing", () 
     ).toBeNull();
   });
 
-  it.each([
-    ["a rotation", false],
-    ["a rotate-and-undo (no ABA on the envelope)", true],
-  ] as const)("a metadata read across %s returns nothing to ingest", async (_n, undo) => {
-    const id = await create(`sync-rotation-${String(undo)}`);
-    // The sync decrypts B, so it reads the repository with B ...
+  /** The sync's token read lands after a rotation to B, so it reads GitHub with B. */
+  const decryptsRotatedValue = () =>
     vi.mocked(readBoundSecretWithEnvelope).mockImplementationOnce(async (secretId: string) => {
       secretCiphertexts.set(secretId, "ct:B");
       return { plaintext: "pat_B", envelope: "ct:B" };
     });
-    // ... and before it writes, the value is rotated again, or the rotation is
-    // undone back to the row's envelope A.
+
+  it("a metadata read across a rotate-and-undo returns nothing to ingest (no ABA on the envelope)", async () => {
+    const id = await create("sync-aba");
+    decryptsRotatedValue();
+    // Before it writes, the rotation is undone back to the row's envelope A.
     githubThat(() => {
-      if (undo) secretCiphertexts.delete("gh-pat");
-      else secretCiphertexts.set("gh-pat", "ct:C");
+      secretCiphertexts.delete("gh-pat");
     });
     await expect(fetchRepoMetadata("proj_1", id, "user_1")).rejects.toMatchObject({
       code: "REPO_CONNECTOR_CHANGED",
     });
+    // Guarded on the row's envelope, B's result landed against credential A.
     expect(rows.get(id)!.status).toBe("pending");
+  });
+
+  it("a metadata read whose token was rotated just before it was decrypted records what that token read", async () => {
+    const id = await create("sync-rotated-before-read");
+    decryptsRotatedValue();
+    // Nothing changes after the token read: B is still stored when it writes.
+    githubThat(() => undefined);
+    const meta = await fetchRepoMetadata("proj_1", id, "user_1");
+    expect(meta.repo.full_name).toBe("octocat/demo");
+    // Guarded on the row's envelope (A), this valid read of B was refused.
+    expect(rows.get(id)!.status).toBe("connected");
   });
 
   it("the 409 from a failing Test's guarded write is audited", async () => {

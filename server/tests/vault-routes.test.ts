@@ -234,6 +234,21 @@ describe("/api/vault", () => {
     });
   });
 
+  it("#1499 — a rotation that could not get a database transaction is a retryable 503, not a 404", async () => {
+    const token = await login("admin");
+    const { AppError } = await import("../src/middleware/error-handler.js");
+    const { DATABASE_BUSY } = await import("../src/lib/vault/vault-service.js");
+    fakeService.rotate.mockRejectedValueOnce(
+      new AppError(503, DATABASE_BUSY, "The database is busy; try again."),
+    );
+    const res = await request(app)
+      .post("/api/vault/any-id/rotate")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ value: "v" });
+    expect(res.status).toBe(503);
+    expect(res.body.error.code).toBe("DATABASE_BUSY");
+  });
+
   it("returns 404 when rotating an unknown id", async () => {
     const token = await login("admin");
     const res = await request(app)

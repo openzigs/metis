@@ -3,6 +3,8 @@
  * block in `index.ts` does not run under test (`METIS_NO_LISTEN=1`); its one
  * `listen` call is `listenAndStart`, exercised here with a fake server.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
 const recheck = vi.hoisted(() => ({ start: vi.fn() }));
@@ -32,6 +34,14 @@ describe("#1499 — the boot re-check is started once the server listens", () =>
     // Fire-and-forget, with its defaults.
     expect(recheck.start).toHaveBeenCalledTimes(1);
     expect(recheck.start).toHaveBeenCalledWith();
+  });
+
+  it("the boot block's listen call is listenAndStart (tripwire: the block itself never runs under test)", () => {
+    // Deliberately coupled to the source: a reformat of this one line should
+    // update the pattern, not delete the test. Without it, reverting the boot
+    // block to a bare `httpServer.listen(PORT)` would silently drop the re-check.
+    const source = readFileSync(fileURLToPath(new URL("../src/index.ts", import.meta.url)), "utf8");
+    expect(source).toMatch(/^\s*listenAndStart\(httpServer, PORT\);$/m);
   });
 
   it("onServerListening starts the re-check each time it runs", () => {
