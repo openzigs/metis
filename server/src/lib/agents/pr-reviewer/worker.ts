@@ -39,6 +39,7 @@ import {
   type PrReviewProcessor,
 } from "./queue.js";
 import { purgeOldDeliveries } from "./webhook-dedup.js";
+import { purgeOldPayloadDigests } from "../../webhooks/payload-replay.js";
 import {
   executePrReviewJob,
   recordPrReviewJobSkip,
@@ -131,7 +132,10 @@ export function startWorker(opts: StartWorkerOptions): PrReviewWorkerHandle {
       // accept it directly. The cast keeps the test-seam clean.
       clearInterval(h as ReturnType<typeof setInterval>);
     });
-  const purgeFn = opts.purge ?? (() => purgeOldDeliveries());
+  // #1484 — the signed-body replay claims are purged on the same cadence, each
+  // table on its own retention, so both stay bounded.
+  const purgeFn =
+    opts.purge ?? (async () => (await purgeOldDeliveries()) + (await purgeOldPayloadDigests()));
   const purgeMs = opts.purgeIntervalMs ?? DEFAULT_PURGE_INTERVAL_MS;
 
   const processor = opts.processor ?? buildDefaultProcessor(opts.processorDeps);

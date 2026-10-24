@@ -2,11 +2,15 @@
  * Epic #192 (A.3 + A.5) — GitHub PR webhook verification + dispatch.
  *
  * Verifies the standard GitHub `X-Hub-Signature-256` HMAC header against
- * `GITHUB_WEBHOOK_SECRET`. When the optional `X-Webhook-Timestamp` header is
- * present (a custom defence-in-depth header set by upstream proxies), the
- * timestamp is validated against a 5-minute clock-skew window — this is
- * opt-in because GitHub's native webhook signature does NOT include a
- * timestamp.
+ * `GITHUB_WEBHOOK_SECRET` (or a connector's own secret, #1475).
+ *
+ * #1484 — there is deliberately no timestamp check. GitHub signs the body
+ * only, so any `X-Webhook-Timestamp` header sits outside the HMAC: whoever
+ * replays a captured delivery sets it to "now" (or drops it), and the check
+ * refused nothing an attacker could not walk around. No METIS sender sets that
+ * header either, so there is no `timestamp.body` scheme to sign instead. Replay
+ * protection lives after this check, keyed on the signed body itself:
+ * `lib/webhooks/payload-replay.ts`.
  *
  * `dispatchGithubPrEvent` is a thin router: it calls the living-spec sync
  * for `pull_request.closed` (when merged) and the PR-reviewer agent for
@@ -14,8 +18,6 @@
  * handlers are injected so tests stay hermetic.
  */
 import crypto from "node:crypto";
-
-const SKEW_MS = 5 * 60 * 1000;
 
 export interface VerifyResult {
   ok: boolean;
@@ -38,22 +40,13 @@ function stripPrefix(sig: string, prefix: string): string {
 export function verifyGithubPrSignature(
   rawBody: string,
   secret: string,
-  headers: { signature?: string; timestamp?: string },
-  now = Date.now(),
+  headers: { signature?: string },
 ): VerifyResult {
   if (!secret) return { ok: false, reason: "MISSING_SECRET" };
   if (!headers.signature) return { ok: false, reason: "MISSING_SIGNATURE" };
   const provided = stripPrefix(headers.signature.trim().toLowerCase(), "sha256=");
   const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
   if (!timingSafeEqHex(expected, provided)) return { ok: false, reason: "BAD_SIGNATURE" };
-
-  // Optional timestamp skew check (defence-in-depth — GitHub's native sig
-  // doesn't include a timestamp, but proxies/tests can supply one).
-  if (headers.timestamp) {
-    const tsSec = Number.parseInt(headers.timestamp, 10);
-    if (!Number.isFinite(tsSec)) return { ok: false, reason: "BAD_TIMESTAMP" };
-    if (Math.abs(now - tsSec * 1000) > SKEW_MS) return { ok: false, reason: "EXPIRED" };
-  }
   return { ok: true };
 }
 

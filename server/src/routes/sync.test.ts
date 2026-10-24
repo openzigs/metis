@@ -6,7 +6,20 @@ import express, { type Request, type Response, type NextFunction } from "express
 import request from "supertest";
 import { syncWebhookRouter, syncDriftRouter } from "./sync.js";
 
-const { seenDeliveries } = vi.hoisted(() => ({ seenDeliveries: new Set<string>() }));
+const { seenDeliveries, seenBodies } = vi.hoisted(() => ({
+  seenDeliveries: new Set<string>(),
+  seenBodies: new Set<string>(),
+}));
+
+// #1484 — stateful mock of the signed-body replay claim, keyed as the real one is.
+vi.mock("../lib/webhooks/payload-replay.js", () => ({
+  claimPayload: vi.fn(async (c: { receiver: string; eventType: string; rawBody: string }) => {
+    const key = `${c.receiver}|${c.eventType}|${c.rawBody}`;
+    const dup = seenBodies.has(key);
+    if (!dup) seenBodies.add(key);
+    return { duplicate: dup };
+  }),
+}));
 
 // #681 — stateful mock of the shared delivery-dedup so the replay test is
 // deterministic and never touches the real pr_review_webhook_deliveries table.
@@ -122,6 +135,7 @@ function createApp() {
 
 beforeEach(() => {
   seenDeliveries.clear();
+  seenBodies.clear();
   vi.clearAllMocks();
   accessibleProjectIds = ["proj-1"];
   authedUser = { userId: "user-1", role: "coordinator", username: "test" };
@@ -182,6 +196,20 @@ describe("Jira issues webhook route", () => {
     const replay = await send();
     expect(replay.status).toBe(200);
     expect(replay.body.reason).toBe("DUPLICATE_DELIVERY");
+  });
+
+  it("#1484 — the same signed body under a new X-Atlassian-Webhook-Id is a no-op", async () => {
+    const app = createApp();
+    const send = (id: string) =>
+      request(app)
+        .post("/webhooks/jira/issues")
+        .set("x-hub-signature", "valid-sig")
+        .set("x-atlassian-webhook-id", id)
+        .send({ webhookEvent: "jira:issue_updated", issue: { id: "1", key: "P-1" } });
+    expect((await send("jira-original")).body.reason).not.toBe("DUPLICATE_PAYLOAD");
+    const replay = await send("jira-forged");
+    expect(replay.status).toBe(200);
+    expect(replay.body).toEqual({ ok: true, handled: false, reason: "DUPLICATE_PAYLOAD" });
   });
 });
 

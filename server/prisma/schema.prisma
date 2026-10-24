@@ -4055,6 +4055,27 @@ model PrReviewWebhookDelivery {
   @@map("pr_review_webhook_deliveries")
 }
 
+/// Issue #1484 — replay guard for signed webhook deliveries. GitHub (and Jira)
+/// sign only the body, so the delivery-id header above is attacker-chosen on a
+/// replay; this row keys the delivery on what the signature covers. One row per
+/// (receiver, event type, SHA-256 of the raw signed body), kept for
+/// `PAYLOAD_DIGEST_RETENTION_MS` and purged hourly by the PR-review worker.
+model WebhookPayloadDigest {
+  id         String   @id @default(cuid())
+  /// Which receiver accepted it: `github-pr`, `github-pr:c:<connectorId>`,
+  /// `github-issues`, `jira-issues`.
+  receiver   String
+  /// Event type header (`pull_request`, `issues`, `jira-issue`).
+  eventType  String
+  /// Hex SHA-256 of the raw request body the signature was verified over.
+  bodySha256 String
+  receivedAt DateTime @default(now())
+
+  @@unique([receiver, eventType, bodySha256])
+  @@index([receivedAt])
+  @@map("webhook_payload_digests")
+}
+
 // ============================================================================
 // Epic #486 — Auto Documentation Generator
 // ============================================================================

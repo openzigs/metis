@@ -24,6 +24,7 @@ import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { AppError } from "../middleware/error-handler.js";
 import { webhookReceiverRateLimiter } from "../middleware/webhook-receiver-rate-limit.js";
 import { recordDelivery } from "../lib/agents/pr-reviewer/webhook-dedup.js";
+import { claimPayload } from "../lib/webhooks/payload-replay.js";
 import {
   reconcileIssueChange,
   resolveDriftEvent,
@@ -95,6 +96,19 @@ export function syncWebhookRouter(deps: SyncRouterDeps = {}): Router {
     if (dedup.duplicate) {
       log.debug("sync.webhook.jira.duplicate_delivery", { deliveryId: rawDelivery });
       res.status(200).json({ ok: true, handled: false, reason: "DUPLICATE_DELIVERY" });
+      return;
+    }
+    // #1484 — that delivery id is an unsigned header, so a replay under a fresh
+    // id passed it. Claim the signed body too (a missing `timestamp` leaves
+    // Jira's own window open, so this is the only check in that case).
+    const replay = await claimPayload({
+      receiver: "jira-issues",
+      eventType: "jira-issue",
+      rawBody: body,
+    });
+    if (replay.duplicate) {
+      log.debug("sync.webhook.jira.duplicate_payload", { deliveryId: rawDelivery });
+      res.status(200).json({ ok: true, handled: false, reason: "DUPLICATE_PAYLOAD" });
       return;
     }
 
