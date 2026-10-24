@@ -177,6 +177,20 @@ describe("<CustomAgentsEnablementCard /> (#85)", () => {
     await waitFor(() => expect(screen.getByTestId("ca-edit-prompt")).toHaveValue("Own persona"));
   });
 
+  it("#1500 — an own agent known only from an /enabled summary offers no Edit (a summary is not a definition)", async () => {
+    // e.g. created after the candidates were fetched: /enabled lists it first.
+    listAgents.mockResolvedValue([]);
+    listEnabledAgents.mockResolvedValue([
+      { id: "late", name: "Late", description: "", isBuiltIn: false, projectId: "proj-1" },
+    ]);
+    renderCard();
+
+    await waitFor(() => expect(screen.getByTestId("ca-enablement-row-late")).toBeInTheDocument());
+    expect(screen.getByTestId("ca-enablement-toggle-late")).toHaveTextContent(/disable/i);
+    expect(screen.queryByTestId("ca-edit-open-late")).toBeNull();
+    expect(screen.queryByTestId("ca-delete-late")).toBeNull();
+  });
+
   it("#1445 review — a refused switch says why instead of failing silently", async () => {
     listAgents.mockResolvedValue([agent("a1", "Risk Analyst")]);
     listEnabledAgents.mockResolvedValue([]);
