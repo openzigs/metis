@@ -6,7 +6,10 @@
  *
  * Both endpoints are gated on the existing `pr.review.read` permission
  * so the same RBAC rule that protects `/api/run-reviews/:runId` covers
- * the list view too. The detail endpoint returns the persisted
+ * the list view too. Every role holds it since #1472, so the router also
+ * runs its own `requireProjectAccess()`: a caller outside the project's
+ * workspace, or a non-admin on a deleted project, gets 404 before any role
+ * check, whatever the mount order upstream. The detail endpoint returns the persisted
  * `PrReviewState` row plus a deep-link to the AgentRun the review was
  * recorded under (so the UI can pivot to `/runs/[runId]/review`).
  */
@@ -15,6 +18,12 @@ import { randomUUID } from "node:crypto";
 import type { ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { requireProjectAccess } from "../middleware/require-project-access.js";
+import {
+  prReviewsPreAuthRateLimiter,
+  prReviewsReReviewUserRateLimiter,
+  prReviewsUserRateLimiter,
+} from "../middleware/pr-reviews-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
   getPrReviewState,
@@ -102,53 +111,52 @@ export interface PrReviewsRouterDeps {
 export function prReviewsRouter(deps: PrReviewsRouterDeps = {}): Router {
   const r = Router({ mergeParams: true });
   const resolveQueue = deps.resolveQueue ?? (() => getPrReviewWorker()?.queue ?? null);
+  // #1472 — defence in depth. In production the routers mounted earlier at
+  // `/projects/:projectId` (`knowledgeRouter()`, and the projects router's
+  // `/:id/:sub` chokepoint) already authenticate and scope the project, so this
+  // chain re-checks rather than first-checks: it keeps the router safe if the
+  // mount order changes. The limiters run first because CodeQL counts only a
+  // limiter ahead of the authorization step; the reads they guard here are this
+  // router's own, not the upstream ones. Every route below relies on this
+  // `requireAuth`.
+  r.use(prReviewsPreAuthRateLimiter, requireAuth, prReviewsUserRateLimiter, requireProjectAccess());
 
-  r.get(
-    "/",
-    requireAuth,
-    requirePermission("pr.review.read"),
-    async (req: Request, res: Response) => {
-      const projectId = String((req.params as { projectId?: string }).projectId ?? "");
-      if (!projectId) throw new AppError(400, "MISSING_PROJECT_ID", "projectId is required");
-      const limit = parseIntSafe(req.query.limit, 50, 200);
-      const offset = parseIntSafe(req.query.offset, 0, 10_000);
-      const out = await listPrReviewStatesForProject(projectId, { limit, offset });
-      res.json(ok({ items: out.items.map(toView), total: out.total, limit, offset }));
-    },
-  );
+  r.get("/", requirePermission("pr.review.read"), async (req: Request, res: Response) => {
+    const projectId = String((req.params as { projectId?: string }).projectId ?? "");
+    if (!projectId) throw new AppError(400, "MISSING_PROJECT_ID", "projectId is required");
+    const limit = parseIntSafe(req.query.limit, 50, 200);
+    const offset = parseIntSafe(req.query.offset, 0, 10_000);
+    const out = await listPrReviewStatesForProject(projectId, { limit, offset });
+    res.json(ok({ items: out.items.map(toView), total: out.total, limit, offset }));
+  });
 
-  r.get(
-    "/:prNumber",
-    requireAuth,
-    requirePermission("pr.review.read"),
-    async (req: Request, res: Response) => {
-      const projectId = String((req.params as { projectId?: string }).projectId ?? "");
-      const prNumberRaw = (req.params as { prNumber?: string }).prNumber;
-      const prNumber = Number(prNumberRaw);
-      if (!projectId || !Number.isFinite(prNumber) || prNumber <= 0) {
-        throw new AppError(400, "BAD_REQUEST", "projectId and prNumber are required");
-      }
-      // The UI passes the (owner, repo) via querystring since a project may
-      // be wired to multiple repos in the future. Required so the unique
-      // index is fully specified.
-      const repoOwner = String(req.query.owner ?? "");
-      const repoName = String(req.query.repo ?? "");
-      if (!repoOwner || !repoName) {
-        throw new AppError(400, "BAD_REQUEST", "owner and repo query params are required");
-      }
-      const row = await getPrReviewState({
-        projectId,
-        repoOwner,
-        repoName,
-        prNumber: Math.floor(prNumber),
-      });
-      if (!row) {
-        res.status(404).json({ success: false, error: "REVIEW_NOT_FOUND" });
-        return;
-      }
-      res.json(ok(toView(row)));
-    },
-  );
+  r.get("/:prNumber", requirePermission("pr.review.read"), async (req: Request, res: Response) => {
+    const projectId = String((req.params as { projectId?: string }).projectId ?? "");
+    const prNumberRaw = (req.params as { prNumber?: string }).prNumber;
+    const prNumber = Number(prNumberRaw);
+    if (!projectId || !Number.isFinite(prNumber) || prNumber <= 0) {
+      throw new AppError(400, "BAD_REQUEST", "projectId and prNumber are required");
+    }
+    // The UI passes the (owner, repo) via querystring since a project may
+    // be wired to multiple repos in the future. Required so the unique
+    // index is fully specified.
+    const repoOwner = String(req.query.owner ?? "");
+    const repoName = String(req.query.repo ?? "");
+    if (!repoOwner || !repoName) {
+      throw new AppError(400, "BAD_REQUEST", "owner and repo query params are required");
+    }
+    const row = await getPrReviewState({
+      projectId,
+      repoOwner,
+      repoName,
+      prNumber: Math.floor(prNumber),
+    });
+    if (!row) {
+      res.status(404).json({ success: false, error: "REVIEW_NOT_FOUND" });
+      return;
+    }
+    res.json(ok(toView(row)));
+  });
 
   /**
    * Epic #394 P2 review #404 — Re-run a previously-recorded PR review.
@@ -162,8 +170,9 @@ export function prReviewsRouter(deps: PrReviewsRouterDeps = {}): Router {
    */
   r.post(
     "/:prNumber/re-review",
-    requireAuth,
     requirePermission("pr.review.manage"),
+    // A judge-model call plus a GitHub post: its own, tighter bucket (#1472).
+    prReviewsReReviewUserRateLimiter,
     async (req: Request, res: Response) => {
       const projectId = String((req.params as { projectId?: string }).projectId ?? "");
       const prNumberRaw = (req.params as { prNumber?: string }).prNumber;

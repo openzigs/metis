@@ -34,6 +34,10 @@ export const ROLE_HIERARCHY: Record<RoleKey, number> = {
  * - `coordinator` runs project lifecycle + publishes issues.
  * - `developer` runs analyses, drafts issues, reads vault.
  * - `reader` is read-only on projects/documents/analyses.
+ * - PR reviews (#1472): every role reads a project's PR-review history
+ *   (`pr.review.read`); `coordinator` may also re-run a review
+ *   (`pr.review.manage`). `pr.review` — the manual `POST /api/run-reviews`
+ *   trigger — stays admin-only.
  *
  * Tests assert that `reader` has no `*.write` / `*.publish` / `*.delete` /
  * `*.manage` permissions and that `admin` carries the full set.
@@ -71,6 +75,8 @@ export const ROLE_PERMISSIONS: Record<RoleKey, readonly PermissionKey[]> = {
     "review.read",
     "review.decide",
     "review.admin",
+    "pr.review.read",
+    "pr.review.manage",
   ],
   developer: [
     "project.read",
@@ -92,6 +98,7 @@ export const ROLE_PERMISSIONS: Record<RoleKey, readonly PermissionKey[]> = {
     "review.create",
     "review.read",
     "review.decide",
+    "pr.review.read",
   ],
   reader: [
     "project.read",
@@ -102,6 +109,7 @@ export const ROLE_PERMISSIONS: Record<RoleKey, readonly PermissionKey[]> = {
     "task.read",
     "sync.read",
     "review.read",
+    "pr.review.read",
   ],
 };
 

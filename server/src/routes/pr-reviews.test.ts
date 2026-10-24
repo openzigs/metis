@@ -73,7 +73,8 @@ vi.mock("../lib/prisma.js", () => ({
 vi.mock("../middleware/auth.js", () => ({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   requireAuth: (req: any, _res: any, next: any) => {
-    req.user = { userId: "u1", roles: ["admin"], permissions: ["pr.review.read"] };
+    // `role: "admin"` bypasses the router's own project-scope guard (#1472).
+    req.user = { userId: "u1", role: "admin", permissions: ["pr.review.read"] };
     next();
   },
 }));

@@ -94,11 +94,6 @@ export const PROJECT_ACCESS_BASELINE: readonly BaselineEntry[] = [
     note: "role gate fixed in #1075 (project.read / project.update / skill.manage); still no requireProjectAccess of its own",
   },
   {
-    path: "/projects/:projectId/pr-reviews",
-    expression: "prReviewsRouter()",
-    note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",
-  },
-  {
     path: "/projects/:projectId",
     expression: "dataMappingsRouter()",
     note: "service layer filters on the PATH projectId only — it trusts the path, never the caller",
