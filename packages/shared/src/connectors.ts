@@ -83,8 +83,13 @@ export const repoConnectorSchema = z
       .default("main"),
     apiBaseUrl: z.string().url().nullable().default(null),
     secretRef: vaultRefOrEmpty.default(""),
-    // #1475 — the connector has its own GitHub webhook secret (never the secret).
+    // #1475 — the connector has its own GitHub webhook secret that verifies
+    // (never the secret); one it had that no longer verifies (the master key
+    // rotated, or the connector was imported under a new id); and its own
+    // receiver path, for GitHub connectors.
     webhookSecretConfigured: z.boolean().default(false),
+    webhookSecretNeedsRenewal: z.boolean().default(false),
+    webhookPath: z.string().nullable().default(null),
     status: z.enum(CONNECTOR_STATUSES).default("pending"),
     errorMessage: z.string().nullable().default(null),
     lastTestedAt: dateSchema.nullable().default(null),

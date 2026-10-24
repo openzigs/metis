@@ -1,8 +1,9 @@
 /**
  * #1475 — a GitHub repository connection's own webhook secret: created and
- * shown once, replaced, or removed (back to the server's shared secret).
+ * shown once with its receiver URL, replaced or removed after a confirm, and
+ * flagged when it no longer works on this server.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { makeWrapper } from "./test-utils";
@@ -22,9 +23,14 @@ import { ApiError } from "@/lib/api-client";
 
 const api = vi.mocked(repoConnectorsApi);
 const SECRET = "s3cr3t-value-shown-once-AAAAAAAAAAAAAAAAAAAAA";
+const PATH = "/api/webhooks/github/pr/c/r1";
 
 function renderIt(
-  connector: { provider: string; webhookSecretConfigured: boolean },
+  connector: {
+    provider: string;
+    webhookSecretConfigured: boolean;
+    webhookSecretNeedsRenewal?: boolean;
+  },
   onChanged = vi.fn(),
 ) {
   const Wrapper = makeWrapper({ withAuth: false });
@@ -32,7 +38,14 @@ function renderIt(
     <Wrapper>
       <RepoWebhookSecret
         projectId="p1"
-        connector={{ id: "r1", ...connector } as never}
+        connector={
+          {
+            id: "r1",
+            webhookSecretNeedsRenewal: false,
+            webhookPath: connector.provider.startsWith("github") ? PATH : null,
+            ...connector,
+          } as never
+        }
         onChanged={onChanged}
       />
     </Wrapper>,
@@ -40,46 +53,91 @@ function renderIt(
   return onChanged;
 }
 
-beforeEach(() => vi.clearAllMocks());
+let confirmSpy: ReturnType<typeof vi.spyOn>;
+beforeEach(() => {
+  vi.clearAllMocks();
+  confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+});
+afterEach(() => confirmSpy.mockRestore());
+
+function setClipboard(writeText: () => Promise<void>) {
+  Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+}
 
 describe("RepoWebhookSecret (#1475)", () => {
-  it("says a connection without its own secret uses the shared one, and creates one shown once", async () => {
+  it("creates a secret, shows it once with the receiver path, and copies it", async () => {
     api.generateWebhookSecret.mockResolvedValue({ id: "r1", secret: SECRET } as never);
     const onChanged = renderIt({ provider: "github", webhookSecretConfigured: false });
     expect(screen.getByText(/uses the server's shared secret/)).toBeInTheDocument();
-    expect(screen.getByText(/automatic reviews stop if any other project/)).toBeInTheDocument();
+    expect(screen.getByText(/only if\s+no other project connected it earlier/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Use shared secret" })).toBeNull();
 
     await userEvent.click(screen.getByRole("button", { name: "Create webhook secret" }));
+    // A first secret needs no confirm: nothing working is replaced.
+    expect(confirmSpy).not.toHaveBeenCalled();
     expect(api.generateWebhookSecret).toHaveBeenCalledWith("p1", "r1");
     expect(await screen.findByLabelText("Webhook secret (shown only now)")).toHaveValue(SECRET);
+    expect(screen.getByLabelText("Payload URL path")).toHaveValue(PATH);
     expect(onChanged).toHaveBeenCalled();
 
     const writeText = vi.fn(async () => undefined);
-    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-    await userEvent.click(screen.getByRole("button", { name: "Copy" }));
-    expect(writeText).toHaveBeenCalledWith(SECRET);
-  });
-
-  it("shows a generic message when removing fails without a server reason", async () => {
-    api.removeWebhookSecret.mockRejectedValue(new Error("network"));
-    renderIt({ provider: "github", webhookSecretConfigured: true });
-    await userEvent.click(screen.getByRole("button", { name: "Use shared secret" }));
-    await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith("Could not remove the webhook secret"),
+    setClipboard(writeText);
+    await userEvent.click(
+      screen.getByRole("button", { name: "Copy Webhook secret (shown only now)" }),
     );
+    expect(writeText).toHaveBeenCalledWith(SECRET);
+    expect(toast.success).toHaveBeenCalledWith("Copied");
   });
 
-  it("offers to replace or remove an existing secret", async () => {
-    api.removeWebhookSecret.mockResolvedValue({ id: "r1" } as never);
-    const onChanged = renderIt({ provider: "github_enterprise", webhookSecretConfigured: true });
-    expect(screen.getByText(/has its own secret/)).toBeInTheDocument();
-    expect(screen.queryByText(/automatic reviews stop if any other project/)).toBeNull();
-    expect(screen.getByRole("button", { name: "Replace webhook secret" })).toBeInTheDocument();
+  it("does not say Copied when the clipboard write fails", async () => {
+    api.generateWebhookSecret.mockResolvedValue({ id: "r1", secret: SECRET } as never);
+    renderIt({ provider: "github", webhookSecretConfigured: false });
+    await userEvent.click(screen.getByRole("button", { name: "Create webhook secret" }));
+    await screen.findByLabelText("Webhook secret (shown only now)");
+    setClipboard(async () => {
+      throw new Error("denied");
+    });
+    await userEvent.click(
+      screen.getByRole("button", { name: "Copy Webhook secret (shown only now)" }),
+    );
+    await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    expect(toast.success).not.toHaveBeenCalled();
+  });
 
+  it("asks before replacing a working secret, and does nothing when declined", async () => {
+    confirmSpy.mockReturnValue(false);
+    renderIt({ provider: "github_enterprise", webhookSecretConfigured: true });
+    expect(screen.getByText(/has its own secret/)).toBeInTheDocument();
+    expect(screen.getByText(PATH)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Replace webhook secret" }));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(api.generateWebhookSecret).not.toHaveBeenCalled();
+  });
+
+  it("asks before going back to the shared secret, then removes it", async () => {
+    api.removeWebhookSecret.mockResolvedValue({ id: "r1" } as never);
+    const onChanged = renderIt({ provider: "github", webhookSecretConfigured: true });
     await userEvent.click(screen.getByRole("button", { name: "Use shared secret" }));
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(api.removeWebhookSecret).toHaveBeenCalledWith("p1", "r1"));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
+
+    confirmSpy.mockReturnValue(false);
+    api.removeWebhookSecret.mockClear();
+    await userEvent.click(screen.getByRole("button", { name: "Use shared secret" }));
+    expect(api.removeWebhookSecret).not.toHaveBeenCalled();
+  });
+
+  it("says a secret that no longer works needs a new one", () => {
+    renderIt({
+      provider: "github",
+      webhookSecretConfigured: false,
+      webhookSecretNeedsRenewal: true,
+    });
+    expect(screen.getByText(/needs a new secret/)).toBeInTheDocument();
+    expect(screen.getByText(/deliveries to this connection are refused/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create webhook secret" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Use shared secret" })).toBeInTheDocument();
   });
 
   it("shows the server's reason when a secret cannot be created", async () => {
@@ -92,6 +150,15 @@ describe("RepoWebhookSecret (#1475)", () => {
       expect(toast.error).toHaveBeenCalledWith("This server has no VAULT_MASTER_KEY"),
     );
     expect(screen.queryByLabelText("Webhook secret (shown only now)")).toBeNull();
+  });
+
+  it("shows a generic message when removing fails without a server reason", async () => {
+    api.removeWebhookSecret.mockRejectedValue(new Error("network"));
+    renderIt({ provider: "github", webhookSecretConfigured: true });
+    await userEvent.click(screen.getByRole("button", { name: "Use shared secret" }));
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("Could not remove the webhook secret"),
+    );
   });
 
   it("renders nothing for a connection GitHub does not deliver to", () => {

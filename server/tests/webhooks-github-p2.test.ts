@@ -48,6 +48,14 @@ vi.mock("../src/lib/prisma.js", () => ({
     repoConnection: {
       findMany: vi.fn(async () => [
         {
+          // #1475 — only a connected GitHub connector takes shared-secret deliveries.
+          id: "conn_1",
+          projectId: "proj_1",
+          provider: "github",
+          status: "connected",
+          apiBaseUrl: null,
+          createdAt: new Date(0),
+          repoBoundAt: null,
           project: {
             id: "proj_1",
             autoReviewPrs: true,

@@ -45,6 +45,11 @@ export interface SyncMergedPRInput {
    * delivery was signed with that project's connector secret.
    */
   projectId?: string;
+  /**
+   * #1475 — leave these projects' requirements alone: set for a delivery
+   * signed with the shared secret, naming the projects that took their own.
+   */
+  excludeProjectIds?: readonly string[];
 }
 
 export interface SyncMergedPRResult {
@@ -84,15 +89,20 @@ async function resolveLinkedRequirements(
   prisma: PrismaClient,
   closedIssueNumbers: number[],
   repository: NamedRepository | null,
-  projectId?: string,
+  scope: { projectId?: string; excludeProjectIds?: readonly string[] } = {},
 ): Promise<Array<{ id: string; projectId: string }>> {
   if (closedIssueNumbers.length === 0 || !repository) return [];
+  const projectFilter = scope.projectId
+    ? { projectId: scope.projectId }
+    : scope.excludeProjectIds?.length
+      ? { projectId: { notIn: [...scope.excludeProjectIds] } }
+      : {};
   const published = await prisma.publishedIssue.findMany({
     // #1438 — a merged PR changes nothing in a soft-deleted project.
     where: {
       issueNumber: { in: closedIssueNumbers },
       destination: "github",
-      draft: { project: { deletedAt: null }, ...(projectId ? { projectId } : {}) },
+      draft: { project: { deletedAt: null }, ...projectFilter },
     },
     include: { draft: true, batch: { select: { targetOwner: true, targetRepo: true } } },
   });
@@ -123,7 +133,7 @@ export async function syncMergedPR(
     prisma,
     links.closes,
     repositoryOfPrUrl(prUrl) ?? repositoryOfFullName(repo.full_name),
-    input.projectId,
+    { projectId: input.projectId, excludeProjectIds: input.excludeProjectIds },
   );
   if (requirements.length === 0) {
     return { requirementsUpdated: 0, implementationsCreated: 0, driftedFiles: [] };

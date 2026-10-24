@@ -31,6 +31,16 @@ vi.mock("../src/lib/prisma.js", () => ({
 import { githubPrWebhookRouter } from "../src/routes/webhooks-github.js";
 
 const SECRET = "webhook-secret";
+// #1475 — only a connected GitHub connector takes shared-secret deliveries.
+const CONN = {
+  id: "conn1",
+  projectId: "proj1",
+  provider: "github",
+  status: "connected",
+  apiBaseUrl: null,
+  createdAt: new Date(0),
+  repoBoundAt: null,
+};
 
 beforeEach(() => {
   process.env.GITHUB_WEBHOOK_SECRET = SECRET;
@@ -144,7 +154,9 @@ describe("POST /api/webhooks/github/pr", () => {
   });
 
   it("invokes the judge when judge+octokit are injected and project.autoReviewPrs is true", async () => {
-    repoFindMany.mockResolvedValueOnce([{ project: { id: "proj1", autoReviewPrs: true } }]);
+    repoFindMany.mockResolvedValueOnce([
+      { ...CONN, project: { id: "proj1", autoReviewPrs: true } },
+    ]);
     // AC traceability now resolves criteria via PublishedIssue lookup; the
     // legacy in-body heuristic was retired in Epic #394 (#398).
     findMany.mockResolvedValueOnce([
@@ -217,7 +229,9 @@ describe("POST /api/webhooks/github/pr", () => {
   });
 
   it("skips the review (no_published_issue) when the linked issue cannot be resolved", async () => {
-    repoFindMany.mockResolvedValueOnce([{ project: { id: "proj1", autoReviewPrs: true } }]);
+    repoFindMany.mockResolvedValueOnce([
+      { ...CONN, project: { id: "proj1", autoReviewPrs: true } },
+    ]);
     findMany.mockResolvedValueOnce([]); // no PublishedIssue match
     const judgeFn = vi.fn(async () => "{}");
     const app = express();
@@ -252,6 +266,7 @@ describe("POST /api/webhooks/github/pr", () => {
   it("skips with diff_too_large when the PR diff exceeds the configured cap", async () => {
     repoFindMany.mockResolvedValueOnce([
       {
+        ...CONN,
         project: {
           id: "proj1",
           autoReviewPrs: true,
@@ -305,7 +320,9 @@ describe("POST /api/webhooks/github/pr", () => {
   });
 
   it("skips when octokit.pulls.get throws (audit-only, no 500)", async () => {
-    repoFindMany.mockResolvedValueOnce([{ project: { id: "proj1", autoReviewPrs: true } }]);
+    repoFindMany.mockResolvedValueOnce([
+      { ...CONN, project: { id: "proj1", autoReviewPrs: true } },
+    ]);
     findMany.mockResolvedValueOnce([
       {
         issueNumber: 5,

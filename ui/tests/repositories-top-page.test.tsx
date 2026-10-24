@@ -47,6 +47,8 @@ function repo(id: string, projectId: string, label: string) {
     hasLocalSource: false,
     hasUploadArchive: false,
     webhookSecretConfigured: false,
+    webhookSecretNeedsRenewal: false,
+    webhookPath: null,
     defaultBranch: "main",
     isPrimary: false,
     apiBaseUrl: null,

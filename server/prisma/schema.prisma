@@ -1034,6 +1034,13 @@ model RepoConnection {
   /// derived from VAULT_MASTER_KEY and never stored. NULL = the connector takes
   /// deliveries signed with the deployment GITHUB_WEBHOOK_SECRET.
   webhookSecretNonce String?
+  /// #1475 — non-secret check of the derived secret; a mismatch (master key
+  /// rotated, or the connector's id changed on import) means "needs a new secret".
+  webhookSecretCheck String?
+  /// #1475 — when the connector began naming its current repository (create,
+  /// or a change of provider/owner/name/server). The earliest live connected
+  /// connector takes shared-secret deliveries. NULL reads as createdAt.
+  repoBoundAt   DateTime?
   status        String    @default("pending") // pending|connected|error|disabled
   errorMessage  String?
   lastTestedAt  DateTime?
@@ -1067,6 +1074,8 @@ model RepoConnection {
   @@unique([projectId], where: { isPrimary: true, deletedAt: null }, map: "repo_connections_projectId_primary_key")
   @@index([secretId])
   @@index([projectId, status])
+  /// #1475 — the webhook receiver looks connectors up by repository.
+  @@index([ownerOrOrg, repoName])
   @@map("repo_connections")
 }
 
