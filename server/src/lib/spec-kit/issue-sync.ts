@@ -18,6 +18,15 @@ import { writeFeatureArtifact, getFeatureArtifact } from "./feature-artifacts.js
 import { audit } from "../audit/audit-service.js";
 import { splitTaskTitle } from "./tasks-parser.js";
 import { issueTitle } from "./commands/taskstoissues.js";
+import { createChildLogger } from "../logger.js";
+import { logDeletedProjectSkip } from "../projects/deleted-project-guard.js";
+import {
+  OPEN_ATTRIBUTION,
+  projectIdFilter,
+  type IssueAttribution,
+} from "../webhooks/issue-attribution.js";
+
+const log = createChildLogger("spec-kit-issue-sync");
 
 export type IssuesEventAction =
   | "closed"
@@ -39,6 +48,11 @@ export interface IssueSyncInput {
   newTitle?: string;
   /** Optional changes block from the GitHub `edited` payload. */
   changes?: { title?: { from: string } };
+  /**
+   * #1483 — the projects the delivery may act on, decided by the receiver from
+   * who signed it. Omitted: any live project, earliest export first.
+   */
+  attribution?: IssueAttribution;
 }
 
 export type IssueSyncOutcome =
@@ -218,6 +232,7 @@ export async function syncIssueEvent(
     repoOwner: input.repoOwner,
     repoName: input.repoName,
     issueNumber: input.issueNumber,
+    ...(input.attribution ? { attribution: input.attribution } : {}),
   });
   if (!exp) {
     return { handled: false, reason: "NO_TASK_EXPORT" };
@@ -288,6 +303,7 @@ interface FindExportInput {
   repoOwner: string;
   repoName: string;
   issueNumber: number;
+  attribution?: IssueAttribution;
 }
 
 interface ExportRow {
@@ -296,17 +312,63 @@ interface ExportRow {
   taskId: string;
 }
 
+/**
+ * #1483 — the export an issue event is for, within the projects the delivery's
+ * signer may act on (`IssueAttribution`). Earliest export first (then id), so
+ * two projects that exported to the same issue number always resolve the same
+ * way; a soft-deleted project's export is skipped, never written to.
+ *
+ * `spec_kit_task_exports` has no relation to `projects`, so the live check is
+ * a second, bounded query over the candidate rows' project ids.
+ */
 async function defaultFindExport(input: FindExportInput): Promise<ExportRow | null> {
-  const row = await prisma.specKitTaskExport.findFirst({
+  const attribution = input.attribution ?? OPEN_ATTRIBUTION;
+  const projectId = projectIdFilter(attribution);
+  const rows = await prisma.specKitTaskExport.findMany({
     where: {
       repoOwner: input.repoOwner,
       repoName: input.repoName,
       issueNumber: input.issueNumber,
+      ...(projectId === undefined ? {} : { projectId }),
     },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    take: MAX_EXPORT_CANDIDATES,
     select: { projectId: true, featureSlug: true, taskId: true },
   });
-  return row;
+  if (rows.length === 0) return null;
+  const live = new Set(
+    (
+      await prisma.project.findMany({
+        where: { id: { in: [...new Set(rows.map((r) => r.projectId))] }, deletedAt: null },
+        select: { id: true },
+      })
+    ).map((p) => p.id),
+  );
+  const match = rows.find((r) => live.has(r.projectId)) ?? null;
+  if (!match) {
+    logDeletedProjectSkip({
+      path: "spec-kit.issue-sync",
+      projectId: rows[0]!.projectId,
+      sourceType: "repo",
+      sourceId: `${input.repoOwner}/${input.repoName}#${input.issueNumber}`,
+    });
+    return null;
+  }
+  const others = [...new Set(rows.filter((r) => live.has(r.projectId)).map((r) => r.projectId))];
+  if (others.length > 1) {
+    log.warn("speckit.issue_sync_owner_ambiguous", {
+      repo: `${input.repoOwner}/${input.repoName}`,
+      issueNumber: input.issueNumber,
+      syncedFor: match.projectId,
+      notSyncedFor: others.filter((p) => p !== match.projectId),
+      hint: "give each project's repository connection its own webhook secret",
+    });
+  }
+  return match;
 }
+
+/** Candidate exports read per event; one issue number is exported once per project. */
+const MAX_EXPORT_CANDIDATES = 50;
 
 interface FindFeatureInput {
   projectId: string;

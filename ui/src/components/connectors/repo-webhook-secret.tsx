@@ -27,6 +27,7 @@ type Connector = Pick<
   | "webhookSecretConfigured"
   | "webhookSecretNeedsRenewal"
   | "webhookPath"
+  | "issuesWebhookPath"
 >;
 
 async function copy(text: string): Promise<void> {
@@ -187,16 +188,37 @@ export function RepoWebhookSecret({
               value={connector.webhookPath}
             />
           ) : null}
+          {connector.issuesWebhookPath ? (
+            <CopyField
+              id={`webhook-issues-url-${connector.id}`}
+              label="Issue events payload URL path"
+              value={connector.issuesWebhookPath}
+            />
+          ) : null}
           <p>
             In the repository&apos;s GitHub webhook settings, set the Payload URL to your METIS
             server&apos;s public address followed by this path, and the Secret to this secret. Until
             you do, that webhook&apos;s deliveries no longer reach this project.
           </p>
+          {connector.issuesWebhookPath ? (
+            <p data-testid={`webhook-issues-hint-${connector.id}`}>
+              Issue events (task sync and drift) now reach this project only at the issue events
+              path, signed with this same secret: point the issue webhook of each repository this
+              project publishes issues to at it.
+            </p>
+          ) : null}
         </div>
       ) : configured && connector.webhookPath ? (
-        <p className="text-muted-foreground">
-          Payload URL path: <code>{connector.webhookPath}</code>
-        </p>
+        <div className="space-y-1 text-muted-foreground">
+          <p>
+            Payload URL path: <code>{connector.webhookPath}</code>
+          </p>
+          {connector.issuesWebhookPath ? (
+            <p>
+              Issue events payload URL path: <code>{connector.issuesWebhookPath}</code>
+            </p>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

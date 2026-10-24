@@ -14,6 +14,7 @@ import {
   type ReconcileDeps,
   type ReconcileResult,
 } from "./reconcile-service.js";
+import type { IssueAttribution } from "../webhooks/issue-attribution.js";
 
 const log = createChildLogger("sync-github-webhook");
 
@@ -107,12 +108,17 @@ export function normalizeGithubIssueEvent(
 }
 
 export interface GithubIssueDriftDelivery {
-  /** `X-GitHub-Event` header value. */
+  /**
+   * The event the delivery is. #1483 — the receiver reads it from the SIGNED
+   * body (`signedGithubEvent`), never from the unsigned `X-GitHub-Event` header.
+   */
   eventType: string;
   /** `X-GitHub-Delivery` UUID — the DriftEvent's idempotency key. */
   deliveryId: string;
   /** Parsed JSON body, already signature-verified by the caller. */
   payload: unknown;
+  /** #1483 — the projects the delivery may act on (see `IssueAttribution`). */
+  attribution?: IssueAttribution;
 }
 
 /**
@@ -137,5 +143,5 @@ export async function reconcileGithubIssueDelivery(
   const payload = (delivery.payload ?? {}) as GithubIssueWebhookPayload;
   const { event, reason } = normalizeGithubIssueEvent(payload, delivery.deliveryId);
   if (!event) return { handled: false, reason };
-  return reconcileIssueChange(event, deps);
+  return reconcileIssueChange(event, deps, delivery.attribution);
 }
