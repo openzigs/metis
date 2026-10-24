@@ -5,7 +5,10 @@
  * dependencies stubbed. We focus on the route layer's responsibilities:
  * routing, validation, RBAC, and ConnectorError → AppError mapping.
  */
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import nodePath from "node:path";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 interface RepoRow {
   id: string;
@@ -273,7 +276,12 @@ vi.mock("../src/lib/connectors/vault-resolver.js", () => ({
 
 import request from "supertest";
 import { createApp } from "../src/app.js";
-import { __setOctokitFactory, type OctokitLike } from "../src/lib/connectors/repo/repo-service.js";
+import {
+  __setOctokitFactory,
+  __setSimpleGitFactory,
+  type OctokitLike,
+  type SimpleGitLike,
+} from "../src/lib/connectors/repo/repo-service.js";
 import {
   __resetDriverRegistry,
   registerDriver,
@@ -324,6 +332,25 @@ function fakeDbAdapter(): DbDriverAdapter {
   } as unknown as DbDriverAdapter;
 }
 
+// #1512 — creating the first repo connector fires `triggerDeepIngest` →
+// `shallowCloneRepo` in the background. Without this stub that ran a real
+// `git clone https://github.com/octocat/demo.git`. The fake records the clone and
+// fails it like an unreachable remote, so the deep ingest ends in its handled
+// CLONE_FAILED path with no process spawn and no network.
+const cloneCalls: { url: string; target: string }[] = [];
+function fakeGit(): SimpleGitLike {
+  const git: SimpleGitLike = {
+    clone: vi.fn(async (url: string, target: string) => {
+      cloneCalls.push({ url, target });
+      throw new Error("clone stubbed in connector-routes.test.ts (#1512)");
+    }),
+    env: () => git,
+  };
+  return git;
+}
+let cloneDir: string;
+const originalCloneDir = process.env.REPO_CLONE_DIR;
+
 let app: ReturnType<typeof createApp>;
 
 async function login(username: string): Promise<string> {
@@ -334,6 +361,14 @@ async function login(username: string): Promise<string> {
 
 beforeAll(() => {
   process.env.RATE_LIMIT_MAX = "100000";
+  cloneDir = mkdtempSync(nodePath.join(os.tmpdir(), "metis-1512-"));
+  process.env.REPO_CLONE_DIR = cloneDir;
+});
+
+afterAll(() => {
+  if (originalCloneDir === undefined) delete process.env.REPO_CLONE_DIR;
+  else process.env.REPO_CLONE_DIR = originalCloneDir;
+  rmSync(cloneDir, { recursive: true, force: true });
 });
 
 beforeEach(() => {
@@ -346,11 +381,14 @@ beforeEach(() => {
   __resetDriverRegistry();
   registerDriver("postgres", () => fakeDbAdapter());
   __setOctokitFactory(() => fakeOctokit());
+  cloneCalls.length = 0;
+  __setSimpleGitFactory(() => fakeGit());
   app = createApp();
 });
 
 afterEach(() => {
   __setOctokitFactory(null);
+  __setSimpleGitFactory(null);
   vi.clearAllMocks();
 });
 
@@ -382,6 +420,11 @@ describe("/api/projects/:projectId/connectors/repos", () => {
       });
     expect(create.status).toBe(201);
     const id = create.body.data.id;
+    // #1512 — the first connector auto-ingests; the clone must hit the stub.
+    expect(create.body.data.autoIngestTriggered).toBe(true);
+    await vi.waitFor(() => expect(cloneCalls).toHaveLength(1));
+    expect(cloneCalls[0].url).toBe("https://github.com/octocat/demo.git");
+    expect(cloneCalls[0].target.startsWith(cloneDir)).toBe(true);
 
     const get = await request(app)
       .get(`/api/projects/proj_1/connectors/repos/${id}`)

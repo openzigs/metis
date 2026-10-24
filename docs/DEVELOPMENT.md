@@ -189,6 +189,21 @@ Conventional Commits format is mandatory (`feat:`, `fix:`, `chore:`, `docs:`, `r
 - Reset module-level singletons between tests (`__resetSchedulerBootstrap()`, `resetMetricsForTests()`, etc.).
 - Fixtures live in `server/tests/fixtures/`. Don't hit the network — every external call should be mocked.
 
+#### The unit suite refuses network egress (issue #1512)
+
+`server/tests/setup-egress-guard.ts` fails any `pnpm test` test that opens a TCP/TLS
+connection to a non-loopback host (`http`, `fetch`, drivers — hooked at
+`net.Socket#connect`) or spawns `git` against a remote URL (hooked at
+`ChildProcess#spawn` and the sync spawners, since a child's sockets are invisible
+in-process). The attempt fails like a real outage (`ENETUNREACH`, or a git that exits 128)
+and is recorded, and the test fails in `afterEach` even if the code under test swallowed
+the error. Loopback is always allowed, and so is a hostname whose own pinned `lookup`
+resolves to loopback (the SSRF pinning tests). Stub the path instead —
+`__setSimpleGitFactory`, `__setOctokitFactory`, a `vi.mock`, or a local server. A suite
+that truly needs a remote goes in `EGRESS_ALLOWLIST` with a reason. The guard stands down
+under `RUN_INTEGRATION_TESTS` (`postgres-unit`, `postgres-adapter`) and is not loaded by
+`pnpm test:integration`.
+
 #### The unit suite needs no database, on either provider (issue #876)
 
 `pnpm test` stubs Prisma per-suite (`vi.mock("../src/lib/prisma.js", …)`) and executes **no
