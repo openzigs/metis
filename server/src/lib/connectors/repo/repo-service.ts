@@ -622,12 +622,17 @@ export async function updateRepoConnector(
     if (patch.apiBaseUrl) assertHttpsUrl(patch.apiBaseUrl);
     data.apiBaseUrl = patch.apiBaseUrl;
   }
-  // #1475 — naming another repository (or server) starts a new binding, so a
-  // connector repointed at a repository never counts as its earliest one.
+  // #1475 — naming another repository (or server) starts a new binding: the
+  // connector counts from now, and its `connected` status, earned against the
+  // old repository, is no proof it reaches the new one, so it goes back to
+  // pending until it is tested again.
   const rebinds = (["provider", "ownerOrOrg", "repoName", "apiBaseUrl"] as const).some(
     (k) => k in data && (data[k] ?? null) !== (existing[k] ?? null),
   );
-  if (rebinds) data.repoBoundAt = new Date();
+  if (rebinds) {
+    data.repoBoundAt = new Date();
+    data.status = "pending";
+  }
   if (patch.secretRef !== undefined) {
     // #480 — a re-sent `${vault:<bound id>}` keeps the binding as it is,
     // even when that secret has since been deleted.

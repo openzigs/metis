@@ -437,7 +437,9 @@ async function verifyConnectorDelivery(
     GITHUB_PROVIDERS.has(conn.provider) &&
     connectorSecretState(conn, root) === "active" &&
     typeof fullName === "string" &&
-    fullName.toLowerCase() === `${conn.ownerOrOrg ?? ""}/${conn.repoName ?? ""}`.toLowerCase();
+    // Exact, as the queued worker's `resolveProjectForQueuedReview` matches it:
+    // a delivery accepted here is never then dropped there.
+    fullName === `${conn.ownerOrOrg ?? ""}/${conn.repoName ?? ""}`;
   const secret =
     usable && conn?.webhookSecretNonce && root
       ? connectorWebhookSecret(root, conn.id, conn.webhookSecretNonce)

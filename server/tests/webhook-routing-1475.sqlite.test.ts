@@ -367,6 +367,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(enqueuedFor()).toEqual([PA]);
       });
 
+      it("the earliest binding wins whatever order the rows were written in", async () => {
+        // PA's row was written first; bind it later than PB's, so only the
+        // ordering (not the table's scan order) can pick PB.
+        await db.repoConnection.update({
+          where: { id: `repo-${PA}` },
+          data: { createdAt: new Date("2026-03-01T00:00:00.000Z") },
+        });
+        await deliver(DEPLOYMENT_SECRET, payloadOf(REPO, 14));
+        expect(enqueuedFor()).toEqual([PB]);
+        // repoBoundAt, when set, outranks createdAt.
+        enqueued.length = 0;
+        await db.repoConnection.update({
+          where: { id: `repo-${PB}` },
+          data: { repoBoundAt: new Date("2026-04-01T00:00:00.000Z") },
+        });
+        await deliver(DEPLOYMENT_SECRET, payloadOf(REPO, 15));
+        expect(enqueuedFor()).toEqual([PA]);
+      });
+
       it("a pending connector never counts, even one bound to the repository earlier", async () => {
         await db.repoConnection.update({
           where: { id: `repo-${PB}` },
@@ -398,6 +417,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           await updateRepoConnector(PB, "repo-b-old-1475", { repoName: "app" }, "u-b");
           await deliver(DEPLOYMENT_SECRET, payloadOf(REPO, 5));
           expect(enqueuedFor()).toEqual([PA]);
+          // Its `connected` was earned against the old repository: repointed, it is
+          // pending again, so it takes nothing even when no other connector is eligible.
+          const repointed = await db.repoConnection.findUnique({
+            where: { id: "repo-b-old-1475" },
+          });
+          expect(repointed?.status).toBe("pending");
+          enqueued.length = 0;
+          await db.repoConnection.updateMany({
+            where: { id: { in: [`repo-${PA}`, `repo-${PB}`] } },
+            data: { status: "error" },
+          });
+          await deliver(DEPLOYMENT_SECRET, payloadOf(REPO, 13));
+          expect(enqueuedFor()).toEqual([]);
         } finally {
           await db.repoConnection.delete({ where: { id: "repo-b-old-1475" } });
         }
