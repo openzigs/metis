@@ -12,13 +12,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 
+interface TestUser {
+  userId: string;
+  role: string;
+  workspaces: string[];
+}
+const ADMIN: TestUser = { userId: "admin-1", role: "admin", workspaces: [] };
+let currentUser: TestUser = ADMIN;
 vi.mock("../src/middleware/auth.js", () => ({
   requireAuth: (req: express.Request, _res: express.Response, next: () => void) => {
-    (req as unknown as { user: unknown }).user = {
-      userId: "admin-1",
-      role: "admin",
-      workspaces: [],
-    };
+    (req as unknown as { user: TestUser }).user = currentUser;
     next();
   },
 }));
@@ -82,6 +85,7 @@ function stored(source: string, config: Record<string, unknown>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  currentUser = ADMIN;
   projectFindUnique.mockResolvedValue({
     workspaceId: "ws-1",
     workspace: { deletedAt: null, members: [{ id: "m" }] },
@@ -140,6 +144,38 @@ describe("#1504 — creating a trigger", () => {
   it("leaves non-GitHub sources alone (a dotted `event` there is not a GitHub event)", async () => {
     const res = await post({ name: "Hook", source: "webhook", config: { event: "a.b" } });
     expect(res.status).toBe(201);
+  });
+});
+
+describe("#1504 — authorization still runs before the event check", () => {
+  const dotted = { name: "GH", source: "github", config: { event: "issues.opened" } };
+
+  it("404s a non-admin of another workspace without revealing the event refusal", async () => {
+    currentUser = { userId: "u-other", role: "coordinator", workspaces: ["ws-other"] };
+    projectFindUnique.mockResolvedValue({
+      workspaceId: "ws-1",
+      workspace: { deletedAt: null, members: [] },
+    });
+    const created = await post(dotted);
+    expect(created.status).toBe(404);
+    expect(JSON.stringify(created.body)).not.toContain("issues.opened");
+    stored("github", { event: "issues" });
+    const patched = await patch({ config: { event: "issues.opened" } });
+    expect(patched.status).toBe(404);
+    expect(triggerCreate).not.toHaveBeenCalled();
+    expect(triggerUpdate).not.toHaveBeenCalled();
+  });
+
+  it("403s a member of the project's workspace who lacks admin.write", async () => {
+    currentUser = { userId: "u-reader", role: "reader", workspaces: ["ws-1"] };
+    const created = await post(dotted);
+    expect(created.status).toBe(403);
+    expect(JSON.stringify(created.body)).not.toContain("issues.opened");
+    stored("github", { event: "issues" });
+    const patched = await patch({ config: { event: "issues.opened" } });
+    expect(patched.status).toBe(403);
+    expect(triggerCreate).not.toHaveBeenCalled();
+    expect(triggerUpdate).not.toHaveBeenCalled();
   });
 });
 
