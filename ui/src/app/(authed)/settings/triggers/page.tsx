@@ -134,6 +134,20 @@ function parseConfig(raw: TriggerDto["config"]): Record<string, unknown> {
   return raw as Record<string, unknown>;
 }
 
+/**
+ * #1504 — a GitHub trigger's `event` is matched against the bare GitHub event
+ * name, so a dotted value (`issues.opened`) saved before the server refused it
+ * never fires. Returns the bare event to suggest ("" when nothing precedes the
+ * dot), or null when there is nothing to warn about. The stored config is never
+ * rewritten.
+ */
+function dottedGithubEvent(source: string, cfg: Record<string, unknown>): string | null {
+  if (source !== "github" || typeof cfg.event !== "string" || !cfg.event.includes(".")) {
+    return null;
+  }
+  return cfg.event.slice(0, cfg.event.indexOf("."));
+}
+
 export default function TriggersSettingsPage() {
   const qc = useQueryClient();
   const [projectId, setProjectId] = useState("");
@@ -217,7 +231,7 @@ export default function TriggersSettingsPage() {
               data-testid="tg-secret"
             />
             <textarea
-              placeholder='Extra config JSON (e.g. {"repo":"acme/app","event":"issues.opened"})'
+              placeholder='Extra config JSON (e.g. {"repo":"acme/app","event":"issues"})'
               className="h-20 w-full rounded-md border bg-background p-2 font-mono text-xs"
               value={extraConfig}
               onChange={(e) => setExtraConfig(e.target.value)}
@@ -230,6 +244,11 @@ export default function TriggersSettingsPage() {
             >
               {create.isPending ? "Saving…" : "Add trigger"}
             </Button>
+            {create.isError && (
+              <p role="alert" className="text-sm text-destructive" data-testid="tg-create-error">
+                {(create.error as Error).message}
+              </p>
+            )}
           </>
         )}
       </Card>
@@ -257,6 +276,7 @@ export default function TriggersSettingsPage() {
             <ul className="space-y-2">
               {list.data.items.map((t) => {
                 const cfg = parseConfig(t.config);
+                const bareEvent = dottedGithubEvent(t.source, cfg);
                 return (
                   <li
                     key={t.id}
@@ -274,6 +294,16 @@ export default function TriggersSettingsPage() {
                         <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs">
                           disabled
                         </span>
+                      )}
+                      {bareEvent !== null && (
+                        <p
+                          className="mt-1 text-xs text-destructive"
+                          data-testid={`tg-event-warning-${t.id}`}
+                        >
+                          {`Event "${String(cfg.event)}" never matches: GitHub triggers match the bare event name${
+                            bareEvent ? ` ("${bareEvent}")` : ""
+                          } and action filtering isn't supported. Delete this trigger and add it again with the bare event.`}
+                        </p>
                       )}
                     </div>
                     <div className="flex gap-2">

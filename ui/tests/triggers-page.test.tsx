@@ -215,3 +215,66 @@ describe("TriggersSettingsPage — trigger CRUD", () => {
     await waitFor(() => expect(screen.getByText("No triggers.")).toBeInTheDocument());
   });
 });
+
+describe("TriggersSettingsPage — GitHub event is the bare name (#1504)", () => {
+  it("suggests a bare event in the config placeholder, not `issues.opened`", async () => {
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <TriggersSettingsPage />
+      </Wrapper>,
+    );
+    await pickProject("proj_alpha");
+    const placeholder = (await screen.findByTestId("tg-config")).getAttribute("placeholder");
+    expect(placeholder).toContain('"event":"issues"}');
+    expect(placeholder).not.toContain("issues.opened");
+  });
+
+  it("shows the server's refusal when saving a dotted GitHub event", async () => {
+    createTriggerMock.mockRejectedValueOnce(
+      new Error(
+        'GitHub trigger event "issues.opened" never matches: the event is the bare GitHub event name, so use "issues"; action filtering isn\'t supported.',
+      ),
+    );
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <TriggersSettingsPage />
+      </Wrapper>,
+    );
+    await pickProject("proj_alpha");
+    fireEvent.change(await screen.findByTestId("tg-name"), { target: { value: "GH" } });
+    fireEvent.change(screen.getByTestId("tg-source"), { target: { value: "github" } });
+    fireEvent.change(screen.getByTestId("tg-config"), {
+      target: { value: '{"event":"issues.opened"}' },
+    });
+    fireEvent.click(screen.getByTestId("tg-save"));
+    const alert = await screen.findByTestId("tg-create-error");
+    expect(alert).toHaveTextContent('use "issues"');
+    expect(alert).toHaveTextContent("action filtering isn't supported");
+  });
+
+  it("warns on a stored GitHub trigger whose event is dotted, naming the bare event", async () => {
+    listTriggersMock.mockResolvedValue({
+      items: [
+        makeTriggerRow({ id: "dotted", config: { repo: "acme/app", event: "issues.opened" } }),
+        makeTriggerRow({ id: "bare", config: { repo: "acme/app", event: "issues" } }),
+        makeTriggerRow({ id: "hook", source: "webhook", config: { event: "a.b" } }),
+        makeTriggerRow({ id: "lead", config: JSON.stringify({ event: ".opened" }) }),
+      ],
+    });
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <TriggersSettingsPage />
+      </Wrapper>,
+    );
+    await pickProject("proj_alpha");
+    const warning = await screen.findByTestId("tg-event-warning-dotted");
+    expect(warning).toHaveTextContent('Event "issues.opened" never matches');
+    expect(warning).toHaveTextContent('("issues")');
+    expect(screen.queryByTestId("tg-event-warning-bare")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("tg-event-warning-hook")).not.toBeInTheDocument();
+    expect(screen.getByTestId("tg-event-warning-lead")).not.toHaveTextContent('("")');
+  });
+});
