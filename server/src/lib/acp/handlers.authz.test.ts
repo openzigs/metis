@@ -89,6 +89,27 @@ const agents: AgentRow[] = [
   { id: "a-builtin", name: "fleet", description: "", projectId: null, updatedAt: new Date(3) },
 ];
 const enablements: Array<{ customAgentId: string; projectId: string; enabled: boolean }> = [];
+// #1445 — off until enabled: each project's own agent starts switched ON for it.
+function resetEnablements(): void {
+  enablements.length = 0;
+  enablements.push(
+    { customAgentId: "a-own", projectId: "p-own", enabled: true },
+    { customAgentId: "a-foreign", projectId: "p-foreign", enabled: true },
+  );
+}
+function setEnabled(customAgentId: string, projectId: string, enabled: boolean): void {
+  const row = enablements.find(
+    (e) => e.customAgentId === customAgentId && e.projectId === projectId,
+  );
+  if (row) row.enabled = enabled;
+  else enablements.push({ customAgentId, projectId, enabled });
+}
+/** Drop every row for an agent: nobody has switched it on or off anywhere. */
+function neverToggled(customAgentId: string): void {
+  for (let i = enablements.length - 1; i >= 0; i--)
+    if (enablements[i]!.customAgentId === customAgentId) enablements.splice(i, 1);
+}
+resetEnablements();
 const skills: SkillRow[] = [
   {
     id: "s-global",
@@ -177,6 +198,9 @@ const prisma = {
   customAgent: {
     findMany: vi.fn(async ({ where }: { where: W }) =>
       agents.filter((a) => {
+        // #1445 — `listUsableCustomAgentRows`' `{ id: { in } }` lookup.
+        if (where.id && typeof where.id === "object" && "in" in (where.id as W))
+          return (((where.id as W).in as string[]) ?? []).includes(a.id);
         if (Array.isArray(where.OR))
           return (where.OR as W[]).some(
             (c) =>
@@ -216,7 +240,7 @@ const prisma = {
       async ({
         where,
       }: {
-        where: { projectId?: string; enabled: boolean; customAgentId?: { in: string[] } };
+        where: { projectId?: string; enabled?: boolean; customAgentId?: { in: string[] } };
       }) =>
         enablements
           .filter(
@@ -224,7 +248,7 @@ const prisma = {
               (where.projectId === undefined || e.projectId === where.projectId) &&
               (where.customAgentId === undefined ||
                 where.customAgentId.in.includes(e.customAgentId)) &&
-              e.enabled === where.enabled,
+              (where.enabled === undefined || e.enabled === where.enabled),
           )
           .map((e) => ({ ...e })),
     ),
@@ -287,6 +311,7 @@ const ALL = [ACP_SCOPE_WILDCARD];
 
 beforeEach(() => {
   createdRuns.length = 0;
+  resetEnablements();
   vi.clearAllMocks();
 });
 
@@ -327,34 +352,63 @@ describe("list handlers — tenant scoping (BOLA)", () => {
         error?: { code: number };
       };
     afterEach(() => {
-      enablements.length = 0;
+      resetEnablements();
     });
 
     it("for a project: owned agents, plus agents turned on for it — never one turned off", async () => {
       expect(await listed({ projectId: "p-own" })).toEqual(["a-own"]);
-      enablements.push({ customAgentId: "a-builtin", projectId: "p-own", enabled: true });
+      setEnabled("a-builtin", "p-own", true);
       expect(await listed({ projectId: "p-own" })).toEqual(["a-builtin", "a-own"]);
-      enablements.push({ customAgentId: "a-own", projectId: "p-own", enabled: false });
+      setEnabled("a-own", "p-own", false);
       expect(await listed({ projectId: "p-own" })).toEqual(["a-builtin"]);
       // Admin too: the per-project list is the project's, not the caller's.
       expect(await listed({ projectId: "p-own" }, "u-admin", ALL)).toEqual(["a-builtin"]);
     });
 
     it("matches run-agent for the same project, agent by agent", async () => {
-      enablements.push({ customAgentId: "a-own", projectId: "p-own", enabled: false });
+      setEnabled("a-own", "p-own", false);
       expect(await listed({ projectId: "p-own" })).not.toContain("a-own");
       expect((await run("deployer")).error?.code).toBe(ACP_ERR.AGENT_NOT_FOUND);
-      enablements.length = 0;
+      resetEnablements();
       expect(await listed({ projectId: "p-own" })).toContain("a-own");
       expect((await run("deployer")).result).toBeDefined();
     });
 
     it("the catalog (no project) drops an agent turned off for its own project; another project's switch does not", async () => {
-      enablements.push({ customAgentId: "a-own", projectId: "p-other", enabled: false });
+      setEnabled("a-own", "p-other", false);
       expect(await listed({})).toEqual(["a-builtin", "a-own"]);
-      enablements.push({ customAgentId: "a-own", projectId: "p-own", enabled: false });
+      setEnabled("a-own", "p-own", false);
       expect(await listed({})).toEqual(["a-builtin"]);
       expect(await listed({}, "u-admin", ALL)).toEqual(["a-builtin", "a-foreign"]);
+    });
+  });
+
+  describe("#1445 — the project's own agent nobody switched on is off for ACP", () => {
+    afterEach(() => {
+      resetEnablements();
+    });
+
+    it("is not listed for its project nor in the catalog, and run-agent refuses it", async () => {
+      neverToggled("a-own");
+      const listedFor = async (params: Record<string, string>) =>
+        (
+          (await call("list-agents", params, "u-low", READ)) as { result: Array<{ id: string }> }
+        ).result
+          .map((r) => r.id)
+          .sort();
+      expect(await listedFor({ projectId: "p-own" })).toEqual([]);
+      expect(await listedFor({})).toEqual(["a-builtin"]);
+      const res = await call(
+        "run-agent",
+        { projectId: "p-own", agentKey: "deployer" },
+        "u-low",
+        RUN,
+      );
+      expect((res as { error: { code: number } }).error.code).toBe(ACP_ERR.AGENT_NOT_FOUND);
+      expect(prisma.backgroundRun.create).not.toHaveBeenCalled();
+      // Switching it on makes it runnable.
+      setEnabled("a-own", "p-own", true);
+      expect(await listedFor({ projectId: "p-own" })).toEqual(["a-own"]);
     });
   });
 
@@ -408,13 +462,13 @@ describe("run-agent — parity with REST invoke twin (BOLA)", () => {
 
   it("resolves an agent ENABLED for the project (not owned by it) — mirrors REST enablement", async () => {
     // Built-in fleet agent "fleet" enabled for p-own via CustomAgentEnablement.
-    enablements.push({ customAgentId: "a-builtin", projectId: "p-own", enabled: true });
+    setEnabled("a-builtin", "p-own", true);
     try {
       const res = await call("run-agent", { projectId: "p-own", agentKey: "fleet" }, "u-low", RUN);
       expect((res as { result: { runId: string } }).result.runId).toBe("run-1");
       expect(createdRuns[0].projectId).toBe("p-own");
     } finally {
-      enablements.length = 0;
+      resetEnablements();
     }
   });
 

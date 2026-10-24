@@ -109,8 +109,9 @@ export function CustomAgentsEnablementCard({ projectId }: Props) {
       <div className="flex items-start justify-between gap-2">
         <div>
           <h3 className="text-base font-semibold">Custom agents</h3>
-          <p className="text-xs text-muted-foreground">
-            Enable analyst agents to participate in this project&apos;s analysis runs.
+          <p className="text-xs text-muted-foreground" data-testid="ca-default-off-hint">
+            Agents are off until enabled here, including new ones. An enabled agent is offered in
+            chat and joins this project&apos;s analysis runs.
           </p>
         </div>
         {workspaceId ? (
@@ -162,6 +163,13 @@ export function CustomAgentsEnablementCard({ projectId }: Props) {
                     {agent.isBuiltIn && (
                       <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs">built-in</span>
                     )}
+                    {/* #1445 — the state in words, the same rule chat and analysis apply. */}
+                    <span
+                      className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs"
+                      data-testid={`ca-enablement-state-${agent.id}`}
+                    >
+                      {on ? "On" : "Off until enabled"}
+                    </span>
                   </div>
                   {agent.description && (
                     <div className="text-xs text-muted-foreground">{agent.description}</div>

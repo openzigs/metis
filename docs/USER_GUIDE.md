@@ -2800,8 +2800,8 @@ YAML frontmatter block"). Agent and skill text that contains a credential
 and shown to everyone on the project.
 
 **Agents helping agents.** In a project chat, the chat's agent can hand a task
-to another agent the project may use — its own custom agents, those enabled for
-it, and library agents explicitly enabled for it — when the agent's tool list
+to another agent the project may use — the custom agents enabled for it (its
+own included) and library agents explicitly enabled for it — when the agent's tool list
 allows it (`agent:*` for any of them). You see the hand-off as a tool call
 (approved like any medium-risk tool) and, under it, the other agent's own tool
 calls marked "via <agent>". The other agent starts fresh with only the task it
@@ -2831,8 +2831,21 @@ is told which of the two happened. The playground says the agent is turned off
 (409 `AGENT_DISABLED`). Over ACP, `list-agents` for a project lists only the
 agents that project may use, and `run-agent` answers a turned-off agent with
 `AGENT_NOT_FOUND`, exactly as for an unknown one. **Enable** brings it back on
-the next message. An agent the project owns and has never switched either way
-stays usable in chat and the playground.
+the next message.
+
+**A custom agent is off until you enable it** (#1445). A new agent, including
+one the project owns, does nothing in the project until you press **Enable** on
+the **Custom agents** card: chat does not offer it (neither the agent picker
+nor as a hand-off target), ACP `list-agents` does not list it and `run-agent`
+answers `AGENT_NOT_FOUND`, and analysis runs do not run it. The card shows it as
+**Off until enabled**, and the authoring wizard says so once the agent is saved.
+The one exception is the wizard's playground, which may run an agent its project
+owns before it is enabled, so you can test it first; an agent you switched off
+stays off there too. Once enabled, an agent joins every later analysis run of
+the project, and each run costs model calls for it (see #938).
+**Upgrading:** before #1445 an agent the project owned and had never switched
+was usable in chat, ACP and the playground (though not in analysis runs). Such
+agents are now off: press **Enable** on the card for each one you still use.
 
 **Agents and skills — local-model smoke run (manual).** The CI end-to-end test
 (`e2e/tests/agents-skills.spec.ts`) drives this flow with a scripted model. To

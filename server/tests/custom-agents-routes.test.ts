@@ -384,6 +384,60 @@ describe("POST /custom-agents/:id/invoke (#80/#83)", () => {
     expect(chatMock).not.toHaveBeenCalled();
   });
 
+  it("#1445 — a newly created agent is off until enabled: the card lists it off and chat/ACP refuse it, but the playground may test it", async () => {
+    seedProject("p1", "w1");
+    seedMember("w1", "u1", "admin");
+    const created = await request(createApp()).post("/custom-agents").send({
+      projectId: "p1",
+      name: "Fresh",
+      description: "",
+      systemPrompt: "do work",
+      tools: [],
+    });
+    expect(created.status).toBe(201);
+    const id = created.body.data.id as string;
+
+    // The card's source (`GET /projects/:id/enabled`): not on.
+    const enabled = await request(createApp()).get("/custom-agents/projects/p1/enabled");
+    expect(enabled.body.data.map((a: { id: string }) => a.id)).not.toContain(id);
+    // Chat's sub-agent tools, the session picker and ACP read this rule: off too.
+    const { isCustomAgentUsableInProject, listUsableCustomAgentRows } =
+      await import("../src/lib/agent-runtime/definition.js");
+    expect(await isCustomAgentUsableInProject({ kind: "custom", id, projectId: "p1" }, "p1")).toBe(
+      false,
+    );
+    expect((await listUsableCustomAgentRows("p1")).map((r) => r.id)).not.toContain(id);
+
+    // The authoring playground is the one exception.
+    const tried = await request(createApp())
+      .post(`/custom-agents/${id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(tried.status).toBe(200);
+    expect(chatMock).toHaveBeenCalledTimes(1);
+
+    // Enabling it turns it on everywhere, in agreement with the card.
+    await request(createApp())
+      .put(`/custom-agents/${id}/enablement`)
+      .send({ projectId: "p1", enabled: true });
+    const after = await request(createApp()).get("/custom-agents/projects/p1/enabled");
+    expect(after.body.data.map((a: { id: string }) => a.id)).toContain(id);
+    expect(await isCustomAgentUsableInProject({ kind: "custom", id, projectId: "p1" }, "p1")).toBe(
+      true,
+    );
+    expect((await listUsableCustomAgentRows("p1")).map((r) => r.id)).toContain(id);
+  });
+
+  it("#1445 — the playground exception does not reach another project's agent", async () => {
+    seedProject("p1", "w1");
+    seedMember("w1", "u1", "admin");
+    const foreign = seedAgent({ projectId: "p2" });
+    const res = await request(createApp())
+      .post(`/custom-agents/${foreign.id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(res.status).toBe(404);
+    expect(chatMock).not.toHaveBeenCalled();
+  });
+
   it("rejects an empty input with 400 before invoking", async () => {
     seedProject("p1", "w1");
     const agent = seedAgent({ projectId: "p1" });

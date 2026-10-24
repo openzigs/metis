@@ -99,6 +99,21 @@ describe("<CustomAgentsEnablementCard /> (#85)", () => {
     expect(screen.getByTestId("ca-enablement-toggle-a2")).toHaveTextContent(/enable/i);
   });
 
+  it("#1445 — a never-switched owned agent reads 'Off until enabled' with an Enable call to action", async () => {
+    listAgents.mockResolvedValue([agent("own", "Fresh"), agent("on", "Switched on")]);
+    // The project owns both; only "on" has an enabled row.
+    listEnabledAgents.mockResolvedValue([agent("on", "Switched on")]);
+    renderCard();
+
+    await waitFor(() => expect(screen.getByTestId("ca-enablement-row-own")).toBeInTheDocument());
+    expect(screen.getByTestId("ca-enablement-state-own")).toHaveTextContent("Off until enabled");
+    expect(screen.getByTestId("ca-enablement-toggle-own")).toHaveTextContent(/^enable$/i);
+    expect(screen.getByTestId("ca-enablement-state-on")).toHaveTextContent(/^on$/i);
+    // The one default, stated on the card itself.
+    expect(screen.getByTestId("ca-default-off-hint")).toHaveTextContent(/off until enabled/i);
+    expect(screen.getByTestId("ca-default-off-hint")).toHaveTextContent(/chat/i);
+  });
+
   it("enables a disabled agent and live-updates via refetch", async () => {
     listAgents.mockResolvedValue([agent("a2", "Compliance")]);
     // First load: a2 not enabled. After toggle, refetch returns it enabled.

@@ -29,7 +29,7 @@ import {
   invokeCustomAgent,
 } from "../lib/custom-agents/invoke.js";
 import { auditInvocation } from "../lib/custom-agents/invocation-audit.js";
-import { isCustomAgentUsableInProject } from "../lib/agent-runtime/definition.js";
+import { isCustomAgentPlaygroundUsable } from "../lib/agent-runtime/definition.js";
 import {
   AgentImportError,
   exportAgent,
@@ -330,10 +330,17 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
     if (!agent) throw new AppError(404, "NOT_FOUND", "Custom agent not found");
 
     // AuthZ: anyone may invoke IF the agent is enabled for this project, OR
-    // the agent is owned by this exact project. Otherwise treat as not found
-    // (do not leak that the agent exists in another scope — IDOR guard).
+    // the agent is owned by this exact project and was never switched off.
+    // Otherwise treat as not found (do not leak that the agent exists in
+    // another scope — IDOR guard).
+    //
+    // #1445 — THIS route is the authoring playground, and the owner exception
+    // ("test it before you enable it") is applied here and nowhere else. Chat,
+    // ACP and analysis use `isCustomAgentUsableInProject` (off until enabled),
+    // so nothing a chat request claims can reach this rule: it is bound to the
+    // route, not to anything in the request.
     const ownedByProject = agent.projectId === projectId;
-    const enabled = await isCustomAgentUsableInProject(
+    const enabled = await isCustomAgentPlaygroundUsable(
       { kind: "custom", id: agentId, projectId: agent.projectId },
       projectId,
     );

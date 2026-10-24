@@ -160,7 +160,7 @@ export interface BindableAgent {
 /**
  * The agents a chat session may bind: every enabled library agent (the library
  * binding rule is unchanged), then — for a project session — the custom agents
- * the project may use: owned and not turned off, or turned on (#1005). ONE
+ * the project has enabled, owned or not (off until enabled, #1005 / #1445). ONE
  * list for the one picker.
  */
 export async function listBindableAgents(

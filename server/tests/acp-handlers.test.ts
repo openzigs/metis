@@ -20,6 +20,10 @@ const skills: Array<{ id: string; name: string; description: string; deletedAt: 
 const agents: Array<{ id: string; name: string; description: string; updatedAt: Date }> = [];
 const bgRuns: Array<{ id: string; payload: string; kind: string; projectId: string }> = [];
 const turnedOff = new Set<string>();
+// #1445 — an agent id in `neverToggled` has NO enablement row at all. Every
+// other agent has an enabled row for every project (off until enabled).
+const neverToggled = new Set<string>();
+const switchedOn = (id: string) => !turnedOff.has(id) && !neverToggled.has(id);
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
@@ -49,11 +53,23 @@ vi.mock("../src/lib/prisma.js", () => ({
       ),
     },
     customAgentEnablement: {
-      findMany: vi.fn(async () => []),
+      // Only enabled rows are returned: what every caller here filters for.
+      findMany: vi.fn(async () =>
+        agents
+          .filter((a) => switchedOn(a.id))
+          .map((a) => ({
+            customAgentId: a.id,
+            projectId: (a as { projectId?: string }).projectId,
+            enabled: true,
+          })),
+      ),
       // #1005 — an agent id in `turnedOff` has a disabled row for every project.
       findUnique: vi.fn(
-        async ({ where }: { where: { customAgentId_projectId: { customAgentId: string } } }) =>
-          turnedOff.has(where.customAgentId_projectId.customAgentId) ? { enabled: false } : null,
+        async ({ where }: { where: { customAgentId_projectId: { customAgentId: string } } }) => {
+          const id = where.customAgentId_projectId.customAgentId;
+          if (neverToggled.has(id)) return null;
+          return { enabled: !turnedOff.has(id) };
+        },
       ),
     },
     projectSkillAllowlist: { findMany: vi.fn(async () => []) },
@@ -78,6 +94,7 @@ beforeEach(() => {
   agents.length = 0;
   bgRuns.length = 0;
   turnedOff.clear();
+  neverToggled.clear();
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -179,6 +196,39 @@ describe("dispatchAcp", () => {
     );
     expect("error" in r && r.error.code).toBe(ACP_ERR.AGENT_NOT_FOUND);
     expect(bgRuns).toHaveLength(0);
+  });
+
+  it("#1445 — run-agent refuses the project's own agent nobody switched on (AGENT_NOT_FOUND, no enqueue)", async () => {
+    projects.push({
+      id: "p1",
+      name: "P",
+      slug: "p",
+      status: "active",
+      workspaceId: null,
+      deletedAt: null,
+    });
+    agents.push({ id: "a1", name: "smoke", description: "", updatedAt: new Date() });
+    neverToggled.add("a1");
+    const r = await dispatchAcp(
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "run-agent",
+        params: { projectId: "p1", agentKey: "smoke", prompt: "hi" },
+      },
+      { auth },
+    );
+    expect("error" in r && r.error.code).toBe(ACP_ERR.AGENT_NOT_FOUND);
+    expect(bgRuns).toHaveLength(0);
+  });
+
+  it("#1445 — list-agents does not offer an agent nobody switched on", async () => {
+    agents.push({ id: "a1", name: "never-on", description: "", updatedAt: new Date() });
+    agents.push({ id: "a2", name: "switched-on", description: "", updatedAt: new Date() });
+    neverToggled.add("a1");
+    const r = await dispatchAcp({ jsonrpc: "2.0", id: 1, method: "list-agents" }, { auth });
+    const keys = "result" in r ? (r.result as Array<{ key: string }>).map((a) => a.key) : [];
+    expect(keys).toEqual(["switched-on"]);
   });
 
   it("run-agent returns INVALID_PARAMS when missing projectId/agentKey", async () => {

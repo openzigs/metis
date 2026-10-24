@@ -303,6 +303,33 @@ describe("<AgentAuthoringWizard /> (#84)", () => {
     expect(banner).toHaveAttribute("role", "note");
   });
 
+  it("#1445 — once the playground saves the agent, says it is off until enabled", async () => {
+    invokeAgent.mockResolvedValue({
+      content: "ok",
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      model: "m",
+      provider: "p",
+    });
+    createAgent.mockResolvedValue({ id: "agent-n", projectId: "proj-1", tools: [] });
+    renderWizard();
+    await flush();
+    fireEvent.change(screen.getByTestId("wizard-name-input"), { target: { value: "Fresh" } });
+    fireEvent.change(screen.getByTestId("wizard-project-select"), { target: { value: "proj-1" } });
+    fireEvent.click(screen.getByTestId("wizard-next"));
+    fireEvent.change(screen.getByTestId("wizard-prompt-input"), { target: { value: "Review." } });
+    fireEvent.click(screen.getByTestId("wizard-next"));
+    fireEvent.click(screen.getByTestId("wizard-next"));
+    fireEvent.click(screen.getByTestId("wizard-next"));
+    // Nothing saved yet: no claim about its state.
+    expect(screen.queryByTestId("wizard-off-until-enabled")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("wizard-playground-input"), { target: { value: "Go." } });
+    fireEvent.click(screen.getByTestId("wizard-playground-run"));
+
+    const note = await screen.findByTestId("wizard-off-until-enabled");
+    expect(note).toHaveTextContent(/off for this project until you enable it/i);
+    expect(note).toHaveTextContent(/Custom agents/);
+  });
+
   it("surfaces an error if the playground invocation fails", async () => {
     createAgent.mockResolvedValue({
       id: "agent-2",

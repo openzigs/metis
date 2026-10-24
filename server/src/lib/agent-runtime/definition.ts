@@ -191,13 +191,32 @@ export async function loadAgentDefinition(
 }
 
 /**
- * #1005 — THE rule for whether `projectId` may use a custom agent, in one
- * place. An explicit enablement row for (agent, project) decides, either way:
- * an agent the project OWNS that was turned off for it is off — ownership does
- * not override the switch. With no row, only the owning project may use it
- * (a freshly authored agent works in its own project's playground and chat).
+ * #1005 / #1445 — THE rule for whether `projectId` may use a custom agent, in
+ * one place: **off until enabled**. Only an explicit, enabled enablement row
+ * for (agent, project) makes it usable — owning the agent does not. An agent a
+ * project owns but never switched on is off for chat (sub-agent tools and the
+ * session agent picker), ACP `run-agent` and the analysis phase alike, which is
+ * exactly what the Custom agents card shows (`listEnabledAgentsForProject`).
+ *
+ * The ONE exception is the authoring playground, and it has its own rule
+ * ({@link customAgentPlaygroundUsable}) used by its own route only.
  */
 export function customAgentUsableInProject(
+  enablement: { enabled: boolean } | null | undefined,
+): boolean {
+  return enablement?.enabled === true;
+}
+
+/**
+ * #1445 — the authoring playground's exception (`POST /custom-agents/:id/invoke`
+ * only): the project that OWNS an agent may test it before enabling it, so a
+ * never-switched owned agent (no row) runs there. An explicit row still
+ * decides either way — an owned agent switched OFF stays off, and another
+ * project's agent needs an enabled row. Never use this where a chat turn, an
+ * ACP call or an analysis run selects agents: those use
+ * {@link customAgentUsableInProject}.
+ */
+export function customAgentPlaygroundUsable(
   agentProjectId: string | null,
   projectId: string,
   enablement: { enabled: boolean } | null | undefined,
@@ -206,10 +225,20 @@ export function customAgentUsableInProject(
   return agentProjectId === projectId;
 }
 
+async function readEnablement(
+  customAgentId: string,
+  projectId: string,
+  db: PrismaClient,
+): Promise<{ enabled: boolean } | null> {
+  return db.customAgentEnablement.findUnique({
+    where: { customAgentId_projectId: { customAgentId, projectId } },
+    select: { enabled: true },
+  });
+}
+
 /**
- * #236 / #1005 — may `projectId` use this CUSTOM agent? See
- * {@link customAgentUsableInProject}. Always scoped on BOTH the agent and the
- * project: another project's agent is never usable here unless enabled for it.
+ * #236 / #1005 / #1445 — may `projectId` use this CUSTOM agent? See
+ * {@link customAgentUsableInProject}: only with an enabled row for it.
  */
 export async function isCustomAgentUsableInProject(
   def: Pick<AgentDefinitionDto, "kind" | "id" | "projectId">,
@@ -217,40 +246,45 @@ export async function isCustomAgentUsableInProject(
   db: PrismaClient = defaultPrisma,
 ): Promise<boolean> {
   if (def.kind !== "custom") return false;
-  const row = await db.customAgentEnablement.findUnique({
-    where: { customAgentId_projectId: { customAgentId: def.id, projectId } },
-    select: { enabled: true },
-  });
-  return customAgentUsableInProject(def.projectId, projectId, row);
+  return customAgentUsableInProject(await readEnablement(def.id, projectId, db));
 }
 
 /**
- * #1005 — every custom agent row `projectId` may use, by name: the ones it
- * owns and has not turned off, and the ones it has turned on. The ONE list
- * behind chat's sub-agent tools ({@link listCallableAgents}) and the session
- * agent picker (`listBindableAgents`), so neither can offer a switched-off
- * agent.
+ * #1445 — may the authoring playground run this CUSTOM agent for `projectId`?
+ * See {@link customAgentPlaygroundUsable}. The playground route's check only.
+ */
+export async function isCustomAgentPlaygroundUsable(
+  def: Pick<AgentDefinitionDto, "kind" | "id" | "projectId">,
+  projectId: string,
+  db: PrismaClient = defaultPrisma,
+): Promise<boolean> {
+  if (def.kind !== "custom") return false;
+  return customAgentPlaygroundUsable(
+    def.projectId,
+    projectId,
+    await readEnablement(def.id, projectId, db),
+  );
+}
+
+/**
+ * #1005 / #1445 — every custom agent row `projectId` may use, by name: the
+ * ones with an enabled row for it, owned or not. The ONE list behind chat's
+ * sub-agent tools ({@link listCallableAgents}) and the session agent picker
+ * (`listBindableAgents`), so neither can offer an agent the card shows off.
  */
 export async function listUsableCustomAgentRows(
   projectId: string,
   db: PrismaClient = defaultPrisma,
 ): Promise<CustomAgentRow[]> {
-  const [on, off] = await Promise.all([
-    db.customAgentEnablement.findMany({
-      where: { projectId, enabled: true },
-      select: { customAgentId: true },
-    }),
-    db.customAgentEnablement.findMany({
-      where: { projectId, enabled: false },
-      select: { customAgentId: true },
-    }),
-  ]);
-  const turnedOff = new Set(off.map((e) => e.customAgentId));
-  const rows = await db.customAgent.findMany({
-    where: { OR: [{ projectId }, { id: { in: on.map((e) => e.customAgentId) } }] },
+  const on = await db.customAgentEnablement.findMany({
+    where: { projectId, enabled: true },
+    select: { customAgentId: true },
+  });
+  if (on.length === 0) return [];
+  return db.customAgent.findMany({
+    where: { id: { in: on.map((e) => e.customAgentId) } },
     orderBy: { name: "asc" },
   });
-  return rows.filter((r) => !turnedOff.has(r.id));
 }
 
 /**
@@ -284,8 +318,8 @@ export async function listProjectLibraryAgents(
 
 /**
  * The agents a project's chat may call as sub-agents (#147):
- *   • custom agents the project may use ({@link listUsableCustomAgentRows}:
- *     owned and not turned off, or turned on — the invoke/ACP rule, #1005);
+ *   • custom agents the project has enabled ({@link listUsableCustomAgentRows}:
+ *     off until enabled — the chat/ACP/analysis rule, #1005/#1445);
  *   • library agents with an explicit, enabled `ProjectAgentAllowlist` row.
  *     The library's "no rows ⇒ everything" picker default is deliberately NOT
  *     used here: exposing every library agent as a tool is an opt-in, not a
