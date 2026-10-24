@@ -13,7 +13,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Late-mount scroll must cancel](project_late-mount-scroll-must-cancel.md) — cancel each never-mounts path (#434)
 - [Grounding misses tools](project_grounding-from-auto-rag-misses-tools.md) — auto-RAG capture never sees tool retrieval (#437)
 - [Verify the issue premise](project_verify-issue-premise-before-copy.md) — grep write path + tests first; recheck 'blocked on PR' deferrals
-- [Split advisory fixes deadlock](project_split-advisory-fixes-deadlock-audit.md) — fix all new HIGHs on one branch (#431)
 - [TanStack stale data](project_tanstack-stale-data-after-failed-refetch.md) — failed refetch keeps .data; prop-seeded useState ignores refetch
 - [CI guards parse the step](project_ci-guards-must-parse-the-step.md) — reject if:, `||`, continue-on-error (#458)
 - [Cap gendoc-sized ids](project_gendoc-ids-are-long.md) — id caps (cursor, schema, path) must fit ~94-char gendoc- ids (#469)
@@ -103,9 +102,7 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Headless Chrome offline proof](project_headless-chrome-network-lockdown.md) — interception + CSP + launch args; real probe (#1321)
 - [CSRF boundary = UI proxy](project_csrf-boundary-is-the-ui-proxy.md) — metis.at becomes Bearer there; API guard alone protects no one (#913)
 - [CodeQL CSRF heuristic](project_codeql-csrf-query-heuristic.md) — only csurf/lusca or compared csrf-named cookie; dismiss #24 (#913)
-- [Shard stuck pending](project_gh-checks-shard-stuck-pending.md) — steps all success but job in_progress; read steps, re-read (#1347)
 - [Pre-auth limiters on req.ip](project_preauth-limiters-keyed-on-req-ip.md) — gaps + approval still do; copy runs key (#838)
-- [Cross-PR helper semantics](project_shared-helper-semantics-cross-pr.md) — tests pinning a shared helper break on merge order (#1348)
 - [`\u` escapes land literal](project_unicode-escapes-arrive-literal.md) — use String.fromCodePoint; scan for Cf/bidi; `(?<!=)=+` linear (#1114)
 - [Supertest peer in beforeAll](project_supertest-beforeall-peer-differs.md) — 127.0.0.1 vs ::1; spend peer limits per test (#1117)
 - [Route guard wiring](project_project-access-guard-wiring.md) — guard per route behind a limiter; mount order; detector blind spot (#1344)
@@ -121,3 +118,14 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Docs-gen module facts + scans](project_docs-gen-module-facts-and-deterministic-scans.md) — tests in; 2 builders; Module path keys cache
 - [Socket session lifecycle](project_socket-session-lifecycle.md) — close on every session end; cookie-expiry refusal; Manager; ui mocks (#1418)
 - [Linearity tests: count work or CPU](project_linearity-tests-count-work-or-thread-cpu.md) — threadCpuMs, not wall-clock; CPU backstop (#1423)
+- [Deleted project: background half](project_deleted-project-background-firing-guard.md) — deletedProjectOfTask at fire time; mock fallout (#1444)
+- [ChatOps workspace scoping](project_chatops-workspace-scoping.md) — card ids untrusted; resolvers need workspaceId; fakes (#1443)
+- [Teams MSI + proactive sends](project_teams-msi-auth-and-proactive-sends.md) — botbuilder app type; operator allowlist; serviceUrl (#1468)
+- [Confirm fingerprint](project_withheld-replacement-confirm-fingerprint.md) — ids+version+reviewStatus+step kind; 409 (#1436)
+- [Code-pass placeholders](project_code-pass-placeholders-and-append-mode.md) — could-not-verify per unreached req; append purge (#1451)
+- [Custom agent pre-gate checks](project_custom-agent-usability-and-pre-gate-checks.md) — unavailableNow; must throw on failed read (#1441)
+- [Notification writers](project_notification-writers-and-content-copies.md) — projectId required; copied text outlives source (#1450)
+- [PR review budget + GitHub client](project_pr-review-worker-budget-and-github-client.md) — cap>0; octokit ignores agent; redirects (#1474)
+- [Body parsers: two apps](project_request-body-parsers-and-embeddings-svc.md) — sweep embeddings-svc too; raw Buffer in supertest (#1461)
+- [Schema prose check probes](project_schema-prose-check-probes-and-fixtures.md) — config keys; same-line decoy; list both ways (#1477)
+- [Traceability tab + paging](project_traceability-tab-imports-and-paging.md) — tab in analysis page.tsx; orderBy tie-break (#1448)

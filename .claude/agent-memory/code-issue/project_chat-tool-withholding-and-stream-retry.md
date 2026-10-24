@@ -21,5 +21,6 @@ Collected from #1139 / PR #1234 and its review and panel (2026-10-17).
 **UI test traps.**
 - Two `fireEvent.submit` calls in a row do not test a same-tick double send, because React flushes discrete events synchronously. Dispatch both inside one `act()`.
 - Mocking `useProjectScope` to "All projects" models a state that the real hook reaches only for a user with no project. Run the real hook, as `ui/tests/chat-page-unscoped-resume.test.tsx` does.
+- `ui/tests/chat-page-*.test.tsx` assert `resumeChatSession` is called with exactly `(id)`. Adding an argument on the stored-chat path fails five suites: pass new options only on the `?sessionId=` path, or update those assertions (#1428).
 
 **Usage ledger.** When a dropped stream is retried, the dropped attempt's tokens are not counted, because providers report usage only at stream end (#1238).

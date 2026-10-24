@@ -52,3 +52,19 @@ A CLI date guard using JS `Date.parse` lets `October 15, 2026` through to SQLite
 ## A new `users` column breaks pre-migration fixtures (#1400)
 
 Every test that writes users with today's Prisma client into a pre-migration (`stopBefore`) database, or into a hand-built `CREATE TABLE users`, fails once a column is added. Seed those rows with raw SQL, or add the column to the hand-built table.
+
+## Testing hand-written migrations and backfills (#1440, #1450, 2026-10-23)
+
+- **Verify a hand-written SQLite migration:** `prisma migrate deploy` into a scratch DB, then
+  `prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --script`;
+  empty output means it matches.
+- **SQLite backfill against old rows:** `createMigratedSqlite(prefix, { stopBefore })` then
+  `.apply(name)` (`server/tests/helpers/sqlite-migrated-db.ts`). A Postgres backfill needs its
+  own `*-postgres.integration.test.ts` (scratch schema, `search_path`, run the migration file
+  as-is) plus a `postgres-adapter` CI step.
+- **Prove "unresolvable rows are never rewritten".** Postgres: compare each row's `xmin::text`
+  before and after. SQLite: an `AFTER UPDATE` logging trigger created before
+  `sqlite.apply(MIGRATION)` (`stopBefore` keeps it through the migration).
+- **Never `::json`-cast a text column in a Postgres migration** (`notifications.payload`): one
+  malformed row aborts it. Use `substring(payload from '"key":"([^"]+)"')`, which is safe
+  because payloads are `JSON.stringify`'d.

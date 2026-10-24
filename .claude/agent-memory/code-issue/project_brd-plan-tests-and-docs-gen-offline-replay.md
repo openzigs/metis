@@ -66,3 +66,16 @@ Links: [[project_read-live-is-not-read-completely]], [[project_never-dropped-sil
 - **The replay must rank canonical-fact citations as the synthesizer does** (`rankOfSource`: a `facts:canon:` id ranks as its module). Before #1368 it ranked module facts only, so Data Model's "Entry and Media Entities" (cites `internal/model` canon facts, rank 0) read as rank 20 behind three rank-15 topics, and no tie rule could write it. Map canon id → module from `selectedEvidence.primary[].label` (`file:line — NAME`, dirname). `--no-canonical-rank` reproduces the old replay.
 - **"kept" by H3 presence lies:** `repliesOf` re-emits a theme's H3 in a later batch over one line, so "Content Entities: kept" was a 43-character stub. The replay now prints `kept (own-upTo)` rendered characters (own = what the heading's batch wrote, by `fit.parts[i].partOf`); check it before claiming a theme survives.
 - **Smallest-first among tied ranks, only when it keeps MORE tied topics than the written-order prefix** fixed it (44 → 38 themes lost, both entities written). Plain smallest-first was rejected in review: it trades a large core topic written first for a small one one-for-one. Ranking by most-cited module gave 29 but redefines importance; not taken.
+
+## Single-call reader-BRD length (PR for #1449, 2026-10-23)
+
+- **Overrun does not carry over from batches.** DeepSeek's overrun on single-call reader-BRD
+  main sections varied 1.10–1.50× between two runs with identical length notes (per section
+  1.02–1.84×). Batch-measured overrun factors do not apply to single-call sections.
+- **Separate model variance from prompt changes offline.** A section's facts input can be
+  rebuilt from `docs_gen_fact_cache` plus the repo clone; per-section drafts are in the
+  provenance manifest's `sectionSynthesis.records[].markdown`. Compare rendered length with
+  the words the `LENGTH LIMIT` note asked for.
+- **The note rounds.** Each section's ask is rounded to 50 words at 6 chars/word, so a cap
+  derived exactly as target/floor asks for slightly LESS than the floor. Leave a margin (1.05)
+  and assert the rounded words×6 total, not the ratio (#1449 and its review).

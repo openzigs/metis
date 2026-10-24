@@ -11,7 +11,7 @@ S24 marker, Phase 15 sandbox, fork `upstream` remote, operator-grepped logs, `CG
 Miniflux's DB-less test skips, operator-created memberships, REPO_CROSS_PROJECT before wave F).
 
 **Product facts a code change must respect**
-- `Project.autoReviewPrs` has no UI/API setter (`server/prisma/schema.prisma:433`); webhook PR review is unreachable until one exists (#1169).
+- `Project.autoReviewPrs` had no UI/API setter, so webhook PR review was unreachable (#1169). Since #1467 it is set in Project settings, with a monthly limit; see [[pr-review-worker-budget-and-github-client]].
 - REPO_CROSS_PROJECT (`server/src/lib/publishing/publishing-service.ts:206`) blocks only the Publish batch, dry run included; Spec Kit task export is not blocked (#1171).
 - Docs-gen per-document cost needs documents run one at a time: the ledger `sessionId` carries no document id.
 - Docs-gen topic-plan / fit log lines go to the dev server's stdout only.

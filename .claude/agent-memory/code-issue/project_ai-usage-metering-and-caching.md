@@ -42,3 +42,19 @@ Judge an unknown-model-id fallback by what a wrong guess costs (money vs latency
 - The `brd-before-1070-grounded.json` fake model cites sources in prompt order, so
   reordering sources changes the markdown, footnote numbering and judge hashes with no
   behaviour change. Diff leaf by leaf, and check `systemSha256` / `userChars`.
+
+**Docs-gen cache share per call type (2026-10-23 run).** Docs-gen ledger rows carry only
+`agentStep=docs-gen`. The per-call-type cache share comes from the server log's
+`ai-cache-hit-telemetry` lines (`lib/ai/cache-hit-telemetry.ts`; callType synthesis /
+claim-extraction / grounding; `promptTokens` include `cacheRead`), which matched the ledger
+exactly.
+
+**Pricing an Anthropic-compatible model (#1474).**
+- `estimateUsageCostUsd` (`finops/token-tracker.ts`) prices nothing for anthropic when
+  `ANTHROPIC_BASE_URL` is set. Loopback tests that need a priced cost set
+  `ANTHROPIC_BASE_URL_BILLS_AS=anthropic` (`finops/provider-rates.ts`).
+- Price against both the configured `provider.model` and the reply's `res.model`: APIs return
+  dated snapshot ids the rate table lacks.
+- `TokenUsage.costUsd` is a Prisma `Decimal`; `Number(null)` is 0 and hides unpriced rows. A
+  spend cap that sums cost must treat null as unpriced, not $0
+  ([[pr-review-worker-budget-and-github-client]]).

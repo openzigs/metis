@@ -115,3 +115,20 @@ Older single-trap entries, folded here (retired from the index 2026-10-16; files
   `ui/tests/analysis/analysis-subviews.test.tsx` renders the real analysis `page.tsx`.
   Before accepting "untestable wiring", grep `ui/tests` for the page's test ids and mutate
   the call site.
+
+**From #1434 to #1467 (2026-10-23).**
+- **A name-based structural test is bypassed by an aliased import.** A regex on `fnName(`
+  pinning callers misses `import { fnName as x }`. Reject the import, not the call (#1434
+  review).
+- **On/off switches:** a test asserting only "nothing happened" when off passes on unfixed
+  code. Switch on, confirm it fires, then switch off, in the same test (#1467 review).
+- **Fakes that ignore `where`.** A fake db whose `findFirst` ignores `where`, or an in-memory
+  mock filtering only some fields, cannot fail a filter test. Read the filter from the
+  selected row, or drop each filter in turn and confirm a test fails
+  ([[deleted-project-background-firing-guard]], [[code-pass-placeholders-and-append-mode]]).
+- **A fake driver must apply its own limits.** oracledb's `maxRows` truncates silently; a fake
+  Oracle connection must apply `opts.maxRows` itself or a ">N rows" test passes on unfixed
+  code (#1462, [[read-live-is-not-read-completely]]).
+- More from this batch: the vacuous `RequirementLink` fixture
+  ([[withheld-replacement-confirm-fingerprint]]); cross-project 404s and limiter wiring
+  ([[project-access-guard-wiring]]).

@@ -29,3 +29,17 @@ vitest's module runner defines `require`, so no vitest test can catch `require i
 Never start `pnpm test` while `pnpm install` or `typecheck` is still running in the
 background. The scripts suite's subprocess tests (13 s each) time out from CPU contention
 and look like real failures.
+
+**More fan-out timeouts that pass alone (2026-10-23):**
+`server/tests/socket-role-change-633.test.ts` (~3 s per test, #1439; untracked) and the
+scripts runner tests `check-no-nul` / `verify-no-company-identifiers` (5 s, #1441). On a
+loaded shared machine (load ~25) a full `pnpm test` exceeded a 590 s wrapper (#1449). Run
+each package separately, and re-run timed-out files alone before calling them failures. For
+the CI-side rule (cut the tie to a contended resource), see CLAUDE.md (#1379).
+
+## Grepping the output hides the exit code too (#1468)
+
+`pnpm -s typecheck | grep error` hid a real TS2322 that CI caught. Judge typecheck and lint by
+exit code, never by grepping output. Local `pnpm typecheck` can also miss what CI's `api`
+Typecheck sees in `tsconfig.test.json` (#1440, #1455): see
+[[notification-writers-and-content-copies]] and [[dependency-audit-flips-on-new-advisories]].
