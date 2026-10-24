@@ -2065,7 +2065,19 @@ function firstWordFrom(words: readonly ProseWord[], at: number): number {
  * describe the column ("a new nullable text column"), so they do not count
  * toward {@link MAX_COLUMN_CUE_WORDS}.
  */
-const DETERMINERS = new Set(["the", "a", "an", "this", "that"]);
+const DETERMINERS = new Set([
+  "the",
+  "a",
+  "an",
+  "this",
+  "that",
+  "these",
+  "those",
+  "every",
+  "each",
+  "its",
+  "their",
+]);
 /** How many words may describe the column between a determiner and the column word. */
 const MAX_COLUMN_MODIFIERS = 3;
 
@@ -2112,7 +2124,8 @@ function definesColumn(
       if (stop === line.length && onlySpacing(line, word.end, stop)) return true;
       for (let i = word.end; i < stop; i++) {
         const c = line[i];
-        if (c === "." || c === "," || c === ";" || c === "!" || c === "?" || c === ")") {
+        // "(" too: "`users.a1`: a column (text)." gives the type after the phrase.
+        if (".,;!?()".includes(c)) {
           return true;
         }
       }
@@ -2217,16 +2230,22 @@ function bareColumnSpans(
   const allowed = new Set<number>();
   if (words.some(({ word }) => NOT_COLUMN_CONTEXT.has(word))) return allowed;
   if (!words.some(({ word }) => roleOf(word) === "column")) return allowed;
+  /** Spans `k` and `k + 1` are two names of one list: only list words between, in one clause. */
+  const listedWithNext = (k: number): boolean =>
+    spans[k + 1].depth === spans[k].depth &&
+    gapIs(line, spans[k].close + 1, spans[k + 1].open, LIST_WORDS) &&
+    !endsClause(line, spans[k].close + 1, spans[k + 1].open);
+  // A column word AFTER a list cues every name of it, right to left...
   let cuedAfter = false;
   for (let k = spans.length - 1; k >= 0; k--) {
-    const next = spans[k + 1];
-    const listed: boolean =
-      cuedAfter &&
-      next.depth === spans[k].depth &&
-      gapIs(line, spans[k].close + 1, next.open, LIST_WORDS) &&
-      !endsClause(line, spans[k].close + 1, next.open);
-    cuedAfter = listed || columnWordAfter(line, spans, words, k);
-    if (cuedAfter || columnWordBefore(line, spans, words, k)) allowed.add(spans[k].open);
+    cuedAfter = (cuedAfter && listedWithNext(k)) || columnWordAfter(line, spans, words, k);
+    if (cuedAfter) allowed.add(spans[k].open);
+  }
+  // ...and one BEFORE it, left to right: "Two columns (`users.a1` and `users.a2`)".
+  let cuedBefore = false;
+  for (let k = 0; k < spans.length; k++) {
+    cuedBefore = (cuedBefore && listedWithNext(k - 1)) || columnWordBefore(line, spans, words, k);
+    if (cuedBefore) allowed.add(spans[k].open);
   }
   return allowed;
 }

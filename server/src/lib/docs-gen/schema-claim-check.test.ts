@@ -2296,7 +2296,14 @@ describe("checkProseSchemaClaims (#1133)", () => {
       // Too far from the column word to be its name.
       "`users.max_count` is set in the admin page under the column heading.",
       // Five words, no determiner: one past the bound.
-      "`users.max_count` is ten for every username column.",
+      "`users.max_count` is ten for my username column.",
+      // #1469 cycle 2 — the wider determiners open another clause after "and"/"or".
+      "Set `users.max_count` and those columns overflow.",
+      "Set `users.max_count` and its column overflows.",
+      "Set `users.max_count` or each column overflows.",
+      "Set `users.max_count` and these columns overflow.",
+      "Set `users.max_count` or every column overflows.",
+      "Set `users.max_count` and their columns overflow.",
       // #1469 review — the column word belongs to the other code name; only
       // the "no other span between" rule stops these.
       "Set `users.max_count` to 10 and the `username` column stays short.",
@@ -2392,8 +2399,46 @@ describe("checkProseSchemaClaims (#1133)", () => {
         "`users.alpha` is a new nullable text column",
         "`users.alpha`" + M + " is a new nullable text column",
       ],
+      // #1469 cycle 2 — "its" opens the phrase too.
+      [
+        "`users.ghost` is stored in its own text column",
+        "`users.ghost`" + M + " is stored in its own text column",
+      ],
+      // A definition can give the type in parentheses after the phrase.
+      ["`users.a1`: a column (text).", "`users.a1`" + M + ": a column (text)."],
+      // #1469 cycle 2 — a column word BEFORE a list cues every name of it.
+      [
+        "Two columns (`users.a1` and `users.a2`) are added.",
+        "Two columns (`users.a1`" + M + " and `users.a2`" + M + ") are added.",
+      ],
+      [
+        "New columns (`users.a1`, `users.a2`) are added.",
+        "New columns (`users.a1`" + M + ", `users.a2`" + M + ") are added.",
+      ],
+      [
+        "The column `users.a1` and `users.a2` are new.",
+        "The column `users.a1`" + M + " and `users.a2`" + M + " are new.",
+      ],
+      // ...but not past a sentence end or onto a name outside the parentheses.
+      [
+        "A column, `users.a1`. `users.max_count` is ten.",
+        "A column, `users.a1`" + M + ". `users.max_count` is ten.",
+      ],
+      [
+        "New columns (`users.a1`) and `users.max_count` are added.",
+        "New columns (`users.a1`" + M + ") and `users.max_count` are added.",
+      ],
     ])("%s", (line, marked) => {
       expect(prose(line).markdown).toBe(marked);
+    });
+
+    // Known limits on the other side, kept on purpose: a column word too far
+    // from the name to tell it from a decoy leaves a genuine column unchecked.
+    it.each([
+      "`users.ghost` holds the user's email in a text column",
+      "`users.ghost` is the new nullable varchar text column",
+    ])("known limit, not checked: %s", (line) => {
+      expect(prose(line).markdown).toBe(line);
     });
 
     it("counts a listed name that matches, and marks only the one that does not", () => {
