@@ -131,7 +131,7 @@ const REINSTALL_REFUSAL: Record<
     statusCode: 403,
     code: "MSI_CLIENT_ID_NOT_ALLOWED",
     message:
-      "this managed identity is not allowed for Teams bots: the operator must add its client id to TEAMS_MSI_CLIENT_IDS",
+      "this managed identity is not allowed for this workspace's Teams bot: the operator must list its client id for this workspace in TEAMS_MSI_CLIENT_IDS",
   },
   "msi-in-use": {
     statusCode: 409,
@@ -392,7 +392,7 @@ export class TeamsInstallationStore {
     clientId: string,
     tenantId: string | null,
   ): Promise<Exclude<TeamsReinstallReason, "legacy-app-type" | "unknown-app-type"> | null> {
-    if (!isMsiClientIdAllowed(this.msiAllowlist(), clientId)) return "msi-not-allowed";
+    if (!isMsiClientIdAllowed(this.msiAllowlist(), clientId, workspaceId)) return "msi-not-allowed";
     const elsewhere = await this.db.teamsAppInstallation.findMany({
       where: { status: "active", workspaceId: { not: workspaceId } },
       select: { appId: true },

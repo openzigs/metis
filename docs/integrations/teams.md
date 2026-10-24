@@ -106,11 +106,20 @@ names only a client id, which is not a secret, and the SDK obtains tokens for
 the identities this deployment's bots may use:
 
 ```bash
-TEAMS_MSI_CLIENT_IDS=<client-id-guid>[,<client-id-guid>...]
+# Bound: this identity, for this workspace only (recommended).
+TEAMS_MSI_CLIENT_IDS=<client-id-guid>=<workspace-id>[,...]
+# Unbound: this identity, for any ONE workspace at a time.
+TEAMS_MSI_CLIENT_IDS=<client-id-guid>[,...]
 ```
 
+- **Bind each identity in a multi-workspace deployment.** An unbound id goes to
+  whichever workspace connects it first, so any workspace admin could claim it
+  while its intended workspace does not hold it, for example before that
+  workspace connects or after it disconnects. A bound id is refused for every
+  other workspace. Unbound is fine when the deployment has one workspace.
 - **Unset or empty:** every managed-identity install is refused with
-  `403 MSI_CLIENT_ID_NOT_ALLOWED`. Entries that are not GUIDs allow nothing.
+  `403 MSI_CLIENT_ID_NOT_ALLOWED`. Unusable entries allow nothing: a non-GUID, an
+  empty binding, or the same id bound to two different workspaces.
 - **Checked on every credential resolution, not only at install.** Removing an id
   from the list stops that bot authenticating on the next send or inbound
   activity, with the same named code.
@@ -855,7 +864,8 @@ A developer must perform these steps once in Azure to register the bot:
    secret*). Copy the secret value immediately — it is shown once. For a
    user-assigned managed identity there is no secret: capture the identity's
    client id and tenant id, assign the identity to the host METIS runs on, and
-   add the client id to `TEAMS_MSI_CLIENT_IDS` on that host (then restart).
+   add `<client-id>=<workspace-id>` to `TEAMS_MSI_CLIENT_IDS` on that host (then
+   restart).
 3. **Set the messaging endpoint** to your public METIS host with the workspace
    routing key, e.g.:
    ```
@@ -919,7 +929,7 @@ required).
 | `VAULT_MASTER_KEY` | Required in production; encrypts bot credentials at rest. `openssl rand -base64 32`. |
 | `DATABASE_URL` | Selects SQLite vs the shared Postgres (the ConversationReference + installation tables live here). |
 | `TEAMS_ALLOWED_TENANTS` | **(#554)** Comma-separated Azure AD tenant id allowlist for inbound bridge traffic. **Unset/blank = allow-all** (any tenant whose activity passes JWT validation). Set it (e.g. `TEAMS_ALLOWED_TENANTS=<tenant-guid>`) to pin a MultiTenant bot to approved tenant(s). Comparison is case-insensitive; a tenant-less sender is rejected when a list is set. |
-| `TEAMS_MSI_CLIENT_IDS` | **(#1466)** Comma-separated client-id GUIDs of the user-assigned managed identities this deployment's Teams bots may use. **Unset/blank = no managed-identity bot is allowed** (`MSI_CLIENT_ID_NOT_ALLOWED`). Checked at install and on every credential resolution; case-insensitive; non-GUID entries allow nothing. Password bots are unaffected. |
+| `TEAMS_MSI_CLIENT_IDS` | **(#1466)** Comma-separated user-assigned managed identities this deployment's Teams bots may use: `<client-id>=<workspace-id>` (that workspace only — recommended with several workspaces) or a bare `<client-id>` (any one workspace at a time). **Unset/blank = no managed-identity bot is allowed** (`MSI_CLIENT_ID_NOT_ALLOWED`). Checked at install and on every credential resolution; client ids case-insensitive; unusable entries allow nothing. Password bots are unaffected. |
 | `TEAMS_INBOUND_RATE_LIMIT_MAX` | **(#554)** Max inbound activities per `(workspace, conversation)` per window. Default `30`. |
 | `TEAMS_INBOUND_RATE_LIMIT_WINDOW_MS` | **(#554)** Inbound rate-limit window in ms. Default `60000` (1 min). |
 | `DISCUSSION_RATE_LIMIT_BACKEND` | Selects the rate-limit store backend (`memory` default, `postgres` for a cluster-wide cap). Shared by the inbound bridge cap (#554) and the per-(thread,user) AI cap (#485). |
@@ -958,7 +968,7 @@ structured outcome and **no** message, AI reply, or requirement is created.
 | Control | Mechanism | Code | OWASP |
 |---|---|---|---|
 | **Inbound authenticity** | Bot Framework **JWT** validated by the SDK `CloudAdapter` (`ConfigurationBotFrameworkAuthentication`) — signature (JWKS), expiry, issuer, audience = app id. Unsigned/forged/expired/wrong-audience tokens are rejected **before** turn logic. We never run an auth-disabled adapter (a workspace with no installed credentials returns 403). | `bot-adapter.ts`, `routes/integrations/teams.ts` | A07, A01 |
-| **Managed-identity allowlist** | `TEAMS_MSI_CLIENT_IDS`. A `UserAssignedMsi` install names a client id it cannot prove it owns, so only operator-listed ids are accepted, one workspace each — at install **and** at every credential resolution. | `msi-allowlist.ts`, `installation-store.ts` | A01, A07 |
+| **Managed-identity allowlist** | `TEAMS_MSI_CLIENT_IDS`. A `UserAssignedMsi` install names a client id it cannot prove it owns, so only operator-listed ids are accepted, bound to a workspace or one workspace at a time — at install **and** at every credential resolution. | `msi-allowlist.ts`, `installation-store.ts` | A01, A07 |
 | **Proactive `serviceUrl`** | Outbound mirror and notification sends go only to HTTPS Bot Framework / Teams connector hosts, so an admin-supplied reference cannot route the bot's bearer token elsewhere. | `service-url.ts`, `outbound-sync.ts`, `notification-sync.ts`, `routes/integrations/teams.ts` | A10, A07 |
 | **Tenant allowlist** | `TEAMS_ALLOWED_TENANTS` (case-insensitive). Unset = **allow-all** (documented default); set = only listed tenants, and a tenant-less sender is rejected. Enforced on inbound ingest **and** promote. | `tenant-allowlist.ts`, `inbound-sync.ts`, `teams-promote.ts` | A01 |
 | **Inbound rate limit** | Per-`(workspace, conversation)` sliding window (default 30/min) reusing the shared `RateLimitStore` seam — cluster-wide with `DISCUSSION_RATE_LIMIT_BACKEND=postgres`. Fails **open** (logs) if the store errors, so a limiter outage never blocks legitimate traffic. | `inbound-rate-limit.ts` | A04 |
@@ -993,8 +1003,11 @@ AI, or promote a requirement.
    rest.
 4. **List managed identities in `TEAMS_MSI_CLIENT_IDS`** before any workspace
    connects a `UserAssignedMsi` bot, and only identities you intend Teams bots to
-   use. A workspace admin cannot prove they own a managed identity, so this list
-   is what keeps one workspace from acting as another's identity or the host's
+   use. In a multi-workspace deployment, **bind each one to its workspace**
+   (`<client-id>=<workspace-id>`). A workspace admin cannot prove they own a
+   managed identity, so only a bound entry stops one workspace from claiming
+   another's identity. An unbound entry only stops two workspaces holding it at
+   once. Never list the host's own identities unless a bot should use them
    (#1466).
 4. **Map Teams users** (SSO email match or explicit admin link) before they expect
    to participate — unmapped senders are rejected with a hint, never attributed.

@@ -394,6 +394,24 @@ describe("TeamsInstallationStore (#548)", () => {
     expect(db.installs).toHaveLength(0);
   });
 
+  it("an identity the operator bound to workspace B cannot be claimed by A, even while B does not hold it", async () => {
+    allowlist = loadTeamsMsiAllowlist({ TEAMS_MSI_CLIENT_IDS: `${MSI}=ws-b` });
+    await expect(store.install(msiInput({ workspaceId: "ws-a" }))).rejects.toMatchObject({
+      code: "MSI_CLIENT_ID_NOT_ALLOWED",
+    });
+    await expect(store.install(msiInput({ workspaceId: "ws-b" }))).resolves.toMatchObject({
+      needsReinstall: false,
+    });
+    // A row A held before the binding was added stops resolving.
+    await store.uninstall("ws-b");
+    allowlist = loadTeamsMsiAllowlist({ TEAMS_MSI_CLIENT_IDS: MSI });
+    await store.install(msiInput({ workspaceId: "ws-a" }));
+    allowlist = loadTeamsMsiAllowlist({ TEAMS_MSI_CLIENT_IDS: `${MSI}=ws-b` });
+    await expect(store.resolveAppPassword("ws-a")).rejects.toMatchObject({
+      code: "MSI_CLIENT_ID_NOT_ALLOWED",
+    });
+  });
+
   it("refuses every managed identity when TEAMS_MSI_CLIENT_IDS is unset", async () => {
     allowlist = loadTeamsMsiAllowlist({});
     await expect(store.install(msiInput())).rejects.toMatchObject({
