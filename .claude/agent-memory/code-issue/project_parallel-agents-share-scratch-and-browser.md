@@ -64,3 +64,20 @@ Older entries, folded here (retired from the index 2026-10-16; files unchanged):
 - (#1305) In an isolated worktree the guard also refuses multi-line Bash heredocs that edit files ("too complex to verify"). Use Edit/Write, or write a script file with the Write tool and run it in its own plain call.
 - (#1308) The Edit tool can write a `\uXXXX` escape as the literal character. A bidi control written that way fails Semgrep's blocking `contains-bidirectional-characters` on the PR. Use `\p{Bidi_Control}` or `String.fromCodePoint(...)`, and scan your changed files for bidi characters before pushing.
 - (#1415) The guard also refuses compound commands with `jq '.[...]'` filters. Write the jq filter to a scratch file and run `jq -f <file>`, one command per call.
+
+## 2026-10-24 additions (webhook/security wave)
+
+- **The guard matches the substring, not the command.** Compound Bash (redirects, `cd`/`cp`
+  chains, heredoc python, a `for` loop over files) is refused whenever any path in it contains
+  `git` or `github`, including a file name such as `…-github-client.md` (#1484; recurred
+  persisting this memory). Put the script in a scratchpad file and pass the path, or use
+  vitest substring filters.
+- **Scratchpad insert scripts are not idempotent on re-run**: one re-run duplicated mocks
+  into five suites (#1484). Make an insert script assert its text is absent first.
+- **Prettier from `server/` ignores the root `.prettierignore`**:
+  `prettier --write ../docs/USER_GUIDE.md` reformatted ~1,100 lines (#1501). Check
+  `git diff origin/main --stat -- docs/` before pushing.
+- **A symlinked `node_modules` also means main's generated Prisma client.** A `.sqlite.test.ts`
+  in a scratch worktree that symlinks from main fails with "Unknown argument" on schema drift.
+  Run `pnpm install --frozen-lockfile --prod=false --filter @metis/server... --filter .` in
+  the worktree instead of regenerating through the symlink (#1508 cycle 2).

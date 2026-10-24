@@ -38,6 +38,10 @@ resolves the column, `payload.projectId`, and the connector/batch/import-source 
 - Teams, PagerDuty and provider-watcher hook tests use a fake db whose `findFirst` ignores
   `where`. Read a `deletedAt` filter from the selected row, or the test cannot fail.
 
+**Declared is not logged (#1493 review).** A declared `BackgroundPath` member, or a PR-body
+"skip is logged" claim, can have no call site. Grep `logDeletedProjectSkip` to confirm each
+declared path really logs.
+
 **Classifying hooks.** PagerDuty and Teams notification hooks (`lib/pagerduty/*`,
 `lib/teams/notification-hooks.ts`) are external writes; never class them "internal-only".
 

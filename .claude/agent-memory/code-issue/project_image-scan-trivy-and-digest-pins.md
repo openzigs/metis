@@ -25,4 +25,14 @@ metadata:
 - **A `workflow_dispatch` of `ci.yml` on a PR branch uploads SARIF for that ref**, and
   GitHub then attaches a Trivy check to the PR head: an extra row in the check set.
 
+**Red on every PR at once (2026-10-24).**
+- The api job's Trivy scan (#1379) can turn every PR red between two runs when an upstream
+  HIGH advisory is published. Before debugging a failing `api` with `api-outcome` also
+  failing, check whether `main`'s latest `api` fails with the same `##[error]` lines (#1480).
+- Trivy reports npm advisories by CVE alias, while the `sast.yml` OSV gate waives by GHSA.
+  When a waived GHSA gains a CVE alias, the image scan goes red on `main`. Mirror it in
+  `.github/image-scan-waivers.json` with `allowFixed` + `packages` (exact
+  `name@installed`) + `mirrors` + `guards`, and retire both waivers together
+  (`image-scan-waivers-mirror.test.mjs`, #1490).
+
 Related: [[dependency-audit-flips-on-new-advisories]], [[helm-chart-install-and-networkpolicy-traps]].
