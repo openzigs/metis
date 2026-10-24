@@ -925,8 +925,11 @@ describe("#1488 — a failure that is not about the credential leaves the status
 
   it("a failure reading the credential, before GitHub is asked, still marks it error", async () => {
     const id = await connectedAdmin("te-vault");
-    // A plain Error with no HTTP status would read as transient had GitHub been asked.
-    vi.mocked(readBoundSecret).mockRejectedValueOnce(new Error("vault decrypt failed"));
+    // An AbortError would read as transient had GitHub been asked: only the
+    // `askedGithub` guard keeps a vault-side one from leaving the status alone.
+    vi.mocked(readBoundSecret).mockRejectedValueOnce(
+      Object.assign(new Error("vault read aborted"), { name: "AbortError" }),
+    );
     await expect(testRepoConnector("proj_1", id, "user_1")).rejects.toBeTruthy();
     expect((await getRepoConnector("proj_1", id)).status).toBe("error");
   });

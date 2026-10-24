@@ -422,6 +422,30 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
+    describe("a metadata sync racing a PATCH (review of #1494)", () => {
+      it("an admin read of the attacker's own repository never lands on a row repointed at the victim's", async () => {
+        await connect(OTHER_P, T_EARLY, ownerSecretId);
+        await db.repoConnection.update({
+          where: { id: `repo-${OTHER_P}` },
+          data: { ownerOrOrg: "attacker-1488", repoName: "own" },
+        });
+        duringGet = async () => {
+          const patch = await request(api)
+            .patch(`/api/projects/${OTHER_P}/connectors/repos/repo-${OTHER_P}`)
+            .set("Authorization", asOther())
+            .send({ ownerOrOrg: ORG, repoName: "public-app", secretRef: "" });
+          expect(patch.status, patch.text).toBe(200);
+        };
+        await request(api)
+          .post(`/api/projects/${OTHER_P}/connectors/repos/repo-${OTHER_P}/metadata`)
+          .set("Authorization", asOther());
+        expect(duringGet).toBeNull(); // the PATCH ran inside the sync
+        expect(await deliveredTo(32)).toEqual([]);
+        const row = await db.repoConnection.findUnique({ where: { id: `repo-${OTHER_P}` } });
+        expect(row).toMatchObject({ status: "pending", repoPermission: null });
+      });
+    });
+
     describe("a sync after an error (review of #1494)", () => {
       it("an errored connector made connected again by a metadata sync carries the permission that sync read", async () => {
         await connect(OTHER_P, T_EARLY, readerSecretId);
