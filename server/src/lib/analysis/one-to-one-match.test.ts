@@ -69,6 +69,107 @@ function rng(seed: number): () => number {
   };
 }
 
+/**
+ * Replay `candidates` level by level by brute force and check every decision
+ * `matchOneToOneRefusingTies` made. Returns whether some level was a PERFECT
+ * graph (every live vertex matched) with more than one maximum matching: there
+ * the only thing that can unforce a pair is an even alternating cycle, so a
+ * corpus with such levels exercises the cycle (SCC) half of the proof.
+ * Candidates must not repeat a `(left, right)` pair.
+ */
+function expectMatchesBruteForce(
+  candidates: ReadonlyArray<OneToOneCandidate<string, string, number[]>>,
+  levels: readonly number[],
+  label: string,
+): { cycleOnlyLevel: boolean } {
+  const out = matchOneToOneRefusingTies(candidates, { compare: compareTiersDescending });
+  let cycleOnlyLevel = false;
+  const matched = new Set<string>();
+  const refused = new Set<string>();
+  const refusedAmong = new Map<string, string[]>();
+  for (const level of levels) {
+    const live: Edge[] = candidates
+      .filter((c) => c.score[0] === level)
+      .filter((c) => ![c.left, c.right].some((v) => matched.has(v) || refused.has(v)))
+      .map((c) => [c.left, c.right]);
+    if (live.length === 0) continue;
+    const maxima = allMaximumMatchings(live);
+    const inEvery = maxima[0]!.filter(([l, r]) =>
+      maxima.every((m) => m.some(([l2, r2]) => l2 === l && r2 === r)),
+    );
+    if (maxima.length > 1 && maxima[0]!.length * 2 === new Set(live.flat()).size)
+      cycleOnlyLevel = true;
+    for (const [l, r] of live) {
+      const takenHere = out.matches.get(l) === r;
+      const forced = inEvery.some(([l2, r2]) => l2 === l && r2 === r);
+      // No matched pair is missing from any maximum matching of its level,
+      // and no pair in all of them is left out.
+      expect(takenHere, `${label}: ${l}–${r} at level ${level}`).toBe(forced);
+    }
+    for (const [l, r] of inEvery) {
+      matched.add(l);
+      matched.add(r);
+    }
+    for (const [l, r] of live) {
+      if (!matched.has(l)) {
+        refused.add(l);
+        // A right a forced pair took at this same level is not an option
+        // the refused left was "too close to call" on (#1204 review): it
+        // went to another left. Collecting it here would agree with an
+        // overcounting matcher and prove nothing.
+        const options = refusedAmong.get(l) ?? [];
+        refusedAmong.set(l, matched.has(r) ? options : [...options, r]);
+      }
+      if (!matched.has(r)) refused.add(r);
+    }
+  }
+  // #1204 — each refused left reports exactly its live options at the
+  // level that refused it: no fewer, and none from another level.
+  expect(
+    Object.fromEntries([...out.refusedLeftOptions].map(([l, rs]) => [l, [...rs].sort()])),
+    `${label}: refused options`,
+  ).toEqual(Object.fromEntries([...refusedAmong].map(([l, rs]) => [l, [...rs].sort()])));
+  // Every refused left has at least one option, and none of them is a
+  // right that any left was given.
+  const givenRights = new Set(out.matches.values());
+  for (const [l, rs] of out.refusedLeftOptions) {
+    expect(rs.size, `${label}: ${l} has no options`).toBeGreaterThan(0);
+    for (const r of rs) expect(givenRights.has(r), `${label}: ${l} lists ${r}`).toBe(false);
+  }
+  // Nothing refused at a better level is matched at a weaker one.
+  for (const v of refused) {
+    expect(out.matches.has(v) || [...out.matches.values()].includes(v)).toBe(false);
+  }
+  expect([...out.refusedLefts, ...out.refusedRights].sort()).toEqual([...refused].sort());
+  return { cycleOnlyLevel };
+}
+
+/** Random candidates over up to `maxSide` × `maxSide` vertices, shuffled, scores drawn from `levels`. */
+function randomCandidates(
+  random: () => number,
+  maxSide: number,
+  levels: readonly number[],
+): Array<OneToOneCandidate<string, string, number[]>> {
+  const side = () => 1 + Math.floor(random() * maxSide);
+  const lefts = Array.from({ length: side() }, (_, i) => `R${i + 1}`);
+  const rights = Array.from({ length: side() }, (_, i) => `S${i + 1}`);
+  const density = 0.15 + random() * 0.6;
+  const candidates: Array<OneToOneCandidate<string, string, number[]>> = [];
+  for (const left of lefts) {
+    for (const right of rights) {
+      if (random() < density) {
+        const score = [levels[Math.floor(random() * levels.length)]!];
+        candidates.push({ left, right, score });
+      }
+    }
+  }
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [candidates[i], candidates[j]] = [candidates[j]!, candidates[i]!];
+  }
+  return candidates;
+}
+
 describe("matchOneToOneRefusingTies — property: a matched pair is never a guess", () => {
   it("on random small graphs, takes exactly the pairs in every maximum matching of their level", () => {
     const random = rng(1033);
@@ -82,67 +183,96 @@ describe("matchOneToOneRefusingTies — property: a matched pair is never a gues
             candidates.push({ left: l, right: r, score: [random() < 0.6 ? 1 : 0.5] });
         }
       }
-      const out = matchOneToOneRefusingTies(candidates, { compare: compareTiersDescending });
-
-      // Replay the levels by brute force and check every decision.
-      const matched = new Set<string>();
-      const refused = new Set<string>();
-      const refusedAmong = new Map<string, string[]>();
-      for (const level of [1, 0.5]) {
-        const live: Edge[] = candidates
-          .filter((c) => c.score[0] === level)
-          .filter((c) => ![c.left, c.right].some((v) => matched.has(v) || refused.has(v)))
-          .map((c) => [c.left, c.right]);
-        if (live.length === 0) continue;
-        const maxima = allMaximumMatchings(live);
-        const inEvery = maxima[0]!.filter(([l, r]) =>
-          maxima.every((m) => m.some(([l2, r2]) => l2 === l && r2 === r)),
-        );
-        for (const [l, r] of live) {
-          const takenHere = out.matches.get(l) === r;
-          const forced = inEvery.some(([l2, r2]) => l2 === l && r2 === r);
-          // No matched pair is missing from any maximum matching of its level,
-          // and no pair in all of them is left out.
-          expect(takenHere, `trial ${trial}: ${l}–${r} at level ${level}`).toBe(forced);
-        }
-        for (const [l, r] of inEvery) {
-          matched.add(l);
-          matched.add(r);
-        }
-        for (const [l, r] of live) {
-          if (!matched.has(l)) {
-            refused.add(l);
-            // A right a forced pair took at this same level is not an option
-            // the refused left was "too close to call" on (#1204 review): it
-            // went to another left. Collecting it here would agree with an
-            // overcounting matcher and prove nothing.
-            const options = refusedAmong.get(l) ?? [];
-            refusedAmong.set(l, matched.has(r) ? options : [...options, r]);
-          }
-          if (!matched.has(r)) refused.add(r);
-        }
-      }
-      // #1204 — each refused left reports exactly its live options at the
-      // level that refused it: no fewer, and none from another level.
-      expect(
-        Object.fromEntries([...out.refusedLeftOptions].map(([l, rs]) => [l, [...rs].sort()])),
-        `trial ${trial}: refused options`,
-      ).toEqual(Object.fromEntries([...refusedAmong].map(([l, rs]) => [l, [...rs].sort()])));
-      // Every refused left has at least one option, and none of them is a
-      // right that any left was given.
-      const givenRights = new Set(out.matches.values());
-      for (const [l, rs] of out.refusedLeftOptions) {
-        expect(rs.size, `trial ${trial}: ${l} has no options`).toBeGreaterThan(0);
-        for (const r of rs)
-          expect(givenRights.has(r), `trial ${trial}: ${l} lists ${r}`).toBe(false);
-      }
-      // Nothing refused at a better level is matched at a weaker one.
-      for (const v of refused) {
-        expect(out.matches.has(v) || [...out.matches.values()].includes(v)).toBe(false);
-      }
-      expect([...out.refusedLefts, ...out.refusedRights].sort()).toEqual([...refused].sort());
+      expectMatchesBruteForce(candidates, [1, 0.5], `trial ${trial}`);
     }
   });
+
+  // #1208 — the proof is one maximum matching read Dulmage–Mendelsohn style,
+  // not a re-match per edge. Cross-check it against brute force on thousands
+  // of seeded graphs up to 6 × 6, at one level and at three.
+  it("agrees with brute force on 4,000 seeded random graphs up to 6 × 6 (#1208)", () => {
+    const random = rng(1208);
+    let cycleOnly = 0;
+    for (let trial = 0; trial < 4_000; trial++) {
+      const levels = trial % 2 === 0 ? [1] : [1, 0.5, 0.25];
+      const candidates = randomCandidates(random, 6, levels);
+      if (expectMatchesBruteForce(candidates, levels, `#1208 trial ${trial}`).cycleOnlyLevel)
+        cycleOnly++;
+    }
+    // The corpus must reach the cycle half of the proof: levels where every
+    // vertex is matched yet the matching is not unique, so only an even
+    // alternating cycle can unforce a pair. Without them, a matcher with a
+    // wrong SCC test could pass.
+    expect(cycleOnly).toBeGreaterThan(100); // 155 on this seed
+  });
+});
+
+// ── Size: the proof is near-linear (#1208) ──────────────────────────────────
+
+/**
+ * A CI-safe ceiling, not the target. #1208 asks for K300,300 under 200 ms,
+ * measured locally (the PR records the figures); the per-edge re-match this
+ * replaced took 7.3 s for K300,300 and 31 s for the 2,499-edge chain. One
+ * second keeps a contended CI runner from flaking and still fails on any
+ * return to a per-edge proof.
+ */
+const CI_SAFE_MS = 1_000;
+
+type Candidates = Array<OneToOneCandidate<string, string, number[]>>;
+
+function timedMatch(candidates: Candidates) {
+  const start = performance.now();
+  const out = matchOneToOneRefusingTies(candidates, { compare: compareTiersDescending });
+  return { out, ms: performance.now() - start };
+}
+
+describe("matchOneToOneRefusingTies — size (#1208)", () => {
+  const orders: Array<[string, (c: Candidates) => Candidates]> = [
+    ["forward", (c) => c],
+    ["reversed", (c) => [...c].reverse()],
+  ];
+
+  for (const [name, order] of orders) {
+    it(`K300,300 at one level refuses every vertex, quickly (${name} order)`, () => {
+      const complete: Candidates = [];
+      for (let l = 0; l < 300; l++)
+        for (let r = 0; r < 300; r++) complete.push({ left: `L${l}`, right: `R${r}`, score: [1] });
+      const { out, ms } = timedMatch(order(complete));
+      expect(out.matches.size).toBe(0);
+      expect(out.refusedLefts.size).toBe(300);
+      expect(out.refusedRights.size).toBe(300);
+      expect(ms).toBeLessThan(CI_SAFE_MS);
+    });
+
+    it(`a closed 2,499-edge chain L0:{R0}, Li:{R(i-1), Ri} is forced pair by pair, quickly (${name} order)`, () => {
+      // The only maximum matching is Li–Ri. #1186's review measured 31 s here.
+      const chain: Candidates = [{ left: "L0", right: "R0", score: [1] }];
+      for (let i = 1; i < 1_250; i++) {
+        chain.push({ left: `L${i}`, right: `R${i - 1}`, score: [1] });
+        chain.push({ left: `L${i}`, right: `R${i}`, score: [1] });
+      }
+      expect(chain).toHaveLength(2_499);
+      const { out, ms } = timedMatch(order(chain));
+      expect(out.matches.size).toBe(1_250);
+      for (let i = 0; i < 1_250; i++) expect(out.matches.get(`L${i}`)).toBe(`R${i}`);
+      expect(ms).toBeLessThan(CI_SAFE_MS);
+    });
+
+    it(`an open 2,500-edge chain Li:{Ri, R(i+1)} refuses everything, quickly (${name} order)`, () => {
+      // One spare right: every pair lies on an even alternating path from a
+      // free right, so nothing is forced.
+      const chain: Candidates = [];
+      for (let i = 0; i < 1_250; i++) {
+        chain.push({ left: `L${i}`, right: `R${i}`, score: [1] });
+        chain.push({ left: `L${i}`, right: `R${i + 1}`, score: [1] });
+      }
+      const { out, ms } = timedMatch(order(chain));
+      expect(out.matches.size).toBe(0);
+      expect(out.refusedLefts.size).toBe(1_250);
+      expect(out.refusedRights.size).toBe(1_251);
+      expect(ms).toBeLessThan(CI_SAFE_MS);
+    });
+  }
 });
 
 describe("matchOneToOneRefusingTies — refused options (#1204)", () => {
@@ -195,49 +325,6 @@ describe("matchOneToOneRefusingTies — edges", () => {
       { compare: (a: number, b: number) => b - a },
     );
     expect(Object.fromEntries(out.matches)).toEqual({ 2: "a" });
-  });
-});
-
-describe("matchOneToOneRefusingTies — maxComponentEdges (#1031)", () => {
-  const probeA: Array<OneToOneCandidate<string, string, number[]>> = [
-    { left: "R1", right: "S1", score: [1] },
-    { left: "R2", right: "S1", score: [1] },
-    { left: "R2", right: "S2", score: [1] },
-  ];
-
-  it("proves a component at the limit, and refuses the same component one edge over it", () => {
-    const at = matchOneToOneRefusingTies(probeA, {
-      compare: compareTiersDescending,
-      maxComponentEdges: 3,
-    });
-    expect(Object.fromEntries(at.matches)).toEqual({ R1: "S1", R2: "S2" });
-
-    const over = matchOneToOneRefusingTies(probeA, {
-      compare: compareTiersDescending,
-      maxComponentEdges: 2,
-    });
-    expect(over.matches.size).toBe(0);
-    expect([...over.refusedLefts].sort()).toEqual(["R1", "R2"]);
-    expect([...over.refusedRights].sort()).toEqual(["S1", "S2"]);
-    // #1204 — an unproved component reports each left's options all the same.
-    expect(over.refusedLeftOptions.get("R1")).toEqual(new Set(["S1"]));
-    expect(over.refusedLeftOptions.get("R2")).toEqual(new Set(["S1", "S2"]));
-  });
-
-  it("refuses only the oversized component; a separate pair at the same level still matches", () => {
-    const out = matchOneToOneRefusingTies([...probeA, { left: "R9", right: "S9", score: [1] }], {
-      compare: compareTiersDescending,
-      maxComponentEdges: 2,
-    });
-    expect(Object.fromEntries(out.matches)).toEqual({ R9: "S9" });
-  });
-
-  it("an oversized component's vertices take nothing weaker later (no fallback)", () => {
-    const out = matchOneToOneRefusingTies([...probeA, { left: "R1", right: "S8", score: [0.5] }], {
-      compare: compareTiersDescending,
-      maxComponentEdges: 2,
-    });
-    expect(out.matches.size).toBe(0);
   });
 });
 

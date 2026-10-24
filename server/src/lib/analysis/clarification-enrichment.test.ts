@@ -115,7 +115,6 @@ const {
   CLARIFICATIONS_START,
   MAX_OUTCOME_QUESTION,
   MAX_PUBLISHED_ANSWER,
-  MAX_ATTRIBUTION_PROOF_EDGES,
   resolvePromotedCandidates,
   applyClarificationBlock,
   planClarificationBlock,
@@ -1425,25 +1424,18 @@ describe("#1031 — promoted-row attribution shares the one-to-one tie rule (#11
     return out;
   };
 
-  it("proves a component up to MAX_ATTRIBUTION_PROOF_EDGES — a staircase just under it is forced", () => {
-    const n = 70; // 2,485 edges
-    const candidates = staircase(n);
-    expect(candidates.length).toBeLessThanOrEqual(MAX_ATTRIBUTION_PROOF_EDGES);
-    const out = resolvePromotedCandidates(candidates);
-    expect(out.matches.size).toBe(n);
-    expect(out.matches.get("S70")).toBe("R70");
-  });
-
-  it("refuses a component over MAX_ATTRIBUTION_PROOF_EDGES whole, and still matches a separate pair", () => {
-    // Nothing caps an analysis's rows; the proof is ~O(matched × V·E) per
-    // component. Over the limit it is refused instead — even this staircase,
-    // which the proof would force pair by pair.
-    const n = 71; // 2,556 edges
+  it("proves a component of any size — a staircase over the retired 2,500-edge guard is forced pair by pair (#1208)", () => {
+    // Nothing caps an analysis's rows. #1186 refused any component over 2,500
+    // edges because the per-edge re-match was ~O(matched × V·E); the proof is
+    // now near-linear, so the guard is gone and a big component is proved.
+    const n = 150; // 11,325 edges
     const candidates = [...staircase(n), { left: "S-solo", right: "R-solo", score: [0, 0, 1, 1] }];
-    expect(candidates.length - 1).toBeGreaterThan(MAX_ATTRIBUTION_PROOF_EDGES);
+    expect(candidates.length - 1).toBeGreaterThan(2_500);
     const out = resolvePromotedCandidates(candidates);
-    expect(Object.fromEntries(out.matches)).toEqual({ "S-solo": "R-solo" });
-    expect(out.refusedLefts.size).toBe(n);
+    expect(out.matches.size).toBe(n + 1);
+    for (let s = 1; s <= n; s++) expect(out.matches.get(`S${s}`)).toBe(`R${s}`);
+    expect(out.matches.get("S-solo")).toBe("R-solo");
+    expect(out.refusedLefts.size).toBe(0);
   });
 });
 

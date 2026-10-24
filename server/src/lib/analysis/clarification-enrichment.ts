@@ -321,20 +321,6 @@ function buildCandidates(
 }
 
 /**
- * Issue #1031 — the largest connected component of one level's candidates
- * that the strict "in every maximum matching" proof is run on.
- *
- * Unlike synthesis output (capped at 100 items), nothing caps an analysis's
- * persisted requirement rows or its structured list, and the proof costs about
- * (matched edges × V·E) per component — a complete 300 × 300 level takes
- * seconds. Above this many edges the component is refused outright, which is
- * always safe here: an answer reported as not applied, never a guess. A real
- * component of this size means hundreds of requirements level with each other,
- * which no title match could separate anyway.
- */
-export const MAX_ATTRIBUTION_PROOF_EDGES = 2_500;
-
-/**
  * Promoted rows — one row per requirement and one requirement per row, by the
  * rule #1033's promotion fallback shares ({@link matchOneToOneRefusingTies}):
  * at each level a pair is taken only if it is in every maximum matching of
@@ -345,10 +331,9 @@ export const MAX_ATTRIBUTION_PROOF_EDGES = 2_500;
 export function resolvePromotedCandidates(
   candidates: readonly RowCandidate[],
 ): OneToOneResult<string, string> {
-  return matchOneToOneRefusingTies(candidates, {
-    compare: compareTiersDescending,
-    maxComponentEdges: MAX_ATTRIBUTION_PROOF_EDGES,
-  });
+  // Nothing caps an analysis's rows, and nothing needs to: the proof is
+  // near-linear in the level's edges (#1208), so no size guard remains.
+  return matchOneToOneRefusingTies(candidates, { compare: compareTiersDescending });
 }
 
 /**
