@@ -8,13 +8,25 @@
  * the real `VaultService`: a signed `pull_request` delivery to the server's own
  * `/api/webhooks/github/pr` → the worker singleton `createServer()` started →
  * the real `AnthropicProvider` (the project's configured provider) talking to a
- * loopback HTTP server, so no model is billed → a stubbed GitHub API behind the
- * real `acquirePublishOctokit` (its factory is replaced; the target validation
- * and connector lookup are real) → the `PrReviewState` row, the posted review
- * and the `TokenUsage` spend row, all read back from the database.
+ * loopback HTTP server, so no model is billed → the REAL publish Octokit
+ * (`acquirePublishOctokit`, no factory override: target validation, DNS pin,
+ * `fetch`, redirect refusal and deadline all real) calling a loopback HTTPS
+ * stub of the GitHub Enterprise API, reached through the project's
+ * `github_enterprise` connector saved as a bare host → the `PrReviewState`
+ * row, the posted review and the `TokenUsage` spend row, all read back from
+ * the database.
+ *
+ * The stub's certificate is self-signed, made per run with `openssl`, so TLS
+ * verification is switched off for this file only (`NODE_TLS_REJECT_UNAUTHORIZED`).
+ * The suite is skipped where `openssl` is unavailable.
  */
+import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import https from "node:https";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import request from "supertest";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
@@ -46,8 +58,7 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 const { createServer } = await import("../src/server.js");
 const { VaultService, __resetVaultSingleton } = await import("../src/lib/vault/vault-service.js");
-const { __setPublishOctokitFactory, __resetPublishOctokitCache } =
-  await import("../src/lib/publishing/octokit-factory.js");
+const { __resetPublishOctokitCache } = await import("../src/lib/publishing/octokit-factory.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 
 const SECRET = "webhook-secret-1471";
@@ -58,6 +69,8 @@ const P = "project-1471";
 const OWNER = "acme-1471";
 const NOCRED = "project-1471-nocred";
 const NOCRED_OWNER = "nocred-1471";
+const UNPRICED = "project-1471-unpriced";
+const UNPRICED_OWNER = "unpriced-1471";
 const MODEL = "claude-sonnet-4-6";
 
 const JUDGE_REPLY = JSON.stringify({
@@ -79,17 +92,49 @@ function readBody(req: IncomingMessage): Promise<Body> {
   });
 }
 
-describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
+const hasOpenssl = spawnSync("openssl", ["version"]).status === 0;
+
+/** A throwaway self-signed certificate for `localhost`. */
+function selfSignedLocalhost(): { key: string; cert: string } {
+  const dir = mkdtempSync(join(tmpdir(), "gh-1471-"));
+  try {
+    const key = join(dir, "key.pem");
+    const cert = join(dir, "cert.pem");
+    const out = spawnSync("openssl", [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-subj",
+      "/CN=localhost",
+      "-days",
+      "1",
+      "-keyout",
+      key,
+      "-out",
+      cert,
+    ]);
+    if (out.status !== 0) throw new Error(`openssl failed: ${String(out.stderr)}`);
+    return { key: readFileSync(key, "utf8"), cert: readFileSync(cert, "utf8") };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe.skipIf(readGeneratedClientProvider() !== "sqlite" || !hasOpenssl)(
   "#1471 — createServer()'s default wiring reviews a pull request",
   () => {
     let sqlite: MigratedSqlite;
     let db: PrismaClient;
     let server: ReturnType<typeof createServer>;
     let modelServer: http.Server;
+    let githubServer: https.Server;
     const modelCalls: Body[] = [];
     /** Every request the stubbed GitHub API received, with the token it carried. */
     const github: Array<{ method: string; url: string; accept?: string; token: string }> = [];
     let prHeadSha = "sha-current-1471";
+    const PR_BASE_SHA = "sha-base-1471";
     const savedEnv: Record<string, string | undefined> = {};
     const ENV = [
       "AI_OFFLINE",
@@ -100,6 +145,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       "VAULT_MASTER_KEY",
       "AI_RETRY_BASE_DELAY_MS",
       "ANTHROPIC_BASE_URL_BILLS_AS",
+      "NODE_TLS_REJECT_UNAUTHORIZED",
+      "HTTPS_PROXY",
+      "https_proxy",
+      "HTTP_PROXY",
+      "http_proxy",
     ];
 
     let delivery = 0;
@@ -139,7 +189,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         },
       });
 
-    const seedProject = async (id: string, owner: string, secretId: string | null) => {
+    let ghBase = "";
+    const seedProject = async (
+      id: string,
+      owner: string,
+      secretId: string | null,
+      model: string = MODEL,
+    ) => {
       await db.project.create({
         data: {
           id,
@@ -149,14 +205,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           status: "active",
           autoReviewPrs: true,
           aiProviderId: "anthropic",
-          aiModel: MODEL,
+          aiModel: model,
         },
       });
       await db.repoConnection.create({
         data: {
           projectId: id,
           label: "main",
-          provider: "github",
+          // Saved as the form suggests: the Enterprise host alone.
+          provider: "github_enterprise",
+          apiBaseUrl: ghBase,
           ownerOrOrg: owner,
           repoName: "app",
           isPrimary: true,
@@ -215,7 +273,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
               id: "msg_1471",
               type: "message",
               role: "assistant",
-              model: MODEL,
+              // Answers as the model asked for, as Anthropic does.
+              model: typeof body.model === "string" ? body.model : MODEL,
               content: [{ type: "text", text: JUDGE_REPLY }],
               stop_reason: "end_turn",
               stop_sequence: null,
@@ -234,6 +293,60 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // The loopback stands in for Anthropic itself, so its calls are priced.
       process.env.ANTHROPIC_BASE_URL_BILLS_AS = "anthropic";
       process.env.GITHUB_WEBHOOK_SECRET = SECRET;
+      for (const k of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]) {
+        delete process.env[k];
+      }
+      // The GitHub stub's certificate is self-signed (see the file comment).
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+      githubServer = https.createServer(selfSignedLocalhost(), (req, res) => {
+        const url = req.url ?? "";
+        const accept = req.headers.accept ?? "";
+        const auth = String(req.headers.authorization ?? "");
+        github.push({
+          method: req.method ?? "",
+          url,
+          ...(accept.includes("diff") ? { accept } : {}),
+          token: auth.replace(/^(token|bearer) /i, ""),
+        });
+        const json = (status: number, body: unknown) => {
+          res.writeHead(status, { "content-type": "application/json" });
+          res.end(JSON.stringify(body));
+        };
+        const pr = /^\/api\/v3\/repos\/([^/]+)\/app\/pulls\/(\d+)(\/reviews)?$/.exec(url);
+        if (req.method === "POST" && pr?.[3]) {
+          const n = Number(pr[2]);
+          void readBody(req).then(() =>
+            json(200, {
+              id: 7000 + n,
+              html_url: `https://github.com/${pr[1]}/app/pull/${n}#pullrequestreview-${7000 + n}`,
+            }),
+          );
+          return;
+        }
+        if (
+          req.method === "GET" &&
+          (url.includes("/compare/") || (pr && accept.includes("diff")))
+        ) {
+          res.writeHead(200, { "content-type": "text/plain" });
+          res.end(DIFF);
+          return;
+        }
+        if (req.method === "GET" && pr) {
+          const n = Number(pr[2]);
+          json(200, {
+            number: n,
+            title: `PR #${n} (from GitHub)`,
+            body: "Closes #5",
+            html_url: `https://github.com/${pr[1]}/app/pull/${n}`,
+            head: { sha: prHeadSha, ref: "feature" },
+            base: { sha: PR_BASE_SHA },
+          });
+          return;
+        }
+        json(404, { message: "Not Found" });
+      });
+      await new Promise<void>((r) => githubServer.listen(0, "127.0.0.1", () => r()));
+      ghBase = `https://localhost:${(githubServer.address() as AddressInfo).port}`;
       process.env.VAULT_MASTER_KEY = MASTER_KEY;
       __resetVaultSingleton();
 
@@ -246,48 +359,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       await seedProject(P, OWNER, secret.id);
       await seedProject(NOCRED, NOCRED_OWNER, null);
+      // A model with no published price, under a monthly limit.
+      await seedProject(UNPRICED, UNPRICED_OWNER, secret.id, "no-such-model-1471");
+      await db.project.update({
+        where: { id: UNPRICED },
+        data: { prReviewMonthlyBudgetCents: 100 },
+      });
 
       __resetPublishOctokitCache();
-      __setPublishOctokitFactory(async (args) => ({
-        request: async (a: { method: string; url: string; headers?: Record<string, string> }) => {
-          github.push({
-            method: a.method,
-            url: a.url,
-            ...(a.headers?.accept ? { accept: a.headers.accept } : {}),
-            token: args.token,
-          });
-          if (a.method === "POST" && /\/pulls\/\d+\/reviews$/.test(a.url)) {
-            const n = Number(/pulls\/(\d+)/.exec(a.url)![1]);
-            return {
-              status: 200,
-              headers: {},
-              data: {
-                id: 7000 + n,
-                html_url: `https://github.com/${OWNER}/app/pull/${n}#pullrequestreview-${7000 + n}`,
-              },
-            } as never;
-          }
-          if (a.method === "GET" && a.headers?.accept === "application/vnd.github.diff") {
-            return { status: 200, headers: {}, data: DIFF } as never;
-          }
-          if (a.method === "GET" && /\/pulls\/\d+$/.test(a.url)) {
-            const n = Number(/pulls\/(\d+)$/.exec(a.url)![1]);
-            return {
-              status: 200,
-              headers: {},
-              data: {
-                number: n,
-                title: `PR #${n} (from GitHub)`,
-                body: "Closes #5",
-                html_url: `https://github.com/${OWNER}/app/pull/${n}`,
-                head: { sha: prHeadSha, ref: "feature" },
-              },
-            } as never;
-          }
-          throw Object.assign(new Error("unexpected GitHub call"), { status: 500 });
-        },
-      }));
-
       // The default wiring under test: no `prReviewProcessorDeps`.
       server = createServer({ skipMCPBootstrap: true });
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
@@ -295,8 +374,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     afterAll(async () => {
       await server?.prReviewWorker.shutdown();
       await server?.io.close();
-      __setPublishOctokitFactory(null);
+      __resetPublishOctokitCache();
       __resetVaultSingleton();
+      githubServer?.closeAllConnections();
+      await new Promise<void>((r) => (githubServer ? githubServer.close(() => r()) : r()));
       modelServer?.closeAllConnections();
       await new Promise<void>((r) => (modelServer ? modelServer.close(() => r()) : r()));
       for (const k of ENV) {
@@ -319,8 +400,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(modelCalls[0].model).toBe(MODEL);
       const posts = github.filter((g) => g.method === "POST");
       expect(posts).toEqual([
-        { method: "POST", url: `/repos/${OWNER}/app/pulls/31/reviews`, token: GH_TOKEN },
+        { method: "POST", url: `/api/v3/repos/${OWNER}/app/pulls/31/reviews`, token: GH_TOKEN },
       ]);
+      // The diff was read from the Enterprise API the connector names.
+      expect(github[0]).toMatchObject({
+        method: "GET",
+        url: `/api/v3/repos/${OWNER}/app/pulls/31`,
+      });
+      expect(github[0].accept).toContain("diff");
       expect(github.every((g) => g.token === GH_TOKEN)).toBe(true);
 
       const row = await rowOf(P, OWNER, 31);
@@ -364,8 +451,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
       expect(github[0]).toEqual({
         method: "GET",
-        url: `/repos/${OWNER}/app/pulls/31`,
+        url: `/api/v3/repos/${OWNER}/app/pulls/31`,
         token: GH_TOKEN,
+      });
+      // The diff reviewed is base...head at exactly the head just read.
+      expect(github[1]).toMatchObject({
+        method: "GET",
+        url: `/api/v3/repos/${OWNER}/app/compare/${PR_BASE_SHA}...sha-after-push-1471`,
       });
       expect(modelCalls).toHaveLength(1);
       // The description read from GitHub links the issue: not a false `no_linked_issue`.
@@ -404,6 +496,72 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       } finally {
         await db.project.update({ where: { id: P }, data: { prReviewMonthlyBudgetCents: null } });
       }
+    });
+
+    describe("a monthly limit with a model that has no price (#1471)", () => {
+      const admin = () =>
+        issueTokens({
+          userId: USER,
+          username: USER,
+          role: "admin",
+          permissions: getPermissionsForRole("admin"),
+        }).accessToken;
+
+      it("a delivery is refused before any model or GitHub call, and the row says why", async () => {
+        await deliver(UNPRICED_OWNER, 51, "Closes #5");
+        expect(modelCalls).toHaveLength(0);
+        expect(github).toHaveLength(0);
+        expect(await rowOf(UNPRICED, UNPRICED_OWNER, 51)).toMatchObject({
+          lastStatus: "skipped",
+          lastSkipReason: "budget_unpriced",
+          lastRunId: null,
+        });
+        const spend = await db.tokenUsage.count({ where: { projectId: UNPRICED } });
+        expect(spend).toBe(0);
+      });
+
+      it("a manual Re-run is refused the same way", async () => {
+        const res = await request(server.http)
+          .post(`/api/projects/${UNPRICED}/pr-reviews/51/re-review`)
+          .set("Authorization", `Bearer ${admin()}`)
+          .send({ owner: UNPRICED_OWNER, repo: "app" });
+        expect(res.status, res.text).toBe(202);
+        await server.prReviewWorker.queue.drain();
+        expect(modelCalls).toHaveLength(0);
+        expect(github).toHaveLength(0);
+        expect(await rowOf(UNPRICED, UNPRICED_OWNER, 51)).toMatchObject({
+          lastSkipReason: "budget_unpriced",
+        });
+      });
+
+      it("Project settings' budget status says the model is unpriced", async () => {
+        const res = await request(server.http)
+          .get(`/api/projects/${UNPRICED}/pr-review-budget`)
+          .set("Authorization", `Bearer ${admin()}`);
+        expect(res.status, res.text).toBe(200);
+        expect(res.body.data).toMatchObject({ capCents: 100, modelPriced: false });
+        const priced = await request(server.http)
+          .get(`/api/projects/${P}/pr-review-budget`)
+          .set("Authorization", `Bearer ${admin()}`);
+        expect(priced.body.data).toMatchObject({ modelPriced: true });
+      });
+
+      it("with the limit removed, the same project is reviewed (and its spend recorded unpriced)", async () => {
+        await db.project.update({
+          where: { id: UNPRICED },
+          data: { prReviewMonthlyBudgetCents: null },
+        });
+        await deliver(UNPRICED_OWNER, 52, "Closes #5");
+        expect(modelCalls).toHaveLength(1);
+        expect(await rowOf(UNPRICED, UNPRICED_OWNER, 52)).toMatchObject({
+          lastStatus: "reviewed",
+        });
+        const spend = await db.tokenUsage.findMany({
+          where: { projectId: UNPRICED, sessionId: { startsWith: "pr-review-" } },
+        });
+        expect(spend).toHaveLength(1);
+        expect(spend[0].costUsd).toBeNull();
+      });
     });
 
     it("a project whose connector has no credential stays review_not_configured, with no model call", async () => {

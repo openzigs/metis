@@ -3,11 +3,9 @@ issue: 1471
 section: Fixed
 ---
 
-- Automatic PR review now runs on a deployment. Each review uses the project's
-  AI model and its GitHub repository connection's vault token (GitHub
-  Enterprise included), and its spend counts toward the monthly limit. A project
-  missing either is listed as not reviewed, with the reason, and no model call is made.
-- Re-run review reads the pull request from GitHub first, so it no longer records
-  a pull request that links an issue as linking none, and its SHA is the commit
-  it reviewed. When a pull request is updated while a review of it is waiting,
-  only the newest update is reviewed.
+- Automatic PR review now runs on a deployment, with the project's AI model and
+  its GitHub (or Enterprise) connection's vault token. Spend counts toward the
+  monthly limit; with a limit set, a model that has no price is not reviewed.
+- Re-run review reads the pull request first and reviews the commit it read.
+- GitHub publishing and PR review now connect to the checked Enterprise address,
+  use the egress proxy, refuse redirects and time out after 20 seconds.

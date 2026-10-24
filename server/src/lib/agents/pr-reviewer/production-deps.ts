@@ -13,12 +13,15 @@
  *     uses) in the `JudgeEnvelope`, so `runPrReview` records the spend through
  *     `defaultBudgetDeps()` and the #1169 monthly limit counts it. An unpriced
  *     model reports a non-finite cost, which `recordPrReviewSpend` stores as
- *     unpriced rather than as a known $0.
+ *     unpriced rather than as a known $0; with a monthly limit set, such a
+ *     judge (`priced: false`) is refused before the call (`budget_unpriced`).
  *   - **GitHub client** — the project's GitHub repository connector for the
- *     job's repo: its bound vault secret (`readBoundSecret`, by id), its API
- *     base URL (GitHub Enterprise), validated and DNS-pinned by
- *     `resolvePublishTarget`, and the shared throttled/retried client from
- *     `acquirePublishOctokit`.
+ *     job's repo: its API base URL (GitHub Enterprise), validated by
+ *     `resolvePublishTarget` (HTTPS; an Enterprise host allow-listed and
+ *     resolved to the address the client is pinned to), then its bound vault
+ *     secret (`readBoundSecret`, by id), then the client from
+ *     `acquirePublishOctokit`, whose `fetch` connects to that pinned address
+ *     (or the egress proxy), refuses redirects and has a deadline.
  *
  * Anything unresolvable — no provider configured, the offline stub, no
  * connector, no secret, a deleted secret, a host off the allow-list — answers
@@ -47,7 +50,19 @@ import type { PrReviewJob } from "./queue.js";
 const log = createChildLogger("pr-review-production-deps");
 
 /** The GitHub client shape the PR-review job uses. */
-export type PrReviewOctokit = OctokitLike & DiffFetchOctokit;
+export type PrReviewOctokit = OctokitLike &
+  DiffFetchOctokit & {
+    /**
+     * #1471 — the unified diff of `base...head` (the pull request's diff at
+     * exactly `head`), so a re-run reviews the commit it read.
+     */
+    compareDiff?(input: {
+      owner: string;
+      repo: string;
+      base: string;
+      head: string;
+    }): Promise<string>;
+  };
 
 /** Connector providers whose credential can review a GitHub pull request. */
 const GITHUB_CONNECTOR_PROVIDERS = new Set(["github", "github_enterprise"]);
@@ -61,9 +76,37 @@ function errorClass(err: unknown): string {
   return "Error";
 }
 
+/**
+ * #1471 — whether `provider`'s model has a published price. Tested on a
+ * nominal usage: a model with no rate prices nothing, at any size.
+ */
+export function modelIsPriced(provider: Pick<AIProvider, "key" | "model">): boolean {
+  return (
+    estimateUsageCostUsd(
+      provider.model,
+      { promptTokens: 1000, completionTokens: 1000 },
+      provider.key,
+    ) != null
+  );
+}
+
+/**
+ * #1471 — whether `projectId`'s AI model is priced, for Project settings:
+ * `null` when the project has no model this server can use.
+ */
+export async function resolveProjectModelPriced(projectId: string): Promise<boolean | null> {
+  try {
+    const provider = await resolveProjectProvider(projectId);
+    return provider.offline ? null : modelIsPriced(provider);
+  } catch {
+    return null;
+  }
+}
+
 /** Wrap a provider as the review judge: one non-streaming call, metered. */
 export function judgeFromProvider(provider: AIProvider): JudgeLike {
   return {
+    priced: modelIsPriced(provider),
     async evaluate({ system, user }): Promise<JudgeEnvelope> {
       const res = await provider.chat(
         [
@@ -139,6 +182,14 @@ export function githubApiBaseUrl(stored: string | null): string | null {
   return path.endsWith("/api/v3") ? url.origin + path : url.origin + "/api/v3";
 }
 
+function isPublicGithubApi(baseUrl: string): boolean {
+  try {
+    return new URL(baseUrl).hostname.toLowerCase() === "api.github.com";
+  } catch {
+    return false;
+  }
+}
+
 function repoPath(owner: string, repo: string): string {
   return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 }
@@ -164,6 +215,14 @@ export function prReviewOctokitFrom(client: PublishOctokitLike): PrReviewOctokit
         });
         return { data: { id: res.data.id, html_url: res.data.html_url } };
       },
+    },
+    async compareDiff({ owner, repo, base, head }) {
+      const res = await client.request({
+        method: "GET",
+        url: `${repoPath(owner, repo)}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`,
+        headers: { accept: "application/vnd.github.diff" },
+      });
+      return typeof res.data === "string" ? res.data : String(res.data ?? "");
     },
   };
 }
@@ -198,12 +257,14 @@ export async function resolvePrReviewOctokit(job: PrReviewJob): Promise<PrReview
     log.warn("pr_review.octokit_unresolved", { ...where, reason: "not_a_github_connector" });
     return null;
   }
+  const baseUrl = githubApiBaseUrl(conn.apiBaseUrl);
+  if (conn.provider === "github_enterprise" && (!baseUrl || isPublicGithubApi(baseUrl))) {
+    // An Enterprise token is never sent to api.github.com.
+    log.warn("pr_review.octokit_unresolved", { ...where, reason: "enterprise_without_base_url" });
+    return null;
+  }
   try {
-    const target = await resolvePublishTarget({
-      owner: job.owner,
-      repo: job.repo,
-      baseUrl: githubApiBaseUrl(conn.apiBaseUrl),
-    });
+    const target = await resolvePublishTarget({ owner: job.owner, repo: job.repo, baseUrl });
     const token = await readBoundSecret(conn.secretId, getVaultService());
     if (!token) {
       log.warn("pr_review.octokit_unresolved", { ...where, reason: "empty_secret" });

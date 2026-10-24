@@ -39,10 +39,13 @@ import {
   type PrReviewProcessor,
 } from "./queue.js";
 import { purgeOldDeliveries } from "./webhook-dedup.js";
-import { executePrReviewJob, type PrReviewJobProject } from "./pr-review-job.js";
-import type { JudgeLike, RunPrReviewDeps } from "./agent.js";
-import type { OctokitLike } from "./github-review-poster.js";
-import type { DiffFetchOctokit } from "./diff-fetcher.js";
+import {
+  executePrReviewJob,
+  recordPrReviewJobSkip,
+  type PrReviewJobProject,
+} from "./pr-review-job.js";
+import { defaultBudgetDeps, type JudgeLike, type RunPrReviewDeps } from "./agent.js";
+import type { PrReviewOctokit } from "./production-deps.js";
 import { fetchPullRequest } from "./pull-request-fetcher.js";
 
 const log = createChildLogger("pr-review-worker");
@@ -61,7 +64,7 @@ export const DEFAULT_PURGE_INTERVAL_MS = 60 * 60 * 1000;
 export interface PrReviewProcessorDeps {
   resolveProject(job: PrReviewJob): Promise<PrReviewJobProject | null>;
   resolveJudge(job: PrReviewJob): Promise<JudgeLike | null>;
-  resolveOctokit(job: PrReviewJob): Promise<(OctokitLike & DiffFetchOctokit) | null>;
+  resolveOctokit(job: PrReviewJob): Promise<PrReviewOctokit | null>;
   /** Optional per-job budget override (test seam). Default: agent's default. */
   resolveBudget?(job: PrReviewJob): Promise<RunPrReviewDeps["budget"] | undefined>;
 }
@@ -290,48 +293,118 @@ function buildDefaultProcessor(deps?: PrReviewProcessorDeps): PrReviewProcessor 
       await executePrReviewJob(input, {});
       return;
     }
-    const [judge, octokit, budget] = await Promise.all([
-      deps.resolveJudge(job),
-      deps.resolveOctokit(job),
-      deps.resolveBudget?.(job) ?? Promise.resolve(undefined),
-    ]);
-    if (!judge || !octokit) {
+    // #1471 — in order, each only when the one before it allows the review:
+    // the judge, then the budget (exhausted, or a limit an unpriced model
+    // cannot be held to), and only then the GitHub client, whose resolver
+    // decrypts the connector's vault secret.
+    const unresolved = (hasJudge: boolean) => {
       log.warn("pr_review.deps_unresolved", {
         deliveryId: job.deliveryId,
         repo: `${job.owner}/${job.repo}`,
         prNumber: job.prNumber,
-        hasJudge: !!judge,
-        hasOctokit: !!octokit,
+        hasJudge,
+        hasOctokit: false,
       });
       // #1470 — the executor records the skip (`review_not_configured`) so the
       // pull requests page says why nothing was reviewed.
-      await executePrReviewJob(input, {});
+      return executePrReviewJob(input, {});
+    };
+    const judge = await deps.resolveJudge(job);
+    if (!judge) {
+      await unresolved(false);
+      return;
+    }
+    const budget = (await deps.resolveBudget?.(job)) ?? defaultBudgetDeps();
+    const refused = await budgetPreflight(project.id, judge, budget);
+    if (refused) {
+      await recordPrReviewJobSkip(input, refused.reason, refused.details);
+      return;
+    }
+    const octokit = await deps.resolveOctokit(job);
+    if (!octokit) {
+      await unresolved(true);
       return;
     }
     // #1471 — a job queued without the webhook's pull request payload (a
     // manual Re-run) reads the PR from GitHub first, so its description is
-    // the one linking the issue and the SHA recorded is the one reviewed. A
-    // failed read throws: the queue retries, and the row is left as it was
-    // rather than overwritten with a false skip.
-    const reviewInput =
-      typeof job.context.prBody === "string" ? input : await withFetchedPullRequest(input, octokit);
-    await executePrReviewJob(reviewInput, { judge, octokit, ...(budget ? { budget } : {}) });
+    // the one linking the issue, and reviews the diff at exactly the head it
+    // read, which is the SHA recorded. A failed read throws: the queue
+    // retries, and the row is left as it was rather than overwritten with a
+    // false skip.
+    if (typeof job.context.prBody === "string") {
+      await executePrReviewJob(input, { judge, octokit, budget });
+      return;
+    }
+    const fetched = await withFetchedPullRequest(input, octokit);
+    await executePrReviewJob(fetched.input, { judge, octokit: fetched.octokit, budget });
   };
+}
+
+/**
+ * #1471 — the budget refusals, before any GitHub client exists. The same
+ * checks `runPrReview` makes (it still makes them, for its other callers).
+ */
+async function budgetPreflight(
+  projectId: string,
+  judge: JudgeLike,
+  budget: NonNullable<RunPrReviewDeps["budget"]>,
+): Promise<{
+  reason: "budget_exceeded" | "budget_unpriced";
+  details: Record<string, unknown>;
+} | null> {
+  const status = await budget.check(projectId);
+  const details = {
+    capCents: status.capCents,
+    spentCents: status.spentCents,
+    resetAt: status.resetAt,
+  };
+  if (!status.allowed) return { reason: "budget_exceeded", details };
+  if (status.capCents != null && status.capCents > 0 && judge.priced === false) {
+    return { reason: "budget_unpriced", details };
+  }
+  return null;
 }
 
 async function withFetchedPullRequest(
   input: Parameters<typeof executePrReviewJob>[0],
-  octokit: DiffFetchOctokit,
-): Promise<Parameters<typeof executePrReviewJob>[0]> {
+  octokit: PrReviewOctokit,
+): Promise<{ input: Parameters<typeof executePrReviewJob>[0]; octokit: PrReviewOctokit }> {
   const pr = await fetchPullRequest(octokit, input.job);
-  return {
-    ...input,
-    job: {
-      ...input.job,
-      context: { ...input.job.context, headSha: pr.headSha, branchName: pr.branchName },
+  if (!pr.baseSha || !octokit.compareDiff) {
+    throw new Error(`pull request ${input.job.prNumber}: no base commit to diff its head against`);
+  }
+  const { baseSha, headSha } = pr;
+  const compareDiff = octokit.compareDiff.bind(octokit);
+  // The diff the executor fetches is `base...head` at the head just read, not
+  // whatever the PR's head is by the time the diff is requested.
+  const pinned: PrReviewOctokit = {
+    ...octokit,
+    pulls: {
+      ...octokit.pulls,
+      get: async (params) =>
+        params.mediaType?.format === "diff"
+          ? {
+              data: await compareDiff({
+                owner: params.owner,
+                repo: params.repo,
+                base: baseSha,
+                head: headSha,
+              }),
+            }
+          : octokit.pulls.get(params),
     },
-    prTitle: pr.title,
-    prBody: pr.body,
-    prUrl: pr.htmlUrl,
+  };
+  return {
+    input: {
+      ...input,
+      job: {
+        ...input.job,
+        context: { ...input.job.context, headSha, branchName: pr.branchName },
+      },
+      prTitle: pr.title,
+      prBody: pr.body,
+      prUrl: pr.htmlUrl,
+    },
+    octokit: pinned,
   };
 }

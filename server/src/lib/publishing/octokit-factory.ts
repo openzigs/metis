@@ -9,9 +9,13 @@
  *     R-F2 acceptance criteria).
  *   - `@octokit/plugin-retry`     — 3 retries on 5xx + 429 with exponential
  *     backoff.
- *   - DNS pinning for GHE hosts via a custom `https.Agent.lookup` so the
- *     hostname we resolve is the hostname we actually connect to (TOCTOU
- *     defence reused from the connector subsystem).
+ *     (#1471: neither plugin is a dependency or is loaded, so the `throttle`
+ *     and `retry` options below are inert; the hooks are unit-tested only.)
+ *   - DNS pinning for GHE hosts through our own `fetch` with a pinned undici
+ *     dispatcher, so the hostname we resolved is the address we connect to
+ *     (TOCTOU defence reused from the connector subsystem), or the corporate
+ *     egress proxy when the network requires one; redirects refused and a
+ *     per-request deadline (`buildPublishFetch`, #1471).
  *   - `X-GitHub-Api-Version` header (#69 AC).
  *
  * Auth scope is verified on first use against `GET /` (rate-limited cheap
@@ -31,7 +35,6 @@ import {
   GITHUB_API_VERSION,
 } from "@metis/shared";
 import { getConfigService } from "../config/index.js";
-import { makePinnedLookup } from "../connectors/network-allowlist.js";
 import { createChildLogger } from "../logger.js";
 import {
   type OctokitFactory,
@@ -150,6 +153,8 @@ export interface AcquirePublishOctokitOptions {
   pinnedAddress?: string;
   pinnedFamily?: 4 | 6;
   rateLimit?: PublishRateLimitConfig;
+  /** Per-request deadline; default {@link PUBLISH_REQUEST_TIMEOUT_MS}. */
+  timeoutMs?: number;
 }
 
 export async function acquirePublishOctokit(
@@ -170,6 +175,7 @@ export async function acquirePublishOctokit(
     pinnedAddress: opts.pinnedAddress,
     pinnedFamily: opts.pinnedFamily,
     rateLimit: cfg,
+    ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
   };
   const client = octokitFactoryOverride
     ? await octokitFactoryOverride(args)
@@ -183,6 +189,66 @@ export async function acquirePublishOctokit(
   return client;
 }
 
+/** #1471 — a GitHub request that has not completed in this long is aborted. */
+export const PUBLISH_REQUEST_TIMEOUT_MS = 20_000;
+
+/**
+ * #1471 — the `fetch` every publish client sends through.
+ *
+ * `@octokit/request` ≥10 calls `globalThis.fetch` and reads only `fetch`,
+ * `redirect`, `signal` and `log` off `request`: the `agent` (the DNS pin) and
+ * `timeout` this factory used to set were silently ignored, so an Enterprise
+ * hostname was re-resolved by system DNS (a rebinding window), redirects were
+ * followed to any host, and nothing bounded a hung request. Supplying our own
+ * `fetch` is the only hook, as `repo-service.ts`'s connector client does:
+ *
+ *   - the dispatcher is `resolveConnectorDispatcher` — the pinned address, or
+ *     the corporate egress proxy when the network requires one — for a pinned
+ *     (Enterprise) host, and the egress proxy alone for public github.com;
+ *   - `redirect: "error"` — a 3xx is a failure, never followed;
+ *   - an `AbortSignal` deadline, combined with any signal the caller passed;
+ *   - the `X-GitHub-Api-Version` header (#69), which also used to sit in the
+ *     ignored `request` options.
+ */
+async function buildPublishFetch(args: OctokitFactoryArgs): Promise<typeof fetch> {
+  const [{ fetch: undiciFetch }, net] = await Promise.all([
+    import("undici"),
+    import("../connectors/network-allowlist.js"),
+  ]);
+  const hostname = new URL(args.baseUrl).hostname;
+  let dispatcher: unknown;
+  if (args.pinnedAddress) {
+    dispatcher = await net.resolveConnectorDispatcher({
+      hostname,
+      address: args.pinnedAddress,
+      family: args.pinnedFamily ?? 4,
+    });
+  } else {
+    const proxyUrl = net.resolveCorporateProxyUrl(hostname);
+    if (proxyUrl) {
+      const { proxyAgentForBuiltinFetch } = await import("../net/builtin-fetch-dispatcher.js");
+      dispatcher = proxyAgentForBuiltinFetch(proxyUrl);
+    }
+  }
+  const timeoutMs = args.timeoutMs ?? PUBLISH_REQUEST_TIMEOUT_MS;
+  const publishFetch = (input: string | URL, init: RequestInit = {}) => {
+    const deadline = AbortSignal.timeout(timeoutMs);
+    const signal = init.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
+    const headers = new Headers(init.headers);
+    if (!headers.has("x-github-api-version")) {
+      headers.set("x-github-api-version", GITHUB_API_VERSION);
+    }
+    return undiciFetch(String(input), {
+      ...init,
+      headers: Object.fromEntries(headers.entries()),
+      redirect: "error",
+      signal,
+      ...(dispatcher ? { dispatcher } : {}),
+    } as Parameters<typeof undiciFetch>[1]);
+  };
+  return publishFetch as unknown as typeof fetch;
+}
+
 async function defaultOctokit(args: OctokitFactoryArgs): Promise<PublishOctokitLike> {
   const { Octokit } = (await import("@octokit/rest")) as unknown as {
     Octokit: new (cfg: unknown) => {
@@ -193,28 +259,13 @@ async function defaultOctokit(args: OctokitFactoryArgs): Promise<PublishOctokitL
     baseUrl: args.baseUrl,
     auth: args.token,
     userAgent: "metis-publisher/1.0",
-    request: {
-      timeout: 20_000,
-      headers: {
-        "X-GitHub-Api-Version": GITHUB_API_VERSION,
-      },
-    },
+    request: { fetch: await buildPublishFetch(args), redirect: "error" },
     throttle: buildThrottleHooks(args.rateLimit),
     retry: {
       enabled: true,
       retries: args.rateLimit.maxRetries,
     },
   };
-  if (args.pinnedAddress) {
-    const https = await import("node:https");
-    cfg.request = {
-      ...((cfg.request as Record<string, unknown>) ?? {}),
-      agent: new https.Agent({
-        keepAlive: false,
-        lookup: makePinnedLookup(args.pinnedAddress, args.pinnedFamily),
-      }),
-    };
-  }
   const inst = new Octokit(cfg);
   return { request: (a) => inst.request(a) };
 }

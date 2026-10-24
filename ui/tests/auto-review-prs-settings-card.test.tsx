@@ -171,6 +171,39 @@ describe("AutoReviewPrsSettingsCard", () => {
   });
 
   describe("monthly limit", () => {
+    it("#1471 — says what to do when a limit is set and the model has no price", async () => {
+      listRepos.mockResolvedValue([githubRepo]);
+      getBudget.mockResolvedValue({
+        ...budget({ capCents: 2500, spentCents: 0 }),
+        modelPriced: false,
+      });
+      renderCard({ monthlyBudgetCents: 2500 });
+      await waitFor(() =>
+        expect(screen.getByTestId("auto-review-prs-unpriced")).toHaveTextContent(
+          /no price.*MODEL_PRICES.*remove the limit/,
+        ),
+      );
+    });
+
+    it("#1471 — no unpriced notice for a priced model, or with no limit", async () => {
+      listRepos.mockResolvedValue([githubRepo]);
+      getBudget.mockResolvedValue({
+        ...budget({ capCents: 2500, spentCents: 0 }),
+        modelPriced: true,
+      });
+      const { unmount } = renderCard({ monthlyBudgetCents: 2500 });
+      await waitFor(() => expect(screen.getByTestId("auto-review-prs-spend")).toBeInTheDocument());
+      expect(screen.queryByTestId("auto-review-prs-unpriced")).toBeNull();
+      unmount();
+      getBudget.mockResolvedValue({
+        ...budget({ capCents: null, spentCents: 0 }),
+        modelPriced: false,
+      });
+      renderCard();
+      await waitFor(() => expect(screen.getByTestId("auto-review-prs-spend")).toBeInTheDocument());
+      expect(screen.queryByTestId("auto-review-prs-unpriced")).toBeNull();
+    });
+
     it("shows the saved limit in dollars and this month's spend against it", async () => {
       listRepos.mockResolvedValue([githubRepo]);
       getBudget.mockResolvedValue(budget({ capCents: 2500, spentCents: 123 }));

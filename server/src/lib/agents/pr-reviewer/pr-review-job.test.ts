@@ -38,7 +38,11 @@ vi.mock("../../logger.js", () => ({
   createChildLogger: () => ({ warn: m.warn, info: vi.fn(), error: vi.fn(), debug: vi.fn() }),
 }));
 
-import { executePrReviewJob, type ExecutePrReviewJobInput } from "./pr-review-job.js";
+import {
+  executePrReviewJob,
+  recordPrReviewJobSkip,
+  type ExecutePrReviewJobInput,
+} from "./pr-review-job.js";
 
 const KEY = { projectId: "p1", repoOwner: "acme", repoName: "site", prNumber: 7 };
 
@@ -206,5 +210,26 @@ describe("executePrReviewJob records its outcome (#1470)", () => {
       expect.objectContaining({ prNumber: 7, status: "reviewed", error: "db down" }),
     );
     expect(m.finishRun).toHaveBeenCalledWith(expect.objectContaining({ status: "completed" }));
+  });
+});
+
+describe("recordPrReviewJobSkip (#1471)", () => {
+  it.each(["budget_exceeded", "budget_unpriced"] as const)(
+    "records %s on the row and in the audit, reviewing nothing",
+    async (reason) => {
+      const out = await recordPrReviewJobSkip(input(), reason, { capCents: 100 });
+      expect(out).toEqual({ skipped: "budget_preflight", runId: null });
+      expect(m.record).toHaveBeenCalledWith(KEY, { status: "skipped", reason });
+      expect(m.auditSkipped).toHaveBeenCalledWith(
+        expect.objectContaining({ reason, projectId: "p1", details: { capCents: 100 } }),
+      );
+      expect(m.runPrReview).not.toHaveBeenCalled();
+    },
+  );
+
+  it("records nothing without a project", async () => {
+    const out = await recordPrReviewJobSkip(input({ project: null }), "budget_unpriced", {});
+    expect(out.skipped).toBe("no_project_or_auto_review_disabled");
+    expect(m.record).not.toHaveBeenCalled();
   });
 });

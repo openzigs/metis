@@ -26,8 +26,13 @@ vi.mock("../../logger.js", () => {
   };
 });
 
-const { judgeFromProvider, resolvePrReviewJudge, resolvePrReviewOctokit, prReviewOctokitFrom } =
-  await import("./production-deps.js");
+const {
+  judgeFromProvider,
+  resolveProjectModelPriced,
+  resolvePrReviewJudge,
+  resolvePrReviewOctokit,
+  prReviewOctokitFrom,
+} = await import("./production-deps.js");
 const { __setPublishOctokitFactory, __resetPublishOctokitCache } =
   await import("../../publishing/octokit-factory.js");
 const { fetchPullRequest } = await import("./pull-request-fetcher.js");
@@ -112,6 +117,13 @@ describe("judgeFromProvider", () => {
     expect(Number.isFinite(typeof out === "object" ? out.costUsd : NaN)).toBe(true);
   });
 
+  it("says whether its model is priced, before any call", () => {
+    expect(judgeFromProvider(stubProvider()).priced).toBe(true);
+    const unpriced = stubProvider({ key: "local" as never, model: "no-such-model-1471" });
+    expect(judgeFromProvider(unpriced).priced).toBe(false);
+    expect(unpriced.chat).not.toHaveBeenCalled();
+  });
+
   it("an unpriced model reports a non-finite cost (recorded unpriced, never $0)", async () => {
     const provider = stubProvider({}, { model: "no-such-model-1471", provider: "local" as never });
     const out = await judgeFromProvider(provider).evaluate({ system: "S", user: "U" });
@@ -142,6 +154,24 @@ describe("resolvePrReviewJudge", () => {
     resolveProjectProviderMock.mockResolvedValue(provider);
     expect(await resolvePrReviewJudge(JOB)).toBeNull();
     expect(provider.chat).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolveProjectModelPriced", () => {
+  it("is true for a priced model, false for an unpriced one", async () => {
+    resolveProjectProviderMock.mockResolvedValueOnce(stubProvider());
+    expect(await resolveProjectModelPriced("p1")).toBe(true);
+    resolveProjectProviderMock.mockResolvedValueOnce(
+      stubProvider({ key: "local" as never, model: "no-such-model-1471" }),
+    );
+    expect(await resolveProjectModelPriced("p1")).toBe(false);
+  });
+
+  it("is null when the project has no usable model", async () => {
+    resolveProjectProviderMock.mockRejectedValueOnce(new Error("not configured"));
+    expect(await resolveProjectModelPriced("p1")).toBeNull();
+    resolveProjectProviderMock.mockResolvedValueOnce(stubProvider({ offline: true }));
+    expect(await resolveProjectModelPriced("p1")).toBeNull();
   });
 });
 
@@ -188,14 +218,36 @@ describe("resolvePrReviewOctokit", () => {
       "https://140.82.112.6/Org/repo/tree/main",
       "https://140.82.112.6/api/v3",
     ],
-    ["a github.com browse URL", "https://github.com/acme/site", "https://api.github.com"],
-    ["the public API base", "https://api.github.com/", "https://api.github.com"],
   ])(
     "calls the REST API for a connector saved as %s, as the repo connector does",
     async (_label, stored, expected) => {
       findFirstMock.mockResolvedValue(conn({ provider: "github_enterprise", apiBaseUrl: stored }));
       expect(await resolvePrReviewOctokit(JOB)).not.toBeNull();
       expect(factoryCalls[0]).toMatchObject({ baseUrl: expected });
+    },
+  );
+
+  it.each([
+    ["a github.com browse URL", "https://github.com/acme/site"],
+    ["the public API base", "https://api.github.com/"],
+  ])("a github.com connector saved as %s calls the public API", async (_label, stored) => {
+    findFirstMock.mockResolvedValue(conn({ provider: "github", apiBaseUrl: stored }));
+    expect(await resolvePrReviewOctokit(JOB)).not.toBeNull();
+    expect(factoryCalls[0]).toMatchObject({ baseUrl: "https://api.github.com" });
+  });
+
+  it.each([
+    ["no base URL", null],
+    ["a github.com browse URL", "https://github.com/acme/site"],
+    ["the public API base", "https://api.github.com"],
+  ])(
+    "refuses an Enterprise connector with %s: its token never goes to api.github.com",
+    async (_label, stored) => {
+      findFirstMock.mockResolvedValue(conn({ provider: "github_enterprise", apiBaseUrl: stored }));
+      expect(await resolvePrReviewOctokit(JOB)).toBeNull();
+      expect(readBoundSecretMock).not.toHaveBeenCalled();
+      expect(factoryCalls).toHaveLength(0);
+      expect(JSON.stringify(logged)).toContain("enterprise_without_base_url");
     },
   );
 
@@ -282,6 +334,22 @@ describe("prReviewOctokitFrom", () => {
     expect(out.data).toEqual({ id: 42, html_url: "https://gh/r/42" });
   });
 
+  it("reads the base...head diff at exactly the given head", async () => {
+    const c = prReviewOctokitFrom({
+      request: async (a) => {
+        requests.push(a as never);
+        return { status: 200, headers: {}, data: "diff --git a/x b/x" as never };
+      },
+    });
+    const diff = await c.compareDiff!({ owner: "acme", repo: "site", base: "b1", head: "h2" });
+    expect(diff).toBe("diff --git a/x b/x");
+    expect(requests[0]).toEqual({
+      method: "GET",
+      url: "/repos/acme/site/compare/b1...h2",
+      headers: { accept: "application/vnd.github.diff" },
+    });
+  });
+
   it("omits comments when there are none", async () => {
     await client().pulls.createReview({
       owner: "acme",
@@ -302,6 +370,7 @@ describe("fetchPullRequest", () => {
         body: "Closes #5",
         html_url: "https://github.com/acme/site/pull/7",
         head: { sha: "abc", ref: "feat" },
+        base: { sha: "base1" },
       },
     }));
     expect(await fetchPullRequest({ pulls: { get } }, JOB)).toEqual({
@@ -309,18 +378,25 @@ describe("fetchPullRequest", () => {
       body: "Closes #5",
       htmlUrl: "https://github.com/acme/site/pull/7",
       headSha: "abc",
+      baseSha: "base1",
       branchName: "feat",
     });
   });
 
-  it("falls back for a PR with no body, title or head", async () => {
-    const get = vi.fn(async () => ({ data: { body: null } }));
+  it("falls back for a PR with no body, title, branch or base", async () => {
+    const get = vi.fn(async () => ({ data: { body: null, head: { sha: "abc" } } }));
     expect(await fetchPullRequest({ pulls: { get } }, JOB)).toEqual({
       title: "PR #7",
       body: "",
       htmlUrl: "https://github.com/acme/site/pull/7",
-      headSha: null,
+      headSha: "abc",
+      baseSha: null,
       branchName: null,
     });
+  });
+
+  it("a PR with no head commit is a failed read, not a review of an unknown commit", async () => {
+    const get = vi.fn(async () => ({ data: { title: "T", body: "Closes #5" } }));
+    await expect(fetchPullRequest({ pulls: { get } }, JOB)).rejects.toThrow(/no head commit/);
   });
 });

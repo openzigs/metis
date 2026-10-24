@@ -35,6 +35,12 @@ import { PR_REVIEW_SESSION_PREFIX, checkBudget, recordPrReviewSpend } from "./bu
  */
 export interface JudgeLike {
   evaluate(input: { system: string; user: string }): Promise<string | JudgeEnvelope>;
+  /**
+   * #1471 — `false` when the judge's model has no published price, so its
+   * spend would be recorded unpriced and could not count toward a monthly
+   * limit. Absent = unknown (a test double), treated as priced.
+   */
+  readonly priced?: boolean;
 }
 
 export interface JudgeEnvelope {
@@ -200,6 +206,25 @@ export async function runPrReview(
           summary: "Monthly PR-review budget exceeded — skipping review.",
         },
         skipped: "budget_exceeded",
+        telemetry: { ...EMPTY_TELEMETRY },
+      };
+    }
+    // #1471 — an unpriced model's spend is recorded unpriced, which the limit
+    // sums as nothing: with a limit set, refuse rather than spend unmetered.
+    if (status.capCents != null && status.capCents > 0 && deps.judge.priced === false) {
+      auditPrReviewSkipped({
+        ...auditCommon,
+        reason: "budget_unpriced",
+        details: { capCents: status.capCents },
+      });
+      return {
+        ...SKIPPED_RESULT_BASE,
+        judge: {
+          ...SKIPPED_RESULT_BASE.judge,
+          summary:
+            "This project's AI model has no price, so its spending limit cannot be enforced — skipping review.",
+        },
+        skipped: "budget_unpriced",
         telemetry: { ...EMPTY_TELEMETRY },
       };
     }

@@ -121,6 +121,41 @@ describe("Project pulls (PR-review history) page", () => {
     });
   });
 
+  it("#1471 — says reviews are skipped when a limit is set and the model has no price", async () => {
+    getBudget.mockResolvedValue({
+      allowed: true,
+      capCents: 100,
+      spentCents: 0,
+      resetAt: "2026-11-01T00:00:00.000Z",
+      modelPriced: false,
+    });
+    list.mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByTestId("auto-review-unpriced")).toHaveTextContent(
+        /no price.*MODEL_PRICES.*remove the limit/i,
+      );
+    });
+  });
+
+  it.each([
+    ["the model is priced", { capCents: 100, modelPriced: true }],
+    ["there is no limit", { capCents: null, modelPriced: false }],
+  ])("#1471 — no unpriced notice when %s", async (_label, over) => {
+    getBudget.mockResolvedValue({
+      allowed: true,
+      spentCents: 0,
+      resetAt: "2026-11-01T00:00:00.000Z",
+      ...over,
+    });
+    list.mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByText(/No PR reviews recorded yet/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("auto-review-unpriced")).toBeNull();
+  });
+
   it("#1169 — makes no 'review is off' claim while it is on", async () => {
     list.mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
     renderPage();
@@ -189,6 +224,7 @@ describe("Project pulls (PR-review history) page", () => {
 
   it.each([
     ["budget_exceeded", /spending limit for automatic reviews was reached/],
+    ["budget_unpriced", /no price.*MODEL_PRICES.*remove the limit/],
     ["no_linked_issue", /does not link an issue/],
     ["no_published_issue", /not published from this project/],
     ["no_acceptance_criteria", /no acceptance criteria/],

@@ -73,6 +73,7 @@ export interface ExecutePrReviewJobResult {
     | "ac_resolve_skip"
     | "diff_fetch_failed"
     | "diff_too_large"
+    | "budget_preflight"
     | null;
   runId: string | null;
 }
@@ -95,6 +96,34 @@ export interface ExecutePrReviewJobInput {
   installationId: string | null;
   /** Actor metadata for audit rows. */
   actor: { type: "webhook" | "system" | "user"; id: string | null };
+}
+
+/**
+ * #1471 — record a job the worker refused before resolving a GitHub client
+ * (the budget preflight): the same `pr.review_skipped` audit and state row
+ * `runPrReview`'s own refusal writes. Nothing is reviewed or spent.
+ */
+export async function recordPrReviewJobSkip(
+  input: ExecutePrReviewJobInput,
+  reason: "budget_exceeded" | "budget_unpriced",
+  details: Record<string, unknown>,
+): Promise<ExecutePrReviewJobResult> {
+  const { job, project, prUrl, installationId, actor } = input;
+  if (!project) return { skipped: "no_project_or_auto_review_disabled", runId: null };
+  auditPrReviewSkipped({
+    prUrl,
+    prNumber: job.prNumber,
+    repoOwner: job.owner,
+    repoName: job.repo,
+    installationId,
+    linkedIssueNumbers: [],
+    actor,
+    projectId: project.id,
+    reason,
+    details,
+  });
+  await recordOutcome(project.id, job, { status: "skipped", reason });
+  return { skipped: "budget_preflight", runId: null };
 }
 
 /**

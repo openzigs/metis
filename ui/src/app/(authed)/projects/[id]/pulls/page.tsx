@@ -13,6 +13,7 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { prReviewsApi, type PrReviewStateView } from "@/lib/pr-reviews-api";
 import { projectsApi } from "@/lib/projects-api";
+import { PR_REVIEW_UNPRICED_LIMIT_TEXT } from "@/lib/pr-review-copy";
 import { queryKeys } from "@/lib/query-keys";
 import { ApiError } from "@/lib/api-client";
 import { Card } from "@/components/ui/card";
@@ -58,6 +59,10 @@ const SKIP_REASONS: ReadonlyMap<string, string> = new Map([
   ["no_published_issue", "The linked issue was not published from this project."],
   ["no_acceptance_criteria", "The linked issue has no acceptance criteria to check."],
   ["budget_exceeded", "This month’s spending limit for automatic reviews was reached."],
+  [
+    "budget_unpriced",
+    "This project’s AI model has no price, so its monthly limit cannot be enforced. Give the model a price in the MODEL_PRICES setting, or remove the limit.",
+  ],
   ["diff_too_large", "The changes are larger than this project’s review size limit."],
   ["diff_unavailable", "The changes could not be read from GitHub."],
   ["auto_review_disabled", "Automatic PR review was switched off for this project."],
@@ -182,6 +187,11 @@ export default function ProjectPullsPage(): React.ReactElement {
     enabled: Boolean(id) && projectQuery.data?.autoReviewPrs === true,
   });
   const limitReached = !reviewOff && budgetQuery.data ? !budgetQuery.data.allowed : false;
+  // #1471 — with a limit set, an unpriced model is never reviewed (`budget_unpriced`).
+  const unpricedLimit =
+    !reviewOff && budgetQuery.data
+      ? budgetQuery.data.capCents != null && budgetQuery.data.modelPriced === false
+      : false;
 
   if (!id) {
     return <p className="p-4 text-sm text-muted-foreground">Loading project…</p>;
@@ -220,6 +230,18 @@ export default function ProjectPullsPage(): React.ReactElement {
             Project settings
           </Link>{" "}
           to resume sooner.
+        </p>
+      ) : null}
+
+      {unpricedLimit ? (
+        <p
+          className="rounded-md border border-warning/40 bg-warning-muted p-3 text-sm text-warning"
+          data-testid="auto-review-unpriced"
+        >
+          {PR_REVIEW_UNPRICED_LIMIT_TEXT}{" "}
+          <Link className="underline" href={`/projects/${id}/settings`}>
+            Project settings
+          </Link>
         </p>
       ) : null}
 
