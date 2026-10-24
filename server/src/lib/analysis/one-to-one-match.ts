@@ -230,8 +230,22 @@ function hopcroftKarp(
   const stack = new Int32Array(nL);
   const INF = 0x7fffffff;
 
+  // A greedy maximal matching first: the phase bound holds from any start,
+  // and most lefts are matched before the first BFS.
+  for (let l = 0; l < nL; l++) {
+    for (const r of adj[l]!) {
+      if (matchR[r] === -1) {
+        matchL[l] = r;
+        matchR[r] = l;
+        break;
+      }
+    }
+  }
+
   for (;;) {
-    // BFS: layer the free lefts and what alternating paths reach from them.
+    // BFS: layer the free lefts and what alternating paths reach from them,
+    // stopping at the first layer `limit` with a left that sees a free right —
+    // the length of the shortest augmenting paths.
     const queue: number[] = [];
     for (let l = 0; l < nL; l++) {
       if (matchL[l] === -1) {
@@ -239,22 +253,25 @@ function hopcroftKarp(
         queue.push(l);
       } else dist[l] = INF;
     }
-    let found = false;
+    let limit = INF;
     for (let head = 0; head < queue.length; head++) {
       const l = queue[head]!;
+      if (dist[l]! > limit) break; // the queue is in layer order
       for (const r of adj[l]!) {
         const next = matchR[r]!;
-        if (next === -1) found = true;
-        else if (dist[next] === INF) {
+        if (next === -1) limit = dist[l]!;
+        else if (dist[next] === INF && dist[l]! < limit) {
           dist[next] = dist[l]! + 1;
           queue.push(next);
         }
       }
     }
-    if (!found) return { matchL, matchR };
+    if (limit === INF) return { matchL, matchR };
 
-    // DFS along the layers from each free left, augmenting vertex-disjoint
-    // shortest paths.
+    // DFS along the layers from each free left, augmenting a maximal set of
+    // vertex-disjoint SHORTEST augmenting paths: a free right ends a path only
+    // from layer `limit`, and the search never goes deeper than it. That is
+    // what bounds the phases at O(√V), so the whole matching at O(E·√V).
     cursor.fill(0);
     for (let root = 0; root < nL; root++) {
       if (matchL[root] !== -1) continue;
@@ -271,7 +288,7 @@ function hopcroftKarp(
         }
         const r = rs[cursor[l]!]!;
         const next = matchR[r]!;
-        if (next === -1) {
+        if (next === -1 && dist[l] === limit) {
           // Augment: every left on the stack takes the right its cursor names.
           for (let d = depth; d >= 0; d--) {
             const u = stack[d]!;
@@ -281,7 +298,7 @@ function hopcroftKarp(
           }
           break;
         }
-        if (dist[next] === dist[l]! + 1) stack[++depth] = next;
+        if (next !== -1 && dist[l]! < limit && dist[next] === dist[l]! + 1) stack[++depth] = next;
         else cursor[l]!++;
       }
     }

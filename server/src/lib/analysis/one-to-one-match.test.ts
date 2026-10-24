@@ -71,58 +71,84 @@ function rng(seed: number): () => number {
 
 /**
  * Replay `candidates` level by level by brute force and check every decision
- * `matchOneToOneRefusingTies` made. Returns whether some level was a PERFECT
- * graph (every live vertex matched) with more than one maximum matching: there
- * the only thing that can unforce a pair is an even alternating cycle, so a
- * corpus with such levels exercises the cycle (SCC) half of the proof.
- * Candidates must not repeat a `(left, right)` pair.
+ * `matchOneToOneRefusingTies` made. A repeated pair is read at its best score,
+ * levels are the classes `compareTiersDescending` calls equal, and lefts and
+ * rights are tracked apart, since one id may name both.
+ *
+ * Returns whether some level was a PERFECT graph (every live vertex matched)
+ * with more than one maximum matching: there only an even alternating cycle can
+ * unforce a pair, so a corpus with such levels exercises the cycle (SCC) half
+ * of the proof.
  */
 function expectMatchesBruteForce(
   candidates: ReadonlyArray<OneToOneCandidate<string, string, number[]>>,
-  levels: readonly number[],
   label: string,
 ): { cycleOnlyLevel: boolean } {
-  const out = matchOneToOneRefusingTies(candidates, { compare: compareTiersDescending });
+  const out = matchOneToOneRefusingTies(candidates, {
+    compare: compareTiersDescending,
+  });
+
+  const best = new Map<string, { left: string; right: string; score: number[] }>();
+  for (const c of candidates) {
+    const key = `${c.left}\u0000${c.right}`;
+    const seen = best.get(key);
+    if (!seen || compareTiersDescending(c.score, seen.score) < 0) best.set(key, c);
+  }
+  const pairs = [...best.values()].sort((a, b) => compareTiersDescending(a.score, b.score));
+  const levels: Array<typeof pairs> = [];
+  for (const p of pairs) {
+    const level = levels.at(-1);
+    if (level && compareTiersDescending(level[0]!.score, p.score) === 0) level.push(p);
+    else levels.push([p]);
+  }
+
   let cycleOnlyLevel = false;
-  const matched = new Set<string>();
-  const refused = new Set<string>();
+  const matchedL = new Set<string>();
+  const matchedR = new Set<string>();
+  const refusedL = new Set<string>();
+  const refusedR = new Set<string>();
   const refusedAmong = new Map<string, string[]>();
-  for (const level of levels) {
-    const live: Edge[] = candidates
-      .filter((c) => c.score[0] === level)
-      .filter((c) => ![c.left, c.right].some((v) => matched.has(v) || refused.has(v)))
+  const expectedMatches = new Map<string, string>();
+  for (const [index, level] of levels.entries()) {
+    const live: Edge[] = level
+      .filter((c) => !matchedL.has(c.left) && !refusedL.has(c.left))
+      .filter((c) => !matchedR.has(c.right) && !refusedR.has(c.right))
       .map((c) => [c.left, c.right]);
     if (live.length === 0) continue;
     const maxima = allMaximumMatchings(live);
     const inEvery = maxima[0]!.filter(([l, r]) =>
       maxima.every((m) => m.some(([l2, r2]) => l2 === l && r2 === r)),
     );
-    if (maxima.length > 1 && maxima[0]!.length * 2 === new Set(live.flat()).size)
-      cycleOnlyLevel = true;
+    const vertices = new Set(live.map(([l]) => l)).size + new Set(live.map(([, r]) => r)).size;
+    if (maxima.length > 1 && maxima[0]!.length * 2 === vertices) cycleOnlyLevel = true;
     for (const [l, r] of live) {
       const takenHere = out.matches.get(l) === r;
       const forced = inEvery.some(([l2, r2]) => l2 === l && r2 === r);
       // No matched pair is missing from any maximum matching of its level,
       // and no pair in all of them is left out.
-      expect(takenHere, `${label}: ${l}–${r} at level ${level}`).toBe(forced);
+      expect(takenHere, `${label}: ${l}–${r} at level ${index}`).toBe(forced);
     }
     for (const [l, r] of inEvery) {
-      matched.add(l);
-      matched.add(r);
+      matchedL.add(l);
+      matchedR.add(r);
+      expectedMatches.set(l, r);
     }
     for (const [l, r] of live) {
-      if (!matched.has(l)) {
-        refused.add(l);
+      if (!matchedL.has(l)) {
+        refusedL.add(l);
         // A right a forced pair took at this same level is not an option
         // the refused left was "too close to call" on (#1204 review): it
         // went to another left. Collecting it here would agree with an
         // overcounting matcher and prove nothing.
         const options = refusedAmong.get(l) ?? [];
-        refusedAmong.set(l, matched.has(r) ? options : [...options, r]);
+        refusedAmong.set(l, matchedR.has(r) ? options : [...options, r]);
       }
-      if (!matched.has(r)) refused.add(r);
+      if (!matchedR.has(r)) refusedR.add(r);
     }
   }
+  expect(Object.fromEntries(out.matches), `${label}: matches`).toEqual(
+    Object.fromEntries(expectedMatches),
+  );
   // #1204 — each refused left reports exactly its live options at the
   // level that refused it: no fewer, and none from another level.
   expect(
@@ -137,31 +163,49 @@ function expectMatchesBruteForce(
     for (const r of rs) expect(givenRights.has(r), `${label}: ${l} lists ${r}`).toBe(false);
   }
   // Nothing refused at a better level is matched at a weaker one.
-  for (const v of refused) {
-    expect(out.matches.has(v) || [...out.matches.values()].includes(v)).toBe(false);
-  }
-  expect([...out.refusedLefts, ...out.refusedRights].sort()).toEqual([...refused].sort());
+  for (const l of refusedL) expect(out.matches.has(l), `${label}: ${l} fell back`).toBe(false);
+  for (const r of refusedR) expect(givenRights.has(r), `${label}: ${r} fell back`).toBe(false);
+  expect([...out.refusedLefts].sort(), `${label}: refused lefts`).toEqual([...refusedL].sort());
+  expect([...out.refusedRights].sort(), `${label}: refused rights`).toEqual([...refusedR].sort());
   return { cycleOnlyLevel };
 }
 
-/** Random candidates over up to `maxSide` × `maxSide` vertices, shuffled, scores drawn from `levels`. */
+/**
+ * Tier tuples for the random corpus. Some are equal under
+ * `compareTiersDescending` though written differently ([1] and [1, 0];
+ * [1, 0.5] and [1, 0.5, 0]), so a level is a class of scores, not one value.
+ */
+const ONE_LEVEL_SCORES: number[][] = [[1], [1, 0]];
+const MANY_LEVEL_SCORES: number[][] = [[1], [1, 0], [1, 0.5], [1, 0.5, 0], [0.5], [0.5, 1], [0, 1]];
+
+/**
+ * Random candidates on 0 … `maxSide` lefts and 0 … `maxSide` rights (so a side
+ * may be empty), shuffled. Sometimes lefts and rights share their ids; some
+ * pairs are repeated with another score, to be read at the best of them.
+ */
 function randomCandidates(
   random: () => number,
   maxSide: number,
-  levels: readonly number[],
+  scores: readonly number[][],
 ): Array<OneToOneCandidate<string, string, number[]>> {
-  const side = () => 1 + Math.floor(random() * maxSide);
-  const lefts = Array.from({ length: side() }, (_, i) => `R${i + 1}`);
-  const rights = Array.from({ length: side() }, (_, i) => `S${i + 1}`);
+  const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)]!;
+  const shared = random() < 0.3;
+  const lefts = Array.from({ length: Math.floor(random() * (maxSide + 1)) }, (_, i) =>
+    shared ? `V${i + 1}` : `R${i + 1}`,
+  );
+  const rights = Array.from({ length: Math.floor(random() * (maxSide + 1)) }, (_, i) =>
+    shared ? `V${i + 1}` : `S${i + 1}`,
+  );
   const density = 0.15 + random() * 0.6;
   const candidates: Array<OneToOneCandidate<string, string, number[]>> = [];
   for (const left of lefts) {
     for (const right of rights) {
-      if (random() < density) {
-        const score = [levels[Math.floor(random() * levels.length)]!];
-        candidates.push({ left, right, score });
-      }
+      if (random() < density) candidates.push({ left, right, score: pick(scores) });
     }
+  }
+  const unique = candidates.length;
+  for (let i = 0; i < unique; i++) {
+    if (random() < 0.2) candidates.push({ ...candidates[i]!, score: pick(scores) });
   }
   for (let i = candidates.length - 1; i > 0; i--) {
     const j = Math.floor(random() * (i + 1));
@@ -180,30 +224,44 @@ describe("matchOneToOneRefusingTies — property: a matched pair is never a gues
       for (const l of lefts) {
         for (const r of rights) {
           if (random() < 0.45)
-            candidates.push({ left: l, right: r, score: [random() < 0.6 ? 1 : 0.5] });
+            candidates.push({
+              left: l,
+              right: r,
+              score: [random() < 0.6 ? 1 : 0.5],
+            });
         }
       }
-      expectMatchesBruteForce(candidates, [1, 0.5], `trial ${trial}`);
+      expectMatchesBruteForce(candidates, `trial ${trial}`);
     }
   });
 
   // #1208 — the proof is one maximum matching read Dulmage–Mendelsohn style,
   // not a re-match per edge. Cross-check it against brute force on thousands
-  // of seeded graphs up to 6 × 6, at one level and at three.
-  it("agrees with brute force on 4,000 seeded random graphs up to 6 × 6 (#1208)", () => {
+  // of seeded graphs up to 6 × 6: half at one level, half over several tiered
+  // levels, with empty sides, repeated pairs and ids shared across sides.
+  it("agrees with brute force on 6,000 seeded random graphs up to 6 × 6 (#1208)", () => {
     const random = rng(1208);
     let cycleOnly = 0;
-    for (let trial = 0; trial < 4_000; trial++) {
-      const levels = trial % 2 === 0 ? [1] : [1, 0.5, 0.25];
-      const candidates = randomCandidates(random, 6, levels);
-      if (expectMatchesBruteForce(candidates, levels, `#1208 trial ${trial}`).cycleOnlyLevel)
-        cycleOnly++;
+    let noCandidates = 0;
+    let repeated = 0;
+    let sharedIds = 0;
+    for (let trial = 0; trial < 6_000; trial++) {
+      const scores = trial % 2 === 0 ? ONE_LEVEL_SCORES : MANY_LEVEL_SCORES;
+      const candidates = randomCandidates(random, 6, scores);
+      if (candidates.length === 0) noCandidates++; // an empty side, or no edge drawn
+      const keys = candidates.map((c) => `${c.left}\u0000${c.right}`);
+      if (new Set(keys).size < keys.length) repeated++;
+      if (candidates.some((c) => c.left.startsWith("V"))) sharedIds++;
+      if (expectMatchesBruteForce(candidates, `#1208 trial ${trial}`).cycleOnlyLevel) cycleOnly++;
     }
     // The corpus must reach the cycle half of the proof: levels where every
     // vertex is matched yet the matching is not unique, so only an even
     // alternating cycle can unforce a pair. Without them, a matcher with a
-    // wrong SCC test could pass.
-    expect(cycleOnly).toBeGreaterThan(100); // 155 on this seed
+    // wrong SCC test could pass. And it must reach each input shape it claims.
+    expect(cycleOnly).toBeGreaterThan(100);
+    expect(noCandidates).toBeGreaterThan(100);
+    expect(repeated).toBeGreaterThan(500);
+    expect(sharedIds).toBeGreaterThan(500);
   });
 });
 

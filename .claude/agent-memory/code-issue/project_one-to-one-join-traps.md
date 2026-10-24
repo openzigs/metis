@@ -26,11 +26,16 @@ refused and takes no weaker match later. Do not write a second matcher.
   matching of small graphs and replays each level; keep that when changing the rule.
 - **Mutate each ranking tier separately.** Both tiers of the score tuple could be deleted with
   every test green on #1187.
-- **Benchmark a sparse chain, not only dense graphs.** The remove-and-rematch proof took 31 s
-  on a 2,499-edge chain (Li:{R(i-1),Ri}) vs 63 ms on a 2,485-edge triangle; an edge cap
-  (`maxComponentEdges`, `MAX_ATTRIBUTION_PROOF_EDGES`) does not bound it. Open: #1208.
-  Size-guard tests need a graph the full proof would resolve (a staircase), not a complete
-  graph, or the guard is never what decides the result.
+- **The proof is Dulmage–Mendelsohn, not re-matching (#1208).** One Hopcroft–Karp matching,
+  then a matched pair is forced unless it shares an SCC of the oriented alternating graph or
+  lies on an even alternating path from a free vertex. #1208 removed the old per-edge
+  re-match (31 s on a 2,499-edge chain) and with it the edge cap #1186 added
+  (`maxComponentEdges`, `MAX_ATTRIBUTION_PROOF_EDGES`), which never bounded it anyway. Do
+  not bring either back. Benchmark sparse chains and grids as well as complete graphs, in
+  both input orders.
+- **A brute-force cross-check proves the SCC half only if the corpus has cycle-only
+  levels** (every vertex matched, matching not unique). Assert a floor on their count, or
+  a matcher with a wrong cycle test passes.
 - **A synthesis-prompt change moves the generative-e2e fixture key.** Update
   `server/scripts/e2e-build-clarify-fixtures.ts` and
   `server/tests/e2e-clarify-fixture-key-parity.test.ts` in the same PR.
