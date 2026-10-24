@@ -321,6 +321,90 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(firedTriggers()).toEqual([firstToFire, secondToFire]);
     });
 
+    it("triggers cut off by the fan-out cap stay unclaimed, and each redelivery drains the next batch", async () => {
+      for (const id of ["t-1", "t-2", "t-3"]) await trigger(id, { event: "push" });
+      process.env.MAX_TRIGGER_FANOUT = "2";
+      try {
+        const body = pushBody(20);
+        const first = await deliver(body, "push", "delivery-20");
+        expect(first.body.data).toMatchObject({ matched: 3, capped: 1 });
+        expect(first.body.data.fired).toHaveLength(2);
+        expect(await db.webhookPayloadDigest.count()).toBe(2);
+
+        // GitHub's Redeliver reuses the delivery id: it reaches the third trigger only.
+        const redelivered = await deliver(body, "push", "delivery-20");
+        expect(redelivered.body.data.fired).toHaveLength(1);
+        expect(redelivered.body.data).toMatchObject({ duplicate: 2 });
+        expect(redelivered.body.data.capped).toBeUndefined();
+        expect(firedTriggers().sort()).toEqual(["t-1", "t-2", "t-3"]);
+
+        expect((await deliver(body, "push", "delivery-20")).body.data.reason).toBe(
+          "DUPLICATE_DELIVERY",
+        );
+        expect((await deliver(body, "push", "delivery-20-forged")).body.data.fired).toEqual([]);
+        expect(firedTriggers()).toHaveLength(3);
+      } finally {
+        delete process.env.MAX_TRIGGER_FANOUT;
+      }
+    });
+
+    it("a claim on a body with no signed time outlives the 7-day purge and is dropped after 90 days", async () => {
+      const {
+        purgeOldPayloadDigests,
+        PAYLOAD_DIGEST_RETENTION_MS,
+        UNTIMED_PAYLOAD_DIGEST_RETENTION_MS,
+      } = await import("../src/lib/webhooks/payload-replay.js");
+      await trigger("t-release", { event: "release" });
+      await trigger("t-push", { event: "push" });
+      const untimed = JSON.stringify({
+        action: "edited",
+        release: { id: 21, published_at: "2020-01-01T00:00:00Z" },
+        repository: { full_name: REPO },
+      });
+      const timed = pushBody(22);
+      expect((await deliver(untimed, "release", "delivery-21")).body.data.fired).toHaveLength(1);
+      expect((await deliver(timed, "push", "delivery-22")).body.data.fired).toHaveLength(1);
+      const receivers = (await db.webhookPayloadDigest.findMany({ select: { receiver: true } }))
+        .map((r) => r.receiver)
+        .sort();
+      // The release body is unclassified, so the non-matching push trigger is
+      // claimed for it too (relabel protection), also untimed.
+      expect(receivers).toEqual([
+        "github-trigger:t-push",
+        "untimed:github-trigger:t-push",
+        "untimed:github-trigger:t-release",
+      ]);
+
+      const ageAll = (ms: number) =>
+        db.webhookPayloadDigest.updateMany({ data: { receivedAt: new Date(Date.now() - ms) } });
+      await ageAll(PAYLOAD_DIGEST_RETENTION_MS + DAY);
+      expect(await purgeOldPayloadDigests()).toBe(1); // the timed push claim only
+      expect((await deliver(untimed, "release", "delivery-21-forged")).body.data.fired).toEqual([]);
+
+      await ageAll(UNTIMED_PAYLOAD_DIGEST_RETENTION_MS + DAY);
+      expect(await purgeOldPayloadDigests()).toBe(2);
+      expect(await db.webhookPayloadDigest.count()).toBe(0);
+    });
+
+    it("an old release publish is refused as stale; the run payload's event stays a string", async () => {
+      await trigger("t-any", {});
+      const old = new Date(Date.now() - SIGNED_EVENT_MAX_AGE_MS - DAY).toISOString();
+      const stale = JSON.stringify({
+        action: "published",
+        release: { id: 23, published_at: old },
+        repository: { full_name: REPO },
+      });
+      expect((await deliver(stale, "release", "delivery-23")).body.data.reason).toBe(
+        "STALE_DELIVERY",
+      );
+
+      // A header the signed body contradicts: the unfiltered trigger fires with "unknown".
+      expect(
+        (await deliver(releaseBody(24), "pull_request", "delivery-24")).body.data.fired,
+      ).toHaveLength(1);
+      expect(state.submitted[0].payload.event).toBe("unknown");
+    });
+
     it("a claim that cannot be written fails closed (503), fires nothing and records nothing", async () => {
       await trigger("t-1", { event: "push" });
       await trigger("t-2", { event: "push" });

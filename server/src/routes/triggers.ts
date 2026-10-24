@@ -30,6 +30,8 @@ import {
   releasePayload,
   SIGNED_TRIGGER_EVENTS,
   signedTriggerEvent,
+  signedTriggerEventTime,
+  UNTIMED_RECEIVER_PREFIX,
   type PayloadClaim,
 } from "../lib/webhooks/payload-replay.js";
 import { createChildLogger } from "../lib/logger.js";
@@ -194,8 +196,10 @@ async function spawnTriggerRun(
  *   by the signed body, so no event-filtered trigger matches it.
  * - It does not, and the header names another event (`release`,
  *   `workflow_run`, …): the header, the only source there is. A relabelled
- *   replay of such a body still fires nothing, because every trigger whose
- *   secret verified the body claimed it on the genuine delivery.
+ *   replay of such a body still fires nothing: on the genuine delivery, every
+ *   trigger whose secret verified it and whose filter did NOT match claimed
+ *   it. The only unclaimed ones are matching triggers left over by the fan-out
+ *   cap, which have not fired for this body and may fire once later.
  */
 function deliveryEvent(signed: string | null, header: string | undefined): string | null {
   if (signed !== null) return signed;
@@ -448,8 +452,9 @@ export function triggersWebhookRouter(): Router {
       return;
     }
     // #1492 — every trigger of the repository whose secret signed the body,
-    // whatever its event filter: each is claimed below, so a replay of this
-    // body under a relabelled event header finds them all already claimed.
+    // whatever its event filter. When the event comes from the header, the
+    // non-matching ones are claimed below too, so a replay of this body under
+    // a relabelled header finds them already claimed.
     const verified = forRepo.filter((t) => {
       const cfg = parseConfig(t.config);
       const secret = String(cfg.secret ?? "");
@@ -496,18 +501,53 @@ export function triggersWebhookRouter(): Router {
     // #1492 — the delivery id is unsigned, so claim the signed body as well,
     // once PER TRIGGER: each has its own secret (its own GitHub webhook), so
     // the same body legitimately reaches this receiver once per registration.
+    // A body with no signed time is claimed under the untimed prefix, which is
+    // kept 90 days instead of 7: no age check backs that claim up.
     const raw = rawBody(req);
+    const receiverPrefix = signedTriggerEventTime(body) === null ? UNTIMED_RECEIVER_PREFIX : "";
     const claimOf = (t: { id: string }): PayloadClaim => ({
-      receiver: `github-trigger:${t.id}`,
+      receiver: `${receiverPrefix}github-trigger:${t.id}`,
       eventType: signedEvent ?? "unclassified",
       rawBody: raw,
     });
-    const claimedIds = new Set<string>();
     const release = (ts: Array<{ id: string }>) =>
       Promise.allSettled(ts.map((t) => releasePayload(claimOf(t))));
+
+    // #680 — bound the fan-out per delivery. Event-matching triggers are
+    // claimed in order until `cap` of them are fresh, and those fire. The
+    // rest are NOT claimed, so GitHub's "Redeliver" reaches them: each one
+    // drains the next `cap` without re-running a trigger that already fired.
+    //
+    // Non-matching triggers are claimed only when the event came from the
+    // header (`signedEvent === null`): there a replay relabelled to their
+    // event would match them. A classified body's event is fixed by the
+    // signature, so they can never match it and need no claim. That loop is
+    // not capped, because leaving one unclaimed re-opens the relabel. It is
+    // bounded by the triggers an admin created on this repository with this
+    // same secret.
+    const cap = maxTriggerFanout();
+    const matching = live.filter((t) => eventMatches(parseConfig(t.config).event, event));
+    const others = live.filter((t) => !eventMatches(parseConfig(t.config).event, event));
+    const claimed: typeof live = [];
+    const toFire: typeof live = [];
+    let attempted = 0;
+    let duplicate = 0;
     try {
-      for (const t of live) {
-        if (!(await claimPayload(claimOf(t))).duplicate) claimedIds.add(t.id);
+      for (const t of matching) {
+        if (toFire.length >= cap) break;
+        attempted++;
+        if ((await claimPayload(claimOf(t))).duplicate) {
+          duplicate++;
+        } else {
+          claimed.push(t);
+          toFire.push(t);
+        }
+      }
+      if (signedEvent === null) {
+        for (const t of others) {
+          if ((await claimPayload(claimOf(t))).duplicate) duplicate++;
+          else claimed.push(t);
+        }
       }
     } catch (err) {
       // Fail CLOSED: firing without a claim is the unguarded replay. Give back
@@ -516,44 +556,44 @@ export function triggersWebhookRouter(): Router {
         deliveryId,
         error: (err as Error).message,
       });
-      await Promise.allSettled([
-        release(live.filter((t) => claimedIds.has(t.id))),
-        releaseDeliveryId(),
-      ]);
+      await Promise.allSettled([release(claimed), releaseDeliveryId()]);
       throw new AppError(
         503,
         "REPLAY_GUARD_UNAVAILABLE",
         "The replay guard could not record this delivery",
       );
     }
+    const capped = matching.length - attempted;
 
-    const fresh = live.filter((t) => claimedIds.has(t.id));
-    const duplicate = live.length - fresh.length;
-    const toFire = fresh.filter((t) => eventMatches(parseConfig(t.config).event, event));
     const fired: string[] = [];
-    // #680 — bound the fan-out per delivery.
-    const capped = toFire.slice(0, maxTriggerFanout());
-    for (let i = 0; i < capped.length; i++) {
-      const t = capped[i];
+    for (let i = 0; i < toFire.length; i++) {
+      const t = toFire[i];
       let out: { runId: string };
       try {
-        out = await submitTriggerRun(t, { event, body });
+        // The run payload's `event` stays a string, as before #1492: the
+        // matched event, or "unknown" when there is none (no header, or one
+        // the signed body contradicts).
+        out = await submitTriggerRun(t, { event: event ?? "unknown", body });
       } catch (err) {
         // #1492 — a failed submit created no run (one row insert). Give back
         // its claim and the claims of the triggers not yet fired, plus the
         // delivery id, so a redelivery fires exactly those. The triggers that
         // DID fire keep their claims: releasing them would run them twice.
-        await Promise.allSettled([release(capped.slice(i)), releaseDeliveryId()]);
+        await Promise.allSettled([release(toFire.slice(i)), releaseDeliveryId()]);
         throw err;
       }
       fired.push(out.runId);
       await markTriggerFired(t.id);
     }
+    // Triggers left over by the cap: give the delivery id back too, so the
+    // sender's redelivery of this same delivery is not deduped before them.
+    if (capped > 0) await releaseDeliveryId();
     res.json(
       ok({
         matched: matched.length,
         fired,
         ...(duplicate ? { duplicate } : {}),
+        ...(capped ? { capped } : {}),
         ...(skipped ? { skippedDeletedProject: skipped } : {}),
       }),
     );

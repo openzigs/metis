@@ -20,7 +20,10 @@ import {
   signedEventTime,
   signedGithubEvent,
   signedTriggerEvent,
+  signedTriggerEventTime,
   SIGNED_TRIGGER_EVENTS,
+  UNTIMED_PAYLOAD_DIGEST_RETENTION_MS,
+  UNTIMED_RECEIVER_PREFIX,
   PAYLOAD_DIGEST_RETENTION_MS,
   SIGNED_EVENT_MAX_AGE_MS,
 } from "./payload-replay.js";
@@ -69,8 +72,19 @@ describe("purgeOldPayloadDigests", () => {
     table.deleteMany.mockResolvedValue({ count: 3 });
     expect(await purgeOldPayloadDigests(undefined, NOW)).toBe(3);
     expect(table.deleteMany).toHaveBeenCalledWith({
-      where: { receivedAt: { lt: new Date(NOW - PAYLOAD_DIGEST_RETENTION_MS) } },
+      where: {
+        OR: [
+          {
+            receivedAt: { lt: new Date(NOW - PAYLOAD_DIGEST_RETENTION_MS) },
+            NOT: { receiver: { startsWith: UNTIMED_RECEIVER_PREFIX } },
+          },
+          { receivedAt: { lt: new Date(NOW - UNTIMED_PAYLOAD_DIGEST_RETENTION_MS) } },
+        ],
+      },
     });
+    // #1492 — an untimed claim outlives the age limit by far; a timed one
+    // outlives it by the margin #1484 set.
+    expect(UNTIMED_PAYLOAD_DIGEST_RETENTION_MS).toBeGreaterThanOrEqual(90 * DAY);
   });
 
   it("tolerates a delegate that reports no count", async () => {
@@ -242,5 +256,80 @@ describe("isStaleSignedTriggerEvent (#1492)", () => {
     expect(isStaleSignedTriggerEvent({ comment: { updated_at: "nonsense" } }, NOW)).toBe(false);
     expect(isStaleSignedTriggerEvent(null, NOW)).toBe(false);
     expect(isStaleSignedTriggerEvent({ ...push(1), repository: "x" }, NOW)).toBe(false);
+  });
+});
+
+describe("signedTriggerEventTime (#1492)", () => {
+  const at = (ms: number) => new Date(ms).toISOString();
+  const old = at(NOW - SIGNED_EVENT_MAX_AGE_MS - DAY);
+  const fresh = at(NOW - DAY);
+
+  it("reads release times only for the actions that publish or create it", () => {
+    for (const action of ["created", "published", "released", "prereleased"]) {
+      const body = { action, release: { published_at: fresh, created_at: old } };
+      expect(signedTriggerEventTime(body)).toBe(NOW - DAY);
+    }
+    const draft = { action: "created", release: { published_at: null, created_at: fresh } };
+    expect(signedTriggerEventTime(draft)).toBe(NOW - DAY);
+    for (const action of ["edited", "deleted", "unpublished"]) {
+      expect(signedTriggerEventTime({ action, release: { published_at: old } })).toBeNull();
+    }
+  });
+
+  it("reads workflow_run, workflow_job, deployment and deployment_status times", () => {
+    expect(
+      signedTriggerEventTime({ action: "completed", workflow_run: { updated_at: fresh } }),
+    ).toBe(NOW - DAY);
+    expect(
+      signedTriggerEventTime({
+        action: "completed",
+        workflow_job: { created_at: old, started_at: old, completed_at: fresh },
+      }),
+    ).toBe(NOW - DAY);
+    expect(signedTriggerEventTime({ action: "created", deployment: { created_at: fresh } })).toBe(
+      NOW - DAY,
+    );
+    expect(
+      signedTriggerEventTime({
+        action: "created",
+        deployment: { created_at: old, updated_at: old },
+        deployment_status: { created_at: fresh },
+      }),
+    ).toBe(NOW - DAY);
+  });
+
+  it("is null for events with no signed time it trusts", () => {
+    for (const p of [
+      { ref: "v1", ref_type: "tag", repository: { pushed_at: fresh } },
+      { zen: "ping", hook: { updated_at: fresh } },
+      { action: "completed", check_run: { completed_at: fresh } },
+      { action: "completed", workflow_run: { updated_at: "nonsense" } },
+      { action: "completed", workflow_run: "x" },
+      "push",
+    ]) {
+      expect(signedTriggerEventTime(p)).toBeNull();
+    }
+  });
+
+  it("never reads a committer-set head_commit.timestamp", () => {
+    const push = {
+      ref: "refs/heads/main",
+      before: "a",
+      after: "b",
+      commits: [],
+      pusher: {},
+      head_commit: { timestamp: fresh },
+      repository: {},
+    };
+    expect(signedTriggerEventTime(push)).toBeNull();
+  });
+
+  it("an old release publish is stale; an old release edit is untimed, not stale", () => {
+    expect(
+      isStaleSignedTriggerEvent({ action: "published", release: { published_at: old } }, NOW),
+    ).toBe(true);
+    expect(
+      isStaleSignedTriggerEvent({ action: "edited", release: { published_at: old } }, NOW),
+    ).toBe(false);
   });
 });

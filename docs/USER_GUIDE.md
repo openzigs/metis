@@ -3587,12 +3587,29 @@ trigger's own `secret`. Its `event` is the bare GitHub event name (`push`, `issu
 > For any other event (`release`, `workflow_run`, …) the body can't tell METIS what it is, so the
 > header is still used, as before.
 
-Each trigger fires **at most once per signed body**. The same body sent again under a new
-`X-GitHub-Delivery` id, or with a different `X-GitHub-Event` header, fires nothing: the response
-carries `fired: []` and `duplicate: <count>`. GitHub's own retry of a delivery id answers
-`reason: "DUPLICATE_DELIVERY"`. A pull request, issue or push whose signed timestamp is more than 4
-days old answers `reason: "STALE_DELIVERY"`. Two webhooks with different secrets sending the same
-event each fire their own triggers once.
+**How often a body can fire a trigger.** The same body sent again under a new `X-GitHub-Delivery`
+id, or with a different `X-GitHub-Event` header, fires nothing: the response carries `fired: []`
+and `duplicate: <count>`. GitHub's own retry of a delivery id answers
+`reason: "DUPLICATE_DELIVERY"`. Two webhooks with different secrets sending the same event each
+fire their own triggers once. How long that holds depends on whether the body carries a time
+GitHub signed:
+
+- **Bodies with a signed time** fire each trigger at most once, ever. METIS remembers the body for
+  7 days, and refuses one whose signed time is more than 4 days old (`reason: "STALE_DELIVERY"`).
+  These are pushes (`repository.pushed_at`), pull requests, issues, comments and reviews, a release
+  being created or published, `workflow_run`, `workflow_job`, `deployment` and `deployment_status`.
+- **Every other body** fires each trigger at most once **within 90 days**. These include `create`,
+  `delete`, `ping`, and a release that is edited or deleted. METIS remembers it for 90 days instead
+  of 7, because it has no signed time to judge its age by. After that, a resend of the same body
+  could fire once more.
+
+A run's payload carries the event it was matched as. It is `"unknown"` when there is none: no
+header, or a header the signed body contradicts. Only a trigger with no `event` fires then.
+
+**Fan-out cap.** One delivery starts at most `MAX_TRIGGER_FANOUT` runs (default 50). Any matching
+triggers beyond that are counted as `capped: <n>` and are not marked as seen. GitHub's
+**Redeliver** of that delivery fires the next batch, and never re-runs a trigger that already
+fired.
 
 If METIS can't record the delivery it answers `503 REPLAY_GUARD_UNAVAILABLE` and fires nothing. If a
 run can't be started it answers `500`. Triggers that had already fired stay fired, and GitHub's
