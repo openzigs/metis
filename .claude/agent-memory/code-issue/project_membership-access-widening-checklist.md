@@ -53,3 +53,11 @@ runs lists' `?projectId=` use it; the session lists add `deletedAt: null` on the
 whenever deleting a project must close a by-id path. `task:` and `publish:` socket rooms now
 take `canReadProject` and are re-judged with the project-data rooms (#1297); a test that
 joined `task:{id}` "on role alone" as a stand-in room must use `scheduler:status` instead.
+
+**Closed for the remaining request guards by #1430 (2026-10-23).** The #1428 review found
+every guard built on `assertProjectAccess` (`requireProjectAccess` on the projects catch-all,
+`authorizeRunProject`, requirement-authz, resource-project-access, connection-authz) admitting
+a soft-deleted project. All five now call `assertLiveProjectAccess`. A NEW guard
+must still check `deletedAt` explicitly or use the live variant; bare `assertProjectAccess`
+has not changed. Background paths are the other half:
+[[deleted-project-background-firing-guard]].

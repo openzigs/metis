@@ -53,3 +53,30 @@ so where it sits decides both which tests pass and what CodeQL reports.
 
 Related: [[preauth-limiters-keyed-on-req-ip]], [[supertest-beforeall-peer-differs]],
 [[product-repo-access-traps]], [[membership-access-widening-checklist]].
+
+## Parent/child scoping (IDOR) — #1428 to #1448 (2026-10-23)
+
+The `projects.ts` catch-all is now `r.use("/:id/:sub", requireAuth, requireProjectAccess("id"))`
+at about line 157, and `requireProjectAccess` uses `assertLiveProjectAccess` (#1430).
+
+- **A by-id helper under a nested route can ignore the parent.** `forgetEntry(entryId)` under
+  `/projects/:id/chronicle/:entryId` deleted any project's entry (#1429, fixed). Child lookups
+  must include the path's `projectId`.
+- **Find-then-act.** Code often scopes the `findFirst` by parent but then acts by id alone
+  (seen in `memory/chronicle.ts` and `finops-workspace.ts`). Bind the effect to the scoped
+  lookup, or carry the parent key into the write.
+- **State after #1433:** every route in `server/src/routes` naming a parent and child id
+  scopes the child to its parent. The remaining IDOR risk is foreign ids in request BODIES
+  (#1431, #1432). pr-reviews, project-scoped reviews and ast-cache rely on the catch-all and on
+  `/projects` being mounted first in `index.ts`.
+- **The catch-all masks a missing per-router guard in the full app.** Probe a new
+  `/projects/:projectId/...` route on an unguarded router standalone, with a cross-workspace
+  coordinator (#1448 review).
+- **Cross-project 404 tests** on a projectScoped analysis route must use a second project in
+  the caller's OWN workspace. A foreign-workspace project is refused earlier by
+  `requireProjectAccess`, so the test passes even with `ensureAnalysisVisible` removed (#1436).
+- **Limiter tests.** A limiter unit test with its own Express app does not prove the route
+  uses the limiter. Drive the real router past a `*_LIMIT_MAX=1` cap with a fresh user per
+  route (#1436).
+
+Soft-deleted projects on background paths: [[deleted-project-background-firing-guard]].

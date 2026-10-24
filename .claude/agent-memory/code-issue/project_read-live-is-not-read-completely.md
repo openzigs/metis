@@ -7,6 +7,15 @@ metadata:
 
 A "read live" introspection in this project is not a complete column list — `drivers/oracle.ts` silently caps introspection at `maxRows: 10_000`, and the PostgreSQL, MySQL and SQL Server `information_schema` queries return only columns the role has a privilege on — so any feature that deletes or "corrects" content because a name is absent from an introspected table needs a per-table completeness proof, or must mark instead. #1093 went mark-only after two review cycles of new deletion routes.
 
+**The Oracle cap is gone (#1096, PR #1462, 2026-10-23).** Catalog reads now page a result set
+with `getRows`, and `maxRows` is never set on them. Two traps from that PR and its review:
+- node-oracledb `getRows(n)` does not set rows per round trip; `fetchArraySize` does (default
+  100). Pass both for paged catalog reads.
+- When removing a cap that silently limited data size, check every consumer it bounded
+  (stored JSON blobs, API payloads, UI render size, LLM prose cost, chat tool output), not just
+  the driver. A fake Oracle connection must apply `opts.maxRows` itself
+  ([[test-falsifiability-traps]]).
+
 **Why:** PR #1093 (#1061) checked the architecture document's Data Architecture section against the schema and removed what it could not resolve. Each review found new ways for that to delete correct content, and each fix narrowed the gate without closing the class:
 
 - Cycle 1: a `current: true` flag ("every connector was introspected in this run") was true and wrong three ways. A connector that returned `[]` (what a role without grants gets) counted as read, because `if (live)` is true for an empty array. `drivers/postgres.ts` reads `opts.schema ?? "public"` and `sqlserver.ts` reads `dbo`, so "live" was one schema. And a schema prefix was dropped to make a name resolve, so `### Entity: audit.users` was judged against `public.users`.

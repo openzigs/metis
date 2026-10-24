@@ -20,3 +20,10 @@ Re-confirmed on #1108 (`entry-point` relation): all three surfaces plus the unte
 - **A `naming` match is a link through the target too:** demoting only `exercises` left `TestNewHandler…` reading as `naming`, and a whole-file target's sibling `naming` match re-added `TestTruncateStringForTSVectorField`. Apply a link rule to both relations.
 - **Whole-file word rule:** one shared title word let every `Feed…` client test "test" "Force IPv4 or IPv6 per feed"; the hub's rule (1 word for titles of <= 2 words, else 2) did not, and lost no true positive on six projects. The adversarial panel then found the old one-token `naming` fallback re-admitting a test the rule had just rejected: when a rule drops a link, check every later branch that can offer the same test. Scoped to `analysis-grounding` rows (a `manual` whole-file row is a person's claim); every rangeless row in dev.db had that source.
 - **A callee's own test vs an entry point's own test cannot be told apart by name** (#1435 review): `TestParseFeedRSS` of `ParseFeed` and `TestNewHandlerSupportsBasePathStripping` of `NewHandler` have the same shape. Keeping named tests (to save the former) put all 15 `NewHandler`-only requirements back to strict on Miniflux. What separates them: keep a named test only when the CALLEE's own name shares a non-stop word with the title (`new`/`handler`/`get`/… ignored); measured, it restores run 9's 8 entry-point-only requirements.
+- **TS/JS graphs attribute test calls to the module, not the test** (#1435 review): nearly all
+  test-file call edges come from the test MODULE symbol (~237k of ~248k in dev.db), so a
+  Tested-by rule counting "test callers" or reading test names counts and reads test FILES
+  there. A threshold measured on Go needs a TS re-measurement.
+- **Word rules did no stemming** (#1435 review): `words()` / `sharesRequirementWords` and the
+  #860 hub guard compared raw tokens (`traceability/tested-by.ts`). Probe inflected and paraphrased titles ("Parsing feeds"
+  vs `TestParseFeed`) when reviewing a title-overlap rule.
