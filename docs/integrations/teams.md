@@ -141,7 +141,10 @@ with that password**. The API still accepts the old spelling and stores the new
 one. A stored row is read as `UserAssignedMsi` and flagged `needsReinstall`
 (`legacy-app-type`). If its client id is not allowed, has no tenant id, or is in
 use elsewhere, it stops authenticating with the matching code (`TENANT_REQUIRED`
-for the missing tenant). To fix it, disconnect and reconnect the bot: as
+for the missing tenant). **`TEAMS_MSI_CLIENT_IDS` is unset by default, so on
+upgrade every such bot stops sending and receiving** until it is reconnected. Check
+each workspace's Teams settings page for the "Needs reinstall" banner straight after
+upgrading. To fix it, disconnect and reconnect the bot: as
 `UserAssignedMsi` with no password if it really is a managed identity (after the
 operator allows it), or as `MultiTenant` with its secret if that is what it has
 been using.
