@@ -115,7 +115,12 @@ export function judgeFromProvider(provider: AIProvider): JudgeLike {
         ],
         { disableTools: true },
       );
-      const cost = estimateUsageCostUsd(res.model, res.usage, res.provider);
+      // #1471 — price what the API says ran; when that id has no rate (a dated
+      // snapshot of a priced alias), price the configured model the limit was
+      // checked against, so a priced review is never recorded as free.
+      const cost =
+        estimateUsageCostUsd(res.model, res.usage, res.provider) ??
+        estimateUsageCostUsd(provider.model, res.usage, provider.key);
       return {
         raw: res.content,
         model: res.model,

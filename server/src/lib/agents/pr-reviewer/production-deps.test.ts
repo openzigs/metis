@@ -125,9 +125,22 @@ describe("judgeFromProvider", () => {
   });
 
   it("an unpriced model reports a non-finite cost (recorded unpriced, never $0)", async () => {
-    const provider = stubProvider({}, { model: "no-such-model-1471", provider: "local" as never });
+    const provider = stubProvider(
+      { key: "local" as never, model: "no-such-model-1471" },
+      { model: "no-such-model-1471", provider: "local" as never },
+    );
     const out = await judgeFromProvider(provider).evaluate({ system: "S", user: "U" });
     expect(typeof out === "object" && Number.isNaN(out.costUsd)).toBe(true);
+  });
+
+  it("a reply naming an unpriced snapshot of a priced configured model is priced as the configured one", async () => {
+    // Configured `anthropic:claude-sonnet-4-6` (priced, so the limit lets it run);
+    // the API answers with an id the rate table does not list.
+    const provider = stubProvider({}, { model: "no-such-snapshot-1471" });
+    const out = await judgeFromProvider(provider).evaluate({ system: "S", user: "U" });
+    expect(judgeFromProvider(provider).priced).toBe(true);
+    expect(typeof out === "object" && out.costUsd).toBeGreaterThan(0);
+    expect(typeof out === "object" && out.model).toBe("no-such-snapshot-1471");
   });
 });
 
