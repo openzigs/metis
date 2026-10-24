@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { parseWaivers } from "./image-scan-gate.mjs";
+import { parseRetired, parseWaivers } from "./image-scan-gate.mjs";
 
 /**
  * #1489 — an image-scan waiver for an npm finding mirrors the OSV Dependency-audit waiver
@@ -56,15 +56,26 @@ const waivers = parseWaivers(waiverDoc);
 const mirrored = waivers.filter((w) => "mirrors" in w);
 
 describe("image-scan waivers mirror their sast.yml twins (#1489)", () => {
-  it("the four advisories of #1489 are recorded as mirrors, not as free-standing waivers", () => {
-    expect(
-      Object.fromEntries(mirrored.map((w) => [w.id, /** @type {any} */ (w).mirrors])),
-    ).toMatchObject({
+  it("each advisory of #1489 is a mirror in `waivers`, or has been retired to `expired`", () => {
+    const retired = new Set(parseRetired(waiverDoc).map((w) => w.id));
+    const byId = Object.fromEntries(mirrored.map((w) => [w.id, /** @type {any} */ (w).mirrors]));
+    for (const [cve, ghsa] of Object.entries({
       "CVE-2026-109461": "GHSA-xcx6-jx8p-x3h5",
       "CVE-2026-111181": "GHSA-27r3-jxmh-p828",
       "CVE-2026-113872": "GHSA-q7qp-rjg7-q26m",
       "CVE-2023-54404": "GHSA-mrhx-c7xc-m3w5",
-    });
+    })) {
+      if (retired.has(cve)) continue;
+      expect(byId[cve], `${cve} must be waived as a mirror of ${ghsa}, or moved to expired`).toBe(
+        ghsa,
+      );
+    }
+  });
+
+  it("CI has python3, so the comparison below cannot skip there", () => {
+    if (process.env.CI) {
+      expect(python3, "python3 is required to execute sast.yml's WAIVERS").toBe(true);
+    }
   });
 
   it.runIf(python3)("each mirror matches its sast.yml waiver's expiry and package scope", () => {
