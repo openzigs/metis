@@ -306,6 +306,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           tools: JSON.stringify(["count_rows"]),
         },
       });
+      // #1445 — off until enabled, owned agents included.
+      await db.customAgentEnablement.create({
+        data: { customAgentId: "c-counter", projectId: IDS.delegating, enabled: true },
+      });
       alice = issueTokens({
         userId: IDS.alice,
         username: "alice",

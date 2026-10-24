@@ -126,7 +126,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite = createMigratedSqlite("129-wire");
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
-      await seedAgentsFixture(db);
+      await seedAgentsFixture(db, { enableOwnCustomAgents: true });
       alice = issueTokens({
         userId: IDS.alice,
         username: "alice",

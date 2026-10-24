@@ -135,7 +135,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite = createMigratedSqlite("236-session-agent");
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
-      await seedAgentsFixture(db);
+      await seedAgentsFixture(db, { enableOwnCustomAgents: true });
       // Library agents a session may NOT bind: disabled, archived.
       await db.agent.create({
         data: { id: "a-disabled", key: "a-disabled", name: "a-disabled", enabled: false },
@@ -194,6 +194,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           tools: "[]",
         },
       });
+      // #1445 — off until enabled: each project's own agents are switched on for it.
+      for (const [customAgentId, projectId] of [
+        ["c-strict", IDS.project],
+        ["c-bare", IDS.project],
+        ["c-ws", "p-ws"],
+      ] as const) {
+        await db.customAgentEnablement.create({
+          data: { customAgentId, projectId, enabled: true },
+        });
+      }
       const token = (userId: string, workspaces: string[] = []) =>
         issueTokens({ userId, username: userId, role: "developer", permissions: [], workspaces })
           .accessToken;
@@ -718,6 +728,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             model: SAVED,
             tools: "[]",
           },
+        });
+        // #1445 — off until enabled.
+        await db.customAgentEnablement.create({
+          data: { customAgentId: "c-modelled", projectId: IDS.project, enabled: true },
         });
       });
       beforeEach(() => {
