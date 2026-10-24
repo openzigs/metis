@@ -383,6 +383,35 @@ function firstSourceHost(digest: EvidenceDigest): string | undefined {
 }
 
 /**
+ * One source as the writer's grounding blocks show it: its `[SOURCE …]` header,
+ * then its text, or, for a `facts` source whose text the prompt's EXTRACTED
+ * MODULE FACTS already carries (#168), a pointer to that entry.
+ *
+ * #1370 — a source's text is repository, document or web text: it cannot close
+ * a block, forge another of the writer's blocks, or forge a `[SOURCE id=…]`
+ * header that would pass its text off as another source's. Clean text is
+ * returned unchanged, so the prompt (and its cache prefix) is byte-identical
+ * for it. #1329 — the one place {@link renderGroundingBlock} and
+ * {@link renderGroundingBlocks} render a source, so the scrub cannot drift
+ * between the two.
+ */
+function renderGroundingSource(
+  s: GroundingSource,
+  factsBlob: string,
+): { text: string; referenced: boolean } {
+  const data = (text: string) => scrubWriterFenceLookalikes(text, "[REDACTED-FENCE]");
+  const header = `[SOURCE id=${s.sourceId} kind=${s.kind} label=${JSON.stringify(data(s.label))}]`;
+  if (s.kind === "facts" && factsBlob && factsBlob.includes(s.text)) {
+    const entry = data(s.text.split("\n", 1)[0]);
+    return {
+      text: `${header}\n(text: the "${entry}" entry in EXTRACTED MODULE FACTS above)`,
+      referenced: true,
+    };
+  }
+  return { text: `${header}\n${data(s.text)}`, referenced: false };
+}
+
+/**
  * Render the grounding context as a prompt block. Each source is delimited and
  * labelled with its stable id so the model can cite ids verbatim. Returns an
  * empty string when there is no grounding evidence (the caller can then skip
@@ -400,23 +429,9 @@ export function renderGroundingBlock(
   opts: { factsBlob?: string } = {},
 ): string {
   if (ctx.isEmpty) return "";
-  const blob = opts.factsBlob ?? "";
-  let referenced = 0;
-  // #1370 — a source's text is repository, document or web text: it cannot
-  // close this block, forge another of the writer's blocks, or forge a
-  // `[SOURCE id=…]` header that would pass its text off as another source's.
-  // Clean text is returned unchanged, so the prompt (and its cache prefix) is
-  // byte-identical for it.
-  const data = (text: string) => scrubWriterFenceLookalikes(text, "[REDACTED-FENCE]");
-  const parts = ctx.sources.map((s) => {
-    const header = `[SOURCE id=${s.sourceId} kind=${s.kind} label=${JSON.stringify(data(s.label))}]`;
-    if (s.kind === "facts" && blob && blob.includes(s.text)) {
-      referenced++;
-      const entry = data(s.text.split("\n", 1)[0]);
-      return `${header}\n(text: the "${entry}" entry in EXTRACTED MODULE FACTS above)`;
-    }
-    return `${header}\n${data(s.text)}`;
-  });
+  const rendered = ctx.sources.map((s) => renderGroundingSource(s, opts.factsBlob ?? ""));
+  const referenced = rendered.filter((r) => r.referenced).length;
+  const parts = rendered.map((r) => r.text);
   return [
     "=== RETRIEVED GROUNDING SOURCES ===",
     "Every factual claim you write MUST be grounded in one or more of the",
@@ -471,17 +486,9 @@ export function renderGroundingBlocks(
     opts,
   );
   if (facts.length === 0) return { shared, own: "" };
-  const blob = opts.factsBlob ?? "";
-  const data = (text: string) => scrubWriterFenceLookalikes(text, "[REDACTED-FENCE]");
-  let referenced = 0;
-  const parts = facts.map((s) => {
-    const header = `[SOURCE id=${s.sourceId} kind=${s.kind} label=${JSON.stringify(data(s.label))}]`;
-    if (blob && blob.includes(s.text)) {
-      referenced++;
-      return `${header}\n(text: the "${data(s.text.split("\n", 1)[0])}" entry in EXTRACTED MODULE FACTS above)`;
-    }
-    return `${header}\n${data(s.text)}`;
-  });
+  const rendered = facts.map((s) => renderGroundingSource(s, opts.factsBlob ?? ""));
+  const referenced = rendered.filter((r) => r.referenced).length;
+  const parts = rendered.map((r) => r.text);
   const own = [
     "=== GROUNDING SOURCES: MODULE FACTS ===",
     "These are grounding sources too: cite them exactly as the retrieved sources above.",

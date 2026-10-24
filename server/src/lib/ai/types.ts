@@ -362,8 +362,20 @@ export interface ChatOptions {
    *     ABSENT key as its ENABLE_PROMPT_CACHING default, so an explicit `false`
    *     from any caller is forwarded to the gateway as `false` (and to no other
    *     OpenAI-compatible backend, which does not read the field).
+   *
+   *   • `userPrefix` (#1329, native Anthropic only) — send the LAST user turn as
+   *     two text blocks, a breakpoint ending this leading part of it and the
+   *     rest uncached, so calls that share the lead but differ after it read
+   *     each other's write. Independent of `system` / `messages`. Ignored unless
+   *     it is a strict, non-empty prefix of that turn's plain-string content.
+   *     Every other provider ignores it and sends the turn unchanged.
    */
-  promptCaching?: { system?: boolean; messages?: boolean; systemPrefix?: string };
+  promptCaching?: {
+    system?: boolean;
+    messages?: boolean;
+    systemPrefix?: string;
+    userPrefix?: string;
+  };
   /**
    * Coarse call-site tag used ONLY to attribute prompt-cache hit-ratio
    * telemetry (#390) to a workload. It does NOT change request behaviour.

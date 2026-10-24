@@ -621,8 +621,11 @@ export class AnthropicProvider implements AIProvider {
    *     message with the same breakpoint, caching the large stable
    *     facts/source prefix reused across generation + claim-extraction +
    *     faithfulness-judge calls.
-   * Anthropic allows ≤4 breakpoints; we place at most 2 (system + last user
-   * turn). Content below the model's min cacheable size simply does not cache —
+   *   • `promptCaching.userPrefix` (#1329) → split the LAST user message into
+   *     [that prefix, carrying the breakpoint][the rest], so sibling calls that
+   *     share the lead read its write.
+   * Anthropic allows ≤4 breakpoints; we place at most 3 (system, a user lead,
+   * last user turn). Content below the model's min cacheable size simply does not cache —
    * a harmless no-op — so flagging caching is always safe.
    */
   private buildRequest(
@@ -769,6 +772,10 @@ export class AnthropicProvider implements AIProvider {
     // Tag the last content block of the last USER message so the large stable
     // facts/source prefix is cached. We convert that one message's content to
     // block form in place; all other turns stay as plain strings.
+    // #1329 — a shared user lead is split off first, so with `messages` too the
+    // last block (the rest) carries its own breakpoint after the lead's.
+    const userPrefix = opts.promptCaching?.userPrefix ?? "";
+    if (userPrefix.length > 0) splitLastUserTurnAt(apiMessages, userPrefix, cacheControl);
     if (cacheMessages) markLastUserBlockForCaching(apiMessages, cacheControl);
 
     if (opts.disableThinking) {
@@ -1076,6 +1083,36 @@ function toTextBlocks(content: ChatMessage["content"]): AnthropicTextBlock[] | n
     blocks.push({ type: "text", text: part.text });
   }
   return blocks;
+}
+
+/**
+ * #1329 — send the LAST user turn as [`prefix`, with a cache breakpoint][the
+ * rest]. The two blocks hold exactly the turn's text, so the model reads the
+ * same prompt. No-op (logged) unless that turn is a plain string with `prefix`
+ * as a strict, non-empty prefix. Mutates in place.
+ */
+function splitLastUserTurnAt(
+  apiMessages: AnthropicApiMessage[],
+  prefix: string,
+  cacheControl: CacheControl,
+): void {
+  const target = [...apiMessages].reverse().find((m) => m.role === "user");
+  const text = target?.content;
+  if (!target || typeof text !== "string" || text.length <= prefix.length) {
+    log.debug("userPrefix not applied: the last user turn is not a longer plain string");
+    return;
+  }
+  if (!text.startsWith(prefix)) {
+    log.debug("userPrefix is not a prefix of the last user turn; sending it unsplit", {
+      prefixLength: prefix.length,
+      turnLength: text.length,
+    });
+    return;
+  }
+  target.content = [
+    { type: "text", text: prefix, cache_control: cacheControl },
+    { type: "text", text: text.slice(prefix.length) },
+  ];
 }
 
 /**

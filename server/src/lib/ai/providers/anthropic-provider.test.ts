@@ -283,6 +283,48 @@ describe("AnthropicProvider prompt caching — chat()", () => {
     expect(lastCreateBody().system).toBe("SYS PROMPT");
     expect(JSON.stringify(lastCreateBody())).not.toContain("cache_control");
   });
+
+  // #1329 — a breakpoint is per block, so a lead shared by sibling calls inside
+  // one user text block was never cached. `userPrefix` splits it off.
+  it("#1329 — userPrefix sends the last user turn as [lead + breakpoint][rest], text unchanged", async () => {
+    await provider().chat(
+      [{ role: "user", content: "SHARED EXCERPTS\n=== FACTS ===\nthis call's own facts" }],
+      { systemMessage: "SYS", promptCaching: { system: true, userPrefix: "SHARED EXCERPTS\n" } },
+    );
+    const body = lastCreateBody();
+    expect(body.system).toEqual([
+      { type: "text", text: "SYS", cache_control: { type: "ephemeral" } },
+    ]);
+    const turn = (body.messages as Array<{ content: Block[] }>).at(-1)!;
+    expect(turn.content).toEqual([
+      { type: "text", text: "SHARED EXCERPTS\n", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "=== FACTS ===\nthis call's own facts" },
+    ]);
+    expect(turn.content.map((b) => b.text).join("")).toBe(
+      "SHARED EXCERPTS\n=== FACTS ===\nthis call's own facts",
+    );
+  });
+
+  it("#1329 — a userPrefix that is not a strict prefix of the last user turn sends it unsplit", async () => {
+    for (const userPrefix of ["OTHER", "USER Q", "USER Q LONGER"]) {
+      await provider().chat([{ role: "user", content: "USER Q" }], {
+        promptCaching: { system: true, userPrefix },
+      });
+      const turn = (lastCreateBody().messages as Array<{ content: unknown }>).at(-1)!;
+      expect(turn.content).toBe("USER Q");
+    }
+  });
+
+  it("#1329 — userPrefix with messages caching keeps a breakpoint on the rest as well", async () => {
+    await provider().chat([{ role: "user", content: "LEAD rest" }], {
+      promptCaching: { messages: true, userPrefix: "LEAD " },
+    });
+    const turn = (lastCreateBody().messages as Array<{ content: Block[] }>).at(-1)!;
+    expect(turn.content).toEqual([
+      { type: "text", text: "LEAD ", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "rest", cache_control: { type: "ephemeral" } },
+    ]);
+  });
 });
 
 describe("AnthropicProvider prompt caching — stream()", () => {

@@ -6,16 +6,26 @@
  * This replays Phase 2 of a stored business-requirements run OFFLINE, through
  * the real prompt-assembly path (`synthesizeFinalDocument`, the topic plan and
  * the section batching): its Phase-1 facts are read from the run's
- * `docs_gen_fact_cache` rows, a fake model records every section prompt, and
- * each section is given retrieved grounding the size production retrieves
- * (`--rag-chunks` chunks of `--rag-chars` characters, within the 60K
- * per-section budget, distinct per section), standing in for the repository
- * excerpts a run with source on disk is given. No model is called; the fake
- * model's `chat` (claim extraction, judge) refuses, so nothing is fact-checked.
+ * `docs_gen_fact_cache` rows (`docs-gen-run-facts.ts`), a fake model records
+ * every section prompt, and each section is given retrieved grounding the size
+ * production retrieves (`--rag-chunks` chunks of `--rag-chars` characters,
+ * within the 60K per-section budget, distinct per section), standing in for
+ * the repository excerpts a run with source on disk is given. No model is
+ * called; the fake model's `chat` (claim extraction, judge) refuses, so
+ * nothing is fact-checked.
  *
  * For every call it prints the first byte at which its prompt (system, NUL,
  * user, as one stream) differs from the previous call of the same section and
  * from the previous section's first call, and the block that byte falls in.
+ *
+ * It also prints what a DeepSeek-like cache could READ: DeepSeek writes a
+ * prefix only when the call that sent it has finished, so a call reads the
+ * longest prefix it shares with a call that ENDED before it started. The fake
+ * model takes a moment per call, so the section's batches overlap as they do
+ * in production (`DOCS_GEN_PHASE2_CONCURRENCY`, 4 on a cloud provider). The
+ * same figure is given without the #1329 warm-up (a `…-warmup-…` call, one
+ * output token): its calls removed, and the section's first wave of batches
+ * started when the warm-up started.
  *
  *   DATABASE_URL=file:/nonexistent npx tsx scripts/docs-gen-prefix-report.ts \
  *     --db ../server/dev.db --version cmvjc1fv30031qk9kwll8qds7
@@ -26,7 +36,8 @@
 /* eslint-disable no-console -- a local CLI whose output is the table it prints */
 import Database from "better-sqlite3";
 import { AIProviderError } from "../src/lib/ai/errors.js";
-import type { AIProvider, ChatChunk, ChatMessage } from "../src/lib/ai/types.js";
+import { PREFIX_WARM_UP_MAX_TOKENS } from "../src/lib/ai/prompt-cache-warmup.js";
+import type { AIProvider, ChatChunk, ChatMessage, ChatOptions } from "../src/lib/ai/types.js";
 import type { CodeGraphSummary } from "../src/lib/docs-gen/code-graph-summary.js";
 import { buildGroundingContext } from "../src/lib/docs-gen/grounding/grounding-context.js";
 import {
@@ -35,7 +46,7 @@ import {
   type ModuleFacts,
   type Phase2Router,
 } from "../src/lib/docs-gen/holistic-synthesizer.js";
-import { mergePhase1ChunkFacts } from "../src/lib/docs-gen/phase1-chunking.js";
+import { moduleFactsFromRows, positiveNumberArg, selectRunFactRows } from "./docs-gen-run-facts.js";
 
 interface Args {
   db: string;
@@ -53,9 +64,9 @@ function parseArgs(argv: string[]): Args {
   return {
     db: get("db") ?? "dev.db",
     version: get("version") ?? "cmvjc1fv30031qk9kwll8qds7",
-    factsWindowMin: Number(get("facts-window-min") ?? 30),
-    ragChunks: Number(get("rag-chunks") ?? 29),
-    ragChars: Number(get("rag-chars") ?? 2_048),
+    factsWindowMin: positiveNumberArg(argv, "facts-window-min", 30),
+    ragChunks: positiveNumberArg(argv, "rag-chunks", 29, { integer: true }),
+    ragChars: positiveNumberArg(argv, "rag-chars", 2_048, { integer: true }),
   };
 }
 
@@ -75,36 +86,14 @@ function loadFacts(args: Args): { facts: ModuleFacts[]; model: string; projectId
       sectionSynthesis: { records: Array<{ metadata: { model?: string } }> };
     };
     const model = manifest.sectionSynthesis.records[0]?.metadata.model ?? "";
-    const until = new Date(version.createdAt);
-    const since = new Date(until.getTime() - args.factsWindowMin * 60_000);
-    const rows = db
-      .prepare(
-        `select modulePath, facts, formulasJson, minedRulesJson, topClassesJson, classCount, methodCount
-         from docs_gen_fact_cache
-         where projectId = ? and model = ? and lastUsedAt >= ? and lastUsedAt <= ?
-         order by modulePath, createdAt`,
-      )
-      .all(version.projectId, model, since.toISOString(), until.toISOString()) as Array<
-      Record<string, string | number>
-    >;
-    const byPath = new Map<string, typeof rows>();
-    for (const r of rows) {
-      const list = byPath.get(String(r.modulePath)) ?? [];
-      list.push(r);
-      byPath.set(String(r.modulePath), list);
-    }
-    const facts = [...byPath].map(([modulePath, list]): ModuleFacts => ({
-      modulePath,
-      moduleName: modulePath.split("/").pop() || modulePath,
-      classCount: Number(list[0].classCount),
-      methodCount: Number(list[0].methodCount),
-      facts: mergePhase1ChunkFacts(list.map((r) => String(r.facts))),
-      formulas: list.flatMap((r) => JSON.parse(String(r.formulasJson)) as ModuleFacts["formulas"]),
-      minedRules: list.flatMap(
-        (r) => JSON.parse(String(r.minedRulesJson)) as NonNullable<ModuleFacts["minedRules"]>,
-      ),
-      topClasses: JSON.parse(String(list[0].topClassesJson)) as ModuleFacts["topClasses"],
-    }));
+    const facts = moduleFactsFromRows(
+      selectRunFactRows(db, {
+        projectId: version.projectId,
+        model,
+        publishedAt: version.createdAt,
+        windowMin: args.factsWindowMin,
+      }),
+    );
     return { facts, model, projectId: version.projectId };
   } finally {
     db.close();
@@ -114,14 +103,19 @@ function loadFacts(args: Args): { facts: ModuleFacts[]; model: string; projectId
 interface Captured {
   section: string;
   stream: string;
+  warmUp: boolean;
+  /** Positions in the run's start/end event order. */
+  start: number;
+  end: number;
 }
 
 function recordingModel(model: string, calls: Captured[]): AIProvider {
+  let clock = 0;
   return {
     key: "anthropic",
     model,
     offline: false,
-    async *stream(messages: ChatMessage[]): AsyncGenerator<ChatChunk> {
+    async *stream(messages: ChatMessage[], opts: ChatOptions = {}): AsyncGenerator<ChatChunk> {
       const text = (m: ChatMessage | undefined) =>
         typeof m?.content === "string"
           ? m.content
@@ -129,8 +123,18 @@ function recordingModel(model: string, calls: Captured[]): AIProvider {
       const system = text(messages.find((m) => m.role === "system"));
       const user = text(messages[messages.length - 1]);
       const section = /Section group: \*\*(.+?)\*\*/.exec(user)?.[1] ?? "?";
-      calls.push({ section, stream: `${system}\u0000${user}` });
+      const call: Captured = {
+        section,
+        stream: `${system}\u0000${user}`,
+        warmUp: opts.maxTokens === PREFIX_WARM_UP_MAX_TOKENS,
+        start: clock++,
+        end: Number.POSITIVE_INFINITY,
+      };
+      calls.push(call);
+      // A moment per call, so a wave of parallel batches overlaps.
+      await new Promise((r) => setTimeout(r, 5));
       yield { type: "delta", content: `## ${section}\n\nRecorded.` };
+      call.end = clock++;
       yield { type: "done", finishReason: "stop" };
     },
     async chat(): Promise<never> {
@@ -185,11 +189,46 @@ const commonPrefix = (a: string, b: string): number => {
 };
 const bytes = (s: string): number => Buffer.byteLength(s, "utf8");
 
+/**
+ * The bytes of each call's prompt a finish-time prefix cache could read: the
+ * longest prefix it shares with a call that ended before it started. Without
+ * the warm-up, its calls are dropped and the batches of a section that started
+ * before any of that section's batches had ended (its first wave) are taken to
+ * start when the warm-up did.
+ */
+function readableBytes(calls: readonly Captured[], withWarmUp: boolean): Map<Captured, number> {
+  const kept = withWarmUp ? calls : calls.filter((c) => !c.warmUp);
+  const startOf = new Map<Captured, number>();
+  for (const c of kept) {
+    let start = c.start;
+    if (!withWarmUp) {
+      const warmUp = calls.find((w) => w.warmUp && w.section === c.section);
+      const siblings = kept.filter((s) => s.section === c.section && s !== c);
+      const firstWave = siblings.every((s) => s.end > c.start);
+      if (warmUp && firstWave) start = warmUp.start;
+    }
+    startOf.set(c, start);
+  }
+  const out = new Map<Captured, number>();
+  for (const c of kept) {
+    let best = 0;
+    for (const p of kept) {
+      if (p === c || p.end >= startOf.get(c)!) continue;
+      best = Math.max(best, commonPrefix(p.stream, c.stream));
+    }
+    out.set(c, bytes(c.stream.slice(0, best)));
+  }
+  return out;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const { facts, model, projectId } = loadFacts(args);
-  if (facts.length === 0)
-    throw new Error("no Phase-1 facts in the window; widen --facts-window-min");
+  if (facts.length === 0) {
+    throw new Error(
+      `no Phase-1 facts for ${args.version}: none created by its publication and used in the ${args.factsWindowMin} minutes before it; widen --facts-window-min`,
+    );
+  }
   const calls: Captured[] = [];
   const provider = recordingModel(model, calls);
   const tuning = docsGenTuning("anthropic", model);
@@ -244,11 +283,13 @@ async function main(): Promise<void> {
     graphSummary,
   );
 
+  const readable = readableBytes(calls, true);
+  const readableBefore = readableBytes(calls, false);
   console.log(`modules: ${facts.length}, model: ${model}, calls: ${calls.length}`);
   console.log(
-    "| # | section | call | prompt bytes | shared w/ previous batch | diverges in | shared w/ previous section | diverges in |",
+    "| # | section | call | prompt bytes | shared w/ previous batch | diverges in | shared w/ previous section | diverges in | readable (finished calls) |",
   );
-  console.log("|---:|---|---:|---:|---:|---|---:|---|");
+  console.log("|---:|---|---:|---:|---:|---|---:|---|---:|");
   let prevSectionFirst: Captured | null = null;
   let batchShared = 0;
   let batchTotal = 0;
@@ -280,8 +321,9 @@ async function main(): Promise<void> {
       }
       prevSectionFirst = c;
     }
+    const call = c.warmUp ? "warm-up" : String(prior.filter((p) => !p.warmUp).length + 1);
     console.log(
-      `| ${i + 1} | ${c.section} | ${prior.length + 1} | ${bytes(c.stream)} | ${batchCol} | ${batchBlock} | ${sectionCol} | ${sectionBlock} |`,
+      `| ${i + 1} | ${c.section} | ${call} | ${bytes(c.stream)} | ${batchCol} | ${batchBlock} | ${sectionCol} | ${sectionBlock} | ${readable.get(c)} |`,
     );
   });
   console.log(
@@ -292,6 +334,24 @@ async function main(): Promise<void> {
   );
   console.log(
     `upper bound on cache-read share from these prefixes: ${((100 * (batchShared + sectionShared)) / Math.max(total, 1)).toFixed(1)}% of ${total} prompt bytes`,
+  );
+  const share = (m: Map<Captured, number>) => {
+    let read = 0;
+    let sent = 0;
+    for (const [c, n] of m) {
+      read += n;
+      sent += bytes(c.stream);
+    }
+    return { read, sent, pct: ((100 * read) / Math.max(sent, 1)).toFixed(1) };
+  };
+  const after = share(readable);
+  const before = share(readableBefore);
+  const warmUps = calls.filter((c) => c.warmUp);
+  console.log(
+    `readable from finished calls, with the warm-up: ${after.read} of ${after.sent} bytes (${after.pct}%), ${warmUps.length} warm-up calls of ${warmUps.reduce((n, c) => n + bytes(c.stream), 0)} bytes`,
+  );
+  console.log(
+    `readable from finished calls, without it: ${before.read} of ${before.sent} bytes (${before.pct}%)`,
   );
 }
 

@@ -30,6 +30,31 @@
  * hash of those five sections: every `systemChars` / `userChars`, every user
  * prompt, judge request, document and evidence hash is unchanged.
  *
+ * #1329 re-wrote `brd-before-1070-grounded.json` twice the same way (the plain
+ * fixture is unchanged both times):
+ *
+ *   - #1416 (83e187bf) moved a section's RETRIEVED sources ahead of each part's
+ *     facts in the writer's user prompt. The fake model cites sources in the
+ *     order the prompt lists them, so the reorder also moved what it wrote. A
+ *     leaf-by-leaf diff changed 294 of 2,763 leaves, all downstream of the
+ *     reorder: the `userChars` / `userSha256` of all 39 section calls, 120 of
+ *     the 146 claims and judge request hashes (62 of their lengths), the
+ *     document's `markdownChars` / `markdownSha256` and canonical-footnote
+ *     order, and the `markdown`, `grounding`, `prompts` and `outputHash` of
+ *     the 7 grounded section records. No `systemSha256` and no plain-fixture
+ *     leaf changed.
+ *   - The next #1329 PR put the faithfulness judge's evidence ahead of its
+ *     claims, and retrieved sources ahead of module facts within it. A
+ *     leaf-by-leaf diff changed 39 of 2,763 leaves: the `sha256` of each of
+ *     the 39 judge requests (15 grounded, 24 escalated). Their `chars` are
+ *     unchanged, and so is every section prompt, claims request, document and
+ *     reuse hash.
+ *
+ * Both were written with `WRITE_BEFORE_1070_FIXTURE=1` on the changed code, not
+ * on the base, because both change only prompt ORDER downstream of the plan:
+ * the off path still makes the same calls, with the same text, as the code
+ * before #1070. Diff the leaves (count, and which kinds changed) on any rewrite.
+ *
  * Two scenarios, each one the plan WOULD change if it were on:
  *
  *   1. `brd-before-1070.json` — module facts that carry shared constants and a

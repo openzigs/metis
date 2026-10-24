@@ -3,7 +3,14 @@
  * cache before the rest go out in parallel.
  */
 import { describe, expect, it } from "vitest";
-import { needsPromptCacheWarmUp, estimatePromptTokens } from "./prompt-cache-warmup.js";
+import {
+  estimatePromptTokens,
+  hasExplicitPromptCache,
+  needsPrefixCacheWarmUp,
+  needsPromptCacheWarmUp,
+  PREFIX_WARM_UP_MAX_TOKENS,
+  PREFIX_WARM_UP_MIN_TOKENS,
+} from "./prompt-cache-warmup.js";
 import type { ProviderKey } from "./types.js";
 
 const prefixOf = (tokens: number) => "x".repeat(tokens * 4);
@@ -77,5 +84,57 @@ describe("estimatePromptTokens", () => {
   it("estimates about four characters per token, rounding up", () => {
     expect(estimatePromptTokens("")).toBe(0);
     expect(estimatePromptTokens("abcde")).toBe(2);
+  });
+});
+
+describe("hasExplicitPromptCache (#1329)", () => {
+  it("is a Claude model on native Anthropic or the Bedrock gateway, served as named", () => {
+    expect(hasExplicitPromptCache(provider("anthropic", "claude-sonnet-5-5"))).toBe(true);
+    expect(hasExplicitPromptCache(provider("bedrock-gateway", "us.anthropic.claude-x", true))).toBe(
+      true,
+    );
+    expect(hasExplicitPromptCache(provider("anthropic", "claude-sonnet-5-5", false))).toBe(false);
+    expect(hasExplicitPromptCache(provider("anthropic", "deepseek-flash"))).toBe(false);
+    expect(hasExplicitPromptCache(provider("openai", "claude-sonnet-5-5"))).toBe(false);
+  });
+});
+
+describe("needsPrefixCacheWarmUp (#1329)", () => {
+  const lead = (tokens: number) => "x".repeat(tokens * 4);
+
+  it("warms a DeepSeek lead at or over the minimum, on any provider but a local runtime", () => {
+    for (const key of ["anthropic", "openai", "bedrock-gateway"] as ProviderKey[]) {
+      expect(
+        needsPrefixCacheWarmUp(provider(key, "deepseek-flash"), lead(PREFIX_WARM_UP_MIN_TOKENS)),
+      ).toBe(true);
+    }
+    expect(
+      needsPrefixCacheWarmUp(
+        provider("anthropic", "DeepSeek-V4-Pro"),
+        lead(PREFIX_WARM_UP_MIN_TOKENS),
+      ),
+    ).toBe(true);
+    expect(
+      needsPrefixCacheWarmUp(
+        provider("local-gemma", "deepseek-r1:8b"),
+        lead(PREFIX_WARM_UP_MIN_TOKENS),
+      ),
+    ).toBe(false);
+  });
+
+  it("skips a short lead, and every model that is not DeepSeek", () => {
+    expect(
+      needsPrefixCacheWarmUp(
+        provider("anthropic", "deepseek-flash"),
+        lead(PREFIX_WARM_UP_MIN_TOKENS - 1),
+      ),
+    ).toBe(false);
+    expect(needsPrefixCacheWarmUp(provider("anthropic", "claude-sonnet-5-5"), lead(50_000))).toBe(
+      false,
+    );
+  });
+
+  it("caps the warm-up's reply at one token", () => {
+    expect(PREFIX_WARM_UP_MAX_TOKENS).toBe(1);
   });
 });

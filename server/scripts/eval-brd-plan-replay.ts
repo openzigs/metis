@@ -59,9 +59,10 @@
  *
  * The database is opened READ-ONLY (`readonly: true, fileMustExist: true`).
  * Phase-1 facts are read from `docs_gen_fact_cache` rows for the run's
- * project and model last used in the half hour before the version was
- * written (`--facts-window-min`): a later run that reuses them moves that
- * timestamp, so replay before re-running, or widen the window.
+ * project and model created by the time the version was written and last
+ * used no earlier than `--facts-window-min` (30) minutes before it
+ * (`docs-gen-run-facts.ts`, #1329): a later run that reuses them no longer
+ * hides them.
  */
 /* eslint-disable no-console -- a local CLI whose output is the table it prints */
 import Database from "better-sqlite3";
@@ -87,9 +88,9 @@ import {
   type ModuleFacts,
   type Phase2Router,
 } from "../src/lib/docs-gen/holistic-synthesizer.js";
-import { mergePhase1ChunkFacts } from "../src/lib/docs-gen/phase1-chunking.js";
 import { mergeBatchBlocks } from "../src/lib/docs-gen/section-batching.js";
 import { units } from "../src/lib/docs-gen/section-size.js";
+import { moduleFactsFromRows, positiveNumberArg, selectRunFactRows } from "./docs-gen-run-facts.js";
 
 interface Args {
   db: string;
@@ -113,12 +114,12 @@ function parseArgs(argv: string[]): Args {
   return {
     db: get("db") ?? "dev.db",
     version: get("version") ?? "cmvi3h71u00e9o99k3c0iq4ec",
-    bodyMax: Number(get("body-max") ?? 234_277),
-    documentMax: Number(get("document-max") ?? 250_000),
-    sectionMax: Number(get("section-max") ?? 60_000),
+    bodyMax: positiveNumberArg(argv, "body-max", 234_277, { integer: true }),
+    documentMax: positiveNumberArg(argv, "document-max", 250_000, { integer: true }),
+    sectionMax: positiveNumberArg(argv, "section-max", 60_000, { integer: true }),
     allowances: (get("allowances") ?? "0,80,98,100").split(",").map(Number),
     watch: (get("watch") ?? "Content Entities,Entry and Media Entities").split(","),
-    factsWindowMin: Number(get("facts-window-min") ?? 30),
+    factsWindowMin: positiveNumberArg(argv, "facts-window-min", 30),
     list: argv.includes("--list"),
     canonicalRank: !argv.includes("--no-canonical-rank"),
   };
@@ -169,36 +170,14 @@ function load(args: Args): Run {
     }
     const records = manifest.sectionSynthesis.records;
     const model = records[0]?.metadata.model ?? "";
-    const until = new Date(version.createdAt);
-    const since = new Date(until.getTime() - args.factsWindowMin * 60_000);
-    const rows = db
-      .prepare(
-        `select modulePath, facts, formulasJson, minedRulesJson, topClassesJson, classCount, methodCount
-         from docs_gen_fact_cache
-         where projectId = ? and model = ? and lastUsedAt >= ? and lastUsedAt <= ?
-         order by modulePath, createdAt`,
-      )
-      .all(version.projectId, model, since.toISOString(), until.toISOString()) as Array<
-      Record<string, string | number>
-    >;
-    const byPath = new Map<string, typeof rows>();
-    for (const r of rows) {
-      const list = byPath.get(String(r.modulePath)) ?? [];
-      list.push(r);
-      byPath.set(String(r.modulePath), list);
-    }
-    const facts = [...byPath].map(([modulePath, list]): ModuleFacts => ({
-      modulePath,
-      moduleName: modulePath.split("/").pop() || modulePath,
-      classCount: Number(list[0].classCount),
-      methodCount: Number(list[0].methodCount),
-      facts: mergePhase1ChunkFacts(list.map((r) => String(r.facts))),
-      formulas: list.flatMap((r) => JSON.parse(String(r.formulasJson)) as ModuleFacts["formulas"]),
-      minedRules: list.flatMap(
-        (r) => JSON.parse(String(r.minedRulesJson)) as NonNullable<ModuleFacts["minedRules"]>,
-      ),
-      topClasses: JSON.parse(String(list[0].topClassesJson)) as ModuleFacts["topClasses"],
-    }));
+    const facts = moduleFactsFromRows(
+      selectRunFactRows(db, {
+        projectId: version.projectId,
+        model,
+        publishedAt: version.createdAt,
+        windowMin: args.factsWindowMin,
+      }),
+    );
     return { facts, records, storedPlan: manifest.topicPlan, model, canonicalModuleOf };
   } finally {
     db.close();

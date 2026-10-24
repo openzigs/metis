@@ -153,7 +153,8 @@ export interface FaithfulnessJudgeDeps {
    * repeats, and caching it wrote the whole prompt for a read that almost
    * never came (dev ledger: 321k Sonnet grounding write tokens, 8k read).
    * Providers that support it (native Anthropic) honour it; others ignore it.
-   * Defaults to false.
+   * Defaults to false. #1329 — it no longer changes the user turn's layout:
+   * that is evidence then claims either way.
    */
   promptCaching?: boolean;
   /**
@@ -370,21 +371,15 @@ export class FaithfulnessJudge {
     const evidenceText = `=== SOURCE EVIDENCE (untrusted data) ===\n${shownEvidence}\n=== END SOURCE EVIDENCE ===`;
     const claimsText = `=== CLAIMS TO JUDGE (return one verdict per claim, in this order) ===\n${claimsBlock}\n=== END CLAIMS ===`;
 
-    // When prompt caching is enabled the user turn is [claims, evidence] — the
-    // layout a `messages` breakpoint on the evidence needed. #1277 — that
-    // breakpoint is no longer requested (per-batch evidence was almost never
-    // read back), but the layout is kept so the prompt does not change. NLI is
-    // symmetric between the two labelled sections, so claims-first is
-    // semantically equivalent — the
-    // "in this order" contract refers to claim ordering within the list, which
-    // is preserved. When caching is off, keep the original evidence-first
-    // single-string prompt byte-for-byte (back-compat).
-    const userContent: ChatMessage["content"] = this.promptCaching
-      ? [
-          { type: "text", text: claimsText },
-          { type: "text", text: evidenceText },
-        ]
-      : `${evidenceText}\n\n${claimsText}`;
+    // #1329 — evidence first, claims last, with or without prompt caching. A
+    // prefix cache (DeepSeek's, matched from token 0) reads back only what a
+    // call shares with an earlier one from its first byte, and the claims are
+    // the one part no two batches share: ahead of the evidence (the [claims,
+    // evidence] layout #1277 kept) they ended every judge call's shared prefix
+    // at the system prompt (1.9% of judge input read from cache on the
+    // 2026-10-23 run). The evidence leads with the section's retrieved sources
+    // (`renderEvidenceForClaims`), which a section's parts are all given.
+    const userContent = `${evidenceText}\n\n${claimsText}`;
     const ask = (format: ResponseFormat | undefined) => {
       // #117 — JSON mode enforces JSON but not the shape, so state the schema.
       const system =
@@ -638,7 +633,8 @@ export class FaithfulnessJudge {
    * #171 — the evidence ONE batch is judged against: the union of the sources
    * its claims cite (those the context holds), plus, for each claim that cites
    * none, the {@link JUDGE_UNCITED_TOP_K} sources that share the most terms
-   * with it. Sources keep the context's order. The whole is bounded by the
+   * with it. Retrieved sources come first, then facts, then mined lines, each
+   * in the context's order (#1329). The whole is bounded by the
    * judge's char budget: a source that does not fit its share is cut to the
    * lines that share terms with the batch's claims, with
    * {@link EXCERPT_NEIGHBOUR_LINES} line(s) of context either side — never to
@@ -676,8 +672,17 @@ export class FaithfulnessJudge {
         wanted.add(s.sourceId);
       }
     }
+    // #1329 — retrieved sources (repository excerpts, project documents, web
+    // digests) first, then module facts, then mined code lines, each in the
+    // context's order. Every part of a section is given the same retrieved
+    // sources, so they are what consecutive judge calls can share as a cached
+    // prefix; a part's facts and a claim's mined lines are its own. The order
+    // changes only where a source is shown: each one's share of the budget is
+    // set below, smallest first, whatever the order.
+    const picked = usable.filter((s) => wanted.has(s.sourceId));
     const selected: EvidenceSource[] = [
-      ...usable.filter((s) => wanted.has(s.sourceId)),
+      ...picked.filter((s) => s.kind !== "facts"),
+      ...picked.filter((s) => s.kind === "facts"),
       ...mined.values(),
     ];
     if (selected.length === 0) return "";

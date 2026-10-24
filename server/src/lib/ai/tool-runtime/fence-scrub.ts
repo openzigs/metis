@@ -383,10 +383,12 @@ const FOLDED_SECTION_FENCE = new RegExp(
  * #1370 — the docs-gen Phase-2 writer's blocks: `=== EXTRACTED MODULE FACTS ===`
  * / `=== END MODULE FACTS ===`, `=== FORMULAS/CONSTANTS DETECTED IN SOURCE ===`
  * / `=== END FORMULAS ===`, `=== END-TO-END FLOW (…) ===` / `=== END FLOW ===`,
- * `=== RETRIEVED GROUNDING SOURCES ===` / `=== END GROUNDING SOURCES ===`, and
- * the `=== CANONICAL FACTS (…) ===` and `=== … SCHEMA … ===` / `=== END SCHEMA ===`
- * blocks that share the writer's prompt. The same forms as the section fences,
- * over the writer's nouns, plus:
+ * `=== RETRIEVED GROUNDING SOURCES ===` / `=== END GROUNDING SOURCES ===`, the
+ * `=== GROUNDING SOURCES: MODULE FACTS ===` block that #1329 split off it (its
+ * opening is form W's `GROUNDING SOURCES` with `RETRIEVED` left out, and it closes with the
+ * same `=== END GROUNDING SOURCES ===`), and the `=== CANONICAL FACTS (…) ===`
+ * and `=== … SCHEMA … ===` / `=== END SCHEMA ===` blocks that share the writer's
+ * prompt. The same forms as the section fences, over the writer's nouns, plus:
  *
  *   W.  two or more `=`, one of the writer's OPENING phrases (`RETRIEVED
  *       GROUNDING SOURCES`, `EXTRACTED MODULE FACTS`, `CANONICAL FACTS`,
