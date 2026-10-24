@@ -248,6 +248,35 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
+describe("#1445 review — the pre-auth guard sits in front of requireAuth (CodeQL js/missing-rate-limiting)", () => {
+  it("on POST /:id/invoke and GET /projects/:projectId/disabled", async () => {
+    const { customAgentsPreAuthRateLimiter } =
+      await import("../src/middleware/custom-agents-rate-limit.js");
+    const { requireAuth } = await import("../src/middleware/auth.js");
+    const router = customAgentsRouter({ buildProvider: mockProvider }) as unknown as {
+      stack: Array<{
+        route?: {
+          path: string;
+          methods: Record<string, boolean>;
+          stack: Array<{ handle: unknown }>;
+        };
+      }>;
+    };
+    const chain = (method: string, path: string) =>
+      router.stack
+        .find((l) => l.route?.path === path && l.route.methods[method])!
+        .route!.stack.map((s) => s.handle);
+    for (const [method, path] of [
+      ["post", "/:id/invoke"],
+      ["get", "/projects/:projectId/disabled"],
+    ] as const) {
+      const handles = chain(method, path);
+      expect(handles[0]).toBe(customAgentsPreAuthRateLimiter);
+      expect(handles[1]).toBe(requireAuth);
+    }
+  });
+});
+
 describe("POST /custom-agents (create RBAC #80)", () => {
   const body = {
     projectId: "p1",

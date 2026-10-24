@@ -33,6 +33,7 @@ import {
 import { auditInvocation } from "../lib/custom-agents/invocation-audit.js";
 import { customAgentPlaygroundAccessFor } from "../lib/agent-runtime/definition.js";
 import { aiRateLimiter } from "../middleware/ai-rate-limit.js";
+import { customAgentsPreAuthRateLimiter } from "../middleware/custom-agents-rate-limit.js";
 import { assertWithinBudget, BudgetExceededError } from "../lib/finops/budget-enforcer.js";
 import {
   AgentImportError,
@@ -271,12 +272,17 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
 
   // #1445 review — ids of agents explicitly switched OFF for a project, so the
   // card can say "Off" for those and "Off until enabled" for the rest.
-  r.get("/projects/:projectId/disabled", requireAuth, async (req: Request, res: Response) => {
-    if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-    const projectId = String(req.params.projectId);
-    await assertLiveProjectAccess(req.user, projectId);
-    res.json(ok(await listDisabledAgentIdsForProject(projectId)));
-  });
+  r.get(
+    "/projects/:projectId/disabled",
+    customAgentsPreAuthRateLimiter,
+    requireAuth,
+    async (req: Request, res: Response) => {
+      if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+      const projectId = String(req.params.projectId);
+      await assertLiveProjectAccess(req.user, projectId);
+      res.json(ok(await listDisabledAgentIdsForProject(projectId)));
+    },
+  );
 
   // Enable / disable an agent for a project (workspace admin only).
   r.put("/:id/enablement", requireAuth, async (req: Request, res: Response) => {
@@ -353,117 +359,124 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
     input: z.string().min(1).max(MAX_INVOKE_PAYLOAD_CHARS),
   });
 
-  // #1445 — the same per-user AI limiter chat uses (`routes/ai.ts`).
-  r.post("/:id/invoke", requireAuth, aiRateLimiter, async (req: Request, res: Response) => {
-    const parsed = invokeSchema.safeParse(req.body);
-    if (!parsed.success) {
-      throw new AppError(400, "BAD_REQUEST", parsed.error.message);
-    }
-    if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-    const agentId = String(req.params.id);
-    const { projectId, input } = parsed.data;
-
-    // The caller must be able to reach the project context they invoke under.
-    await assertLiveProjectAccess(req.user, projectId);
-
-    const agent = await getAgent(agentId);
-    if (!agent) throw new AppError(404, "NOT_FOUND", "Custom agent not found");
-
-    // AuthZ: anyone who can reach the project may invoke an agent ENABLED for
-    // it. Otherwise treat as not found (do not leak that the agent exists in
-    // another scope — IDOR guard), except for the project's OWN agent, whose
-    // members can see it and are told why.
-    //
-    // #1445 — THIS route is the authoring playground, and the "test it before
-    // you enable it" exception is applied here and nowhere else: the
-    // project's own agent that nobody has switched runs here for a caller who
-    // could enable it (a workspace admin, as `PUT /:id/enablement` requires),
-    // and for nobody else. Chat, ACP and analysis use
-    // `isCustomAgentUsableInProject` (off until enabled), so nothing a chat
-    // request claims can reach this rule: it is bound to the route, not to
-    // anything in the request.
-    const user = req.user;
-    const access = await customAgentPlaygroundAccessFor(
-      { kind: "custom", id: agentId, projectId: agent.projectId },
-      projectId,
-      () => callerMayEnableAgents(user, projectId),
-    );
-    if (access === "switched-off" || access === "off-until-enabled") {
-      const switchedOff = access === "switched-off";
-      auditInvocation({
-        actorId: user.userId,
-        agentId,
-        projectId,
-        outcome: "denied",
-        error: switchedOff ? "agent turned off for project" : "agent not yet enabled for project",
-      });
-      throw new AppError(
-        409,
-        "AGENT_DISABLED",
-        switchedOff
-          ? `"${agent.name}" is turned off for this project. Turn it on under Custom agents to use it.`
-          : `"${agent.name}" is off for this project until a workspace admin enables it under Custom agents.`,
-      );
-    }
-    if (access !== "run") {
-      // Audit the denied attempt for SOC 2 before masking existence as 404.
-      auditInvocation({
-        actorId: user.userId,
-        agentId,
-        projectId,
-        outcome: "denied",
-        error: "agent not enabled for project",
-      });
-      throw new AppError(404, "NOT_FOUND", "Custom agent not found");
-    }
-
-    // #1445 — the project budget gate chat applies (`routes/ai.ts`), before
-    // any model call. After the access check, so the 402's usage figures are
-    // only ever shown to someone who may run the agent here.
-    try {
-      await assertWithinBudget(projectId);
-    } catch (err) {
-      if (err instanceof BudgetExceededError) {
-        throw new AppError(err.status, err.code, err.message, {
-          usedTokens: err.usedTokens,
-          budget: err.budget,
-        });
+  // #1445 review — a pre-auth guard (CodeQL counts only a limiter ahead of
+  // `requireAuth`), then the same per-user AI limiter chat uses (`routes/ai.ts`).
+  r.post(
+    "/:id/invoke",
+    customAgentsPreAuthRateLimiter,
+    requireAuth,
+    aiRateLimiter,
+    async (req: Request, res: Response) => {
+      const parsed = invokeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new AppError(400, "BAD_REQUEST", parsed.error.message);
       }
-      throw err;
-    }
+      if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+      const agentId = String(req.params.id);
+      const { projectId, input } = parsed.data;
 
-    try {
-      // #724 — playground spend is the project's: meter it and bill it there.
-      // The session is per agent AND project — an agent enabled in several
-      // projects must not pool every project's invocations into one session.
-      const sessionId = `playground:${agentId}:${projectId}`;
-      const result = await runInAnalysisUsageScope({ projectId, sessionId }, () =>
-        invokeCustomAgent({
-          provider: meterAnalysisProvider(makeProvider()),
-          agent,
-          input,
-          projectId,
-        }),
+      // The caller must be able to reach the project context they invoke under.
+      await assertLiveProjectAccess(req.user, projectId);
+
+      const agent = await getAgent(agentId);
+      if (!agent) throw new AppError(404, "NOT_FOUND", "Custom agent not found");
+
+      // AuthZ: anyone who can reach the project may invoke an agent ENABLED for
+      // it. Otherwise treat as not found (do not leak that the agent exists in
+      // another scope — IDOR guard), except for the project's OWN agent, whose
+      // members can see it and are told why.
+      //
+      // #1445 — THIS route is the authoring playground, and the "test it before
+      // you enable it" exception is applied here and nowhere else: the
+      // project's own agent that nobody has switched runs here for a caller who
+      // could enable it (a workspace admin, as `PUT /:id/enablement` requires),
+      // and for nobody else. Chat, ACP and analysis use
+      // `isCustomAgentUsableInProject` (off until enabled), so nothing a chat
+      // request claims can reach this rule: it is bound to the route, not to
+      // anything in the request.
+      const user = req.user;
+      const access = await customAgentPlaygroundAccessFor(
+        { kind: "custom", id: agentId, projectId: agent.projectId },
+        projectId,
+        () => callerMayEnableAgents(user, projectId),
       );
-      auditInvocation({
-        actorId: req.user.userId,
-        agentId,
-        projectId,
-        outcome: "success",
-        usage: result.usage,
-      });
-      res.json(ok(result));
-    } catch (err) {
-      auditInvocation({
-        actorId: req.user.userId,
-        agentId,
-        projectId,
-        outcome: "error",
-        error: err instanceof Error ? err.message : String(err),
-      });
-      rethrow(err);
-    }
-  });
+      if (access === "switched-off" || access === "off-until-enabled") {
+        const switchedOff = access === "switched-off";
+        auditInvocation({
+          actorId: user.userId,
+          agentId,
+          projectId,
+          outcome: "denied",
+          error: switchedOff ? "agent turned off for project" : "agent not yet enabled for project",
+        });
+        throw new AppError(
+          409,
+          "AGENT_DISABLED",
+          switchedOff
+            ? `"${agent.name}" is turned off for this project. Turn it on under Custom agents to use it.`
+            : `"${agent.name}" is off for this project until a workspace admin enables it under Custom agents.`,
+        );
+      }
+      if (access !== "run") {
+        // Audit the denied attempt for SOC 2 before masking existence as 404.
+        auditInvocation({
+          actorId: user.userId,
+          agentId,
+          projectId,
+          outcome: "denied",
+          error: "agent not enabled for project",
+        });
+        throw new AppError(404, "NOT_FOUND", "Custom agent not found");
+      }
+
+      // #1445 — the project budget gate chat applies (`routes/ai.ts`), before
+      // any model call. After the access check, so the 402's usage figures are
+      // only ever shown to someone who may run the agent here.
+      try {
+        await assertWithinBudget(projectId);
+      } catch (err) {
+        if (err instanceof BudgetExceededError) {
+          throw new AppError(err.status, err.code, err.message, {
+            usedTokens: err.usedTokens,
+            budget: err.budget,
+          });
+        }
+        throw err;
+      }
+
+      try {
+        // #724 — playground spend is the project's: meter it and bill it there.
+        // The session is per agent AND project — an agent enabled in several
+        // projects must not pool every project's invocations into one session.
+        const sessionId = `playground:${agentId}:${projectId}`;
+        const result = await runInAnalysisUsageScope({ projectId, sessionId }, () =>
+          invokeCustomAgent({
+            provider: meterAnalysisProvider(makeProvider()),
+            agent,
+            input,
+            projectId,
+          }),
+        );
+        auditInvocation({
+          actorId: req.user.userId,
+          agentId,
+          projectId,
+          outcome: "success",
+          usage: result.usage,
+        });
+        res.json(ok(result));
+      } catch (err) {
+        auditInvocation({
+          actorId: req.user.userId,
+          agentId,
+          projectId,
+          outcome: "error",
+          error: err instanceof Error ? err.message : String(err),
+        });
+        rethrow(err);
+      }
+    },
+  );
 
   return r;
 }
