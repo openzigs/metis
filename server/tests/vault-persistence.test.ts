@@ -84,6 +84,9 @@ vi.mock("../src/lib/prisma.js", () => ({
         },
       ),
     },
+    // #1499 — every value write forgets the recorded repository permission of
+    // the connectors bound to the secret.
+    repoConnection: { updateMany: vi.fn(async () => ({ count: 0 })) },
   },
 }));
 

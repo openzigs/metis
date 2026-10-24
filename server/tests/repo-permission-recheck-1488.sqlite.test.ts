@@ -144,7 +144,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         "c-stale-own-secret",
       ]);
       expect(test.mock.calls.every((c) => c[0] === "p-live" && c[2] === "system")).toBe(true);
-      expect(out).toEqual({ skipped: false, candidates: 2, recorded: 2, failed: 0 });
+      expect(out).toEqual({
+        skipped: false,
+        candidates: 2,
+        recorded: 2,
+        failed: 0,
+        alreadyRecorded: 0,
+      });
       // Serial and spaced: one wait between two checks, of the configured length.
       expect(noSleep.mock.calls).toEqual([[1500]]);
     });
@@ -195,6 +201,53 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const out = await recheckUnrecordedRepoPermissions({ test, sleep: noSleep, env: {} });
       expect(test).toHaveBeenCalledTimes(2);
       expect(out).toMatchObject({ candidates: 2, recorded: 1, failed: 1 });
+    });
+
+    it("#1499 — skips, without a GitHub call or a wait, a candidate another replica recorded meanwhile", async () => {
+      await seed("c-first");
+      await seed("c-second");
+      await seed("c-third");
+      // While this replica checks the first, another records the second.
+      const test = vi.fn(async (_p: string, id: string) => {
+        if (id === "c-first") {
+          await db.repoConnection.update({
+            where: { id: "c-second" },
+            data: { repoPermission: "admin" },
+          });
+        }
+        return {} as never;
+      });
+      const out = await recheckUnrecordedRepoPermissions({
+        test,
+        sleep: noSleep,
+        env: { REPO_PERMISSION_RECHECK_INTERVAL_MS: "700" },
+      });
+      // On main every candidate in the list read at start was re-tested.
+      expect(test.mock.calls.map((c) => c[1])).toEqual(["c-first", "c-third"]);
+      expect(out).toEqual({
+        skipped: false,
+        candidates: 3,
+        recorded: 2,
+        failed: 0,
+        alreadyRecorded: 1,
+      });
+      // One wait: between the two GitHub calls, none for the skipped candidate.
+      expect(noSleep.mock.calls).toEqual([[700]]);
+    });
+
+    it("#1499 — the re-check is unattended, so a DNS failure at boot leaves a connector as it was", async () => {
+      await seed("c-dns");
+      const { resolveAndAssertConnectorHost } =
+        await import("../src/lib/connectors/network-allowlist.js");
+      const { ConnectorError } = await import("../src/lib/connectors/types.js");
+      vi.mocked(resolveAndAssertConnectorHost).mockRejectedValueOnce(
+        new ConnectorError(502, "DNS_LOOKUP_FAILED", "repo host DNS lookup failed"),
+      );
+      const out = await recheckUnrecordedRepoPermissions({ sleep: noSleep, env: {} });
+      expect(out).toMatchObject({ candidates: 1, recorded: 0, failed: 1 });
+      // On main the boot check marked it `error`.
+      const row = await db.repoConnection.findUnique({ where: { id: "c-dns" } });
+      expect(row).toMatchObject({ status: "connected", errorMessage: null, repoPermission: null });
     });
 
     it.each(["off", "0", "false", "OFF"])("REPO_PERMISSION_RECHECK=%s turns it off", async (v) => {

@@ -86,18 +86,29 @@ vi.mock("../src/lib/prisma.js", async () => {
       findMany: vi.fn(async ({ where }: { where: { projectId: string } }) =>
         [...repos.values()].filter((r) => r.projectId === where.projectId && !r.deletedAt),
       ),
-      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
-        for (const r of repos.values()) {
-          if (r.deletedAt) continue;
-          let ok = true;
-          for (const [k, v] of Object.entries(where)) {
-            if (k === "deletedAt") continue;
-            if ((r as unknown as Record<string, unknown>)[k] !== v) ok = false;
+      findFirst: vi.fn(
+        async ({
+          where,
+          include,
+        }: {
+          where: Record<string, unknown>;
+          include?: { secret?: unknown };
+        }) => {
+          for (const r of repos.values()) {
+            if (r.deletedAt) continue;
+            let ok = true;
+            for (const [k, v] of Object.entries(where)) {
+              if (k === "deletedAt") continue;
+              if ((r as unknown as Record<string, unknown>)[k] !== v) ok = false;
+            }
+            if (!ok) continue;
+            // #1499 — the binding read includes the bound secret's envelope.
+            if (!include?.secret) return r;
+            return { ...r, secret: r.secretId ? { ciphertext: `ct:${r.secretId}` } : null };
           }
-          if (ok) return r;
-        }
-        return null;
-      }),
+          return null;
+        },
+      ),
       count: vi.fn(
         async ({ where }: { where: { projectId: string; deletedAt: null } }) =>
           [...repos.values()].filter((r) => r.projectId === where.projectId && !r.deletedAt).length,
@@ -141,9 +152,16 @@ vi.mock("../src/lib/prisma.js", async () => {
         }) => {
           if (!where.updatedAt) {
             // #1488 — a Test's binding-guarded write: every field must match.
+            // #1499 — `secret` is the bound secret's envelope (see findFirst).
             const r = where.id ? repos.get(where.id) : undefined;
             const rec = r as unknown as Record<string, unknown> | undefined;
-            if (!r || !Object.entries(where).every(([k, v]) => (rec![k] ?? null) === v)) {
+            const fieldMatches = ([k, v]: [string, unknown]) =>
+              k === "secret"
+                ? rec!.secretId != null &&
+                  `ct:${String(rec!.secretId)}` ===
+                    (v as { is: { ciphertext: string } }).is.ciphertext
+                : (rec![k] ?? null) === v;
+            if (!r || !Object.entries(where).every(fieldMatches)) {
               return { count: 0 };
             }
             repos.set(r.id, { ...r, ...data, updatedAt: new Date() } as RepoRow);

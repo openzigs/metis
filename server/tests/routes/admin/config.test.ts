@@ -91,6 +91,9 @@ vi.mock("../../../src/lib/prisma.js", async () => {
     userRole: {},
     auditLog: { create: vi.fn(async () => ({})) },
     project: { findMany: vi.fn(async () => []) },
+    // #1499 — every secret value write forgets the recorded repository
+    // permission of the connectors bound to it; none are bound here.
+    repoConnection: { updateMany: vi.fn(async () => ({ count: 0 })) },
     secret: {
       // #93 — `Secret.name` is UNIQUE in the schema, soft-deleted rows included.
       // This double used to accept a duplicate name, which is how a re-set after

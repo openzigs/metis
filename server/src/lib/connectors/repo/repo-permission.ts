@@ -97,3 +97,48 @@ export function isTransientGithubFailure(err: unknown): boolean {
   const message = typeof e.message === "string" ? e.message : "";
   return /rate limit/i.test(message);
 }
+
+/** The host allow-list's DNS failures (`resolveAndAssertConnectorHost`). */
+const DNS_LOOKUP_CODES = new Set(["DNS_LOOKUP_FAILED", "DNS_LOOKUP_EMPTY"]);
+
+/** Node and undici errors raised when no connection, and so no answer, was made. */
+const NETWORK_ERROR_CODES = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "ENETDOWN",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
+function errorCode(v: unknown): string | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const code = (v as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
+/**
+ * #1499 — did this check fail before GitHub gave any HTTP answer? A DNS lookup
+ * that failed or found nothing, or a connection that was refused, reset or
+ * timed out. Such a failure says nothing about the credential. Only the
+ * unattended boot re-check treats it as transient; a clicked Test still
+ * reports it as an error.
+ *
+ * Never true for an HTTP answer (a numeric `status`, other than on the host
+ * allow-list's own DNS failure) or for a refusal this server raised itself:
+ * `HOST_NOT_ALLOWED` (the host now resolves to a private address) is not a
+ * network blip.
+ */
+export function isPreResponseNetworkFailure(err: unknown): boolean {
+  const code = errorCode(err);
+  if (code !== undefined && DNS_LOOKUP_CODES.has(code)) return true;
+  if (!err || typeof err !== "object") return false;
+  if (typeof (err as { status?: unknown }).status === "number") return false;
+  if (code !== undefined && NETWORK_ERROR_CODES.has(code)) return true;
+  const causeCode = errorCode((err as { cause?: unknown }).cause);
+  return causeCode !== undefined && NETWORK_ERROR_CODES.has(causeCode);
+}

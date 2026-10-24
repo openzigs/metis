@@ -52,6 +52,7 @@ import type { RepoFetcher } from "../../library/import.js";
 import { validateLocalSourcePath } from "./local-source.js";
 import { sourceIngestSummary } from "../source-ingest-state.js";
 import {
+  isPreResponseNetworkFailure,
   isTransientGithubFailure,
   repoPermissionDto,
   repoPermissionOf,
@@ -894,6 +895,7 @@ function bindingWhere(row: {
   repoName: string | null;
   apiBaseUrl: string | null;
   secretId: string | null;
+  secret?: { ciphertext: string } | null;
 }) {
   return {
     id: row.id,
@@ -903,6 +905,16 @@ function bindingWhere(row: {
     repoName: row.repoName,
     apiBaseUrl: row.apiBaseUrl,
     secretId: row.secretId,
+    // #1499 — a vault rotation rewrites a secret's value under the same id, so
+    // the id alone does not name the credential the check read. Every value
+    // write stores a fresh envelope (random salt and IV), so the stored
+    // ciphertext does: a rotation that lands while the check is in flight
+    // makes this write match nothing. The rotation itself also clears the
+    // recorded permission (`VaultService`), which covers a check that finished
+    // first.
+    ...(row.secretId !== null
+      ? { secret: { is: { ciphertext: row.secret?.ciphertext ?? "" } } }
+      : {}),
   };
 }
 
@@ -916,9 +928,22 @@ function bindingChanged(): ConnectorError {
   );
 }
 
+/** #1488/#1499 — a Test that recorded nothing because the connection changed under it. */
+function auditBindingChanged(actorId: string, id: string, projectId: string): void {
+  audit({
+    actor: { id: actorId },
+    action: "connector.repo.test",
+    target: { type: "repo_connector", id },
+    metadata: { projectId, status: "unchanged", code: REPO_CONNECTOR_CHANGED },
+  });
+}
+
 async function readRepoConnectorRow(projectId: string, id: string) {
+  // #1499 — the bound secret's current envelope is read with the row, so the
+  // binding guard also covers an in-place rotation. It never leaves this module.
   const row = await prisma.repoConnection.findFirst({
     where: { id, projectId, deletedAt: null },
+    include: { secret: { select: { ciphertext: true } } },
   });
   if (!row) {
     throw new ConnectorError(404, "REPO_CONNECTOR_NOT_FOUND", "repo connector not found");
@@ -955,7 +980,24 @@ export async function getPrimaryRepo(projectId: string) {
 
 // ---- Operations ------------------------------------------------------------
 
-export async function testRepoConnector(projectId: string, id: string, actorId: string) {
+export interface TestRepoConnectorOptions {
+  /**
+   * #1499 — nobody clicked Test (the boot re-check). A network failure before
+   * any HTTP answer (a DNS blip at startup, a refused or reset connection)
+   * then leaves the connector as it was instead of marking it `error`: an
+   * unattended check has no user to see the error and retry, and the failure
+   * says nothing about the credential. A clicked Test still reports it as
+   * `error`, as before.
+   */
+  unattended?: boolean;
+}
+
+export async function testRepoConnector(
+  projectId: string,
+  id: string,
+  actorId: string,
+  opts: TestRepoConnectorOptions = {},
+) {
   // #1488 — one read gives both the DTO and the binding the writes are guarded on.
   const row = await readRepoConnectorRow(projectId, id);
   const binding = bindingWhere(row);
@@ -1022,15 +1064,32 @@ export async function testRepoConnector(projectId: string, id: string, actorId: 
   } catch (err) {
     // #1488 — the connection changed under this Test: record nothing.
     if (err instanceof ConnectorError && err.code === REPO_CONNECTOR_CHANGED) {
+      auditBindingChanged(actorId, id, projectId);
+      throw err;
+    }
+    const ce = toOctokitError(err);
+    // #1499 — an unattended check (the boot re-check) that never got an HTTP
+    // answer: DNS failed or the connection was refused, reset or timed out.
+    // That says nothing about the credential, so it leaves the connector as it
+    // was. Never a refusal this server raised itself (`HOST_NOT_ALLOWED`).
+    if (opts.unattended && isPreResponseNetworkFailure(err)) {
+      log.warn("connector.repo.test_network_failure", {
+        connectorId: id,
+        projectId,
+        code: ce.code,
+      });
       audit({
         actor: { id: actorId },
         action: "connector.repo.test",
         target: { type: "repo_connector", id },
-        metadata: { projectId, status: "unchanged", code: REPO_CONNECTOR_CHANGED },
+        metadata: { projectId, status: "unchanged", transient: true, code: ce.code },
       });
-      throw err;
+      throw new ConnectorError(
+        ce.status,
+        ce.code,
+        "GitHub could not be reached. This is a temporary network failure: the connection's status was left unchanged.",
+      );
     }
-    const ce = toOctokitError(err);
     // #1488 — a rate limit, a 5xx or an aborted request says nothing about
     // this connector's credential, and anyone can exhaust the server's
     // unauthenticated quota. Such a failure leaves the status (and the
@@ -1075,7 +1134,11 @@ export async function testRepoConnector(projectId: string, id: string, actorId: 
         lastTestedAt: new Date(),
       },
     });
-    if (count === 0) throw bindingChanged();
+    if (count === 0) {
+      // #1499 — the 409 from this branch is audited like the success branch's.
+      auditBindingChanged(actorId, id, projectId);
+      throw bindingChanged();
+    }
     emitter().status({ connectorId: id, kind: "repo", status: "error", errorMessage: safeMessage });
     audit({
       actor: { id: actorId },
@@ -1338,7 +1401,17 @@ export async function fetchRepoMetadata(
     },
   });
   if (count === 0) {
+    // #1499 — what was read describes a repository, server or credential the
+    // connector no longer names, so none of it is returned for ingest: the
+    // sync stops here, as a Test does.
     log.warn("connector.repo.metadata_binding_changed", { connectorId: id, projectId });
+    audit({
+      actor: { id: actorId },
+      action: "connector.repo.metadata",
+      target: { type: "repo_connector", id },
+      metadata: { projectId, status: "unchanged", code: REPO_CONNECTOR_CHANGED },
+    });
+    throw bindingChanged();
   }
   audit({
     actor: { id: actorId },

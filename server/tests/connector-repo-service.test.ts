@@ -34,6 +34,23 @@ type RepoCreateRequired = Pick<
 
 const rows = new Map<string, RepoRow>();
 let nextId = 0;
+/**
+ * #1499 — the stored envelope of each bound secret, as the binding guard sees
+ * it (`secret: { is: { ciphertext } }`). Setting one models a vault rotation.
+ */
+const secretCiphertexts = new Map<string, string>();
+const ciphertextOf = (secretId: string) => secretCiphertexts.get(secretId) ?? `ct:${secretId}`;
+/** Does a guarded write's `where` match this row? Every field must, `secret` included. */
+function matchesBinding(rec: Record<string, unknown>, where: Record<string, unknown>): boolean {
+  return Object.entries(where).every(([k, v]) => {
+    if (k === "secret") {
+      const want = (v as { is: { ciphertext: string } }).is.ciphertext;
+      const secretId = rec.secretId as string | null;
+      return secretId !== null && ciphertextOf(secretId) === want;
+    }
+    return (rec[k] ?? null) === v;
+  });
+}
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
@@ -41,18 +58,28 @@ vi.mock("../src/lib/prisma.js", () => ({
       findMany: vi.fn(async ({ where }: { where: { projectId: string } }) =>
         [...rows.values()].filter((r) => r.projectId === where.projectId && !r.deletedAt),
       ),
-      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
-        for (const r of rows.values()) {
-          if (r.deletedAt) continue;
-          let ok = true;
-          for (const [k, v] of Object.entries(where)) {
-            if (k === "deletedAt") continue;
-            if ((r as unknown as Record<string, unknown>)[k] !== v) ok = false;
+      findFirst: vi.fn(
+        async ({
+          where,
+          include,
+        }: {
+          where: Record<string, unknown>;
+          include?: { secret?: unknown };
+        }) => {
+          for (const r of rows.values()) {
+            if (r.deletedAt) continue;
+            let ok = true;
+            for (const [k, v] of Object.entries(where)) {
+              if (k === "deletedAt") continue;
+              if ((r as unknown as Record<string, unknown>)[k] !== v) ok = false;
+            }
+            if (!ok) continue;
+            if (!include?.secret) return r;
+            return { ...r, secret: r.secretId ? { ciphertext: ciphertextOf(r.secretId) } : null };
           }
-          if (ok) return r;
-        }
-        return null;
-      }),
+          return null;
+        },
+      ),
       create: vi.fn(async ({ data }: { data: Partial<RepoRow> & RepoCreateRequired }) => {
         nextId += 1;
         const row: RepoRow = {
@@ -86,8 +113,7 @@ vi.mock("../src/lib/prisma.js", () => ({
         async ({ where, data }: { where: Record<string, unknown>; data: Partial<RepoRow> }) => {
           let count = 0;
           for (const r of [...rows.values()]) {
-            const rec = r as unknown as Record<string, unknown>;
-            if (!Object.entries(where).every(([k, v]) => (rec[k] ?? null) === v)) continue;
+            if (!matchesBinding(r as unknown as Record<string, unknown>, where)) continue;
             rows.set(r.id, { ...r, ...data, updatedAt: new Date() } as RepoRow);
             count += 1;
           }
@@ -174,6 +200,8 @@ import {
   type SimpleGitLike,
 } from "../src/lib/connectors/repo/repo-service.js";
 import { readBoundSecret } from "../src/lib/connectors/vault-resolver.js";
+import { resolveAndAssertConnectorHost } from "../src/lib/connectors/network-allowlist.js";
+import { audit } from "../src/lib/audit/audit-service.js";
 import { ConnectorError } from "../src/lib/connectors/types.js";
 import { MAX_REPO_CLONE_BYTES } from "@metis/shared";
 import { promises as fsp } from "node:fs";
@@ -283,6 +311,7 @@ function makeOctokit(
 
 beforeEach(() => {
   rows.clear();
+  secretCiphertexts.clear();
   nextId = 0;
 });
 
@@ -1781,5 +1810,231 @@ describe("#1056 — implicit main on an untested master repo reads the default b
     for (const [params] of vi.mocked(octokit.rest.repos.getContent).mock.calls) {
       expect(params).not.toHaveProperty("ref");
     }
+  });
+});
+describe("#1499 — a check whose binding changed under it records nothing", () => {
+  const ADMIN = { admin: true, push: true, pull: true };
+  /** A fake GitHub whose `repos.get` runs `during` first, then answers or throws. */
+  const githubThat = (during: () => void | Promise<void>, fail?: Error) =>
+    __setOctokitFactory(() =>
+      makeOctokit({
+        get: async () => {
+          await during();
+          if (fail) throw fail;
+          return {
+            data: {
+              id: 1,
+              name: "demo",
+              full_name: "octocat/demo",
+              default_branch: "main",
+              private: false,
+              archived: false,
+              size: 1,
+              language: null,
+              permissions: ADMIN,
+            },
+          };
+        },
+      }),
+    );
+  const create = async (label: string) =>
+    (
+      await createRepoConnector(
+        "proj_1",
+        {
+          provider: "github",
+          label,
+          ownerOrOrg: "octocat",
+          repoName: "demo",
+          secretRef: "${vault:gh-pat}",
+        },
+        "user_1",
+      )
+    ).id;
+  const mutate = (id: string, patch: Partial<RepoRow>) => () => {
+    rows.set(id, { ...rows.get(id)!, ...patch });
+  };
+
+  it.each([
+    ["the provider", { provider: "github_enterprise" }],
+    ["the API server", { apiBaseUrl: "https://ghe.example.com/api/v3" }],
+  ] as const)("a Test during which %s changed records nothing", async (_n, patch) => {
+    const id = await create(`mid-${_n}`);
+    githubThat(mutate(id, patch));
+    await expect(testRepoConnector("proj_1", id, "user_1")).rejects.toMatchObject({
+      status: 409,
+      code: "REPO_CONNECTOR_CHANGED",
+    });
+    const row = rows.get(id)!;
+    expect(row.status).toBe("pending");
+    expect((row as unknown as { repoPermission?: string | null }).repoPermission ?? null).toBe(
+      null,
+    );
+  });
+
+  it("a Test during which the bound secret was rotated records nothing", async () => {
+    const id = await create("mid-rotation");
+    githubThat(() => {
+      secretCiphertexts.set("gh-pat", "ct:rotated");
+    });
+    await expect(testRepoConnector("proj_1", id, "user_1")).rejects.toMatchObject({
+      code: "REPO_CONNECTOR_CHANGED",
+    });
+    expect(rows.get(id)!.status).toBe("pending");
+  });
+
+  it("the 409 from a failing Test's guarded write is audited", async () => {
+    const id = await create("mid-error");
+    githubThat(
+      mutate(id, { repoName: "elsewhere" }),
+      Object.assign(new Error("Bad credentials"), { status: 401 }),
+    );
+    await expect(testRepoConnector("proj_1", id, "user_1")).rejects.toMatchObject({
+      code: "REPO_CONNECTOR_CHANGED",
+    });
+    expect(rows.get(id)!.status).toBe("pending");
+    expect(vi.mocked(audit)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "connector.repo.test",
+        target: { type: "repo_connector", id },
+        metadata: expect.objectContaining({
+          status: "unchanged",
+          code: "REPO_CONNECTOR_CHANGED",
+        }),
+      }),
+    );
+  });
+
+  it("a metadata read during which the repository changed returns nothing to ingest", async () => {
+    const id = await create("mid-sync");
+    githubThat(mutate(id, { ownerOrOrg: "someone-else" }));
+    await expect(fetchRepoMetadata("proj_1", id, "user_1")).rejects.toMatchObject({
+      status: 409,
+      code: "REPO_CONNECTOR_CHANGED",
+    });
+    expect(rows.get(id)!.status).toBe("pending");
+    expect(vi.mocked(audit)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "connector.repo.metadata",
+        metadata: expect.objectContaining({
+          status: "unchanged",
+          code: "REPO_CONNECTOR_CHANGED",
+        }),
+      }),
+    );
+  });
+});
+
+describe("#1499 — an unattended check leaves the connector alone on a network failure", () => {
+  const connected = async (label: string) => {
+    __setOctokitFactory(() =>
+      makeOctokit({
+        get: async () => ({
+          data: {
+            id: 1,
+            name: "demo",
+            full_name: "octocat/demo",
+            default_branch: "main",
+            private: false,
+            archived: false,
+            size: 1,
+            language: null,
+            permissions: { admin: true, push: true, pull: true },
+          },
+        }),
+      }),
+    );
+    const c = await createRepoConnector(
+      "proj_1",
+      {
+        provider: "github",
+        label,
+        ownerOrOrg: "octocat",
+        repoName: "demo",
+        secretRef: "${vault:gh-pat}",
+      },
+      "user_1",
+    );
+    await testRepoConnector("proj_1", c.id, "user_1");
+    // The recorded permission is the boot re-check's target; start from none.
+    rows.set(c.id, { ...rows.get(c.id)!, repoPermission: null } as RepoRow);
+    return c.id;
+  };
+  const dnsFailure = () =>
+    new ConnectorError(502, "DNS_LOOKUP_FAILED", "repo host DNS lookup failed for api.github.com");
+
+  it.each([
+    [
+      "a DNS lookup failure",
+      () => vi.mocked(resolveAndAssertConnectorHost).mockRejectedValueOnce(dnsFailure()),
+    ],
+    [
+      "a DNS lookup that found nothing",
+      () =>
+        vi
+          .mocked(resolveAndAssertConnectorHost)
+          .mockRejectedValueOnce(new ConnectorError(502, "DNS_LOOKUP_EMPTY", "no addresses")),
+    ],
+    [
+      "a refused connection",
+      () =>
+        __setOctokitFactory(() =>
+          makeOctokit({
+            get: async () => {
+              throw Object.assign(new TypeError("fetch failed"), {
+                cause: Object.assign(new Error("connect ECONNREFUSED"), {
+                  code: "ECONNREFUSED",
+                }),
+              });
+            },
+          }),
+        ),
+    ],
+  ])("%s at boot leaves it connected", async (_n, arrange) => {
+    const id = await connected(`net-${_n}`);
+    arrange();
+    await expect(
+      testRepoConnector("proj_1", id, "system", { unattended: true }),
+    ).rejects.toMatchObject({
+      message: expect.stringMatching(/left unchanged/),
+    });
+    const row = rows.get(id)!;
+    expect(row.status).toBe("connected");
+    expect(row.errorMessage).toBeNull();
+  });
+
+  it("the same DNS failure on a clicked Test still marks it error", async () => {
+    const id = await connected("net-clicked");
+    vi.mocked(resolveAndAssertConnectorHost).mockRejectedValueOnce(dnsFailure());
+    await expect(testRepoConnector("proj_1", id, "user_1")).rejects.toMatchObject({
+      code: "DNS_LOOKUP_FAILED",
+    });
+    expect(rows.get(id)!.status).toBe("error");
+  });
+
+  it("a host that now resolves to a private address is never a network blip", async () => {
+    const id = await connected("net-private");
+    vi.mocked(resolveAndAssertConnectorHost).mockRejectedValueOnce(
+      new ConnectorError(403, "HOST_NOT_ALLOWED", "resolves to a private address"),
+    );
+    await expect(
+      testRepoConnector("proj_1", id, "system", { unattended: true }),
+    ).rejects.toMatchObject({ code: "HOST_NOT_ALLOWED" });
+    expect(rows.get(id)!.status).toBe("error");
+  });
+
+  it("a 401 at boot still marks it error", async () => {
+    const id = await connected("net-401");
+    __setOctokitFactory(() =>
+      makeOctokit({
+        get: async () => {
+          throw Object.assign(new Error("Bad credentials"), { status: 401 });
+        },
+      }),
+    );
+    await expect(
+      testRepoConnector("proj_1", id, "system", { unattended: true }),
+    ).rejects.toMatchObject({ code: "REPO_AUTH_FAILED" });
+    expect(rows.get(id)!.status).toBe("error");
   });
 });

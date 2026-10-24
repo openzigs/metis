@@ -31,6 +31,26 @@ function isRecordNotFoundError(err: unknown): boolean {
   return !!err && typeof err === "object" && (err as { code?: unknown }).code === "P2025";
 }
 
+/**
+ * #1499 — a repository connector's recorded permission (`repoPermission`, #1488)
+ * is what the value of its bound secret could do on the repository when a Test
+ * or sync read it. A write that replaces that value under the same id makes the
+ * record describe a credential that is no longer stored, and an `admin` or
+ * `push` record takes shared-secret webhook deliveries. So every value write
+ * forgets it on every connector bound to the secret, in any project, and the
+ * next Test or sync earns it again with the new value. Nothing else on those
+ * connectors changes. A check already in flight with the old value cannot
+ * record it afterwards: its write is guarded on the envelope it read
+ * (`bindingWhere` in `repo-service.ts`).
+ */
+async function forgetRecordedRepoPermissions(secretId: string): Promise<void> {
+  const { count } = await prisma.repoConnection.updateMany({
+    where: { secretId, repoPermission: { not: null } },
+    data: { repoPermission: null },
+  });
+  if (count > 0) log.info("Recorded repository permissions forgotten", { secretId, count });
+}
+
 const ALGORITHM = "aes-256-gcm" as const;
 const KEY_VERSION = 0x01;
 const KEY_LENGTH = 32; // 256 bits
@@ -377,6 +397,7 @@ export class VaultService {
       row = await write();
     }
     log.info("Secret upserted", { id: row.id, scope, label });
+    await forgetRecordedRepoPermissions(row.id);
     return this.toSummary(row, scope);
   }
 
@@ -482,6 +503,7 @@ export class VaultService {
       throw err;
     }
     log.info("Secret rotated", { id });
+    await forgetRecordedRepoPermissions(id);
     return this.toSummary(row, this.scopeOf(row.name));
   }
 
@@ -520,6 +542,7 @@ export class VaultService {
       });
       if (count === 1) {
         log.info("Secret rotated", { id });
+        await forgetRecordedRepoPermissions(id);
         return {
           id,
           previous: {
@@ -551,7 +574,10 @@ export class VaultService {
         algorithm: undo.previous.algorithm,
       },
     });
-    if (count === 1) log.info("Secret rotation undone", { id: undo.id });
+    if (count === 1) {
+      log.info("Secret rotation undone", { id: undo.id });
+      await forgetRecordedRepoPermissions(undo.id);
+    }
     return count === 1;
   }
 
