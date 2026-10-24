@@ -152,6 +152,31 @@ describe("<CustomAgentsEnablementCard /> (#85)", () => {
     expect(screen.queryByTestId("ca-other-project-own")).toBeNull();
   });
 
+  it("#1500 — rows come from /enabled summaries; Edit opens the project's own agent with its full definition", async () => {
+    listAgents.mockResolvedValue([{ ...agent("own", "Own"), systemPrompt: "Own persona" }]);
+    // `/enabled` carries no definition: id, name, description, badge, owner.
+    const summary = (id: string, name: string, projectId: string) => ({
+      id,
+      name,
+      description: "",
+      isBuiltIn: false,
+      projectId,
+    });
+    listEnabledAgents.mockResolvedValue([
+      summary("own", "Own", "proj-1"),
+      summary("foreign", "Borrowed", "proj-2"),
+    ]);
+    renderCard();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("ca-enablement-row-foreign")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("ca-enablement-state-own")).toHaveTextContent(/^On$/);
+    expect(screen.queryByTestId("ca-edit-open-foreign")).toBeNull();
+    fireEvent.click(screen.getByTestId("ca-edit-open-own"));
+    await waitFor(() => expect(screen.getByTestId("ca-edit-prompt")).toHaveValue("Own persona"));
+  });
+
   it("#1445 review — a refused switch says why instead of failing silently", async () => {
     listAgents.mockResolvedValue([agent("a1", "Risk Analyst")]);
     listEnabledAgents.mockResolvedValue([]);

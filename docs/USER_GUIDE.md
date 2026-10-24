@@ -2842,10 +2842,18 @@ agent as **On**, **Off** (someone switched it off) or **Off until enabled**
 (nobody has switched it yet), and the authoring wizard says so once the agent is
 saved. The card also lists an agent from another project that is enabled here,
 marked "from another project", so it can be switched off where it is used.
+Once switched off, such an agent **leaves the card** (#1500): the card lists
+only this project's own agents, built-ins and agents enabled here, so a
+borrowed agent you turned off is no longer shown and is no longer used by
+chat or analysis. To use it again, enable it from a project that can reach its
+home project (switching an agent on needs access to the project that owns it).
+The card shows only each agent's name, description and owner; the definition
+itself (persona, tools, model) is shown only to the owning project.
 The one exception is the wizard's playground: a workspace admin (who could
 enable the agent anyway) may run an agent the project owns before it is
 enabled, to test it first. Other members get "off for this project until a
-workspace admin enables it", and an agent someone switched off stays off there
+workspace admin enables it" (on a project with no workspace, "until a system
+admin enables it": only a system admin can enable agents there), and an agent someone switched off stays off there
 for everyone. The playground is rate-limited and checks the project's budget
 like chat does. Once enabled, an agent joins every later analysis run of the
 project, and each run costs model calls for it (see #938).
@@ -2853,8 +2861,11 @@ project, and each run costs model calls for it (see #938).
 was usable in chat, ACP and the playground (though not in analysis runs). Such
 agents are now off: press **Enable** on the card for each one you still use.
 Reopening a chat that was bound to such an agent shows a notice naming the
-agent and saying it is switched off for the project; until it is enabled, the
-chat runs without the agent's persona, tools and skills.
+agent and saying it is off for the project until it is enabled (or, if someone
+switched it off, that it is switched off), and who can enable it; until it is
+enabled, the chat runs without the agent's persona, tools and skills. If that
+notice cannot be worked out (say, a database hiccup), the chat still reopens,
+just without the notice.
 
 **Agents and skills — local-model smoke run (manual).** The CI end-to-end test
 (`e2e/tests/agents-skills.spec.ts`) drives this flow with a scripted model. To

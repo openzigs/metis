@@ -50,6 +50,9 @@ import {
 } from "../../async/compaction.js";
 import { assertWithinBudget } from "../../finops/budget-enforcer.js";
 import { sessionAgentNotice } from "../../agent-runtime/session-agent.js";
+import { createChildLogger } from "../../logger.js";
+
+const log = createChildLogger("conversation-service");
 
 /** Hours after its last activity that a session can still be resumed. */
 function resumeTtlHours(): number {
@@ -124,6 +127,23 @@ async function transcriptPage(
 }
 
 /**
+ * #1500 — the resume notice is informational: a failure while building it (a
+ * database error reading the agent or its enablement) is logged and costs the
+ * notice, never the resume.
+ */
+async function agentNoticeOrNull(session: AISession): Promise<string | null> {
+  try {
+    return await sessionAgentNotice(session);
+  } catch (err) {
+    log.warn("Could not build the session agent notice; resuming without it", {
+      sessionId: session.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+/**
  * #139 — resume: the session state and the FIRST page of its transcript.
  *
  * #245 — bounded like the paged read (#212): at most
@@ -145,7 +165,7 @@ export async function resumeSession(
   const page = await transcriptPage(session, { afterOrdinal: 0, limit: TRANSCRIPT_PAGE_MAX });
   return {
     session: sessionStateDto(session),
-    agentNotice: await sessionAgentNotice(session),
+    agentNotice: await agentNoticeOrNull(session),
     messages: page.messages,
     hasMore: page.hasMore,
     nextAfterOrdinal: page.nextAfterOrdinal,

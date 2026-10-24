@@ -17,6 +17,8 @@ const rows = vi.hoisted(() => ({
   enablement: [] as Array<{ customAgentId: string; projectId: string; enabled: boolean }>,
   /** Every enablement read fails (the database is unreachable). */
   enablementReadsFail: false,
+  /** #1500 — each project's workspace (absent: none). */
+  projectWorkspace: {} as Record<string, string | null>,
 }));
 
 interface Where {
@@ -60,6 +62,13 @@ Object.assign(fakeDb, {
       if (rows.enablementReadsFail) throw new Error("db unreachable");
       return rows.enablement.filter((e) => matches(e as unknown as Record<string, unknown>, where));
     }),
+  },
+  project: {
+    findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+      where.id in rows.projectWorkspace
+        ? { workspaceId: rows.projectWorkspace[where.id] ?? null }
+        : null,
+    ),
   },
   projectAgentAllowlist: { findMany: vi.fn(async () => []) },
   agent: { findMany: vi.fn(async () => []), findUnique: vi.fn(async () => null) },
@@ -119,6 +128,7 @@ function setEnabled(customAgentId: string, projectId: string, enabled: boolean):
 
 beforeEach(() => {
   rows.enablementReadsFail = false;
+  rows.projectWorkspace = { p1: "w1" };
   rows.custom.length = 0;
   rows.enablement.length = 0;
   rows.custom.push(
@@ -379,11 +389,22 @@ describe("#1445 — an owned agent nobody has switched is off everywhere but the
   it("a session bound to it gets a notice naming the agent; none once it is enabled", async () => {
     const bound = { agentRef: "custom:own", projectId: "p1" };
     neverToggled();
+    // #1500 — nobody ever enabled it: "off until enabled", not "switched off".
     expect(await sessionAgentNotice(bound, db)).toBe(
-      'This chat\'s agent "Go SQL reviewer" is switched off for this project, so the chat runs without its persona, tools and skills. Ask a workspace admin to enable it under Custom agents.',
+      'This chat\'s agent "Go SQL reviewer" is off for this project until it is enabled, so the chat runs without its persona, tools and skills. Ask a workspace admin to enable it under Custom agents.',
     );
     setEnabled("own", "p1", true);
     expect(await sessionAgentNotice(bound, db)).toBeNull();
+    // #1500 — someone switched it off: said so.
+    setEnabled("own", "p1", false);
+    expect(await sessionAgentNotice(bound, db)).toBe(
+      'This chat\'s agent "Go SQL reviewer" is switched off for this project, so the chat runs without its persona, tools and skills. Ask a workspace admin to switch it back on under Custom agents.',
+    );
+    // #1500 — a project with no workspace: only a system admin can enable it.
+    rows.projectWorkspace = { p1: null };
+    expect(await sessionAgentNotice(bound, db)).toMatch(/Ask a system admin to switch it back on/);
+    neverToggled();
+    expect(await sessionAgentNotice(bound, db)).toMatch(/Ask a system admin to enable it/);
     // Deleted: said so, without claiming it is switched off.
     expect(await sessionAgentNotice({ agentRef: "custom:gone", projectId: "p1" }, db)).toMatch(
       /^This chat's agent no longer exists/,

@@ -28,7 +28,7 @@ import { SkeletonText } from "@/components/ui/skeleton";
 import { sdkApi } from "@/lib/sdk-alignment-api";
 import { projectsApi } from "@/lib/projects-api";
 import { queryKeys } from "@/lib/query-keys";
-import type { CustomAgentDto } from "@metis/shared";
+import type { CustomAgentDto, CustomAgentSummaryDto } from "@metis/shared";
 import {
   Dialog,
   DialogContent,
@@ -123,15 +123,20 @@ export function CustomAgentsEnablementCard({ projectId }: Props) {
   const isLoading = candidates.isLoading || enabled.isLoading || disabled.isLoading;
   const isError = candidates.isError || enabled.isError;
 
-  const enabledIds = new Set((enabled.data ?? []).map((a: CustomAgentDto) => a.id));
+  const enabledIds = new Set((enabled.data ?? []).map((a: CustomAgentSummaryDto) => a.id));
   const disabledIds = new Set(disabled.data ?? []);
   // #1445 review — an agent from ANOTHER project that is enabled here is used
   // by chat and analysis too, so it is listed here, where it can be switched
   // off; the candidates alone (built-ins and this project's own) miss it.
-  const candidateIds = new Set((candidates.data ?? []).map((a: CustomAgentDto) => a.id));
-  const rows = [
+  // #1500 — `/enabled` returns summaries, so a row is a summary; the edit
+  // dialog takes the full definition from the candidates (this project's own
+  // agents, the only ones editable here).
+  const candidatesById = new Map(
+    (candidates.data ?? []).map((a: CustomAgentDto) => [a.id, a] as const),
+  );
+  const rows: CustomAgentSummaryDto[] = [
     ...(candidates.data ?? []),
-    ...(enabled.data ?? []).filter((a: CustomAgentDto) => !candidateIds.has(a.id)),
+    ...(enabled.data ?? []).filter((a: CustomAgentSummaryDto) => !candidatesById.has(a.id)),
   ];
 
   return (
@@ -184,7 +189,8 @@ export function CustomAgentsEnablementCard({ projectId }: Props) {
         </p>
       ) : (
         <ul className="space-y-2">
-          {rows.map((agent: CustomAgentDto) => {
+          {rows.map((agent: CustomAgentSummaryDto) => {
+            const ownDefinition = candidatesById.get(agent.id);
             const on = enabledIds.has(agent.id);
             const pendingThis = toggle.isPending && toggle.variables?.id === agent.id;
             return (
@@ -220,13 +226,13 @@ export function CustomAgentsEnablementCard({ projectId }: Props) {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {!agent.isBuiltIn && agent.projectId === projectId && (
+                  {!agent.isBuiltIn && agent.projectId === projectId && ownDefinition && (
                     <>
                       <Button
                         type="button"
                         size="sm"
                         variant="outline"
-                        onClick={() => setEditing(agent)}
+                        onClick={() => setEditing(ownDefinition)}
                         data-testid={`ca-edit-open-${agent.id}`}
                       >
                         Edit

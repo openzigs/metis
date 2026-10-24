@@ -238,7 +238,29 @@ export function customAgentPlaygroundAccess(
   return callerMayEnable ? "run" : "off-until-enabled";
 }
 
-async function readEnablement(
+/**
+ * #1500 — who may switch a custom agent on for a project, in words: a
+ * workspace admin, or (on a project with no workspace, where
+ * `assertWorkspaceAdminForProject` refuses everyone else) only a system admin.
+ */
+export function customAgentEnablerFor(workspaceId: string | null | undefined): string {
+  return workspaceId ? "a workspace admin" : "a system admin";
+}
+
+/** {@link customAgentEnablerFor} for `projectId`, read from the project row. */
+export async function customAgentEnablerForProject(
+  projectId: string,
+  db: PrismaClient = defaultPrisma,
+): Promise<string> {
+  const project = await db.project.findUnique({
+    where: { id: projectId },
+    select: { workspaceId: true },
+  });
+  return customAgentEnablerFor(project?.workspaceId);
+}
+
+/** The (agent, project) enablement row's `enabled` flag, or `null` when nobody has switched it. */
+export async function readEnablement(
   customAgentId: string,
   projectId: string,
   db: PrismaClient,
