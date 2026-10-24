@@ -23,6 +23,20 @@ import {
   softDeletedProjectIds,
   type BackgroundPath,
 } from "../lib/projects/deleted-project-guard.js";
+import { recordDelivery, releaseDelivery } from "../lib/agents/pr-reviewer/webhook-dedup.js";
+import {
+  claimPayload,
+  isStaleSignedTriggerEvent,
+  releasePayload,
+  SIGNED_TRIGGER_EVENTS,
+  signedTriggerEvent,
+  signedTriggerEventTime,
+  UNTIMED_RECEIVER_PREFIX,
+  type PayloadClaim,
+} from "../lib/webhooks/payload-replay.js";
+import { createChildLogger } from "../lib/logger.js";
+
+const log = createChildLogger("triggers");
 
 // #680 — cap the number of triggers fired per delivery so one webhook cannot
 // spawn unbounded async runs (defence-in-depth beside the rate limiter).
@@ -125,8 +139,16 @@ function rawBody(req: Request): string {
   return JSON.stringify(req.body ?? {});
 }
 
-async function spawnTriggerRun(
-  trigger: { id: string; projectId: string; config: unknown; source: string; name: string },
+type FireableTrigger = {
+  id: string;
+  projectId: string;
+  config: unknown;
+  source: string;
+  name: string;
+};
+
+async function submitTriggerRun(
+  trigger: FireableTrigger,
   payload: Record<string, unknown>,
 ): Promise<{ runId: string }> {
   const cfg = parseConfig(trigger.config);
@@ -136,11 +158,58 @@ async function spawnTriggerRun(
     kind,
     payload: { triggerId: trigger.id, source: trigger.source, name: trigger.name, ...payload },
   });
+  return { runId: out.id };
+}
+
+/**
+ * #1492 — `lastFiredAt` for a GitHub trigger whose run was already submitted.
+ * Best effort: the run exists, so this failing must not fail the delivery and
+ * give its claim back (a redelivery would then submit the run again).
+ */
+async function markTriggerFired(triggerId: string): Promise<void> {
+  try {
+    await prisma.trigger.update({ where: { id: triggerId }, data: { lastFiredAt: new Date() } });
+  } catch (err) {
+    log.warn("trigger.last_fired_update_failed", { triggerId, error: (err as Error).message });
+  }
+}
+
+async function spawnTriggerRun(
+  trigger: FireableTrigger,
+  payload: Record<string, unknown>,
+): Promise<{ runId: string }> {
+  const out = await submitTriggerRun(trigger, payload);
   await prisma.trigger.update({
     where: { id: trigger.id },
     data: { lastFiredAt: new Date() },
   });
-  return { runId: out.id };
+  return out;
+}
+
+/**
+ * #1492 — the event a GitHub trigger delivery is matched as.
+ *
+ * - The signed body classifies (`signedTriggerEvent`): that event, whatever
+ *   the unsigned `X-GitHub-Event` header says.
+ * - It does not, and the header names an event the body WOULD classify as
+ *   (`pull_request`, `issues`, `push`, …): `null`. The header is contradicted
+ *   by the signed body, so no event-filtered trigger matches it.
+ * - It does not, and the header names another event (`release`,
+ *   `workflow_run`, …): the header, the only source there is. A relabelled
+ *   replay of such a body still fires nothing: on the genuine delivery, every
+ *   trigger whose secret verified it claimed it, matching or not. That
+ *   includes matching triggers beyond the fan-out cap, which therefore never
+ *   fire for this body (unlike a classified body's, which Redeliver reaches).
+ */
+function deliveryEvent(signed: string | null, header: string | undefined): string | null {
+  if (signed !== null) return signed;
+  const claimed = (header ?? "").trim();
+  if (!claimed || SIGNED_TRIGGER_EVENTS.has(claimed)) return null;
+  return claimed;
+}
+
+function eventMatches(filter: unknown, event: string | null): boolean {
+  return !filter || filter === event;
 }
 
 /**
@@ -361,7 +430,6 @@ export function triggersWebhookRouter(): Router {
   // GitHub: POST /api/webhooks/github
   r.post("/github", webhookReceiverRateLimiter, async (req: Request, res: Response) => {
     const sig = req.header("x-hub-signature-256");
-    const event = req.header("x-github-event") ?? "unknown";
     const body = req.body as { repository?: { full_name?: string } };
     const repo = body?.repository?.full_name;
     if (!repo) throw new AppError(400, "BAD_PAYLOAD", "Missing repository.full_name");
@@ -369,37 +437,189 @@ export function triggersWebhookRouter(): Router {
     // trigger always carries x-hub-signature-256; reject its absence BEFORE the
     // trigger-table scan so unsigned floods cannot amplify DB load.
     if (!sig) throw new AppError(401, "BAD_SIGNATURE", "Missing x-hub-signature-256");
+    // #1492 — the event is the one the SIGNED body is. The header is read only
+    // for an event the body cannot be classified as (see `deliveryEvent`).
+    const signedEvent = signedTriggerEvent(body);
+    const event = deliveryEvent(signedEvent, req.header("x-github-event"));
     const candidates = await prisma.trigger.findMany({
       where: { source: "github", enabled: true },
     });
-    const matched = candidates.filter((t) => {
-      const cfg = parseConfig(t.config);
-      return cfg.repo === repo && (!cfg.event || cfg.event === event);
-    });
-    if (matched.length === 0) {
+    const forRepo = candidates.filter((t) => parseConfig(t.config).repo === repo);
+    const matched = forRepo.filter((t) => eventMatches(parseConfig(t.config).event, event));
+    if (forRepo.length === 0) {
       // Always 200 — GitHub treats non-2xx as failure and retries.
       res.json(ok({ matched: 0 }));
       return;
     }
-    const verified = matched.filter((t) => {
+    // #1492 — every trigger of the repository whose secret signed the body,
+    // whatever its event filter. When the event comes from the header, the
+    // non-matching ones are claimed below too, so a replay of this body under
+    // a relabelled header finds them already claimed.
+    const verified = forRepo.filter((t) => {
       const cfg = parseConfig(t.config);
       const secret = String(cfg.secret ?? "");
       return verifyGithubWebhook(rawBody(req), secret, sig).ok;
     });
+    if (verified.length === 0) {
+      res.json(ok({ matched: matched.length, fired: [] }));
+      return;
+    }
     // #1438 — a trigger of a soft-deleted project never fires. When that leaves
     // nothing to fire for a verified delivery, say so with a 410.
     const { live, skipped } = await liveTriggers("trigger.github", verified);
-    if (verified.length > 0 && live.length === 0) throw projectDeletedError();
-    const fired: string[] = [];
-    // #680 — bound the fan-out per delivery.
-    for (const t of live.slice(0, maxTriggerFanout())) {
-      const r = await spawnTriggerRun(t, { event, body });
-      fired.push(r.runId);
+    if (live.length === 0) throw projectDeletedError();
+    // #1484 — the signed `updated_at` (a push's `pushed_at`) past the replay
+    // window is a replay: refused before any database write.
+    if (isStaleSignedTriggerEvent(body)) {
+      res.json(ok({ matched: matched.length, fired: [], reason: "STALE_DELIVERY" }));
+      return;
     }
+
+    // Delivery-id dedup, as on the other GitHub receivers: a duplicate id is
+    // GitHub's own retry; a dedup failure never blocks the delivery.
+    //
+    // GitHub gives one GUID to EVERY webhook subscribed to an event, and the
+    // dedup table is keyed on the id alone across receivers. So the key is
+    // scoped to this receiver and to the signer: the lowest id among the
+    // triggers this secret verified. A trigger has one secret, so two secrets
+    // never verify the same trigger. A PR-review webhook, or a second trigger
+    // webhook with its own secret, therefore gets its own key for the same
+    // GUID, and only a retry of THIS webhook's delivery is deduped.
+    const guid = (req.header("x-github-delivery") ?? "").trim();
+    // The LOWEST id is an arbitrary pick: any choice works as long as it is
+    // deterministic, so the same webhook's retry maps to the same key.
+    const signerId = verified.map((t) => t.id).sort()[0];
+    const deliveryId = guid ? `github-trigger:${signerId}:${guid}` : "";
+    let deliveryRecorded = false;
+    if (deliveryId) {
+      try {
+        const dedup = await recordDelivery({ deliveryId, eventType: signedEvent ?? "unknown" });
+        if (dedup.duplicate) {
+          res.json(ok({ matched: matched.length, fired: [], reason: "DUPLICATE_DELIVERY" }));
+          return;
+        }
+        deliveryRecorded = true;
+      } catch (err) {
+        log.warn("trigger.github_webhook_dedup_failed", {
+          deliveryId,
+          error: (err as Error).message,
+        });
+      }
+    }
+    const releaseDeliveryId = async () => {
+      if (deliveryRecorded) await releaseDelivery(deliveryId).catch(() => undefined);
+    };
+
+    // #1492 — the delivery id is unsigned, so claim the signed body as well,
+    // once PER TRIGGER: each has its own secret (its own GitHub webhook), so
+    // the same body legitimately reaches this receiver once per registration.
+    // A body with no signed time is claimed under the untimed prefix, which is
+    // kept 90 days instead of 7: no age check backs that claim up.
+    const raw = rawBody(req);
+    const receiverPrefix = signedTriggerEventTime(body) === null ? UNTIMED_RECEIVER_PREFIX : "";
+    const claimOf = (t: { id: string }): PayloadClaim => ({
+      receiver: `${receiverPrefix}github-trigger:${t.id}`,
+      eventType: signedEvent ?? "unclassified",
+      rawBody: raw,
+    });
+    const release = (ts: Array<{ id: string }>) =>
+      Promise.allSettled(ts.map((t) => releasePayload(claimOf(t))));
+
+    // #680 — bound the fan-out per delivery. Event-matching triggers are
+    // claimed in order until `cap` of them are fresh, and those fire.
+    //
+    // The rest ("capped") depend on where the event came from:
+    // - A classified body (`signedEvent !== null`): left UNCLAIMED, so
+    //   GitHub's "Redeliver" reaches them. Each redelivery drains the next
+    //   `cap` without re-running a trigger that already fired. The signature
+    //   fixes the event, so no relabelled replay can touch them.
+    // - A header-derived event: CLAIMED without firing, so they never fire
+    //   for this body. Left unclaimed, a replay relabelled to another event
+    //   would make them "non-matching" and claim them below without firing,
+    //   which would give an attacker the say over whether they ever fire.
+    //   Claiming them here makes the outcome deterministic instead.
+    //
+    // Non-matching triggers are claimed only when the event came from the
+    // header (`signedEvent === null`): there a replay relabelled to their
+    // event would match them. A classified body's event is fixed by the
+    // signature, so they can never match it and need no claim. That loop is
+    // not capped, because leaving one unclaimed re-opens the relabel. It is
+    // bounded by the triggers an admin created on this repository with this
+    // same secret.
+    const cap = maxTriggerFanout();
+    const matching = live.filter((t) => eventMatches(parseConfig(t.config).event, event));
+    const others = live.filter((t) => !eventMatches(parseConfig(t.config).event, event));
+    const claimed: typeof live = [];
+    const toFire: typeof live = [];
+    let capped = 0;
+    let cappedUnclaimed = 0;
+    let duplicate = 0;
+    try {
+      for (const t of matching) {
+        const full = toFire.length >= cap;
+        if (full && signedEvent !== null) {
+          capped++;
+          cappedUnclaimed++;
+          continue;
+        }
+        if ((await claimPayload(claimOf(t))).duplicate) {
+          duplicate++;
+        } else {
+          claimed.push(t);
+          if (full) capped++;
+          else toFire.push(t);
+        }
+      }
+      if (signedEvent === null) {
+        for (const t of others) {
+          if ((await claimPayload(claimOf(t))).duplicate) duplicate++;
+          else claimed.push(t);
+        }
+      }
+    } catch (err) {
+      // Fail CLOSED: firing without a claim is the unguarded replay. Give back
+      // what this request recorded, so GitHub's "Redeliver" is processed later.
+      log.warn("trigger.github_payload_claim_failed", {
+        deliveryId,
+        error: (err as Error).message,
+      });
+      await Promise.allSettled([release(claimed), releaseDeliveryId()]);
+      throw new AppError(
+        503,
+        "REPLAY_GUARD_UNAVAILABLE",
+        "The replay guard could not record this delivery",
+      );
+    }
+
+    const fired: string[] = [];
+    for (let i = 0; i < toFire.length; i++) {
+      const t = toFire[i];
+      let out: { runId: string };
+      try {
+        // The run payload's `event` stays a string, as before #1492: the
+        // matched event, or "unknown" when there is none (no header, or one
+        // the signed body contradicts).
+        out = await submitTriggerRun(t, { event: event ?? "unknown", body });
+      } catch (err) {
+        // #1492 — a failed submit created no run (one row insert). Give back
+        // its claim and the claims of the triggers not yet fired, plus the
+        // delivery id, so a redelivery fires exactly those. The triggers that
+        // DID fire keep their claims: releasing them would run them twice.
+        await Promise.allSettled([release(toFire.slice(i)), releaseDeliveryId()]);
+        throw err;
+      }
+      fired.push(out.runId);
+      await markTriggerFired(t.id);
+    }
+    // Triggers left UNCLAIMED by the cap: give the delivery id back too, so
+    // the sender's redelivery of this same delivery is not deduped before them.
+    if (cappedUnclaimed > 0) await releaseDeliveryId();
     res.json(
       ok({
         matched: matched.length,
         fired,
+        ...(duplicate ? { duplicate } : {}),
+        ...(capped ? { capped } : {}),
         ...(skipped ? { skippedDeletedProject: skipped } : {}),
       }),
     );

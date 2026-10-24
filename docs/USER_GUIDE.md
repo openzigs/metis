@@ -3588,6 +3588,59 @@ Pre-existing sub-pages — see the v1.1.0 release notes for `/settings/mcp`,
 `/settings/triggers`. The hub now exposes them as cards alongside the new
 v1.2 sub-pages.
 
+#### GitHub triggers: which event fires, and replays (#1492)
+
+A `github` trigger receives deliveries at `https://<your-metis>/api/webhooks/github`, signed with the
+trigger's own `secret`. Its `event` is the bare GitHub event name (`push`, `issues`), not
+`issues.opened`; a trigger with no `event` fires on every event for its `repo`.
+
+> **Behaviour change.** METIS now reads the event from the **signed body**, not from the unsigned
+> `X-GitHub-Event` header, for `push`, `pull_request`, `pull_request_review`,
+> `pull_request_review_comment`, `pull_request_review_thread`, `issues` and `issue_comment`. A
+> trigger filtered on one of these fires only when the body really is that event. A delivery that
+> only *says* it is one (a hand-built test payload with the header set but no `issue` or
+> `pull_request` in the body, say) no longer fires it. Genuine GitHub deliveries are unaffected.
+> For any other event (`release`, `workflow_run`, …) the body can't tell METIS what it is, so the
+> header is still used, as before.
+
+**How often a body can fire a trigger.** The same body sent again under a new `X-GitHub-Delivery`
+id, or with a different `X-GitHub-Event` header, fires nothing: the response carries `fired: []`
+and `duplicate: <count>`. GitHub's own retry of a delivery id answers
+`reason: "DUPLICATE_DELIVERY"`. Two webhooks with different secrets sending the same event each
+fire their own triggers once. How long that holds depends on whether the body carries a time
+GitHub signed:
+
+- **Bodies with a signed time** fire each trigger at most once, ever. METIS remembers the body for
+  7 days, and refuses one whose signed time is more than 4 days old (`reason: "STALE_DELIVERY"`).
+  These are:
+  - pushes (`repository.pushed_at`);
+  - pull requests, issues, comments and reviews;
+  - a release being published (`created`, `published` or `prereleased`, with a `published_at`);
+  - `workflow_run`, `workflow_job`, `deployment` and `deployment_status`.
+- **Every other body** fires each trigger at most once **within 90 days**. These include `create`,
+  `delete`, `ping`, a draft release, and a release that is edited, deleted or promoted from
+  pre-release (`released`). METIS remembers such a body for 90 days instead of 7, because it has
+  no signed time to judge its age by. After that, a resend of the same body could fire once more.
+
+A run's payload carries the event it was matched as. It is `"unknown"` when there is none: no
+header, or a header the signed body contradicts. Only a trigger with no `event` fires then.
+
+**Fan-out cap.** One delivery starts at most `MAX_TRIGGER_FANOUT` runs (default 50). Any matching
+triggers beyond that are counted as `capped: <n>`. What happens to them next depends on the event:
+
+- **Events METIS reads from the signed body** (`push`, pull requests, issues): the capped triggers
+  are not marked as seen. GitHub's **Redeliver** of that delivery fires the next batch, and never
+  re-runs a trigger that already fired.
+- **Events read from the header** (`release`, `workflow_run`, …): the capped triggers are marked as
+  seen and **never fire for that delivery**. Otherwise a resend with a different header could decide
+  whether they ever fire.
+
+Keep the number of triggers on one repository and secret below the cap.
+
+If METIS can't record the delivery it answers `503 REPLAY_GUARD_UNAVAILABLE` and fires nothing. If a
+run can't be started it answers `500`. Triggers that had already fired stay fired, and GitHub's
+**Redeliver** fires only the ones that didn't.
+
 > **First MCP in 5 minutes** — for a step-by-step "fresh clone → tool call in the audit log" walkthrough, see [`docs/LOCAL_QUICKSTART.md`](./LOCAL_QUICKSTART.md) (Issue [#364](https://github.com/openzigs/metis-private/issues/364)).
 
 #### MCP runtime selection (epics #271, #272)
