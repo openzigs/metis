@@ -7,7 +7,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { JobLifecycleEvent } from "@metis/shared";
+import { getPermissionsForRole, type JobLifecycleEvent, type RoleKey } from "@metis/shared";
+import type { AuthUser } from "@/lib/auth-types";
 import { makeWrapper } from "./test-utils";
 import { ApiError } from "@/lib/api-client";
 
@@ -110,14 +111,50 @@ function review(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
-function renderPage() {
-  const Wrapper = makeWrapper({});
+const userWith = (role: RoleKey): AuthUser => ({
+  id: `u-${role}`,
+  username: role,
+  displayName: role,
+  email: `${role}@example.test`,
+  role,
+  permissions: getPermissionsForRole(role),
+});
+
+// A coordinator holds `pr.review.manage` (#1472), so the Re-run button is shown.
+function renderPage(user: AuthUser | null = userWith("coordinator")) {
+  const Wrapper = makeWrapper({ initialUser: user });
   return render(
     <Wrapper>
       <ProjectPullDetailPage />
     </Wrapper>,
   );
 }
+
+describe("Project pull detail page — Re-run review by role (#1472)", () => {
+  it.each(["admin", "coordinator"] as const)("shows the Re-run button to %s", async (role) => {
+    detail.mockResolvedValue(review());
+    renderPage(userWith(role));
+    expect(await screen.findByTestId("re-run-button")).toBeEnabled();
+  });
+
+  it.each(["developer", "reader"] as const)(
+    "hides the Re-run button from %s, who still reads the verdicts",
+    async (role) => {
+      detail.mockResolvedValue(review());
+      renderPage(userWith(role));
+      expect(await screen.findByText("looks good")).toBeInTheDocument();
+      expect(screen.queryByTestId("re-run-button")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /re-run review/i })).not.toBeInTheDocument();
+    },
+  );
+
+  it("hides the Re-run button when no user is signed in", async () => {
+    detail.mockResolvedValue(review());
+    renderPage(null);
+    expect(await screen.findByText("looks good")).toBeInTheDocument();
+    expect(screen.queryByTestId("re-run-button")).not.toBeInTheDocument();
+  });
+});
 
 describe("Project pull detail page", () => {
   it("shows the loading state while the detail query is in flight", () => {
@@ -229,8 +266,14 @@ describe("Project pull detail page", () => {
     renderPage();
     await waitFor(() => {
       expect(screen.getByText(/Permission required/i)).toBeInTheDocument();
-      expect(screen.getAllByText(/pr.review.read/).length).toBeGreaterThan(0);
+      expect(
+        screen.getByText(
+          "Your role can't view PR reviews for this project. Ask a project coordinator or admin.",
+        ),
+      ).toBeInTheDocument();
     });
+    // #1472 — no raw permission key: every role reads, so a key is not actionable.
+    expect(screen.queryByText(/pr\.review\./)).not.toBeInTheDocument();
   });
 
   it("renders the no-review-yet surface when the detail endpoint returns 404", async () => {
@@ -248,8 +291,12 @@ describe("Project pull detail page", () => {
     const btn = await screen.findByTestId("re-run-button");
     await userEvent.click(btn);
     await waitFor(() => {
-      expect(screen.getByText(/don't have permission to re-run PR reviews/i)).toBeInTheDocument();
-      expect(screen.getByText(/pr.review.manage/)).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Your role can't re-run PR reviews for this project. Ask a project coordinator or admin.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/pr\.review\.manage/)).not.toBeInTheDocument();
     });
   });
 

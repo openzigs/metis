@@ -213,9 +213,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
-    it("the project's callable agents: its own + enabled custom agents, and explicitly allowed library agents", async () => {
+    it("the project's callable agents: its enabled custom agents, and explicitly allowed library agents", async () => {
+      // #1445 — off until enabled: `c-proj` is the project's own agent but has
+      // no enablement row, so it is not callable; `c-builtin` is enabled.
       const refs = (await listCallableAgents("p1")).map((d) => d.ref).sort();
-      expect(refs).toEqual(["custom:c-builtin", "custom:c-proj", "library:a1"]);
+      expect(refs).toEqual(["custom:c-builtin", "library:a1"]);
     });
   },
 );

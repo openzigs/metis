@@ -49,6 +49,7 @@ import {
   providerSummarizer,
 } from "../../async/compaction.js";
 import { assertWithinBudget } from "../../finops/budget-enforcer.js";
+import { sessionAgentNotice } from "../../agent-runtime/session-agent.js";
 
 /** Hours after its last activity that a session can still be resumed. */
 function resumeTtlHours(): number {
@@ -144,6 +145,7 @@ export async function resumeSession(
   const page = await transcriptPage(session, { afterOrdinal: 0, limit: TRANSCRIPT_PAGE_MAX });
   return {
     session: sessionStateDto(session),
+    agentNotice: await sessionAgentNotice(session),
     messages: page.messages,
     hasMore: page.hasMore,
     nextAfterOrdinal: page.nextAfterOrdinal,

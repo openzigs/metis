@@ -279,6 +279,13 @@ export interface ResumeSessionResponse {
     readOnlyReason: string | null;
   };
   /**
+   * #1445 — non-null when the session's CUSTOM agent can no longer run in its
+   * project (switched off, never enabled, or deleted): the chat then runs
+   * without the agent's persona, tools and skills. Shown to the user as-is.
+   * Optional: older servers do not send it.
+   */
+  agentNotice?: string | null;
+  /**
    * #245 — the FIRST page of the transcript, at most {@link TRANSCRIPT_PAGE_MAX}
    * rows. When `hasMore` is `true` the reader continues with
    * `GET /api/ai/sessions/:id/messages?afterOrdinal=nextAfterOrdinal` until it

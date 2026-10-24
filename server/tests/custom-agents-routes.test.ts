@@ -171,6 +171,21 @@ vi.mock("../src/lib/finops/token-tracker.js", async (importOriginal) => ({
   recordUsage: recordUsageSpy,
 }));
 
+// #1445 review — the playground route sits behind chat's AI limiter and budget
+// gate. Both are observed here; each test decides whether they let it through.
+const limiterSpy = vi.hoisted(() =>
+  vi.fn((_req: unknown, _res: unknown, next: () => void) => next()),
+);
+vi.mock("../src/middleware/ai-rate-limit.js", () => ({
+  aiRateLimiter: (req: unknown, res: unknown, next: () => void) => limiterSpy(req, res, next),
+}));
+const budgetSpy = vi.hoisted(() => vi.fn(async (_projectId: string) => ({})));
+vi.mock("../src/lib/finops/budget-enforcer.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/finops/budget-enforcer.js")>()),
+  assertWithinBudget: (projectId: string) => budgetSpy(projectId),
+}));
+const { BudgetExceededError } = await import("../src/lib/finops/budget-enforcer.js");
+
 const { customAgentsRouter } = await import("../src/routes/custom-agents.js");
 
 function createApp() {
@@ -190,6 +205,18 @@ function seedProject(id: string, workspaceId: string | null) {
 }
 function seedMember(ws: string, user: string, role: string) {
   members.set(`${ws}:${user}`, { role });
+}
+/** #1445 — off until enabled: switch `agentId` on for `projectId`. */
+function enableFor(agentId: string, projectId: string) {
+  seq++;
+  enablements.set(`en_${seq}`, {
+    id: `en_${seq}`,
+    customAgentId: agentId,
+    projectId,
+    enabled: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
 }
 function seedAgent(over: Partial<AgentRow> = {}): AgentRow {
   seq++;
@@ -214,9 +241,41 @@ function seedAgent(over: Partial<AgentRow> = {}): AgentRow {
 beforeEach(() => {
   reset();
   chatMock.mockClear();
+  limiterSpy.mockClear();
+  budgetSpy.mockReset();
+  budgetSpy.mockImplementation(async () => ({}));
   testUser = { userId: "u1", username: "alice", role: "user", permissions: [], workspaces: ["w1"] };
 });
 afterEach(() => vi.restoreAllMocks());
+
+describe("#1445 review — the pre-auth guard sits in front of requireAuth (CodeQL js/missing-rate-limiting)", () => {
+  it("on POST /:id/invoke and GET /projects/:projectId/disabled", async () => {
+    const { customAgentsPreAuthRateLimiter } =
+      await import("../src/middleware/custom-agents-rate-limit.js");
+    const { requireAuth } = await import("../src/middleware/auth.js");
+    const router = customAgentsRouter({ buildProvider: mockProvider }) as unknown as {
+      stack: Array<{
+        route?: {
+          path: string;
+          methods: Record<string, boolean>;
+          stack: Array<{ handle: unknown }>;
+        };
+      }>;
+    };
+    const chain = (method: string, path: string) =>
+      router.stack
+        .find((l) => l.route?.path === path && l.route.methods[method])!
+        .route!.stack.map((s) => s.handle);
+    for (const [method, path] of [
+      ["post", "/:id/invoke"],
+      ["get", "/projects/:projectId/disabled"],
+    ] as const) {
+      const handles = chain(method, path);
+      expect(handles[0]).toBe(customAgentsPreAuthRateLimiter);
+      expect(handles[1]).toBe(requireAuth);
+    }
+  });
+});
 
 describe("POST /custom-agents (create RBAC #80)", () => {
   const body = {
@@ -261,6 +320,7 @@ describe("POST /custom-agents/:id/invoke (#80/#83)", () => {
     seedProject("p1", "w1");
     seedMember("w1", "u1", "member");
     const agent = seedAgent({ projectId: "p1" });
+    enableFor(agent.id, "p1"); // #1445 — a plain member needs it switched on
     const res = await request(createApp())
       .post(`/custom-agents/${agent.id}/invoke`)
       .send({ projectId: "p1", input: "hello" });
@@ -280,6 +340,7 @@ describe("POST /custom-agents/:id/invoke (#80/#83)", () => {
     seedProject("p1", "w1");
     seedMember("w1", "u1", "member");
     const agent = seedAgent({ projectId: "p1" });
+    enableFor(agent.id, "p1");
     recordUsageSpy.mockClear();
     const res = await request(createApp())
       .post(`/custom-agents/${agent.id}/invoke`)
@@ -384,6 +445,168 @@ describe("POST /custom-agents/:id/invoke (#80/#83)", () => {
     expect(chatMock).not.toHaveBeenCalled();
   });
 
+  it("#1445 — a newly created agent is off until enabled: the card lists it off and chat/ACP refuse it, but the playground may test it", async () => {
+    seedProject("p1", "w1");
+    seedMember("w1", "u1", "admin");
+    const created = await request(createApp()).post("/custom-agents").send({
+      projectId: "p1",
+      name: "Fresh",
+      description: "",
+      systemPrompt: "do work",
+      tools: [],
+    });
+    expect(created.status).toBe(201);
+    const id = created.body.data.id as string;
+
+    // The card's source (`GET /projects/:id/enabled`): not on.
+    const enabled = await request(createApp()).get("/custom-agents/projects/p1/enabled");
+    expect(enabled.body.data.map((a: { id: string }) => a.id)).not.toContain(id);
+    // Chat's sub-agent tools, the session picker and ACP read this rule: off too.
+    const { isCustomAgentUsableInProject, listUsableCustomAgentRows } =
+      await import("../src/lib/agent-runtime/definition.js");
+    expect(await isCustomAgentUsableInProject({ kind: "custom", id, projectId: "p1" }, "p1")).toBe(
+      false,
+    );
+    expect((await listUsableCustomAgentRows("p1")).map((r) => r.id)).not.toContain(id);
+
+    // The authoring playground is the one exception.
+    const tried = await request(createApp())
+      .post(`/custom-agents/${id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(tried.status).toBe(200);
+    expect(chatMock).toHaveBeenCalledTimes(1);
+
+    // Enabling it turns it on everywhere, in agreement with the card.
+    await request(createApp())
+      .put(`/custom-agents/${id}/enablement`)
+      .send({ projectId: "p1", enabled: true });
+    const after = await request(createApp()).get("/custom-agents/projects/p1/enabled");
+    expect(after.body.data.map((a: { id: string }) => a.id)).toContain(id);
+    expect(await isCustomAgentUsableInProject({ kind: "custom", id, projectId: "p1" }, "p1")).toBe(
+      true,
+    );
+    expect((await listUsableCustomAgentRows("p1")).map((r) => r.id)).toContain(id);
+  });
+
+  it("#1445 review — a plain member may NOT run the project's never-enabled agent; once enabled they may", async () => {
+    seedProject("p1", "w1");
+    seedMember("w1", "u1", "member");
+    const agent = seedAgent({ projectId: "p1", name: "Draft" });
+    const off = await request(createApp())
+      .post(`/custom-agents/${agent.id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(off.status).toBe(409);
+    expect(off.body.error.code).toBe("AGENT_DISABLED");
+    expect(off.body.error.message).toBe(
+      '"Draft" is off for this project until a workspace admin enables it under Custom agents.',
+    );
+    expect(chatMock).not.toHaveBeenCalled();
+    expect(budgetSpy).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 0));
+    const denied = auditRows.find((a) => a.action === "custom_agent.invoke_denied");
+    expect(denied).toBeTruthy();
+
+    enableFor(agent.id, "p1");
+    const on = await request(createApp())
+      .post(`/custom-agents/${agent.id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(on.status).toBe(200);
+  });
+
+  it("#1445 review — on a project with no workspace (nobody but a system admin can enable), a member gets the strict rule, not a 400", async () => {
+    seedProject("p-open", null);
+    const agent = seedAgent({ projectId: "p-open", name: "Open draft" });
+    const res = await request(createApp())
+      .post(`/custom-agents/${agent.id}/invoke`)
+      .send({ projectId: "p-open", input: "hello" });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("AGENT_DISABLED");
+    expect(chatMock).not.toHaveBeenCalled();
+  });
+
+  it("#1445 review — a caller outside the project's workspace never reaches the exception (404 before it)", async () => {
+    seedProject("p1", "w1");
+    testUser.workspaces = []; // claims no workspace: the project itself is out of reach
+    const agent = seedAgent({ projectId: "p1" });
+    const res = await request(createApp())
+      .post(`/custom-agents/${agent.id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(res.status).toBe(404);
+    expect(chatMock).not.toHaveBeenCalled();
+  });
+
+  it("#1445 review — a system admin may test the project's never-enabled agent", async () => {
+    testUser.role = "admin";
+    seedProject("p1", "w1");
+    const agent = seedAgent({ projectId: "p1" });
+    const res = await request(createApp())
+      .post(`/custom-agents/${agent.id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(res.status).toBe(200);
+  });
+
+  it("#1445 review — the AI rate limiter runs on the playground, and a refusal stops the call", async () => {
+    seedProject("p1", "w1");
+    seedMember("w1", "u1", "admin");
+    const agent = seedAgent({ projectId: "p1" });
+    const ok1 = await request(createApp())
+      .post(`/custom-agents/${agent.id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(ok1.status).toBe(200);
+    expect(limiterSpy).toHaveBeenCalledTimes(1);
+
+    limiterSpy.mockImplementationOnce((_req: unknown, res: any) => {
+      res.status(429).json({ success: false, error: { code: "AI_RATE_LIMITED" } });
+    });
+    chatMock.mockClear();
+    const limited = await request(createApp())
+      .post(`/custom-agents/${agent.id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(limited.status).toBe(429);
+    expect(chatMock).not.toHaveBeenCalled();
+  });
+
+  it("#1445 review — the project budget is checked before the model call; over budget is a 402", async () => {
+    seedProject("p1", "w1");
+    seedMember("w1", "u1", "admin");
+    const agent = seedAgent({ projectId: "p1" });
+    await request(createApp())
+      .post(`/custom-agents/${agent.id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(budgetSpy).toHaveBeenCalledWith("p1");
+
+    chatMock.mockClear();
+    budgetSpy.mockRejectedValueOnce(new BudgetExceededError(1000, 500));
+    const over = await request(createApp())
+      .post(`/custom-agents/${agent.id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(over.status).toBe(402);
+    expect(over.body.error.code).toBe("BUDGET_EXCEEDED");
+    expect(chatMock).not.toHaveBeenCalled();
+  });
+
+  it("#1445 review — an agent the caller may not run is refused before the budget is read", async () => {
+    seedProject("p1", "w1");
+    seedMember("w1", "u1", "admin");
+    const foreign = seedAgent({ projectId: "p2" });
+    const res = await request(createApp())
+      .post(`/custom-agents/${foreign.id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(res.status).toBe(404);
+    expect(budgetSpy).not.toHaveBeenCalled();
+  });
+
+  it("#1445 — the playground exception does not reach another project's agent", async () => {
+    seedProject("p1", "w1");
+    seedMember("w1", "u1", "admin");
+    const foreign = seedAgent({ projectId: "p2" });
+    const res = await request(createApp())
+      .post(`/custom-agents/${foreign.id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(res.status).toBe(404);
+    expect(chatMock).not.toHaveBeenCalled();
+  });
+
   it("rejects an empty input with 400 before invoking", async () => {
     seedProject("p1", "w1");
     const agent = seedAgent({ projectId: "p1" });
@@ -410,6 +633,69 @@ describe("enablement endpoints (#79/#80)", () => {
     expect(list.status).toBe(200);
     expect(list.body.data).toHaveLength(1);
     expect(list.body.data[0].id).toBe(agent.id);
+  });
+
+  it("#1445 review — lists the agents explicitly switched OFF for the project, and only to its members", async () => {
+    seedProject("p1", "w1");
+    seedMember("w1", "u1", "admin");
+    const off = seedAgent({ projectId: "p1" });
+    const on = seedAgent({ projectId: "p1" });
+    seedAgent({ projectId: "p1" }); // never switched: in neither list
+    await request(createApp())
+      .put(`/custom-agents/${off.id}/enablement`)
+      .send({ projectId: "p1", enabled: false });
+    await request(createApp())
+      .put(`/custom-agents/${on.id}/enablement`)
+      .send({ projectId: "p1", enabled: true });
+    const res = await request(createApp()).get("/custom-agents/projects/p1/disabled");
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual([off.id]);
+
+    members.clear(); // no longer a member of w1
+    const outsider = await request(createApp()).get("/custom-agents/projects/p1/disabled");
+    expect(outsider.status).toBe(404);
+  });
+
+  it("#1445 review — an admin can switch OFF a borrowed agent already enabled here, even without access to its home project; never switch one ON", async () => {
+    seedProject("p1", "w1");
+    seedProject("p2", "w2"); // the agent's home: u1 is not a member of w2
+    seedMember("w1", "u1", "admin");
+    const borrowed = seedAgent({ projectId: "p2", name: "Borrowed" });
+    enableFor(borrowed.id, "p1");
+
+    const off = await request(createApp())
+      .put(`/custom-agents/${borrowed.id}/enablement`)
+      .send({ projectId: "p1", enabled: false });
+    expect(off.status).toBe(200);
+    expect(off.body.data.enabled).toBe(false);
+    const disabled = await request(createApp()).get("/custom-agents/projects/p1/disabled");
+    expect(disabled.body.data).toEqual([borrowed.id]);
+
+    // Switching it back ON still needs the agent's own project (#305): 404.
+    const on = await request(createApp())
+      .put(`/custom-agents/${borrowed.id}/enablement`)
+      .send({ projectId: "p1", enabled: true });
+    expect(on.status).toBe(404);
+
+    // With no row here, switching OFF is no exception either: 404, nothing written.
+    const stranger = seedAgent({ projectId: "p2", name: "Stranger" });
+    const offStranger = await request(createApp())
+      .put(`/custom-agents/${stranger.id}/enablement`)
+      .send({ projectId: "p1", enabled: false });
+    expect(offStranger.status).toBe(404);
+    expect([...enablements.values()].some((e) => e.customAgentId === stranger.id)).toBe(false);
+  });
+
+  it("#1445 review — a plain member still cannot switch a borrowed agent off (403)", async () => {
+    seedProject("p1", "w1");
+    seedProject("p2", "w2");
+    seedMember("w1", "u1", "member");
+    const borrowed = seedAgent({ projectId: "p2" });
+    enableFor(borrowed.id, "p1");
+    const res = await request(createApp())
+      .put(`/custom-agents/${borrowed.id}/enablement`)
+      .send({ projectId: "p1", enabled: false });
+    expect(res.status).toBe(403);
   });
 
   it("non-admin cannot toggle enablement (403)", async () => {
@@ -721,6 +1007,7 @@ describe("invoke failure path (#83)", () => {
     seedProject("p1", "w1");
     seedMember("w1", "u1", "member");
     const agent = seedAgent({ projectId: "p1" });
+    enableFor(agent.id, "p1");
     chatMock.mockRejectedValueOnce(new Error("provider exploded"));
     const res = await request(createApp())
       .post(`/custom-agents/${agent.id}/invoke`)
@@ -745,6 +1032,7 @@ describe("invoke failure path (#83)", () => {
     seedProject("p1", "w1");
     seedMember("w1", "u1", "member");
     const agent = seedAgent({ projectId: "p1" });
+    enableFor(agent.id, "p1");
     chatMock.mockRejectedValueOnce("string failure"); // non-Error throw
     const res = await request(createApp())
       .post(`/custom-agents/${agent.id}/invoke`)

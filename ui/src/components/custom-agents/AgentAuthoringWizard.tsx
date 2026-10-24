@@ -462,6 +462,19 @@ export function AgentAuthoringWizard({ workspaceId }: Props) {
               {playground.isPending ? "Running…" : "Run playground"}
             </Button>
 
+            {/* #1445 — a new agent is off until enabled: say so once it exists. */}
+            {draftAgentId && (
+              <p
+                role="note"
+                className="rounded border p-2 text-xs text-muted-foreground"
+                data-testid="wizard-off-until-enabled"
+              >
+                Agent saved. It is off for this project until you enable it under Custom agents:
+                until then chat, the agent picker and analysis runs do not use it. The playground
+                can still run it so you can test it first.
+              </p>
+            )}
+
             {playground.isError && (
               <p
                 className="text-sm text-destructive"

@@ -92,6 +92,9 @@ export const sdkApi = {
   // Per-project enablement (Epic #260 / #79/#80).
   listEnabledAgents: (projectId: string) =>
     apiFetch<CustomAgentDto[]>(`/custom-agents/projects/${projectId}/enabled`),
+  /** #1445 — ids of agents explicitly switched OFF for the project. */
+  listDisabledAgentIds: (projectId: string) =>
+    apiFetch<string[]>(`/custom-agents/projects/${projectId}/disabled`),
   setAgentEnablement: (id: string, input: { projectId: string; enabled: boolean }) =>
     apiFetch<CustomAgentEnablement>(`/custom-agents/${id}/enablement`, {
       method: "PUT",

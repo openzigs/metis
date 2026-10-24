@@ -253,8 +253,8 @@ async function handleListAgents(params: unknown, ctx: AuthedAcpContext): Promise
   if (projectId) {
     await assertLiveProjectAccess(ctx.actor, projectId);
     // #1005 — for a project, exactly the agents `run-agent` would run there
-    // (`customAgentUsableInProject`): owned and not turned off, or turned on.
-    // Admin or not: an agent turned off for the project is not offered.
+    // (`customAgentUsableInProject`): enabled for it, owned or not (#1445).
+    // Admin or not: an agent that is off for the project is not offered.
     const usable = await listUsableCustomAgentRows(projectId, prisma);
     return usable.slice(0, LIST_AGENTS_LIMIT).map(toAgentSummary);
   }
@@ -274,19 +274,25 @@ async function handleListAgents(params: unknown, ctx: AuthedAcpContext): Promise
     orderBy: { updatedAt: "desc" },
     take: LIST_AGENTS_LIMIT,
   });
-  // #1005 — an agent turned off for the project that OWNS it is usable
-  // nowhere it could be run by name, so it is not listed. (A built-in has no
-  // owner; whether a given project may run one is the per-project list above.)
-  const turnedOff = await prisma.customAgentEnablement.findMany({
-    where: { customAgentId: { in: customs.map((c) => c.id) }, enabled: false },
-    select: { customAgentId: true, projectId: true, enabled: true },
-  });
+  // #1005 / #1445 — a project agent is listed only while it is enabled for the
+  // project that OWNS it (off until enabled). (A built-in has no owner;
+  // whether a given project may run one is the per-project list above.)
+  // Only each agent's OWNING project's row is read.
+  const owned = customs.filter((c): c is typeof c & { projectId: string } => c.projectId !== null);
+  const ownerRows =
+    owned.length === 0
+      ? []
+      : await prisma.customAgentEnablement.findMany({
+          where: { OR: owned.map((c) => ({ customAgentId: c.id, projectId: c.projectId })) },
+          select: { customAgentId: true, projectId: true, enabled: true },
+        });
+  const rowKey = (customAgentId: string, projectId: string) => `${customAgentId}\u0000${projectId}`;
+  const byOwner = new Map(ownerRows.map((e) => [rowKey(e.customAgentId, e.projectId), e]));
   return customs
-    .filter((c) => {
-      if (c.projectId === null) return true;
-      const row = turnedOff.find((e) => e.customAgentId === c.id && e.projectId === c.projectId);
-      return customAgentUsableInProject(c.projectId, c.projectId, row);
-    })
+    .filter(
+      (c) =>
+        c.projectId === null || customAgentUsableInProject(byOwner.get(rowKey(c.id, c.projectId))),
+    )
     .map(toAgentSummary);
 }
 
@@ -318,11 +324,11 @@ async function handleRunAgent(params: unknown, ctx: AuthedAcpContext): Promise<{
   await assertLiveProjectAccess(ctx.actor, p.projectId);
 
   // Resolve the agent SCOPED TO THE PROJECT — never a global name lookup —
-  // under the one rule the REST twin also applies (`customAgentUsableInProject`,
-  // #1005). Anything else is masked as AGENT_NOT_FOUND (no oracle). That
-  // includes the project's OWN agent turned off for it: REST answers that case
-  // 409 AGENT_DISABLED with a readable message (the playground is a person),
-  // ACP keeps the single not-found answer for every "cannot run here".
+  // under the one rule chat and analysis also apply (`customAgentUsableInProject`,
+  // #1005 / #1445: off until enabled). Anything else is masked as
+  // AGENT_NOT_FOUND (no oracle). That includes the project's OWN agent that is
+  // off for it, never switched on included: ACP is not the authoring
+  // playground, so the playground's owner exception does not apply here.
   const agent = await resolveAgentForProject(p.projectId, p.agentKey);
   if (!agent) {
     // Audit the denied attempt for SOC 2 before masking existence.
@@ -389,11 +395,10 @@ function parseRunAgentParams(params: unknown): RunAgentParams {
 }
 
 /**
- * Resolve a custom agent by name WITHIN a project's scope, under the rule the
- * REST twin applies (`customAgentUsableInProject`, #1005): an agent is
- * runnable in `projectId` when it is owned by that project and not turned off
- * for it, or a foreign/built-in agent explicitly enabled for it via
- * `CustomAgentEnablement`. A bare global name lookup is never used.
+ * Resolve a custom agent by name WITHIN a project's scope, under
+ * `customAgentUsableInProject` (#1005 / #1445): an agent is runnable in
+ * `projectId` only with an enabled `CustomAgentEnablement` row for it — owned
+ * by that project or not. A bare global name lookup is never used.
  */
 async function resolveAgentForProject(
   projectId: string,
@@ -403,8 +408,9 @@ async function resolveAgentForProject(
     where: { projectId, name: agentKey },
     select: { id: true, name: true },
   });
-  // #1005 — an owned agent turned off for this project is not runnable here
-  // (its disabled row also keeps it out of the enabled lookup below).
+  // #1005 / #1445 — an owned agent that is off for this project (switched off,
+  // or never switched on) is not runnable here, and is not in the enabled
+  // lookup below either.
   if (
     owned &&
     (await isCustomAgentUsableInProject({ kind: "custom", id: owned.id, projectId }, projectId))

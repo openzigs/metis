@@ -2800,8 +2800,8 @@ YAML frontmatter block"). Agent and skill text that contains a credential
 and shown to everyone on the project.
 
 **Agents helping agents.** In a project chat, the chat's agent can hand a task
-to another agent the project may use — its own custom agents, those enabled for
-it, and library agents explicitly enabled for it — when the agent's tool list
+to another agent the project may use — the custom agents enabled for it (its
+own included) and library agents explicitly enabled for it — when the agent's tool list
 allows it (`agent:*` for any of them). You see the hand-off as a tool call
 (approved like any medium-risk tool) and, under it, the other agent's own tool
 calls marked "via <agent>". The other agent starts fresh with only the task it
@@ -2831,8 +2831,30 @@ is told which of the two happened. The playground says the agent is turned off
 (409 `AGENT_DISABLED`). Over ACP, `list-agents` for a project lists only the
 agents that project may use, and `run-agent` answers a turned-off agent with
 `AGENT_NOT_FOUND`, exactly as for an unknown one. **Enable** brings it back on
-the next message. An agent the project owns and has never switched either way
-stays usable in chat and the playground.
+the next message.
+
+**A custom agent is off until you enable it** (#1445). A new agent, including
+one the project owns, does nothing in the project until you press **Enable** on
+the **Custom agents** card: chat does not offer it (neither the agent picker
+nor as a hand-off target), ACP `list-agents` does not list it and `run-agent`
+answers `AGENT_NOT_FOUND`, and analysis runs do not run it. The card shows each
+agent as **On**, **Off** (someone switched it off) or **Off until enabled**
+(nobody has switched it yet), and the authoring wizard says so once the agent is
+saved. The card also lists an agent from another project that is enabled here,
+marked "from another project", so it can be switched off where it is used.
+The one exception is the wizard's playground: a workspace admin (who could
+enable the agent anyway) may run an agent the project owns before it is
+enabled, to test it first. Other members get "off for this project until a
+workspace admin enables it", and an agent someone switched off stays off there
+for everyone. The playground is rate-limited and checks the project's budget
+like chat does. Once enabled, an agent joins every later analysis run of the
+project, and each run costs model calls for it (see #938).
+**Upgrading:** before #1445 an agent the project owned and had never switched
+was usable in chat, ACP and the playground (though not in analysis runs). Such
+agents are now off: press **Enable** on the card for each one you still use.
+Reopening a chat that was bound to such an agent shows a notice naming the
+agent and saying it is switched off for the project; until it is enabled, the
+chat runs without the agent's persona, tools and skills.
 
 **Agents and skills — local-model smoke run (manual).** The CI end-to-end test
 (`e2e/tests/agents-skills.spec.ts`) drives this flow with a scripted model. To
@@ -3970,9 +3992,9 @@ Open `/projects/[id]/pulls` to see every pull request automatic review has handl
 - **Run** — pivot to `/runs/[runId]` for the live conversation that produced the verdict
 - **Details** — opens the PR-review detail page described below
 
-The page reads from the `PrReviewState` table (`GET /api/projects/:id/pr-reviews`, fields `lastStatus`, `lastSkipReason`, `lastVerdict` and `lastReviewUrl`). The review job writes one row per pull request each time it reviews or skips it. Empty until the first pull request is handled. While automatic PR review is off for the project, the page says so and links to Project settings: GitHub's deliveries still arrive, but no review is made and no row is written. Reading the page needs the `pr.review.read` permission, which only administrators hold today (#1472); anyone else sees a message saying they don't have permission. Like the rest of a project, the page answers "not found" to anyone outside the project's workspace, and to everyone but administrators once the project is deleted.
+The page reads from the `PrReviewState` table (`GET /api/projects/:id/pr-reviews`, fields `lastStatus`, `lastSkipReason`, `lastVerdict` and `lastReviewUrl`). The review job writes one row per pull request each time it reviews or skips it. Empty until the first pull request is handled. While automatic PR review is off for the project, the page says so and links to Project settings: GitHub's deliveries still arrive, but no review is made and no row is written. Every role can read the page: administrators, coordinators, developers and readers all hold the `pr.review.read` permission (#1472). Like the rest of a project, the page answers "not found" to anyone outside the project's workspace, and to everyone but administrators once the project is deleted.
 
-Click **Details** on any row to open the **PR-review detail page** (`/projects/[id]/pulls/[prNumber]`), which lists every acceptance-criterion verdict (with reasoning and evidence files) plus a **Re-run review** button (requires the `pr.review.manage` permission). A re-run first reads the pull request from GitHub, so it reviews the current description and the changes at the latest commit, and the row's SHA is that commit (#1471). If the pull request is updated again while a review of it is waiting, only the newest is reviewed. Re-running now shows **live progress** instead of asking you to refresh: a spinner and progress bar track the review in real time over the realtime job bus, and the moment it finishes the new verdict appears **automatically** — no manual reload. If the re-review fails, a clear error toast is shown (with a generic, non-revealing message). [Epic #406, #421]
+Click **Details** on any row to open the **PR-review detail page** (`/projects/[id]/pulls/[prNumber]`), which lists every acceptance-criterion verdict (with reasoning and evidence files) plus a **Re-run review** button. Only administrators and coordinators see the button, because only they hold the `pr.review.manage` permission (#1472). Developers and readers can see the verdicts but not re-run them. Each user can re-run up to 10 reviews per 15 minutes (`PR_REVIEWS_REREVIEW_LIMIT_MAX`), separately from the page's reads, because every re-run is a model call. A re-run first reads the pull request from GitHub, so it reviews the current description and the changes at the latest commit, and the row's SHA is that commit (#1471). If the pull request is updated again while a review of it is waiting, only the newest is reviewed. Re-running now shows **live progress** instead of asking you to refresh: a spinner and progress bar track the review in real time over the realtime job bus, and the moment it finishes the new verdict appears **automatically** — no manual reload. If the re-review fails, a clear error toast is shown (with a generic, non-revealing message). [Epic #406, #421]
 
 ### Per-repository configuration (`.metis/pr-review.yaml`)
 

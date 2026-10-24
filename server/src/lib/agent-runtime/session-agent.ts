@@ -100,6 +100,27 @@ export async function loadBoundCustomAgent(
 }
 
 /**
+ * #1445 review — what to tell the person whose chat is bound to a custom agent
+ * that can no longer run here (`SessionAgent.customUnusable`): without this,
+ * the turn silently runs with no persona, tools or skills. `null` when the
+ * session has no custom agent or its agent is usable. Shown as-is in the chat;
+ * the agent's name is user text and is rendered as text, never markup.
+ */
+export async function sessionAgentNotice(
+  s: Pick<SessionAgentBinding, "agentRef" | "projectId">,
+  db: PrismaClient = defaultPrisma,
+): Promise<string | null> {
+  const parsed = s.agentRef ? parseAgentRef(s.agentRef) : null;
+  if (!parsed || parsed.kind !== "custom" || !s.projectId) return null;
+  const def = await loadAgentDefinition(s.agentRef!, db);
+  if (!def) {
+    return "This chat's agent no longer exists, so the chat runs without its persona, tools and skills. Start a new chat to pick another agent.";
+  }
+  if (await isCustomAgentUsableInProject(def, s.projectId, db)) return null;
+  return `This chat's agent "${def.name}" is switched off for this project, so the chat runs without its persona, tools and skills. Ask a workspace admin to enable it under Custom agents.`;
+}
+
+/**
  * The session agent's definition, allowlist and approval override — read once
  * per turn. The library branch keeps the #142 semantics exactly: a library
  * agent's empty `tools` declares no allowlist; an unreadable one fails closed.
@@ -160,7 +181,7 @@ export interface BindableAgent {
 /**
  * The agents a chat session may bind: every enabled library agent (the library
  * binding rule is unchanged), then — for a project session — the custom agents
- * the project may use: owned and not turned off, or turned on (#1005). ONE
+ * the project has enabled, owned or not (off until enabled, #1005 / #1445). ONE
  * list for the one picker.
  */
 export async function listBindableAgents(

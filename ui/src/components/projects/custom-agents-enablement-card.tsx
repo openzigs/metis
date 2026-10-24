@@ -44,14 +44,21 @@ interface Props {
 
 const candidatesKey = (projectId: string) => ["custom-agents", "candidates", projectId] as const;
 const enabledKey = (projectId: string) => ["custom-agents", "enabled", projectId] as const;
+const disabledKey = (projectId: string) => ["custom-agents", "disabled", projectId] as const;
 
 export function CustomAgentsEnablementCard({ projectId }: Props) {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<CustomAgentDto | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // #1445 review — a refused switch (no admin role, an agent this caller cannot
+  // reach) is said, never a click that silently does nothing.
+  const [toggleError, setToggleError] = useState<string | null>(null);
   // The card stays mounted when the Library scope picker changes project, so a
   // refusal on one project must not linger on the next (PR #408 review).
-  useEffect(() => setDeleteError(null), [projectId]);
+  useEffect(() => {
+    setDeleteError(null);
+    setToggleError(null);
+  }, [projectId]);
 
   // The wizard lists only one workspace's projects, so link to THIS project's
   // workspace. A project with no workspace could not be picked in any wizard,
@@ -78,12 +85,27 @@ export function CustomAgentsEnablementCard({ projectId }: Props) {
     enabled: Boolean(projectId),
   });
 
+  // #1445 — agents someone explicitly switched OFF here, to tell "Off" apart
+  // from "Off until enabled" (never switched). Labels only: if it cannot be
+  // read, every agent that is not on reads "Off until enabled".
+  const disabled = useQuery({
+    queryKey: disabledKey(projectId),
+    queryFn: () => sdkApi.listDisabledAgentIds(projectId),
+    enabled: Boolean(projectId),
+    // A failed read only costs the "Off" wording; do not hold the card on retries.
+    retry: false,
+  });
+
   const toggle = useMutation({
     mutationFn: ({ id, next }: { id: string; next: boolean }) =>
       sdkApi.setAgentEnablement(id, { projectId, enabled: next }),
+    onMutate: () => setToggleError(null),
+    onError: (err: unknown) =>
+      setToggleError(err instanceof Error ? err.message : "Failed to change the agent."),
     onSuccess: () => {
       // Refetch the enabled set so the row labels live-update (AC).
       qc.invalidateQueries({ queryKey: enabledKey(projectId) });
+      qc.invalidateQueries({ queryKey: disabledKey(projectId) });
     },
   });
 
@@ -98,19 +120,28 @@ export function CustomAgentsEnablementCard({ projectId }: Props) {
       setDeleteError(err instanceof Error ? err.message : "Failed to delete the agent."),
   });
 
-  const isLoading = candidates.isLoading || enabled.isLoading;
+  const isLoading = candidates.isLoading || enabled.isLoading || disabled.isLoading;
   const isError = candidates.isError || enabled.isError;
 
   const enabledIds = new Set((enabled.data ?? []).map((a: CustomAgentDto) => a.id));
-  const rows = candidates.data ?? [];
+  const disabledIds = new Set(disabled.data ?? []);
+  // #1445 review — an agent from ANOTHER project that is enabled here is used
+  // by chat and analysis too, so it is listed here, where it can be switched
+  // off; the candidates alone (built-ins and this project's own) miss it.
+  const candidateIds = new Set((candidates.data ?? []).map((a: CustomAgentDto) => a.id));
+  const rows = [
+    ...(candidates.data ?? []),
+    ...(enabled.data ?? []).filter((a: CustomAgentDto) => !candidateIds.has(a.id)),
+  ];
 
   return (
     <Card className="space-y-3 p-4" data-testid="custom-agents-enablement-card">
       <div className="flex items-start justify-between gap-2">
         <div>
           <h3 className="text-base font-semibold">Custom agents</h3>
-          <p className="text-xs text-muted-foreground">
-            Enable analyst agents to participate in this project&apos;s analysis runs.
+          <p className="text-xs text-muted-foreground" data-testid="ca-default-off-hint">
+            Agents are off until enabled here, including new ones. An enabled agent is offered in
+            chat and joins this project&apos;s analysis runs.
           </p>
         </div>
         {workspaceId ? (
@@ -124,6 +155,12 @@ export function CustomAgentsEnablementCard({ projectId }: Props) {
           </Button>
         ) : null}
       </div>
+
+      {toggleError ? (
+        <p className="text-sm text-destructive" role="alert" data-testid="ca-toggle-error">
+          {toggleError}
+        </p>
+      ) : null}
 
       {deleteError ? (
         <p className="text-sm text-destructive" role="alert" data-testid="ca-delete-error">
@@ -162,6 +199,21 @@ export function CustomAgentsEnablementCard({ projectId }: Props) {
                     {agent.isBuiltIn && (
                       <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs">built-in</span>
                     )}
+                    {!agent.isBuiltIn && agent.projectId !== projectId && (
+                      <span
+                        className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs"
+                        data-testid={`ca-other-project-${agent.id}`}
+                      >
+                        from another project
+                      </span>
+                    )}
+                    {/* #1445 — the state in words, the same rule chat and analysis apply. */}
+                    <span
+                      className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs"
+                      data-testid={`ca-enablement-state-${agent.id}`}
+                    >
+                      {on ? "On" : disabledIds.has(agent.id) ? "Off" : "Off until enabled"}
+                    </span>
                   </div>
                   {agent.description && (
                     <div className="text-xs text-muted-foreground">{agent.description}</div>

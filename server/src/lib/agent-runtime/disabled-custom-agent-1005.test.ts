@@ -5,8 +5,9 @@
  * before it was turned off is refused BEFORE anyone is asked to approve it
  * (no two-minute approval wait), and turning it back on restores all of it.
  *
- * The rule: an explicit enablement row for (agent, project) decides, either
- * way. With no row, only the project that OWNS the agent may use it.
+ * The rule (#1445): off until enabled. Only an enabled row for (agent,
+ * project) makes it usable — owning it does not. The authoring playground is
+ * the one exception (`customAgentPlaygroundAccess`, its route only).
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
@@ -70,18 +71,22 @@ vi.mock("../prisma.js", () => ({ prisma: fakeDb }));
 vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 import {
+  customAgentPlaygroundAccess,
+  customAgentPlaygroundAccessFor,
   customAgentUsableInProject,
   isAgentCallable,
   isCustomAgentUsableInProject,
   listCallableAgents,
   loadAgentDefinition,
 } from "./definition.js";
-import { listBindableAgents, loadBoundCustomAgent } from "./session-agent.js";
+import { listBindableAgents, loadBoundCustomAgent, sessionAgentNotice } from "./session-agent.js";
 import { SubAgentBudget, subAgentTools, type AgentToolsContext } from "./subagents.js";
 import { ApprovalGateService } from "../ai/approval-policy.js";
 import { executeToolCall } from "../ai/tool-runtime/executor.js";
 import { makeToolset } from "../ai/tool-runtime/toolset.js";
 import type { AIProvider } from "../ai/types.js";
+import { listEnabledAgentsForProject } from "../custom-agents/index.js";
+import { listAnalysisPhaseAgents } from "../analysis/custom-agent-phase.js";
 
 const db = fakeDb as unknown as PrismaClient;
 
@@ -98,6 +103,9 @@ function agentRow(id: string, projectId: string | null, name = `Agent ${id}`) {
     skillKeys: "[]",
     approvalPolicy: null,
     version: "1.0.0",
+    isBuiltIn: false,
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
   };
 }
 
@@ -119,16 +127,36 @@ beforeEach(() => {
     agentRow("shared", null, "Shared"),
     agentRow("foreign", "p2", "Foreign"),
   );
+  // The project's own agents start switched ON here; the #1445 block below
+  // covers the never-switched case.
+  setEnabled("own", "p1", true);
+  setEnabled("own2", "p1", true);
 });
 
-describe("customAgentUsableInProject — the one rule", () => {
-  it("an explicit row decides either way; with none, only the owner may use it", () => {
-    expect(customAgentUsableInProject("p1", "p1", null)).toBe(true);
-    expect(customAgentUsableInProject("p1", "p1", { enabled: false })).toBe(false);
-    expect(customAgentUsableInProject("p1", "p1", { enabled: true })).toBe(true);
-    expect(customAgentUsableInProject(null, "p1", null)).toBe(false);
-    expect(customAgentUsableInProject(null, "p1", { enabled: true })).toBe(true);
-    expect(customAgentUsableInProject("p2", "p1", { enabled: false })).toBe(false);
+/** Drop every enablement row: each owned agent is now "never toggled". */
+function neverToggled(): void {
+  rows.enablement.length = 0;
+}
+
+describe("customAgentUsableInProject — the one rule (#1445: off until enabled)", () => {
+  it("only an enabled row makes an agent usable; no row is off", () => {
+    expect(customAgentUsableInProject(null)).toBe(false);
+    expect(customAgentUsableInProject(undefined)).toBe(false);
+    expect(customAgentUsableInProject({ enabled: false })).toBe(false);
+    expect(customAgentUsableInProject({ enabled: true })).toBe(true);
+  });
+});
+
+describe("customAgentPlaygroundAccess — the playground's exception", () => {
+  it("the owner's admin may test a never-switched agent; a member may not; a row still decides", () => {
+    expect(customAgentPlaygroundAccess("p1", "p1", null, true)).toBe("run");
+    expect(customAgentPlaygroundAccess("p1", "p1", null, false)).toBe("off-until-enabled");
+    expect(customAgentPlaygroundAccess("p1", "p1", { enabled: false }, true)).toBe("switched-off");
+    expect(customAgentPlaygroundAccess("p1", "p1", { enabled: true }, false)).toBe("run");
+    expect(customAgentPlaygroundAccess(null, "p1", null, true)).toBe("not-found");
+    expect(customAgentPlaygroundAccess("p2", "p1", null, true)).toBe("not-found");
+    expect(customAgentPlaygroundAccess(null, "p1", { enabled: true }, false)).toBe("run");
+    expect(customAgentPlaygroundAccess("p2", "p1", { enabled: false }, true)).toBe("not-found");
   });
 });
 
@@ -140,7 +168,7 @@ describe("isCustomAgentUsableInProject", () => {
     expect(await isCustomAgentUsableInProject(own, "p1", db)).toBe(false);
   });
 
-  it("an owned agent never toggled stays usable; turning it back on restores it", async () => {
+  it("turning an owned agent back on restores it", async () => {
     expect(await isCustomAgentUsableInProject(own, "p1", db)).toBe(true);
     setEnabled("own", "p1", false);
     setEnabled("own", "p1", true);
@@ -322,5 +350,101 @@ describe("a delegation offered before the agent was turned off", () => {
     expect(out).toMatchObject({ executed: true, isError: true });
     expect(out.text).toContain('could not check whether the "Go SQL reviewer" agent may run');
     expect(out.text).not.toContain("turned off");
+  });
+});
+
+describe("#1445 — an owned agent nobody has switched is off everywhere but the playground", () => {
+  const own = { kind: "custom" as const, id: "own", projectId: "p1" };
+  const callableRefs = async () => (await listCallableAgents("p1", { db })).map((d) => d.ref);
+  const bindableRefs = async () =>
+    (await listBindableAgents("p1", db)).filter((a) => a.kind === "custom").map((a) => a.ref);
+
+  it("is not usable by the project that owns it", async () => {
+    neverToggled();
+    expect(await isCustomAgentUsableInProject(own, "p1", db)).toBe(false);
+  });
+
+  it("is offered neither as a chat sub-agent nor in the session agent picker", async () => {
+    neverToggled();
+    expect(await callableRefs()).toEqual([]);
+    expect(await bindableRefs()).toEqual([]);
+    expect(await isAgentCallable("p1", "custom:own", db)).toBe(false);
+  });
+
+  it("a session bound to it fails closed", async () => {
+    neverToggled();
+    expect(await loadBoundCustomAgent("custom:own", "p1", db)).toBeNull();
+  });
+
+  it("a session bound to it gets a notice naming the agent; none once it is enabled", async () => {
+    const bound = { agentRef: "custom:own", projectId: "p1" };
+    neverToggled();
+    expect(await sessionAgentNotice(bound, db)).toBe(
+      'This chat\'s agent "Go SQL reviewer" is switched off for this project, so the chat runs without its persona, tools and skills. Ask a workspace admin to enable it under Custom agents.',
+    );
+    setEnabled("own", "p1", true);
+    expect(await sessionAgentNotice(bound, db)).toBeNull();
+    // Deleted: said so, without claiming it is switched off.
+    expect(await sessionAgentNotice({ agentRef: "custom:gone", projectId: "p1" }, db)).toMatch(
+      /^This chat's agent no longer exists/,
+    );
+    // No custom agent, or no project: nothing to say.
+    expect(await sessionAgentNotice({ agentRef: null, projectId: "p1" }, db)).toBeNull();
+    expect(await sessionAgentNotice({ agentRef: "library:x", projectId: "p1" }, db)).toBeNull();
+    expect(await sessionAgentNotice({ agentRef: "custom:own", projectId: null }, db)).toBeNull();
+  });
+
+  it("enabling it offers it in chat and the picker", async () => {
+    neverToggled();
+    setEnabled("own", "p1", true);
+    expect(await callableRefs()).toEqual(["custom:own"]);
+    expect(await bindableRefs()).toEqual(["custom:own"]);
+  });
+
+  it("the analysis phase does not run it", async () => {
+    neverToggled();
+    expect((await listAnalysisPhaseAgents("p1")).map((d) => d.ref)).toEqual([]);
+    setEnabled("own", "p1", true);
+    expect((await listAnalysisPhaseAgents("p1")).map((d) => d.ref)).toEqual(["custom:own"]);
+  });
+
+  it("the card's list (enabled for the project) and chat's offer agree, before and after enabling", async () => {
+    const cardIds = async () => (await listEnabledAgentsForProject("p1")).map((a) => a.id).sort();
+    const chatIds = async () =>
+      (await listCallableAgents("p1", { db })).map((d) => d.ref.replace(/^custom:/, "")).sort();
+    neverToggled();
+    expect(await cardIds()).toEqual([]);
+    expect(await chatIds()).toEqual(await cardIds());
+    setEnabled("own", "p1", true);
+    expect(await cardIds()).toEqual(["own"]);
+    expect(await chatIds()).toEqual(await cardIds());
+  });
+
+  it("the authoring playground may still run it, for its owner's admin only", async () => {
+    neverToggled();
+    const admin = vi.fn(async () => true);
+    const member = vi.fn(async () => false);
+    expect(await customAgentPlaygroundAccessFor(own, "p1", admin, db)).toBe("run");
+    expect(await customAgentPlaygroundAccessFor(own, "p1", member, db)).toBe("off-until-enabled");
+    // Another project gets nothing from ownership it does not have, admin or not.
+    expect(await customAgentPlaygroundAccessFor(own, "p2", admin, db)).toBe("not-found");
+    // Switched OFF by its owner: the playground honours that too.
+    setEnabled("own", "p1", false);
+    expect(await customAgentPlaygroundAccessFor(own, "p1", admin, db)).toBe("switched-off");
+    expect(
+      await customAgentPlaygroundAccessFor(
+        { kind: "library", id: "x", projectId: null },
+        "p1",
+        admin,
+        db,
+      ),
+    ).toBe("not-found");
+  });
+
+  it("the caller is asked only when it decides the answer", async () => {
+    const asked = vi.fn(async () => true);
+    // Enabled: decided by the row.
+    expect(await customAgentPlaygroundAccessFor(own, "p1", asked, db)).toBe("run");
+    expect(asked).not.toHaveBeenCalled();
   });
 });
