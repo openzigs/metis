@@ -22,7 +22,39 @@ import { fetchPrDiff, type DiffFetchOctokit } from "./diff-fetcher.js";
 import type { OctokitLike } from "./github-review-poster.js";
 import { auditPrReviewSkipped } from "./pr-audit.js";
 import type { PrReviewJob } from "./queue.js";
+import { recordPrReviewOutcome, type PrReviewOutcome } from "./state-repo.js";
 import { computeRunCost, finishRun, recordStep, startRun } from "../../replay/runs-service.js";
+import { createChildLogger } from "../../logger.js";
+
+const log = createChildLogger("pr-review-job");
+
+/**
+ * #1470 — write the job's outcome to its `PrReviewState` row, which is what
+ * `/projects/:id/pulls` lists. Keyed by the project the caller resolved (never
+ * by anything in the job payload alone) + repo + PR number. Best-effort: the
+ * review itself is already posted or skipped, so a failed write is logged, not
+ * thrown.
+ */
+async function recordOutcome(
+  projectId: string,
+  job: PrReviewJob,
+  outcome: PrReviewOutcome,
+): Promise<void> {
+  try {
+    await recordPrReviewOutcome(
+      { projectId, repoOwner: job.owner, repoName: job.repo, prNumber: job.prNumber },
+      outcome,
+    );
+  } catch (err) {
+    log.warn("pr_review.state_write_failed", {
+      deliveryId: job.deliveryId,
+      repo: `${job.owner}/${job.repo}`,
+      prNumber: job.prNumber,
+      status: outcome.status,
+      error: (err as Error).message,
+    });
+  }
+}
 
 export interface ExecutePrReviewJobDeps {
   judge?: JudgeLike;
@@ -75,11 +107,25 @@ export async function executePrReviewJob(
   input: ExecutePrReviewJobInput,
   deps: ExecutePrReviewJobDeps,
 ): Promise<ExecutePrReviewJobResult> {
-  if (!deps.judge || !deps.octokit) {
-    return { skipped: "no_judge_or_octokit", runId: null };
-  }
-  if (!input.project || !input.project.autoReviewPrs) {
+  if (!input.project) {
     return { skipped: "no_project_or_auto_review_disabled", runId: null };
+  }
+  if (!input.project.autoReviewPrs) {
+    // #1470 — a job queued before review was switched off reaches here
+    // (`resolveProjectForQueuedReview`); nothing is reviewed or spent.
+    await recordOutcome(input.project.id, input.job, {
+      status: "skipped",
+      reason: "auto_review_disabled",
+    });
+    return { skipped: "no_project_or_auto_review_disabled", runId: null };
+  }
+  if (!deps.judge || !deps.octokit) {
+    // #1470 — the server has no review model or GitHub client to review with.
+    await recordOutcome(input.project.id, input.job, {
+      status: "skipped",
+      reason: "review_not_configured",
+    });
+    return { skipped: "no_judge_or_octokit", runId: null };
   }
 
   const { job, project, prTitle, prBody, prUrl, installationId, actor } = input;
@@ -103,6 +149,7 @@ export async function executePrReviewJob(
       projectId: project.id,
       reason: acResult.skipReason,
     });
+    await recordOutcome(project.id, job, { status: "skipped", reason: acResult.skipReason });
     return { skipped: "ac_resolve_skip", runId: null };
   }
 
@@ -130,6 +177,7 @@ export async function executePrReviewJob(
       reason: "diff_too_large",
       details: { errorMessage: (err as Error).message },
     });
+    await recordOutcome(project.id, job, { status: "skipped", reason: "diff_unavailable" });
     return { skipped: "diff_fetch_failed", runId: null };
   }
   if (diffOut.tooLarge) {
@@ -145,6 +193,7 @@ export async function executePrReviewJob(
       reason: "diff_too_large",
       details: { rawBytes: diffOut.rawBytes },
     });
+    await recordOutcome(project.id, job, { status: "skipped", reason: "diff_too_large" });
     return { skipped: "diff_too_large", runId: null };
   }
 
@@ -158,6 +207,9 @@ export async function executePrReviewJob(
   });
   const budget = deps.budget ?? defaultBudgetDeps();
   const action = (job.context.action as string | undefined) ?? "queued";
+  // Set once `runPrReview` has returned, so a bookkeeping error after it never
+  // rewrites a posted (or skipped) review as failed.
+  let outcomeRecorded = false;
   try {
     const result = await runPrReview(
       {
@@ -177,6 +229,21 @@ export async function executePrReviewJob(
       },
       { judge: deps.judge, budget },
     );
+    await recordOutcome(
+      project.id,
+      job,
+      result.skipped
+        ? { status: "skipped", reason: result.skipped }
+        : {
+            status: "reviewed",
+            headSha: (job.context.headSha as string | null | undefined) ?? null,
+            acVerdicts: result.judge.verdicts,
+            runId,
+            verdict: result.verdict ?? result.judge.overallVerdict,
+            reviewUrl: result.reviewUrl,
+          },
+    );
+    outcomeRecorded = true;
     await recordStep({
       runId,
       kind: "tool_result",
@@ -187,6 +254,7 @@ export async function executePrReviewJob(
     await finishRun({ runId, status: "completed", ...cost });
     return { skipped: null, runId };
   } catch (err) {
+    if (!outcomeRecorded) await recordOutcome(project.id, job, { status: "failed", runId });
     await recordStep({
       runId,
       kind: "tool_result",

@@ -268,6 +268,27 @@ function buildDefaultProcessor(deps?: PrReviewProcessorDeps): PrReviewProcessor 
       });
       return;
     }
+    const installationId = (job.context.installationId as string | null | undefined) ?? null;
+    const prTitle = (job.context.prTitle as string | undefined) ?? `PR #${job.prNumber}`;
+    const prBody = (job.context.prBody as string | undefined) ?? "";
+    const prUrl =
+      (job.context.prUrl as string | undefined) ??
+      `https://github.com/${job.owner}/${job.repo}/pull/${job.prNumber}`;
+    const input = {
+      job,
+      project,
+      prTitle,
+      prBody,
+      prUrl,
+      installationId,
+      actor: { type: "webhook" as const, id: null },
+    };
+    if (!project.autoReviewPrs) {
+      // #1470 — switched off since the job was queued: no judge or GitHub
+      // client is resolved; the executor records the skip and reviews nothing.
+      await executePrReviewJob(input, {});
+      return;
+    }
     const [judge, octokit, budget] = await Promise.all([
       deps.resolveJudge(job),
       deps.resolveOctokit(job),
@@ -281,25 +302,11 @@ function buildDefaultProcessor(deps?: PrReviewProcessorDeps): PrReviewProcessor 
         hasJudge: !!judge,
         hasOctokit: !!octokit,
       });
+      // #1470 — the executor records the skip (`review_not_configured`) so the
+      // pull requests page says why nothing was reviewed.
+      await executePrReviewJob(input, {});
       return;
     }
-    const installationId = (job.context.installationId as string | null | undefined) ?? null;
-    const prTitle = (job.context.prTitle as string | undefined) ?? `PR #${job.prNumber}`;
-    const prBody = (job.context.prBody as string | undefined) ?? "";
-    const prUrl =
-      (job.context.prUrl as string | undefined) ??
-      `https://github.com/${job.owner}/${job.repo}/pull/${job.prNumber}`;
-    await executePrReviewJob(
-      {
-        job,
-        project,
-        prTitle,
-        prBody,
-        prUrl,
-        installationId,
-        actor: { type: "webhook", id: null },
-      },
-      { judge, octokit, ...(budget ? { budget } : {}) },
-    );
+    await executePrReviewJob(input, { judge, octokit, ...(budget ? { budget } : {}) });
   };
 }

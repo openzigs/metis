@@ -198,6 +198,7 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
               context: {
                 action,
                 branchName: pr.head?.ref ?? null,
+                headSha: pr.head?.sha ?? null,
               },
               attempt: 1,
               enqueuedAt: Date.now(),
@@ -349,6 +350,11 @@ async function runDriftReconcile(input: {
  * one it was enqueued for (the original was deleted, or another project
  * connected the same repo). A job runs only for the project it was enqueued
  * for, and only while that project still has auto-review switched on.
+ *
+ * #1470 — a project that switched auto-review off since is still returned
+ * (with `autoReviewPrs: false`) so `executePrReviewJob` records the skip on
+ * the pull requests page; the executor's first gate refuses to review it, and
+ * the worker resolves no judge or GitHub client for it.
  */
 export async function resolveProjectForQueuedReview(job: {
   deliveryId: string;
@@ -359,7 +365,7 @@ export async function resolveProjectForQueuedReview(job: {
 }): Promise<Awaited<ReturnType<typeof findProjectForRepo>>> {
   const project = await findProjectForRepo(`${job.owner}/${job.repo}`);
   if (!project) return null;
-  if (project.id !== job.projectId || !project.autoReviewPrs) {
+  if (project.id !== job.projectId) {
     log.warn("pr_review.queued_project_changed", {
       deliveryId: job.deliveryId,
       repo: `${job.owner}/${job.repo}`,

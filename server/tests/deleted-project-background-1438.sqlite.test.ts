@@ -511,13 +511,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }
       });
 
-      it("drops a job whose project switched auto-review off after it was enqueued", async () => {
+      it("hands back a project that switched auto-review off, flagged off, so the skip is recorded (#1470)", async () => {
         await db.project.update({
           where: { id: LIVE },
           data: { autoReviewPrs: false },
         });
         try {
-          expect(await resolveProjectForQueuedReview(job(LIVE, "live-org"))).toBeNull();
+          // The executor's first gate refuses a project with review off; the
+          // review itself is proven not to run in pr-review-state-1470.sqlite.test.ts.
+          expect(await resolveProjectForQueuedReview(job(LIVE, "live-org"))).toMatchObject({
+            id: LIVE,
+            autoReviewPrs: false,
+          });
         } finally {
           await db.project.update({
             where: { id: LIVE },

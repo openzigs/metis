@@ -60,6 +60,7 @@ import {
   getPrReviewState,
   upsertPrReviewState,
   listPrReviewStatesForProject,
+  recordPrReviewOutcome,
 } from "./state-repo.js";
 
 beforeEach(() => {
@@ -262,5 +263,113 @@ describe("listPrReviewStatesForProject", () => {
     expect(a.items).toHaveLength(1);
     const b = await listPrReviewStatesForProject("pZ", { limit: 0, offset: 0 });
     expect(b.items).toHaveLength(1); // clamped to >= 1
+  });
+});
+
+describe("recordPrReviewOutcome (#1470)", () => {
+  const K = { projectId: "p1", repoOwner: "acme", repoName: "site", prNumber: 9 };
+  const reviewed = {
+    status: "reviewed" as const,
+    headSha: "sha1",
+    acVerdicts: [
+      { acId: "AC-1", verdict: "satisfied" as const, reasoning: "ok", evidenceFiles: ["a.ts"] },
+    ],
+    runId: "run_1",
+    verdict: "approve" as const,
+    reviewUrl: "https://github.com/acme/site/pull/9#pullrequestreview-1",
+  };
+
+  it("a completed review writes every field the page and the incremental path read", async () => {
+    const out = await recordPrReviewOutcome(K, reviewed);
+    expect(out).toMatchObject({
+      lastStatus: "reviewed",
+      lastSkipReason: null,
+      lastReviewedSha: "sha1",
+      lastRunId: "run_1",
+      lastVerdict: "approve",
+      lastReviewUrl: reviewed.reviewUrl,
+    });
+    expect(out.acVerdicts).toHaveLength(1);
+  });
+
+  it("a skip on a new PR creates the row with only the status and reason", async () => {
+    const out = await recordPrReviewOutcome(K, { status: "skipped", reason: "no_linked_issue" });
+    expect(out).toMatchObject({
+      lastStatus: "skipped",
+      lastSkipReason: "no_linked_issue",
+      lastReviewUrl: null,
+      acVerdicts: [],
+    });
+    // Nothing else is written (the column defaults apply; this mock has none).
+    const created = rows.get("p1|acme|site|9")!;
+    expect(Object.keys(created).sort()).toEqual(
+      [
+        "id",
+        "createdAt",
+        "updatedAt",
+        "projectId",
+        "repoOwner",
+        "repoName",
+        "prNumber",
+        "lastStatus",
+        "lastSkipReason",
+      ].sort(),
+    );
+  });
+
+  it("a skip after a review keeps the posted review's verdict, link, SHA and run", async () => {
+    await recordPrReviewOutcome(K, reviewed);
+    const out = await recordPrReviewOutcome(K, { status: "skipped", reason: "budget_exceeded" });
+    expect(out).toMatchObject({
+      lastStatus: "skipped",
+      lastSkipReason: "budget_exceeded",
+      lastVerdict: "approve",
+      lastReviewUrl: reviewed.reviewUrl,
+      lastReviewedSha: "sha1",
+      lastRunId: "run_1",
+    });
+    expect(out.acVerdicts).toHaveLength(1);
+  });
+
+  it("a failure points at its run and clears a stale skip reason, keeping the posted review", async () => {
+    await recordPrReviewOutcome(K, reviewed);
+    await recordPrReviewOutcome(K, { status: "skipped", reason: "budget_exceeded" });
+    const out = await recordPrReviewOutcome(K, { status: "failed", runId: "run_2" });
+    expect(out).toMatchObject({
+      lastStatus: "failed",
+      lastSkipReason: null,
+      lastRunId: "run_2",
+      lastVerdict: "approve",
+      lastReviewUrl: reviewed.reviewUrl,
+    });
+  });
+
+  it("a new review after a skip clears the skip reason", async () => {
+    await recordPrReviewOutcome(K, { status: "skipped", reason: "diff_too_large" });
+    const out = await recordPrReviewOutcome(K, { ...reviewed, verdict: "request_changes" });
+    expect(out).toMatchObject({
+      lastStatus: "reviewed",
+      lastSkipReason: null,
+      lastVerdict: "request_changes",
+    });
+  });
+
+  it("reads an unknown stored status as no status", async () => {
+    rows.set("p1|acme|site|10", {
+      id: "prs_x",
+      projectId: "p1",
+      repoOwner: "acme",
+      repoName: "site",
+      prNumber: 10,
+      lastReviewedSha: null,
+      acVerdictsJson: "[]",
+      lastRunId: null,
+      lastVerdict: null,
+      lastStatus: "bogus",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const out = await getPrReviewState({ ...K, prNumber: 10 });
+    expect(out).toMatchObject({ lastStatus: null, lastSkipReason: null, lastReviewUrl: null });
   });
 });

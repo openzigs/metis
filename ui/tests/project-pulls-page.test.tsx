@@ -39,6 +39,7 @@ vi.mock("@/lib/projects-api", () => ({
 
 import { prReviewsApi } from "@/lib/pr-reviews-api";
 import { projectsApi } from "@/lib/projects-api";
+import { ApiError } from "@/lib/api-client";
 import ProjectPullsPage from "@/app/(authed)/projects/[id]/pulls/page";
 
 const list = prReviewsApi.list as unknown as ReturnType<typeof vi.fn>;
@@ -157,6 +158,114 @@ describe("Project pulls (PR-review history) page", () => {
     expect(screen.getByText(/50% \(1\/2\)/)).toBeInTheDocument();
     expect(screen.getByText("abcdef1")).toBeInTheDocument();
     expect(screen.getByText("approve")).toBeInTheDocument();
+  });
+
+  it("#1470 — a reviewed PR shows its status, its review on GitHub and a link to its details", async () => {
+    list.mockResolvedValue({
+      items: [
+        row({
+          lastStatus: "reviewed",
+          lastSkipReason: null,
+          lastReviewUrl: "https://github.com/acme/proj/pull/42#pullrequestreview-9",
+        }),
+      ],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByTestId("pr-review-status")).toHaveTextContent("Reviewed");
+    });
+    expect(screen.getByRole("link", { name: "Review on GitHub" })).toHaveAttribute(
+      "href",
+      "https://github.com/acme/proj/pull/42#pullrequestreview-9",
+    );
+    expect(screen.getByRole("link", { name: /Details/ })).toHaveAttribute(
+      "href",
+      "/projects/p1/pulls/42?owner=acme&repo=proj",
+    );
+  });
+
+  it.each([
+    ["budget_exceeded", /spending limit for automatic reviews was reached/],
+    ["no_linked_issue", /does not link an issue/],
+    ["no_published_issue", /not published from this project/],
+    ["no_acceptance_criteria", /no acceptance criteria/],
+    ["diff_too_large", /larger than this project’s review size limit/],
+    ["diff_unavailable", /could not be read from GitHub/],
+    ["auto_review_disabled", /switched off for this project/],
+    ["review_not_configured", /not set up on this server yet/],
+    ["something_new", /No reason was recorded/],
+    [null, /No reason was recorded/],
+  ])("#1470 — a PR skipped for %s says so in plain words", async (reason, text) => {
+    list.mockResolvedValue({
+      items: [
+        row({
+          lastStatus: "skipped",
+          lastSkipReason: reason,
+          lastVerdict: null,
+          lastReviewUrl: null,
+        }),
+      ],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByTestId("pr-review-status")).toHaveTextContent(/Not reviewed\./);
+    });
+    expect(screen.getByTestId("pr-review-status")).toHaveTextContent(text);
+    expect(screen.queryByRole("link", { name: "Review on GitHub" })).toBeNull();
+    // No raw reason code is shown.
+    if (reason) expect(screen.queryByText(reason)).toBeNull();
+  });
+
+  it("#1470 — a failed review says so; a legacy row with a verdict reads as reviewed", async () => {
+    list.mockResolvedValue({
+      items: [
+        row({ id: "a", prNumber: 1, lastStatus: "failed", lastVerdict: null }),
+        row({ id: "b", prNumber: 2, lastStatus: undefined, lastVerdict: "approve" }),
+        row({ id: "c", prNumber: 3, lastStatus: undefined, lastVerdict: null }),
+      ],
+      total: 3,
+      limit: 50,
+      offset: 0,
+    });
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getAllByTestId("pr-review-status")).toHaveLength(3);
+    });
+    const cells = screen.getAllByTestId("pr-review-status");
+    expect(cells[0]).toHaveTextContent(/Review failed/);
+    expect(cells[1]).toHaveTextContent("Reviewed");
+    expect(cells[2]).toHaveTextContent("—");
+  });
+
+  it("#1470 — a review link that is not https is not rendered as a link", async () => {
+    list.mockResolvedValue({
+      items: [row({ lastStatus: "reviewed", lastReviewUrl: "javascript:alert(1)" })],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByTestId("pr-review-status")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("link", { name: "Review on GitHub" })).toBeNull();
+  });
+
+  it("#1470 — a 403 says the user lacks permission instead of 'try again later'", async () => {
+    list.mockRejectedValue(new ApiError(403, "Requires permission pr.review.read", "FORBIDDEN"));
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByTestId("pr-reviews-forbidden")).toHaveTextContent(
+        /don't have permission to see PR reviews/,
+      );
+    });
+    expect(screen.queryByText(/Try again later/)).toBeNull();
   });
 
   it("renders an em-dash for AC pass-rate when no verdicts exist", async () => {

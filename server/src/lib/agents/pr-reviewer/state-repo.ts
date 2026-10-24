@@ -15,6 +15,18 @@
  */
 import { prisma } from "../../prisma.js";
 import type { JudgeVerdict } from "./prompts.js";
+import type { PrReviewSkipReason } from "./pr-audit.js";
+
+/** #1470 — the latest job's outcome for a PR. */
+export type PrReviewStatus = "reviewed" | "skipped" | "failed";
+
+/**
+ * #1470 — why a job was skipped. The audit vocabulary plus the reasons only
+ * the job path knows: review switched off after the job was queued, a diff
+ * GitHub would not return, and a server with no review model or GitHub client.
+ */
+export type PrReviewStateSkipReason =
+  PrReviewSkipReason | "auto_review_disabled" | "diff_unavailable" | "review_not_configured";
 
 export interface PrReviewStateKey {
   projectId: string;
@@ -29,6 +41,9 @@ export interface PrReviewStateRow extends PrReviewStateKey {
   acVerdicts: JudgeVerdict[];
   lastRunId: string | null;
   lastVerdict: string | null;
+  lastStatus: PrReviewStatus | null;
+  lastSkipReason: string | null;
+  lastReviewUrl: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -69,6 +84,10 @@ function parseVerdicts(raw: string | null | undefined): JudgeVerdict[] {
   }
 }
 
+function parseStatus(raw: string | null | undefined): PrReviewStatus | null {
+  return raw === "reviewed" || raw === "skipped" || raw === "failed" ? raw : null;
+}
+
 function rowToState(row: {
   id: string;
   projectId: string;
@@ -79,6 +98,9 @@ function rowToState(row: {
   acVerdictsJson: string | null;
   lastRunId: string | null;
   lastVerdict: string | null;
+  lastStatus?: string | null;
+  lastSkipReason?: string | null;
+  lastReviewUrl?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }): PrReviewStateRow {
@@ -92,6 +114,9 @@ function rowToState(row: {
     acVerdicts: parseVerdicts(row.acVerdictsJson),
     lastRunId: row.lastRunId,
     lastVerdict: row.lastVerdict,
+    lastStatus: parseStatus(row.lastStatus),
+    lastSkipReason: row.lastSkipReason ?? null,
+    lastReviewUrl: row.lastReviewUrl ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -137,6 +162,69 @@ export async function upsertPrReviewState(
       repoOwner: input.repoOwner,
       repoName: input.repoName,
       prNumber: input.prNumber,
+      ...data,
+    },
+    update: data,
+  });
+  return rowToState(row);
+}
+
+/** #1470 — the outcome of one PR-review job, as the job path reports it. */
+export type PrReviewOutcome =
+  | {
+      status: "reviewed";
+      headSha: string | null;
+      acVerdicts: JudgeVerdict[];
+      runId: string;
+      verdict: "approve" | "request_changes" | "comment";
+      reviewUrl: string | null;
+    }
+  | { status: "skipped"; reason: PrReviewStateSkipReason }
+  | { status: "failed"; runId: string };
+
+/**
+ * #1470 — write one job's outcome to the PR's row, creating it on first sight.
+ *
+ * A completed review replaces everything the incremental path reads (head SHA,
+ * per-AC verdicts) along with the verdict, run and GitHub link. A skip or a
+ * failure records only the status (and the skip's reason, or the failed run):
+ * the review last posted to GitHub is still the PR's review, so its verdict,
+ * link and SHA stay.
+ */
+export async function recordPrReviewOutcome(
+  key: PrReviewStateKey,
+  outcome: PrReviewOutcome,
+): Promise<PrReviewStateRow> {
+  let data: Record<string, unknown>;
+  if (outcome.status === "reviewed") {
+    data = {
+      lastStatus: "reviewed",
+      lastSkipReason: null,
+      lastReviewedSha: outcome.headSha,
+      acVerdictsJson: JSON.stringify(outcome.acVerdicts),
+      lastRunId: outcome.runId,
+      lastVerdict: outcome.verdict,
+      lastReviewUrl: outcome.reviewUrl,
+    };
+  } else if (outcome.status === "skipped") {
+    data = { lastStatus: "skipped", lastSkipReason: outcome.reason };
+  } else {
+    data = { lastStatus: "failed", lastSkipReason: null, lastRunId: outcome.runId };
+  }
+  const row = await table().upsert({
+    where: {
+      projectId_repoOwner_repoName_prNumber: {
+        projectId: key.projectId,
+        repoOwner: key.repoOwner,
+        repoName: key.repoName,
+        prNumber: key.prNumber,
+      },
+    },
+    create: {
+      projectId: key.projectId,
+      repoOwner: key.repoOwner,
+      repoName: key.repoName,
+      prNumber: key.prNumber,
       ...data,
     },
     update: data,

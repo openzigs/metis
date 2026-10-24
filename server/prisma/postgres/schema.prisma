@@ -4006,6 +4006,13 @@ model PrReviewState {
   lastRunId       String?
   /// Last verdict posted: approve|request_changes|comment|skipped.
   lastVerdict     String?
+  /// #1470 — outcome of the latest job for this PR: reviewed|skipped|failed.
+  /// A skip or failure leaves the last posted review's verdict and link alone.
+  lastStatus      String?
+  /// #1470 — why the latest job was skipped (PrReviewStateSkipReason); null unless skipped.
+  lastSkipReason  String?
+  /// #1470 — GitHub `html_url` of the last review posted to the PR.
+  lastReviewUrl   String?
   /// Bookkeeping for queue dedup + observability.
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
