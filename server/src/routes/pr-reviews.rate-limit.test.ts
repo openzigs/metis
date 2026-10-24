@@ -13,6 +13,14 @@ let currentUserId = "u-1472-wiring";
 
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
+    // The project-scope guard's lookup: a live project in the caller's workspace.
+    project: {
+      findUnique: vi.fn(async () => ({
+        workspaceId: "ws-1472",
+        deletedAt: null,
+        workspace: { deletedAt: null, members: [{ id: "member-row" }] },
+      })),
+    },
     prReviewState: {
       findMany: vi.fn(async () => []),
       count: vi.fn(async () => 0),
@@ -24,8 +32,14 @@ vi.mock("../lib/prisma.js", () => ({
 vi.mock("../middleware/auth.js", () => ({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   requireAuth: (req: any, _res: any, next: any) => {
-    // An admin bypasses the project lookup, so only the limiters can refuse.
-    req.user = { userId: currentUserId, role: "admin", permissions: [] };
+    // A workspace coordinator: passes the real scope guard and the real role
+    // gates (read and manage), so only the limiters can refuse.
+    req.user = {
+      userId: currentUserId,
+      role: "coordinator",
+      permissions: [],
+      workspaces: ["ws-1472"],
+    };
     next();
   },
 }));
