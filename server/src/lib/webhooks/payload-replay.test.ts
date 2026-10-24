@@ -176,6 +176,8 @@ describe("signedTriggerEvent (#1492)", () => {
       { ...push, commits: undefined },
       { ...push, pusher: "octo" },
       { ...push, before: 1 },
+      { ...push, ref: 1 },
+      { ...push, after: null },
       { action: "published", release: {}, repository: {} },
       null,
       "push",
@@ -219,5 +221,26 @@ describe("isStaleSignedTriggerEvent (#1492)", () => {
       pull_request: { updated_at: new Date(NOW - SIGNED_EVENT_MAX_AGE_MS - DAY).toISOString() },
     };
     expect(isStaleSignedTriggerEvent(oldPr, NOW)).toBe(true);
+  });
+
+  it("a fresh comment or review on an old issue or pull request is not stale; an old one is", () => {
+    const old = new Date(NOW - SIGNED_EVENT_MAX_AGE_MS - DAY).toISOString();
+    const fresh = new Date(NOW - DAY).toISOString();
+    const comment = (at: string) => ({
+      action: "edited",
+      issue: { updated_at: old },
+      comment: { updated_at: at },
+    });
+    expect(isStaleSignedTriggerEvent(comment(fresh), NOW)).toBe(false);
+    expect(isStaleSignedTriggerEvent(comment(old), NOW)).toBe(true);
+    const review = (at: string) => ({
+      pull_request: { updated_at: old },
+      review: { submitted_at: at },
+    });
+    expect(isStaleSignedTriggerEvent(review(fresh), NOW)).toBe(false);
+    expect(isStaleSignedTriggerEvent(review(old), NOW)).toBe(true);
+    expect(isStaleSignedTriggerEvent({ comment: { updated_at: "nonsense" } }, NOW)).toBe(false);
+    expect(isStaleSignedTriggerEvent(null, NOW)).toBe(false);
+    expect(isStaleSignedTriggerEvent({ ...push(1), repository: "x" }, NOW)).toBe(false);
   });
 });

@@ -229,12 +229,34 @@ export function signedTriggerEvent(payload: unknown): SignedTriggerEvent | null 
  * `updated_at`; its signed `repository.pushed_at` (epoch SECONDS in a push
  * payload, unlike other events' ISO strings, and the time of this push) is
  * used instead. Read for `push` bodies only: on any other event `pushed_at` is
- * the repository's last push, which says nothing about this delivery.
+ * the repository's last push, which says nothing about this delivery. Other
+ * events take the newest of `updated_at`, `comment.updated_at` and
+ * `review.submitted_at`; a body with none of them is not stale (the claim's
+ * retention window still covers it).
  */
 export function isStaleSignedTriggerEvent(payload: unknown, now: number = Date.now()): boolean {
-  if (isStaleSignedEvent(payload, now)) return true;
-  if (signedTriggerEvent(payload) !== "push") return false;
-  const pushedAt = (payload as { repository?: { pushed_at?: unknown } }).repository?.pushed_at;
-  if (typeof pushedAt !== "number" || !Number.isFinite(pushedAt)) return false;
-  return now - pushedAt * 1000 > SIGNED_EVENT_MAX_AGE_MS;
+  if (!isObject(payload)) return false;
+  const event = signedTriggerEvent(payload);
+  if (event === "push") {
+    const repo = payload.repository;
+    const pushedAt = isObject(repo) ? repo.pushed_at : undefined;
+    if (typeof pushedAt !== "number" || !Number.isFinite(pushedAt)) return false;
+    return now - pushedAt * 1000 > SIGNED_EVENT_MAX_AGE_MS;
+  }
+  // A comment or review edited on an issue or pull request untouched for days
+  // is a fresh event, so the NEWEST signed time in the body decides. Every one
+  // of them is signed and no later than the event itself, so a replay is
+  // still judged by when it really happened.
+  const at = Math.max(
+    signedEventTime(payload) ?? -Infinity,
+    isoTime(isObject(payload.comment) ? payload.comment.updated_at : undefined),
+    isoTime(isObject(payload.review) ? payload.review.submitted_at : undefined),
+  );
+  return Number.isFinite(at) && now - at > SIGNED_EVENT_MAX_AGE_MS;
+}
+
+function isoTime(raw: unknown): number {
+  if (typeof raw !== "string") return -Infinity;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : -Infinity;
 }
