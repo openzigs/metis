@@ -528,12 +528,44 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const off = await resume();
         expect(off.status).toBe(200);
         expect(off.body.data.agentNotice).toBe(
-          'This chat\'s agent "Bare" is switched off for this project, so the chat runs without its persona, tools and skills. Ask a workspace admin to enable it under Custom agents.',
+          // #1500 — the fixture project has no workspace: only a system admin can enable it.
+          'This chat\'s agent "Bare" is off for this project until it is enabled, so the chat runs without its persona, tools and skills. Ask a system admin to enable it under Custom agents.',
         );
       } finally {
         await db.customAgentEnablement.create({
           data: { customAgentId: "c-bare", projectId: IDS.project, enabled: true },
         });
+      }
+    });
+
+    it("#1500 — a database error while building the notice costs the notice, never the resume", async () => {
+      const created = await createSession(alice, {
+        projectId: IDS.project,
+        agentRef: "custom:c-bare",
+      });
+      expect(created.status).toBe(201);
+      const sid = created.body.data.session.id as string;
+      // Only the notice's reads fail: the session and transcript reads do not
+      // touch these models.
+      const failing = () => Promise.reject(new Error("db unreachable"));
+      state.db = new Proxy(db, {
+        get(target, prop, receiver) {
+          if (prop === "customAgent" || prop === "customAgentEnablement") {
+            return { findUnique: failing, findFirst: failing, findMany: failing };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      try {
+        const res = await request(app())
+          .post(`/api/ai/sessions/${sid}/resume`)
+          .set("Authorization", `Bearer ${alice}`)
+          .send({});
+        expect(res.status, res.text.slice(0, 300)).toBe(200);
+        expect(res.body.data.session.id).toBe(sid);
+        expect(res.body.data.agentNotice).toBeNull();
+      } finally {
+        state.db = db;
       }
     });
 

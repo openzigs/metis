@@ -18,12 +18,15 @@ import { prisma as defaultPrisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { readStoredOverride } from "./policy.js";
 import {
+  customAgentEnablerForProject,
+  customAgentUsableInProject,
   customDefinition,
   isCustomAgentUsableInProject,
   libraryDefinition,
   listUsableCustomAgentRows,
   loadAgentDefinition,
   parseAgentRef,
+  readEnablement,
 } from "./definition.js";
 
 const log = createChildLogger("session-agent");
@@ -116,8 +119,16 @@ export async function sessionAgentNotice(
   if (!def) {
     return "This chat's agent no longer exists, so the chat runs without its persona, tools and skills. Start a new chat to pick another agent.";
   }
-  if (await isCustomAgentUsableInProject(def, s.projectId, db)) return null;
-  return `This chat's agent "${def.name}" is switched off for this project, so the chat runs without its persona, tools and skills. Ask a workspace admin to enable it under Custom agents.`;
+  const row = await readEnablement(def.id, s.projectId, db);
+  if (customAgentUsableInProject(row)) return null;
+  // #1500 — "switched off" only when someone did; an agent nobody ever enabled
+  // is "off until enabled", the card's words for that state. And name who can
+  // enable it: on a project with no workspace only a system admin can.
+  const who = await customAgentEnablerForProject(s.projectId, db);
+  if (row) {
+    return `This chat's agent "${def.name}" is switched off for this project, so the chat runs without its persona, tools and skills. Ask ${who} to switch it back on under Custom agents.`;
+  }
+  return `This chat's agent "${def.name}" is off for this project until it is enabled, so the chat runs without its persona, tools and skills. Ask ${who} to enable it under Custom agents.`;
 }
 
 /**

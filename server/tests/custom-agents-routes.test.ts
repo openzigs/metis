@@ -249,7 +249,7 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("#1445 review — the pre-auth guard sits in front of requireAuth (CodeQL js/missing-rate-limiting)", () => {
-  it("on POST /:id/invoke and GET /projects/:projectId/disabled", async () => {
+  it("on POST /:id/invoke, GET /projects/:projectId/disabled and /enabled, and PUT /:id/enablement", async () => {
     const { customAgentsPreAuthRateLimiter } =
       await import("../src/middleware/custom-agents-rate-limit.js");
     const { requireAuth } = await import("../src/middleware/auth.js");
@@ -269,6 +269,9 @@ describe("#1445 review — the pre-auth guard sits in front of requireAuth (Code
     for (const [method, path] of [
       ["post", "/:id/invoke"],
       ["get", "/projects/:projectId/disabled"],
+      // #1500
+      ["get", "/projects/:projectId/enabled"],
+      ["put", "/:id/enablement"],
     ] as const) {
       const handles = chain(method, path);
       expect(handles[0]).toBe(customAgentsPreAuthRateLimiter);
@@ -417,7 +420,10 @@ describe("POST /custom-agents/:id/invoke (#80/#83)", () => {
       .send({ projectId: "p1", input: "hello" });
     expect(off.status).toBe(409);
     expect(off.body.error.code).toBe("AGENT_DISABLED");
-    expect(off.body.error.message).toContain('"Go SQL reviewer" is turned off for this project');
+    // #1500 — says who can switch it back on, in the session notice's words.
+    expect(off.body.error.message).toBe(
+      '"Go SQL reviewer" is turned off for this project. Ask a workspace admin to switch it back on under Custom agents.',
+    );
     expect(chatMock).not.toHaveBeenCalled();
     await new Promise((r) => setTimeout(r, 0));
     expect(auditRows.find((a) => a.action === "custom_agent.invoke_denied")).toBeTruthy();
@@ -521,6 +527,25 @@ describe("POST /custom-agents/:id/invoke (#80/#83)", () => {
       .send({ projectId: "p-open", input: "hello" });
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe("AGENT_DISABLED");
+    // #1500 — there only a system admin can enable it, and the message says so.
+    expect(res.body.error.message).toBe(
+      '"Open draft" is off for this project until a system admin enables it under Custom agents.',
+    );
+    expect(chatMock).not.toHaveBeenCalled();
+  });
+
+  it("#1500 — a switched-off agent on a project with no workspace names a system admin", async () => {
+    seedProject("p-open", null);
+    const agent = seedAgent({ projectId: "p-open", name: "Open off" });
+    enableFor(agent.id, "p-open");
+    for (const row of enablements.values()) if (row.customAgentId === agent.id) row.enabled = false;
+    const res = await request(createApp())
+      .post(`/custom-agents/${agent.id}/invoke`)
+      .send({ projectId: "p-open", input: "hello" });
+    expect(res.status).toBe(409);
+    expect(res.body.error.message).toBe(
+      '"Open off" is turned off for this project. Ask a system admin to switch it back on under Custom agents.',
+    );
     expect(chatMock).not.toHaveBeenCalled();
   });
 
@@ -633,6 +658,35 @@ describe("enablement endpoints (#79/#80)", () => {
     expect(list.status).toBe(200);
     expect(list.body.data).toHaveLength(1);
     expect(list.body.data[0].id).toBe(agent.id);
+  });
+
+  it("#1500 — /enabled returns summaries only: no system prompt or other definition field, for own and borrowed agents alike", async () => {
+    seedProject("p1", "w1");
+    seedProject("p2", "w2");
+    seedMember("w1", "u1", "member"); // any member reads the card
+    const own = seedAgent({ projectId: "p1", name: "Own" });
+    const borrowed = seedAgent({ projectId: "p2", name: "Borrowed" });
+    enableFor(own.id, "p1");
+    enableFor(borrowed.id, "p1");
+
+    const list = await request(createApp()).get("/custom-agents/projects/p1/enabled");
+    expect(list.status).toBe(200);
+    expect(list.text).not.toContain("systemPrompt");
+    const byId = new Map(list.body.data.map((a: { id: string }) => [a.id, a]));
+    expect(byId.get(borrowed.id)).toEqual({
+      id: borrowed.id,
+      name: "Borrowed",
+      description: borrowed.description,
+      isBuiltIn: false,
+      projectId: "p2",
+    });
+    expect(Object.keys(byId.get(own.id) as object).sort()).toEqual([
+      "description",
+      "id",
+      "isBuiltIn",
+      "name",
+      "projectId",
+    ]);
   });
 
   it("#1445 review — lists the agents explicitly switched OFF for the project, and only to its members", async () => {

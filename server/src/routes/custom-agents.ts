@@ -31,7 +31,10 @@ import {
   invokeCustomAgent,
 } from "../lib/custom-agents/invoke.js";
 import { auditInvocation } from "../lib/custom-agents/invocation-audit.js";
-import { customAgentPlaygroundAccessFor } from "../lib/agent-runtime/definition.js";
+import {
+  customAgentEnablerForProject,
+  customAgentPlaygroundAccessFor,
+} from "../lib/agent-runtime/definition.js";
 import { aiRateLimiter } from "../middleware/ai-rate-limit.js";
 import { customAgentsPreAuthRateLimiter } from "../middleware/custom-agents-rate-limit.js";
 import { assertWithinBudget, BudgetExceededError } from "../lib/finops/budget-enforcer.js";
@@ -43,7 +46,7 @@ import {
 import { buildProvider, loadAIConfig } from "../lib/ai/index.js";
 import { meterAnalysisProvider, runInAnalysisUsageScope } from "../lib/analysis/analysis-usage.js";
 import type { AIProvider } from "../lib/ai/types.js";
-import type { AuthPayload, CustomAgentDto } from "@metis/shared";
+import type { AuthPayload, CustomAgentDto, CustomAgentSummaryDto } from "@metis/shared";
 
 function ok<T>(data: T): { success: true; data: T } {
   return { success: true, data };
@@ -81,6 +84,20 @@ async function callerMayEnableAgents(user: AuthPayload, projectId: string): Prom
     if (err instanceof AppError && [400, 403, 404].includes(err.statusCode)) return false;
     throw err;
   }
+}
+
+/**
+ * #1500 — the card's view of an agent, built field by field (an allowlist, so
+ * a field later added to the definition is not sent by default).
+ */
+export function toCustomAgentSummary(agent: CustomAgentDto): CustomAgentSummaryDto {
+  return {
+    id: agent.id,
+    name: agent.name,
+    description: agent.description,
+    isBuiltIn: agent.isBuiltIn,
+    projectId: agent.projectId,
+  };
 }
 
 export interface CustomAgentsRouterDeps {
@@ -257,18 +274,25 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
     enabled: z.boolean().default(true),
   });
 
-  // List agents enabled for a project.
-  r.get("/projects/:projectId/enabled", requireAuth, async (req: Request, res: Response) => {
-    if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-    const projectId = String(req.params.projectId);
-    await assertLiveProjectAccess(req.user, projectId);
-    try {
-      const agents = await listEnabledAgentsForProject(projectId);
-      res.json(ok(agents));
-    } catch (err) {
-      rethrow(err);
-    }
-  });
+  // List agents enabled for a project — as summaries (#1500): any member of
+  // the project reads this, and the agents may belong to another project, so
+  // it never carries a definition (system prompt, tools, model, skills).
+  r.get(
+    "/projects/:projectId/enabled",
+    customAgentsPreAuthRateLimiter,
+    requireAuth,
+    async (req: Request, res: Response) => {
+      if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+      const projectId = String(req.params.projectId);
+      await assertLiveProjectAccess(req.user, projectId);
+      try {
+        const agents = await listEnabledAgentsForProject(projectId);
+        res.json(ok(agents.map(toCustomAgentSummary)));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
 
   // #1445 review — ids of agents explicitly switched OFF for a project, so the
   // card can say "Off" for those and "Off until enabled" for the rest.
@@ -285,40 +309,45 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
   );
 
   // Enable / disable an agent for a project (workspace admin only).
-  r.put("/:id/enablement", requireAuth, async (req: Request, res: Response) => {
-    const parsed = enablementSchema.safeParse(req.body);
-    if (!parsed.success) {
-      throw new AppError(400, "BAD_REQUEST", parsed.error.message);
-    }
-    if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
-    await assertWorkspaceAdminForProject(req.user, parsed.data.projectId);
-    // #305 — the caller must also reach the AGENT's own project, not just the
-    // target one: an agent id from another workspace answers 404 exactly like
-    // an unknown id, so a foreign agent can never be enabled (and then read
-    // back) through a project the caller administers. Built-ins stay open.
-    //
-    // #1445 review — except switching OFF an agent that already has a row for
-    // the target project: it is in use (or was) there, the Custom agents card
-    // lists it there, and narrowing what the caller's own project runs reveals
-    // nothing about the agent's home project. Without this an agent borrowed
-    // from a workspace the admin cannot reach (or whose project was deleted)
-    // could be listed on the card but never switched off.
-    const switchingOffHere =
-      !parsed.data.enabled &&
-      (await hasEnablementRow(String(req.params.id), parsed.data.projectId));
-    if (!switchingOffHere) await resolveForRead(req);
-    try {
-      const row = await setAgentEnabledForProject(
-        String(req.params.id),
-        parsed.data.projectId,
-        parsed.data.enabled,
-        req.user.userId,
-      );
-      res.json(ok(row));
-    } catch (err) {
-      rethrow(err);
-    }
-  });
+  r.put(
+    "/:id/enablement",
+    customAgentsPreAuthRateLimiter,
+    requireAuth,
+    async (req: Request, res: Response) => {
+      const parsed = enablementSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+      }
+      if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+      await assertWorkspaceAdminForProject(req.user, parsed.data.projectId);
+      // #305 — the caller must also reach the AGENT's own project, not just the
+      // target one: an agent id from another workspace answers 404 exactly like
+      // an unknown id, so a foreign agent can never be enabled (and then read
+      // back) through a project the caller administers. Built-ins stay open.
+      //
+      // #1445 review — except switching OFF an agent that already has a row for
+      // the target project: it is in use (or was) there, the Custom agents card
+      // lists it there, and narrowing what the caller's own project runs reveals
+      // nothing about the agent's home project. Without this an agent borrowed
+      // from a workspace the admin cannot reach (or whose project was deleted)
+      // could be listed on the card but never switched off.
+      const switchingOffHere =
+        !parsed.data.enabled &&
+        (await hasEnablementRow(String(req.params.id), parsed.data.projectId));
+      if (!switchingOffHere) await resolveForRead(req);
+      try {
+        const row = await setAgentEnabledForProject(
+          String(req.params.id),
+          parsed.data.projectId,
+          parsed.data.enabled,
+          req.user.userId,
+        );
+        res.json(ok(row));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
 
   // ── Epic #260 (#82) — import / export JSON ──────────────────────────────
   r.get("/:id/export", requireAuth, async (req: Request, res: Response) => {
@@ -409,12 +438,14 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
           outcome: "denied",
           error: switchedOff ? "agent turned off for project" : "agent not yet enabled for project",
         });
+        // #1500 — on a project with no workspace only a system admin can enable it.
+        const who = await customAgentEnablerForProject(projectId);
         throw new AppError(
           409,
           "AGENT_DISABLED",
           switchedOff
-            ? `"${agent.name}" is turned off for this project. Turn it on under Custom agents to use it.`
-            : `"${agent.name}" is off for this project until a workspace admin enables it under Custom agents.`,
+            ? `"${agent.name}" is turned off for this project. Ask ${who} to switch it back on under Custom agents.`
+            : `"${agent.name}" is off for this project until ${who} enables it under Custom agents.`,
         );
       }
       if (access !== "run") {
