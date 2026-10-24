@@ -5982,7 +5982,7 @@ async function synthesizeFinalDocumentInRun(
         inText = schemaCheckUnmatched(checked.report);
       }
       fittedSections.sections[i] = checked.markdown;
-      const record = schemaClaimsRecord(checked.report);
+      const record = schemaClaimsRecord(checked.report, schemaInventory);
       finalManifestSections[sectionOwners[i]].schemaClaims = record;
       if (inText.length > 0) {
         warnings.push(schemaUnverifiedInTextWarning(owner.sectionLabel, inText, schemaInventory));
@@ -5990,7 +5990,7 @@ async function synthesizeFinalDocumentInRun(
       summary.push({
         section: sectionIdAt(i),
         judged: record.judged,
-        unmatched: record.unmatched.length,
+        unmatched: record.unmatchedCount ?? record.unmatched.length,
       });
     });
     log.info("Schema check of the names in the document's text", {

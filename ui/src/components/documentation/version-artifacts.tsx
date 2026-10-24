@@ -49,8 +49,14 @@ interface ProvenanceSummary {
   schemaClaims?: Array<{
     section: string;
     judged: number;
+    /** At most 50 names; `unmatchedCount` is how many there are (#1469). */
     unmatched: string[];
+    unmatchedCount?: number;
     notChecked: number;
+    /** #1469 — why names were not checked, each reason once. */
+    notCheckedWhy?: string[];
+    /** #1469 — what the names were compared with; absent on a version recorded before. */
+    source?: string;
   }>;
   /** #1070 — a planned document's topic plan; absent = not planned. */
   topicPlan?: {
@@ -313,12 +319,40 @@ function CodeIdentifiers({
 const plural = (n: number, one: string, many: string): string =>
   `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
+/** #1469 — what the schema check compared the names with, as the panel says it. */
+function schemaSourceName(source: string | undefined): string {
+  switch (source) {
+    case "live-schema":
+      return "the database schema";
+    case "schema-graph":
+      return "the stored database schema";
+    case "repository-sql":
+      return "the repository's SQL files";
+    default:
+      // A version recorded before #1469 does not say which it was.
+      return "the schema";
+  }
+}
+
+/** #1469 — why the schema check could not check a name (`NotCheckedReason` on the server). */
+const NOT_CHECKED_WORDS: Record<string, string> = {
+  unread: "outside the schemas that were read",
+  "not-a-column": "not a plain column name (an index, constraint, key or relation)",
+  view: "described as a view, which the schema does not list as one",
+  "diagram-line": "a diagram line whose column could not be told from its type",
+  "no-columns": "no column list for the table",
+  dataset: "a dataset in the code's data lineage, not a database table",
+};
+
 /**
  * #1133 — what the schema check found in an architecture document: per
  * section, how many table and column names were compared with the database
  * schema, the ones it does not have (each is marked "not in schema" in the
  * text), and how many could not be checked. Nothing is shown for a document
- * that was not checked.
+ * that was not checked. #1469 — it names what the names were compared with
+ * (the database, a stored schema or the repository's SQL), counts every
+ * unmatched name though only 50 per section are listed, and never says every
+ * name matched while one could not be checked.
  */
 function SchemaClaims({
   checked,
@@ -329,22 +363,43 @@ function SchemaClaims({
 }): React.ReactElement | null {
   const sections = checked.filter((entry) => entry.judged > 0 || entry.notChecked > 0);
   if (sections.length === 0) return null;
+  // #1469 — the record's list is capped; its count is not.
+  const countOf = (entry: (typeof sections)[number]): number =>
+    Math.max(entry.unmatchedCount ?? 0, entry.unmatched.length);
   const judged = sections.reduce((n, entry) => n + entry.judged, 0);
-  const unmatched = sections.reduce((n, entry) => n + entry.unmatched.length, 0);
+  const unmatched = sections.reduce((n, entry) => n + countOf(entry), 0);
+  const notChecked = sections.reduce((n, entry) => n + entry.notChecked, 0);
+  const source = schemaSourceName(sections.find((entry) => entry.source)?.source);
+  const reasons = [...new Set(sections.flatMap((entry) => entry.notCheckedWhy ?? []))].map(
+    (why) => NOT_CHECKED_WORDS[why] ?? why,
+  );
+  const unchecked = notChecked > 0 ? `; ${notChecked.toLocaleString()} could not be checked` : "";
+  const heading =
+    judged === 0
+      ? `Schema check: no table or column name could be checked against ${source}`
+      : unmatched > 0
+        ? `Schema check: ${plural(unmatched, "name", "names")} not in ${source}, of ${plural(judged, "table or column name", "table and column names")} checked${unchecked}`
+        : notChecked > 0
+          ? `Schema check: ${plural(judged, "table or column name", "table and column names")} matched ${source}${unchecked}`
+          : `Schema check: every table and column name checked (${judged.toLocaleString()}) matches ${source}`;
   return (
     <div className="mt-1" data-testid={testId}>
-      <p className="font-medium">
-        {unmatched === 0
-          ? `Schema check: every table and column name checked (${judged.toLocaleString()}) matches the database schema`
-          : `Schema check: ${plural(unmatched, "name", "names")} not in the database schema, of ${plural(judged, "table or column name", "table and column names")} checked`}
-      </p>
+      <p className="font-medium">{heading}</p>
+      {notChecked > 0 && (
+        <p className="text-muted-foreground">
+          {reasons.length > 0
+            ? `Could not be checked: ${reasons.join("; ")}`
+            : "Could not be checked: the schema that was read cannot speak for these names"}
+        </p>
+      )}
       <ul className="max-h-48 overflow-y-auto">
         {sections.map((entry, i) => (
           <li key={`${i}:${entry.section}`}>
             <span className="text-muted-foreground">
               {entry.section}: {plural(entry.judged, "name", "names")} checked
-              {entry.unmatched.length > 0 &&
-                `, ${entry.unmatched.length.toLocaleString()} not in schema`}
+              {countOf(entry) > 0 && `, ${countOf(entry).toLocaleString()} not in schema`}
+              {countOf(entry) > entry.unmatched.length &&
+                ` (showing the first ${entry.unmatched.length.toLocaleString()})`}
               {entry.notChecked > 0 &&
                 `, ${entry.notChecked.toLocaleString()} could not be checked`}
             </span>

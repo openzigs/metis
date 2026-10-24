@@ -2281,6 +2281,53 @@ describe("checkProseSchemaClaims (#1133)", () => {
     });
   });
 
+  // #1469 — the column word has to be beside the dotted name, not anywhere on
+  // the line: a column word that belongs to another name is not a cue.
+  describe("a column word elsewhere on the line is not a cue (#1469)", () => {
+    it.each([
+      "Set `users.max_count` to 10 so the `username` column stays short.",
+      "Set `users.max_count` to 10 so the username column stays short.",
+      "`users.max_count` is 10; the `username` column is short.",
+      "`users.max_count` is 10. The username column is short.",
+      "`users.max_count` limits logins: the column `username` is short.",
+      "The `username` column is short, so set `users.max_count` to 10.",
+      "Columns are short when `users.max_count` is set to a small number like ten here.",
+      "`users.max_count` is ten, but the column is short.",
+      // Too far from the column word to be its name.
+      "`users.max_count` is set in the admin page under the column heading.",
+    ])("%s", (line) => {
+      const { markdown, report } = prose(line);
+      expect(markdown).toBe(line);
+      expect(schemaCheckUnmatched(report)).toEqual([]);
+    });
+
+    it.each([
+      // The genuine column on the same kind of line is still marked; the decoy is not.
+      [
+        "Set `users.max_count` to 10 so the `users.ghost` column stays short.",
+        "Set `users.max_count` to 10 so the `users.ghost`" + M + " column stays short.",
+      ],
+      [
+        "Set `users.max_count` to 10 so the `username` column and `users.ghost`, a column it adds, stay short.",
+        "Set `users.max_count` to 10 so the `username` column and `users.ghost`" +
+          M +
+          ", a column it adds, stay short.",
+      ],
+      [
+        "a column, `users.ghost`, is added; set `users.max_count` to 10.",
+        "a column, `users.ghost`" + M + ", is added; set `users.max_count` to 10.",
+      ],
+      ["`users.ghost` is a new column", "`users.ghost`" + M + " is a new column"],
+      // The decoy after the genuine name, across a clause word.
+      [
+        "`users.ghost` is a column, so set `users.max_count` to 10.",
+        "`users.ghost`" + M + " is a column, so set `users.max_count` to 10.",
+      ],
+    ])("%s", (line, marked) => {
+      expect(prose(line).markdown).toBe(marked);
+    });
+  });
+
   describe("what the read cannot speak for, and code, as in the section check", () => {
     it("lists, and does not mark, a name in a schema that was not read", () => {
       const { markdown, report } = prose("the `audit.ghosts` table");
@@ -2367,6 +2414,32 @@ describe("checkProseSchemaClaims (#1133)", () => {
       expect(markdown).toContain(`the \`ghosts\`${M} table`);
     });
 
+    // #1469 — "every one matched" is never said beside a name that could not be checked.
+    it("says how many matched and how many could not be checked, never 'every one'", () => {
+      const section = grounded(`${ROSTER}\n\nAudit rows go to the \`audit.ghosts\` table.`);
+      const { markdown, report } = checkDataArchitectureText(section, STORED);
+      expect(report.notChecked).toEqual([{ name: "audit.ghosts", why: "unread" }]);
+      expect(markdown).not.toContain("every one matched");
+      expect(markdown).toContain(
+        `> **Schema check.** 2 table and column names in this section were compared with ${STORED.label}; ` +
+          "2 matched; 1 more could not be checked (outside the schemas that were read).",
+      );
+    });
+
+    it("says what could not be checked beside a mark too (#1469)", () => {
+      const section = grounded(
+        `${ROSTER}\n\nThe \`ghosts\` table, the \`audit.ghosts\` table and the \`audit.spooks\` table.`,
+      );
+      const { markdown } = checkDataArchitectureText(section, STORED);
+      expect(markdown).toContain(
+        "1 could not be matched and is marked **not in schema** where it stands. ",
+      );
+      expect(markdown).toContain(
+        "so a marked name is one to verify, not necessarily a mistake. " +
+          "2 more could not be checked (outside the schemas that were read).",
+      );
+    });
+
     it("adds nothing when the section's own note is there, and counts the marked names in it", () => {
       const section = grounded(`| Table | Purpose |\n|---|---|\n| \`ghosts\` | Invented |`);
       expect(section).toContain("> **Schema check.** The table and column names");
@@ -2385,10 +2458,27 @@ describe("checkProseSchemaClaims (#1133)", () => {
 
   it("records the report for provenance, capped", () => {
     const many = Array.from({ length: 60 }, (_, n) => `the \`ghost_${n}\` table`).join("\n");
-    const record = schemaClaimsRecord(prose(`${many}\nthe \`users\` table`).report);
+    const record = schemaClaimsRecord(prose(`${many}\nthe \`users\` table`).report, LIVE);
     expect(record.judged).toBe(61);
     expect(record.unmatched).toHaveLength(50);
+    // #1469 — the true count, and what the names were compared with.
+    expect(record.unmatchedCount).toBe(60);
+    expect(record.source).toBe("live-schema");
     expect(record.notChecked).toBe(0);
+    expect(record.notCheckedWhy).toEqual([]);
+  });
+
+  it("records why names could not be checked, each reason once, and the source (#1469)", () => {
+    const text = "the `audit.ghosts` table, the `audit.spooks` table";
+    const record = schemaClaimsRecord(prose(text, STORED).report, STORED);
+    expect(record).toEqual({
+      judged: 0,
+      unmatched: [],
+      unmatchedCount: 0,
+      notChecked: 2,
+      notCheckedWhy: ["unread"],
+      source: "schema-graph",
+    });
   });
 
   describe("reads a line in linear time", () => {

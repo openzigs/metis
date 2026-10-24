@@ -604,7 +604,7 @@ describe("DocumentationPage — version history", () => {
     const check = await within(panel).findByTestId("version-schema-claims-v2");
     expect(
       within(check).getByText(
-        "Schema check: 1 name not in the database schema, of 27 table and column names checked",
+        "Schema check: 1 name not in the schema, of 27 table and column names checked; 1 could not be checked",
       ),
     ).toBeInTheDocument();
     expect(
@@ -627,7 +627,15 @@ describe("DocumentationPage — version history", () => {
       }),
       {
         ...PROVENANCE_SUMMARY,
-        schemaClaims: [{ section: "Data Architecture", judged: 1, unmatched: [], notChecked: 0 }],
+        schemaClaims: [
+          {
+            section: "Data Architecture",
+            judged: 1,
+            unmatched: [],
+            notChecked: 0,
+            source: "live-schema",
+          },
+        ],
       },
     );
     await openDoc();
@@ -639,6 +647,118 @@ describe("DocumentationPage — version history", () => {
         "Schema check: every table and column name checked (1) matches the database schema",
       ),
     ).toBeInTheDocument();
+  });
+
+  // #1469 — the panel's wording, as true as the record lets it be.
+  describe("schema check wording (#1469)", () => {
+    const openCheck = async (
+      schemaClaims: Array<Record<string, unknown>>,
+    ): Promise<HTMLElement> => {
+      setup(
+        docDetail({
+          versions: [
+            { id: "v2", version: 2, diffSummary: "Latest", createdAt: "2026-06-02T00:00:00.000Z" },
+          ],
+        }),
+        { ...PROVENANCE_SUMMARY, schemaClaims },
+      );
+      await openDoc();
+      fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+      const panel = await screen.findByTestId("version-provenance-v2");
+      return within(panel).findByTestId("version-schema-claims-v2");
+    };
+
+    it("says nothing could be checked, and why, when no name was judged", async () => {
+      const check = await openCheck([
+        {
+          section: "Data Architecture",
+          judged: 0,
+          unmatched: [],
+          unmatchedCount: 0,
+          notChecked: 2,
+          notCheckedWhy: ["unread"],
+          source: "live-schema",
+        },
+      ]);
+      expect(
+        within(check).getByText(
+          "Schema check: no table or column name could be checked against the database schema",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        within(check).getByText("Could not be checked: outside the schemas that were read"),
+      ).toBeInTheDocument();
+      expect(check).not.toHaveTextContent(/every|matches/);
+    });
+
+    it("never says every name matched when a name could not be checked", async () => {
+      const check = await openCheck([
+        {
+          section: "Data Architecture",
+          judged: 5,
+          unmatched: [],
+          unmatchedCount: 0,
+          notChecked: 1,
+          notCheckedWhy: ["no-columns"],
+          source: "schema-graph",
+        },
+      ]);
+      expect(
+        within(check).getByText(
+          "Schema check: 5 table and column names matched the stored database schema; 1 could not be checked",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        within(check).getByText("Could not be checked: no column list for the table"),
+      ).toBeInTheDocument();
+      expect(check).not.toHaveTextContent(/every/);
+    });
+
+    it("names the repository's SQL files when that is what the names were compared with", async () => {
+      const check = await openCheck([
+        {
+          section: "Data Architecture",
+          judged: 4,
+          unmatched: [],
+          unmatchedCount: 0,
+          notChecked: 0,
+          notCheckedWhy: [],
+          source: "repository-sql",
+        },
+      ]);
+      expect(
+        within(check).getByText(
+          "Schema check: every table and column name checked (4) matches the repository's SQL files",
+        ),
+      ).toBeInTheDocument();
+      expect(check).not.toHaveTextContent(/database schema/);
+    });
+
+    it("shows the true unmatched count, and that only the first 50 are listed", async () => {
+      const listed = Array.from({ length: 50 }, (_, n) => `ghost_${n}`);
+      const check = await openCheck([
+        {
+          section: "Algorithms, Operations & Stack",
+          judged: 80,
+          unmatched: listed,
+          unmatchedCount: 73,
+          notChecked: 0,
+          notCheckedWhy: [],
+          source: "live-schema",
+        },
+      ]);
+      expect(
+        within(check).getByText(
+          "Schema check: 73 names not in the database schema, of 80 table and column names checked",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        within(check).getByText(
+          "Algorithms, Operations & Stack: 80 names checked, 73 not in schema (showing the first 50)",
+        ),
+      ).toBeInTheDocument();
+      expect(within(check).getAllByRole("listitem")).toHaveLength(51);
+    });
   });
 
   it("shows no schema check for a document that was not checked (#1133)", async () => {
