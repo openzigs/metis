@@ -371,6 +371,32 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
     });
 
+    it("on a header-derived event, triggers cut off by the cap are claimed, so no relabelled replay decides their fate", async () => {
+      for (const id of ["t-r1", "t-r2", "t-r3"]) await trigger(id, { event: "release" });
+      await trigger("t-wf", { event: "workflow_run" });
+      process.env.MAX_TRIGGER_FANOUT = "2";
+      try {
+        const body = releaseBody(25);
+        const first = await deliver(body, "release", "delivery-25");
+        expect(first.body.data).toMatchObject({ capped: 1 });
+        expect(first.body.data.fired).toHaveLength(2);
+        // Every verified trigger is claimed: 3 release (2 fired, 1 capped) + the workflow_run one.
+        expect(await db.webhookPayloadDigest.count()).toBe(4);
+
+        // The delivery id is kept: nothing was left unclaimed for a redelivery to reach.
+        expect((await deliver(body, "release", "delivery-25")).body.data.reason).toBe(
+          "DUPLICATE_DELIVERY",
+        );
+        // A relabelled replay finds every trigger claimed and fires none.
+        const relabelled = await deliver(body, "workflow_run", "delivery-25-forged");
+        expect(relabelled.body.data).toMatchObject({ fired: [], duplicate: 4 });
+        expect(firedTriggers()).toHaveLength(2);
+        expect(firedTriggers()).not.toContain("t-wf");
+      } finally {
+        delete process.env.MAX_TRIGGER_FANOUT;
+      }
+    });
+
     it("a claim on a body with no signed time outlives the 7-day purge and is dropped after 90 days", async () => {
       const {
         purgeOldPayloadDigests,

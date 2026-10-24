@@ -197,9 +197,9 @@ async function spawnTriggerRun(
  * - It does not, and the header names another event (`release`,
  *   `workflow_run`, …): the header, the only source there is. A relabelled
  *   replay of such a body still fires nothing: on the genuine delivery, every
- *   trigger whose secret verified it and whose filter did NOT match claimed
- *   it. The only unclaimed ones are matching triggers left over by the fan-out
- *   cap, which have not fired for this body and may fire once later.
+ *   trigger whose secret verified it claimed it, matching or not. That
+ *   includes matching triggers beyond the fan-out cap, which therefore never
+ *   fire for this body (unlike a classified body's, which Redeliver reaches).
  */
 function deliveryEvent(signed: string | null, header: string | undefined): string | null {
   if (signed !== null) return signed;
@@ -486,6 +486,8 @@ export function triggersWebhookRouter(): Router {
     // webhook with its own secret, therefore gets its own key for the same
     // GUID, and only a retry of THIS webhook's delivery is deduped.
     const guid = (req.header("x-github-delivery") ?? "").trim();
+    // The LOWEST id is an arbitrary pick: any choice works as long as it is
+    // deterministic, so the same webhook's retry maps to the same key.
     const signerId = verified.map((t) => t.id).sort()[0];
     const deliveryId = guid ? `github-trigger:${signerId}:${guid}` : "";
     let deliveryRecorded = false;
@@ -524,9 +526,18 @@ export function triggersWebhookRouter(): Router {
       Promise.allSettled(ts.map((t) => releasePayload(claimOf(t))));
 
     // #680 — bound the fan-out per delivery. Event-matching triggers are
-    // claimed in order until `cap` of them are fresh, and those fire. The
-    // rest are NOT claimed, so GitHub's "Redeliver" reaches them: each one
-    // drains the next `cap` without re-running a trigger that already fired.
+    // claimed in order until `cap` of them are fresh, and those fire.
+    //
+    // The rest ("capped") depend on where the event came from:
+    // - A classified body (`signedEvent !== null`): left UNCLAIMED, so
+    //   GitHub's "Redeliver" reaches them. Each redelivery drains the next
+    //   `cap` without re-running a trigger that already fired. The signature
+    //   fixes the event, so no relabelled replay can touch them.
+    // - A header-derived event: CLAIMED without firing, so they never fire
+    //   for this body. Left unclaimed, a replay relabelled to another event
+    //   would make them "non-matching" and claim them below without firing,
+    //   which would give an attacker the say over whether they ever fire.
+    //   Claiming them here makes the outcome deterministic instead.
     //
     // Non-matching triggers are claimed only when the event came from the
     // header (`signedEvent === null`): there a replay relabelled to their
@@ -540,17 +551,23 @@ export function triggersWebhookRouter(): Router {
     const others = live.filter((t) => !eventMatches(parseConfig(t.config).event, event));
     const claimed: typeof live = [];
     const toFire: typeof live = [];
-    let attempted = 0;
+    let capped = 0;
+    let cappedUnclaimed = 0;
     let duplicate = 0;
     try {
       for (const t of matching) {
-        if (toFire.length >= cap) break;
-        attempted++;
+        const full = toFire.length >= cap;
+        if (full && signedEvent !== null) {
+          capped++;
+          cappedUnclaimed++;
+          continue;
+        }
         if ((await claimPayload(claimOf(t))).duplicate) {
           duplicate++;
         } else {
           claimed.push(t);
-          toFire.push(t);
+          if (full) capped++;
+          else toFire.push(t);
         }
       }
       if (signedEvent === null) {
@@ -573,7 +590,6 @@ export function triggersWebhookRouter(): Router {
         "The replay guard could not record this delivery",
       );
     }
-    const capped = matching.length - attempted;
 
     const fired: string[] = [];
     for (let i = 0; i < toFire.length; i++) {
@@ -595,9 +611,9 @@ export function triggersWebhookRouter(): Router {
       fired.push(out.runId);
       await markTriggerFired(t.id);
     }
-    // Triggers left over by the cap: give the delivery id back too, so the
-    // sender's redelivery of this same delivery is not deduped before them.
-    if (capped > 0) await releaseDeliveryId();
+    // Triggers left UNCLAIMED by the cap: give the delivery id back too, so
+    // the sender's redelivery of this same delivery is not deduped before them.
+    if (cappedUnclaimed > 0) await releaseDeliveryId();
     res.json(
       ok({
         matched: matched.length,
