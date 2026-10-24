@@ -24,6 +24,7 @@ import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { AppError } from "../middleware/error-handler.js";
 import { webhookReceiverRateLimiter } from "../middleware/webhook-receiver-rate-limit.js";
 import { recordDelivery, releaseDelivery } from "../lib/agents/pr-reviewer/webhook-dedup.js";
+import { deliveryDedupKey } from "../lib/webhooks/delivery-key.js";
 import { claimPayload, releasePayload } from "../lib/webhooks/payload-replay.js";
 import {
   reconcileIssueChange,
@@ -92,7 +93,12 @@ export function syncWebhookRouter(deps: SyncRouterDeps = {}): Router {
       req.header("x-request-id") ??
       ""
     ).trim();
-    const dedup = await recordDelivery({ deliveryId: rawDelivery, eventType: "jira-issue" });
+    // #1506 — Atlassian's delivery identifier is unique per webhook within a
+    // tenant, so it is not shared across hooks the way GitHub's GUID is. It is
+    // still namespaced to this receiver: the table is shared with the GitHub
+    // receivers, and this unsigned header must never name one of their rows.
+    const dedupKey = deliveryDedupKey("jira-issues", { kind: "deployment" }, rawDelivery);
+    const dedup = await recordDelivery({ deliveryId: dedupKey, eventType: "jira-issue" });
     if (dedup.duplicate) {
       log.debug("sync.webhook.jira.duplicate_delivery", { deliveryId: rawDelivery });
       res.status(200).json({ ok: true, handled: false, reason: "DUPLICATE_DELIVERY" });
@@ -105,7 +111,7 @@ export function syncWebhookRouter(deps: SyncRouterDeps = {}): Router {
     // Fails closed (500) like the delivery-id dedup above; the delivery-id row
     // it wrote is given back first, so Jira's same-id retry is processed.
     const replay = await claimPayload(claim).catch(async (err: unknown) => {
-      await releaseDelivery(rawDelivery).catch(() => undefined);
+      await releaseDelivery(dedupKey).catch(() => undefined);
       throw err;
     });
     if (replay.duplicate) {
@@ -126,7 +132,7 @@ export function syncWebhookRouter(deps: SyncRouterDeps = {}): Router {
     // (or an operator's resend) of that same delivery is processed, not deduped.
     const result = await reconcileIssueChange(event, deps.reconcileDeps).catch(
       async (err: unknown) => {
-        await Promise.allSettled([releasePayload(claim), releaseDelivery(rawDelivery)]);
+        await Promise.allSettled([releasePayload(claim), releaseDelivery(dedupKey)]);
         throw err;
       },
     );

@@ -173,8 +173,9 @@ describe("POST /api/webhooks/github/issues — integration", () => {
         action: "closed",
       }),
     );
+    // #1506 — keyed on the receiver and its signer, not the bare GUID.
     expect(recordDeliveryMock).toHaveBeenCalledWith({
-      deliveryId: "delivery-12",
+      deliveryId: "github-issues:deployment:delivery-12",
       eventType: "issues",
     });
   });
@@ -338,7 +339,7 @@ describe("POST /api/webhooks/github/issues — drift reconcile (#96)", () => {
     expect(resp.body).toEqual({ ok: false, reason: "ATTRIBUTION_UNAVAILABLE" });
     expect(syncIssueEventMock).not.toHaveBeenCalled();
     expect(reconcileMock).not.toHaveBeenCalled();
-    expect(releaseDelivery).toHaveBeenCalledWith("delivery-25");
+    expect(releaseDelivery).toHaveBeenCalledWith("github-issues:deployment:delivery-25");
     // The signed-body claim is given back too, or "Redeliver" reads DUPLICATE_PAYLOAD.
     expect(releasePayload).toHaveBeenCalledWith(
       expect.objectContaining({ receiver: "github-issues", eventType: "issues", rawBody: body }),

@@ -27,6 +27,7 @@ import {
   type ReconcileResult,
 } from "../lib/sync/index.js";
 import { recordDelivery, releaseDelivery } from "../lib/agents/pr-reviewer/webhook-dedup.js";
+import { deliveryDedupKey } from "../lib/webhooks/delivery-key.js";
 import {
   claimPayload,
   isStaleSignedEvent,
@@ -126,11 +127,20 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
     // retries on transient receiver errors) don't double-post a review.
     // Skipped when the header is absent (e.g. legacy unit tests) so the
     // contract stays backwards compatible.
+    //
+    // #1506 — GitHub gives one GUID to every webhook subscribed to the event,
+    // so the row is keyed on this receiver and its signer as well: the
+    // deployment hook's and each connector's own hook's delivery of one event
+    // are all processed; only a retry of the same webhook's delivery is not.
     const deliveryId = (req.header("x-github-delivery") ?? "").trim();
+    const dedupKey = deliveryDedupKey("github-pr", signer, deliveryId);
     const eventType = (req.header("x-github-event") ?? "").trim();
-    if (deliveryId && !deps.skipDedup) {
+    if (dedupKey && !deps.skipDedup) {
       try {
-        const dedup = await recordDelivery({ deliveryId, eventType: eventType || "unknown" });
+        const dedup = await recordDelivery({
+          deliveryId: dedupKey,
+          eventType: eventType || "unknown",
+        });
         if (dedup.duplicate) {
           res.status(200).json({ ok: true, handled: false, reason: "DUPLICATE_DELIVERY" });
           return;
@@ -156,7 +166,7 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
       eventType: "pull_request",
       rawBody: rawBody(req),
     };
-    const claimed = await claimSignedPayload(claim, deps, deliveryId);
+    const claimed = await claimSignedPayload(claim, deps, deliveryId, dedupKey);
     if (claimed === "unavailable") {
       replayGuardUnavailable(res);
       return;
@@ -172,7 +182,7 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
     const releaseClaims = async () => {
       await Promise.allSettled([
         claimed === "claimed" ? releasePayload(claim) : Promise.resolve(),
-        deliveryId && !deps.skipDedup ? releaseDelivery(deliveryId) : Promise.resolve(),
+        dedupKey && !deps.skipDedup ? releaseDelivery(dedupKey) : Promise.resolve(),
       ]);
     };
     const out = await dispatchGithubPrEvent(payload, {
@@ -348,14 +358,15 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
       return;
     }
     // Issue #438 — replay protection. Reuses the existing
-    // `pr_review_webhook_deliveries` table (a misnomer post-#438; GitHub
-    // delivery UUIDs are globally unique across event types so a single
-    // dedup table is sufficient). The `eventType` column stays the
-    // discriminator — `issues` here vs `pull_request` for the PR path.
+    // `pr_review_webhook_deliveries` table (a misnomer post-#438).
+    // #1506 — a GitHub delivery GUID is NOT unique across webhooks: every hook
+    // subscribed to the event gets the same one. So the key carries this
+    // receiver and its signer, as on the PR receiver (`delivery-key.ts`).
     const deliveryId = (req.header("x-github-delivery") ?? "").trim();
-    if (deliveryId && !deps.skipDedup) {
+    const dedupKey = deliveryDedupKey("github-issues", signer, deliveryId);
+    if (dedupKey && !deps.skipDedup) {
       try {
-        const dedup = await recordDelivery({ deliveryId, eventType: "issues" });
+        const dedup = await recordDelivery({ deliveryId: dedupKey, eventType: "issues" });
         if (dedup.duplicate) {
           res.status(200).json({ ok: true, handled: false, reason: "DUPLICATE_DELIVERY" });
           return;
@@ -375,7 +386,7 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
       eventType: event,
       rawBody: rawBody(req),
     };
-    const claimed = await claimSignedPayload(claim, deps, deliveryId);
+    const claimed = await claimSignedPayload(claim, deps, deliveryId, dedupKey);
     if (claimed === "unavailable") {
       replayGuardUnavailable(res);
       return;
@@ -397,7 +408,7 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
       });
       await Promise.allSettled([
         claimed === "claimed" ? releasePayload(claim) : Promise.resolve(),
-        deliveryId && !deps.skipDedup ? releaseDelivery(deliveryId) : Promise.resolve(),
+        dedupKey && !deps.skipDedup ? releaseDelivery(dedupKey) : Promise.resolve(),
       ]);
       res.status(503).json({ ok: false, reason: "ATTRIBUTION_UNAVAILABLE" });
       return;
@@ -511,13 +522,15 @@ function signatureHeaders(req: Request) {
  * #1484 — claim a verified delivery's signed body. A claim that cannot be
  * written (database down) fails CLOSED: `unavailable` — processing it would be
  * exactly the unguarded replay this exists to stop. The caller answers 503 and
- * gives back the delivery-id row it may have written, so nothing was recorded
- * and GitHub's "Redeliver" processes the delivery once the database is back.
+ * gives back the delivery-id row it may have written (`dedupKey`, #1506), so
+ * nothing was recorded and GitHub's "Redeliver" processes the delivery once
+ * the database is back. `deliveryId` is the bare GUID, for the log only.
  */
 async function claimSignedPayload(
   claim: PayloadClaim,
   deps: GithubPrRouterDeps,
   deliveryId: string,
+  dedupKey: string,
 ): Promise<"claimed" | "duplicate" | "skipped" | "unavailable"> {
   if (deps.skipDedup) return "skipped";
   try {
@@ -528,7 +541,7 @@ async function claimSignedPayload(
       deliveryId,
       error: (err as Error).message,
     });
-    if (deliveryId) await releaseDelivery(deliveryId).catch(() => undefined);
+    if (dedupKey) await releaseDelivery(dedupKey).catch(() => undefined);
     return "unavailable";
   }
 }
