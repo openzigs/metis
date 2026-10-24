@@ -45,13 +45,14 @@ import {
   type ConnectorEmitter,
 } from "../types.js";
 import { isDriverDetailCode, sanitizeDriverError } from "../driver-error.js";
-import { readBoundSecret } from "../vault-resolver.js";
+import { readBoundSecret, readBoundSecretWithEnvelope } from "../vault-resolver.js";
 import { bindSecretRef, VAULT_REF_UNRESOLVED } from "../../vault/bound-secret.js";
 import { AppError } from "../../../middleware/error-handler.js";
 import type { RepoFetcher } from "../../library/import.js";
 import { validateLocalSourcePath } from "./local-source.js";
 import { sourceIngestSummary } from "../source-ingest-state.js";
 import {
+  isPreResponseNetworkFailure,
   isTransientGithubFailure,
   repoPermissionDto,
   repoPermissionOf,
@@ -887,14 +888,18 @@ function webhookSecretFlags(row: {
  * and nothing is recorded (otherwise an `admin` read from the attacker's own
  * repository lands on a row that now names the victim's).
  */
-function bindingWhere(row: {
-  id: string;
-  provider: string;
-  ownerOrOrg: string | null;
-  repoName: string | null;
-  apiBaseUrl: string | null;
-  secretId: string | null;
-}) {
+function bindingWhere(
+  row: {
+    id: string;
+    provider: string;
+    ownerOrOrg: string | null;
+    repoName: string | null;
+    apiBaseUrl: string | null;
+    secretId: string | null;
+    secret?: { ciphertext: string } | null;
+  },
+  decryptedEnvelope?: string | null,
+) {
   return {
     id: row.id,
     deletedAt: null,
@@ -903,6 +908,27 @@ function bindingWhere(row: {
     repoName: row.repoName,
     apiBaseUrl: row.apiBaseUrl,
     secretId: row.secretId,
+    // #1499 — a vault rotation rewrites a secret's value under the same id, so
+    // the id alone does not name the credential the check used. The stored
+    // envelope does: every value write stores a fresh one (random salt and
+    // IV), so a rotation that lands while the check is in flight makes this
+    // write match nothing. The rotation itself also clears the recorded
+    // permission (`VaultService`), which covers a check that finished first.
+    //
+    // Once the token has been decrypted, the guard is the envelope it was
+    // decrypted FROM (`decryptedEnvelope`, one row read with the plaintext),
+    // not the one read with the connector row. `undoRotation` restores an
+    // earlier envelope byte for byte, so guarding on the row's envelope let a
+    // rotate-and-undo inside one Test record the rotated value's permission
+    // against the restored one (an ABA). Before the token is read (a failure
+    // reading the vault or pinning the host) the row's envelope is all there is.
+    ...(row.secretId !== null
+      ? {
+          secret: {
+            is: { ciphertext: decryptedEnvelope ?? row.secret?.ciphertext ?? "" },
+          },
+        }
+      : {}),
   };
 }
 
@@ -916,9 +942,22 @@ function bindingChanged(): ConnectorError {
   );
 }
 
+/** #1488/#1499 — a Test that recorded nothing because the connection changed under it. */
+function auditBindingChanged(actorId: string, id: string, projectId: string): void {
+  audit({
+    actor: { id: actorId },
+    action: "connector.repo.test",
+    target: { type: "repo_connector", id },
+    metadata: { projectId, status: "unchanged", code: REPO_CONNECTOR_CHANGED },
+  });
+}
+
 async function readRepoConnectorRow(projectId: string, id: string) {
+  // #1499 — the bound secret's current envelope is read with the row, so the
+  // binding guard also covers an in-place rotation. It never leaves this module.
   const row = await prisma.repoConnection.findFirst({
     where: { id, projectId, deletedAt: null },
+    include: { secret: { select: { ciphertext: true } } },
   });
   if (!row) {
     throw new ConnectorError(404, "REPO_CONNECTOR_NOT_FOUND", "repo connector not found");
@@ -955,10 +994,33 @@ export async function getPrimaryRepo(projectId: string) {
 
 // ---- Operations ------------------------------------------------------------
 
-export async function testRepoConnector(projectId: string, id: string, actorId: string) {
+export interface TestRepoConnectorOptions {
+  /**
+   * #1499 — nobody clicked Test (the boot re-check). A network failure before
+   * any HTTP answer then leaves the connector as it was instead of marking it
+   * `error`: an unattended check has no user to see the error and retry, and
+   * the failure says nothing about the credential. A clicked Test still
+   * reports it as `error`, as before.
+   *
+   * Scope, measured: the first DNS lookup (`assertHostFromBaseUrl`) runs
+   * before the `try` and so never wrote `error`, and Octokit reports a failed
+   * fetch as a status-500 `RequestError`, already transient. What this adds is
+   * the host-pinning lookup in `acquireOctokitWithAuth` failing after the
+   * first succeeded, and a network error that reaches here unwrapped.
+   */
+  unattended?: boolean;
+}
+
+export async function testRepoConnector(
+  projectId: string,
+  id: string,
+  actorId: string,
+  opts: TestRepoConnectorOptions = {},
+) {
   // #1488 — one read gives both the DTO and the binding the writes are guarded on.
   const row = await readRepoConnectorRow(projectId, id);
-  const binding = bindingWhere(row);
+  // #1499 — re-bound to the envelope the token is decrypted from, once it is.
+  let binding = bindingWhere(row);
   const conn = toApi(row);
   const git = assertGitConnector(conn);
   await assertHostFromBaseUrl(conn.apiBaseUrl);
@@ -967,10 +1029,11 @@ export async function testRepoConnector(projectId: string, id: string, actorId: 
   // raised while reading the credential (vault) or pinning the host is not.
   let askedGithub = false;
   try {
-    const { octokit, authenticated } = await acquireOctokitWithAuth(
+    const { octokit, authenticated, envelope } = await acquireOctokitWithAuth(
       conn.apiBaseUrl,
       conn.secretRef,
     );
+    binding = bindingWhere(row, envelope);
     askedGithub = true;
     // #762 — no `connector:progress` here: a Test is one request answered in
     // well under a second, and its count-less progress event left a stuck
@@ -1022,15 +1085,32 @@ export async function testRepoConnector(projectId: string, id: string, actorId: 
   } catch (err) {
     // #1488 — the connection changed under this Test: record nothing.
     if (err instanceof ConnectorError && err.code === REPO_CONNECTOR_CHANGED) {
+      auditBindingChanged(actorId, id, projectId);
+      throw err;
+    }
+    const ce = toOctokitError(err);
+    // #1499 — an unattended check (the boot re-check) that never got an HTTP
+    // answer: DNS failed or the connection was refused, reset or timed out.
+    // That says nothing about the credential, so it leaves the connector as it
+    // was. Never a refusal this server raised itself (`HOST_NOT_ALLOWED`).
+    if (opts.unattended && isPreResponseNetworkFailure(err)) {
+      log.warn("connector.repo.test_network_failure", {
+        connectorId: id,
+        projectId,
+        code: ce.code,
+      });
       audit({
         actor: { id: actorId },
         action: "connector.repo.test",
         target: { type: "repo_connector", id },
-        metadata: { projectId, status: "unchanged", code: REPO_CONNECTOR_CHANGED },
+        metadata: { projectId, status: "unchanged", transient: true, code: ce.code },
       });
-      throw err;
+      throw new ConnectorError(
+        ce.status,
+        ce.code,
+        "GitHub could not be reached. This is a temporary network failure: the connection's status was left unchanged.",
+      );
     }
-    const ce = toOctokitError(err);
     // #1488 — a rate limit, a 5xx or an aborted request says nothing about
     // this connector's credential, and anyone can exhaust the server's
     // unauthenticated quota. Such a failure leaves the status (and the
@@ -1075,7 +1155,11 @@ export async function testRepoConnector(projectId: string, id: string, actorId: 
         lastTestedAt: new Date(),
       },
     });
-    if (count === 0) throw bindingChanged();
+    if (count === 0) {
+      // #1499 — the 409 from this branch is audited like the success branch's.
+      auditBindingChanged(actorId, id, projectId);
+      throw bindingChanged();
+    }
     emitter().status({ connectorId: id, kind: "repo", status: "error", errorMessage: safeMessage });
     audit({
       actor: { id: actorId },
@@ -1234,11 +1318,15 @@ export async function fetchRepoMetadata(
   actorId: string,
 ): Promise<RepoMetadata> {
   const row = await readRepoConnectorRow(projectId, id);
-  const binding = bindingWhere(row);
   const conn = toApi(row);
   const git = assertGitConnector(conn);
   await assertHostFromBaseUrl(conn.apiBaseUrl);
-  const { octokit, authenticated } = await acquireOctokitWithAuth(conn.apiBaseUrl, conn.secretRef);
+  const { octokit, authenticated, envelope } = await acquireOctokitWithAuth(
+    conn.apiBaseUrl,
+    conn.secretRef,
+  );
+  // #1499 — guarded on the envelope the token was decrypted from.
+  const binding = bindingWhere(row, envelope);
 
   emitter().progress({ connectorId: id, projectId, kind: "repo", phase: "metadata", step: "repo" });
   const repo = await octokit.rest.repos.get({ owner: git.ownerOrOrg, repo: git.repoName });
@@ -1338,7 +1426,17 @@ export async function fetchRepoMetadata(
     },
   });
   if (count === 0) {
+    // #1499 — what was read describes a repository, server or credential the
+    // connector no longer names, so none of it is returned for ingest: the
+    // sync stops here, as a Test does.
     log.warn("connector.repo.metadata_binding_changed", { connectorId: id, projectId });
+    audit({
+      actor: { id: actorId },
+      action: "connector.repo.metadata",
+      target: { type: "repo_connector", id },
+      metadata: { projectId, status: "unchanged", code: REPO_CONNECTOR_CHANGED },
+    });
+    throw bindingChanged();
   }
   audit({
     actor: { id: actorId },
@@ -1846,13 +1944,28 @@ export async function restoreCloneAtCommit(
 // ---- Helpers ---------------------------------------------------------------
 
 async function acquireOctokit(apiBaseUrl: string | null, secretRef: string): Promise<OctokitLike> {
-  return (await acquireOctokitWithAuth(apiBaseUrl, secretRef)).octokit;
+  const token = (await resolveSecret(secretRef)) ?? undefined;
+  return (await octokitFor(apiBaseUrl, token)).octokit;
 }
 
-/** #1488 — as `acquireOctokit`, also saying whether the client sends a token. */
+/**
+ * #1488 — as `acquireOctokit`, also saying whether the client sends a token.
+ * #1499 — and the stored envelope that token was decrypted from (null with no
+ * token), which the Test and metadata writes are guarded on.
+ */
 async function acquireOctokitWithAuth(
   apiBaseUrl: string | null,
   secretRef: string,
+): Promise<{ octokit: OctokitLike; authenticated: boolean; envelope: string | null }> {
+  const secretId = secretRef ? extractRefBody(secretRef) : null;
+  const read = secretId ? await readBoundSecretWithEnvelope(secretId, getVaultService()) : null;
+  const { octokit, authenticated } = await octokitFor(apiBaseUrl, read?.plaintext);
+  return { octokit, authenticated, envelope: read?.envelope ?? null };
+}
+
+async function octokitFor(
+  apiBaseUrl: string | null,
+  token: string | undefined,
 ): Promise<{ octokit: OctokitLike; authenticated: boolean }> {
   // Normalize GHE base URL: users may paste a browse URL like
   // "https://git.example.com/Org/repo/tree/main" or just the host
@@ -1872,7 +1985,6 @@ async function acquireOctokitWithAuth(
       // If URL parsing fails, pass through as-is (will fail at Octokit level)
     }
   }
-  const token = (await resolveSecret(secretRef)) ?? undefined;
   const host = normalizedBase ? hostnameOrThrow(normalizedBase) : "api.github.com";
   const pinned = await resolveAndAssertConnectorHost(host, "repo");
   const args: OctokitFactoryArgs = {

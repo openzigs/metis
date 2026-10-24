@@ -84,6 +84,13 @@ vi.mock("../src/lib/prisma.js", () => ({
         },
       ),
     },
+    // #1499 — every value write forgets the recorded repository permission of
+    // the connectors bound to the secret, in one transaction with the write.
+    repoConnection: { updateMany: vi.fn(async () => ({ count: 0 })) },
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+      const { prisma } = await import("../src/lib/prisma.js");
+      return fn(prisma);
+    }),
   },
 }));
 
@@ -91,6 +98,7 @@ import {
   SecretNameTakenError,
   SecretNotFoundError,
   VaultService,
+  vaultWriteTransactionOptions,
 } from "../src/lib/vault/vault-service.js";
 import { prisma } from "../src/lib/prisma.js";
 
@@ -258,5 +266,65 @@ describe("VaultService.upsert", () => {
   it("rejects empty labels", async () => {
     const v = new VaultService({ masterKey: MASTER, isProduction: false });
     await expect(v.upsert("  ", "x")).rejects.toThrow(/label/);
+  });
+});
+describe("#1499 — the vault write transaction", () => {
+  const txMock = () =>
+    (prisma as unknown as { $transaction: ReturnType<typeof vi.fn> }).$transaction;
+
+  afterEach(() => {
+    delete process.env.VAULT_WRITE_TX_MAX_WAIT_MS;
+    delete process.env.VAULT_WRITE_TX_TIMEOUT_MS;
+  });
+
+  it("is opened with a 30 s maxWait and a 15 s timeout, so a long vector transaction does not fail it", async () => {
+    const v = new VaultService({ masterKey: MASTER, isProduction: false });
+    const s = await v.create("tx-opts", "v0", "global");
+    await v.rotate(s.id, "v1");
+    expect(txMock()).toHaveBeenCalledWith(expect.any(Function), {
+      maxWait: 30_000,
+      timeout: 15_000,
+    });
+  });
+
+  it("takes VAULT_WRITE_TX_MAX_WAIT_MS / _TIMEOUT_MS, ignoring a value that is not a positive integer", () => {
+    process.env.VAULT_WRITE_TX_MAX_WAIT_MS = "45000";
+    process.env.VAULT_WRITE_TX_TIMEOUT_MS = "nope";
+    expect(vaultWriteTransactionOptions()).toEqual({
+      maxWait: 45_000,
+      timeout: 15_000,
+    });
+  });
+
+  it.each(["rotate", "rotateUndoable", "upsert"] as const)(
+    "%s: a transaction that could not start (P2028) is a retryable 503 DATABASE_BUSY",
+    async (write) => {
+      const v = new VaultService({ masterKey: MASTER, isProduction: false });
+      const s = await v.create("tx-busy", "v0", "global");
+      txMock().mockRejectedValueOnce(
+        Object.assign(new Error("Unable to start a transaction in the given time."), {
+          code: "P2028",
+        }),
+      );
+      const attempt =
+        write === "rotate"
+          ? v.rotate(s.id, "v1")
+          : write === "rotateUndoable"
+            ? v.rotateUndoable(s.id, "v1")
+            : v.upsert("tx-busy", "v1", "global");
+      await expect(attempt).rejects.toMatchObject({
+        statusCode: 503,
+        code: "DATABASE_BUSY",
+        message: expect.stringMatching(/busy.*try again/i),
+      });
+      expect((await v.read(s.id)).plaintext).toBe("v0");
+    },
+  );
+
+  it("any other transaction failure keeps its own error", async () => {
+    const v = new VaultService({ masterKey: MASTER, isProduction: false });
+    const s = await v.create("tx-other", "v0", "global");
+    txMock().mockRejectedValueOnce(new Error("disk I/O error"));
+    await expect(v.rotate(s.id, "v1")).rejects.toThrow("disk I/O error");
   });
 });

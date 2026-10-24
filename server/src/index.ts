@@ -154,6 +154,29 @@ export function isBootTolerableAIConfigError(err: unknown): boolean {
   );
 }
 
+/**
+ * What runs once the HTTP server is listening. #1488 — record the token
+ * permission of connectors upgraded without one, serially and in the
+ * background; never delays or fails boot. #1499 — exported so the wiring is
+ * tested, since the boot block itself does not run under test.
+ */
+export function onServerListening(port: number | string): void {
+  log.info("METIS server listening", { port, env: process.env.NODE_ENV });
+  startRepoPermissionRecheck();
+}
+
+/**
+ * #1499 — start listening, running {@link onServerListening} once bound. The
+ * boot block's only `listen` call, so its wiring is tested by behaviour with a
+ * fake server.
+ */
+export function listenAndStart(
+  server: { listen: (port: number, onListening: () => void) => unknown },
+  port: number,
+): void {
+  server.listen(port, () => onServerListening(port));
+}
+
 function isMainModule(): boolean {
   // Detect direct execution (`node dist/index.js`) vs test/library import.
   try {
@@ -305,12 +328,7 @@ if (isMainModule() && process.env.METIS_NO_LISTEN !== "1") {
   // #622 — `bootServer` resolves the Socket.IO cluster adapter (awaiting its
   // attachments table) before building the server on it.
   const { http: httpServer, io, acp, prReviewWorker, socketCluster } = await bootServer();
-  httpServer.listen(PORT, () => {
-    log.info("METIS server listening", { port: PORT, env: process.env.NODE_ENV });
-    // #1488 — record the token permission of connectors upgraded without one,
-    // serially and in the background; never delays or fails boot.
-    startRepoPermissionRecheck();
-  });
+  listenAndStart(httpServer, PORT);
 
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {

@@ -32,6 +32,7 @@ import { requirePermission } from "../middleware/require-permission.js";
 import { vaultRevealRateLimiter } from "../middleware/vault-reveal-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
+  DATABASE_BUSY,
   getVaultService,
   SecretNameTakenError,
   SecretNotFoundError,
@@ -334,6 +335,10 @@ export function vaultRouter(): Router {
           : {}),
       });
     } catch (err) {
+      // #1499 — the write could not get a database transaction (a long one held
+      // it): nothing was written and a retry will succeed, so it is the 503 it
+      // says, not a missing secret, and not a rotation failure to page about.
+      if (err instanceof AppError && err.code === DATABASE_BUSY) throw err;
       if (secret && foreignOwnerId && confirmedBindings && err instanceof SecretNotFoundError) {
         await refuseIfBindingsMoved(id, secret, foreignOwnerId, confirmedBindings);
       }

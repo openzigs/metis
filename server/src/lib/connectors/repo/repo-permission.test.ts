@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isPreResponseNetworkFailure,
   isSharedWebhookEligible,
   isTransientGithubFailure,
   repoPermissionDto,
@@ -108,5 +109,45 @@ describe("#1488 isTransientGithubFailure", () => {
   it("is false for something that is not an error object", () => {
     expect(isTransientGithubFailure(null)).toBe(false);
     expect(isTransientGithubFailure("boom")).toBe(false);
+  });
+});
+
+describe("#1499 isPreResponseNetworkFailure", () => {
+  const coded = (code: string, extra: Record<string, unknown> = {}) =>
+    Object.assign(new Error(code), { code, ...extra });
+
+  it("is true for the host allow-list's DNS failures, which carry a 502", () => {
+    expect(isPreResponseNetworkFailure(coded("DNS_LOOKUP_FAILED", { status: 502 }))).toBe(true);
+    expect(isPreResponseNetworkFailure(coded("DNS_LOOKUP_EMPTY", { status: 502 }))).toBe(true);
+  });
+
+  it.each(["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "UND_ERR_SOCKET"])(
+    "is true for %s, raised directly or as a failed fetch's cause",
+    (code) => {
+      expect(isPreResponseNetworkFailure(coded(code))).toBe(true);
+      const fetchFailed = Object.assign(new TypeError("fetch failed"), { cause: coded(code) });
+      expect(isPreResponseNetworkFailure(fetchFailed)).toBe(true);
+    },
+  );
+
+  it("is false for a refusal this server raised itself", () => {
+    expect(isPreResponseNetworkFailure(coded("HOST_NOT_ALLOWED", { status: 403 }))).toBe(false);
+    expect(isPreResponseNetworkFailure(coded("PIN_UNAVAILABLE", { status: 500 }))).toBe(false);
+  });
+
+  it("is false for any HTTP answer, even one whose cause names a network code", () => {
+    expect(isPreResponseNetworkFailure(coded("ECONNRESET", { status: 500 }))).toBe(false);
+    const answered = Object.assign(new Error("Bad credentials"), {
+      status: 401,
+      cause: coded("ECONNRESET"),
+    });
+    expect(isPreResponseNetworkFailure(answered)).toBe(false);
+  });
+
+  it("is false for anything else", () => {
+    expect(isPreResponseNetworkFailure(new TypeError("cannot read 'x'"))).toBe(false);
+    expect(isPreResponseNetworkFailure(coded("EACCES"))).toBe(false);
+    expect(isPreResponseNetworkFailure(null)).toBe(false);
+    expect(isPreResponseNetworkFailure("ECONNRESET")).toBe(false);
   });
 });
