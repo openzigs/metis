@@ -138,10 +138,6 @@ function PermissionDeniedSurface({ message }: { message: string }): React.ReactE
     <Card className="p-6">
       <h2 className="text-base font-medium text-foreground">Permission required</h2>
       <p className="mt-2 text-sm text-muted-foreground">{message}</p>
-      <p className="mt-2 text-xs text-muted-foreground">
-        Ask a project administrator to grant the <code>pr.review.manage</code> permission to re-run
-        reviews, or <code>pr.review.read</code> to view review history.
-      </p>
     </Card>
   );
 }
@@ -211,7 +207,7 @@ export default function ProjectPullDetailPage(): React.ReactElement {
       if (err instanceof ApiError && err.status === 403) {
         setReRunMessage({
           kind: "denied",
-          text: "You don't have permission to re-run PR reviews. The pr.review.manage permission is required.",
+          text: "Your role can't re-run PR reviews for this project. Ask a project coordinator or admin.",
         });
         return;
       }
@@ -245,7 +241,7 @@ export default function ProjectPullDetailPage(): React.ReactElement {
           >
             ← Back to PR reviews
           </Link>
-          <PermissionDeniedSurface message="You don't have permission to view this PR review. The pr.review.read permission is required." />
+          <PermissionDeniedSurface message="Your role can't view PR reviews for this project. Ask a project coordinator or admin." />
         </div>
       );
     }

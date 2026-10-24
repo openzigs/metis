@@ -58,7 +58,11 @@ function app() {
 
 afterEach(() => {
   delete process.env.PR_REVIEWS_LIMIT_MAX;
+  delete process.env.PR_REVIEWS_REREVIEW_LIMIT_MAX;
 });
+
+const reReview = (a: express.Express) =>
+  request(a).post("/api/projects/p1/pr-reviews/3/re-review").send({ owner: "o", repo: "r" });
 
 describe("prReviewsRouter rate limiting (#1472)", () => {
   it("throttles a user past PR_REVIEWS_LIMIT_MAX on the list, with the router's own code", async () => {
@@ -81,5 +85,25 @@ describe("prReviewsRouter rate limiting (#1472)", () => {
       .post("/api/projects/p1/pr-reviews/3/re-review")
       .send({ owner: "o", repo: "r" });
     expect(second.status).toBe(429);
+  });
+
+  it("gives re-review its own bucket: spent, it refuses re-reviews and leaves reads alone", async () => {
+    process.env.PR_REVIEWS_REREVIEW_LIMIT_MAX = "1";
+    currentUserId = "u-1472-wiring-rereview";
+    const a = app();
+    expect((await reReview(a)).status).toBe(404); // no row: past both limiters
+    const limited = await reReview(a);
+    expect(limited.status).toBe(429);
+    expect(limited.body.error.code).toBe("PR_REVIEWS_REREVIEW_RATE_LIMITED");
+    expect((await request(a).get("/api/projects/p1/pr-reviews")).status).toBe(200);
+  });
+
+  it("allows 10 re-reviews per user by default, far under the reads budget", async () => {
+    currentUserId = "u-1472-wiring-rereview-default";
+    const a = app();
+    for (let i = 0; i < 10; i++) expect((await reReview(a)).status).toBe(404);
+    const limited = await reReview(a);
+    expect(limited.status).toBe(429);
+    expect(limited.body.error.code).toBe("PR_REVIEWS_REREVIEW_RATE_LIMITED");
   });
 });

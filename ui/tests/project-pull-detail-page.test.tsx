@@ -266,8 +266,14 @@ describe("Project pull detail page", () => {
     renderPage();
     await waitFor(() => {
       expect(screen.getByText(/Permission required/i)).toBeInTheDocument();
-      expect(screen.getAllByText(/pr.review.read/).length).toBeGreaterThan(0);
+      expect(
+        screen.getByText(
+          "Your role can't view PR reviews for this project. Ask a project coordinator or admin.",
+        ),
+      ).toBeInTheDocument();
     });
+    // #1472 — no raw permission key: every role reads, so a key is not actionable.
+    expect(screen.queryByText(/pr\.review\./)).not.toBeInTheDocument();
   });
 
   it("renders the no-review-yet surface when the detail endpoint returns 404", async () => {
@@ -285,8 +291,12 @@ describe("Project pull detail page", () => {
     const btn = await screen.findByTestId("re-run-button");
     await userEvent.click(btn);
     await waitFor(() => {
-      expect(screen.getByText(/don't have permission to re-run PR reviews/i)).toBeInTheDocument();
-      expect(screen.getByText(/pr.review.manage/)).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Your role can't re-run PR reviews for this project. Ask a project coordinator or admin.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/pr\.review\.manage/)).not.toBeInTheDocument();
     });
   });
 

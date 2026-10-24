@@ -10,6 +10,11 @@
  *    the user id in an access token this server signed, else the TCP peer, never
  *    `req.ip`. Default 20000 per 15 minutes (`PR_REVIEWS_PREAUTH_LIMIT_MAX`). A
  *    spent peer bucket answers `requireAuth`'s 401, not 429 (#1117).
+ *  - {@link prReviewsReReviewUserRateLimiter} — on `POST /:prNumber/re-review`
+ *    only, after the role check. Default 10 per 15 minutes per user
+ *    (`PR_REVIEWS_REREVIEW_LIMIT_MAX`). A re-review is a judge-model call plus a
+ *    GitHub post, and with no monthly limit set the review throughput is its
+ *    only bound, so it gets a bucket of its own, apart from the reads.
  * Caps are read per request; the window once (`PR_REVIEWS_LIMIT_WINDOW_MS`).
  */
 import rateLimit from "express-rate-limit";
@@ -23,6 +28,16 @@ import type { ApiResponse } from "@metis/shared";
 const FIFTEEN_MIN_MS = 15 * 60_000;
 export const PR_REVIEWS_USER_DEFAULT_MAX = 600;
 export const PR_REVIEWS_PREAUTH_DEFAULT_MAX = 20_000;
+export const PR_REVIEWS_REREVIEW_DEFAULT_MAX = 10;
+
+/**
+ * {@link prReviewsReReviewUserRateLimiter}'s key. Exported for its test. Under
+ * `rereview:` so it is never the key the reads limiter gives the same request
+ * (same store class: `ERR_ERL_DOUBLE_COUNT`).
+ */
+export function prReviewsReReviewKey(req: Request): string {
+  return `rereview:${runsUserKey(req)}`;
+}
 
 function intFromEnv(name: string, fallback: number): number {
   const n = Number.parseInt(process.env[name] ?? "", 10);
@@ -55,4 +70,20 @@ export const prReviewsUserRateLimiter: RequestHandler = rateLimit({
   legacyHeaders: false,
   keyGenerator: (req) => runsUserKey(req as unknown as Request),
   message: limited,
+}) as unknown as RequestHandler;
+
+export const prReviewsReReviewUserRateLimiter: RequestHandler = rateLimit({
+  store: clusterRateLimitStore("pr-reviews-rereview-user"),
+  windowMs: WINDOW_MS,
+  limit: () => intFromEnv("PR_REVIEWS_REREVIEW_LIMIT_MAX", PR_REVIEWS_REREVIEW_DEFAULT_MAX),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => prReviewsReReviewKey(req as unknown as Request),
+  message: {
+    success: false,
+    error: {
+      code: "PR_REVIEWS_REREVIEW_RATE_LIMITED",
+      message: "Too many re-reviews — try again later",
+    },
+  } satisfies ApiResponse,
 }) as unknown as RequestHandler;
