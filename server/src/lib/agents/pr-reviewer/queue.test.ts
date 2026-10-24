@@ -101,9 +101,10 @@ describe("createPrReviewQueue", () => {
         concurrent -= 1;
       },
     });
-    q.enqueue(makePayload({ deliveryId: "1" }));
-    q.enqueue(makePayload({ deliveryId: "2" }));
-    q.enqueue(makePayload({ deliveryId: "3" }));
+    // Three different PRs on one repo: one PR's jobs never overlap (#1471).
+    q.enqueue(makePayload({ deliveryId: "1", prNumber: 1 }));
+    q.enqueue(makePayload({ deliveryId: "2", prNumber: 2 }));
+    q.enqueue(makePayload({ deliveryId: "3", prNumber: 3 }));
     await new Promise((r) => setImmediate(r));
     expect(peak).toBe(2);
     releaseFirst();
@@ -458,6 +459,127 @@ describe("createPrReviewQueue", () => {
       ).rejects.toThrow("hook failed");
       await q.drain();
       expect(processor).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("one pull request's jobs (#1471)", () => {
+    function gatedQueue(extra: Partial<Parameters<typeof createPrReviewQueue>[0]> = {}) {
+      const order: string[] = [];
+      const releases = new Map<string, () => void>();
+      let running = 0;
+      let peak = 0;
+      const q = createPrReviewQueue({
+        concurrencyPerRepo: 2,
+        processor: async (job) => {
+          running += 1;
+          peak = Math.max(peak, running);
+          order.push(`start:${job.deliveryId}`);
+          await new Promise<void>((res) => releases.set(job.deliveryId, res));
+          order.push(`end:${job.deliveryId}`);
+          running -= 1;
+        },
+        ...extra,
+      });
+      const release = async (id: string) => {
+        releases.get(id)!();
+        await new Promise((r) => setImmediate(r));
+      };
+      return { q, order, release, peak: () => peak };
+    }
+
+    it("never runs two jobs for the same PR at once, even with lane capacity free", async () => {
+      const { q, order, release, peak } = gatedQueue();
+      q.enqueue(makePayload({ deliveryId: "a", prNumber: 9 }));
+      q.enqueue(makePayload({ deliveryId: "b", prNumber: 9 }));
+      await new Promise((r) => setImmediate(r));
+      expect(order).toEqual(["start:a"]);
+      expect(q.depth()).toBe(1);
+      await release("a");
+      expect(order).toEqual(["start:a", "end:a", "start:b"]);
+      await release("b");
+      await q.drain();
+      expect(peak()).toBe(1);
+    });
+
+    it("another PR on the same repo still runs alongside", async () => {
+      const { q, order, release } = gatedQueue();
+      q.enqueue(makePayload({ deliveryId: "a", prNumber: 9 }));
+      q.enqueue(makePayload({ deliveryId: "b", prNumber: 9 }));
+      q.enqueue(makePayload({ deliveryId: "c", prNumber: 10 }));
+      await new Promise((r) => setImmediate(r));
+      expect(order).toEqual(["start:a", "start:c"]);
+      await release("a");
+      await release("c");
+      await release("b");
+      await q.drain();
+    });
+
+    it("drops a waiting job once a newer one for its PR is queued; the newer one runs", async () => {
+      const events: PrReviewLifecycleEvent[] = [];
+      const { q, order, release } = gatedQueue({ onLifecycle: (e) => events.push(e) });
+      q.enqueue(makePayload({ deliveryId: "a", prNumber: 9 }));
+      const older = q.enqueue(makePayload({ deliveryId: "b", prNumber: 9 }));
+      q.enqueue(makePayload({ deliveryId: "c", prNumber: 9 }));
+      await new Promise((r) => setImmediate(r));
+      await release("a");
+      expect(order).toEqual(["start:a", "end:a", "start:c"]);
+      await release("c");
+      await q.drain();
+      expect(order).not.toContain("start:b");
+      expect(q.depth()).toBe(0);
+      // The superseded job's subscribers still see it finish.
+      expect(events.filter((e) => e.jobId === older.jobId).map((e) => e.phase)).toEqual([
+        "completed",
+      ]);
+    });
+
+    it("drops an older job's retry when a newer job for its PR arrived meanwhile", async () => {
+      const timers: Array<() => void> = [];
+      const runs: string[] = [];
+      const q = createPrReviewQueue({
+        maxAttempts: 3,
+        backoffMs: [10],
+        setTimer: (cb) => {
+          timers.push(cb);
+          return 0;
+        },
+        processor: async (job) => {
+          runs.push(`${job.deliveryId}#${job.attempt}`);
+          if (job.deliveryId === "old") throw new Error("transient");
+        },
+      });
+      q.enqueue(makePayload({ deliveryId: "old", prNumber: 9 }));
+      await new Promise((r) => setImmediate(r));
+      expect(timers).toHaveLength(1);
+      q.enqueue(makePayload({ deliveryId: "new", prNumber: 9 }));
+      await new Promise((r) => setImmediate(r));
+      timers[0]();
+      await new Promise((r) => setImmediate(r));
+      expect(runs).toEqual(["old#1", "new#1"]);
+      expect(q.depth()).toBe(0);
+      expect(q.deadLetters()).toHaveLength(0);
+    });
+
+    it("still retries a job when nothing newer for its PR was queued", async () => {
+      const timers: Array<() => void> = [];
+      let attempts = 0;
+      const q = createPrReviewQueue({
+        maxAttempts: 2,
+        backoffMs: [10],
+        setTimer: (cb) => {
+          timers.push(cb);
+          return 0;
+        },
+        processor: async () => {
+          attempts += 1;
+          if (attempts === 1) throw new Error("transient");
+        },
+      });
+      q.enqueue(makePayload({ deliveryId: "only", prNumber: 9 }));
+      await new Promise((r) => setImmediate(r));
+      timers[0]();
+      await new Promise((r) => setImmediate(r));
+      expect(attempts).toBe(2);
     });
   });
 });

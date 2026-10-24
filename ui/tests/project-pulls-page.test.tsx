@@ -195,8 +195,12 @@ describe("Project pulls (PR-review history) page", () => {
     ["diff_too_large", /larger than this project’s review size limit/],
     ["diff_unavailable", /could not be read from GitHub/],
     ["auto_review_disabled", /switched off for this project/],
-    ["review_not_configured", /not set up on this server yet/],
+    ["review_not_configured", /no AI model or GitHub token the review can use/],
     ["something_new", /No reason was recorded/],
+    // #1471 — an inherited object key is not a reason.
+    ["constructor", /No reason was recorded/],
+    ["toString", /No reason was recorded/],
+    ["__proto__", /No reason was recorded/],
     [null, /No reason was recorded/],
   ])("#1470 — a PR skipped for %s says so in plain words", async (reason, text) => {
     list.mockResolvedValue({

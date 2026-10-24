@@ -43,6 +43,7 @@ import { executePrReviewJob, type PrReviewJobProject } from "./pr-review-job.js"
 import type { JudgeLike, RunPrReviewDeps } from "./agent.js";
 import type { OctokitLike } from "./github-review-poster.js";
 import type { DiffFetchOctokit } from "./diff-fetcher.js";
+import { fetchPullRequest } from "./pull-request-fetcher.js";
 
 const log = createChildLogger("pr-review-worker");
 
@@ -307,6 +308,30 @@ function buildDefaultProcessor(deps?: PrReviewProcessorDeps): PrReviewProcessor 
       await executePrReviewJob(input, {});
       return;
     }
-    await executePrReviewJob(input, { judge, octokit, ...(budget ? { budget } : {}) });
+    // #1471 — a job queued without the webhook's pull request payload (a
+    // manual Re-run) reads the PR from GitHub first, so its description is
+    // the one linking the issue and the SHA recorded is the one reviewed. A
+    // failed read throws: the queue retries, and the row is left as it was
+    // rather than overwritten with a false skip.
+    const reviewInput =
+      typeof job.context.prBody === "string" ? input : await withFetchedPullRequest(input, octokit);
+    await executePrReviewJob(reviewInput, { judge, octokit, ...(budget ? { budget } : {}) });
+  };
+}
+
+async function withFetchedPullRequest(
+  input: Parameters<typeof executePrReviewJob>[0],
+  octokit: DiffFetchOctokit,
+): Promise<Parameters<typeof executePrReviewJob>[0]> {
+  const pr = await fetchPullRequest(octokit, input.job);
+  return {
+    ...input,
+    job: {
+      ...input.job,
+      context: { ...input.job.context, headSha: pr.headSha, branchName: pr.branchName },
+    },
+    prTitle: pr.title,
+    prBody: pr.body,
+    prUrl: pr.htmlUrl,
   };
 }

@@ -50,20 +50,25 @@ function VerdictBadge({ verdict }: { verdict: string | null }): React.ReactEleme
  * #1470 — why a pull request was not reviewed, in words. Keys are the
  * server's `PrReviewStateSkipReason` values.
  */
-const SKIP_REASONS: Record<string, string> = {
-  no_linked_issue:
+const SKIP_REASONS: ReadonlyMap<string, string> = new Map([
+  [
+    "no_linked_issue",
     "The pull request does not link an issue. Add “Closes #<number>” to its description.",
-  no_published_issue: "The linked issue was not published from this project.",
-  no_acceptance_criteria: "The linked issue has no acceptance criteria to check.",
-  budget_exceeded: "This month’s spending limit for automatic reviews was reached.",
-  diff_too_large: "The changes are larger than this project’s review size limit.",
-  diff_unavailable: "The changes could not be read from GitHub.",
-  auto_review_disabled: "Automatic PR review was switched off for this project.",
-  review_not_configured: "Automatic review is not set up on this server yet. Ask an administrator.",
-};
+  ],
+  ["no_published_issue", "The linked issue was not published from this project."],
+  ["no_acceptance_criteria", "The linked issue has no acceptance criteria to check."],
+  ["budget_exceeded", "This month’s spending limit for automatic reviews was reached."],
+  ["diff_too_large", "The changes are larger than this project’s review size limit."],
+  ["diff_unavailable", "The changes could not be read from GitHub."],
+  ["auto_review_disabled", "Automatic PR review was switched off for this project."],
+  [
+    "review_not_configured",
+    "This project has no AI model or GitHub token the review can use. Check the project’s AI model and its repository connection’s token.",
+  ],
+]);
 
 function skipReasonText(reason: string | null): string {
-  return (reason && SKIP_REASONS[reason]) || "No reason was recorded.";
+  return (reason && SKIP_REASONS.get(reason)) || "No reason was recorded.";
 }
 
 function StatusCell({ row }: { row: PrReviewStateView }): React.ReactElement {

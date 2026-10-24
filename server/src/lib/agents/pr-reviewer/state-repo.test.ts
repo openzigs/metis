@@ -373,3 +373,38 @@ describe("recordPrReviewOutcome (#1470)", () => {
     expect(out).toMatchObject({ lastStatus: null, lastSkipReason: null, lastReviewUrl: null });
   });
 });
+
+describe("recordPrReviewOutcome — the first-write race (#1471)", () => {
+  const K = { projectId: "p1", repoOwner: "acme", repoName: "site", prNumber: 21 };
+
+  it("a write that loses the create race on the unique key retries as an update", async () => {
+    const { prisma } = await import("../../prisma.js");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const upsert = (prisma as any).prReviewState.upsert as ReturnType<typeof vi.fn>;
+    const real = upsert.getMockImplementation() as (args: unknown) => Promise<unknown>;
+    upsert.mockImplementationOnce(async () => {
+      // Another writer creates the row first; this create then hits the key.
+      await real({
+        where: { projectId_repoOwner_repoName_prNumber: K },
+        create: { ...K, lastStatus: "skipped", lastSkipReason: "no_linked_issue" },
+        update: {},
+      });
+      throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+    });
+    const out = await recordPrReviewOutcome(K, { status: "skipped", reason: "budget_exceeded" });
+    expect(out).toMatchObject({ lastStatus: "skipped", lastSkipReason: "budget_exceeded" });
+    expect(rows.size).toBe(1);
+  });
+
+  it("any other write error is not retried", async () => {
+    const { prisma } = await import("../../prisma.js");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const upsert = (prisma as any).prReviewState.upsert as ReturnType<typeof vi.fn>;
+    upsert.mockClear();
+    upsert.mockRejectedValueOnce(Object.assign(new Error("db down"), { code: "P1001" }));
+    await expect(
+      recordPrReviewOutcome(K, { status: "skipped", reason: "budget_exceeded" }),
+    ).rejects.toThrow("db down");
+    expect(upsert).toHaveBeenCalledTimes(1);
+  });
+});

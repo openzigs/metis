@@ -59,6 +59,10 @@ import {
 } from "./lib/agents/pr-reviewer/worker.js";
 import { setPrReviewWorker } from "./lib/agents/pr-reviewer/worker-singleton.js";
 import { resolveProjectForQueuedReview } from "./routes/webhooks-github.js";
+import {
+  resolvePrReviewJudge,
+  resolvePrReviewOctokit,
+} from "./lib/agents/pr-reviewer/production-deps.js";
 import { registerSocketServer } from "./lib/socket/registry.js";
 import {
   resolveSocketClusterAdapter,
@@ -476,20 +480,19 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
       ? createNoopAcpHandle()
       : attachAcpServer(httpServer);
 
-  // Epic #394 P2 review F4 + post-`e7eb006` follow-up — start the
-  // PR-reviewer worker. The processor now wires the *real* agent
-  // entrypoint via `processorDeps`: every job resolves the project +
-  // judge + octokit and invokes `executePrReviewJob`. When the optional
-  // `judge` / `octokit` resolvers are not supplied (current default —
-  // production credential wiring is tracked separately), the processor
-  // logs a structured `pr_review.deps_unresolved` per job instead of
-  // silently dropping it. Tests can override individual resolvers via
+  // Epic #394 P2 review F4 — start the PR-reviewer worker. Every job
+  // resolves the project + judge + octokit and invokes `executePrReviewJob`.
+  // #1471 — the judge is the project's model provider and the client is its
+  // GitHub repository connector credential, both resolved per job; either one
+  // unresolvable records `review_not_configured` with no model call. Spend goes
+  // through `defaultBudgetDeps()` (the #1169 monthly limit) unless a test
+  // overrides `resolveBudget`. Tests can override any resolver via
   // `opts.prReviewProcessorDeps`.
   const userDeps = opts.prReviewProcessorDeps ?? {};
   const processorDeps: PrReviewProcessorDeps = {
     resolveProject: userDeps.resolveProject ?? resolveProjectForQueuedReview,
-    resolveJudge: userDeps.resolveJudge ?? (async () => null),
-    resolveOctokit: userDeps.resolveOctokit ?? (async () => null),
+    resolveJudge: userDeps.resolveJudge ?? resolvePrReviewJudge,
+    resolveOctokit: userDeps.resolveOctokit ?? resolvePrReviewOctokit,
     ...(userDeps.resolveBudget ? { resolveBudget: userDeps.resolveBudget } : {}),
   };
   const prReviewWorker = startWorker({ processorDeps });
