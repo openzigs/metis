@@ -79,4 +79,23 @@ at about line 157, and `requireProjectAccess` uses `assertLiveProjectAccess` (#1
   uses the limiter. Drive the real router past a `*_LIMIT_MAX=1` cap with a fresh user per
   route (#1436).
 
+## CodeQL `js/missing-rate-limiting` placement (#1472 to #1496, 2026-10-24)
+
+- **A router-level `requireProjectAccess()`** (`r.use`) trips the alert unless the same
+  `r.use` puts a `rateLimit()` limiter before `requireAuth` (shape:
+  `server/src/middleware/baseline-scope-rate-limit.ts`, #1472).
+- **Editing a handler body re-fires the alert on an existing route**, and a limiter after
+  `requireAuth` (`aiRateLimiter`) does not count. A touched authz route needs a pre-auth
+  limiter (`middleware/custom-agents-rate-limit.ts` reuses `runsPreAuthKey`, #1496).
+- **A per-route limiter sharing a store class with a router-level one needs a distinct key
+  prefix** (e.g. `rereview:`), or express-rate-limit logs `ERR_ERL_DOUBLE_COUNT` (see
+  `middleware/runs-rate-limit.ts`, #1495).
+- **Judge a CodeQL-driven limiter against the full mount order.** Routers mounted at
+  `/projects/:projectId` in `server/src/routes/index.ts` (knowledgeRouter at about line 110,
+  etc.) already run `requireAuth` + `requireProjectAccess` on every `/projects/:projectId/*`
+  request (#1495 review).
+- **A fix letting someone act without home-project access** must use the target-scoped
+  compound key for the lookup, the exception must only narrow access, and check whether the
+  resource then drops out of every list (unseeable, undoable state) (#1496 cycle 2).
+
 Soft-deleted projects on background paths: [[deleted-project-background-firing-guard]].

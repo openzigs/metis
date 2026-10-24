@@ -23,4 +23,12 @@ failed read, so an outage reads as "turned off". Use the throwing check (`isAgen
 reviewing a new pre-gate check, trace whether its read can actually throw before trusting the
 fallback.
 
+**Later (2026-10-24).**
+- Owned custom agents need an explicit enabled `CustomAgentEnablement` row before chat, the
+  picker or ACP use them. Tests that bind an owned agent in chat must enable it, or pass
+  `seedAgentsFixture(db, { enableOwnCustomAgents: true })` (#1445).
+- Check "card and chat agree" against the card's candidate list (`listAgents`: built-ins plus
+  own agents), not only its enabled list: chat lists every enabled agent, including other
+  projects' (`listUsableCustomAgentRows`) (#1496 review).
+
 Related: [[chat-tool-withholding-and-stream-retry]], [[secret-binding-fire-time-checks]].

@@ -3,25 +3,16 @@
 Entries are capped at 150 bytes and the whole file at 17,500 (`pnpm agents:verify`).
 Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never loaded.
 
-- [Probe real default paths](project_storage-probes-must-target-real-default-paths.md) — a /tmp probe passed while <cwd>/data was EACCES (#54)
 - [Module wiring needs the smoke](project_module-wiring-needs-the-image-smoke.md) — import-order bugs pass unit tests (#55, #60)
 - [A run outruns its service](project_coverage-run-spans-more-phases-than-the-service.md) — bill from `task-runner.ts` phases (#72)
 - [vi.mock + double traps](project_whole-module-vi-mock-stubs-500-at-runtime.md) — importOriginal; default params; beforeEach return; honour select
-- [Sanitise the superseded field too](project_sanitise-the-superseded-field-too.md) — UI legacy parsers still read the old column (#67/#86)
 - [Row matchers drop scope](project_row-matchers-drop-scope-assertions.md) — the columns the matcher omits stop being asserted (#94)
 - [Scratch, stash, worktree hygiene](project_parallel-agents-share-scratch-and-browser.md) — issue-named files; script files for git; no symlinks
-- [Late-mount scroll must cancel](project_late-mount-scroll-must-cancel.md) — cancel each never-mounts path (#434)
-- [Grounding misses tools](project_grounding-from-auto-rag-misses-tools.md) — auto-RAG capture never sees tool retrieval (#437)
 - [Verify the issue premise](project_verify-issue-premise-before-copy.md) — grep write path + tests first; recheck 'blocked on PR' deferrals
 - [TanStack stale data](project_tanstack-stale-data-after-failed-refetch.md) — failed refetch keeps .data; prop-seeded useState ignores refetch
 - [CI guards parse the step](project_ci-guards-must-parse-the-step.md) — reject if:, `||`, continue-on-error (#458)
 - [Cap gendoc-sized ids](project_gendoc-ids-are-long.md) — id caps (cursor, schema, path) must fit ~94-char gendoc- ids (#469)
 - [Tests can pin a bug](project_tests-can-lock-in-bugs.md) — grep tests for the old constant before calling it a regression (#483)
-- [Re-run nulls draft links](project_rerun-nulls-requirement-links.md) — re-runs recreate requirements; requirementId goes null (#485/#490)
-- [Write after end](project_write-after-end-is-an-error-event.md) — guard SSE writes with writableEnded; assert the listener logs (#511/#546)
-- [Filename prefixes](project_filename-prefix-classifiers.md) — classify on documents.source; UI labels read prefixes too (#516/#540)
-- [Job id reused per run](project_job-id-reused-across-runs.md) — docId is the jobId; reset per-job caches on started (#515)
-- [Scroll clips focus ring](project_scrollable-tablist-clips-focus-ring.md) — overflow-x-auto clips offset rings; inset (#520)
 - [Import pass 1 commits](project_logical-import-pass1-commits-early.md) — sanitise untrusted fields before batch.push (#531)
 - [Workspace delete is soft](project_workspace-delete-is-soft.md) — filter deletedAt in membership scope and at sinks (#549, #561)
 - [Dependency audit flips](project_dependency-audit-flips-on-new-advisories.md) — fix once, update-branch; removed deps vs audit tests
@@ -31,7 +22,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Time-bounded refs need recheck](project_time-dependent-refs-need-recheck.md) — one-shot retirement; test fakes miss new methods
 - [Test harness false greens](project_test-harness-false-greens.md) — pipe-to-tail exit codes; helper-only tests; fireEvent file input
 - [Socket handler patterns](project_socket-handler-patterns.md) — payload?.x, onClientEvent; rooms fixed at handshake; guard typo probe
-- [Docs-gen model-written keys](project_docs-gen-model-keys.md) — S1/[^storage] tables were model output after [facts:] stripping
 - [Access rule in fixtures](project_access-rule-in-fixtures.md) — socket/discussion tests encode access in mocks; update together
 - [Compaction truncates evidence](project_compaction-truncates-evidence.md) — 600-char tool-result cut; check before blaming tools
 - [e2e replay provider is not offline](project_e2e-replay-provider-not-offline.md) — detect stub by key "offline-stub" too (#900)
@@ -39,7 +29,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [vitest 5 jest-dom second copy](project_vitest5-jest-dom-second-copy.md) — jest-dom loads a 2nd vitest; extend expect locally (#668)
 - [float USD to cents](project_float-usd-to-cents.md) — costUsd*100 float error; round to cents before sign/zero checks (#950)
 - [Decline guards: every token](project_decline-guards-need-every-continuation-token.md) — silent-success holes evade throw-fuzz (#1084)
-- [HTML comment shows as text](project_html-comment-marker-renders-as-text-in-spec-kit-viewer.md) — filter in displayArtifactText (#1134)
 - [Weak Tested-by: check counts](project_weak-tested-by-relation-check-every-count.md) — aggregates ignore weak vs strict (#1069)
 - [Impact offline replay + pinned shapes](project_impact-offline-replay-and-pinned-shapes.md) — measure with no model; 4 far-away tests
 - [Gate over LLM output: probes](project_deterministic-gate-over-llm-output-probes.md) — adversarial answer, context cue, regex timing
@@ -61,8 +50,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [`analysis.read`: every role has it](project_analysis-read-is-held-by-every-role.md) — no 403 test; test scoping + ownership
 - [BRD plan (#1070)](project_brd-plan-tests-and-docs-gen-offline-replay.md) — =off tests; replay; floors (#1316); hold, ties (#1327, #1368)
 - [requirementId guard; recording doubles](project_requirement-id-guard-and-recording-doubles.md) — agentic+single-shot unchecked (#1027)
-- [Count the delimiter, not the split](project_count-the-delimiter-not-the-split.md) — `split(" | ")` misses `a | | b`; test edge bars
-- [Absent page group is ambiguous](project_absent-page-group-is-ambiguous-when-ui-hides-empty.md) — UI hides empty groups
 - [Memory probe: own members × tables/call](project_memory-probe-own-members-times-tables.md) — cap + watchdog; closure/counter notes (#1104)
 - [Embed-retrieval corpus limits](project_embed-retrieval-corpus-limits-and-document-ab.md) — no receivers/tables (#1072)
 - [A/B: rank depth + snippet budget](project_retrieval-ab-rank-depth-and-snippet-budget.md) — print lost ranks; locators first (#1126)
@@ -73,10 +60,9 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Affected-code cap 8 < 25 imported](project_affected-code-cap-below-imported-cap.md) — NR-* keyed logic loses items 9+; test >8 (#1158)
 - [Declaration checks mistake calls](project_declaration-check-mistakes-calls.md) — test callback, return, assign and void forms (#1135)
 - [Walkthrough run 9 findings](project_walkthrough-run9-durable-findings.md) — Spec Kit/chat shapes, budgets, harness tips (#1172)
-- [Walkthrough docs: read the code](project_walkthrough-docs-describe-code-not-memory.md) — open function + page controls; grep archived facts
+- [Walkthrough docs: read the code](project_walkthrough-docs-describe-code-not-memory.md) — open function + controls; plan gate blind spots
 - [Batch row decides dryRun](project_runbatch-batch-row-decides-dry-run.md) — BATCH_IS_DRY_RUN in runBatch (#1171)
 - [Verify your worktree](project_verify-your-worktree-before-committing.md) — HEAD vs your branch; worktree list; no stash pop; a lock failed
-- [Cut-off doc? Lazy render](project_cutoff-doc-lazy.md) — read stored body, scroll (#1170)
 - [Roadmap sync traps](project_sync-roadmap-label-check-traps.md) — throttled main(); missing-only check; keep completed cycles
 - [Publishing guards, repo identity](project_publishing-guards-repo-identity-limiters.md) — case-variant repos; src mocks; TEST_PLAN
 - [Test-falsifiability traps](project_test-falsifiability-traps.md) — delete the line; links 5 older traps
@@ -95,7 +81,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Run claims + citation salvage](project_analysis-run-claims-and-citation-salvage.md) — releaseClaim; failed finalize; per-finding marks
 - [AI metering + prompt caching](project_ai-usage-metering-and-caching.md) — retried attempts once; cache floors; run tokens: 2 values
 - [Footnote line pins](project_footnote-line-pins.md) — assembly only; facts ids repeat per section; real mined-rule fixtures (#1305)
-- [matchMedia effect misses a switch](project_matchmedia-effect-misses-switch.md) — subscribe once; read .matches (#1307)
 - [Server typecheck OOM = capacity](project_server-typecheck-memory-cap.md) — 12,288 MB cap; compare Types counts (#1308)
 - [Same-origin href check](project_same-origin-href-check.md) — new URL origin, then re-check the normalised result; tab, %2e (#1315)
 - [Docs-gen reuse + regenerate](project_docs-gen-section-reuse-and-regenerate.md) — checkpoint timing; one-child trim; stage (#1317)
@@ -105,7 +90,7 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Pre-auth limiters on req.ip](project_preauth-limiters-keyed-on-req-ip.md) — gaps + approval still do; copy runs key (#838)
 - [`\u` escapes land literal](project_unicode-escapes-arrive-literal.md) — use String.fromCodePoint; scan for Cf/bidi; `(?<!=)=+` linear (#1114)
 - [Supertest peer in beforeAll](project_supertest-beforeall-peer-differs.md) — 127.0.0.1 vs ::1; spend peer limits per test (#1117)
-- [Route guard wiring](project_project-access-guard-wiring.md) — guard per route behind a limiter; mount order; detector blind spot (#1344)
+- [Route guard wiring](project_project-access-guard-wiring.md) — per-route guard; CodeQL limiter placement; mount order (#1496)
 - [Fence scrub Unicode traps](project_fence-scrub-unicode-traps.md) — X+ regex; marker re-forms a fence; splice widening; fold order (#1350)
 - [Clone preflight + health](project_repo-clone-preflight-and-health.md) — mock source-preflight; lease wait; index count; template repo (#1354)
 - [Code-agent budget from ledger](project_code-agent-budget-read-from-ledger-cache-pattern.md) — cacheRead drops = rewrites; sim compaction (#766)
@@ -125,7 +110,13 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Code-pass placeholders](project_code-pass-placeholders-and-append-mode.md) — could-not-verify per unreached req; append purge (#1451)
 - [Custom agent pre-gate checks](project_custom-agent-usability-and-pre-gate-checks.md) — unavailableNow; must throw on failed read (#1441)
 - [Notification writers](project_notification-writers-and-content-copies.md) — projectId required; copied text outlives source (#1450)
-- [PR review budget + GitHub client](project_pr-review-worker-budget-and-github-client.md) — cap>0; octokit ignores agent; redirects (#1474)
+- [PR review budget + GitHub client](project_pr-review-worker-budget-and-github-client.md) — cap>0; never throw after run; sessionId (#1487)
 - [Body parsers: two apps](project_request-body-parsers-and-embeddings-svc.md) — sweep embeddings-svc too; raw Buffer in supertest (#1461)
 - [Schema prose check probes](project_schema-prose-check-probes-and-fixtures.md) — config keys; same-line decoy; list both ways (#1477)
 - [Traceability tab + paging](project_traceability-tab-imports-and-paging.md) — tab in analysis page.tsx; orderBy tie-break (#1448)
+- [Webhook dedup + routing](project_github-webhook-dedup-and-routing.md) — one GUID per event: scope by receiver+signer; replay; derived secrets
+- [Connector proof + vault writes](project_repo-connector-proof-and-vault-writes.md) — "connected" is not ownership; rotate/undo ABA (#1494)
+- [SQLite interactive transactions](project_prisma-sqlite-interactive-transactions.md) — one lock, 2 s maxWait, P2028; spy via $transaction
+- [Suite traps: webhook wave](project_server-test-suite-traps-webhook-wave.md) — route-fixture-privilege; prisma doubles; egress guard; prettier
+- [Narrowed key unmasks uniqueness](project_review-heuristics-hidden-uniqueness-and-dead-claims.md) — fail-open reuse; no call site (#1508)
+- [Panel required? exit 2](project_adversarial-panel-trigger-and-gate-scripts.md) — review:adversarial-required; gate snippets fail open (#1482)

@@ -36,6 +36,9 @@ refused and takes no weaker match later. Do not write a second matcher.
 - **A brute-force cross-check proves the SCC half only if the corpus has cycle-only
   levels** (every vertex matched, matching not unique). Assert a floor on their count, or
   a matcher with a wrong cycle test passes.
+- **Check the shortest-layer cap before accepting a complexity claim (#1481 review).** A
+  hand-written "Hopcroft–Karp" whose BFS runs past the first free right, or whose DFS accepts
+  a free right at any depth, is correct but lacks the O(E·√V) bound.
 - **A synthesis-prompt change moves the generative-e2e fixture key.** Update
   `server/scripts/e2e-build-clarify-fixtures.ts` and
   `server/tests/e2e-clarify-fixture-key-parity.test.ts` in the same PR.

@@ -53,6 +53,11 @@ A CLI date guard using JS `Date.parse` lets `October 15, 2026` through to SQLite
 
 Every test that writes users with today's Prisma client into a pre-migration (`stopBefore`) database, or into a hand-built `CREATE TABLE users`, fails once a column is added. Seed those rows with raw SQL, or add the column to the hand-built table.
 
+The same break hits any `stopBefore` test that then uses Prisma on a table a later migration
+adds a column to. `apply()` just the new migration, not `applyRemaining()`, which can change
+pinned behaviour (`repo-primary-unique-457.sqlite.test.ts` vs #492) (#1480). Interactive
+transactions on SQLite: [[prisma-sqlite-interactive-transactions]].
+
 ## Testing hand-written migrations and backfills (#1440, #1450, 2026-10-23)
 
 - **Verify a hand-written SQLite migration:** `prisma migrate deploy` into a scratch DB, then

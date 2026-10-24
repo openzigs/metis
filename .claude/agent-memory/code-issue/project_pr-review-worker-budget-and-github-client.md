@@ -49,6 +49,26 @@ From #1467, #1473, #1474 and their reviews (2026-10-23/24). Code: `server/src/li
 - CodeQL fails any test setting `NODE_TLS_REJECT_UNAUTHORIZED=0`. For a loopback HTTPS stub,
   generate a cert with a SAN via openssl and trust it with `tls.setDefaultCACertificates`.
 
+**Errors, retries and spend (#1485, #1487 and reviews, 2026-10-24).**
+- `@octokit/request` >= 10 wraps anything a custom `request.fetch` throws in
+  `RequestError(500)`, with the original on `.cause`. Typed errors from `buildPublishFetch`
+  must be unwrapped in the `defaultOctokit` request wrapper, or every caller sees a GitHub "500".
+- `PublishError.retryable` defaults to false and nothing sets it true, so a `retryable`-based
+  gate really means "any PublishError". Gate retry loops on `isRedirectRefusal()`
+  (`publishing/types.ts`), never on `!retryable`.
+- `executePrReviewJob` must never throw after `runPrReview` has run: the queue retries any
+  processor throw, re-running the model and re-posting. It swallows every `runPrReview` error,
+  so claims that the queue retries the model on a judge or post failure are usually false:
+  trace the error to the queue first.
+- Spend is recorded in `runPrReview` right after `judge.evaluate`; never add a second
+  `budget.record` on the success path. `computeRunCost` matches `TokenUsage` rows by the run's
+  exact `sessionId` within its window, so every spend writer must record under the run's own
+  `sessionId`. It and `recordPrReviewSpend` once keyed on different ids, so every run's cost
+  read 0, hidden because every pr-review test mocked `computeRunCost`: test ledger write and
+  read under the same session, unmocked.
+- A best-effort wrapper written `fn().catch()` misses synchronous throws. Use
+  `Promise.resolve().then(fn).catch()`, and never `(err as Error).message`.
+
 **Panel trigger gap.** `shouldRunAdversarialPass` returned `required: false` for
 `production-deps.ts`, which reads vault secrets (`readBoundSecret`) and builds an outbound
 GitHub client: its path rules miss credential reads outside auth/secrets dirs. Run the panel
