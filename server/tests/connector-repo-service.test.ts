@@ -1910,6 +1910,28 @@ describe("#1499 — a check whose binding changed under it records nothing", () 
     ).toBeNull();
   });
 
+  it.each([
+    ["a rotation", false],
+    ["a rotate-and-undo (no ABA on the envelope)", true],
+  ] as const)("a metadata read across %s returns nothing to ingest", async (_n, undo) => {
+    const id = await create(`sync-rotation-${String(undo)}`);
+    // The sync decrypts B, so it reads the repository with B ...
+    vi.mocked(readBoundSecretWithEnvelope).mockImplementationOnce(async (secretId: string) => {
+      secretCiphertexts.set(secretId, "ct:B");
+      return { plaintext: "pat_B", envelope: "ct:B" };
+    });
+    // ... and before it writes, the value is rotated again, or the rotation is
+    // undone back to the row's envelope A.
+    githubThat(() => {
+      if (undo) secretCiphertexts.delete("gh-pat");
+      else secretCiphertexts.set("gh-pat", "ct:C");
+    });
+    await expect(fetchRepoMetadata("proj_1", id, "user_1")).rejects.toMatchObject({
+      code: "REPO_CONNECTOR_CHANGED",
+    });
+    expect(rows.get(id)!.status).toBe("pending");
+  });
+
   it("the 409 from a failing Test's guarded write is audited", async () => {
     const id = await create("mid-error");
     githubThat(
