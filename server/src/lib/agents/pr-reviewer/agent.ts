@@ -27,6 +27,9 @@ import {
   type PrReviewSkipReason,
 } from "./pr-audit.js";
 import { PR_REVIEW_SESSION_PREFIX, checkBudget, recordPrReviewSpend } from "./budget-guard.js";
+import { createChildLogger } from "../../logger.js";
+
+const log = createChildLogger("pr-review-agent");
 
 /**
  * Minimal judge-LLM interface. The legacy form returns a raw JSON string
@@ -79,6 +82,13 @@ export interface RunPrReviewInput {
   installationId?: string | null;
   actor?: { type: "user" | "system" | "webhook"; id: string | null };
   linkedIssueNumbers?: number[];
+  /**
+   * #1486 — the session the spend row is written under: the caller's run's
+   * own, so `computeRunCost` attributes it to that run. Must carry the
+   * `pr-review-` prefix the monthly limit sums by; otherwise (or when absent)
+   * a per-review session is minted.
+   */
+  sessionId?: string;
 }
 
 export interface RunPrReviewDeps {
@@ -253,6 +263,41 @@ export async function runPrReview(
     throw err;
   }
 
+  const inputTokens = envelope.inputTokens ?? 0;
+  const outputTokens = envelope.outputTokens ?? 0;
+  const costUsd = envelope.costUsd ?? 0;
+  const model = envelope.model ?? null;
+
+  // #1486 — the model has been paid for the moment it answers, so its spend
+  // (#401) is recorded now, once, on every path that follows: a response that
+  // does not parse, or a review GitHub will not take, still counts toward the
+  // monthly limit `checkBudget` enforces. Recorded before the audit row so the
+  // audit metadata reflects what landed in TokenUsage.
+  if (deps.budget && input.projectId && (inputTokens > 0 || outputTokens > 0 || costUsd > 0)) {
+    try {
+      await deps.budget.record({
+        projectId: input.projectId,
+        sessionId: input.sessionId?.startsWith(PR_REVIEW_SESSION_PREFIX)
+          ? input.sessionId
+          : `${PR_REVIEW_SESSION_PREFIX}${input.owner}-${input.repo}-${input.prNumber}-${startedAt}`,
+        provider: envelope.provider ?? "unknown",
+        model: model ?? "unknown",
+        inputTokens,
+        outputTokens,
+        costUsd,
+      });
+    } catch (err) {
+      // Spend tracking is best-effort — never fail a review on a TokenUsage
+      // write — but an unrecorded spend escapes the limit, so say so.
+      log.warn("pr_review.spend_record_failed", {
+        projectId: input.projectId,
+        repo: `${input.owner}/${input.repo}`,
+        prNumber: input.prNumber,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   let judge: JudgeResponse;
   try {
     judge = parseJudgeResponse(envelope.raw);
@@ -261,7 +306,7 @@ export async function runPrReview(
       ...auditCommon,
       errorMessage: `judge response parse failed: ${(err as Error).message}`,
       latencyMs: Date.now() - startedAt,
-      model: envelope.model ?? null,
+      model,
     });
     throw err;
   }
@@ -318,35 +363,13 @@ export async function runPrReview(
       ...auditCommon,
       errorMessage: `postPrReview failed: ${(err as Error).message}`,
       latencyMs: Date.now() - startedAt,
-      model: envelope.model ?? null,
+      model,
     });
     throw err;
   }
 
   const latencyMs = Date.now() - startedAt;
   const acPassRate = computeAcPassRate(judge);
-  const inputTokens = envelope.inputTokens ?? 0;
-  const outputTokens = envelope.outputTokens ?? 0;
-  const costUsd = envelope.costUsd ?? 0;
-  const model = envelope.model ?? null;
-
-  // Record spend (#401) BEFORE emitting the audit row so the audit metadata
-  // accurately reflects what landed in TokenUsage.
-  if (deps.budget && input.projectId && (inputTokens > 0 || outputTokens > 0 || costUsd > 0)) {
-    try {
-      await deps.budget.record({
-        projectId: input.projectId,
-        sessionId: `${PR_REVIEW_SESSION_PREFIX}${input.owner}-${input.repo}-${input.prNumber}-${startedAt}`,
-        provider: envelope.provider ?? "unknown",
-        model: model ?? "unknown",
-        inputTokens,
-        outputTokens,
-        costUsd,
-      });
-    } catch {
-      // Spend tracking is best-effort — never fail a review on a TokenUsage write.
-    }
-  }
 
   auditPrReviewed({
     ...auditCommon,

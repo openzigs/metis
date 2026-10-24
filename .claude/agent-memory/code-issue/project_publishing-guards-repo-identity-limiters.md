@@ -26,6 +26,10 @@ retired from the index 2026-10-16, file unchanged: three of those five fail only
 - The `changelog` CI job also runs `scripts/verify-walkthrough-plan.mjs`
   (`pnpm walkthrough:verify-pr`): a PR adding a route or page must edit
   `docs/walkthroughs/TEST_PLAN.md` or carry the `no-walkthrough-impact` label.
+  The TEST_PLAN drift check (`scripts/walkthrough/check-test-plan.mjs`) runs in both the
+  `changelog` job and the `api` job's scripts tests; a bare page path like `/pulls` fails
+  both. Write `/projects/:id/pulls`, and run the script locally before pushing doc edits
+  (#1467).
 - Rate limiters: the rule (copy `runs-rate-limit.ts`, never key on `req.ip`, copy its
   expired-token test) is now in the code-issue skill's Step 4. Background and older tips
   (test determinism with `trust proxy`, refactors that re-surface CodeQL alerts, a second-IP

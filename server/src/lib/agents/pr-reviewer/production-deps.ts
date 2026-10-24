@@ -21,7 +21,9 @@
  *     resolved to the address the client is pinned to), then its bound vault
  *     secret (`readBoundSecret`, by id), then the client from
  *     `acquirePublishOctokit`, whose `fetch` connects to that pinned address
- *     (or the egress proxy), refuses redirects and has a deadline.
+ *     (or the egress proxy), follows redirects only on the same origin (at
+ *     most five, refusing any other with a non-retryable `PublishError`) and
+ *     has a deadline.
  *
  * Anything unresolvable — no provider configured, the offline stub, no
  * connector, no secret, a deleted secret, a host off the allow-list — answers
@@ -115,12 +117,16 @@ export function judgeFromProvider(provider: AIProvider): JudgeLike {
         ],
         { disableTools: true },
       );
-      // #1471 — price what the API says ran; when that id has no rate (a dated
-      // snapshot of a priced alias), price the configured model the limit was
-      // checked against, so a priced review is never recorded as free.
-      const cost =
-        estimateUsageCostUsd(res.model, res.usage, res.provider) ??
-        estimateUsageCostUsd(provider.model, res.usage, provider.key);
+      // #1471 — a priced review is never recorded as free: when the id the API
+      // says ran has no rate (a dated snapshot of a priced alias), the
+      // configured model the limit was checked against prices it. #1478 — when
+      // both are priced, the larger estimate is recorded, so an endpoint that
+      // reports a cheaper id cannot undercount against the monthly limit.
+      const estimates = [
+        estimateUsageCostUsd(res.model, res.usage, res.provider),
+        estimateUsageCostUsd(provider.model, res.usage, provider.key),
+      ].filter((c): c is number => c != null);
+      const cost = estimates.length > 0 ? Math.max(...estimates) : null;
       return {
         raw: res.content,
         model: res.model,

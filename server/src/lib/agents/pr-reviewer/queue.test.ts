@@ -2,6 +2,7 @@
  * Epic #394 P2 (#403) — in-memory queue unit tests.
  */
 import { describe, expect, it, vi } from "vitest";
+import { PublishError } from "../../publishing/types.js";
 import {
   createPrReviewQueue,
   SHUTDOWN_REJECTED_JOB_ID,
@@ -246,6 +247,96 @@ describe("createPrReviewQueue", () => {
       expect(failed[0].jobId).toBe(out.jobId);
       expect(failed[0].error).toBe("review blew up");
       expect(q.deadLetters()).toHaveLength(1);
+    });
+
+    it("#1478 — dead-letters a non-retryable PublishError at once, never re-running the review", async () => {
+      const events: Event[] = [];
+      const timers: Array<() => void> = [];
+      let runs = 0;
+      const q = createPrReviewQueue({
+        processor: async () => {
+          runs += 1;
+          throw new PublishError(
+            502,
+            "GITHUB_REDIRECT_REFUSED",
+            "GitHub redirected the request to another origin; it was not followed",
+          );
+        },
+        maxAttempts: 3,
+        backoffMs: [10, 10],
+        setTimer: (cb) => {
+          timers.push(cb);
+          return 0;
+        },
+        onLifecycle: (e) => events.push(e),
+      });
+      q.enqueue(makePayload({ deliveryId: "refused" }));
+      await new Promise((r) => setImmediate(r));
+      expect(runs).toBe(1);
+      expect(timers).toHaveLength(0);
+      expect(q.deadLetters()).toHaveLength(1);
+      expect(events.filter((e) => e.phase === "failed")).toHaveLength(1);
+    });
+
+    it("#1486 — dead-letters a GITHUB_TOO_MANY_REDIRECTS refusal at once", async () => {
+      let runs = 0;
+      const timers: Array<() => void> = [];
+      const q = createPrReviewQueue({
+        processor: async () => {
+          runs += 1;
+          throw new PublishError(502, "GITHUB_TOO_MANY_REDIRECTS", "too many redirects");
+        },
+        maxAttempts: 3,
+        backoffMs: [10, 10],
+        setTimer: (cb) => {
+          timers.push(cb);
+          return 0;
+        },
+      });
+      q.enqueue(makePayload({ deliveryId: "loop" }));
+      await new Promise((r) => setImmediate(r));
+      expect(runs).toBe(1);
+      expect(timers).toHaveLength(0);
+      expect(q.deadLetters()).toHaveLength(1);
+    });
+
+    it("#1486 — still retries any other PublishError, retryable flag or not", async () => {
+      const timers: Array<() => void> = [];
+      const q = createPrReviewQueue({
+        processor: async () => {
+          // `retryable` defaults to false: the gate is the redirect codes, not the flag.
+          throw new PublishError(500, "GITHUB_REQUEST_FAILED", "GitHub had a bad moment");
+        },
+        maxAttempts: 2,
+        backoffMs: [10],
+        setTimer: (cb) => {
+          timers.push(cb);
+          return 0;
+        },
+      });
+      q.enqueue(makePayload({ deliveryId: "other-publish-error" }));
+      await new Promise((r) => setImmediate(r));
+      expect(timers).toHaveLength(1);
+      expect(q.deadLetters()).toHaveLength(0);
+    });
+
+    it("#1478 — still retries a retryable PublishError", async () => {
+      const timers: Array<() => void> = [];
+      const q = createPrReviewQueue({
+        processor: async () => {
+          throw new PublishError(503, "GITHUB_UNAVAILABLE", "try again", true);
+        },
+        maxAttempts: 2,
+        backoffMs: [10],
+        setTimer: (cb) => {
+          timers.push(cb);
+          return 0;
+        },
+      });
+      q.enqueue(makePayload({ deliveryId: "retryable" }));
+      await new Promise((r) => setImmediate(r));
+      expect(timers).toHaveLength(1);
+      expect(q.deadLetters()).toHaveLength(0);
     });
 
     it("does NOT emit failed on an intermediate (retryable) failure — only on final DLQ", async () => {

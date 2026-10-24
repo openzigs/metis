@@ -13,3 +13,9 @@ metadata:
 **Why:** conflict tools see text, not invariants.
 
 **How to apply:** when two open PRs touch one chokepoint, merge one, then rebase the other with a test that fails if any entry point bypasses the invariant; never use `updateMany` on a model whose `@updatedAt` is user-visible; after a conflict resolution, grep for re-declared names. Links: [[sqlite-tests-skip-on-postgres-adapter]].
+
+**Folded here (retired from the index 2026-10-24; file unchanged):**
+[[shared-helper-semantics-cross-pr]] — a test pinning a shared helper's semantics breaks when
+a parallel PR changes the helper, and `main` merges without up-to-date checks. Check open PRs
+touching the helper, assert values that hold under both semantics, or merge `origin/main`
+first (#1347/#1348).

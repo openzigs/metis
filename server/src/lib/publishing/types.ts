@@ -34,6 +34,23 @@ export class PublishError extends Error {
   }
 }
 
+/** #1478 — the codes `buildPublishFetch` throws when it refuses a redirect. */
+export const GITHUB_REDIRECT_REFUSED = "GITHUB_REDIRECT_REFUSED";
+export const GITHUB_TOO_MANY_REDIRECTS = "GITHUB_TOO_MANY_REDIRECTS";
+
+/**
+ * #1486 — a refused redirect fails the same way on every attempt, so retry
+ * loops fail fast on it. Gated on the codes, not on `retryable`: that flag
+ * defaults to false and nothing sets it, so testing it would fail fast on
+ * every `PublishError`.
+ */
+export function isRedirectRefusal(err: unknown): err is PublishError {
+  return (
+    err instanceof PublishError &&
+    (err.code === GITHUB_REDIRECT_REFUSED || err.code === GITHUB_TOO_MANY_REDIRECTS)
+  );
+}
+
 export interface PublishEmitter {
   status(event: Omit<PublishStatusEvent, "ts">): void;
   progress(event: Omit<PublishProgressEvent, "ts">): void;

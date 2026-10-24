@@ -5,7 +5,7 @@
  * be driven on its own. The end-to-end proof (real worker, real SQLite, the
  * page's API) is `server/tests/pr-review-state-1470.sqlite.test.ts`.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
   resolveAc: vi.fn(),
@@ -43,6 +43,7 @@ import {
   recordPrReviewJobSkip,
   type ExecutePrReviewJobInput,
 } from "./pr-review-job.js";
+import { createPrReviewQueue } from "./queue.js";
 
 const KEY = { projectId: "p1", repoOwner: "acme", repoName: "site", prNumber: 7 };
 
@@ -210,6 +211,128 @@ describe("executePrReviewJob records its outcome (#1470)", () => {
       expect.objectContaining({ prNumber: 7, status: "reviewed", error: "db down" }),
     );
     expect(m.finishRun).toHaveBeenCalledWith(expect.objectContaining({ status: "completed" }));
+  });
+});
+
+describe("bookkeeping after the review never makes the queue run it again (#1486)", () => {
+  afterEach(() => {
+    m.recordStep.mockReset().mockImplementation(async () => undefined);
+    m.finishRun.mockReset().mockImplementation(async () => undefined);
+  });
+
+  it("a posted review whose run bookkeeping fails still resolves the job", async () => {
+    m.recordStep.mockRejectedValue(new Error("db down"));
+    m.finishRun.mockRejectedValue(new Error("db down"));
+    const out = await executePrReviewJob(input(), deps);
+    expect(out).toEqual({ skipped: null, runId: "run_1" });
+    expect(m.runPrReview).toHaveBeenCalledTimes(1);
+    expect(m.record).toHaveBeenCalledTimes(1);
+    expect(m.record).toHaveBeenCalledWith(KEY, expect.objectContaining({ status: "reviewed" }));
+    expect(m.warn).toHaveBeenCalledWith(
+      "pr_review.bookkeeping_failed",
+      expect.objectContaining({ prNumber: 7, step: "record_step", error: "db down" }),
+    );
+  });
+
+  it("a failed review whose run bookkeeping fails still resolves the job", async () => {
+    m.runPrReview.mockRejectedValue(new Error("422 from GitHub"));
+    m.recordStep.mockRejectedValue(new Error("db down"));
+    m.finishRun.mockRejectedValue(new Error("db down"));
+    const out = await executePrReviewJob(input(), deps);
+    expect(out).toEqual({ skipped: null, runId: "run_1" });
+    expect(m.record).toHaveBeenCalledWith(KEY, { status: "failed", runId: "run_1" });
+    expect(m.warn).toHaveBeenCalledWith(
+      "pr_review.bookkeeping_failed",
+      expect.objectContaining({ step: "finish_run", error: "db down" }),
+    );
+  });
+
+  it("passes the run's own session to the review, so its spend is attributed to the run", async () => {
+    await executePrReviewJob(input(), deps);
+    expect(m.startRun).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "pr-review-7-d1" }),
+    );
+    expect(m.runPrReview).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "pr-review-7-d1" }),
+      expect.anything(),
+    );
+  });
+
+  it.each([undefined, null, "a bare string"])(
+    "a review rejecting with %s is recorded as failed and never reaches the queue",
+    async (thrown) => {
+      m.runPrReview.mockImplementation(() => Promise.reject(thrown));
+      const timers: Array<() => void> = [];
+      const q = createPrReviewQueue({
+        processor: async (job) => {
+          await executePrReviewJob(input({ job }), deps);
+        },
+        maxAttempts: 3,
+        backoffMs: [10, 10],
+        setTimer: (cb) => {
+          timers.push(cb);
+          return 0;
+        },
+      });
+      q.enqueue({
+        deliveryId: "d1",
+        projectId: "p1",
+        owner: "acme",
+        repo: "site",
+        prNumber: 7,
+        context: { action: "opened", headSha: "head-sha" },
+      });
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      expect(m.runPrReview).toHaveBeenCalledTimes(1);
+      expect(timers).toHaveLength(0);
+      expect(q.deadLetters()).toHaveLength(0);
+      expect(m.record).toHaveBeenCalledWith(KEY, { status: "failed", runId: "run_1" });
+      expect(m.recordStep).toHaveBeenCalledWith(
+        expect.objectContaining({ content: { kind: "pr_review_error", error: String(thrown) } }),
+      );
+      expect(m.finishRun).toHaveBeenCalledWith(expect.objectContaining({ status: "failed" }));
+    },
+  );
+
+  it("a failed state write rejecting with undefined is still only logged", async () => {
+    m.record.mockImplementationOnce(() => Promise.reject(undefined));
+    const out = await executePrReviewJob(input(), deps);
+    expect(out).toEqual({ skipped: null, runId: "run_1" });
+    expect(m.warn).toHaveBeenCalledWith(
+      "pr_review.state_write_failed",
+      expect.objectContaining({ error: "undefined" }),
+    );
+  });
+
+  it("through the queue: the model is called and the review posted once, never retried", async () => {
+    m.recordStep.mockRejectedValue(new Error("db down"));
+    m.finishRun.mockRejectedValue(new Error("db down"));
+    const timers: Array<() => void> = [];
+    const q = createPrReviewQueue({
+      processor: async (job) => {
+        await executePrReviewJob(input({ job }), deps);
+      },
+      maxAttempts: 3,
+      backoffMs: [10, 10],
+      setTimer: (cb) => {
+        timers.push(cb);
+        return 0;
+      },
+    });
+    q.enqueue({
+      deliveryId: "d1",
+      projectId: "p1",
+      owner: "acme",
+      repo: "site",
+      prNumber: 7,
+      context: { action: "opened", headSha: "head-sha" },
+    });
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(m.runPrReview).toHaveBeenCalledTimes(1);
+    expect(timers).toHaveLength(0);
+    expect(q.deadLetters()).toHaveLength(0);
   });
 });
 

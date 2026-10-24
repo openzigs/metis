@@ -14,8 +14,10 @@
  *   - DNS pinning for GHE hosts through our own `fetch` with a pinned undici
  *     dispatcher, so the hostname we resolved is the address we connect to
  *     (TOCTOU defence reused from the connector subsystem), or the corporate
- *     egress proxy when the network requires one; redirects to another host refused and a
- *     per-request deadline (`buildPublishFetch`, #1471).
+ *     egress proxy when the network requires one; redirects followed only on
+ *     the same origin (at most five), any other refused with a non-retryable
+ *     `PublishError` (#1478); and a per-request deadline (`buildPublishFetch`,
+ *     #1471).
  *   - `X-GitHub-Api-Version` header (#69 AC).
  *
  * Auth scope is verified on first use against `GET /` (rate-limited cheap
@@ -42,6 +44,8 @@ import {
   type OctokitResponseLike,
   type PublishOctokitLike,
   type PublishRateLimitConfig,
+  GITHUB_REDIRECT_REFUSED,
+  GITHUB_TOO_MANY_REDIRECTS,
   PublishError,
 } from "./types.js";
 
@@ -120,7 +124,7 @@ function posInt(raw: string | undefined, fallback: number): number {
 // ---- Per-credential client cache ------------------------------------------
 
 /**
- * #749 — one client per (baseUrl, owner, pinned address, token). The token is
+ * #749 — one client per (baseUrl, owner, pinned address, deadline, token). The token is
  * part of the key as a full SHA-256, so two credentials publishing to the same
  * owner never share a client: the old "fingerprint" (length + first 2 + last 2
  * characters) collided about 1 in 3,844 for classic `ghp_` PATs, and a publish
@@ -139,7 +143,10 @@ const clientCache = new Map<string, PublishOctokitLike>();
 function cacheKey(opts: AcquirePublishOctokitOptions): string {
   const tokenDigest = createHash("sha256").update(opts.token).digest("hex");
   const pin = opts.pinnedAddress ? `${opts.pinnedAddress}/${opts.pinnedFamily ?? ""}` : "";
-  return [opts.baseUrl, opts.owner.toLowerCase(), pin, tokenDigest].join("::");
+  // #1478 — the deadline is baked into the client's `fetch`, so a caller
+  // asking for another one must not be handed a client built with this one.
+  const timeoutMs = opts.timeoutMs ?? PUBLISH_REQUEST_TIMEOUT_MS;
+  return [opts.baseUrl, opts.owner.toLowerCase(), pin, timeoutMs, tokenDigest].join("::");
 }
 
 export function __resetPublishOctokitCache(): void {
@@ -194,6 +201,15 @@ export const PUBLISH_REQUEST_TIMEOUT_MS = 20_000;
 
 /** #1471 — same-origin redirects followed per request before giving up. */
 const PUBLISH_MAX_REDIRECTS = 5;
+
+/** #1478 — the headers that describe a request body, dropped with it on a switch to GET. */
+const BODY_HEADERS = [
+  "content-type",
+  "content-length",
+  "content-encoding",
+  "content-language",
+  "content-location",
+];
 
 /**
  * #1471 — the `fetch` every publish client sends through.
@@ -264,15 +280,29 @@ async function buildPublishFetch(args: OctokitFactoryArgs): Promise<typeof fetch
       if (res.status < 300 || res.status >= 400 || res.status === 304 || !location) return res;
       const next = new URL(location, url);
       await res.body?.cancel();
+      // #1478 — a refusal is deterministic, so it is a typed, non-retryable
+      // `PublishError`; `defaultOctokit` unwraps it from the `RequestError`
+      // (status 500) that `@octokit/request` wraps every `fetch` throw in.
       if (next.origin !== origin) {
-        throw new Error("GitHub redirected the request to another host; it was not followed");
+        throw new PublishError(
+          502,
+          GITHUB_REDIRECT_REFUSED,
+          "GitHub redirected the request to another origin; it was not followed",
+        );
       }
       if (hop >= PUBLISH_MAX_REDIRECTS) {
-        throw new Error("GitHub redirected the request too many times");
+        throw new PublishError(
+          502,
+          GITHUB_TOO_MANY_REDIRECTS,
+          "GitHub redirected the request too many times",
+        );
       }
       if (res.status === 303 || ((res.status === 301 || res.status === 302) && method === "POST")) {
+        // The fetch spec's method switch: the request becomes a GET, and the
+        // body goes with the headers that describe it.
         method = "GET";
         body = undefined;
+        for (const h of BODY_HEADERS) headers.delete(h);
       }
       url = next;
     }
@@ -298,7 +328,21 @@ async function defaultOctokit(args: OctokitFactoryArgs): Promise<PublishOctokitL
     },
   };
   const inst = new Octokit(cfg);
-  return { request: (a) => inst.request(a) };
+  return {
+    request: async (a) => {
+      try {
+        return await inst.request(a);
+      } catch (err) {
+        // #1478 — `@octokit/request` wraps whatever `fetch` throws in a
+        // `RequestError` with status 500, which reads as a GitHub outage to
+        // every caller that classifies on status. A refusal from
+        // `buildPublishFetch` is surfaced as itself.
+        const cause = (err as { cause?: unknown } | null)?.cause;
+        if (cause instanceof PublishError) throw cause;
+        throw err;
+      }
+    },
+  };
 }
 
 // ---- Throttle hook config (R-F2) ------------------------------------------

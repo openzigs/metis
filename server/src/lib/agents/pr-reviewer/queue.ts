@@ -18,7 +18,14 @@
  *     emitted so operators can replay manually.
  *   - The processor is injected so the unit tests can drive the queue
  *     without booting the real review agent.
+ *   - #1478 / #1486 — a refused GitHub redirect (`GITHUB_REDIRECT_REFUSED`,
+ *     `GITHUB_TOO_MANY_REDIRECTS`) dead-letters at once, since it fails the
+ *     same way every time; any other error is retried. The one refusal that
+ *     reaches here is the processor's PR read for a manual Re-run, before the
+ *     model is called: `executePrReviewJob` never throws once it has called
+ *     the model, so a retry never re-runs a review.
  */
+import { isRedirectRefusal } from "../../publishing/types.js";
 
 export interface PrReviewJobPayload {
   /** Stable id for logs / dedup audit — typically the X-GitHub-Delivery UUID. */
@@ -310,7 +317,8 @@ export function createPrReviewQueue(opts: PrReviewQueueOptions): PrReviewQueue {
       trackTerminal(job);
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
-      if (job.attempt >= maxAttempts) {
+      const deterministic = isRedirectRefusal(err);
+      if (job.attempt >= maxAttempts || deterministic) {
         const entry = { job, error: error.message };
         dlq.push(entry);
         trackTerminal(job);

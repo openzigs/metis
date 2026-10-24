@@ -17,6 +17,7 @@ import {
   type GeneratedDocVersionManifest,
 } from "./generated-doc-provenance.js";
 import type { CodeIdentifierHit } from "./main-part-language.js";
+import { optionalSchemaClaimFields, type SchemaClaimsRecord } from "./schema-claim-check.js";
 
 /** The summary the viewer's Provenance panel shows, without the manifest. */
 export interface GeneratedDocProvenanceSummary {
@@ -43,9 +44,11 @@ export interface GeneratedDocProvenanceSummary {
    * #1133 — per section checked against a schema, the names its text writes as
    * tables or columns: how many were compared, which did not match (each is
    * marked in the text) and how many were not checked. Empty when the document
-   * was not checked (no schema, or not an architecture document).
+   * was not checked (no schema, or not an architecture document). #1469 —
+   * with the true unmatched count, why names were not checked and what they
+   * were compared with, on a version recorded since.
    */
-  schemaClaims: Array<{ section: string; judged: number; unmatched: string[]; notChecked: number }>;
+  schemaClaims: Array<{ section: string } & SchemaClaimsRecord>;
   /**
    * #1070 — a planned document's topic plan: per section, what it was planned
    * and the topics left out before writing, highest priority first. Absent =
@@ -99,6 +102,7 @@ export function summarizeGeneratedDocVersionManifest(
               section: section.sectionLabel,
               judged: section.schemaClaims.judged,
               unmatched: [...section.schemaClaims.unmatched],
+              ...optionalSchemaClaimFields(section.schemaClaims),
               notChecked: section.schemaClaims.notChecked,
             },
           ]

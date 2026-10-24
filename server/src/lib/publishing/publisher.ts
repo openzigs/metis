@@ -87,6 +87,7 @@ import { pagerDutyPublishRollback } from "../pagerduty/alerting-hooks.js";
 import {
   NOOP_PUBLISH_EMITTER,
   PublishError,
+  isRedirectRefusal,
   readIssueIdentity,
   type AddSubIssueBody,
   type GhIssue,
@@ -1100,6 +1101,9 @@ async function attachSubIssueWithRetry(args: AttachArgs): Promise<void> {
       return;
     } catch (err) {
       lastErr = err;
+      // #1478 — a refused redirect fails the same way every time: never spend
+      // the backoff budget retrying it. #1486 — any other error still retries.
+      if (isRedirectRefusal(err)) throw err;
       const status = (err as { status?: number }).status;
       // M2: capability-detect older GHE that doesn't expose the sub-issue
       // API. Cache the verdict per-process per-baseUrl so a single batch

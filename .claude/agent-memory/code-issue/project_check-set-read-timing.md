@@ -52,4 +52,7 @@ Measured across PR heads, 2026-10-16/17 (#1217 re-review, then every PR from #12
 ## Folded here (retired from the index 2026-10-21; files unchanged)
 
 - [[project_cancelled-no-runner-checks]] — a red check with 0 steps and a log 404 was cancelled in the queue, not failed: re-run; stuck `in_progress` for hours: `gh pr update-branch`.
+- [[gh-checks-shard-stuck-pending]] (retired 2026-10-24) — a shard can read `pending` for
+  15–40+ min after every step succeeded: read the job's steps, wait and re-read; past ~40 min
+  `gh run rerun --job <id>` on that job cleared it (#1347, #1418).
 - [[image-budget-rationale-lives-in-three-places]] — the server image-budget rationale lives in `docs/OPERATIONS.md` and two comments (`verify-image-size.mjs`, `ci.yml`); an instance of "Correcting a fact in one place" above.

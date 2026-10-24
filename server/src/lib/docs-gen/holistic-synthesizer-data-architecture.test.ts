@@ -871,10 +871,20 @@ describe("synthesizeFinalDocument — table names in the text of every section (
     expect(ops?.schemaClaims).toEqual({
       judged: 3,
       unmatched: ["certificate_cache"],
+      unmatchedCount: 1,
       notChecked: 0,
+      notCheckedWhy: [],
+      source: LIVE.source,
     });
     const data = result.sections.find((s) => s.sectionLabel === "Data Architecture");
-    expect(data?.schemaClaims).toEqual({ judged: 2, unmatched: [], notChecked: 0 });
+    expect(data?.schemaClaims).toEqual({
+      judged: 2,
+      unmatched: [],
+      unmatchedCount: 0,
+      notChecked: 0,
+      notCheckedWhy: [],
+      source: LIVE.source,
+    });
     // Informational: the document is not degraded by it.
     expect(result.warnings.every((w) => w.severity === "info")).toBe(true);
   });

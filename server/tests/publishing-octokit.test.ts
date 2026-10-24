@@ -11,6 +11,7 @@ vi.mock("../src/lib/connectors/network-allowlist.js", () => ({
 
 import {
   PUBLISH_OCTOKIT_CACHE_MAX,
+  PUBLISH_REQUEST_TIMEOUT_MS,
   __resetPublishOctokitCache,
   __resetThrottleBudget,
   __setPublishOctokitFactory,
@@ -260,6 +261,28 @@ describe("acquirePublishOctokit caching", () => {
     expect(again).toBe(first);
     expect(moved).not.toBe(first);
     expect(pins).toEqual(["203.0.113.5", "203.0.113.9"]);
+  });
+
+  it("#1478 — builds a new client when the deadline changes", async () => {
+    const deadlines: Array<number | undefined> = [];
+    __setPublishOctokitFactory(async (args) => {
+      deadlines.push(args.timeoutMs);
+      return fakeClient(async () => ({ status: 200, headers: {}, data: {} }));
+    });
+    const base = { owner: "acme", baseUrl: GH, token: "tok-deadline" };
+
+    const fallback = await acquirePublishOctokit(base);
+    const sameAsDefault = await acquirePublishOctokit({
+      ...base,
+      timeoutMs: PUBLISH_REQUEST_TIMEOUT_MS,
+    });
+    const short = await acquirePublishOctokit({ ...base, timeoutMs: 300 });
+    const shortAgain = await acquirePublishOctokit({ ...base, timeoutMs: 300 });
+
+    expect(sameAsDefault).toBe(fallback);
+    expect(short).not.toBe(fallback);
+    expect(shortAgain).toBe(short);
+    expect(deadlines).toEqual([undefined, 300]);
   });
 
   it("bounds the cache, evicting the least recently used client", async () => {

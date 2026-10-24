@@ -9,7 +9,11 @@
  *
  *   - FAIL  a HIGH or CRITICAL finding WITH a fixed version, unless a live waiver
  *           names it AND sets `allowFixed` (for a fix that genuinely cannot be
- *           installed yet, e.g. held by pnpm's 7-day `minimumReleaseAge`).
+ *           installed yet, e.g. held by pnpm's 7-day `minimumReleaseAge`). An
+ *           `allowFixed` waiver must name the exact `packages` (name@installed) it
+ *           covers (#1489): an id-only one would also hide a DIFFERENT copy of the
+ *           package that can take the fix, e.g. a zod 4.x that regressed below 4.6.6
+ *           while only zod@3.25.76 is stuck — the gap sast.yml closed in #1453.
  *   - FAIL  a CRITICAL finding with NO fixed version and no live waiver.
  *   - FAIL  a waiver whose `expires` date has passed while its finding is still
  *           present. The date is a review date: on it, someone re-checks whether a
@@ -75,6 +79,8 @@ import { pathToFileURL } from "node:url";
  * @property {string} reason
  * @property {string[]} [images] limit to these image labels; absent = every image
  * @property {boolean} [allowFixed] also suppress a finding that HAS a fixed version
+ * @property {string[]} [packages] limit to these `name@installed` copies; required
+ *   with allowFixed, absent = every copy (#1489)
  */
 
 /**
@@ -83,6 +89,7 @@ import { pathToFileURL } from "node:url";
  * @property {string} retired   ISO date the waiver was taken out of `waivers`
  * @property {string} reason
  * @property {string[]} [images]
+ * @property {string[]} [packages]
  */
 
 /**
@@ -181,6 +188,31 @@ export function findingsFromReport(image, report) {
 }
 
 /**
+ * The optional `images` and `packages` scope lists shared by both sections.
+ *
+ * @param {any} w
+ * @param {string} where
+ */
+function checkScope(w, where) {
+  for (const field of ["images", "packages"]) {
+    const value = w[field];
+    if (
+      value !== undefined &&
+      !(Array.isArray(value) && value.every((/** @type {unknown} */ x) => typeof x === "string"))
+    ) {
+      const what = field === "images" ? "image labels" : "name@version strings";
+      throw new Error(`${where} (${w.id}): ${field} must be a list of ${what}`);
+    }
+  }
+  if (
+    w.packages !== undefined &&
+    !w.packages.every((/** @type {string} */ p) => /^.+@[^@\s]+$/.test(p))
+  ) {
+    throw new Error(`${where} (${w.id}): packages entries must be name@version`);
+  }
+}
+
+/**
  * Validate the waiver file's shape. A malformed entry is an error, not a skip:
  * a typo'd date that silently never expires is the failure this file exists to
  * prevent.
@@ -201,17 +233,15 @@ export function parseWaivers(doc) {
     if (typeof w.reason !== "string" || w.reason.trim().length < 10) {
       throw new Error(`${where} (${w.id}): a reason is required`);
     }
-    if (
-      w.images !== undefined &&
-      !(
-        Array.isArray(w.images) &&
-        w.images.every((/** @type {unknown} */ x) => typeof x === "string")
-      )
-    ) {
-      throw new Error(`${where} (${w.id}): images must be a list of image labels`);
-    }
+    checkScope(w, where);
     if (w.allowFixed !== undefined && typeof w.allowFixed !== "boolean") {
       throw new Error(`${where} (${w.id}): allowFixed must be true or false`);
+    }
+    if (w.allowFixed === true && w.packages === undefined) {
+      throw new Error(
+        `${where} (${w.id}): allowFixed requires packages (the exact name@version copies ` +
+          "that cannot take the fix), so it cannot hide a copy that can",
+      );
     }
     return /** @type {Waiver} */ ({ ...w, id: w.id.trim() });
   });
@@ -239,26 +269,19 @@ export function parseRetired(doc) {
     if (typeof w.reason !== "string" || w.reason.trim().length < 10) {
       throw new Error(`${where} (${w.id}): a reason is required`);
     }
-    if (
-      w.images !== undefined &&
-      !(
-        Array.isArray(w.images) &&
-        w.images.every((/** @type {unknown} */ x) => typeof x === "string")
-      )
-    ) {
-      throw new Error(`${where} (${w.id}): images must be a list of image labels`);
-    }
+    checkScope(w, where);
     return /** @type {RetiredWaiver} */ ({ ...w, id: w.id.trim() });
   });
 }
 
 /**
- * @param {{ id: string, images?: string[] }} waiver
+ * @param {{ id: string, images?: string[], packages?: string[] }} waiver
  * @param {Finding} finding
  */
 function waiverMatches(waiver, finding) {
   if (waiver.id !== finding.id) return false;
-  return !waiver.images || waiver.images.includes(finding.image);
+  if (waiver.images && !waiver.images.includes(finding.image)) return false;
+  return !waiver.packages || waiver.packages.includes(`${finding.pkg}@${finding.installed}`);
 }
 
 /**

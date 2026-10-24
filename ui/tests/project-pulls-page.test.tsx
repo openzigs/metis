@@ -2,7 +2,7 @@
  * Epic #394 P2 (#404) — PR review history page tests.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { makeWrapper } from "./test-utils";
 
 const useParamsMock = vi.fn(() => ({ id: "p1" }) as { id: string } | null);
@@ -141,6 +141,8 @@ describe("Project pulls (PR-review history) page", () => {
   it.each([
     ["the model is priced", { capCents: 100, modelPriced: true }],
     ["there is no limit", { capCents: null, modelPriced: false }],
+    // #1478 — the server reads a cap of 0 as "no limit" (`checkBudget`), so does the UI.
+    ["the limit is 0 (no limit)", { capCents: 0, modelPriced: false }],
   ])("#1471 — no unpriced notice when %s", async (_label, over) => {
     getBudget.mockResolvedValue({
       allowed: true,
@@ -152,6 +154,11 @@ describe("Project pulls (PR-review history) page", () => {
     renderPage();
     await waitFor(() => {
       expect(screen.getByText(/No PR reviews recorded yet/i)).toBeInTheDocument();
+    });
+    // #1478 — the budget answer must have landed, or "no notice" proves nothing.
+    await waitFor(() => expect(getBudget).toHaveBeenCalled());
+    await act(async () => {
+      await getBudget.mock.results[0]?.value;
     });
     expect(screen.queryByTestId("auto-review-unpriced")).toBeNull();
   });
