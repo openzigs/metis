@@ -116,6 +116,29 @@ export async function resolvePrReviewJudge(job: PrReviewJob): Promise<JudgeLike 
   return judgeFromProvider(provider);
 }
 
+/**
+ * The REST API base for a connector's stored `apiBaseUrl`. The connector form
+ * stores what was typed — often the Enterprise host (`https://git.example.com`)
+ * or a browse URL — and the repo connector's own client rewrites that to
+ * `{origin}/api/v3` (`repo-service.ts` `acquireOctokit`); the review client
+ * must call the same API. A github.com browse URL means the public API.
+ * Unparseable input is passed through for `resolvePublishTarget` to refuse.
+ */
+export function githubApiBaseUrl(stored: string | null): string | null {
+  if (!stored) return null;
+  let url: URL;
+  try {
+    url = new URL(stored.trim());
+  } catch {
+    return stored;
+  }
+  const host = url.hostname.toLowerCase();
+  if (host === "api.github.com") return url.origin;
+  if (host === "github.com" || host === "www.github.com") return null;
+  const path = url.pathname.replace(/\/+$/, "");
+  return path.endsWith("/api/v3") ? url.origin + path : url.origin + "/api/v3";
+}
+
 function repoPath(owner: string, repo: string): string {
   return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
 }
@@ -179,7 +202,7 @@ export async function resolvePrReviewOctokit(job: PrReviewJob): Promise<PrReview
     const target = await resolvePublishTarget({
       owner: job.owner,
       repo: job.repo,
-      baseUrl: conn.apiBaseUrl,
+      baseUrl: githubApiBaseUrl(conn.apiBaseUrl),
     });
     const token = await readBoundSecret(conn.secretId, getVaultService());
     if (!token) {

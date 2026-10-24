@@ -182,6 +182,24 @@ describe("resolvePrReviewOctokit", () => {
   });
 
   it.each([
+    ["the Enterprise host alone", "https://140.82.112.6", "https://140.82.112.6/api/v3"],
+    [
+      "a pasted browse URL",
+      "https://140.82.112.6/Org/repo/tree/main",
+      "https://140.82.112.6/api/v3",
+    ],
+    ["a github.com browse URL", "https://github.com/acme/site", "https://api.github.com"],
+    ["the public API base", "https://api.github.com/", "https://api.github.com"],
+  ])(
+    "calls the REST API for a connector saved as %s, as the repo connector does",
+    async (_label, stored, expected) => {
+      findFirstMock.mockResolvedValue(conn({ provider: "github_enterprise", apiBaseUrl: stored }));
+      expect(await resolvePrReviewOctokit(JOB)).not.toBeNull();
+      expect(factoryCalls[0]).toMatchObject({ baseUrl: expected });
+    },
+  );
+
+  it.each([
     ["no connector for the repo", null],
     ["a connector with no secret", { provider: "github", apiBaseUrl: null, secretId: null }],
     ["a non-GitHub connector", { provider: "gitlab", apiBaseUrl: null, secretId: "sec-1" }],
