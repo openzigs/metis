@@ -484,6 +484,28 @@ describe("POST /custom-agents/:id/invoke (#80/#83)", () => {
     expect(on.status).toBe(200);
   });
 
+  it("#1445 review — on a project with no workspace (nobody but a system admin can enable), a member gets the strict rule, not a 400", async () => {
+    seedProject("p-open", null);
+    const agent = seedAgent({ projectId: "p-open", name: "Open draft" });
+    const res = await request(createApp())
+      .post(`/custom-agents/${agent.id}/invoke`)
+      .send({ projectId: "p-open", input: "hello" });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("AGENT_DISABLED");
+    expect(chatMock).not.toHaveBeenCalled();
+  });
+
+  it("#1445 review — a caller outside the project's workspace never reaches the exception (404 before it)", async () => {
+    seedProject("p1", "w1");
+    testUser.workspaces = []; // claims no workspace: the project itself is out of reach
+    const agent = seedAgent({ projectId: "p1" });
+    const res = await request(createApp())
+      .post(`/custom-agents/${agent.id}/invoke`)
+      .send({ projectId: "p1", input: "hello" });
+    expect(res.status).toBe(404);
+    expect(chatMock).not.toHaveBeenCalled();
+  });
+
   it("#1445 review — a system admin may test the project's never-enabled agent", async () => {
     testUser.role = "admin";
     seedProject("p1", "w1");
@@ -603,6 +625,48 @@ describe("enablement endpoints (#79/#80)", () => {
     members.clear(); // no longer a member of w1
     const outsider = await request(createApp()).get("/custom-agents/projects/p1/disabled");
     expect(outsider.status).toBe(404);
+  });
+
+  it("#1445 review — an admin can switch OFF a borrowed agent already enabled here, even without access to its home project; never switch one ON", async () => {
+    seedProject("p1", "w1");
+    seedProject("p2", "w2"); // the agent's home: u1 is not a member of w2
+    seedMember("w1", "u1", "admin");
+    const borrowed = seedAgent({ projectId: "p2", name: "Borrowed" });
+    enableFor(borrowed.id, "p1");
+
+    const off = await request(createApp())
+      .put(`/custom-agents/${borrowed.id}/enablement`)
+      .send({ projectId: "p1", enabled: false });
+    expect(off.status).toBe(200);
+    expect(off.body.data.enabled).toBe(false);
+    const disabled = await request(createApp()).get("/custom-agents/projects/p1/disabled");
+    expect(disabled.body.data).toEqual([borrowed.id]);
+
+    // Switching it back ON still needs the agent's own project (#305): 404.
+    const on = await request(createApp())
+      .put(`/custom-agents/${borrowed.id}/enablement`)
+      .send({ projectId: "p1", enabled: true });
+    expect(on.status).toBe(404);
+
+    // With no row here, switching OFF is no exception either: 404, nothing written.
+    const stranger = seedAgent({ projectId: "p2", name: "Stranger" });
+    const offStranger = await request(createApp())
+      .put(`/custom-agents/${stranger.id}/enablement`)
+      .send({ projectId: "p1", enabled: false });
+    expect(offStranger.status).toBe(404);
+    expect([...enablements.values()].some((e) => e.customAgentId === stranger.id)).toBe(false);
+  });
+
+  it("#1445 review — a plain member still cannot switch a borrowed agent off (403)", async () => {
+    seedProject("p1", "w1");
+    seedProject("p2", "w2");
+    seedMember("w1", "u1", "member");
+    const borrowed = seedAgent({ projectId: "p2" });
+    enableFor(borrowed.id, "p1");
+    const res = await request(createApp())
+      .put(`/custom-agents/${borrowed.id}/enablement`)
+      .send({ projectId: "p1", enabled: false });
+    expect(res.status).toBe(403);
   });
 
   it("non-admin cannot toggle enablement (403)", async () => {

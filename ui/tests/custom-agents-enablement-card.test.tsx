@@ -152,6 +152,19 @@ describe("<CustomAgentsEnablementCard /> (#85)", () => {
     expect(screen.queryByTestId("ca-other-project-own")).toBeNull();
   });
 
+  it("#1445 review — a refused switch says why instead of failing silently", async () => {
+    listAgents.mockResolvedValue([agent("a1", "Risk Analyst")]);
+    listEnabledAgents.mockResolvedValue([]);
+    setAgentEnablement.mockRejectedValue(new Error("Workspace admin role required"));
+    renderCard();
+
+    await waitFor(() => expect(screen.getByTestId("ca-enablement-toggle-a1")).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId("ca-enablement-toggle-a1"));
+    const alert = await screen.findByTestId("ca-toggle-error");
+    expect(alert).toHaveTextContent("Workspace admin role required");
+    expect(alert).toHaveAttribute("role", "alert");
+  });
+
   it("enables a disabled agent and live-updates via refetch", async () => {
     listAgents.mockResolvedValue([agent("a2", "Compliance")]);
     // First load: a2 not enabled. After toggle, refetch returns it enabled.

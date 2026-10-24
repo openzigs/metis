@@ -13,6 +13,7 @@ import {
   createAgent,
   deleteAgent,
   getAgent,
+  hasEnablementRow,
   importAgent,
   listAgents,
   listDisabledAgentIdsForProject,
@@ -289,7 +290,17 @@ export function customAgentsRouter(deps: CustomAgentsRouterDeps = {}): Router {
     // target one: an agent id from another workspace answers 404 exactly like
     // an unknown id, so a foreign agent can never be enabled (and then read
     // back) through a project the caller administers. Built-ins stay open.
-    await resolveForRead(req);
+    //
+    // #1445 review — except switching OFF an agent that already has a row for
+    // the target project: it is in use (or was) there, the Custom agents card
+    // lists it there, and narrowing what the caller's own project runs reveals
+    // nothing about the agent's home project. Without this an agent borrowed
+    // from a workspace the admin cannot reach (or whose project was deleted)
+    // could be listed on the card but never switched off.
+    const switchingOffHere =
+      !parsed.data.enabled &&
+      (await hasEnablementRow(String(req.params.id), parsed.data.projectId));
+    if (!switchingOffHere) await resolveForRead(req);
     try {
       const row = await setAgentEnabledForProject(
         String(req.params.id),

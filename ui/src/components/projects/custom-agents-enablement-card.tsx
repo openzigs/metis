@@ -50,9 +50,15 @@ export function CustomAgentsEnablementCard({ projectId }: Props) {
   const qc = useQueryClient();
   const [editing, setEditing] = useState<CustomAgentDto | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // #1445 review — a refused switch (no admin role, an agent this caller cannot
+  // reach) is said, never a click that silently does nothing.
+  const [toggleError, setToggleError] = useState<string | null>(null);
   // The card stays mounted when the Library scope picker changes project, so a
   // refusal on one project must not linger on the next (PR #408 review).
-  useEffect(() => setDeleteError(null), [projectId]);
+  useEffect(() => {
+    setDeleteError(null);
+    setToggleError(null);
+  }, [projectId]);
 
   // The wizard lists only one workspace's projects, so link to THIS project's
   // workspace. A project with no workspace could not be picked in any wizard,
@@ -93,6 +99,9 @@ export function CustomAgentsEnablementCard({ projectId }: Props) {
   const toggle = useMutation({
     mutationFn: ({ id, next }: { id: string; next: boolean }) =>
       sdkApi.setAgentEnablement(id, { projectId, enabled: next }),
+    onMutate: () => setToggleError(null),
+    onError: (err: unknown) =>
+      setToggleError(err instanceof Error ? err.message : "Failed to change the agent."),
     onSuccess: () => {
       // Refetch the enabled set so the row labels live-update (AC).
       qc.invalidateQueries({ queryKey: enabledKey(projectId) });
@@ -146,6 +155,12 @@ export function CustomAgentsEnablementCard({ projectId }: Props) {
           </Button>
         ) : null}
       </div>
+
+      {toggleError ? (
+        <p className="text-sm text-destructive" role="alert" data-testid="ca-toggle-error">
+          {toggleError}
+        </p>
+      ) : null}
 
       {deleteError ? (
         <p className="text-sm text-destructive" role="alert" data-testid="ca-delete-error">
