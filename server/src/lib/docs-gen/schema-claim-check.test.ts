@@ -1211,16 +1211,33 @@ describe("not checked: a name the read cannot speak for", () => {
     expect(notChecked(drawn.report, "unread")).toEqual(["GHOSTS"]);
   });
 
-  it("a read that may have been cut short is not taken to hold every table", () => {
+  it("a read the driver reports as cut is not taken to hold every table (#1096)", () => {
     const truncated = liveInventory(TABLES, [
-      { connector: "ora", how: "live", schemas: ["public"], possiblyTruncated: true },
+      {
+        connector: "ora",
+        how: "live",
+        schemas: ["public"],
+        truncation: { tablesRead: 3, tablesTotal: 4000 },
+      },
     ]);
     const { report } = check("| Table | Purpose |\n|---|---|\n| `zz_last` | — |", truncated);
     expect(report.unresolvedTables).toEqual([]);
     expect(notChecked(report, "unread")).toEqual(["zz_last"]);
     expect(renderSchemaCheckNotice(report, truncated)).toContain(
-      '> - The read of "ora" reached the driver\'s row limit and may have been cut short',
+      '> - The schema was read partially: "ora" 3 of 4,000 tables were read, so tables are ' +
+        "missing from it.",
     );
+  });
+
+  it("a cut read is noted even when every name matched (#1096)", () => {
+    const truncated = liveInventory(TABLES, [
+      { connector: "ora", how: "live", schemas: ["public"], truncation: { tablesRead: 3 } },
+    ]);
+    const { report } = check("| Table | Purpose |\n|---|---|\n| `users` | — |", truncated);
+    expect(report.unresolvedTables).toEqual([]);
+    const notice = renderSchemaCheckNotice(report, truncated);
+    expect(notice).toContain("**Schema check.**");
+    expect(notice).toContain('"ora" 3 tables (the total could not be counted) were read');
   });
 
   it("a name that resolves is judged against what it resolved to, unread database or not", () => {

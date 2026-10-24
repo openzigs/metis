@@ -369,6 +369,7 @@ import {
   fitReaderDocument,
   isMainSection,
   mainPlanBudget,
+  mainSectionOverrun,
   readBrdLayoutSetting,
   withRequirementsLeadIn,
 } from "./brd-layout.js";
@@ -5142,12 +5143,18 @@ async function synthesizeFinalDocumentInRun(
       // instructions stand, as they did before there was a plan. #1352 — the
       // words it is asked for are its planned length divided by the writing
       // model's measured overrun, as a batch's are (`length-calibration.ts`):
-      // an escalation asks for the escalation model's.
+      // an escalation asks for the escalation model's. #1427 — a main section
+      // of the reader layout corrects for at most `mainSectionOverrun`'s cap,
+      // so the main part is never asked for less than its 40k floor.
+      const overrunFor = (model: string | undefined): number =>
+        readerLayout && isMainSection(group.id)
+          ? mainSectionOverrun(resolveLengthOverrun(model))
+          : resolveLengthOverrun(model);
       const sectionAddendumFor = (model: string | undefined): string =>
         planning
           ? [
               !batchPlan && plannedSection && planning.lengthLimited.has(group.id)
-                ? lengthLimitNote(plannedSection.budgetChars, resolveLengthOverrun(model))
+                ? lengthLimitNote(plannedSection.budgetChars, overrunFor(model))
                 : "",
               renderCanonicalFactsBlock(sectionFacts, group, planning.ownerOf),
             ]

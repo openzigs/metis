@@ -127,6 +127,7 @@
  * through maps, and there is no backtracking pattern.
  */
 import {
+  describeTablesRead,
   isTypedInventory,
   plainSchemaText,
   renderSchemaReference,
@@ -302,7 +303,7 @@ class InventoryIndex {
       this.datasets.add(name.slice(name.lastIndexOf(".") + 1));
     }
     this.partlyUnread = inventory.reads.some(
-      (read) => read.how === "unread" || read.possiblyTruncated === true,
+      (read) => read.how === "unread" || read.truncation !== undefined,
     );
     for (const read of inventory.reads) {
       for (const schema of read.schemas) this.schemasRead.add(schema.toLowerCase());
@@ -2460,17 +2461,21 @@ export function renderSchemaCheckNotice(
         `${listed(noColumns.map((entry) => entry.name))}.`,
     );
   }
+  // #1096 — a cut read is said even when every name matched: the reader
+  // must know the schema compared with is partial.
+  const truncated = inventory.reads.filter((read) => read.truncation);
+  if (truncated.length > 0) {
+    lines.push(
+      `> - The schema was read partially: ` +
+        truncated
+          .map((read) => `"${read.connector}" ${describeTablesRead(read.truncation!)}`)
+          .join(", ") +
+        ` were read, so tables are missing from it.`,
+    );
+  }
   // A clean section's one line is written later, over the whole fitted text
   // (`checkDataArchitectureText`), so it can count the names in its sentences too.
   if (lines.length === 0) return "";
-  const truncated = inventory.reads.filter((read) => read.possiblyTruncated);
-  if (truncated.length > 0) {
-    lines.push(
-      `> - The read of ${truncated.map((read) => `"${read.connector}"`).join(", ")} reached the ` +
-        `driver's row limit and may have been cut short, so tables and columns can be missing ` +
-        `from it.`,
-    );
-  }
   // Why a mark is not a verdict, in the words that fit what was compared with.
   const caveat = schemaCaveat(inventory);
   return [

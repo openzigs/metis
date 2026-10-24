@@ -80,6 +80,10 @@ function makeOrchestrator(mode: "agentic" | "single-shot" | "requirement-grounde
   orch.computeEscalations = vi.fn(async () => undefined);
   orch.resolveDatabaseAware = vi.fn(async () => ({ enabled: true }));
   orch.computeAffectedSchema = vi.fn(async () => SCHEMA);
+  // #1131 — a continuation is scoped by the persisted code findings: none here.
+  (
+    orch as unknown as { readCodeFindingVerdicts: () => Promise<unknown[]> }
+  ).readCodeFindingVerdicts = vi.fn(async () => []);
   return orch;
 }
 
@@ -129,8 +133,13 @@ describe("regenerate the code agent through its pipeline mode (#766)", () => {
     expect(orch.computeAffectedSchema).toHaveBeenCalledWith("an_1", "pr_1", undefined, true);
     expect(orch.detectAgentMode).toHaveBeenCalledWith("pr_1", "code", REQS);
     // A stale connector-less row from an earlier single-shot regenerate goes.
+    // #1131 — and so does a row a continuation appended for the repo it re-ran.
     expect(prismaMock.agentResult.deleteMany).toHaveBeenCalledWith({
-      where: expect.objectContaining({ analysisId: "an_1", agentKey: "code", connectorId: null }),
+      where: expect.objectContaining({
+        analysisId: "an_1",
+        agentKey: "code",
+        OR: [{ connectorId: null }, { connectorId: { in: ["repo_1"] } }],
+      }),
     });
     expect(orch.runSynthesisAndPersist).toHaveBeenCalledTimes(1);
   });

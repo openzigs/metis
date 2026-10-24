@@ -247,6 +247,7 @@ const { getGapReport } = await import("./gap-report-service.js");
 const {
   resolveGapReportDeps,
   loadAnalysisSchemaImpact,
+  getRequirementDatabaseChanges,
   isSchemaImpactEnabled,
   SCHEMA_IMPACT_FLAG,
 } = await import("./schema-impact-producer.js");
@@ -353,6 +354,33 @@ describe("#847/#856 reachability — real getGapReport through the route seam yi
     expect(req?.databaseChanges).toBeUndefined();
     // #856 — the suppression reason is still observable, never a silent no-op.
     expect(report?.databaseAware?.reason).toBe("off");
+  });
+});
+
+describe("#1137 — one requirement's database changes, fetched on demand", () => {
+  it("returns the same changes the full report carries for that requirement", async () => {
+    const result = await getRequirementDatabaseChanges(
+      ANALYSIS_ID,
+      PROJECT_ID,
+      REQ_ID,
+      producerDeps(),
+    );
+    expect(result.requirementId).toBe(REQ_ID);
+    expect(result.databaseAware?.enabled).toBe(true);
+    expect(result.databaseChanges).toHaveLength(1);
+    expect(result.databaseChanges[0]?.tableName).toBe(SHARED_TABLE);
+    expect(result.databaseChanges[0]?.consumers?.[0]?.projectId).toBe(SIBLING_PROJECT_ID);
+  });
+
+  it("is empty, with the reason, when the project turned database-aware analysis off", async () => {
+    const result = await getRequirementDatabaseChanges(
+      ANALYSIS_ID,
+      PROJECT_ID,
+      REQ_ID,
+      producerDeps({ databaseAwareAnalysisSetting: "off" }),
+    );
+    expect(result.databaseChanges).toEqual([]);
+    expect(result.databaseAware?.reason).toBe("off");
   });
 });
 
@@ -512,6 +540,30 @@ describe("#847 producer internals — total, best-effort, and default-deps paths
     });
     expect(map.size).toBe(0);
     expect(prisma.codeSymbol.findMany).toHaveBeenCalled();
+  });
+
+  it("#1137 — crosses only the requirements it is asked for", async () => {
+    const mapRequirement = vi.fn(async () => ONE_MATCH);
+    const common = {
+      loadSnapshot: async () => snapshotFixture(),
+      mapRequirement,
+      dataSourceFor: emptyGraphFor,
+      schemaDataSourceFor: ordersSchemaDataSource,
+      liveIndexFor: () => null,
+      prisma: stubPrisma() as never,
+    };
+    const other = await loadAnalysisSchemaImpact(ANALYSIS_ID, {
+      ...common,
+      requirementIds: ["some-other-requirement"],
+    });
+    expect(other.size).toBe(0);
+    expect(mapRequirement).not.toHaveBeenCalled();
+
+    const mine = await loadAnalysisSchemaImpact(ANALYSIS_ID, {
+      ...common,
+      requirementIds: [REQ_ID],
+    });
+    expect([...mine.keys()]).toEqual([REQ_ID]);
   });
 
   it("honours the maxRequirements cost cap (0 ⇒ no crossing)", async () => {

@@ -53,13 +53,8 @@ import type { ChatOptions } from "../ai/types.js";
 
 const log = createChildLogger("analysis-agentic-pass-context");
 
-/** Default token budget per agentic agent loop (100k tokens). */
-export const DEFAULT_AGENT_TOKEN_BUDGET = 100_000;
-
-/** The configured per-loop token budget (`ANALYSIS_AGENT_TOKEN_BUDGET`). */
-export function resolveAgentTokenBudget(): number {
-  return getConfigService().getNumber("ANALYSIS_AGENT_TOKEN_BUDGET", DEFAULT_AGENT_TOKEN_BUDGET);
-}
+// #1131 — moved to their own module; re-exported for every existing import.
+export { DEFAULT_AGENT_TOKEN_BUDGET, resolveAgentTokenBudget } from "./agent-token-budget.js";
 
 /** Config key for {@link resolveRecoveryReasoning}. */
 export const RECOVERY_REASONING_KEY = "ANALYSIS_RECOVERY_REASONING";

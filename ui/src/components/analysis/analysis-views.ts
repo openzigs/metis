@@ -235,6 +235,26 @@ export function paginate<T>(items: readonly T[], page: number, pageSize: number)
 }
 
 /**
+ * #1137 — a {@link Page} for a list the SERVER paged: `page` is the server's
+ * 1-based page, `itemCount` how many items that page returned.
+ */
+export function serverPage(
+  info: { page: number; pageSize: number; total: number },
+  itemCount: number,
+): Page<never> {
+  const pageCount = Math.max(1, Math.ceil(info.total / info.pageSize));
+  const start = (info.page - 1) * info.pageSize;
+  return {
+    items: [],
+    page: info.page - 1,
+    pageCount,
+    total: info.total,
+    from: itemCount > 0 ? start + 1 : 0,
+    to: start + itemCount,
+  };
+}
+
+/**
  * Issue #424 — the zero-based page of `items` that holds `id`, so a deep link
  * to a requirement opens the page it is on. `null` when the list lacks it.
  */

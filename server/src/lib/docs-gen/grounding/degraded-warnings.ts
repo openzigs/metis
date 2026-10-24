@@ -814,6 +814,38 @@ export const SQL_FILES_SECTION = "SQL files";
 /** #224 — section label of the warning naming a module's unreadable code files. */
 export const SOURCE_FILES_SECTION = "Source files";
 
+/** #1096 — section label of {@link schemaReadPartiallyWarning}. */
+export const SCHEMA_READ_SECTION = "Database schema";
+
+/**
+ * #1096 — the database's schema was read partially: the driver stopped at its
+ * catalog row ceiling, so the document describes `tablesRead` of the
+ * `tablesTotal` tables (the total is absent when it could not be counted).
+ * `warning` severity: what IS in the document is correct, but tables are
+ * missing from it, so {@link deriveDocStatus} must not call it `ready`.
+ */
+export function schemaReadPartiallyWarning(truncation: {
+  tablesRead: number;
+  tablesTotal?: number;
+  rowCeiling: number;
+}): DocWarning {
+  const n = (value: number) => value.toLocaleString("en-US");
+  const which =
+    truncation.tablesTotal === undefined
+      ? `${n(truncation.tablesRead)} tables are described (METIS could not count how many there are in total)`
+      : `${n(truncation.tablesRead)} of ${n(truncation.tablesTotal)} tables are described`;
+  return {
+    kind: "source-unavailable",
+    section: SCHEMA_READ_SECTION,
+    message:
+      `This database is very large, so METIS read part of its structure: ${which}. ` +
+      `It has more than ${n(truncation.rowCeiling)} columns in all, more than METIS reads at ` +
+      `once, so the remaining tables are not in this document. Every table that is described ` +
+      `here is complete, with all its columns.`,
+    severity: "warning",
+  };
+}
+
 /** The section label of {@link formulaLinesSkippedWarning}. */
 export const FORMULA_EXTRACTION_SECTION = "Formula extraction";
 
@@ -1197,9 +1229,19 @@ export function summarizeWarnings(allWarnings: DocWarning[]): string {
   const ungroundedSampled = ungroundedWarnings.filter((w) => w.sampled === true).length;
   const noModules = warnings.filter((w) => w.kind === "no-modules").length;
   const isSourceFiles = (w: DocWarning) => w.section === SOURCE_FILES_SECTION;
+  // #1096 — a schema read partially is not unread source code.
+  const isSchemaRead = (w: DocWarning) => w.section === SCHEMA_READ_SECTION;
   const sourceUnavailable = warnings.filter(
-    (w) => w.kind === "source-unavailable" && !isSqlFiles(w) && !isSqlScan(w) && !isSourceFiles(w),
+    (w) =>
+      w.kind === "source-unavailable" &&
+      !isSqlFiles(w) &&
+      !isSqlScan(w) &&
+      !isSourceFiles(w) &&
+      !isSchemaRead(w),
   ).length;
+  const schemaReadPartially = warnings.some(
+    (w) => w.kind === "source-unavailable" && isSchemaRead(w),
+  );
   // #224 — a partly read module's unread code files, told apart by the remedy
   // each cause printed (one shared constant each, as for the SQL scan).
   const sourceFileWarnings = warnings.filter(
@@ -1264,6 +1306,8 @@ export function summarizeWarnings(allWarnings: DocWarning[]): string {
   if (noModules > 0) parts.push("no documentable modules were found despite indexed code");
   if (sourceUnavailable > 0)
     parts.push("source code could not be read — re-ingest the project and regenerate");
+  if (schemaReadPartially)
+    parts.push("the database is very large, so only part of its structure is described");
   if (sqlFilesSkipped)
     parts.push(
       "some SQL file(s) or directories could not be read or mined, so their rules are missing — " +

@@ -71,7 +71,10 @@ import {
   type SpecKitHandoffRecord,
   type SynthesisFieldRepairs,
   type UnreadAnalysisSteps,
+  CODE_CONTINUE_BUDGET_MULTIPLIER,
+  codeInvestigationContinueOffered,
 } from "@metis/shared";
+import { resolveAgentTokenBudget } from "./agent-token-budget.js";
 import type { Prisma } from "@prisma/client";
 import { prisma, resolveDatabaseProvider } from "../prisma.js";
 import {
@@ -757,18 +760,19 @@ export async function persistAgentResult(
   // no longer deletes repo N-1's `code` row. Callers with no connector
   // (doc/synthesis/security agents, single-repo regenerate #57) keep the original
   // whole-`agentKey` replace.
+  //
+  // Issue #1131 — EVERY prior row in that scope goes, not the first one found:
+  // a "Continue with a larger budget" appends a second `code` row beside the
+  // first, and a later replace (a single-shot regenerate) that deleted only
+  // one of them left the other's findings doubled beside the new ones.
   if ((input.mode ?? "replace") === "replace") {
-    const existing = await prisma.agentResult.findFirst({
+    await prisma.agentResult.deleteMany({
       where: {
         analysisId: input.analysisId,
         agentKey: input.agentKey,
         ...(input.connectorId ? { connectorId: input.connectorId } : {}),
       },
-      select: { id: true },
     });
-    if (existing) {
-      await prisma.agentResult.delete({ where: { id: existing.id } });
-    }
   }
 
   // #774 — the loop's tool-call summary rides in the existing output JSON column
@@ -1807,8 +1811,12 @@ export async function getAnalysisSnapshot(id: string): Promise<AnalysisSnapshot 
         include: { findings: true },
         orderBy: { startedAt: "asc" },
       },
+      // #1137 — the gap report pages these, so the order is total (`id` breaks
+      // a createdAt tie) and a soft-deleted requirement is left out, as every
+      // per-requirement route (and the new database-changes one) 404s it.
       requirements: {
-        orderBy: { createdAt: "asc" },
+        where: { deletedAt: null },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       },
     },
   });
@@ -1832,6 +1840,13 @@ export async function getAnalysisSnapshot(id: string): Promise<AnalysisSnapshot 
     ledgerUsage: await readAnalysisLedgerUsage(row.projectId, id),
     // #766 — a Regenerate in progress, shown on the agent's card.
     liveAgents: readLiveAgents(id),
+    // #1131 — the budget Continue would run with, quoted before it starts.
+    codeContinuation: codeInvestigationContinueOffered(snapshot.capability)
+      ? {
+          tokenBudget: resolveAgentTokenBudget() * CODE_CONTINUE_BUDGET_MULTIPLIER,
+          budgetMultiplier: CODE_CONTINUE_BUDGET_MULTIPLIER,
+        }
+      : null,
   };
 }
 

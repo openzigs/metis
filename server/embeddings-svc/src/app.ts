@@ -131,7 +131,11 @@ export function createApp(): Express {
 
   const app = express();
   app.disable("x-powered-by");
-  app.use(express.json({ limit: "8mb" }));
+  // #1458 — never inflate a request body: body-parser GHSA-27r3-jxmh-p828 is a DoS
+  // through trailing bytes after a COMPRESSED body, and this parser runs ahead of
+  // the per-route token check. The server's embed client sends plain JSON, so a
+  // gzip/deflate/br body is refused 415 before any zlib stream exists.
+  app.use(express.json({ limit: "8mb", inflate: false }));
 
   /**
    * LIVENESS. "Is this process alive and is its HTTP loop responsive?" — nothing

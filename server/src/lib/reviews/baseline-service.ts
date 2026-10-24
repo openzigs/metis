@@ -364,8 +364,56 @@ export async function compareBaselines(
 export interface CreateBaselineInput {
   name: string;
   description?: string;
-  /** Optional subset; omitted = every non-deleted requirement in the project. */
+  /**
+   * Optional explicit subset, pinned whatever its review status or origin.
+   * Omitted = the project's requirements less unapproved tracker imports (#1137).
+   */
   requirementIds?: string[];
+}
+
+const APPROVED = "approved";
+
+/**
+ * #1137 — the requirements New baseline pins when none are chosen: every live
+ * requirement except items imported from a tracker that nobody has approved.
+ * Pinning every row pinned 266 never-reviewed GitHub issues next to 19 analysed
+ * requirements. Unapproved requirements the project wrote or an analysis
+ * produced stay in, so a project that has not been through a review can still
+ * freeze a milestone (#732); an approved import is in too.
+ */
+function defaultBaselineWhere(projectId: string) {
+  return {
+    projectId,
+    deletedAt: null,
+    OR: [{ importSourceId: null }, { reviewStatus: APPROVED }],
+  };
+}
+
+/** What New baseline will pin, and what it leaves out, before it is created. */
+export interface BaselineScopePreview {
+  /** Requirements New baseline pins. */
+  pinCount: number;
+  /** How many of `pinCount` are approved. */
+  approved: number;
+  /** Imported, unapproved items left out. */
+  excludedImported: number;
+}
+
+export async function previewManualBaseline(projectId: string): Promise<BaselineScopePreview> {
+  const pinned = defaultBaselineWhere(projectId);
+  const [pinCount, approved, excludedImported] = await Promise.all([
+    prisma.requirement.count({ where: pinned }),
+    prisma.requirement.count({ where: { projectId, deletedAt: null, reviewStatus: APPROVED } }),
+    prisma.requirement.count({
+      where: {
+        projectId,
+        deletedAt: null,
+        importSourceId: { not: null },
+        OR: [{ reviewStatus: null }, { reviewStatus: { not: APPROVED } }],
+      },
+    }),
+  ]);
+  return { pinCount, approved, excludedImported };
 }
 
 export async function createManualBaseline(
@@ -383,7 +431,7 @@ export async function createManualBaseline(
   const where =
     input.requirementIds && input.requirementIds.length > 0
       ? { id: { in: [...new Set(input.requirementIds)] }, projectId, deletedAt: null }
-      : { projectId, deletedAt: null };
+      : defaultBaselineWhere(projectId);
   const requirements = (await prisma.requirement.findMany({
     where,
     select: { id: true, version: true },
@@ -401,10 +449,14 @@ export async function createManualBaseline(
     }
   }
   if (requirements.length === 0) {
+    // #1137 — say which of the two empty cases this is, and what to do.
+    const anyLive = await prisma.requirement.count({ where: { projectId, deletedAt: null } });
     throw new AppError(
       400,
       "EMPTY_BASELINE",
-      "A baseline needs at least one requirement to pin — this project has none",
+      anyLive === 0
+        ? "A baseline needs at least one requirement to pin — this project has none"
+        : "This project's only requirements are imported items nobody has approved, and a baseline leaves those out. Approve the ones you want on the Requirements page, or request a review there.",
     );
   }
 

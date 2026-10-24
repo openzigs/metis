@@ -8,7 +8,7 @@
  * is mocked — the rest of analysis-api (used by CodeCitation) stays real.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { RequirementDiff as TRequirementDiff } from "@metis/shared";
 
@@ -192,6 +192,28 @@ describe("RequirementDiff component", () => {
     expect(screen.getByTestId("diff-no-proposed")).toBeInTheDocument();
     // Removed entry's current side has no code evidence → explicit marker.
     expect(screen.getByTestId("diff-current-no-evidence")).toBeInTheDocument();
+  });
+
+  it("#1137 — fetches page 1 and pages through the changed requirements", async () => {
+    getRequirementDiff.mockImplementation(
+      async (_p: string, _a: string, _base: string | undefined, page: number) => ({
+        ...MODIFIED,
+        entries: [{ ...MODIFIED.entries[0]!, diffSummary: `Change on page ${page}` }],
+        summary: { total: 23, added: 0, removed: 0, modified: 23 },
+        page: { page, pageSize: 10, total: 23 },
+      }),
+    );
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByTestId("requirement-diff-pager-range")).toHaveTextContent(
+        "Showing 1–1 of 23 changed requirements",
+      ),
+    );
+    expect(getRequirementDiff).toHaveBeenCalledWith("proj-1", "an-head", undefined, 1);
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    await waitFor(() =>
+      expect(getRequirementDiff).toHaveBeenCalledWith("proj-1", "an-head", undefined, 2),
+    );
   });
 
   it("renders the error state when the diff request fails", async () => {

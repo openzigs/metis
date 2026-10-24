@@ -460,21 +460,53 @@ function SchemaGraphInner({ graph }: { graph: SchemaGraph }): React.ReactElement
 // Public component
 // ---------------------------------------------------------------------------
 
+/**
+ * #1096 — the line shown above a graph built from a schema read that the driver
+ * cut at its row ceiling, so a partial graph is never taken for the whole
+ * schema. `null` for a complete read (and for graphs stored before #1096).
+ */
+export function schemaGraphTruncationNotice(graph: SchemaGraph): string | null {
+  const truncation = graph.truncation;
+  if (!truncation || typeof truncation.tablesRead !== "number") return null;
+  const n = (value: number) => value.toLocaleString("en-US");
+  const which =
+    typeof truncation.tablesTotal === "number"
+      ? `${n(truncation.tablesRead)} of ${n(truncation.tablesTotal)} tables`
+      : `${n(truncation.tablesRead)} tables (the total could not be counted)`;
+  return `The schema was read partially: ${which}. The tables that were not read are missing from this graph.`;
+}
+
 export function SchemaGraphExplorer({ graph }: { graph: SchemaGraph }): React.ReactElement {
+  const notice = schemaGraphTruncationNotice(graph);
+  const banner = notice ? (
+    <p
+      role="status"
+      data-testid="schema-graph-truncated"
+      className="mb-2 rounded-md border border-warning/40 bg-warning-muted px-3 py-2 text-sm text-warning"
+    >
+      {notice}
+    </p>
+  ) : null;
   if (graph.tables.length === 0) {
     return (
-      <div
-        className="flex h-[300px] items-center justify-center rounded-md border text-sm text-muted-foreground"
-        data-testid="schema-graph-empty"
-      >
-        No tables to display.
-      </div>
+      <>
+        {banner}
+        <div
+          className="flex h-[300px] items-center justify-center rounded-md border text-sm text-muted-foreground"
+          data-testid="schema-graph-empty"
+        >
+          No tables to display.
+        </div>
+      </>
     );
   }
   return (
-    <ReactFlowProvider>
-      <SchemaGraphInner graph={graph} />
-    </ReactFlowProvider>
+    <>
+      {banner}
+      <ReactFlowProvider>
+        <SchemaGraphInner graph={graph} />
+      </ReactFlowProvider>
+    </>
   );
 }
 

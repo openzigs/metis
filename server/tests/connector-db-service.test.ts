@@ -329,6 +329,39 @@ describe("DB connector service — operations", () => {
     expect(snap.tables).toHaveLength(1);
     expect(snap.driver).toBe("postgres");
     expect(typeof snap.extractedAt).toBe("string");
+    expect(snap.truncation).toBeUndefined();
+  });
+
+  it("inspect() carries a driver's truncation into the snapshot and the audit row (#1096)", async () => {
+    const { audit } = await import("../src/lib/audit/audit-service.js");
+    const table = { schema: "APP", name: "T1", columns: [], foreignKeys: [], indexes: [] };
+    const introspect = vi.fn(async () => [table]);
+    const truncation = { rowsRead: 250_000, rowCeiling: 250_000, tablesRead: 1, tablesTotal: 9 };
+    __resetDriverRegistry();
+    registerDriver(
+      "postgres",
+      () =>
+        ({
+          ...makeFakeAdapter({ introspect }),
+          introspectSchema: vi.fn(async () => ({ tables: [table], truncation })),
+        }) as unknown as DbDriverAdapter,
+    );
+    const c = await createDbConnector(
+      "proj_1",
+      { label: "big", driver: "postgres", host: "h", username: "u" },
+      "user_1",
+    );
+    const snap = await inspectDbConnector("proj_1", c.id, "user_1");
+    expect(snap.tables).toEqual([table]);
+    expect(snap.truncation).toEqual(truncation);
+    // The richer read is preferred; the plain one is not issued as well.
+    expect(introspect).not.toHaveBeenCalled();
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "connector.db.inspect",
+        metadata: expect.objectContaining({ tableCount: 1, truncated: true, tablesTotal: 9 }),
+      }),
+    );
   });
 
   it("query() rejects non-SELECT before driver is touched", async () => {

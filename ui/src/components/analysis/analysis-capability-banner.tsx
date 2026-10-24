@@ -8,12 +8,18 @@
  * what was NOT analyzed and how to fix it — rather than the pipeline degrading
  * silently. A fully-capable run renders nothing.
  */
+import { useState } from "react";
 import {
   codeInvestigationContinueLimitReached,
+  codeInvestigationContinueOffered,
   isAnalysisDegraded,
   type AnalysisCapability,
+  type AnalysisCodeContinuationQuote,
+  type AnalysisLedgerUsage,
+  type AnalysisLiveAgent,
 } from "@metis/shared";
 import { CAPABILITY_REASON_COPY } from "@/lib/analysis-capability-copy";
+import { continuationEstimate, continuationProgressLine } from "./code-continuation";
 
 /**
  * Issue #1062 — why "Continue with a larger budget" is no longer offered. Every
@@ -35,6 +41,24 @@ export function rerunAlsoCutShortText(capability: AnalysisCapability): string | 
   return `The rerun was also cut short: ${gap.unreached} of ${gap.total} requirements unreached.`;
 }
 
+/**
+ * Issue #1131 — on a first cut-short run, how many requirements the pass never
+ * reached and how many it reached that are inconclusive. `null` without counts.
+ */
+export function cutShortGapText(capability: AnalysisCapability): string | null {
+  const gap = capability.codeInvestigationUnreached;
+  if (!gap || (capability.codeInvestigationContinuations ?? 0) > 0) return null;
+  const inconclusive = gap.inconclusive ?? 0;
+  return (
+    `${gap.unreached} of ${gap.total} requirements ${gap.unreached === 1 ? "was" : "were"} not reached.` +
+    (inconclusive > 0
+      ? inconclusive === 1
+        ? " 1 more was reached but is inconclusive; a larger budget would not change it."
+        : ` ${inconclusive} more were reached but are inconclusive; a larger budget would not change them.`
+      : "")
+  );
+}
+
 interface Props {
   capability: AnalysisCapability | null;
   /**
@@ -46,13 +70,22 @@ interface Props {
   /** True while a resume is in flight — disables the action + shows progress. */
   resuming?: boolean;
   /**
-   * Issue #1001 — invoked when the operator clicks "Continue with a larger
+   * Issue #1001 — invoked when the operator CONFIRMS "Continue with a larger
    * budget" on the `code-investigation-cut-short` reason. Omitted ⇒ not rendered.
    */
   onContinueInvestigation?: () => void;
   /** True while a continued investigation is being started. */
   continuing?: boolean;
+  /** Issue #1131 — the budget Continue would run with (the snapshot's quote). */
+  continuationQuote?: AnalysisCodeContinuationQuote | null;
+  /** Issue #1131 — this run's ledger spend, which the estimate is priced from. */
+  ledgerUsage?: AnalysisLedgerUsage | null;
+  /** Issue #1131 — a continuation running right now, shown in place of the action. */
+  liveContinuation?: AnalysisLiveAgent | null;
 }
+
+const ACTION_BUTTON =
+  "rounded border border-warning/40 bg-warning-muted px-2 py-1 text-xs font-medium text-warning hover:bg-warning-muted disabled:cursor-not-allowed disabled:opacity-60";
 
 export function AnalysisCapabilityBanner({
   capability,
@@ -60,8 +93,13 @@ export function AnalysisCapabilityBanner({
   resuming = false,
   onContinueInvestigation,
   continuing = false,
+  continuationQuote,
+  ledgerUsage,
+  liveContinuation,
 }: Props): React.ReactElement | null {
+  const [confirming, setConfirming] = useState(false);
   if (!isAnalysisDegraded(capability) || !capability) return null;
+  const continueOffered = codeInvestigationContinueOffered(capability);
 
   return (
     <div
@@ -97,7 +135,23 @@ export function AnalysisCapabilityBanner({
           // Continue is not offered past its limit (the reason is shown instead).
           const isCutShort = reason === "code-investigation-cut-short";
           const rerunNote = isCutShort ? rerunAlsoCutShortText(capability) : null;
+          const gapNote = isCutShort ? cutShortGapText(capability) : null;
           const continueLimited = isCutShort && codeInvestigationContinueLimitReached(capability);
+          // Issue #1131 — reached but not settled: counted, never continued.
+          const inconclusiveGap =
+            reason === "code-investigation-inconclusive"
+              ? capability.codeInvestigationUnreached
+              : undefined;
+          const showContinue =
+            isCutShort && continueOffered && !liveContinuation && Boolean(onContinueInvestigation);
+          const estimate =
+            showContinue && confirming
+              ? continuationEstimate({
+                  gap: capability.codeInvestigationUnreached,
+                  quote: continuationQuote,
+                  ledger: ledgerUsage,
+                })
+              : null;
           return (
             <li key={reason} data-testid={`capability-reason-${reason}`} className="text-warning">
               <span className="font-medium">
@@ -105,6 +159,17 @@ export function AnalysisCapabilityBanner({
                 {skipped}
               </span>{" "}
               {continueLimited ? null : <span className="text-warning">{copy.action}</span>}
+              {inconclusiveGap ? (
+                <p className="mt-1.5 font-medium text-warning" data-testid="inconclusive-count">
+                  {inconclusiveGap.inconclusive ?? 0} of {inconclusiveGap.total} requirements{" "}
+                  {(inconclusiveGap.inconclusive ?? 0) === 1 ? "is" : "are"} inconclusive.
+                </p>
+              ) : null}
+              {gapNote ? (
+                <p className="mt-1.5 font-medium text-warning" data-testid="cut-short-gap">
+                  {gapNote}
+                </p>
+              ) : null}
               {rerunNote ? (
                 <p className="mt-1.5 font-medium text-warning" data-testid="rerun-also-cut-short">
                   {rerunNote}
@@ -123,7 +188,7 @@ export function AnalysisCapabilityBanner({
                     data-testid="resume-skipped-repos"
                     onClick={onResumeRepos}
                     disabled={resuming}
-                    className="rounded border border-warning/40 bg-warning-muted px-2 py-1 text-xs font-medium text-warning hover:bg-warning-muted disabled:cursor-not-allowed disabled:opacity-60"
+                    className={ACTION_BUTTON}
                   >
                     {resuming
                       ? "Analyzing remaining repositories…"
@@ -131,18 +196,62 @@ export function AnalysisCapabilityBanner({
                   </button>
                 </div>
               ) : null}
-              {/* Issue #1001 — continue a code pass that ran out of budget. */}
-              {isCutShort && !continueLimited && onContinueInvestigation ? (
+              {/* Issue #1131 — a continuation in progress, with the first run's progress line. */}
+              {isCutShort && liveContinuation ? (
+                <p
+                  className="mt-1.5 font-medium text-warning"
+                  aria-live="polite"
+                  data-testid="continuation-in-progress"
+                >
+                  {continuationProgressLine(liveContinuation, Date.now())}
+                </p>
+              ) : null}
+              {/* Issue #1001 — continue a code pass that ran out of budget;
+              #1131 — only after the analyst has seen what it costs. */}
+              {showContinue && !estimate ? (
                 <div className="mt-1.5">
                   <button
                     type="button"
                     data-testid="continue-code-investigation"
-                    onClick={onContinueInvestigation}
+                    onClick={() => setConfirming(true)}
                     disabled={continuing}
-                    className="rounded border border-warning/40 bg-warning-muted px-2 py-1 text-xs font-medium text-warning hover:bg-warning-muted disabled:cursor-not-allowed disabled:opacity-60"
+                    className={ACTION_BUTTON}
                   >
-                    {continuing ? "Continuing code analysis…" : "Continue with a larger budget"}
+                    {continuing ? "Continuing code analysis…" : "Continue with a larger budget…"}
                   </button>
+                </div>
+              ) : null}
+              {estimate ? (
+                <div
+                  role="group"
+                  aria-label="Continue the code analysis"
+                  data-testid="continue-confirm"
+                  className="mt-1.5 space-y-1 rounded border border-warning/40 p-2 text-xs"
+                >
+                  <p>{estimate.scope}</p>
+                  <p>{estimate.budget}</p>
+                  {estimate.firstRun ? <p>{estimate.firstRun}</p> : null}
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      type="button"
+                      data-testid="confirm-continue-code-investigation"
+                      onClick={() => {
+                        setConfirming(false);
+                        onContinueInvestigation?.();
+                      }}
+                      disabled={continuing}
+                      className={ACTION_BUTTON}
+                    >
+                      Start the continuation
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirming(false)}
+                      className={ACTION_BUTTON}
+                    >
+                      Not now
+                    </button>
+                  </div>
                 </div>
               ) : null}
             </li>

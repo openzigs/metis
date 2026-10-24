@@ -368,11 +368,21 @@ export interface WorkspaceProjectTraceability {
   name: string;
   /** Non-deleted requirements in the project. */
   requirements: number;
+  /**
+   * #1137 — the denominator of `specCoverage` and `codeCoverage`:
+   * `requirements` less `importedUnanalysed`.
+   */
+  analysedRequirements: number;
+  /**
+   * #1137 — items imported from a tracker that no analysis has mapped to a spec
+   * or to code. Reported apart, never counted in the coverage fractions.
+   */
+  importedUnanalysed: number;
   /** Requirements in this project that participate in a cross-project link. */
   linkedCrossProject: number;
-  /** Fraction (0–1) of requirements with ≥1 requirement→spec mapping. */
+  /** Fraction (0–1) of `analysedRequirements` with ≥1 requirement→spec mapping. */
   specCoverage: number;
-  /** Fraction (0–1) of requirements with ≥1 direct requirement→code mapping. */
+  /** Fraction (0–1) of `analysedRequirements` with ≥1 direct requirement→code mapping. */
   codeCoverage: number;
   /**
    * #815 — requirements with mapped code, directly or through a spec: the

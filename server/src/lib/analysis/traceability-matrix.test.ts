@@ -192,6 +192,54 @@ describe("buildTraceabilityMatrix", () => {
     expect(sources).toEqual(["citation", "deterministic-mapping"]);
   });
 
+  it("#1137 — lists a location once when a citation and a mapping name the same range", () => {
+    const deterministic = new Map<string, TraceabilityCodeLocation[]>([
+      [
+        "req-1",
+        [
+          {
+            filePath: "internal/model/feed.go",
+            startLine: 24,
+            endLine: 78,
+            source: "deterministic-mapping",
+            symbolId: "sym-feed",
+          },
+        ],
+      ],
+    ]);
+    const matrix = buildTraceabilityMatrix({
+      analysisId: "an-1",
+      projectId: "proj-1",
+      requirements: [
+        {
+          id: "req-1",
+          title: "R",
+          coverage: "grounded_in_code",
+          verdict: "implemented",
+          evidenceFindingIds: ["f-1"],
+        },
+      ],
+      findingsById: findingsMap([
+        {
+          id: "f-1",
+          title: "A",
+          severity: "high",
+          citations: [codeCitation("internal/model/feed.go", 24, 78)],
+        },
+      ]),
+      deterministicByRequirement: deterministic,
+    });
+    expect(matrix.rows[0]!.codeLocations).toEqual([
+      {
+        filePath: "internal/model/feed.go",
+        startLine: 24,
+        endLine: 78,
+        source: "citation",
+        symbolId: "sym-feed",
+      },
+    ]);
+  });
+
   it("#815 — takes each row's tests from the resolver's per-requirement map, in order", () => {
     const tests = new Map<string, TraceabilityTestLink[]>([
       [

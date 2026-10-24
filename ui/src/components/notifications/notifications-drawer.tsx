@@ -186,7 +186,10 @@ export function NotificationsDrawer() {
                     </time>
                   </div>
                   <p className="mt-1 font-medium">{n.title}</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">{n.message}</p>
+                  {/* #1447 — a redacted row has no text: no empty line for it. */}
+                  {n.redacted && !n.message ? null : (
+                    <p className="mt-0.5 text-xs text-muted-foreground">{n.message}</p>
+                  )}
                   {n.href ? (
                     <a
                       href={n.href}

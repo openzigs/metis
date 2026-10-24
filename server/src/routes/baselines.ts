@@ -4,6 +4,7 @@
  * Routes:
  *   GET  /api/projects/:projectId/baselines        — list           (review.read)
  *   POST /api/projects/:projectId/baselines        — manual create  (review.admin)
+ *   GET  /api/projects/:projectId/baselines/scope  — what a manual create pins (#1137)
  *   GET  /api/baselines/:baselineId                — contents: each requirement
  *                                                    AS OF its pinned version (review.read)
  *   GET  /api/baselines/:idA/compare/:idB          — added/removed/changed(field-level)/
@@ -22,14 +23,20 @@ import { z } from "zod";
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { requireProjectAccess } from "../middleware/require-project-access.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
 import { assertResourceProjectAccess } from "../lib/auth/resource-project-access.js";
+import {
+  baselineScopePreAuthRateLimiter,
+  baselineScopeUserRateLimiter,
+} from "../middleware/baseline-scope-rate-limit.js";
 import {
   compareBaselines,
   createManualBaseline,
   getBaselineContents,
   listBaselines,
+  previewManualBaseline,
 } from "../lib/reviews/baseline-service.js";
 
 // ---- Schemas ----------------------------------------------------------------
@@ -86,6 +93,23 @@ export function projectBaselinesRouter(): Router {
     const data = await listBaselines(String(req.params.projectId), page, pageSize);
     res.json({ success: true, data });
   });
+
+  // GET /scope — #1137: what New baseline will pin (the approved requirements)
+  // and what it leaves out, shown before the admin creates it.
+  r.get(
+    "/scope",
+    baselineScopePreAuthRateLimiter,
+    requireAuth,
+    // Its own project check, not only the `/projects/:id/:sub` catch-all in
+    // projects.ts: the route must stay scoped wherever the router is mounted.
+    requireProjectAccess(),
+    requirePermission("review.admin"),
+    baselineScopeUserRateLimiter,
+    async (req: Request, res: Response) => {
+      const data = await previewManualBaseline(String(req.params.projectId));
+      res.json({ success: true, data });
+    },
+  );
 
   // POST / — manual baseline pinning CURRENT requirement versions (admin only).
   r.post(

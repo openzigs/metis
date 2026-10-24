@@ -65,6 +65,24 @@ describe("inspect_schema tool", () => {
     expect(data.tables[0].columns).toHaveLength(2);
     expect(result.text).toContain("public.users");
     expect(result.text).toContain("id:int");
+    expect(result.text).not.toContain("read partially");
+    expect(result.data).not.toHaveProperty("truncation");
+  });
+
+  it("tells the model when the schema was read partially (#1096)", async () => {
+    const truncation = { rowsRead: 9, rowCeiling: 9, tablesRead: 1, tablesTotal: 40 };
+    inspectDbConnector.mockResolvedValue({ ...snapshot(), truncation });
+    const result = await createInspectSchemaTool().exec({ connectorId: "c1" }, ctxA);
+    expect(result.text.split("\n")[0]).toBe(
+      "NOTE: the schema was read partially (1 of 40 tables); tables not listed may still exist.",
+    );
+    expect(result.text).toContain("public.users");
+    expect((result.data as { truncation: unknown }).truncation).toEqual(truncation);
+
+    const { tablesTotal: _omit, ...uncounted } = truncation;
+    inspectDbConnector.mockResolvedValue({ ...snapshot(), truncation: uncounted });
+    const again = await createInspectSchemaTool().exec({ connectorId: "c1" }, ctxA);
+    expect(again.text).toContain("(1 of an uncounted number of tables)");
   });
 
   it("forwards an optional schema filter", async () => {

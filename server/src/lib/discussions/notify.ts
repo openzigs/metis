@@ -249,6 +249,8 @@ export async function notifyDiscussionMentions(input: DiscussionMentionInput): P
                   type: "discussion_mention",
                   ...shown,
                   payload: JSON.stringify(payload),
+                  // #1447 — so every read re-checks the reader's access to it.
+                  projectId,
                 },
                 select: { id: true },
               });

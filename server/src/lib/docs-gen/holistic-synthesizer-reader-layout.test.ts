@@ -28,6 +28,8 @@ import {
   APPENDIX_DIVIDER,
   REQUIREMENTS_LEAD_IN,
   BRD_MAIN_MAX_CHARS,
+  BRD_MAIN_MAX_OVERRUN,
+  BRD_MAIN_MIN_CHARS,
   BRD_MAIN_SECTION_TARGETS,
   BRD_MAIN_TARGET_CHARS,
 } from "./brd-layout.js";
@@ -643,5 +645,61 @@ describe("the catalogue layout", () => {
     expect(result.markdown).not.toContain("## Key Business Rules");
     expect(provider.calls.map((c) => c.group)).not.toContain(label("requirements"));
     for (const call of provider.calls) expect(call.user).not.toContain("LENGTH LIMIT");
+  });
+});
+
+describe("#1427 — the words a main section is asked for, under a model's measured overrun", () => {
+  const asked = (provider: { calls: Call[] }, id: string): number =>
+    Number(
+      /Write at most about (\d+) words for this section group/.exec(
+        callsFor(provider, label(id))[0].user,
+      )?.[1],
+    );
+
+  it("corrects a main section for at most the main part's cap, so the main part is asked for its floor", async () => {
+    // DeepSeek's built-in factor, set on the fake model's id.
+    vi.stubEnv("DOCS_GEN_LENGTH_OVERRUN", "fake-section=1.5");
+    const provider = fakeModel({ overrun: 1 });
+    await run(project(6), provider);
+    for (const id of MAIN_IDS) {
+      expect({ id, words: asked(provider, id) }).toEqual({
+        id,
+        words: batchWordBudget(BRD_MAIN_SECTION_TARGETS[id] / BRD_MAIN_MAX_OVERRUN),
+      });
+      // Before #1427 it was asked for its target / 1.5: 32k for the main part.
+      expect(asked(provider, id)).toBeGreaterThan(
+        batchWordBudget(BRD_MAIN_SECTION_TARGETS[id] / 1.5),
+      );
+    }
+    // Together at least the floor, after each note's rounding to 50 words (42,000).
+    const total = MAIN_IDS.reduce((n, id) => n + asked(provider, id) * 6, 0);
+    expect(total).toBeGreaterThanOrEqual(BRD_MAIN_MIN_CHARS);
+  });
+
+  it("leaves the appendix's single-call section corrected for the model's whole factor", async () => {
+    // A small document, so the appendix's budget binds and its single-call
+    // section is told a length too.
+    vi.stubEnv("DOCS_GEN_DOCUMENT_MAX_CHARS", "40000");
+    const wordsAt = async (factor: string) => {
+      vi.stubEnv("DOCS_GEN_LENGTH_OVERRUN", `fake-section=${factor}`);
+      const provider = fakeModel({ overrun: 1 });
+      await run(project(6), provider);
+      return (id: string) => asked(provider, id);
+    };
+    const atCap = await wordsAt(String(BRD_MAIN_MAX_OVERRUN));
+    const atDeepSeek = await wordsAt("1.5");
+    for (const id of MAIN_IDS) expect(atDeepSeek(id)).toBe(atCap(id));
+    expect(atDeepSeek("integrations-and-glossary")).toBeLessThan(
+      atCap("integrations-and-glossary"),
+    );
+  });
+
+  it("keeps a factor below the cap as measured", async () => {
+    vi.stubEnv("DOCS_GEN_LENGTH_OVERRUN", "fake-section=1.1");
+    const provider = fakeModel({ overrun: 1 });
+    await run(project(6), provider);
+    for (const id of MAIN_IDS) {
+      expect(asked(provider, id)).toBe(batchWordBudget(BRD_MAIN_SECTION_TARGETS[id] / 1.1));
+    }
   });
 });

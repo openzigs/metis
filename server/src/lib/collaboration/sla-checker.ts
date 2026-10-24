@@ -130,6 +130,8 @@ export async function runSlaCheck(): Promise<void> {
               message: `Assignment ${assignment.id} SLA deadline has passed`,
               href: `/requirements/${encodeURIComponent(assignment.requirement.id)}`,
               payload: JSON.stringify(payload),
+              // #1447 — so every read re-checks the reader's access to it.
+              projectId,
             },
           });
         } catch (persistErr) {
@@ -156,6 +158,8 @@ export async function runSlaCheck(): Promise<void> {
               message: `Assignment ${assignment.id} SLA deadline has passed`,
               href: `/requirements/${encodeURIComponent(assignment.requirement.id)}`,
               payload: JSON.stringify(payload),
+              // #1447 — so every read re-checks the reader's access to it.
+              projectId,
             },
           });
         } catch (persistErr) {

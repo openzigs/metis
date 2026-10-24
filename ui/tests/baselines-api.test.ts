@@ -50,8 +50,13 @@ describe("baselinesApi", () => {
     });
   });
 
+  it("#1137 — fetches what a manual baseline would pin", async () => {
+    await baselinesApi.scope("proj-1");
+    expect(apiFetchMock).toHaveBeenCalledWith("/projects/proj-1/baselines/scope");
+  });
+
   it("exposes no update or delete calls (baselines are immutable)", () => {
     const surface = Object.keys(baselinesApi).sort();
-    expect(surface).toEqual(["compare", "create", "get", "list"]);
+    expect(surface).toEqual(["compare", "create", "get", "list", "scope"]);
   });
 });

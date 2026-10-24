@@ -356,8 +356,11 @@ found wrong in `TEST_PLAN.md`, in a PR.
   - Requirement edits use `PUT /api/requirements/:id` with the current `version` in the body
     (409 `VERSION_CONFLICT` on a stale one). Since #865, `PATCH
     /api/analyses/:id/requirements/:reqId` is versioned the same way.
-  - **New baseline** on the Baselines page (review admins) pins every requirement; a subset
-    still needs `POST /api/projects/:id/baselines` `{name, requirementIds}` (#929).
+  - **New baseline** on the Baselines page (review admins) pins every requirement except
+    tracker imports nobody has approved, and its form shows the pin count, how many are
+    approved, and the imports left out before you create it (#1137). A subset, or an
+    unapproved import, still needs `POST /api/projects/:id/baselines` `{name, requirementIds}`
+    (#929).
 - **Connector labels** must match `^[A-Za-z0-9][A-Za-z0-9 _.\-]*$`. A label like
   `miniflux/v2 @ v2.3.3` fails with only "invalid payload".
 - **Uploaded and URL documents land in quarantine.** Approve them under Project settings →

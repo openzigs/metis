@@ -13,6 +13,7 @@
  * A requirement whose findings cite no code renders an explicit "nothing found in
  * code" marker rather than a hallucinated summary (no-fabrication rule).
  */
+import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import {
   analysisApi,
@@ -30,6 +31,9 @@ import { VerificationBadge } from "@/components/analysis/VerificationBadge";
 import { VerdictBadge } from "@/components/analysis/VerdictBadge";
 import { RequirementBody } from "@/components/analysis/RequirementBody";
 import { GapReportSchemaSection } from "@/components/analysis/gap-report-schema-section";
+import { ListPager } from "@/components/analysis/ListPager";
+import { serverPage } from "@/components/analysis/analysis-views";
+import { usePageFor } from "@/components/analysis/use-page-for";
 
 interface Props {
   projectId: string;
@@ -89,12 +93,70 @@ function FindingItem({ f }: { f: GapReportFindingRef }): React.ReactElement {
   );
 }
 
+/**
+ * #1137 — a requirement's database changes, fetched when the analyst asks.
+ * Crossing every requirement into the schema graph made the report 588 KB and
+ * 3.6 s for 33 requirements, and rendered about a million characters.
+ */
+function DeferredDatabaseChanges({
+  projectId,
+  analysisId,
+  requirementId,
+}: {
+  projectId: string;
+  analysisId: string;
+  requirementId: string;
+}): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const query = useQuery({
+    queryKey: ["gap-report-database-changes", projectId, analysisId, requirementId],
+    queryFn: () => analysisApi.getGapReportDatabaseChanges(projectId, analysisId, requirementId),
+    enabled: open,
+  });
+  if (!open) {
+    return (
+      <Button
+        size="sm"
+        variant="outline"
+        data-testid="gap-db-changes-show"
+        onClick={() => setOpen(true)}
+      >
+        Show database changes
+      </Button>
+    );
+  }
+  if (query.isLoading) {
+    return <p className="text-xs text-muted-foreground">Loading database changes…</p>;
+  }
+  if (query.isError) {
+    return (
+      <p className="text-xs text-destructive" role="alert">
+        Could not load the database changes.
+      </p>
+    );
+  }
+  const changes = query.data?.databaseChanges ?? [];
+  if (changes.length === 0) {
+    return (
+      <p data-testid="gap-db-changes-none" className="text-xs text-muted-foreground">
+        No database changes for this requirement.
+      </p>
+    );
+  }
+  return <GapReportSchemaSection projectId={projectId} changes={changes} />;
+}
+
 function GapReportCard({
   req,
   projectId,
+  analysisId,
+  deferDatabaseChanges,
 }: {
   req: GapReportRequirement;
   projectId: string;
+  analysisId: string;
+  /** The report left database changes out; offer to fetch them (#1137). */
+  deferDatabaseChanges: boolean;
 }): React.ReactElement {
   const { citations, hasEvidence, citedFindingCount } = req.currentImplementation;
   return (
@@ -193,7 +255,15 @@ function GapReportCard({
           columns with suggested DDL (review-only), live-schema reconciliation,
           risk, and cross-project consumers. Renders nothing when the requirement
           has no schema impact. */}
-      <GapReportSchemaSection projectId={projectId} changes={req.databaseChanges} />
+      {req.databaseChanges || !deferDatabaseChanges ? (
+        <GapReportSchemaSection projectId={projectId} changes={req.databaseChanges} />
+      ) : (
+        <DeferredDatabaseChanges
+          projectId={projectId}
+          analysisId={analysisId}
+          requirementId={req.requirementId}
+        />
+      )}
     </Card>
   );
 }
@@ -352,9 +422,12 @@ export function GapReport({
   analysisId,
   enabled = true,
 }: Props): React.ReactElement | null {
+  // #1137 — one page of requirements at a time (1-based, as the server pages).
+  // Starts over on another analysis.
+  const [page, setPage] = usePageFor(analysisId, 1);
   const query = useQuery({
-    queryKey: ["gap-report", projectId, analysisId],
-    queryFn: () => analysisApi.getGapReport(projectId, analysisId),
+    queryKey: ["gap-report", projectId, analysisId, page],
+    queryFn: () => analysisApi.getGapReport(projectId, analysisId, page),
     enabled,
   });
 
@@ -368,6 +441,8 @@ export function GapReport({
   const requirements = query.data?.requirements ?? [];
   const retrieval = query.data?.retrieval ?? null;
   const sqlLineageCoverage = query.data?.sqlLineageCoverage ?? null;
+  const pageInfo = query.data?.page ?? null;
+  const deferDatabaseChanges = query.data?.databaseAware?.enabled === true;
 
   return (
     <section data-testid="gap-report" className="space-y-2">
@@ -417,8 +492,22 @@ export function GapReport({
       ) : (
         <div className="space-y-2">
           {requirements.map((req) => (
-            <GapReportCard key={req.requirementId} req={req} projectId={projectId} />
+            <GapReportCard
+              key={req.requirementId}
+              req={req}
+              projectId={projectId}
+              analysisId={analysisId}
+              deferDatabaseChanges={deferDatabaseChanges}
+            />
           ))}
+          {pageInfo ? (
+            <ListPager
+              page={serverPage(pageInfo, requirements.length)}
+              noun="requirements"
+              onPageChange={(zeroBased) => setPage(zeroBased + 1)}
+              testId="gap-report-pager"
+            />
+          ) : null}
         </div>
       )}
     </section>
