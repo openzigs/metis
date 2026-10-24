@@ -329,7 +329,7 @@ export async function getWorkspaceTraceabilitySummary(
       const [liveRequirements, specMapped, codeMapped] = await Promise.all([
         prisma.requirement.findMany({
           where: { projectId: pid, deletedAt: null },
-          select: { id: true, title: true, body: true },
+          select: { id: true, title: true, body: true, importSourceId: true },
         }),
         prisma.requirementSpecMapping.findMany({
           where: { projectId: pid },
@@ -343,11 +343,24 @@ export async function getWorkspaceTraceabilitySummary(
         }),
       ]);
       const requirements = liveRequirements.length;
-      // Mapping tables can retain rows for soft-deleted requirements, so clamp
-      // the fraction to 1 rather than let the numerator exceed the denominator.
+      // #1137 — an item imported from a tracker that no analysis has mapped to a
+      // spec or to code was never analysed. Counting it in the denominator read
+      // 6% where the analysed set was 89%, so it is reported apart instead.
+      const specMappedIds = new Set(specMapped.map((m) => m.requirementId));
+      const codeMappedIds = new Set(codeMapped.map((m) => m.requirementId));
+      const importedUnanalysed = liveRequirements.filter(
+        (r) => r.importSourceId != null && !specMappedIds.has(r.id) && !codeMappedIds.has(r.id),
+      ).length;
+      const analysedRequirements = requirements - importedUnanalysed;
+      // Mapping tables can retain rows for soft-deleted requirements, so count
+      // only live ones and clamp the fraction to 1.
+      const liveIds = new Set(liveRequirements.map((r) => r.id));
+      const countLive = (ids: Set<string>): number =>
+        [...ids].filter((id) => liveIds.has(id)).length;
       const fraction = (part: number, whole: number): number =>
         whole === 0 ? 0 : Math.min(1, Math.max(0, part / whole));
-      const coverage = (mapped: number): number => fraction(mapped, requirements);
+      const coverage = (mapped: Set<string>): number =>
+        fraction(countLive(mapped), analysedRequirements);
 
       // #815 — tested coverage over the requirements that have mapped code.
       // limit 1: the resolver orders by relation strength, so the first test
@@ -383,9 +396,11 @@ export async function getWorkspaceTraceabilitySummary(
         projectId: pid,
         name: nameById.get(pid) ?? pid,
         requirements,
+        analysedRequirements,
+        importedUnanalysed,
         linkedCrossProject: crossReqByProject.get(pid)?.size ?? 0,
-        specCoverage: coverage(specMapped.length),
-        codeCoverage: coverage(codeMapped.length),
+        specCoverage: coverage(specMappedIds),
+        codeCoverage: coverage(codeMappedIds),
         codeMappedRequirements,
         testCoverage: fraction(tested, codeMappedRequirements),
         strictTestCoverage: fraction(strictlyTested, codeMappedRequirements),

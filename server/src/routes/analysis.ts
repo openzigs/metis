@@ -109,6 +109,8 @@ import {
   // Issue #847 (Epic #820) — production loadSchemaImpact producer wiring: gates
   // + builds the per-requirement `databaseChanges` producer for `getGapReport`.
   resolveGapReportDeps,
+  // #1137 — one requirement's database changes, fetched when the analyst opens them.
+  getRequirementDatabaseChanges,
   // Issue #744 — markdown / GitHub-issue-draft export.
   buildFindingIssueDraft,
   serializeFindingIssueDraftMarkdown,
@@ -127,6 +129,8 @@ import {
 import { resolveNewRequirementCandidateCap } from "../lib/analysis/new-requirements.js";
 // Issue #743 — diff-style current-vs-proposed view for changed requirements.
 import { getRequirementDiff } from "../lib/change-analysis/requirement-diff-service.js";
+// #1137 — the Traceability tab's per-requirement lists are paged.
+import { parseListPageQuery, sliceListPage } from "../lib/analysis/list-page.js";
 import type { StructuredRequirements } from "../lib/analysis/types/requirements.js";
 import { clarifyRequestSchema } from "../lib/analysis/clarify-request-schema.js";
 import { meterAnalysisProvider, runInAnalysisUsageScope } from "../lib/analysis/analysis-usage.js";
@@ -1058,12 +1062,51 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       const projectId = String(req.params.projectId);
       await ensureAnalysisVisible(analysisId, projectId);
 
-      // #847 — supply the real `loadSchemaImpact` producer. #856 — the gate is now
-      // the per-project database-aware resolver decision (#854), the SAME one the
-      // run path (#855) reads, so the two can no longer diverge.
-      const report = await getGapReport(analysisId, await resolveGapReportDeps(projectId));
+      // #856 — the per-project database-aware resolver decision (#854), the SAME
+      // one the run path (#855) reads, is still resolved and echoed. #1137 — but
+      // the report is one page of requirements, and their database changes are
+      // NOT crossed here: that was 3.6 s and 487 KB of a 588 KB response for 33
+      // requirements. The UI fetches them per requirement from the route below.
+      const report = await getGapReport(analysisId, {
+        ...(await resolveGapReportDeps(projectId)),
+        loadSchemaImpact: undefined,
+        page: parseListPageQuery(req.query as Record<string, unknown>),
+      });
       if (!report) throw new AppError(404, "ANALYSIS_NOT_FOUND", "Analysis not found");
       res.json(ok(report));
+    },
+  );
+
+  /**
+   * GET /api/projects/:projectId/analyses/:id/gap-report/requirements/:requirementId/database-changes
+   *
+   * #1137 — one requirement's database changes (#825/#847), computed when the
+   * analyst opens them in the gap report. Gated by the same per-project
+   * database-aware decision as the report (#856): off ⇒ an empty list plus the
+   * reason. Authorized like the report, and the requirement must belong to the
+   * analysis (404 otherwise, so no foreign requirement id is crossed). Rate
+   * limited like the matrix: it loads the code graph.
+   */
+  projectScoped.get(
+    "/:id/gap-report/requirements/:requirementId/database-changes",
+    analysisMatrixPreAuthRateLimiter,
+    requireAuth,
+    requirePermission("analysis.read"),
+    analysisMatrixUserRateLimiter,
+    async (req: Request, res: Response) => {
+      const analysisId = String(req.params.id);
+      const projectId = String(req.params.projectId);
+      const requirementId = String(req.params.requirementId);
+      await ensureAnalysisVisible(analysisId, projectId);
+
+      const requirement = await prisma.requirement.findFirst({
+        where: { id: requirementId, analysisId, projectId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!requirement) {
+        throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+      }
+      res.json(ok(await getRequirementDatabaseChanges(analysisId, projectId, requirementId)));
     },
   );
 
@@ -1152,7 +1195,12 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         baseAnalysisId: baseParam,
       });
       if (!diff) throw new AppError(404, "ANALYSIS_NOT_FOUND", "Analysis not found");
-      res.json(ok(diff));
+      // #1137 — one page of the changed requirements (250 KB for 87 at once).
+      const paged = sliceListPage(
+        diff.entries,
+        parseListPageQuery(req.query as Record<string, unknown>),
+      );
+      res.json(ok({ ...diff, entries: paged.items, page: paged.page }));
     },
   );
 

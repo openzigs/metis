@@ -1807,8 +1807,12 @@ export async function getAnalysisSnapshot(id: string): Promise<AnalysisSnapshot 
         include: { findings: true },
         orderBy: { startedAt: "asc" },
       },
+      // #1137 — the gap report pages these, so the order is total (`id` breaks
+      // a createdAt tie) and a soft-deleted requirement is left out, as every
+      // per-requirement route (and the new database-changes one) 404s it.
       requirements: {
-        orderBy: { createdAt: "asc" },
+        where: { deletedAt: null },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       },
     },
   });

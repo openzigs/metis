@@ -34,14 +34,18 @@ vi.mock("../middleware/analysis-deepdive-rate-limit.js", () => ({
 }));
 
 const analysisFindFirst = vi.fn();
+const requirementFindFirst = vi.fn();
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
     analysis: { findFirst: analysisFindFirst },
+    requirement: { findFirst: requirementFindFirst },
     project: { findUnique: vi.fn(async () => ({ workspaceId: null })) },
   },
 }));
 
 const getGapReport = vi.fn();
+const getRequirementDatabaseChanges = vi.fn();
+const resolveGapReportDeps = vi.fn(async (): Promise<Record<string, unknown>> => ({}));
 vi.mock("../lib/analysis/index.js", () => ({
   ANALYSIS_SPECIALIST_AGENT_KEYS: [],
   AnalysisOrchestrator: class {},
@@ -70,7 +74,8 @@ vi.mock("../lib/analysis/index.js", () => ({
   serializeTraceabilityMarkdown: vi.fn(),
   getGapReport,
   // #847 — the route resolves the schema-impact producer deps; OFF path is `{}`.
-  resolveGapReportDeps: () => ({}),
+  resolveGapReportDeps,
+  getRequirementDatabaseChanges,
 }));
 
 vi.mock("../lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
@@ -163,7 +168,31 @@ describe("GET /api/projects/:projectId/analyses/:id/gap-report", () => {
     const res = await request(app).get("/api/projects/proj-1/analyses/analysis-1/gap-report");
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true, data: REPORT });
-    expect(getGapReport).toHaveBeenCalledWith("analysis-1", {});
+    expect(getGapReport).toHaveBeenCalledWith("analysis-1", {
+      loadSchemaImpact: undefined,
+      page: { page: 1, pageSize: 10 },
+    });
+  });
+
+  it("#1137 — passes the requested page, and never crosses database changes for the list", async () => {
+    analysisFindFirst.mockResolvedValueOnce({ id: "analysis-1", projectId: "proj-1" });
+    const databaseAware = { setting: "on", enabled: true, ran: true, reason: "on" };
+    resolveGapReportDeps.mockResolvedValueOnce({
+      loadSchemaImpact: vi.fn(),
+      databaseAware,
+      sqlLineageCoverage: null,
+    });
+    getGapReport.mockResolvedValueOnce(REPORT);
+    const res = await request(app).get(
+      "/api/projects/proj-1/analyses/analysis-1/gap-report?page=2&pageSize=5",
+    );
+    expect(res.status).toBe(200);
+    expect(getGapReport).toHaveBeenCalledWith("analysis-1", {
+      loadSchemaImpact: undefined,
+      databaseAware,
+      sqlLineageCoverage: null,
+      page: { page: 2, pageSize: 5 },
+    });
   });
 
   it("404s when the report builder finds no analysis", async () => {
@@ -172,5 +201,49 @@ describe("GET /api/projects/:projectId/analyses/:id/gap-report", () => {
     const res = await request(app).get("/api/projects/proj-1/analyses/analysis-1/gap-report");
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe("ANALYSIS_NOT_FOUND");
+  });
+});
+
+describe("GET /api/projects/:projectId/analyses/:id/gap-report/requirements/:requirementId/database-changes (#1137)", () => {
+  let app: ReturnType<typeof createApp>;
+  const url =
+    "/api/projects/proj-1/analyses/analysis-1/gap-report/requirements/req-1/database-changes";
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentUser = { userId: "user-1", role: "member" };
+    app = createApp();
+  });
+
+  it("404s when the analysis does not belong to the path project (IDOR)", async () => {
+    analysisFindFirst.mockResolvedValueOnce(null);
+    const res = await request(app).get(
+      "/api/projects/other-project/analyses/analysis-1/gap-report/requirements/req-1/database-changes",
+    );
+    expect(res.status).toBe(404);
+    expect(getRequirementDatabaseChanges).not.toHaveBeenCalled();
+  });
+
+  it("404s for a requirement that is not in this analysis", async () => {
+    analysisFindFirst.mockResolvedValueOnce({ id: "analysis-1", projectId: "proj-1" });
+    requirementFindFirst.mockResolvedValueOnce(null);
+    const res = await request(app).get(url);
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe("REQUIREMENT_NOT_FOUND");
+    expect(requirementFindFirst).toHaveBeenCalledWith({
+      where: { id: "req-1", analysisId: "analysis-1", projectId: "proj-1", deletedAt: null },
+      select: { id: true },
+    });
+    expect(getRequirementDatabaseChanges).not.toHaveBeenCalled();
+  });
+
+  it("returns that requirement's database changes", async () => {
+    analysisFindFirst.mockResolvedValueOnce({ id: "analysis-1", projectId: "proj-1" });
+    requirementFindFirst.mockResolvedValueOnce({ id: "req-1" });
+    const data = { requirementId: "req-1", databaseChanges: [], databaseAware: null };
+    getRequirementDatabaseChanges.mockResolvedValueOnce(data);
+    const res = await request(app).get(url);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true, data });
+    expect(getRequirementDatabaseChanges).toHaveBeenCalledWith("analysis-1", "proj-1", "req-1");
   });
 });

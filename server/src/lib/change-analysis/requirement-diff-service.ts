@@ -94,6 +94,10 @@ async function defaultLoadRequirements(
 ): Promise<RequirementDiffRequirementInput[]> {
   const rows = await prisma.requirement.findMany({
     where: { analysisId, deletedAt: null },
+    // #1137 — the route pages the diff, so the order must be total and stable:
+    // with no orderBy, two requests could see different orders and a page could
+    // repeat or skip a requirement. `id` breaks a createdAt tie.
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     select: {
       id: true,
       title: true,

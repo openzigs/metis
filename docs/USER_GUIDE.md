@@ -1465,7 +1465,7 @@ A **fully-capable run shows no banner at all.** The same information appears as 
 
 #### 11.3.2 Traceability matrix (requirement → findings → code → tests)
 
-Once a run completes, the results page shows a **Traceability matrix**: a scannable table with one row per requirement and columns for the **findings** it was grounded in, the **code locations** those findings cite (shown as `filePath:startLine-endLine`), the **tests** METIS could detect for that code, and the requirement's **coverage badge**. It answers, at a glance, "for each requirement, what did we find, where does it live in the code, and is it tested?"
+Once a run completes, the results page shows a **Traceability matrix**: a scannable table with one row per requirement and columns for the **findings** it was grounded in, the **code locations** those findings cite (shown as `filePath:startLine-endLine`), the **tests** METIS could detect for that code, and the requirement's **coverage badge**. It answers, at a glance, "for each requirement, what did we find, where does it live in the code, and is it tested?" Each code location is listed once, and each test names the test function as well as its file. A long matrix shows 25 requirements at a time, with **Previous** / **Next** below it.
 
 - **Explicit empty cells.** A requirement with no linked code shows **"none"**, and one with no detected tests shows **"none detected"** — never a blank you have to guess about.
 - **Tests are best-effort.** METIS detects tests by walking the code graph from the cited code to test files (`*.test.*`, `*.spec.*`, `*_test.*`, files under `tests/` or `__tests__/`). If the analysis didn't resolve a precise code symbol for a requirement, its tests column stays **"none detected"** rather than guessing — a missing test link means "not detected here", not "no tests exist".
@@ -1487,6 +1487,8 @@ The **verdict** badge leads each card and is the field to act on:
 - **Could not verify** — METIS could **not** tell: its code searches failed, came back empty, or the investigation ran out of budget before reaching this requirement. **This is not a gap.** The functionality may well already exist. These findings are shown in their own **"Could not verify — not a confirmed gap"** block, never mixed into the Gap section, and never exported as gaps. Re-run the analysis (or check the code yourself) before planning work from one.
 
 A requirement with **no verdict** simply means the code agent did not take part in that run.
+
+The report shows 10 requirements at a time; use **Previous** / **Next** below the cards. When database-aware analysis is on, each card has a **Show database changes** button that loads that requirement's affected tables and columns. They are loaded on request because working them out for every requirement at once made the tab slow and very long. The **Export report (Markdown)** download still includes them for every requirement.
 
 **Watching a Regenerate or Continue.** While an agent is being re-run, its card on the **Agent output** tab reads **running** with a line such as *"Re-running · 37 steps so far · 4m 12s"* (each step is one look the code agent took at the code: a search or a file it read), then *"updating the run summary with the new findings"* while the run's requirements are re-synthesised. The old findings stay on the card until the new ones replace them. During a normal run the code agent gets a card of its own as soon as it starts investigating. On a deployment with several server replicas the step count may pause between updates; the card still reads running until the re-run finishes. [#766]
 
@@ -1534,6 +1536,7 @@ When you re-run an analysis on the same project, requirements evolve — some ar
 - **Left = Current.** The base requirement text, plus the code that implements it today, shown as clickable code citations. If no source was linked, the card says so plainly.
 - **Right = Proposed.** The new requirement text, plus the gap (the linked findings describing what still needs to change). Changed wording is highlighted word-by-word — additions on the proposed side, removals struck through on the current side — so you can see exactly what moved.
 - A **new** requirement shows only a proposed side (nothing existed before); a **removed** requirement shows only a current side. Unchanged requirements are hidden.
+- The panel shows 10 changed requirements at a time; use **Previous** / **Next** below the cards.
 
 If there's no earlier run to compare against, the panel shows an explicit **"No prior run to compare"** message rather than pretending everything is new. Like the gap report, this view is assembled from the completed runs with no extra AI step, so it's fast and reproducible.
 
@@ -1694,7 +1697,7 @@ When a review of requirements is **approved**, METIS automatically creates a **b
 - **Contents:** open a baseline to see each requirement **as it was at its pinned version** — even if it has been edited or deleted since. A drift note ("now at v5", "deleted since") tells you where the requirement is today, but the baseline itself never changes.
 - **Compare:** with two or more baselines, pick two in the compare picker to see what changed between sign-offs: requirements **added**, **removed**, **unchanged**, and **changed** — the changed ones with a field-by-field before/after diff (title, body, priority, type, story points, …).
 - **Requesting a review:** on the project's **Requirements** page, **Request review** (anyone with `review.create`: developer, coordinator, admin) opens a review of the latest analysis's requirements. Search for reviewers among the people who can open the project (you cannot review your own request), adjust the title, and send it. The review is submitted straight away, pinning each requirement's current version, and appears in the reviewers' **Reviews** queue.
-- **Manual baselines:** review administrators (coordinator or admin) can also pin a baseline without a review: **New baseline** on the Baselines page takes a name (and an optional description) and pins the current version of every requirement in the project, which is useful for milestone freezes outside a formal review. The API (`POST /api/projects/:id/baselines`) also accepts a chosen subset of requirements.
+- **Manual baselines:** review administrators (coordinator or admin) can also pin a baseline without a review: **New baseline** on the Baselines page takes a name (and an optional description) and pins the current version of the project's requirements, which is useful for milestone freezes outside a formal review. It leaves out items imported from a tracker (for example GitHub issues) that nobody has approved; an imported item you approved is pinned. Before you create it, the form says how many requirements it will pin, how many of those are approved, and how many imported items it leaves out. The API (`POST /api/projects/:id/baselines`) also accepts a chosen subset of requirements, which is pinned whatever its status.
 - **Immutability:** baselines cannot be edited or deleted — there is no such button and no such API. They are audit artifacts: what was approved stays exactly as approved.
 
 ### 12.7 Linking Requirements to Database Tables (Data Mappings)
@@ -1796,7 +1799,7 @@ Individual requirement links (Section 12.8) are most useful when you can see the
 
 Open your workspace and select the **Traceability** tab (`/workspaces/<id>/traceability`). You'll see two panels:
 
-- **Per-project coverage** — a table with one row per project in the workspace, showing its requirement count, how many of those requirements are **linked across projects**, and its **spec** and **code** coverage as percentages. A **Tested** column shows the share of requirements *with mapped code* that have at least one linked test (any of the "Tested by" labels in Section 12.4). Requirements with no mapped code are left out of that figure, and a project with none shows "No mapped code" instead of a percentage. **Shared entry point** links do not count. Hover the badge for the strict figure, which counts only **Mapped directly** and **Calls the code** links, not **Naming convention** or **Inferred call**. It's a quick read on which projects are well-connected and well-covered, and which are lagging.
+- **Per-project coverage** — a table with one row per project in the workspace, showing its **analysed** requirement count, how many of those requirements are **linked across projects**, and its **spec** and **code** coverage as percentages of the analysed requirements (hover a badge to see the denominator). Items imported from a tracker that no analysis has mapped to a spec or to code are shown as a separate "+ N imported, not analysed" count under the requirement count and are left out of the percentages, so a project with hundreds of imported issues does not read as almost uncovered. A **Tested** column shows the share of requirements *with mapped code* that have at least one linked test (any of the "Tested by" labels in Section 12.4). Requirements with no mapped code are left out of that figure, and a project with none shows "No mapped code" instead of a percentage. **Shared entry point** links do not count. Hover the badge for the strict figure, which counts only **Mapped directly** and **Calls the code** links, not **Naming convention** or **Inferred call**. It's a quick read on which projects are well-connected and well-covered, and which are lagging.
 - **Cross-project link map** — a diagram of the workspace's cross-project requirement links: each project is a box, each participating requirement a node, and each link a typed arrow between them. When there are no cross-project links yet, the panel says so.
 
 **What you see respects your access.** The rollup only ever includes projects you can access within that workspace, and a cross-project link appears **only when you can access both of its endpoints** — so the view never reveals a requirement, project, or link you aren't entitled to see. Asking for a workspace you don't belong to returns "not found".
@@ -5411,9 +5414,10 @@ either end with **Unlink**.
 To see the whole picture, open a workspace and go to its **Traceability**
 tab. It shows:
 
-- A **per-project coverage table**: how many requirements each project has,
-  how many participate in cross-project links, and each project's spec and
-  code coverage.
+- A **per-project coverage table**: how many analysed requirements each
+  project has (imported items no analysis has mapped are counted apart), how
+  many participate in cross-project links, and each project's spec and code
+  coverage out of its analysed requirements.
 - A **cross-project link map** — a diagram of the workspace's requirement
   links, grouped by project — so you can spot how initiatives thread across
   project boundaries at a glance.

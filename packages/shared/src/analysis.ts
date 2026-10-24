@@ -2376,10 +2376,27 @@ export interface GapReportRequirement {
  * (Issue #742). Reusable by the D3 export (#744) the same way the traceability
  * matrix service (#737) feeds its CSV/markdown serializers.
  */
+/**
+ * #1137 — which page of a long per-requirement list a response carries. `page`
+ * is 1-based; `total` counts every item across all pages.
+ */
+export interface ListPageInfo {
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
 export interface GapReport {
   analysisId: string;
   projectId: string;
   requirements: GapReportRequirement[];
+  /**
+   * #1137 — present when `requirements` is one page of the report (the HTTP
+   * route pages it; the markdown export does not). The route also leaves each
+   * requirement's `databaseChanges` out: they are fetched per requirement, see
+   * {@link GapReportRequirementDatabaseChanges}.
+   */
+  page?: ListPageInfo;
   /**
    * Issue #773 — the run's code-retrieval health + searched-scope provenance.
    * Every `gap-confirmed` verdict in this report is an absence claim relative to
@@ -2531,11 +2548,25 @@ export interface RequirementDiffEntry {
  * to compare against, `baseAnalysisId` is null and `entries` is empty — the UI
  * then shows an explicit empty state rather than treating everything as new.
  */
+/**
+ * #1137 — one requirement's database changes, fetched when the analyst opens
+ * them in the gap report rather than computed for every requirement up front.
+ */
+export interface GapReportRequirementDatabaseChanges {
+  requirementId: string;
+  /** Empty when the requirement has no schema impact or database-aware analysis is off. */
+  databaseChanges: GapReportDatabaseChange[];
+  databaseAware: AnalysisDatabaseAware | null;
+}
+
 export interface RequirementDiff {
   projectId: string;
   headAnalysisId: string;
   baseAnalysisId: string | null;
+  /** One page of the changed requirements when `page` is present (#1137). */
   entries: RequirementDiffEntry[];
+  /** #1137 — the page `entries` holds; `summary.total` still counts all of them. */
+  page?: ListPageInfo;
   summary: {
     total: number;
     added: number;
