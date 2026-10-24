@@ -5,6 +5,7 @@ import { apiFetch } from "@/lib/api-client";
 import type {
   CustomAgentApprovalPolicy,
   CustomAgentDto,
+  CustomAgentSummaryDto,
   HookSubscriptionDto,
   ResumableSessionDto,
   SdkHookEvent,
@@ -90,8 +91,9 @@ export const sdkApi = {
     }),
 
   // Per-project enablement (Epic #260 / #79/#80).
+  // #1500 — summaries only (no system prompt or other definition fields).
   listEnabledAgents: (projectId: string) =>
-    apiFetch<CustomAgentDto[]>(`/custom-agents/projects/${projectId}/enabled`),
+    apiFetch<CustomAgentSummaryDto[]>(`/custom-agents/projects/${projectId}/enabled`),
   /** #1445 — ids of agents explicitly switched OFF for the project. */
   listDisabledAgentIds: (projectId: string) =>
     apiFetch<string[]>(`/custom-agents/projects/${projectId}/disabled`),

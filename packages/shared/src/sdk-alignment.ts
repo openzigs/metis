@@ -55,6 +55,19 @@ export interface CustomAgentDto extends CustomAgentDefinition {
   updatedAt: string;
 }
 
+/**
+ * #1500 — what the project's Custom agents card shows for an agent enabled
+ * there: name, description, the built-in badge and the owning project. Never
+ * the definition (persona/system prompt, tools, model, skills, approval
+ * override): `GET /custom-agents/projects/:projectId/enabled` is readable by
+ * every member of the project, and the agents it lists may belong to another
+ * project. The full definition stays behind the owning project's reads.
+ */
+export type CustomAgentSummaryDto = Pick<
+  CustomAgentDto,
+  "id" | "name" | "description" | "isBuiltIn" | "projectId"
+>;
+
 export interface HookSubscriptionDto {
   id: string;
   projectId: string;
