@@ -190,6 +190,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             repoName,
             isPrimary: true,
             status: "connected",
+            repoPermission: "admin", // #1488 — eligible for shared-secret routing
             provider: "github",
             createdAt,
           },

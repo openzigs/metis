@@ -13,6 +13,7 @@
 // HTTP / Express auto-instrumentation can patch their targets.
 import "./lib/otel/init.js";
 import { bootServer } from "./server.js";
+import { startRepoPermissionRecheck } from "./lib/connectors/repo/permission-recheck.js";
 import { createChildLogger } from "./lib/logger.js";
 import { prisma } from "./lib/prisma.js";
 import { ensureSchemaUpToDate } from "./lib/db/migration-guard.js";
@@ -306,6 +307,9 @@ if (isMainModule() && process.env.METIS_NO_LISTEN !== "1") {
   const { http: httpServer, io, acp, prReviewWorker, socketCluster } = await bootServer();
   httpServer.listen(PORT, () => {
     log.info("METIS server listening", { port: PORT, env: process.env.NODE_ENV });
+    // #1488 — record the token permission of connectors upgraded without one,
+    // serially and in the background; never delays or fails boot.
+    startRepoPermissionRecheck();
   });
 
   let shuttingDown = false;

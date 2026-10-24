@@ -52,6 +52,12 @@ import type { RepoFetcher } from "../../library/import.js";
 import { validateLocalSourcePath } from "./local-source.js";
 import { sourceIngestSummary } from "../source-ingest-state.js";
 import {
+  isTransientGithubFailure,
+  repoPermissionDto,
+  repoPermissionOf,
+  type GithubRepoPermissions,
+} from "./repo-permission.js";
+import {
   connectorIssuesWebhookPath,
   connectorSecretState,
   connectorWebhookPath,
@@ -111,6 +117,8 @@ export interface OctokitLike {
           archived: boolean;
           size: number;
           language: string | null;
+          /** #1488 — present only when the request was authenticated. */
+          permissions?: GithubRepoPermissions;
         };
       }>;
       listLanguages: (params: { owner: string; repo: string }) => Promise<{
@@ -634,6 +642,7 @@ export async function updateRepoConnector(
   if (rebinds) {
     data.repoBoundAt = new Date();
     data.status = "pending";
+    data.repoPermission = null;
     data.webhookSecretNonce = null;
     data.webhookSecretCheck = null;
   }
@@ -647,6 +656,9 @@ export async function updateRepoConnector(
         : patchRefBody === existing.secretId
           ? patchRefBody
           : await bindRepoSecret(patchRefBody);
+    // #1488 — the recorded permission belongs to the credential it was read
+    // with; another credential is unproven until it is tested.
+    if (data.secretId !== existing.secretId) data.repoPermission = null;
   }
   let row;
   try {
@@ -867,6 +879,53 @@ function webhookSecretFlags(row: {
   };
 }
 
+/**
+ * #1488 — the fields a Test (or metadata read) was bound to when it began. Its
+ * result describes that repository, server and credential only, so it is
+ * written with `updateMany` matching them: a PATCH that repointed the
+ * connector or swapped its secret mid-request makes the write match nothing,
+ * and nothing is recorded (otherwise an `admin` read from the attacker's own
+ * repository lands on a row that now names the victim's).
+ */
+function bindingWhere(row: {
+  id: string;
+  provider: string;
+  ownerOrOrg: string | null;
+  repoName: string | null;
+  apiBaseUrl: string | null;
+  secretId: string | null;
+}) {
+  return {
+    id: row.id,
+    deletedAt: null,
+    provider: row.provider,
+    ownerOrOrg: row.ownerOrOrg,
+    repoName: row.repoName,
+    apiBaseUrl: row.apiBaseUrl,
+    secretId: row.secretId,
+  };
+}
+
+/** #1488 — the connection changed while it was being checked; nothing was recorded. */
+export const REPO_CONNECTOR_CHANGED = "REPO_CONNECTOR_CHANGED";
+function bindingChanged(): ConnectorError {
+  return new ConnectorError(
+    409,
+    REPO_CONNECTOR_CHANGED,
+    "The connection was changed while it was being checked, so nothing was recorded. Test it again.",
+  );
+}
+
+async function readRepoConnectorRow(projectId: string, id: string) {
+  const row = await prisma.repoConnection.findFirst({
+    where: { id, projectId, deletedAt: null },
+  });
+  if (!row) {
+    throw new ConnectorError(404, "REPO_CONNECTOR_NOT_FOUND", "repo connector not found");
+  }
+  return row;
+}
+
 async function findGithubRepoConnector(projectId: string, id: string) {
   const existing = await prisma.repoConnection.findFirst({
     where: { id, projectId, deletedAt: null },
@@ -897,12 +956,22 @@ export async function getPrimaryRepo(projectId: string) {
 // ---- Operations ------------------------------------------------------------
 
 export async function testRepoConnector(projectId: string, id: string, actorId: string) {
-  const conn = await getRepoConnector(projectId, id);
+  // #1488 — one read gives both the DTO and the binding the writes are guarded on.
+  const row = await readRepoConnectorRow(projectId, id);
+  const binding = bindingWhere(row);
+  const conn = toApi(row);
   const git = assertGitConnector(conn);
   await assertHostFromBaseUrl(conn.apiBaseUrl);
   const start = Date.now();
+  // #1488 — only a failure of the GitHub request itself can be transient; one
+  // raised while reading the credential (vault) or pinning the host is not.
+  let askedGithub = false;
   try {
-    const octokit = await acquireOctokit(conn.apiBaseUrl, conn.secretRef);
+    const { octokit, authenticated } = await acquireOctokitWithAuth(
+      conn.apiBaseUrl,
+      conn.secretRef,
+    );
+    askedGithub = true;
     // #762 — no `connector:progress` here: a Test is one request answered in
     // well under a second, and its count-less progress event left a stuck
     // "repo.get /" row under the card. The response (and its toast) reports it.
@@ -917,15 +986,21 @@ export async function testRepoConnector(projectId: string, id: string, actorId: 
     // (`main`) may be replaced, and only when it does not exist upstream.
     const ref = await resolveConfiguredRef(octokit, git, conn.defaultBranch, upstreamDefault);
     const latencyMs = Date.now() - start;
-    await prisma.repoConnection.update({
-      where: { id },
+    // #1488 — what this credential may do on the repository. Only admin or
+    // push takes shared-secret webhook deliveries; a Test with no token
+    // records `none`, so reading a public repository earns nothing.
+    const repoPermission = repoPermissionOf(authenticated, repoData.data.permissions);
+    const { count } = await prisma.repoConnection.updateMany({
+      where: binding,
       data: {
         status: "connected",
+        repoPermission,
         lastTestedAt: new Date(),
         errorMessage: null,
         ...(ref !== conn.defaultBranch ? { defaultBranch: ref } : {}),
       },
     });
+    if (count === 0) throw bindingChanged();
     emitter().status({ connectorId: id, kind: "repo", status: "connected" });
     audit({
       actor: { id: actorId },
@@ -942,18 +1017,65 @@ export async function testRepoConnector(projectId: string, id: string, actorId: 
       private: repoData.data.private,
       archived: repoData.data.archived,
       sizeKb: repoData.data.size,
+      repoPermission,
     };
   } catch (err) {
+    // #1488 — the connection changed under this Test: record nothing.
+    if (err instanceof ConnectorError && err.code === REPO_CONNECTOR_CHANGED) {
+      audit({
+        actor: { id: actorId },
+        action: "connector.repo.test",
+        target: { type: "repo_connector", id },
+        metadata: { projectId, status: "unchanged", code: REPO_CONNECTOR_CHANGED },
+      });
+      throw err;
+    }
     const ce = toOctokitError(err);
+    // #1488 — a rate limit, a 5xx or an aborted request says nothing about
+    // this connector's credential, and anyone can exhaust the server's
+    // unauthenticated quota. Such a failure leaves the status (and the
+    // recorded permission) as they were: writing `error` here handed a
+    // connected connector's shared-secret deliveries to the next one. Only a
+    // 401, a 404, a non-rate-limit 403 (the credential was refused) or an
+    // error this server raised itself (host allow-list, stale vault binding)
+    // marks the connector `error`.
+    if (askedGithub && !(err instanceof ConnectorError) && isTransientGithubFailure(err)) {
+      log.warn("connector.repo.test_transient_failure", {
+        connectorId: id,
+        projectId,
+        status: (err as { status?: unknown }).status ?? null,
+        code: ce.code,
+      });
+      audit({
+        actor: { id: actorId },
+        action: "connector.repo.test",
+        target: { type: "repo_connector", id },
+        metadata: { projectId, status: "unchanged", transient: true, code: ce.code },
+      });
+      throw new ConnectorError(
+        ce.status,
+        ce.code,
+        `${safeRepoErrorMessage(ce)}. This is a temporary GitHub failure: the connection's status was left unchanged. Try again later.`,
+      );
+    }
     // #1084 — the host allow-list raises `HOST_NOT_ALLOWED` / `DNS_LOOKUP_*`
     // naming the private address a caller-supplied host resolved to, and
     // `toOctokitError` passes a `ConnectorError` straight through. The message
     // is returned, persisted, AND emitted, so it is sanitized once here.
     const safeMessage = safeRepoErrorMessage(ce);
-    await prisma.repoConnection.update({
-      where: { id },
-      data: { status: "error", errorMessage: safeMessage, lastTestedAt: new Date() },
+    // #1488 — an errored connector's recorded permission is forgotten: it must
+    // be earned again by a read that succeeds, never revived by a later status
+    // write. Guarded on the binding like the success write.
+    const { count } = await prisma.repoConnection.updateMany({
+      where: binding,
+      data: {
+        status: "error",
+        repoPermission: null,
+        errorMessage: safeMessage,
+        lastTestedAt: new Date(),
+      },
     });
+    if (count === 0) throw bindingChanged();
     emitter().status({ connectorId: id, kind: "repo", status: "error", errorMessage: safeMessage });
     audit({
       actor: { id: actorId },
@@ -1111,10 +1233,12 @@ export async function fetchRepoMetadata(
   id: string,
   actorId: string,
 ): Promise<RepoMetadata> {
-  const conn = await getRepoConnector(projectId, id);
+  const row = await readRepoConnectorRow(projectId, id);
+  const binding = bindingWhere(row);
+  const conn = toApi(row);
   const git = assertGitConnector(conn);
   await assertHostFromBaseUrl(conn.apiBaseUrl);
-  const octokit = await acquireOctokit(conn.apiBaseUrl, conn.secretRef);
+  const { octokit, authenticated } = await acquireOctokitWithAuth(conn.apiBaseUrl, conn.secretRef);
 
   emitter().progress({ connectorId: id, projectId, kind: "repo", phase: "metadata", step: "repo" });
   const repo = await octokit.rest.repos.get({ owner: git.ownerOrOrg, repo: git.repoName });
@@ -1198,13 +1322,24 @@ export async function fetchRepoMetadata(
     }
   }
 
-  await prisma.repoConnection.update({
-    where: { id },
-    // #758 — `headSha` is the remote tip NOW, which after a long ingest can be
-    // newer than the commit the graph was built from, so it is returned for the
-    // metadata document but never written as `lastCommitSha`.
-    data: { status: "connected", errorMessage: null },
+  // #758 — `headSha` is the remote tip NOW, which after a long ingest can be
+  // newer than the commit the graph was built from, so it is returned for the
+  // metadata document but never written as `lastCommitSha`.
+  // #1488 — a read that marks the connector connected also records what its
+  // credential may do, from the same `repos.get`, so a sync can never revive
+  // an errored connector with an old permission. Guarded on the binding the
+  // read used; a connector changed meanwhile keeps its own state.
+  const { count } = await prisma.repoConnection.updateMany({
+    where: binding,
+    data: {
+      status: "connected",
+      errorMessage: null,
+      repoPermission: repoPermissionOf(authenticated, repo.data.permissions),
+    },
   });
+  if (count === 0) {
+    log.warn("connector.repo.metadata_binding_changed", { connectorId: id, projectId });
+  }
   audit({
     actor: { id: actorId },
     action: "connector.repo.metadata",
@@ -1711,6 +1846,14 @@ export async function restoreCloneAtCommit(
 // ---- Helpers ---------------------------------------------------------------
 
 async function acquireOctokit(apiBaseUrl: string | null, secretRef: string): Promise<OctokitLike> {
+  return (await acquireOctokitWithAuth(apiBaseUrl, secretRef)).octokit;
+}
+
+/** #1488 — as `acquireOctokit`, also saying whether the client sends a token. */
+async function acquireOctokitWithAuth(
+  apiBaseUrl: string | null,
+  secretRef: string,
+): Promise<{ octokit: OctokitLike; authenticated: boolean }> {
   // Normalize GHE base URL: users may paste a browse URL like
   // "https://git.example.com/Org/repo/tree/main" or just the host
   // "https://git.example.com". Octokit needs "{origin}/api/v3".
@@ -1739,7 +1882,10 @@ async function acquireOctokit(apiBaseUrl: string | null, secretRef: string): Pro
     pinnedFamily: pinned.family,
     hostname: pinned.hostname,
   };
-  return octokitFactoryOverride ? octokitFactoryOverride(args) : await defaultOctokit(args);
+  const octokit = octokitFactoryOverride
+    ? octokitFactoryOverride(args)
+    : await defaultOctokit(args);
+  return { octokit, authenticated: Boolean(token) };
 }
 
 /** #480 — the connector's bound secret, by id only (`secretRef` is `${vault:<secretId>}`). */
@@ -1861,6 +2007,7 @@ function toApi(row: {
   secretId: string | null;
   webhookSecretNonce?: string | null;
   webhookSecretCheck?: string | null;
+  repoPermission?: string | null;
   status: string;
   errorMessage: string | null;
   lastTestedAt: Date | null;
@@ -1894,6 +2041,9 @@ function toApi(row: {
     // #1475 — whether the connector has its own webhook secret that still
     // verifies, or had one that no longer does; never the secret.
     ...webhookSecretFlags(row),
+    // #1488 — what the credential could do at the last successful Test; only
+    // admin or push takes shared-secret webhook deliveries.
+    repoPermission: repoPermissionDto(row.repoPermission),
     status: row.status,
     errorMessage: row.errorMessage,
     lastTestedAt: row.lastTestedAt,
@@ -1945,7 +2095,14 @@ function toOctokitError(err: unknown): ConnectorError {
       `GitHub auth failed${e.message && e.message !== "HttpError" ? `: ${e.message}` : ""}`,
     );
   if (e.status === 403)
-    return new ConnectorError(403, "REPO_FORBIDDEN", "GitHub forbidden / rate-limited");
+    return new ConnectorError(
+      403,
+      "REPO_FORBIDDEN",
+      // #1488 — the two 403s mean different things to the connector.
+      isTransientGithubFailure(err)
+        ? "GitHub rate limit reached"
+        : "GitHub refused this credential (403 forbidden)",
+    );
   if (e.status === 404) return new ConnectorError(404, "REPO_NOT_FOUND", "GitHub repo not found");
   return new ConnectorError(502, "REPO_API_ERROR", e.message ?? "GitHub API error");
 }

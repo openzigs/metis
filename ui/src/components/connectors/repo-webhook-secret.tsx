@@ -24,6 +24,7 @@ type Connector = Pick<
   | "id"
   | "provider"
   | "status"
+  | "repoPermission"
   | "webhookSecretConfigured"
   | "webhookSecretNeedsRenewal"
   | "webhookPath"
@@ -65,6 +66,28 @@ function CopyField({ id, label, value }: { id: string; label: string; value: str
       </div>
     </div>
   );
+}
+
+/**
+ * #1488 — why a connected, shared-secret connection gets no shared-secret
+ * reviews: its token was not seen to have push or admin access to the
+ * repository. Depends on this connection's own fields only, so it never says
+ * whether another project connects the repository. Null when it is eligible.
+ */
+function sharedSecretIneligibleReason(permission: Connector["repoPermission"]): string | null {
+  switch (permission) {
+    case "admin":
+    case "push":
+      return null;
+    case "none":
+      return "This connection has no access token, so it does not receive shared-secret reviews: anyone can read a public repository, so that proves nothing. Add a token with push or admin access to the repository and click Test, or create a secret for this connection.";
+    case "read":
+      return "GitHub reports that this connection's token can only read the repository, so it does not receive shared-secret reviews. Use a token with push or admin access and click Test, or create a secret for this connection.";
+    case "unknown":
+      return "GitHub did not report this token's permissions on the repository (some token types don't), so this connection does not receive shared-secret reviews. Create a secret for this connection, or use a token GitHub reports push or admin access for and click Test.";
+    default:
+      return "This connection's token access has not been checked since METIS began requiring push or admin access for shared-secret reviews, so it does not receive them yet. Click Test. A connection with a token is also checked once when the server restarts, and by its scheduled refresh if one is set up.";
+  }
 }
 
 /** #1483 — once a connection has its own secret, issue events reach its project only at its issues URL. */
@@ -116,6 +139,7 @@ export function RepoWebhookSecret({
   const configured = connector.webhookSecretConfigured;
   const stale = connector.webhookSecretNeedsRenewal;
   const hasOwn = configured || stale;
+  const ineligible = sharedSecretIneligibleReason(connector.repoPermission);
 
   const generateLabel = configured ? "Replace webhook secret" : "Create webhook secret";
 
@@ -183,6 +207,11 @@ export function RepoWebhookSecret({
         <p className="font-medium text-warning" data-testid={`webhook-needs-test-${connector.id}`}>
           Shared-secret deliveries reach this connection only after a successful Test. Click Test,
           or create a secret for this connection.
+        </p>
+      ) : null}
+      {!hasOwn && !shown && connector.status === "connected" && ineligible ? (
+        <p className="font-medium text-warning" data-testid={`webhook-ineligible-${connector.id}`}>
+          {ineligible}
         </p>
       ) : null}
       {shown ? (

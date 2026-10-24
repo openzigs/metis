@@ -32,6 +32,7 @@ function renderIt(
     webhookSecretConfigured: boolean;
     webhookSecretNeedsRenewal?: boolean;
     status?: string;
+    repoPermission?: string | null;
   },
   onChanged = vi.fn(),
 ) {
@@ -44,6 +45,7 @@ function renderIt(
           {
             id: "r1",
             status: "connected",
+            repoPermission: "admin",
             webhookSecretNeedsRenewal: false,
             webhookPath: connector.provider.startsWith("github") ? PATH : null,
             issuesWebhookPath: connector.provider.startsWith("github") ? ISSUES_PATH : null,
@@ -197,5 +199,38 @@ describe("RepoWebhookSecret (#1475)", () => {
     expect(screen.getByTestId("webhook-issues-hint-r1")).toHaveTextContent(
       /only at the issue events/,
     );
+  });
+
+  describe("#1488 — why a connected connection gets no shared-secret reviews", () => {
+    it.each([
+      ["none", /no access token/],
+      ["read", /can only read the repository/],
+      ["unknown", /did not report this token's permissions/],
+      [null, /has not been checked.*checked once when the server restarts/],
+    ] as const)("explains a %s permission", (repoPermission, copy) => {
+      renderIt({ provider: "github", webhookSecretConfigured: false, repoPermission });
+      expect(screen.getByTestId("webhook-ineligible-r1")).toHaveTextContent(copy);
+    });
+
+    it.each(["admin", "push"])("says nothing for a %s token", (repoPermission) => {
+      renderIt({ provider: "github", webhookSecretConfigured: false, repoPermission });
+      expect(screen.queryByTestId("webhook-ineligible-r1")).toBeNull();
+    });
+
+    it("says nothing for a connection with its own secret", () => {
+      renderIt({ provider: "github", webhookSecretConfigured: true, repoPermission: "none" });
+      expect(screen.queryByTestId("webhook-ineligible-r1")).toBeNull();
+    });
+
+    it("leaves a pending connection to the Test prompt alone", () => {
+      renderIt({
+        provider: "github",
+        webhookSecretConfigured: false,
+        status: "pending",
+        repoPermission: "none",
+      });
+      expect(screen.queryByTestId("webhook-ineligible-r1")).toBeNull();
+      expect(screen.getByTestId("webhook-needs-test-r1")).toBeInTheDocument();
+    });
   });
 });

@@ -190,6 +190,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           repoName: "app",
           isPrimary: true,
           status: "connected",
+          repoPermission: "admin", // #1488 — eligible for shared-secret routing
         },
       });
       await db.analysis.create({ data: { id: `an-${id}`, projectId: id, startedById: "u-owner" } });

@@ -214,6 +214,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           repoName,
           isPrimary: opts.primary,
           status: "connected",
+          // #1488 — as a Test with a repository admin's token records it.
+          repoPermission: "admin",
           provider: opts.provider ?? "github",
           apiBaseUrl: opts.apiBaseUrl ?? null,
           createdAt: opts.createdAt,
@@ -262,6 +264,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           webhookSecretNonce: null,
           webhookSecretCheck: null,
           status: "connected",
+          repoPermission: "admin",
           deletedAt: null,
           repoBoundAt: null,
           createdAt,
@@ -426,6 +429,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             ownerOrOrg: OWNER,
             repoName: "elsewhere",
             status: "connected",
+            repoPermission: "admin",
             createdAt: new Date("2024-01-01T00:00:00.000Z"),
           },
         });
@@ -441,9 +445,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           expect(repointed?.status).toBe("pending");
           // Even once it passes Test again, it ranks from the repoint, not from
           // its 2024 creation: PA keeps the deliveries.
+          // #1488 — the repoint also forgot the token's permission.
+          expect(repointed?.repoPermission).toBeNull();
           await db.repoConnection.update({
             where: { id: "repo-b-old-1475" },
-            data: { status: "connected" },
+            data: { status: "connected", repoPermission: "admin" },
           });
           enqueued.length = 0;
           await deliver(DEPLOYMENT_SECRET, payloadOf(REPO, 18));
@@ -480,6 +486,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             ownerOrOrg: OWNER,
             repoName: "app",
             status: "connected",
+            repoPermission: "admin",
             createdAt: new Date("2024-01-01T00:00:00.000Z"),
           },
         });
@@ -610,7 +617,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
           await db.repoConnection.update({
             where: { id: `repo-${PB}` },
-            data: { status: "connected" },
+            data: { status: "connected", repoPermission: "admin" },
           });
           await deliver(DEPLOYMENT_SECRET, payloadOf(NEW_REPO, 71));
           expect(enqueuedFor()).toEqual([PB]);
