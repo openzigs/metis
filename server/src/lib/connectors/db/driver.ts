@@ -14,6 +14,7 @@ import type {
   DbDependencyInfo,
   DbForeignKeyInfo,
   DbIndexInfo,
+  DbIntrospectionTruncation,
   DbPackageInfo,
   DbRoutineInfo,
   DbTableInfo,
@@ -62,6 +63,16 @@ export interface DbQueryResponse {
   durationMs: number;
 }
 
+/**
+ * #1096 — a table introspection and whether it was complete. `truncation` is
+ * present only when a driver ceiling stopped the read before the catalog was
+ * exhausted.
+ */
+export interface DbIntrospection {
+  tables: DbTableInfo[];
+  truncation?: DbIntrospectionTruncation;
+}
+
 export interface DbDriverAdapter {
   /** Open a pool / handle. Idempotent. */
   init(config: DbConnectionConfig): Promise<void>;
@@ -71,6 +82,13 @@ export interface DbDriverAdapter {
   query(req: DbQueryRequest): Promise<DbQueryResponse>;
   /** Read schema metadata (tables/cols/FKs/indexes). */
   introspect(opts?: { schema?: string }): Promise<DbTableInfo[]>;
+  /**
+   * #1096 — {@link introspect} plus whether the read was complete. A driver
+   * whose catalog read has a ceiling implements this so a cut read is reported
+   * instead of passing for the whole schema; callers prefer it when present. A
+   * driver that reads the catalog without a ceiling need not implement it.
+   */
+  introspectSchema?(opts?: { schema?: string }): Promise<DbIntrospection>;
   /**
    * Read stored-routine metadata — procedures & functions — for the given
    * schema (Epic #293 Phase 2, #300). READ-ONLY: every driver issues a single

@@ -3,8 +3,6 @@
  * read (live, then a stored graph, then repository SQL, then nothing), and
  * what is rendered from it.
  */
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbTableInfo, SchemaGraph } from "@metis/shared";
 
@@ -55,10 +53,8 @@ import {
 } from "./schema-render.js";
 import {
   datasetNamesFromLineage,
-  introspectionRowsAtLeast,
   LIVE_INTROSPECTION_CONCURRENCY,
   loadSchemaInventory,
-  ORACLE_INTROSPECTION_ROW_CAP,
   type SchemaInventoryDeps,
 } from "./schema-inventory-loader.js";
 
@@ -397,78 +393,93 @@ describe("loadSchemaInventory", () => {
     });
   });
 
-  describe("a read that reached the Oracle driver's row limit (#1061 second review)", () => {
-    /** `tables` tables of `columns` columns each: one introspection row per column. */
-    const wide = (tables: number, columns: number): DbTableInfo[] =>
-      Array.from({ length: tables }, (_, t) => ({
-        schema: "APP",
-        name: `T${1000 + t}`,
-        columns: Array.from({ length: columns }, (_, c) => ({
-          name: `C${c}`,
-          dataType: "NUMBER",
-          nullable: true,
-          isPrimaryKey: false,
-          isForeignKey: false,
-        })),
-        foreignKeys: [],
-        indexes: [],
-      }));
-    const oracle = (tables: DbTableInfo[], driver = "oracle") =>
+  describe("a read the driver reports as cut (#1096)", () => {
+    const APP: DbTableInfo = { ...USERS, schema: "APP", name: "T1" };
+    const cutRead = (truncation: { tablesRead: number; tablesTotal?: number }) =>
       load({
-        listConnectors: async () => [{ id: "c1", label: "ora", driver }],
-        introspect: async () => tables,
+        listConnectors: async () => [{ id: "c1", label: "ora", driver: "oracle" }],
+        introspect: async () => ({
+          tables: [APP],
+          truncation: { rowsRead: 250_000, rowCeiling: 250_000, ...truncation },
+        }),
       });
 
-    it("is recorded as possibly truncated, and the prompt says so", async () => {
-      // The review's reproduction: 10,000 rows of a 30-column-per-table schema
-      // end inside the 334th table.
-      const cut = [
-        ...wide(333, 30),
-        ...wide(334, 30)
-          .slice(333)
-          .map((t) => ({ ...t, columns: t.columns.slice(0, 10) })),
-      ];
-      expect(introspectionRowsAtLeast(cut)).toBe(ORACLE_INTROSPECTION_ROW_CAP);
-      const inventory = await oracle(cut);
+    it("is recorded with N of M tables, and the prompt says so", async () => {
+      const inventory = await cutRead({ tablesRead: 1_200, tablesTotal: 4_000 });
       expect(inventory.reads).toEqual([
-        { connector: "ora", how: "live", schemas: ["APP"], possiblyTruncated: true },
+        {
+          connector: "ora",
+          how: "live",
+          schemas: ["APP"],
+          truncation: { tablesRead: 1_200, tablesTotal: 4_000 },
+        },
       ]);
       expect(renderSchemaCoverage(inventory)).toContain(
-        '- "ora": schema APP, read from the database now. This read reached the driver\'s row ' +
-          "limit and may have been cut short: tables and columns can be missing from it.",
+        '- "ora": schema APP, read from the database now. This read was cut at the driver\'s ' +
+          "row ceiling: only 1,200 of 4,000 tables were read, so tables are missing from it " +
+          "and may still exist.",
       );
     });
 
-    it("is not, one row under the limit, or on another driver", async () => {
-      const under = wide(333, 30);
-      expect(introspectionRowsAtLeast(under)).toBe(ORACLE_INTROSPECTION_ROW_CAP - 10);
-      expect((await oracle(under)).reads[0].possiblyTruncated).toBeUndefined();
-      const full = [...under, ...wide(1, 10)];
-      expect((await oracle(full, "postgres")).reads[0].possiblyTruncated).toBeUndefined();
-      expect((await oracle(full)).reads[0].possiblyTruncated).toBe(true);
-    });
-
-    it("counts a row for each further foreign key a column is in", () => {
-      const [t] = wide(1, 3);
-      const keyed: DbTableInfo = {
-        ...t,
-        foreignKeys: [
-          { name: "fk_a", columns: ["C0"], refTable: "X", refColumns: ["ID"] },
-          { name: "fk_b", columns: ["C0", "C1"], refTable: "Y", refColumns: ["A", "B"] },
-        ],
-      };
-      // C0 is in two keys (two rows), C1 in one, C2 in none.
-      expect(introspectionRowsAtLeast([keyed])).toBe(4);
-    });
-
-    it("uses the limit the driver really applies", () => {
-      const driver = readFileSync(
-        fileURLToPath(new URL("../connectors/db/drivers/oracle.ts", import.meta.url)),
-        "utf8",
+    it("says so at the top of the Schema Reference", async () => {
+      const inventory = await cutRead({ tablesRead: 1_200, tablesTotal: 4_000 });
+      const reference = renderSchemaReference(inventory);
+      expect(reference).toContain(
+        "> **The schema was read partially.** The database catalog held more rows than one " +
+          'read takes, so only some tables were read ("ora": 1,200 of 4,000 tables).',
       );
-      const introspect = driver.slice(driver.indexOf("async introspect("));
-      const limit = /maxRows: ([\d_]+)/.exec(introspect)?.[1].split("_").join("");
-      expect(Number(limit)).toBe(ORACLE_INTROSPECTION_ROW_CAP);
+      expect(reference.indexOf("read partially")).toBeLessThan(reference.indexOf("```mermaid"));
+    });
+
+    it("names no total it does not have", async () => {
+      const inventory = await cutRead({ tablesRead: 1_200 });
+      expect(inventory.reads[0].truncation).toEqual({ tablesRead: 1_200 });
+      expect(renderSchemaCoverage(inventory)).toContain(
+        "only 1,200 tables (the total could not be counted) were read",
+      );
+    });
+
+    it("is not recorded for a complete read, plain list or not", async () => {
+      const plain = await load({ introspect: async () => [USERS] });
+      expect(plain.reads[0].truncation).toBeUndefined();
+      const complete = await load({
+        introspect: async () => ({ tables: [USERS] }),
+      });
+      expect(complete.reads[0]).toEqual({
+        connector: "miniflux-pg",
+        how: "live",
+        schemas: ["public"],
+      });
+      expect(renderSchemaReference(complete)).not.toContain("read partially");
+    });
+
+    it("is carried by a stored graph built from a cut read, and only a valid one", async () => {
+      const stored = (truncation: unknown) =>
+        load({
+          introspect: async () => [],
+          readSchemaGraphs: async () => [
+            {
+              dbConnectorId: "c1",
+              graph: { ...GRAPH, truncation },
+              generatedAt: null,
+            },
+          ],
+        });
+      expect((await stored({ tablesRead: 2, tablesTotal: 9 })).reads[0]).toEqual({
+        connector: "miniflux-pg",
+        how: "stored",
+        schemas: ["public"],
+        truncation: { tablesRead: 2, tablesTotal: 9 },
+      });
+      expect(renderSchemaCoverage(await stored({ tablesRead: 2, tablesTotal: 9 }))).toContain(
+        "it may be out of date. This read was cut at the driver's row ceiling: only 2 of 9 tables",
+      );
+      expect((await stored({ tablesRead: 2, tablesTotal: "9" })).reads[0].truncation).toEqual({
+        tablesRead: 2,
+      });
+      expect((await stored({ tablesRead: -1 })).reads[0].truncation).toBeUndefined();
+      expect((await stored("cut")).reads[0].truncation).toBeUndefined();
+      expect((await stored(null)).reads[0].truncation).toBeUndefined();
     });
   });
 
@@ -838,6 +849,16 @@ describe("loadSchemaInventory", () => {
       expect(connectors.inspectDbConnector).toHaveBeenCalledWith("p", "c1", "u1");
       expect(inventory.source).toBe("live-schema");
       expect(inventory.tables[0].name).toBe("users");
+      expect(inventory.reads[0].truncation).toBeUndefined();
+    });
+
+    it("carries the snapshot's truncation into the read (#1096)", async () => {
+      connectors.inspectDbConnector.mockResolvedValue({
+        tables: [USERS],
+        truncation: { rowsRead: 250_000, rowCeiling: 250_000, tablesRead: 1, tablesTotal: 7 },
+      });
+      const inventory = await loadSchemaInventory({ projectId: "p", actorId: "u1" });
+      expect(inventory.reads[0].truncation).toEqual({ tablesRead: 1, tablesTotal: 7 });
     });
 
     it("reads stored graphs from database documents and tolerates a corrupt row", async () => {

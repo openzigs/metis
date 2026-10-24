@@ -363,7 +363,14 @@ export async function inspectDbConnector(
       phase: "introspect",
       step: "tables",
     });
-    const tables: DbTableInfo[] = await adapter.introspect(opts);
+    // #1096 — a driver whose catalog read has a ceiling reports a cut read;
+    // prefer that, so a partial schema never passes for the whole one.
+    const read =
+      typeof adapter.introspectSchema === "function"
+        ? await adapter.introspectSchema(opts)
+        : { tables: await adapter.introspect(opts) };
+    const tables: DbTableInfo[] = read.tables;
+    const truncation = read.truncation;
 
     // Epic #293 Phase 2 (#300) — best-effort routines (procedures & functions)
     // introspection. READ-ONLY: a single parameterized catalog SELECT per
@@ -395,6 +402,7 @@ export async function inspectDbConnector(
       driver: conn.driver,
       schema: opts.schema,
       tables,
+      ...(truncation ? { truncation } : {}),
       routines,
       extractedAt: new Date().toISOString(),
       durationMs: Date.now() - start,
@@ -408,6 +416,15 @@ export async function inspectDbConnector(
         tableCount: tables.length,
         routineCount: routines.length,
         schema: opts.schema ?? "(default)",
+        ...(truncation
+          ? {
+              truncated: true,
+              rowsRead: truncation.rowsRead,
+              ...(truncation.tablesTotal === undefined
+                ? {}
+                : { tablesTotal: truncation.tablesTotal }),
+            }
+          : {}),
       },
     });
     return snapshot;

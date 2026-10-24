@@ -19,6 +19,7 @@ import {
   type DbDependencyInfo,
   type DbForeignKeyInfo,
   type DbIndexInfo,
+  type DbIntrospectionTruncation,
   type DbPackageInfo,
   type DbRoutineInfo,
   type DbTableInfo,
@@ -28,20 +29,144 @@ import { ConnectorError } from "../../types.js";
 import type {
   DbConnectionConfig,
   DbDriverAdapter,
+  DbIntrospection,
   DbQueryRequest,
   DbQueryResponse,
 } from "../driver.js";
 
 const log = createChildLogger("db-oracle");
 
+/** The part of an oracledb `ResultSet` the catalog reads use. */
+export interface OracleResultSetLike<T> {
+  getRows(count: number): Promise<T[]>;
+  close(): Promise<void>;
+}
+
 export interface OracleConnectionLike {
   execute<T = unknown>(
     sql: string,
     params?: unknown[],
-    opts?: { maxRows?: number; resultSet?: boolean },
-  ): Promise<{ rows?: T[]; metaData?: { name: string }[] }>;
+    opts?: { maxRows?: number; resultSet?: boolean; fetchArraySize?: number },
+  ): Promise<{
+    rows?: T[];
+    metaData?: { name: string }[];
+    /** Set when `resultSet: true` was asked for (oracledb). */
+    resultSet?: OracleResultSetLike<T>;
+  }>;
   close(): Promise<void>;
   callTimeout?: number;
+}
+
+/**
+ * #1096 — rows fetched per round trip when a catalog query is paged through a
+ * result set. Only one page is held besides what has been grouped so far.
+ */
+export const ORACLE_CATALOG_FETCH_ROWS = 1_000;
+
+/**
+ * #1096 — the most catalog rows one introspection call reads. It bounds the
+ * memory a pathological catalog can take; it is not expected to be reached
+ * (250,000 column rows is 2,500 tables of 100 columns in ONE owner). Reaching it
+ * is reported, never silent: {@link OracleDriverAdapter.introspectSchema}
+ * returns a `truncation` with the tables read and the tables there are. Until
+ * #1096 the limit was a silent `maxRows: 10_000`.
+ */
+export const ORACLE_INTROSPECTION_ROW_CEILING = 250_000;
+
+let rowCeilingOverride: number | null = null;
+
+/** Test hook: a smaller ceiling, so a cut read needs no 250,000-row fixture. */
+export function __setOracleIntrospectionRowCeiling(ceiling: number | null): void {
+  rowCeilingOverride = ceiling;
+}
+
+function introspectionRowCeiling(): number {
+  return rowCeilingOverride ?? ORACLE_INTROSPECTION_ROW_CEILING;
+}
+
+/** What {@link readCatalogRows} read. */
+interface CatalogRead<T> {
+  rowsRead: number;
+  /** True when rows were left unread at the ceiling. */
+  cut: boolean;
+  /** The first row past the ceiling, when the read was cut. */
+  nextRow?: T;
+}
+
+/**
+ * #1096 — read a catalog query to the end, a page at a time, handing each page
+ * to `onPage`, and stop at `ceiling` rows. To tell "exactly `ceiling` rows" from
+ * "more than `ceiling`", one row past the ceiling is fetched and returned as
+ * `nextRow`, never handed to `onPage`.
+ *
+ * Asks for a result set (`resultSet: true`) and pages it with `getRows`, with
+ * `fetchArraySize` matched to the page size: oracledb's default of 100 rows per
+ * round trip would otherwise take ten network trips per page. A
+ * connection that answers with plain `rows` instead (a test double, or a driver
+ * that does not page) is read the same way from the array. No `maxRows` is ever
+ * passed: that is what cut the read silently before.
+ */
+async function readCatalogRows<T>(
+  conn: OracleConnectionLike,
+  sql: string,
+  params: unknown[],
+  onPage: (rows: T[]) => void,
+  ceiling: number = introspectionRowCeiling(),
+): Promise<CatalogRead<T>> {
+  let rowsRead = 0;
+  /** Hands over what fits under the ceiling; returns the read if it ended here. */
+  const take = (rows: T[]): CatalogRead<T> | null => {
+    const room = ceiling - rowsRead;
+    if (rows.length <= room) {
+      if (rows.length > 0) onPage(rows);
+      rowsRead += rows.length;
+      return null;
+    }
+    if (room > 0) onPage(rows.slice(0, room));
+    rowsRead += room;
+    return { rowsRead, cut: true, nextRow: rows[room] };
+  };
+
+  const result = await conn.execute<T>(sql, params, {
+    resultSet: true,
+    fetchArraySize: ORACLE_CATALOG_FETCH_ROWS,
+  });
+  const resultSet = result.resultSet;
+  if (!resultSet) {
+    return take(result.rows ?? []) ?? { rowsRead, cut: false };
+  }
+  try {
+    for (;;) {
+      const want = Math.min(ORACLE_CATALOG_FETCH_ROWS, ceiling + 1 - rowsRead);
+      const page = await resultSet.getRows(want);
+      if (page.length === 0) return { rowsRead, cut: false };
+      const ended = take(page);
+      if (ended) return ended;
+    }
+  } finally {
+    await resultSet.close().catch(() => undefined);
+  }
+}
+
+/** Read a whole catalog query into one array, bounded by the ceiling. */
+async function readAllCatalogRows<T>(
+  conn: OracleConnectionLike,
+  sql: string,
+  params: unknown[],
+  what: string,
+): Promise<T[]> {
+  const rows: T[] = [];
+  const read = await readCatalogRows<T>(conn, sql, params, (page) => {
+    for (const row of page) rows.push(row);
+  });
+  if (read.cut) {
+    log.warn("Oracle catalog read stopped at the introspection row ceiling", {
+      what,
+      rowsRead: read.rowsRead,
+      rowCeiling: introspectionRowCeiling(),
+    });
+  }
+  return rows;
 }
 
 export interface OraclePoolLike {
@@ -193,6 +318,18 @@ export class OracleDriverAdapter implements DbDriverAdapter {
   }
 
   async introspect(opts: { schema?: string } = {}): Promise<DbTableInfo[]> {
+    return (await this.introspectSchema(opts)).tables;
+  }
+
+  /**
+   * #1096 — the tables of one owner, read to the end of the catalog a page at a
+   * time and grouped as they arrive, so memory holds the grouped tables and one
+   * page of rows. Past {@link ORACLE_INTROSPECTION_ROW_CEILING} rows the read
+   * stops and says so: the table the ceiling cut through is left out (a table is
+   * returned with all its columns or not at all), and `truncation` gives the
+   * tables read and, from a separate count, the tables there are.
+   */
+  async introspectSchema(opts: { schema?: string } = {}): Promise<DbIntrospection> {
     const pool = this.requirePool();
     let conn: OracleConnectionLike | null = null;
     try {
@@ -201,8 +338,31 @@ export class OracleDriverAdapter implements DbDriverAdapter {
       const owner = (opts.schema ?? "").toUpperCase();
       const sql = owner ? ORACLE_INTROSPECT_SQL : ORACLE_INTROSPECT_USER_SQL;
       const params = owner ? [owner] : [];
-      const result = await conn.execute<OracleIntrospectRow>(sql, params, { maxRows: 10_000 });
-      return groupOracleIntrospection((result.rows ?? []) as OracleIntrospectRow[]);
+      const grouper = new OracleIntrospectionGrouper();
+      const read = await readCatalogRows<OracleIntrospectRow>(conn, sql, params, (page) =>
+        grouper.add(page),
+      );
+      if (!read.cut) return { tables: grouper.tables() };
+
+      // The table the first unread row belongs to is partly read: drop it by
+      // its key, not by position. Under a linguistic NLS_SORT, rows of tables
+      // whose names differ only in case ("Foo", "FOO") can interleave, so the
+      // partly read table need not be the last one grouped.
+      const next = read.nextRow;
+      if (next) grouper.drop(next.OWNER, next.TABLE_NAME);
+      const tables = grouper.tables();
+      const tablesTotal = await countOracleTables(conn, owner);
+      const truncation: DbIntrospectionTruncation = {
+        rowsRead: read.rowsRead,
+        rowCeiling: introspectionRowCeiling(),
+        tablesRead: tables.length,
+        ...(tablesTotal === undefined ? {} : { tablesTotal }),
+      };
+      log.warn("Oracle introspection stopped at the row ceiling; the schema was read partially", {
+        schema: owner || undefined,
+        ...truncation,
+      });
+      return { tables, truncation };
     } finally {
       if (conn) await conn.close().catch(() => undefined);
     }
@@ -217,8 +377,9 @@ export class OracleDriverAdapter implements DbDriverAdapter {
       const owner = (opts.schema ?? "").toUpperCase();
       const sql = owner ? ORACLE_ROUTINES_SQL : ORACLE_ROUTINES_USER_SQL;
       const params = owner ? [owner] : [];
-      const result = await conn.execute<OracleRoutineRow>(sql, params, { maxRows: 10_000 });
-      return mapOracleRoutines((result.rows ?? []) as OracleRoutineRow[]);
+      return mapOracleRoutines(
+        await readAllCatalogRows<OracleRoutineRow>(conn, sql, params, "routines"),
+      );
     } finally {
       if (conn) await conn.close().catch(() => undefined);
     }
@@ -251,12 +412,14 @@ export class OracleDriverAdapter implements DbDriverAdapter {
 
       if (opts.allowDba && owner) {
         try {
-          const dbaResult = await conn.execute<OracleDependencyRow>(
-            ORACLE_DEPENDENCIES_DBA_SQL,
-            params,
-            { maxRows: 10_000 },
+          return mapOracleDependencies(
+            await readAllCatalogRows<OracleDependencyRow>(
+              conn,
+              ORACLE_DEPENDENCIES_DBA_SQL,
+              params,
+              "dependencies (DBA)",
+            ),
           );
-          return mapOracleDependencies((dbaResult.rows ?? []) as OracleDependencyRow[]);
         } catch {
           // Insufficient privilege (ORA-00942) or DBA_DEPENDENCIES unreachable —
           // degrade to the always-permitted ALL_DEPENDENCIES/USER_DEPENDENCIES
@@ -264,8 +427,9 @@ export class OracleDriverAdapter implements DbDriverAdapter {
         }
       }
 
-      const result = await conn.execute<OracleDependencyRow>(sql, params, { maxRows: 10_000 });
-      return mapOracleDependencies((result.rows ?? []) as OracleDependencyRow[]);
+      return mapOracleDependencies(
+        await readAllCatalogRows<OracleDependencyRow>(conn, sql, params, "dependencies"),
+      );
     } finally {
       if (conn) await conn.close().catch(() => undefined);
     }
@@ -323,16 +487,19 @@ export class OracleDriverAdapter implements DbDriverAdapter {
       const objectSql = owner ? ORACLE_PACKAGES_SQL : ORACLE_PACKAGES_USER_SQL;
       const memberSql = owner ? ORACLE_PACKAGE_MEMBERS_SQL : ORACLE_PACKAGE_MEMBERS_USER_SQL;
       const params = owner ? [owner] : [];
-      const objectResult = await conn.execute<OraclePackageObjectRow>(objectSql, params, {
-        maxRows: 10_000,
-      });
-      const memberResult = await conn.execute<OraclePackageMemberRow>(memberSql, params, {
-        maxRows: 50_000,
-      });
-      return mapOraclePackages(
-        (objectResult.rows ?? []) as OraclePackageObjectRow[],
-        (memberResult.rows ?? []) as OraclePackageMemberRow[],
+      const objectRows = await readAllCatalogRows<OraclePackageObjectRow>(
+        conn,
+        objectSql,
+        params,
+        "packages",
       );
+      const memberRows = await readAllCatalogRows<OraclePackageMemberRow>(
+        conn,
+        memberSql,
+        params,
+        "package members",
+      );
+      return mapOraclePackages(objectRows, memberRows);
     } finally {
       if (conn) await conn.close().catch(() => undefined);
     }
@@ -501,49 +668,108 @@ interface OracleIntrospectRow {
 }
 
 export function groupOracleIntrospection(rows: OracleIntrospectRow[]): DbTableInfo[] {
-  const tables = new Map<string, DbTableInfo>();
-  for (const r of rows) {
-    const key = `${r.OWNER}.${r.TABLE_NAME}`;
-    let t = tables.get(key);
-    if (!t) {
-      t = {
-        schema: r.OWNER,
-        name: r.TABLE_NAME,
-        columns: [],
-        primaryKey: undefined,
-        foreignKeys: [],
-        indexes: [] as DbIndexInfo[],
-      };
-      tables.set(key, t);
-    }
-    if (!t.columns.find((c) => c.name === r.COLUMN_NAME)) {
-      const col: DbColumnInfo = {
-        name: r.COLUMN_NAME,
-        dataType: r.DATA_TYPE,
-        nullable: r.NULLABLE === "Y",
-        defaultValue: r.DATA_DEFAULT,
-        isPrimaryKey: Boolean(r.PK_NAME),
-        isForeignKey: Boolean(r.FK_NAME),
-      };
-      t.columns.push(col);
-      if (r.PK_NAME) t.primaryKey = (t.primaryKey ?? []).concat([r.COLUMN_NAME]);
-    }
-    if (r.FK_NAME && r.FK_FOREIGN_TABLE && r.FK_FOREIGN_COLUMN) {
-      let fk = t.foreignKeys.find((f) => f.name === r.FK_NAME);
-      if (!fk) {
-        fk = {
-          name: r.FK_NAME,
-          columns: [],
-          refTable: r.FK_FOREIGN_TABLE,
-          refColumns: [],
-        } as DbForeignKeyInfo;
-        t.foreignKeys.push(fk);
-      }
-      if (!fk.columns.includes(r.COLUMN_NAME)) fk.columns.push(r.COLUMN_NAME);
-      if (!fk.refColumns.includes(r.FK_FOREIGN_COLUMN)) fk.refColumns.push(r.FK_FOREIGN_COLUMN);
-    }
+  const grouper = new OracleIntrospectionGrouper();
+  grouper.add(rows);
+  return grouper.tables();
+}
+
+/**
+ * Groups introspection rows into tables a page at a time (#1096), so a paged
+ * read never holds every row at once. Rows of one table may span pages.
+ */
+class OracleIntrospectionGrouper {
+  private readonly byKey = new Map<string, DbTableInfo>();
+
+  add(rows: readonly OracleIntrospectRow[]): void {
+    for (const r of rows) addOracleIntrospectRow(this.byKey, r);
   }
-  return [...tables.values()];
+
+  /** Forget one table (#1096: the one a ceiling cut through). */
+  drop(owner: string, tableName: string): void {
+    this.byKey.delete(`${owner}.${tableName}`);
+  }
+
+  tables(): DbTableInfo[] {
+    return [...this.byKey.values()];
+  }
+}
+
+function addOracleIntrospectRow(tables: Map<string, DbTableInfo>, r: OracleIntrospectRow): void {
+  const key = `${r.OWNER}.${r.TABLE_NAME}`;
+  let t = tables.get(key);
+  if (!t) {
+    t = {
+      schema: r.OWNER,
+      name: r.TABLE_NAME,
+      columns: [],
+      primaryKey: undefined,
+      foreignKeys: [],
+      indexes: [] as DbIndexInfo[],
+    };
+    tables.set(key, t);
+  }
+  if (!t.columns.find((c) => c.name === r.COLUMN_NAME)) {
+    const col: DbColumnInfo = {
+      name: r.COLUMN_NAME,
+      dataType: r.DATA_TYPE,
+      nullable: r.NULLABLE === "Y",
+      defaultValue: r.DATA_DEFAULT,
+      isPrimaryKey: Boolean(r.PK_NAME),
+      isForeignKey: Boolean(r.FK_NAME),
+    };
+    t.columns.push(col);
+    if (r.PK_NAME) t.primaryKey = (t.primaryKey ?? []).concat([r.COLUMN_NAME]);
+  }
+  if (r.FK_NAME && r.FK_FOREIGN_TABLE && r.FK_FOREIGN_COLUMN) {
+    let fk = t.foreignKeys.find((f) => f.name === r.FK_NAME);
+    if (!fk) {
+      fk = {
+        name: r.FK_NAME,
+        columns: [],
+        refTable: r.FK_FOREIGN_TABLE,
+        refColumns: [],
+      } as DbForeignKeyInfo;
+      t.foreignKeys.push(fk);
+    }
+    if (!fk.columns.includes(r.COLUMN_NAME)) fk.columns.push(r.COLUMN_NAME);
+    if (!fk.refColumns.includes(r.FK_FOREIGN_COLUMN)) fk.refColumns.push(r.FK_FOREIGN_COLUMN);
+  }
+}
+
+/**
+ * #1096 — how many tables the owner has, for the "N of M tables" a cut read
+ * reports. Counted from the same column view the introspection reads, so the
+ * two agree on what the role can see. Owner bound as `:1`.
+ */
+const ORACLE_TABLE_COUNT_SQL = `
+  SELECT COUNT(DISTINCT c.TABLE_NAME) AS TABLE_COUNT
+  FROM ALL_TAB_COLUMNS c
+  WHERE c.OWNER = :1
+`;
+
+const ORACLE_TABLE_COUNT_USER_SQL = `
+  SELECT COUNT(DISTINCT c.TABLE_NAME) AS TABLE_COUNT
+  FROM USER_TAB_COLUMNS c
+`;
+
+/** `undefined` when the count fails: the cut is still reported, without the total. */
+async function countOracleTables(
+  conn: OracleConnectionLike,
+  owner: string,
+): Promise<number | undefined> {
+  try {
+    const result = await conn.execute<{ TABLE_COUNT: unknown }>(
+      owner ? ORACLE_TABLE_COUNT_SQL : ORACLE_TABLE_COUNT_USER_SQL,
+      owner ? [owner] : [],
+    );
+    const count = Number(result.rows?.[0]?.TABLE_COUNT);
+    return Number.isFinite(count) && count >= 0 ? count : undefined;
+  } catch (err) {
+    log.warn("Oracle table count failed; reporting the cut without a total", {
+      err: (err as Error).message,
+    });
+    return undefined;
+  }
 }
 
 /**

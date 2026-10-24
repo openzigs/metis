@@ -15,6 +15,7 @@ import { recordUsage } from "../finops/index.js";
 import { createChildLogger } from "../logger.js";
 import { inspectDbConnector, getDbConnector } from "../connectors/db/db-service.js";
 import type {
+  DbIntrospectionTruncation,
   DbTableInfo,
   SchemaGraph,
   SchemaUsageClassificationView,
@@ -25,6 +26,7 @@ import { readUsageClassification } from "../impact-analysis/used-schema-classifi
 import { detectTruncation, describeTruncation } from "./truncation.js";
 import { resolveDbSchemaProseMaxOutputTokens } from "./output-caps.js";
 import {
+  schemaReadPartiallyWarning,
   sectionFailedWarning,
   sectionTruncatedWarning,
   type DocWarning,
@@ -145,11 +147,15 @@ export async function synthesizeDbSchemaDocument(
   log.info("Starting DB schema synthesis", { projectId, dbConnectorId });
 
   let tables: DbTableInfo[];
+  let truncation: DbIntrospectionTruncation | undefined;
   let connectorLabel: string = dbConnectorId;
 
   try {
     const snapshot = await inspectDbConnector(projectId, dbConnectorId, actorId);
     tables = snapshot.tables;
+    // #1096 — a read the driver cut: the document must say so, in its text,
+    // its stored graph and its status.
+    truncation = snapshot.truncation;
 
     // Try to get a human label from the connector record
     try {
@@ -227,6 +233,7 @@ export async function synthesizeDbSchemaDocument(
       // tables is in `prose.failures` and in the log, but naming it here would
       // misdescribe a healthy run.
       proseFailureCount: lostBatches(prose.failures).length,
+      truncation,
     },
   );
 
@@ -242,12 +249,15 @@ export async function synthesizeDbSchemaDocument(
     log.warn("Could not append used-objects section; skipping", { projectId, err });
   }
 
-  const schemaGraph = buildSchemaGraph(tables, prose.descriptions);
+  const schemaGraph = buildSchemaGraph(tables, prose.descriptions, truncation);
   return {
     markdown,
     schemaGraph,
     generationModel: prose.generationModel,
-    warnings: buildProseWarnings(prose, tables.length),
+    warnings: [
+      ...(truncation ? [schemaReadPartiallyWarning(truncation)] : []),
+      ...buildProseWarnings(prose, tables.length),
+    ],
   };
 }
 
@@ -418,6 +428,7 @@ export function buildUsageClassificationSection(views: SchemaUsageClassification
 export function buildSchemaGraph(
   tables: DbTableInfo[],
   descriptions: Map<string, string>,
+  truncation?: DbIntrospectionTruncation,
 ): SchemaGraph {
   const graphTables = tables.map((table) => ({
     id: qualifiedTableId(table.schema, table.name),
@@ -452,7 +463,9 @@ export function buildSchemaGraph(
     }
   }
 
-  return { tables: graphTables, edges };
+  // #1096 — the graph is stored and read back as the schema later (the
+  // architecture document's stored tier), so it carries the cut with it.
+  return { tables: graphTables, edges, ...(truncation ? { truncation } : {}) };
 }
 
 /**
@@ -943,6 +956,8 @@ interface AssembleOpts {
   proseAttemptedTableCount?: number;
   /** #1228 — how many batches failed, so the banner can name the cause. */
   proseFailureCount?: number;
+  /** #1096 — the introspection was cut; the document says so up front. */
+  truncation?: DbIntrospectionTruncation;
 }
 
 function assembleDocument(
@@ -967,6 +982,10 @@ function assembleDocument(
       `containing ${tables.length} table${tables.length !== 1 ? "s" : ""}. ` +
       `Generated on ${new Date(timestamp).toUTCString()}.`,
   );
+  if (opts.truncation) {
+    sections.push("");
+    sections.push(`> **Warning:** ${schemaReadPartiallyWarning(opts.truncation).message}`);
+  }
   // #1228 — the banner counts the SAME description map the Table Reference and
   // the schema graph render from, so it is structurally incapable of claiming
   // prose the document does not contain. The pre-#1228 banner was handed a

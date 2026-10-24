@@ -321,11 +321,30 @@ export interface DbPackageInfo {
   members: string[];
 }
 
+/**
+ * #1096 — a schema introspection that stopped at the driver's row ceiling
+ * before the catalog was exhausted. `tables` then holds only the tables read
+ * in full: a table the ceiling cut through is left out rather than returned
+ * with some of its columns.
+ */
+export interface DbIntrospectionTruncation {
+  /** Catalog rows read before the ceiling stopped the read. */
+  rowsRead: number;
+  /** The ceiling that stopped it. */
+  rowCeiling: number;
+  /** Tables returned, each with all its columns. */
+  tablesRead: number;
+  /** Tables in the schema, from a separate count; absent when it failed. */
+  tablesTotal?: number;
+}
+
 export interface DbSchemaSnapshot {
   connectorId: string;
   driver: string;
   schema?: string;
   tables: DbTableInfo[];
+  /** #1096 — present only when the read was cut; `tables` is then partial. */
+  truncation?: DbIntrospectionTruncation;
   /**
    * Procedures & functions discovered by the read-only routines-introspection
    * path (#300). Optional for backward compatibility with snapshots produced
@@ -390,6 +409,12 @@ export interface SchemaGraphEdge {
 export interface SchemaGraph {
   tables: SchemaGraphTable[];
   edges: SchemaGraphEdge[];
+  /**
+   * #1096 — the introspection this graph was built from was cut, so tables
+   * are missing from it. Absent for a complete read (and on graphs stored
+   * before #1096).
+   */
+  truncation?: DbIntrospectionTruncation;
 }
 
 // ---- Query result (returned by /query) -------------------------------------

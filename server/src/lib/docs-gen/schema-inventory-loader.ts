@@ -30,11 +30,12 @@
  *
  * ## What a live read does not prove
  *
- * See `schema-inventory.ts`: one schema, only what the role may see, and on
- * Oracle at most {@link ORACLE_INTROSPECTION_ROW_CAP} rows. A read that
- * reached that cap is recorded as `possiblyTruncated`.
+ * See `schema-inventory.ts`: one schema, and only what the role may see. A read
+ * the driver reports as cut at its row ceiling (#1096) is recorded with its
+ * `truncation`: N of M tables.
  */
 import type { DbTableInfo } from "@metis/shared";
+import type { DbIntrospection } from "../connectors/db/driver.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { inspectDbConnector, listDbConnectors } from "../connectors/db/db-service.js";
@@ -43,9 +44,11 @@ import {
   NO_SCHEMA_INVENTORY,
   plainConnectorLabel,
   schemaNamesOf,
+  schemaReadTruncation,
   tablesFromIntrospection,
   tablesFromRepositorySql,
   tablesFromSchemaGraph,
+  truncationOfSchemaGraph,
   type RepositorySqlSymbol,
   type SchemaInventory,
   type SchemaInventoryRead,
@@ -60,9 +63,14 @@ export interface SchemaInventoryDeps {
   ) => Promise<Array<{ id: string; label?: string | null; driver?: string | null }>>;
   /**
    * One connector's tables. Called without a schema, so the driver reads its
-   * default schema only — exactly what the database document reads.
+   * default schema only — exactly what the database document reads. A plain
+   * table list is a complete read; a {@link DbIntrospection} can say it was cut.
    */
-  introspect: (projectId: string, connectorId: string, actorId: string) => Promise<DbTableInfo[]>;
+  introspect: (
+    projectId: string,
+    connectorId: string,
+    actorId: string,
+  ) => Promise<DbTableInfo[] | DbIntrospection>;
   /** Stored schema graphs of the project's database documents, newest first. */
   readSchemaGraphs: (
     projectId: string,
@@ -82,34 +90,6 @@ export const LIVE_INTROSPECTION_TIMEOUT_MS = 30_000;
 export const SCHEMA_LOAD_DEADLINE_MS = 45_000;
 /** How many connectors are introspected at once. */
 export const LIVE_INTROSPECTION_CONCURRENCY = 4;
-/**
- * The Oracle driver's introspection limit: `maxRows: 10_000` in
- * `connectors/db/drivers/oracle.ts`, one row per column (more when a column is
- * in several foreign keys), applied without an error. Kept in step with the
- * driver by a test that reads the driver's source.
- */
-export const ORACLE_INTROSPECTION_ROW_CAP = 10_000;
-
-/**
- * A lower bound on the rows an introspection returned for `tables`: one per
- * column, and one more for each further foreign key a column is in. The driver
- * does not report its row count, so this is the nearest the loader can get; a
- * read that was cut can still fall under it.
- */
-export function introspectionRowsAtLeast(tables: readonly DbTableInfo[]): number {
-  let rows = 0;
-  for (const table of tables) {
-    const keysPerColumn = new Map<string, number>();
-    for (const fk of table.foreignKeys ?? []) {
-      for (const column of fk.columns) {
-        keysPerColumn.set(column, (keysPerColumn.get(column) ?? 0) + 1);
-      }
-    }
-    for (const column of table.columns) rows += Math.max(1, keysPerColumn.get(column.name) ?? 0);
-  }
-  return rows;
-}
-
 /** Upper bound on code-graph schema symbols read for the repository-SQL tier. */
 const MAX_REPOSITORY_SQL_SYMBOLS = 50_000;
 /** Upper bound on lineage edges read, and on dataset names kept from them. */
@@ -143,8 +123,10 @@ export function datasetNamesFromLineage(
 
 const defaultDeps: SchemaInventoryDeps = {
   listConnectors: (projectId) => listDbConnectors(projectId),
-  introspect: async (projectId, connectorId, actorId) =>
-    (await inspectDbConnector(projectId, connectorId, actorId)).tables,
+  introspect: async (projectId, connectorId, actorId) => {
+    const snapshot = await inspectDbConnector(projectId, connectorId, actorId);
+    return { tables: snapshot.tables, truncation: snapshot.truncation };
+  },
   readSchemaGraphs: async (projectId) => {
     const docs = await prisma.generatedDocument.findMany({
       where: { projectId, scope: "database", deletedAt: null, schemaGraph: { not: null } },
@@ -282,12 +264,14 @@ export async function loadSchemaInventory(
     if (signal?.aborted) return NO_SCHEMA_INVENTORY;
 
     // Live tier: a bounded pool, in connector order. `null` is "not read now".
-    const live: Array<DbTableInfo[] | null> = connectors.map(() => null);
+    const live: Array<DbIntrospection | null> = connectors.map(() => null);
     let next = 0;
     const worker = async (): Promise<void> => {
       while (actorId && next < connectors.length && !pastDeadline && !signal?.aborted) {
         const at = next++;
-        const answer = await safely<DbTableInfo[] | typeof GIVEN_UP | typeof TIMED_OUT | null>(
+        const answer = await safely<
+          DbTableInfo[] | DbIntrospection | typeof GIVEN_UP | typeof TIMED_OUT | null
+        >(
           "live introspection",
           () =>
             Promise.race([
@@ -313,7 +297,7 @@ export async function loadSchemaInventory(
           }
           return;
         }
-        live[at] = answer;
+        live[at] = Array.isArray(answer) ? { tables: answer } : answer;
       }
     };
     await Promise.all(Array.from({ length: Math.min(concurrency, connectors.length) }, worker));
@@ -326,17 +310,15 @@ export async function loadSchemaInventory(
       const read = reads.length;
       // A read that returned no tables proves nothing: it is what a role
       // without grants gets. It is not "live", whatever came back beside it.
-      const liveTables = tablesFromIntrospection(live[at] ?? [], read);
+      const liveTables = tablesFromIntrospection(live[at]?.tables ?? [], read);
       if (liveTables.length > 0) {
         tables.push(...liveTables);
-        const atCap =
-          connector.driver === "oracle" &&
-          introspectionRowsAtLeast(live[at] ?? []) >= ORACLE_INTROSPECTION_ROW_CAP;
+        const truncation = schemaReadTruncation(live[at]?.truncation);
         reads.push({
           connector: name,
           how: "live",
           schemas: schemaNamesOf(liveTables),
-          ...(atCap ? { possiblyTruncated: true } : {}),
+          ...(truncation ? { truncation } : {}),
         });
         return;
       }
@@ -344,7 +326,7 @@ export async function loadSchemaInventory(
       const storedTables = stored ? tablesFromSchemaGraph(stored.graph, read) : [];
       if (stored && storedTables.length > 0) {
         tables.push(...storedTables);
-        reads.push(storedRead(name, storedTables, stored.generatedAt));
+        reads.push(storedRead(name, storedTables, stored.generatedAt, stored.graph));
         return;
       }
       reads.push({ connector: name, how: "unread", schemas: [] });
@@ -359,7 +341,7 @@ export async function loadSchemaInventory(
         if (storedTables.length === 0) continue;
         seen.add(key);
         tables.push(...storedTables);
-        reads.push(storedRead("a database document", storedTables, entry.generatedAt));
+        reads.push(storedRead("a database document", storedTables, entry.generatedAt, entry.graph));
       }
     }
 
@@ -420,12 +402,15 @@ function storedRead(
   connector: string,
   tables: readonly SchemaInventoryTable[],
   generatedAt: Date | null,
+  graph: unknown,
 ): SchemaInventoryRead {
+  const truncation = truncationOfSchemaGraph(graph);
   return {
     connector,
     how: "stored",
     schemas: schemaNamesOf(tables),
     ...(generatedAt ? { storedOn: generatedAt.toISOString().slice(0, 10) } : {}),
+    ...(truncation ? { truncation } : {}),
   };
 }
 
