@@ -510,7 +510,7 @@ describe("triggers routes (#147)", () => {
       .send({
         name: "GH",
         source: "github",
-        config: { repo: "acme/app", event: "issues.opened", secret: "s1" },
+        config: { repo: "acme/app", event: "issues", secret: "s1" },
       });
     expect(create.status).toBe(201);
     const triggerId = create.body.data.id;

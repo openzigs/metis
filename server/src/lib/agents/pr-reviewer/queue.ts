@@ -231,13 +231,22 @@ export function createPrReviewQueue(opts: PrReviewQueueOptions): PrReviewQueue {
    * PR's jobs run one at a time, and a job — or its retry — still waiting
    * when a newer one for its PR is queued is dropped as superseded: the newer
    * job reviews the newer head. Process-local, like the rest of this queue.
+   * "A PR" here means one project's review of it (`prKey`, #1506).
    */
   const runningPrs = new Set<string>();
   /** Per PR: the newest job's `seq`, and how many of its jobs are still live. */
   const prJobs = new Map<string, { latestSeq: number; live: number }>();
 
-  function prKey(job: Pick<PrReviewJob, "owner" | "repo" | "prNumber">): string {
-    return `${job.owner}/${job.repo}#${job.prNumber}`;
+  /**
+   * #1506 — the key is per PROJECT as well as per PR. The state row the
+   * serialisation protects is unique on (project, repo, PR), and two projects
+   * can each review one PR: the shared hook's project and a project with its
+   * own hook on the same repository. Keyed on the PR alone, one project's
+   * waiting or retrying job was dropped as "superseded" by the other's.
+   * `JSON.stringify` so no project id can make two keys equal.
+   */
+  function prKey(job: Pick<PrReviewJob, "projectId" | "owner" | "repo" | "prNumber">): string {
+    return JSON.stringify([job.projectId, job.owner, job.repo, job.prNumber]);
   }
 
   function trackAdmitted(job: InternalJob): void {
