@@ -3,13 +3,15 @@
  *
  * Mounted under `/api/webhooks`: `POST github/pr` and `POST github/issues`
  * (spec-kit task sync #433 + drift reconcile #96). Verifies the
- * `X-Hub-Signature-256` HMAC against `GITHUB_WEBHOOK_SECRET`, then dispatches
+ * `X-Hub-Signature-256` HMAC against `GITHUB_WEBHOOK_SECRET` (or, on
+ * `github/pr/c/:connectorId`, against that connector's own secret, #1475), then dispatches
  * to the living-spec sync (#192/A.5) on `pull_request.closed+merged` and
  * the PR-reviewer agent (#192/A.4 → #394 MVP) on `pull_request.opened|synchronize`.
  *
  * Always responds 2xx (even on "no-op" actions) so GitHub does not retry —
  * non-handling reasons are surfaced in the response body for observability.
  */
+import crypto from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import { prisma } from "../lib/prisma.js";
 import { dispatchGithubPrEvent, verifyGithubPrSignature } from "../lib/living-spec/webhook.js";
@@ -32,6 +34,11 @@ import { executePrReviewJob } from "../lib/agents/pr-reviewer/pr-review-job.js";
 import { createChildLogger } from "../lib/logger.js";
 import { recordJobScope } from "../lib/socket/job-scope-store.js";
 import { logDeletedProjectSkip } from "../lib/projects/deleted-project-guard.js";
+import {
+  connectorSecretState,
+  connectorWebhookSecret,
+  webhookSecretRootKey,
+} from "../lib/connectors/repo/webhook-secret.js";
 
 const log = createChildLogger("webhooks-github");
 
@@ -71,18 +78,21 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
   // path-less limiter leaked onto the shared `/webhooks` prefix. Scoping that
   // limiter to its own routes would have left `/github/pr` unthrottled, so it
   // now carries the shared receiver budget explicitly — counted once.
-  r.post("/github/pr", webhookReceiverRateLimiter, async (req: Request, res: Response) => {
-    const secret = deps.resolveSecret?.() ?? process.env.GITHUB_WEBHOOK_SECRET ?? "";
-    const sig = req.header("x-hub-signature-256") ?? undefined;
-    const ts = req.header("x-webhook-timestamp") ?? undefined;
-    const verdict = verifyGithubPrSignature(rawBody(req), secret, {
-      signature: sig,
-      timestamp: ts,
-    });
+  //
+  // #1475 — two receivers, one handler. `/github/pr` takes the deployment
+  // secret only; `/github/pr/c/:connectorId` takes that one connector's own
+  // secret only. Who signed decides which project the delivery is for.
+  const handlePrDelivery = async (req: Request, res: Response) => {
+    const connectorId = typeof req.params.connectorId === "string" ? req.params.connectorId : null;
+    const verdict =
+      connectorId === null
+        ? verifyDeploymentDelivery(req, deps)
+        : await verifyConnectorDelivery(req, connectorId);
     if (!verdict.ok) {
-      res.status(401).json({ ok: false, reason: verdict.reason ?? "BAD_SIGNATURE" });
+      res.status(401).json({ ok: false, reason: verdict.reason });
       return;
     }
+    const signer = verdict.signer;
 
     // Epic #394 P2 (#403) — webhook delivery dedup. We short-circuit
     // duplicate `X-GitHub-Delivery` UUIDs so re-deliveries (GitHub
@@ -116,10 +126,25 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
     const installationId = payload?.installation?.id ? String(payload.installation.id) : null;
     const out = await dispatchGithubPrEvent(payload, {
       onMerged: async ({ pr, repo }) => {
-        await syncMergedPR({ pr, repo });
+        // #1475 — a connector-signed merge touches only its own project's
+        // requirements: that project holds the secret, the others do not.
+        // A deployment-signed merge skips the projects that took their own
+        // secret for the repository: they take only what that secret signs.
+        await syncMergedPR({
+          pr,
+          repo,
+          ...(signer.kind === "connector"
+            ? { projectId: signer.projectId }
+            : {
+                excludeProjectIds: await projectsWithOwnSecret(repo.full_name ?? "", repo.html_url),
+              }),
+        });
       },
       onReviewable: async ({ pr, repo, action }) => {
-        const project = await findProjectForRepo(repo.full_name ?? "");
+        const project =
+          signer.kind === "connector"
+            ? await findLiveProject(signer.projectId)
+            : await findProjectForRepo(repo.full_name ?? "", deliveryId, repo.html_url);
         if (!project || !project.autoReviewPrs) return;
 
         const owner = repo.full_name?.split("/")[0] ?? "";
@@ -219,7 +244,9 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
       },
     });
     res.status(200).json({ ok: true, ...out });
-  });
+  };
+  r.post("/github/pr", webhookReceiverRateLimiter, handlePrDelivery);
+  r.post("/github/pr/c/:connectorId", webhookReceiverRateLimiter, handlePrDelivery);
 
   // Issue #433 — spec-kit issue → tasks.md sync, and (#96) Epic #739 drift
   // reconcile: the ONLY registration of this path — see runDriftReconcile.
@@ -344,12 +371,130 @@ async function runDriftReconcile(input: {
   }
 }
 
+/** #1475 — who signed a verified `pull_request` delivery. */
+type DeliverySigner =
+  { kind: "deployment" } | { kind: "connector"; connectorId: string; projectId: string };
+
+type DeliveryVerdict = { ok: true; signer: DeliverySigner } | { ok: false; reason: string };
+
+function signatureHeaders(req: Request) {
+  return {
+    signature: req.header("x-hub-signature-256") ?? undefined,
+    timestamp: req.header("x-webhook-timestamp") ?? undefined,
+  };
+}
+
+/** #1475 — `/github/pr` verifies against the deployment secret only; no database read. */
+function verifyDeploymentDelivery(req: Request, deps: GithubPrRouterDeps): DeliveryVerdict {
+  const secret = deps.resolveSecret?.() ?? process.env.GITHUB_WEBHOOK_SECRET ?? "";
+  const v = verifyGithubPrSignature(rawBody(req), secret, signatureHeaders(req));
+  return v.ok
+    ? { ok: true, signer: { kind: "deployment" } }
+    : { ok: false, reason: v.reason ?? "BAD_SIGNATURE" };
+}
+
+const GITHUB_PROVIDERS = new Set(["github", "github_enterprise"]);
+
 /**
- * #1438 — the queued PR-review worker's project resolver. A job re-resolves
- * its repo when it runs, which by then may name a different project than the
- * one it was enqueued for (the original was deleted, or another project
- * connected the same repo). A job runs only for the project it was enqueued
- * for, and only while that project still has auto-review switched on.
+ * #1475 — `/github/pr/c/:connectorId` verifies against that one connector's
+ * own secret only: one lookup by id and one HMAC, whatever the repository.
+ *
+ * An unsigned delivery is refused before the lookup. A connector that is
+ * unknown, deleted, in a deleted project, not a GitHub connector, without an
+ * own secret that still verifies (`connectorSecretState`), or that names a
+ * different repository than the payload, gets the same `BAD_SIGNATURE` a
+ * wrong signature does, and the HMAC is computed either way.
+ */
+async function verifyConnectorDelivery(
+  req: Request,
+  connectorId: string,
+): Promise<DeliveryVerdict> {
+  const headers = signatureHeaders(req);
+  if (!headers.signature) return { ok: false, reason: "MISSING_SIGNATURE" };
+  const body = rawBody(req);
+  const root = webhookSecretRootKey();
+  const conn = root
+    ? await prisma.repoConnection.findFirst({
+        where: {
+          id: connectorId,
+          deletedAt: null,
+          project: { deletedAt: null },
+        },
+        select: {
+          id: true,
+          projectId: true,
+          provider: true,
+          ownerOrOrg: true,
+          repoName: true,
+          webhookSecretNonce: true,
+          webhookSecretCheck: true,
+        },
+      })
+    : null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fullName: unknown = (req.body as any)?.repository?.full_name;
+  const usable =
+    !!root &&
+    !!conn &&
+    GITHUB_PROVIDERS.has(conn.provider) &&
+    connectorSecretState(conn, root) === "active" &&
+    typeof fullName === "string" &&
+    // Exact, as the queued worker's `resolveProjectForQueuedReview` matches it:
+    // a delivery accepted here is never then dropped there.
+    fullName === `${conn.ownerOrOrg ?? ""}/${conn.repoName ?? ""}`;
+  const secret =
+    usable && conn?.webhookSecretNonce && root
+      ? connectorWebhookSecret(root, conn.id, conn.webhookSecretNonce)
+      : crypto.randomBytes(32).toString("base64url");
+  const v = verifyGithubPrSignature(body, secret, headers);
+  if (!usable || !conn) return { ok: false, reason: "BAD_SIGNATURE" };
+  if (!v.ok) return { ok: false, reason: v.reason ?? "BAD_SIGNATURE" };
+  return {
+    ok: true,
+    signer: {
+      kind: "connector",
+      connectorId: conn.id,
+      projectId: conn.projectId,
+    },
+  };
+}
+
+/** The project facts a PR review needs. */
+export interface WebhookProjectConfig {
+  id: string;
+  autoReviewPrs: boolean;
+  prReviewMaxDiffBytes: number | null;
+  prReviewSkipGlobs: string | null;
+}
+
+function toConfig(project: {
+  id: string;
+  autoReviewPrs?: boolean | null;
+  prReviewMaxDiffBytes?: number | null;
+  prReviewSkipGlobs?: string | null;
+}): WebhookProjectConfig {
+  return {
+    id: project.id,
+    autoReviewPrs: !!project.autoReviewPrs,
+    prReviewMaxDiffBytes: project.prReviewMaxDiffBytes ?? null,
+    prReviewSkipGlobs: project.prReviewSkipGlobs ?? null,
+  };
+}
+
+/** #1475 — the project a connector-signed delivery is for, while it is live. */
+async function findLiveProject(projectId: string): Promise<WebhookProjectConfig | null> {
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, deletedAt: null },
+  });
+  return project ? toConfig(project) : null;
+}
+
+/**
+ * #1438 / #1475 — the queued PR-review worker's project resolver. A job runs
+ * only for the project it was enqueued for (the one the delivery was
+ * attributed to when it arrived) and only while that project is live and
+ * still connects the repository. Another project connecting the same
+ * repository since changes nothing: a job is never re-attributed.
  *
  * #1470 — a project that switched auto-review off since is still returned
  * (with `autoReviewPrs: false`) so `executePrReviewJob` records the skip on
@@ -362,57 +507,163 @@ export async function resolveProjectForQueuedReview(job: {
   owner: string;
   repo: string;
   prNumber: number;
-}): Promise<Awaited<ReturnType<typeof findProjectForRepo>>> {
-  const project = await findProjectForRepo(`${job.owner}/${job.repo}`);
-  if (!project) return null;
-  if (project.id !== job.projectId) {
-    log.warn("pr_review.queued_project_changed", {
+}): Promise<WebhookProjectConfig | null> {
+  const conn = await prisma.repoConnection.findFirst({
+    where: {
+      projectId: job.projectId,
+      ownerOrOrg: job.owner,
+      repoName: job.repo,
+      deletedAt: null,
+      project: { deletedAt: null },
+    },
+    include: { project: true },
+  });
+  if (!conn) {
+    log.warn("pr_review.queued_project_gone", {
       deliveryId: job.deliveryId,
       repo: `${job.owner}/${job.repo}`,
       prNumber: job.prNumber,
       enqueuedFor: job.projectId,
-      resolvedTo: project.id,
-      autoReviewPrs: project.autoReviewPrs,
     });
     return null;
   }
-  return project;
+  return toConfig(conn.project);
+}
+
+/** The host a GitHub URL names, compared without a leading `api.` (`api.github.com` ≡ `github.com`). */
+function githubHost(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/^api\./, "");
+  } catch {
+    return null;
+  }
+}
+
+/** The GitHub host a connector talks to: github.com, or its Enterprise server. */
+function connectorHost(c: { provider: string; apiBaseUrl: string | null }): string | null {
+  if (c.provider === "github") return "github.com";
+  if (c.provider === "github_enterprise") return githubHost(c.apiBaseUrl);
+  return null;
+}
+
+/** #1475 — the live projects that took their own (still verifying) secret for a repository. */
+async function projectsWithOwnSecret(
+  repoFullName: string,
+  repoHtmlUrl?: string | null,
+): Promise<string[]> {
+  const [owner, name] = repoFullName.split("/");
+  if (!owner || !name) return [];
+  // The same host rule as `findProjectForRepo`: a GHE connector's own secret
+  // says nothing about deliveries from github.com, and vice versa.
+  const host = githubHost(repoHtmlUrl) ?? "github.com";
+  const conns = await prisma.repoConnection.findMany({
+    where: {
+      ownerOrOrg: owner,
+      repoName: name,
+      deletedAt: null,
+      webhookSecretNonce: { not: null },
+      project: { deletedAt: null },
+    },
+    select: {
+      id: true,
+      projectId: true,
+      provider: true,
+      apiBaseUrl: true,
+      webhookSecretNonce: true,
+      webhookSecretCheck: true,
+    },
+  });
+  const root = webhookSecretRootKey();
+  return [
+    ...new Set(
+      conns
+        .filter((c) => connectorHost(c) === host && connectorSecretState(c, root) === "active")
+        .map((c) => c.projectId),
+    ),
+  ];
 }
 
 /**
- * Resolve the Metis project + per-repo PR-review config for a webhook
- * payload. Exported so the worker singleton (set up in `server.ts`)
- * can re-resolve from a queued job — the inline webhook path and the
- * async queue MUST agree on the same project facts so an enqueued
- * review behaves identically to one executed inline.
+ * #1475 — the project a delivery signed with the DEPLOYMENT secret is for.
+ *
+ * That secret is shared by every registration that uses it, so it cannot say
+ * which one sent the delivery. The delivery goes to the project of the
+ * earliest-bound (`repoBoundAt`, else `createdAt`; then id) connector for the
+ * repository that is live, in a live project, `connected` (its credential
+ * reached the repository), a GitHub connector for the delivery's host, and
+ * without an own secret that still verifies. While the earliest such
+ * connector stays connected, a newcomer can neither take its deliveries nor
+ * stop them: it gets none, and is logged. If the earliest one's Test fails
+ * (`error`), the next connected one takes them until it passes again — an
+ * errored connector is not counted, or one bound early with a bad token would
+ * block every later project for good. A connector repointed at the repository
+ * counts from the repoint, and is pending until re-tested. Never "the first
+ * primary connector found".
  */
-export async function findProjectForRepo(repoFullName: string): Promise<{
-  id: string;
-  autoReviewPrs: boolean;
-  prReviewMaxDiffBytes: number | null;
-  prReviewSkipGlobs: string | null;
-} | null> {
+export async function findProjectForRepo(
+  repoFullName: string,
+  deliveryId?: string,
+  repoHtmlUrl?: string | null,
+): Promise<WebhookProjectConfig | null> {
   if (!repoFullName) return null;
   const [owner, name] = repoFullName.split("/");
   if (!owner || !name) return null;
-  // Use the existing RepoConnection table to look up the project.
-  // Epic #640 — prefer the primary repo connection if multiple projects
-  // have the same repo connected (primary = source-of-truth link).
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const conns = await (prisma as any).repoConnection.findMany({
+  const conns = await prisma.repoConnection.findMany({
     where: { ownerOrOrg: owner, repoName: name, deletedAt: null },
     include: { project: true },
-    orderBy: { isPrimary: "desc" }, // primary connections first
   });
   // #1438 — a soft-deleted project is never reviewed for. Filtered here rather
-  // than in the query so the skip can be logged, and so a live project sharing
-  // the repo still wins over a deleted primary. The queued worker re-resolves
-  // through this function, so a review queued before the delete is dropped too.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const conn = conns.find((c: any) => c.project && !c.project.deletedAt);
-  if (!conn) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const deleted = conns.find((c: any) => c.project?.deletedAt);
+  // than in the query so the skip can be logged.
+  const live = conns.filter((c) => c.project && !c.project.deletedAt);
+  const host = githubHost(repoHtmlUrl) ?? "github.com";
+  const root = webhookSecretRootKey();
+  const eligible = live
+    .filter(
+      (c) =>
+        c.status === "connected" &&
+        connectorHost(c) === host &&
+        connectorSecretState(c, root) !== "active",
+    )
+    .sort((a, b) => {
+      const at = (a.repoBoundAt ?? a.createdAt).getTime();
+      const bt = (b.repoBoundAt ?? b.createdAt).getTime();
+      return at !== bt ? at - bt : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+  const winner = eligible[0];
+  if (winner) {
+    const others = [...new Set(eligible.map((c) => c.projectId))].filter(
+      (p) => p !== winner.projectId,
+    );
+    if (others.length > 0) {
+      log.warn("pr_review.webhook_owner_ambiguous", {
+        deliveryId,
+        repo: repoFullName,
+        deliveredTo: winner.projectId,
+        notDeliveredTo: others,
+        hint: "give each project's repository connection its own webhook secret",
+      });
+    }
+    return toConfig(winner.project);
+  }
+  if (live.length > 0) {
+    // Connected to the repository but none may take this delivery: say why,
+    // per connector, so the operator can tell the project to click Test.
+    log.warn("pr_review.webhook_no_eligible_connector", {
+      deliveryId,
+      repo: repoFullName,
+      host,
+      connectors: live.map((c) => ({
+        id: c.id,
+        projectId: c.projectId,
+        status: c.status,
+        provider: c.provider,
+        ownSecret: connectorSecretState(c, root),
+      })),
+      hint: "a connection takes shared-secret deliveries only while its Test succeeds (status connected)",
+    });
+  } else {
+    const deleted = conns.find((c) => c.project?.deletedAt);
     if (deleted) {
       logDeletedProjectSkip({
         path: "pr-review",
@@ -421,12 +672,6 @@ export async function findProjectForRepo(repoFullName: string): Promise<{
         sourceId: repoFullName,
       });
     }
-    return null;
   }
-  return {
-    id: conn.project.id,
-    autoReviewPrs: !!conn.project.autoReviewPrs,
-    prReviewMaxDiffBytes: conn.project.prReviewMaxDiffBytes ?? null,
-    prReviewSkipGlobs: conn.project.prReviewSkipGlobs ?? null,
-  };
+  return null;
 }

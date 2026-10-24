@@ -88,6 +88,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           ownerOrOrg: owner,
           repoName: "app",
           isPrimary: true,
+          status: "connected",
         },
       });
       await db.databaseConnection.create({
@@ -174,6 +175,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             label: "second",
             ownerOrOrg: "deleted-org",
             repoName: "app",
+            status: "connected",
           },
         });
         try {
@@ -499,6 +501,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             label: "o",
             ownerOrOrg: "deleted-org",
             repoName: "app",
+            status: "connected",
           },
         });
         try {

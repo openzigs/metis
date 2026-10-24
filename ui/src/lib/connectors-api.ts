@@ -155,6 +155,14 @@ export const repoConnectorsApi = {
     apiFetch<RepoConnector>(`${repoBase(projectId, id)}/set-primary`, { method: "PATCH" }),
   getPrimary: (projectId: Id) =>
     apiFetch<RepoConnector | null>(`/projects/${projectId}/connectors/repos/primary`),
+  /** #1475 — issue the connector its own GitHub webhook secret; the answer is the only time it is shown. */
+  generateWebhookSecret: (projectId: Id, id: Id) =>
+    apiFetch<RepoConnector & { secret: string }>(`${repoBase(projectId, id)}/webhook-secret`, {
+      method: "POST",
+    }),
+  /** #1475 — back to the server's shared webhook secret. */
+  removeWebhookSecret: (projectId: Id, id: Id) =>
+    apiFetch<RepoConnector>(`${repoBase(projectId, id)}/webhook-secret`, { method: "DELETE" }),
 };
 
 /**

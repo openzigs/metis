@@ -283,6 +283,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             ownerOrOrg: "acme-1169",
             repoName: "app",
             isPrimary: true,
+            status: "connected",
           },
         });
       });
@@ -552,6 +553,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             ownerOrOrg: OWNER,
             repoName: "app",
             isPrimary: true,
+            status: "connected",
           },
         });
         await db.analysis.create({

@@ -189,6 +189,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           ownerOrOrg: owner,
           repoName: "app",
           isPrimary: true,
+          status: "connected",
         },
       });
       await db.analysis.create({ data: { id: `an-${id}`, projectId: id, startedById: "u-owner" } });

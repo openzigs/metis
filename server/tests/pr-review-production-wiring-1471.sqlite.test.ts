@@ -168,7 +168,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite" || !hasOpenssl)(
           head: { sha: `sha-webhook-${prNumber}`, ref: "feature" },
           html_url: `https://github.com/${owner}/app/pull/${prNumber}`,
         },
-        repository: { full_name: `${owner}/app`, html_url: `https://github.com/${owner}/app` },
+        // The Enterprise server's own host: a shared-secret delivery is routed
+        // only to connectors for the server it came from (#1475).
+        repository: { full_name: `${owner}/app`, html_url: `${ghBase}/${owner}/app` },
       });
       const sig = "sha256=" + crypto.createHmac("sha256", SECRET).update(payload).digest("hex");
       const res = await request(server.http)

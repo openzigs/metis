@@ -52,6 +52,14 @@ import type { RepoFetcher } from "../../library/import.js";
 import { validateLocalSourcePath } from "./local-source.js";
 import { sourceIngestSummary } from "../source-ingest-state.js";
 import {
+  connectorSecretState,
+  connectorWebhookPath,
+  connectorWebhookSecret,
+  newWebhookSecretNonce,
+  webhookSecretCheck,
+  webhookSecretRootKey,
+} from "./webhook-secret.js";
+import {
   cleanupExtraction,
   extractArchiveBuffer,
   extractArchiveFromPath,
@@ -614,6 +622,20 @@ export async function updateRepoConnector(
     if (patch.apiBaseUrl) assertHttpsUrl(patch.apiBaseUrl);
     data.apiBaseUrl = patch.apiBaseUrl;
   }
+  // #1475 — naming another repository (or server) starts a new binding: the
+  // connector counts from now, and its `connected` status, earned against the
+  // old repository, is no proof it reaches the new one, so it goes back to
+  // pending until it is tested again. Its own webhook secret was issued for the
+  // old repository's hook, so it is dropped: the old secret stops working.
+  const rebinds = (["provider", "ownerOrOrg", "repoName", "apiBaseUrl"] as const).some(
+    (k) => k in data && (data[k] ?? null) !== (existing[k] ?? null),
+  );
+  if (rebinds) {
+    data.repoBoundAt = new Date();
+    data.status = "pending";
+    data.webhookSecretNonce = null;
+    data.webhookSecretCheck = null;
+  }
   if (patch.secretRef !== undefined) {
     // #480 — a re-sent `${vault:<bound id>}` keeps the binding as it is,
     // even when that secret has since been deleted.
@@ -753,6 +775,111 @@ export async function setPrimaryRepo(projectId: string, id: string, actorId: str
     metadata: { projectId, repo: repoSourceLabel(updated) },
   });
   return toApi(updated);
+}
+
+/**
+ * #1475 — give a GitHub repository connector its own webhook secret, replacing
+ * any it had. Returns the secret: it is shown this once and never stored (see
+ * `webhook-secret.ts`), so a lost secret is replaced, not read back.
+ */
+export async function generateRepoWebhookSecret(
+  projectId: string,
+  id: string,
+  actorId: string,
+): Promise<{ connector: ReturnType<typeof toApi>; secret: string }> {
+  const root = webhookSecretRootKey();
+  if (!root) {
+    throw new ConnectorError(
+      503,
+      "WEBHOOK_SECRET_UNAVAILABLE",
+      "This server has no VAULT_MASTER_KEY, so it cannot issue webhook secrets.",
+    );
+  }
+  const existing = await findGithubRepoConnector(projectId, id);
+  const nonce = newWebhookSecretNonce();
+  // Compare-and-set on the nonce read above: of two concurrent requests one
+  // wins, and the other gets a conflict rather than a secret that never worked.
+  const { count } = await prisma.repoConnection.updateMany({
+    where: { id: existing.id, webhookSecretNonce: existing.webhookSecretNonce },
+    data: {
+      webhookSecretNonce: nonce,
+      webhookSecretCheck: webhookSecretCheck(root, existing.id, nonce),
+    },
+  });
+  if (count === 0) throw webhookSecretConflict();
+  const updated = await prisma.repoConnection.findUniqueOrThrow({ where: { id: existing.id } });
+  audit({
+    actor: { id: actorId },
+    action: "connector.repo.webhook_secret.generate",
+    target: { type: "repo_connector", id },
+    metadata: {
+      projectId,
+      repo: repoSourceLabel(updated),
+      replaced: !!existing.webhookSecretNonce,
+    },
+  });
+  return { connector: toApi(updated), secret: connectorWebhookSecret(root, updated.id, nonce) };
+}
+
+/** #1475 — drop a connector's own webhook secret: it takes deployment-signed deliveries again. */
+export async function removeRepoWebhookSecret(projectId: string, id: string, actorId: string) {
+  const existing = await findGithubRepoConnector(projectId, id);
+  const { count } = await prisma.repoConnection.updateMany({
+    where: { id: existing.id, webhookSecretNonce: existing.webhookSecretNonce },
+    data: { webhookSecretNonce: null, webhookSecretCheck: null },
+  });
+  if (count === 0) throw webhookSecretConflict();
+  const updated = await prisma.repoConnection.findUniqueOrThrow({ where: { id: existing.id } });
+  if (existing.webhookSecretNonce) {
+    audit({
+      actor: { id: actorId },
+      action: "connector.repo.webhook_secret.remove",
+      target: { type: "repo_connector", id },
+      metadata: { projectId, repo: repoSourceLabel(updated) },
+    });
+  }
+  return toApi(updated);
+}
+
+function webhookSecretConflict(): ConnectorError {
+  return new ConnectorError(
+    409,
+    "WEBHOOK_SECRET_CONFLICT",
+    "The webhook secret was changed at the same time. Reload to see the current state.",
+  );
+}
+
+/** #1475 — the read DTO's webhook-secret fields. */
+function webhookSecretFlags(row: {
+  id: string;
+  provider: string;
+  webhookSecretNonce?: string | null;
+  webhookSecretCheck?: string | null;
+}) {
+  const github = row.provider === "github" || row.provider === "github_enterprise";
+  const state = connectorSecretState(row);
+  return {
+    webhookSecretConfigured: state === "active",
+    webhookSecretNeedsRenewal: state === "stale",
+    webhookPath: github ? connectorWebhookPath(row.id) : null,
+  };
+}
+
+async function findGithubRepoConnector(projectId: string, id: string) {
+  const existing = await prisma.repoConnection.findFirst({
+    where: { id, projectId, deletedAt: null },
+  });
+  if (!existing) {
+    throw new ConnectorError(404, "REPO_CONNECTOR_NOT_FOUND", "repo connector not found");
+  }
+  if (existing.provider !== "github" && existing.provider !== "github_enterprise") {
+    throw new ConnectorError(
+      400,
+      "WEBHOOK_SECRET_UNSUPPORTED",
+      "Only GitHub repository connections receive GitHub webhooks.",
+    );
+  }
+  return existing;
 }
 
 /**
@@ -1730,6 +1857,8 @@ function toApi(row: {
   isPrimary: boolean;
   apiBaseUrl: string | null;
   secretId: string | null;
+  webhookSecretNonce?: string | null;
+  webhookSecretCheck?: string | null;
   status: string;
   errorMessage: string | null;
   lastTestedAt: Date | null;
@@ -1760,6 +1889,9 @@ function toApi(row: {
     isPrimary: row.isPrimary,
     apiBaseUrl: row.apiBaseUrl,
     secretRef: row.secretId ? `\${vault:${row.secretId}}` : "",
+    // #1475 — whether the connector has its own webhook secret that still
+    // verifies, or had one that no longer does; never the secret.
+    ...webhookSecretFlags(row),
     status: row.status,
     errorMessage: row.errorMessage,
     lastTestedAt: row.lastTestedAt,

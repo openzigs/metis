@@ -184,7 +184,8 @@ To move a complete METIS instance to a fresh host — including the relational d
    docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d
    ```
 7. **Verify** `/readyz` reports `vault: ok` and a sample connector still resolves a credential (e.g. trigger a connector refresh from the UI).
-8. **Securely destroy the old key** from your secret store / password manager.
+8. **Replace the repository connections' own GitHub webhook secrets (#1475).** These secrets are not re-encrypted: they are derived from `VAULT_MASTER_KEY` and never stored, so every one changes with the key and GitHub's deliveries to those connections are refused (401) from the restart on. Each affected card in **Connections** shows "needs a new secret". Find them with `SELECT id, "projectId" FROM repo_connections WHERE "webhookSecretNonce" IS NOT NULL AND "deletedAt" IS NULL;`. For each one, click **Create webhook secret** and paste the new value into that repository's GitHub webhook. Until then the connection counts as having no secret of its own, so shared-secret (`GITHUB_WEBHOOK_SECRET`) deliveries can reach it again. Do this right after the restart, or tell the project owners. The same applies after a full-instance move to a host with a different key (§3.4).
+9. **Securely destroy the old key** from your secret store / password manager.
 
 ### 4.2 JWT secret rotation
 
