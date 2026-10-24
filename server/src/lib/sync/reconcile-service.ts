@@ -291,7 +291,7 @@ export async function reconcileIssueChange(
   } catch (err: unknown) {
     // Unique violation on (projectId, deliveryId) = this project already has it
     if (isUniqueViolation(err)) {
-      log.debug("sync.reconcile.duplicate", { deliveryId: event.deliveryId });
+      log.debug("sync.reconcile.duplicate", { deliveryId: event.deliveryId, projectId });
       return { handled: false, reason: "DUPLICATE" };
     }
     throw err;

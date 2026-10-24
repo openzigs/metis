@@ -95,6 +95,14 @@ export function syncWebhookRouter(deps: SyncRouterDeps = {}): Router {
     // is documented to send either, so a real delivery read no id and the
     // delivery-id dedup was off. Not yet confirmed against a live delivery (#1176).
     const rawDelivery = (req.header("x-atlassian-webhook-identifier") ?? "").trim();
+    if (!rawDelivery) {
+      // Until #1176 confirms the header against a live delivery, make a missing
+      // one visible: delivery-id dedup is off for it, so only the signed-body
+      // claim below stops a retry, and a re-stamped body would pass it.
+      log.warn("sync.webhook.jira.no_delivery_identifier", {
+        retry: req.header("x-atlassian-webhook-retry") ?? null,
+      });
+    }
     // #1506 — Atlassian's delivery identifier is unique per webhook within a
     // tenant, so it is not shared across hooks the way GitHub's GUID is. It is
     // still namespaced to this receiver: the table is shared with the GitHub

@@ -74,10 +74,14 @@ const checkOf = (id: string, nonce: string) =>
     .slice(0, 16);
 
 type Hook = { path: string; secret: string };
-const ownHook = (projectId: string): Hook => ({
-  path: `/api/webhooks/github/issues/c/repo-${projectId}`,
-  secret: secretOf(`repo-${projectId}`, `nonce-${projectId}`),
+/** A connector's own issue hook (#1483); `repo-<projectId>` is each project's first. */
+const connectorHook = (connectorId: string): Hook => ({
+  path: `/api/webhooks/github/issues/c/${connectorId}`,
+  secret: secretOf(connectorId, `nonce-${connectorId}`),
 });
+const ownHook = (projectId: string): Hook => connectorHook(`repo-${projectId}`);
+/** Project C's second connector, with its own hook too. */
+const C2 = "repo-project-c-1511-second";
 const sharedHook: Hook = { path: "/api/webhooks/github/issues", secret: DEPLOYMENT_SECRET };
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
@@ -195,12 +199,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     };
 
-    const ownSecret = (id: string) =>
+    const ownSecret = (connectorId: string) =>
       db.repoConnection.update({
-        where: { id: `repo-${id}` },
+        where: { id: connectorId },
         data: {
-          webhookSecretNonce: `nonce-${id}`,
-          webhookSecretCheck: checkOf(`repo-${id}`, `nonce-${id}`),
+          webhookSecretNonce: `nonce-${connectorId}`,
+          webhookSecretCheck: checkOf(connectorId, `nonce-${connectorId}`),
         },
       });
 
@@ -217,8 +221,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await seedProject(PB, new Date("2026-02-01T00:00:00.000Z"));
       await seedProject(PC, new Date("2026-03-01T00:00:00.000Z"));
       // B and C registered their own issue hooks (#1483); A takes the shared one.
-      await ownSecret(PB);
-      await ownSecret(PC);
+      await ownSecret(`repo-${PB}`);
+      await ownSecret(`repo-${PC}`);
+      // C also connects a second repository, and registered its hook as well.
+      await db.repoConnection.create({
+        data: {
+          id: C2,
+          projectId: PC,
+          label: "code-2",
+          ownerOrOrg: TRACKER_OWNER,
+          repoName: `code-${PC}-2`,
+          isPrimary: false,
+          status: "connected",
+          provider: "github",
+        },
+      });
+      await ownSecret(C2);
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
@@ -263,6 +281,26 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await driftRows()).toEqual([
         [PA, "guid-1511-b"],
         [PB, "guid-1511-b"],
+      ]);
+    });
+
+    it("one project reached by two of its own connectors' hooks records the drift once", async () => {
+      // Each signer has its own delivery-id key (#1506) and its own body-claim
+      // receiver (#1484), so both requests pass both webhook guards: only the
+      // (projectId, deliveryId) index stops the second drift row.
+      const body = editedBody();
+      const first = await deliver(ownHook(PC), body, "guid-1511-d");
+      const second = await deliver(connectorHook(C2), body, "guid-1511-d");
+      expect(first.body.drift).toMatchObject({ handled: true });
+      expect(second.status).toBe(200);
+      expect(second.body.drift).toEqual({ handled: false, reason: "DUPLICATE" });
+      expect(await driftRows()).toEqual([[PC, "guid-1511-d"]]);
+      const keys = (await db.prReviewWebhookDelivery.findMany({ select: { deliveryId: true } }))
+        .map((r) => r.deliveryId)
+        .sort();
+      expect(keys).toEqual([
+        `github-issues:c:${C2}:guid-1511-d`,
+        `github-issues:c:repo-${PC}:guid-1511-d`,
       ]);
     });
 
