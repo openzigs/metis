@@ -11,6 +11,7 @@
  */
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { NOT_CHECKED_REASON_WORDS } from "@metis/shared";
 import { apiFetch } from "@/lib/api-client";
 
 /** Changed symbols shown per page. */
@@ -334,15 +335,9 @@ function schemaSourceName(source: string | undefined): string {
   }
 }
 
-/** #1469 — why the schema check could not check a name (`NotCheckedReason` on the server). */
-const NOT_CHECKED_WORDS: Record<string, string> = {
-  unread: "outside the schemas that were read",
-  "not-a-column": "not a plain column name (an index, constraint, key or relation)",
-  view: "described as a view, which the schema does not list as one",
-  "diagram-line": "a diagram line whose column could not be told from its type",
-  "no-columns": "no column list for the table",
-  dataset: "a dataset in the code's data lineage, not a database table",
-};
+/** #1469 — a reason in the words the document's own note uses (`@metis/shared`). */
+const notCheckedWords = (why: string): string =>
+  (NOT_CHECKED_REASON_WORDS as Readonly<Record<string, string>>)[why] ?? why;
 
 /**
  * #1133 — what the schema check found in an architecture document: per
@@ -371,7 +366,7 @@ function SchemaClaims({
   const notChecked = sections.reduce((n, entry) => n + entry.notChecked, 0);
   const source = schemaSourceName(sections.find((entry) => entry.source)?.source);
   const reasons = [...new Set(sections.flatMap((entry) => entry.notCheckedWhy ?? []))].map(
-    (why) => NOT_CHECKED_WORDS[why] ?? why,
+    notCheckedWords,
   );
   const unchecked = notChecked > 0 ? `; ${notChecked.toLocaleString()} could not be checked` : "";
   const heading =
@@ -389,7 +384,8 @@ function SchemaClaims({
         <p className="text-muted-foreground">
           {reasons.length > 0
             ? `Could not be checked: ${reasons.join("; ")}`
-            : "Could not be checked: the schema that was read cannot speak for these names"}
+            : // A version recorded before #1469 kept no reasons.
+              "Could not be checked (reasons were not recorded for this version)"}
         </p>
       )}
       <ul className="max-h-48 overflow-y-auto">

@@ -2295,6 +2295,29 @@ describe("checkProseSchemaClaims (#1133)", () => {
       "`users.max_count` is ten, but the column is short.",
       // Too far from the column word to be its name.
       "`users.max_count` is set in the admin page under the column heading.",
+      // Five words, no determiner: one past the bound.
+      "`users.max_count` is ten for every username column.",
+      // #1469 review — the column word belongs to the other code name; only
+      // the "no other span between" rule stops these.
+      "Set `users.max_count` to 10 and the `username` column stays short.",
+      "Size `users.max_count` like the `username` column.",
+      // "and"/"or" before a determiner opens another clause.
+      "Set `users.max_count` to 10 and the username column stays short.",
+      "Set `users.max_count` or the column will overflow.",
+      "Raise `users.max_count` and a column is added.",
+      // Too many words describing the column after the determiner.
+      "`users.max_count` is set by a very long winded admin column.",
+      // A colon is a definition only of a short phrase that ENDS with the column word.
+      "`users.max_count`: the column `username` is short.",
+      "`users.max_count`: set it in the column editor.",
+      "`users.max_count`: max column width",
+      "`users.max_count`: so the column is short.",
+      "`users.max_count`: see the column.",
+      // The colon must follow the name directly.
+      "`users.max_count` 10: the text column.",
+      // Before the name, too, the column word is the other name's, or in another clause.
+      "the column `username` stays short with `users.max_count`.",
+      "Shorten the username column and the `users.max_count` limit.",
     ])("%s", (line) => {
       const { markdown, report } = prose(line);
       expect(markdown).toBe(line);
@@ -2323,8 +2346,69 @@ describe("checkProseSchemaClaims (#1133)", () => {
         "`users.ghost` is a column, so set `users.max_count` to 10.",
         "`users.ghost`" + M + " is a column, so set `users.max_count` to 10.",
       ],
+      // #1469 review — every name of a list before the predicate shares its cue.
+      [
+        "`users.alpha` and `users.beta` are columns",
+        "`users.alpha`" + M + " and `users.beta`" + M + " are columns",
+      ],
+      [
+        "`users.alpha`, `users.beta` and `users.gamma` are new columns",
+        "`users.alpha`" + M + ", `users.beta`" + M + " and `users.gamma`" + M + " are new columns",
+      ],
+      [
+        "`users.alpha`, `users.beta`, and `users.gamma` are columns",
+        "`users.alpha`" + M + ", `users.beta`" + M + ", and `users.gamma`" + M + " are columns",
+      ],
+      [
+        "The migration adds `users.alpha`, `users.beta` and `users.gamma` as columns.",
+        "The migration adds `users.alpha`" +
+          M +
+          ", `users.beta`" +
+          M +
+          " and `users.gamma`" +
+          M +
+          " as columns.",
+      ],
+      // A list does not run across a sentence or onto a name with a clause between.
+      [
+        "Set `users.max_count`. `users.ghost` is a column.",
+        "Set `users.max_count`. `users.ghost`" + M + " is a column.",
+      ],
+      [
+        "Set `users.max_count` to 10 so `users.ghost` is a column.",
+        "Set `users.max_count` to 10 so `users.ghost`" + M + " is a column.",
+      ],
+      // A definition: a colon, then a short phrase ending in the column word.
+      ["`users.alpha`: a text column", "`users.alpha`" + M + ": a text column"],
+      ["- **`users.alpha`**: text column.", "- **`users.alpha`" + M + "**: text column."],
+      // Up to four words between, and a determiner as the fourth.
+      ["`users.ghost` is now stored as columns", "`users.ghost`" + M + " is now stored as columns"],
+      [
+        "`users.ghost` is now stored as a column",
+        "`users.ghost`" + M + " is now stored as a column",
+      ],
+      // Words describing the column after a determiner do not count toward the four.
+      [
+        "`users.alpha` is a new nullable text column",
+        "`users.alpha`" + M + " is a new nullable text column",
+      ],
     ])("%s", (line, marked) => {
       expect(prose(line).markdown).toBe(marked);
+    });
+
+    it("counts a listed name that matches, and marks only the one that does not", () => {
+      const { markdown, report } = prose("`users.username` and `users.ghost` are columns");
+      expect(markdown).toBe("`users.username` and `users.ghost`" + M + " are columns");
+      expect(report.matched).toBe(1);
+    });
+
+    // A known limit, kept on purpose: a comma splice cannot be told from an
+    // apposition ("login sets `users.ghost`, a column it adds"), which must
+    // stay marked, so this decoy is still read as a column.
+    it("known limit: a comma splice still cues the name", () => {
+      expect(prose("Set `users.max_count` to 10, the column stays short.").markdown).toBe(
+        "Set `users.max_count`" + M + " to 10, the column stays short.",
+      );
     });
   });
 

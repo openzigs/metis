@@ -13,6 +13,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { NOT_CHECKED_REASON_WORDS } from "@metis/shared";
 import { makeWrapper } from "./test-utils";
 
 vi.mock("next/navigation", () => ({
@@ -614,6 +615,10 @@ describe("DocumentationPage — version history", () => {
       within(check).getByText("Algorithms, Operations & Stack: 13 names checked, 1 not in schema"),
     ).toBeInTheDocument();
     expect(within(check).getByText("certificate_cache")).toBeInTheDocument();
+    // #1469 review — recorded before #1469: no reasons were kept, and none is guessed.
+    expect(
+      within(check).getByText("Could not be checked (reasons were not recorded for this version)"),
+    ).toBeInTheDocument();
     // A section that names no table is not listed.
     expect(within(check).queryByText(/Overview & Context/)).not.toBeInTheDocument();
   });
@@ -712,6 +717,28 @@ describe("DocumentationPage — version history", () => {
         within(check).getByText("Could not be checked: no column list for the table"),
       ).toBeInTheDocument();
       expect(check).not.toHaveTextContent(/every/);
+    });
+
+    it("words each reason as the document's own note does (#1469 review)", async () => {
+      const check = await openCheck([
+        {
+          section: "Data Architecture",
+          judged: 2,
+          unmatched: [],
+          unmatchedCount: 0,
+          notChecked: 2,
+          notCheckedWhy: ["not-a-column", "view"],
+          source: "live-schema",
+        },
+      ]);
+      expect(
+        within(check).getByText(
+          `Could not be checked: ${NOT_CHECKED_REASON_WORDS["not-a-column"]}; ${NOT_CHECKED_REASON_WORDS.view}`,
+        ),
+      ).toBeInTheDocument();
+      expect(NOT_CHECKED_REASON_WORDS["not-a-column"]).toBe(
+        "an index, constraint, key or relation row, or a name that is not a plain column name",
+      );
     });
 
     it("names the repository's SQL files when that is what the names were compared with", async () => {
