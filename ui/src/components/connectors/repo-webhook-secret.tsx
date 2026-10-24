@@ -67,6 +67,15 @@ export function RepoWebhookSecret({
           </Button>
         ) : null}
       </div>
+      {/* #1475 — shown to every shared-secret connection, whatever else connects the
+          repository, so it never says whether another project does. */}
+      {!connector.webhookSecretConfigured && !shown ? (
+        <p className="text-muted-foreground">
+          With the shared secret, automatic reviews stop if any other project also uses it for this
+          repository, because METIS cannot tell the webhooks apart. Create a secret for this
+          connection to avoid that.
+        </p>
+      ) : null}
       {shown ? (
         <div className="space-y-1 rounded border border-info/40 bg-info-muted p-2">
           <label className="block font-medium" htmlFor={`webhook-secret-value-${connector.id}`}>

@@ -47,6 +47,7 @@ describe("RepoWebhookSecret (#1475)", () => {
     api.generateWebhookSecret.mockResolvedValue({ id: "r1", secret: SECRET } as never);
     const onChanged = renderIt({ provider: "github", webhookSecretConfigured: false });
     expect(screen.getByText(/uses the server's shared secret/)).toBeInTheDocument();
+    expect(screen.getByText(/automatic reviews stop if any other project/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Use shared secret" })).toBeNull();
 
     await userEvent.click(screen.getByRole("button", { name: "Create webhook secret" }));
@@ -73,6 +74,7 @@ describe("RepoWebhookSecret (#1475)", () => {
     api.removeWebhookSecret.mockResolvedValue({ id: "r1" } as never);
     const onChanged = renderIt({ provider: "github_enterprise", webhookSecretConfigured: true });
     expect(screen.getByText(/has its own secret/)).toBeInTheDocument();
+    expect(screen.queryByText(/automatic reviews stop if any other project/)).toBeNull();
     expect(screen.getByRole("button", { name: "Replace webhook secret" })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Use shared secret" }));
