@@ -88,13 +88,13 @@
 23. [API Usage (For Developers)](#23-api-usage-for-developers)
 24. [Troubleshooting](#24-troubleshooting)
 25. [Frequently Asked Questions](#25-frequently-asked-questions)
-25. [Closed-Loop PR Reviews (v1.2.0)](#25-closed-loop-pr-reviews-v120)
-26. [Spec Kit — Phased Spec-Driven Workflow (v1.2.0)](#26-spec-kit--phased-spec-driven-workflow-v120)
-27. [MCP Federation — Discovering External Servers (v1.2.0)](#27-mcp-federation--discovering-external-servers-v120)
-28. [Eval Leaderboard — Benchmarking Agent Performance (v1.2.0)](#28-eval-leaderboard--benchmarking-agent-performance-v120)
-29. [Code-Execution Sandbox — QA-agent now runs your tests in isolation (v1.2.x)](#29-code-execution-sandbox--qa-agent-now-runs-your-tests-in-isolation-v12x)
-30. [Auto Documentation Generator (Epic #486)](#30-auto-documentation-generator-epic-486)
-31. [Model Selection — Choosing the Right AI Model (Epic #593)](#31-model-selection--choosing-the-right-ai-model-epic-593)
+26. [Closed-Loop PR Reviews (v1.2.0)](#25-closed-loop-pr-reviews-v120)
+27. [Spec Kit — Phased Spec-Driven Workflow (v1.2.0)](#26-spec-kit--phased-spec-driven-workflow-v120)
+28. [MCP Federation — Discovering External Servers (v1.2.0)](#27-mcp-federation--discovering-external-servers-v120)
+29. [Eval Leaderboard — Benchmarking Agent Performance (v1.2.0)](#28-eval-leaderboard--benchmarking-agent-performance-v120)
+30. [Code-Execution Sandbox — QA-agent now runs your tests in isolation (v1.2.x)](#29-code-execution-sandbox--qa-agent-now-runs-your-tests-in-isolation-v12x)
+31. [Auto Documentation Generator (Epic #486)](#30-auto-documentation-generator-epic-486)
+32. [Model Selection — Choosing the Right AI Model (Epic #593)](#31-model-selection--choosing-the-right-ai-model-epic-593)
 
 ---
 
@@ -139,24 +139,24 @@ What would take a team weeks of work, METIS accomplishes in minutes — and it d
 
 Before diving in, let's define some terms you'll encounter throughout this guide:
 
-| Term | What It Means |
-|---|---|
-| **Project** | A container that groups related documents, analyses, and requirements together. For example, "OASIS Market Redesign" would be a project. |
-| **Document** | A file you upload to a project for the AI to analyze. Can be PDF, Word, Excel, Markdown, or plain text. |
-| **Analysis** | The process where AI agents examine your documents, code, and databases to discover requirements. |
-| **Requirement** | A specific thing that needs to be built, changed, or fixed. Has a title, description, priority, and type. |
-| **Draft** | A GitHub issue that METIS has prepared but hasn't published yet. You can review and edit it before publishing. |
-| **Publishing** | The act of creating actual GitHub issues from approved drafts. |
-| **Knowledge Base** | A searchable database of text extracted from your uploaded documents. The AI uses this to answer questions accurately. |
-| **Repository** | A Git code repository (like on GitHub) that METIS can analyze. |
-| **Brain** | An AI-generated summary of a repository — its architecture, technologies, key files, and dependencies. |
-| **Session** | An AI chat conversation. Each session maintains its own context and history. |
-| **Task** | A background job submitted to the task engine (like running an analysis). Runs asynchronously while you continue working. |
-| **Vault** | A secure, encrypted storage for sensitive information like API keys and passwords. |
-| **Token** | The unit of measurement for AI usage. Roughly 4 characters = 1 token. METIS tracks tokens to manage cost. |
-| **RAG** | Retrieval-Augmented Generation — a technique where the AI retrieves relevant document chunks before generating answers, making responses much more accurate. |
-| **Epic** | A large GitHub issue that represents a major piece of work, containing multiple smaller features. |
-| **Feature** | A regular GitHub issue representing a single piece of work. |
+| Term               | What It Means                                                                                                                                                |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Project**        | A container that groups related documents, analyses, and requirements together. For example, "OASIS Market Redesign" would be a project.                     |
+| **Document**       | A file you upload to a project for the AI to analyze. Can be PDF, Word, Excel, Markdown, or plain text.                                                      |
+| **Analysis**       | The process where AI agents examine your documents, code, and databases to discover requirements.                                                            |
+| **Requirement**    | A specific thing that needs to be built, changed, or fixed. Has a title, description, priority, and type.                                                    |
+| **Draft**          | A GitHub issue that METIS has prepared but hasn't published yet. You can review and edit it before publishing.                                               |
+| **Publishing**     | The act of creating actual GitHub issues from approved drafts.                                                                                               |
+| **Knowledge Base** | A searchable database of text extracted from your uploaded documents. The AI uses this to answer questions accurately.                                       |
+| **Repository**     | A Git code repository (like on GitHub) that METIS can analyze.                                                                                               |
+| **Brain**          | An AI-generated summary of a repository — its architecture, technologies, key files, and dependencies.                                                       |
+| **Session**        | An AI chat conversation. Each session maintains its own context and history.                                                                                 |
+| **Task**           | A background job submitted to the task engine (like running an analysis). Runs asynchronously while you continue working.                                    |
+| **Vault**          | A secure, encrypted storage for sensitive information like API keys and passwords.                                                                           |
+| **Token**          | The unit of measurement for AI usage. Roughly 4 characters = 1 token. METIS tracks tokens to manage cost.                                                    |
+| **RAG**            | Retrieval-Augmented Generation — a technique where the AI retrieves relevant document chunks before generating answers, making responses much more accurate. |
+| **Epic**           | A large GitHub issue that represents a major piece of work, containing multiple smaller features.                                                            |
+| **Feature**        | A regular GitHub issue representing a single piece of work.                                                                                                  |
 
 ---
 
@@ -166,11 +166,11 @@ Before installing METIS, make sure you have the following software on your compu
 
 ### Required
 
-| Software | Minimum Version | What It Is | How to Check |
-|---|---|---|---|
-| **Node.js** | 22.22.2 | The runtime that executes METIS | Run `node --version` in your terminal |
-| **pnpm** | 10.16.0 | The package manager METIS uses for installing dependencies | Run `pnpm --version` in your terminal |
-| **Git** | 2.0+ | Version control system | Run `git --version` in your terminal |
+| Software    | Minimum Version | What It Is                                                 | How to Check                          |
+| ----------- | --------------- | ---------------------------------------------------------- | ------------------------------------- |
+| **Node.js** | 22.22.2         | The runtime that executes METIS                            | Run `node --version` in your terminal |
+| **pnpm**    | 10.16.0         | The package manager METIS uses for installing dependencies | Run `pnpm --version` in your terminal |
+| **Git**     | 2.0+            | Version control system                                     | Run `git --version` in your terminal  |
 
 > **METIS uses pnpm, not npm.** The repository is a pnpm workspace — `server/` and `ui/`
 > depend on `packages/shared` through pnpm's `workspace:*` protocol, and the dependency
@@ -181,10 +181,10 @@ Before installing METIS, make sure you have the following software on your compu
 
 ### Optional (for Docker deployment)
 
-| Software | What It Is | How to Check |
-|---|---|---|
-| **Docker** | Container runtime for running the app in isolated containers | Run `docker --version` |
-| **Docker Compose** | Tool for running multi-container Docker applications | Run `docker compose version` |
+| Software           | What It Is                                                   | How to Check                 |
+| ------------------ | ------------------------------------------------------------ | ---------------------------- |
+| **Docker**         | Container runtime for running the app in isolated containers | Run `docker --version`       |
+| **Docker Compose** | Tool for running multi-container Docker applications         | Run `docker compose version` |
 
 ### Installing Node.js
 
@@ -329,6 +329,7 @@ pnpm bootstrap                # generates .env + the four required secrets
 **Step 3: Start with Docker Compose**
 
 For development:
+
 ```bash
 docker compose up --build
 # …or the recommended one-liner that also waits for /readyz=200:
@@ -336,6 +337,7 @@ pnpm bootstrap:up
 ```
 
 For production:
+
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
 ```
@@ -344,12 +346,12 @@ The `-d` flag runs containers in the background (detached mode). The `--build` f
 
 This starts the core containers (refreshed for v1.3 — Issue [#364](https://github.com/openzigs/metis-private/issues/364)):
 
-| Container          | Port  | Purpose                                                         |
-| ------------------ | ----- | --------------------------------------------------------------- |
-| `metis-ui`         | 3000  | Next.js web interface                                           |
-| `metis-server`     | 4000  | Express + Socket.IO API server                                  |
+| Container          | Port  | Purpose                                                           |
+| ------------------ | ----- | ----------------------------------------------------------------- |
+| `metis-ui`         | 3000  | Next.js web interface                                             |
+| `metis-server`     | 4000  | Express + Socket.IO API server                                    |
 | `metis-postgres`   | 5432  | PostgreSQL 16 database (data persisted in `postgres_data` volume) |
-| `metis-embeddings` | 5050* | RAG embeddings + cross-encoder reranker (Xenova/bge-small)      |
+| `metis-embeddings` | 5050* | RAG embeddings + cross-encoder reranker (Xenova/bge-small)        |
 
 \* internal-only; reachable from `metis-server` on the `metis` bridge network, not exposed to the host by default.
 
@@ -391,15 +393,18 @@ DATABASE_URL=file:./dev.db
 ```
 
 **SQLite (default for development):**
+
 - No database server needed — the database is a single file
 - Perfect for individual development
 - Data is stored in `server/dev.db`
 
 **PostgreSQL (recommended for teams/production):**
+
 ```dotenv
 DATABASE_PROVIDER=postgresql
 DATABASE_URL=postgresql://metis:metis@localhost:5432/metis
 ```
+
 - Requires a PostgreSQL server (included in Docker Compose)
 - Handles multiple concurrent users
 - Better performance with large datasets
@@ -412,11 +417,13 @@ JWT_SECRET=your-development-jwt-secret-change-in-production
 ```
 
 **Mock Mode (default for development):**
+
 - Provides 4 test accounts (see [Section 7: Logging In](#7-logging-in))
 - No external auth server needed
 - **Never use in production!**
 
 **LDAP / Active Directory Mode (direct username+password against AD):**
+
 ```dotenv
 AUTH_MODE=ldap
 AUTH_LDAP_URL=ldaps://ad.example.com:636
@@ -428,6 +435,7 @@ AUTH_LDAP_SEARCH_FILTER=(&(objectClass=user)(sAMAccountName={{username}}))
 AUTH_LDAP_TLS_SKIP_VERIFY=true
 AUTH_LDAP_CONNECTION_TIMEOUT=10000
 ```
+
 - Connects to your organization's LDAP/Active Directory server
 - Users log in with their AD username and password via the standard login form
 - Group memberships (`memberOf` attribute) are mapped to METIS roles via the Admin UI
@@ -436,9 +444,11 @@ AUTH_LDAP_CONNECTION_TIMEOUT=10000
 > **Settings UI alternative:** All LDAP settings can also be configured at runtime via the Settings → SSO & authentication → LDAP / AD tab. Settings made there override environment variables.
 
 **SAML 2.0 Mode (redirect-based SSO via an Identity Provider):**
+
 ```dotenv
 AUTH_MODE=saml
 ```
+
 - Users click an SSO button on the login page and are redirected to the IdP (Okta, Azure AD, etc.)
 - After authenticating at the IdP, users land back in METIS with an active session
 - Configure the SAML provider details (IdP metadata XML, SP Entity ID, ACS URL) in the Settings → SSO & authentication → SAML 2.0 tab
@@ -447,9 +457,11 @@ AUTH_MODE=saml
 > **Secret handling (Settings → SSO).** For security (OWASP A09), the admin config-read API never returns stored secrets — the SP private key, certificates, and IdP metadata XML (SAML) and the client secret (OIDC) are masked as "configured" presence flags, not raw values. The corresponding form fields therefore stay **blank** when you reopen the tab. **Leave a secret field blank to keep the stored value**; type a new value only to replace it. Submitting the form blank never wipes an existing secret.
 
 **OIDC Mode (OpenID Connect with PKCE):**
+
 ```dotenv
 AUTH_MODE=oidc
 ```
+
 - Users click an SSO button on the login page and are redirected to the OIDC provider
 - PKCE (Proof Key for Code Exchange) is always enabled for security
 - MFA passthrough: if the IdP's token contains `amr` values indicating MFA, the session is flagged `mfaPassed=true`
@@ -459,6 +471,7 @@ AUTH_MODE=oidc
 **SCIM 2.0 Provisioning (automated user/group sync):**
 
 SCIM works alongside any auth mode to allow your IdP to automatically create, update, and deactivate users in METIS:
+
 - Endpoint: `https://your-metis-url/api/scim/v2/Users` and `/Groups`
 - Bearer token: generate via Settings → SSO & authentication → SCIM tab → "Rotate SCIM Token"
 - Supports: user provisioning, deprovisioning (soft-disable + session revocation), group-to-role mapping
@@ -467,6 +480,7 @@ SCIM works alongside any auth mode to allow your IdP to automatically create, up
 **Group-to-Role Mappings:**
 
 All SSO and LDAP modes support mapping IdP group claims to METIS roles. Configure in Settings → SSO & authentication → Role Mappings tab:
+
 - Map IdP group names (e.g. `METIS-Admins`) to METIS roles (`admin`, `coordinator`, `developer`, `reader`)
 - The highest-privilege matching role wins when a user belongs to multiple groups
 - A default role (fallback when no mapping matches) can be set per provider
@@ -512,23 +526,23 @@ Cookies alone are deliberately refused. The endpoints are rate limited and accep
 at most 4 KB; extra JSON fields are rejected. There is no new admin UI screen.
 
 1. POST `/api/admin/auth/role-reconciliation/inspect` with `targetId` and `username`.
-  Read `data.state` (identity, status, authority, role sources and timestamps) and
-  retain `data.fingerprint`. This request does not change access.
+   Read `data.state` (identity, status, authority, role sources and timestamps) and
+   retain `data.fingerprint`. This request does not change access.
 2. POST `/api/admin/auth/role-reconciliation/confirm` with the same `targetId` and
-  `username`, `expectedFingerprint` from inspection, a new UUID `requestId`, a
-  10–1,000 character `reason` recording the verification, and one `decision`:
+   `username`, `expectedFingerprint` from inspection, a new UUID `requestId`, a
+   10–1,000 character `reason` recording the verification, and one `decision`:
 
-  | Decision | Result |
-  |---|---|
-  | `provider-managed` | Explicitly approve future provider management. Only a provider-sourced **reader** row is installed now. Any explicit assignment or known SCIM authority blocks this decision. |
-  | `keep-explicit` | Preserve explicit assignments, remove provider grants, and keep the account outside provider management. An empty set stays reader. |
-  | `revoked` | Revoke **provider** grants; preserve all explicit assignments and SCIM authority. This is not account disablement or removal of local/SCIM roles. |
+| Decision           | Result                                                                                                                                                                        |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `provider-managed` | Explicitly approve future provider management. Only a provider-sourced **reader** row is installed now. Any explicit assignment or known SCIM authority blocks this decision. |
+| `keep-explicit`    | Preserve explicit assignments, remove provider grants, and keep the account outside provider management. An empty set stays reader.                                           |
+| `revoked`          | Revoke **provider** grants; preserve all explicit assignments and SCIM authority. This is not account disablement or removal of local/SCIM roles.                             |
 
 3. Verify the returned state. For `provider-managed`, have the user sign out and
-  perform a **fresh trusted login** through their configured provider. Token
-  refresh alone does not refresh provider mappings. The next successful login
-  records the current trusted role; the approval itself cannot grant elevated
-  access. Generated-document requests and workers then read that durable role.
+   perform a **fresh trusted login** through their configured provider. Token
+   refresh alone does not refresh provider mappings. The next successful login
+   records the current trusted role; the approval itself cannot grant elevated
+   access. Generated-document requests and workers then read that durable role.
 
 Both inspection and confirmation require a currently active **durable** administrator
 inside the transaction. A stale admin JWT, ordinary user, disabled administrator,
@@ -548,10 +562,10 @@ Prisma client generated; never pass credentials in command arguments or tickets.
 Use `pnpm --filter @metis/server exec tsx src/lib/auth/role-reconciliation-cli.ts`
 with the following arguments (values shown as placeholders):
 
-| Operation | Required arguments |
-|---|---|
-| Inspect | `inspect --operator "Named administrator" --acknowledge-host-authority --target-id ID --username USER` |
-| Confirm | `confirm --operator "Named administrator" --acknowledge-host-authority --target-id ID --username USER --expected-fingerprint HASH --request-id UUID --decision provider-managed --reason "Verified identity and current IdP ownership" --confirm "ID:USER:provider-managed"` |
+| Operation | Required arguments                                                                                                                                                                                                                                                           |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Inspect   | `inspect --operator "Named administrator" --acknowledge-host-authority --target-id ID --username USER`                                                                                                                                                                       |
+| Confirm   | `confirm --operator "Named administrator" --acknowledge-host-authority --target-id ID --username USER --expected-fingerprint HASH --request-id UUID --decision provider-managed --reason "Verified identity and current IdP ownership" --confirm "ID:USER:provider-managed"` |
 
 The final confirmation must exactly match the selected ID, username and decision.
 Inspection prints the fingerprint; use a new UUID for each new decision. Host
@@ -586,6 +600,7 @@ AI_TOKEN_BUDGET=100000
 This controls the maximum number of AI tokens per session. The default (100,000) is enough for several hours of complex analysis. One token ≈ 4 characters of text.
 
 Pick the AI provider with `AI_PROVIDER` and give it its keys, for example:
+
 ```dotenv
 AI_PROVIDER=anthropic
 ANTHROPIC_API_KEY=sk-ant-...
@@ -604,14 +619,14 @@ METIS turns your uploaded documents into searchable vectors using a pluggable
 **embedding backend**. The backend is selected with `EMBED_BACKEND` and the
 specific model with `EMBED_MODEL`:
 
-| `EMBED_BACKEND` | Runs where | `EMBED_MODEL` (default) | Dimension | Sends your text off-box? |
-|---|---|---|---|---|
-| `offline` (aka `hash`) | In-process, deterministic stub | `offline-hash` | 384 | No — fully air-gapped |
-| `xenova` | In-process ONNX (downloaded weights) | `Xenova/bge-small-en-v1.5` | 384 | No (after one-time model download) |
-| `embeddinggemma` | In-process ONNX (downloaded weights) | `onnx-community/embeddinggemma-300m-ONNX` | 768 (Matryoshka: 768/512/256/128 via `EMBED_DIM`) | No (after one-time model download) |
-| `sidecar` | In-cluster `metis-embeddings` HTTP service | `Xenova/bge-small-en-v1.5` | 384 | No — stays inside your cluster |
-| `bedrock` / `bedrock-sdk` | AWS Bedrock API | `amazon.titan-embed-text-v2:0` | 1024 | **Yes** — text egresses to AWS |
-| `openai` | Azure / OpenAI API | `text-embedding-3-small` | 1536 | **Yes** — text egresses to the API |
+| `EMBED_BACKEND`           | Runs where                                 | `EMBED_MODEL` (default)                   | Dimension                                         | Sends your text off-box?           |
+| ------------------------- | ------------------------------------------ | ----------------------------------------- | ------------------------------------------------- | ---------------------------------- |
+| `offline` (aka `hash`)    | In-process, deterministic stub             | `offline-hash`                            | 384                                               | No — fully air-gapped              |
+| `xenova`                  | In-process ONNX (downloaded weights)       | `Xenova/bge-small-en-v1.5`                | 384                                               | No (after one-time model download) |
+| `embeddinggemma`          | In-process ONNX (downloaded weights)       | `onnx-community/embeddinggemma-300m-ONNX` | 768 (Matryoshka: 768/512/256/128 via `EMBED_DIM`) | No (after one-time model download) |
+| `sidecar`                 | In-cluster `metis-embeddings` HTTP service | `Xenova/bge-small-en-v1.5`                | 384                                               | No — stays inside your cluster     |
+| `bedrock` / `bedrock-sdk` | AWS Bedrock API                            | `amazon.titan-embed-text-v2:0`            | 1024                                              | **Yes** — text egresses to AWS     |
+| `openai`                  | Azure / OpenAI API                         | `text-embedding-3-small`                  | 1536                                              | **Yes** — text egresses to the API |
 
 **Data-egress tradeoff:** `offline`, `xenova`, `embeddinggemma`, and `sidecar`
 keep document text on your own infrastructure. The cloud backends (`bedrock`,
@@ -689,7 +704,7 @@ another box, use that box's **private LAN IP** or an **SSH tunnel to loopback**.
 > `node scripts/local-llm/smoke-test.mjs --base <url> --model <id>`.
 
 > **⚠️ Avoid reasoning models for doc-generation.** The current default
-> `gemma4:12b` is a *reasoning* model: over `/v1` it spends the token budget in a
+> `gemma4:12b` is a _reasoning_ model: over `/v1` it spends the token budget in a
 > `reasoning` field and returns **empty** content at low `max_tokens`
 > (`finish_reason: length`), and reasoning models hallucinate more on faithful
 > extraction. Use a clean **instruct** model — `qwen2.5:14b`, or Qwen3-14B with
@@ -730,11 +745,11 @@ not (no extra configuration — it uses the existing health path).
 **Step 2 — Pull a Gemma model (B2, model-tag verified).**
 The Gemma `gemma4` tags verified against Ollama 0.20.4 (June 2026):
 
-| Tag | Size | Class | Where it fits |
-|---|---|---|---|
-| `gemma4:26b` | ~17 GB (Q4_K_M, 25.8B params, 256k ctx) | large | Split across 2+ GPUs (~24 GB total) |
-| `gemma4:12b` | ~7.4 GB, vision-capable | medium | A single 12 GB card — **this is the repo default** |
-| `gemma4:e4b` | ~9.6 GB (Q4_K_M, 8B-class) | small | A single smaller card, or CPU fallback |
+| Tag          | Size                                    | Class  | Where it fits                                      |
+| ------------ | --------------------------------------- | ------ | -------------------------------------------------- |
+| `gemma4:26b` | ~17 GB (Q4_K_M, 25.8B params, 256k ctx) | large  | Split across 2+ GPUs (~24 GB total)                |
+| `gemma4:12b` | ~7.4 GB, vision-capable                 | medium | A single 12 GB card — **this is the repo default** |
+| `gemma4:e4b` | ~9.6 GB (Q4_K_M, 8B-class)              | small  | A single smaller card, or CPU fallback             |
 
 ```powershell
 ollama pull gemma4:12b      # single 12 GB card (default)
@@ -797,6 +812,7 @@ GITHUB_TOKEN=ghp_your_personal_access_token
 ```
 
 **How to get a GitHub token:**
+
 1. Go to [GitHub.com](https://github.com) → Settings → Developer settings → Personal access tokens → Tokens (classic)
 2. Click "Generate new token (classic)"
 3. Give it a name (e.g., "METIS")
@@ -805,6 +821,7 @@ GITHUB_TOKEN=ghp_your_personal_access_token
 6. Copy the token and paste it in your `.env` file
 
 Alternatively, for organizations, you can use a GitHub App:
+
 ```dotenv
 GITHUB_APP_ID=your-app-id
 GITHUB_APP_PRIVATE_KEY=your-app-private-key
@@ -813,12 +830,14 @@ GITHUB_APP_PRIVATE_KEY=your-app-private-key
 ### 5.6 Optional Services
 
 **Oracle Database** (for inspecting Oracle databases):
+
 ```dotenv
 ORACLE_TNS_ADMIN=/opt/oracle/tns
 ORACLE_CLIENT_DIR=/opt/oracle/instantclient
 ```
 
 **Brave Web Search** (for web research during analysis):
+
 ```dotenv
 BRAVE_API_KEY=your-brave-search-api-key
 ```
@@ -844,17 +863,17 @@ Wait until you see messages indicating both are ready (typically 5-10 seconds).
 
 ### Other Useful Commands
 
-| Command | What It Does |
-|---|---|
-| `pnpm dev` | Start both server and UI in development mode |
-| `pnpm build` | Build both for production |
-| `pnpm test` | Run all tests (server + UI) |
-| `pnpm lint` | Check code for style issues |
-| `pnpm format` | Auto-format all code |
+| Command            | What It Does                                    |
+| ------------------ | ----------------------------------------------- |
+| `pnpm dev`         | Start both server and UI in development mode    |
+| `pnpm build`       | Build both for production                       |
+| `pnpm test`        | Run all tests (server + UI)                     |
+| `pnpm lint`        | Check code for style issues                     |
+| `pnpm format`      | Auto-format all code                            |
 | `pnpm db:generate` | Regenerate database client after schema changes |
-| `pnpm db:migrate` | Apply database migrations |
-| `pnpm db:seed` | Load sample data into the database |
-| `pnpm db:studio` | Open a visual database browser |
+| `pnpm db:migrate`  | Apply database migrations                       |
+| `pnpm db:seed`     | Load sample data into the database              |
+| `pnpm db:studio`   | Open a visual database browser                  |
 
 ### Docker
 
@@ -885,12 +904,12 @@ Open your browser to `http://localhost:3000`. The middleware will redirect you t
 
 In development mode (`AUTH_MODE=mock`), METIS provides four test accounts. Sign in with any of:
 
-| Username | Password | Role | What You Can Do |
-|---|---|---|---|
-| `admin` | `password` | Admin | Everything — full access to all features, settings, and user management |
-| `coordinator` | `password` | Coordinator | Manage projects, run analyses, publish issues, but no admin settings |
-| `developer` | `password` | Developer | Run analyses, use AI chat, manage repos, but no project deletion or publishing |
-| `reader` | `password` | Read-Only | View everything but can't create, modify, or delete anything |
+| Username      | Password   | Role        | What You Can Do                                                                |
+| ------------- | ---------- | ----------- | ------------------------------------------------------------------------------ |
+| `admin`       | `password` | Admin       | Everything — full access to all features, settings, and user management        |
+| `coordinator` | `password` | Coordinator | Manage projects, run analyses, publish issues, but no admin settings           |
+| `developer`   | `password` | Developer   | Run analyses, use AI chat, manage repos, but no project deletion or publishing |
+| `reader`      | `password` | Read-Only   | View everything but can't create, modify, or delete anything                   |
 
 After a successful login the form posts to `/api/auth/login`, which proxies to the upstream Express API and stores your access + refresh tokens as **HttpOnly cookies on the Next.js origin** — your JWT is never accessible to client-side JavaScript. You'll be redirected to the route you were trying to reach (defaults to `/dashboard`).
 
@@ -907,7 +926,7 @@ When `AUTH_MODE=saml` or `AUTH_MODE=oidc` is set and a provider is configured in
 3. Authenticate with your corporate credentials (and MFA if required)
 4. You are redirected back to METIS with an active session
 
-The buttons are driven by the public `GET /api/auth/sso/providers` endpoint, which the login page calls on load. It returns the **live** list of configured, *enabled* providers — so enabling (or disabling) a provider under **Settings → SSO & authentication** makes its button appear (or disappear) on `/login` **without a redeploy or restart**. This endpoint is intentionally pre-authentication (the login page is anonymous), so it exposes **only** the minimum each button needs — `{ id, label, type, loginUrl }` — and never returns client secrets, signing keys, certificates, IdP metadata, or any other provider configuration.
+The buttons are driven by the public `GET /api/auth/sso/providers` endpoint, which the login page calls on load. It returns the **live** list of configured, _enabled_ providers — so enabling (or disabling) a provider under **Settings → SSO & authentication** makes its button appear (or disappear) on `/login` **without a redeploy or restart**. This endpoint is intentionally pre-authentication (the login page is anonymous), so it exposes **only** the minimum each button needs — `{ id, label, type, loginUrl }` — and never returns client secrets, signing keys, certificates, IdP metadata, or any other provider configuration.
 
 If no SSO providers are enabled, the endpoint returns an empty list, **no buttons appear, and no error is shown** — the page renders the standard username/password form alone (which will reject logins when `AUTH_MODE` is set to an SSO mode). The SSO buttons sit alongside the **"Your session expired"** banner (shown when you arrive at `/login?reason=expired`) without any layout collision — both can render together.
 
@@ -923,8 +942,8 @@ After logging in you land on the **Dashboard** inside the persistent app shell:
 
 - **Sidebar** (left, 16 rem) — six destinations, one level deep: **Home** (the dashboard), **Projects**, **Chat**, **Activity**, **Library** and **Settings**. Each one opens a row of page tabs above the content for the pages it groups: **Projects** → All projects, Products, Documents, Repositories, Databases, Impact analyses (the cross-project views, all in one place); **Chat** → Chat, Workbench (the same chat sessions, in a project-scoped layout); **Activity** → Tasks, Runs, Sessions, Scheduler, Reviews; **Settings** → Settings, Vault, Eval, and Admin (Admin shown to system admins only). The sidebar entry stays highlighted on every page it groups, announced via `aria-current="page"`. Every page kept its address, so bookmarks and shared links still work; the command palette (⌘K / Ctrl+K) searches all of them by name. On viewports smaller than 768 px the sidebar collapses into a slide-in drawer; tap the menu button in the header to open it. [#27]
 - **Header** (top, sticky) — a **Workspace › Project breadcrumb** on the left (each crumb opens a switcher menu; degrades to workspace-only when no project is selected); on the right, the **activity indicator**, theme toggle (light / dark / system), the **notifications bell** (with an unread-count badge), and the user menu.
-- **Activity indicator** — a small **"N jobs running"** control that appears in the header **only while something is actually running**, and disappears automatically when everything finishes. It reflects *any* long-running operation — documentation generation, analysis, PR reviews, imports/syncs, and more — not just one kind. Click it to open a drawer that lists each in-progress job with its type, project, and live progress bar. The count and announcements are accessible to screen readers (announced politely as jobs start and complete). For documentation specifically, you no longer have to open a document to watch it build: a doc that is generating now shows a live progress bar and an "N of M sections" counter **directly on its card in the documentation list**, and clicking **Generate Documentation** takes you straight to the new document's live progress (with a "View progress" toast) instead of leaving you on a static badge. [Epic #406] The **Import Requirements** page (`Projects › Import`) likewise streams live progress: after you click **Import** or **Run now** on a saved source, the page shows a live progress bar with the current step ("Fetched 5/10 issues") for the active run instead of going silent, and a toast announces the result when the run finishes ("Imported 5 new, 2 updated" on success, or a generic "The import sync failed. Please try again." on failure — raw error detail is never shown). The import history below still refreshes on its own as a fallback if the live connection drops, and the ongoing-sync toggle, interval, and **Run now** controls are unchanged. [Epic #406, #424]
-- **Consistent completion feedback** — every long-running operation now ends with a clear **success or failure toast**, and you get it **even when you are not on the operation's detail page**. Previously, if you started documentation generation or an analysis and then navigated to a list view (or simply looked away), a *failure* was recorded silently on the row but never announced — you had to notice the badge had changed. Now a single app-wide layer watches the realtime job bus and shows the terminal result wherever you are: a green toast on success (carrying the operation's own message, e.g. the Spec Kit "Generated spec.md (v3) … grounded on N retrieved chunks" line) and a red toast on failure with a **generic, non-revealing message** ("The … operation failed. Please try again.") — raw error detail and stack traces are never shown. Each operation toasts **exactly once**: the surfaces that already announce their own outcome (PR re-review, embeddings reindex, import/sync, Spec Kit, overview regenerate) are reconciled with this global layer so you never see a duplicate. [Epic #406, #425]
+- **Activity indicator** — a small **"N jobs running"** control that appears in the header **only while something is actually running**, and disappears automatically when everything finishes. It reflects _any_ long-running operation — documentation generation, analysis, PR reviews, imports/syncs, and more — not just one kind. Click it to open a drawer that lists each in-progress job with its type, project, and live progress bar. The count and announcements are accessible to screen readers (announced politely as jobs start and complete). For documentation specifically, you no longer have to open a document to watch it build: a doc that is generating now shows a live progress bar and an "N of M sections" counter **directly on its card in the documentation list**, and clicking **Generate Documentation** takes you straight to the new document's live progress (with a "View progress" toast) instead of leaving you on a static badge. [Epic #406] The **Import Requirements** page (`Projects › Import`) likewise streams live progress: after you click **Import** or **Run now** on a saved source, the page shows a live progress bar with the current step ("Fetched 5/10 issues") for the active run instead of going silent, and a toast announces the result when the run finishes ("Imported 5 new, 2 updated" on success, or a generic "The import sync failed. Please try again." on failure — raw error detail is never shown). The import history below still refreshes on its own as a fallback if the live connection drops, and the ongoing-sync toggle, interval, and **Run now** controls are unchanged. [Epic #406, #424]
+- **Consistent completion feedback** — every long-running operation now ends with a clear **success or failure toast**, and you get it **even when you are not on the operation's detail page**. Previously, if you started documentation generation or an analysis and then navigated to a list view (or simply looked away), a _failure_ was recorded silently on the row but never announced — you had to notice the badge had changed. Now a single app-wide layer watches the realtime job bus and shows the terminal result wherever you are: a green toast on success (carrying the operation's own message, e.g. the Spec Kit "Generated spec.md (v3) … grounded on N retrieved chunks" line) and a red toast on failure with a **generic, non-revealing message** ("The … operation failed. Please try again.") — raw error detail and stack traces are never shown. Each operation toasts **exactly once**: the surfaces that already announce their own outcome (PR re-review, embeddings reindex, import/sync, Spec Kit, overview regenerate) are reconciled with this global layer so you never see a duplicate. [Epic #406, #425]
 - **Friendly form validation** — forms now guide you instead of dumping raw errors. The **New project** dialog (`Projects › New project`) keeps its **Create** button disabled until the required fields (**Name** and **Slug**) are filled in; leaving **Name** empty shows an inline "Name is required" message right under the field instead of silently doing nothing. The **Import Requirements** page behaves the same way: if a required filter field is missing (for example a GitHub import with no **Owner** or **Repository**), you get a clear inline message beside the offending field — never the previous wall of raw technical error text, and never a generic "something went wrong" page. Behind the scenes, validation problems now come back from the server as a friendly, structured message (a plain "X is required" per field); the application never exposes internal schema details, stack traces, or raw validation arrays to your browser. [Epic #407, #426 — OWASP A09]
 - **Re-sync keeps your edits to imported requirements** — when you edit an imported requirement (title, body, type, priority or labels), the next import run or scheduled sync no longer puts the source's text back. If the source issue has not changed, your edit stays. If the source changed and you had not edited the requirement, the source's change is applied. If both changed, the requirement card shows a **Diverged from source** badge: **Compare** shows your version and the source's side by side, **Take the source version** replaces your text with the source's (recorded in History as a new version, so a review approved on the old text needs approving again), and **Keep mine** keeps your text; it creates no new version, so a review approved on your text stays approved, and History notes the choice. Either choice also protects the requirement from being replaced when the analysis is re-run, like any other review work. For requirements imported before this change, METIS checks History: one nobody edited in METIS simply takes the source's change; one that was edited and now differs from its source is flagged, with the card saying it was edited before METIS tracked its source, so compare and choose. After upgrading, the first sync may therefore flag some edited requirements for review; find them by the badge and by the run's "diverged from source" count. History shows your latest answer to a divergence on each requirement; every answer is kept in the audit log. The import run's badge now reads, for example, "0 new · 2 updated · kept 1 local edit · 1 diverged from source". [#1220]
 - **Import with a vault secret** — the **Import Requirements** page's credential defaults to **Vault secret**, the same `${vault:label}` picker the connector forms use, so you no longer paste a token into the form. **Paste a token** is still available; that token is vaulted for the import source alone. For a **public GitHub repository** you may leave the credential empty: the preview and import read GitHub anonymously and show a warning that anonymous reads are limited to 60 requests per hour. Azure DevOps and Linear still need a credential. You can only choose a vault secret you created unless you are an admin, and deleting an import source never deletes a vault secret it merely referred to. [#763]
@@ -935,16 +954,16 @@ A **skip-to-content** link is the first focusable element on every authenticated
 
 **Project sections.** Inside a project, the tab bar follows the pipeline from left to right: **Overview · Sources · Analyze · Requirements · Docs · Publish · Code · ⚙**. Each tab opens its section's first step in one click, and the section's other pages appear in a row underneath:
 
-| Tab | Pages |
-|---|---|
-| Overview | Where each stage stands and what to do next; a numbered **Get started** checklist on a new project |
-| Sources | Connections (including Deep Ingest), Documents, Import, Jira |
-| Analyze | Requirements Analysis, Impact Analysis (this project), Spec Kit |
-| Requirements | Review (what is awaiting review), Baselines, Discussions |
-| Docs | Documentation, Templates |
-| Publish | Issue drafts and publish batches |
-| Code | Code Overview, Changes, Pull Requests |
-| ⚙ | Project settings, Models, Plugins, Usage |
+| Tab          | Pages                                                                                              |
+| ------------ | -------------------------------------------------------------------------------------------------- |
+| Overview     | Where each stage stands and what to do next; a numbered **Get started** checklist on a new project |
+| Sources      | Connections (including Deep Ingest), Documents, Import, Jira                                       |
+| Analyze      | Requirements Analysis, Impact Analysis (this project), Spec Kit                                    |
+| Requirements | Review (what is awaiting review), Baselines, Discussions                                           |
+| Docs         | Documentation, Templates                                                                           |
+| Publish      | Issue drafts and publish batches                                                                   |
+| Code         | Code Overview, Changes, Pull Requests                                                              |
+| ⚙            | Project settings, Models, Plugins, Usage                                                           |
 
 There is no "More" menu. Project settings (AI provider and model, safety, budget, autopilot, quarantine, archive, …) are behind **⚙**, not on the Overview. Per-project skills are managed from **Library**, which has a project picker. Every existing project URL still works. Below `md` the whole bar collapses into a single dropdown so there's no horizontal scrolling on mobile. **Settings** sub-pages share a persistent left sub-navigation.
 
@@ -1003,16 +1022,16 @@ See §19 for full details on each sub-page.
 
 The bell icon in the header opens a side **notifications drawer** with these alerts:
 
-- **Mention** — someone @mentioned you in a comment, e.g. *Alex mentioned you on "Login lockout"*, with the start of the comment underneath. Click **Open →** to open that requirement (or Spec Kit artifact) with its comments showing. The quote follows the comment: if its author edits it, the notification quotes the new text (or reads *The comment was edited.* if you can no longer open the project); if they delete it, the notification keeps who and where but reads *The comment was deleted.* An item already showing in an open drawer updates on the next reload.
-- **Discussion mention** — someone @mentioned you in a project discussion, e.g. *"Alex mentioned you in a discussion"*. Click **Open →** to go to that discussion thread.
+- **Mention** — someone @mentioned you in a comment, e.g. _Alex mentioned you on "Login lockout"_, with the start of the comment underneath. Click **Open →** to open that requirement (or Spec Kit artifact) with its comments showing. The quote follows the comment: if its author edits it, the notification quotes the new text (or reads _The comment was edited._ if you can no longer open the project); if they delete it, the notification keeps who and where but reads _The comment was deleted._ An item already showing in an open drawer updates on the next reload.
+- **Discussion mention** — someone @mentioned you in a project discussion, e.g. _"Alex mentioned you in a discussion"_. Click **Open →** to go to that discussion thread.
 - **SLA deadline expired** — an assignment's SLA deadline has passed. Click **Open →** to navigate to the requirement. It goes only to people who can still open the project. A requirement can be assigned only to someone the assignee picker offers: an active member of the project's workspace, or a system admin. Anyone else gets "Assignee not found" (#1432).
 - **Review lifecycle** — for the formal review workflow (the Reviews page, sidebar → Activity → Reviews): as an **assigned reviewer** you are notified when a review is submitted and awaits your decision; as the **requester** you are notified of each reviewer's decision and of the final outcome (approved — including when a baseline was auto-created — or rejected). Each notification deep-links to the review's detail page. These are governed by the **Requirements approved × In-app** toggle in Settings → Notifications.
 
-The badge shows your unread count; opening the drawer marks all items read. Use **Clear all** to dismiss the list. Comment mentions, discussion mentions and review notifications arrive **live** while you are signed in: the badge updates without a reload, and the item reads the same as it will after a reload. Notifications are **persisted server-side**, so they survive page reloads and reconnects and you do not miss an alert sent while you were offline. Each notification links to the item it is about where there is one. If you lose access to a notification's project — you are removed from its workspace, it moves to a workspace you are not in, or it is deleted — the notification stays in your list (so the unread count still adds up) but reads *Notification unavailable*, with no text or link.
+The badge shows your unread count; opening the drawer marks all items read. Use **Clear all** to dismiss the list. Comment mentions, discussion mentions and review notifications arrive **live** while you are signed in: the badge updates without a reload, and the item reads the same as it will after a reload. Notifications are **persisted server-side**, so they survive page reloads and reconnects and you do not miss an alert sent while you were offline. Each notification links to the item it is about where there is one. If you lose access to a notification's project — you are removed from its workspace, it moves to a workspace you are not in, or it is deleted — the notification stays in your list (so the unread count still adds up) but reads _Notification unavailable_, with no text or link.
 
 **Comment threads update live.** When a requirement's or a Spec Kit artifact's **Comments** panel is open, a comment, reply, edit or delete by anyone else on the project appears in it within a moment; you do not need to reload the page. Only people who can open the project see the update, the same people who can read the comments.
 
-You control which notifications you receive at all in **Settings → Notifications** (§20.3): disabling a channel × event combination (for example *Mentions × In-app*) stops those notifications at the source — nothing is created for you to dismiss.
+You control which notifications you receive at all in **Settings → Notifications** (§20.3): disabling a channel × event combination (for example _Mentions × In-app_) stops those notifications at the source — nothing is created for you to dismiss.
 
 ---
 
@@ -1029,14 +1048,14 @@ The banner is deliberately quiet: it ignores brief, normal reconnects (it only a
 
 ## 8.6 Keyboard Shortcuts
 
-| Shortcut | Action |
-|---|---|
-| ⌘K / Ctrl+K | Open the command palette |
-| ↑ / ↓ | Move between palette results |
-| ↵ | Invoke the highlighted command |
-| Esc | Close the palette or any open drawer |
-| Tab | Move focus through interactive elements |
-| Shift+Tab | Move focus backwards |
+| Shortcut    | Action                                  |
+| ----------- | --------------------------------------- |
+| ⌘K / Ctrl+K | Open the command palette                |
+| ↑ / ↓       | Move between palette results            |
+| ↵           | Invoke the highlighted command          |
+| Esc         | Close the palette or any open drawer    |
+| Tab         | Move focus through interactive elements |
+| Shift+Tab   | Move focus backwards                    |
 
 ---
 
@@ -1046,8 +1065,8 @@ The banner is deliberately quiet: it ignores brief, normal reconnects (it only a
 
 A **project** in METIS is a container that groups everything related to a specific piece of work. For example, if your team is redesigning a market system, you'd create a project called " Market Redesign" and put all the related documents, analyses, and requirements inside it.
 
-
 Every project has:
+
 - **Name** — a clear, descriptive title
 - **Description** — what this project is about
 - **Status** — where it is in the workflow (Draft, Analyzing, Review, Published, Archived)
@@ -1114,12 +1133,14 @@ The **Discussions** tab (`/projects/{id}/discussions`) is a shared, realtime roo
 **Starting a discussion.** Open the **Discussions** tab and click **Start discussion** (an optional title helps others find it). You land in the thread view; everyone with access to the project — the same people who can open the project itself — can join the same thread and see messages appear live.
 
 **Who said what.** Every message is clearly attributed:
+
 - **Human messages** show a colored avatar with the author's initials and a small **human** badge.
 - **AI messages** show an **AI** avatar and a badge with the **model id** that produced the reply, so you always know when you're reading the assistant versus a teammate.
 
 Message text is rendered as safe Markdown (code blocks, tables, lists, diagrams) — pasted content can never inject scripts into the page.
 
 **Bringing the AI in.** Whether the AI replies depends on the thread's **AI mode** (configured in the thread settings panel — see the promote/settings guide):
+
 - **On mention** (default) — the AI replies only when you explicitly mention **`@AI`** in your message.
 - **Auto** — the AI replies whenever it detects a clear question or request, no mention needed.
 - **Off** — the AI stays silent, even if you mention `@AI`.
@@ -1137,6 +1158,7 @@ The AI answers from **this project's own sources**, as the project chat does: it
 **Turning a message into a requirement.** When the discussion lands on something worth tracking, hover any message and click **Promote to requirement**. A small form opens (title pre-filled from the message, plus type and priority); on save, METIS creates a tracked Requirement and links you straight to it, preserving where it came from (the source message and thread) in the audit trail. (A future enhancement — "Ask AI to draft acceptance criteria" — is noted in the form but not yet available.)
 
 **Configuring the thread.** Click **Settings** (top of the thread) to open the thread settings panel:
+
 - **AI participation** — a 3-way control to set the thread's mode (**Off**, **On mention**, or **Auto**). Your choice takes effect immediately.
 - **Anchor (optional)** — attach the discussion to a specific Requirement, Analysis, or Spec Kit feature so it carries that context. (Both controls are available to thread members only.)
 
@@ -1156,14 +1178,14 @@ Draft ──────────→ Analyzing ───────→ Revie
                        Archived
 ```
 
-| From | To | When This Happens |
-|---|---|---|
-| **Draft** → **Analyzing** | You start an analysis |
-| **Analyzing** → **Review** | The analysis completes successfully |
-| **Analyzing** → **Draft** | You want to add more documents before re-analyzing |
-| **Review** → **Published** | You approve and publish the requirements |
-| **Review** → **Draft** | You want to go back and refine things |
-| **Any** → **Archived** | You're done with this project (it's kept for records but set aside) |
+| From                       | To                                                                  | When This Happens |
+| -------------------------- | ------------------------------------------------------------------- | ----------------- |
+| **Draft** → **Analyzing**  | You start an analysis                                               |
+| **Analyzing** → **Review** | The analysis completes successfully                                 |
+| **Analyzing** → **Draft**  | You want to add more documents before re-analyzing                  |
+| **Review** → **Published** | You approve and publish the requirements                            |
+| **Review** → **Draft**     | You want to go back and refine things                               |
+| **Any** → **Archived**     | You're done with this project (it's kept for records but set aside) |
 
 Every transition is recorded in the **audit trail**, so there's always a record of who changed what and when.
 
@@ -1236,14 +1258,14 @@ Documents are the raw material that METIS analyzes. The more relevant documents 
 
 ### 10.1 Supported File Types
 
-| Extension | File Type | Best For |
-|---|---|---|
-| `.pdf` | PDF Document | Business requirements, policies, regulations, specifications |
-| `.docx` | Microsoft Word | Requirements documents, project charters, meeting notes |
-| `.xlsx` | Microsoft Excel | Data dictionaries, test matrices, configuration tables |
-| `.pptx` | Microsoft PowerPoint | Presentations, slide decks, design reviews |
-| `.md` | Markdown | Technical documentation, README files, wiki pages |
-| `.txt` | Plain Text | Notes, logs, any unformatted text |
+| Extension | File Type            | Best For                                                     |
+| --------- | -------------------- | ------------------------------------------------------------ |
+| `.pdf`    | PDF Document         | Business requirements, policies, regulations, specifications |
+| `.docx`   | Microsoft Word       | Requirements documents, project charters, meeting notes      |
+| `.xlsx`   | Microsoft Excel      | Data dictionaries, test matrices, configuration tables       |
+| `.pptx`   | Microsoft PowerPoint | Presentations, slide decks, design reviews                   |
+| `.md`     | Markdown             | Technical documentation, README files, wiki pages            |
+| `.txt`    | Plain Text           | Notes, logs, any unformatted text                            |
 
 ### 10.2 What Happens When You Upload
 
@@ -1260,11 +1282,11 @@ This process is automatic and happens in the background. The document's status c
 
 ### 10.3 Upload Limits
 
-| Limit | Value |
-|---|---|
-| Maximum file size | 50 MB per file |
-| Maximum documents per project | 100 |
-| Allowed file types | .pdf, .docx, .xlsx, .pptx, .md, .txt |
+| Limit                         | Value                                |
+| ----------------------------- | ------------------------------------ |
+| Maximum file size             | 50 MB per file                       |
+| Maximum documents per project | 100                                  |
+| Allowed file types            | .pdf, .docx, .xlsx, .pptx, .md, .txt |
 
 ---
 
@@ -1282,7 +1304,7 @@ When you click **"Run Analysis"** on a project, here's what happens behind the s
    - **Database Analyst** — inspects your connected databases, discovering schema changes, index requirements, and data migration needs
    - **Web Researcher** — reviews your uploaded documents (and Confluence or Jira pages) for industry standards, best practices, and regulatory compliance. Despite the name it does not search the web itself, and it never cites repository or database files. It is skipped, with a single notice, when no web search provider is configured. Live web search happens only in the opt-in web research step, whose sources appear under **Evidence Review**; it needs `WEB_SEARCH_PROVIDER` and that provider's API key
 
-   > **What analysis reads vs. writes:** Analysis reads from uploaded documents, connected code repositories, connected databases, and — only when you turn on web research — live web search. It does **not** read existing Jira or GitHub issues as input. Jira and GitHub are output-only destinations — approved requirements are *published to* them after analysis.
+   > **What analysis reads vs. writes:** Analysis reads from uploaded documents, connected code repositories, connected databases, and — only when you turn on web research — live web search. It does **not** read existing Jira or GitHub issues as input. Jira and GitHub are output-only destinations — approved requirements are _published to_ them after analysis.
 
 2. **Each agent has 60 seconds** to complete its work. They run simultaneously, so the total time is the time of the slowest agent, not the sum of all four.
 
@@ -1318,28 +1340,28 @@ Newly added documents start in a `pending` or `processing` state while they are 
 
 **Evaluate new requirements (optional)**
 
-Click **Add requirements** to expand a free-text box where you can describe *new* requirements to evaluate against the **current** implementation — for example, "Support SSO for enterprise tenants" or "Add audit logging to all mutations." The agents treat this as operator guidance and report the **gap**: what already exists, what is missing, and the changes needed to satisfy the new requirements.
+Click **Add requirements** to expand a free-text box where you can describe _new_ requirements to evaluate against the **current** implementation — for example, "Support SSO for enterprise tenants" or "Add audit logging to all mutations." The agents treat this as operator guidance and report the **gap**: what already exists, what is missing, and the changes needed to satisfy the new requirements.
 
-The text is capped at **4096 characters** (a live counter shows your usage), and it is passed to every specialist agent as well as the synthesis step. Leaving it blank runs a standard discovery analysis. If a paste exceeds the cap, the panel says so explicitly — *"Your text was cut at 4096 characters — the last N characters were removed and will not be analyzed"* — rather than trimming it behind the counter.
+The text is capped at **4096 characters** (a live counter shows your usage), and it is passed to every specialist agent as well as the synthesis step. Leaving it blank runs a standard discovery analysis. If a paste exceeds the cap, the panel says so explicitly — _"Your text was cut at 4096 characters — the last N characters were removed and will not be analyzed"_ — rather than trimming it behind the counter.
 
-**METIS accounts for every requirement you type.** A run that used this box shows a **Requirements you supplied** section on the results page, leading with a one-line count — *"6 of 7 requirements you supplied were analyzed"* — followed by anything that did not simply go through:
+**METIS accounts for every requirement you type.** A run that used this box shows a **Requirements you supplied** section on the results page, leading with a one-line count — _"6 of 7 requirements you supplied were analyzed"_ — followed by anything that did not simply go through:
 
-- **Merged** — a requirement that restates one METIS already had is folded into it, and the section names the survivor (*"NR-2 … merged into REQ-003 as a duplicate … It was analyzed under that requirement"*). Merging is normal and is **not** a loss.
+- **Merged** — a requirement that restates one METIS already had is folded into it, and the section names the survivor (_"NR-2 … merged into REQ-003 as a duplicate … It was analyzed under that requirement"_). Merging is normal and is **not** a loss.
 - **Not analyzed** — a requirement that never reached the agents, with the reason (over the per-run limit on requirements, or no requirement text could be read from that block). A run that dropped input also raises the amber capability banner (§11.3.1), so it can never look like an unqualified success.
 
 If you see a dropped requirement, re-run it in a shorter, separate submission.
 
-**How METIS decides what counts as one requirement.** Blank lines separate requirements. A bullet list is read as a *set* of requirements when it stands on its own or sits under a heading that names a group (`## Requirements`, `Notification channels:`). A bullet list that *continues the requirement just above it* — either directly, or under a label like **Acceptance criteria:**, **Success criteria:**, **Definition of done:**, **Examples:** or **Notes:** — is read as detail of that requirement: it still reaches the agents, carried by the requirement it qualifies, and does **not** consume one of your per-run requirement slots. So a paste of ten requirements each with three acceptance-criteria bullets counts as **ten**, not forty.
+**How METIS decides what counts as one requirement.** Blank lines separate requirements. A bullet list is read as a _set_ of requirements when it stands on its own or sits under a heading that names a group (`## Requirements`, `Notification channels:`). A bullet list that _continues the requirement just above it_ — either directly, or under a label like **Acceptance criteria:**, **Success criteria:**, **Definition of done:**, **Examples:** or **Notes:** — is read as detail of that requirement: it still reaches the agents, carried by the requirement it qualifies, and does **not** consume one of your per-run requirement slots. So a paste of ten requirements each with three acceptance-criteria bullets counts as **ten**, not forty.
 
-When your project has a **built code graph**, METIS additionally maps each new requirement to the code it most likely affects — deterministically, using the same requirement→code mapper and blast-radius traversal as **Impact Analysis** (§13.9), before the AI agents run. The completed run shows an **Affected code** panel with one collapsible section per requirement: the matched symbols with their `file:line` locator, the relation (a **direct** mapper hit versus a blast-radius **caller**/**importer**), and a confidence score. A requirement that matched no code shows an explicit *"no code matched"* note. This mapping also grounds the AI gap findings, so they anchor to real symbols and files. Projects with no code graph simply skip this step and behave exactly as before.
+When your project has a **built code graph**, METIS additionally maps each new requirement to the code it most likely affects — deterministically, using the same requirement→code mapper and blast-radius traversal as **Impact Analysis** (§13.9), before the AI agents run. The completed run shows an **Affected code** panel with one collapsible section per requirement: the matched symbols with their `file:line` locator, the relation (a **direct** mapper hit versus a blast-radius **caller**/**importer**), and a confidence score. A requirement that matched no code shows an explicit _"no code matched"_ note. This mapping also grounds the AI gap findings, so they anchor to real symbols and files. Projects with no code graph simply skip this step and behave exactly as before.
 
-**How the code is found, and what the confidence means (#1097).** When the project's code has been embedded (it is, after ingest, once the background embedding finishes), the mapper ranks code by **meaning and keywords together**, so *"terminate all sessions"* reaches `FlushAllSessions` even though no symbol is called "terminate". Until then, or when no embedding model is configured, it ranks by **keywords only**, and the panel says so; re-run once embedding has finished to compare. The **confidence** is an estimate of how often a link like this one is right, on the same scale for every requirement: 0.30 means about three in ten such links were right when METIS measured it on hand-labelled requirements. Most links therefore read well under 1.00, and the best link of a requirement is no longer 1.00 by construction. With the meaning-based ranking a direct match is shown when its confidence is at least **0.08** and it is about the requirement's subject (below); the two-shared-words rule in the next paragraph applies when the ranking is keywords only, and also wherever the confidence cannot use the embeddings. That is every link when the configured embedding model is not the default one (the confidence is calibrated for the default model only). It is single links to a database table or column, which are never embedded, so this never changes on a re-run. So a table is linked when its name (for a column, with its table's name) shares two of the requirement's words: on a small project with a database schema, a one-word table such as `sessions` is no longer linked to a requirement that shares only that one word with it ("Terminate sessions"), though a requirement that is just "Sessions" still links it. And it is single links to code with no embedding under the model in use: code still being embedded, which a re-run after embedding has finished can change; code embedded only with another model, which stays so until the project's code is embedded again with the model in use; and code with no embedding at all. Code that *has* an embedding the search did not return is not one of these: it ranked below every code the search did return, so it is scored as at most that close, is never ranked above a link the search measured, is shown only if it still clears 0.08, and is not shown at all when no measured link is. The panel names every cause behind the links it shows, advises a re-run only for code still being embedded (for code with no embedding, or embedded with another model, it says to ask an administrator to re-embed the project's code), and, where one requirement's links were shown by different rules, labels each link with its rule. If some requirements of a run were ranked, or had their links decided, one way and some the other, the panel says so and labels each requirement. Links with a confidence of **0.15** or more are listed; the rest are folded under **N weaker matches** — open it to see them. On METIS's own measurement sample the listed links were right about a third of the time and the folded ones about a quarter. A run made before this change keeps its old, relative confidences, and its panel says so.
+**How the code is found, and what the confidence means (#1097).** When the project's code has been embedded (it is, after ingest, once the background embedding finishes), the mapper ranks code by **meaning and keywords together**, so _"terminate all sessions"_ reaches `FlushAllSessions` even though no symbol is called "terminate". Until then, or when no embedding model is configured, it ranks by **keywords only**, and the panel says so; re-run once embedding has finished to compare. The **confidence** is an estimate of how often a link like this one is right, on the same scale for every requirement: 0.30 means about three in ten such links were right when METIS measured it on hand-labelled requirements. Most links therefore read well under 1.00, and the best link of a requirement is no longer 1.00 by construction. With the meaning-based ranking a direct match is shown when its confidence is at least **0.08** and it is about the requirement's subject (below); the two-shared-words rule in the next paragraph applies when the ranking is keywords only, and also wherever the confidence cannot use the embeddings. That is every link when the configured embedding model is not the default one (the confidence is calibrated for the default model only). It is single links to a database table or column, which are never embedded, so this never changes on a re-run. So a table is linked when its name (for a column, with its table's name) shares two of the requirement's words: on a small project with a database schema, a one-word table such as `sessions` is no longer linked to a requirement that shares only that one word with it ("Terminate sessions"), though a requirement that is just "Sessions" still links it. And it is single links to code with no embedding under the model in use: code still being embedded, which a re-run after embedding has finished can change; code embedded only with another model, which stays so until the project's code is embedded again with the model in use; and code with no embedding at all. Code that _has_ an embedding the search did not return is not one of these: it ranked below every code the search did return, so it is scored as at most that close, is never ranked above a link the search measured, is shown only if it still clears 0.08, and is not shown at all when no measured link is. The panel names every cause behind the links it shows, advises a re-run only for code still being embedded (for code with no embedding, or embedded with another model, it says to ask an administrator to re-embed the project's code), and, where one requirement's links were shown by different rules, labels each link with its rule. If some requirements of a run were ranked, or had their links decided, one way and some the other, the panel says so and labels each requirement. Links with a confidence of **0.15** or more are listed; the rest are folded under **N weaker matches** — open it to see them. On METIS's own measurement sample the listed links were right about a third of the time and the folded ones about a quarter. A run made before this change keeps its old, relative confidences, and its panel says so.
 
-**When a requirement has no code link (keywords-only ranking).** A symbol is shown as a direct match only when its **name** shares at least **two** of the requirement's terms (or its only term, for a one-word requirement). The name is the symbol's own name together with the type or table it belongs to (`KeyboardHandler::listen`, `user_sessions.ip`). Folders, file extensions, and the file a function or class lives in do not count; a file is matched by its own name. One shared word is not treated as evidence: before this rule, *"Add a button to terminate all sessions"* was linked to a Telegram keyboard-button class because both contain "button". So *"No code matched"* is an ordinary outcome and does not mean the code is absent — it means no symbol *name* matched well enough to show. Words are compared as written, so "session" does not match "sessions".
+**When a requirement has no code link (keywords-only ranking).** A symbol is shown as a direct match only when its **name** shares at least **two** of the requirement's terms (or its only term, for a one-word requirement). The name is the symbol's own name together with the type or table it belongs to (`KeyboardHandler::listen`, `user_sessions.ip`). Folders, file extensions, and the file a function or class lives in do not count; a file is matched by its own name. One shared word is not treated as evidence: before this rule, _"Add a button to terminate all sessions"_ was linked to a Telegram keyboard-button class because both contain "button". So _"No code matched"_ is an ordinary outcome and does not mean the code is absent — it means no symbol _name_ matched well enough to show. Words are compared as written, so "session" does not match "sessions".
 
-Two shared words are still not enough on their own, so a link must also be about the requirement's **subject**. When the requirement names something the project stores in a table (for example "feed", for the `feeds` table), the symbol, or the type it belongs to, must name it too: *"Last successful refresh in feed API"* no longer links the web session's `LastForceRefresh`. A generic word such as "user", "entry" or "setting" does not count here, because requirements use it for the actor ("Given two users"). A type or a table is shown only when the requirement uses the last word of its name (`markReadBehavior` needs "behavior", `APIKey` needs "key"), and a table column only when the requirement names its table (`users.mark_read_on_view` needs "user" or "users"; `entries.reading_time` needs "entry" or "entries"). Test code is never shown, neither as a match nor as a caller. For these checks a plural and its singular count as the same word (feeds and feed, entries and entry, addresses and address, movies and movie).
+Two shared words are still not enough on their own, so a link must also be about the requirement's **subject**. When the requirement names something the project stores in a table (for example "feed", for the `feeds` table), the symbol, or the type it belongs to, must name it too: _"Last successful refresh in feed API"_ no longer links the web session's `LastForceRefresh`. A generic word such as "user", "entry" or "setting" does not count here, because requirements use it for the actor ("Given two users"). A type or a table is shown only when the requirement uses the last word of its name (`markReadBehavior` needs "behavior", `APIKey` needs "key"), and a table column only when the requirement names its table (`users.mark_read_on_view` needs "user" or "users"; `entries.reading_time` needs "entry" or "entries"). Test code is never shown, neither as a match nor as a caller. For these checks a plural and its singular count as the same word (feeds and feed, entries and entry, addresses and address, movies and movie).
 
-The rule filters only the links this panel **stores and shows**. It does not narrow what the code agent starts from: the agent is still given the mapper's wider, unfiltered candidate list (the same list as before this rule), is told to verify each candidate with its tools, and investigates the requirement by reading the code. So a requirement shown here with *"No code matched"* can still have had starting points, some of them weak one-word matches. The rules and the confidence model were chosen on a small hand-labelled sample (one repository) and may change.
+The rule filters only the links this panel **stores and shows**. It does not narrow what the code agent starts from: the agent is still given the mapper's wider, unfiltered candidate list (the same list as before this rule), is told to verify each candidate with its tools, and investigates the requirement by reading the code. So a requirement shown here with _"No code matched"_ can still have had starting points, some of them weak one-word matches. The rules and the confidence model were chosen on a small hand-labelled sample (one repository) and may change.
 
 **Starting from imported items.** If you start an analysis from imported tracker items (GitHub, Jira, Azure DevOps or Linear), the analysis usually rewrites their titles and may add requirements of its own. Each requirement card on the **Requirements** tab then shows where it came from:
 
@@ -1349,19 +1371,18 @@ The rule filters only the links this panel **stores and shows**. It does not nar
 
 The link is made by the analysis model, which names the imported items each requirement restates; METIS only accepts items that belong to that run, and the title and link always come from the imported item itself. The list of everything the run was started from is still shown in **Imported requirements analyzed in this run** on the Summary tab.
 
-Just above the **Run analysis** button, a one-line summary confirms what the run will use — for example, *"This run uses 3 documents + requirements provided: yes."*
+Just above the **Run analysis** button, a one-line summary confirms what the run will use — for example, _"This run uses 3 documents + requirements provided: yes."_
 
 ### 11.3 Understanding Analysis Results
 
-
 After an analysis completes, you'll see the results on both the project detail page and the analysis page. Key metrics include:
 
-| Metric | What It Means |
-|---|---|
-| **Status** | `completed` (success), `running` (in progress), `failed` (error occurred) |
-| **Requirements Found** | How many distinct requirements the AI discovered |
-| **Confidence** | A percentage indicating how confident the AI is in its findings (higher = more certain) |
-| **Duration** | How long the analysis took to complete |
+| Metric                 | What It Means                                                                           |
+| ---------------------- | --------------------------------------------------------------------------------------- |
+| **Status**             | `completed` (success), `running` (in progress), `failed` (error occurred)               |
+| **Requirements Found** | How many distinct requirements the AI discovered                                        |
+| **Confidence**         | A percentage indicating how confident the AI is in its findings (higher = more certain) |
+| **Duration**           | How long the analysis took to complete                                                  |
 
 #### Citation transparency and requirement grounding
 
@@ -1376,7 +1397,7 @@ When you provide new requirements to evaluate, each finding is tagged with the r
 - **"Grounded in REQ-003"** (blue badge) — the finding is backed by evidence retrieved from your selected documents for that requirement.
 - **"Gap for REQ-003"** (amber badge) — METIS could **not** find supporting evidence in the selected documents for that requirement. The finding is marked `info` severity and flagged for manual review, with a "No supporting evidence retrieved from the selected documents" note. This is how METIS tells you a new requirement is likely **not yet implemented** rather than silently omitting it.
 
-Because grounding is driven entirely by *your* document selection, narrowing the selection focuses the analysis (and its citations) on exactly the material you care about.
+Because grounding is driven entirely by _your_ document selection, narrowing the selection focuses the analysis (and its citations) on exactly the material you care about.
 
 #### Verification status on finding cards
 
@@ -1385,50 +1406,50 @@ Before METIS turns findings into requirements, it runs an automated **verifier**
 - **Confirmed** (green) — the verifier found the code this finding points to: at least one cited file and line range was really present in the retrieved source. Its code evidence is supported.
 - **Unverified** (amber) — the finding claimed a place in the code, but **every** code location it cited was missing from what METIS retrieved. The claim could not be confirmed. The finding is **still shown** — never hidden — but you should review it manually before acting on it, and METIS tells the synthesis step to treat it as weaker evidence so an unproven claim does not quietly become a high-priority requirement.
 
-Findings that make no code claim at all (for example a document-only observation) carry no verification badge. Use the **Verification** filter above the findings list to narrow to just the *Confirmed* or *Unverified* findings — handy when you want to triage exactly the claims METIS could not stand behind. A hover tooltip on each badge explains what it means and what to do.
+Findings that make no code claim at all (for example a document-only observation) carry no verification badge. Use the **Verification** filter above the findings list to narrow to just the _Confirmed_ or _Unverified_ findings — handy when you want to triage exactly the claims METIS could not stand behind. A hover tooltip on each badge explains what it means and what to do.
 
 #### Panel confidence on finding cards
 
-When your deployment enables the multi-lens support panel (`ANALYSIS_LLM_SUPPORT_PANEL`), a second badge appears beside the verification badge. The two answer different questions: verification asks *"was this file really retrieved?"*, the panel asks *"does that file actually back the claim?"*
+When your deployment enables the multi-lens support panel (`ANALYSIS_LLM_SUPPORT_PANEL`), a second badge appears beside the verification badge. The two answer different questions: verification asks _"was this file really retrieved?"_, the panel asks _"does that file actually back the claim?"_
 
 - **High confidence** (green) — every lens agreed the retrieved evidence backs the finding.
 - **Mixed confidence** (blue) — the lenses disagreed, but the supporting ones outnumbered the dissenters.
 - **Low confidence** (rose) — more lenses doubted the finding than backed it. Its card is dimmed and dashed and it sorts to the bottom of the list, but it is **never hidden and never filtered out**. METIS down-weights; you decide.
-- **Not judged** (slate) — the panel produced no usable verdict, so nothing is known either way. This is *missing information, not doubt*: treat the finding exactly as you would one the panel never looked at. It is deliberately styled and worded differently from *Low confidence*.
+- **Not judged** (slate) — the panel produced no usable verdict, so nothing is known either way. This is _missing information, not doubt_: treat the finding exactly as you would one the panel never looked at. It is deliberately styled and worded differently from _Low confidence_.
 
 Every panelled finding carries a **"Why?"** disclosure. Open it to see each lens's verdict in its own words, plus the `file:line` it based that verdict on — including the dissenting lens, which is usually the most useful thing on the card. Nothing there needs a second lookup; it comes with the analysis you already loaded.
 
-On the **Requirements** tab the same signal appears rolled up per requirement (*"Evidence: Low confidence"*), listing the dissenting lens and its reason for each linked finding. A requirement whose evidence the panel could not judge is reported as such rather than being downgraded.
+On the **Requirements** tab the same signal appears rolled up per requirement (_"Evidence: Low confidence"_), listing the dissenting lens and its reason for each linked finding. A requirement whose evidence the panel could not judge is reported as such rather than being downgraded.
 
-One caveat travels with every label, and it is shown in the UI too: the panel reads **only the evidence this run retrieved**. "High confidence" means *supported by what we retrieved*, never *true*.
+One caveat travels with every label, and it is shown in the UI too: the panel reads **only the evidence this run retrieved**. "High confidence" means _supported by what we retrieved_, never _true_.
 
 ##### When a finding says something is MISSING
 
-A finding that claims something is *not* implemented is the highest-stakes thing METIS emits — it directly drives what someone builds next — and it is the one kind of claim that cites nothing, so the ordinary evidence checks have nothing to check. Those findings therefore carry a **third badge**, telling you which of three very different things happened:
+A finding that claims something is _not_ implemented is the highest-stakes thing METIS emits — it directly drives what someone builds next — and it is the one kind of claim that cites nothing, so the ordinary evidence checks have nothing to check. Those findings therefore carry a **third badge**, telling you which of three very different things happened:
 
 - **Absence checked** (green) — the retrieved code covering that area was read, and the thing really is not there.
-- **Absence contradicted** (rose) — METIS **found the thing this finding says is missing**, and names the `file:line`. Treat the claim as wrong until you have looked yourself. The finding drops to *Low confidence*, and it is still shown in full.
-- **Absence unexamined** (amber) — **nobody looked.** Nothing this run retrieved covers where the thing would live, so its absence was never actually checked. This is *not* a confirmed gap. It is deliberately worded and coloured so it can never be mistaken for *Absence checked*: "we looked and found nothing" and "we never looked" are different facts, and conflating them is what this check exists to stop.
+- **Absence contradicted** (rose) — METIS **found the thing this finding says is missing**, and names the `file:line`. Treat the claim as wrong until you have looked yourself. The finding drops to _Low confidence_, and it is still shown in full.
+- **Absence unexamined** (amber) — **nobody looked.** Nothing this run retrieved covers where the thing would live, so its absence was never actually checked. This is _not_ a confirmed gap. It is deliberately worded and coloured so it can never be mistaken for _Absence checked_: "we looked and found nothing" and "we never looked" are different facts, and conflating them is what this check exists to stop.
 - **Absence not checked** (slate) — the check itself produced no usable result. Nothing is known either way.
 
-The check reads **only what this analysis retrieved** — it never goes searching for more. That is deliberate: if it went looking, it would be grading a different claim than the one the agent made. So *Absence unexamined* is the honest answer to thin retrieval, not a failure to be worked around.
+The check reads **only what this analysis retrieved** — it never goes searching for more. That is deliberate: if it went looking, it would be grading a different claim than the one the agent made. So _Absence unexamined_ is the honest answer to thin retrieval, not a failure to be worked around.
 
-On the **Requirements** tab, a requirement built on a contradicted or unexamined absence claim carries the same warning in plain words (*"This may already exist…"* / *"Not confirmed missing…"*) — that tab is where work actually gets scheduled.
+On the **Requirements** tab, a requirement built on a contradicted or unexamined absence claim carries the same warning in plain words (_"This may already exist…"_ / _"Not confirmed missing…"_) — that tab is where work actually gets scheduled.
 
-**Detection has limits, and they are known.** The badge only appears on findings METIS recognises as absence claims, which it does by phrasing. Measured against a labelled set, it catches **12 of 15** — the three it misses assert an absence with no negative words at all (*"only 3 of the 5 formats are produced"*, *"REQ-7 remains open"*). If a finding tells you something is missing and carries **no** absence badge, nothing checked it: verify before you build.
+**Detection has limits, and they are known.** The badge only appears on findings METIS recognises as absence claims, which it does by phrasing. Measured against a labelled set, it catches **12 of 15** — the three it misses assert an absence with no negative words at all (_"only 3 of the 5 formats are produced"_, _"REQ-7 remains open"_). If a finding tells you something is missing and carries **no** absence badge, nothing checked it: verify before you build.
 
-**Published GitHub issues.** When a requirement is graded *low confidence* (or the panel could not judge it at all), the issue METIS publishes carries a short **Confidence** section naming the disagreeing check, its reason and its `file:line`. Confident requirements publish exactly the body they always did — only the doubt crosses the boundary, because the reader of a GitHub issue is furthest from the evidence and least able to judge it for themselves. **One exception:** a requirement built on a contradicted or unexamined absence claim carries its warning into the issue at *any* confidence — an issue saying "build X" needs to say so if X may already exist, or if nobody checked.
+**Published GitHub issues.** When a requirement is graded _low confidence_ (or the panel could not judge it at all), the issue METIS publishes carries a short **Confidence** section naming the disagreeing check, its reason and its `file:line`. Confident requirements publish exactly the body they always did — only the doubt crosses the boundary, because the reader of a GitHub issue is furthest from the evidence and least able to judge it for themselves. **One exception:** a requirement built on a contradicted or unexamined absence claim carries its warning into the issue at _any_ confidence — an issue saying "build X" needs to say so if X may already exist, or if nobody checked.
 
 #### Persona attribution on finding cards
 
-Each finding is surfaced by one of METIS's named specialist personas rather than an opaque agent key. The card shows a persona chip — avatar, name and role — so you instantly know *who* raised it:
+Each finding is surfaced by one of METIS's named specialist personas rather than an opaque agent key. The card shows a persona chip — avatar, name and role — so you instantly know _who_ raised it:
 
-| Persona | Role |
-|---|---|
-| 🧭 **Mary** | Business Analyst (`document`) |
-| 🏛️ **Winston** | Solution Architect (`code`) |
-| 🗄️ **Sally** | Data Specialist (`database`) |
-| 🌐 **Quinn** | Web Specialist (`web`) |
+| Persona        | Role                          |
+| -------------- | ----------------------------- |
+| 🧭 **Mary**    | Business Analyst (`document`) |
+| 🏛️ **Winston** | Solution Architect (`code`)   |
+| 🗄️ **Sally**   | Data Specialist (`database`)  |
+| 🌐 **Quinn**   | Web Specialist (`web`)        |
 
 Unknown or legacy agents fall back to a generic 🤖 glyph plus the raw key, so the chip never renders blank.
 
@@ -1448,20 +1469,20 @@ The button is **disabled** when ticket creation is blocked by a pending or rejec
 
 METIS never silently skips code analysis. When a run could not use its full capabilities, the results page shows an amber **"Some analysis capabilities were limited for this run"** banner that spells out, in plain language, what was not analyzed and how to fix it. You may see any of:
 
-| Banner says… | What it means | How to fix it |
-|---|---|---|
-| **No code graph has been built for this project** | The code agent could not run its deep, multi-turn ("agentic") investigation. | Connect a repository and let indexing build the code graph, then re-run. |
-| **Repository source code has not been ingested** | Code gap findings were grounded only in your documents, not in real source. | Connect a repository so its source is indexed as knowledge. |
-| **No requirements were extracted from your documents** | Without requirements, the code agent falls back to a shallow single-shot pass. | Add requirement documents, or type new-requirements text on the start form. |
-| **Code-graph symbol grounding is turned off** | The deployment has `ANALYSIS_FUSED_CODE_RETRIEVAL` disabled. | Ask an administrator to enable it for deeper, cited code findings. |
-| **Live database-schema grounding is turned off** | The deployment has `ANALYSIS_SCHEMA_CONTEXT` disabled. | Ask an administrator to enable it so the database agent grounds in your real data model. |
-| **Some content was analyzed from unapproved (quarantined) documents** | No approved knowledge was available, so raw content was used. | Approve the relevant documents and re-run. |
-| **Some repositories were skipped** (named) | A multi-repo run dropped repos because the per-repo token budget was too low. | Click **Analyze remaining repositories** on the banner (see below), reduce the number of connected repositories, or analyze the skipped ones separately. |
-| **Some of the requirements you supplied were not analyzed** | At least one requirement from the **Evaluate new requirements** box never reached the agents — it was over the per-run limit, unreadable, or your paste was cut at the character limit. | Open **Requirements you supplied** on the same page to see exactly which ones and why, then re-run the dropped requirements as a shorter, separate submission. |
+| Banner says…                                                          | What it means                                                                                                                                                                           | How to fix it                                                                                                                                                  |
+| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **No code graph has been built for this project**                     | The code agent could not run its deep, multi-turn ("agentic") investigation.                                                                                                            | Connect a repository and let indexing build the code graph, then re-run.                                                                                       |
+| **Repository source code has not been ingested**                      | Code gap findings were grounded only in your documents, not in real source.                                                                                                             | Connect a repository so its source is indexed as knowledge.                                                                                                    |
+| **No requirements were extracted from your documents**                | Without requirements, the code agent falls back to a shallow single-shot pass.                                                                                                          | Add requirement documents, or type new-requirements text on the start form.                                                                                    |
+| **Code-graph symbol grounding is turned off**                         | The deployment has `ANALYSIS_FUSED_CODE_RETRIEVAL` disabled.                                                                                                                            | Ask an administrator to enable it for deeper, cited code findings.                                                                                             |
+| **Live database-schema grounding is turned off**                      | The deployment has `ANALYSIS_SCHEMA_CONTEXT` disabled.                                                                                                                                  | Ask an administrator to enable it so the database agent grounds in your real data model.                                                                       |
+| **Some content was analyzed from unapproved (quarantined) documents** | No approved knowledge was available, so raw content was used.                                                                                                                           | Approve the relevant documents and re-run.                                                                                                                     |
+| **Some repositories were skipped** (named)                            | A multi-repo run dropped repos because the per-repo token budget was too low.                                                                                                           | Click **Analyze remaining repositories** on the banner (see below), reduce the number of connected repositories, or analyze the skipped ones separately.       |
+| **Some of the requirements you supplied were not analyzed**           | At least one requirement from the **Evaluate new requirements** box never reached the agents — it was over the per-run limit, unreadable, or your paste was cut at the character limit. | Open **Requirements you supplied** on the same page to see exactly which ones and why, then re-run the dropped requirements as a shorter, separate submission. |
 
 **Analyzing repositories that were skipped for budget.** When a project has more connected repositories than a single run's token budget can cover, METIS analyzes as many as fit and lists the rest by name on the banner. Rather than start a whole new run, click **Analyze remaining repositories** — METIS re-runs the code investigation for **only** the skipped repos (each now getting a full budget) and **merges** their findings into the same analysis, then updates the results. The button is disabled while the resume is in progress, and it disappears once every repository has been analyzed. If there are still more skipped repos than one resume can cover, the banner simply lists whatever remains so you can resume again. (You can only resume a **finished** run — you cannot resume one that is still running or already resuming.)
 
-A **fully-capable run shows no banner at all.** The same information appears as a smaller **hint on the start-analysis form** *before* you run, so you know up front which capabilities the run will have (for example, "This project has no code graph — code gap analysis will be document-grounded only"). The hint respects which agents you have selected.
+A **fully-capable run shows no banner at all.** The same information appears as a smaller **hint on the start-analysis form** _before_ you run, so you know up front which capabilities the run will have (for example, "This project has no code graph — code gap analysis will be document-grounded only"). The hint respects which agents you have selected.
 
 #### 11.3.2 Traceability matrix (requirement → findings → code → tests)
 
@@ -1490,19 +1511,19 @@ A requirement with **no verdict** simply means the code agent did not take part 
 
 The report shows 10 requirements at a time; use **Previous** / **Next** below the cards. When database-aware analysis is on, each card has a **Show database changes** button that loads that requirement's affected tables and columns. They are loaded on request because working them out for every requirement at once made the tab slow and very long. The **Export report (Markdown)** download still includes them for every requirement.
 
-**Watching a Regenerate or Continue.** While an agent is being re-run, its card on the **Agent output** tab reads **running** with a line such as *"Re-running · 37 steps so far · 4m 12s"* (each step is one look the code agent took at the code: a search or a file it read), then *"updating the run summary with the new findings"* while the run's requirements are re-synthesised. The old findings stay on the card until the new ones replace them. During a normal run the code agent gets a card of its own as soon as it starts investigating. On a deployment with several server replicas the step count may pause between updates; the card still reads running until the re-run finishes. [#766]
+**Watching a Regenerate or Continue.** While an agent is being re-run, its card on the **Agent output** tab reads **running** with a line such as _"Re-running · 37 steps so far · 4m 12s"_ (each step is one look the code agent took at the code: a search or a file it read), then _"updating the run summary with the new findings"_ while the run's requirements are re-synthesised. The old findings stay on the card until the new ones replace them. During a normal run the code agent gets a card of its own as soon as it starts investigating. On a deployment with several server replicas the step count may pause between updates; the card still reads running until the re-run finishes. [#766]
 
-**When the code agent stops early (#1388).** A code investigation that stops on its own with most requirements unchecked, or after only a few look-ups with most of its budget unused, no longer shows a green **completed**. Its card on the **Agent output** tab reads **degraded**, and the first note says what happened in plain words, for example *"the code agent stopped after 3 turns and 7 look-ups in the code, using about 6% of its token budget, and did not check 22 of 32 requirements against the code. They are marked “Could not verify”. Re-run the code investigation to check them."* The run lists it once, as a code-analysis limitation. The note names other causes differently: when the agent's searches of the code failed, it says so (and how many errored or came back empty) and suggests checking the repository's index; when the agent checked the requirements and the code simply did not settle them, it says that, with no advice to re-run. Before any of this, METIS asks the code agent to keep going when it replies without searching or answering, or answers while most requirements are still unchecked and most of its budget is left, a bounded number of times per run. A pass that METIS sent back after it had already answered is never reported as cut short.
+**When the code agent stops early (#1388).** A code investigation that stops on its own with most requirements unchecked, or after only a few look-ups with most of its budget unused, no longer shows a green **completed**. Its card on the **Agent output** tab reads **degraded**, and the first note says what happened in plain words, for example _"the code agent stopped after 3 turns and 7 look-ups in the code, using about 6% of its token budget, and did not check 22 of 32 requirements against the code. They are marked “Could not verify”. Re-run the code investigation to check them."_ The run lists it once, as a code-analysis limitation. The note names other causes differently: when the agent's searches of the code failed, it says so (and how many errored or came back empty) and suggests checking the repository's index; when the agent checked the requirements and the code simply did not settle them, it says that, with no advice to re-run. Before any of this, METIS asks the code agent to keep going when it replies without searching or answering, or answers while most requirements are still unchecked and most of its budget is left, a bounded number of times per run. A pass that METIS sent back after it had already answered is never reported as cut short.
 
-**When the code analysis runs out of budget: Continue with a larger budget (#1001, #1062, #1131).** The banner on the **Summary** tab tells two cases apart. If the code agent ran out of tokens or turns before it **reached** some requirements (it has no finding for them that cites the code it read; a bare *Could not verify* saying the investigation was cut short counts as not reached), the banner says how many, for example *"3 of 19 requirements were not reached. 2 more were reached but are inconclusive; a larger budget would not change them."*, and offers **Continue with a larger budget…**. If it reached every requirement and some still read *Could not verify* while citing code, those are **inconclusive**: the agent looked, and the code it read did not settle them. The banner says so and does not offer Continue, because more budget would not change them; check them by hand or add context and start a new analysis. When every requirement has a grounded verdict, no banner is shown for it.
+**When the code analysis runs out of budget: Continue with a larger budget (#1001, #1062, #1131).** The banner on the **Summary** tab tells two cases apart. If the code agent ran out of tokens or turns before it **reached** some requirements (it has no finding for them that cites the code it read; a bare _Could not verify_ saying the investigation was cut short counts as not reached), the banner says how many, for example _"3 of 19 requirements were not reached. 2 more were reached but are inconclusive; a larger budget would not change them."_, and offers **Continue with a larger budget…**. If it reached every requirement and some still read _Could not verify_ while citing code, those are **inconclusive**: the agent looked, and the code it read did not settle them. The banner says so and does not offer Continue, because more budget would not change them; check them by hand or add context and start a new analysis. When every requirement has a grounded verdict, no banner is shown for it.
 
-Clicking **Continue with a larger budget…** does not start anything yet. It shows what the continuation will do and what it may cost: it re-investigates **only** the requirements that were not reached (per repository, on a project with several), keeps the findings the run already has, and then rebuilds the requirements from all findings (that rebuild has to run again, because a requirement's verdict and evidence links come from it). It quotes the code pass's token budget (twice `ANALYSIS_AGENT_TOKEN_BUDGET`), an estimated cost at this run's own average price per token so far, and what this run has used. The figure is a guide, not a cap: the pass's final answer retry and evidence salvage can add a little, and rebuilding the requirements is extra. When the continuation confirms a requirement, the earlier *Could not verify* placeholder for it is removed, so the requirement shows the new verdict. If the run's model has no price set, it says there is no cost estimate. Choose **Start the continuation** to go ahead, or **Not now**. While it runs, the banner reads *"Rerun in progress: re-investigating 3 of 19 requirements"* with the steps taken and the time so far, the same progress the **Agent output** card shows, and the run header's tokens and cost move as it goes. Continue can be used once per code pass; the banner then says what the rerun left, and why it is not offered again.
+Clicking **Continue with a larger budget…** does not start anything yet. It shows what the continuation will do and what it may cost: it re-investigates **only** the requirements that were not reached (per repository, on a project with several), keeps the findings the run already has, and then rebuilds the requirements from all findings (that rebuild has to run again, because a requirement's verdict and evidence links come from it). It quotes the code pass's token budget (twice `ANALYSIS_AGENT_TOKEN_BUDGET`), an estimated cost at this run's own average price per token so far, and what this run has used. The figure is a guide, not a cap: the pass's final answer retry and evidence salvage can add a little, and rebuilding the requirements is extra. When the continuation confirms a requirement, the earlier _Could not verify_ placeholder for it is removed, so the requirement shows the new verdict. If the run's model has no price set, it says there is no cost estimate. Choose **Start the continuation** to go ahead, or **Not now**. While it runs, the banner reads _"Rerun in progress: re-investigating 3 of 19 requirements"_ with the steps taken and the time so far, the same progress the **Agent output** card shows, and the run header's tokens and cost move as it goes. Continue can be used once per code pass; the banner then says what the rerun left, and why it is not offered again.
 
 **What a Regenerate keeps of your approved requirements (#1389).** When a Regenerate (or a resume) re-synthesises the requirements, METIS writes the requirement list again. For requirements you approved in the approval checkpoint:
 
 - **Title, description and priority** stay as you approved them. They come from the reviewed list, which a Regenerate does not change.
 - **They stay Approved.** Before this fix, a Regenerate returned every one of them to unreviewed.
-- **Acceptance criteria stay as you approved them.** If the new synthesis gives a requirement no criteria, the approved ones are kept and nothing is shown. Re-synthesis rewords criteria every time, so METIS compares them ignoring case, punctuation, order and the code lines they cite, and says nothing when only the wording changed. When the criteria really differ, the requirement still keeps the approved ones, and one notice above the requirements list says **Re-synthesis suggested different acceptance criteria for N approved requirements**. **Review** shows only those requirements; on each one, **Review** compares the approved and suggested lists, **Accept** writes the suggestion as a new version under your name, and **Dismiss** keeps the approved criteria. **Keep approved criteria for all** dismisses every suggestion at once. A dismissed requirement gets no further suggestions from later Regenerates of the same analysis run. After an Accept, **Restore** in the **History** tab on the version before it brings the approved criteria back: that version is a **System** entry, *"Approved acceptance criteria kept; re-synthesis suggested different ones"*. Accepting a suggestion is your own edit, so later Regenerates keep the whole list as it is (see below). The criteria METIS keeps are the ones recorded when the requirement was approved, so any number of Regenerates compare against the same list.
+- **Acceptance criteria stay as you approved them.** If the new synthesis gives a requirement no criteria, the approved ones are kept and nothing is shown. Re-synthesis rewords criteria every time, so METIS compares them ignoring case, punctuation, order and the code lines they cite, and says nothing when only the wording changed. When the criteria really differ, the requirement still keeps the approved ones, and one notice above the requirements list says **Re-synthesis suggested different acceptance criteria for N approved requirements**. **Review** shows only those requirements; on each one, **Review** compares the approved and suggested lists, **Accept** writes the suggestion as a new version under your name, and **Dismiss** keeps the approved criteria. **Keep approved criteria for all** dismisses every suggestion at once. A dismissed requirement gets no further suggestions from later Regenerates of the same analysis run. After an Accept, **Restore** in the **History** tab on the version before it brings the approved criteria back: that version is a **System** entry, _"Approved acceptance criteria kept; re-synthesis suggested different ones"_. Accepting a suggestion is your own edit, so later Regenerates keep the whole list as it is (see below). The criteria METIS keeps are the ones recorded when the requirement was approved, so any number of Regenerates compare against the same list.
 - **Clarification answers** you gave are written into the description again, as they are on the first promotion.
 
 A requirement you edited, linked, commented on or reviewed yourself is never replaced: the Regenerate keeps the whole list as it is and says so (#769).
@@ -1513,21 +1534,21 @@ A requirement you edited, linked, commented on or reviewed yourself is never rep
 - **Apply changes** asks you to confirm first and names every reviewed requirement that would get new wording. Applying never deletes review work. A reviewed requirement keeps its status, links, comments, data mappings and baseline pins, and its new wording is saved as a new version under your name, so **Restore** in **History** brings the old wording back. Requirements without review work are replaced, as a normal Regenerate would. If the new result gives a requirement no acceptance criteria, its current criteria stay.
 - **Dismiss changes** appears once the comparison is open. It asks you to confirm, then keeps your current requirements exactly as they are and discards the new result. A discarded result cannot be brought back; run the Regenerate again to get a new one.
 
-Anyone who can open the analysis can review the changes. Applying or dismissing them needs permission to edit the project; without it, the comparison says *Ask someone who can edit this project (a coordinator or admin) to apply or dismiss these changes.* If a requirement changes after you open the comparison (someone edits it, changes its review status, or reviews one that had no review work), **Apply changes** applies nothing. It says the requirements changed and shows the up-to-date comparison for you to review again, so METIS never applies something the confirmation did not show you. If another Regenerate finishes while you are reviewing, METIS says a newer re-synthesis replaced the one you were reviewing, changes nothing, and shows the newest one. A notice from before this change has no stored result to review: run the Regenerate again to get one.
+Anyone who can open the analysis can review the changes. Applying or dismissing them needs permission to edit the project; without it, the comparison says _Ask someone who can edit this project (a coordinator or admin) to apply or dismiss these changes._ If a requirement changes after you open the comparison (someone edits it, changes its review status, or reviews one that had no review work), **Apply changes** applies nothing. It says the requirements changed and shows the up-to-date comparison for you to review again, so METIS never applies something the confirmation did not show you. If another Regenerate finishes while you are reviewing, METIS says a newer re-synthesis replaced the one you were reviewing, changes nothing, and shows the newest one. A notice from before this change has no stored result to review: run the Regenerate again to get one.
 
-**When every requirement is "Could not verify".** If the code agent ran out of budget and then returned nothing, the **Agent output** tab says why under the code agent's notes — for example *"The final-answer call returned no text: it stopped at its output limit (16384 of 16384 output tokens used)."* That message means the model spent its whole output allowance reasoning before writing an answer. METIS now limits reasoning on those two recovery calls for models that reason by default; an administrator can change this with `ANALYSIS_RECOVERY_REASONING` (`off` turns reasoning off for them). The setting reaches the model only through the Anthropic-format provider (`anthropic`, including an Anthropic-compatible endpoint such as DeepSeek's) and `local-gemma`. The OpenAI-format providers (`openai`, `azure`, `bedrock-gateway`) do not send it, and on those the note says so and suggests limiting reasoning at the endpoint, another model, or a larger `ANALYSIS_FINAL_ANSWER_MAX_OUTPUT_TOKENS` instead. **Leave it at `auto` when you run real Claude models:** `auto` sends Claude exactly the request it was sent before this setting existed, while `low`, `medium`, `high` and `off` add `thinking` / `output_config.effort` fields that have not been verified against each Claude model.
+**When every requirement is "Could not verify".** If the code agent ran out of budget and then returned nothing, the **Agent output** tab says why under the code agent's notes — for example _"The final-answer call returned no text: it stopped at its output limit (16384 of 16384 output tokens used)."_ That message means the model spent its whole output allowance reasoning before writing an answer. METIS now limits reasoning on those two recovery calls for models that reason by default; an administrator can change this with `ANALYSIS_RECOVERY_REASONING` (`off` turns reasoning off for them). The setting reaches the model only through the Anthropic-format provider (`anthropic`, including an Anthropic-compatible endpoint such as DeepSeek's) and `local-gemma`. The OpenAI-format providers (`openai`, `azure`, `bedrock-gateway`) do not send it, and on those the note says so and suggests limiting reasoning at the endpoint, another model, or a larger `ANALYSIS_FINAL_ANSWER_MAX_OUTPUT_TOKENS` instead. **Leave it at `auto` when you run real Claude models:** `auto` sends Claude exactly the request it was sent before this setting existed, while `low`, `medium`, `high` and `off` add `thinking` / `output_config.effort` fields that have not been verified against each Claude model.
 
-**What `off` does on newer Claude models (#1224).** This applies to every reasoning setting (`DOCS_GEN_PHASE1_REASONING`, `SPEC_KIT_REASONING`, `ANALYSIS_RECOVERY_REASONING`). On Claude Sonnet 5.5, `off` turns reasoning off: the model does not reason before it answers. **Claude Opus 5.5, Fable and Mythos cannot turn reasoning off at all.** On those models `off` means the *lowest effort*, so they still reason a little, and **that reasoning is still billed** as output tokens. To keep reasoning cost down on those models, `off` and `low` behave the same. To stop paying for reasoning, choose a model that can turn it off. **How much `off` still costs on them (#1278):** the reasoning is billed at the model's output price, $20 per million tokens on Opus 5.5 and $50 on Fable and Mythos. Anthropic does not publish a fixed amount for `low` effort: the model reasons less, and on a hard section it may still reason at length. So that this reasoning cannot crowd out the text of a document section, METIS gives these three models the same extra output room it gives models that reason by default, such as DeepSeek V4 (`DOCS_GEN_REASONING_ALLOWANCE_TOKENS`, 32,768 tokens by default, within each model's output limit). The room is a ceiling, not a charge: you pay only for the tokens the model actually writes. Other Claude models get no extra room, and what `auto` sends them is unchanged. Every other model is sent reasoning `off` exactly as before. If a model rejects a reasoning setting, the document warning says so in plain words and names the step that failed.
+**What `off` does on newer Claude models (#1224).** This applies to every reasoning setting (`DOCS_GEN_PHASE1_REASONING`, `SPEC_KIT_REASONING`, `ANALYSIS_RECOVERY_REASONING`). On Claude Sonnet 5.5, `off` turns reasoning off: the model does not reason before it answers. **Claude Opus 5.5, Fable and Mythos cannot turn reasoning off at all.** On those models `off` means the _lowest effort_, so they still reason a little, and **that reasoning is still billed** as output tokens. To keep reasoning cost down on those models, `off` and `low` behave the same. To stop paying for reasoning, choose a model that can turn it off. **How much `off` still costs on them (#1278):** the reasoning is billed at the model's output price, $20 per million tokens on Opus 5.5 and $50 on Fable and Mythos. Anthropic does not publish a fixed amount for `low` effort: the model reasons less, and on a hard section it may still reason at length. So that this reasoning cannot crowd out the text of a document section, METIS gives these three models the same extra output room it gives models that reason by default, such as DeepSeek V4 (`DOCS_GEN_REASONING_ALLOWANCE_TOKENS`, 32,768 tokens by default, within each model's output limit). The room is a ceiling, not a charge: you pay only for the tokens the model actually writes. Other Claude models get no extra room, and what `auto` sends them is unchanged. Every other model is sent reasoning `off` exactly as before. If a model rejects a reasoning setting, the document warning says so in plain words and names the step that failed.
 
-Expand **Searched scope** at the top of the report to see exactly which queries the code agent ran and which ones returned results — an absence claim only means something relative to what was actually searched. If retrieval was poor, the panel leads with a warning that "not found" results are unreliable for that run (the same signal appears in the analysis banner as *code search returned little usable evidence*).
+Expand **Searched scope** at the top of the report to see exactly which queries the code agent ran and which ones returned results — an absence claim only means something relative to what was actually searched. If retrieval was poor, the panel leads with a warning that "not found" results are unreliable for that run (the same signal appears in the analysis banner as _code search returned little usable evidence_).
 
-The **coverage** badge (grounded in code / docs only / no evidence) and the **verification** badge (confirmed / unverified / could not verify) appear inline on each card so you can judge, at a glance, how trustworthy the evidence is. Coverage describes what **kind** of evidence exists, not whether the requirement is done: *grounded in code* means some code was cited, and *no evidence* may simply mean the search failed — read the **verdict** for the actual answer. The whole report is assembled from the completed analysis — there is no extra AI step, so it's fast and reproducible, and **every claim about the current implementation is anchored to a citation or an explicit no-evidence marker**.
+The **coverage** badge (grounded in code / docs only / no evidence) and the **verification** badge (confirmed / unverified / could not verify) appear inline on each card so you can judge, at a glance, how trustworthy the evidence is. Coverage describes what **kind** of evidence exists, not whether the requirement is done: _grounded in code_ means some code was cited, and _no evidence_ may simply mean the search failed — read the **verdict** for the actual answer. The whole report is assembled from the completed analysis — there is no extra AI step, so it's fast and reproducible, and **every claim about the current implementation is anchored to a citation or an explicit no-evidence marker**.
 
-**Database changes.** When a requirement touches the database, the card grows a **Database changes** section — the database counterpart of the gap findings. It lists the affected tables and columns, the kind of change (add table, add column, alter column, drop column, or a reference), and, for each, a **Suggested DDL** block. That DDL is always shown under a persistent **“Suggested DDL — for review only, never executed”** label: METIS *never* runs it against any database — it is a starting point for you to review, edit, and apply yourself. Each row also carries a **risk** badge — **Breaking** (loud), **Expanding** (additive), **Neutral**, or **Unclassified** when the risk has not yet been scored — and the label text always states the risk, so it is never conveyed by colour alone.
+**Database changes.** When a requirement touches the database, the card grows a **Database changes** section — the database counterpart of the gap findings. It lists the affected tables and columns, the kind of change (add table, add column, alter column, drop column, or a reference), and, for each, a **Suggested DDL** block. That DDL is always shown under a persistent **“Suggested DDL — for review only, never executed”** label: METIS _never_ runs it against any database — it is a starting point for you to review, edit, and apply yourself. Each row also carries a **risk** badge — **Breaking** (loud), **Expanding** (additive), **Neutral**, or **Unclassified** when the risk has not yet been scored — and the label text always states the risk, so it is never conveyed by colour alone.
 
 Objects METIS could match against the live schema appear in the main table. Objects it referenced in code but **could not find** in the live schema are moved into a separate **“Unverified against live schema”** block, so a speculative table or column is never presented as a confirmed change.
 
-If a change touches a table shared with other projects in your workspace, a **cross-project impact** banner lists which projects **read** or **write** it, so you can see the blast radius before you commit. When METIS cannot tell whether a table is shared — because the database identity has not been linked — it says **“cross-project impact unknown — database identity not linked”** (with a link to the connection's identity settings), which is deliberately distinct from confirming that *no* other project uses it.
+If a change touches a table shared with other projects in your workspace, a **cross-project impact** banner lists which projects **read** or **write** it, so you can see the blast radius before you commit. When METIS cannot tell whether a table is shared — because the database identity has not been linked — it says **“cross-project impact unknown — database identity not linked”** (with a link to the connection's identity settings), which is deliberately distinct from confirming that _no_ other project uses it.
 
 > For the full picture — how the schema crossing works, how to link database identity, how to read reconciliation confidence and verdicts, and the safety guarantees behind the suggested DDL — see the [Database Impact Analysis](./DATABASE_IMPACT_ANALYSIS.md) guide.
 
@@ -1554,6 +1575,7 @@ Once a run completes you can take the analyst-facing artifacts out of METIS as m
 ### 11.4 Viewing Analysis History
 
 Navigate to the **Analysis** page to see all analysis runs across all projects. Each entry shows:
+
 - The document or project that was analyzed
 - The status with a colored badge
 - Number of requirements found
@@ -1578,27 +1600,27 @@ A **requirement** is a specific, actionable piece of work that was discovered du
 
 Each requirement has these properties:
 
-| Property | Description | Example |
-|---|---|---|
-| **ID** | Unique identifier (auto-generated) | `REQ-001` |
-| **Title** | Brief summary of what's needed | "Add rate limiting to public API" |
-| **Description** | Detailed explanation of the requirement | Full paragraph with context and rationale |
-| **Type** | Category of work | `feature`, `schema-change`, `api-change`, `security`, `performance` |
-| **Priority** | Urgency level | `critical`, `high`, `medium`, `low` |
-| **Status** | Where it is in the workflow | `generated`, `reviewing`, `approved`, `published` |
-| **Source** | What document/code/database it came from | "API Security Policy v3.2, Section 4.1" |
-| **Tags** | Keywords for categorization | `security`, `authentication`, `api` |
-| **Acceptance Criteria** | Specific conditions for completion | "Users can log in via OAuth 2.0 provider" |
-| **Coverage** | How strongly the requirement is backed by evidence | `Grounded in code`, `Docs only`, `No evidence` |
-| **GitHub Issue #** | Linked issue number (after publishing) | `#142` |
+| Property                | Description                                        | Example                                                             |
+| ----------------------- | -------------------------------------------------- | ------------------------------------------------------------------- |
+| **ID**                  | Unique identifier (auto-generated)                 | `REQ-001`                                                           |
+| **Title**               | Brief summary of what's needed                     | "Add rate limiting to public API"                                   |
+| **Description**         | Detailed explanation of the requirement            | Full paragraph with context and rationale                           |
+| **Type**                | Category of work                                   | `feature`, `schema-change`, `api-change`, `security`, `performance` |
+| **Priority**            | Urgency level                                      | `critical`, `high`, `medium`, `low`                                 |
+| **Status**              | Where it is in the workflow                        | `generated`, `reviewing`, `approved`, `published`                   |
+| **Source**              | What document/code/database it came from           | "API Security Policy v3.2, Section 4.1"                             |
+| **Tags**                | Keywords for categorization                        | `security`, `authentication`, `api`                                 |
+| **Acceptance Criteria** | Specific conditions for completion                 | "Users can log in via OAuth 2.0 provider"                           |
+| **Coverage**            | How strongly the requirement is backed by evidence | `Grounded in code`, `Docs only`, `No evidence`                      |
+| **GitHub Issue #**      | Linked issue number (after publishing)             | `#142`                                                              |
 
 **Coverage badge.** Every requirement row shows a small colour-coded **coverage** badge that tells you, at a glance, how well the analysis could back the requirement up with evidence. Metis works this out automatically when it synthesizes the requirements — it looks at the findings each requirement was built from and checks whether they point at real source code, only at documents, or at nothing concrete. Hover the badge for a plain-language explanation.
 
-| Badge | Colour | Meaning | What to do |
-|---|---|---|---|
-| **Grounded in code** | Green | At least one supporting finding cites a specific place in the source code (a file and line range). This is the strongest evidence. | Nothing — this requirement is well-anchored to the implementation. |
-| **Docs only** | Amber | The requirement is backed only by document citations; no finding traced it to actual code. It may still be valid, but its link to the implementation is unverified. | If the requirement should touch code, consider connecting the repository (or building the code graph) and re-running, so the analysis can look for code evidence. |
-| **No evidence** | Red | No grounded evidence was linked to this requirement. | **Review it manually:** confirm it is real, gather the supporting documents or code, and re-run the analysis. |
+| Badge                | Colour | Meaning                                                                                                                                                             | What to do                                                                                                                                                        |
+| -------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Grounded in code** | Green  | At least one supporting finding cites a specific place in the source code (a file and line range). This is the strongest evidence.                                  | Nothing — this requirement is well-anchored to the implementation.                                                                                                |
+| **Docs only**        | Amber  | The requirement is backed only by document citations; no finding traced it to actual code. It may still be valid, but its link to the implementation is unverified. | If the requirement should touch code, consider connecting the repository (or building the code graph) and re-running, so the analysis can look for code evidence. |
+| **No evidence**      | Red    | No grounded evidence was linked to this requirement.                                                                                                                | **Review it manually:** confirm it is real, gather the supporting documents or code, and re-run the analysis.                                                     |
 
 Requirements from analyses run before this feature shipped show no badge (there is nothing to classify). Coverage is recomputed every time you re-run the analysis, so acting on a `No evidence` requirement — adding a document, connecting a repo — and re-running will update the badge.
 
@@ -1611,6 +1633,7 @@ The **Requirements** page provides powerful filtering tools to help you find spe
 **Search Bar**: Type any text to search across requirement titles, IDs, and source references. Results update instantly as you type.
 
 **Priority Filter**: Click the Priority dropdown to show only requirements of a specific priority level:
+
 - All Priorities (default)
 - Critical
 - High
@@ -1618,6 +1641,7 @@ The **Requirements** page provides powerful filtering tools to help you find spe
 - Low
 
 **Status Filter**: Click the Status dropdown to show only requirements in a specific state:
+
 - All Statuses (default)
 - Generated (newly created by analysis)
 - Reviewing (being reviewed by a human)
@@ -1630,11 +1654,11 @@ The page header shows a count of how many requirements match your current filter
 
 The Requirements page has a second tab called **Traceability Matrix**. This is a table that shows the lifecycle of every requirement at a glance:
 
-| Requirement | Analyzed | Approved | Issue Created | Published |
-|---|---|---|---|---|
-| REQ-001: Add rate limiting | ✅ | ✅ | ✅ | ✅ |
-| REQ-002: Schema migration | ✅ | ✅ | ⬜ | ⬜ |
-| REQ-003: Update dashboard | ✅ | ⬜ | ⬜ | ⬜ |
+| Requirement                | Analyzed | Approved | Issue Created | Published |
+| -------------------------- | -------- | -------- | ------------- | --------- |
+| REQ-001: Add rate limiting | ✅       | ✅       | ✅            | ✅        |
+| REQ-002: Schema migration  | ✅       | ✅       | ⬜            | ⬜        |
+| REQ-003: Update dashboard  | ✅       | ⬜       | ⬜            | ⬜        |
 
 - ✅ Green checkmark = this stage is complete
 - ⬜ Gray icon = this stage is pending
@@ -1645,13 +1669,13 @@ This matrix gives you instant visibility into where each requirement stands in t
 
 Each requirement's card on an analysis's **Requirements** tab shows its traceability chain (specs → code), and below it a **Tested by** section. Each test is listed as `file:line › test name` — for example `internal/validator/user_test.go:18 › TestValidatePassword` — with a label saying how METIS linked it:
 
-| Label | Meaning |
-|---|---|
-| **Mapped directly** | The code mapped to the requirement is itself a test file or test. |
-| **Calls the code** | A test calls (or references) code mapped to the requirement. |
-| **Naming convention** | A test in the conventional test file for the mapped code is named for it. A weak signal. |
-| **Inferred call** | Go only. The test calls a method whose name matches the mapped code, but METIS could not see which object the call was made on, so it matched by name. It is shown only when the name is distinctive (two words or more, and not a common Go library name such as `Close` or `WithTimeout`) or the test is named for the method. A weak signal: read the test before relying on it. |
-| **Shared entry point** | The test only calls setup code that many tests use, such as a constructor or a router (Miniflux's `NewHandler`), its name does not name that code, and neither name mentions the requirement's words. The call is real, but it says nothing about this requirement, so it does not count as a test of it. Hover the label for this explanation. A test named for the code it calls keeps its usual label when that code's own name shares a word with the requirement (`TestParseFeedRSS` for "Parsing feeds"). Generic words such as *new* or *handler* do not count, so `TestNewHandler…` is still a shared entry point for a route requirement. |
+| Label                  | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Mapped directly**    | The code mapped to the requirement is itself a test file or test.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| **Calls the code**     | A test calls (or references) code mapped to the requirement.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **Naming convention**  | A test in the conventional test file for the mapped code is named for it. A weak signal.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **Inferred call**      | Go only. The test calls a method whose name matches the mapped code, but METIS could not see which object the call was made on, so it matched by name. It is shown only when the name is distinctive (two words or more, and not a common Go library name such as `Close` or `WithTimeout`) or the test is named for the method. A weak signal: read the test before relying on it.                                                                                                                                                                                                                                                                |
+| **Shared entry point** | The test only calls setup code that many tests use, such as a constructor or a router (Miniflux's `NewHandler`), its name does not name that code, and neither name mentions the requirement's words. The call is real, but it says nothing about this requirement, so it does not count as a test of it. Hover the label for this explanation. A test named for the code it calls keeps its usual label when that code's own name shares a word with the requirement (`TestParseFeedRSS` for "Parsing feeds"). Generic words such as _new_ or _handler_ do not count, so `TestNewHandler…` is still a shared entry point for a route requirement. |
 
 A requirement that METIS mapped to a whole file from an analysis citation, with no line range, is linked only to tests whose name, or the name of the code they call, shares the requirement's words. Other tests of that file are about something else in it.
 
@@ -1662,13 +1686,14 @@ Two empty states mean different things:
 - **No linked test** — the requirement has mapped code, but no test was found for it. This is a real testing gap.
 - **No code mapped yet, so tests can't be linked** — METIS does not yet know which code implements the requirement, so it cannot tell whether it is tested. Map code first.
 
-On the analysis's **Traceability** tab, the matrix's **Tests** column shows the same label after each test, and an **Untested requirements** list sits below the matrix. It reads "N of M requirements with mapped code have a linked test", says how many requirements have no mapped code (those are not counted either way), and lists each untested requirement as a link to its card. A requirement whose only tests call a shared entry point is listed too, marked **Tested only through a shared entry point**, with the next step: map it to the code that implements it, or add a test for it. On the requirement's card such tests are listed under **Only calls shared setup code**, apart from the tests that count, and the **Tested by (n)** heading counts only the latter. The exported matrix lists them after the counted tests, marked "not counted". Use **Load more** to page through a long list. The list appears once the analysis has completed. It is separate from the **Gap report** further down, which is about missing *implementation*, not missing tests.
+On the analysis's **Traceability** tab, the matrix's **Tests** column shows the same label after each test, and an **Untested requirements** list sits below the matrix. It reads "N of M requirements with mapped code have a linked test", says how many requirements have no mapped code (those are not counted either way), and lists each untested requirement as a link to its card. A requirement whose only tests call a shared entry point is listed too, marked **Tested only through a shared entry point**, with the next step: map it to the code that implements it, or add a test for it. On the requirement's card such tests are listed under **Only calls shared setup code**, apart from the tests that count, and the **Tested by (n)** heading counts only the latter. The exported matrix lists them after the counted tests, marked "not counted". Use **Load more** to page through a long list. The list appears once the analysis has completed. It is separate from the **Gap report** further down, which is about missing _implementation_, not missing tests.
 
 > **Used the old Test Coverage page?** It was removed, with its test-case imports and its Jira, Xray, Zephyr Scale and TestRail connectors ([ADR 0019](decisions/0019-replace-test-coverage-with-tested-by.md)). **Tested by** replaces it: it reads the tests already in your repository from the code graph, makes no model call, and tells "no test" apart from "no code mapped". For a per-project figure, see the **Tested** column in Section 12.10.
 
 ### 12.5 Editing Requirements
 
 You can edit any requirement that hasn't been published yet:
+
 1. Navigate to the requirement
 2. Modify the **title**, **description**, **body**, or **labels** as needed
 3. Save your changes
@@ -1689,12 +1714,12 @@ For teams that use the **formal review workflow** (the Reviews page — see the 
 
 - **Where:** the **Approval gate** card at the top of the project's **Publishing** page. Tick **"Require approved review to publish/export"**. Only review administrators (coordinator or admin) can change the setting — everyone else sees it read-only. It is **off by default**, so nothing changes until you enable it.
 - **What it enforces (when on):** publishing issue drafts (single approve, live batches, and retried/re-published batches — to GitHub and to Jira), exporting a generated document (PDF/Word/Markdown), and exporting a requirement's version history (CSV/JSON) are all **blocked** unless each item has an **approved review of its current content**. If a requirement or document changed after its review was approved, the old approval no longer counts — submit it for review again.
-- **What you see on a block (#1117):** the draft row you clicked shows an inline message right where you clicked it, and a fuller notice appears **above** the drafts list — it used to render below the list, which on a long list put it off-screen and made a rejected Approve read as a click that did nothing. The notice leads with how many requirements/documents still need review (and any drafts not linked to a requirement at all), shows the first five ids plus *"and N more"* rather than a wall of identifiers, and links to **Create or view reviews**. Dry-run publishes are never blocked — use them to preview what still needs sign-off. The clarify-question CSV/JSON download is also never blocked: it writes nothing to external systems, like dry-run previews.
-- **Safety behavior:** the gate *fails closed*. If METIS cannot verify approvals (for example, a temporary database problem), the publish/export is blocked rather than allowed — retry once the system recovers.
+- **What you see on a block (#1117):** the draft row you clicked shows an inline message right where you clicked it, and a fuller notice appears **above** the drafts list — it used to render below the list, which on a long list put it off-screen and made a rejected Approve read as a click that did nothing. The notice leads with how many requirements/documents still need review (and any drafts not linked to a requirement at all), shows the first five ids plus _"and N more"_ rather than a wall of identifiers, and links to **Create or view reviews**. Dry-run publishes are never blocked — use them to preview what still needs sign-off. The clarify-question CSV/JSON download is also never blocked: it writes nothing to external systems, like dry-run previews.
+- **Safety behavior:** the gate _fails closed_. If METIS cannot verify approvals (for example, a temporary database problem), the publish/export is blocked rather than allowed — retry once the system recovers.
 
 #### 12.6.2 Baselines (immutable snapshots of approved requirements)
 
-When a review of requirements is **approved**, METIS automatically creates a **baseline**: a named, immutable snapshot recording the exact version of every requirement in the review's scope at sign-off time. This is the same review-to-baseline coupling you may know from IBM DOORS Next or Jama Connect — approval *is* the baselining event, so your audit trail and your requirement snapshots can never drift apart.
+When a review of requirements is **approved**, METIS automatically creates a **baseline**: a named, immutable snapshot recording the exact version of every requirement in the review's scope at sign-off time. This is the same review-to-baseline coupling you may know from IBM DOORS Next or Jama Connect — approval _is_ the baselining event, so your audit trail and your requirement snapshots can never drift apart.
 
 - **Where:** the project's **Requirements** tab → **Baselines**. The review detail page also links straight to the baseline a review produced.
 - **List:** every baseline in the project, newest first, showing how many requirements it pins and which review produced it (or who created it manually).
@@ -1713,11 +1738,13 @@ The **Data Mappings** panel appears directly below each requirement card on the 
 #### Two ways to create a mapping
 
 **Manual:**
+
 1. Click **"Add mapping"** on any requirement.
 2. Select the database connection, enter the schema name, table name, and (optionally) a specific column.
 3. Click **Save**. The mapping is stored with a confidence of 1.0 (manually confirmed).
 
 **AI-suggested:**
+
 1. Click **"Suggest mappings"** on any requirement.
 2. METIS queries the RAG knowledge base (populated when your database schema was ingested) and asks the LLM to reason about which tables/columns are relevant to the requirement text.
 3. Ranked candidates are returned with a confidence score (0–100%) and a brief rationale.
@@ -1785,11 +1812,11 @@ Restoring is limited to **coordinators and admins**.
 
 Restoring does **not** overwrite history — it creates a **new** version with the restored contents, so the full trail (including the restore itself) is always preserved.
 
-Changes METIS makes on its own are recorded too: writing clarification answers into a requirement shows as a version with the reason *"Clarification answers applied"*, and an import re-sync that changes a requirement shows as *"Import re-sync from the source system"*.
+Changes METIS makes on its own are recorded too: writing clarification answers into a requirement shows as a version with the reason _"Clarification answers applied"_, and an import re-sync that changes a requirement shows as _"Import re-sync from the source system"_.
 
 > **Imported requirements follow their source.** A re-sync writes the source system's title, description, priority, type and labels back over the requirement, so it **reverts any edit you made in METIS**, even if nothing changed in the source. Your edit is not lost: it stays in History as its own version, and you can bring it back with **Restore**. If the project has **Require approved review to publish/export** turned on (see 12.6.1; it is off by default), a re-sync that changes a requirement also means its approved review no longer matches, so the requirement needs reviewing again before it can be published or exported.
 
-A requirement's **review status** (draft, approved, rejected, deferred) is not part of its versions — it is the verdict *on* a version — so approving or rejecting does not create one, and restoring an old version does not change the status.
+A requirement's **review status** (draft, approved, rejected, deferred) is not part of its versions — it is the verdict _on_ a version — so approving or rejecting does not create one, and restoring an old version does not change the status.
 
 #### Exporting the history
 
@@ -1803,7 +1830,7 @@ Individual requirement links (Section 12.8) are most useful when you can see the
 
 Open your workspace and select the **Traceability** tab (`/workspaces/<id>/traceability`). You'll see two panels:
 
-- **Per-project coverage** — a table with one row per project in the workspace, showing its **analysed** requirement count, how many of those requirements are **linked across projects**, and its **spec** and **code** coverage as percentages of the analysed requirements (hover a badge to see the denominator). Items imported from a tracker that no analysis has mapped to a spec or to code are shown as a separate "+ N imported, not analysed" count under the requirement count and are left out of the percentages, so a project with hundreds of imported issues does not read as almost uncovered. A **Tested** column shows the share of requirements *with mapped code* that have at least one linked test (any of the "Tested by" labels in Section 12.4). Requirements with no mapped code are left out of that figure, and a project with none shows "No mapped code" instead of a percentage. **Shared entry point** links do not count. Hover the badge for the strict figure, which counts only **Mapped directly** and **Calls the code** links, not **Naming convention** or **Inferred call**. It's a quick read on which projects are well-connected and well-covered, and which are lagging.
+- **Per-project coverage** — a table with one row per project in the workspace, showing its **analysed** requirement count, how many of those requirements are **linked across projects**, and its **spec** and **code** coverage as percentages of the analysed requirements (hover a badge to see the denominator). Items imported from a tracker that no analysis has mapped to a spec or to code are shown as a separate "+ N imported, not analysed" count under the requirement count and are left out of the percentages, so a project with hundreds of imported issues does not read as almost uncovered. A **Tested** column shows the share of requirements _with mapped code_ that have at least one linked test (any of the "Tested by" labels in Section 12.4). Requirements with no mapped code are left out of that figure, and a project with none shows "No mapped code" instead of a percentage. **Shared entry point** links do not count. Hover the badge for the strict figure, which counts only **Mapped directly** and **Calls the code** links, not **Naming convention** or **Inferred call**. It's a quick read on which projects are well-connected and well-covered, and which are lagging.
 - **Cross-project link map** — a diagram of the workspace's cross-project requirement links: each project is a box, each participating requirement a node, and each link a typed arrow between them. When there are no cross-project links yet, the panel says so.
 
 **What you see respects your access.** The rollup only ever includes projects you can access within that workspace, and a cross-project link appears **only when you can access both of its endpoints** — so the view never reveals a requirement, project, or link you aren't entitled to see. Asking for a workspace you don't belong to returns "not found".
@@ -1832,6 +1859,7 @@ After an analysis produces requirements, you can generate GitHub issue drafts:
 2. Click **"Generate Drafts"** or use the Publishing API
 
 For each requirement, METIS creates a draft issue (an import of more than 25 requirements first asks you to choose which ones to draft, up to 500 at a time) with:
+
 - **Epic or Feature label** — critical/high priority items become Epics; others become Features
 - **Structured template**:
   - Description (from the requirement body)
@@ -1849,17 +1877,17 @@ For each requirement, METIS creates a draft issue (an import of more than 25 req
     leaving the section out. Derived files are written into the draft only; they are not saved as the
     requirement's code links. **What this section reveals depends on
     where the issue is going:**
-    - *Drafts generated for the repository METIS analysed* — the publish target has the same host, owner
+    - _Drafts generated for the repository METIS analysed_ — the publish target has the same host, owner
       and name as the project's single GitHub connector: each path is a link into that repository at the
       ingested commit, so the issue names the repository's owner, name and commit SHA — which its readers
       can already see. Three fields decide it, and they sit on two cards: the **Target owner** and
-      **Target repo** of the *Generate drafts from analysis* card, and the **GHE base URL** field of the
-      *New publish batch* card, which gives the host (empty = github.com; it is prefilled from the
+      **Target repo** of the _Generate drafts from analysis_ card, and the **GHE base URL** field of the
+      _New publish batch_ card, which gives the host (empty = github.com; it is prefilled from the
       connector, and **Generate** stays disabled until that has loaded). All three are read when you
       click **Generate**. A repository with the same owner and name on another host is a different
       repository. If the base URL field holds something that is not an `https://` URL, Generate still
       runs: the drafts list the code as plain text and a note beside the button says why.
-    - *Drafts generated for any other repository* (a sandbox, a separate tracker, a public issue repo, a
+    - _Drafts generated for any other repository_ (a sandbox, a separate tracker, a public issue repo, a
       same-named repository on another host): the same paths and symbol names are listed as plain code,
       with no link, no owner or repository name and no commit SHA, and the section's last line says the
       paths are text because the issue is not in the analysed repository. The paths and symbol names
@@ -1871,8 +1899,8 @@ For each requirement, METIS creates a draft issue (an import of more than 25 req
     - A batch, or a draft pull request, pointed at a different repository than its drafts were generated for is refused
       (`CODE_LINKS_TARGET_MISMATCH`) while any of them still links into the analysed repository. The
       message names the drafts. There are two ways out. **Generate again for the new target:** in the
-      *Generate drafts from analysis* card set **Target owner** and **Target repo** to the new
-      repository, in the *New publish batch* card set **GHE base URL** to its host (empty for
+      _Generate drafts from analysis_ card set **Target owner** and **Target repo** to the new
+      repository, in the _New publish batch_ card set **GHE base URL** to its host (empty for
       github.com), and click **Generate** — the batch form's own Owner and Repo fields are not read by
       Generate; they then show the regenerated drafts' target. The code is listed as text afterwards,
       except in a draft whose text you edited by hand or that is kept because it is signed off. **Or
@@ -1883,11 +1911,11 @@ For each requirement, METIS creates a draft issue (an import of more than 25 req
       and symbol names as code, no owner, repository name, commit SHA or URL — whatever the GitHub issue
       of the same draft carries. Only that section is replaced; every other character of the draft is
       sent as it is, and the stored draft is not changed. Two consequences:
-      - *A link or URL you (or the imported requirement text) wrote is yours and goes to Jira unchanged*,
+      - _A link or URL you (or the imported requirement text) wrote is yours and goes to Jira unchanged_,
         including a link into the analysed repository and its commit SHA. If that must not reach Jira,
         take it out of the draft before approving it. The draft preview shows the linked body; Jira has
         no dry run, so the plain section is not shown before it is sent.
-      - *If you edit the section*, METIS no longer swaps it whole. It takes its own link off each row
+      - _If you edit the section_, METIS no longer swaps it whole. It takes its own link off each row
         that still has it, leaves your words, and ends the section with a line saying it was edited. A
         row you rewrote from its first character is yours and is sent as written.
     - The paths are also plain text when the project has no GitHub connector, more than one, or one
@@ -1901,10 +1929,10 @@ For each requirement, METIS creates a draft issue (an import of more than 25 req
     Hidden means not rendered — anyone who can read the issue can still read it in the issue's source
   - **What each destination carries back to METIS (#1103).** None of them shows an internal id in the
     visible text.
-    - *GitHub issue* — the hidden `metis-source` comment above.
-    - *Draft pull request* — the same hidden comment, at the end of the pull request body. The visible
+    - _GitHub issue_ — the hidden `metis-source` comment above.
+    - _Draft pull request_ — the same hidden comment, at the end of the pull request body. The visible
       footer says "Opened as a draft by METIS from an issue draft" and no longer names the draft's id.
-    - *Jira issue* — Jira shows an HTML comment as text, so the ids go into a Jira **issue property**
+    - _Jira issue_ — Jira shows an HTML comment as text, so the ids go into a Jira **issue property**
       named `metis.source` (`{ projectId, analysisId, requirementId }`). It is not shown in the
       description; read it through the Jira API (`GET /rest/api/3/issue/<key>/properties/metis.source`).
       If the token may not set properties, the issue is still created and the failure is audited.
@@ -1948,7 +1976,7 @@ When your approved drafts are ready:
 
 **Rollback protection**: If more than 50% of publishes fail, METIS automatically closes all already-published issues to prevent a partial, inconsistent state.
 
-**Editing drafts before you publish** [#776]: on the **Publish** page each draft that is not yet published has an **Edit** button. Change the title, the Markdown body (for example to add acceptance criteria) or the labels, then **Save draft**. An approved draft goes back to *draft* when you edit it, so approve it again. Re-generating drafts from the analysis keeps your edits. Two drafts in one project cannot share a title.
+**Editing drafts before you publish** [#776]: on the **Publish** page each draft that is not yet published has an **Edit** button. Change the title, the Markdown body (for example to add acceptance criteria) or the labels, then **Save draft**. An approved draft goes back to _draft_ when you edit it, so approve it again. Re-generating drafts from the analysis keeps your edits. Two drafts in one project cannot share a title.
 
 **Draft pull requests** [#776]: **Draft PR** on a draft commits it as a spec file (`.metis/drafts/<draft id>.md`) on a new branch `metis/draft-<draft id>` and opens a GitHub **draft** pull request. It always targets the project's **saved publish target**; there is no owner or repo field. It is refused if no target is saved, or if the saved target is a repository the project analyses, including one whose connector was since removed. When the PR is opened, METIS also looks up each analysed GitHub repository and refuses a target that is its upstream (fork parent or source): a project that analyses your fork must not open PRs on the original. A target that is itself a fork of the analysed repository is allowed; that is the usual sandbox. Only repositories that connected or were ingested are looked up (a connector that never connected is skipped, a removed one is not). If one of them cannot be looked up, the PR is not opened: use a vault secret that can read it, or change the publish target. The dry run makes no network call, so its plan says the upstream check is still to come. Repositories analysed from a **local** path or an **upload** carry no GitHub owner or name, so METIS cannot tell where they were cloned from: do not save that clone's origin as the publish target. Click **Plan (dry run)** first. The plan shows the target and the three writes and checks your vault secret ref, but writes nothing. **Open draft PR** is enabled only after a plan whose secret resolved, and it needs the `issue.publish` permission and a vault secret you created (an admin may use any secret). Running it again reuses the branch and the open pull request. If the saved target is a repository another METIS project has connected, **Open draft PR** asks you to confirm first, as a batch publish does; the dry run is not stopped. [#1180]
 
@@ -1956,13 +1984,13 @@ When your approved drafts are ready:
 
 Navigate to the project's batches to see the history of all publish operations:
 
-| Batch Status | Meaning |
-|---|---|
-| `pending` | Batch created but not yet started |
-| `in-progress` | Currently publishing issues |
-| `completed` | All issues published successfully |
-| `partial` | Some issues published, some failed |
-| `failed` | All publishes failed |
+| Batch Status  | Meaning                                                   |
+| ------------- | --------------------------------------------------------- |
+| `pending`     | Batch created but not yet started                         |
+| `in-progress` | Currently publishing issues                               |
+| `completed`   | All issues published successfully                         |
+| `partial`     | Some issues published, some failed                        |
+| `failed`      | All publishes failed                                      |
 | `rolled-back` | Issues were automatically closed due to >50% failure rate |
 
 Each batch shows which issues were published, their GitHub issue numbers, and any errors that occurred.
@@ -2009,11 +2037,11 @@ This is your last sanity check before approving — review every change before p
 
 You can multi-select drafts via the checkboxes in the drafts table, then click **Bulk approve (N)**. A confirmation dialog shows:
 
-| Bucket | What it means |
-|---|---|
-| **created** | drafts in `draft` state that will transition to `approved` |
+| Bucket      | What it means                                                 |
+| ----------- | ------------------------------------------------------------- |
+| **created** | drafts in `draft` state that will transition to `approved`    |
 | **updated** | drafts already `approved` (re-approval is a no-op but logged) |
-| **skipped** | drafts in `published` or `failed` state — left untouched |
+| **skipped** | drafts in `published` or `failed` state — left untouched      |
 
 Click **Approve N** to confirm. Each approval is audited individually.
 
@@ -2089,7 +2117,7 @@ sequence number and the date-time it started — for example **"Run #3 — Jun 2
 glance which is newer. The run's short id is still shown beneath the label as a muted
 secondary token for copy / deep-link purposes; it is no longer the primary label.
 
-**Token figures on a run.** A run's tokens read the usage ledger everywhere they are shown — this list, the run's header, the **Agent Runs** page (`/runs`) and a run's own page — and always as two named figures, for example **"457.9k tok without cache · 545.2k with cache"**. *Without cache* is fresh input plus output. *With cache* adds the tokens read from and written to the prompt cache, each counted once. The figures move while a run is going; a run that has not made its first model call reads **in progress**. A run from before analysis spend was metered has no ledger rows and reads **"… tok recorded at finish (not in the ledger)"**; if the ledger could not be read at that moment it reads **"… tok recorded at finish (ledger unavailable)"** instead, and a reload usually brings the figures back. An analysis run's figure also counts work done on the analysis after the run finished (a deep dive, a regenerate, a clarification round); the run's own page then adds **"includes … recorded after the run finished"** under the tokens.
+**Token figures on a run.** A run's tokens read the usage ledger everywhere they are shown — this list, the run's header, the **Agent Runs** page (`/runs`) and a run's own page — and always as two named figures, for example **"457.9k tok without cache · 545.2k with cache"**. _Without cache_ is fresh input plus output. _With cache_ adds the tokens read from and written to the prompt cache, each counted once. The figures move while a run is going; a run that has not made its first model call reads **in progress**. A run from before analysis spend was metered has no ledger rows and reads **"… tok recorded at finish (not in the ledger)"**; if the ledger could not be read at that moment it reads **"… tok recorded at finish (ledger unavailable)"** instead, and a reload usually brings the figures back. An analysis run's figure also counts work done on the analysis after the run finished (a deep dive, a regenerate, a clarification round); the run's own page then adds **"includes … recorded after the run finished"** under the tokens.
 
 **Cost on a run.** Every cost on the **Agent Runs** page and on a run's page is headed **Cost (as recorded)**: it is the usage ledger's own cost, what each model call was priced at when it was made. It is the same figure as the run's header on this page and the project's Usage page, and it does not change when a model's price is edited later. Calls made while their model had no price are not given one afterwards: they appear as **"+ 100.0k unpriced tok"** next to the cost of the priced calls.
 
@@ -2113,8 +2141,8 @@ dependencies).
    click **New analysis**.
 2. Provide the requirement change — either **Paste text** of the new/changed
    requirements, or pick an existing **document** that has already been ingested.
-   A pasted **issue** (a title followed by sections such as *Summary*, *Proposed
-   Solution*, *Steps to Reproduce*, *Expected Behavior*) is read as **one**
+   A pasted **issue** (a title followed by sections such as _Summary_, _Proposed
+   Solution_, _Steps to Reproduce_, _Expected Behavior_) is read as **one**
    change: the proposed solution and expected behaviour refine it, the problem
    statement and reproduction steps are kept as context, and empty form fields,
    bare links, version fields and sign-offs are left out. GitHub's older
@@ -2135,7 +2163,7 @@ dependencies).
      appear even when their names share no word with the request), and, when a
      table gains a column, from where that table is defined and the types named
      for it (**Defines affected data**).
-   - **Blast radius** — a wider list to *review*: callers and importers of the
+   - **Blast radius** — a wider list to _review_: callers and importers of the
      files to edit, data writers the request is not directly about, and
      **Related** code the search found or that is built the same way as a match.
      Being listed here is not a claim that the code has to change. A caller's
@@ -2143,7 +2171,7 @@ dependencies).
      callers of the best match read as before, callers of a weaker match are
      scaled down by it.
 
-   The card's headline counts both (*"3 files to edit · 41 more to review"*), and
+   The card's headline counts both (_"3 files to edit · 41 more to review"_), and
    the markdown export has the same two sections.
 
 Only projects you have access to appear in the picker, and you can only open a
@@ -2211,10 +2239,10 @@ against the live schema when one is available; mismatches are flagged as
 > human-authored migration.
 
 **Suggested new columns.** A requirement written the way a business
-analyst writes one — *"a cancelled order must record who cancelled it and when"*,
-*"each line item must carry its own shipment status and dispatch date"* — implies
+analyst writes one — _"a cancelled order must record who cancelled it and when"_,
+_"each line item must carry its own shipment status and dispatch date"_ — implies
 **new columns**, but the plain-language wording is an obligation, not the
-developer imperative (*"add a cancellation timestamp field to orders"*) METIS's
+developer imperative (_"add a cancellation timestamp field to orders"_) METIS's
 deterministic detector looks for. With this feature enabled, METIS additionally
 asks an AI model which new columns the requirement implies and shows them as
 **Proposed column changes** on the table they belong to, e.g.
@@ -2232,7 +2260,7 @@ would without AI — the proposals are **added** to the deterministic results an
 never replace them, so nothing is lost either way.
 
 **When existing code already does it.** Some requests ask for something the code
-can already do: *"mark all as read older than X"* is already a function that
+can already do: _"mark all as read older than X"_ is already a function that
 takes the cut-off date as an argument. METIS checks each proposed column against
 the functions that write the affected data — what they take as parameters and
 what they filter on — before showing it:
@@ -2251,16 +2279,16 @@ filters the data it writes by a date or time. For a covered request:
   apart from the proposed changes, and **not** part of the migration.
 - If the change really does need a new column, **ask for it in the request**:
   write `ALTER TABLE <table> ADD COLUMN <column> <type>`, or a sentence such as
-  *"add a delay field to users"*. A column you asked for is always proposed.
+  _"add a delay field to users"_. A column you asked for is always proposed.
 
 This check is made by rules over the code graph, not by the AI model, and no
 answer the model gives can turn a column into a required one. It reads what the
-request *asks for* — its title, summary and proposed solution, and any section
+request _asks for_ — its title, summary and proposed solution, and any section
 under a heading METIS does not recognise — not the background around it
 (the problem statement, alternatives you considered, logs).
 
-That rule has a cost. Suppose a request says *"delete entries older than 30
-days, and record when each feed was last cleaned"*. The second half does need a
+That rule has a cost. Suppose a request says _"delete entries older than 30
+days, and record when each feed was last cleaned"_. The second half does need a
 new column, but METIS cannot tell it apart from a copy of the cut-off without
 guessing at intent, so it lists it as optional rather than required. Read the
 optional list for a covered request, or state the column as `ALTER TABLE`.
@@ -2286,15 +2314,15 @@ impacted requirement shows up to three more lists:
   migration the change needs.
 - **Not proposed** — the columns an existing function appears to cover already.
   Each entry says what was checked.
-- **Proposed, not checked** — columns that *are* in the proposed changes above,
+- **Proposed, not checked** — columns that _are_ in the proposed changes above,
   which this check did not rule on. Each entry says why. Treat them as
   unverified.
 
 An entry names the existing function it was set against, with its file and line
 (a link to the repository when the project has one connected), and the reason —
-for example *"`MarkAllAsReadBeforeDate` (`internal/storage/entry.go:523`) already
+for example _"`MarkAllAsReadBeforeDate` (`internal/storage/entry.go:523`) already
 filters `entries.published_at` by its argument (`before time.Time`), and the
-request asks for the value to be configurable"*. The same lists are in the
+request asks for the value to be configurable"_. The same lists are in the
 markdown export and in the API response. Analyses run before this version show
 none of them.
 
@@ -2302,18 +2330,18 @@ none of them.
 same search chat uses, which combines keyword matching with meaning-based
 (embedding) search. Right after a project is ingested, its embeddings may still
 be building; the search then runs on keywords alone. The analysis still
-completes, and its summary says so — *"Code search ran on keywords only (BM25)
-for this project…"* — so you know to re-run it once embedding has finished
+completes, and its summary says so — _"Code search ran on keywords only (BM25)
+for this project…"_ — so you know to re-run it once embedding has finished
 before comparing results.
 
 **Affected procedures & functions.** When the impacted code invokes a stored
-**procedure** or **function**, those routines are listed in their own *Affected
-procedures & functions* sub-section beneath the tables. METIS introspects routine
+**procedure** or **function**, those routines are listed in their own _Affected
+procedures & functions_ sub-section beneath the tables. METIS introspects routine
 existence and signature only — it **never reads or runs the routine body** — so
 each routine shows a **verify-only** note rather than a DDL suggestion, and there
 is no drop/alter affordance. (Deep analysis of what a routine's body touches is a
 later phase; until then, an object reachable only through a routine body is shown
-as *uncertain*, never as unused.)
+as _uncertain_, never as unused.)
 
 Uncheck **Include database schema impact** when creating an analysis to skip the
 schema dimension entirely.
@@ -2426,7 +2454,7 @@ never dropped, and never guessed. The **gap report** surfaces this as a coverage
 metric at the top of the report (and in the exported markdown):
 
 > **N% of table edges are dynamically resolved / need manual confirmation** —
-> *X of Y edges; Z% resolved precisely.*
+> _X of Y edges; Z% resolved precisely._
 
 Read it as: **Z% of the schema surface was pinned to a specific table/column**,
 and the remaining **N%** points at a placeholder or a coarse dependency that a
@@ -2484,18 +2512,18 @@ always what you see; the enrichment layer improves it and is what costs money.
 **All four enrichment stages are ON by default.** This changed in METIS 0.x
 (issue #1025): before, they all shipped off, and the out-of-the-box result was
 27 lines of `-- Verify column orders.billaddr1` comments for a requirement like
-*"a cancelled order must record who cancelled it and when"* — technically correct
+_"a cancelled order must record who cancelled it and when"_ — technically correct
 and practically unusable. With enrichment on, the same requirement returns a
 short list of genuinely relevant tables, two proposed `ALTER TABLE … ADD COLUMN`
 statements, a reason per table, and a note if part of the requirement looks
 uncovered.
 
-| Stage | What it adds | Turn off with | AI calls saved |
-|---|---|---|---|
-| Table relevance filter | Prunes tangential tables; adds the per-table reason | `IMPACT_LLM_TABLE_FILTER=0` | 1 per requirement |
-| Proposed new columns | The actionable `ADD COLUMN` suggestions | `IMPACT_LLM_ADDITIVE_DDL=0` | 1 per requirement |
-| Coverage advisories | *"this analysis may be incomplete because…"* | `IMPACT_LLM_CLAUSE_RECONCILE=0` | 1 per requirement |
-| Plain-English summaries | Run overview + per-requirement narrative | `IMPACT_LLM_SUMMARY=0` | 1 per requirement **plus** the run overview |
+| Stage                   | What it adds                                        | Turn off with                   | AI calls saved                              |
+| ----------------------- | --------------------------------------------------- | ------------------------------- | ------------------------------------------- |
+| Table relevance filter  | Prunes tangential tables; adds the per-table reason | `IMPACT_LLM_TABLE_FILTER=0`     | 1 per requirement                           |
+| Proposed new columns    | The actionable `ADD COLUMN` suggestions             | `IMPACT_LLM_ADDITIVE_DDL=0`     | 1 per requirement                           |
+| Coverage advisories     | _"this analysis may be incomplete because…"_        | `IMPACT_LLM_CLAUSE_RECONCILE=0` | 1 per requirement                           |
+| Plain-English summaries | Run overview + per-requirement narrative            | `IMPACT_LLM_SUMMARY=0`          | 1 per requirement **plus** the run overview |
 
 Every flag also accepts `false`. Turning a stage off removes only that stage.
 Turning all four off restores the pre-#1025 behaviour exactly: **no AI calls, no
@@ -2513,14 +2541,14 @@ usage is recorded per project in the AI token ledger under the step names
 `impact.summary-item` and `impact.summary-run`, so you can see the spend rather than infer it.
 
 **One stage stays off.** `IMPACT_LLM_ENTITY_SEEDS` (an experimental way of
-finding *more* code for a requirement) remains opt-in, because measurement showed
+finding _more_ code for a requirement) remains opt-in, because measurement showed
 it made results **less** precise without finding the things it was meant to find.
 Leave it off unless you are deliberately experimenting.
 
 **If you have no AI provider.** Nothing breaks. The analysis completes on the
 deterministic results, no stage produces partial or invented output, and the
-summary block tells you plainly that *"AI enrichment did not run for this
-analysis (no AI provider is configured)"* and lists which stages did not apply —
+summary block tells you plainly that _"AI enrichment did not run for this
+analysis (no AI provider is configured)"_ and lists which stages did not apply —
 so an un-enriched report can never be mistaken for an enriched one.
 
 ### 13.10 Dual-Destination Publishing
@@ -2543,7 +2571,7 @@ METIS can publish issues to GitHub, Jira, or both simultaneously.
    (together, or both `null` to clear) on the same `PATCH`. The saved target
    pre-fills the Publishing page and the **Deep Dive → Issue** dialog.
 
-   Publishing never defaults to the repository the project *analyses*: for an
+   Publishing never defaults to the repository the project _analyses_: for an
    analysed open-source project that is its upstream. With no saved target the
    fields start empty, a Deep Dive publish without a target is
    refused with `ERR_NO_PUBLISH_TARGET`, and a target equal to the analysed
@@ -2553,6 +2581,7 @@ METIS can publish issues to GitHub, Jira, or both simultaneously.
 #### How It Works
 
 When a batch is published:
+
 - **GitHub-only**: works exactly as before (see 13.7)
 - **Jira-only**: maps each draft to a Jira issue (Story, Epic, Bug, or Task) and creates it via the Jira API
 - **Both**: publishes to GitHub first, then Jira. If Jira fails, GitHub issues are still created — Jira is best-effort in dual mode.
@@ -2626,25 +2655,30 @@ The AI responds in a chat-bubble format — your messages appear on the right in
 You can ask the AI about anything related to your projects:
 
 **Project guidance:**
+
 - "How do I create a new project?"
 - "What's the best way to organize my documents?"
 
 **Analysis help:**
+
 - "What should I analyze first?"
 - "Explain the analysis results for my project"
 - "What do the confidence scores mean?"
 
 **Requirements:**
+
 - "Summarize the requirements for Project X"
 - "Which requirements are highest priority?"
 - "What's the difference between an epic and a feature?"
 
 **Technical questions:**
+
 - "What's the architecture of our codebase?"
 - "Describe the database schema for the EMPLOYEES table"
 - "What API changes are needed?"
 
 **General assistance:**
+
 - "Help me write acceptance criteria for this requirement"
 - "What are industry best practices for API rate limiting?"
 
@@ -2653,13 +2687,13 @@ You can ask the AI about anything related to your projects:
 In a chat scoped to a project, on a model that supports tool calling, the AI
 can use tools to look things up or act for you:
 
-| Tool | What It Does |
-|---|---|
-| **Search Knowledge Base** | Searches the project's uploaded documents |
-| **Inspect Database** | Examines a connected database's schema |
-| **Query Database** | Runs read-only SQL against a connected database |
-| **MCP tools** | Tools from MCP servers this project is allowed to use (see §20.7) |
-| **Code search** | Searches the project's code graph and symbols, and reads up to 200 lines of a file from the project's repository so an answer can quote the code it cites, when your administrator has turned on `CHAT_CODE_SEARCH_TOOLS` |
+| Tool                      | What It Does                                                                                                                                                                                                              |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Search Knowledge Base** | Searches the project's uploaded documents                                                                                                                                                                                 |
+| **Inspect Database**      | Examines a connected database's schema                                                                                                                                                                                    |
+| **Query Database**        | Runs read-only SQL against a connected database                                                                                                                                                                           |
+| **MCP tools**             | Tools from MCP servers this project is allowed to use (see §20.7)                                                                                                                                                         |
+| **Code search**           | Searches the project's code graph and symbols, and reads up to 200 lines of a file from the project's repository so an answer can quote the code it cites, when your administrator has turned on `CHAT_CODE_SEARCH_TOOLS` |
 
 A chat that is not scoped to a project is offered no tools. Administrators can
 turn the METIS and MCP tools off with `CHAT_TOOLS=false`. A chat can be scoped
@@ -2675,12 +2709,12 @@ approved by you, allowed by policy, denied, or not answered in time.
 **Approving tool calls.** Every tool has a risk level, and the session's
 approval policy decides what happens for each level:
 
-| Policy | What happens |
-|---|---|
-| `auto` | The tool runs without asking. |
-| `prompt-once` | You are asked the first time the tool is used in this chat; after you approve it, it runs without asking for the rest of the chat. |
-| `always-prompt` | You are asked every time. |
-| `deny` | The tool never runs in this chat. |
+| Policy          | What happens                                                                                                                       |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `auto`          | The tool runs without asking.                                                                                                      |
+| `prompt-once`   | You are asked the first time the tool is used in this chat; after you approve it, it runs without asking for the rest of the chat. |
+| `always-prompt` | You are asked every time.                                                                                                          |
+| `deny`          | The tool never runs in this chat.                                                                                                  |
 
 The defaults are `auto` for low risk, `prompt-once` for medium and
 `always-prompt` for high. When a call needs your approval, the chat (or the
@@ -2886,7 +2920,7 @@ You can check your token usage for a session via the session's usage endpoint. I
 By default, every AI session inherits the global provider and model from the server's environment (`AI_PROVIDER`, `AI_MODEL` / `BEDROCK_MODEL` / `LOCAL_GEMMA_MODEL` / `ANTHROPIC_MODEL`). Two project-scoped overrides let you steer individual projects to a different backend or model without touching env or restarting the server. Open a project (`/projects/[id]`) and look at the **Settings** card:
 
 - **AI provider** — pick `bedrock-gateway`, `local-gemma`, `openai`, `azure`, `anthropic`, or `offline-stub`. Choose **Global default** to clear the override. A project still set to the removed `copilot-native` shows it as "no longer supported", and new chats in it are refused until you pick another provider or the global default.
-- **AI model** — free-form text. Paste any provider-specific model id, e.g. `us.anthropic.claude-sonnet-4-6` for Bedrock, `gemma4:12b` for local Gemma, `gpt-5` for OpenAI, or `claude-sonnet-4-6` for Anthropic. Leave blank to use the global default. When the project also overrides the **AI provider**, a blank model means *that provider's* default (`ANTHROPIC_MODEL`, `LOCAL_GEMMA_MODEL`, `BEDROCK_MODEL`, or the built-in one), never the deployment's `AI_MODEL` / Admin default model, which names a model of the deployment's own provider (#254, #283).
+- **AI model** — free-form text. Paste any provider-specific model id, e.g. `us.anthropic.claude-sonnet-4-6` for Bedrock, `gemma4:12b` for local Gemma, `gpt-5` for OpenAI, or `claude-sonnet-4-6` for Anthropic. Leave blank to use the global default. When the project also overrides the **AI provider**, a blank model means _that provider's_ default (`ANTHROPIC_MODEL`, `LOCAL_GEMMA_MODEL`, `BEDROCK_MODEL`, or the built-in one), never the deployment's `AI_MODEL` / Admin default model, which names a model of the deployment's own provider (#254, #283).
 
 Both fields persist on the `Project` row and are read at session-create time. The per-session `model` field on `POST /api/ai/sessions` (e.g. when an agent definition pins its own model) still wins over the project override; the project override only fires when the request body omits `model`. Bedrock model ids are not validated against an allow-list — METIS only enforces ≤ 200 characters and trims whitespace — so any model id your gateway accepts will work. Sessions started before you change a project's overrides keep the provider/model they were created with; new sessions pick up the new values immediately.
 
@@ -2906,12 +2940,12 @@ Both fields persist on the `Project` row and are read at session-create time. Th
   the session; the browser sends only your new message. Reloading the page, or
   opening the chat from **Sessions → Resume**, shows the conversation exactly as
   the server recorded it — including a reply that was cut off (marked
-  *Incomplete answer*).
+  _Incomplete answer_).
 - **Long conversations are summarised, not trimmed.** When a conversation
   approaches the model's context window (80% by default, from the model
   catalog), the oldest messages are summarised for the model. You will see a
   note above the chat; the summarised messages stay in the history, marked
-  *summarised*, and a *Summary of earlier messages* block shows what the model
+  _summarised_, and a _Summary of earlier messages_ block shows what the model
   now reads instead. Nothing is deleted. Very large tool results are shortened
   for the model the same way — the full result stays in the history.
 - **Long histories load in pages.** Resuming a chat downloads the first page of
@@ -2924,10 +2958,10 @@ Both fields persist on the `Project` row and are read at session-create time. Th
   or start a new chat — it never silently switches to another provider.
 - **Waiting for a local model.** On a local model that serves one request at a
   time, a message sent while it is busy (for example with documentation
-  generation) shows *Waiting for the local model* until it starts. That wait does
+  generation) shows _Waiting for the local model_ until it starts. That wait does
   not count against the response's time limit; it has its own limit
   (`AI_STREAM_QUEUE_MAX_WAIT_MS`, default 10 minutes).
-- **Fork from here.** Every answer has a *Fork from here* link. It starts a new
+- **Fork from here.** Every answer has a _Fork from here_ link. It starts a new
   chat containing the conversation up to that answer, with the same model,
   agent, skills and project, and opens it; the original chat is unchanged.
 - Operators can tune this with `CHAT_COMPACTION_WATERMARK_PERCENT`,
@@ -2982,6 +3016,7 @@ Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
 ### 15.1 Why Connect Repositories?
 
 When METIS analyzes your project, the **Code Analyst** agent can examine your source code to discover technical requirements — things like:
+
 - API endpoints that need updating
 - Architectural patterns that should be maintained
 - Technical debt that should be addressed
@@ -3021,28 +3056,29 @@ Repositories change over time as new code is committed. METIS keeps up in two wa
 **Manual sync**: You can trigger an immediate sync for a specific repository via the API. Use this when you know important changes were just pushed and you want the AI to see them immediately.
 
 Each sync records:
+
 - Who triggered it (manual, cron schedule, or webhook)
 - What changed (new files, modified files, deleted files)
 - Whether the sync succeeded or failed
 - When it happened
 
 **"Go call binding is not finished"** (Go repositories): after a sync or a Deep Ingest of a
-very large Go repository, the result may end with *Go call binding is not finished: N Go
-calls in M files are not yet bound by type*. METIS stops working out which function each Go
+very large Go repository, the result may end with _Go call binding is not finished: N Go
+calls in M files are not yet bound by type_. METIS stops working out which function each Go
 call reaches when that step has used its time limit, so the sync itself is never held up.
 Nothing that was already known is lost, the remaining calls are finished by the following
 syncs (the scheduled ones included), and running **Sync** again continues at once. Until
 then, impact analysis and "Tested by" may miss some Go call paths in that repository.
 
-**Rebuild AST cache** (Issue #122): each repository row on the **Connections** tab has a **Rebuild AST cache** button. Clicking it pulls (or clones) the repository and re-indexes its source files into the AST summary cache, showing an explicit status — *Rebuilding…* → completed (with indexed-file / symbol / skipped counts) or a failed status with a parsed error message. Use it after large refactors when you want the code-overview and analysis tooling to reflect the latest structure immediately rather than waiting for the next scheduled ingest.
+**Rebuild AST cache** (Issue #122): each repository row on the **Connections** tab has a **Rebuild AST cache** button. Clicking it pulls (or clones) the repository and re-indexes its source files into the AST summary cache, showing an explicit status — _Rebuilding…_ → completed (with indexed-file / symbol / skipped counts) or a failed status with a parsed error message. Use it after large refactors when you want the code-overview and analysis tooling to reflect the latest structure immediately rather than waiting for the next scheduled ingest.
 
 ### 15.5 Products that span repositories you can't access
 
 A product (**Projects › Products**) can include repositories from projects you don't
 have access to. You won't see those repositories; instead the product page says
 **"N repos hidden"**. **Generate Documentation** still works, but it builds the documents
-from the repositories you *can* access, and every document affected says so: *"Built
-without N repos the person who ran it couldn't access."* Repository names are never shown.
+from the repositories you _can_ access, and every document affected says so: _"Built
+without N repos the person who ran it couldn't access."_ Repository names are never shown.
 The next run by someone who can access every repository (an administrator, for example)
 replaces those documents with complete ones and the notice disappears. A repository
 connection that has been deleted no longer appears on the product and is left out of
@@ -3062,6 +3098,7 @@ its documents. [#1261]
 ### 16.1 Why Connect Databases?
 
 Many software projects involve databases. When METIS analyzes a project, the **Database Analyst** agent can examine your existing database to discover:
+
 - Tables that need new columns or modifications
 - Missing indexes that affect performance
 - Data migration requirements
@@ -3085,15 +3122,15 @@ Many software projects involve databases. When METIS analyzes a project, the **D
 
 Once connected, METIS can inspect the full database schema:
 
-| What It Extracts | Description |
-|---|---|
-| **Tables** | Name, columns, data types, constraints, row counts |
-| **Views** | Regular and materialized views |
-| **Stored Procedures** | PL/SQL procedures |
-| **Functions** | PL/SQL functions |
-| **Packages** | PL/SQL package definitions |
-| **Indexes** | Index names, types, associated tables |
-| **Sequences** | Auto-incrementing number generators |
+| What It Extracts      | Description                                        |
+| --------------------- | -------------------------------------------------- |
+| **Tables**            | Name, columns, data types, constraints, row counts |
+| **Views**             | Regular and materialized views                     |
+| **Stored Procedures** | PL/SQL procedures                                  |
+| **Functions**         | PL/SQL functions                                   |
+| **Packages**          | PL/SQL package definitions                         |
+| **Indexes**           | Index names, types, associated tables              |
+| **Sequences**         | Auto-incrementing number generators                |
 
 This information is used by the Database Analyst agent during analysis and can also be explored by the AI during chat conversations.
 
@@ -3123,7 +3160,7 @@ Open any project and click **Connections** in the left nav (`/projects/{id}/conn
 - `REPO_ALLOWED_HOSTS=github.com,*.github.example.com` — restrict which hosts the repo connector may reach.
 - `DB_ALLOWED_HOSTS=db1.example.com,db2.example.com` — same for DB connectors.
 - `REPO_CLONE_DIR=/var/lib/metis/clones` — where shallow clones live. Defaults to `<server>/data/repo-clones`, next to `uploads/` and `lancedb/`; put it on a persistent volume (the Helm chart and both compose files do). It used to default to the OS temp dir, which macOS and container restarts purge (#1322): an existing clone still there is moved across the first time it is needed, if it is at the indexed commit.
-- **A missing or emptied clone.** Before a document is generated, METIS checks each repository's clone. One that is missing, holds far fewer files than its git index lists (a full or partial purge), or is checked out at a different commit, is re-fetched at the exact commit the code graph was built from. If another job (an ingest, or another document) is preparing the same repository, METIS waits for it, up to `CLONE_RESTORE_LEASE_WAIT_MS` (default two minutes); if it is still busy, generation stops with *"Another job is preparing this repository's source … Try again in a few minutes."* — no re-ingest needed. If that cannot be done (the host is unreachable, the commit is gone, or no commit was recorded), generation stops before any AI call with *"The repository's source checkout is missing or empty … Re-ingest the repository, then generate again."* Re-ingest from the repository's connector, then generate again. An analysis in the same state restores the clone the same way, or runs without the file-reading tools and says so (`repo-clone-unavailable`).
+- **A missing or emptied clone.** Before a document is generated, METIS checks each repository's clone. One that is missing, holds far fewer files than its git index lists (a full or partial purge), or is checked out at a different commit, is re-fetched at the exact commit the code graph was built from. If another job (an ingest, or another document) is preparing the same repository, METIS waits for it, up to `CLONE_RESTORE_LEASE_WAIT_MS` (default two minutes); if it is still busy, generation stops with _"Another job is preparing this repository's source … Try again in a few minutes."_ — no re-ingest needed. If that cannot be done (the host is unreachable, the commit is gone, or no commit was recorded), generation stops before any AI call with _"The repository's source checkout is missing or empty … Re-ingest the repository, then generate again."_ Re-ingest from the repository's connector, then generate again. An analysis in the same state restores the clone the same way, or runs without the file-reading tools and says so (`repo-clone-unavailable`).
 - `UPLOAD_ARCHIVE_DIR` / `UPLOAD_EXTRACT_DIR` — where folder-upload (`.zip`) connectors store the uploaded archive and its extracted working copy. These default to **persistent** app-data dirs (`<cwd>/data/repo-archives`, `<cwd>/data/repo-extracts`) so an uploaded project survives an OS temp purge and re-ingest can re-extract without re-upload (#329). Override to a mounted volume in production. If the stored archive is missing (e.g. a pre-#329 upload connector whose temp archive was already purged), re-ingest fails with a clear `410 UPLOAD_ARCHIVE_MISSING` — re-upload the folder to re-ingest. Like `REPO_CLONE_DIR`, these are per-pod local dirs and are not shared across replicas.
 - `CONNECTOR_ALLOW_LOOPBACK=false` — keep this off in production. Loopback / RFC1918 addresses are blocked unless you flip it.
 - `PII_REDACT_DISABLE_PATTERNS=` — empty = redact SSNs, credit cards (Luhn-validated), emails, phone numbers, IPs from any data the connectors return before it reaches RAG. Disable patterns by name only if you have a regulatory reason.
@@ -3135,11 +3172,13 @@ When two projects in the same workspace connect to the **same physical database*
 **What you see.** Each shared database is shown with its canonical endpoint (`driver · host:port / database`), the connections attached to it, and — under **Also used by** — the other projects in the workspace that share it. A database used by no other project is labelled explicitly ("No other project in this workspace uses this database"), so "not shared" never looks the same as "unknown".
 
 **Unlinked connections** are listed separately, each with the precise reason it is not linked:
+
 - **Insufficient identity** — the connection is missing the host or database name needed to identify a physical database, so METIS never guesses a link for it.
 - **No workspace** — the project is not part of a workspace, so shared-database management is unavailable until you add it to one.
 - **Not linked yet** — the connection is linkable; use the actions below.
 
 **Actions** (each shows a confirmation that explains the cross-project consequence before it runs):
+
 - **Re-resolve** — safely find-or-create this database's identity from its own `(driver, host, port, database)` key. This never overrides an existing explicit link.
 - **Link…** — the escape hatch for the same physical database reached through **two different hostnames**, which the automatic key cannot detect. Pick the target shared database and confirm; impact analysis will then treat the connections as one database. The picker only ever offers databases **in your own workspace** — you cannot link across workspaces.
 - **Unlink** — reverse a link. The confirmation names how many other projects currently share the database so you understand what stops being tracked. You can re-link at any time.
@@ -3148,12 +3187,12 @@ If an action fails on the server (for example a resource that no longer exists),
 
 **Permissions.**
 
-| Role | Can list/get | Can test | Can query | Can create/update/delete |
-|---|---|---|---|---|
-| Admin | ✅ | ✅ | ✅ | ✅ |
-| Coordinator | ✅ | ✅ | ✅ | ❌ |
-| Developer | ✅ | ✅ | ✅ | ❌ |
-| Reader | ✅ | ❌ | ❌ | ❌ |
+| Role        | Can list/get | Can test | Can query | Can create/update/delete |
+| ----------- | ------------ | -------- | --------- | ------------------------ |
+| Admin       | ✅           | ✅       | ✅        | ✅                       |
+| Coordinator | ✅           | ✅       | ✅        | ❌                       |
+| Developer   | ✅           | ✅       | ✅        | ❌                       |
+| Reader      | ✅           | ❌       | ❌        | ❌                       |
 
 Every connector mutation, test, query, and ingest is written to the audit log with actor + target. Secrets and SQL bind values are never logged.
 
@@ -3177,16 +3216,16 @@ METIS supports **Jira Cloud** (hosted at `*.atlassian.net`) and **Jira Data Cent
 2. Click **Add Connection**
 3. Fill in the form:
 
-| Field | Cloud | Data Center |
-|---|---|---|
-| **Label** | Friendly name (e.g. "Prod Jira") | Same |
-| **Edition** | Cloud | Data Center |
-| **Base URL** | `https://yourorg.atlassian.net` | `https://jira.corp.example.com` |
-| **Username** | Your Atlassian email | Leave blank |
+| Field               | Cloud                                                                                     | Data Center                            |
+| ------------------- | ----------------------------------------------------------------------------------------- | -------------------------------------- |
+| **Label**           | Friendly name (e.g. "Prod Jira")                                                          | Same                                   |
+| **Edition**         | Cloud                                                                                     | Data Center                            |
+| **Base URL**        | `https://yourorg.atlassian.net`                                                           | `https://jira.corp.example.com`        |
+| **Username**        | Your Atlassian email                                                                      | Leave blank                            |
 | **API Token / PAT** | [Create at id.atlassian.com](https://id.atlassian.com/manage-profile/security/api-tokens) | Create a Personal Access Token in Jira |
-| **Proxy URL** | Optional HTTP/HTTPS proxy | Same |
-| **TLS verify** | Always on for Cloud | Uncheck only if using a private CA |
-| **Custom CA cert** | Not needed | Paste the PEM if you have a private CA |
+| **Proxy URL**       | Optional HTTP/HTTPS proxy                                                                 | Same                                   |
+| **TLS verify**      | Always on for Cloud                                                                       | Uncheck only if using a private CA     |
+| **Custom CA cert**  | Not needed                                                                                | Paste the PEM if you have a private CA |
 
 4. Click **Save**, then click **Test** to verify connectivity. The status badge shows **Connected** and the latency on success.
 
@@ -3203,11 +3242,13 @@ The left panel lists all Jira projects available on the connection. Click any pr
 #### JQL Search
 
 Type a JQL query in the search bar (e.g. `project = ACME AND status = Open`) and press **Enter** or click **Search**. Results appear as cards showing:
+
 - Issue key and summary
 - Status, priority, and assignee
 - Click the issue key to open it in full detail
 
 If the query fails, an error banner appears with the message returned by Jira. Common causes:
+
 - Typo in a field name (JQL is case-sensitive)
 - No permission to access the project
 - Connection token expired
@@ -3215,6 +3256,7 @@ If the query fails, an error banner appears with the message returned by Jira. C
 #### Issue Detail
 
 Click any issue card to expand the full detail view, which includes:
+
 - Description (Jira Document Format rendered as plain text)
 - Labels, components, fix versions
 - Reporter and assignee
@@ -3222,13 +3264,13 @@ Click any issue card to expand the full detail view, which includes:
 
 ### 17.4 Security Notes
 
-| Concern | How METIS handles it |
-|---|---|
-| **SSRF** | Every Jira base URL is validated before the first request. Hostnames are DNS-resolved and any private/RFC1918 address is rejected unless the administrator has added the hostname to `JIRA_ALLOWED_HOSTS`. The attachment proxy applies the same policy to the URL you ask it to fetch: the URL must share the connection's exact origin, the host is re-resolved and re-checked, and redirects are followed only to public hosts — never carrying your Jira credential off the Jira origin. |
-| **Attachment rendering** | Proxied attachments are served with a `Content-Type` restricted to a safe image allow-list. Anything else — including HTML, SVG, and PDF — is delivered as a download (`Content-Disposition: attachment`) rather than rendered in the page, so an attachment can never run script in the METIS UI. Inline images embedded in Jira issue descriptions still display normally. |
-| **Credential storage** | API tokens are encrypted via AES-256-GCM in the vault. The API never returns the plaintext — the UI only ever sees `••••••••`. |
-| **Rate limiting** | All Jira API calls are rate-limited per connection (30 req/min by default) to prevent accidental overload of your Jira instance. |
-| **Audit trail** | Every connection create, update, delete, and test is recorded in the project audit log. |
+| Concern                  | How METIS handles it                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **SSRF**                 | Every Jira base URL is validated before the first request. Hostnames are DNS-resolved and any private/RFC1918 address is rejected unless the administrator has added the hostname to `JIRA_ALLOWED_HOSTS`. The attachment proxy applies the same policy to the URL you ask it to fetch: the URL must share the connection's exact origin, the host is re-resolved and re-checked, and redirects are followed only to public hosts — never carrying your Jira credential off the Jira origin. |
+| **Attachment rendering** | Proxied attachments are served with a `Content-Type` restricted to a safe image allow-list. Anything else — including HTML, SVG, and PDF — is delivered as a download (`Content-Disposition: attachment`) rather than rendered in the page, so an attachment can never run script in the METIS UI. Inline images embedded in Jira issue descriptions still display normally.                                                                                                                 |
+| **Credential storage**   | API tokens are encrypted via AES-256-GCM in the vault. The API never returns the plaintext — the UI only ever sees `••••••••`.                                                                                                                                                                                                                                                                                                                                                               |
+| **Rate limiting**        | All Jira API calls are rate-limited per connection (30 req/min by default) to prevent accidental overload of your Jira instance.                                                                                                                                                                                                                                                                                                                                                             |
+| **Audit trail**          | Every connection create, update, delete, and test is recorded in the project audit log.                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 If your Jira server is on a private network and METIS rejects the URL with `HOST_NOT_ALLOWED`, ask your administrator to add the hostname to `JIRA_ALLOWED_HOSTS` in the server environment.
 
@@ -3377,13 +3419,13 @@ for create / edit / delete / run / pause / resume.
 
 The **Tasks** page is the per-task queue view. Status tabs filter by:
 
-| Tab        | Status     | Meaning                                              |
-| ---------- | ---------- | ---------------------------------------------------- |
-| Waiting    | `pending`  | Queued, waiting for a concurrency slot.              |
-| In flight  | `running`  | A handler is currently executing the task.           |
-| Completed  | `completed`| Handler returned successfully.                       |
-| Failed     | `failed`   | Handler exhausted `maxAttempts` retries.             |
-| Cancelled  | `cancelled`| Task was cancelled (via UI or `AbortSignal`).        |
+| Tab       | Status      | Meaning                                       |
+| --------- | ----------- | --------------------------------------------- |
+| Waiting   | `pending`   | Queued, waiting for a concurrency slot.       |
+| In flight | `running`   | A handler is currently executing the task.    |
+| Completed | `completed` | Handler returned successfully.                |
+| Failed    | `failed`    | Handler exhausted `maxAttempts` retries.      |
+| Cancelled | `cancelled` | Task was cancelled (via UI or `AbortSignal`). |
 
 Click a task ID to expand its row and see the payload, error message, result,
 and progress percentage. From the row you can:
@@ -3423,13 +3465,13 @@ at the queue head. Failures retry with exponential backoff up to
 
 ### 19.4 Built-in task types
 
-| Type                            | Use case                                              |
-| ------------------------------- | ----------------------------------------------------- |
-| `refresh-repo-connector`        | Re-pull and re-ingest a repo connector.               |
-| `refresh-db-connector-schema`   | Re-introspect schema + samples for a DB connector.    |
-| `rerun-analysis`                | Run Phase 7 analysis on a project's documents.        |
-| `publish-batch`                 | Re-run a Phase 9 publish (idempotent).                |
-| `http-webhook`                  | POST a JSON payload to a vetted external URL.         |
+| Type                          | Use case                                           |
+| ----------------------------- | -------------------------------------------------- |
+| `refresh-repo-connector`      | Re-pull and re-ingest a repo connector.            |
+| `refresh-db-connector-schema` | Re-introspect schema + samples for a DB connector. |
+| `rerun-analysis`              | Run Phase 7 analysis on a project's documents.     |
+| `publish-batch`               | Re-run a Phase 9 publish (idempotent).             |
+| `http-webhook`                | POST a JSON payload to a vetted external URL.      |
 
 The `http-webhook` handler is locked down: hosts must appear on the
 `WEBHOOK_ALLOWED_HOSTS` list, payload size is capped at `WEBHOOK_MAX_BYTES`,
@@ -3482,6 +3524,7 @@ graph TD
 ### 20.1 Profile (`/settings/profile`)
 
 View and edit your account information:
+
 - **Username** — your login name (read-only, set by the system)
 - **Display Name** — how your name appears in the UI (read-only in v1.2)
 - **Email** — your account email (read-only)
@@ -3490,6 +3533,7 @@ View and edit your account information:
 ### 20.2 Appearance (`/settings/appearance`)
 
 Customize how METIS looks:
+
 - **Theme** — Light / Dark / System (also surfaced as the sun/moon toggle in the header).
 - **Density** — Comfortable or Compact. Persisted to `metis.settings.density` in `localStorage`; takes effect immediately and survives reloads.
 - **Reset** — clears any local appearance overrides.
@@ -3501,8 +3545,8 @@ Control which notifications you receive as a **per-channel × per-event matrix**
 - Preferences are **stored server-side on your account** and sync across browsers and devices (defaults: Email, In-app, and Teams on; Webhook off). If loading or saving fails, the page shows an error — it never falls back to browser-local storage.
 - **Save** is disabled until the form is dirty and writes only the cells you changed; **Discard changes** reverts unsaved edits.
 - **One-time import:** if you had toggles saved by the older browser-local version of this page (`metis.settings.notifications`) and haven't customized anything server-side yet, they are imported automatically on your first visit and the local key is removed.
-- **Toggles are enforced at the source.** Disabling a cell stops that notification from being created for you at all — e.g. turning off *Mentions × In-app* means an @mention no longer produces an in-app notification (nothing appears in the bell drawer), and turning it back on restores delivery immediately.
-- **Ops-critical alerts are exempt by design.** Preferences govern notifications addressed to *you personally*. They never suppress PagerDuty on-call paging, workspace-level budget alerts, or Teams cards broadcast to a whole workspace channel — those are operational alerts without an individual recipient, so no personal toggle applies.
+- **Toggles are enforced at the source.** Disabling a cell stops that notification from being created for you at all — e.g. turning off _Mentions × In-app_ means an @mention no longer produces an in-app notification (nothing appears in the bell drawer), and turning it back on restores delivery immediately.
+- **Ops-critical alerts are exempt by design.** Preferences govern notifications addressed to _you personally_. They never suppress PagerDuty on-call paging, workspace-level budget alerts, or Teams cards broadcast to a whole workspace channel — those are operational alerts without an individual recipient, so no personal toggle applies.
 
 ### 20.4 Configuration (`/settings/api-keys`)
 
@@ -3511,9 +3555,9 @@ Single admin home for AI provider preferences and runtime configuration. The rou
 - **Provider preferences** — pick the active provider (`bedrock-gateway`, `openai`, `azure`, `anthropic`, `offline-stub`) and default model. Local-only — never sent to the server. Persisted to `metis.settings.providerPrefs`.
 - **Security evaluation** — kicks off the Phase-15 red-team harness via `POST /api/security-eval/run` and renders the report inline. Admin only.
 - **Runtime configuration** (Epic #249) — three tiers, all backed by the unified `GET/PUT/DELETE /api/admin/config/:key` surface:
-    - **Runtime secrets** (Tier 2): vault-backed credentials such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GITHUB_TOKEN`. Save rotates the secret in the vault; Clear deletes the override and falls back to the env value. Audit entries are always redacted. These are server configuration values the server itself reads. Each is stored as a global-scope entry in the [Vault](#18-the-secret-vault) under its key name, so it also appears on `/vault`, but manage it here: Clear falls back to the env value and changes are audited. Credentials for connectors, MCP servers and publishing are added in the Vault directly and referenced as `${vault:…}`. The section links to `/vault`, and the Vault page links back here for admins.
-    - **Runtime tunables** (Tier 3): non-sensitive knobs persisted to `runtime_config`. Changes take effect on the **next request** with no server restart — the in-memory cache is invalidated and the `config.changed` event fires for every subscriber. Includes provider/model selection (`AI_PROVIDER`, `AI_DEFAULT_MODEL`, `AI_MODE`), token caps (`ANALYSIS_MONTHLY_TOKEN_CAP`, `ANALYSIS_AGENT_TOKEN_CAP`), publishing rate limits, scheduler controls, MCP partial-health, and SSRF allowlists.
-    - **Bootstrap configuration** (Tier 1): read-only values loaded from `.env` at boot — `DATABASE_URL`, `JWT_SECRET`, `PORT`, etc. Restart the server to change them.
+  - **Runtime secrets** (Tier 2): vault-backed credentials such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GITHUB_TOKEN`. Save rotates the secret in the vault; Clear deletes the override and falls back to the env value. Audit entries are always redacted. These are server configuration values the server itself reads. Each is stored as a global-scope entry in the [Vault](#18-the-secret-vault) under its key name, so it also appears on `/vault`, but manage it here: Clear falls back to the env value and changes are audited. Credentials for connectors, MCP servers and publishing are added in the Vault directly and referenced as `${vault:…}`. The section links to `/vault`, and the Vault page links back here for admins.
+  - **Runtime tunables** (Tier 3): non-sensitive knobs persisted to `runtime_config`. Changes take effect on the **next request** with no server restart — the in-memory cache is invalidated and the `config.changed` event fires for every subscriber. Includes provider/model selection (`AI_PROVIDER`, `AI_DEFAULT_MODEL`, `AI_MODE`), token caps (`ANALYSIS_MONTHLY_TOKEN_CAP`, `ANALYSIS_AGENT_TOKEN_CAP`), publishing rate limits, scheduler controls, MCP partial-health, and SSRF allowlists.
+  - **Bootstrap configuration** (Tier 1): read-only values loaded from `.env` at boot — `DATABASE_URL`, `JWT_SECRET`, `PORT`, etc. Restart the server to change them.
 - **Audit log** — every Tier-2 / Tier-3 write produces a `config_audit` row with actor, key, old/new value (sensitive values masked as `[REDACTED]`), scope, and timestamp. The Audit log tab paginates this view.
 - **Runtime environment** — admin-only table that mirrors `GET /api/settings/env-vars`. Secrets are returned redacted; unset variables show `[unset]`.
 
@@ -3582,7 +3626,7 @@ trigger's own `secret`. Its `event` is the bare GitHub event name (`push`, `issu
 > `X-GitHub-Event` header, for `push`, `pull_request`, `pull_request_review`,
 > `pull_request_review_comment`, `pull_request_review_thread`, `issues` and `issue_comment`. A
 > trigger filtered on one of these fires only when the body really is that event. A delivery that
-> only *says* it is one (a hand-built test payload with the header set but no `issue` or
+> only _says_ it is one (a hand-built test payload with the header set but no `issue` or
 > `pull_request` in the body, say) no longer fires it. Genuine GitHub deliveries are unaffected.
 > For any other event (`release`, `workflow_run`, …) the body can't tell METIS what it is, so the
 > header is still used, as before.
@@ -3597,9 +3641,11 @@ GitHub signed:
 - **Bodies with a signed time** fire each trigger at most once, ever. METIS remembers the body for
   7 days, and refuses one whose signed time is more than 4 days old (`reason: "STALE_DELIVERY"`).
   These are pushes (`repository.pushed_at`), pull requests, issues, comments and reviews, a release
-  being created or published, `workflow_run`, `workflow_job`, `deployment` and `deployment_status`.
+  being published (`created`, `published` or `prereleased` with a `published_at`), `workflow_run`,
+  `workflow_job`, `deployment` and `deployment_status`.
 - **Every other body** fires each trigger at most once **within 90 days**. These include `create`,
-  `delete`, `ping`, and a release that is edited or deleted. METIS remembers it for 90 days instead
+  `delete`, `ping`, a draft release, and a release that is edited, deleted or promoted from
+  pre-release (`released`). METIS remembers it for 90 days instead
   of 7, because it has no signed time to judge its age by. After that, a resend of the same body
   could fire once more.
 
@@ -3622,11 +3668,11 @@ run can't be started it answers `500`. Triggers that had already fired stay fire
 When adding or editing an MCP server, admins can pick the **Runtime** that
 will host the server's stdio process:
 
-| Runtime | What METIS does | When to use |
-|---|---|---|
-| **Native** (default) | Spawns `command + args` directly on the METIS pod, same as before. | Local dev, trusted commands, back-compat for existing rows. |
-| **Docker (stdio)** | Wraps the spawn into `docker run -i --rm <wrapper-image>` with memory/CPU caps and a dedicated `metis-mcp` bridge network. Secrets are passed via `-e KEY` (no values in `ps`). | AWS hosts where you don't want every runtime (uvx/jbang/npx) baked into the METIS image. |
-| **K8s (SSE)** | Provisions a per-server K8s `Deployment` + `Service` + `NetworkPolicy` (and optionally a per-server `ServiceAccount` with IRSA). MCP exposes HTTP+SSE on :8080; METIS connects via `http://mcp-<id>.metis-mcp.svc.cluster.local:8080/sse`. | Production EKS. Strongest isolation: non-root pods, read-only root FS, no API token mount unless IRSA, deny-all egress except an explicit per-server allowlist. |
+| Runtime              | What METIS does                                                                                                                                                                                                                            | When to use                                                                                                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Native** (default) | Spawns `command + args` directly on the METIS pod, same as before.                                                                                                                                                                         | Local dev, trusted commands, back-compat for existing rows.                                                                                                     |
+| **Docker (stdio)**   | Wraps the spawn into `docker run -i --rm <wrapper-image>` with memory/CPU caps and a dedicated `metis-mcp` bridge network. Secrets are passed via `-e KEY` (no values in `ps`).                                                            | AWS hosts where you don't want every runtime (uvx/jbang/npx) baked into the METIS image.                                                                        |
+| **K8s (SSE)**        | Provisions a per-server K8s `Deployment` + `Service` + `NetworkPolicy` (and optionally a per-server `ServiceAccount` with IRSA). MCP exposes HTTP+SSE on :8080; METIS connects via `http://mcp-<id>.metis-mcp.svc.cluster.local:8080/sse`. | Production EKS. Strongest isolation: non-root pods, read-only root FS, no API token mount unless IRSA, deny-all egress except an explicit per-server allowlist. |
 
 Wrapper images live under `images/mcp-wrappers/` (`uvx-runner`,
 `jbang-runner`, `node-runner`, `npx-runner` for stdio; `*-runner-sse`
@@ -3638,12 +3684,12 @@ Six runtime-config tunables on the **Configuration** page (§19.5) gate
 how MCP servers can be registered. All default to off in dev; ops should
 flip them on in prod via the UI:
 
-| Tunable | Effect when `true`/non-empty |
-|---|---|
-| `MCP_REQUIRE_VAULT_ENV` | Reject env values that aren't `${vault:...}` references. |
-| `MCP_REQUIRE_CATALOG` | Project-scope MCPs must come from the federated catalog (§27); raw `command` strings rejected with `403`. Global scope still allows admin raw-register. |
-| `MCP_IMAGE_ALLOWLIST` | CSV of segment-aware glob patterns (e.g. `ghcr.io/metis-mcps/*`); container runtimes (`docker-stdio`, `k8s-sse`) only accept matching images. `*` matches one path segment, `**` matches any number of segments (issue #304). |
-| `MCP_ALLOW_USER_SCOPE` | Enables a `scope: 'user'` on MCP rows (per-user MCPs). When off, `scope: 'user'` writes return `400 USER_SCOPE_DISABLED`. Capped per-user by `MCP_USER_MAX_CONCURRENT` and reaped after `MCP_USER_IDLE_TIMEOUT_MIN`. A user server's label is unique only among its owner's servers, and its tools are named `mcp:u.<ownerId>.<label-slug>:<tool>` (the label lowercased, each run of characters outside `[a-z0-9]` replaced by `-`, leading or trailing `-` trimmed, and cut to 32 characters). |
+| Tunable                 | Effect when `true`/non-empty                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `MCP_REQUIRE_VAULT_ENV` | Reject env values that aren't `${vault:...}` references.                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `MCP_REQUIRE_CATALOG`   | Project-scope MCPs must come from the federated catalog (§27); raw `command` strings rejected with `403`. Global scope still allows admin raw-register.                                                                                                                                                                                                                                                                                                                                          |
+| `MCP_IMAGE_ALLOWLIST`   | CSV of segment-aware glob patterns (e.g. `ghcr.io/metis-mcps/*`); container runtimes (`docker-stdio`, `k8s-sse`) only accept matching images. `*` matches one path segment, `**` matches any number of segments (issue #304).                                                                                                                                                                                                                                                                    |
+| `MCP_ALLOW_USER_SCOPE`  | Enables a `scope: 'user'` on MCP rows (per-user MCPs). When off, `scope: 'user'` writes return `400 USER_SCOPE_DISABLED`. Capped per-user by `MCP_USER_MAX_CONCURRENT` and reaped after `MCP_USER_IDLE_TIMEOUT_MIN`. A user server's label is unique only among its owner's servers, and its tools are named `mcp:u.<ownerId>.<label-slug>:<tool>` (the label lowercased, each run of characters outside `[a-z0-9]` replaced by `-`, leading or trailing `-` trimmed, and cut to 32 characters). |
 
 Trust-level promotion to `trusted` is admin-only (`mcp.manage`); coordinators
 registering project servers can only set `trustLevel: 'untrusted'`.
@@ -3667,25 +3713,25 @@ Admin (Level 4)
 
 ### What Each Role Can Do
 
-| Feature | Read-Only | Developer | Coordinator | Admin |
-|---|---|---|---|---|
-| View projects | ✅ | ✅ | ✅ | ✅ |
-| View documents | ✅ | ✅ | ✅ | ✅ |
-| View analyses | ✅ | ✅ | ✅ | ✅ |
-| View requirements | ✅ | ✅ | ✅ | ✅ |
-| View repositories | ✅ | ✅ | ✅ | ✅ |
-| Use AI chat | ❌ | ✅ | ✅ | ✅ |
-| Start analysis | ❌ | ✅ | ✅ | ✅ |
-| Upload documents | ❌ | ✅ | ✅ | ✅ |
-| Add repositories | ❌ | ✅ | ✅ | ✅ |
-| Create projects | ❌ | ❌ | ✅ | ✅ |
-| Update projects | ❌ | ❌ | ✅ | ✅ |
-| Delete projects | ❌ | ❌ | ❌ | ✅ |
-| Update requirements | ❌ | ❌ | ✅ | ✅ |
-| Publish to GitHub | ❌ | ❌ | ✅ | ✅ |
-| Manage vault secrets | ❌ | ❌ | ❌ | ✅ |
-| Manage users | ❌ | ❌ | ❌ | ✅ |
-| System settings | ❌ | ❌ | ❌ | ✅ |
+| Feature              | Read-Only | Developer | Coordinator | Admin |
+| -------------------- | --------- | --------- | ----------- | ----- |
+| View projects        | ✅        | ✅        | ✅          | ✅    |
+| View documents       | ✅        | ✅        | ✅          | ✅    |
+| View analyses        | ✅        | ✅        | ✅          | ✅    |
+| View requirements    | ✅        | ✅        | ✅          | ✅    |
+| View repositories    | ✅        | ✅        | ✅          | ✅    |
+| Use AI chat          | ❌        | ✅        | ✅          | ✅    |
+| Start analysis       | ❌        | ✅        | ✅          | ✅    |
+| Upload documents     | ❌        | ✅        | ✅          | ✅    |
+| Add repositories     | ❌        | ✅        | ✅          | ✅    |
+| Create projects      | ❌        | ❌        | ✅          | ✅    |
+| Update projects      | ❌        | ❌        | ✅          | ✅    |
+| Delete projects      | ❌        | ❌        | ❌          | ✅    |
+| Update requirements  | ❌        | ❌        | ✅          | ✅    |
+| Publish to GitHub    | ❌        | ❌        | ✅          | ✅    |
+| Manage vault secrets | ❌        | ❌        | ❌          | ✅    |
+| Manage users         | ❌        | ❌        | ❌          | ✅    |
+| System settings      | ❌        | ❌        | ❌          | ✅    |
 
 ---
 
@@ -3694,26 +3740,31 @@ Admin (Level 4)
 Here's the full end-to-end workflow for using METIS, from nothing to published GitHub issues:
 
 ### Step 1: Create a Project
+
 1. Log in to METIS
 2. Go to Projects → New Project
 3. Give it a name, description, and link it to your GitHub repository
 
 ### Step 2: Upload Documents
+
 1. Open your project
 2. Upload all relevant business documents (requirements, policies, specifications, data dictionaries)
 3. Wait for processing to complete (status changes from "uploading" to "indexed")
 
 ### Step 3: Connect Repositories (Optional)
+
 1. Via the Repos API, add your code repository URL
 2. METIS clones and indexes the code
 3. The AI generates a "Brain" summary of the codebase
 
 ### Step 4: Connect Databases (Optional)
+
 1. Via the Databases API, register your database connection
 2. Test the connection
 3. The AI can now inspect the schema during analysis
 
 ### Step 5: Run Analysis
+
 1. Go to your project detail page
 2. Click **"Run Analysis"**
 3. Four AI agents work in parallel:
@@ -3724,28 +3775,33 @@ Here's the full end-to-end workflow for using METIS, from nothing to published G
 4. Wait for completion (typically 1–5 minutes)
 
 ### Step 6: Review Requirements
+
 1. Go to the Requirements page
 2. Filter and search through generated requirements
 3. Check the Traceability Matrix for a lifecycle overview
 4. Edit any requirements that need refinement
 
 ### Step 7: Approve Requirements
+
 1. Review each requirement carefully
 2. Click **"Approve"** on requirements you're satisfied with
 3. Or use "Approve All" if the entire batch looks good
 
 ### Step 8: Generate GitHub Issue Drafts
+
 1. Generate drafts from approved requirements
 2. Review the generated issue templates
 3. Edit titles, descriptions, or labels as needed
 
 ### Step 9: Publish to GitHub
+
 1. Click **"Publish Issues"** on the project
 2. METIS creates the issues in your GitHub repository
 3. Monitor the batch progress
 4. Verify the issues appear in GitHub
 
 ### Step 10: Track and Iterate
+
 1. Check the Traceability Matrix to see full lifecycle coverage
 2. Start new analyses as documents or code change
 3. Use the AI Chat for ongoing questions and assistance
@@ -3813,6 +3869,7 @@ curl http://localhost:4000/api/health
 ```
 
 Response:
+
 ```json
 {
   "status": "healthy",
@@ -3832,6 +3889,7 @@ For the complete API reference with all 56 endpoints, see [ARCHITECTURE.md](ARCH
 **Problem**: `pnpm dev` fails with errors.
 
 **Solution**:
+
 1. Make sure you're using Node.js 22.22.2 or higher: `node --version`
 2. Delete `node_modules` and reinstall: `rm -rf node_modules && pnpm install`
 3. Build the shared package: `pnpm --filter @metis/shared build`. If the error mentions
@@ -3845,6 +3903,7 @@ For the complete API reference with all 56 endpoints, see [ARCHITECTURE.md](ARCH
 **Problem**: The server can't connect to the database.
 
 **Solution**:
+
 - **SQLite**: The database file is auto-created. Make sure the `server/` directory is writable.
 - **PostgreSQL**: Check that the database server is running:
   - Docker: `docker compose ps` — the postgres container should be "Up"
@@ -3856,6 +3915,7 @@ For the complete API reference with all 56 endpoints, see [ARCHITECTURE.md](ARCH
 **Problem**: You get "Invalid credentials" when trying to log in.
 
 **Solution**:
+
 - **Mock mode**: Use username `admin` and password `password` (or any of the 4 test accounts)
 - **LDAP mode**: Check that your LDAP configuration is correct in `.env` and that the LDAP server is reachable
 - Check the server logs for more details: look at the terminal running `pnpm dev`
@@ -3865,6 +3925,7 @@ For the complete API reference with all 56 endpoints, see [ARCHITECTURE.md](ARCH
 **Problem**: The red dot in the header says "Disconnected."
 
 **Solution**:
+
 - Make sure the **server** is running (port 4000). The UI (port 3000) needs the server to be running.
 - Check where the browser is dialling: open `/runtime-config` on the UI. A `socketUrl` of `null` means the page's own origin, which is right behind the Helm ingress. Anywhere the server is reached on another address, set `METIS_BROWSER_SOCKET_URL` on the UI to that server URL and restart the UI (Docker Compose sets `http://localhost:4000`). In `pnpm dev`, `NEXT_PUBLIC_SOCKET_URL` in your `.env` is still honoured
 - Check for CORS errors in your browser's developer console (F12 → Console tab)
@@ -3874,6 +3935,7 @@ For the complete API reference with all 56 endpoints, see [ARCHITECTURE.md](ARCH
 **Problem**: An analysis runs for a long time or returns a failure status.
 
 **Solution**:
+
 - Check the task engine stats for queue depth
 - Ensure the AI token budget hasn't been exceeded
 - In development (mock mode), analyses should complete in seconds. If they don't, check server logs for errors.
@@ -3884,6 +3946,7 @@ For the complete API reference with all 56 endpoints, see [ARCHITECTURE.md](ARCH
 **Problem**: Issues are not being created in GitHub.
 
 **Solution**:
+
 1. Verify your `GITHUB_TOKEN` is valid and not expired
 2. Make sure the token has the `repo` scope
 3. Confirm the project has the correct `githubOwner` and `githubRepo` set
@@ -3895,6 +3958,7 @@ For the complete API reference with all 56 endpoints, see [ARCHITECTURE.md](ARCH
 **Problem**: `docker compose up` fails.
 
 **Solution**:
+
 1. Make sure Docker is running: `docker info`
 2. Check for port conflicts: `lsof -i :3000` and `lsof -i :4000` — make sure nothing else is using those ports
 3. Remove old containers and rebuild: `docker compose down -v && docker compose up --build`
@@ -3905,6 +3969,7 @@ For the complete API reference with all 56 endpoints, see [ARCHITECTURE.md](ARCH
 **Problem**: The UI appears unstyled or layout is wrong.
 
 **Solution**:
+
 1. Clear your browser cache (Ctrl+Shift+R or Cmd+Shift+R)
 2. Make sure the UI build completed without errors in the terminal
 3. Try a different browser to rule out browser-specific issues
@@ -3959,7 +4024,7 @@ A: If more than 50% of publishes in a batch fail, all already-published issues a
 
 ---
 
-*This guide was created for the METIS project. For detailed technical architecture documentation, see [ARCHITECTURE.md](ARCHITECTURE.md).*
+_This guide was created for the METIS project. For detailed technical architecture documentation, see [ARCHITECTURE.md](ARCHITECTURE.md)._
 
 ## 25. Closed-Loop PR Reviews (v1.2.0)
 
@@ -3974,9 +4039,9 @@ When the **Closed Loop** is enabled, METIS treats your GitHub pull requests as t
    - A **GitHub Enterprise** connection needs its server address. A connection with none is not used for reviews, so its token is never sent to github.com.
 3. Configure a GitHub webhook on your repository that sends `pull_request` events to METIS, set up one of the two ways below (#1475):
    - **The connection's own secret and URL (recommended).** In **Connections**, on the repository's card, click **Create webhook secret**. Set the webhook's **Payload URL** to `https://<your-metis-host>` followed by the path shown (`/api/webhooks/github/pr/c/<connection id>`), and its **Secret** to the secret shown. The secret is shown only that once: METIS keeps no copy it could show again, so if you lose it, click **Replace webhook secret** and update the webhook (the old secret stops working at once, which is why METIS asks first). Deliveries to that URL are checked against this connection's secret only, and go to this project only, even if a project in another workspace connects the same repository. Once a connection has its own secret it no longer takes shared-secret deliveries. **Use shared secret** removes it. Over the API: `POST` or `DELETE /api/projects/:id/connectors/repos/:repoId/webhook-secret` (`connector.write`, audited as `connector.repo.webhook_secret.generate` / `.remove`). Two changes at the same moment get a `409 WEBHOOK_SECRET_CONFLICT`, never a secret that does not work. The server needs `VAULT_MASTER_KEY` to issue one. **The secrets are derived from that key**, so rotating it, or moving METIS to a host with a different key, invalidates every connection's own secret: those cards then say **needs a new secret**, GitHub's deliveries to them are refused, and each needs a new secret (see OPERATIONS.md §4).
-   - **The server's shared secret.** Payload URL `https://<your-metis-host>/api/webhooks/github/pr`, Secret `GITHUB_WEBHOOK_SECRET`. That secret cannot say whose webhook sent a delivery, so each delivery goes to **one** project: the project whose connection was set to this repository earliest. Only connections that count take part: a GitHub (or, for an Enterprise delivery, that Enterprise server's) connection whose **Test** succeeded (status *connected*) **with a token that GitHub says has push or admin access to the repository** (#1488), and that has no secret of its own. A connection with no token, with a token that can only read the repository, or with a token GitHub reports no permissions for, never counts: anyone can read a public repository, and only a repository admin can add its webhook. The access is recorded by each **Test**, scheduled refresh and metadata sync that reads the repository, from that same read; a **Test** that marks the connection *error* forgets it. A Test or sync that overlaps a change to the connection's repository, server or token records nothing (a Test answers `REPO_CONNECTOR_CHANGED`: test it again). The card says why such a connection gets no shared-secret reviews. Changing a connection's token, or pointing it at another repository, forgets what its old token could do until the next Test. A connection that is still *pending* never counts. A connection later changed to point at this repository counts from the time of that change, goes back to *pending* until it is tested again, and loses its own webhook secret, if it had one. A project that connects the repository later gets no shared-secret deliveries (logged as `pr_review.webhook_owner_ambiguous`), and cannot take them from, or stop them for, the earlier project **while the earlier project's connection stays *connected***. If a **Test** of the earlier connection fails because of the connection itself (status *error*: GitHub answered 401, 404, or a 403 refusing the token, for example when it expires), the next eligible connection gets the deliveries until that Test succeeds again. A Test or scheduled refresh that hits a GitHub rate limit, a GitHub server error (5xx) or a dropped connection leaves the status and the recorded access as they were, and says so, so nobody can take an incumbent's deliveries by exhausting the server's GitHub quota. A successful Test shows only that the connection could read the repository, and a public repository can be read without any token, so it is no proof of who owns the repository's webhook. If several workspaces may connect the same repository, give your connection its own secret. To be sure of getting your project's deliveries, give its connection its own secret. Each connection's card says this too, whether or not another project connects the repository, so the card never reveals that one does.
-   - **Upgrading from before #1488:** METIS did not record what a connection's token could do, and cannot tell afterwards which token a past Test used, so existing connections take no shared-secret deliveries until they are tested again. **After the upgrade, the server re-checks them once, in the background**: every *connected* GitHub connection with a token, no secret of its own and no recorded access is tested with its own token, one every 2 seconds (`REPO_PERMISSION_RECHECK_INTERVAL_MS`), logged as `repo_permission_recheck.start` / `.done` with counts. It never delays startup, and a check that fails is logged and left for a manual **Test** (a 401 or 404 marks the connection *error*, as a Test would). Set `REPO_PERMISSION_RECHECK=off` to skip it. A connection with no token is not re-checked: it could only ever record *none*. Connections with their own webhook secret are unaffected.
-   - **Upgrading from before #1475:** the shared-secret webhook keeps working, but **only for a connection that is *connected***. A connection that was never tested (still *pending*), or whose last Test failed (*error*), stops getting automatic reviews until it passes **Test** on its card. If several projects connect the same repository on the shared secret, only the earliest-connected one now gets the reviews. Before, whichever connection was found first got them, so a project in another workspace could take a repository's reviews over just by connecting it. Merged pull requests: one signed with a connection's own secret updates only that project's requirements, and one signed with the shared secret never updates a project whose connection has its own secret. Issue events got the same two receivers in #1483: see **GitHub issues → `tasks.md` sync** below.
+   - **The server's shared secret.** Payload URL `https://<your-metis-host>/api/webhooks/github/pr`, Secret `GITHUB_WEBHOOK_SECRET`. That secret cannot say whose webhook sent a delivery, so each delivery goes to **one** project: the project whose connection was set to this repository earliest. Only connections that count take part: a GitHub (or, for an Enterprise delivery, that Enterprise server's) connection whose **Test** succeeded (status _connected_) **with a token that GitHub says has push or admin access to the repository** (#1488), and that has no secret of its own. A connection with no token, with a token that can only read the repository, or with a token GitHub reports no permissions for, never counts: anyone can read a public repository, and only a repository admin can add its webhook. The access is recorded by each **Test**, scheduled refresh and metadata sync that reads the repository, from that same read; a **Test** that marks the connection _error_ forgets it. A Test or sync that overlaps a change to the connection's repository, server or token records nothing (a Test answers `REPO_CONNECTOR_CHANGED`: test it again). The card says why such a connection gets no shared-secret reviews. Changing a connection's token, or pointing it at another repository, forgets what its old token could do until the next Test. A connection that is still _pending_ never counts. A connection later changed to point at this repository counts from the time of that change, goes back to _pending_ until it is tested again, and loses its own webhook secret, if it had one. A project that connects the repository later gets no shared-secret deliveries (logged as `pr_review.webhook_owner_ambiguous`), and cannot take them from, or stop them for, the earlier project **while the earlier project's connection stays _connected_**. If a **Test** of the earlier connection fails because of the connection itself (status _error_: GitHub answered 401, 404, or a 403 refusing the token, for example when it expires), the next eligible connection gets the deliveries until that Test succeeds again. A Test or scheduled refresh that hits a GitHub rate limit, a GitHub server error (5xx) or a dropped connection leaves the status and the recorded access as they were, and says so, so nobody can take an incumbent's deliveries by exhausting the server's GitHub quota. A successful Test shows only that the connection could read the repository, and a public repository can be read without any token, so it is no proof of who owns the repository's webhook. If several workspaces may connect the same repository, give your connection its own secret. To be sure of getting your project's deliveries, give its connection its own secret. Each connection's card says this too, whether or not another project connects the repository, so the card never reveals that one does.
+   - **Upgrading from before #1488:** METIS did not record what a connection's token could do, and cannot tell afterwards which token a past Test used, so existing connections take no shared-secret deliveries until they are tested again. **After the upgrade, the server re-checks them once, in the background**: every _connected_ GitHub connection with a token, no secret of its own and no recorded access is tested with its own token, one every 2 seconds (`REPO_PERMISSION_RECHECK_INTERVAL_MS`), logged as `repo_permission_recheck.start` / `.done` with counts. It never delays startup, and a check that fails is logged and left for a manual **Test** (a 401 or 404 marks the connection _error_, as a Test would). Set `REPO_PERMISSION_RECHECK=off` to skip it. A connection with no token is not re-checked: it could only ever record _none_. Connections with their own webhook secret are unaffected.
+   - **Upgrading from before #1475:** the shared-secret webhook keeps working, but **only for a connection that is _connected_**. A connection that was never tested (still _pending_), or whose last Test failed (_error_), stops getting automatic reviews until it passes **Test** on its card. If several projects connect the same repository on the shared secret, only the earliest-connected one now gets the reviews. Before, whichever connection was found first got them, so a project in another workspace could take a repository's reviews over just by connecting it. Merged pull requests: one signed with a connection's own secret updates only that project's requirements, and one signed with the shared secret never updates a project whose connection has its own secret. Issue events got the same two receivers in #1483: see **GitHub issues → `tasks.md` sync** below.
 4. (Sandbox test re-runs through the `copilot-svc` sidecar were removed with that sidecar in #150; they were never wired into the reviewer.)
 
 ### What you'll see
@@ -4019,15 +4084,16 @@ Each connected repository can override the project's defaults by committing a `.
 
 ```yaml
 # .metis/pr-review.yaml — all fields are optional
-maxDiffBytes: 50000        # cap diff size (bytes) before review is skipped
-skipGlobs:                 # additional skip globs (merged with project defaults)
+maxDiffBytes: 50000 # cap diff size (bytes) before review is skipped
+skipGlobs: # additional skip globs (merged with project defaults)
   - "**/*.snap"
   - "vendor/**"
-model: "gpt-4o-mini"       # override the judge model for this repo
-severityFloor: "warning"   # only post comments at or above this severity
-                           #   one of: info | minor | warning | major | risk
-skipDraftPrs: true         # skip review when pr.draft === true
-skipAuthors:               # skip these GitHub usernames (case-insensitive)
+model: "gpt-4o-mini" # override the judge model for this repo
+severityFloor:
+  "warning" # only post comments at or above this severity
+  #   one of: info | minor | warning | major | risk
+skipDraftPrs: true # skip review when pr.draft === true
+skipAuthors: # skip these GitHub usernames (case-insensitive)
   - "dependabot[bot]"
   - "renovate[bot]"
 ```
@@ -4094,14 +4160,14 @@ Below that, **Context given to the code agent, not requirements** opens to show 
 
 ### The Six Phases
 
-| Phase | Slash Command | Agent | Produces |
-|---|---|---|---|
-| **Specify** | `/specify` | Business Analyst | `spec.md` — stakeholders, in-scope, out-of-scope, Given/When/Then ACs, NFRs |
-| **Plan** | `/plan` | Architect | `plan.md` — architecture plan with at least one Mermaid diagram |
-| **Tasks** | `/tasks` | Product Owner | `tasks.md` — topologically-ordered task table with Fibonacci sizing |
-| **Clarify** | `/clarify` | — | `clarify.md` — Q&A log; empty input asks a question, non-empty input answers the latest |
-| **Analyze** | `/analyze` | Cross-phase | `analysis.md` — consistency check across spec + plan + tasks |
-| **Implement** | `/implement` | Dispatcher | Returns the orchestrator handoff payload (no AI call) |
+| Phase         | Slash Command | Agent            | Produces                                                                                |
+| ------------- | ------------- | ---------------- | --------------------------------------------------------------------------------------- |
+| **Specify**   | `/specify`    | Business Analyst | `spec.md` — stakeholders, in-scope, out-of-scope, Given/When/Then ACs, NFRs             |
+| **Plan**      | `/plan`       | Architect        | `plan.md` — architecture plan with at least one Mermaid diagram                         |
+| **Tasks**     | `/tasks`      | Product Owner    | `tasks.md` — topologically-ordered task table with Fibonacci sizing                     |
+| **Clarify**   | `/clarify`    | —                | `clarify.md` — Q&A log; empty input asks a question, non-empty input answers the latest |
+| **Analyze**   | `/analyze`    | Cross-phase      | `analysis.md` — consistency check across spec + plan + tasks                            |
+| **Implement** | `/implement`  | Dispatcher       | Returns the orchestrator handoff payload (no AI call)                                   |
 
 Each command runs through the governance chain: FinOps budget check (402 if exceeded), inbound + outbound safety filters (422 if denied), usage recording, and audit logging.
 
@@ -4112,6 +4178,7 @@ The **constitution** is prepended to every agent system prompt. **Generate const
 ### The UI
 
 The Spec Kit page has three columns:
+
 1. **Features and artifact tree.** The **Features** selector lists the project's features. Tick **Show archived** to include archived ones; **Archive feature** and **Restore feature** act on the selected one. With **Project (.specify/)** selected, the tree lists the six project-level files. With a feature selected, it lists that feature's `specs/<slug>/` artifacts, and the selector shows the feature's phase gates (spec, plan, tasks, ready to implement). To create a feature, select **Project** and run `/speckit.specify <brief>`; the page then opens the new feature.
 2. **Viewer/Editor.** Displays the selected artifact. Project files can be edited and commented on. **Delete** removes the viewed artifact (project file or feature artifact) after a confirmation.
 3. **Command palette.** Autocomplete offers the `speckit.*` commands. A typed short name such as `/plan` runs as `/speckit.plan`, so the page never calls a deprecated alias. Commands run on the selected feature; `/speckit.constitution` always applies to the project. `/speckit.plan`, `/speckit.checklist` and `/speckit.taskstoissues` need a feature selected. With a feature selected, **Feature actions** offers **Generate checklists**, **Preview issue export (dry run)** and **Publish issues to the saved target**. Pick the GitHub token under **GitHub token (vault secret)** first: it is chosen from the vault, never pasted. Publishing is enabled only after a dry run of that feature whose vault secret resolved, lists only the issues it would create, asks for confirmation, and creates exactly those. After a dry run, **Tasks to export** lists every task with a checkbox: untick the ones to leave out and run the dry run again, and Publish creates only the chosen ones. After publishing, the toast and the result card link the created issues (see `/speckit.taskstoissues` below). After `/speckit.implement`, **Start analysis with these artifacts** starts an analysis with the scope's `spec.md` as the requirements and opens it. It sends `spec.md`'s requirements as a structured summary: each acceptance criterion (`AC-1`, …) with its Given/When/Then, then each non-functional requirement (`NFR-1`, …), one per paragraph, so each becomes one requirement of the analysis. A requirement that does not fit the analysis input limit (4,096 characters) is left out whole, never cut. Only `spec.md`'s requirements are sent: the analysis page says so, names the requirements sent and any left out, and lists the other artifacts (`plan.md`, `tasks.md`, `constitution.md`) as not sent, above the result tabs, while the run is going and afterwards. A `spec.md` without an `## Acceptance criteria` section is sent as written, cut at a line or sentence end if it is too long, and the analysis page says its end was not sent. The analysis **Outcome** card states how many requirements are stored for the run, and corrects a summary sentence that counts the derived requirements differently.
@@ -4137,12 +4204,12 @@ Spec Kit commands are not run from the Workbench chat. Its `/` suggestions were 
 
 **API clients.** `POST /api/projects/:id/spec-kit/commands/:cmd` still waits and answers with the result, with the same statuses and codes as before, for both the `speckit.*` names and the deprecated short names. Two things changed for it. It is refused with `409 SPEC_KIT_JOB_RUNNING` while another command holds the same feature. And its command now runs as a job too, so a caller whose connection dropped can read the outcome from the job endpoints. For a long command, start a job instead:
 
-| Request | Answer |
-|---|---|
-| `POST …/spec-kit/commands/:cmd/jobs` (same body and `x-speckit-force` header) | `202 { jobId, job }` at once. `409 SPEC_KIT_JOB_RUNNING` (with the running job's id) if the feature is busy; `400 SPEC_KIT_COMMAND_NOT_A_JOB` for the three commands above |
-| `GET …/spec-kit/jobs/:jobId` | `{ job }`: `status` is `running`, `cancelling`, `saving`, `succeeded`, `failed` or `cancelled` (the first three are still under way); `phase` says what it is doing; a succeeded job carries `result` (the payload the first route returns), a failed one `error: { status, code, message, details }` |
-| `GET …/spec-kit/jobs` | The project's running jobs, without results |
-| `POST …/spec-kit/jobs/:jobId/cancel` | `{ job }`; `409 SPEC_KIT_JOB_SAVING` once it is saving, on whichever server the cancel arrives |
+| Request                                                                       | Answer                                                                                                                                                                                                                                                                                                |
+| ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST …/spec-kit/commands/:cmd/jobs` (same body and `x-speckit-force` header) | `202 { jobId, job }` at once. `409 SPEC_KIT_JOB_RUNNING` (with the running job's id) if the feature is busy; `400 SPEC_KIT_COMMAND_NOT_A_JOB` for the three commands above                                                                                                                            |
+| `GET …/spec-kit/jobs/:jobId`                                                  | `{ job }`: `status` is `running`, `cancelling`, `saving`, `succeeded`, `failed` or `cancelled` (the first three are still under way); `phase` says what it is doing; a succeeded job carries `result` (the payload the first route returns), a failed one `error: { status, code, message, details }` |
+| `GET …/spec-kit/jobs`                                                         | The project's running jobs, without results                                                                                                                                                                                                                                                           |
+| `POST …/spec-kit/jobs/:jobId/cancel`                                          | `{ job }`; `409 SPEC_KIT_JOB_SAVING` once it is saving, on whichever server the cancel arrives                                                                                                                                                                                                        |
 
 Reading needs `project.read`; starting and cancelling need `project.update`, for any job in the project and not only your own. A job is visible only inside its own project: its id answers `404` anywhere else. A finished job is kept for one day, and for that day any member who can read the project can read its result by its id. `POST …/commands/speckit.specify/jobs` without a `featureSlug` creates the feature before it answers: the `job` in the `202` already carries the new `featureSlug`. If the AI provider is not configured, or the token budget is spent, that request is refused (`502`, `409` or `402`) and no feature is created. Reads and writes are rate limited separately, each per signed-in user (`SPECKIT_JOB_LIMIT_MAX`, `SPECKIT_JOB_USER_WRITE_LIMIT_MAX`), so polling a job never uses up the allowance for cancelling it.
 
@@ -4211,12 +4278,14 @@ The budget is `SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET` (default 2,500 tokens). 
 **Codex host (`--ai codex`).** The installer (`POST /api/projects/:projectId/spec-kit/install`) now accepts `"codex"` alongside Copilot/Claude/Cursor. It writes `speckit-{cmd}.md` skill files under `.codex/skills/speckit/` and merges a `<!-- speckit:start --> / <!-- speckit:end -->`-bounded section into the workspace `AGENTS.md` listing every `$speckit-*` alias and its REST endpoint. The merge is idempotent (re-runs replace only the marked block) and `AGENTS.md` is preserved across `mode: "skip"` runs.
 
 **GitHub issues → `tasks.md` sync.** Configure a webhook on the repository your issues are published to, sending `Issues` events to METIS, one of two ways (#1483):
+
 - **Your connection's own secret (recommended).** Give one of the project's GitHub repository connections its own secret (**Create webhook secret** on its card in **Connections**; the same secret as its pull-request webhook). Set the issue webhook's **Payload URL** to `https://<your-metis>` followed by the **Issue events payload URL path** the card shows (`/api/webhooks/github/issues/c/<connection id>`), and its **Secret** to that secret. Deliveries there go to this project only, whatever repository the webhook is on. Replacing the secret, removing it, or pointing the connection at another repository stops this URL too, exactly as for pull requests.
 - **The server's shared secret.** Payload URL `https://<your-metis>/api/webhooks/github/issues`, Secret `GITHUB_WEBHOOK_SECRET`. The shared secret cannot say whose webhook sent a delivery, so the matching exported task or published issue decides: the earliest one in a project that is not deleted. **A project with any connection that has its own secret never takes shared-secret issue deliveries**, so nobody holding the shared secret can send events into it. When you create a connection's own secret, move your issue webhooks to its issue events URL as well. Only a secret that still works counts: after the server's `VAULT_MASTER_KEY` is rotated, a connection whose card says **needs a new secret** no longer excludes its project, so the project takes shared-secret issue deliveries again until you replace the secret (the same as for pull requests).
 
 Either way, a deleted project's tasks and issues are never touched, and METIS reads the event from the signed body, never from the `X-GitHub-Event` header. A body that is not an `issues` event (an `issue_comment`, a pull request) answers `reason: "NOT_ISSUES_EVENT"`. If METIS cannot read the connections to decide, it answers `503 ATTRIBUTION_UNAVAILABLE` and records nothing, so **Redeliver** works later.
 
 METIS verifies the HMAC signature, looks up the matching `SpecKitTaskExport` row by `(repoOwner, repoName, issueNumber)` in the projects the delivery is for, and:
+
 - **Closes** an issue → ticks the bullet form (`- [ ] T01` → `- [x] T01`) or appends `<!-- closed via #N -->` to the table row.
 - **Reopens** an issue → unticks the checkbox / appends `<!-- open -->`.
 - **Edits** the title → rewrites the task title in place (table row is preferred over bullet for the same task ID).
@@ -4244,6 +4313,7 @@ The MCP (Model Context Protocol) server registry now supports **federated discov
 ### What gets stored
 
 Each federated entry is cached in the `mcp_registry_entries` table with:
+
 - Source, external ID, name, publisher, description
 - Downloads, stars, last update time
 - A SHA-256 digest of the install manifest
@@ -4263,10 +4333,10 @@ The Eval surface lets operators run standardized benchmarks against METIS's agen
 
 ### Supported Benchmarks
 
-| Benchmark | What It Tests | Scoring |
-|---|---|---|
-| **SWE-bench-Pro** | Code generation tasks from real GitHub issues | Sandbox exit code + Jaccard line overlap (threshold 0.4) |
-| **TAU-bench** | Tool-call trace accuracy | Per-position name+args match + final-state deep-equal (50/50 blend) |
+| Benchmark                  | What It Tests                                                                                                                           | Scoring                                                                                                      |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| **SWE-bench-Pro**          | Code generation tasks from real GitHub issues                                                                                           | Sandbox exit code + Jaccard line overlap (threshold 0.4)                                                     |
+| **TAU-bench**              | Tool-call trace accuracy                                                                                                                | Per-position name+args match + final-state deep-equal (50/50 blend)                                          |
 | **Docs-gen local harness** | Generated-document cold/warm ingest, synthesis, retrieval latency, RAM, claim support, and missed behavior on pinned synthetic fixtures | Measured timings plus answer-correctness-derived missed-behavior rate; token/cost only on explicit live runs |
 
 ### Running Benchmarks
@@ -4304,7 +4374,7 @@ What this means for you, the user:
   Nothing persists between runs.
 - **Default-deny network** — the sandbox can only reach package
   registries (npm, PyPI) and GitHub by default. Project admins may
-  *tighten* this allow-list per-project but cannot widen it.
+  _tighten_ this allow-list per-project but cannot widen it.
 - **Resource caps you can trust** — every sandbox is hard-capped at
   4 vCPUs, 8 GiB RAM, and a 5-minute wall-clock. A runaway test triggers
   a watchdog kill and surfaces a `timed out` outcome.
@@ -4399,12 +4469,12 @@ Verify with `pnpm bootstrap:check` — the `metis-mcp network present` row shoul
 
 **Fix**: open **Settings → Configuration**, find `MCP_IMAGE_ALLOWLIST`, add the registry path (or a glob covering it), and save. Examples:
 
-| Goal                                           | Pattern to add                  |
-| ---------------------------------------------- | ------------------------------- |
-| Allow all images under `ghcr.io/metis-mcps`    | `ghcr.io/metis-mcps/*`          |
-| Allow nested paths under `ghcr.io/metis-mcps`  | `ghcr.io/metis-mcps/**`         |
-| Allow a specific image                         | `ghcr.io/myorg/myrunner:1.2.3`  |
-| Allow an internal registry                     | `registry.internal.example.com/mcp/*` |
+| Goal                                          | Pattern to add                        |
+| --------------------------------------------- | ------------------------------------- |
+| Allow all images under `ghcr.io/metis-mcps`   | `ghcr.io/metis-mcps/*`                |
+| Allow nested paths under `ghcr.io/metis-mcps` | `ghcr.io/metis-mcps/**`               |
+| Allow a specific image                        | `ghcr.io/myorg/myrunner:1.2.3`        |
+| Allow an internal registry                    | `registry.internal.example.com/mcp/*` |
 
 The provisioner re-validates the image at provision time, so an off-allowlist image is rejected before any container starts.
 
@@ -4495,16 +4565,17 @@ When you connect a code repository, METIS builds a **code graph** — a map of a
 
 Click the **Generate** button to open the generation form:
 
-| Field | Description |
-|-------|-------------|
-| **Title** | A name for your document (e.g., "Orders Module Reference") |
-| **Scope** | `Full` — entire codebase · `Module` — specific package/namespace · `Symbol` — single class/method |
-| **Scope Filter** | When scope is Module or Symbol, specify which module/class to document |
-| **Auto Update** | Toggle ON to check for changed inputs after successful repository Deep Ingest or refresh (manual or scheduled); database-scope and requirements-scope documents are excluded |
+| Field            | Description                                                                                                                                                                  |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Title**        | A name for your document (e.g., "Orders Module Reference")                                                                                                                   |
+| **Scope**        | `Full` — entire codebase · `Module` — specific package/namespace · `Symbol` — single class/method                                                                            |
+| **Scope Filter** | When scope is Module or Symbol, specify which module/class to document                                                                                                       |
+| **Auto Update**  | Toggle ON to check for changed inputs after successful repository Deep Ingest or refresh (manual or scheduled); database-scope and requirements-scope documents are excluded |
 
 **A Business Requirements Document for an analysis run (#991).** Choose the scope **Requirements (analysis run)**, pick a completed analysis run, and leave **Approved requirements only** ticked to cover just the requirements a reviewer approved. The document has a summary table and then one section per requirement, highest priority first: its description, review status, verdict, acceptance criteria, and the code it is linked to (requirement-to-code mappings with their confidence, and the merged pull requests that implemented it). Every line comes from the stored requirements and links, so no AI model is called and nothing in it is ungrounded. A requirement with no code links says so. If the run has no requirements matching the choice, generation is refused up front with a message rather than producing an empty document. Through the API, `scopeFilter` can instead name `requirementIds` (up to 500) or a `reviewRequestId`. A review-scoped document shows each requirement as the review pinned it: a requirement edited after the review was submitted appears at its pinned version, with a note giving the version it has since become. A pinned requirement deleted since stays in the document, with a note saying it has been deleted (#1017).
 
 After clicking **Generate**, METIS will:
+
 1. Analyze the code graph for the selected scope
 2. Extract business rules, formulas, and relationships
 3. Call the AI to produce natural-language summaries
@@ -4543,19 +4614,19 @@ Generation and indexing are reported separately. A document can be `ready` or `d
 
 **The architecture document's Data Architecture section follows the real schema (#1061).** Data Architecture is its own section of an architecture document, and it is written from the project's database schema instead of from what the code suggests. When the project has a connected database, METIS reads its schema as the document is generated and adds a **Schema Reference** to the section: a relationship diagram and one column table per table, rendered from the schema itself and not written by the model, which writes the narrative around it. If the database cannot be reached, the schema stored with the project's database document is used; without one, the table and column names found in the repository's SQL.
 
-*What is read.* Every database connection of the project is read, also for a document scoped to one repository or to path prefixes: a connection belongs to the project and is not tied to a repository or a path, so there is nothing to narrow it by. Each database's table names, column names and types are sent to the AI provider in that section's prompt, as they already are for a database document. Only each database's **default schema** is read (`public` on PostgreSQL, `dbo` on SQL Server, the connected database on MySQL, the connected user's schema on Oracle), the same as a database document. The section says which schemas it was checked against, and the model is told that a table in another schema may exist and, when the code names that schema, is to be written with it (`audit.events`). Databases are read four at a time with a limit of 30 seconds each and 45 seconds in total; one that does not answer in time, or returns no tables, counts as not read, and so do the ones that were waiting behind a database that did not answer. Cancelling the generation ends the read at once.
+_What is read._ Every database connection of the project is read, also for a document scoped to one repository or to path prefixes: a connection belongs to the project and is not tied to a repository or a path, so there is nothing to narrow it by. Each database's table names, column names and types are sent to the AI provider in that section's prompt, as they already are for a database document. Only each database's **default schema** is read (`public` on PostgreSQL, `dbo` on SQL Server, the connected database on MySQL, the connected user's schema on Oracle), the same as a database document. The section says which schemas it was checked against, and the model is told that a table in another schema may exist and, when the code names that schema, is to be written with it (`audit.events`). Databases are read four at a time with a limit of 30 seconds each and 45 seconds in total; one that does not answer in time, or returns no tables, counts as not read, and so do the ones that were waiting behind a database that did not answer. Cancelling the generation ends the read at once.
 
-*What is checked, and what happens to it.* The table and column names the model writes in relationship diagrams, in `Entity:`/`Table:` headings and the first column of the field table under them, and in tables of tables are compared with that schema; a sentence is checked only where its words call a name a table or column (see *Table names in the rest of the document* below). **Nothing is ever removed, rewritten or corrected.** A name that could not be matched is marked *(not in schema)* where it stands, and a spelling that differs from the schema's only by underscores or case is marked with the schema's spelling beside it (`google_reader_username` *(not in schema; the schema has `googlereader_username`)*). A type that contradicts the schema is reported in the section's note, not written into the table. A diagram is left exactly as the model wrote it, so what was found in one is listed in the note. **A field table written with the application's names gets a mark on every such row.** When the model fills a table's field column with the names the code uses (an ORM or Go struct's `GestureNav`, `userId`, `FeverUsername`) instead of the column names, each row whose name differs from its column only by case or underscores is marked with the schema's spelling beside it (*(not in schema; the schema has `gesture_nav`)*), and a name that matches no column that way is marked *(not in schema)*. The same goes for an `Entity:` heading that names a concept of the code and not a table, and for an irregular plural (`Person` for `people`). That is the check working as described, not a fault in the section: read the marks as "this is the application's name; the column is called …". A mark is only ever written into ordinary text. Anything a Markdown reader shows as code is left exactly as written and nothing in it is marked: a fenced block (also one fenced with `~~~`, a longer fence that holds shorter ones, and a fence the model never closed, which runs to the end of the section), an indented block, a raw HTML block, and the inside of a code span. METIS marks instead of deleting because it cannot prove that a name is absent from your database: the check reads text a model wrote, and the read it compares against can be incomplete. Only each database's default schema is read; PostgreSQL, MySQL and SQL Server list only the columns the connecting account has a privilege on, so with column-level grants a real column is missing from the read; and on Oracle the catalog is read to the end, but one read takes at most 250,000 column rows: in a schema larger than that the read stops at a table boundary, and the section, its Schema Reference and the database document all say **"The schema was read partially: N of M tables"** (#1096). A marked name is one to verify, not necessarily a mistake.
+_What is checked, and what happens to it._ The table and column names the model writes in relationship diagrams, in `Entity:`/`Table:` headings and the first column of the field table under them, and in tables of tables are compared with that schema; a sentence is checked only where its words call a name a table or column (see _Table names in the rest of the document_ below). **Nothing is ever removed, rewritten or corrected.** A name that could not be matched is marked _(not in schema)_ where it stands, and a spelling that differs from the schema's only by underscores or case is marked with the schema's spelling beside it (`google_reader_username` _(not in schema; the schema has `googlereader_username`)_). A type that contradicts the schema is reported in the section's note, not written into the table. A diagram is left exactly as the model wrote it, so what was found in one is listed in the note. **A field table written with the application's names gets a mark on every such row.** When the model fills a table's field column with the names the code uses (an ORM or Go struct's `GestureNav`, `userId`, `FeverUsername`) instead of the column names, each row whose name differs from its column only by case or underscores is marked with the schema's spelling beside it (_(not in schema; the schema has `gesture_nav`)_), and a name that matches no column that way is marked _(not in schema)_. The same goes for an `Entity:` heading that names a concept of the code and not a table, and for an irregular plural (`Person` for `people`). That is the check working as described, not a fault in the section: read the marks as "this is the application's name; the column is called …". A mark is only ever written into ordinary text. Anything a Markdown reader shows as code is left exactly as written and nothing in it is marked: a fenced block (also one fenced with `~~~`, a longer fence that holds shorter ones, and a fence the model never closed, which runs to the end of the section), an indented block, a raw HTML block, and the inside of a code span. METIS marks instead of deleting because it cannot prove that a name is absent from your database: the check reads text a model wrote, and the read it compares against can be incomplete. Only each database's default schema is read; PostgreSQL, MySQL and SQL Server list only the columns the connecting account has a privilege on, so with column-level grants a real column is missing from the read; and on Oracle the catalog is read to the end, but one read takes at most 250,000 column rows: in a schema larger than that the read stops at a table boundary, and the section, its Schema Reference and the database document all say **"The schema was read partially: N of M tables"** (#1096). A marked name is one to verify, not necessarily a mistake.
 
-*What is not checked.* A name written with a schema that was not read (`audit.events`, or `users (audit schema)`), a table name that does not resolve while one of the project's databases could not be read, an index, constraint or relationship row, a name the document itself calls a view, and a diagram line whose column name cannot be told from its type are not marked. They are **listed in the note as not checked**, with the reason, so a short note is not mistaken for a clean section. Two more cases are listed the same way. **A table whose columns are not known** has none of its columns marked: when the only schema source is the repository's SQL, a table can be known by name alone (the code calls it through an ORM and no migration or query lists its columns), and marking every column of such a table would mark a correct table from top to bottom. The note says *Columns not checked (no column list for this table)* and names the table once; its name is still checked. **A dataset** is not a table: for SAS and other dataset-centric code, where the section is asked to describe each dataset as an entity, a name that is no table and is one of the datasets the code reads or writes is listed as *a dataset in the code's data lineage, not a database table* instead of being marked. Other cells of a field table (constraints, descriptions), a field table further down a sub-section (a struct, a message) and ordinary sentences are not read at all.
+_What is not checked._ A name written with a schema that was not read (`audit.events`, or `users (audit schema)`), a table name that does not resolve while one of the project's databases could not be read, an index, constraint or relationship row, a name the document itself calls a view, and a diagram line whose column name cannot be told from its type are not marked. They are **listed in the note as not checked**, with the reason, so a short note is not mistaken for a clean section. Two more cases are listed the same way. **A table whose columns are not known** has none of its columns marked: when the only schema source is the repository's SQL, a table can be known by name alone (the code calls it through an ORM and no migration or query lists its columns), and marking every column of such a table would mark a correct table from top to bottom. The note says _Columns not checked (no column list for this table)_ and names the table once; its name is still checked. **A dataset** is not a table: for SAS and other dataset-centric code, where the section is asked to describe each dataset as an entity, a name that is no table and is one of the datasets the code reads or writes is listed as _a dataset in the code's data lineage, not a database table_ instead of being marked. Other cells of a field table (constraints, descriptions), a field table further down a sub-section (a struct, a message) and ordinary sentences are not read at all.
 
-*What you see.* One **Schema check** note at the top of the section lists everything: the names that are marked, the schema's spelling for near misses, the types that differ, and what was not checked. A document with unmatched names is still **ready**, not *Needs review*: its detail page shows one informational line ("4 names in Data Architecture could not be matched to the database schema …"), and the section is reused on later generations like any other. That line says what the names were really compared with: *the database schema* when a database was read, *the stored schema from* a date when the database document's stored schema was used, and *the SQL found in the repository* when no database was read at all, each with the reason a name that did not match can still be real. The marks stay until the section is written again, which happens when the code, the schema or the generation settings it was written from change; there is no separate action that clears them. The Schema Reference is added after the section has been fitted to `DOCS_GEN_SECTION_MAX_CHARS`, so it does not count against that limit and is never what the limit cuts; it has its own bound (about 30,000 characters of column tables, the rest named, and a diagram of at most 50 tables showing key columns). A schema with no primary or foreign keys gets the column tables and no diagram, and when two of the project's databases hold a table of the same name each is headed with its database and schema. A project with no database connection, no database document and no SQL in its code graph gets a **Schema not verified** note instead, and nothing in it is marked. When the project does have a database connection and it could not be read (and there is no stored schema and no SQL either), the note says that the project's database could not be read and names it; it does not say the project has none. The Schema Reference normally stands before the section's first sub-heading, or at the end of a section that has none. If the model left a code fence open, so that everything to the end of the section is code, the reference is placed directly under the section's heading and note instead: at the end it would itself be drawn as code, and METIS does not close the fence for the model, because that would be an edit to what the model wrote. **In a Word (DOCX) export, escaped characters are shown literally.** A column default or type that contains a character with a meaning in Markdown (a square bracket, an asterisk, an ampersand, a dollar sign, an angle bracket, a backslash) is stored escaped, so that it cannot break the table. The document page and the HTML and PDF exports show it as the original character; the Word export shows the escape itself (a backslash before the character, or an entity such as `&amp;`). Ordinary schemas (plain identifiers, `now()`, `nextval(...)`, `jsonb`) contain no such character and are unaffected.
+_What you see._ One **Schema check** note at the top of the section lists everything: the names that are marked, the schema's spelling for near misses, the types that differ, and what was not checked. A document with unmatched names is still **ready**, not _Needs review_: its detail page shows one informational line ("4 names in Data Architecture could not be matched to the database schema …"), and the section is reused on later generations like any other. That line says what the names were really compared with: _the database schema_ when a database was read, _the stored schema from_ a date when the database document's stored schema was used, and _the SQL found in the repository_ when no database was read at all, each with the reason a name that did not match can still be real. The marks stay until the section is written again, which happens when the code, the schema or the generation settings it was written from change; there is no separate action that clears them. The Schema Reference is added after the section has been fitted to `DOCS_GEN_SECTION_MAX_CHARS`, so it does not count against that limit and is never what the limit cuts; it has its own bound (about 30,000 characters of column tables, the rest named, and a diagram of at most 50 tables showing key columns). A schema with no primary or foreign keys gets the column tables and no diagram, and when two of the project's databases hold a table of the same name each is headed with its database and schema. A project with no database connection, no database document and no SQL in its code graph gets a **Schema not verified** note instead, and nothing in it is marked. When the project does have a database connection and it could not be read (and there is no stored schema and no SQL either), the note says that the project's database could not be read and names it; it does not say the project has none. The Schema Reference normally stands before the section's first sub-heading, or at the end of a section that has none. If the model left a code fence open, so that everything to the end of the section is code, the reference is placed directly under the section's heading and note instead: at the end it would itself be drawn as code, and METIS does not close the fence for the model, because that would be an edit to what the model wrote. **In a Word (DOCX) export, escaped characters are shown literally.** A column default or type that contains a character with a meaning in Markdown (a square bracket, an asterisk, an ampersand, a dollar sign, an angle bracket, a backslash) is stored escaped, so that it cannot break the table. The document page and the HTML and PDF exports show it as the original character; the Word export shows the escape itself (a backslash before the character, or an entity such as `&amp;`). Ordinary schemas (plain identifiers, `now()`, `nextval(...)`, `jsonb`) contain no such character and are unaffected.
 
-*Table names in the rest of the document (#1133).* The names a sentence writes as a database table or column are checked too, in every section of the architecture document, not only in Data Architecture: "the `feeds` table", "Key tables: `users`, `feeds` and `certificate_cache`", "backed by PostgreSQL (`certificate_cache`)", "the `users.last_login` column". A name that is not in the schema is marked *(not in schema)* where it stands, exactly as in Data Architecture, and nothing is removed or changed. A section with such a mark gets its own informational line on the detail page ("1 name written as a database table or column in the text of Algorithms, Operations & Stack could not be matched …"). A version's **Provenance** panel shows a **Schema check** line: how many table and column names were checked, what they were compared with (*the database schema*, *the stored database schema*, or *the repository's SQL files*), and, per section, how many were checked, which are not in the schema and how many could not be checked. A section lists at most 50 unmatched names; above that the true count is shown with "(showing the first 50)". When some names could not be checked the panel says why (for example, they are outside the schemas that were read) and never says that every name matched; when no name could be checked at all, it says so. A code name is only treated as a table or column when the words beside it say so, so `autocert.Cache`, `certificate_cache.go`, "a hash table `m`", "not a table: `configOptions`", a config or YAML key such as `feeds.refresh_interval` and an API field such as `users.display_name` are left alone (a dotted name with no table or column word written right next to it is read as a column only when the word "column" is near it: at most four words away, or after "a", "an", "the", "this", "that", "these", "those", "every", "each", "its" or "their" with up to three describing words, as in "`users.alpha` is a new nullable text column"; in the same clause, so not past a full stop, semicolon, "so", "but", "when" and the like, or "and"/"or" followed by "the" or "a"; and with no other code name in between, which the word would describe instead. So "Set `users.max_count` to 10 so the `username` column stays short" and "…to 10 and the username column…" mark nothing. A colon ends the clause, except in a definition such as "`users.alpha`: a text column" or "`users.alpha`: a column (text).", where it comes right after the name and the short phrase after it ends with "column". The names of a list share the word, whether it comes after the list ("`users.alpha`, `users.beta` and `users.gamma` are new columns") or before it ("Two columns (`users.a1` and `users.a2`) are added"). Known limits, in both directions: a comma does not end the clause, because "`users.ghost`, a column it adds" must be read, so "Set `users.max_count` to 10, the column stays short" is still read as a column; and a genuine column described from too far away is not checked, such as "`users.ghost` holds the user's email in a text column" (the "a" is the sixth word) or "`users.ghost` is the new nullable varchar text column" (four describing words)), and nothing is ever marked inside a heading. When Data Architecture has no **Schema check** note (nothing in its diagrams, entity headings, field tables or table lists was marked), it now gets one line saying how many names in the section were compared, counting its sentences too, and either that every one matched or how many are marked; when a name in it could not be checked, the line says how many matched and how many more could not be checked, and why, instead of "every one matched". That line is added each time the document is generated, so an existing section gets it on the next regenerate without being written again.
+_Table names in the rest of the document (#1133)._ The names a sentence writes as a database table or column are checked too, in every section of the architecture document, not only in Data Architecture: "the `feeds` table", "Key tables: `users`, `feeds` and `certificate_cache`", "backed by PostgreSQL (`certificate_cache`)", "the `users.last_login` column". A name that is not in the schema is marked _(not in schema)_ where it stands, exactly as in Data Architecture, and nothing is removed or changed. A section with such a mark gets its own informational line on the detail page ("1 name written as a database table or column in the text of Algorithms, Operations & Stack could not be matched …"). A version's **Provenance** panel shows a **Schema check** line: how many table and column names were checked, what they were compared with (_the database schema_, _the stored database schema_, or _the repository's SQL files_), and, per section, how many were checked, which are not in the schema and how many could not be checked. A section lists at most 50 unmatched names; above that the true count is shown with "(showing the first 50)". When some names could not be checked the panel says why (for example, they are outside the schemas that were read) and never says that every name matched; when no name could be checked at all, it says so. A code name is only treated as a table or column when the words beside it say so, so `autocert.Cache`, `certificate_cache.go`, "a hash table `m`", "not a table: `configOptions`", a config or YAML key such as `feeds.refresh_interval` and an API field such as `users.display_name` are left alone (a dotted name with no table or column word written right next to it is read as a column only when the word "column" is near it: at most four words away, or after "a", "an", "the", "this", "that", "these", "those", "every", "each", "its" or "their" with up to three describing words, as in "`users.alpha` is a new nullable text column"; in the same clause, so not past a full stop, semicolon, "so", "but", "when" and the like, or "and"/"or" followed by "the" or "a"; and with no other code name in between, which the word would describe instead. So "Set `users.max_count` to 10 so the `username` column stays short" and "…to 10 and the username column…" mark nothing. A colon ends the clause, except in a definition such as "`users.alpha`: a text column" or "`users.alpha`: a column (text).", where it comes right after the name and the short phrase after it ends with "column". The names of a list share the word, whether it comes after the list ("`users.alpha`, `users.beta` and `users.gamma` are new columns") or before it ("Two columns (`users.a1` and `users.a2`) are added"). Known limits, in both directions: a comma does not end the clause, because "`users.ghost`, a column it adds" must be read, so "Set `users.max_count` to 10, the column stays short" is still read as a column; and a genuine column described from too far away is not checked, such as "`users.ghost` holds the user's email in a text column" (the "a" is the sixth word) or "`users.ghost` is the new nullable varchar text column" (four describing words)), and nothing is ever marked inside a heading. When Data Architecture has no **Schema check** note (nothing in its diagrams, entity headings, field tables or table lists was marked), it now gets one line saying how many names in the section were compared, counting its sentences too, and either that every one matched or how many are marked; when a name in it could not be checked, the line says how many matched and how many more could not be checked, and why, instead of "every one matched". That line is added each time the document is generated, so an existing section gets it on the next regenerate without being written again.
 
-*Existing architecture documents.* Data Architecture used to share a section with Component Breakdown. Splitting them changes how sections are identified, so the first regeneration of every architecture document after this release writes all of its sections again instead of reusing the stored ones. That happens once per document.
+_Existing architecture documents._ Data Architecture used to share a section with Component Breakdown. Splitting them changes how sections are identified, so the first regeneration of every architecture document after this release writes all of its sections again instead of reusing the stored ones. That happens once per document.
 
-**Database schema documents count what was actually written (#1228).** A database-scope document reports AI prose descriptions for the tables it really described, not the tables it tried to describe — the note above the table reference is derived from the same descriptions the sections and the schema explorer show, so it cannot overstate them. When a batch of descriptions returns nothing usable (the model errored, was cut off by its output cap, returned something no description could be read from, or no AI provider could be reached), the document is marked **Degraded output** with a warning instead of appearing complete — and the Schema Graph explorer stays available, because the graph is complete even when the prose is not. Two things are deliberately *not* degradations: stopping early because the configured generation budget was reached, and a batch that describes most of its tables but skips one or two. Both are recorded in the server log and reflected in the count above the table reference; every table is fully documented with its column schema regardless. If descriptions are being cut off, raise `DOCS_GEN_DB_SCHEMA_MAX_OUTPUT_TOKENS` or lower `DB_SCHEMA_SYNTH_BATCH_SIZE` and regenerate.
+**Database schema documents count what was actually written (#1228).** A database-scope document reports AI prose descriptions for the tables it really described, not the tables it tried to describe — the note above the table reference is derived from the same descriptions the sections and the schema explorer show, so it cannot overstate them. When a batch of descriptions returns nothing usable (the model errored, was cut off by its output cap, returned something no description could be read from, or no AI provider could be reached), the document is marked **Degraded output** with a warning instead of appearing complete — and the Schema Graph explorer stays available, because the graph is complete even when the prose is not. Two things are deliberately _not_ degradations: stopping early because the configured generation budget was reached, and a batch that describes most of its tables but skips one or two. Both are recorded in the server log and reflected in the count above the table reference; every table is fully documented with its column schema regardless. If descriptions are being cut off, raise `DOCS_GEN_DB_SCHEMA_MAX_OUTPUT_TOKENS` or lower `DB_SCHEMA_SYNTH_BATCH_SIZE` and regenerate.
 
 ### 30.4 Viewing Generated Documentation
 
@@ -4629,12 +4700,12 @@ The left sidebar shows a navigable table of contents extracted from the document
 
 Above the document preview, you'll find export buttons:
 
-| Format | Details |
-|--------|---------|
-| **PDF** | Full-fidelity export with diagrams, formulas, and syntax highlighting. Requires Chrome on the server (included in Docker images) |
+| Format           | Details                                                                                                                                           |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **PDF**          | Full-fidelity export with diagrams, formulas, and syntax highlighting. Requires Chrome on the server (included in Docker images)                  |
 | **Word (.docx)** | Professional Word document with Table of Contents, styled headings, and code blocks. Best for sharing with stakeholders who prefer Office formats |
 
-**Printing from the browser (Ctrl+P, #1279).** A long document draws its diagrams as you scroll to them, so opening it stays fast. Printing prints every section, but a diagram you have not scrolled to may not be drawn yet when the print preview is made. In that case the page says so in place of the diagram: *Diagram not included: it was still being drawn when printing started.* Close the print preview and print again, and the diagram is included.
+**Printing from the browser (Ctrl+P, #1279).** A long document draws its diagrams as you scroll to them, so opening it stays fast. Printing prints every section, but a diagram you have not scrolled to may not be drawn yet when the print preview is made. In that case the page says so in place of the diagram: _Diagram not included: it was still being drawn when printing started._ Close the print preview and print again, and the diagram is included.
 
 > **Note:** If you're running locally without Chrome installed, PDF export returns a styled HTML file instead. Run `npx puppeteer browsers install chrome` to enable full PDF support.
 
@@ -4643,34 +4714,34 @@ Above the document preview, you'll find export buttons:
 When you enable **Auto Update** on a document:
 
 1. After successful **Deep Ingest** or **Refresh** (including background Deep
-  Ingest and configured scheduled repository refresh), METIS checks the document's
-  inputs. The graph, source-knowledge, and applicable metadata steps must succeed;
-  a partial ingest does not trigger regeneration. This is not a watcher on every
-  commit, and there is no fixed 15-minute documentation timer.
+   Ingest and configured scheduled repository refresh), METIS checks the document's
+   inputs. The graph, source-knowledge, and applicable metadata steps must succeed;
+   a partial ingest does not trigger regeneration. This is not a watcher on every
+   commit, and there is no fixed 15-minute documentation timer.
 2. The check includes the full scoped symbol inventory, additions/deletions,
-  relationships, source/rationale, eligible supporting evidence, and generation
-  settings—not just previously cited symbols. An unchanged inventory creates no
-  task or version. Refreshing another repository does not regenerate a document
-  scoped to an unrelated repository. Evidence/settings changes are checked on the
-  next successful ingest, not immediately when edited.
+   relationships, source/rationale, eligible supporting evidence, and generation
+   settings—not just previously cited symbols. An unchanged inventory creates no
+   task or version. Refreshing another repository does not regenerate a document
+   scoped to an unrelated repository. Evidence/settings changes are checked on the
+   next successful ingest, not immediately when edited.
 3. Changed inputs queue a durable job identified by the document, expected version,
-  and input fingerprint. With the scheduler enabled, pending jobs resume after
-  restart; recovery runs every minute and can reclaim running jobs stale for over
-  **two hours**. Jobs allow three attempts. A later successful ingest can retry an
-  exhausted failed job for the same inputs, but does not resurrect a cancelled job.
+   and input fingerprint. With the scheduler enabled, pending jobs resume after
+   restart; recovery runs every minute and can reclaim running jobs stale for over
+   **two hours**. Jobs allow three attempts. A later successful ingest can retry an
+   exhausted failed job for the same inputs, but does not resurrect a cancelled job.
 4. Full-project/repository documents reuse cached module facts and section output
-  only when complete records prove the actual section prompts and all their inputs
-  unchanged. Reused sections keep their original grounding warnings; reuse does
-  not turn degraded output into verified output. Changed sections run the normal
-  synthesis and grounding checks. Older/incomplete records, shared escalation,
-  changed global dependencies, or settings can require **full regeneration**.
-  Module/symbol scopes use their normal discovery/assembly pipeline. No Graphify
-  installation or developer graph is required.
+   only when complete records prove the actual section prompts and all their inputs
+   unchanged. Reused sections keep their original grounding warnings; reuse does
+   not turn degraded output into verified output. Changed sections run the normal
+   synthesis and grounding checks. Older/incomplete records, shared escalation,
+   changed global dependencies, or settings can require **full regeneration**.
+   Module/symbol scopes use their normal discovery/assembly pipeline. No Graphify
+   installation or developer graph is required.
 5. METIS saves a new **version** with a diff summary and queues shared publication
-  under a new immutable revision ID. If the source inventory changed but every
-  section prompt is unchanged, the summary says **Source inventory updated; all
-  section dependencies unchanged**. This still records/publishes a new inventory
-  revision; it is different from the unchanged-inventory no-op in step 2.
+   under a new immutable revision ID. If the source inventory changed but every
+   section prompt is unchanged, the summary says **Source inventory updated; all
+   section dependencies unchanged**. This still records/publishes a new inventory
+   revision; it is different from the unchanged-inventory no-op in step 2.
 
 **Benchmarking note (#1357/#1358).** The local docs-gen benchmark is a bounded
 evaluation harness, not a measurement of production Deep Ingest throughput. Its
@@ -4738,28 +4809,28 @@ For large codebases (500+ files), documentation generation can be surprisingly e
 
 Generation runs in two distinct phases, each using the most cost-appropriate model:
 
-| Phase | What It Does | Model | Why |
-|-------|-------------|-------|-----|
-| **Phase 1** — Fact Extraction | Reads each module's code and extracts structured facts: business rules, formulas, class summaries | **Claude Haiku 4.5** (`global.anthropic.claude-haiku-4-5`) | Structured extraction is a well-defined task — Haiku produces equivalent quality at ~1/4 the price of Sonnet |
-| **Phase 2** — Synthesis | Combines all extracted facts into long-form prose, Mermaid diagrams, and LaTeX formulas | **Claude Sonnet 4.6** (`us.anthropic.claude-sonnet-4-6`) | Long-form narrative quality, accurate diagram syntax, and faithful cross-module aggregation benefit from the stronger model |
+| Phase                         | What It Does                                                                                      | Model                                                      | Why                                                                                                                         |
+| ----------------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| **Phase 1** — Fact Extraction | Reads each module's code and extracts structured facts: business rules, formulas, class summaries | **Claude Haiku 4.5** (`global.anthropic.claude-haiku-4-5`) | Structured extraction is a well-defined task — Haiku produces equivalent quality at ~1/4 the price of Sonnet                |
+| **Phase 2** — Synthesis       | Combines all extracted facts into long-form prose, Mermaid diagrams, and LaTeX formulas           | **Claude Sonnet 4.6** (`us.anthropic.claude-sonnet-4-6`)   | Long-form narrative quality, accurate diagram syntax, and faithful cross-module aggregation benefit from the stronger model |
 
 #### Approximate Cost Estimates
 
 For a **large Java monolith (~1,500 files, 150 modules)** such as a legacy ERP:
 
-| Scenario | Phase 1 | Phase 2 | Total |
-|----------|---------|---------|-------|
-| First run (Haiku + Sonnet) | ~$1.50 | ~$1.00 | **~$2.50** |
-| First run (Sonnet + Sonnet — before Haiku IAM) | ~$5.50 | ~$1.00 | **~$6.50** |
-| Cached run (no code changes) | ~$0.00 | ~$1.00 | **~$1.00** |
-| Cached run + new modules only | proportional | ~$1.00 | **~$1–2** |
+| Scenario                                       | Phase 1      | Phase 2 | Total      |
+| ---------------------------------------------- | ------------ | ------- | ---------- |
+| First run (Haiku + Sonnet)                     | ~$1.50       | ~$1.00  | **~$2.50** |
+| First run (Sonnet + Sonnet — before Haiku IAM) | ~$5.50       | ~$1.00  | **~$6.50** |
+| Cached run (no code changes)                   | ~$0.00       | ~$1.00  | **~$1.00** |
+| Cached run + new modules only                  | proportional | ~$1.00  | **~$1–2**  |
 
 For a **mid-size service (~200 files, 40 modules)**:
 
-| Scenario | Total |
-|----------|-------|
+| Scenario                   | Total      |
+| -------------------------- | ---------- |
 | First run (Haiku + Sonnet) | **~$0.50** |
-| Cached run | **~$0.25** |
+| Cached run                 | **~$0.25** |
 
 > Estimates assume [Anthropic's current pricing](https://www.anthropic.com/pricing): Haiku 4.5 at $0.80/MTok input · $4.00/MTok output · $0.08/MTok cache read; Sonnet 4.6 at $3.00/MTok input · $15.00/MTok output · $0.30/MTok cache read.
 
@@ -4806,13 +4877,13 @@ The model name is part of the cache key. This means:
 
 #### Cache Hit Behaviour
 
-| Run | Files changed? | Model changed? | Phase 1 AI calls |
-|-----|---------------|---------------|------------------|
-| First run | — | — | All modules |
-| Second run, no changes | No | No | **0 (100% cache)** |
-| After code change | Some files | No | Only affected modules |
-| After model switch | No | Yes | All modules (rebuilds cache) |
-| After prompt version bump | No | No | All modules (cache invalidated) |
+| Run                       | Files changed? | Model changed? | Phase 1 AI calls                |
+| ------------------------- | -------------- | -------------- | ------------------------------- |
+| First run                 | —              | —              | All modules                     |
+| Second run, no changes    | No             | No             | **0 (100% cache)**              |
+| After code change         | Some files     | No             | Only affected modules           |
+| After model switch        | No             | Yes            | All modules (rebuilds cache)    |
+| After prompt version bump | No             | No             | All modules (cache invalidated) |
 
 #### Cache Persistence
 
@@ -4824,10 +4895,10 @@ The cache is stored in the METIS database (`DocsGenFactCache` table) and persist
 
 METIS can automatically choose between two AI models for each task:
 
-| Model | Strengths | Cost |
-|-------|-----------|------|
-| **Claude Haiku 4.5** | Fast responses, great for simple extraction and formatting tasks | Lower (~$0.001 per 1K tokens) |
-| **Claude Sonnet 4.6** | Deep reasoning, multi-step analysis, complex synthesis | Higher (~$0.015 per 1K tokens) |
+| Model                 | Strengths                                                        | Cost                           |
+| --------------------- | ---------------------------------------------------------------- | ------------------------------ |
+| **Claude Haiku 4.5**  | Fast responses, great for simple extraction and formatting tasks | Lower (~$0.001 per 1K tokens)  |
+| **Claude Sonnet 4.6** | Deep reasoning, multi-step analysis, complex synthesis           | Higher (~$0.015 per 1K tokens) |
 
 By default, METIS uses **Auto** mode — it analyzes each task's complexity and picks the most cost-effective model. Simple tasks route to Haiku; complex reasoning routes to Sonnet.
 
@@ -4877,6 +4948,7 @@ curl -X PUT -H "Authorization: Bearer $TOKEN" \
 ```
 
 Valid `defaultModel` values:
+
 - `"auto"` — let METIS decide (same as `null`)
 - `"us.anthropic.claude-haiku-4-5-20251001-v1:0"` — always use Haiku
 - `"us.anthropic.claude-sonnet-4-6"` — always use Sonnet
@@ -4922,12 +4994,12 @@ An administrator can price such a model under **Settings → Configuration** (`/
 
 **Built-in Claude 5.5 prices** (Anthropic's price list, read 2026-10-11, USD per million tokens):
 
-| Model | Input | Output | Cache read | Cache write (5 minutes) |
-|---|---|---|---|---|
-| `claude-sonnet-5-5` | 2.00 | 10.00 | 0.10 | 2.50 |
-| `claude-opus-5-5` | 4.00 | 20.00 | 0.20 | 5.00 |
-| `claude-haiku-5-5`, prompt up to 100,000 tokens | 0.10 | 0.50 | 0.01 | 0.125 |
-| `claude-haiku-5-5`, prompt over 100,000 tokens | 0.50 | 2.50 | 0.05 | 0.625 |
+| Model                                           | Input | Output | Cache read | Cache write (5 minutes) |
+| ----------------------------------------------- | ----- | ------ | ---------- | ----------------------- |
+| `claude-sonnet-5-5`                             | 2.00  | 10.00  | 0.10       | 2.50                    |
+| `claude-opus-5-5`                               | 4.00  | 20.00  | 0.20       | 5.00                    |
+| `claude-haiku-5-5`, prompt up to 100,000 tokens | 0.10  | 0.50   | 0.01       | 0.125                   |
+| `claude-haiku-5-5`, prompt over 100,000 tokens  | 0.50  | 2.50   | 0.05       | 0.625                   |
 
 Claude Haiku 5.5 is priced by prompt length. Each request is priced on its own: when its prompt — new input, cache reads and cache writes together — is over 100,000 tokens, the whole request, output included, is charged at the higher prices. A request of exactly 100,000 prompt tokens is charged at the lower ones. METIS decides this for each model call, so many short calls are never charged the higher prices because together they add up to more than 100,000 tokens. That holds where one usage row covers several model calls as well: a chat turn that uses tools, an AI reply in a discussion and a turn that failed part-way are each recorded as one row with the tokens of all their calls added up, and the row's cost is the sum of what each call cost. The agent-run cost and the month's projection, which work costs out again from the recorded tokens, do the same. One case is still priced as a single call: a chat turn whose provider reported no usage at all, where METIS estimates the tokens for the whole turn. Model pickers show both prices. Two things are not modelled: the Batch API discount and the US-only inference surcharge, neither of which METIS uses.
 
@@ -4953,11 +5025,11 @@ Token budgets enforce cost limits at the project level. Navigate to **Projects �
 
 #### Budget Thresholds
 
-| Utilization | Behavior |
-|-------------|----------|
-| 0-79% | Normal operation |
-| 80-99% | ⚠️ Soft threshold — auto-downgrades to configured cheaper model, logs warning |
-| 100%+ | 🛑 Hard limit — rejects requests with HTTP 429, logs error |
+| Utilization | Behavior                                                                      |
+| ----------- | ----------------------------------------------------------------------------- |
+| 0-79%       | Normal operation                                                              |
+| 80-99%      | ⚠️ Soft threshold — auto-downgrades to configured cheaper model, logs warning |
+| 100%+       | 🛑 Hard limit — rejects requests with HTTP 429, logs error                    |
 
 ### 32.4 Inference Profiles (Bedrock)
 
@@ -4973,7 +5045,7 @@ When configured, the inference profile ARN is used instead of the raw model ID w
 
 > **Cost attribution only — not region pinning; profiles wrap a foundation model.**
 > Swapping the raw model ID for the application inference profile ARN changes only
-> how spend is *attributed*; it does not pin a region and it does not change the
+> how spend is _attributed_; it does not pin a region and it does not change the
 > model. Cross-region routing (us-east-1 / us-east-2 / us-west-2) via the
 > `us.anthropic.*` system inference profiles is **intentional** and permitted by the
 > gateway IAM — there is no us-east-1 residency lock. The two env-level profiles
@@ -5013,11 +5085,11 @@ open this page on that scope. The All projects view shows:
 
 METIS estimates costs automatically based on known model pricing:
 
-| Model | Input (per 1M tokens) | Output (per 1M tokens) |
-|-------|----------------------|----------------------|
-| Claude Haiku | $1.00 | $5.00 |
-| Claude Sonnet | $3.00 | $15.00 |
-| Claude Opus | $15.00 | $75.00 |
+| Model         | Input (per 1M tokens) | Output (per 1M tokens) |
+| ------------- | --------------------- | ---------------------- |
+| Claude Haiku  | $1.00                 | $5.00                  |
+| Claude Sonnet | $3.00                 | $15.00                 |
+| Claude Opus   | $15.00                | $75.00                 |
 
 Cost estimates are stored with each token usage record and rolled up in the usage dashboards.
 
@@ -5041,12 +5113,12 @@ You'll see a list of all templates for this project. Default templates are marke
 
 Every new project is seeded with 4 default templates:
 
-| Template | Platform | Type | Description |
-|----------|----------|------|-------------|
-| GitHub Epic | GitHub | Epic | Structured epic with goal, scope, acceptance criteria, and technical notes |
-| GitHub Feature | GitHub | Feature | Standard feature issue with description, acceptance criteria, and tags |
-| Jira Story | Jira | Story | Jira story with mapped custom fields (story points, priority, labels) |
-| Jira Bug | Jira | Bug | Jira bug report with reproduction steps, expected/actual behavior, and severity |
+| Template       | Platform | Type    | Description                                                                     |
+| -------------- | -------- | ------- | ------------------------------------------------------------------------------- |
+| GitHub Epic    | GitHub   | Epic    | Structured epic with goal, scope, acceptance criteria, and technical notes      |
+| GitHub Feature | GitHub   | Feature | Standard feature issue with description, acceptance criteria, and tags          |
+| Jira Story     | Jira     | Story   | Jira story with mapped custom fields (story points, priority, labels)           |
+| Jira Bug       | Jira     | Bug     | Jira bug report with reproduction steps, expected/actual behavior, and severity |
 
 ### 33.3 Creating a Custom Template
 
@@ -5065,14 +5137,14 @@ Every new project is seeded with 4 default templates:
 
 ### 33.4 Section Types
 
-| Type | Best For | Example |
-|------|----------|---------|
-| `text` | Short fields (titles, labels) | Issue title, component name |
-| `markdown` | Rich descriptions | Description, technical notes |
-| `checklist` | Actionable items | Acceptance criteria, review checklist |
-| `number` | Numeric values | Story points, estimated hours |
-| `select` | Fixed choices | Priority (Low/Medium/High), severity |
-| `tags` | Flexible labels | Component tags, technology tags |
+| Type        | Best For                      | Example                               |
+| ----------- | ----------------------------- | ------------------------------------- |
+| `text`      | Short fields (titles, labels) | Issue title, component name           |
+| `markdown`  | Rich descriptions             | Description, technical notes          |
+| `checklist` | Actionable items              | Acceptance criteria, review checklist |
+| `number`    | Numeric values                | Story points, estimated hours         |
+| `select`    | Fixed choices                 | Priority (Low/Medium/High), severity  |
+| `tags`      | Flexible labels               | Component tags, technology tags       |
 
 ### 33.5 Live Preview
 
@@ -5147,6 +5219,7 @@ When web research is enabled, METIS:
 4. Scores source trustworthiness by domain (government, academic, and standards bodies rate highest)
 
 The **Evidence Review** panel shows each digest with:
+
 - Source URLs and excerpts
 - A domain trust badge (High/Medium/Low)
 - Approve or Reject buttons for human review
@@ -5164,19 +5237,20 @@ If more than 60% of ambiguities remain unresolved after a round, the system auto
 
 **Your progress is saved.** As of Epic #201, an in-flight clarification dialog is stored durably on the server: if you reload the page (or the server restarts) the dialog resumes exactly where you left off, showing how many ambiguities are already resolved versus still remaining. Your submitted answers are persisted with the analysis and feed directly into the generated requirements/specs — changing an answer changes the regenerated output.
 
-**"Addressed" counts your answers, not METIS's opinion of them (#1117).** The progress badges used to count only the ambiguities the resolution model reported it had closed. That model is often stingy — one run answered 14 questions and had exactly one confirmed — so the panel read *"1 resolved / 13 remaining"* and asked all 14 questions again in the next round, which looks exactly like your work being thrown away. The badge now reads **N addressed** and counts every question you answered, whether or not the model agreed it had enough to close the ambiguity. A question you have answered is never re-asked, the dialog finishes when you have answered everything, and when the model confirmed fewer than you answered the panel says so on its own line instead of reporting the shortfall as your progress. Your answers are carried into the analysis either way. Submitting also no longer blanks the form while the page refreshes — the text stays visible throughout.
+**"Addressed" counts your answers, not METIS's opinion of them (#1117).** The progress badges used to count only the ambiguities the resolution model reported it had closed. That model is often stingy — one run answered 14 questions and had exactly one confirmed — so the panel read _"1 resolved / 13 remaining"_ and asked all 14 questions again in the next round, which looks exactly like your work being thrown away. The badge now reads **N addressed** and counts every question you answered, whether or not the model agreed it had enough to close the ambiguity. A question you have answered is never re-asked, the dialog finishes when you have answered everything, and when the model confirmed fewer than you answered the panel says so on its own line instead of reporting the shortfall as your progress. Your answers are carried into the analysis either way. Submitting also no longer blanks the form while the page refreshes — the text stays visible throughout.
 
-**Your answers reach the published issue (#1116).** Until this fix, answering questions improved only the requirement text shown on the Approvals panel: the saved requirements — and therefore the drafts and the GitHub issues published from them — still carried the wording METIS synthesized *before* it asked you anything. Answers submitted after a run are now written into the saved requirements themselves, verbatim, under a **Clarifications** heading that is published with the issue. A short note above the questions tells you exactly what happened: how many of your answers were written into the saved requirements, how many could not be matched to one (those refine only the on-screen text), and that METIS's own re-worded requirement summary is *not* copied into published issues — only your answers are. If the approval gate is still holding the requirements back, the note says so, and your answers are applied the moment the requirements are promoted.
+**Your answers reach the published issue (#1116).** Until this fix, answering questions improved only the requirement text shown on the Approvals panel: the saved requirements — and therefore the drafts and the GitHub issues published from them — still carried the wording METIS synthesized _before_ it asked you anything. Answers submitted after a run are now written into the saved requirements themselves, verbatim, under a **Clarifications** heading that is published with the issue. A short note above the questions tells you exactly what happened: how many of your answers were written into the saved requirements, how many could not be matched to one (those refine only the on-screen text), and that METIS's own re-worded requirement summary is _not_ copied into published issues — only your answers are. If the approval gate is still holding the requirements back, the note says so, and your answers are applied the moment the requirements are promoted.
 
-**When METIS could not tell which requirement something belongs to (#1204).** METIS matches each approved requirement to the item its analysis grouped the acceptance criteria and code evidence under, and each clarification answer to the saved requirement it was asked about. When two or more fit equally well it picks none rather than guess, because a wrong match puts criteria or answers on the wrong requirement. You are now told when that happened. A requirement card with no acceptance criteria for this reason says *"The analysis could not tell which of N grouped items belongs to this requirement"* and lists those items; open one to see its criteria and copy the ones that apply into the requirement with **Edit**. Once the requirement has acceptance criteria, the note stops asking and keeps the items in a collapsed list for reference. In the clarification note, the warning about answers that could not be matched lists each answer whose match was too close to call: either the saved requirements it fitted equally well, or — the commoner case — the one saved requirement that fits this answer's requirement and another one equally well, so the answer was not added to it.
+**When METIS could not tell which requirement something belongs to (#1204).** METIS matches each approved requirement to the item its analysis grouped the acceptance criteria and code evidence under, and each clarification answer to the saved requirement it was asked about. When two or more fit equally well it picks none rather than guess, because a wrong match puts criteria or answers on the wrong requirement. You are now told when that happened. A requirement card with no acceptance criteria for this reason says _"The analysis could not tell which of N grouped items belongs to this requirement"_ and lists those items; open one to see its criteria and copy the ones that apply into the requirement with **Edit**. Once the requirement has acceptance criteria, the note stops asking and keeps the items in a collapsed list for reference. In the clarification note, the warning about answers that could not be matched lists each answer whose match was too close to call: either the saved requirements it fitted equally well, or — the commoner case — the one saved requirement that fits this answer's requirement and another one equally well, so the answer was not added to it.
 
-**When acceptance criteria were written for several requirements (#1203).** The analysis sometimes writes one set of acceptance criteria for a group of related requirements. Each approved requirement in the group receives the whole set, so some of its criteria may really belong to another one. The requirement card now says so under its criteria: *"Shared with Flush on reset and Flush on revoke — the analysis wrote these acceptance criteria for the group; edit any that don't apply."* Each name links to that requirement's card; a requirement that was not approved is named with *(not approved)*. When only some of the list is shared, those criteria are marked *(shared)*. The review card shows the same note, and so does the issue METIS publishes. Once you edit the criteria (change, add, remove or reorder any of them), METIS treats the list as yours: the note disappears from the cards and the issue is published with your criteria only.
+**When acceptance criteria were written for several requirements (#1203).** The analysis sometimes writes one set of acceptance criteria for a group of related requirements. Each approved requirement in the group receives the whole set, so some of its criteria may really belong to another one. The requirement card now says so under its criteria: _"Shared with Flush on reset and Flush on revoke — the analysis wrote these acceptance criteria for the group; edit any that don't apply."_ Each name links to that requirement's card; a requirement that was not approved is named with _(not approved)_. When only some of the list is shared, those criteria are marked _(shared)_. The review card shows the same note, and so does the issue METIS publishes. Once you edit the criteria (change, add, remove or reorder any of them), METIS treats the list as yours: the note disappears from the cards and the issue is published with your criteria only.
 
-**If you edited the Clarifications section (#1162).** METIS manages that section between two hidden markers. If it finds one marker without the other, two sections, or a **Clarifications** heading with no markers, it leaves the requirement exactly as you wrote it rather than guess which lines are yours. The note above the questions then says how many answers were not written, and the list of answers that were not applied names the requirement. To fix it, open the requirement and delete the whole Clarifications section. You can instead restore an earlier version from **History**, but a restore brings back the whole requirement as it was, so it also undoes any edits made after that version (#1269). Your answers are then written again the next time you submit answers while clarifying questions are still open or, once clarification is complete, when you reopen a rejected requirement on the Approvals panel and approve it. (Approving a requirement card on the requirements hub does not do this.) If neither applies, type the answer into the requirement yourself, outside the Clarifications section, and delete your copy if METIS writes the answers later. METIS rewrites the inside of a well-formed Clarifications section on every pass, so text you type *inside* it is replaced the next time the answers are applied. Put your own notes outside the section, or get an overwritten edit back from **History**.
+**If you edited the Clarifications section (#1162).** METIS manages that section between two hidden markers. If it finds one marker without the other, two sections, or a **Clarifications** heading with no markers, it leaves the requirement exactly as you wrote it rather than guess which lines are yours. The note above the questions then says how many answers were not written, and the list of answers that were not applied names the requirement. To fix it, open the requirement and delete the whole Clarifications section. You can instead restore an earlier version from **History**, but a restore brings back the whole requirement as it was, so it also undoes any edits made after that version (#1269). Your answers are then written again the next time you submit answers while clarifying questions are still open or, once clarification is complete, when you reopen a rejected requirement on the Approvals panel and approve it. (Approving a requirement card on the requirements hub does not do this.) If neither applies, type the answer into the requirement yourself, outside the Clarifications section, and delete your copy if METIS writes the answers later. METIS rewrites the inside of a well-formed Clarifications section on every pass, so text you type _inside_ it is replaced the next time the answers are applied. Put your own notes outside the section, or get an overwritten edit back from **History**.
 
 ### 35.4 Approval Checkpoints
 
 Before tickets are created, METIS creates approval requests for:
+
 - **Evidence items** — Approve or reject each evidence digest
 - **Requirements** — Approve or reject each refined requirement
 
@@ -5203,6 +5277,7 @@ METIS automatically ingests your first connected repository so you can start ana
 ### 36.1 Auto-Ingest on First Repository
 
 When you connect your first Git repository to a project, METIS automatically begins deep ingestion of the **Branch or tag** you entered (or `main`):
+
 1. **Cloning** — A shallow clone of the repository is created at that ref.
 2. **Code Graph** — Source files are parsed into symbols, edges, and rationale.
 3. **RAG Ingestion** — File content is indexed into the knowledge base for retrieval.
@@ -5214,6 +5289,7 @@ Subsequent repositories can be ingested manually or by checking "Auto-ingest" du
 ### 36.2 Progress Indicator
 
 While ingestion is running, a progress bar appears below the repository card on the **Connections** page showing:
+
 - The current step name (e.g., "Building code graph")
 - A progress fraction (e.g., 2/5)
 
@@ -5224,7 +5300,7 @@ The progress bar automatically disappears 2 seconds after completion. If ingesti
 If the ingestion pipeline discovers database connection references in your source code (e.g., PostgreSQL connection strings, MongoDB URIs), a toast notification appears:
 
 > "2 database connections discovered in backend-api"
-> *Review suggested connectors in the Connections tab.*
+> _Review suggested connectors in the Connections tab._
 
 Click **View** to jump to the suggested connectors section and review/confirm the discovered databases.
 
@@ -5259,20 +5335,20 @@ discovery** in the page header. The toggle:
 
 - Requires the `project.update` permission (admins/owners).
 - Is audit-logged as `project.allowCredentialScan.update`.
-- Takes effect on the *next* discovery run; existing rows are not
+- Takes effect on the _next_ discovery run; existing rows are not
   retroactively re-scanned.
 
 ### 37.3 Wizard walkthrough
 
 1. **Review** — Confirm the driver, host, port, database, source file/line,
    and confidence label. If credentials were detected in source, a green
-   badge reads *"Dev credentials found in source — pre-loaded from the
-   vault."*
+   badge reads _"Dev credentials found in source — pre-loaded from the
+   vault."_
 2. **Configure** — Edit the label, driver, host, port, database, username
    and password. Click the eye icon to toggle password visibility. For
    administrators the password is fetched one-shot from the vault and is
    never written to the DOM as plaintext outside this dialog; other roles see
-   a blank field with a *stored password* hint — leave it blank to provision
+   a blank field with a _stored password_ hint — leave it blank to provision
    with the vaulted password, which they never receive (#324).
 3. **Test** — Click **Run test** to perform a credential-explicit liveness
    probe. The pool is opened, pinged, and closed in a single request — no
@@ -5282,7 +5358,7 @@ discovery** in the page header. The toggle:
    the vault entry tagged
    `provisioned-cred:project:<id>:suggestion:<id>` and (b) create a real
    DB connector that references it as `${vault:<id>}`. If the connector
-   write fails *and* the vault entry was just created, the vault entry is
+   write fails _and_ the vault entry was just created, the vault entry is
    rolled back automatically.
 
 ### 37.4 What's audited
@@ -5297,8 +5373,7 @@ threat-model entry.
 
 ---
 
-*This guide was created for the METIS project. For detailed technical architecture documentation, see [ARCHITECTURE.md](ARCHITECTURE.md).*
-
+_This guide was created for the METIS project. For detailed technical architecture documentation, see [ARCHITECTURE.md](ARCHITECTURE.md)._
 
 ## 38. Formal Reviews & Approvals — Reviewer Walkthrough (Epic #609)
 
@@ -5465,7 +5540,7 @@ a **Require approved review to publish/export** toggle. With it on:
 ## 39. Linking Requirements Across Projects (Epic #610)
 
 Big initiatives span more than one project. When a requirement in one
-project *depends on*, *duplicates*, or is *derived from* a requirement in
+project _depends on_, _duplicates_, or is _derived from_ a requirement in
 another, you can record that relationship as a **cross-project link** —
 provided both projects live in the **same workspace**.
 
@@ -5474,11 +5549,11 @@ provided both projects live in the **same workspace**.
 1. Open a project's **Analysis** page and find the requirement you want to
    link from. Under it, the **Linked requirements** panel shows any
    existing links; click **Add link**.
-2. Pick the relationship **type** — *Relates to*, *Duplicates*, *Depends
-   on*, or *Derived from*.
+2. Pick the relationship **type** — _Relates to_, _Duplicates_, _Depends
+   on_, or _Derived from_.
 3. Start typing in **Search requirements**. The search covers every
    project in your workspace that you can access, so you can pull in a
-   requirement from a *different* project. Click **Link** next to the match.
+   requirement from a _different_ project. Click **Link** next to the match.
 
 The new link appears immediately in the panel. Because it points at another
 project, the row carries that project's **badge**, which is a shortcut into
@@ -5488,8 +5563,8 @@ the counterpart project.
 
 A link is bidirectional. Open the **linked** requirement's Analysis page and
 its **Linked requirements** panel shows the reciprocal edge with a badge back
-to the project you started from — with direction-aware wording (a *Depends
-on* link reads as **required by** on the other side). Remove a link from
+to the project you started from — with direction-aware wording (a _Depends
+on_ link reads as **required by** on the other side). Remove a link from
 either end with **Unlink**.
 
 ### What is (and isn't) allowed
@@ -5497,7 +5572,7 @@ either end with **Unlink**.
 - Both requirements must sit in the **same workspace**. The search never
   offers a requirement outside your workspace, and an attempt to force one
   through is rejected — linking is a within-tenant relationship.
-- A requirement can't link to **itself**, and a *Depends on* link that would
+- A requirement can't link to **itself**, and a _Depends on_ link that would
   create a **dependency cycle** is refused.
 - You only ever see — and can only link to — requirements in projects you
   have access to. A link touching a project you can't see is never revealed.

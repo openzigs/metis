@@ -254,13 +254,12 @@ export function signedTriggerEvent(payload: unknown): SignedTriggerEvent | null 
   return isObject(payload) && isPushBody(payload) ? "push" : null;
 }
 
-/** Release actions whose `published_at`/`created_at` is the time of the event itself. */
-const TIMED_RELEASE_ACTIONS: ReadonlySet<string> = new Set([
-  "created",
-  "published",
-  "released",
-  "prereleased",
-]);
+/**
+ * Release actions whose `published_at` is the time of the event itself. Not
+ * `released`: GitHub also sends it when a pre-release is promoted, an edit
+ * that keeps the old `published_at`.
+ */
+const TIMED_RELEASE_ACTIONS: ReadonlySet<string> = new Set(["created", "published", "prereleased"]);
 
 function isoTime(raw: unknown): number {
   if (typeof raw !== "string") return -Infinity;
@@ -288,8 +287,9 @@ function timesOf(obj: unknown, ...keys: string[]): number[] {
  *   is read for `push` only).
  * - Pull-request and issue events: `updated_at`, `comment.updated_at`,
  *   `review.submitted_at`.
- * - `release`, for the actions that publish or create it only: an `edited` or
- *   `deleted` release keeps its old times, so those are untimed.
+ * - `release.published_at`, for `created`, `published` and `prereleased`
+ *   only: an `edited`, `deleted` or promoted (`released`) release keeps its
+ *   old time, and a draft has none, so those are untimed.
  * - `workflow_run.updated_at`; `workflow_job` `created_at`/`started_at`/
  *   `completed_at`; `deployment` and `deployment_status` `created_at`/`updated_at`.
  *
@@ -313,7 +313,10 @@ export function signedTriggerEventTime(payload: unknown): number | null {
     );
   } else {
     if (typeof payload.action === "string" && TIMED_RELEASE_ACTIONS.has(payload.action)) {
-      times.push(...timesOf(payload.release, "published_at", "created_at"));
+      // Never `release.created_at`: GitHub documents it as the date of the
+      // release's COMMIT, not of the release, so a draft on an old commit
+      // would read as stale. A draft has no `published_at` and is untimed.
+      times.push(...timesOf(payload.release, "published_at"));
     }
     times.push(
       ...timesOf(payload.workflow_run, "updated_at"),

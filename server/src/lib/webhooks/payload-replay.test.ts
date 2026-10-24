@@ -265,13 +265,15 @@ describe("signedTriggerEventTime (#1492)", () => {
   const fresh = at(NOW - DAY);
 
   it("reads release times only for the actions that publish or create it", () => {
-    for (const action of ["created", "published", "released", "prereleased"]) {
+    for (const action of ["created", "published", "prereleased"]) {
       const body = { action, release: { published_at: fresh, created_at: old } };
       expect(signedTriggerEventTime(body)).toBe(NOW - DAY);
     }
+    // `created_at` is the release COMMIT's date, never read: a draft is untimed.
     const draft = { action: "created", release: { published_at: null, created_at: fresh } };
-    expect(signedTriggerEventTime(draft)).toBe(NOW - DAY);
-    for (const action of ["edited", "deleted", "unpublished"]) {
+    expect(signedTriggerEventTime(draft)).toBeNull();
+    // `released` also fires on a pre-release's promotion, which keeps the old time.
+    for (const action of ["edited", "deleted", "unpublished", "released"]) {
       expect(signedTriggerEventTime({ action, release: { published_at: old } })).toBeNull();
     }
   });
