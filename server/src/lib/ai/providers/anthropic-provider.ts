@@ -230,6 +230,11 @@ export class AnthropicProvider implements AIProvider {
   private readonly streamMaxTokens: number;
   /** #25 — `baseUrl` is DeepSeek's Anthropic-compatible endpoint. */
   private readonly deepSeekEndpoint: boolean;
+
+  /** #1329 — {@link AIProvider.deepSeekPrefixCache}: DeepSeek's own host, by URL. */
+  get deepSeekPrefixCache(): boolean {
+    return this.deepSeekEndpoint;
+  }
   /** #512 — `baseUrl` is Anthropic's own API (unset, or api.anthropic.com). */
   private readonly anthropicApiEndpoint: boolean;
   private readonly config?: ConfigService;
@@ -548,7 +553,7 @@ export class AnthropicProvider implements AIProvider {
       emitCacheTelemetry(usage, final.model ?? model, opts);
       // #1257 — streaming is NOT subject to the SDK's non-streaming bound, but
       // it spends thinking from the same budget, so the accounting is the same.
-      logOutputBudget("stream", params.max_tokens, usage, final.stop_reason);
+      logOutputBudget("stream", params.max_tokens, usage, final.stop_reason, opts.callType);
       // #724 — the served model, so a metered stream is priced as `chat()` is.
       usageYielded = true;
       yield final.model ? { type: "usage", usage, model: final.model } : { type: "usage", usage };
@@ -621,8 +626,11 @@ export class AnthropicProvider implements AIProvider {
    *     message with the same breakpoint, caching the large stable
    *     facts/source prefix reused across generation + claim-extraction +
    *     faithfulness-judge calls.
-   * Anthropic allows ≤4 breakpoints; we place at most 2 (system + last user
-   * turn). Content below the model's min cacheable size simply does not cache —
+   *   • `promptCaching.userPrefix` (#1329) → split the LAST user message into
+   *     [that prefix, carrying the breakpoint][the rest], so sibling calls that
+   *     share the lead read its write.
+   * Anthropic allows ≤4 breakpoints; we place at most 3 (system, a user lead,
+   * last user turn). Content below the model's min cacheable size simply does not cache —
    * a harmless no-op — so flagging caching is always safe.
    */
   private buildRequest(
@@ -769,6 +777,10 @@ export class AnthropicProvider implements AIProvider {
     // Tag the last content block of the last USER message so the large stable
     // facts/source prefix is cached. We convert that one message's content to
     // block form in place; all other turns stay as plain strings.
+    // #1329 — a shared user lead is split off first, so with `messages` too the
+    // last block (the rest) carries its own breakpoint after the lead's.
+    const userPrefix = opts.promptCaching?.userPrefix ?? "";
+    if (userPrefix.length > 0) splitLastUserTurnAt(apiMessages, userPrefix, cacheControl);
     if (cacheMessages) markLastUserBlockForCaching(apiMessages, cacheControl);
 
     if (opts.disableThinking) {
@@ -1036,6 +1048,7 @@ function logOutputBudget(
   maxTokens: unknown,
   usage: TokenUsage,
   finishReason: string | null | undefined,
+  callType?: ChatOptions["callType"],
 ): void {
   if (usage.thinkingTokens === undefined) return;
   const meta = {
@@ -1045,7 +1058,9 @@ function logOutputBudget(
     thinkingTokens: usage.thinkingTokens,
     finishReason: finishReason ?? "unknown",
   };
-  if (finishReason === "max_tokens") {
+  // #1329 — the docs-gen warm-up is capped at one token on purpose: reaching
+  // that cap is its normal end, not the #1223 truncation this warns about.
+  if (finishReason === "max_tokens" && callType !== "warmup") {
     log.warn(
       "Anthropic output cap reached — thinking spent part of the SAME budget as the answer, " +
         "so the payload was truncated by however much the model chose to think on this run. " +
@@ -1076,6 +1091,36 @@ function toTextBlocks(content: ChatMessage["content"]): AnthropicTextBlock[] | n
     blocks.push({ type: "text", text: part.text });
   }
   return blocks;
+}
+
+/**
+ * #1329 — send the LAST user turn as [`prefix`, with a cache breakpoint][the
+ * rest]. The two blocks hold exactly the turn's text, so the model reads the
+ * same prompt. No-op (logged) unless that turn is a plain string with `prefix`
+ * as a strict, non-empty prefix. Mutates in place.
+ */
+function splitLastUserTurnAt(
+  apiMessages: AnthropicApiMessage[],
+  prefix: string,
+  cacheControl: CacheControl,
+): void {
+  const target = [...apiMessages].reverse().find((m) => m.role === "user");
+  const text = target?.content;
+  if (!target || typeof text !== "string" || text.length <= prefix.length) {
+    log.debug("userPrefix not applied: the last user turn is not a longer plain string");
+    return;
+  }
+  if (!text.startsWith(prefix)) {
+    log.debug("userPrefix is not a prefix of the last user turn; sending it unsplit", {
+      prefixLength: prefix.length,
+      turnLength: text.length,
+    });
+    return;
+  }
+  target.content = [
+    { type: "text", text: prefix, cache_control: cacheControl },
+    { type: "text", text: text.slice(prefix.length) },
+  ];
 }
 
 /**

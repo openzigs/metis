@@ -5053,6 +5053,28 @@ complete larger-cap retry; `--include-current` widens the sweep for a provider
 that reports no finish reason; `--min-output-tokens`, `--project`; a value flag
 with no value, or an unknown flag, is refused rather than widening the purge).
 
+#### Phase-2 prompt caching (#1277, #1329)
+
+A section written in batches sends the same lead in every batch: the system
+prompt, then the user turn's document context, flow graph, section label and
+retrieved grounding (`SectionPrompts.sharedUserLead`, `holistic-synthesizer.ts`).
+Each batch's own facts, formulas and notes follow it. How that lead is cached
+depends on the provider:
+
+| Provider | What is done |
+|---|---|
+| Claude on native Anthropic | `cache_control` breakpoints on the system prompt and, with more than one batch, at the end of the lead (`promptCaching.userPrefix`, which the provider sends as a separate text block). The first batch goes alone until its reply starts (`needsPromptCacheWarmUp`). |
+| Claude on the Bedrock gateway | The system prompt only. The gateway caches a whole message or nothing. |
+| DeepSeek's own API (an adapter whose base URL is a `deepseek.com` host, `AIProvider.deepSeekPrefixCache`; a DeepSeek model behind the Bedrock gateway, Azure or another host gets no warm-up) | Caching is automatic, but a prefix becomes readable only once the call that sent it has finished. With more than one batch and a lead of at least 1,024 estimated tokens, one warm-up call is sent first. It holds exactly the system prompt and the lead, has a 1-token output cap, and is recorded under a `…-warmup-…` session (agent step `docs-gen`, so it counts in the run's cost; telemetry call type `warmup`, so the `synthesis` cache share leaves it out). The lead ends on the retrieved block's closing `===`, and the newline after it belongs to each batch, so the warm-up's input ends on a token boundary every batch shares. The batches are sent once it has finished. If the warm-up fails, this is logged and the batches are sent anyway; a run stop is not swallowed. It is sent whatever `supportsCaching` says (`ENABLE_PROMPT_CACHING=false` included), because DeepSeek's API caches regardless and does not charge for writes. |
+
+The faithfulness judge sends its evidence first and its claims last. Within the
+evidence, retrieved sources come first, then module facts, then mined code
+lines. A section's parts all receive the same retrieved sources, so consecutive
+judge calls can share them as a prefix.
+
+To measure sibling prefixes and what a finish-time cache could read, with and
+without the warm-up, without calling a model, run `server/scripts/docs-gen-prefix-report.ts`.
+
 #### Phase-2 fact slices (#154)
 
 Phase 2 no longer sends each section the whole facts blob of every module.

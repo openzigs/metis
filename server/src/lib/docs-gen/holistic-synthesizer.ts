@@ -64,8 +64,13 @@ import {
   BedrockDirectProvider,
   OpenAICompatibleProvider,
 } from "../ai/providers/bedrock-direct-provider.js";
-import type { AIProvider, ChatChunk, ChatMessage } from "../ai/types.js";
-import { needsPromptCacheWarmUp } from "../ai/prompt-cache-warmup.js";
+import type { AIProvider, CacheTelemetryCallType, ChatChunk, ChatMessage } from "../ai/types.js";
+import {
+  hasExplicitPromptCache,
+  needsPrefixCacheWarmUp,
+  needsPromptCacheWarmUp,
+  PREFIX_WARM_UP_MAX_TOKENS,
+} from "../ai/prompt-cache-warmup.js";
 import { resolveClaimModelOverride } from "../ai/claim-model-config.js";
 import {
   detectRepetitionLoop,
@@ -3919,6 +3924,40 @@ async function synthesizeBatchedSection(input: {
   type BatchFailed = { batch: SectionBatchModule[]; err: unknown };
   type BatchOutcome = { done: BatchDone } | { failed: BatchFailed };
 
+  // #1329 — what every batch of this section sends first: the system prompt
+  // and the user turn's lead through the retrieved grounding. The retrieved
+  // block does not depend on the batch (`renderGroundingBlocks` puts only the
+  // module facts in `own`), so the first batch's stands for all of them.
+  const firstBatch = plan.batches[0] ?? [];
+  const firstGrounding = claimExtractor
+    ? mergeFactsIntoContext(
+        input.baseGrounding,
+        firstBatch.map((m) => sourceOf.get(m)!),
+        bundle.factsCharCap,
+      )
+    : input.baseGrounding;
+  const sharedPrompts = buildSectionPrompts(
+    group,
+    input.meta,
+    input.title,
+    input.docType,
+    "",
+    "",
+    bundle.tuning,
+    firstGrounding ? renderGroundingBlocks(firstGrounding) : NO_GROUNDING_BLOCKS,
+    input.flowBlob,
+  );
+  // #1329 — on native Anthropic a breakpoint is per block, and the system
+  // prompt was the only cached one, so the batches shared nothing of the user
+  // turn's lead (the retrieved excerpts). With more than one batch the lead
+  // ends in a breakpoint of its own; a single call would only pay the write.
+  // The Bedrock gateway caches a whole message or nothing, so not there.
+  const cacheUserLead =
+    bundle.supportsCaching &&
+    plan.batches.length > 1 &&
+    bundle.provider.key === "anthropic" &&
+    hasExplicitPromptCache(bundle.provider);
+
   // Returns the batch's outcomes in PLAN order: a split batch returns its first
   // half's outcomes before its second's, whatever order the calls finish in.
   const runBatch = async (
@@ -3992,6 +4031,7 @@ async function synthesizeBatchedSection(input: {
         // groups.
         false,
         onFirstOutput,
+        cacheUserLead,
       );
     } catch (err) {
       if (isGenerationStop(err)) throw err;
@@ -4067,6 +4107,7 @@ async function synthesizeBatchedSection(input: {
   // (not DeepSeek, which caches automatically) and a cached prefix — the
   // section's system prompt, the same for every batch — at or over the model's
   // minimum. Below it nothing is cached, and the wait would only slow the run.
+  // #1329 — with the user lead's breakpoint, the cached prefix runs through it.
   let releaseRest = (): void => {};
   const warmUp =
     bundle.supportsCaching &&
@@ -4074,13 +4115,40 @@ async function synthesizeBatchedSection(input: {
     plan.batches.length > 1 &&
     needsPromptCacheWarmUp(
       bundle.provider,
-      buildSectionPrompts(group, input.meta, input.title, input.docType, "", "", bundle.tuning)
-        .systemMessage,
+      cacheUserLead
+        ? `${sharedPrompts.systemMessage}${sharedPrompts.sharedUserLead}`
+        : sharedPrompts.systemMessage,
     )
       ? new Promise<void>((resolve) => {
           releaseRest = resolve;
         })
       : null;
+  // #1329 — DeepSeek writes a cache unit only when a call ends, so the first
+  // wave of parallel batches would each pay for the shared lead in full. One
+  // short call holding exactly the shared prefix goes first, and the batches
+  // are sent once it has finished. It is counted in the section's `calls`.
+  // Deliberately NOT gated on `bundle.supportsCaching` (PR #1516 review):
+  // DeepSeek's API caches every prompt whatever METIS or a gateway's
+  // ENABLE_PROMPT_CACHING says, and its cache writes are free, so the flag
+  // has nothing to turn off there. The gate is DeepSeek's own host
+  // (`needsPrefixCacheWarmUp`), where the read-back is real.
+  if (
+    concurrency > 1 &&
+    plan.batches.length > 1 &&
+    needsPrefixCacheWarmUp(bundle.provider, sharedPrompts.sharedUserLead)
+  ) {
+    calls += 1;
+    await warmSectionPrefix({
+      provider: bundle.provider,
+      supportsCaching: bundle.supportsCaching,
+      projectId,
+      docType: input.docType,
+      group,
+      prompts: sharedPrompts,
+      batches: plan.batches.length,
+      ...(input.beforeBatch ? { beforeCall: input.beforeBatch } : {}),
+    });
+  }
   const settled = await mapSettledWithConcurrency(
     plan.batches,
     concurrency,
@@ -5259,7 +5327,12 @@ async function synthesizeFinalDocumentInRun(
           // section is never reused across fact-check modes.
           ...(groundingRecord ? { grounding: groundingRecord } : {}),
         }),
-        prompts: JSON.stringify(prompts),
+        // #1329 — the two prompts only, as before: `sharedUserLead` is a prefix
+        // of the user prompt, and hashing it too would rewrite every section.
+        prompts: JSON.stringify({
+          systemMessage: prompts.systemMessage,
+          userMessage: prompts.userMessage,
+        }),
       });
       // #1070 — a canonical fact the section was given renders as a footnote
       // wherever the section cites it, whether or not fact-checking is on.
@@ -7524,6 +7597,19 @@ export interface SectionGroupResult {
   budget?: OutputTokenBudget;
 }
 
+/** A section call's prompts. */
+export interface SectionPrompts {
+  systemMessage: string;
+  userMessage: string;
+  /**
+   * #1329 — the leading part of {@link userMessage} that every batch of the
+   * section sends: the document lead, the flow graph, the section label and
+   * the retrieved grounding. Always a prefix of `userMessage`, ending on a
+   * non-whitespace character (the newline after it is the part's).
+   */
+  sharedUserLead: string;
+}
+
 /** @internal Exported for the prompt-prefix tests (#1277). */
 export function buildSectionPrompts(
   group: SectionGroup,
@@ -7536,7 +7622,7 @@ export function buildSectionPrompts(
   groundingBlock: GroundingBlocks | string = "",
   flowBlob = "",
   batchNote = "",
-): { systemMessage: string; userMessage: string } {
+): SectionPrompts {
   // #1329 — a plain string is a block with no retrieved part: all the call's own.
   const grounding: GroundingBlocks =
     typeof groundingBlock === "string" ? { shared: "", own: groundingBlock } : groundingBlock;
@@ -7644,14 +7730,30 @@ RULES:
   const flowSection = flowBlob
     ? `\n=== END-TO-END FLOW (cross-module dependencies + SAS dataset lineage, from the code graph) ===\n\n${data(flowBlob)}\n\nUse this to describe TRUE end-to-end workflows: which module hands off to which, and how datasets flow input→output across modules. Do NOT invent flows not supported by this graph.\n\n=== END FLOW ===\n`
     : "";
-  const userMessage = `Project: **${meta.name}**
+  // #1329 — everything up to and including the retrieved grounding is what
+  // every batch of this section sends byte for byte (`sharedUserLead`): the
+  // DeepSeek warm-up sends exactly it, and on Anthropic a cache breakpoint
+  // ends it. The user message is that lead and the batch's own part, joined
+  // with nothing in between, so splitting it changes no byte.
+  //
+  // PR #1516 review — the lead ENDS ON A NON-WHITESPACE CHARACTER: `===` (the
+  // retrieved block's closing fence) or `**` (the section label), and the
+  // newline after it belongs to the part. A tokenizer merges a run of
+  // newlines into one token, so a lead ending `===\n` would tokenize as
+  // `===` + `\n` in the warm-up and `===` + `\n\n` in every part, and the
+  // cache unit written at the end of the warm-up's input would be a prefix of
+  // no part. Punctuation and a following newline are separate pre-tokens in
+  // both, so the boundary after `===` is a token boundary everywhere.
+  const leadThroughNewline = `Project: **${meta.name}**
 Primary language: ${meta.language}
 Source files analyzed: ${meta.totalFiles}
 Code symbols: ${meta.totalSymbols}
 Document title (already rendered as H1, do NOT repeat): "${title}"
 Document type: ${docTypeLabel(docType)}
 ${flowSection}Section group: **${group.label}**
-${grounding.shared ? `\n${grounding.shared}\n` : ""}
+${grounding.shared ? `\n${grounding.shared}\n` : ""}`;
+  const sharedUserLead = leadThroughNewline.slice(0, -1);
+  const userMessage = `${leadThroughNewline}
 === EXTRACTED MODULE FACTS ===
 
 ${data(factsBlob)}
@@ -7666,7 +7768,7 @@ ${data(formulasBlob)}
 ${grounding.own ? `\n${grounding.own}\n` : ""}${batchNote ? `\n${batchNote}\n` : ""}
 Write the markdown for the **${group.label}** section group now, following the instructions in your system prompt. Begin with the first H2 heading.`;
 
-  return { systemMessage, userMessage };
+  return { systemMessage, userMessage, sharedUserLead };
 }
 
 /**
@@ -7675,6 +7777,58 @@ Write the markdown for the **${group.label}** section group now, following the i
  * prompt, on every provider — the grounding calls' bound (#246).
  */
 export const MID_STREAM_DROP_ATTEMPTS = DEFAULT_GROUNDING_ATTEMPTS;
+
+/**
+ * #1329 — the DeepSeek prefix-cache warm-up ({@link needsPrefixCacheWarmUp}):
+ * ONE call whose prompt is the section's system prompt and shared user lead and
+ * nothing else, capped at {@link PREFIX_WARM_UP_MAX_TOKENS} output token, sent
+ * and awaited before the section's batches. Its cost is that prompt once, at
+ * the input price, less what is already cached (the system prompt), plus one
+ * output token. It is a paid call like a batch: checked against the run's
+ * ceilings first (`beforeCall`) and recorded in the ledger under a
+ * `…-warmup-…` session. A warm-up that fails is logged and the batches go
+ * ahead without it; a stopped run stops here.
+ */
+async function warmSectionPrefix(input: {
+  provider: AIProvider;
+  supportsCaching: boolean;
+  projectId: string;
+  docType: DocType;
+  group: SectionGroup;
+  prompts: SectionPrompts;
+  batches: number;
+  beforeCall?: () => Promise<void>;
+}): Promise<void> {
+  const { provider, prompts } = input;
+  throwIfGenerationStopped();
+  await input.beforeCall?.();
+  const logFields = {
+    projectId: input.projectId,
+    group: input.group.id,
+    batches: input.batches,
+    promptChars: prompts.systemMessage.length + prompts.sharedUserLead.length,
+  };
+  try {
+    await streamSectionContent(provider, {
+      sessionId: `docs-synth-${input.projectId}-${input.docType}-${input.group.id}-warmup-${Date.now()}-${randomBytes(3).toString("hex")}`,
+      systemMessage: prompts.systemMessage,
+      userMessage: prompts.sharedUserLead,
+      supportsCaching: input.supportsCaching,
+      projectId: input.projectId,
+      maxTokens: PREFIX_WARM_UP_MAX_TOKENS,
+      // Its own telemetry bucket: the "synthesis" share is what it raises,
+      // and its ~25k mostly-uncached prompt would read as a section draft's.
+      callType: "warmup",
+    });
+    log.info("Section prefix-cache warm-up sent", logFields);
+  } catch (err) {
+    if (isGenerationStop(err)) throw err;
+    log.warn("Section prefix-cache warm-up failed; sending the batches without it", {
+      ...logFields,
+      err: String(err),
+    });
+  }
+}
 
 async function generateSectionGroup(
   group: SectionGroup,
@@ -7693,9 +7847,15 @@ async function generateSectionGroup(
   allowRefine = true,
   /** #208 — called once, when the draft call's reply begins (the prompt cache is written). */
   onFirstOutput?: () => void,
+  /**
+   * #1329 — end an Anthropic cache breakpoint at the prompt's shared user lead,
+   * so the section's other batches read it. Set only by a caller that sends
+   * the lead more than once.
+   */
+  cacheUserLead = false,
 ): Promise<SectionGroupResult> {
   const isLocal = provider.key === "local-gemma";
-  const { systemMessage, userMessage } = buildSectionPrompts(
+  const { systemMessage, userMessage, sharedUserLead } = buildSectionPrompts(
     group,
     meta,
     title,
@@ -7757,6 +7917,7 @@ async function generateSectionGroup(
         projectId,
         progress,
         onFirstChunk,
+        ...(cacheUserLead ? { userLead: sharedUserLead } : {}),
       });
     },
     {
@@ -7905,6 +8066,16 @@ async function streamSectionContent(
     progress?: { chunks: number };
     /** #208 — called when the first chunk of the reply arrives. */
     onFirstChunk?: () => void;
+    /**
+     * #1329 — a leading part of `userMessage` that the section's other calls
+     * send too: with prompt caching, an explicit-breakpoint provider (native
+     * Anthropic) ends a cache breakpoint there (`promptCaching.userPrefix`).
+     */
+    userLead?: string;
+    /** #1329 — the OUTPUT cap, in place of the section's (the warm-up's 1 token). */
+    maxTokens?: number;
+    /** #1329 — the telemetry bucket; `"synthesis"` unless set (the warm-up's is `"warmup"`). */
+    callType?: CacheTelemetryCallType;
   },
 ): Promise<SectionStreamResult> {
   const messages: ChatMessage[] = [
@@ -7921,7 +8092,8 @@ async function streamSectionContent(
   // #1226 — configurable OUTPUT cap (was hardcoded 8192), clamped to the
   // model's known ceiling.
   const budget = resolveSectionOutputBudget(provider.model);
-  const { maxTokens } = budget;
+  const maxTokens = opts.maxTokens ?? budget.maxTokens;
+  const caching = singleShotPromptCaching(opts.supportsCaching);
   let firstChunk = true;
   let received = 0;
   let outputChars = 0;
@@ -7932,14 +8104,15 @@ async function streamSectionContent(
       disableTools: true,
       maxTokens,
       // #390 — tag prompt-cache hit-ratio telemetry by workload.
-      callType: "synthesis",
+      callType: opts.callType ?? "synthesis",
       ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
       // Cache ONLY the shared section-writer system prompt (reused across all ~6
       // sections). The large per-section facts/grounding blob in the user turn is
       // unique to THIS section group and not reused across calls, so a
       // message-level cache write would just burn the write premium with no later
-      // read to amortise it (#389). #anthropic-prompt-caching.
-      promptCaching: singleShotPromptCaching(opts.supportsCaching),
+      // read to amortise it (#389). #anthropic-prompt-caching. #1329 — except
+      // the user turn's shared lead, when the caller says it is sent again.
+      promptCaching: caching && opts.userLead ? { ...caching, userPrefix: opts.userLead } : caching,
     })) {
       if (firstChunk) {
         firstChunk = false;

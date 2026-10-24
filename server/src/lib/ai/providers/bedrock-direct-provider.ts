@@ -42,7 +42,7 @@ import {
   type FifoSemaphore,
   type ReleaseSlot,
 } from "./local-concurrency-limiter.js";
-import { messageText } from "../types.js";
+import { describePromptCaching, messageText } from "../types.js";
 import { createUnsupportedToolsWarner, type ProviderCapabilities } from "../capabilities.js";
 import { catalogCapabilities, ensureLocalDiscovery } from "../model-catalog.js";
 import { isDeepSeekEndpoint } from "./anthropic-endpoint.js";
@@ -883,6 +883,11 @@ export class OpenAICompatibleProvider implements AIProvider {
    * as the Anthropic adapter keys the same vendor's other endpoint.
    */
   private readonly deepSeekEndpoint: boolean;
+
+  /** #1329 — {@link AIProvider.deepSeekPrefixCache}: DeepSeek's own host, by URL. */
+  get deepSeekPrefixCache(): boolean {
+    return this.deepSeekEndpoint;
+  }
   /** #1077 — models already logged as downgraded from `json_schema`. */
   private readonly jsonSchemaDowngradedModels = new Set<string>();
   private readonly baseUrl: string;
@@ -1702,7 +1707,7 @@ export class OpenAICompatibleProvider implements AIProvider {
       url,
       messageCount: messages.length,
       maxTokens: body.max_tokens,
-      caching: opts.promptCaching,
+      caching: describePromptCaching(opts.promptCaching),
     });
 
     // Each attempt gets a fresh AbortController + timeout (a retry must not reuse
@@ -1870,7 +1875,7 @@ export class OpenAICompatibleProvider implements AIProvider {
       url,
       messageCount: messages.length,
       maxTokens: opts.maxTokens ?? this.defaultMaxTokens,
-      caching: opts.promptCaching,
+      caching: describePromptCaching(opts.promptCaching),
     });
 
     const prompt: StreamPromptShape = {

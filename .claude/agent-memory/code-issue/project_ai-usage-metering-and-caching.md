@@ -58,3 +58,21 @@ exactly.
 - `TokenUsage.costUsd` is a Prisma `Decimal`; `Number(null)` is 0 and hides unpriced rows. A
   spend cap that sums cost must treat null as unpriced, not $0
   ([[pr-review-worker-budget-and-github-client]]).
+
+**DeepSeek warm-up, judge order, replay window (#1329, 2026-10-24).**
+- DeepSeek's KV-cache guide: a request reads only a "cache prefix unit" it FULLY matches;
+  units are written when a request ends (end of user input, end of output), at fixed
+  intervals of a long input, and where requests are seen to share a prefix. So a parallel
+  first wave reads nothing of its shared lead. A warm-up whose user input ENDS at the shared
+  lead (1-token cap, awaited) gives every batch the lead (`warmSectionPrefix`).
+- The section reuse hash is `JSON.stringify` of the built prompts. Adding a field to
+  `SectionPrompts` (`sharedUserLead`) silently changed every section's `prompts` hash and
+  would have rewritten every stored section; hash the two prompt strings by name.
+- Offline replays (`server/scripts/docs-gen-run-facts.ts`) select fact rows by
+  `createdAt <= published AND lastUsedAt >= published - window`. Selecting by `lastUsedAt`
+  inside the window broke once a later paid run touched every row.
+- Offline estimate: the prefix report's "readable from finished calls" without the warm-up
+  (11.8%) matched the 2026-10-23 run's measured section-draft share (11.0%), so trust its
+  with-warm-up figure (32.5%) as the section-draft expectation, not as the run total.
+- A dispatch brief can be stale: #1427's AC1–2 had already landed in #1449 (merged the same
+  morning). Run `git log --oneline --grep "#<issue>"` before redoing an issue's offline work.

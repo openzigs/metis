@@ -584,8 +584,6 @@ describe("FaithfulnessJudge.judge — batching & robustness (#grounding)", () =>
 });
 
 describe("FaithfulnessJudge prompt caching (#anthropic-prompt-caching)", () => {
-  type Part = { type: string; text?: string };
-
   it("does NOT request caching by default and keeps a single evidence-first string", async () => {
     const provider = mockProvider(
       JSON.stringify({ verdicts: [{ claim: "c", supported: true, sourceIds: [] }] }),
@@ -600,7 +598,7 @@ describe("FaithfulnessJudge prompt caching (#anthropic-prompt-caching)", () => {
     expect(userMsg.indexOf("SOURCE EVIDENCE")).toBeLessThan(userMsg.indexOf("CLAIMS TO JUDGE"));
   });
 
-  it("requests caching and puts the STABLE evidence in the cached trailing block", async () => {
+  it("requests caching of the system prompt only, with the same evidence-first user turn", async () => {
     const provider = mockProvider(
       JSON.stringify({ verdicts: [{ claim: "c", supported: true, sourceIds: [] }] }),
     );
@@ -609,14 +607,13 @@ describe("FaithfulnessJudge prompt caching (#anthropic-prompt-caching)", () => {
     const [messages, options] = (provider.chat as ReturnType<typeof vi.fn>).mock.calls[0];
     // #1277 — system only: the per-batch user turn is never read back.
     expect(options.promptCaching).toEqual({ system: true, messages: false });
-    // User content is a [claims, evidence] block array so the provider can cache
-    // the trailing (stable) evidence block.
-    const parts = messages[1].content as Part[];
-    expect(Array.isArray(parts)).toBe(true);
-    expect(parts).toHaveLength(2);
-    expect(parts[0].text).toContain("CLAIMS TO JUDGE");
-    expect(parts[1].text).toContain("SOURCE EVIDENCE");
-    expect(parts[1].text).toContain("Invoices over 1000 require manager approval");
+    // #1329 — one string, evidence then claims: the claims are the part no two
+    // batches share, so they come after everything that can be shared.
+    expect(typeof messages[1].content).toBe("string");
+    const userMsg = messages[1].content as string;
+    expect(userMsg).toContain("Invoices over 1000 require manager approval");
+    expect(userMsg.indexOf("SOURCE EVIDENCE")).toBeLessThan(userMsg.indexOf("CLAIMS TO JUDGE"));
+    expect(userMsg.trimEnd().endsWith("=== END CLAIMS ===")).toBe(true);
   });
 
   // #171 — evidence is per batch now; batches that select the same sources
@@ -631,14 +628,72 @@ describe("FaithfulnessJudge prompt caching (#anthropic-prompt-caching)", () => {
     await judge.judge(claims(10), ctx); // 2 batches
     const calls = (provider.chat as ReturnType<typeof vi.fn>).mock.calls;
     expect(calls.length).toBeGreaterThanOrEqual(2);
-    const evidence0 = (calls[0][0][1].content as Part[])[1].text;
-    const evidence1 = (calls[1][0][1].content as Part[])[1].text;
+    const user0 = calls[0][0][1].content as string;
+    const user1 = calls[1][0][1].content as string;
+    const evidenceOf = (u: string) => u.slice(0, u.indexOf("=== CLAIMS TO JUDGE"));
     // Identical evidence prefix → batch 2 reads it from cache instead of re-billing.
-    expect(evidence0).toBe(evidence1);
+    expect(evidenceOf(user0)).toBe(evidenceOf(user1));
     // But the per-batch claims block differs (dynamic suffix).
-    const claimsBlock0 = (calls[0][0][1].content as Part[])[0].text;
-    const claimsBlock1 = (calls[1][0][1].content as Part[])[0].text;
-    expect(claimsBlock0).not.toBe(claimsBlock1);
+    expect(user0.slice(evidenceOf(user0).length)).not.toBe(user1.slice(evidenceOf(user1).length));
+  });
+
+  // #1329 — the judge calls of a section's parts share the section's retrieved
+  // sources, and nothing else: each part cites its own module facts. A prefix
+  // cache (DeepSeek's, matched from token 0) reads back only what two calls
+  // share from their first byte. Before #1329 the user turn led with the claims
+  // and the evidence led with the module facts, so two parts' judge calls
+  // shared the system prompt and nothing more.
+  it("gives two parts' judge calls a shared prefix that runs through their common retrieved source", async () => {
+    const shared = `func Validate(entry Entry) error {\n${'  if entry.URL == "" { return ErrMissingURL }\n'.repeat(40)}}`;
+    const section = buildGroundingContext({
+      factsSources: [
+        { moduleDir: "internal/feed", idx: 0, label: "feed", text: "Feeds refresh hourly." },
+        {
+          moduleDir: "internal/user",
+          idx: 1,
+          label: "user",
+          text: "Users sign in with a password.",
+        },
+      ],
+      ragChunks: [
+        { documentId: "repo", chunkId: "validate", filename: "internal/validate.go", text: shared },
+      ],
+    });
+    const [feedFacts, userFacts, retrieved] = section.sources.map((s) => s.sourceId);
+    const provider = programmableProvider((cs) =>
+      cs.map((claim) => ({ claim, supported: true, sourceIds: [] })),
+    );
+    const judge = new FaithfulnessJudge({ provider, promptCaching: true, maxBatch: 1 });
+    await judge.judge(
+      ["A feed entry without a URL is rejected.", "A user entry without a URL is rejected."],
+      section,
+      undefined,
+      undefined,
+      [
+        [feedFacts, retrieved],
+        [userFacts, retrieved],
+      ],
+    );
+    const calls = (provider.chat as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(2);
+    // A block array (the layout before #1329) is read as the text it sends.
+    const text = (content: unknown): string =>
+      Array.isArray(content)
+        ? content.map((p: { text?: string }) => p.text ?? "").join("")
+        : String(content);
+    const prompt = (call: unknown[]) => {
+      const messages = call[0] as Array<{ content: unknown }>;
+      return `${text(messages[0].content)}\u0000${text(messages[1].content)}`;
+    };
+    const [first, second] = calls.map(prompt);
+    let common = 0;
+    while (common < first.length && first[common] === second[common]) common += 1;
+    // The shared prefix holds the whole retrieved source...
+    const sourceEnd = first.indexOf(shared) + shared.length;
+    expect(first.indexOf(shared)).toBeGreaterThan(0);
+    expect(common).toBeGreaterThanOrEqual(sourceEnd);
+    // ...and stops at the part's own evidence, ahead of the claims.
+    expect(common).toBeLessThan(first.indexOf("=== CLAIMS TO JUDGE"));
   });
 
   it("still verifies entailment correctly with caching on (parsing unaffected)", async () => {
