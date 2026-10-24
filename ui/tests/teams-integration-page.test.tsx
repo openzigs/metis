@@ -141,6 +141,96 @@ describe("TeamsIntegrationPage", () => {
     expect(teamsApi.install).not.toHaveBeenCalled();
   });
 
+  it("offers UserAssignedMsi, spelled as botbuilder expects (#1466)", async () => {
+    renderPage();
+    const select = await screen.findByTestId("teams-app-type");
+    const values = within(select)
+      .getAllByRole("option")
+      .map((o) => (o as HTMLOptionElement).value);
+    expect(values).toEqual(["MultiTenant", "SingleTenant", "UserAssignedMsi"]);
+  });
+
+  it("installs a UserAssignedMsi bot with a tenant id and no password (#1466)", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.type(await screen.findByTestId("teams-app-id"), "msi-client");
+    // A password typed before switching type must not be sent.
+    await user.type(screen.getByTestId("teams-app-password"), "leftover");
+    await user.selectOptions(screen.getByTestId("teams-app-type"), "UserAssignedMsi");
+
+    // Managed identity has no password field, and needs a tenant id.
+    expect(screen.queryByTestId("teams-app-password")).not.toBeInTheDocument();
+    expect(screen.getByTestId("teams-tenant-required")).toBeInTheDocument();
+    expect(screen.getByTestId("teams-install-submit")).toBeDisabled();
+
+    await user.type(screen.getByTestId("teams-tenant-id"), "tenant-1");
+    expect(screen.getByTestId("teams-install-submit")).toBeEnabled();
+    await user.click(screen.getByTestId("teams-install-submit"));
+
+    await waitFor(() =>
+      expect(teamsApi.install).toHaveBeenCalledWith("w1", {
+        appId: "msi-client",
+        appType: "UserAssignedMsi",
+        tenantId: "tenant-1",
+        label: null,
+      }),
+    );
+  });
+
+  it("says a managed-identity bot needs a tenant id, in plain words (#1466)", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.selectOptions(await screen.findByTestId("teams-app-type"), "UserAssignedMsi");
+    expect(screen.getByTestId("teams-tenant-required")).toHaveTextContent(
+      "A managed-identity bot requires a tenant id.",
+    );
+  });
+
+  it("shows a Needs reinstall banner saying why and what to do (#1466)", async () => {
+    teamsApi.getInstallation.mockResolvedValue({
+      ...INSTALLED,
+      appType: "UserAssignedMsi",
+      needsReinstall: true,
+      reinstallReason: "legacy-app-type",
+    });
+    renderPage();
+    const banner = await screen.findByTestId("teams-needs-reinstall");
+    expect(banner).toHaveAttribute("role", "alert");
+    expect(banner).toHaveTextContent("Needs reinstall");
+    // The most likely fix comes first: it was a password bot all along.
+    expect(banner).toHaveTextContent(
+      /Most likely fix: disconnect it and reconnect it as a MultiTenant or SingleTenant bot with its client secret/,
+    );
+    expect(banner).toHaveTextContent(
+      /Only if it really is a managed identity: ask your METIS operator to list its client ID in TEAMS_MSI_CLIENT_IDS/,
+    );
+    // It does not claim the bot is still signing in with its password.
+    expect(banner).not.toHaveTextContent(/has really been signing in/);
+  });
+
+  it("names the operator allowlist when a managed identity is not allowed (#1466)", async () => {
+    teamsApi.getInstallation.mockResolvedValue({
+      ...INSTALLED,
+      needsReinstall: true,
+      reinstallReason: "msi-not-allowed",
+    });
+    renderPage();
+    expect(await screen.findByTestId("teams-needs-reinstall")).toHaveTextContent(
+      "TEAMS_MSI_CLIENT_IDS",
+    );
+  });
+
+  it("shows no banner for a sound installation", async () => {
+    teamsApi.getInstallation.mockResolvedValue({
+      ...INSTALLED,
+      needsReinstall: false,
+      reinstallReason: null,
+    });
+    renderPage();
+    await screen.findByTestId("teams-installed-view");
+    expect(screen.queryByTestId("teams-needs-reinstall")).not.toBeInTheDocument();
+  });
+
   it("shows the connected view + disconnects", async () => {
     teamsApi.getInstallation.mockResolvedValue(INSTALLED);
     const user = userEvent.setup();

@@ -56,6 +56,7 @@ import {
   type StoredConversationReference,
 } from "./conversation-reference-store.js";
 import { renderTeamsMessage, renderMirroredMessageActivity } from "./outbound-render.js";
+import { isTrustedBotServiceUrl } from "./service-url.js";
 
 const log = createChildLogger("teams-outbound");
 
@@ -207,6 +208,11 @@ export async function mirrorMessageToTeams(
     const stored = await deps.refStore.get(link.workspaceId, link.conversationId);
     if (!stored) {
       return { mirrored: false, reason: "no-reference" };
+    }
+    // The send posts a bearer token for the bot's identity to this URL (#1466).
+    if (!isTrustedBotServiceUrl(stored.reference.serviceUrl)) {
+      log.warn("outbound Teams mirror suppressed — untrusted serviceUrl", { threadId });
+      return { mirrored: false, reason: "untrusted-service-url" };
     }
 
     // Render authorship distinctly (human vs AI).

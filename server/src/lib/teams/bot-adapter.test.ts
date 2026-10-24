@@ -9,11 +9,14 @@
  *   - the factory override seam lets tests substitute a stub adapter and is
  *     restorable to the real factory.
  */
+import { createRequire } from "node:module";
+
 import { afterEach, describe, expect, it } from "vitest";
 import { CloudAdapter } from "botbuilder";
 
 import {
   buildCloudAdapter,
+  buildCredentialsFactory,
   getBotAdapterFactory,
   setBotAdapterFactoryForTests,
   type BotAdapterLike,
@@ -80,5 +83,64 @@ describe("bot adapter factory (#548)", () => {
 
     setBotAdapterFactoryForTests(null);
     expect(getBotAdapterFactory()).toBe(buildCloudAdapter);
+  });
+});
+
+/**
+ * #1466 — botbuilder chooses the auth path from `MicrosoftAppType`. These build
+ * the credentials botbuilder would use for an outbound call and assert which
+ * kind they are, through its public `createCredentials`.
+ */
+describe("Bot Framework auth path by app type (#1466)", () => {
+  // botframework-connector is botbuilder's dependency, not the server's: load it
+  // the way botbuilder does at runtime.
+  const connector = createRequire(createRequire(import.meta.url).resolve("botbuilder"))(
+    "botframework-connector",
+  ) as {
+    ManagedIdentityAppCredentials: new (...args: never[]) => unknown;
+    MicrosoftAppCredentials: new (...args: never[]) => unknown;
+  };
+  const AUDIENCE = "https://api.botframework.com";
+  const LOGIN = "https://login.microsoftonline.com/botframework.com";
+  const MSI_CREDS = {
+    appId: "99999999-8888-7777-6666-555555555555",
+    appPassword: "",
+    appType: "UserAssignedMsi",
+    tenantId: "tenant-1",
+  };
+
+  it("a UserAssignedMsi installation authenticates as the managed identity, not MultiTenant", async () => {
+    const factory = buildCredentialsFactory(MSI_CREDS);
+    const credentials = await factory.createCredentials(MSI_CREDS.appId, AUDIENCE, LOGIN, true);
+    expect(credentials).toBeInstanceOf(connector.ManagedIdentityAppCredentials);
+    expect(credentials).not.toBeInstanceOf(connector.MicrosoftAppCredentials);
+    expect(await factory.isAuthenticationDisabled()).toBe(false);
+    // And the full adapter builds on it: botbuilder's MSI assertions (tenant set,
+    // no password) all pass.
+    expect(buildCloudAdapter(MSI_CREDS)).toBeInstanceOf(CloudAdapter);
+  });
+
+  it("the pre-#1466 spelling `UserAssignedMSID` is what fell through to MultiTenant", async () => {
+    // Raw, unnormalised: botbuilder does not recognise it and builds app-password
+    // credentials. The store maps this spelling on read so it never gets here.
+    const legacy = { ...MSI_CREDS, appType: "UserAssignedMSID", appPassword: "pw" };
+    const credentials = await buildCredentialsFactory(legacy).createCredentials(
+      legacy.appId,
+      AUDIENCE,
+      LOGIN,
+      true,
+    );
+    expect(credentials).toBeInstanceOf(connector.MicrosoftAppCredentials);
+    expect(credentials).not.toBeInstanceOf(connector.ManagedIdentityAppCredentials);
+  });
+
+  it("a MultiTenant installation still authenticates with its app password", async () => {
+    const credentials = await buildCredentialsFactory(CREDS).createCredentials(
+      CREDS.appId,
+      AUDIENCE,
+      LOGIN,
+      true,
+    );
+    expect(credentials).toBeInstanceOf(connector.MicrosoftAppCredentials);
   });
 });

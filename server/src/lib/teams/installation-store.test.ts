@@ -13,10 +13,18 @@
  * `secret` + `teamsAppInstallation` model, so no real DB or master-key env is
  * required.
  */
+import { createRequire } from "node:module";
+
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { VaultService } from "../vault/vault-service.js";
-import { TeamsInstallationStore } from "./installation-store.js";
+import { buildCredentialsFactory } from "./bot-adapter.js";
+import {
+  normalizeTeamsAppType,
+  TeamsInstallationStore,
+  type InstallInput,
+} from "./installation-store.js";
+import { loadTeamsMsiAllowlist, type TeamsMsiAllowlist } from "./msi-allowlist.js";
 
 interface SecretRow {
   id: string;
@@ -146,14 +154,36 @@ class FakeDb {
     },
     findFirst: async (args: {
       where: { workspaceId: string; status?: string };
-      orderBy?: unknown;
+      orderBy?: { updatedAt?: "asc" | "desc" };
     }): Promise<InstallRow | null> => {
-      return (
-        this.installs.find(
-          (i) =>
-            i.workspaceId === args.where.workspaceId &&
-            (args.where.status ? i.status === args.where.status : true),
-        ) ?? null
+      const matches = this.installs.filter(
+        (i) =>
+          i.workspaceId === args.where.workspaceId &&
+          (args.where.status ? i.status === args.where.status : true),
+      );
+      // Like the database: without an orderBy the first row stored comes back.
+      if (args.orderBy?.updatedAt === "desc") {
+        matches.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+      }
+      return matches[0] ?? null;
+    },
+    findMany: async (args: {
+      where: {
+        status?: string;
+        workspaceId?: string | { not: string };
+        id?: { not: string };
+      };
+    }): Promise<InstallRow[]> => {
+      const { status, workspaceId, id } = args.where;
+      return this.installs.filter(
+        (i) =>
+          (status ? i.status === status : true) &&
+          (typeof workspaceId === "string"
+            ? i.workspaceId === workspaceId
+            : workspaceId
+              ? i.workspaceId !== workspaceId.not
+              : true) &&
+          (id ? i.id !== id.not : true),
       );
     },
     update: async (args: {
@@ -170,19 +200,35 @@ class FakeDb {
 
 const MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
 
+/** The managed identity the operator allowed, and one they did not (#1466). */
+const MSI = "11111111-2222-3333-4444-555555555555";
+const OTHER_MSI = "99999999-8888-7777-6666-555555555555";
+
+function msiInput(over: Partial<InstallInput> = {}): InstallInput {
+  return {
+    workspaceId: "ws-1",
+    appId: MSI,
+    appType: "UserAssignedMsi",
+    tenantId: "tenant-1",
+    ...over,
+  };
+}
+
 describe("TeamsInstallationStore (#548)", () => {
   let db: FakeDb;
   let vault: VaultService;
   let store: TeamsInstallationStore;
+  let allowlist: TeamsMsiAllowlist;
 
   beforeEach(() => {
+    allowlist = loadTeamsMsiAllowlist({ TEAMS_MSI_CLIENT_IDS: MSI });
     db = new FakeDb();
     vault = new VaultService({ masterKey: MASTER_KEY, isProduction: false });
     // The vault persists via the global prisma import; here we inject our fake by
     // re-pointing the vault's prisma is not possible, so we test the store's
     // secret handling by giving the vault a fake-backed store through the same
     // FakeDb (vault-service uses `prisma.secret.*`).
-    store = new TeamsInstallationStore(db as never, vaultOver(vault, db));
+    store = new TeamsInstallationStore(db as never, vaultOver(vault, db), () => allowlist);
   });
 
   it("install encrypts the password into the vault and stores only a ${vault:ref}", async () => {
@@ -315,6 +361,375 @@ describe("TeamsInstallationStore (#548)", () => {
     await expect(store.resolveAppPassword("ws-1")).rejects.toMatchObject({
       code: "VAULT_REF_INVALID",
     });
+  });
+
+  // ── #1466 — user-assigned managed identity ──────────────────────────────
+  // botbuilder-core selects its managed-identity factory on `UserAssignedMsi`
+  // (case-insensitive) and requires a tenant id and NO password for it. METIS
+  // additionally requires the operator to have allowed the client id
+  // (TEAMS_MSI_CLIENT_IDS), because naming one proves no ownership of it.
+
+  it("installs an allowed UserAssignedMsi bot with a tenant id and no password, vaulting nothing", async () => {
+    const summary = await store.install(msiInput());
+    expect(summary).toMatchObject({
+      appType: "UserAssignedMsi",
+      needsReinstall: false,
+      reinstallReason: null,
+    });
+    expect(db.installs[0].appType).toBe("UserAssignedMsi");
+    expect(db.installs[0].appPasswordRef).toBe("");
+    expect(db.secrets).toHaveLength(0);
+
+    expect(await store.resolveAppPassword("ws-1")).toEqual({
+      appId: MSI,
+      appPassword: "",
+      appType: "UserAssignedMsi",
+      tenantId: "tenant-1",
+    });
+  });
+
+  it("refuses a managed identity the operator has not allowed — e.g. another workspace's or the host's", async () => {
+    await expect(store.install(msiInput({ appId: OTHER_MSI }))).rejects.toMatchObject({
+      statusCode: 403,
+      code: "MSI_CLIENT_ID_NOT_ALLOWED",
+      message: expect.stringContaining("TEAMS_MSI_CLIENT_IDS"),
+    });
+    expect(db.installs).toHaveLength(0);
+  });
+
+  it("an identity the operator bound to workspace B cannot be claimed by A, even while B does not hold it", async () => {
+    allowlist = loadTeamsMsiAllowlist({ TEAMS_MSI_CLIENT_IDS: `${MSI}=ws-b` });
+    await expect(store.install(msiInput({ workspaceId: "ws-a" }))).rejects.toMatchObject({
+      code: "MSI_CLIENT_ID_NOT_ALLOWED",
+    });
+    await expect(store.install(msiInput({ workspaceId: "ws-b" }))).resolves.toMatchObject({
+      needsReinstall: false,
+    });
+    // A row A held before the binding was added stops resolving.
+    await store.uninstall("ws-b");
+    allowlist = loadTeamsMsiAllowlist({ TEAMS_MSI_CLIENT_IDS: MSI });
+    await store.install(msiInput({ workspaceId: "ws-a" }));
+    allowlist = loadTeamsMsiAllowlist({ TEAMS_MSI_CLIENT_IDS: `${MSI}=ws-b` });
+    await expect(store.resolveAppPassword("ws-a")).rejects.toMatchObject({
+      code: "MSI_CLIENT_ID_NOT_ALLOWED",
+    });
+  });
+
+  it("another workspace cannot switch off a bound identity's bot by storing the same id", async () => {
+    allowlist = loadTeamsMsiAllowlist({ TEAMS_MSI_CLIENT_IDS: `${MSI}=ws-b` });
+    await store.install(msiInput({ workspaceId: "ws-b" }));
+    // A installs B's client id as a password app (any password passes install)...
+    await store.install({ workspaceId: "ws-a", appId: MSI, appPassword: "guess" });
+    // ...and even a stray managed-identity row for it in A (e.g. a legacy row).
+    db.installs.find((i) => i.workspaceId === "ws-a")!.appType = "UserAssignedMSID";
+    expect((await store.resolveAppPassword("ws-b"))?.appType).toBe("UserAssignedMsi");
+    expect((await store.getByWorkspace("ws-b"))?.needsReinstall).toBe(false);
+    // A's row is the one refused.
+    await expect(store.resolveAppPassword("ws-a")).rejects.toMatchObject({
+      code: "MSI_CLIENT_ID_NOT_ALLOWED",
+    });
+  });
+
+  it("an unbound identity is not blocked by a password installation of the same id elsewhere", async () => {
+    await store.install({ workspaceId: "ws-a", appId: MSI, appPassword: "guess" });
+    await expect(store.install(msiInput({ workspaceId: "ws-b" }))).resolves.toMatchObject({
+      needsReinstall: false,
+    });
+    expect((await store.resolveAppPassword("ws-b"))?.appType).toBe("UserAssignedMsi");
+  });
+
+  it("refuses every managed identity when TEAMS_MSI_CLIENT_IDS is unset", async () => {
+    allowlist = loadTeamsMsiAllowlist({});
+    await expect(store.install(msiInput())).rejects.toMatchObject({
+      code: "MSI_CLIENT_ID_NOT_ALLOWED",
+    });
+  });
+
+  it("refuses an allowed managed identity already active in another workspace, without naming it", async () => {
+    await store.install(msiInput({ workspaceId: "ws-a" }));
+    let thrown: { code?: string; statusCode?: number; message?: string } = {};
+    try {
+      await store.install(msiInput({ workspaceId: "ws-b", appId: MSI.toUpperCase() }));
+    } catch (err) {
+      thrown = err as typeof thrown;
+    }
+    expect(thrown).toMatchObject({
+      statusCode: 409,
+      code: "MSI_CLIENT_ID_IN_USE",
+    });
+    expect(thrown.message).not.toContain("ws-a");
+    expect(db.installs.filter((i) => i.workspaceId === "ws-b")).toHaveLength(0);
+    // Once workspace A disconnects, B may use it.
+    await store.uninstall("ws-a");
+    await expect(store.install(msiInput({ workspaceId: "ws-b" }))).resolves.toMatchObject({
+      needsReinstall: false,
+    });
+  });
+
+  it("stops resolving a managed identity once the operator removes it from the allowlist", async () => {
+    await store.install(msiInput());
+    allowlist = loadTeamsMsiAllowlist({ TEAMS_MSI_CLIENT_IDS: OTHER_MSI });
+    await expect(store.resolveAppPassword("ws-1")).rejects.toMatchObject({
+      statusCode: 403,
+      code: "MSI_CLIENT_ID_NOT_ALLOWED",
+    });
+    expect(await store.getByWorkspace("ws-1")).toMatchObject({
+      needsReinstall: true,
+      reinstallReason: "msi-not-allowed",
+    });
+  });
+
+  it("refuses to resolve a managed identity that is active in two workspaces", async () => {
+    // e.g. two rows written before the in-use check existed.
+    await store.install(msiInput({ workspaceId: "ws-a" }));
+    await store.install({
+      workspaceId: "ws-b",
+      appId: "app-b",
+      appPassword: "pw",
+    });
+    Object.assign(db.installs[1], {
+      appId: MSI,
+      appType: "UserAssignedMsi",
+      tenantId: "t",
+    });
+    await expect(store.resolveAppPassword("ws-a")).rejects.toMatchObject({
+      code: "MSI_CLIENT_ID_IN_USE",
+    });
+    expect((await store.getByWorkspace("ws-b"))?.reinstallReason).toBe("msi-in-use");
+  });
+
+  it("requires a tenant id for a UserAssignedMsi bot", async () => {
+    await expect(store.install(msiInput({ tenantId: null }))).rejects.toMatchObject({
+      statusCode: 400,
+      code: "TENANT_REQUIRED",
+    });
+  });
+
+  it("rejects a password for a UserAssignedMsi bot rather than vaulting a secret it never uses", async () => {
+    await expect(store.install(msiInput({ appPassword: "pw" }))).rejects.toMatchObject({
+      statusCode: 400,
+      code: "APP_PASSWORD_NOT_ALLOWED",
+    });
+    expect(db.secrets).toHaveLength(0);
+  });
+
+  it("switching a workspace from a password app to a managed identity revokes the old app and retires its password", async () => {
+    // A managed identity's client id always differs from the password app's id.
+    await store.install({
+      workspaceId: "ws-1",
+      appId: "app-1",
+      appPassword: "pw",
+    });
+    await store.install(msiInput());
+    const old = db.installs.find((i) => i.appId === "app-1");
+    expect(old?.status).toBe("revoked");
+    expect(db.secrets[0].deletedAt).not.toBeNull();
+    expect(db.installs.filter((i) => i.status === "active").map((i) => i.appId)).toEqual([MSI]);
+    expect((await store.resolveAppPassword("ws-1"))?.appType).toBe("UserAssignedMsi");
+  });
+
+  it("installing a second password app revokes the first and retires its secret", async () => {
+    await store.install({
+      workspaceId: "ws-1",
+      appId: "app-1",
+      appPassword: "pw-1",
+    });
+    await store.install({
+      workspaceId: "ws-1",
+      appId: "app-2",
+      appPassword: "pw-2",
+    });
+    expect(db.installs.find((i) => i.appId === "app-1")?.status).toBe("revoked");
+    expect(db.secrets.find((s) => s.name.endsWith(":app-1"))?.deletedAt).not.toBeNull();
+    expect(db.secrets.find((s) => s.name.endsWith(":app-2"))?.deletedAt).toBeNull();
+    // Another workspace's installation is untouched.
+    await store.install({
+      workspaceId: "ws-2",
+      appId: "app-3",
+      appPassword: "pw-3",
+    });
+    expect(db.installs.find((i) => i.appId === "app-2")?.status).toBe("active");
+  });
+
+  it("re-installing the same app as a managed identity retires its password only after the row is updated", async () => {
+    const id = MSI;
+    await store.install({
+      workspaceId: "ws-1",
+      appId: id,
+      appPassword: "pw",
+      tenantId: "t",
+    });
+    const upsert = db.teamsAppInstallation.upsert;
+    db.teamsAppInstallation.upsert = async () => {
+      throw new Error("db down");
+    };
+    await expect(store.install(msiInput())).rejects.toThrow("db down");
+    // The failed install left the password the still-active row points at.
+    expect(db.secrets[0].deletedAt).toBeNull();
+    expect((await store.resolveAppPassword("ws-1"))?.appPassword).toBe("pw");
+
+    db.teamsAppInstallation.upsert = upsert;
+    await store.install(msiInput());
+    expect(db.secrets[0].deletedAt).not.toBeNull();
+    expect(db.installs[0].appPasswordRef).toBe("");
+  });
+
+  it("uninstalls a UserAssignedMsi bot without touching the vault", async () => {
+    await store.install(msiInput());
+    expect(await store.uninstall("ws-1")).toBe(true);
+    expect(db.installs[0].status).toBe("revoked");
+  });
+
+  it("maps a stored legacy `UserAssignedMSID` row to UserAssignedMsi, and flags it for reinstall", async () => {
+    // A row written before #1466: the old spelling, and the vaulted password the
+    // install flow required at the time — the bot really ran as MultiTenant.
+    await store.install({
+      workspaceId: "ws-1",
+      appId: MSI,
+      appPassword: "pw",
+      tenantId: "t-1",
+    });
+    db.installs[0].appType = "UserAssignedMSID";
+
+    expect(await store.getByWorkspace("ws-1")).toMatchObject({
+      appType: "UserAssignedMsi",
+      needsReinstall: true,
+      reinstallReason: "legacy-app-type",
+    });
+    // An allowed identity still resolves — as a managed identity, never with the
+    // legacy vaulted password, which botbuilder refuses for MSI.
+    expect(await store.resolveAppPassword("ws-1")).toEqual({
+      appId: MSI,
+      appPassword: "",
+      appType: "UserAssignedMsi",
+      tenantId: "t-1",
+    });
+    // Uninstall still retires the legacy vaulted password.
+    expect(await store.uninstall("ws-1")).toBe(true);
+    expect(db.secrets[0].deletedAt).not.toBeNull();
+  });
+
+  it("a legacy `UserAssignedMSID` row whose id is not allowed is refused, not run as MultiTenant", async () => {
+    await store.install({
+      workspaceId: "ws-1",
+      appId: "app-1",
+      appPassword: "pw",
+      tenantId: "t",
+    });
+    db.installs[0].appType = "UserAssignedMSID";
+    // Resolution still refuses it with the blocking code...
+    await expect(store.resolveAppPassword("ws-1")).rejects.toMatchObject({
+      code: "MSI_CLIENT_ID_NOT_ALLOWED",
+    });
+    // ...but the admin is told it is a legacy row: it was really a password bot,
+    // so "reconnect it" is the advice that fits, not "allow the id".
+    expect(await store.getByWorkspace("ws-1")).toMatchObject({
+      needsReinstall: true,
+      reinstallReason: "legacy-app-type",
+    });
+  });
+
+  it("a stored legacy `UserAssignedMSID` installation now reaches botbuilder's managed-identity path", async () => {
+    await store.install({
+      workspaceId: "ws-1",
+      appId: MSI,
+      appPassword: "pw",
+      tenantId: "t-1",
+    });
+    db.installs[0].appType = "UserAssignedMSID";
+
+    const creds = await store.resolveAppPassword("ws-1");
+    const credentials = await buildCredentialsFactory(creds!).createCredentials(
+      MSI,
+      "https://api.botframework.com",
+      "https://login.microsoftonline.com/botframework.com",
+      true,
+    );
+    const connector = createRequire(createRequire(import.meta.url).resolve("botbuilder"))(
+      "botframework-connector",
+    ) as {
+      ManagedIdentityAppCredentials: new (...args: never[]) => unknown;
+    };
+    expect(credentials).toBeInstanceOf(connector.ManagedIdentityAppCredentials);
+  });
+
+  it("refuses to resolve a managed-identity row stored without a tenant id, and flags it", async () => {
+    await store.install(msiInput());
+    db.installs[0].tenantId = null;
+    await expect(store.resolveAppPassword("ws-1")).rejects.toMatchObject({
+      code: "TENANT_REQUIRED",
+    });
+    expect((await store.getByWorkspace("ws-1"))?.reinstallReason).toBe("msi-missing-tenant");
+
+    // The same row under the legacy spelling is still refused, and reported as legacy.
+    db.installs[0].appType = "UserAssignedMSID";
+    await expect(store.resolveAppPassword("ws-1")).rejects.toMatchObject({
+      code: "TENANT_REQUIRED",
+    });
+    expect((await store.getByWorkspace("ws-1"))?.reinstallReason).toBe("legacy-app-type");
+  });
+
+  it("uninstall removes the newest active installation, the one every read shows", async () => {
+    // Two active rows, e.g. written before install began revoking the others.
+    await store.install({ workspaceId: "ws-1", appId: "app-old", appPassword: "pw-old" });
+    db.installs.push({
+      ...db.installs[0],
+      id: "inst_new",
+      appId: "app-new",
+      appPasswordRef: "",
+      updatedAt: new Date(db.installs[0].updatedAt.getTime() + 60_000),
+    });
+    db.installs[0].updatedAt = new Date(db.installs[0].updatedAt.getTime() - 60_000);
+    expect((await store.getByWorkspace("ws-1"))?.appId).toBe("app-new");
+
+    expect(await store.uninstall("ws-1")).toBe(true);
+    expect(db.installs.find((i) => i.appId === "app-new")?.status).toBe("revoked");
+    expect(db.installs.find((i) => i.appId === "app-old")?.status).toBe("active");
+  });
+
+  it("refuses to resolve an unrecognised stored app type instead of falling through to MultiTenant", async () => {
+    await store.install({
+      workspaceId: "ws-1",
+      appId: "app-1",
+      appPassword: "pw",
+    });
+    db.installs[0].appType = "SomethingElse";
+    await expect(store.resolveAppPassword("ws-1")).rejects.toMatchObject({
+      code: "APP_TYPE_UNKNOWN",
+    });
+    // The secret-free summary still renders, showing what is stored.
+    expect(await store.getByWorkspace("ws-1")).toMatchObject({
+      appType: "SomethingElse",
+      needsReinstall: true,
+      reinstallReason: "unknown-app-type",
+    });
+  });
+
+  it("a sound password installation does not need reinstalling", async () => {
+    await store.install({
+      workspaceId: "ws-1",
+      appId: "app-1",
+      appPassword: "pw",
+    });
+    expect(await store.getByWorkspace("ws-1")).toMatchObject({
+      needsReinstall: false,
+      reinstallReason: null,
+    });
+  });
+});
+
+describe("normalizeTeamsAppType (#1466)", () => {
+  it("returns the canonical spelling, case-insensitively, and maps the legacy spelling", () => {
+    expect(normalizeTeamsAppType("MultiTenant")).toBe("MultiTenant");
+    expect(normalizeTeamsAppType("singletenant")).toBe("SingleTenant");
+    expect(normalizeTeamsAppType(" UserAssignedMsi ")).toBe("UserAssignedMsi");
+    expect(normalizeTeamsAppType("UserAssignedMSID")).toBe("UserAssignedMsi");
+    expect(normalizeTeamsAppType("userassignedmsid")).toBe("UserAssignedMsi");
+  });
+
+  it("returns null for anything else", () => {
+    expect(normalizeTeamsAppType("Other")).toBeNull();
+    expect(normalizeTeamsAppType("")).toBeNull();
   });
 });
 

@@ -53,6 +53,7 @@ import {
   type ResolvedNotificationTarget,
   type TeamsNotificationTargetStore,
 } from "./notification-target-store.js";
+import { isTrustedBotServiceUrl } from "./service-url.js";
 import {
   loadTeamsTenantAllowlist,
   isTeamsTenantAllowed,
@@ -91,7 +92,13 @@ function defaultDeps(): NotificationSyncDeps {
 /** Outcome of a notification attempt (for tests + structured logs). */
 export interface NotificationResult {
   sent: boolean;
-  reason?: "no-target" | "tenant-not-allowed" | "no-installation" | "adapter-unsupported" | "error";
+  reason?:
+    | "no-target"
+    | "tenant-not-allowed"
+    | "untrusted-service-url"
+    | "no-installation"
+    | "adapter-unsupported"
+    | "error";
 }
 
 /** Send a single proactive activity to the target channel. Throws on failure. */
@@ -144,6 +151,13 @@ export async function sendEventNotification(
     if (!isTeamsTenantAllowed(deps.tenantPolicy, target.tenantId)) {
       log.warn("Teams notification suppressed — tenant not allowed", { workspaceId, eventType });
       return { sent: false, reason: "tenant-not-allowed" };
+    }
+
+    // 4. SERVICE URL (#1466) — the reference is admin-supplied, and the send posts
+    //    a bearer token for the bot's identity to its serviceUrl.
+    if (!isTrustedBotServiceUrl(target.reference.serviceUrl)) {
+      log.warn("Teams notification suppressed — untrusted serviceUrl", { workspaceId, eventType });
+      return { sent: false, reason: "untrusted-service-url" };
     }
 
     await sendProactive(deps, workspaceId, target, activity);

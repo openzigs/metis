@@ -32,12 +32,14 @@ import { AppError } from "../../middleware/error-handler.js";
 import { createChildLogger } from "../../lib/logger.js";
 import {
   getTeamsInstallationStore,
+  normalizeTeamsAppType,
   TeamsInstallationError,
   TEAMS_APP_TYPES,
   type TeamsInstallationStore,
 } from "../../lib/teams/installation-store.js";
 import { getConversationReferenceStore } from "../../lib/teams/conversation-reference-store.js";
 import { getBotAdapterFactory } from "../../lib/teams/bot-adapter.js";
+import { isTrustedBotServiceUrl } from "../../lib/teams/service-url.js";
 import { runFoundationTurn } from "../../lib/teams/bot-handler.js";
 import { buildTeamsManifest, botMessagingEndpoint } from "../../lib/teams/manifest.js";
 import {
@@ -66,13 +68,35 @@ function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
 }
 
-const installSchema = z.object({
-  appId: z.string().min(1).max(200),
-  appPassword: z.string().min(1).max(2048),
-  tenantId: z.string().min(1).max(200).nullable().optional(),
-  appType: z.enum(TEAMS_APP_TYPES).optional(),
-  label: z.string().max(200).nullable().optional(),
-});
+const installSchema = z
+  .object({
+    appId: z.string().min(1).max(200),
+    // Required unless the bot is a UserAssignedMsi, which must not carry one.
+    appPassword: z.string().min(1).max(2048).optional(),
+    tenantId: z.string().min(1).max(200).nullable().optional(),
+    // Accepts the pre-#1466 `UserAssignedMSID` (and any casing botbuilder would)
+    // and normalises it. Such a client still has to omit the password, which it
+    // used to be forced to send, so an old request with one gets a 400.
+    appType: z
+      .preprocess(
+        (v) => (typeof v === "string" ? (normalizeTeamsAppType(v) ?? v) : v),
+        z.enum(TEAMS_APP_TYPES),
+      )
+      .optional(),
+    label: z.string().max(200).nullable().optional(),
+  })
+  .superRefine((body, ctx) => {
+    const msi = body.appType === "UserAssignedMsi";
+    if (msi && body.appPassword !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["appPassword"],
+        message: "appPassword must not be set for a UserAssignedMsi bot",
+      });
+    } else if (!msi && body.appPassword === undefined) {
+      ctx.addIssue({ code: "custom", path: ["appPassword"], message: "appPassword is required" });
+    }
+  });
 
 const manifestQuerySchema = z.object({
   packageId: z.string().min(1).max(200),
@@ -133,7 +157,13 @@ const notificationTargetSchema = z.object({
    * for the proactive send. Captured by the operator from a channel the bot is
    * installed in (the same reference the #548 store records on inbound activity).
    */
-  reference: z.record(z.string(), z.unknown()),
+  reference: z
+    .record(z.string(), z.unknown())
+    .refine((ref) => isTrustedBotServiceUrl(ref.serviceUrl), {
+      // A proactive send posts a bearer token for the bot's identity here (#1466).
+      message: "reference.serviceUrl must be an https Bot Framework / Teams connector URL",
+      path: ["serviceUrl"],
+    }),
 });
 
 const linkIdentitySchema = z.object({

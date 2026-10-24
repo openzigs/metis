@@ -241,6 +241,7 @@ jobs:
               # builds DefaultAzureCredential for a `UserAssignedMsi` bot, and that
               # chain's only auth-code users (VS Code and broker credentials) need the
               # @azure/identity-vscode / -broker plugins, which are not in the tree.
+              # #1466 made that MSI path live; the guard now builds it and checks both.
               # botframework's own msal-node@2.16.3 is outside the advisory's range.
               # Guarded by server/src/lib/teams/msal-auth-code-reachability.test.ts.
               # Expires at review: re-check @azure/identity for a ^7 release then.

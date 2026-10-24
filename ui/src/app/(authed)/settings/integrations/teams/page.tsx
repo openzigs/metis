@@ -28,12 +28,27 @@ import {
   teamsIntegrationApi,
   type TeamsAppType,
   type TeamsManifestResult,
+  type TeamsReinstallReason,
 } from "@/lib/teams-integration-api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/ui/page-header";
+
+/** Why the connected bot needs reinstalling, and what to do about it (#1466). */
+const REINSTALL_MESSAGES: Record<TeamsReinstallReason, string> = {
+  "legacy-app-type":
+    "This bot was saved with an old managed-identity setting that never took effect, so until this update it signed in with the password saved alongside it. That password is no longer used, and the bot may not be able to sign in. Most likely fix: disconnect it and reconnect it as a MultiTenant or SingleTenant bot with its client secret. Only if it really is a managed identity: ask your METIS operator to list its client ID in TEAMS_MSI_CLIENT_IDS, then reconnect it as UserAssignedMsi with no password.",
+  "msi-not-allowed":
+    "This managed identity is not allowed for this workspace, so the bot cannot sign in. Ask your METIS operator to list its client ID for this workspace in TEAMS_MSI_CLIENT_IDS, or reconnect the bot with a password.",
+  "msi-in-use":
+    "This managed identity is already connected to another workspace, so the bot cannot sign in here. Disconnect it from the other workspace, or reconnect this one with a different bot.",
+  "msi-missing-tenant":
+    "This managed-identity bot has no tenant ID, so it cannot sign in. Disconnect it and reconnect it with its tenant ID and no password.",
+  "unknown-app-type":
+    "This bot's app type is not one Teams recognises, so it cannot sign in. Disconnect it and reconnect it with a supported app type.",
+};
 
 const ACTIVE_WORKSPACE_STORAGE_KEY = "metis.activeWorkspaceId";
 
@@ -129,6 +144,7 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
   const [appType, setAppType] = useState<TeamsAppType>("MultiTenant");
   const [tenantId, setTenantId] = useState("");
   const [label, setLabel] = useState("");
+  const managedIdentity = appType === "UserAssignedMsi";
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -150,7 +166,8 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
     mutationFn: () =>
       teamsIntegrationApi.install(workspaceId, {
         appId: appId.trim(),
-        appPassword,
+        // A managed identity takes no password; the server rejects one (#1466).
+        ...(managedIdentity ? {} : { appPassword }),
         appType,
         tenantId: tenantId.trim() ? tenantId.trim() : null,
         label: label.trim() ? label.trim() : null,
@@ -181,11 +198,13 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
   });
 
   const summary = installation.data ?? null;
-  const singleTenantMissing = appType === "SingleTenant" && !tenantId.trim();
+  const tenantRequired = appType === "SingleTenant" || managedIdentity;
+  const tenantMissing = tenantRequired && !tenantId.trim();
+  const passwordMissing = !managedIdentity && !appPassword;
 
   function submitInstall(e: React.FormEvent) {
     e.preventDefault();
-    if (!appId.trim() || !appPassword || singleTenantMissing) return;
+    if (!appId.trim() || passwordMissing || tenantMissing) return;
     installMut.mutate();
   }
 
@@ -195,7 +214,7 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
         <div>
           <h2 className="text-base font-semibold">Teams bot</h2>
           <p className="text-xs text-muted-foreground">
-            Register the Azure bot (App ID + password) for this workspace.
+            Register the Azure bot (App ID + password, or a managed identity) for this workspace.
           </p>
         </div>
         {installation.isLoading ? (
@@ -232,6 +251,16 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
 
       {summary ? (
         <div className="space-y-3" data-testid="teams-installed-view">
+          {summary.needsReinstall ? (
+            <div
+              role="alert"
+              className="space-y-1 rounded border border-destructive/40 bg-destructive/10 p-3 text-sm"
+              data-testid="teams-needs-reinstall"
+            >
+              <p className="font-medium text-destructive">Needs reinstall</p>
+              <p>{REINSTALL_MESSAGES[summary.reinstallReason ?? "unknown-app-type"]}</p>
+            </div>
+          ) : null}
           <dl className="grid grid-cols-[max-content,1fr] gap-x-4 gap-y-1 text-sm">
             <dt className="text-muted-foreground">App ID</dt>
             <dd className="font-mono text-xs">{summary.appId}</dd>
@@ -283,21 +312,29 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
               autoComplete="off"
             />
           </div>
-          <div className="space-y-1">
-            <Label htmlFor="teams-app-password">Bot App password</Label>
-            <Input
-              id="teams-app-password"
-              data-testid="teams-app-password"
-              type="password"
-              value={appPassword}
-              onChange={(e) => setAppPassword(e.target.value)}
-              placeholder="Client secret (write-only)"
-              autoComplete="new-password"
-            />
-            <p className="text-xs text-muted-foreground">
-              Stored encrypted server-side. It is never displayed after saving.
+          {managedIdentity ? (
+            <p className="text-xs text-muted-foreground" data-testid="teams-msi-note">
+              A user-assigned managed identity signs in as itself, so there is no password. Use the
+              identity&apos;s client ID as the Bot App ID. Your METIS operator must first allow that
+              client ID for this deployment.
             </p>
-          </div>
+          ) : (
+            <div className="space-y-1">
+              <Label htmlFor="teams-app-password">Bot App password</Label>
+              <Input
+                id="teams-app-password"
+                data-testid="teams-app-password"
+                type="password"
+                value={appPassword}
+                onChange={(e) => setAppPassword(e.target.value)}
+                placeholder="Client secret (write-only)"
+                autoComplete="new-password"
+              />
+              <p className="text-xs text-muted-foreground">
+                Stored encrypted server-side. It is never displayed after saving.
+              </p>
+            </div>
+          )}
           <div className="space-y-1">
             <Label htmlFor="teams-app-type">App type</Label>
             <select
@@ -316,7 +353,7 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
           </div>
           <div className="space-y-1">
             <Label htmlFor="teams-tenant-id">
-              Tenant ID {appType === "SingleTenant" ? "(required)" : "(optional)"}
+              Tenant ID {tenantRequired ? "(required)" : "(optional)"}
             </Label>
             <Input
               id="teams-tenant-id"
@@ -326,9 +363,11 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
               placeholder="Azure AD tenant id"
               autoComplete="off"
             />
-            {singleTenantMissing ? (
+            {tenantMissing ? (
               <p className="text-xs text-destructive" data-testid="teams-tenant-required">
-                A SingleTenant bot requires a tenant id.
+                {managedIdentity
+                  ? "A managed-identity bot requires a tenant id."
+                  : "A single-tenant bot requires a tenant id."}
               </p>
             ) : null}
           </div>
@@ -347,7 +386,7 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
             type="submit"
             size="sm"
             data-testid="teams-install-submit"
-            disabled={installMut.isPending || !appId.trim() || !appPassword || singleTenantMissing}
+            disabled={installMut.isPending || !appId.trim() || passwordMissing || tenantMissing}
           >
             {installMut.isPending ? "Connecting…" : "Connect Teams bot"}
           </Button>

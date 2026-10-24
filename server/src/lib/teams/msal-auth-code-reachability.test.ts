@@ -19,6 +19,10 @@
  *      @azure/identity-broker plugins, which are not in the tree.
  *   3. The waived copy is still the one botframework's @azure/identity loads, and that
  *      chain is still its only route into the tree — a new consumer fails here first.
+ *   4. Since #1466 a `UserAssignedMsi` installation really does build DefaultAzureCredential
+ *      (before, a misspelt type fell through to app-password auth). The last test builds it
+ *      through METIS's own factory and checks both auth-code credentials in the live chain
+ *      are inert.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -26,6 +30,8 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
+
+import { buildCredentialsFactory } from "./bot-adapter.js";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 const lockfile = readFileSync(join(REPO_ROOT, "pnpm-lock.yaml"), "utf8");
@@ -148,6 +154,76 @@ describe("METIS never runs the MSAL authorization-code flow (GHSA-xcx6-jx8p-x3h5
     // unavailable, so DefaultAzureCredential's chain never reaches acquireTokenInteractive.
     for (const plugin of ["@azure/identity-vscode", "@azure/identity-broker"]) {
       expect(lockfile.includes(`${plugin}@`), `${plugin} entered the tree`).toBe(false);
+    }
+  });
+
+  it("on the managed-identity path METIS now reaches (#1466), both auth-code credentials are inert", async () => {
+    // Before #1466 METIS misspelt the type, so botbuilder never built a
+    // DefaultAzureCredential. Build one the way a UserAssignedMsi bot now does and look
+    // at the chain it actually runs. The default chain is the widest one: an operator
+    // narrowing it with AZURE_TOKEN_CREDENTIALS can only remove credentials.
+    const saved = process.env.AZURE_TOKEN_CREDENTIALS;
+    delete process.env.AZURE_TOKEN_CREDENTIALS;
+    try {
+      const appId = "99999999-8888-7777-6666-555555555555";
+      const credentials = (await buildCredentialsFactory({
+        appId,
+        appPassword: "",
+        appType: "UserAssignedMsi",
+        tenantId: "tenant-1",
+      }).createCredentials(
+        appId,
+        "https://api.botframework.com",
+        "https://login.microsoftonline.com/botframework.com",
+        true,
+      )) as unknown as { authenticator: { tokenProvider: { _sources: object[] } } };
+      const identity = requireFromConnector("@azure/identity") as {
+        DefaultAzureCredential: new (...args: never[]) => unknown;
+        VisualStudioCodeCredential: new (...args: never[]) => unknown;
+      };
+      const provider = credentials.authenticator.tokenProvider;
+      expect(provider).toBeInstanceOf(identity.DefaultAzureCredential);
+
+      const chain = provider._sources.map((c) => c.constructor.name);
+      // The broker credential's constructor throws without @azure/identity-broker, so the
+      // chain holds a stand-in that only ever reports itself unavailable.
+      expect(chain).not.toContain("BrokerCredential");
+      expect(chain).toContain("UnavailableDefaultCredential");
+
+      // The broker stand-in carries the "plugin missing" reason, not some other failure.
+      // The stand-in yields no token (null) and records why it was skipped.
+      const broker = (
+        provider._sources as Array<{
+          credentialName?: string;
+          credentialUnavailableErrorMessage?: string;
+          getToken(scope: string): Promise<unknown>;
+        }>
+      ).find((c) => c.credentialName === "createDefaultBrokerCredential");
+      expect(broker, "the broker credential is no longer a skipped stand-in").toBeDefined();
+      expect(broker!.credentialUnavailableErrorMessage).toMatch(/@azure\/identity-broker/);
+      await expect(broker!.getToken("https://api.botframework.com/.default")).resolves.toBeNull();
+
+      // The VS Code credential is built, but refuses before reaching MSAL because no
+      // plugin is registered. Match that reason: the same error type is also thrown
+      // for a missing authentication record WITH the plugin installed, which would
+      // already mean MSAL is armed.
+      const vscode = provider._sources.find(
+        (c) => c instanceof identity.VisualStudioCodeCredential,
+      ) as { getToken(scope: string): Promise<unknown> } | undefined;
+      expect(vscode, "DefaultAzureCredential no longer builds a VS Code credential").toBeDefined();
+      await expect(vscode!.getToken("https://api.botframework.com/.default")).rejects.toMatchObject(
+        {
+          name: "CredentialUnavailableError",
+          message: expect.stringMatching(/Visual Studio Code Authentication is not available/),
+        },
+      );
+      // And the plugin genuinely cannot be loaded from where @azure/identity runs.
+      for (const plugin of ["@azure/identity-vscode", "@azure/identity-broker"]) {
+        expect(() => createRequire(identityEntry).resolve(plugin), `${plugin} resolves`).toThrow();
+      }
+    } finally {
+      if (saved === undefined) delete process.env.AZURE_TOKEN_CREDENTIALS;
+      else process.env.AZURE_TOKEN_CREDENTIALS = saved;
     }
   });
 });

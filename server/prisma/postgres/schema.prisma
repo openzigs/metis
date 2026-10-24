@@ -5211,7 +5211,7 @@ model TeamsAppInstallation {
   /// Azure AD tenant id this app is registered in. For single-tenant bots this
   /// is the `MicrosoftAppTenantId`; null for multi-tenant ("MultiTenant") apps.
   tenantId String?
-  /// Bot identity type — "MultiTenant" | "SingleTenant" | "UserAssignedMSID".
+  /// Bot identity type — "MultiTenant" | "SingleTenant" | "UserAssignedMsi" (rows from before #1466 may hold "UserAssignedMSID", mapped on read).
   /// Defaults to MultiTenant, matching the Azure Bot default.
   appType String @default("MultiTenant")
   /// Lifecycle status — "active" | "revoked". Free-form string (no migration to

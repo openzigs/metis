@@ -14,9 +14,16 @@
  */
 import { apiFetch } from "@/lib/api-client";
 
-/** Bot identity types accepted from Azure. Mirrors `MicrosoftAppType`. */
-export const TEAMS_APP_TYPES = ["MultiTenant", "SingleTenant", "UserAssignedMSID"] as const;
+/**
+ * Bot identity types accepted from Azure, spelled as botbuilder compares
+ * `MicrosoftAppType` (#1466). Mirrors the server's `TEAMS_APP_TYPES`.
+ */
+export const TEAMS_APP_TYPES = ["MultiTenant", "SingleTenant", "UserAssignedMsi"] as const;
 export type TeamsAppType = (typeof TEAMS_APP_TYPES)[number];
+
+/** Why an installation needs reinstalling (mirror of the server's `TeamsReinstallReason`). */
+export type TeamsReinstallReason =
+  "unknown-app-type" | "msi-not-allowed" | "msi-in-use" | "msi-missing-tenant" | "legacy-app-type";
 
 /** Secret-free view of a Teams installation (mirror of `InstallationSummary`). */
 export interface TeamsInstallationSummary {
@@ -27,14 +34,20 @@ export interface TeamsInstallationSummary {
   appType: string;
   status: string;
   label: string | null;
+  /** True when the bot must be reinstalled before it works as configured (#1466). */
+  needsReinstall?: boolean;
+  reinstallReason?: TeamsReinstallReason | null;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface TeamsInstallInput {
   appId: string;
-  /** PLAINTEXT bot password — write-only, encrypted server-side, never returned. */
-  appPassword: string;
+  /**
+   * PLAINTEXT bot password — write-only, encrypted server-side, never returned.
+   * Omitted for a UserAssignedMsi bot, which authenticates as its managed identity.
+   */
+  appPassword?: string;
   tenantId?: string | null;
   appType?: TeamsAppType;
   label?: string | null;
