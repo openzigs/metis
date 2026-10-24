@@ -15,6 +15,9 @@
  *    (`PR_REVIEWS_REREVIEW_LIMIT_MAX`). A re-review is a judge-model call plus a
  *    GitHub post, and with no monthly limit set the review throughput is its
  *    only bound, so it gets a bucket of its own, apart from the reads.
+ * #1497 — `GET /api/run-reviews/:runId` (`run-reviews.ts`), also a
+ * `pr.review.read` read, mounts the pre-auth and per-user limiters too, so one
+ * user's PR-review reads share one budget across both routers.
  * Caps are read per request; the window once (`PR_REVIEWS_LIMIT_WINDOW_MS`).
  */
 import rateLimit from "express-rate-limit";

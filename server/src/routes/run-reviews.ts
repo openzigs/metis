@@ -10,7 +10,10 @@
  *     budget is exhausted.
  *   - `GET /:runId` — read the persisted PR-review record (the agent stores
  *     its result as a `pr_review` step on the AgentRun). Requires
- *     `pr.review.read`.
+ *     `pr.review.read`, which every role holds since #1472, so it is rate
+ *     limited (#1497) by the PR-review read limiters, one in front of
+ *     `requireAuth` and one after it. The per-user budget is shared with the
+ *     project PR-review pages.
  *
  * Both routes also check the caller's access to the project involved (#334):
  * the body's `projectId` for `POST /`, the run's own `projectId` for
@@ -33,6 +36,10 @@ import type { OctokitLike } from "../lib/agents/pr-reviewer/github-review-poster
 import { recordStep, startRun, finishRun } from "../lib/replay/runs-service.js";
 import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { assertResourceProjectAccess } from "../lib/auth/resource-project-access.js";
+import {
+  prReviewsPreAuthRateLimiter,
+  prReviewsUserRateLimiter,
+} from "../middleware/pr-reviews-rate-limit.js";
 
 const runNotFound = () => new AppError(404, "RUN_NOT_FOUND", "Run not found");
 
@@ -122,23 +129,27 @@ export function runReviewsRouter(deps: RunReviewsRouterDeps = {}): Router {
 
   r.get(
     "/:runId",
+    prReviewsPreAuthRateLimiter,
     requireAuth,
+    prReviewsUserRateLimiter,
     requirePermission("pr.review.read"),
     async (req: Request, res: Response) => {
       const runId = String(req.params.runId);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const run = await (prisma as any).agentRun.findUnique({ where: { id: runId } });
+      const run = await prisma.agentRun.findUnique({
+        where: { id: runId },
+        select: { projectId: true },
+      });
       if (!run) throw runNotFound();
       // #334 — mounted outside `/api/projects`: the run's own project decides
       // access. A run in an unreachable project, or bound to no project, answers
       // the same 404 as an unknown id for a non-admin.
       await assertResourceProjectAccess(req.user, run.projectId, runNotFound);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const steps = await (prisma as any).agentRunStep.findMany({
+      const steps = await prisma.agentRunStep.findMany({
         where: { runId },
         orderBy: { ord: "asc" },
+        select: { content: true },
       });
-      const reviewStep = steps.find((s: { content: string }) => {
+      const reviewStep = steps.find((s) => {
         try {
           const c = JSON.parse(s.content);
           return c?.kind === "pr_review";
