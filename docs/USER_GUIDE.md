@@ -3594,6 +3594,14 @@ A `github` trigger receives deliveries at `https://<your-metis>/api/webhooks/git
 trigger's own `secret`. Its `event` is the bare GitHub event name (`push`, `issues`), not
 `issues.opened`; a trigger with no `event` fires on every event for its `repo`.
 
+**A dotted `event` is refused (#1504).** METIS matches the event name only, never its action, so
+saving a `github` trigger whose `event` contains a `.` (the settings page used to suggest
+`issues.opened`) fails with a message naming the bare event: *use "issues"; action filtering isn't
+supported*. That applies when you add a trigger and when you change a trigger's source or config.
+A trigger saved that way before this check is left exactly as stored, and it still never fires:
+the Triggers page marks it with a warning naming the bare event. Renaming, disabling and enabling
+it still work. To fix it, delete it and add it again with the bare event.
+
 > **Behaviour change.** METIS now reads the event from the **signed body**, not from the unsigned
 > `X-GitHub-Event` header, for `push`, `pull_request`, `pull_request_review`,
 > `pull_request_review_comment`, `pull_request_review_thread`, `issues` and `issue_comment`. A
