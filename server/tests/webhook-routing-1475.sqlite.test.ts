@@ -439,6 +439,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             where: { id: "repo-b-old-1475" },
           });
           expect(repointed?.status).toBe("pending");
+          // Even once it passes Test again, it ranks from the repoint, not from
+          // its 2024 creation: PA keeps the deliveries.
+          await db.repoConnection.update({
+            where: { id: "repo-b-old-1475" },
+            data: { status: "connected" },
+          });
+          enqueued.length = 0;
+          await deliver(DEPLOYMENT_SECRET, payloadOf(REPO, 18));
+          expect(enqueuedFor()).toEqual([PA]);
+          await db.repoConnection.update({
+            where: { id: "repo-b-old-1475" },
+            data: { status: "pending" },
+          });
           enqueued.length = 0;
           await db.repoConnection.updateMany({
             where: { id: { in: [`repo-${PA}`, `repo-${PB}`] } },

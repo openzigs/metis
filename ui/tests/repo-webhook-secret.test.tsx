@@ -3,8 +3,8 @@
  * shown once with its receiver URL, replaced or removed after a confirm, and
  * flagged when it no longer works on this server.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { makeWrapper } from "./test-utils";
 
@@ -55,12 +55,12 @@ function renderIt(
   return onChanged;
 }
 
-let confirmSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   vi.clearAllMocks();
-  confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
 });
-afterEach(() => confirmSpy.mockRestore());
+
+/** The open confirmation dialog (an accessible AlertDialog, #268). */
+const dialog = () => screen.getByRole("alertdialog");
 
 function setClipboard(writeText: () => Promise<void>) {
   Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
@@ -76,7 +76,7 @@ describe("RepoWebhookSecret (#1475)", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Create webhook secret" }));
     // A first secret needs no confirm: nothing working is replaced.
-    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(api.generateWebhookSecret).toHaveBeenCalledWith("p1", "r1");
     expect(await screen.findByLabelText("Webhook secret (shown only now)")).toHaveValue(SECRET);
     expect(screen.getByLabelText("Payload URL path")).toHaveValue(PATH);
@@ -106,28 +106,32 @@ describe("RepoWebhookSecret (#1475)", () => {
     expect(toast.success).not.toHaveBeenCalled();
   });
 
-  it("asks before replacing a working secret, and does nothing when declined", async () => {
-    confirmSpy.mockReturnValue(false);
+  it("asks before replacing a working secret, and does nothing when cancelled", async () => {
+    api.generateWebhookSecret.mockResolvedValue({ id: "r1", secret: SECRET } as never);
     renderIt({ provider: "github_enterprise", webhookSecretConfigured: true });
     expect(screen.getByText(/has its own secret/)).toBeInTheDocument();
     expect(screen.getByText(PATH)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Replace webhook secret" }));
-    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(within(dialog()).getByText(/stops working at once/)).toBeInTheDocument();
+    await userEvent.click(within(dialog()).getByRole("button", { name: "Cancel" }));
     expect(api.generateWebhookSecret).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Replace webhook secret" }));
+    await userEvent.click(within(dialog()).getByRole("button", { name: "Replace" }));
+    await waitFor(() => expect(api.generateWebhookSecret).toHaveBeenCalledWith("p1", "r1"));
   });
 
   it("asks before going back to the shared secret, then removes it", async () => {
     api.removeWebhookSecret.mockResolvedValue({ id: "r1" } as never);
     const onChanged = renderIt({ provider: "github", webhookSecretConfigured: true });
     await userEvent.click(screen.getByRole("button", { name: "Use shared secret" }));
-    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    await userEvent.click(within(dialog()).getByRole("button", { name: "Cancel" }));
+    expect(api.removeWebhookSecret).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Use shared secret" }));
+    await userEvent.click(within(dialog()).getByRole("button", { name: "Use shared secret" }));
     await waitFor(() => expect(api.removeWebhookSecret).toHaveBeenCalledWith("p1", "r1"));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
-
-    confirmSpy.mockReturnValue(false);
-    api.removeWebhookSecret.mockClear();
-    await userEvent.click(screen.getByRole("button", { name: "Use shared secret" }));
-    expect(api.removeWebhookSecret).not.toHaveBeenCalled();
   });
 
   it("says a secret that no longer works needs a new one", () => {
@@ -158,6 +162,7 @@ describe("RepoWebhookSecret (#1475)", () => {
     api.removeWebhookSecret.mockRejectedValue(new Error("network"));
     renderIt({ provider: "github", webhookSecretConfigured: true });
     await userEvent.click(screen.getByRole("button", { name: "Use shared secret" }));
+    await userEvent.click(within(dialog()).getByRole("button", { name: "Use shared secret" }));
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith("Could not remove the webhook secret"),
     );

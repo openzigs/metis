@@ -16,6 +16,7 @@ import type { RepoConnector } from "@metis/shared";
 import { ApiError } from "@/lib/api-client";
 import { repoConnectorsApi } from "@/lib/connectors-api";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 
 type Connector = Pick<
@@ -104,29 +105,7 @@ export function RepoWebhookSecret({
   const stale = connector.webhookSecretNeedsRenewal;
   const hasOwn = configured || stale;
 
-  const onGenerate = () => {
-    if (
-      configured &&
-      !window.confirm(
-        "Replace this connection's webhook secret? The current one stops working at once, " +
-          "until you paste the new one into the GitHub webhook.",
-      )
-    ) {
-      return;
-    }
-    generate.mutate();
-  };
-  const onRemove = () => {
-    if (
-      !window.confirm(
-        "Go back to the server's shared secret? The connection's own webhook stops working, " +
-          "and its project gets shared-secret deliveries only if no earlier connection takes them.",
-      )
-    ) {
-      return;
-    }
-    remove.mutate();
-  };
+  const generateLabel = configured ? "Replace webhook secret" : "Create webhook secret";
 
   return (
     <div className="mt-2 space-y-2 text-xs" data-testid={`webhook-secret-${connector.id}`}>
@@ -139,13 +118,36 @@ export function RepoWebhookSecret({
               ? "needs a new secret: its secret no longer works on this server"
               : "uses the server's shared secret"}
         </span>
-        <Button size="sm" variant="outline" disabled={busy} onClick={onGenerate}>
-          {configured ? "Replace webhook secret" : "Create webhook secret"}
-        </Button>
-        {hasOwn ? (
-          <Button size="sm" variant="outline" disabled={busy} onClick={onRemove}>
-            Use shared secret
+        {configured ? (
+          // Replacing a working secret breaks the live hook at once: ask first.
+          <ConfirmDialog
+            title="Replace this connection's webhook secret?"
+            description="The current secret stops working at once, until you paste the new one into the GitHub webhook."
+            confirmLabel="Replace"
+            onConfirm={() => generate.mutate()}
+            trigger={
+              <Button size="sm" variant="outline" disabled={busy}>
+                {generateLabel}
+              </Button>
+            }
+          />
+        ) : (
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => generate.mutate()}>
+            {generateLabel}
           </Button>
+        )}
+        {hasOwn ? (
+          <ConfirmDialog
+            title="Go back to the server's shared secret?"
+            description="The connection's own webhook stops working, and its project gets shared-secret deliveries only if no earlier connection takes them."
+            confirmLabel="Use shared secret"
+            onConfirm={() => remove.mutate()}
+            trigger={
+              <Button size="sm" variant="outline" disabled={busy}>
+                Use shared secret
+              </Button>
+            }
+          />
         ) : null}
       </div>
       {stale && !shown ? (
