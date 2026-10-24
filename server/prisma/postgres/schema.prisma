@@ -4719,7 +4719,11 @@ model DriftEvent {
   projectId        String
   requirementId    String?
   source           String // github|jira
-  deliveryId       String    @unique
+  /// The tracker's own delivery id (GitHub's `X-GitHub-Delivery` GUID, Jira's
+  /// webhook identifier, or `poll-<ulid>`), unique per project (#1511): GitHub
+  /// gives one GUID to every webhook subscribed to an event, so two projects'
+  /// issue hooks can receive the same one.
+  deliveryId       String
   action           String // edited|closed|reopened|labeled|assigned|unassigned
   fieldDiffs       String // JSON array of {field, local, external}
   externalSnapshot String // JSON of full external fields
@@ -4734,6 +4738,7 @@ model DriftEvent {
   publishedIssue PublishedIssue @relation(fields: [publishedIssueId], references: [id], onDelete: Cascade)
   project        Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
+  @@unique([projectId, deliveryId])
   @@index([projectId, status])
   @@index([publishedIssueId])
   @@index([source])

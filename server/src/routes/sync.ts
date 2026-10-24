@@ -88,11 +88,21 @@ export function syncWebhookRouter(deps: SyncRouterDeps = {}): Router {
     // #681 — replay/dedup on the Atlassian delivery id (matches the GitHub path).
     // Jira validates a 5-min timestamp window but no nonce; the dedup row makes a
     // within-window replay a no-op.
-    const rawDelivery = (
-      req.header("x-atlassian-webhook-id") ??
-      req.header("x-request-id") ??
-      ""
-    ).trim();
+    // #1509 — the header Atlassian documents: "unique within a Jira Cloud tenant
+    // and is the same across retries"
+    // (https://developer.atlassian.com/cloud/jira/platform/webhooks/). This used
+    // to read `X-Atlassian-Webhook-Id` and then `X-Request-Id`; no Jira variant
+    // is documented to send either, so a real delivery read no id and the
+    // delivery-id dedup was off. Not yet confirmed against a live delivery (#1176).
+    const rawDelivery = (req.header("x-atlassian-webhook-identifier") ?? "").trim();
+    if (!rawDelivery) {
+      // Until #1176 confirms the header against a live delivery, make a missing
+      // one visible: delivery-id dedup is off for it, so only the signed-body
+      // claim below stops a retry, and a re-stamped body would pass it.
+      log.warn("sync.webhook.jira.no_delivery_identifier", {
+        retry: req.header("x-atlassian-webhook-retry") ?? null,
+      });
+    }
     // #1506 — Atlassian's delivery identifier is unique per webhook within a
     // tenant, so it is not shared across hooks the way GitHub's GUID is. It is
     // still namespaced to this receiver: the table is shared with the GitHub

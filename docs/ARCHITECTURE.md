@@ -8156,7 +8156,7 @@ Jira DC Poll   → scheduler task (jira.poll)        → fetchChanges    → nor
 ### Data Model
 
 `DriftEvent` (table: `drift_events`): id, publishedIssueId, projectId, requirementId,
-source, deliveryId (unique), action, fieldDiffs (JSON), externalSnapshot (JSON),
+source, deliveryId (unique per project, #1511: GitHub gives every subscribed hook one GUID), action, fieldDiffs (JSON), externalSnapshot (JSON),
 localSnapshot (JSON), status (pending/resolved), resolution (adopt/push/divergent),
 resolvedById, resolvedAt, createdAt, updatedAt.
 

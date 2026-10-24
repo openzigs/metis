@@ -6,6 +6,22 @@ import express, { type Request, type Response, type NextFunction } from "express
 import request from "supertest";
 import { syncWebhookRouter, syncDriftRouter } from "./sync.js";
 
+// #1509 — the receiver's own logger, so a missing delivery id is observable.
+const routeLogWarn = vi.hoisted(() => vi.fn());
+vi.mock("../lib/logger.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../lib/logger.js")>();
+  return {
+    ...real,
+    createChildLogger: (name: string) => {
+      const child = real.createChildLogger(name);
+      // A spread would drop the prototype's level methods (`debug`), so the
+      // spy is set on the child itself.
+      if (name === "sync-routes") child.warn = routeLogWarn as unknown as typeof child.warn;
+      return child;
+    },
+  };
+});
+
 const { seenDeliveries, seenBodies } = vi.hoisted(() => ({
   seenDeliveries: new Set<string>(),
   seenBodies: new Set<string>(),
@@ -188,13 +204,13 @@ describe("Jira issues webhook route", () => {
     expect(res.status).toBe(401);
   });
 
-  it("dedups a replayed delivery — second identical X-Atlassian-Webhook-Id is a no-op (#681)", async () => {
+  it("dedups a replayed delivery — second identical X-Atlassian-Webhook-Identifier is a no-op (#681)", async () => {
     const app = createApp();
     const send = () =>
       request(app)
         .post("/webhooks/jira/issues")
         .set("x-hub-signature", "valid-sig")
-        .set("x-atlassian-webhook-id", "jira-replay-1")
+        .set("x-atlassian-webhook-identifier", "jira-replay-1")
         .send({ webhookEvent: "jira:issue_updated", issue: { id: "1", key: "P-1" } });
     const first = await send();
     expect(first.status).toBe(200);
@@ -204,13 +220,89 @@ describe("Jira issues webhook route", () => {
     expect(replay.body.reason).toBe("DUPLICATE_DELIVERY");
   });
 
-  it("#1484 — the same signed body under a new X-Atlassian-Webhook-Id is a no-op", async () => {
+  // #1509 — a body that differs per send (as a retry's may: Jira re-signs it,
+  // and a `timestamp` moves), so the signed-body claim cannot be what refuses
+  // the second one: only the delivery-id dedup can.
+  const jiraUpdate = (n: number) => ({
+    webhookEvent: "jira:issue_updated",
+    timestamp: n,
+    issue: { id: "1", key: "P-1" },
+  });
+
+  it("#1509 — a retry carrying only X-Atlassian-Webhook-Identifier is deduped on that id", async () => {
+    const { reconcileIssueChange } = await import("../lib/sync/index.js");
+    const app = createApp();
+    const send = (n: number) =>
+      request(app)
+        .post("/webhooks/jira/issues")
+        .set("x-hub-signature", "valid-sig")
+        .set("X-Atlassian-Webhook-Identifier", "1509-delivery")
+        .set("X-Atlassian-Webhook-Retry", String(n))
+        .send(jiraUpdate(n));
+    expect((await send(0)).body).toMatchObject({ ok: true, handled: true });
+    const retry = await send(1);
+    expect(retry.status).toBe(200);
+    expect(retry.body).toEqual({ ok: true, handled: false, reason: "DUPLICATE_DELIVERY" });
+    expect(vi.mocked(reconcileIssueChange)).toHaveBeenCalledTimes(1);
+    expect([...seenDeliveries]).toEqual(["jira-issues:deployment:1509-delivery"]);
+  });
+
+  it("#1509 — the undocumented X-Atlassian-Webhook-Id and X-Request-Id are not read as the delivery id", async () => {
+    const { reconcileIssueChange } = await import("../lib/sync/index.js");
+    const app = createApp();
+    for (const header of ["X-Atlassian-Webhook-Id", "X-Request-Id"]) {
+      for (const n of [1, 2]) {
+        const res = await request(app)
+          .post("/webhooks/jira/issues")
+          .set("x-hub-signature", "valid-sig")
+          .set(header, "1509-undocumented")
+          .send(jiraUpdate(n + (header === "X-Request-Id" ? 10 : 0)));
+        expect(res.body).toMatchObject({ ok: true, handled: true });
+      }
+    }
+    expect(vi.mocked(reconcileIssueChange)).toHaveBeenCalledTimes(4);
+    expect(seenDeliveries.size).toBe(0);
+  });
+
+  const noIdWarnings = () =>
+    routeLogWarn.mock.calls.filter(([msg]) => msg === "sync.webhook.jira.no_delivery_identifier");
+
+  it("#1509 — a verified delivery with no X-Atlassian-Webhook-Identifier is logged once: dedup is off for it", async () => {
+    const app = createApp();
+    const res = await request(app)
+      .post("/webhooks/jira/issues")
+      .set("x-hub-signature", "valid-sig")
+      .set("X-Atlassian-Webhook-Retry", "2")
+      .send(jiraUpdate(21));
+    expect(res.body).toMatchObject({ ok: true, handled: true });
+    expect(noIdWarnings()).toEqual([["sync.webhook.jira.no_delivery_identifier", { retry: "2" }]]);
+    expect(seenDeliveries.size).toBe(0);
+  });
+
+  it("#1509 — a delivery carrying the identifier, or an unverified one, logs no such warning", async () => {
+    const { verifyJiraWebhookSignature } = await import("../lib/sync/index.js");
+    const app = createApp();
+    await request(app)
+      .post("/webhooks/jira/issues")
+      .set("x-hub-signature", "valid-sig")
+      .set("X-Atlassian-Webhook-Identifier", "1509-with-id")
+      .send(jiraUpdate(22));
+    vi.mocked(verifyJiraWebhookSignature).mockReturnValueOnce({
+      ok: false,
+      reason: "SIGNATURE_MISMATCH",
+    });
+    const refused = await request(app).post("/webhooks/jira/issues").send(jiraUpdate(23));
+    expect(refused.status).toBe(401);
+    expect(noIdWarnings()).toEqual([]);
+  });
+
+  it("#1484 — the same signed body under a new X-Atlassian-Webhook-Identifier is a no-op", async () => {
     const app = createApp();
     const send = (id: string) =>
       request(app)
         .post("/webhooks/jira/issues")
         .set("x-hub-signature", "valid-sig")
-        .set("x-atlassian-webhook-id", id)
+        .set("x-atlassian-webhook-identifier", id)
         .send({ webhookEvent: "jira:issue_updated", issue: { id: "1", key: "P-1" } });
     expect((await send("jira-original")).body.reason).not.toBe("DUPLICATE_PAYLOAD");
     const replay = await send("jira-forged");
@@ -227,7 +319,7 @@ describe("Jira issues webhook route", () => {
       request(app)
         .post("/webhooks/jira/issues")
         .set("x-hub-signature", "valid-sig")
-        .set("x-atlassian-webhook-id", "jira-claim-fail-1")
+        .set("x-atlassian-webhook-identifier", "jira-claim-fail-1")
         .send({ webhookEvent: "jira:issue_updated", issue: { id: "1", key: "P-1" } });
     expect((await send()).status).toBe(500);
     expect(vi.mocked(reconcileIssueChange)).not.toHaveBeenCalled();
@@ -244,7 +336,7 @@ describe("Jira issues webhook route", () => {
       request(app)
         .post("/webhooks/jira/issues")
         .set("x-hub-signature", "valid-sig")
-        .set("x-atlassian-webhook-id", "jira-retry-1")
+        .set("x-atlassian-webhook-identifier", "jira-retry-1")
         .send({ webhookEvent: "jira:issue_updated", issue: { id: "1", key: "P-1" } });
     expect((await send()).status).toBe(500);
     const retry = await send();

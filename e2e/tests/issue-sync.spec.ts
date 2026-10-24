@@ -107,7 +107,7 @@ async function postJiraIssueEditedWebhook(
   const res = await api.post("/api/webhooks/jira/issues", {
     headers: {
       "content-type": "application/json",
-      "x-atlassian-webhook-id": crypto.randomUUID(),
+      "x-atlassian-webhook-identifier": crypto.randomUUID(),
       "x-hub-signature": signBody(JIRA_WEBHOOK_SECRET, payload),
     },
     data: payload,
