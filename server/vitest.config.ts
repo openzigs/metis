@@ -14,7 +14,7 @@ export default defineConfig({
     // Prisma client (SQLite or Postgres), removing the `prisma generate` toggle that
     // dev-on-Postgres used to require before every `pnpm test`. It is intentionally NOT
     // listed in `vitest.integration.config.ts`, which must see the real `DATABASE_URL`.
-    setupFiles: ["tests/setup.ts", "tests/setup-datasource.ts"],
+    setupFiles: ["tests/setup-egress-guard.ts", "tests/setup.ts", "tests/setup-datasource.ts"],
     // Use forked workers so each test file gets a fresh process. The codebase
     // relies on module-level singletons (MCP registry, agent/skill services,
     // rate limiters, prisma client, etc.) and the default thread pool with
