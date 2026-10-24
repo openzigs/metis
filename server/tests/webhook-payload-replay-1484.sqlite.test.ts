@@ -417,7 +417,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           .post("/api/webhooks/jira/issues")
           .set("Content-Type", "application/json")
           .set("X-Hub-Signature", `sha256=${hmac(JIRA_SECRET, body)}`)
-          .set("X-Atlassian-Webhook-Id", id)
+          .set("X-Atlassian-Webhook-Identifier", id)
           .send(body);
       expect((await jira("jira-1")).body.reason).toBe("UNSUPPORTED_EVENT");
       await restart();

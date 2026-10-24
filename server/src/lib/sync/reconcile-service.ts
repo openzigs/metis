@@ -7,8 +7,11 @@
  * since #78, via a realtime `drift:detected` broadcast to the `project:{id}`
  * room so the pending-drift badge updates without a reload.
  *
- * Idempotent: duplicate `deliveryId` values are rejected at the DB unique
- * constraint level and surfaced as a no-op result.
+ * Idempotent: a duplicate `deliveryId` IN THE SAME PROJECT is rejected at the
+ * DB unique constraint level and surfaced as a no-op result. #1511 — the index
+ * is `(projectId, deliveryId)`: GitHub gives one GUID to every webhook
+ * subscribed to an event, so two projects' hooks receive the same id and each
+ * records its own drift.
  */
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
@@ -226,7 +229,7 @@ export async function reconcileIssueChange(
     return { handled: false, reason: "NO_DIFF" };
   }
 
-  // 4. Persist DriftEvent (idempotent via unique deliveryId)
+  // 4. Persist DriftEvent (idempotent via unique (projectId, deliveryId), #1511)
   try {
     const driftEvent = await prisma.driftEvent.create({
       data: {
@@ -286,7 +289,7 @@ export async function reconcileIssueChange(
 
     return { handled: true, driftEventId: driftEvent.id };
   } catch (err: unknown) {
-    // Unique constraint violation on deliveryId = duplicate webhook
+    // Unique violation on (projectId, deliveryId) = this project already has it
     if (isUniqueViolation(err)) {
       log.debug("sync.reconcile.duplicate", { deliveryId: event.deliveryId });
       return { handled: false, reason: "DUPLICATE" };
