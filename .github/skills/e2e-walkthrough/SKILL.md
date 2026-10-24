@@ -68,11 +68,13 @@ results were not comparable. Do not reorder.
    `.env` while `next dev` is running:** in run 8 the edit restarted the UI child, which hit
    `EMFILE` and served 404s, and wave A stopped before login. Raise the file limit first
    (`ulimit -n 10240` in the shell that starts the servers).
-5. **Workspace first, then the project inside it.** Membership has no invite UI (#941): invite
-   over the API, open `/invites/<token>` as the invitee, then log them in afresh. Reviewers
-   must be workspace members. **The operator creates the `coordinator` and `developer`
-   memberships here, before wave B**: in run 9 the harness classifier refused the invite in
-   waves B and D and allowed it only in F, so a wave cannot be relied on to do it. A project *outside* a workspace can only be created with
+5. **Workspace first, then the project inside it.** **The operator creates the second users'
+   memberships here, before wave B**: `coordinator` (the reviewer, Phase 8 and J1) and
+   `developer` (J1's second analyst). Invite each over the API as `admin`, open
+   `/invites/<token>` signed in as the invitee in the operator's own browser, accept, then sign
+   them in afresh (`TEST_PLAN.md`, Setup order 3). In run 9 the harness classifier refused the
+   invite in waves B and D and allowed it only in F, so a wave cannot be relied on to do it.
+   A project *outside* a workspace can only be created with
    `POST /api/projects`. #731 (PR #927) now lets an existing
    project join a workspace, but create it inside so runs stay comparable; wave B tests the
    move on a throwaway project. Enable lineage and database-aware analysis. **Save the
@@ -116,10 +118,10 @@ dispatching the next.
 | A | Setup (steps 5–6 above) + Phases 1–4 | `briefs/wave-a.md` |
 | B | Phases 5–8 | `briefs/wave-b.md` |
 | C | Phases 9–13 | `briefs/wave-c.md` |
-| D | Spec Kit S1–S24 | `briefs/wave-d.md` |
-| E | Phases 15–20 + developer-issue impact | `briefs/wave-e.md` |
-| F | Journeys 1 (analyst) and 2 (developer), **UI only**, no IDs handed over | `briefs/wave-f.md` |
-| G | *Optional.* Implement one request's Spec Kit `tasks.md` on a branch of `openzigs/flux-v2` and prove it builds (`TEST_PLAN.md`, "Wave G") | `briefs/wave-g.md` |
+| D | Spec Kit smoke set S2, S4, S6, S7, S21 (the other S-steps optional, #1177) | `briefs/wave-d.md` |
+| E | Phases 15–20 + two developer requests, #4478 and #4386 (the other four optional) | `briefs/wave-e.md` |
+| F | **The core of the run (#1177).** Journey 1 (analyst, with a reviewer and a second analyst) and journey 2 (developer), **UI only**, no IDs handed over | `briefs/wave-f.md` |
+| G | *Conditional.* Only when Spec Kit or impact analysis changed since the previous run: implement one request's Spec Kit `tasks.md` on a branch of `openzigs/flux-v2` and prove it builds (`TEST_PLAN.md`, "Wave G") | `briefs/wave-g.md` |
 | BA | The 8 BA questions over `POST /api/ai/chat`, one project-scoped session each | `briefs/ba-reask.md` |
 
 The BA re-ask needs no browser. Create a session with `POST /api/ai/sessions`
@@ -128,8 +130,11 @@ The BA re-ask needs no browser. Create a session with `POST /api/ai/sessions`
 runs in the UI: in run 3 the auto-mode classifier blocked selecting the `/chat` project-scope
 radio, so the UI path may be unavailable without an allow rule.
 
-Wave G is **optional**: run it after wave D, or after journey J2 if wave F ran, and skip it on a
-targeted run that did not touch Spec Kit. Dispatch it to an **implementing agent**, not
+Wave G is **conditional** (#1177): run it only when `git diff --name-only` between the previous
+run's `metisSha` and this run's touches Spec Kit or impact analysis (the command and paths are
+in `TEST_PLAN.md`, "Wave G"), or when `fixes.json` places a fix in wave G. Otherwise record it
+as skipped, with the empty diff. When it runs, run it after wave D, or after journey J2 if wave
+F ran. Dispatch it to an **implementing agent**, not
 `ui-vision`; it needs no browser and makes no METIS calls. Its state carries `FEATURE_ISSUE`
 (default `4478`), `TASKS_PATH` and `PLAN_PATH` (the `tasks.md` and `plan.md` exported from
 METIS), and `SCRATCH_DIR`; fill it with `--wave G`.
@@ -137,6 +142,30 @@ METIS), and `SCRATCH_DIR`; fill it with `--wave G`.
 Wave F's personas know names, not IDs: its state carries `WORKSPACE_NAME`, `PROJECT_NAME` and
 `J1_PROJECT_NAME` (the fresh project journey 1 creates), never a project or run ID. Its sandbox
 publishes count toward the run's cap of 2, so leave it a slot or let it dry-run only.
+
+**Second-user steps** are operator-run or operator-approved (`TEST_PLAN.md`, "Second-user
+steps"). They are in waves C (Phase 11), D (S3b and S12, both optional) and F (J1.4a to J1.4c).
+
+- **`SECOND_USER_MODE` is a run-wide `state.json` key.** Set it before filling **wave C**, the
+  first brief that uses it (`fill-brief --wave C` refuses while it is unset): `operator-approved`
+  (you have added the auto-mode allow rule for the second browser context) or `operator-run`
+  (you will do the steps in your own browser). To use the other mode for a later wave, change the
+  key before filling that wave.
+- **With `operator-run`, keep two windows of your own**: a private one signed in as the step's
+  mock user, and a normal one signed in as `admin`, open where the step's must-hold says. The
+  `admin` window is the observer for the live and presence checks. Write what it showed, without
+  reloading, to `.playwright-mcp/walkthrough-706-run<N>/operator/notes.md`, one block per step
+  id, with a screenshot in the same folder. A live check nobody watched is `not-exercised
+  (operator-run)`.
+- **Waves C and D are never re-dispatched for an operator step**: a second wave C would repeat
+  Phase 9's docs generation. They return their [2nd user] checks as `Operator steps pending`;
+  do those after the wave, record them in `operator/notes.md`, and take them into the results
+  comment from there.
+- **Wave F is re-dispatched.** Set `J1_RESUME_AT` to `J1.1` for the first dispatch. With
+  `operator-run`, wave F returns `Operator steps pending: J1.4a, J1.4b, J1.4c` before J1.4a. The
+  two users' actions interleave live, so do all three steps yourself, Priya's part included in the
+  `admin` window. Then re-fill wave F with `--wave F` and `J1_RESUME_AT` set to `J1.5`, and
+  dispatch it again. It reads `operator/notes.md` into `steps.jsonl` for the steps you did.
 
 ### 3a. The fixes to verify — generated, not hand-written (#954)
 
@@ -209,7 +238,8 @@ allowed it in waves D and F. The cap is 2 real sandbox issues per run; assign th
   tighter cost ceiling in `.env`, for example 500, so one runaway document can't spend the
   run's budget.
 - **The harness classifier blocks some checks outright.** It denies
-  `browser_run_code_unsafe` on a second browser context (two-user presence) and in-page
+  `browser_run_code_unsafe` on a second browser context (a second user's sign-in, two-user
+  presence; see wave F's second-user steps in section 3) and in-page
   `fetch` calls that send `UPDATE` SQL (the read-only query probe). Plan those with the
   operator — who runs or approves them, using no-op writes (`… WHERE false`) — or verify them
   from the database tables, and record which.

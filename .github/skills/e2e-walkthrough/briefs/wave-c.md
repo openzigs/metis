@@ -51,7 +51,9 @@ out" note.
 
 **Phase 9 — score the BRD and the architecture document (#1041).** Size is not quality. Fetch
 the export of the full-scope BRD and of the architecture document (scope `repository`) into
-`{{SCRATCH_DIR}}/wave-c/`, then score each against the Phase 9 answer key and rubric in the
+`{{SCRATCH_DIR}}/wave-c/`, and the BRD's Word and PDF exports too: fetch each by URL and open it
+as the plan's Phase 9 says, and report status, content type, size, first bytes and whether its
+headings match the markdown (#1177). Then score each against the Phase 9 answer key and rubric in the
 test plan ("Phase 9 — doc-quality answer key and rubric"). Read the whole document, not a
 keyword search: a fact is present when it is stated in substance. Check every concrete claim
 outside the key against the Miniflux source at `v2.3.3` before you count it as a
@@ -113,9 +115,14 @@ the checkout (#756, PR #892).
 Log in once (20 logins / 15 min). Drive the UI, and keep in-page `fetch` for the ledger and
 for exports. **Fetch doc
 exports — clicking a download button crashes the Playwright page.** Wait 20–40 s after a
-dev-mode navigation before snapshotting. A second user (Phase 11 mentions) needs
-`browser.newContext()`; mock users exist only after their first login, and a workspace
-membership change needs `/api/auth/refresh` before the claim updates.
+dev-mode navigation before snapshotting. Phase 11's second user (mentions, presence, no Edit
+on another user's message) is a [2nd user] step, mode `{{SECOND_USER_MODE}}` (the plan's
+"Second-user steps"). With `operator-approved`, drive the second user in its own browser context;
+if that is refused, treat it as `operator-run`. With `operator-run`, do not sign in a second user
+and do not wait: finish the rest of the wave and return those checks as `Operator steps pending:
+11.2, 11.4` with their text. You are **not** re-dispatched for them (that would repeat Phase 9's
+docs generation); the operator does them after you return. Never call the API as another user.
+Journey 1 (J1.4a to J1.4c) repeats these checks on the analyst's project. A workspace membership change needs `/api/auth/refresh` before the claim updates.
 
 **Scratch files go in `{{SCRATCH_DIR}}/wave-c/` only.** Evidence goes in
 `.playwright-mcp/walkthrough-706-run{{RUN_NUMBER}}/wave-c/`.

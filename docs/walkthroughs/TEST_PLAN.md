@@ -2,7 +2,7 @@
 
 This is the test plan for the end-to-end walkthrough tracked in
 [#706](https://github.com/openzigs/metis/issues/706): phases 1–20, Spec Kit S1–S24, pass bars, the
-Business Analyst questions, the developer issues, the persona journeys and the optional wave G build proof. It moved here from #706's body in #948 so that
+Business Analyst questions, the developer issues, the persona journeys and the conditional wave G build proof. It moved here from #706's body in #948 so that
 changes to it are reviewed, show up in PRs and are checked by CI. **Results still go on #706**, as
 one comment per run built from [`RESULTS_TEMPLATE.md`](RESULTS_TEMPLATE.md).
 
@@ -10,6 +10,32 @@ The `e2e-walkthrough` skill (`.github/skills/e2e-walkthrough/`) holds the **mech
 setup order, waves, guard-rails and measurement. This file holds the **procedure**: what to do and
 what passing looks like. The wave briefs point here for the steps; where a phase has a check that
 only matters for one run, the brief carries it.
+
+## Run shape: the analyst journey first (#1177)
+
+METIS is built mainly for business analysts; developers are expected to use Claude Code or a
+similar tool. From run 10 the run is weighted that way:
+
+- **Journey 1 (the business analyst) is the core of the run.** Two people work on the analyst's
+  requirements: a reviewer (`coordinator`) approves or rejects them and the analyst responds, and
+  a second analyst (`developer`) comments, mentions and discusses on the same project
+  (J1.4a to J1.4c). The operator creates both memberships before wave B (Setup order 3), and
+  the second user's sign-ins are operator-run or operator-approved ("Second-user steps" below).
+- **The BRD is checked as a deliverable**: its Word and PDF exports are fetched by URL and
+  opened, and it is scored on the sign-off rubric (#1175) as well as the answer key (#1041).
+  J1 publishes to the sandbox Jira once #1176 provides one (J1.8a); until then that step is
+  skipped and recorded.
+- **The developer side is a smoke test.** Spec Kit runs a **smoke set** (S2, S4, S6, S7 and
+  S21: enable, specify, plan, tasks and export); every other S-step is marked *(optional)*.
+  Wave E runs **two** developer requests (#4478 and #4386); the other four are optional.
+  Wave G runs only when the METIS commits since the previous run touch Spec Kit or impact
+  analysis ("Wave G").
+- **Optional steps stay in this plan** with their pass bars. Run one when a fix in the wave's
+  fixes-to-verify list names it, or when the operator asks for a full pass; otherwise record it
+  `skipped (optional)`, which is neither a pass nor a fail.
+
+Runs 1 to 9 ran the older shape. `RESULTS_TEMPLATE.md` says which run-to-run numbers stay
+comparable across the change and which do not.
 
 ## Keeping this plan current
 
@@ -150,12 +176,57 @@ Run 1 set things up in the wrong order, and three things could not be recovered 
 1. **Start the SQL lineage sidecar first.** Set `SQL_LINEAGE_MODE=sidecar`, `SQL_LINEAGE_URL=http://127.0.0.1:5070` and `SQL_LINEAGE_TOKEN` in `.env`, then restart the server.
    - Deep Ingest is incremental. Turning lineage on after the first ingest leaves **0** `reads`/`writes` edges (#721).
 2. **Create the workspace first, then create the project inside it.** #731 (PR #927) now lets an existing project join a workspace, but create it inside so runs stay comparable; Phase 5 tests the move on a throwaway project. Without a workspace, requirement links, workspace traceability, DB identity and the custom-agent wizard (`/workspaces/:id/agents/new`) are all unavailable.
-3. **Workspace membership has no invite UI** (#941). To add a member: `POST /api/workspaces/:id/invites`, then open `/invites/<token>` as that user, then log that user in afresh. Reviewers (Phase 8) must be workspace members. **The operator creates the `coordinator` and `developer` memberships before wave B**; run 9's classifier refused the invite in waves B and D and allowed it only in F.
+3. **The operator creates the second users' memberships before wave B.** `coordinator` is the reviewer (Phase 8 and J1's reviewer) and `developer` is J1's second analyst (and S3b's non-editor). For each: `POST /api/workspaces/:id/invites` `{email, role: "member"}` as `admin` (the mock users' emails are `<name>@metis.local`), then, signed in as that user in the operator's own browser, open `/invites/<token>` and accept, then sign them in afresh. Both users then exist and are members before any wave needs them. Reviewers must be workspace members. Run 9's classifier refused the invite in waves B and D and allowed it only in F, so a wave cannot be relied on to do it. Confirm both are listed under **Members** on `/settings/workspaces/:id`.
 4. **Add the repo connector pinned to `v2.3.3` before anything auto-ingests `main`.** Never click **Test** on it afterwards, because Test resets the branch to the default (#714).
 5. **There is no `ChangeLog` at v2.3.3.** Phase 3 uploads `miniflux.1` (renamed `.txt`; `.1` is rejected) instead.
 6. **Never reject an approval item on a run you still need.** One rejection permanently blocked promotion, Deep Dive and publishing for that run (#723); PR #902 changes that, and wave B re-verifies it on a throwaway run.
 7. **API checks:** login is limited to 20 per 15 minutes. Use `fetch('/api/...')` from the logged-in page instead.
 8. **Run the UI and server dev processes in a terminal you own**, not as a harness background task, which is killed after at most 2 h.
+
+### Second-user steps (operator-run or operator-approved)
+
+A step marked **[2nd user]** is done by a user other than the one the wave is signed in as. The
+harness classifier has refused a wave agent signing in a second user (`browser_run_code_unsafe`
+with `browser.newContext()`: allowed in run 5, refused in waves B and D of run 9, allowed in F),
+so no wave relies on it. The operator chooses one way, before filling the first brief that uses
+it (wave C), and the briefs carry the choice as `SECOND_USER_MODE`, a run-wide `state.json` key.
+To choose differently for a later wave, change it in `state.json` before filling that wave.
+
+**Who is who.** Priya, Sam and "the reviewer" are role names. In the UI they are the mock users'
+display names: Priya is `admin` (**System Admin**), the reviewer is `coordinator` (**Test
+Coordinator**) and Sam is `developer` (**Test Developer**). "@mentions Priya" means picking
+**System Admin** in the mention picker.
+
+- **`operator-approved`**: the operator adds a Claude Code auto-mode allow rule for the
+  second-context call, and the wave agent drives the second user in its own browser context. If
+  the call is refused anyway, the agent stops the [2nd user] steps there and returns them as
+  pending, as for `operator-run`.
+- **`operator-run`**: the operator does each [2nd user] step in their own browser, following the
+  step's text: a private window signed in as the named mock user (password `password`), **and a
+  second, normal window signed in as `admin` (Priya), open on the page the step's must-hold names**
+  (the requirement's comment panel, the discussion thread, the review). That second window is the
+  observer for every live and presence check, because the wave agent has returned by then and can
+  only look after a reload. The operator writes what that window showed, without reloading it, to
+  `.playwright-mcp/walkthrough-706-run<N>/operator/notes.md`, one block per step id, with a
+  screenshot beside it in the same folder.
+  - **Wave F** stops before J1.4a and returns `Operator steps pending: J1.4a, J1.4b, J1.4c`.
+    The two users' actions in those steps interleave live, so the operator does all three, Priya's
+    part included in the `admin` window, and wave F is re-dispatched with `J1_RESUME_AT` set to
+    `J1.5`. The agent reads `operator/notes.md`, records each operator step in `steps.jsonl` with
+    the operator's observation as its `result` and screenshot, and checks the lasting result from
+    Priya's own screen: the notification, the review's status, the comment or the message.
+  - **Waves C and D are never re-dispatched for an operator step.** Re-running wave C would
+    repeat Phase 9's docs generation, the run's largest spend. The agent finishes the rest of the
+    wave and returns the [2nd user] checks (Phase 11, S3b, S12) as `Operator steps pending`; the
+    operator does them after the wave, records them in `operator/notes.md` the same way, and the
+    results comment takes them from there.
+
+A live or presence check that nobody watched as it happened is recorded `not-exercised
+(operator-run)`, never passed on what a reload shows.
+
+Record in the step's `result` which way it ran: `operator-run`, `operator-approved` or `agent`.
+Never work around a refusal: no API calls made as the other user, no tokens minted for them, no
+SQL. A [2nd user] step that nobody could run is `blocked`, with the reason.
 
 ## The walkthrough
 
@@ -284,10 +355,11 @@ Every phase records: **steps → Works → Useful**, plus the evidence listed un
   Then view versions and provenance (`…/docs/:docId/versions/:vid/provenance`), export (`…/export?format=`), regenerate (`…/regenerate`), and open the schema graph (`…/schema-graph`).
   - **Cancel once on purpose** (#855): start a **new** document, and after its first section finishes click **Cancel generation** (`POST /api/projects/:id/docs/:docId/cancel`). Regenerate it; the second attempt lists the sections it reused (#857).
   - **Regenerate** only works on a failed, cancelled, or degraded-with-no-version document; on a ready one it is refused. Test cancel and resume on a new document, never on the BRD.
+  - **Fetch the BRD's exports by URL, never by clicking Download** (a download crashes the Playwright page). From the signed-in page, fetch `GET /api/projects/:projectId/docs/:docId/export` with `?format=docx`, `?format=pdf` and `?format=markdown` (`credentials: 'include'`), and save each file into the wave's evidence folder (return the body base64-encoded through `browser_evaluate`'s `filename`, then `base64 -d` it; Playwright writes only under the repo). Then open each: the `.docx` with `unzip -p brd.docx word/document.xml` (or `textutil -convert txt`), the `.pdf` with `pdftotext brd.pdf -` (or `mdls`/Preview if `pdftotext` is missing). Record each file's status, `Content-Type`, size and first bytes (`%PDF-` for the PDF, `PK` for the Word file).
 - **Works:**
   - Statuses move `pending → generating → ready`, or `degraded` with warnings shown; never stuck in `generating` (statuses per `server/prisma/schema.prisma`: `pending|generating|ready|degraded|failed`).
   - Phase-1 progress renders.
-  - Export downloads.
+  - Each export answers 200 with its own content type. The Word and PDF files open, carry the document's title and its top-level headings in the same order as the markdown export, and are not empty or cut short (the last heading of the markdown is in both).
   - No section exceeds `DOCS_GEN_SECTION_MAX_CHARS` (60,000) and no body exceeds `DOCS_GEN_DOCUMENT_MAX_CHARS` (250,000); text is never cut mid-sentence (#741). A cancelled document leaves `generating` within a minute and keeps its finished sections.
   - The database document's model calls appear in the ledger under `docs-gen` (#858).
 - **Useful:**
@@ -296,7 +368,7 @@ Every phase records: **steps → Works → Useful**, plus the evidence listed un
   - The DB doc's schema graph shows the `entries → feeds → users` foreign keys.
   - Provenance links resolve to real lines.
   - **Baseline:** run 4's full-scope BRD cost **$1.91, took 30 min and was 171 KB** under a 500¢ `DOCS_GEN_MAX_RUN_COST_CENTS`. Run 3's was $8.73, 2 h 51 min and 2.19 MB.
-  - **Scored:** both documents scored against the answer key below (#1041), and the BRD also against the sign-off rubric after it (#1175).
+  - **Scored:** both documents scored against the answer key below (#1041), and the BRD also against the sign-off rubric after it (#1175). Score the markdown export; the Word and PDF files are checked for being the same document, not scored again.
 
 #### Phase 9 — doc-quality answer key and rubric (#1041)
 
@@ -450,14 +522,14 @@ substance, as for the answer key.
 ### Phase 11 — Discussions, presence, comments and mentions
 - **Steps:**
   1. In `/projects/:id/discussions`, create a thread (`POST /api/discussions/threads`), post a message that mentions a second user, and ask for an AI reply (`POST …/threads/:id/ai-respond`).
-  2. Open `/projects/:id/discussions/:discussionId` in **two browser contexts** to check presence. The harness classifier refuses `browser_run_code_unsafe` on a second context; plan this check with the operator, or verify presence from the database.
+  2. Open `/projects/:id/discussions/:discussionId` as a second user too, to check presence. **[2nd user]**: operator-run or operator-approved ("Second-user steps"), or verify presence from the database and say so. J1.4b and J1.4c repeat the two-user checks on the analyst's own project, so a run short of time may record this phase's second-user steps as covered there.
   3. Comment on a requirement and reply to it (`POST /api/requirements/:reqId/comments`, then `POST /api/comments/:threadId/replies`).
-  4. Edit, then delete, one of your own discussion messages (`PATCH` / `DELETE /api/discussions/threads/:id/messages/:messageId`, #734) while the second context has the thread open. As the second user, try the same calls on that message.
+  4. Edit, then delete, one of your own discussion messages (`PATCH` / `DELETE /api/discussions/threads/:id/messages/:messageId`, #734) while the second context has the thread open. As the second user, look for **Edit** and **Delete** on that message (a UI check; never call the API as them).
 - **Works:**
   - Both users see each other's presence avatars (`components/presence/PresenceAvatars`).
   - The @mention picker offers only users who can open the project (#870).
   - The mentioned user gets a notification (`/api/notifications`) that names the author and opens the comment (#735).
-  - Edit and delete work for requirement comments and for discussion messages. A discussion edit is marked "(edited)" and appears live in the other context, and a deletion disappears there live. The second user gets 403 on the first user's message (#734).
+  - Edit and delete work for requirement comments and for discussion messages. A discussion edit is marked "(edited)" and appears live in the other context, and a deletion disappears there live. The second user sees no **Edit** or **Delete** on the first user's message (#734; the server's 403 for that call is covered by `server/src/routes/discussions.multi-member.test.ts`).
   - A teammate's live discussion message shows their display name, not a raw user id (#734).
 - **Useful:** the AI reply cites project sources and answers the thread's question about Miniflux.
 
@@ -556,6 +628,12 @@ Replaces the Test Coverage page, whose imports and runs were removed in #818 and
 
 **Type the leading slash.** This plan writes Spec Kit commands without one (`speckit.specify`) so the drift check does not read them as pages, but the command palette requires it: type `/speckit.specify`, `/speckit.plan` and so on. Where a step says to run `speckit.<name>`, that means `/speckit.<name>` in the palette. The API paths are unaffected. <!-- drift-check: skip -->
 
+**Smoke set (#1177): S2, S4, S6, S7 and S21**, in that order: enable, specify, plan, tasks and
+issue export (dry run, then publish within the cap). Wave D runs these on every run. Every other
+row below is marked *(optional)* and keeps its pass bar: run it when a fix in wave D's list names
+it, or on a full pass the operator asks for; otherwise record it `skipped (optional)`. The notes
+below about S3b, S6b to S6d and S9 apply only when those steps run.
+
 **S6 then S6b changes the design**, so save `plan.md` and `tasks.md` only after S6b to S6d, and run `speckit.analyze` and the handoff after them. Budget 45 minutes for S9 when #1062 is exercised (run 8: 20 minutes and $0.35, and one Continue added 23 minutes and $0.41). In S3b, `developer` is a member from setup (Setup order 3): log out and in as `developer`.
 
 **Sources:**
@@ -578,33 +656,33 @@ Feature for this run: **"Mark all entries as read older than N days"** (Miniflux
 
 | # | Step | Drive it with | Works | Useful |
 |---|---|---|---|---|
-| S1 | **Disabled state** | UI: the page before enabling. *API only:* `POST …/commands/speckit.specify` | `spec-kit-disabled-banner` shows and the palette is disabled; the API call returns **409 `SPEC_KIT_DISABLED`** | — |
+| S1 | *(Optional)* **Disabled state** | UI: the page before enabling. *API only:* `POST …/commands/speckit.specify` | `spec-kit-disabled-banner` shows and the palette is disabled; the API call returns **409 `SPEC_KIT_DISABLED`** | — |
 | S2 | **Enable toggle** | UI: `spec-kit-toggle` (`PUT …/enabled {enabled:true}`) | Persists across a reload; the onboarding card shows | — |
-| S3 | **Constitution** | UI: **Generate constitution.md** (`POST …/constitution`) | The success toast, not a warning; `constitution.md` v1 is selected in the viewer | **Grounded (#928):** principles name their sources (README, `go.mod`, contributing guide) and reflect Go stdlib-first, Postgres only, minimalism, no JS frameworks. A skeleton with a "nothing relevant ingested" warning is a FAIL, because Phase 3 ingested the README |
-| S3b | **Read-only for non-editors** | UI: open the page as `developer` in a second context. *API only:* `POST …/commands/speckit.constitution` as `developer`, then `admin` | Every write control is disabled with the tooltip "Requires project.update" (#931); the API returns **403** for `developer` and 200 for `admin`. `speckit.constitution.write` no longer exists (#928) | — |
+| S3 | *(Optional)* **Constitution** | UI: **Generate constitution.md** (`POST …/constitution`) | The success toast, not a warning; `constitution.md` v1 is selected in the viewer | **Grounded (#928):** principles name their sources (README, `go.mod`, contributing guide) and reflect Go stdlib-first, Postgres only, minimalism, no JS frameworks. A skeleton with a "nothing relevant ingested" warning is a FAIL, because Phase 3 ingested the README |
+| S3b | *(Optional)* **Read-only for non-editors** | UI: open the page as `developer` in a second context. *API only:* `POST …/commands/speckit.constitution` as `developer`, then `admin` | Every write control is disabled with the tooltip "Requires project.update" (#931); the API returns **403** for `developer` and 200 for `admin`. `speckit.constitution.write` no longer exists (#928) | — |
 | S4 | **Specify** | UI: select **Project**, run `speckit.specify mark all entries as read older than N days` | Creates a feature and its `spec.md`; the toast reads `Generated spec.md (vN) for <slug> in T tokens — grounded on …` with **K > 0**, and job progress streams | The spec mentions the existing `Storage.MarkAllAsReadBeforeDate` (`internal/storage/entry.go:523`) and the Google Reader path that already uses it (`internal/googlereader/handler.go:1225`). A spec that says **"ungrounded (no project knowledge retrieved)"** is a FAIL |
-| S5 | **Clarify** | UI: select the feature, run `speckit.clarify` | `clarify.md` appears under `specs/<slug>/` (`spec-kit-feature-tree`) | Its questions are real ambiguities: user-configurable N vs fixed presets, starred entries, per-feed/category scope, timezone |
+| S5 | *(Optional)* **Clarify** | UI: select the feature, run `speckit.clarify` | `clarify.md` appears under `specs/<slug>/` (`spec-kit-feature-tree`) | Its questions are real ambiguities: user-configurable N vs fixed presets, starred entries, per-feed/category scope, timezone |
 | S6 | **Plan** | UI: `speckit.plan` | Writes 5 plan artifacts and says it is grounded, citing real `path:start-end` spans (#853); before `spec.md` exists there is a clear precondition error | It names `internal/api/entry_handlers.go`, `internal/ui/*` and `internal/storage/entry.go`, and states **no schema migration needed** |
 | S7 | **Tasks** | UI: `speckit.tasks` | `tasks.md` is written; without `spec.md` and `plan.md` there is a precondition error | Tasks are ordered, testable and include Go tests |
-| S6b | **Background job: progress and reload** (#1059) | UI: run `speckit.plan` on the S4 feature again. While it runs: read the progress text, reload the page, open another page and come back | The progress bar names the command, the feature and the artifact being generated ("Generating research.md (2 of 5)"). After the reload and after coming back the progress is there again, with no second run. The result card and toast appear as in S6. **No "Internal Server Error", however long the plan takes** (record the duration; run 7 failed at 5.0 minutes) | — |
-| S6c | **Background job: cancel** (#1059) | UI: note the versions in the feature tree, run `speckit.plan`, press **Cancel** during the second or third artifact | The page says the command was cancelled. Every artifact keeps the version it had; no new artifact appears. The usage page shows the finished calls under `spec-kit.plan` and the cancelled one under `spec-kit.plan.aborted` | — |
-| S6d | **Background job: one command per feature** (#1059) | *API only:* `POST /api/projects/:id/spec-kit/commands/speckit.tasks/jobs` with `{featureSlug}` twice in a row, then `GET /api/projects/:id/spec-kit/jobs/:jobId` until it ends; `GET /api/projects/:id/spec-kit/jobs`; `POST /api/projects/:id/spec-kit/jobs/:jobId/cancel` on the finished job | The first answers **202** with a `jobId`, the second **409 `SPEC_KIT_JOB_RUNNING`** naming that job. Two `POST …/commands/speckit.specify/jobs` with different briefs and no `featureSlug`, sent together, both answer **202**, each with its own new `featureSlug`. The job ends `succeeded` with the same payload S7 returned. The list is empty afterwards. Cancelling a finished job returns it unchanged. `POST …/commands/speckit.implement/jobs` answers **400 `SPEC_KIT_COMMAND_NOT_A_JOB`** | — |
-| S8 | **Analyze** | UI: `speckit.analyze` | `analysis.md` is written | It flags any spec/plan/tasks inconsistency |
-| S9 | **Implement handoff** | UI: `speckit.implement`, then **Start analysis with these artifacts**, once | `tokensUsed: 0`; the **handoff** card lists the artifacts; a missing artifact gives `Cannot /implement: missing …`. Starting the analysis creates a new run (never the Phase 7 run): record its ID and cost, with test custom agents disabled first. On the analysis page the handoff notice lists the requirements sent from `spec.md` and, in a separate line, the plan components and tasks sent as context; no plan component or task appears among the run's requirements | The handoff reaches the analysis orchestrator (`orchestratorRoute: /api/projects/:id/analyses`) |
-| S10 | **Edit and save** | UI: **Edit** / **Save** / **Cancel** on `constitution.md` (project `.specify/` files only). *API only:* a body over 200,000 chars | The version increments; cancel changes nothing; the oversized body gets 400. Feature artifacts have no Edit button, by design | — |
-| S11 | **Delete** | UI: **Delete** `clarify.md` in the feature, confirm | It leaves the feature tree; the toast names the file | — |
-| S12 | **Comments and presence** | UI: **Comments** on `constitution.md` (`/api/projects/:id/spec-kit/artifacts/:artifactName/comments`), mention `coordinator`; presence in a second context | Comments and presence exist on project `.specify/` artifacts only. The mention notifies and opens the artifact's comments (#735) | — |
-| S13 | **Suggestions** | UI: type `/` in the palette; type `/` in `/chat` | The palette suggests the **nine `speckit.*` commands**, not the six legacy names. `/chat` suggests no Spec Kit command (#931) | — |
-| S14 | **Legacy alias deprecation** | *API only:* `POST …/commands/specify` | `Deprecation: true` and `Link: <…/commands/speckit.specify>; rel="successor-version"`. The palette maps a typed legacy name to `speckit.specify`, so the header is unreachable from the UI | — |
-| S15 | **Feature list** | UI (S4 created it) | `GET …/features` and the Features selector list the feature | — |
-| S16 | **Feature required** | UI: `speckit.plan` with **Project** selected. *API only:* the 400 | The page refuses before sending ("Select a feature first"); the API returns **400 `SPECKIT_FEATURE_REQUIRED`** without `featureSlug`, then 200 with it | It has the expanded plan sections |
-| S17 | **Feature artifacts** | UI: list and read in the feature tree. *API only:* `PUT …/features/:slug/artifacts/*key` with `{content}`, and an unknown slug | Round trip OK; an unknown slug returns 404 `SPECKIT_FEATURE_NOT_FOUND` | — |
-| S18 | **Status gates** | UI: the gate list in the Features panel (`spec-kit-feature-gates`); `GET …/features/:slug/status` | `spec`, `plan`, `tasks` and `implement` gates match what exists | — |
-| S19 | **Checklists** | UI: **Generate checklists** right after S4, before `speckit.plan`, and again after it. *API only:* adding a reviewer line to a checklist (feature artifacts have no Edit) | Before `plan.md`: a **failed job** with `SPECKIT_GATE_UNMET`, its message shown in `spec-kit-error` (no longer an HTTP 412). After: five domain checklists (security, performance, accessibility, observability, testability). Re-run (merge is the default): the reviewer's line and its tick survive below the regenerated items (#925) | The items are specific to this feature, for example a bounded `UPDATE` on `entries` or an index on `published_at` |
-| S20 | **Namespaced commands** | UI (S5–S9 already ran them) | Same results as the legacy commands, with no `Deprecation` header | — |
+| S6b | *(Optional)* **Background job: progress and reload** (#1059) | UI: run `speckit.plan` on the S4 feature again. While it runs: read the progress text, reload the page, open another page and come back | The progress bar names the command, the feature and the artifact being generated ("Generating research.md (2 of 5)"). After the reload and after coming back the progress is there again, with no second run. The result card and toast appear as in S6. **No "Internal Server Error", however long the plan takes** (record the duration; run 7 failed at 5.0 minutes) | — |
+| S6c | *(Optional)* **Background job: cancel** (#1059) | UI: note the versions in the feature tree, run `speckit.plan`, press **Cancel** during the second or third artifact | The page says the command was cancelled. Every artifact keeps the version it had; no new artifact appears. The usage page shows the finished calls under `spec-kit.plan` and the cancelled one under `spec-kit.plan.aborted` | — |
+| S6d | *(Optional)* **Background job: one command per feature** (#1059) | *API only:* `POST /api/projects/:id/spec-kit/commands/speckit.tasks/jobs` with `{featureSlug}` twice in a row, then `GET /api/projects/:id/spec-kit/jobs/:jobId` until it ends; `GET /api/projects/:id/spec-kit/jobs`; `POST /api/projects/:id/spec-kit/jobs/:jobId/cancel` on the finished job | The first answers **202** with a `jobId`, the second **409 `SPEC_KIT_JOB_RUNNING`** naming that job. Two `POST …/commands/speckit.specify/jobs` with different briefs and no `featureSlug`, sent together, both answer **202**, each with its own new `featureSlug`. The job ends `succeeded` with the same payload S7 returned. The list is empty afterwards. Cancelling a finished job returns it unchanged. `POST …/commands/speckit.implement/jobs` answers **400 `SPEC_KIT_COMMAND_NOT_A_JOB`** | — |
+| S8 | *(Optional)* **Analyze** | UI: `speckit.analyze` | `analysis.md` is written | It flags any spec/plan/tasks inconsistency |
+| S9 | *(Optional)* **Implement handoff** | UI: `speckit.implement`, then **Start analysis with these artifacts**, once | `tokensUsed: 0`; the **handoff** card lists the artifacts; a missing artifact gives `Cannot /implement: missing …`. Starting the analysis creates a new run (never the Phase 7 run): record its ID and cost, with test custom agents disabled first. On the analysis page the handoff notice lists the requirements sent from `spec.md` and, in a separate line, the plan components and tasks sent as context; no plan component or task appears among the run's requirements | The handoff reaches the analysis orchestrator (`orchestratorRoute: /api/projects/:id/analyses`) |
+| S10 | *(Optional)* **Edit and save** | UI: **Edit** / **Save** / **Cancel** on `constitution.md` (project `.specify/` files only). *API only:* a body over 200,000 chars | The version increments; cancel changes nothing; the oversized body gets 400. Feature artifacts have no Edit button, by design | — |
+| S11 | *(Optional)* **Delete** | UI: **Delete** `clarify.md` in the feature, confirm | It leaves the feature tree; the toast names the file | — |
+| S12 | *(Optional)* **Comments and presence** | UI: **Comments** on `constitution.md` (`/api/projects/:id/spec-kit/artifacts/:artifactName/comments`), mention `coordinator`; presence in a second context | Comments and presence exist on project `.specify/` artifacts only. The mention notifies and opens the artifact's comments (#735) | — |
+| S13 | *(Optional)* **Suggestions** | UI: type `/` in the palette; type `/` in `/chat` | The palette suggests the **nine `speckit.*` commands**, not the six legacy names. `/chat` suggests no Spec Kit command (#931) | — |
+| S14 | *(Optional)* **Legacy alias deprecation** | *API only:* `POST …/commands/specify` | `Deprecation: true` and `Link: <…/commands/speckit.specify>; rel="successor-version"`. The palette maps a typed legacy name to `speckit.specify`, so the header is unreachable from the UI | — |
+| S15 | *(Optional)* **Feature list** | UI (S4 created it) | `GET …/features` and the Features selector list the feature | — |
+| S16 | *(Optional)* **Feature required** | UI: `speckit.plan` with **Project** selected. *API only:* the 400 | The page refuses before sending ("Select a feature first"); the API returns **400 `SPECKIT_FEATURE_REQUIRED`** without `featureSlug`, then 200 with it | It has the expanded plan sections |
+| S17 | *(Optional)* **Feature artifacts** | UI: list and read in the feature tree. *API only:* `PUT …/features/:slug/artifacts/*key` with `{content}`, and an unknown slug | Round trip OK; an unknown slug returns 404 `SPECKIT_FEATURE_NOT_FOUND` | — |
+| S18 | *(Optional)* **Status gates** | UI: the gate list in the Features panel (`spec-kit-feature-gates`); `GET …/features/:slug/status` | `spec`, `plan`, `tasks` and `implement` gates match what exists | — |
+| S19 | *(Optional)* **Checklists** | UI: **Generate checklists** right after S4, before `speckit.plan`, and again after it. *API only:* adding a reviewer line to a checklist (feature artifacts have no Edit) | Before `plan.md`: a **failed job** with `SPECKIT_GATE_UNMET`, its message shown in `spec-kit-error` (no longer an HTTP 412). After: five domain checklists (security, performance, accessibility, observability, testability). Re-run (merge is the default): the reviewer's line and its tick survive below the regenerated items (#925) | The items are specific to this feature, for example a bounded `UPDATE` on `entries` or an index on `published_at` |
+| S20 | *(Optional)* **Namespaced commands** | UI (S5–S9 already ran them) | Same results as the legacy commands, with no `Deprecation` header | — |
 | S21 | **Issue export** | UI: **Preview issue export (dry run)**, then **Publish issues to the saved target** (`openzigs/flux-v2` only) | The dry run lists the issue titles and the target repo (`openzigs/flux-v2`). #953 has landed, so **Publish is enabled after the dry run**, and its confirm names the repo and the issue count. Publish within the 2-issue cap, to `openzigs/flux-v2` only: the UI publishes one issue per selected task, so publish from a **throwaway feature**, never the run's main feature: tick **one task in the export picker** (`spec-kit-export-tasks`, #993, shown when the dry run lists more than one task) and run the dry run again, or cut `tasks.md` to 1 task. Created issues match the dry run's titles. Publish disabled with "Publishing issues to GitHub is not available on this server yet" means the server has no live issue client: a FAIL | Issue bodies map one-to-one to tasks |
-| S22 | **Archive and restore** | UI: **Archive**, tick **Show archived**, **Restore** (`POST …/features/:slug/archive`, then `…/restore`) | Hidden from `GET …/features`, shown with `?includeArchived=1`, then back | — |
-| S23 | **Install** | *API only:* `POST …/spec-kit/install` | **501 `SPECKIT_ATTACHED_WORKSPACE_NOT_IMPLEMENTED`**. This is expected; do not file it | — |
+| S22 | *(Optional)* **Archive and restore** | UI: **Archive**, tick **Show archived**, **Restore** (`POST …/features/:slug/archive`, then `…/restore`) | Hidden from `GET …/features`, shown with `?includeArchived=1`, then back | — |
+| S23 | *(Optional)* **Install** | *API only:* `POST …/spec-kit/install` | **501 `SPECKIT_ATTACHED_WORKSPACE_NOT_IMPLEMENTED`**. This is expected; do not file it | — |
 | S24 | *(Optional; needs a public webhook)* **Issue sync** | Close a sandbox issue made by S21 (`routes/webhooks-github.ts` → `syncIssueEvent`, #433), then reopen it. Expose only the webhook receivers through a tunnel: a proxy that forwards `POST /api/webhooks/github/pr|issues` (and `/c/<connector id>` under each) and nothing else, never the whole server. If the sandbox connector has its own webhook secret (#1475), set the issue hook's Payload URL to the card's **Issue events payload URL path** (`/api/webhooks/github/issues/c/<connector id>`) with that secret: since #1483 a project with its own secret gets no shared-secret issue deliveries | A **bullet** task is ticked on close and unticked on reopen, with no marker. A **table-form** row is never ticked: close writes `<!-- closed via #N -->` and reopen replaces it with `<!-- open -->` (`toggleCheckbox`, `server/src/lib/spec-kit/issue-sync.ts`) | — |
 
 ## Persona scenarios
@@ -630,17 +708,21 @@ Six real requests a developer would paste into impact analysis. The first three 
 #4336) are feature requests, open on 2026-10-02 and all storage-heavy. The last three (#4479,
 #4386, #4456, added by #1044) are bug reports **closed upstream by a merged fix**, chosen to
 cover the Google Reader API, the web UI and the fetcher, and to be scored against what upstream
-actually changed. All six are asked against the pinned `v2.3.3`, which still has each bug. For
-each one:
+actually changed. All six are asked against the pinned `v2.3.3`, which still has each bug.
+
+**Wave E runs two of them (#1177): #4478 and #4386.** #4478 is the feature request every run since
+run 3 has scored (and wave D's Spec Kit feature); #4386 is a bug fixed upstream, so it is scored
+against what upstream actually changed. #4511, #4336, #4479 and #4456 are *(optional)*: run one
+when a fix in wave E's list names it, or on a full pass. Journey 2 covers #4336 through the UI.
+For each request wave E runs:
 1. Ask chat "where would I implement this?".
 2. Run **impact analysis** (Phase 16).
-3. Run Spec Kit `speckit.specify` → `speckit.plan` (#4478 is done in the Spec Kit section; repeat it briefly for the other five).
+3. Run Spec Kit `speckit.specify` → `speckit.plan` (#4478 is done in the Spec Kit section; repeat it briefly for #4386 and any optional request run).
 4. Draft an issue or PR into the **sandbox** (Phase 12), only if the run's cap of 2 is not used up.
 
-**Cost.** The three added requests mean about three more impact analyses and three more Spec Kit
-plans per run. Snapshot the ledger before and after each request's chat, impact and plan, and
-record the **per-request ledger delta** (tokens and cost) in wave E's return, so the added cost is
-measured rather than estimated.
+**Cost.** Snapshot the ledger before and after each request's chat, impact and plan, and record
+the **per-request ledger delta** (tokens and cost) in wave E's return. Runs 8 and 9 ran all six;
+two requests cost about a third of that, and the delta per request stays comparable.
 
 | Issue | What METIS must surface (Useful) |
 |---|---|
@@ -965,32 +1047,47 @@ between features (#939 approval, #940 a dropped label, #943 cost lost between ru
 
 ### Journey 1: Business analyst ("Priya")
 
+**This is the core of the run (#1177).** Give it the time; the developer side is a smoke test.
+
 **Decide up front whether to approve all.** Run 8's 5 items became about 34 requirements and the harness refuses a scripted bulk rejection. The journey ran 43 of its 45 minutes with no idle time. Take viewport screenshots on analysis pages: a full-page capture of the Traceability tab crashes Chrome.
 
-**Goal:** turn open Miniflux feature requests into reviewed, traceable sandbox issues for a sprint.
-**Budget:** ≤ 45 min, ≤ $1.50.
+**Goal:** turn open Miniflux feature requests into reviewed, signed-off, traceable requirements,
+a BRD a stakeholder could sign, and sandbox issues for a sprint.
+**Budget:** ≤ 60 min, ≤ $1.50 of Priya's own steps. The clock stops while J1.4a to J1.4c are
+operator-run; record their wall time on its own line.
+
+**People.** Priya is `admin` (the user wave F signs in as). The reviewer is `coordinator`; the
+second analyst, Sam, is `developer`, who can comment, mention, discuss and review but not edit a
+requirement (`developer` lacks `project.update`). The operator made both workspace members
+before wave B (Setup order 3). Their steps are **[2nd user]** steps ("Second-user steps").
 
 **Starting state.** Priya is a member of the run's workspace and knows its name. She creates a
 fresh project inside it from `/projects`, connects `https://github.com/miniflux/v2` at `v2.3.3`
 in `/projects/:id/connections` (vault picker for the token) and waits for the ingest. That setup
-is outside the budget; the clock starts at step 1. She knows the sandbox repo `openzigs/flux-v2`
-and the reviewer's name (`coordinator`).
+is outside the budget; the clock starts at step 1. She knows the sandbox repo `openzigs/flux-v2`,
+the reviewer's name (`coordinator`) and her colleague's (`developer`).
 
 | # | Priya does | Must hold |
 |---|---|---|
 | J1.1 | In `/projects/:id/import`, imports open GitHub feature requests from `miniflux/v2`. Miniflux marks them with a `[Feature]:` title prefix, not a label, so she uses "Title starts with" (#1006) | Titles and bodies kept, without the `[Feature]:` prefix. Types sensible ("[Bug]" not typed as a feature). `[Feed Issue]` and `[Proposal]` items are not imported |
 | J1.2 | Picks 5 imported items in "Analyze imported requirements" and runs requirements analysis in `/projects/:id/analysis` | Each item is analysed as its own `NR-*` requirement and listed on the Summary tab with a link back to its issue (#1006). The analysis cites real code for each. It is clear which agents ran |
 | J1.3 | Answers the clarifying questions on the run's Questions tab | Her answers land in the requirements she approves. The questions about her five ticked items come first, ahead of any about requirements the analysis added (#1129). Record how many questions were asked |
-| J1.4 | Invites the reviewer from `/settings/workspaces/:id`, approves the checkpoint (leaving out what the analysis added), requests review on `/projects/:id/requirements` of her five only, edits one requirement's acceptance criteria | The Approvals checkpoint lists "From your ticked items" apart from "Added by the analysis"; **Leave out the N added by the analysis** (`POST …/approvals/reject-added`, asks for confirmation) rejects the added ones in one action, and **Approve all** then approves the five (#1129). Record the clicks needed to end with the five. The Request review form's **Only the N from ticked items** limits the review, and the form says "This review covers 5 of N requirements" before it is sent (#1129). Approval flows through to the requirements (#939). The edit keeps links, labels and version history (#940). The review appears on `/reviews`. **Withdraw review** is offered on the review page and on its `/reviews` row while it is in review; after confirming, the review is a draft and every requirement shows the status it had before the request (#1032, #989) |
+| J1.4 | Checks on `/settings/workspaces/:id` that `coordinator` and `developer` are members, and invites `reader@metis.local` from the page's invite card (nobody accepts it). Approves the checkpoint (leaving out what the analysis added), requests review on `/projects/:id/requirements` of her five only from `coordinator`, edits one requirement's acceptance criteria. If she withdraws the review for the **Withdraw review** check, she sends it again so J1.4a has a review to decide | Both members are listed (**Test Coordinator**, **Test Developer**), and the invite card confirms the invite for `reader@metis.local` and shows its link, once, right after it is created (#941; there is no list of pending invites). The Approvals checkpoint lists "From your ticked items" apart from "Added by the analysis"; **Leave out the N added by the analysis** (`POST …/approvals/reject-added`, asks for confirmation) rejects the added ones in one action, and **Approve all** then approves the five (#1129). Record the clicks needed to end with the five. The Request review form's **Only the N from ticked items** limits the review, and the form says "This review covers 5 of N requirements" before it is sent (#1129). Approval flows through to the requirements (#939). The edit keeps links, labels and version history (#940). The review appears on `/reviews`. **Withdraw review** is offered on the review page and on its `/reviews` row while it is in review; after confirming, the review is a draft and every requirement shows the status it had before the request (#1032, #989) |
+| J1.4a | **[2nd user: `coordinator`]** The reviewer opens the review from the notification bell or `/reviews`, reads the five, and on the requirement J1.4 did not edit leaves a requirement comment that @mentions Priya and asks for one concrete change to its acceptance criteria. Then **Reject**s the review with a note naming that requirement: rejecting with a note is how a reviewer requests changes | The review lists exactly the five, at the versions J1.4 left. The @mention picker offers Priya and `developer`, and only users who can open the project (#870). Priya, on her own screen (the observer window, in `operator-run`) and with no reload: the comment appears in the requirement's panel (#997), a notification names the reviewer and opens the comment (#735, #104), and the review reads **Rejected** with the reviewer's note |
+| J1.4b | **[2nd user: `developer`, the second analyst]** Sam replies to the reviewer's comment, then on `/projects/:id/discussions` starts a thread about the same requirement that @mentions Priya. Priya's window (the observer, in `operator-run`) has the requirement's comment panel open for the reply, then `/projects/:id/discussions`; once the thread appears she opens it, and Sam posts one more message in it | Every author shows a display name, never a raw user id (#734). Sam's reply appears in Priya's comment panel with no reload (#997). Priya gets the mention as a notification that opens the thread (#104); the thread appears in her list, and Sam's follow-up in the open thread, live. Both users' presence avatars show on the thread (`components/presence/PresenceAvatars`). Sam has no **Edit** on the requirement (`developer` lacks `project.update`) |
+| J1.4c | Priya answers. **[2nd user: `developer`]** Sam has the discussion thread open first. Priya replies in the requirement's comment thread and in Sam's discussion, then makes the reviewer's change in the requirement's acceptance criteria. After the rejection the five read **Rejected**, and no control revises a rejected review (the state machine's `rejected → revise` has no route or UI), so she asks again with a **new** review: **Request review** on `/projects/:id/requirements`, **Only the N from ticked items**, reviewer `coordinator`. **[2nd user: `developer`]** Sam looks at Priya's discussion message for **Edit** and **Delete**. **[2nd user: `coordinator`]** The reviewer approves the new review | Her reply appears in Sam's open thread with no reload (observer: Sam's window in `operator-run`, the agent's second context in `operator-approved`). Priya's message offers Sam no **Edit** or **Delete** (#734). That is a UI check: the server's 403 for another member's edit is covered by `server/src/routes/discussions.multi-member.test.ts`, so nobody calls the API as Sam. Her edit is a new version under her name in History, and the new review pins that version. The first review stays **Rejected**; the new one reads **Approved**, and all five requirements read **Approved** on `/projects/:id/requirements`. Record how many notifications Priya got across J1.4a to J1.4c, and that each opened the right place |
 | J1.5 | Opens traceability for her 5 requirements | Each links to code. "Tested by" shows real tests or says untested (#905) |
 | J1.6 | Asks `/chat`, scoped to her project, "which of these touch the database?" | The answer cites her requirements and the schema, with valid `file:line` |
-| J1.7 | Generates a BRD scoped to her requirements in `/projects/:id/documentation` (scope "Requirements", her run, then **Only the N from ticked items**) | The form says it will cover 5; the document's title and introduction state 5 requirements (#1129). It covers only those 5, with citations, inside the cap. It passes the Phase 9 sign-off rubric (SO1–SO4, with the J1.7 readings): report its sign-off line (#1175) |
+| J1.7 | Generates a BRD scoped to her requirements in `/projects/:id/documentation` (scope "Requirements", her run, then **Only the N from ticked items**). It is the deliverable she would send for sign-off, so it is checked as a file: its Word and PDF exports are fetched by URL and opened (Phase 9's method; a Download click crashes the browser, so fetching the URL is the harness's stand-in for her click, not a persona action) | The form says it will cover 5; the document's title and introduction state 5 requirements (#1129). It covers only those 5, with citations, inside the cap, and carries J1.4c's approved criteria. It passes the Phase 9 sign-off rubric (SO1–SO4, with the J1.7 readings): report its sign-off line (#1175). The `.docx` and `.pdf` open, carry the same title and the same five requirement headings as the markdown export, and end with its last heading. A file that fails to open, is empty, or loses a requirement fails the step |
 | J1.8 | Dry-runs, then publishes 2 issues to `openzigs/flux-v2` from `/projects/:id/publish` | Bodies carry her edited criteria and a **Related code** section with her requirement's code links, or a line saying none were recorded (#1064). Because `openzigs/flux-v2` is not the analysed repository, the paths and symbols are plain code: no link, no `miniflux/v2`, no commit SHA, and the section's last line says so (#1064). No internal IDs appear as labels (#744) or in the visible body of either issue, the epic included: the footer reads `Generated by METIS`, the epic names its analysis by start time and lists sub-issues by title, and the ids are in a hidden `metis-source` comment on the last lines of the published issue's source (#1064). The dry-run plan shows every `issue.create` title even when it stops at 25 rows, and its "not shown" line counts what is left out (#1064). The epic is not named after one of her five requirements (#1064). Counts against the run's cap of 2 |
+| J1.8a | *(Conditional on #1176.)* Once the sandbox Jira from #1176 exists, publishes the same two requirements to it: dry run first, then at most 2 issues, by #1176's Jira variant of J1.8. Until it exists, skip the step and record it `skipped: no sandbox Jira (#1176)` | The Jira issues carry the same edited criteria as J1.8's; nothing is published to any other Jira project. Its cap is separate from the GitHub sandbox's |
 | J1.9 | Checks what it cost on `/projects/:id/usage` | The usage page shows the journey's spend, and it matches the ledger delta |
 
 **Handoffs to check:** J1.1's titles are the requirement titles in J1.4; J1.3's answers are in
-the text J1.4 approves; J1.4's edited criteria are in J1.8's issue bodies; J1.5's code links are in
-J1.8's bodies; J1.7's BRD names exactly J1.2's five items.
+the text J1.4 approves; the change the reviewer asked for in J1.4a is the version J1.4c's review
+approves; J1.4's and J1.4c's edited criteria are in J1.7's BRD and J1.8's issue bodies; J1.5's
+code links are in J1.8's bodies; J1.7's BRD names exactly J1.2's five items, in all three export
+formats.
 
 ### Journey 2: Developer ("Dev")
 
@@ -1015,9 +1112,8 @@ citations; J2.5's titles are J2.4's tasks.
 ### Later journeys (not yet in the plan)
 
 - Admin onboarding a team: workspace, members, budgets, model preferences.
-- Reviewer: receives a review request, comments with @mentions, approves.
 
-## Wave G — implement the plan (optional)
+## Wave G — implement the plan (conditional)
 
 Waves D and F show that METIS writes a Spec Kit `tasks.md`; nothing there shows the tasks can be
 implemented or that the result compiles. Wave G hands one feature request's `tasks.md` to an
@@ -1026,8 +1122,20 @@ and its tests pass. That turns "the plan looks right" into "the plan produced wo
 scores the diff against the reference change set. It runs from `briefs/wave-g.md` in the skill,
 dispatched to an implementing agent, not `ui-vision`: no browser and no METIS calls.
 
-- **When:** after wave D, or after journey J2 if wave F ran. Skip it on a targeted run that did
-  not touch Spec Kit.
+- **When (#1177): only when the release under test touches Spec Kit or impact analysis.** Before
+  wave A, list the METIS changes since the previous run's `metisSha` in those areas:
+
+  ```bash
+  git diff --name-only <previous metisSha>..<this run's metisSha> -- \
+    server/src/lib/spec-kit server/src/routes/spec-kit.ts ui/src/components/spec-kit \
+    'ui/src/app/(authed)/projects/[id]/spec-kit' \
+    server/src/lib/impact-analysis server/src/routes/impact-analysis.ts ui/src/components/impact \
+    'ui/src/app/(authed)/impact-analyses'
+  ```
+
+  Any path printed: run wave G after wave D, or after journey J2 if wave F ran. Nothing printed:
+  skip it and record `skipped: no Spec Kit or impact change since <sha>` in the results. A fix in
+  `fixes.json` placed in wave G also makes it run.
 - **Input:** one feature request's `tasks.md` and `plan.md`, exported from METIS (the feature
   tree's artifact viewer on the Spec Kit page). Default request: **#4478**, wave D's feature, whose
   tasks S7 already wrote. If wave F ran, J2.4's tasks for **#4336** are the alternative. #4511 has
@@ -1107,12 +1215,15 @@ skill, section 7), and the report deck shows it on a "Build proof" slide.
 - [ ] DeepSeek config confirmed: `GET /api/ai/models` shows `deepseek-flash`, `jsonSchema: false`; no Unpriced usage once `MODEL_PRICES` is set.
 - [ ] Miniflux pinned at `v2.3.3` (`c4d54f87`) and fully ingested; embeddings backend is not the offline hash stub.
 - [ ] Phases 1–20 were each run, with a Works and Useful verdict and evidence recorded.
-- [ ] Spec Kit S1–S23 (with S6b–S6d) each have a verdict (S24 optional). Every artifact in `SPEC_KIT_ARTIFACT_NAMES` was produced, edited and viewed. Every `SPECKIT_COMMANDS` entry was invoked at least once.
+- [ ] Spec Kit smoke set S2, S4, S6, S7 and S21 each have a verdict (#1177). Every other S-step has a verdict or reads `skipped (optional)`; one a fix in wave D's list named has a verdict.
 - [ ] `speckit.specify` and `speckit.plan` report **grounded on K > 0 retrieved chunks**.
 - [ ] 8/8 BA questions answered. Pass bar: **at least 6 correct with valid citations**.
-- [ ] 6/6 developer requests (#4478, #4511, #4336, #4479, #4386, #4456) have an impact analysis, a plan, and a sandbox draft, with a per-request ledger delta. For #4478, METIS surfaces `MarkAllAsReadBeforeDate`.
+- [ ] 2/2 developer requests (#4478 and #4386; #1177) have an impact analysis, a plan, and a sandbox draft, with a per-request ledger delta. For #4478, METIS surfaces `MarkAllAsReadBeforeDate`. Any optional request run has the same.
 - [ ] Every developer-issue output (impact, chat, plan, J2.1, J2.4) has file and function precision and recall and a migration verdict against its reference change set, recorded in `run.json` `changePlanAccuracy`. Each impact output (impact, J2.1) is two rows: its edit candidates on precision and recall, and its blast radius on recall only (#1073).
 - [ ] Journeys 1 and 2 each have a verdict on the three journey pass bars (completed in the UI, no data lost between steps, within budget), with the step where any of them broke.
+- [ ] Journey 1's two-user steps (J1.4a to J1.4c) each have a verdict and say how the second user ran (`operator-run`, `operator-approved` or `agent`): a rejection with a note, the analyst's change, a second review approved, and a mention, comment and discussion seen live by the other user.
+- [ ] The BRD's Word and PDF exports were fetched by URL and opened (Phase 9 and J1.7), and both BRDs have a sign-off line (#1175). J1.8a is published to the sandbox Jira, or recorded `skipped: no sandbox Jira (#1176)`.
+- [ ] Wave G ran, or is recorded as skipped with the empty Spec Kit and impact diff since the previous run.
 - [ ] Nothing was published, commented or reviewed on `miniflux/v2`; verify with `gh` and attach the output.
 - [ ] Per-phase token/cost table posted; total spend within the project budget.
 - [ ] Every failure or weak result filed as its own issue and linked to #706.
