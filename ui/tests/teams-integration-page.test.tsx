@@ -197,8 +197,15 @@ describe("TeamsIntegrationPage", () => {
     const banner = await screen.findByTestId("teams-needs-reinstall");
     expect(banner).toHaveAttribute("role", "alert");
     expect(banner).toHaveTextContent("Needs reinstall");
-    expect(banner).toHaveTextContent(/really been signing in with its password/);
-    expect(banner).toHaveTextContent(/as MultiTenant if it uses a client secret/);
+    // The most likely fix comes first: it was a password bot all along.
+    expect(banner).toHaveTextContent(
+      /Most likely fix: disconnect it and reconnect it as a MultiTenant or SingleTenant bot with its client secret/,
+    );
+    expect(banner).toHaveTextContent(
+      /Only if it really is a managed identity: ask your METIS operator to list its client ID in TEAMS_MSI_CLIENT_IDS/,
+    );
+    // It does not claim the bot is still signing in with its password.
+    expect(banner).not.toHaveTextContent(/has really been signing in/);
   });
 
   it("names the operator allowlist when a managed identity is not allowed (#1466)", async () => {

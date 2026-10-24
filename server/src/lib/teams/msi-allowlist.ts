@@ -18,6 +18,8 @@
  * credential resolution refuse.
  */
 
+import { createChildLogger } from "../logger.js";
+
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export interface TeamsMsiAllowlist {
@@ -26,8 +28,17 @@ export interface TeamsMsiAllowlist {
    * bound to, or null when any single workspace may use it.
    */
   clientIds: ReadonlyMap<string, string | null>;
-  /** Entries that could not be used: not a client-id GUID, or bound inconsistently. */
-  invalid: string[];
+  /**
+   * Entries that could not be used, by 1-based position among the non-blank
+   * entries. The entry text itself is deliberately not kept, so reporting one
+   * never echoes configuration into a log.
+   */
+  invalid: InvalidMsiAllowlistEntry[];
+}
+
+export interface InvalidMsiAllowlistEntry {
+  position: number;
+  reason: "not a client-id GUID" | "empty workspace binding" | "bound to two different workspaces";
 }
 
 /** Normalise a client id for comparison (trim + lower-case). */
@@ -35,30 +46,65 @@ export function normalizeClientId(clientId: string): string {
   return clientId.trim().toLowerCase();
 }
 
-/** Parse `TEAMS_MSI_CLIENT_IDS`. Unusable entries are reported and allow nothing. */
+const log = createChildLogger("teams-msi-allowlist");
+
+/** The last `TEAMS_MSI_CLIENT_IDS` value whose unusable entries were logged. */
+let lastWarnedValue: string | undefined;
+
+/** Warn about unusable entries, once per distinct configured value. */
+function warnOnce(raw: string, invalid: InvalidMsiAllowlistEntry[]): void {
+  if (invalid.length === 0 || raw === lastWarnedValue) return;
+  lastWarnedValue = raw;
+  log.warn("TEAMS_MSI_CLIENT_IDS has unusable entries; they allow nothing", {
+    entries: invalid.map((e) => `#${e.position}: ${e.reason}`),
+  });
+}
+
+/** Test helper — forget which configuration was already warned about. */
+export function __resetMsiAllowlistWarnings(): void {
+  lastWarnedValue = undefined;
+}
+
+/**
+ * Parse `TEAMS_MSI_CLIENT_IDS`. Unusable entries allow nothing and are logged
+ * once (by position and reason) the first time a given value is parsed.
+ */
 export function loadTeamsMsiAllowlist(env: NodeJS.ProcessEnv = process.env): TeamsMsiAllowlist {
+  const raw = env.TEAMS_MSI_CLIENT_IDS ?? "";
   const clientIds = new Map<string, string | null>();
+  const positions = new Map<string, number[]>();
   const conflicted = new Set<string>();
-  const invalid: string[] = [];
-  for (const part of (env.TEAMS_MSI_CLIENT_IDS ?? "").split(",")) {
+  const invalid: InvalidMsiAllowlistEntry[] = [];
+  let position = 0;
+  for (const part of raw.split(",")) {
     const entry = part.trim();
     if (!entry) continue;
+    position += 1;
     const eq = entry.indexOf("=");
     const id = normalizeClientId(eq === -1 ? entry : entry.slice(0, eq));
     const workspaceId = eq === -1 ? null : entry.slice(eq + 1).trim();
-    if (!GUID.test(id) || workspaceId === "") {
-      invalid.push(entry);
+    if (!GUID.test(id)) {
+      invalid.push({ position, reason: "not a client-id GUID" });
+      continue;
+    }
+    if (workspaceId === "") {
+      invalid.push({ position, reason: "empty workspace binding" });
       continue;
     }
     // The same identity listed twice with different bindings is ambiguous:
     // refuse it outright rather than guess which workspace was meant.
     if (clientIds.has(id) && clientIds.get(id) !== workspaceId) conflicted.add(id);
     clientIds.set(id, workspaceId);
+    positions.set(id, [...(positions.get(id) ?? []), position]);
   }
   for (const id of conflicted) {
     clientIds.delete(id);
-    invalid.push(id);
+    for (const p of positions.get(id) ?? []) {
+      invalid.push({ position: p, reason: "bound to two different workspaces" });
+    }
   }
+  invalid.sort((a, b) => a.position - b.position);
+  warnOnce(raw, invalid);
   return { clientIds, invalid };
 }
 

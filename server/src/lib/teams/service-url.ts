@@ -34,17 +34,3 @@ export function isTrustedBotServiceUrl(serviceUrl: unknown): boolean {
   const host = url.hostname.toLowerCase();
   return TRUSTED_EXACT_HOSTS.has(host) || TRUSTED_HOST_SUFFIXES.some((s) => host.endsWith(s));
 }
-
-/** Thrown before a proactive send whose reference names an untrusted `serviceUrl`. */
-export class UntrustedServiceUrlError extends Error {
-  constructor() {
-    // The URL itself is deliberately not echoed: it is admin-supplied input.
-    super("Teams conversation reference serviceUrl is not a Bot Framework host");
-    this.name = "UntrustedServiceUrlError";
-  }
-}
-
-/** Throw {@link UntrustedServiceUrlError} unless `serviceUrl` is trusted. */
-export function assertTrustedBotServiceUrl(serviceUrl: unknown): void {
-  if (!isTrustedBotServiceUrl(serviceUrl)) throw new UntrustedServiceUrlError();
-}

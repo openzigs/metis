@@ -30,11 +30,16 @@ import {
   type TeamsManifestResult,
   type TeamsReinstallReason,
 } from "@/lib/teams-integration-api";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/ui/page-header";
 
 /** Why the connected bot needs reinstalling, and what to do about it (#1466). */
 const REINSTALL_MESSAGES: Record<TeamsReinstallReason, string> = {
   "legacy-app-type":
-    "This bot was saved as a managed identity under an old setting that never took effect, so it has really been signing in with its password. Disconnect it and reconnect it: as UserAssignedMsi with no password if it is a managed identity, or as MultiTenant if it uses a client secret.",
+    "This bot was saved with an old managed-identity setting that never took effect, so until this update it signed in with the password saved alongside it. That password is no longer used, and the bot may not be able to sign in. Most likely fix: disconnect it and reconnect it as a MultiTenant or SingleTenant bot with its client secret. Only if it really is a managed identity: ask your METIS operator to list its client ID in TEAMS_MSI_CLIENT_IDS, then reconnect it as UserAssignedMsi with no password.",
   "msi-not-allowed":
     "This managed identity is not allowed for this workspace, so the bot cannot sign in. Ask your METIS operator to list its client ID for this workspace in TEAMS_MSI_CLIENT_IDS, or reconnect the bot with a password.",
   "msi-in-use":
@@ -44,11 +49,6 @@ const REINSTALL_MESSAGES: Record<TeamsReinstallReason, string> = {
   "unknown-app-type":
     "This bot's app type is not one Teams recognises, so it cannot sign in. Disconnect it and reconnect it with a supported app type.",
 };
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { PageHeader } from "@/components/ui/page-header";
 
 const ACTIVE_WORKSPACE_STORAGE_KEY = "metis.activeWorkspaceId";
 

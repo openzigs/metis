@@ -121,7 +121,9 @@ TEAMS_MSI_CLIENT_IDS=<client-id-guid>[,...]
   has one workspace.
 - **Unset or empty:** every managed-identity install is refused with
   `403 MSI_CLIENT_ID_NOT_ALLOWED`. Unusable entries allow nothing: a non-GUID, an
-  empty binding, or the same id bound to two different workspaces.
+  empty binding, or the same id bound to two different workspaces. The server logs
+  them once, the first time it reads the value, by position and reason only (for
+  example `#2: not a client-id GUID`). The entries themselves are never logged.
 - **Checked on every credential resolution, not only at install.** Removing an id
   from the list stops that bot authenticating on the next send or inbound
   activity, with the same named code.
@@ -1017,9 +1019,9 @@ AI, or promote a requirement.
    another's identity. An unbound entry only stops two workspaces holding it at
    once. Never list the host's own identities unless a bot should use them
    (#1466).
-4. **Map Teams users** (SSO email match or explicit admin link) before they expect
+5. **Map Teams users** (SSO email match or explicit admin link) before they expect
    to participate — unmapped senders are rejected with a hint, never attributed.
-5. **Tune the inbound cap** (`TEAMS_INBOUND_RATE_LIMIT_*`) to your channel volume;
+6. **Tune the inbound cap** (`TEAMS_INBOUND_RATE_LIMIT_*`) to your channel volume;
    the default of 30/min/conversation suits typical discussion traffic.
 
 ### Residual risks (accepted)

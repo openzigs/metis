@@ -1,11 +1,7 @@
 /** #1466 — the proactive-send serviceUrl allowlist. */
 import { describe, expect, it } from "vitest";
 
-import {
-  assertTrustedBotServiceUrl,
-  isTrustedBotServiceUrl,
-  UntrustedServiceUrlError,
-} from "./service-url.js";
+import { isTrustedBotServiceUrl } from "./service-url.js";
 
 describe("isTrustedBotServiceUrl (#1466)", () => {
   it.each([
@@ -36,17 +32,5 @@ describe("isTrustedBotServiceUrl (#1466)", () => {
     ["a non-string", 42],
   ])("refuses %s", (_label, url) => {
     expect(isTrustedBotServiceUrl(url)).toBe(false);
-  });
-
-  it("assertTrustedBotServiceUrl throws a named error that does not echo the URL", () => {
-    expect(() => assertTrustedBotServiceUrl("https://smba.trafficmanager.net/amer/")).not.toThrow();
-    let thrown: unknown;
-    try {
-      assertTrustedBotServiceUrl("https://attacker.example.com/collect");
-    } catch (err) {
-      thrown = err;
-    }
-    expect(thrown).toBeInstanceOf(UntrustedServiceUrlError);
-    expect((thrown as Error).message).not.toContain("attacker");
   });
 });

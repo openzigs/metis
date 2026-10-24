@@ -154,15 +154,18 @@ class FakeDb {
     },
     findFirst: async (args: {
       where: { workspaceId: string; status?: string };
-      orderBy?: unknown;
+      orderBy?: { updatedAt?: "asc" | "desc" };
     }): Promise<InstallRow | null> => {
-      return (
-        this.installs.find(
-          (i) =>
-            i.workspaceId === args.where.workspaceId &&
-            (args.where.status ? i.status === args.where.status : true),
-        ) ?? null
+      const matches = this.installs.filter(
+        (i) =>
+          i.workspaceId === args.where.workspaceId &&
+          (args.where.status ? i.status === args.where.status : true),
       );
+      // Like the database: without an orderBy the first row stored comes back.
+      if (args.orderBy?.updatedAt === "desc") {
+        matches.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+      }
+      return matches[0] ?? null;
     },
     findMany: async (args: {
       where: {
@@ -614,10 +617,16 @@ describe("TeamsInstallationStore (#548)", () => {
       tenantId: "t",
     });
     db.installs[0].appType = "UserAssignedMSID";
+    // Resolution still refuses it with the blocking code...
     await expect(store.resolveAppPassword("ws-1")).rejects.toMatchObject({
       code: "MSI_CLIENT_ID_NOT_ALLOWED",
     });
-    expect((await store.getByWorkspace("ws-1"))?.reinstallReason).toBe("msi-not-allowed");
+    // ...but the admin is told it is a legacy row: it was really a password bot,
+    // so "reconnect it" is the advice that fits, not "allow the id".
+    expect(await store.getByWorkspace("ws-1")).toMatchObject({
+      needsReinstall: true,
+      reinstallReason: "legacy-app-type",
+    });
   });
 
   it("a stored legacy `UserAssignedMSID` installation now reaches botbuilder's managed-identity path", async () => {
@@ -645,12 +654,37 @@ describe("TeamsInstallationStore (#548)", () => {
   });
 
   it("refuses to resolve a managed-identity row stored without a tenant id, and flags it", async () => {
-    await store.install({ workspaceId: "ws-1", appId: MSI, appPassword: "pw" });
-    db.installs[0].appType = "UserAssignedMSID";
+    await store.install(msiInput());
+    db.installs[0].tenantId = null;
     await expect(store.resolveAppPassword("ws-1")).rejects.toMatchObject({
       code: "TENANT_REQUIRED",
     });
     expect((await store.getByWorkspace("ws-1"))?.reinstallReason).toBe("msi-missing-tenant");
+
+    // The same row under the legacy spelling is still refused, and reported as legacy.
+    db.installs[0].appType = "UserAssignedMSID";
+    await expect(store.resolveAppPassword("ws-1")).rejects.toMatchObject({
+      code: "TENANT_REQUIRED",
+    });
+    expect((await store.getByWorkspace("ws-1"))?.reinstallReason).toBe("legacy-app-type");
+  });
+
+  it("uninstall removes the newest active installation, the one every read shows", async () => {
+    // Two active rows, e.g. written before install began revoking the others.
+    await store.install({ workspaceId: "ws-1", appId: "app-old", appPassword: "pw-old" });
+    db.installs.push({
+      ...db.installs[0],
+      id: "inst_new",
+      appId: "app-new",
+      appPasswordRef: "",
+      updatedAt: new Date(db.installs[0].updatedAt.getTime() + 60_000),
+    });
+    db.installs[0].updatedAt = new Date(db.installs[0].updatedAt.getTime() - 60_000);
+    expect((await store.getByWorkspace("ws-1"))?.appId).toBe("app-new");
+
+    expect(await store.uninstall("ws-1")).toBe(true);
+    expect(db.installs.find((i) => i.appId === "app-new")?.status).toBe("revoked");
+    expect(db.installs.find((i) => i.appId === "app-old")?.status).toBe("active");
   });
 
   it("refuses to resolve an unrecognised stored app type instead of falling through to MultiTenant", async () => {

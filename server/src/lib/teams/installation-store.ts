@@ -316,7 +316,7 @@ export class TeamsInstallationStore {
     // against the operator's allowlist HERE too, not only at install, so a row
     // written before the allowlist existed, or whose id was since removed from
     // it, stops authenticating.
-    this.refuse(await this.reinstallReason(row));
+    this.refuse(await this.blockingReason(row));
     const appType = normalizeTeamsAppType(row.appType) as TeamsAppType;
 
     if (appType === "UserAssignedMsi") {
@@ -350,8 +350,11 @@ export class TeamsInstallationStore {
    * revoked. Idempotent.
    */
   async uninstall(workspaceId: string): Promise<boolean> {
+    // Newest first, as every read path picks it, so uninstall removes the bot the
+    // admin is looking at.
     const row = await this.db.teamsAppInstallation.findFirst({
       where: { workspaceId, status: "active" },
+      orderBy: { updatedAt: "desc" },
     });
     if (!row) return false;
     await this.revoke(row);
@@ -376,15 +379,27 @@ export class TeamsInstallationStore {
     });
   }
 
-  /** Why a stored installation must be reinstalled, or null when it is sound. */
+  /**
+   * Why a stored installation must be reinstalled, as shown to the admin, or null
+   * when it is sound. A row stored with the pre-#1466 spelling reports
+   * `legacy-app-type` first, whatever else is wrong with it: that bot was really a
+   * password bot, so "reconnect it" is the advice that fits, not "allow the id".
+   */
   private async reinstallReason(row: InstallRowLike): Promise<TeamsReinstallReason | null> {
+    if (row.appType.trim().toLowerCase() === LEGACY_MSI_APP_TYPE) return "legacy-app-type";
+    return this.blockingReason(row);
+  }
+
+  /** The reason a stored installation must not authenticate, or null when it may. */
+  private async blockingReason(
+    row: InstallRowLike,
+  ): Promise<Exclude<TeamsReinstallReason, "legacy-app-type"> | null> {
     const appType = normalizeTeamsAppType(row.appType);
     if (!appType) return "unknown-app-type";
     if (appType === "UserAssignedMsi") {
-      const blocking = await this.msiReason(row.workspaceId, row.appId, row.tenantId);
-      if (blocking) return blocking;
+      return this.msiReason(row.workspaceId, row.appId, row.tenantId);
     }
-    return row.appType.trim().toLowerCase() === LEGACY_MSI_APP_TYPE ? "legacy-app-type" : null;
+    return null;
   }
 
   /** The blocking reason a managed identity may not be used by `workspaceId`, if any. */
