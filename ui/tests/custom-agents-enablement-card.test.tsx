@@ -18,6 +18,7 @@ vi.mock("@/lib/sdk-alignment-api", async () => {
       ...actual.sdkApi,
       listAgents: vi.fn(),
       listEnabledAgents: vi.fn(),
+      listDisabledAgentIds: vi.fn(),
       setAgentEnablement: vi.fn(),
       deleteAgent: vi.fn(),
     },
@@ -34,6 +35,7 @@ import { projectsApi } from "@/lib/projects-api";
 const listAgents = sdkApi.listAgents as unknown as ReturnType<typeof vi.fn>;
 const listEnabledAgents = sdkApi.listEnabledAgents as unknown as ReturnType<typeof vi.fn>;
 const setAgentEnablement = sdkApi.setAgentEnablement as unknown as ReturnType<typeof vi.fn>;
+const listDisabledAgentIds = sdkApi.listDisabledAgentIds as unknown as ReturnType<typeof vi.fn>;
 const deleteAgent = sdkApi.deleteAgent as unknown as ReturnType<typeof vi.fn>;
 const getProject = projectsApi.get as unknown as ReturnType<typeof vi.fn>;
 
@@ -55,6 +57,8 @@ beforeEach(() => {
   listAgents.mockReset();
   listEnabledAgents.mockReset();
   setAgentEnablement.mockReset();
+  listDisabledAgentIds.mockReset();
+  listDisabledAgentIds.mockResolvedValue([]);
   deleteAgent.mockReset();
   getProject.mockReset();
   getProject.mockResolvedValue({ id: "proj-1", workspaceId: "ws-1" });
@@ -112,6 +116,40 @@ describe("<CustomAgentsEnablementCard /> (#85)", () => {
     // The one default, stated on the card itself.
     expect(screen.getByTestId("ca-default-off-hint")).toHaveTextContent(/off until enabled/i);
     expect(screen.getByTestId("ca-default-off-hint")).toHaveTextContent(/chat/i);
+  });
+
+  it("#1445 review — 'Off' for an agent someone switched off, 'Off until enabled' for one nobody has", async () => {
+    listAgents.mockResolvedValue([agent("never", "Never touched"), agent("off", "Turned off")]);
+    listEnabledAgents.mockResolvedValue([]);
+    listDisabledAgentIds.mockResolvedValue(["off"]);
+    renderCard();
+
+    await waitFor(() => expect(screen.getByTestId("ca-enablement-row-off")).toBeInTheDocument());
+    expect(screen.getByTestId("ca-enablement-state-off")).toHaveTextContent(/^Off$/);
+    expect(screen.getByTestId("ca-enablement-state-never")).toHaveTextContent("Off until enabled");
+    // Both can still be switched on.
+    expect(screen.getByTestId("ca-enablement-toggle-off")).toHaveTextContent(/^enable$/i);
+  });
+
+  it("#1445 review — an agent from another project that is enabled here is listed, so it can be switched off", async () => {
+    listAgents.mockResolvedValue([agent("own", "Own")]);
+    const foreign = { ...agent("foreign", "Borrowed"), projectId: "proj-2" };
+    listEnabledAgents.mockResolvedValue([foreign]);
+    renderCard();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("ca-enablement-row-foreign")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("ca-other-project-foreign")).toHaveTextContent(
+      "from another project",
+    );
+    expect(screen.getByTestId("ca-enablement-state-foreign")).toHaveTextContent(/^On$/);
+    expect(screen.getByTestId("ca-enablement-toggle-foreign")).toHaveTextContent(/disable/i);
+    // Not this project's agent: no Edit / Delete here.
+    expect(screen.queryByTestId("ca-edit-open-foreign")).toBeNull();
+    expect(screen.queryByTestId("ca-delete-foreign")).toBeNull();
+    // This project's own agent carries no such badge.
+    expect(screen.queryByTestId("ca-other-project-own")).toBeNull();
   });
 
   it("enables a disabled agent and live-updates via refetch", async () => {

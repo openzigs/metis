@@ -240,11 +240,21 @@ const prisma = {
       async ({
         where,
       }: {
-        where: { projectId?: string; enabled?: boolean; customAgentId?: { in: string[] } };
+        where: {
+          projectId?: string;
+          enabled?: boolean;
+          customAgentId?: { in: string[] };
+          // #1445 review — the catalog reads exactly each agent's owner row.
+          OR?: Array<{ customAgentId: string; projectId: string }>;
+        };
       }) =>
         enablements
           .filter(
             (e) =>
+              (where.OR === undefined ||
+                where.OR.some(
+                  (c) => c.customAgentId === e.customAgentId && c.projectId === e.projectId,
+                )) &&
               (where.projectId === undefined || e.projectId === where.projectId) &&
               (where.customAgentId === undefined ||
                 where.customAgentId.in.includes(e.customAgentId)) &&
@@ -409,6 +419,22 @@ describe("list handlers — tenant scoping (BOLA)", () => {
       // Switching it on makes it runnable.
       setEnabled("a-own", "p-own", true);
       expect(await listedFor({ projectId: "p-own" })).toEqual(["a-own"]);
+    });
+
+    it("the catalog reads only each agent's OWNING project's row", async () => {
+      // Enabled elsewhere, never switched by its owner: still off in the catalog.
+      neverToggled("a-own");
+      setEnabled("a-own", "p-other", true);
+      const res = await call("list-agents", {}, "u-low", READ);
+      expect((res as { result: Array<{ id: string }> }).result.map((r) => r.id)).toEqual([
+        "a-builtin",
+      ]);
+      const where = (
+        prisma.customAgentEnablement.findMany.mock.calls.at(-1)![0] as {
+          where: { OR?: Array<{ customAgentId: string; projectId: string }> };
+        }
+      ).where;
+      expect(where.OR).toEqual([{ customAgentId: "a-own", projectId: "p-own" }]);
     });
   });
 

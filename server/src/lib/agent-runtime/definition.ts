@@ -199,7 +199,7 @@ export async function loadAgentDefinition(
  * exactly what the Custom agents card shows (`listEnabledAgentsForProject`).
  *
  * The ONE exception is the authoring playground, and it has its own rule
- * ({@link customAgentPlaygroundUsable}) used by its own route only.
+ * ({@link customAgentPlaygroundAccess}) used by its own route only.
  */
 export function customAgentUsableInProject(
   enablement: { enabled: boolean } | null | undefined,
@@ -208,21 +208,34 @@ export function customAgentUsableInProject(
 }
 
 /**
- * #1445 — the authoring playground's exception (`POST /custom-agents/:id/invoke`
- * only): the project that OWNS an agent may test it before enabling it, so a
- * never-switched owned agent (no row) runs there. An explicit row still
- * decides either way — an owned agent switched OFF stays off, and another
- * project's agent needs an enabled row. Never use this where a chat turn, an
- * ACP call or an analysis run selects agents: those use
+ * #1445 — what the authoring playground (`POST /custom-agents/:id/invoke`, and
+ * nothing else) may do with an agent:
+ *   • `run` — enabled for the project; or the project OWNS it, nobody has
+ *     switched it either way, and the caller is someone who could enable it (a
+ *     workspace admin: the author testing it before enabling it);
+ *   • `switched-off` — the project's own agent, explicitly turned off;
+ *   • `off-until-enabled` — the project's own agent, never switched, and the
+ *     caller may not enable it: the strict rule applies to them too;
+ *   • `not-found` — anything else (another project's agent not enabled here).
+ */
+export type PlaygroundAccess = "run" | "switched-off" | "off-until-enabled" | "not-found";
+
+/**
+ * #1445 — the playground's exception, as a pure rule. Never use this where a
+ * chat turn, an ACP call or an analysis run selects agents: those use
  * {@link customAgentUsableInProject}.
  */
-export function customAgentPlaygroundUsable(
+export function customAgentPlaygroundAccess(
   agentProjectId: string | null,
   projectId: string,
   enablement: { enabled: boolean } | null | undefined,
-): boolean {
-  if (enablement) return enablement.enabled;
-  return agentProjectId === projectId;
+  callerMayEnable: boolean,
+): PlaygroundAccess {
+  const owned = agentProjectId === projectId;
+  if (enablement?.enabled) return "run";
+  if (!owned) return "not-found";
+  if (enablement) return "switched-off";
+  return callerMayEnable ? "run" : "off-until-enabled";
 }
 
 async function readEnablement(
@@ -251,18 +264,24 @@ export async function isCustomAgentUsableInProject(
 
 /**
  * #1445 — may the authoring playground run this CUSTOM agent for `projectId`?
- * See {@link customAgentPlaygroundUsable}. The playground route's check only.
+ * See {@link customAgentPlaygroundAccess}. The playground route's check only.
+ * `callerMayEnable` is asked only when it decides the answer (the project's own
+ * agent with no row), so ordinary invocations cost no extra lookup.
  */
-export async function isCustomAgentPlaygroundUsable(
+export async function customAgentPlaygroundAccessFor(
   def: Pick<AgentDefinitionDto, "kind" | "id" | "projectId">,
   projectId: string,
+  callerMayEnable: () => Promise<boolean>,
   db: PrismaClient = defaultPrisma,
-): Promise<boolean> {
-  if (def.kind !== "custom") return false;
-  return customAgentPlaygroundUsable(
+): Promise<PlaygroundAccess> {
+  if (def.kind !== "custom") return "not-found";
+  const row = await readEnablement(def.id, projectId, db);
+  const needsCaller = !row && def.projectId === projectId;
+  return customAgentPlaygroundAccess(
     def.projectId,
     projectId,
-    await readEnablement(def.id, projectId, db),
+    row,
+    needsCaller ? await callerMayEnable() : false,
   );
 }
 

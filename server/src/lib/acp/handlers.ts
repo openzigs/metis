@@ -277,16 +277,22 @@ async function handleListAgents(params: unknown, ctx: AuthedAcpContext): Promise
   // #1005 / #1445 — a project agent is listed only while it is enabled for the
   // project that OWNS it (off until enabled). (A built-in has no owner;
   // whether a given project may run one is the per-project list above.)
-  const ownerRows = await prisma.customAgentEnablement.findMany({
-    where: { customAgentId: { in: customs.map((c) => c.id) } },
-    select: { customAgentId: true, projectId: true, enabled: true },
-  });
+  // Only each agent's OWNING project's row is read.
+  const owned = customs.filter((c): c is typeof c & { projectId: string } => c.projectId !== null);
+  const ownerRows =
+    owned.length === 0
+      ? []
+      : await prisma.customAgentEnablement.findMany({
+          where: { OR: owned.map((c) => ({ customAgentId: c.id, projectId: c.projectId })) },
+          select: { customAgentId: true, projectId: true, enabled: true },
+        });
+  const rowKey = (customAgentId: string, projectId: string) => `${customAgentId}\u0000${projectId}`;
+  const byOwner = new Map(ownerRows.map((e) => [rowKey(e.customAgentId, e.projectId), e]));
   return customs
-    .filter((c) => {
-      if (c.projectId === null) return true;
-      const row = ownerRows.find((e) => e.customAgentId === c.id && e.projectId === c.projectId);
-      return customAgentUsableInProject(row);
-    })
+    .filter(
+      (c) =>
+        c.projectId === null || customAgentUsableInProject(byOwner.get(rowKey(c.id, c.projectId))),
+    )
     .map(toAgentSummary);
 }
 

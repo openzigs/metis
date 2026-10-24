@@ -507,6 +507,36 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
     });
 
+    it("#1445 review — resuming a chat whose agent is off tells the user, in words, instead of failing silently", async () => {
+      const created = await createSession(alice, {
+        projectId: IDS.project,
+        agentRef: "custom:c-bare",
+      });
+      expect(created.status).toBe(201);
+      const sid = created.body.data.session.id as string;
+      const resume = () =>
+        request(app())
+          .post(`/api/ai/sessions/${sid}/resume`)
+          .set("Authorization", `Bearer ${alice}`)
+          .send({});
+      const on = await resume();
+      expect(on.status, on.text.slice(0, 300)).toBe(200);
+      expect(on.body.data.agentNotice).toBeNull();
+      // The upgrade case: an owned agent with no enablement row at all.
+      await db.customAgentEnablement.deleteMany({ where: { customAgentId: "c-bare" } });
+      try {
+        const off = await resume();
+        expect(off.status).toBe(200);
+        expect(off.body.data.agentNotice).toBe(
+          'This chat\'s agent "Bare" is switched off for this project, so the chat runs without its persona, tools and skills. Ask a workspace admin to enable it under Custom agents.',
+        );
+      } finally {
+        await db.customAgentEnablement.create({
+          data: { customAgentId: "c-bare", projectId: IDS.project, enabled: true },
+        });
+      }
+    });
+
     it("an agent WITH skills the project stops using fails closed on skills too: no load_skill, no catalog", async () => {
       await db.customAgent.create({
         data: {

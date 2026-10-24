@@ -167,6 +167,10 @@ export default function ChatPage() {
   // the session cannot bind it here, the chat falls back to the default agent,
   // the stored choice is cleared, and the user is told once.
   const [agentNotice, setAgentNotice] = useState<string | null>(null);
+  // #1445 — the server's word that THIS session's custom agent cannot run in
+  // its project any more (switched off, never enabled, deleted). Without it the
+  // chat silently loses the agent's persona, tools and skills.
+  const [sessionAgentNotice, setSessionAgentNotice] = useState<string | null>(null);
   // Clearing the choice changes `agentKey`, which would otherwise re-run the
   // session effect and create a SECOND session for a chat that already has one.
   const skipAgentRecreateRef = useRef(false);
@@ -228,6 +232,7 @@ export default function ChatPage() {
     // A compaction note belongs to the session it happened in.
     setCompactionNote(null);
     setReadOnlyReason(null);
+    setSessionAgentNotice(null);
     // #1412 review — an error (a "Chat not found" link above all) belongs to
     // the chat it was raised for. Next.js does not remount on a query-string
     // change, so without this the next chat opened here showed under it.
@@ -285,6 +290,7 @@ export default function ChatPage() {
         setSession(restored.session);
         setMessages(fromServer(restored.messages));
         setReadOnlyReason(restored.readOnlyReason ?? null);
+        setSessionAgentNotice(restored.agentNotice ?? null);
         storeActiveSessionId(restored.session.id);
       } catch (err) {
         if (!cancelled) setError((err as Error).message);
@@ -382,6 +388,7 @@ export default function ChatPage() {
     // Per-session UI state is reset here AND in the session-load effect; a
     // read-only notice left over from a resumed session would lock the new one.
     setReadOnlyReason(null);
+    setSessionAgentNotice(null);
     setSessionScope(null);
     setSession(null);
     resetToolActivity();
@@ -679,6 +686,15 @@ export default function ChatPage() {
         {agentNotice ? (
           <p role="status" data-testid="chat-agent-fallback-notice" className="text-sm">
             {agentNotice}
+          </p>
+        ) : null}
+        {sessionAgentNotice ? (
+          <p
+            role="status"
+            data-testid="chat-session-agent-notice"
+            className="rounded border border-warning/40 bg-warning-muted p-2 text-sm"
+          >
+            {sessionAgentNotice}
           </p>
         ) : null}
         {readOnlyReason ? (

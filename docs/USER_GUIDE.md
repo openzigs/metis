@@ -2837,15 +2837,24 @@ the next message.
 one the project owns, does nothing in the project until you press **Enable** on
 the **Custom agents** card: chat does not offer it (neither the agent picker
 nor as a hand-off target), ACP `list-agents` does not list it and `run-agent`
-answers `AGENT_NOT_FOUND`, and analysis runs do not run it. The card shows it as
-**Off until enabled**, and the authoring wizard says so once the agent is saved.
-The one exception is the wizard's playground, which may run an agent its project
-owns before it is enabled, so you can test it first; an agent you switched off
-stays off there too. Once enabled, an agent joins every later analysis run of
-the project, and each run costs model calls for it (see #938).
+answers `AGENT_NOT_FOUND`, and analysis runs do not run it. The card shows each
+agent as **On**, **Off** (someone switched it off) or **Off until enabled**
+(nobody has switched it yet), and the authoring wizard says so once the agent is
+saved. The card also lists an agent from another project that is enabled here,
+marked "from another project", so it can be switched off where it is used.
+The one exception is the wizard's playground: a workspace admin (who could
+enable the agent anyway) may run an agent the project owns before it is
+enabled, to test it first. Other members get "off for this project until a
+workspace admin enables it", and an agent someone switched off stays off there
+for everyone. The playground is rate-limited and checks the project's budget
+like chat does. Once enabled, an agent joins every later analysis run of the
+project, and each run costs model calls for it (see #938).
 **Upgrading:** before #1445 an agent the project owned and had never switched
 was usable in chat, ACP and the playground (though not in analysis runs). Such
 agents are now off: press **Enable** on the card for each one you still use.
+Reopening a chat that was bound to such an agent shows a notice naming the
+agent and saying it is switched off for the project; until it is enabled, the
+chat runs without the agent's persona, tools and skills.
 
 **Agents and skills — local-model smoke run (manual).** The CI end-to-end test
 (`e2e/tests/agents-skills.spec.ts`) drives this flow with a scripted model. To
