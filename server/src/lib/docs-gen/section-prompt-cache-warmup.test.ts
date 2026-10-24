@@ -111,6 +111,7 @@ function recordingModel(rec: Recording, provider: FakeProvider): AIProvider {
       try {
         // Let the other calls of a wave start before this one ends.
         await new Promise((r) => setTimeout(r, 5));
+        rec.events.push(`first:${index}`);
         yield { type: "delta", content: `## ${section}\n\n### Topic\n\nWritten.` };
         yield {
           type: "usage",
@@ -297,6 +298,27 @@ describe("Anthropic: the batches' shared user lead ends in a cache breakpoint (#
       expect(leads[i]).not.toContain("=== EXTRACTED MODULE FACTS ===");
       expect(leads[i]).toBe(leads[0]);
     }
+  });
+
+  // Panel finding on this PR: the first-batch wait (#208) counts the lead now.
+  // Haiku 4.5 caches nothing under 4,096 tokens; its system prompt alone is
+  // under that, the system prompt and the excerpts are over it.
+  it("holds the other batches until the first reply begins when only the lead clears the floor", async () => {
+    const HAIKU = { key: "anthropic", model: "claude-haiku-4-5" };
+    const firstBatchHeld = (rec: Recording): boolean => {
+      const [first, ...rest] = rec.calls.filter((c) => c.section === RULES.label);
+      expect(rest.length).toBeGreaterThan(0);
+      const begun = rec.events.indexOf(`first:${first.index}`);
+      return rest.every((c) => rec.events.indexOf(`start:${c.index}`) > begun);
+    };
+    const withLead = await generate(HAIKU);
+    const rules = withLead.calls.filter((c) => c.section === RULES.label);
+    expect(Math.ceil(rules[0].system.length / 4)).toBeLessThan(4_096);
+    const lead = rules[0].opts.promptCaching?.userPrefix ?? "";
+    expect(Math.ceil((rules[0].system.length + lead.length) / 4)).toBeGreaterThanOrEqual(4_096);
+    expect(firstBatchHeld(withLead)).toBe(true);
+    // Control: with no retrieved grounding the lead is short, and the batches fan out at once.
+    expect(firstBatchHeld(await generate(HAIKU, null))).toBe(false);
   });
 
   it("writes no lead breakpoint for a section written in one call", async () => {
