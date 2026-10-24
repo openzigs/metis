@@ -17,6 +17,7 @@ import {
   purgeOldPayloadDigests,
   releasePayload,
   signedEventTime,
+  signedGithubEvent,
   PAYLOAD_DIGEST_RETENTION_MS,
   SIGNED_EVENT_MAX_AGE_MS,
 } from "./payload-replay.js";
@@ -104,5 +105,33 @@ describe("signed event age", () => {
 
   it("the retention window outlives the age limit by more than a day", () => {
     expect(PAYLOAD_DIGEST_RETENTION_MS - SIGNED_EVENT_MAX_AGE_MS).toBeGreaterThan(DAY);
+  });
+});
+
+describe("signedGithubEvent (#1483)", () => {
+  it("tells GitHub's events apart by their signed body, not a header", () => {
+    expect(signedGithubEvent({ action: "opened", pull_request: {} })).toBe("pull_request");
+    expect(signedGithubEvent({ pull_request: {}, review: {} })).toBe("pull_request_review");
+    expect(signedGithubEvent({ pull_request: {}, comment: {} })).toBe(
+      "pull_request_review_comment",
+    );
+    expect(signedGithubEvent({ pull_request: {}, thread: {} })).toBe("pull_request_review_thread");
+    expect(signedGithubEvent({ action: "closed", issue: {} })).toBe("issues");
+    expect(signedGithubEvent({ action: "edited", issue: {}, comment: {} })).toBe("issue_comment");
+  });
+
+  it("is null for a body that is none of them", () => {
+    for (const p of [
+      null,
+      undefined,
+      "x",
+      [],
+      {},
+      { zen: "ping" },
+      { issue: "x" },
+      { issue: [] },
+    ]) {
+      expect(signedGithubEvent(p)).toBeNull();
+    }
   });
 });

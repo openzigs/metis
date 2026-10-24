@@ -128,17 +128,20 @@ vi.mock("../src/lib/prisma.js", () => ({
         taskExportRows.set(row.id, row);
         return row;
       }),
-      findFirst: vi.fn(async ({ where }: any) => {
-        for (const r of taskExportRows.values()) {
-          if (
+      // #1483 — the issue sync reads every candidate export, earliest first.
+      findMany: vi.fn(async ({ where }: any) =>
+        [...taskExportRows.values()].filter(
+          (r) =>
             r.repoOwner === where.repoOwner &&
             r.repoName === where.repoName &&
-            r.issueNumber === where.issueNumber
-          )
-            return r;
-        }
-        return null;
-      }),
+            r.issueNumber === where.issueNumber &&
+            (typeof where.projectId !== "string" || r.projectId === where.projectId),
+        ),
+      ),
+    },
+    // #1483 — and keeps those in a live project: every project here is live.
+    project: {
+      findMany: vi.fn(async ({ where }: any) => (where.id.in as string[]).map((id) => ({ id }))),
     },
   },
 }));

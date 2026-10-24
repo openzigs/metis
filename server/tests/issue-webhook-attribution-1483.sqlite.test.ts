@@ -475,9 +475,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
         const res = await deliver(DEPLOYMENT_SECRET, comment, SHARED, "issues");
         expect(res.status).toBe(200);
+        // The effect first: on `main` the drift half took the header's word.
+        expect(await driftFor(PA)).toBe(0);
         expect(res.body).toMatchObject({ handled: false, reason: "NOT_ISSUES_EVENT" });
         expect(res.body.drift).toEqual({ handled: false, reason: "NOT_ISSUES_EVENT" });
-        expect(await driftFor(PA)).toBe(0);
       });
 
       it("a pull-request body captured at /github/pr is neither acted on nor claimed at /github/issues", async () => {
@@ -489,10 +490,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           nonce: ++seq,
         });
         const res = await deliver(DEPLOYMENT_SECRET, pr, SHARED, "issues");
-        expect(res.body).toMatchObject({ handled: false, reason: "NOT_ISSUES_EVENT" });
         expect(await db.webhookPayloadDigest.count({ where: { receiver: "github-issues" } })).toBe(
           0,
         );
+        expect(res.body).toMatchObject({ handled: false, reason: "NOT_ISSUES_EVENT" });
       });
 
       it("an `issues` body sent to /github/pr is not claimed there, so the issues receiver still takes it once", async () => {
