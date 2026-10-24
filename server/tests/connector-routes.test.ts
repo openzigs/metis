@@ -337,13 +337,18 @@ function fakeDbAdapter(): DbDriverAdapter {
 // `git clone https://github.com/octocat/demo.git`. The fake records the clone and
 // fails it like an unreachable remote, so the deep ingest ends in its handled
 // CLONE_FAILED path with no process spawn and no network.
+//
+// Most tests here create a repo connector and so start a background ingest they never
+// await. The fake is therefore installed ONCE for the whole file (beforeAll → afterAll),
+// not per test: a late clone from one test must still land on the fake, never on the
+// real client in the gap after a per-test reset.
 const cloneCalls: { url: string; target: string }[] = [];
 function fakeGit(): SimpleGitLike {
   const git: SimpleGitLike = {
-    clone: vi.fn(async (url: string, target: string) => {
+    clone: async (url: string, target: string) => {
       cloneCalls.push({ url, target });
       throw new Error("clone stubbed in connector-routes.test.ts (#1512)");
-    }),
+    },
     env: () => git,
   };
   return git;
@@ -363,9 +368,12 @@ beforeAll(() => {
   process.env.RATE_LIMIT_MAX = "100000";
   cloneDir = mkdtempSync(nodePath.join(os.tmpdir(), "metis-1512-"));
   process.env.REPO_CLONE_DIR = cloneDir;
+  __setSimpleGitFactory(() => fakeGit());
 });
 
 afterAll(() => {
+  __setSimpleGitFactory(null);
+  __setOctokitFactory(null);
   if (originalCloneDir === undefined) delete process.env.REPO_CLONE_DIR;
   else process.env.REPO_CLONE_DIR = originalCloneDir;
   rmSync(cloneDir, { recursive: true, force: true });
@@ -380,15 +388,13 @@ beforeEach(() => {
   __resetDbConnectorService();
   __resetDriverRegistry();
   registerDriver("postgres", () => fakeDbAdapter());
+  // Replaced per test, never reset between tests, for the same reason as the git fake.
   __setOctokitFactory(() => fakeOctokit());
   cloneCalls.length = 0;
-  __setSimpleGitFactory(() => fakeGit());
   app = createApp();
 });
 
 afterEach(() => {
-  __setOctokitFactory(null);
-  __setSimpleGitFactory(null);
   vi.clearAllMocks();
 });
 

@@ -27,7 +27,12 @@ function currentSuiteAllowance(): string | null {
 }
 
 if (!process.env.RUN_INTEGRATION_TESTS) {
-  const guard = installEgressGuard(currentSuiteAllowance);
+  const guard = installEgressGuard({
+    isAllowed: currentSuiteAllowance,
+    // A fire-and-forget refusal is reported by whichever test drains next; the message
+    // names the test that was running when it happened, which is usually the culprit.
+    context: () => expect.getState().currentTestName ?? undefined,
+  });
   (globalThis as Record<symbol, unknown>)[ACTIVE_EGRESS_GUARD] = guard;
   const failOnViolations = () => {
     const violations = guard.drain();
@@ -40,4 +45,13 @@ if (!process.env.RUN_INTEGRATION_TESTS) {
   };
   afterEach(failOnViolations);
   afterAll(failOnViolations);
+  // Anything refused after the last afterAll cannot fail a test; at least say so.
+  process.once("exit", () => {
+    const late = guard.drain();
+    if (late.length > 0) {
+      process.stderr.write(
+        `Egress guard (#1512): refused after the suite ended:\n  - ${late.join("\n  - ")}\n`,
+      );
+    }
+  });
 }
