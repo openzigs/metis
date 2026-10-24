@@ -518,3 +518,103 @@ describe("review of #1392 — fail closed, retired and deleted waivers, strict d
     });
   });
 });
+
+describe("#1489 — an allowFixed waiver is scoped to the exact package copies it covers", () => {
+  const npm = (/** @type {Partial<Record<string,string>>} */ over = {}) =>
+    vuln({
+      VulnerabilityID: "CVE-2023-54404",
+      PkgName: "zod",
+      InstalledVersion: "3.25.76",
+      FixedVersion: "4.6.6",
+      ...over,
+    });
+  const scoped = waiver({
+    id: "CVE-2023-54404",
+    allowFixed: true,
+    images: ["server"],
+    packages: ["zod@3.25.76"],
+  });
+
+  it("waives the named copy", () => {
+    const r = evaluateGate(findingsFromReport("server", report([npm()])), [scoped], TODAY);
+    expect(r.ok).toBe(true);
+    expect(r.waived).toHaveLength(1);
+  });
+
+  it("still FAILS a different copy of the same package under the same id", () => {
+    const findings = findingsFromReport(
+      "server",
+      report([npm(), npm({ InstalledVersion: "4.5.0" })]),
+    );
+    const r = evaluateGate(findings, [scoped], TODAY);
+    expect(r.ok).toBe(false);
+    expect(r.failures.map((f) => `${f.pkg}@${f.installed}`)).toEqual(["zod@4.5.0"]);
+  });
+
+  it("does not cover a different package that shares the id", () => {
+    const r = evaluateGate(
+      findingsFromReport("server", report([npm({ PkgName: "zod-mini" })])),
+      [scoped],
+      TODAY,
+    );
+    expect(r.failures).toHaveLength(1);
+  });
+
+  it("matches scoped npm names, whose name itself starts with @", () => {
+    const w = waiver({
+      id: "CVE-2026-109461",
+      allowFixed: true,
+      packages: ["@azure/msal-node@5.3.0"],
+    });
+    const f = findingsFromReport(
+      "server",
+      report([
+        npm({
+          VulnerabilityID: "CVE-2026-109461",
+          PkgName: "@azure/msal-node",
+          InstalledVersion: "5.3.0",
+          FixedVersion: "7.1.0",
+        }),
+      ]),
+    );
+    expect(evaluateGate(f, parseWaivers({ waivers: [w] }), TODAY).ok).toBe(true);
+  });
+
+  it("parseWaivers refuses allowFixed without packages", () => {
+    expect(() => parseWaivers({ waivers: [waiver({ allowFixed: true })] })).toThrow(
+      /allowFixed requires packages/,
+    );
+    expect(() => parseWaivers({ waivers: [waiver({ allowFixed: false })] })).not.toThrow();
+  });
+
+  it.each([
+    [{ packages: "zod@3.25.76" }, /packages must be a list/],
+    [{ packages: [3] }, /packages must be a list/],
+    [{ packages: ["zod"] }, /must be name@version/],
+    [{ packages: ["zod@"] }, /must be name@version/],
+    [{ packages: ["@azure/msal-node"] }, /must be name@version/],
+  ])("parseWaivers rejects %j", (over, message) => {
+    expect(() => parseWaivers({ waivers: [{ ...waiver(), ...over }] })).toThrow(message);
+  });
+
+  it("parseRetired validates packages too", () => {
+    const retired = { id: "CVE-2023-54404", retired: "2026-10-30", reason: "upgraded in #1460" };
+    expect(() => parseRetired({ expired: [{ ...retired, packages: ["zod"] }] })).toThrow(
+      /must be name@version/,
+    );
+  });
+
+  it("a deleted package-scoped base waiver still FAILS for its present copy", () => {
+    const f = findingsFromReport("server", report([npm()]));
+    const r = evaluateGate(f, [], TODAY, { baseWaivers: [scoped] });
+    expect(r.ok).toBe(false);
+    expect(r.removed).toHaveLength(1);
+  });
+
+  it("an expired package-scoped waiver FAILS as expired, not as waived", () => {
+    const f = findingsFromReport("server", report([npm()]));
+    const r = evaluateGate(f, [{ ...scoped, expires: TODAY }], TODAY);
+    expect(r.ok).toBe(false);
+    expect(r.expired).toHaveLength(1);
+  });
+});
