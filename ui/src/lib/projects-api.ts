@@ -54,6 +54,12 @@ export interface PrReviewBudgetStatus {
   spentUsd: number;
   monthBucket: string;
   resetAt: string;
+  /**
+   * #1471 — whether the project's AI model has a price; `null` when it has no
+   * model the server can use. With a limit set, an unpriced model's reviews
+   * are skipped (`budget_unpriced`): the limit could not count their spend.
+   */
+  modelPriced?: boolean | null;
 }
 
 /**

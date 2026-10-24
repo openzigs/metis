@@ -287,6 +287,39 @@ describe("runPrReview", () => {
     expect(budget.check).toHaveBeenCalledWith("proj-1");
   });
 
+  it.each([
+    ["a limit and an unpriced model", 100, false, "budget_unpriced"],
+    ["a limit and a priced model", 100, true, null],
+    ["no limit and an unpriced model", null, false, null],
+  ])("#1471 — with %s, skipped is %s", async (_label, capCents, priced, expected) => {
+    const judge = { evaluate: vi.fn(async () => judgeJSON()), priced };
+    const budget = {
+      check: vi.fn(async () => ({
+        allowed: true,
+        capCents,
+        spentCents: 0,
+        resetAt: "2026-05-01T00:00:00Z",
+      })),
+      record: vi.fn(),
+    };
+    const out = await runPrReview(
+      {
+        owner: "acme",
+        repo: "proj",
+        prNumber: 1,
+        prTitle: "feat",
+        prBody: "",
+        diff: "",
+        criteria: [{ id: "AC1", text: "thing" }],
+        octokit: mkOctokit(),
+        projectId: "proj-1",
+      },
+      { judge, budget },
+    );
+    expect(out.skipped).toBe(expected);
+    expect(judge.evaluate).toHaveBeenCalledTimes(expected ? 0 : 1);
+  });
+
   it("records spend and returns telemetry on the happy path with envelope", async () => {
     const judge = {
       evaluate: vi.fn(async () => ({

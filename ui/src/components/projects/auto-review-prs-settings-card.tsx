@@ -21,6 +21,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { projectsApi } from "@/lib/projects-api";
+import { PR_REVIEW_UNPRICED_LIMIT_TEXT } from "@/lib/pr-review-copy";
 import { repoConnectorsApi } from "@/lib/connectors-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
@@ -235,6 +236,15 @@ export function AutoReviewPrsSettingsCard({
             This month&apos;s limit is reached, so new pull requests are not being reviewed. Reviews
             resume on {new Date(budget.data.resetAt).toLocaleDateString()}, or sooner if you raise
             the limit.
+          </p>
+        ) : null}
+        {budget.data && budget.data.capCents != null && budget.data.modelPriced === false ? (
+          <p
+            className="rounded border border-warning/40 bg-warning-muted p-2 text-xs text-warning"
+            role="alert"
+            data-testid="auto-review-prs-unpriced"
+          >
+            {PR_REVIEW_UNPRICED_LIMIT_TEXT}
           </p>
         ) : null}
       </div>

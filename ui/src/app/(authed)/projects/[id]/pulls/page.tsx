@@ -13,6 +13,7 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { prReviewsApi, type PrReviewStateView } from "@/lib/pr-reviews-api";
 import { projectsApi } from "@/lib/projects-api";
+import { PR_REVIEW_UNPRICED_LIMIT_TEXT } from "@/lib/pr-review-copy";
 import { queryKeys } from "@/lib/query-keys";
 import { ApiError } from "@/lib/api-client";
 import { Card } from "@/components/ui/card";
@@ -50,20 +51,29 @@ function VerdictBadge({ verdict }: { verdict: string | null }): React.ReactEleme
  * #1470 — why a pull request was not reviewed, in words. Keys are the
  * server's `PrReviewStateSkipReason` values.
  */
-const SKIP_REASONS: Record<string, string> = {
-  no_linked_issue:
+const SKIP_REASONS: ReadonlyMap<string, string> = new Map([
+  [
+    "no_linked_issue",
     "The pull request does not link an issue. Add “Closes #<number>” to its description.",
-  no_published_issue: "The linked issue was not published from this project.",
-  no_acceptance_criteria: "The linked issue has no acceptance criteria to check.",
-  budget_exceeded: "This month’s spending limit for automatic reviews was reached.",
-  diff_too_large: "The changes are larger than this project’s review size limit.",
-  diff_unavailable: "The changes could not be read from GitHub.",
-  auto_review_disabled: "Automatic PR review was switched off for this project.",
-  review_not_configured: "Automatic review is not set up on this server yet. Ask an administrator.",
-};
+  ],
+  ["no_published_issue", "The linked issue was not published from this project."],
+  ["no_acceptance_criteria", "The linked issue has no acceptance criteria to check."],
+  ["budget_exceeded", "This month’s spending limit for automatic reviews was reached."],
+  [
+    "budget_unpriced",
+    "This project’s AI model has no price, so its monthly limit cannot be enforced. Give the model a price in the MODEL_PRICES setting, or remove the limit.",
+  ],
+  ["diff_too_large", "The changes are larger than this project’s review size limit."],
+  ["diff_unavailable", "The changes could not be read from GitHub."],
+  ["auto_review_disabled", "Automatic PR review was switched off for this project."],
+  [
+    "review_not_configured",
+    "This project has no AI model or GitHub token the review can use. Check the project’s AI model and its repository connection’s token.",
+  ],
+]);
 
 function skipReasonText(reason: string | null): string {
-  return (reason && SKIP_REASONS[reason]) || "No reason was recorded.";
+  return (reason && SKIP_REASONS.get(reason)) || "No reason was recorded.";
 }
 
 function StatusCell({ row }: { row: PrReviewStateView }): React.ReactElement {
@@ -177,6 +187,11 @@ export default function ProjectPullsPage(): React.ReactElement {
     enabled: Boolean(id) && projectQuery.data?.autoReviewPrs === true,
   });
   const limitReached = !reviewOff && budgetQuery.data ? !budgetQuery.data.allowed : false;
+  // #1471 — with a limit set, an unpriced model is never reviewed (`budget_unpriced`).
+  const unpricedLimit =
+    !reviewOff && budgetQuery.data
+      ? budgetQuery.data.capCents != null && budgetQuery.data.modelPriced === false
+      : false;
 
   if (!id) {
     return <p className="p-4 text-sm text-muted-foreground">Loading project…</p>;
@@ -215,6 +230,18 @@ export default function ProjectPullsPage(): React.ReactElement {
             Project settings
           </Link>{" "}
           to resume sooner.
+        </p>
+      ) : null}
+
+      {unpricedLimit ? (
+        <p
+          className="rounded-md border border-warning/40 bg-warning-muted p-3 text-sm text-warning"
+          data-testid="auto-review-unpriced"
+        >
+          {PR_REVIEW_UNPRICED_LIMIT_TEXT}{" "}
+          <Link className="underline" href={`/projects/${id}/settings`}>
+            Project settings
+          </Link>
         </p>
       ) : null}
 

@@ -211,6 +211,26 @@ export async function recordPrReviewOutcome(
   } else {
     data = { lastStatus: "failed", lastSkipReason: null, lastRunId: outcome.runId };
   }
+  const write = () => upsertOutcome(key, data);
+  try {
+    return await write();
+  } catch (err) {
+    // #1471 — two first writes for one PR (another replica, or a review racing
+    // a manual re-run) can both take the upsert's create branch; the loser
+    // fails on the unique key. The row now exists, so one retry updates it.
+    if (!isUniqueViolation(err)) throw err;
+    return write();
+  }
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  return !!err && typeof err === "object" && (err as { code?: unknown }).code === "P2002";
+}
+
+async function upsertOutcome(
+  key: PrReviewStateKey,
+  data: Record<string, unknown>,
+): Promise<PrReviewStateRow> {
   const row = await table().upsert({
     where: {
       projectId_repoOwner_repoName_prNumber: {

@@ -18,6 +18,11 @@ export type PrReviewSkipReason =
   | "no_acceptance_criteria"
   | "diff_too_large"
   | "budget_exceeded"
+  /**
+   * #1471 — the project has a monthly limit, but its model has no price, so
+   * the limit could not count the review's spend: refused before the call.
+   */
+  | "budget_unpriced"
   /** Epic #394 P2 (#403) — webhook delivery already processed (`X-GitHub-Delivery` dedup hit). */
   | "duplicate_delivery"
   /** Epic #394 P2 (#405) — incremental re-review path determined no AC needs re-judging. */

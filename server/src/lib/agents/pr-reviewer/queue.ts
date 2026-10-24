@@ -145,6 +145,8 @@ export interface PrReviewQueue {
 
 interface InternalJob extends PrReviewJob {
   jobId: string;
+  /** Mint order — a higher `seq` for the same PR is a newer job. */
+  seq: number;
 }
 
 /** The id an enqueue returns when the queue is shutting down; no job has it. */
@@ -214,15 +216,77 @@ export function createPrReviewQueue(opts: PrReviewQueueOptions): PrReviewQueue {
     return lane;
   }
 
+  /**
+   * #1471 — one PR's jobs never overlap, and an older job never runs after a
+   * newer one for the same PR has been queued. Two overlapping `synchronize`
+   * reviews used to race to write the PR's state row, so the older result
+   * could win (and two first writes could clash on its unique key). Now a
+   * PR's jobs run one at a time, and a job — or its retry — still waiting
+   * when a newer one for its PR is queued is dropped as superseded: the newer
+   * job reviews the newer head. Process-local, like the rest of this queue.
+   */
+  const runningPrs = new Set<string>();
+  /** Per PR: the newest job's `seq`, and how many of its jobs are still live. */
+  const prJobs = new Map<string, { latestSeq: number; live: number }>();
+
+  function prKey(job: Pick<PrReviewJob, "owner" | "repo" | "prNumber">): string {
+    return `${job.owner}/${job.repo}#${job.prNumber}`;
+  }
+
+  function trackAdmitted(job: InternalJob): void {
+    const key = prKey(job);
+    const entry = prJobs.get(key) ?? { latestSeq: 0, live: 0 };
+    entry.latestSeq = Math.max(entry.latestSeq, job.seq);
+    entry.live += 1;
+    prJobs.set(key, entry);
+  }
+
+  /** A job reached a terminal state (done, dead-lettered, superseded). */
+  function trackTerminal(job: InternalJob): void {
+    const key = prKey(job);
+    const entry = prJobs.get(key);
+    if (!entry) return;
+    entry.live -= 1;
+    if (entry.live <= 0) prJobs.delete(key);
+  }
+
+  function isSuperseded(job: InternalJob): boolean {
+    return (prJobs.get(prKey(job))?.latestSeq ?? job.seq) > job.seq;
+  }
+
+  /** Take the next job this lane may run now, dropping superseded ones. */
+  function takeDispatchable(lane: { pending: InternalJob[] }): InternalJob | null {
+    for (let i = 0; i < lane.pending.length; i += 1) {
+      const job = lane.pending[i];
+      if (isSuperseded(job)) {
+        lane.pending.splice(i, 1);
+        i -= 1;
+        pendingTotal -= 1;
+        // The newer job is the review; this one's subscribers see it finish.
+        emitLifecycle("completed", job, { progress: 100 });
+        trackTerminal(job);
+        continue;
+      }
+      if (runningPrs.has(prKey(job))) continue;
+      lane.pending.splice(i, 1);
+      pendingTotal -= 1;
+      return job;
+    }
+    return null;
+  }
+
   function tryDispatch(key: string): void {
     const lane = lanes.get(key);
     if (!lane) return;
     while (lane.inFlight < concurrency && lane.pending.length > 0) {
-      const job = lane.pending.shift()!;
-      pendingTotal -= 1;
+      const job = takeDispatchable(lane);
+      if (!job) break;
+      const pr = prKey(job);
+      runningPrs.add(pr);
       lane.inFlight += 1;
       const promise = runJob(job).finally(() => {
         lane.inFlight -= 1;
+        runningPrs.delete(pr);
         inFlightPromises.delete(promise);
         // After release, try to dispatch more on this lane.
         tryDispatch(key);
@@ -243,11 +307,13 @@ export function createPrReviewQueue(opts: PrReviewQueueOptions): PrReviewQueue {
     try {
       await opts.processor(job);
       emitLifecycle("completed", job, { progress: 100 });
+      trackTerminal(job);
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       if (job.attempt >= maxAttempts) {
         const entry = { job, error: error.message };
         dlq.push(entry);
+        trackTerminal(job);
         // Surface a single terminal `failed` only after the DLQ — intermediate
         // retryable failures stay silent so the UI doesn't flash an error that
         // a retry then clears.
@@ -278,7 +344,10 @@ export function createPrReviewQueue(opts: PrReviewQueueOptions): PrReviewQueue {
       pendingRetryCancels.add(token);
       setTimer(() => {
         pendingRetryCancels.delete(token);
-        if (token.cancelled || shuttingDown) return;
+        if (token.cancelled || shuttingDown) {
+          trackTerminal(next);
+          return;
+        }
         const lane = getLane(laneKey(next.owner, next.repo));
         lane.pending.push(next);
         pendingTotal += 1;
@@ -300,12 +369,14 @@ export function createPrReviewQueue(opts: PrReviewQueueOptions): PrReviewQueue {
       attempt: 1,
       enqueuedAt: Date.now(),
       jobId: `prr-${nextJobSeq}-${payload.deliveryId || "no-delivery"}`,
+      seq: nextJobSeq,
     };
   }
 
   function admit(job: InternalJob): { jobId: string; queueDepth: number } {
     if (shuttingDown) return { ...REJECTED };
     const key = laneKey(job.owner, job.repo);
+    trackAdmitted(job);
     getLane(key).pending.push(job);
     pendingTotal += 1;
     tryDispatch(key);
@@ -364,6 +435,7 @@ export function createPrReviewQueue(opts: PrReviewQueueOptions): PrReviewQueue {
       // table fall-through.
       for (const lane of lanes.values()) {
         pendingTotal -= lane.pending.length;
+        for (const job of lane.pending) trackTerminal(job);
         lane.pending.length = 0;
       }
       // Wait for in-flight processors to finish so audit + AgentRun

@@ -75,6 +75,7 @@ import { createDefaultCodeSearcher } from "../lib/code-graph/project-code-search
 import { projectWorkspaceRateLimiter } from "../middleware/project-workspace-rate-limit.js";
 import { codeSearchRateLimiter } from "../middleware/code-search-rate-limit.js";
 import { prReviewBudgetRateLimiter } from "../middleware/pr-review-budget-rate-limit.js";
+import { resolveProjectModelPriced } from "../lib/agents/pr-reviewer/production-deps.js";
 import { getPrReviewBudgetStatus } from "../lib/agents/pr-reviewer/budget-guard.js";
 import { jobEvents, genericFailureMessage } from "../lib/socket/job-events.js";
 import { recordJobScope } from "../lib/socket/job-scope-store.js";
@@ -820,7 +821,13 @@ export function projectsRouter(): Router {
       const projectId = String(req.params.id);
       const project = await getProject(projectId);
       if (!project) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
-      res.json(ok(await getPrReviewBudgetStatus(projectId)));
+      // #1471 — whether the limit can count this project's reviews at all: an
+      // unpriced model is refused while a limit is set (`budget_unpriced`).
+      const [status, modelPriced] = await Promise.all([
+        getPrReviewBudgetStatus(projectId),
+        resolveProjectModelPriced(projectId),
+      ]);
+      res.json(ok({ ...status, modelPriced }));
     },
   );
 

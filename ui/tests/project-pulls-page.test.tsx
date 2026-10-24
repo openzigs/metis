@@ -121,6 +121,41 @@ describe("Project pulls (PR-review history) page", () => {
     });
   });
 
+  it("#1471 — says reviews are skipped when a limit is set and the model has no price", async () => {
+    getBudget.mockResolvedValue({
+      allowed: true,
+      capCents: 100,
+      spentCents: 0,
+      resetAt: "2026-11-01T00:00:00.000Z",
+      modelPriced: false,
+    });
+    list.mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByTestId("auto-review-unpriced")).toHaveTextContent(
+        /no price.*MODEL_PRICES.*remove the limit/i,
+      );
+    });
+  });
+
+  it.each([
+    ["the model is priced", { capCents: 100, modelPriced: true }],
+    ["there is no limit", { capCents: null, modelPriced: false }],
+  ])("#1471 — no unpriced notice when %s", async (_label, over) => {
+    getBudget.mockResolvedValue({
+      allowed: true,
+      spentCents: 0,
+      resetAt: "2026-11-01T00:00:00.000Z",
+      ...over,
+    });
+    list.mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByText(/No PR reviews recorded yet/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("auto-review-unpriced")).toBeNull();
+  });
+
   it("#1169 — makes no 'review is off' claim while it is on", async () => {
     list.mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 });
     renderPage();
@@ -189,14 +224,19 @@ describe("Project pulls (PR-review history) page", () => {
 
   it.each([
     ["budget_exceeded", /spending limit for automatic reviews was reached/],
+    ["budget_unpriced", /no price.*MODEL_PRICES.*remove the limit/],
     ["no_linked_issue", /does not link an issue/],
     ["no_published_issue", /not published from this project/],
     ["no_acceptance_criteria", /no acceptance criteria/],
     ["diff_too_large", /larger than this project’s review size limit/],
     ["diff_unavailable", /could not be read from GitHub/],
     ["auto_review_disabled", /switched off for this project/],
-    ["review_not_configured", /not set up on this server yet/],
+    ["review_not_configured", /no AI model or GitHub token the review can use/],
     ["something_new", /No reason was recorded/],
+    // #1471 — an inherited object key is not a reason.
+    ["constructor", /No reason was recorded/],
+    ["toString", /No reason was recorded/],
+    ["__proto__", /No reason was recorded/],
     [null, /No reason was recorded/],
   ])("#1470 — a PR skipped for %s says so in plain words", async (reason, text) => {
     list.mockResolvedValue({

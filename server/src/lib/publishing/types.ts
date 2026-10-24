@@ -83,6 +83,8 @@ export interface OctokitFactoryArgs {
   pinnedAddress?: string;
   pinnedFamily?: 4 | 6;
   rateLimit: PublishRateLimitConfig;
+  /** #1471 — per-request deadline in ms (default 20 s). */
+  timeoutMs?: number;
 }
 
 export type OctokitFactory = (args: OctokitFactoryArgs) => Promise<PublishOctokitLike>;
