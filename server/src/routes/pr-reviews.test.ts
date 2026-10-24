@@ -15,6 +15,9 @@ interface Row {
   acVerdictsJson: string;
   lastRunId: string | null;
   lastVerdict: string | null;
+  lastStatus?: string | null;
+  lastSkipReason?: string | null;
+  lastReviewUrl?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -155,6 +158,55 @@ describe("GET /api/projects/:projectId/pr-reviews", () => {
     expect(resp.status).toBe(200);
     expect(resp.body.data.limit).toBe(50);
     expect(resp.body.data.offset).toBe(0);
+  });
+
+  it("#1470 — carries each row's status, skip reason and GitHub review link", async () => {
+    seed({
+      prNumber: 1,
+      lastStatus: "reviewed",
+      lastReviewUrl: "https://github.com/acme/site/pull/1#pullrequestreview-7",
+    });
+    seed({
+      prNumber: 2,
+      lastStatus: "skipped",
+      lastSkipReason: "budget_exceeded",
+      lastVerdict: null,
+    });
+    const resp = await request(makeApp()).get("/api/projects/p1/pr-reviews");
+    const byPr = new Map(
+      (resp.body.data.items as Array<{ prNumber: number }>).map((i) => [i.prNumber, i]),
+    );
+    expect(byPr.get(1)).toMatchObject({
+      lastStatus: "reviewed",
+      lastSkipReason: null,
+      lastReviewUrl: "https://github.com/acme/site/pull/1#pullrequestreview-7",
+    });
+    expect(byPr.get(2)).toMatchObject({
+      lastStatus: "skipped",
+      lastSkipReason: "budget_exceeded",
+      lastReviewUrl: null,
+    });
+  });
+
+  it("#1470 — never hands the page a non-https review link, nor a reason off a non-skip", async () => {
+    seed({ prNumber: 1, lastStatus: "reviewed", lastReviewUrl: "javascript:alert(1)" });
+    seed({
+      prNumber: 2,
+      lastStatus: "failed",
+      lastSkipReason: "stale",
+      lastReviewUrl: "not a url",
+    });
+    seed({ prNumber: 3, lastReviewUrl: "http://github.com/acme/site/pull/3" });
+    const resp = await request(makeApp()).get("/api/projects/p1/pr-reviews");
+    for (const item of resp.body.data.items as Array<Record<string, unknown>>) {
+      expect(item.lastReviewUrl).toBeNull();
+      expect(item.lastSkipReason).toBeNull();
+    }
+    // A row from before #1470 has no status.
+    const legacy = (resp.body.data.items as Array<Record<string, unknown>>).find(
+      (i) => i.prNumber === 3,
+    );
+    expect(legacy?.lastStatus).toBeNull();
   });
 });
 

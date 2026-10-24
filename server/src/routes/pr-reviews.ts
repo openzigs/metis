@@ -39,10 +39,26 @@ interface PrReviewStateView {
   lastReviewedSha: string | null;
   lastVerdict: string | null;
   lastRunId: string | null;
+  /** #1470 — latest job's outcome: reviewed | skipped | failed (null before #1470). */
+  lastStatus: PrReviewStateRow["lastStatus"];
+  /** #1470 — why the latest job was skipped; null unless `lastStatus` is skipped. */
+  lastSkipReason: string | null;
+  /** #1470 — link to the last review posted on GitHub (https only). */
+  lastReviewUrl: string | null;
   acVerdicts: PrReviewStateRow["acVerdicts"];
   acPassRate: number;
   updatedAt: string;
   createdAt: string;
+}
+
+/** #1470 — only ever hand the page an https link (it renders it as an `href`). */
+function safeReviewUrl(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    return new URL(raw).protocol === "https:" ? raw : null;
+  } catch {
+    return null;
+  }
 }
 
 function toView(row: PrReviewStateRow): PrReviewStateView {
@@ -58,6 +74,9 @@ function toView(row: PrReviewStateRow): PrReviewStateView {
     lastReviewedSha: row.lastReviewedSha,
     lastVerdict: row.lastVerdict,
     lastRunId: row.lastRunId,
+    lastStatus: row.lastStatus,
+    lastSkipReason: row.lastStatus === "skipped" ? row.lastSkipReason : null,
+    lastReviewUrl: safeReviewUrl(row.lastReviewUrl),
     acVerdicts: row.acVerdicts,
     acPassRate: total === 0 ? 0 : satisfied / total,
     updatedAt: row.updatedAt.toISOString(),

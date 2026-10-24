@@ -3923,18 +3923,24 @@ When the **Closed Loop** is enabled, METIS treats your GitHub pull requests as t
 
 ### PR-review history page (v1.2 P2 / Epic #394)
 
-Open `/projects/[id]/pulls` to see every PR review the agent has ever posted for the project's connected repositories. Each row shows:
+Open `/projects/[id]/pulls` to see every pull request automatic review has handled for the project's connected repositories: the ones it reviewed and the ones it skipped (#1470). Each row shows:
 
 - **PR** — `owner/repo#N` linking to the GitHub PR
-- **Verdict** — `approve`, `request_changes`, or `comment` (with a colour-coded badge)
+- **Status** — what happened the last time the pull request was opened or updated:
+  - **Reviewed**: the review was posted on GitHub.
+  - **Not reviewed**, with the reason in plain words: the pull request links no issue (add `Closes #<number>` to its description), the linked issue was not published from this project or has no acceptance criteria, this month's spending limit was reached, the changes are over the project's review size limit or could not be read from GitHub, automatic review was switched off after the update arrived, or automatic review is not set up on this server (no review model is wired, #1471).
+  - **Review failed**: the review started but did not finish. Open the run for details.
+- **Verdict** — `approve`, `request_changes`, or `comment` (with a colour-coded badge). A skip or a failure leaves the last posted review's verdict here, since that review is still the one on GitHub.
+- **Review** — **Review on GitHub** opens the last review posted to the pull request.
 - **AC pass-rate** — `<satisfied>/<total>` plus a percentage
-- **SHA** — short head SHA the review was run against
-- **Updated** — local timestamp of the most recent review
+- **SHA** — short head SHA the last posted review was run against
+- **Updated** — local timestamp of the latest review or skip
 - **Run** — pivot to `/runs/[runId]` for the live conversation that produced the verdict
+- **Details** — opens the PR-review detail page described below
 
-The page reads from the `PrReviewState` table, which is upserted on every webhook delivery. Empty until the first PR is reviewed. While automatic PR review is off for the project, the page says so and links to Project settings: GitHub's deliveries still arrive, but no review is made.
+The page reads from the `PrReviewState` table (`GET /api/projects/:id/pr-reviews`, fields `lastStatus`, `lastSkipReason`, `lastVerdict` and `lastReviewUrl`). The review job writes one row per pull request each time it reviews or skips it. Empty until the first pull request is handled. While automatic PR review is off for the project, the page says so and links to Project settings: GitHub's deliveries still arrive, but no review is made and no row is written. Reading the page needs the `pr.review.read` permission, which only administrators hold today (#1472); anyone else sees a message saying they don't have permission. Like the rest of a project, the page answers "not found" to anyone outside the project's workspace, and to everyone but administrators once the project is deleted.
 
-Click any row to open the **PR-review detail page** (`/projects/[id]/pulls/[prNumber]`), which lists every acceptance-criterion verdict (with reasoning and evidence files) plus a **Re-run review** button (requires the `pr.review.manage` permission). Re-running now shows **live progress** instead of asking you to refresh: a spinner and progress bar track the review in real time over the realtime job bus, and the moment it finishes the new verdict appears **automatically** — no manual reload. If the re-review fails, a clear error toast is shown (with a generic, non-revealing message). [Epic #406, #421]
+Click **Details** on any row to open the **PR-review detail page** (`/projects/[id]/pulls/[prNumber]`), which lists every acceptance-criterion verdict (with reasoning and evidence files) plus a **Re-run review** button (requires the `pr.review.manage` permission). Re-running now shows **live progress** instead of asking you to refresh: a spinner and progress bar track the review in real time over the realtime job bus, and the moment it finishes the new verdict appears **automatically** — no manual reload. If the re-review fails, a clear error toast is shown (with a generic, non-revealing message). [Epic #406, #421]
 
 ### Per-repository configuration (`.metis/pr-review.yaml`)
 

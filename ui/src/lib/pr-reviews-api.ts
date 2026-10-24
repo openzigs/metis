@@ -20,6 +20,12 @@ export interface PrReviewStateView {
   lastReviewedSha: string | null;
   lastVerdict: string | null;
   lastRunId: string | null;
+  /** #1470 — the latest job's outcome; null on a row written before #1470. */
+  lastStatus: "reviewed" | "skipped" | "failed" | null;
+  /** #1470 — why the latest job was skipped; null unless `lastStatus` is skipped. */
+  lastSkipReason: string | null;
+  /** #1470 — the last review posted on GitHub (https only). */
+  lastReviewUrl: string | null;
   acVerdicts: PrReviewVerdict[];
   acPassRate: number;
   updatedAt: string;
