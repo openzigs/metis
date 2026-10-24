@@ -113,10 +113,10 @@ export async function getPrReviewBudgetStatus(
 }
 
 /**
- * Persist a `TokenUsage` row for a completed PR review. Failures are
- * swallowed (logged via Prisma) so a spend-tracking outage never blocks a
- * review from being posted — accuracy of the audit log is the primary
- * SOC 2 control.
+ * Persist a `TokenUsage` row for a PR review the model answered, posted or
+ * not (#1486). The caller swallows failures so a spend-tracking outage never
+ * blocks a review from being posted — accuracy of the audit log is the
+ * primary SOC 2 control.
  */
 export async function recordPrReviewSpend(
   input: RecordSpendInput,

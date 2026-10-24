@@ -16,7 +16,12 @@
  * job.
  */
 import type { JudgeLike } from "./agent.js";
-import { defaultBudgetDeps, runPrReview, type RunPrReviewDeps } from "./agent.js";
+import {
+  defaultBudgetDeps,
+  runPrReview,
+  type RunPrReviewDeps,
+  type RunPrReviewResult,
+} from "./agent.js";
 import { resolveAcceptanceCriteriaForPr } from "./ac-traceability.js";
 import { fetchPrDiff, type DiffFetchOctokit } from "./diff-fetcher.js";
 import type { OctokitLike } from "./github-review-poster.js";
@@ -51,7 +56,7 @@ async function recordOutcome(
       repo: `${job.owner}/${job.repo}`,
       prNumber: job.prNumber,
       status: outcome.status,
-      error: (err as Error).message,
+      error: errorMessage(err),
     });
   }
 }
@@ -236,11 +241,10 @@ export async function executePrReviewJob(
   });
   const budget = deps.budget ?? defaultBudgetDeps();
   const action = (job.context.action as string | undefined) ?? "queued";
-  // Set once `runPrReview` has returned, so a bookkeeping error after it never
-  // rewrites a posted (or skipped) review as failed.
-  let outcomeRecorded = false;
+  let result: RunPrReviewResult | null = null;
+  let reviewError: unknown = null;
   try {
-    const result = await runPrReview(
+    result = await runPrReview(
       {
         owner: job.owner,
         repo: job.repo,
@@ -255,13 +259,42 @@ export async function executePrReviewJob(
         installationId,
         actor,
         linkedIssueNumbers: acResult.linkedIssueNumbers,
+        // #1486 — spend is recorded under this run's session, which is what
+        // `computeRunCost` reads back for it below.
+        sessionId,
       },
       { judge: deps.judge, budget },
     );
-    await recordOutcome(
-      project.id,
-      job,
-      result.skipped
+  } catch (err) {
+    reviewError = err;
+  }
+
+  // #1486 — from here the model has been called and the review may be on the
+  // pull request, so nothing below may throw: a throw reaches the queue, which
+  // retries the whole job, calling the model and posting the review again.
+  // Every step is best-effort and logged; none decides the review's outcome.
+  // (Idempotency on the post alone would not do: the model call comes first.)
+  const bestEffort = (step: string, fn: () => Promise<unknown>) =>
+    Promise.resolve()
+      .then(fn)
+      .catch((err: unknown) => {
+        log.warn("pr_review.bookkeeping_failed", {
+          deliveryId: job.deliveryId,
+          repo: `${job.owner}/${job.repo}`,
+          prNumber: job.prNumber,
+          runId,
+          step,
+          error: errorMessage(err),
+        });
+      });
+
+  // `recordOutcome` already never throws.
+  await recordOutcome(
+    project.id,
+    job,
+    !result
+      ? { status: "failed", runId }
+      : result.skipped
         ? { status: "skipped", reason: result.skipped }
         : {
             status: "reviewed",
@@ -271,30 +304,28 @@ export async function executePrReviewJob(
             verdict: result.verdict ?? result.judge.overallVerdict,
             reviewUrl: result.reviewUrl,
           },
-    );
-    outcomeRecorded = true;
-    await recordStep({
+  );
+  await bestEffort("record_step", () =>
+    recordStep({
       runId,
       kind: "tool_result",
-      content: { kind: "pr_review", action, result },
-    });
-    // Attribute real LLM cost for this run from in-window TokenUsage rows.
-    const cost = await computeRunCost(runId).catch(() => ({ costCents: 0, totalTokens: 0 }));
-    await finishRun({ runId, status: "completed", ...cost });
-    return { skipped: null, runId };
-  } catch (err) {
-    if (!outcomeRecorded) await recordOutcome(project.id, job, { status: "failed", runId });
-    await recordStep({
-      runId,
-      kind: "tool_result",
-      content: { kind: "pr_review_error", error: (err as Error).message },
-    });
-    // A failed review may still have incurred spend before throwing; attribute
-    // whatever usage landed in-window so the run isn't reported as free.
-    const cost = await computeRunCost(runId).catch(() => ({ costCents: 0, totalTokens: 0 }));
-    await finishRun({ runId, status: "failed", ...cost });
-    return { skipped: null, runId };
-  }
+      content: result
+        ? { kind: "pr_review", action, result }
+        : { kind: "pr_review_error", error: errorMessage(reviewError) },
+    }),
+  );
+  // Attribute the run's LLM cost from in-window TokenUsage rows — on a failed
+  // review too, since its spend is recorded as soon as the model answers.
+  const cost = await computeRunCost(runId).catch(() => ({ costCents: 0, totalTokens: 0 }));
+  await bestEffort("finish_run", () =>
+    finishRun({ runId, status: result ? "completed" : "failed", ...cost }),
+  );
+  return { skipped: null, runId };
+}
+
+/** #1486 — a rejection's message, for any thrown value (`undefined` included). */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function parseSkipGlobs(raw: string | null): string[] | null {
