@@ -160,6 +160,8 @@ import {
   type OctokitLike,
   type SimpleGitLike,
 } from "../src/lib/connectors/repo/repo-service.js";
+import { readBoundSecret } from "../src/lib/connectors/vault-resolver.js";
+import { ConnectorError } from "../src/lib/connectors/types.js";
 import { MAX_REPO_CLONE_BYTES } from "@metis/shared";
 import { promises as fsp } from "node:fs";
 import os from "node:os";
@@ -883,6 +885,24 @@ describe("#1488 — a failure that is not about the credential leaves the status
     const id = await connectedAdmin(`te-${_n}`);
     failWith(err);
     await expect(testRepoConnector("proj_1", id, "user_1")).rejects.toMatchObject({ code });
+    expect((await getRepoConnector("proj_1", id)).status).toBe("error");
+  });
+
+  it("a 5xx ConnectorError this server raises during the request (pinned host gone) marks it error", async () => {
+    const id = await connectedAdmin("te-pin");
+    // Status 502 would read as transient if it were GitHub's answer.
+    failWith(new ConnectorError(502, "PIN_UNAVAILABLE", "pinned address unavailable"));
+    await expect(testRepoConnector("proj_1", id, "user_1")).rejects.toMatchObject({
+      code: "PIN_UNAVAILABLE",
+    });
+    expect((await getRepoConnector("proj_1", id)).status).toBe("error");
+  });
+
+  it("a failure reading the credential, before GitHub is asked, still marks it error", async () => {
+    const id = await connectedAdmin("te-vault");
+    // A plain Error with no HTTP status would read as transient had GitHub been asked.
+    vi.mocked(readBoundSecret).mockRejectedValueOnce(new Error("vault decrypt failed"));
+    await expect(testRepoConnector("proj_1", id, "user_1")).rejects.toBeTruthy();
     expect((await getRepoConnector("proj_1", id)).status).toBe("error");
   });
 });

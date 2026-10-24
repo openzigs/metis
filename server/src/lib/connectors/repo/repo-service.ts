@@ -913,11 +913,15 @@ export async function testRepoConnector(projectId: string, id: string, actorId: 
   const git = assertGitConnector(conn);
   await assertHostFromBaseUrl(conn.apiBaseUrl);
   const start = Date.now();
+  // #1488 — only a failure of the GitHub request itself can be transient; one
+  // raised while reading the credential (vault) or pinning the host is not.
+  let askedGithub = false;
   try {
     const { octokit, authenticated } = await acquireOctokitWithAuth(
       conn.apiBaseUrl,
       conn.secretRef,
     );
+    askedGithub = true;
     // #762 — no `connector:progress` here: a Test is one request answered in
     // well under a second, and its count-less progress event left a stuck
     // "repo.get /" row under the card. The response (and its toast) reports it.
@@ -974,7 +978,7 @@ export async function testRepoConnector(projectId: string, id: string, actorId: 
     // 401, a 404, a non-rate-limit 403 (the credential was refused) or an
     // error this server raised itself (host allow-list, stale vault binding)
     // marks the connector `error`.
-    if (!(err instanceof ConnectorError) && isTransientGithubFailure(err)) {
+    if (askedGithub && !(err instanceof ConnectorError) && isTransientGithubFailure(err)) {
       log.warn("connector.repo.test_transient_failure", {
         connectorId: id,
         projectId,
