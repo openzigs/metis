@@ -89,6 +89,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           repoName: "app",
           isPrimary: true,
           status: "connected",
+          repoPermission: "admin", // #1488 — eligible for shared-secret routing
         },
       });
       await db.databaseConnection.create({
@@ -176,6 +177,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             ownerOrOrg: "deleted-org",
             repoName: "app",
             status: "connected",
+            repoPermission: "admin", // #1488 — eligible for shared-secret routing
           },
         });
         try {
@@ -502,6 +504,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             ownerOrOrg: "deleted-org",
             repoName: "app",
             status: "connected",
+            repoPermission: "admin", // #1488 — eligible for shared-secret routing
           },
         });
         try {

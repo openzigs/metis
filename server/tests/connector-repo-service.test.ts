@@ -716,6 +716,174 @@ describe("Repo connector service — test()", () => {
     await expect(testRepoConnector("proj_1", c.id, "user_1")).rejects.toMatchObject({
       code: "REPO_NOT_FOUND",
     });
+    expect((await getRepoConnector("proj_1", c.id)).status).toBe("error");
+  });
+});
+
+describe("#1488 — Test records the token's repository permission", () => {
+  const repoWith = (permissions?: Record<string, boolean>) =>
+    makeOctokit({
+      get: async () => ({
+        data: {
+          id: 1,
+          name: "demo",
+          full_name: "octocat/demo",
+          default_branch: "main",
+          private: false,
+          archived: false,
+          size: 1,
+          language: null,
+          ...(permissions ? { permissions } : {}),
+        },
+      }),
+    });
+  const create = (label: string, secretRef?: string) =>
+    createRepoConnector(
+      "proj_1",
+      {
+        provider: "github",
+        label,
+        ownerOrOrg: "octocat",
+        repoName: "demo",
+        ...(secretRef ? { secretRef } : {}),
+      },
+      "user_1",
+    );
+
+  it("records none for a Test with no token, even when GitHub reports permissions", async () => {
+    // GitHub sends no `permissions` without a token; a faked one must still not count.
+    __setOctokitFactory(() => repoWith({ admin: true, push: true, pull: true }));
+    const c = await create("anon");
+    const result = await testRepoConnector("proj_1", c.id, "user_1");
+    expect(result.repoPermission).toBe("none");
+    const read = await getRepoConnector("proj_1", c.id);
+    expect(read.status).toBe("connected");
+    expect(read.repoPermission).toBe("none");
+  });
+
+  it.each([
+    [{ admin: true, push: true, pull: true }, "admin"],
+    [{ admin: false, push: true, pull: true }, "push"],
+    [{ admin: false, push: false, pull: true }, "read"],
+    [undefined, "read"],
+  ] as const)("records %o for a token as %s", async (permissions, expected) => {
+    __setOctokitFactory(() => repoWith(permissions));
+    const c = await create(`tok-${expected}-${String(Boolean(permissions))}`, "${vault:gh-pat}");
+    await testRepoConnector("proj_1", c.id, "user_1");
+    expect((await getRepoConnector("proj_1", c.id)).repoPermission).toBe(expected);
+  });
+
+  it("a repoint or a credential change forgets the recorded permission", async () => {
+    __setOctokitFactory(() => repoWith({ admin: true, push: true }));
+    const c = await create("forget", "${vault:gh-pat}");
+    await testRepoConnector("proj_1", c.id, "user_1");
+    expect((await getRepoConnector("proj_1", c.id)).repoPermission).toBe("admin");
+
+    await updateRepoConnector("proj_1", c.id, { secretRef: "${vault:other-pat}" }, "user_1");
+    expect((await getRepoConnector("proj_1", c.id)).repoPermission).toBeNull();
+
+    await testRepoConnector("proj_1", c.id, "user_1");
+    await updateRepoConnector("proj_1", c.id, { repoName: "elsewhere" }, "user_1");
+    const read = await getRepoConnector("proj_1", c.id);
+    expect(read.repoPermission).toBeNull();
+    expect(read.status).toBe("pending");
+  });
+
+  it("re-sending the same credential keeps the recorded permission", async () => {
+    __setOctokitFactory(() => repoWith({ admin: true, push: true }));
+    const c = await create("keep", "${vault:gh-pat}");
+    await testRepoConnector("proj_1", c.id, "user_1");
+    await updateRepoConnector(
+      "proj_1",
+      c.id,
+      { secretRef: "${vault:gh-pat}", label: "keep2" },
+      "user_1",
+    );
+    expect((await getRepoConnector("proj_1", c.id)).repoPermission).toBe("admin");
+  });
+});
+
+describe("#1488 — a failure that is not about the credential leaves the status alone", () => {
+  const connectedAdmin = async (label: string) => {
+    __setOctokitFactory(() =>
+      makeOctokit({
+        get: async () => ({
+          data: {
+            id: 1,
+            name: "demo",
+            full_name: "octocat/demo",
+            default_branch: "main",
+            private: false,
+            archived: false,
+            size: 1,
+            language: null,
+            permissions: { admin: true, push: true, pull: true },
+          },
+        }),
+      }),
+    );
+    const c = await createRepoConnector(
+      "proj_1",
+      {
+        provider: "github",
+        label,
+        ownerOrOrg: "octocat",
+        repoName: "demo",
+        secretRef: "${vault:gh-pat}",
+      },
+      "user_1",
+    );
+    await testRepoConnector("proj_1", c.id, "user_1");
+    return c.id;
+  };
+  const failWith = (err: Error) =>
+    __setOctokitFactory(() =>
+      makeOctokit({
+        get: async () => {
+          throw err;
+        },
+      }),
+    );
+  const httpError = (status: number, message: string, headers: Record<string, string> = {}) =>
+    Object.assign(new Error(message), { status, response: { headers } });
+
+  it.each([
+    [
+      "a primary rate limit",
+      httpError(403, "API rate limit exceeded", { "x-ratelimit-remaining": "0" }),
+    ],
+    ["a secondary rate limit", httpError(403, "Forbidden", { "retry-after": "60" })],
+    ["a 429", httpError(429, "Too Many Requests")],
+    ["a 500", httpError(500, "server kaboom")],
+    ["a 503", httpError(503, "unavailable")],
+    ["a dropped connection", new Error("socket hang up")],
+  ])("%s keeps a connected connector connected, with its permission", async (_n, err) => {
+    const id = await connectedAdmin(`tr-${_n}`);
+    failWith(err);
+    await expect(testRepoConnector("proj_1", id, "user_1")).rejects.toMatchObject({
+      message: expect.stringMatching(/status was left unchanged/),
+    });
+    const read = await getRepoConnector("proj_1", id);
+    expect(read.status).toBe("connected");
+    expect(read.repoPermission).toBe("admin");
+    expect(read.errorMessage).toBeNull();
+  });
+
+  it.each([
+    ["a 401", httpError(401, "Bad credentials"), "REPO_AUTH_FAILED"],
+    ["a 404", httpError(404, "Not Found"), "REPO_NOT_FOUND"],
+    [
+      "a 403 that refuses the credential",
+      httpError(403, "Resource protected by organization SAML enforcement", {
+        "x-ratelimit-remaining": "4999",
+      }),
+      "REPO_FORBIDDEN",
+    ],
+  ])("%s marks it error", async (_n, err, code) => {
+    const id = await connectedAdmin(`te-${_n}`);
+    failWith(err);
+    await expect(testRepoConnector("proj_1", id, "user_1")).rejects.toMatchObject({ code });
+    expect((await getRepoConnector("proj_1", id)).status).toBe("error");
   });
 });
 

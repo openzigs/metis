@@ -48,6 +48,7 @@ import {
   connectorWebhookSecret,
   webhookSecretRootKey,
 } from "../lib/connectors/repo/webhook-secret.js";
+import { isSharedWebhookEligible } from "../lib/connectors/repo/repo-permission.js";
 
 const log = createChildLogger("webhooks-github");
 
@@ -753,8 +754,11 @@ async function projectsWithOwnSecret(
  * which one sent the delivery. The delivery goes to the project of the
  * earliest-bound (`repoBoundAt`, else `createdAt`; then id) connector for the
  * repository that is live, in a live project, `connected` (its credential
- * reached the repository), a GitHub connector for the delivery's host, and
- * without an own secret that still verifies. While the earliest such
+ * reached the repository), whose credential was seen to have admin or push
+ * permission on it at its last successful Test (#1488: reading a public
+ * repository needs no credential, so `connected` alone let any workspace
+ * squat on it), a GitHub connector for the delivery's host, and without an
+ * own secret that still verifies. While the earliest such
  * connector stays connected, a newcomer can neither take its deliveries nor
  * stop them: it gets none, and is logged. If the earliest one's Test fails
  * (`error`), the next connected one takes them until it passes again — an
@@ -784,6 +788,10 @@ export async function findProjectForRepo(
     .filter(
       (c) =>
         c.status === "connected" &&
+        // #1488 — `connected` proves only a read, which a public repository
+        // grants with no credential: the connector's token must also have been
+        // seen to write to the repository, as only an admin registers a hook.
+        isSharedWebhookEligible(c.repoPermission) &&
         connectorHost(c) === host &&
         connectorSecretState(c, root) !== "active",
     )
@@ -819,10 +827,11 @@ export async function findProjectForRepo(
         id: c.id,
         projectId: c.projectId,
         status: c.status,
+        repoPermission: c.repoPermission,
         provider: c.provider,
         ownSecret: connectorSecretState(c, root),
       })),
-      hint: "a connection takes shared-secret deliveries only while its Test succeeds (status connected)",
+      hint: "a connection takes shared-secret deliveries only while its Test succeeds (status connected) with a token that has push or admin access to the repository",
     });
   } else {
     const deleted = conns.find((c) => c.project?.deletedAt);

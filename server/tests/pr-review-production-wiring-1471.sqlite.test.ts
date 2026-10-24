@@ -226,6 +226,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite" || !hasOpenssl)(
           repoName: "app",
           isPrimary: true,
           status: "connected",
+          repoPermission: "admin", // #1488 — eligible for shared-secret routing
           secretId,
         },
       });

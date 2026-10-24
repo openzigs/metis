@@ -75,6 +75,7 @@ vi.mock("../src/lib/prisma.js", () => ({
           projectId: "proj_1",
           provider: "github",
           status: "connected",
+          repoPermission: "admin", // #1488 — eligible for shared-secret routing
           apiBaseUrl: null,
           createdAt: new Date(0),
           repoBoundAt: null,

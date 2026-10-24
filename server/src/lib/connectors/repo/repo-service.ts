@@ -52,6 +52,12 @@ import type { RepoFetcher } from "../../library/import.js";
 import { validateLocalSourcePath } from "./local-source.js";
 import { sourceIngestSummary } from "../source-ingest-state.js";
 import {
+  isTransientGithubFailure,
+  repoPermissionDto,
+  repoPermissionOf,
+  type GithubRepoPermissions,
+} from "./repo-permission.js";
+import {
   connectorIssuesWebhookPath,
   connectorSecretState,
   connectorWebhookPath,
@@ -111,6 +117,8 @@ export interface OctokitLike {
           archived: boolean;
           size: number;
           language: string | null;
+          /** #1488 — present only when the request was authenticated. */
+          permissions?: GithubRepoPermissions;
         };
       }>;
       listLanguages: (params: { owner: string; repo: string }) => Promise<{
@@ -634,6 +642,7 @@ export async function updateRepoConnector(
   if (rebinds) {
     data.repoBoundAt = new Date();
     data.status = "pending";
+    data.repoPermission = null;
     data.webhookSecretNonce = null;
     data.webhookSecretCheck = null;
   }
@@ -647,6 +656,9 @@ export async function updateRepoConnector(
         : patchRefBody === existing.secretId
           ? patchRefBody
           : await bindRepoSecret(patchRefBody);
+    // #1488 — the recorded permission belongs to the credential it was read
+    // with; another credential is unproven until it is tested.
+    if (data.secretId !== existing.secretId) data.repoPermission = null;
   }
   let row;
   try {
@@ -902,7 +914,10 @@ export async function testRepoConnector(projectId: string, id: string, actorId: 
   await assertHostFromBaseUrl(conn.apiBaseUrl);
   const start = Date.now();
   try {
-    const octokit = await acquireOctokit(conn.apiBaseUrl, conn.secretRef);
+    const { octokit, authenticated } = await acquireOctokitWithAuth(
+      conn.apiBaseUrl,
+      conn.secretRef,
+    );
     // #762 — no `connector:progress` here: a Test is one request answered in
     // well under a second, and its count-less progress event left a stuck
     // "repo.get /" row under the card. The response (and its toast) reports it.
@@ -917,10 +932,15 @@ export async function testRepoConnector(projectId: string, id: string, actorId: 
     // (`main`) may be replaced, and only when it does not exist upstream.
     const ref = await resolveConfiguredRef(octokit, git, conn.defaultBranch, upstreamDefault);
     const latencyMs = Date.now() - start;
+    // #1488 — what this credential may do on the repository. Only admin or
+    // push takes shared-secret webhook deliveries; a Test with no token
+    // records `none`, so reading a public repository earns nothing.
+    const repoPermission = repoPermissionOf(authenticated, repoData.data.permissions);
     await prisma.repoConnection.update({
       where: { id },
       data: {
         status: "connected",
+        repoPermission,
         lastTestedAt: new Date(),
         errorMessage: null,
         ...(ref !== conn.defaultBranch ? { defaultBranch: ref } : {}),
@@ -942,9 +962,37 @@ export async function testRepoConnector(projectId: string, id: string, actorId: 
       private: repoData.data.private,
       archived: repoData.data.archived,
       sizeKb: repoData.data.size,
+      repoPermission,
     };
   } catch (err) {
     const ce = toOctokitError(err);
+    // #1488 — a rate limit, a 5xx or a dropped connection says nothing about
+    // this connector's credential, and anyone can exhaust the server's
+    // unauthenticated quota. Such a failure leaves the status (and the
+    // recorded permission) as they were: writing `error` here handed a
+    // connected connector's shared-secret deliveries to the next one. Only a
+    // 401, a 404, a non-rate-limit 403 (the credential was refused) or an
+    // error this server raised itself (host allow-list, stale vault binding)
+    // marks the connector `error`.
+    if (!(err instanceof ConnectorError) && isTransientGithubFailure(err)) {
+      log.warn("connector.repo.test_transient_failure", {
+        connectorId: id,
+        projectId,
+        status: (err as { status?: unknown }).status ?? null,
+        code: ce.code,
+      });
+      audit({
+        actor: { id: actorId },
+        action: "connector.repo.test",
+        target: { type: "repo_connector", id },
+        metadata: { projectId, status: "unchanged", transient: true, code: ce.code },
+      });
+      throw new ConnectorError(
+        ce.status,
+        ce.code,
+        `${safeRepoErrorMessage(ce)}. This is a temporary GitHub failure: the connection's status was left unchanged. Try again later.`,
+      );
+    }
     // #1084 — the host allow-list raises `HOST_NOT_ALLOWED` / `DNS_LOOKUP_*`
     // naming the private address a caller-supplied host resolved to, and
     // `toOctokitError` passes a `ConnectorError` straight through. The message
@@ -1711,6 +1759,14 @@ export async function restoreCloneAtCommit(
 // ---- Helpers ---------------------------------------------------------------
 
 async function acquireOctokit(apiBaseUrl: string | null, secretRef: string): Promise<OctokitLike> {
+  return (await acquireOctokitWithAuth(apiBaseUrl, secretRef)).octokit;
+}
+
+/** #1488 — as `acquireOctokit`, also saying whether the client sends a token. */
+async function acquireOctokitWithAuth(
+  apiBaseUrl: string | null,
+  secretRef: string,
+): Promise<{ octokit: OctokitLike; authenticated: boolean }> {
   // Normalize GHE base URL: users may paste a browse URL like
   // "https://git.example.com/Org/repo/tree/main" or just the host
   // "https://git.example.com". Octokit needs "{origin}/api/v3".
@@ -1739,7 +1795,10 @@ async function acquireOctokit(apiBaseUrl: string | null, secretRef: string): Pro
     pinnedFamily: pinned.family,
     hostname: pinned.hostname,
   };
-  return octokitFactoryOverride ? octokitFactoryOverride(args) : await defaultOctokit(args);
+  const octokit = octokitFactoryOverride
+    ? octokitFactoryOverride(args)
+    : await defaultOctokit(args);
+  return { octokit, authenticated: Boolean(token) };
 }
 
 /** #480 — the connector's bound secret, by id only (`secretRef` is `${vault:<secretId>}`). */
@@ -1861,6 +1920,7 @@ function toApi(row: {
   secretId: string | null;
   webhookSecretNonce?: string | null;
   webhookSecretCheck?: string | null;
+  repoPermission?: string | null;
   status: string;
   errorMessage: string | null;
   lastTestedAt: Date | null;
@@ -1894,6 +1954,9 @@ function toApi(row: {
     // #1475 — whether the connector has its own webhook secret that still
     // verifies, or had one that no longer does; never the secret.
     ...webhookSecretFlags(row),
+    // #1488 — what the credential could do at the last successful Test; only
+    // admin or push takes shared-secret webhook deliveries.
+    repoPermission: repoPermissionDto(row.repoPermission),
     status: row.status,
     errorMessage: row.errorMessage,
     lastTestedAt: row.lastTestedAt,
@@ -1945,7 +2008,14 @@ function toOctokitError(err: unknown): ConnectorError {
       `GitHub auth failed${e.message && e.message !== "HttpError" ? `: ${e.message}` : ""}`,
     );
   if (e.status === 403)
-    return new ConnectorError(403, "REPO_FORBIDDEN", "GitHub forbidden / rate-limited");
+    return new ConnectorError(
+      403,
+      "REPO_FORBIDDEN",
+      // #1488 — the two 403s mean different things to the connector.
+      isTransientGithubFailure(err)
+        ? "GitHub rate limit reached"
+        : "GitHub refused this credential (403 forbidden)",
+    );
   if (e.status === 404) return new ConnectorError(404, "REPO_NOT_FOUND", "GitHub repo not found");
   return new ConnectorError(502, "REPO_API_ERROR", e.message ?? "GitHub API error");
 }
