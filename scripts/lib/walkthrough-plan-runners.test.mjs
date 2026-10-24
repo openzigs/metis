@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { parsePhaseMap } from "./walkthrough-fixes-core.mjs";
+
 /**
  * Runner-level tests for the two #948 gates. The cores take their inputs as
  * arguments, so no core test can notice a runner that reads the wrong plan,
@@ -439,5 +441,101 @@ describe("CI wiring (#948)", () => {
     expect(template).toMatch(
       /- \[ \] User-facing feature added or changed → .*TEST_PLAN\.md.* updated \(or N\/A/,
     );
+  });
+});
+
+// #1177 — the analyst journey is the core of the run and the developer side a smoke test.
+// These pin the shape across the plan, the briefs, the map and the results template, so a
+// later edit to one cannot quietly drift from the others.
+describe("Run shape: analyst first, developer smoke test (#1177)", () => {
+  const read = (/** @type {string} */ rel) =>
+    fs.readFileSync(path.join(repoRoot, ...rel.split("/")), "utf8");
+  const plan = read("docs/walkthroughs/TEST_PLAN.md");
+  const SMOKE = ["S2", "S4", "S6", "S7", "S21"];
+
+  it("marks every Spec Kit row outside the smoke set optional, and none inside it", () => {
+    const rows = plan.split("\n").filter((l) => /^\| S\d+[a-z]? \|/.test(l));
+    expect(rows.length).toBeGreaterThanOrEqual(24);
+    for (const row of rows) {
+      const id = /** @type {RegExpMatchArray} */ (row.match(/^\| (S\d+[a-z]?) \|/))[1];
+      const step = row.split("|")[2];
+      expect(/\*\(Optional/.test(step), id).toBe(!SMOKE.includes(id));
+    }
+    expect(plan).toMatch(/Smoke set \(#1177\): S2, S4, S6, S7 and S21/);
+  });
+
+  it("runs two developer requests in wave E and keeps the other four as optional", () => {
+    expect(plan).toMatch(/Wave E runs two of them \(#1177\): #4478 and #4386/);
+    expect(plan).toMatch(/#4511, #4336, #4479 and #4456 are \*\(optional\)\*/);
+    const waveE = read(".github/skills/e2e-walkthrough/briefs/wave-e.md");
+    expect(waveE).toMatch(/Run \*\*two\*\* requests: \*\*#4478\*\*/);
+    expect(waveE).not.toMatch(/For each of the six developer requests/);
+    expect(waveE).not.toMatch(/twenty-four rows in all/);
+  });
+
+  it("makes wave G conditional on a Spec Kit or impact change, with the command to decide", () => {
+    const g = plan.slice(plan.indexOf("## Wave G"));
+    expect(g).toMatch(/only when the release under test touches Spec Kit or impact analysis/);
+    expect(g).toContain("server/src/lib/spec-kit");
+    expect(g).toContain("server/src/lib/impact-analysis");
+    expect(g).toMatch(/skipped: no Spec Kit or impact change since/);
+  });
+
+  it("gives J1 operator-run or operator-approved second-user steps, never a workaround", () => {
+    expect(plan).toMatch(/### Second-user steps \(operator-run or operator-approved\)/);
+    for (const step of ["J1.4a", "J1.4b", "J1.4c"]) {
+      const row = plan.split("\n").find((l) => l.startsWith(`| ${step} |`));
+      expect(row, step).toBeDefined();
+      expect(row, step).toMatch(/\[2nd user/);
+    }
+    const waveF = read(".github/skills/e2e-walkthrough/briefs/wave-f.md");
+    expect(waveF).toContain("{{SECOND_USER_MODE}}");
+    expect(waveF).toContain("{{J1_RESUME_AT}}");
+    expect(waveF).toMatch(/Operator steps pending/);
+    expect(waveF).toMatch(/never act as\s+them through the API or SQL/);
+  });
+
+  it("checks the BRD's Word and PDF by URL and makes the Jira publish conditional on #1176", () => {
+    expect(plan).toMatch(/Fetch the BRD's exports by URL, never by clicking Download/);
+    expect(plan).toContain("?format=docx");
+    expect(plan).toContain("?format=pdf");
+    const j17 = plan.split("\n").find((l) => l.startsWith("| J1.7 |"));
+    expect(j17).toMatch(/Word and PDF exports are fetched by URL and opened/);
+    expect(j17).toMatch(/sign-off rubric/);
+    const j18a = plan.split("\n").find((l) => l.startsWith("| J1.8a |"));
+    expect(j18a).toMatch(/Conditional on #1176/);
+    expect(j18a).toMatch(/skipped: no sandbox Jira \(#1176\)/);
+  });
+
+  it("puts the analyst journey first in the results template and marks what stops comparing", () => {
+    const template = read("docs/walkthroughs/RESULTS_TEMPLATE.md");
+    const at = (/** @type {string} */ heading) => template.indexOf(heading);
+    expect(at("### Analyst journey")).toBeGreaterThan(0);
+    for (const later of [
+      "### Journeys (wave F)",
+      "### Developer smoke test",
+      "### Fixes since the previous run",
+      "### Per-phase evidence",
+      "### Run-to-run comparison",
+    ]) {
+      expect(at(later), later).toBeGreaterThan(at("### Analyst journey"));
+    }
+    const lines = template.slice(at("### Run-to-run comparison")).split("\n");
+    const start = lines.findIndex((l) => l.startsWith("| Measure | Run 2 baseline |"));
+    expect(lines[start]).toContain("Comparable with runs 1 to 9?");
+    const end = lines.findIndex((l, i) => i > start && !l.startsWith("|"));
+    const cells = (/** @type {string} */ l) => l.split("|").length;
+    for (const row of lines.slice(start, end)) expect(cells(row), row).toBe(cells(lines[start]));
+  });
+
+  it("maps #1177 as walkthrough tooling and no longer asks wave E for six requests", () => {
+    const { map, errors } = parsePhaseMap(read("docs/walkthroughs/fix-phase-map.json"));
+    expect(errors).toEqual([]);
+    expect(map?.issues["1177"]).toHaveProperty("skip");
+    for (const [issue, entry] of Object.entries(map?.issues ?? {})) {
+      if ("wave" in entry && entry.wave === "E") {
+        expect(entry.check ?? "", issue).not.toMatch(/six (developer )?requests/);
+      }
+    }
   });
 });

@@ -21,7 +21,12 @@ evidence folder's `run.json` when there is one (#947). Fill it from the same led
 and the same issue list as this comment, so the deck and the comment agree.
 
 Legend for Works / Useful: ✅ pass · ⚠️ partial (Works) or weak (Useful) · ❌ fail ·
-🚫 blocked (give the reason) · – n/a.
+🚫 blocked (give the reason) · – n/a · ⏭ skipped (optional, #1177).
+
+**Run shape (#1177, from run 10).** The analyst journey is the core of the run, so its results
+come first. The developer side is a smoke test: the Spec Kit smoke set (S2, S4, S6, S7, S21),
+two developer requests in wave E (#4478, #4386) and a conditional wave G. The run-to-run table
+marks which numbers are no longer comparable with runs 1 to 9.
 
 ---
 
@@ -34,6 +39,54 @@ sidecar, project `{{PROJECT_ID}}` in workspace `{{WORKSPACE_ID}}`. Ledger: `toke
 
 Phases removed since run 2: {{e.g. Phase 4 bug scan (#799); Phase 17 test coverage → "Tested by" (#812)}}.
 
+### Analyst journey (wave F, journey 1): the core of the run
+
+Second users ran as: {{operator-run / operator-approved / agent}} (reviewer `coordinator`,
+second analyst `developer`; TEST_PLAN "Second-user steps").
+
+| Step | Works | Useful | Handoff held? | Second user ran as | Key finding |
+|---|---|---|---|---|---|
+| J1.1 Import feature requests | | | | – | |
+| J1.2 Analyse 5 imported items | | | | – | |
+| J1.3 Clarifying questions | | | | – | |
+| J1.4 Approve, request review, edit criteria | | | | – | |
+| J1.4a Reviewer comments, @mentions, rejects with a note | | | | | |
+| J1.4b Second analyst replies and discusses | | | | | |
+| J1.4c Analyst responds; second review approved | | | | | |
+| J1.5 Traceability | | | | – | |
+| J1.6 Chat: which touch the database? | | | | – | |
+| J1.7 Requirements-scoped BRD (sign-off, Word, PDF) | | | | – | |
+| J1.8 Publish 2 issues to `openzigs/flux-v2` | | | | – | |
+| J1.8a Publish to the sandbox Jira (#1176) | | | | – | {{or "skipped: no sandbox Jira (#1176)"}} |
+| J1.9 Cost on the usage page | | | | – | |
+
+**Completed in the UI:** {{yes / no, broke at J1.n}} · **Data lost between steps:**
+{{which handoff, what}} · **Time:** {{min}} / 60 min, plus {{min}} of [2nd user] steps ·
+**Cost:** {{$}} / $1.50.
+
+**The BRD as a deliverable** (Phase 9 full-scope BRD and J1.7's requirements-scoped BRD):
+
+| Document | Answer key (#1041) | Sign-off (#1175) | Markdown | Word (`.docx`) | PDF |
+|---|---|---|---|---|---|
+| Full-scope BRD (Phase 9) | coverage · accuracy · hallucinations · sections | SO1 · SO2 · SO3 · SO4 | | opened? headings match? | opened? headings match? |
+| J1.7 BRD (5 requirements) | – (requirements-scoped) | SO1 · SO2 · SO3 · SO4 | | | |
+
+### Journeys (wave F)
+
+| Journey | Completed in the UI? | Where it broke | Data lost between steps | Time / budget | Cost / budget |
+|---|---|---|---|---|---|
+| 1 Business analyst (Priya) | | | | / 60 min (45 before #1177) | / $1.50 |
+| 2 Developer (Dev) | | | | / 30 min | / $1.00 |
+
+Steps the UI could not do (each a finding): {{J1.n: missing control · …}}.
+
+### Developer smoke test
+
+Spec Kit smoke set: S2 {{✅}} · S4 · S6 · S7 · S21. Optional S-steps run (because a fix named
+them): {{S6b · …}}; the rest ⏭. Wave E requests: #4478 {{impact / chat / plan}}, #4386
+{{…}}; optional requests run: {{none}}. Wave G: {{ran (#4478, builds yes/no) / skipped: no Spec
+Kit or impact change since `<sha>`}}.
+
 ### Fixes since the previous run, re-verified
 
 From the run's `fixes.json` (`scripts/walkthrough/fixes-since.mjs`, scope posted on #706 before
@@ -43,15 +96,6 @@ forward from the previous run: {{n}}.
 | Fix | PR | Wave / phase | Verdict | Evidence (step id) |
 |---|---|---|---|---|
 | #… | #… | | ✅ confirmed / ⚠️ partial / ❌ regressed / – not-exercised | |
-
-### Journeys (wave F)
-
-| Journey | Completed in the UI? | Where it broke | Data lost between steps | Time / budget | Cost / budget |
-|---|---|---|---|---|---|
-| 1 Business analyst (Priya) | | | | / 45 min | / $1.50 |
-| 2 Developer (Dev) | | | | / 30 min | / $1.00 |
-
-Steps the UI could not do (each a finding): {{J1.n: missing control · …}}.
 
 ### Per-phase evidence
 
@@ -70,9 +114,9 @@ Steps the UI could not do (each a finding): {{J1.n: missing control · …}}.
 | 11 Discussions | | | | | | | | | |
 | 12 Publishing | | | | | | | | | |
 | 13 Drift / scheduler / tasks | | | | | | | | | |
-| 14 Spec Kit (S1–S24) | | | | | | | | | |
+| 14 Spec Kit (smoke set S2, S4, S6, S7, S21; was S1–S24 to run 9) | | | | | | | | | |
 | 15 PR review / change | | | | | | | | | |
-| 16 Impact | | | | | | | | | |
+| 16 Impact (#4478, #4386; six requests in runs 7 to 9) | | | | | | | | | |
 | 17 Tested by | | | | | | | | | |
 | 18 Usage / cost | | | | | | | | | |
 | 19 Settings | | | | | | | | | |
@@ -97,39 +141,53 @@ Lineage edges (reads + writes): {{…}}.
 - [ ] `deepseek-flash`, `jsonSchema:false`; no Unpriced usage at project scope
 - [ ] Pinned at `v2.3.3` (`c4d54f87`) and fully ingested; embeddings are not the hash stub
 - [ ] Phases 1–20 each run, with a verdict (blocked ones with reasons)
-- [ ] Spec Kit S1–S23 each have a verdict; every artifact and every `SPECKIT_COMMANDS` entry invoked
+- [ ] Spec Kit smoke set (S2, S4, S6, S7, S21) each have a verdict; other S-steps have one or read ⏭
 - [ ] `/specify` and `/plan` grounded with K > 0
 - [ ] 8/8 BA questions; at least 6 correct with valid citations
 - [ ] Journeys 1 and 2 each scored on completed, no data lost, and within budget
-- [ ] 6/6 developer requests with impact, plan, sandbox draft and per-request ledger delta; #4478 surfaces `MarkAllAsReadBeforeDate`
+- [ ] J1.4a to J1.4c each have a verdict and say how the second user ran
+- [ ] BRD Word and PDF fetched by URL and opened; sign-off lines for both BRDs; J1.8a run or skipped with #1176
+- [ ] 2/2 developer requests (#4478, #4386) with impact, plan, sandbox draft and per-request ledger delta; #4478 surfaces `MarkAllAsReadBeforeDate`
+- [ ] Wave G ran, or skipped with an empty Spec Kit / impact diff since the previous run
 - [ ] Nothing published, commented or reviewed on `miniflux/v2` (`gh search issues/prs --repo miniflux/v2 --author <user>` → `[]`)
 - [ ] Per-phase token/cost table posted; total within budget
 - [ ] Every failure filed as its own issue
 
 ### Run-to-run comparison
 
-| Measure | Run 2 baseline | Run {{N}} | Delta |
-|---|---|---|---|
-| Works: pass / partial / fail / blocked | 11 / 6 / 1 / 2 | | |
-| Useful: pass / weak / fail / n/a | 5 / 4 / 9 / 2 | | |
-| BA questions answered correctly | 8/8 (after #783) | | |
-| Developer-issue impact | 0/3 (#791) | | |
-| Impact edit candidates: file precision / recall | – (runs 1 to 7 scored both lists together) | | |
-| Impact blast radius: file recall (recall only, #1073) | – | | |
-| Impact blast radius: files / functions listed (`listed`: a count, not a score; `listed - tp` is the old rule's `fp`) | – | | |
-| Total tokens | ≈ 11.2M (10.81M + 0.39M) | | |
-| Total cost | ≈ $5.77 (557¢ + 19.7¢) | | |
-| Docs-gen share of spend | 80% (8.86M tok / 485¢) | | |
-| Lineage reads/writes edges | 1,436 | | |
-| Repo connector Go files ingested | 421 / 421 | | |
-| Docs-gen: largest document / longest section (chars) | – (run 3 BRD: 2.19 MB) | | |
-| Docs-gen: BRD sign-off rubric SO1 / SO2 / SO3 / SO4, and main part / whole body (chars, `wc -m`) (TEST_PLAN Phase 9, #1175) | – (run 9: 247,171 chars, no main part) | | |
-| Docs-gen: any run stopped by a cost or token ceiling | – | | |
-| Promoted requirements with zero acceptance criteria | – | | |
-| Promoted requirements with no code link | – | | |
-| API-only steps left in the briefs (no UI caller) | – | | |
+**Comparable after the reshape?** (#1177, from run 10). "No" means the number moved because the
+run's shape changed, not because METIS did: report it, but do not read its delta against runs 1
+to 9 as a regression or an improvement. "Per request" means compare #4478 and #4386 with their
+own earlier rows, never the totals.
 
-Per phase (run 2 values from its re-run table; "ai ledger" = `ai_token_usages` only):
+| Measure | Run 2 baseline | Run {{N}} | Delta | Comparable with runs 1 to 9? |
+|---|---|---|---|---|
+| Works: pass / partial / fail / blocked | 11 / 6 / 1 / 2 | | | No: fewer Spec Kit and impact steps, new J1 steps |
+| Useful: pass / weak / fail / n/a | 5 / 4 / 9 / 2 | | | No: as above |
+| BA questions answered correctly | 8/8 (after #783) | | | Yes |
+| Developer-issue impact | 0/3 (#791) | | | No as a total (N/2 from run 10, N/6 runs 7 to 9, N/3 before): per request only |
+| Impact edit candidates: file precision / recall | – (runs 1 to 7 scored both lists together) | | | Per request (#4478, #4386) |
+| Impact blast radius: file recall (recall only, #1073) | – | | | Per request |
+| Impact blast radius: files / functions listed (`listed`: a count, not a score; `listed - tp` is the old rule's `fp`) | – | | | Per request |
+| Total tokens | ≈ 11.2M (10.81M + 0.39M) | | | No: four fewer requests, most S-steps and often wave G skipped |
+| Total cost | ≈ $5.77 (557¢ + 19.7¢) | | | No: as above |
+| Docs-gen share of spend | 80% (8.86M tok / 485¢) | | | No: the denominator shrank |
+| Lineage reads/writes edges | 1,436 | | | Yes |
+| Repo connector Go files ingested | 421 / 421 | | | Yes |
+| Docs-gen: largest document / longest section (chars) | – (run 3 BRD: 2.19 MB) | | | Yes |
+| Docs-gen: BRD sign-off rubric SO1 / SO2 / SO3 / SO4, and main part / whole body (chars, `wc -m`) (TEST_PLAN Phase 9, #1175) | – (run 9: 247,171 chars, no main part) | | | Yes |
+| J1.7 BRD sign-off rubric SO1 / SO2 / SO3 / SO4 | – | | | Yes (scored since #1175) |
+| BRD Word / PDF open with matching headings (Phase 9 and J1.7) | – (never exercised before run 10) | | | New in run 10 |
+| J1 two-user steps (J1.4a to J1.4c): pass / weak / fail / blocked, and how the second user ran | – (the classifier refused it in runs 8 and 9) | | | New in run 10 |
+| J1 wall time / budget | – (run 8: 43 of 45 min) | | | No: budget 60 min from run 10, and the new steps add time |
+| Docs-gen: any run stopped by a cost or token ceiling | – | | | Yes |
+| Promoted requirements with zero acceptance criteria | – | | | Yes |
+| Promoted requirements with no code link | – | | | Yes |
+| API-only steps left in the briefs (no UI caller) | – | | | No: optional S-steps are not counted unless they ran |
+| Wave G build proof | – | | | Only when it ran in both runs |
+
+Per phase (run 2 values from its re-run table; "ai ledger" = `ai_token_usages` only). Phases 14
+and 16 are not comparable from run 10 (smoke set; two requests); the others are:
 
 | Phase | Run 2 Works / Useful | Run 2 tokens / cost | Run {{N}} Works / Useful | Run {{N}} tokens / cost | Delta |
 |---|---|---|---|---|---|

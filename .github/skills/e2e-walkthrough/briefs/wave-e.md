@@ -1,11 +1,15 @@
-# Wave E — Phases 15–20 + developer-issue impact (run {{RUN_NUMBER}})
+# Wave E — Phases 15–20 + two developer requests (run {{RUN_NUMBER}})
 
 You are wave E of run {{RUN_NUMBER}} of the METIS end-to-end walkthrough. Read
 [`docs/walkthroughs/TEST_PLAN.md`](../../../../docs/walkthroughs/TEST_PLAN.md) for Phases 15–20 (PR review, impact,
 "Tested by" in traceability, usage and cost, settings, admin) and the "Developer: real Miniflux
-change requests" table with what each must surface: three open feature requests (#4478, #4511,
-#4336) and three bug reports fixed upstream after `v2.3.3` (#4479 Google Reader API, #4386 web
-UI, #4456 fetcher; #1044).
+change requests" table with what each must surface.
+
+**The developer side is a smoke test (#1177).** Run **two** requests: **#4478** (the open feature
+request every run since run 3 has scored) and **#4386** (a web-UI bug fixed upstream after
+`v2.3.3`, scored against the merged fix). The other four (#4511, #4336, #4479, #4456) are
+*(optional)*: run one only when a fix under "Fixes to verify this wave" names it, and say so.
+Journey 2 (wave F) covers #4336.
 
 ## State you start from
 
@@ -22,7 +26,7 @@ UI, #4456 fetcher; #1044).
 ## Do
 
 1. Phases 15–20 as the plan defines them, skipping `{{REMOVED_PHASES}}`.
-2. For each of the six developer requests: chat "where would I implement this?", impact
+2. For each developer request (#4478 and #4386, plus any optional one a fix names): chat "where would I implement this?", impact
    analysis, and Spec Kit `/specify` → `/plan`. Paste a request's title and body as the
    requirement; for the three closed ones, take them from a read-only
    `gh issue view <n> -R miniflux/v2` and never their fixing PR, which would hand METIS the
@@ -46,9 +50,9 @@ UI, #4456 fetcher; #1044).
    reads "0 files to edit"), the edit list is empty on current METIS: record the edit row as
    `tp` 0, `fp` 0, `fn` = the set's size, score the blast row from the Blast radius group, and
    say the edit list was empty.
-   Keep the "must surface" verdict beside it, scored **N/6** from this run (runs 3 to 6 scored
-   the first three only: 3/3 by the brief, 2/3 strictly, #4478 still proposing a `users`
-   column; compare those three like for like). First re-check #4547 and #4552 with
+   Keep the "must surface" verdict beside it, scored **N/2** from run 10 (runs 7 to 9 scored
+   N/6 and runs 3 to 6 N/3: compare #4478 and #4386 like for like, request by request, never the
+   totals). If #4511 runs, first re-check #4547 and #4552 with
    `gh pr view <n> -R miniflux/v2 --json state,mergedAt` (read-only); if one has merged, score
    #4511 against its merged diff and say so. Also check
    `gh pr list -R miniflux/v2 --state merged --search "merged:>2026-07-24 feat in:title"`: a
@@ -144,17 +148,17 @@ as plain text.
 
    Works / Useful: ✅ pass · ⚠️ partial or weak · ❌ fail · 🚫 blocked (with reason) · – n/a.
 3. **Developer-issue change plans**: per issue, two rows for `impact` (scope `edit` and scope
-   `blast`, #1073) and one each for `chat` and `plan` (scope `–`), twenty-four rows in all (six
-   requests: #4478, #4511, #4336, #4479, #4386, #4456), with counts so the ratios can be
-   checked. A `blast` row gives recall only: `tp` and `fn`, with `–` for `fp` and for the false
+   `blast`, #1073) and one each for `chat` and `plan` (scope `–`), eight rows for the two
+   requests (#4478 and #4386), and four more for each optional request run, with counts so the
+   ratios can be checked. A `blast` row gives recall only: `tp` and `fn`, with `–` for `fp` and for the false
    positives.
 
    | Issue | Output | Scope | File P/R (tp/fp/fn) | Function P/R (tp/fp/fn) | Migration correct | Must-surface | False positives |
    |---|---|---|---|---|---|---|---|
 
    "False positives" lists each by name, `must not` items first. These rows go into `run.json`
-   `changePlanAccuracy` (the skill, section 7), with `source` `upstream` for #4479, #4386 and
-   #4456.
+   `changePlanAccuracy` (the skill, section 7), with `source` `upstream` for #4386 (and for
+   #4479 or #4456 if run).
 
    Then the **per-request ledger delta**, one row per request:
 

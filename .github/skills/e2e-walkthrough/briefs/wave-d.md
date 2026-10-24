@@ -1,9 +1,14 @@
-# Wave D — Spec Kit S1–S24 (run {{RUN_NUMBER}})
+# Wave D — Spec Kit smoke set (run {{RUN_NUMBER}})
 
 You are wave D of run {{RUN_NUMBER}} of the METIS end-to-end walkthrough. Read the
 "Spec Kit (Phase 14, in full)" section of
 [`docs/walkthroughs/TEST_PLAN.md`](../../../../docs/walkthroughs/TEST_PLAN.md) for steps S1–S24, how to drive each one and its pass bars.
-S24 is optional (it needs a public webhook).
+
+**The developer side is a smoke test (#1177).** Run the **smoke set** on every run: **S2, S4,
+S6, S7 and S21** (enable, specify, plan, tasks, issue export). Every other S-step is
+*(optional)*: run it only when a fix under "Fixes to verify this wave" names it (for example a
+fix placed at S6b, S9 or S19), and record the rest `skipped (optional)`. S24 also needs a
+public webhook.
 
 ## State you start from
 
@@ -18,19 +23,20 @@ S24 is optional (it needs a public webhook).
 
 ## Do
 
-S1–S24 in order, **in the UI first**, as the plan's table says: its "Drive it with" column
+The smoke set, plus any optional step a fix names, in the table's order, **in the UI first**, as the plan's table says: its "Drive it with" column
 names the UI control for each step and marks the few checks that are *API only*. Use in-page
 `fetch('/api/projects/{{PROJECT_ID}}/spec-kit/…', {credentials:'include', …})` **only** for
 those; anything else that needs `fetch` is a finding. Chat no longer runs or suggests Spec Kit
 commands (#931).
 
-- **S3b:** the operator made `developer` a workspace member at setup (the skill, section 1,
-  step 5). Log out and back in as `developer` before the read-only check. If `developer` is
-  not a member, stop and ask the operator rather than inviting from this wave (run 9's
-  classifier refused the invite in wave D).
+- **S3b and S12** (optional) are [2nd user] steps: `developer` signs in, or `coordinator` is
+  mentioned and present. The operator made both workspace members at setup (the skill, section
+  1, step 5). Second user mode for this wave: `{{SECOND_USER_MODE}}`. With `operator-run`,
+  return the step as `Operator steps pending: S3b` rather than signing in yourself; never invite
+  from this wave (run 9's classifier refused the invite in wave D).
 - **S6 then S6b changes the design.** Save `plan.md` and `tasks.md` only after S6b to S6d,
   and run `/speckit.analyze` and the handoff after them.
-- **S9 budget:** the handoff analysis took 20 minutes and $0.35 in run 8, and one Continue
+- **S9 budget** (optional step): the handoff analysis took 20 minutes and $0.35 in run 8, and one Continue
   added 23 minutes and $0.41. Budget 45 minutes for S9 when #1062 is exercised.
 - **Spec Kit commands take the leading slash** in the palette (`/speckit.specify`).
 - **S9 handoff:** **Start analysis with these artifacts** once. It must start a new run, never
@@ -105,7 +111,8 @@ as plain text.
 1. **State hand-off**: the Spec Kit feature IDs, the artifact list produced, the S9 handoff
    analysis ID, the URLs of any
    sandbox issues created, and the ledger snapshot timestamp at the end of the wave.
-2. **Per-step table** (one row per S-step, same columns):
+2. **Per-step table** (one row per S-step you ran: the smoke set and any optional step a fix
+   named; then one line listing the optional steps `skipped (optional)`):
 
    | Phase | Wall time | Input tok | Output tok | Cache-read tok | Cost | Console errors | Works | Useful |
    |---|---|---|---|---|---|---|---|---|

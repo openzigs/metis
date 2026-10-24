@@ -1,9 +1,13 @@
-# Wave G — implement the plan, optional (run {{RUN_NUMBER}})
+# Wave G — implement the plan, conditional (run {{RUN_NUMBER}})
 
 You are wave G of run {{RUN_NUMBER}} of the METIS end-to-end walkthrough. Read the **"Wave G —
 implement the plan (optional)"** section of
 [`docs/walkthroughs/TEST_PLAN.md`](../../../../docs/walkthroughs/TEST_PLAN.md), and its
 "Reference change sets" and "Scoring a change plan" sections, which score your diff.
+
+Wave G runs only when the METIS commits since the previous run touch Spec Kit or impact
+analysis, or a fix is placed in wave G (#1177; the plan's "Wave G", **When**). The operator
+checked that before dispatching you; you need not re-check it.
 
 Waves D and F proved METIS can write a Spec Kit `tasks.md`. You prove whether that plan
 **produces working code**: implement it, task by task, on a branch of the sandbox fork, then

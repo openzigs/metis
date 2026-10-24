@@ -8,6 +8,11 @@ hold" column, the handoffs to check and the budgets.
 Waves A–E tested features one at a time. You test whether a **person** can get from a starting
 point to an outcome. Act as the persona: you know what they know and nothing more.
 
+**Journey 1 is the core of the run (#1177).** METIS is built mainly for business analysts, so
+give J1 the time: it now has a reviewer who rejects and then approves, a second analyst who
+comments, mentions and discusses on the same project (J1.4a to J1.4c), a BRD checked as a Word
+and PDF deliverable (J1.7), and a Jira publish once the sandbox Jira exists (J1.8a).
+
 ## What the personas know
 
 | Key | Value |
@@ -16,7 +21,11 @@ point to an outcome. Act as the persona: you know what they know and nothing mor
 | Workspace (by name) | `{{WORKSPACE_NAME}}` |
 | Journey 1's new project (Priya names it) | `{{J1_PROJECT_NAME}}` |
 | Journey 2's project (by name, from wave A) | `{{PROJECT_NAME}}` |
-| Reviewer Priya invites | `coordinator` |
+| Priya signs in as | `admin` |
+| Reviewer (already a workspace member) | `coordinator` |
+| Second analyst, Sam (already a workspace member) | `developer` |
+| Second-user mode | `{{SECOND_USER_MODE}}` (`operator-approved` or `operator-run`) |
+| Start at step | `{{J1_RESUME_AT}}` (`J1.1` on the first dispatch) |
 | Sandbox repo | `openzigs/flux-v2` |
 | Sandbox issues already created this run | `{{SANDBOX_ISSUES_SO_FAR}}` (counts toward the cap of 2) |
 | Ledger snapshot before wave F | `{{LEDGER_SINCE}}` |
@@ -32,17 +41,36 @@ sandbox slots; wave C does not.
 
 ## Do
 
-1. **Journey 1, then journey 2**, step by step as the plan's tables define them. Before J1.1
-   and J2.1, note the wall-clock time and snapshot the ledger (section 5 of the skill); do the
-   same after the last step. That measurement is the only non-UI action allowed.
-2. After every step, run its **handoff check**: open the thing the persona made in the previous
+1. **Journey 1, then journey 2**, step by step as the plan's tables define them, starting at
+   `{{J1_RESUME_AT}}` (on a re-dispatch, everything before it is done: check its handoffs, then
+   carry on). Before J1.1 and J2.1, note the wall-clock time and snapshot the ledger (section 5
+   of the skill); do the same after the last step. That measurement, and fetching J1.7's
+   exports by URL (below), are the only non-UI actions allowed.
+2. **[2nd user] steps** (J1.4a, J1.4b and the approval in J1.4c) follow the plan's
+   "Second-user steps". With `operator-approved`, drive the second user in its own browser
+   context (`browser.newContext()`, signed in as `coordinator` or `developer`, password
+   `password`); if that call is refused, stop there as for `operator-run`. With `operator-run`,
+   **stop at the first [2nd user] step** and return `Operator steps pending: <step ids>` with the
+   exact text of each step for the operator, plus everything finished so far: the operator does
+   them in their own browser and re-dispatches you with the next step as the start. Either way,
+   check each one's result from Priya's screen, and put `operator-run`, `operator-approved` or
+   `agent` in the step's `result`. Never sign in a second user any other way, and never act as
+   them through the API or SQL.
+3. **J1.7's BRD is a deliverable.** Fetch its Word and PDF exports by URL as the plan's Phase 9
+   says (`GET /api/projects/:projectId/docs/:docId/export?format=docx`, `pdf` and `markdown`
+   from the signed-in page; a Download click crashes the page), save them under the wave's
+   evidence folder and open them. Score the markdown export on the sign-off rubric (SO1–SO4,
+   J1.7 readings).
+4. **J1.8a (Jira) is conditional on #1176.** If no sandbox Jira is configured for the project,
+   record the step `skipped: no sandbox Jira (#1176)` and go on; never configure one yourself.
+5. After every step, run its **handoff check**: open the thing the persona made in the previous
    step and confirm it survived (same title, edited text, links, labels). Record what was lost.
-3. **A step the UI cannot do is a finding, not a detour.** Record it `works: "blocked"` with the
+6. **A step the UI cannot do is a finding, not a detour.** Record it `works: "blocked"` with the
    missing control named, then continue with the next step that does not depend on it. Never
    fall back to `fetch()`, SQL, or an ID from an earlier wave.
-4. **Journey 1 publishes** within the run's cap of 2: dry run first, sandbox only. If the cap is
+7. **Journey 1 publishes** within the run's cap of 2: dry run first, sandbox only. If the cap is
    used up, dry-run only and say so. Journey 2's task export follows the same cap.
-5. **Score J2.1 (impact) and J2.4 (Spec Kit plan)** against #4336's reference change set in
+8. **Score J2.1 (impact) and J2.4 (Spec Kit plan)** against #4336's reference change set in
    the plan ("Reference change sets"), by its "Scoring a change plan" rules, exactly as wave E
    scores its outputs: file and function `tp` / `fp` / `fn`, migration correct, false
    positives by name, and the step's "must hold" verdict beside them. **J2.1 is two rows**
@@ -64,7 +92,7 @@ sandbox slots; wave C does not.
    "what about Fever and Google Reader?") read against that request's "must surface" row, and J2.1 and J2.4 are scored against **that** request's reference change set by the
    same rules, with `source` `upstream`. Name the swap in the journey's verdict and in the
    change-plan rows' `issue`, and do not compare its scores with an earlier run's #4336 rows.
-6. Verify the fixes listed below as you pass the step each one names.
+9. Verify the fixes listed below as you pass the step each one names.
 
 ## Fixes to verify this wave
 
@@ -73,7 +101,8 @@ sandbox slots; wave C does not.
 ## Standing rules — never
 
 - Never publish, comment or review on `miniflux/v2`. Sandbox is `openzigs/flux-v2` only.
-- No `fetch()`, no SQL, no API calls and no IDs from earlier waves for a persona step.
+- No `fetch()`, no SQL, no API calls and no IDs from earlier waves for a persona step. The one
+  exception is fetching J1.7's exports by URL (Do, item 3), which stands in for a Download click.
 - Never click **Regenerate** on a reviewed run.
 - Never **reject** approval items on a run that is still needed (#723).
 - Every publish is a **dry run first**; at most 2 real sandbox issues in the whole run.
@@ -82,9 +111,9 @@ sandbox slots; wave C does not.
 ## Tips
 
 Log in once (20 logins / 15 min). Wait 20–40 s after a dev-mode navigation before
-snapshotting. The reviewer needs `browser.newContext()`; mock users exist only after their first
-login, and after a membership change `/api/auth/refresh` refreshes the workspace claim (an
-operator step, not Priya's). Clarification starts when the Questions tab opens: do not remount
+snapshotting. A second user needs its own browser context, and only in `operator-approved` mode;
+the operator's setup signed both in once, so they exist. After a membership change
+`/api/auth/refresh` refreshes the workspace claim (an operator step, not Priya's). Clarification starts when the Questions tab opens: do not remount
 it while it starts (#937).
 
 **Scratch files go in `{{SCRATCH_DIR}}/wave-f/` only.** Evidence goes in
@@ -106,9 +135,15 @@ happened. A blocked step still gets a line and a screenshot of where the persona
 
 ## Return
 
+0. **`Operator steps pending: <step ids>`** first, if you stopped for one, with each step's text
+   for the operator; then everything below for the steps you did.
 1. **Per journey**: completed in the UI (yes / no, and the step where it broke), data lost
    between steps (which handoff, what was lost), wall time and ledger cost against the budget.
-2. **Per step**: step | Works | Useful | handoff held? | evidence path.
+   For journey 1 also: the wall time of the [2nd user] steps on its own line, and the J1.7
+   **sign-off line** (`Sign-off — J1.7 BRD: SO1 … · SO2 … · SO3 … · SO4 …`), and per export
+   format (markdown, docx, pdf): status, content type, size, first bytes, and whether it opened
+   with the five requirement headings.
+2. **Per step**: step | Works | Useful | handoff held? | second user ran as (J1.4a–J1.4c) | evidence path.
    Journey 2 adds its change-plan rows: two for `j2-impact` (J2.1), scope `edit` and scope
    `blast`, and one for `j2-plan` (J2.4), whose scope cell is `–`. A `blast` row gives recall
    only: `tp` and `fn`, with `–` for `fp` and for the false positives.

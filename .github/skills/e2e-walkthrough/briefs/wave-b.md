@@ -71,8 +71,10 @@ unset.
   ```
 - An edit sent with a stale `version` gets **409 `VERSION_CONFLICT`** (#871, PR #877).
 
-**Phase 8 — start a review and pin a baseline from the UI (#732, PR #929).** Log `coordinator`
-in once in a second context so the user exists.
+**Phase 8 — start a review and pin a baseline from the UI (#732, PR #929).** The operator's
+setup made `coordinator` a workspace member and signed them in once, so the user exists; do
+not sign in a second user or invite anyone from this wave (#1177). If `coordinator` is not
+offered as a reviewer, stop and ask the operator.
 - On the Requirements page, **Request review**, choose `coordinator`, and send.
   Expected: `request-review-done` confirms it, and the review is listed on `/reviews`.
 - On `/projects/{{PROJECT_ID}}/baselines`, as `admin`, **New baseline**. Expected: before you
