@@ -61,6 +61,13 @@ const PD = "project-d-1506";
 const D1 = "repo-d1-1506";
 const D2 = "repo-d2-1506";
 const REPO_D = "acme-1506/other";
+// Project E: an own-secret connector on a GitHub Enterprise server (E1) says
+// nothing about github.com deliveries, so its github.com connector (E2) still
+// takes the shared hook's (the same host rule as for merges, #1475).
+const PE = "project-e-1506";
+const E1 = "repo-e1-1506";
+const E2 = "repo-e2-1506";
+const REPO_E = "acme-1506/third";
 const TASKS = "# Tasks\n\n- [ ] T01 Build the thing\n";
 
 const hmac = (secret: string, body: string) =>
@@ -268,9 +275,40 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           },
         });
       }
-      // Projects B and C each registered their own webhook (#1475), and D did
-      // through D1 only.
-      for (const c of [CB, CC, D1]) {
+      await db.project.create({
+        data: {
+          id: PE,
+          name: PE,
+          slug: PE,
+          createdById: "u-1",
+          workspaceId: WS,
+          status: "active",
+          autoReviewPrs: true,
+        },
+      });
+      const [eOwner, eRepo] = REPO_E.split("/");
+      for (const [id, label, isPrimary, provider, apiBaseUrl] of [
+        [E1, "ghe", true, "github_enterprise", "https://ghe.example.test/api/v3"],
+        [E2, "dotcom", false, "github", null],
+      ] as const) {
+        await db.repoConnection.create({
+          data: {
+            id,
+            projectId: PE,
+            label,
+            ownerOrOrg: eOwner,
+            repoName: eRepo,
+            isPrimary,
+            status: "connected",
+            repoPermission: "admin",
+            provider,
+            apiBaseUrl,
+          },
+        });
+      }
+      // Projects B and C each registered their own webhook (#1475), D did
+      // through D1 only, and E only on its Enterprise server (E1).
+      for (const c of [CB, CC, D1, E1]) {
         await db.repoConnection.update({
           where: { id: c },
           data: { webhookSecretNonce: `nonce-${c}`, webhookSecretCheck: checkOf(c, `nonce-${c}`) },
@@ -371,6 +409,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // D2 (no own secret, bound first) would have won the shared hook for D,
       // and D would have been reviewed twice for one event.
       expect(enqueued.map((j) => j.projectId)).toEqual([PD]);
+    });
+
+    it("an own secret on another GitHub server does not exclude the project from github.com's shared hook", async () => {
+      const res = await deliver(prHook(), prBody(11, REPO_E), "guid-11");
+      expect(res.status).toBe(200);
+      expect(enqueued.map((j) => j.projectId)).toEqual([PE]);
     });
 
     it("issues: the same GUID at /github/issues and /github/issues/c/:id is processed by each, and a resend is deduped", async () => {
