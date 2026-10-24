@@ -14,10 +14,13 @@ vi.mock("../prisma.js", () => ({ prisma: { webhookPayloadDigest: table } }));
 import {
   claimPayload,
   isStaleSignedEvent,
+  isStaleSignedTriggerEvent,
   purgeOldPayloadDigests,
   releasePayload,
   signedEventTime,
   signedGithubEvent,
+  signedTriggerEvent,
+  SIGNED_TRIGGER_EVENTS,
   PAYLOAD_DIGEST_RETENTION_MS,
   SIGNED_EVENT_MAX_AGE_MS,
 } from "./payload-replay.js";
@@ -144,5 +147,77 @@ describe("signedGithubEvent (#1483)", () => {
     ]) {
       expect(signedGithubEvent(p)).toBeNull();
     }
+  });
+});
+
+describe("signedTriggerEvent (#1492)", () => {
+  const push = {
+    ref: "refs/heads/main",
+    before: "a",
+    after: "b",
+    commits: [],
+    pusher: { name: "octo" },
+    repository: { full_name: "acme/x" },
+  };
+
+  it("classifies everything signedGithubEvent does, plus push", () => {
+    expect(signedTriggerEvent({ action: "opened", pull_request: {} })).toBe("pull_request");
+    expect(signedTriggerEvent({ action: "closed", issue: {}, repository: {} })).toBe("issues");
+    expect(signedTriggerEvent(push)).toBe("push");
+    for (const e of ["pull_request", "issues", "issue_comment", "push"]) {
+      expect(SIGNED_TRIGGER_EVENTS.has(e)).toBe(true);
+    }
+    expect(SIGNED_TRIGGER_EVENTS.has("release")).toBe(false);
+  });
+
+  it("does not read create, delete, release or a partial push as push", () => {
+    for (const p of [
+      { ref: "v1", ref_type: "tag", pusher_type: "user", repository: {} },
+      { ...push, commits: undefined },
+      { ...push, pusher: "octo" },
+      { ...push, before: 1 },
+      { action: "published", release: {}, repository: {} },
+      null,
+      "push",
+    ]) {
+      expect(signedTriggerEvent(p)).toBeNull();
+    }
+  });
+
+  it("a pull_request shape wins over push fields", () => {
+    expect(signedTriggerEvent({ ...push, pull_request: {} })).toBe("pull_request");
+  });
+});
+
+describe("isStaleSignedTriggerEvent (#1492)", () => {
+  const push = (pushedAt: unknown) => ({
+    ref: "refs/heads/main",
+    before: "a",
+    after: "b",
+    commits: [],
+    pusher: {},
+    repository: { pushed_at: pushedAt },
+  });
+  const secs = (ms: number) => Math.floor(ms / 1000);
+
+  it("reads a push's signed pushed_at (epoch seconds)", () => {
+    expect(isStaleSignedTriggerEvent(push(secs(NOW - SIGNED_EVENT_MAX_AGE_MS - DAY)), NOW)).toBe(
+      true,
+    );
+    expect(isStaleSignedTriggerEvent(push(secs(NOW - DAY)), NOW)).toBe(false);
+  });
+
+  it("is not stale when the push carries no numeric pushed_at", () => {
+    expect(isStaleSignedTriggerEvent(push("2020-01-01T00:00:00Z"), NOW)).toBe(false);
+    expect(isStaleSignedTriggerEvent(push(undefined), NOW)).toBe(false);
+  });
+
+  it("ignores pushed_at on a non-push body, and defers to updated_at", () => {
+    const release = { action: "published", repository: { pushed_at: 1 } };
+    expect(isStaleSignedTriggerEvent(release, NOW)).toBe(false);
+    const oldPr = {
+      pull_request: { updated_at: new Date(NOW - SIGNED_EVENT_MAX_AGE_MS - DAY).toISOString() },
+    };
+    expect(isStaleSignedTriggerEvent(oldPr, NOW)).toBe(true);
   });
 });

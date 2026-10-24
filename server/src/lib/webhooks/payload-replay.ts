@@ -44,7 +44,8 @@ export const SIGNED_EVENT_MAX_AGE_MS = 4 * DAY_MS;
 export interface PayloadClaim {
   /**
    * Endpoint scope: `github-pr`, `github-pr:c:<connectorId>`, `github-issues`,
-   * `github-issues:c:<connectorId>` (#1483), `jira-issues`.
+   * `github-issues:c:<connectorId>` (#1483), `jira-issues`, and
+   * `github-trigger:<triggerId>` (#1492).
    */
   receiver: string;
   /** The event the signed body is (`signedGithubEvent`) — never an unsigned header. */
@@ -178,4 +179,62 @@ export function signedGithubEvent(payload: unknown): SignedGithubEvent | null {
     return typeof payload.action === "string" && isObject(payload.repository) ? "issues" : null;
   }
   return null;
+}
+
+/**
+ * #1492 — the events a GitHub trigger (`POST /api/webhooks/github`) can tell
+ * apart from the signed body: everything `signedGithubEvent` classifies, plus
+ * `push`, the event async triggers are most often pointed at.
+ */
+export type SignedTriggerEvent = SignedGithubEvent | "push";
+
+export const SIGNED_TRIGGER_EVENTS: ReadonlySet<string> = new Set<SignedTriggerEvent>([
+  "pull_request",
+  "pull_request_review",
+  "pull_request_review_comment",
+  "pull_request_review_thread",
+  "issues",
+  "issue_comment",
+  "push",
+]);
+
+/**
+ * A `push` payload carries `ref`, `before` and `after` as strings, a `commits`
+ * array and a `pusher` object. `create` and `delete` carry `ref` but neither
+ * `before`/`after` nor `commits`, so they do not read as `push`.
+ */
+function isPushBody(payload: Record<string, unknown>): boolean {
+  return (
+    typeof payload.ref === "string" &&
+    typeof payload.before === "string" &&
+    typeof payload.after === "string" &&
+    Array.isArray(payload.commits) &&
+    isObject(payload.pusher)
+  );
+}
+
+/**
+ * #1492 — the event a trigger delivery is, read from its signed body; `null`
+ * when the body is none of `SIGNED_TRIGGER_EVENTS`. Pull-request and issue
+ * shapes are checked first, and none of them carries a push's fields.
+ */
+export function signedTriggerEvent(payload: unknown): SignedTriggerEvent | null {
+  const event = signedGithubEvent(payload);
+  if (event !== null) return event;
+  return isObject(payload) && isPushBody(payload) ? "push" : null;
+}
+
+/**
+ * #1492 — `isStaleSignedEvent` for a trigger delivery. A `push` carries no
+ * `updated_at`; its signed `repository.pushed_at` (epoch SECONDS in a push
+ * payload, unlike other events' ISO strings, and the time of this push) is
+ * used instead. Read for `push` bodies only: on any other event `pushed_at` is
+ * the repository's last push, which says nothing about this delivery.
+ */
+export function isStaleSignedTriggerEvent(payload: unknown, now: number = Date.now()): boolean {
+  if (isStaleSignedEvent(payload, now)) return true;
+  if (signedTriggerEvent(payload) !== "push") return false;
+  const pushedAt = (payload as { repository?: { pushed_at?: unknown } }).repository?.pushed_at;
+  if (typeof pushedAt !== "number" || !Number.isFinite(pushedAt)) return false;
+  return now - pushedAt * 1000 > SIGNED_EVENT_MAX_AGE_MS;
 }

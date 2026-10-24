@@ -15,6 +15,10 @@ const tables = {
   triggers: new Map<string, any>(),
   projects: new Map<string, any>(),
   aISessions: new Map<string, any>(),
+  // #1492 — the GitHub trigger receiver's replay guard (payload-replay.ts) and
+  // delivery-id dedup (webhook-dedup.ts), keyed as their unique constraints are.
+  digests: new Map<string, any>(),
+  deliveries: new Map<string, any>(),
 };
 let seq = 0;
 
@@ -176,6 +180,30 @@ vi.mock("../src/lib/prisma.js", () => ({
             where.id.in.includes(p.id) && (where.deletedAt?.not === null ? !!p.deletedAt : true),
         ),
       ),
+    },
+    webhookPayloadDigest: {
+      create: vi.fn(async ({ data }: any) => {
+        const key = `${data.receiver}|${data.eventType}|${data.bodySha256}`;
+        if (tables.digests.has(key)) throw Object.assign(new Error("unique"), { code: "P2002" });
+        tables.digests.set(key, data);
+        return data;
+      }),
+      deleteMany: vi.fn(async ({ where }: any) => {
+        const key = `${where.receiver}|${where.eventType}|${where.bodySha256}`;
+        return { count: tables.digests.delete(key) ? 1 : 0 };
+      }),
+    },
+    prReviewWebhookDelivery: {
+      create: vi.fn(async ({ data }: any) => {
+        if (tables.deliveries.has(data.deliveryId)) {
+          throw Object.assign(new Error("unique"), { code: "P2002" });
+        }
+        tables.deliveries.set(data.deliveryId, data);
+        return data;
+      }),
+      deleteMany: vi.fn(async ({ where }: any) => {
+        return { count: tables.deliveries.delete(where.deliveryId) ? 1 : 0 };
+      }),
     },
     aISession: {
       findUnique: vi.fn(async ({ where }: any) => tables.aISessions.get(where.id) ?? null),
@@ -562,9 +590,11 @@ describe("triggers routes (#147)", () => {
         config: { secret, repo: "acme/app", event: "issues", kind: "analysis" },
       });
 
+    // A genuine `issues` body carries its `issue` (#1492: the event is read from it).
     const body = JSON.stringify({
       repository: { full_name: "acme/app" },
       action: "opened",
+      issue: { number: 1 },
     });
     const sig = "sha256=" + crypto.createHmac("sha256", secret).update(body).digest("hex");
 
@@ -760,7 +790,11 @@ describe("triggers routes (#147)", () => {
           config: { secret, repo: "acme/app", event: "issues", kind: "analysis" },
         });
     }
-    const body = JSON.stringify({ repository: { full_name: "acme/app" }, action: "opened" });
+    const body = JSON.stringify({
+      repository: { full_name: "acme/app" },
+      action: "opened",
+      issue: { number: 1 },
+    });
     const sig = "sha256=" + crypto.createHmac("sha256", secret).update(body).digest("hex");
     process.env.MAX_TRIGGER_FANOUT = "2";
     try {
@@ -777,6 +811,66 @@ describe("triggers routes (#147)", () => {
     } finally {
       delete process.env.MAX_TRIGGER_FANOUT;
     }
+  });
+
+  describe("GitHub receiver failure paths (#1492)", () => {
+    const secret = "gh-1492";
+    const body = JSON.stringify({
+      repository: { full_name: "acme/app" },
+      action: "opened",
+      issue: { number: 7 },
+    });
+    const sig = "sha256=" + crypto.createHmac("sha256", secret).update(body).digest("hex");
+    const seed = (id: string, config: object) =>
+      tables.triggers.set(id, {
+        id,
+        projectId: "p1",
+        name: id,
+        source: "github",
+        config: JSON.stringify({ secret, repo: "acme/app", kind: "chat", ...config }),
+        enabled: true,
+        lastFiredAt: null,
+      });
+    const send = (headers: Record<string, string>) => {
+      const r = request(makeApp())
+        .post(`/api/triggers/github`)
+        .set("Content-Type", "application/json")
+        .set("x-hub-signature-256", sig);
+      for (const [k, v] of Object.entries(headers)) r.set(k, v);
+      return r.send(body);
+    };
+
+    it("a delivery-id dedup failure does not block the delivery; the body claim still guards it", async () => {
+      seed("t-1", { event: "issues" });
+      const { prisma } = await import("../src/lib/prisma.js");
+      (prisma as any).prReviewWebhookDelivery.create.mockRejectedValueOnce(new Error("db down"));
+      const first = await send({ "x-github-event": "issues", "x-github-delivery": "d-1" });
+      expect(first.body.data.fired).toHaveLength(1);
+      const replay = await send({ "x-github-event": "issues", "x-github-delivery": "d-2" });
+      expect(replay.body.data).toMatchObject({ fired: [], duplicate: 1 });
+    });
+
+    it("a failed lastFiredAt update after the run was submitted keeps the delivery a success", async () => {
+      seed("t-1", { event: "issues" });
+      const { prisma } = await import("../src/lib/prisma.js");
+      (prisma as any).trigger.update.mockRejectedValueOnce(new Error("db down"));
+      const res = await send({ "x-github-event": "issues" });
+      expect(res.status).toBe(200);
+      expect(res.body.data.fired).toHaveLength(1);
+      expect(submitMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("with no event header, an event-filtered trigger matches the signed body's event", async () => {
+      seed("t-issues", { event: "issues" });
+      seed("t-any", {});
+      seed("t-release", { event: "release" });
+      const res = await send({});
+      expect(res.body.data.fired).toHaveLength(2);
+      expect(submitMock.mock.calls.map((c: any[]) => c[0].payload.triggerId).sort()).toEqual([
+        "t-any",
+        "t-issues",
+      ]);
+    });
   });
 
   it("rate-limits the unauthenticated webhook receivers (#680)", async () => {
@@ -903,9 +997,11 @@ describe("trigger receivers skip a soft-deleted project (#1438)", () => {
     const secret = "gh-secret";
     const cfg = { secret, repo: "acme/app", event: "issues", kind: "analysis" };
     seedTrigger("tg-del", "p-del", "github", cfg);
+    // A genuine `issues` body carries its `issue` (#1492: the event is read from it).
     const body = JSON.stringify({
       repository: { full_name: "acme/app" },
       action: "opened",
+      issue: { number: 1 },
     });
     const sig = "sha256=" + crypto.createHmac("sha256", secret).update(body).digest("hex");
     const send = () =>
