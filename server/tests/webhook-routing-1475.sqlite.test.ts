@@ -833,6 +833,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const secret: string = res.body.data.secret;
         expect(secret).toMatch(/^[A-Za-z0-9_-]{43}$/);
         expect(res.body.data.webhookPath).toBe(connUrl(`repo-${PB}`));
+        // #1483 — the same secret's issue-events URL, handed out with it.
+        expect(res.body.data.issuesWebhookPath).toBe(`/api/webhooks/github/issues/c/repo-${PB}`);
 
         const read = await request(api).get(base(PB)).set("Authorization", memberB());
         expect(read.status).toBe(200);
@@ -855,6 +857,30 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           .send(viaApi);
         expect(mounted.status).toBe(200);
         expect(mounted.body).toMatchObject({ ok: true, handled: true, kind: "reviewable" });
+
+        // #1483 — the issue-events path it hands out is mounted and takes this
+        // secret, and the read DTO carries it too.
+        expect(read.body.data.issuesWebhookPath).toBe(res.body.data.issuesWebhookPath);
+        const issue = JSON.stringify({
+          action: "closed",
+          issue: {
+            number: 62,
+            node_id: "node-62",
+            title: "x",
+            updated_at: new Date().toISOString(),
+          },
+          repository: { full_name: "acme-1475/tracker" },
+        });
+        const issueRes = await request(api)
+          .post(res.body.data.issuesWebhookPath)
+          .set("Content-Type", "application/json")
+          .set(
+            "X-Hub-Signature-256",
+            "sha256=" + crypto.createHmac("sha256", secret).update(issue).digest("hex"),
+          )
+          .send(issue);
+        expect(issueRes.status).toBe(200);
+        expect(issueRes.body).toMatchObject({ ok: true, reason: "NO_TASK_EXPORT" });
         expect(auditSpy).toHaveBeenCalledWith(
           expect.objectContaining({ action: "connector.repo.webhook_secret.generate" }),
         );

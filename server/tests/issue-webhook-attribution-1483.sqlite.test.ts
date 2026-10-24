@@ -9,8 +9,8 @@
  * - `/github/issues/c/:connectorId` takes that connector's own secret and
  *   acts on its project only (on `main` the route did not exist).
  * - `/github/issues` (deployment secret) never acts on a project that took
- *   its own secret, follows the #1475 owner rule for a connected repository,
- *   and otherwise picks the earliest matching row in a live project (on
+ *   its own secret, and otherwise picks the earliest matching row in a live
+ *   project, whoever connects the repository (on
  *   `main`: the first row SQLite returned, deleted project or not, and the
  *   newest publication across all projects).
  * - A3: the event is the one the signed body is. On `main` the drift half
