@@ -1030,6 +1030,10 @@ model RepoConnection {
   isPrimary     Boolean   @default(false)
   apiBaseUrl    String?
   secretId      String? // reference to encrypted PAT/token
+  /// #1475 — nonce of this connector's own GitHub webhook secret, which is
+  /// derived from VAULT_MASTER_KEY and never stored. NULL = the connector takes
+  /// deliveries signed with the deployment GITHUB_WEBHOOK_SECRET.
+  webhookSecretNonce String?
   status        String    @default("pending") // pending|connected|error|disabled
   errorMessage  String?
   lastTestedAt  DateTime?

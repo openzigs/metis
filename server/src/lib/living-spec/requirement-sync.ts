@@ -40,6 +40,11 @@ export interface SyncMergedPRInput {
   repo: RepositoryPayload;
   /** Optional unified diff (omit when not yet fetched — sync still updates implementedAt). */
   diff?: string | null;
+  /**
+   * #1475 — confine the sync to one project's requirements: set when the
+   * delivery was signed with that project's connector secret.
+   */
+  projectId?: string;
 }
 
 export interface SyncMergedPRResult {
@@ -79,6 +84,7 @@ async function resolveLinkedRequirements(
   prisma: PrismaClient,
   closedIssueNumbers: number[],
   repository: NamedRepository | null,
+  projectId?: string,
 ): Promise<Array<{ id: string; projectId: string }>> {
   if (closedIssueNumbers.length === 0 || !repository) return [];
   const published = await prisma.publishedIssue.findMany({
@@ -86,7 +92,7 @@ async function resolveLinkedRequirements(
     where: {
       issueNumber: { in: closedIssueNumbers },
       destination: "github",
-      draft: { project: { deletedAt: null } },
+      draft: { project: { deletedAt: null }, ...(projectId ? { projectId } : {}) },
     },
     include: { draft: true, batch: { select: { targetOwner: true, targetRepo: true } } },
   });
@@ -117,6 +123,7 @@ export async function syncMergedPR(
     prisma,
     links.closes,
     repositoryOfPrUrl(prUrl) ?? repositoryOfFullName(repo.full_name),
+    input.projectId,
   );
   if (requirements.length === 0) {
     return { requirementsUpdated: 0, implementationsCreated: 0, driftedFiles: [] };

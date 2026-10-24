@@ -52,6 +52,11 @@ import type { RepoFetcher } from "../../library/import.js";
 import { validateLocalSourcePath } from "./local-source.js";
 import { sourceIngestSummary } from "../source-ingest-state.js";
 import {
+  connectorWebhookSecret,
+  newWebhookSecretNonce,
+  webhookSecretRootKey,
+} from "./webhook-secret.js";
+import {
   cleanupExtraction,
   extractArchiveBuffer,
   extractArchiveFromPath,
@@ -753,6 +758,78 @@ export async function setPrimaryRepo(projectId: string, id: string, actorId: str
     metadata: { projectId, repo: repoSourceLabel(updated) },
   });
   return toApi(updated);
+}
+
+/**
+ * #1475 — give a GitHub repository connector its own webhook secret, replacing
+ * any it had. Returns the secret: it is shown this once and never stored (see
+ * `webhook-secret.ts`), so a lost secret is replaced, not read back.
+ */
+export async function generateRepoWebhookSecret(
+  projectId: string,
+  id: string,
+  actorId: string,
+): Promise<{ connector: ReturnType<typeof toApi>; secret: string }> {
+  const root = webhookSecretRootKey();
+  if (!root) {
+    throw new ConnectorError(
+      503,
+      "WEBHOOK_SECRET_UNAVAILABLE",
+      "This server has no VAULT_MASTER_KEY, so it cannot issue webhook secrets.",
+    );
+  }
+  const existing = await findGithubRepoConnector(projectId, id);
+  const nonce = newWebhookSecretNonce();
+  const updated = await prisma.repoConnection.update({
+    where: { id: existing.id },
+    data: { webhookSecretNonce: nonce },
+  });
+  audit({
+    actor: { id: actorId },
+    action: "connector.repo.webhook_secret.generate",
+    target: { type: "repo_connector", id },
+    metadata: {
+      projectId,
+      repo: repoSourceLabel(updated),
+      replaced: !!existing.webhookSecretNonce,
+    },
+  });
+  return { connector: toApi(updated), secret: connectorWebhookSecret(root, updated.id, nonce) };
+}
+
+/** #1475 — drop a connector's own webhook secret: it takes deployment-signed deliveries again. */
+export async function removeRepoWebhookSecret(projectId: string, id: string, actorId: string) {
+  const existing = await findGithubRepoConnector(projectId, id);
+  const updated = await prisma.repoConnection.update({
+    where: { id: existing.id },
+    data: { webhookSecretNonce: null },
+  });
+  if (existing.webhookSecretNonce) {
+    audit({
+      actor: { id: actorId },
+      action: "connector.repo.webhook_secret.remove",
+      target: { type: "repo_connector", id },
+      metadata: { projectId, repo: repoSourceLabel(updated) },
+    });
+  }
+  return toApi(updated);
+}
+
+async function findGithubRepoConnector(projectId: string, id: string) {
+  const existing = await prisma.repoConnection.findFirst({
+    where: { id, projectId, deletedAt: null },
+  });
+  if (!existing) {
+    throw new ConnectorError(404, "REPO_CONNECTOR_NOT_FOUND", "repo connector not found");
+  }
+  if (existing.provider !== "github" && existing.provider !== "github_enterprise") {
+    throw new ConnectorError(
+      400,
+      "WEBHOOK_SECRET_UNSUPPORTED",
+      "Only GitHub repository connections receive GitHub webhooks.",
+    );
+  }
+  return existing;
 }
 
 /**
@@ -1730,6 +1807,7 @@ function toApi(row: {
   isPrimary: boolean;
   apiBaseUrl: string | null;
   secretId: string | null;
+  webhookSecretNonce?: string | null;
   status: string;
   errorMessage: string | null;
   lastTestedAt: Date | null;
@@ -1760,6 +1838,8 @@ function toApi(row: {
     isPrimary: row.isPrimary,
     apiBaseUrl: row.apiBaseUrl,
     secretRef: row.secretId ? `\${vault:${row.secretId}}` : "",
+    // #1475 — whether the connector has its own webhook secret; never the secret.
+    webhookSecretConfigured: Boolean(row.webhookSecretNonce),
     status: row.status,
     errorMessage: row.errorMessage,
     lastTestedAt: row.lastTestedAt,

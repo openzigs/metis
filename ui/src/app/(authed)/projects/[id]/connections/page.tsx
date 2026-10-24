@@ -35,6 +35,7 @@ import { useDeepIngest } from "@/hooks/use-deep-ingest";
 import { DeepIngestOutcomeBanner } from "@/components/connectors/deep-ingest-outcome-banner";
 import { DbConnectorWizard } from "@/components/connectors/db-connector-wizard";
 import { DatabaseResourceManager } from "@/components/connectors/database-resource-manager";
+import { RepoWebhookSecret } from "@/components/connectors/repo-webhook-secret";
 import { RebuildCacheButton } from "@/components/projects/rebuild-cache-button";
 import { PageHeader } from "@/components/ui/page-header";
 import {
@@ -1074,6 +1075,11 @@ export default function ConnectionsPage() {
                     result={testResults[`repo:${r.id}`]!}
                   />
                 ) : null}
+                <RepoWebhookSecret
+                  projectId={projectId}
+                  connector={r}
+                  onChanged={() => qc.invalidateQueries({ queryKey: repoKeys.list(projectId) })}
+                />
               </Card>
             </li>
           ))}

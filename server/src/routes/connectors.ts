@@ -12,6 +12,9 @@
  *   POST   /repos/:id/ingest            ingest into RAG (connector.write)
  *   POST   /repos/:id/deep-ingest       clone + code graph + RAG, in the background:
  *                                       202 { jobId } (connector.write, #373)
+ *   POST   /repos/:id/webhook-secret    issue its own GitHub webhook secret, shown
+ *                                       once (connector.write, #1475)
+ *   DELETE /repos/:id/webhook-secret    back to the deployment secret (connector.write)
  *
  * Database connector:
  *   GET    /dbs                         list
@@ -82,6 +85,8 @@ import {
   getRepoConnectorEmitter,
   listRepoConnectors,
   pullOrCloneRepo,
+  generateRepoWebhookSecret,
+  removeRepoWebhookSecret,
   resolveNonGitIngestRoot,
   setPrimaryRepo,
   shallowCloneRepo,
@@ -637,6 +642,42 @@ export function connectorsRouter(): Router {
       try {
         const updated = await setPrimaryRepo(projectIdOf(req), String(req.params.id), actor(req));
         res.json(ok(updated));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
+
+  // ── #1475 — the connector's own GitHub webhook secret ─────────────────
+  r.post(
+    "/repos/:id/webhook-secret",
+    connectorWriteRateLimiter,
+    requireAuth,
+    requirePermission("connector.write"),
+    async (req, res) => {
+      try {
+        const out = await generateRepoWebhookSecret(
+          projectIdOf(req),
+          String(req.params.id),
+          actor(req),
+        );
+        res.setHeader("Cache-Control", "no-store");
+        res.json(ok({ ...out.connector, secret: out.secret }));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
+  r.delete(
+    "/repos/:id/webhook-secret",
+    connectorWriteRateLimiter,
+    requireAuth,
+    requirePermission("connector.write"),
+    async (req, res) => {
+      try {
+        res.json(
+          ok(await removeRepoWebhookSecret(projectIdOf(req), String(req.params.id), actor(req))),
+        );
       } catch (err) {
         rethrow(err);
       }
