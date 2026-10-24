@@ -412,6 +412,29 @@ describe("TeamsInstallationStore (#548)", () => {
     });
   });
 
+  it("another workspace cannot switch off a bound identity's bot by storing the same id", async () => {
+    allowlist = loadTeamsMsiAllowlist({ TEAMS_MSI_CLIENT_IDS: `${MSI}=ws-b` });
+    await store.install(msiInput({ workspaceId: "ws-b" }));
+    // A installs B's client id as a password app (any password passes install)...
+    await store.install({ workspaceId: "ws-a", appId: MSI, appPassword: "guess" });
+    // ...and even a stray managed-identity row for it in A (e.g. a legacy row).
+    db.installs.find((i) => i.workspaceId === "ws-a")!.appType = "UserAssignedMSID";
+    expect((await store.resolveAppPassword("ws-b"))?.appType).toBe("UserAssignedMsi");
+    expect((await store.getByWorkspace("ws-b"))?.needsReinstall).toBe(false);
+    // A's row is the one refused.
+    await expect(store.resolveAppPassword("ws-a")).rejects.toMatchObject({
+      code: "MSI_CLIENT_ID_NOT_ALLOWED",
+    });
+  });
+
+  it("an unbound identity is not blocked by a password installation of the same id elsewhere", async () => {
+    await store.install({ workspaceId: "ws-a", appId: MSI, appPassword: "guess" });
+    await expect(store.install(msiInput({ workspaceId: "ws-b" }))).resolves.toMatchObject({
+      needsReinstall: false,
+    });
+    expect((await store.resolveAppPassword("ws-b"))?.appType).toBe("UserAssignedMsi");
+  });
+
   it("refuses every managed identity when TEAMS_MSI_CLIENT_IDS is unset", async () => {
     allowlist = loadTeamsMsiAllowlist({});
     await expect(store.install(msiInput())).rejects.toMatchObject({

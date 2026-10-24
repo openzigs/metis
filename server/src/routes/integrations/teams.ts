@@ -75,7 +75,8 @@ const installSchema = z
     appPassword: z.string().min(1).max(2048).optional(),
     tenantId: z.string().min(1).max(200).nullable().optional(),
     // Accepts the pre-#1466 `UserAssignedMSID` (and any casing botbuilder would)
-    // and normalises it, so an older client still gets managed identity.
+    // and normalises it. Such a client still has to omit the password, which it
+    // used to be forced to send, so an old request with one gets a 400.
     appType: z
       .preprocess(
         (v) => (typeof v === "string" ? (normalizeTeamsAppType(v) ?? v) : v),

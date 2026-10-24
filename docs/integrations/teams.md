@@ -115,19 +115,24 @@ TEAMS_MSI_CLIENT_IDS=<client-id-guid>[,...]
 - **Bind each identity in a multi-workspace deployment.** An unbound id goes to
   whichever workspace connects it first, so any workspace admin could claim it
   while its intended workspace does not hold it, for example before that
-  workspace connects or after it disconnects. A bound id is refused for every
-  other workspace. Unbound is fine when the deployment has one workspace.
+  workspace connects or after it disconnects. A bound id is refused as a managed
+  identity for every other workspace, and nothing another workspace stores under
+  that id affects the bound workspace's bot. Unbound is fine when the deployment
+  has one workspace.
 - **Unset or empty:** every managed-identity install is refused with
   `403 MSI_CLIENT_ID_NOT_ALLOWED`. Unusable entries allow nothing: a non-GUID, an
   empty binding, or the same id bound to two different workspaces.
 - **Checked on every credential resolution, not only at install.** Removing an id
   from the list stops that bot authenticating on the next send or inbound
   activity, with the same named code.
-- **One workspace per identity.** An allowed identity already active in another
-  workspace is refused with `409 MSI_CLIENT_ID_IN_USE`. The response does not say
-  which workspace holds it. If two workspaces somehow hold the same identity (for
-  example rows written before this check existed), both stop resolving until one
-  disconnects.
+- **One workspace per unbound identity.** An unbound identity that another
+  workspace already holds as a managed identity is refused with
+  `409 MSI_CLIENT_ID_IN_USE`. The response does not say which workspace holds it.
+  Only managed-identity installations count. A password installation that reuses
+  the id signs in with its own secret, so it cannot switch another workspace's bot
+  off. If two workspaces somehow hold the same unbound identity (for example rows
+  written before this check existed), both stop resolving until one disconnects.
+  Binding the id settles which workspace keeps it.
 
 **Upgrading from `UserAssignedMSID`.** Before #1466 METIS offered
 `UserAssignedMSID`, which the SDK did not recognise. Every installation saved with

@@ -24,6 +24,7 @@ import { prisma as defaultPrisma } from "../prisma.js";
 import { getVaultService, type VaultService } from "../vault/vault-service.js";
 import {
   isMsiClientIdAllowed,
+  isMsiClientIdBoundTo,
   loadTeamsMsiAllowlist,
   normalizeClientId,
   type TeamsMsiAllowlist,
@@ -392,13 +393,26 @@ export class TeamsInstallationStore {
     clientId: string,
     tenantId: string | null,
   ): Promise<Exclude<TeamsReinstallReason, "legacy-app-type" | "unknown-app-type"> | null> {
-    if (!isMsiClientIdAllowed(this.msiAllowlist(), clientId, workspaceId)) return "msi-not-allowed";
-    const elsewhere = await this.db.teamsAppInstallation.findMany({
-      where: { status: "active", workspaceId: { not: workspaceId } },
-      select: { appId: true },
-    });
-    const id = normalizeClientId(clientId);
-    if (elsewhere.some((r) => normalizeClientId(r.appId) === id)) return "msi-in-use";
+    const allowlist = this.msiAllowlist();
+    if (!isMsiClientIdAllowed(allowlist, clientId, workspaceId)) return "msi-not-allowed";
+    // An id the operator bound to this workspace belongs to it, whatever another
+    // workspace has stored. An unbound id is first come: refuse it while another
+    // workspace holds it as a managed identity. Only managed-identity rows count —
+    // a password row with the same id authenticates (or fails) with its own
+    // secret, and must not be a way to switch this workspace's bot off.
+    if (!isMsiClientIdBoundTo(allowlist, clientId, workspaceId)) {
+      const elsewhere = await this.db.teamsAppInstallation.findMany({
+        where: { status: "active", workspaceId: { not: workspaceId } },
+        select: { appId: true, appType: true },
+      });
+      const id = normalizeClientId(clientId);
+      const held = elsewhere.some(
+        (r) =>
+          normalizeClientId(r.appId) === id &&
+          normalizeTeamsAppType(r.appType) === "UserAssignedMsi",
+      );
+      if (held) return "msi-in-use";
+    }
     if (!tenantId) return "msi-missing-tenant";
     return null;
   }

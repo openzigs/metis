@@ -62,6 +62,15 @@ export function loadTeamsMsiAllowlist(env: NodeJS.ProcessEnv = process.env): Tea
   return { clientIds, invalid };
 }
 
+/** True when the operator bound client id `clientId` to exactly `workspaceId`. */
+export function isMsiClientIdBoundTo(
+  allowlist: TeamsMsiAllowlist,
+  clientId: string,
+  workspaceId: string,
+): boolean {
+  return allowlist.clientIds.get(normalizeClientId(clientId)) === workspaceId;
+}
+
 /** True when the operator has allowed client id `clientId` for `workspaceId`. */
 export function isMsiClientIdAllowed(
   allowlist: TeamsMsiAllowlist,
