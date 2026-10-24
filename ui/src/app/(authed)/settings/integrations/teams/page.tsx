@@ -129,6 +129,7 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
   const [appType, setAppType] = useState<TeamsAppType>("MultiTenant");
   const [tenantId, setTenantId] = useState("");
   const [label, setLabel] = useState("");
+  const managedIdentity = appType === "UserAssignedMsi";
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -150,7 +151,8 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
     mutationFn: () =>
       teamsIntegrationApi.install(workspaceId, {
         appId: appId.trim(),
-        appPassword,
+        // A managed identity takes no password; the server rejects one (#1466).
+        ...(managedIdentity ? {} : { appPassword }),
         appType,
         tenantId: tenantId.trim() ? tenantId.trim() : null,
         label: label.trim() ? label.trim() : null,
@@ -181,11 +183,13 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
   });
 
   const summary = installation.data ?? null;
-  const singleTenantMissing = appType === "SingleTenant" && !tenantId.trim();
+  const tenantRequired = appType === "SingleTenant" || managedIdentity;
+  const tenantMissing = tenantRequired && !tenantId.trim();
+  const passwordMissing = !managedIdentity && !appPassword;
 
   function submitInstall(e: React.FormEvent) {
     e.preventDefault();
-    if (!appId.trim() || !appPassword || singleTenantMissing) return;
+    if (!appId.trim() || passwordMissing || tenantMissing) return;
     installMut.mutate();
   }
 
@@ -195,7 +199,7 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
         <div>
           <h2 className="text-base font-semibold">Teams bot</h2>
           <p className="text-xs text-muted-foreground">
-            Register the Azure bot (App ID + password) for this workspace.
+            Register the Azure bot (App ID + password, or a managed identity) for this workspace.
           </p>
         </div>
         {installation.isLoading ? (
@@ -283,21 +287,28 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
               autoComplete="off"
             />
           </div>
-          <div className="space-y-1">
-            <Label htmlFor="teams-app-password">Bot App password</Label>
-            <Input
-              id="teams-app-password"
-              data-testid="teams-app-password"
-              type="password"
-              value={appPassword}
-              onChange={(e) => setAppPassword(e.target.value)}
-              placeholder="Client secret (write-only)"
-              autoComplete="new-password"
-            />
-            <p className="text-xs text-muted-foreground">
-              Stored encrypted server-side. It is never displayed after saving.
+          {managedIdentity ? (
+            <p className="text-xs text-muted-foreground" data-testid="teams-msi-note">
+              A user-assigned managed identity signs in as itself, so there is no password. Use the
+              identity&apos;s client ID as the Bot App ID.
             </p>
-          </div>
+          ) : (
+            <div className="space-y-1">
+              <Label htmlFor="teams-app-password">Bot App password</Label>
+              <Input
+                id="teams-app-password"
+                data-testid="teams-app-password"
+                type="password"
+                value={appPassword}
+                onChange={(e) => setAppPassword(e.target.value)}
+                placeholder="Client secret (write-only)"
+                autoComplete="new-password"
+              />
+              <p className="text-xs text-muted-foreground">
+                Stored encrypted server-side. It is never displayed after saving.
+              </p>
+            </div>
+          )}
           <div className="space-y-1">
             <Label htmlFor="teams-app-type">App type</Label>
             <select
@@ -316,7 +327,7 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
           </div>
           <div className="space-y-1">
             <Label htmlFor="teams-tenant-id">
-              Tenant ID {appType === "SingleTenant" ? "(required)" : "(optional)"}
+              Tenant ID {tenantRequired ? "(required)" : "(optional)"}
             </Label>
             <Input
               id="teams-tenant-id"
@@ -326,9 +337,9 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
               placeholder="Azure AD tenant id"
               autoComplete="off"
             />
-            {singleTenantMissing ? (
+            {tenantMissing ? (
               <p className="text-xs text-destructive" data-testid="teams-tenant-required">
-                A SingleTenant bot requires a tenant id.
+                A {appType} bot requires a tenant id.
               </p>
             ) : null}
           </div>
@@ -347,7 +358,7 @@ function TeamsCard({ workspaceId, canManage }: { workspaceId: string; canManage:
             type="submit"
             size="sm"
             data-testid="teams-install-submit"
-            disabled={installMut.isPending || !appId.trim() || !appPassword || singleTenantMissing}
+            disabled={installMut.isPending || !appId.trim() || passwordMissing || tenantMissing}
           >
             {installMut.isPending ? "Connecting…" : "Connect Teams bot"}
           </Button>

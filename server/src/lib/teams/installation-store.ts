@@ -23,17 +23,40 @@ import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { getVaultService, type VaultService } from "../vault/vault-service.js";
 
-/** Bot identity types accepted from Azure. Mirrors `MicrosoftAppType`. */
-export const TEAMS_APP_TYPES = ["MultiTenant", "SingleTenant", "UserAssignedMSID"] as const;
+/**
+ * Bot identity types accepted from Azure, spelled exactly as botbuilder-core's
+ * `ConfigurationServiceClientCredentialFactory` compares `MicrosoftAppType`.
+ * A value it does not recognise falls through to MultiTenant app-password auth,
+ * which is how `UserAssignedMSID` silently lost managed identity (#1466).
+ */
+export const TEAMS_APP_TYPES = ["MultiTenant", "SingleTenant", "UserAssignedMsi"] as const;
 export type TeamsAppType = (typeof TEAMS_APP_TYPES)[number];
+
+/** The spelling METIS stored before #1466. Rows still carrying it are mapped on read. */
+const LEGACY_MSI_APP_TYPE = "userassignedmsid";
+
+/**
+ * The canonical {@link TeamsAppType} for a stored or submitted value, compared
+ * case-insensitively as botbuilder does, with the pre-#1466 `UserAssignedMSID`
+ * mapped to `UserAssignedMsi`. Null for anything else.
+ */
+export function normalizeTeamsAppType(raw: string): TeamsAppType | null {
+  const lower = raw.trim().toLowerCase();
+  if (lower === LEGACY_MSI_APP_TYPE) return "UserAssignedMsi";
+  return TEAMS_APP_TYPES.find((t) => t.toLowerCase() === lower) ?? null;
+}
 
 export interface InstallInput {
   workspaceId: string;
   /** Azure AD application (client) id of the bot — the `MicrosoftAppId`. */
   appId: string;
-  /** PLAINTEXT Microsoft App Password — encrypted+vaulted, never stored raw. */
-  appPassword: string;
-  /** Required for SingleTenant bots; null/omitted for MultiTenant. */
+  /**
+   * PLAINTEXT Microsoft App Password — encrypted+vaulted, never stored raw.
+   * Required for MultiTenant and SingleTenant; must be omitted for
+   * UserAssignedMsi, which authenticates as the managed identity instead.
+   */
+  appPassword?: string | null;
+  /** Required for SingleTenant and UserAssignedMsi bots; null/omitted for MultiTenant. */
   tenantId?: string | null;
   appType?: TeamsAppType;
   label?: string | null;
@@ -59,6 +82,7 @@ export interface InstallationSummary {
 /** The credentials needed to build a CloudAdapter for a workspace. */
 export interface ResolvedCredentials {
   appId: string;
+  /** Empty for UserAssignedMsi, which takes no password. */
   appPassword: string;
   appType: string;
   tenantId: string | null;
@@ -102,31 +126,50 @@ export class TeamsInstallationStore {
     if (!appId || appId.trim().length === 0) {
       throw new TeamsInstallationError(400, "APP_ID_REQUIRED", "appId is required");
     }
-    if (!input.appPassword || input.appPassword.trim().length === 0) {
-      throw new TeamsInstallationError(400, "APP_PASSWORD_REQUIRED", "appPassword is required");
-    }
     const appType: TeamsAppType = input.appType ?? "MultiTenant";
-    if (appType === "SingleTenant" && !input.tenantId) {
+    if ((appType === "SingleTenant" || appType === "UserAssignedMsi") && !input.tenantId) {
       throw new TeamsInstallationError(
         400,
         "TENANT_REQUIRED",
-        "tenantId is required for a SingleTenant bot",
+        `tenantId is required for a ${appType} bot`,
       );
     }
-
-    // 1. Encrypt + persist the plaintext password to the vault, then keep only a
-    //    `${vault:label}` reference. The label is deterministic so a re-install
-    //    rotates the same secret rather than leaking orphans.
+    const appPassword = input.appPassword?.trim() ? input.appPassword : null;
     const label = vaultLabel(workspaceId, appId);
-    // #258 — one upsert on the name, which this (workspace, app) pair alone owns.
-    // The earlier find-live-then-create missed the SOFT-DELETED secret an uninstall
-    // leaves behind, so a reinstall re-created a taken name and 500'd; the
-    // upsert revives that row with the new value instead.
-    await this.vault.upsert(label, input.appPassword, "project", {
-      description: `Microsoft Teams bot password (workspace ${workspaceId})`,
-      createdById: input.createdById ?? null,
-    });
-    const appPasswordRef = `\${vault:${label}}`;
+    let appPasswordRef: string;
+
+    if (appType === "UserAssignedMsi") {
+      // A managed identity has no client secret, and botbuilder refuses an MSI
+      // configuration that carries one — so there is nothing to vault.
+      if (appPassword) {
+        throw new TeamsInstallationError(
+          400,
+          "APP_PASSWORD_NOT_ALLOWED",
+          "appPassword must not be set for a UserAssignedMsi bot",
+        );
+      }
+      // Switching this app from a password to managed identity retires the
+      // password vaulted for it earlier, rather than leaving it orphaned.
+      const previous = await this.findSecretByLabel(label);
+      if (previous) await this.vault.delete(previous.id);
+      appPasswordRef = "";
+    } else {
+      if (!appPassword) {
+        throw new TeamsInstallationError(400, "APP_PASSWORD_REQUIRED", "appPassword is required");
+      }
+      // 1. Encrypt + persist the plaintext password to the vault, then keep only a
+      //    `${vault:label}` reference. The label is deterministic so a re-install
+      //    rotates the same secret rather than leaking orphans.
+      // #258 — one upsert on the name, which this (workspace, app) pair alone owns.
+      // The earlier find-live-then-create missed the SOFT-DELETED secret an uninstall
+      // leaves behind, so a reinstall re-created a taken name and 500'd; the
+      // upsert revives that row with the new value instead.
+      await this.vault.upsert(label, appPassword, "project", {
+        description: `Microsoft Teams bot password (workspace ${workspaceId})`,
+        createdById: input.createdById ?? null,
+      });
+      appPasswordRef = `\${vault:${label}}`;
+    }
 
     // 2. Upsert the installation row (secret-free). One active app per workspace.
     const row = await this.db.teamsAppInstallation.upsert({
@@ -173,6 +216,31 @@ export class TeamsInstallationStore {
     });
     if (!row) return null;
 
+    const appType = normalizeTeamsAppType(row.appType);
+    if (!appType) {
+      // Handing botbuilder an unrecognised type would silently select MultiTenant
+      // app-password auth — the failure #1466 fixed. Refuse instead.
+      throw new TeamsInstallationError(
+        500,
+        "APP_TYPE_UNKNOWN",
+        "stored Teams bot app type is not one botbuilder recognises",
+      );
+    }
+
+    if (appType === "UserAssignedMsi") {
+      if (!row.tenantId) {
+        throw new TeamsInstallationError(
+          500,
+          "TENANT_REQUIRED",
+          "a UserAssignedMsi Teams bot needs a tenant id; reinstall it with one",
+        );
+      }
+      // No password: botbuilder authenticates as the managed identity and refuses
+      // an MSI configuration that carries one. A row stored before #1466 may still
+      // reference a vaulted password; it is deliberately not read.
+      return { appId: row.appId, appPassword: "", appType, tenantId: row.tenantId };
+    }
+
     const label = this.vaultRefLabel(row.appPasswordRef);
     const secret = await this.findSecretByLabel(label);
     if (!secret) {
@@ -186,7 +254,7 @@ export class TeamsInstallationStore {
     return {
       appId: row.appId,
       appPassword: plaintext,
-      appType: row.appType,
+      appType,
       tenantId: row.tenantId,
     };
   }
@@ -202,10 +270,13 @@ export class TeamsInstallationStore {
     });
     if (!row) return false;
 
-    const label = this.vaultRefLabel(row.appPasswordRef);
-    const secret = await this.findSecretByLabel(label);
-    if (secret) {
-      await this.vault.delete(secret.id);
+    // A managed-identity installation stores no password reference.
+    if (row.appPasswordRef !== "") {
+      const label = this.vaultRefLabel(row.appPasswordRef);
+      const secret = await this.findSecretByLabel(label);
+      if (secret) {
+        await this.vault.delete(secret.id);
+      }
     }
     await this.db.teamsAppInstallation.update({
       where: { id: row.id },
@@ -257,7 +328,8 @@ export class TeamsInstallationStore {
       workspaceId: row.workspaceId,
       appId: row.appId,
       tenantId: row.tenantId,
-      appType: row.appType,
+      // Pre-#1466 rows carry `UserAssignedMSID`; show the spelling botbuilder uses.
+      appType: normalizeTeamsAppType(row.appType) ?? row.appType,
       status: row.status,
       label: row.label,
       createdAt: row.createdAt,

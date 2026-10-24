@@ -47,16 +47,28 @@ export interface BotAdapterLike {
 export type BotAdapterFactory = (creds: ResolvedCredentials) => BotAdapterLike;
 
 /**
- * Build a real `CloudAdapter` for a workspace's bot credentials. The adapter
- * performs full Bot Framework JWT validation on inbound activities.
+ * The Bot Framework credential factory for a workspace's bot. botbuilder picks
+ * the auth path from `MicrosoftAppType`: `UserAssignedMsi` authenticates as the
+ * managed identity, `SingleTenant` with the password against one tenant, and
+ * anything else — including a misspelling — as MultiTenant (#1466).
  */
-export function buildCloudAdapter(creds: ResolvedCredentials): CloudAdapter {
-  const credentialsFactory = new ConfigurationServiceClientCredentialFactory({
+export function buildCredentialsFactory(
+  creds: ResolvedCredentials,
+): ConfigurationServiceClientCredentialFactory {
+  return new ConfigurationServiceClientCredentialFactory({
     MicrosoftAppId: creds.appId,
     MicrosoftAppPassword: creds.appPassword,
     MicrosoftAppType: creds.appType,
     MicrosoftAppTenantId: creds.tenantId ?? undefined,
   });
+}
+
+/**
+ * Build a real `CloudAdapter` for a workspace's bot credentials. The adapter
+ * performs full Bot Framework JWT validation on inbound activities.
+ */
+export function buildCloudAdapter(creds: ResolvedCredentials): CloudAdapter {
+  const credentialsFactory = buildCredentialsFactory(creds);
 
   const auth = new ConfigurationBotFrameworkAuthentication({}, credentialsFactory);
 

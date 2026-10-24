@@ -68,9 +68,9 @@ GET    /api/integrations/teams/workspaces/:workspaceId/manifest?packageId=<guid>
 ```jsonc
 {
   "appId": "<Azure bot app (client) id — MicrosoftAppId>",
-  "appPassword": "<Microsoft App Password / client secret>", // encrypted+vaulted, never stored raw
-  "tenantId": "<Azure AD tenant id>",   // required only for a SingleTenant bot
-  "appType": "MultiTenant",             // MultiTenant | SingleTenant | UserAssignedMSID
+  "appPassword": "<Microsoft App Password / client secret>", // encrypted+vaulted, never stored raw; omit for UserAssignedMsi
+  "tenantId": "<Azure AD tenant id>",   // required for SingleTenant and UserAssignedMsi
+  "appType": "MultiTenant",             // MultiTenant | SingleTenant | UserAssignedMsi
   "label": "Prod bot"                   // optional
 }
 ```
@@ -78,6 +78,22 @@ GET    /api/integrations/teams/workspaces/:workspaceId/manifest?packageId=<guid>
 The response (and every read) is **secret-free** — the app password is never
 echoed back. Re-installing the same `(workspace, appId)` rotates the stored secret
 in place. `DELETE` revokes the installation and soft-deletes the vaulted secret.
+
+**Managed identity (`UserAssignedMsi`).** For a bot that runs as a user-assigned
+managed identity (for example on Azure App Service or Container Apps), send
+`"appType": "UserAssignedMsi"`, the identity's **client id** as `appId`, the
+`tenantId`, and **no** `appPassword` — a password is rejected with a 400, because
+the Bot Framework SDK refuses a managed-identity configuration that carries one.
+METIS then authenticates outbound calls as the managed identity (the SDK builds
+`DefaultAzureCredential` with that client id) and vaults nothing.
+
+The value is spelled exactly as the Bot Framework SDK compares it. Before #1466
+METIS offered `UserAssignedMSID`, which the SDK did not recognise, so such an
+installation silently fell back to MultiTenant app-password auth. The API still
+accepts the old spelling and stores the new one; an installation stored with it is
+read as `UserAssignedMsi`. Such an installation needs a `tenantId` — if it was
+saved without one, sends fail with `TENANT_REQUIRED` until you reinstall it with
+the tenant id and without a password.
 
 ---
 
@@ -778,10 +794,13 @@ needs a real Azure app + tenant + channel) — not a CI job:
 A developer must perform these steps once in Azure to register the bot:
 
 1. **Create an Azure Bot resource** (Azure Portal → *Create a resource* → *Azure
-   Bot*). Choose a **Multi-tenant** (or **Single-tenant**) app type.
+   Bot*). Choose a **Multi-tenant**, **Single-tenant** or **User-Assigned Managed
+   Identity** app type.
 2. **Capture the Microsoft App ID** (the bot's app/client id) and **create a
    client secret** (*App registration → Certificates & secrets → New client
-   secret*). Copy the secret value immediately — it is shown once.
+   secret*). Copy the secret value immediately — it is shown once. For a
+   user-assigned managed identity there is no secret: capture the identity's
+   client id and tenant id, and assign the identity to the host METIS runs on.
 3. **Set the messaging endpoint** to your public METIS host with the workspace
    routing key, e.g.:
    ```
@@ -792,7 +811,9 @@ A developer must perform these steps once in Azure to register the bot:
    Teams*).
 5. **Install the credentials in METIS** via
    `POST /api/integrations/teams/workspaces/:workspaceId/install` with the app id,
-   the client secret, and (for a single-tenant bot) the tenant id.
+   the client secret, and (for a single-tenant bot) the tenant id — or, for a
+   managed identity, `"appType": "UserAssignedMsi"`, its client id and the tenant
+   id with no secret (see *Admin install flow* above).
 6. **Build the Teams app package.** `GET .../manifest` returns a `manifest.json`;
    zip it with a `color.png` (192×192) and `outline.png` (32×32) icon and upload
    the `.zip` to Teams (*Apps → Manage your apps → Upload an app*), or publish it

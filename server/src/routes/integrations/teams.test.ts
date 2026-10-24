@@ -248,6 +248,49 @@ describe("Teams integration routes (#548)", () => {
       expect(res.body.error.code).toBe("VALIDATION_ERROR");
     });
 
+    it("POST install accepts a UserAssignedMsi bot with no password (#1466)", async () => {
+      const store = stubStore();
+      const res = await request(createApp(store))
+        .post("/api/integrations/teams/workspaces/ws-1/install")
+        .send({ appId: "msi-1", appType: "UserAssignedMsi", tenantId: "tenant-1" });
+      expect(res.status).toBe(201);
+      expect(store.install).toHaveBeenCalledWith(
+        expect.objectContaining({
+          appId: "msi-1",
+          appType: "UserAssignedMsi",
+          appPassword: undefined,
+          tenantId: "tenant-1",
+        }),
+      );
+    });
+
+    it("POST install maps the legacy `UserAssignedMSID` spelling to UserAssignedMsi (#1466)", async () => {
+      const store = stubStore();
+      const res = await request(createApp(store))
+        .post("/api/integrations/teams/workspaces/ws-1/install")
+        .send({ appId: "msi-1", appType: "UserAssignedMSID", tenantId: "tenant-1" });
+      expect(res.status).toBe(201);
+      expect(store.install).toHaveBeenCalledWith(
+        expect.objectContaining({ appType: "UserAssignedMsi" }),
+      );
+    });
+
+    it("POST install rejects a password on a UserAssignedMsi bot and an unknown app type (#1466)", async () => {
+      const store = stubStore();
+      const app = createApp(store);
+      const withPassword = await request(app)
+        .post("/api/integrations/teams/workspaces/ws-1/install")
+        .send({ appId: "msi-1", appType: "UserAssignedMsi", tenantId: "t", appPassword: "pw" });
+      expect(withPassword.status).toBe(400);
+      expect(withPassword.body.error.code).toBe("VALIDATION_ERROR");
+
+      const unknown = await request(app)
+        .post("/api/integrations/teams/workspaces/ws-1/install")
+        .send({ appId: "a", appType: "ManagedIdentity", appPassword: "pw" });
+      expect(unknown.status).toBe(400);
+      expect(store.install).not.toHaveBeenCalled();
+    });
+
     it("GET installation → 404 when none installed", async () => {
       const app = createApp(stubStore({ getByWorkspace: vi.fn(async () => null) }));
       const res = await request(app).get("/api/integrations/teams/workspaces/ws-1/installation");

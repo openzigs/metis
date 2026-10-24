@@ -13,10 +13,13 @@
  * `secret` + `teamsAppInstallation` model, so no real DB or master-key env is
  * required.
  */
+import { createRequire } from "node:module";
+
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { VaultService } from "../vault/vault-service.js";
-import { TeamsInstallationStore } from "./installation-store.js";
+import { buildCredentialsFactory } from "./bot-adapter.js";
+import { normalizeTeamsAppType, TeamsInstallationStore } from "./installation-store.js";
 
 interface SecretRow {
   id: string;
@@ -315,6 +318,155 @@ describe("TeamsInstallationStore (#548)", () => {
     await expect(store.resolveAppPassword("ws-1")).rejects.toMatchObject({
       code: "VAULT_REF_INVALID",
     });
+  });
+
+  // ── #1466 — user-assigned managed identity ──────────────────────────────
+  // botbuilder-core selects its managed-identity factory on `UserAssignedMsi`
+  // (case-insensitive) and requires a tenant id and NO password for it.
+
+  it("installs a UserAssignedMsi bot with a tenant id and no password, vaulting nothing", async () => {
+    const summary = await store.install({
+      workspaceId: "ws-1",
+      appId: "msi-client-id",
+      appType: "UserAssignedMsi",
+      tenantId: "tenant-1",
+    });
+    expect(summary.appType).toBe("UserAssignedMsi");
+    expect(db.installs[0].appType).toBe("UserAssignedMsi");
+    expect(db.installs[0].appPasswordRef).toBe("");
+    expect(db.secrets).toHaveLength(0);
+
+    const creds = await store.resolveAppPassword("ws-1");
+    expect(creds).toEqual({
+      appId: "msi-client-id",
+      appPassword: "",
+      appType: "UserAssignedMsi",
+      tenantId: "tenant-1",
+    });
+  });
+
+  it("requires a tenant id for a UserAssignedMsi bot", async () => {
+    await expect(
+      store.install({ workspaceId: "ws-1", appId: "msi", appType: "UserAssignedMsi" }),
+    ).rejects.toMatchObject({ statusCode: 400, code: "TENANT_REQUIRED" });
+  });
+
+  it("rejects a password for a UserAssignedMsi bot rather than vaulting a secret it never uses", async () => {
+    await expect(
+      store.install({
+        workspaceId: "ws-1",
+        appId: "msi",
+        appPassword: "pw",
+        appType: "UserAssignedMsi",
+        tenantId: "tenant-1",
+      }),
+    ).rejects.toMatchObject({ statusCode: 400, code: "APP_PASSWORD_NOT_ALLOWED" });
+    expect(db.secrets).toHaveLength(0);
+  });
+
+  it("switching an app from a password to managed identity retires the old vaulted password", async () => {
+    await store.install({ workspaceId: "ws-1", appId: "app-1", appPassword: "pw" });
+    await store.install({
+      workspaceId: "ws-1",
+      appId: "app-1",
+      appType: "UserAssignedMsi",
+      tenantId: "tenant-1",
+    });
+    expect(db.secrets[0].deletedAt).not.toBeNull();
+    expect(db.installs[0].appPasswordRef).toBe("");
+    expect((await store.resolveAppPassword("ws-1"))?.appPassword).toBe("");
+  });
+
+  it("uninstalls a UserAssignedMsi bot without touching the vault", async () => {
+    await store.install({
+      workspaceId: "ws-1",
+      appId: "msi",
+      appType: "UserAssignedMsi",
+      tenantId: "tenant-1",
+    });
+    expect(await store.uninstall("ws-1")).toBe(true);
+    expect(db.installs[0].status).toBe("revoked");
+  });
+
+  it("maps a stored legacy `UserAssignedMSID` row to UserAssignedMsi on every read", async () => {
+    // A row written before #1466: the old spelling, and a vaulted password the
+    // install flow required at the time.
+    await store.install({
+      workspaceId: "ws-1",
+      appId: "legacy",
+      appPassword: "pw",
+      tenantId: "tenant-1",
+    });
+    db.installs[0].appType = "UserAssignedMSID";
+
+    expect((await store.getByWorkspace("ws-1"))?.appType).toBe("UserAssignedMsi");
+    const creds = await store.resolveAppPassword("ws-1");
+    // Managed identity takes no password: the legacy vaulted one is not handed on,
+    // because botbuilder refuses an MSI configuration that carries one.
+    expect(creds).toEqual({
+      appId: "legacy",
+      appPassword: "",
+      appType: "UserAssignedMsi",
+      tenantId: "tenant-1",
+    });
+    // Uninstall still retires the legacy vaulted password.
+    expect(await store.uninstall("ws-1")).toBe(true);
+    expect(db.secrets[0].deletedAt).not.toBeNull();
+  });
+
+  it("a stored legacy `UserAssignedMSID` installation now reaches botbuilder's managed-identity path", async () => {
+    await store.install({
+      workspaceId: "ws-1",
+      appId: "legacy-msi",
+      appPassword: "pw",
+      tenantId: "tenant-1",
+    });
+    db.installs[0].appType = "UserAssignedMSID";
+
+    const creds = await store.resolveAppPassword("ws-1");
+    const credentials = await buildCredentialsFactory(creds!).createCredentials(
+      "legacy-msi",
+      "https://api.botframework.com",
+      "https://login.microsoftonline.com/botframework.com",
+      true,
+    );
+    const connector = createRequire(createRequire(import.meta.url).resolve("botbuilder"))(
+      "botframework-connector",
+    ) as { ManagedIdentityAppCredentials: new (...args: never[]) => unknown };
+    expect(credentials).toBeInstanceOf(connector.ManagedIdentityAppCredentials);
+  });
+
+  it("refuses to resolve a managed-identity row stored without a tenant id", async () => {
+    await store.install({ workspaceId: "ws-1", appId: "legacy", appPassword: "pw" });
+    db.installs[0].appType = "UserAssignedMSID";
+    await expect(store.resolveAppPassword("ws-1")).rejects.toMatchObject({
+      code: "TENANT_REQUIRED",
+    });
+  });
+
+  it("refuses to resolve an unrecognised stored app type instead of falling through to MultiTenant", async () => {
+    await store.install({ workspaceId: "ws-1", appId: "app-1", appPassword: "pw" });
+    db.installs[0].appType = "SomethingElse";
+    await expect(store.resolveAppPassword("ws-1")).rejects.toMatchObject({
+      code: "APP_TYPE_UNKNOWN",
+    });
+    // The secret-free summary still renders, showing what is stored.
+    expect((await store.getByWorkspace("ws-1"))?.appType).toBe("SomethingElse");
+  });
+});
+
+describe("normalizeTeamsAppType (#1466)", () => {
+  it("returns the canonical spelling, case-insensitively, and maps the legacy spelling", () => {
+    expect(normalizeTeamsAppType("MultiTenant")).toBe("MultiTenant");
+    expect(normalizeTeamsAppType("singletenant")).toBe("SingleTenant");
+    expect(normalizeTeamsAppType(" UserAssignedMsi ")).toBe("UserAssignedMsi");
+    expect(normalizeTeamsAppType("UserAssignedMSID")).toBe("UserAssignedMsi");
+    expect(normalizeTeamsAppType("userassignedmsid")).toBe("UserAssignedMsi");
+  });
+
+  it("returns null for anything else", () => {
+    expect(normalizeTeamsAppType("Other")).toBeNull();
+    expect(normalizeTeamsAppType("")).toBeNull();
   });
 });
 

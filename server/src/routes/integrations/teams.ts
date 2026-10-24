@@ -32,6 +32,7 @@ import { AppError } from "../../middleware/error-handler.js";
 import { createChildLogger } from "../../lib/logger.js";
 import {
   getTeamsInstallationStore,
+  normalizeTeamsAppType,
   TeamsInstallationError,
   TEAMS_APP_TYPES,
   type TeamsInstallationStore,
@@ -66,13 +67,34 @@ function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
 }
 
-const installSchema = z.object({
-  appId: z.string().min(1).max(200),
-  appPassword: z.string().min(1).max(2048),
-  tenantId: z.string().min(1).max(200).nullable().optional(),
-  appType: z.enum(TEAMS_APP_TYPES).optional(),
-  label: z.string().max(200).nullable().optional(),
-});
+const installSchema = z
+  .object({
+    appId: z.string().min(1).max(200),
+    // Required unless the bot is a UserAssignedMsi, which must not carry one.
+    appPassword: z.string().min(1).max(2048).optional(),
+    tenantId: z.string().min(1).max(200).nullable().optional(),
+    // Accepts the pre-#1466 `UserAssignedMSID` (and any casing botbuilder would)
+    // and normalises it, so an older client still gets managed identity.
+    appType: z
+      .preprocess(
+        (v) => (typeof v === "string" ? (normalizeTeamsAppType(v) ?? v) : v),
+        z.enum(TEAMS_APP_TYPES),
+      )
+      .optional(),
+    label: z.string().max(200).nullable().optional(),
+  })
+  .superRefine((body, ctx) => {
+    const msi = body.appType === "UserAssignedMsi";
+    if (msi && body.appPassword !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["appPassword"],
+        message: "appPassword must not be set for a UserAssignedMsi bot",
+      });
+    } else if (!msi && body.appPassword === undefined) {
+      ctx.addIssue({ code: "custom", path: ["appPassword"], message: "appPassword is required" });
+    }
+  });
 
 const manifestQuerySchema = z.object({
   packageId: z.string().min(1).max(200),
