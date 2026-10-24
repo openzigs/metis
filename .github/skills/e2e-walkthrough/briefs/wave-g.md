@@ -1,7 +1,7 @@
 # Wave G — implement the plan, conditional (run {{RUN_NUMBER}})
 
 You are wave G of run {{RUN_NUMBER}} of the METIS end-to-end walkthrough. Read the **"Wave G —
-implement the plan (optional)"** section of
+implement the plan (conditional)"** section of
 [`docs/walkthroughs/TEST_PLAN.md`](../../../../docs/walkthroughs/TEST_PLAN.md), and its
 "Reference change sets" and "Scoring a change plan" sections, which score your diff.
 

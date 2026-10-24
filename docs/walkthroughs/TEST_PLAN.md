@@ -2,7 +2,7 @@
 
 This is the test plan for the end-to-end walkthrough tracked in
 [#706](https://github.com/openzigs/metis/issues/706): phases 1–20, Spec Kit S1–S24, pass bars, the
-Business Analyst questions, the developer issues, the persona journeys and the optional wave G build proof. It moved here from #706's body in #948 so that
+Business Analyst questions, the developer issues, the persona journeys and the conditional wave G build proof. It moved here from #706's body in #948 so that
 changes to it are reviewed, show up in PRs and are checked by CI. **Results still go on #706**, as
 one comment per run built from [`RESULTS_TEMPLATE.md`](RESULTS_TEMPLATE.md).
 
@@ -188,19 +188,41 @@ Run 1 set things up in the wrong order, and three things could not be recovered 
 A step marked **[2nd user]** is done by a user other than the one the wave is signed in as. The
 harness classifier has refused a wave agent signing in a second user (`browser_run_code_unsafe`
 with `browser.newContext()`: allowed in run 5, refused in waves B and D of run 9, allowed in F),
-so no wave relies on it. The operator chooses one way per wave, before dispatching it, and the
-brief carries the choice as `SECOND_USER_MODE`:
+so no wave relies on it. The operator chooses one way, before filling the first brief that uses
+it (wave C), and the briefs carry the choice as `SECOND_USER_MODE`, a run-wide `state.json` key.
+To choose differently for a later wave, change it in `state.json` before filling that wave.
+
+**Who is who.** Priya, Sam and "the reviewer" are role names. In the UI they are the mock users'
+display names: Priya is `admin` (**System Admin**), the reviewer is `coordinator` (**Test
+Coordinator**) and Sam is `developer` (**Test Developer**). "@mentions Priya" means picking
+**System Admin** in the mention picker.
 
 - **`operator-approved`**: the operator adds a Claude Code auto-mode allow rule for the
   second-context call, and the wave agent drives the second user in its own browser context. If
   the call is refused anyway, the agent stops the [2nd user] steps there and returns them as
   pending, as for `operator-run`.
-- **`operator-run`**: the operator does each [2nd user] step in their own browser window (a
-  private window, signed in as the named mock user, password `password`), following the step's
-  text. The wave agent does the steps around them, stops at the first [2nd user] step and returns
-  `Operator steps pending: <step ids>`. When the operator has done them, the wave is re-dispatched
-  with `J1_RESUME_AT` set to the next step, and the agent checks the result from its own user's
-  screen: the notification, the review's status, the comment or the message.
+- **`operator-run`**: the operator does each [2nd user] step in their own browser, following the
+  step's text: a private window signed in as the named mock user (password `password`), **and a
+  second, normal window signed in as `admin` (Priya), open on the page the step's must-hold names**
+  (the requirement's comment panel, the discussion thread, the review). That second window is the
+  observer for every live and presence check, because the wave agent has returned by then and can
+  only look after a reload. The operator writes what that window showed, without reloading it, to
+  `.playwright-mcp/walkthrough-706-run<N>/operator/notes.md`, one block per step id, with a
+  screenshot beside it in the same folder.
+  - **Wave F** stops before J1.4a and returns `Operator steps pending: J1.4a, J1.4b, J1.4c`.
+    The two users' actions in those steps interleave live, so the operator does all three, Priya's
+    part included in the `admin` window, and wave F is re-dispatched with `J1_RESUME_AT` set to
+    `J1.5`. The agent reads `operator/notes.md`, records each operator step in `steps.jsonl` with
+    the operator's observation as its `result` and screenshot, and checks the lasting result from
+    Priya's own screen: the notification, the review's status, the comment or the message.
+  - **Waves C and D are never re-dispatched for an operator step.** Re-running wave C would
+    repeat Phase 9's docs generation, the run's largest spend. The agent finishes the rest of the
+    wave and returns the [2nd user] checks (Phase 11, S3b, S12) as `Operator steps pending`; the
+    operator does them after the wave, records them in `operator/notes.md` the same way, and the
+    results comment takes them from there.
+
+A live or presence check that nobody watched as it happened is recorded `not-exercised
+(operator-run)`, never passed on what a reload shows.
 
 Record in the step's `result` which way it ran: `operator-run`, `operator-approved` or `agent`.
 Never work around a refusal: no API calls made as the other user, no tokens minted for them, no
@@ -500,14 +522,14 @@ substance, as for the answer key.
 ### Phase 11 — Discussions, presence, comments and mentions
 - **Steps:**
   1. In `/projects/:id/discussions`, create a thread (`POST /api/discussions/threads`), post a message that mentions a second user, and ask for an AI reply (`POST …/threads/:id/ai-respond`).
-  2. Open `/projects/:id/discussions/:discussionId` as a second user too, to check presence. **[2nd user]**: operator-run or operator-approved ("Second-user steps"), or verify presence from the database and say so. J1.4b repeats the two-user checks on the analyst's own project, so a run short of time may record this phase's second-user steps as covered there.
+  2. Open `/projects/:id/discussions/:discussionId` as a second user too, to check presence. **[2nd user]**: operator-run or operator-approved ("Second-user steps"), or verify presence from the database and say so. J1.4b and J1.4c repeat the two-user checks on the analyst's own project, so a run short of time may record this phase's second-user steps as covered there.
   3. Comment on a requirement and reply to it (`POST /api/requirements/:reqId/comments`, then `POST /api/comments/:threadId/replies`).
-  4. Edit, then delete, one of your own discussion messages (`PATCH` / `DELETE /api/discussions/threads/:id/messages/:messageId`, #734) while the second context has the thread open. As the second user, try the same calls on that message.
+  4. Edit, then delete, one of your own discussion messages (`PATCH` / `DELETE /api/discussions/threads/:id/messages/:messageId`, #734) while the second context has the thread open. As the second user, look for **Edit** and **Delete** on that message (a UI check; never call the API as them).
 - **Works:**
   - Both users see each other's presence avatars (`components/presence/PresenceAvatars`).
   - The @mention picker offers only users who can open the project (#870).
   - The mentioned user gets a notification (`/api/notifications`) that names the author and opens the comment (#735).
-  - Edit and delete work for requirement comments and for discussion messages. A discussion edit is marked "(edited)" and appears live in the other context, and a deletion disappears there live. The second user gets 403 on the first user's message (#734).
+  - Edit and delete work for requirement comments and for discussion messages. A discussion edit is marked "(edited)" and appears live in the other context, and a deletion disappears there live. The second user sees no **Edit** or **Delete** on the first user's message (#734; the server's 403 for that call is covered by `server/src/routes/discussions.multi-member.test.ts`).
   - A teammate's live discussion message shows their display name, not a raw user id (#734).
 - **Useful:** the AI reply cites project sources and answers the thread's question about Miniflux.
 
@@ -1031,8 +1053,8 @@ between features (#939 approval, #940 a dropped label, #943 cost lost between ru
 
 **Goal:** turn open Miniflux feature requests into reviewed, signed-off, traceable requirements,
 a BRD a stakeholder could sign, and sandbox issues for a sprint.
-**Budget:** ≤ 60 min, ≤ $1.50 of Priya's own steps. The clock stops while the [2nd user] steps
-(J1.4a, J1.4b and the sign-off in J1.4c) are operator-run; record their wall time on its own line.
+**Budget:** ≤ 60 min, ≤ $1.50 of Priya's own steps. The clock stops while J1.4a to J1.4c are
+operator-run; record their wall time on its own line.
 
 **People.** Priya is `admin` (the user wave F signs in as). The reviewer is `coordinator`; the
 second analyst, Sam, is `developer`, who can comment, mention, discuss and review but not edit a
@@ -1050,10 +1072,10 @@ the reviewer's name (`coordinator`) and her colleague's (`developer`).
 | J1.1 | In `/projects/:id/import`, imports open GitHub feature requests from `miniflux/v2`. Miniflux marks them with a `[Feature]:` title prefix, not a label, so she uses "Title starts with" (#1006) | Titles and bodies kept, without the `[Feature]:` prefix. Types sensible ("[Bug]" not typed as a feature). `[Feed Issue]` and `[Proposal]` items are not imported |
 | J1.2 | Picks 5 imported items in "Analyze imported requirements" and runs requirements analysis in `/projects/:id/analysis` | Each item is analysed as its own `NR-*` requirement and listed on the Summary tab with a link back to its issue (#1006). The analysis cites real code for each. It is clear which agents ran |
 | J1.3 | Answers the clarifying questions on the run's Questions tab | Her answers land in the requirements she approves. The questions about her five ticked items come first, ahead of any about requirements the analysis added (#1129). Record how many questions were asked |
-| J1.4 | Checks on `/settings/workspaces/:id` that `coordinator` and `developer` are members, and invites `reader@metis.local` from the page (nobody accepts it). Approves the checkpoint (leaving out what the analysis added), requests review on `/projects/:id/requirements` of her five only from `coordinator`, edits one requirement's acceptance criteria. If she withdraws the review for the **Withdraw review** check, she sends it again so J1.4a has a review to decide | Both members are listed, and the invite appears as pending with its link (#941). The Approvals checkpoint lists "From your ticked items" apart from "Added by the analysis"; **Leave out the N added by the analysis** (`POST …/approvals/reject-added`, asks for confirmation) rejects the added ones in one action, and **Approve all** then approves the five (#1129). Record the clicks needed to end with the five. The Request review form's **Only the N from ticked items** limits the review, and the form says "This review covers 5 of N requirements" before it is sent (#1129). Approval flows through to the requirements (#939). The edit keeps links, labels and version history (#940). The review appears on `/reviews`. **Withdraw review** is offered on the review page and on its `/reviews` row while it is in review; after confirming, the review is a draft and every requirement shows the status it had before the request (#1032, #989) |
-| J1.4a | **[2nd user: `coordinator`]** The reviewer opens the review from the notification bell or `/reviews`, reads the five, and on the requirement J1.4 did not edit leaves a requirement comment that @mentions Priya and asks for one concrete change to its acceptance criteria. Then **Reject**s the review with a note naming that requirement: rejecting with a note is how a reviewer requests changes | The review lists exactly the five, at the versions J1.4 left. The @mention picker offers Priya and `developer`, and only users who can open the project (#870). Priya, on her own screen and with no reload: the comment appears in the requirement's panel (#997), a notification names the reviewer and opens the comment (#735, #104), and the review reads **Rejected** with the reviewer's note |
-| J1.4b | **[2nd user: `developer`, the second analyst]** Sam replies to the reviewer's comment, then on `/projects/:id/discussions` starts a thread about the same requirement that @mentions Priya, while Priya has the thread open | Every author shows a display name, never a raw user id (#734). Priya gets the mention as a notification that opens the thread (#104), and the thread and the reply appear on her screen live. Both users' presence avatars show on the thread (`components/presence/PresenceAvatars`). Sam has no **Edit** on the requirement (`developer` lacks `project.update`) |
-| J1.4c | Priya answers: she replies in the comment thread and in Sam's discussion, makes the reviewer's change in the requirement's acceptance criteria, and requests review again from `coordinator`. **[2nd user: `coordinator`]** approves it | Her edit is a new version under her name in History, and the second review pins that version. The review reads **Approved**, and all five requirements read **Approved** on `/projects/:id/requirements`. Her reply in Sam's discussion appears live for Sam, and Sam gets 403 on editing her message (#734). Record how many notifications Priya got across J1.4a to J1.4c, and that each opened the right place |
+| J1.4 | Checks on `/settings/workspaces/:id` that `coordinator` and `developer` are members, and invites `reader@metis.local` from the page's invite card (nobody accepts it). Approves the checkpoint (leaving out what the analysis added), requests review on `/projects/:id/requirements` of her five only from `coordinator`, edits one requirement's acceptance criteria. If she withdraws the review for the **Withdraw review** check, she sends it again so J1.4a has a review to decide | Both members are listed (**Test Coordinator**, **Test Developer**), and the invite card confirms the invite for `reader@metis.local` and shows its link, once, right after it is created (#941; there is no list of pending invites). The Approvals checkpoint lists "From your ticked items" apart from "Added by the analysis"; **Leave out the N added by the analysis** (`POST …/approvals/reject-added`, asks for confirmation) rejects the added ones in one action, and **Approve all** then approves the five (#1129). Record the clicks needed to end with the five. The Request review form's **Only the N from ticked items** limits the review, and the form says "This review covers 5 of N requirements" before it is sent (#1129). Approval flows through to the requirements (#939). The edit keeps links, labels and version history (#940). The review appears on `/reviews`. **Withdraw review** is offered on the review page and on its `/reviews` row while it is in review; after confirming, the review is a draft and every requirement shows the status it had before the request (#1032, #989) |
+| J1.4a | **[2nd user: `coordinator`]** The reviewer opens the review from the notification bell or `/reviews`, reads the five, and on the requirement J1.4 did not edit leaves a requirement comment that @mentions Priya and asks for one concrete change to its acceptance criteria. Then **Reject**s the review with a note naming that requirement: rejecting with a note is how a reviewer requests changes | The review lists exactly the five, at the versions J1.4 left. The @mention picker offers Priya and `developer`, and only users who can open the project (#870). Priya, on her own screen (the observer window, in `operator-run`) and with no reload: the comment appears in the requirement's panel (#997), a notification names the reviewer and opens the comment (#735, #104), and the review reads **Rejected** with the reviewer's note |
+| J1.4b | **[2nd user: `developer`, the second analyst]** Sam replies to the reviewer's comment, then on `/projects/:id/discussions` starts a thread about the same requirement that @mentions Priya. Priya's window (the observer, in `operator-run`) has the requirement's comment panel open for the reply, then `/projects/:id/discussions`; once the thread appears she opens it, and Sam posts one more message in it | Every author shows a display name, never a raw user id (#734). Sam's reply appears in Priya's comment panel with no reload (#997). Priya gets the mention as a notification that opens the thread (#104); the thread appears in her list, and Sam's follow-up in the open thread, live. Both users' presence avatars show on the thread (`components/presence/PresenceAvatars`). Sam has no **Edit** on the requirement (`developer` lacks `project.update`) |
+| J1.4c | Priya answers. **[2nd user: `developer`]** Sam has the discussion thread open first. Priya replies in the requirement's comment thread and in Sam's discussion, then makes the reviewer's change in the requirement's acceptance criteria. After the rejection the five read **Rejected**, and no control revises a rejected review (the state machine's `rejected → revise` has no route or UI), so she asks again with a **new** review: **Request review** on `/projects/:id/requirements`, **Only the N from ticked items**, reviewer `coordinator`. **[2nd user: `developer`]** Sam looks at Priya's discussion message for **Edit** and **Delete**. **[2nd user: `coordinator`]** The reviewer approves the new review | Her reply appears in Sam's open thread with no reload (observer: Sam's window in `operator-run`, the agent's second context in `operator-approved`). Priya's message offers Sam no **Edit** or **Delete** (#734). That is a UI check: the server's 403 for another member's edit is covered by `server/src/routes/discussions.multi-member.test.ts`, so nobody calls the API as Sam. Her edit is a new version under her name in History, and the new review pins that version. The first review stays **Rejected**; the new one reads **Approved**, and all five requirements read **Approved** on `/projects/:id/requirements`. Record how many notifications Priya got across J1.4a to J1.4c, and that each opened the right place |
 | J1.5 | Opens traceability for her 5 requirements | Each links to code. "Tested by" shows real tests or says untested (#905) |
 | J1.6 | Asks `/chat`, scoped to her project, "which of these touch the database?" | The answer cites her requirements and the schema, with valid `file:line` |
 | J1.7 | Generates a BRD scoped to her requirements in `/projects/:id/documentation` (scope "Requirements", her run, then **Only the N from ticked items**). It is the deliverable she would send for sign-off, so it is checked as a file: its Word and PDF exports are fetched by URL and opened (Phase 9's method; a Download click crashes the browser, so fetching the URL is the harness's stand-in for her click, not a persona action) | The form says it will cover 5; the document's title and introduction state 5 requirements (#1129). It covers only those 5, with citations, inside the cap, and carries J1.4c's approved criteria. It passes the Phase 9 sign-off rubric (SO1–SO4, with the J1.7 readings): report its sign-off line (#1175). The `.docx` and `.pdf` open, carry the same title and the same five requirement headings as the markdown export, and end with its last heading. A file that fails to open, is empty, or loses a requirement fails the step |
@@ -1091,7 +1113,7 @@ citations; J2.5's titles are J2.4's tasks.
 
 - Admin onboarding a team: workspace, members, budgets, model preferences.
 
-## Wave G — implement the plan (optional)
+## Wave G — implement the plan (conditional)
 
 Waves D and F show that METIS writes a Spec Kit `tasks.md`; nothing there shows the tasks can be
 implemented or that the result compiles. Wave G hands one feature request's `tasks.md` to an

@@ -46,16 +46,25 @@ sandbox slots; wave C does not.
    carry on). Before J1.1 and J2.1, note the wall-clock time and snapshot the ledger (section 5
    of the skill); do the same after the last step. That measurement, and fetching J1.7's
    exports by URL (below), are the only non-UI actions allowed.
-2. **[2nd user] steps** (J1.4a, J1.4b and the approval in J1.4c) follow the plan's
-   "Second-user steps". With `operator-approved`, drive the second user in its own browser
-   context (`browser.newContext()`, signed in as `coordinator` or `developer`, password
-   `password`); if that call is refused, stop there as for `operator-run`. With `operator-run`,
-   **stop at the first [2nd user] step** and return `Operator steps pending: <step ids>` with the
-   exact text of each step for the operator, plus everything finished so far: the operator does
-   them in their own browser and re-dispatches you with the next step as the start. Either way,
-   check each one's result from Priya's screen, and put `operator-run`, `operator-approved` or
-   `agent` in the step's `result`. Never sign in a second user any other way, and never act as
-   them through the API or SQL.
+2. **[2nd user] steps** (every action marked so in J1.4a to J1.4c) follow the plan's
+   "Second-user steps". In the UI the users are **System Admin** (Priya, you), **Test
+   Coordinator** (the reviewer) and **Test Developer** (Sam).
+   - With `operator-approved`, drive the second user in its own browser context
+     (`browser.newContext()`, signed in as `coordinator` or `developer`, password `password`),
+     and watch the live and presence checks from Priya's page as they happen. If that call is
+     refused, stop there as for `operator-run`.
+   - With `operator-run`, **stop before J1.4a** and return `Operator steps pending: J1.4a, J1.4b,
+     J1.4c` with the exact text of the three rows, plus everything finished so far. The two users'
+     actions interleave live, so the operator does all three steps, Priya's part included, with
+     an `admin` window as the observer, and re-dispatches you with `J1.5` as the start. Then read
+     `.playwright-mcp/walkthrough-706-run{{RUN_NUMBER}}/operator/notes.md`, record one
+     `steps.jsonl` line per operator step with the operator's observation as its `result` and
+     screenshot, and check the lasting results from Priya's own screen: the requirement's
+     versions in History, both reviews' statuses, the comments, the thread and the notifications.
+     A live or presence check the notes do not report is `not-exercised (operator-run)`, never a
+     pass on what a reload shows.
+   - Put `operator-run`, `operator-approved` or `agent` in each step's `result`. Never sign in a
+     second user any other way, and never act as them through the API or SQL.
 3. **J1.7's BRD is a deliverable.** Fetch its Word and PDF exports by URL as the plan's Phase 9
    says (`GET /api/projects/:projectId/docs/:docId/export?format=docx`, `pdf` and `markdown`
    from the signed-in page; a Download click crashes the page), save them under the wave's

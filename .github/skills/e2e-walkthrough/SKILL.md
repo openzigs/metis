@@ -143,14 +143,29 @@ Wave F's personas know names, not IDs: its state carries `WORKSPACE_NAME`, `PROJ
 `J1_PROJECT_NAME` (the fresh project journey 1 creates), never a project or run ID. Its sandbox
 publishes count toward the run's cap of 2, so leave it a slot or let it dry-run only.
 
-**Wave F's second-user steps** (J1.4a to J1.4c) are operator-run or operator-approved
-(`TEST_PLAN.md`, "Second-user steps"). Before dispatching, set `SECOND_USER_MODE` to
-`operator-approved` (you have added the auto-mode allow rule for the second browser context) or
-`operator-run` (you will do them in your own browser window), and `J1_RESUME_AT` to `J1.1`.
-With `operator-run`, the wave returns `Operator steps pending: …` at the first one: do those
-steps as the named mock user, following the plan's text, then re-fill wave F with `--wave F` and
-`J1_RESUME_AT` set to the next step, and dispatch it again. The same applies to any other
-[2nd user] step (Phase 11, S3b, S12).
+**Second-user steps** are operator-run or operator-approved (`TEST_PLAN.md`, "Second-user
+steps"). They are in waves C (Phase 11), D (S3b and S12, both optional) and F (J1.4a to J1.4c).
+
+- **`SECOND_USER_MODE` is a run-wide `state.json` key.** Set it before filling **wave C**, the
+  first brief that uses it (`fill-brief --wave C` refuses while it is unset): `operator-approved`
+  (you have added the auto-mode allow rule for the second browser context) or `operator-run`
+  (you will do the steps in your own browser). To use the other mode for a later wave, change the
+  key before filling that wave.
+- **With `operator-run`, keep two windows of your own**: a private one signed in as the step's
+  mock user, and a normal one signed in as `admin`, open where the step's must-hold says. The
+  `admin` window is the observer for the live and presence checks. Write what it showed, without
+  reloading, to `.playwright-mcp/walkthrough-706-run<N>/operator/notes.md`, one block per step
+  id, with a screenshot in the same folder. A live check nobody watched is `not-exercised
+  (operator-run)`.
+- **Waves C and D are never re-dispatched for an operator step**: a second wave C would repeat
+  Phase 9's docs generation. They return their [2nd user] checks as `Operator steps pending`;
+  do those after the wave, record them in `operator/notes.md`, and take them into the results
+  comment from there.
+- **Wave F is re-dispatched.** Set `J1_RESUME_AT` to `J1.1` for the first dispatch. With
+  `operator-run`, wave F returns `Operator steps pending: J1.4a, J1.4b, J1.4c` before J1.4a. The
+  two users' actions interleave live, so do all three steps yourself, Priya's part included in the
+  `admin` window. Then re-fill wave F with `--wave F` and `J1_RESUME_AT` set to `J1.5`, and
+  dispatch it again. It reads `operator/notes.md` into `steps.jsonl` for the steps you did.
 
 ### 3a. The fixes to verify — generated, not hand-written (#954)
 

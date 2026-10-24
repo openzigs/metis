@@ -39,7 +39,7 @@
     "941": {
       "wave": "F",
       "phase": "J1.4",
-      "check": "Workspace settings lists the members the operator added (coordinator, developer), and inviting reader@metis.local from the page lists a pending invite with its link (#1177: the operator, not Priya, creates the reviewer's membership before wave B)"
+      "check": "Workspace settings lists the members the operator added (coordinator, developer), and inviting reader@metis.local from the page's invite card confirms the invite and shows its link once (there is no pending-invite list) (#1177: the operator, not Priya, creates the reviewer's membership before wave B)"
     },
     "943": {
       "wave": "B",
@@ -235,7 +235,7 @@
     "1060": {
       "wave": "F",
       "phase": "J2.4",
-      "check": "J2.4's #4336 Spec Kit plan is given the data layer (moved from wave E's six requests by #1177). The feature's `plan-context.md` lists `internal/database/migrations.go`, `internal/storage/entry.go`, `internal/storage/entry_query_builder.go` and `client/model.go`, and the plan does not say one of those files is \"not in the retrieved context\". The client `Entry` struct is placed in `client/model.go`, not `client/client.go`, and the plan names `SetEntriesStatusAndCountVisible`. Report the plan's file precision / recall beside run 7's #4336 plan (18% / 40%)"
+      "check": "J2.4's Spec Kit plan is given the data layer (moved from wave E's six requests by #1177). For J2's default request, #4336: the feature's `plan-context.md` lists `internal/database/migrations.go`, `internal/storage/entry.go`, `internal/storage/entry_query_builder.go` and `client/model.go`, the plan does not say one of those files is \"not in the retrieved context\", the client `Entry` struct is placed in `client/model.go`, not `client/client.go`, and the plan names `SetEntriesStatusAndCountVisible`; report its file precision / recall beside run 7's (18% / 40%). If J2 was swapped to another request, check that request's reference-set files the same way, name the swap, and compare with no earlier figure"
     },
     "1061": {
       "wave": "C",
@@ -331,7 +331,7 @@
     "1135": {
       "wave": "E",
       "phase": "16",
-      "check": "For #4386, the plan context and plan name the page handlers (`internal/ui/feed_entries.go`, and `category_entries.go` as its twin); report the plan's must-surface and the result card's check notes. For #4479 (optional since #1177; only when it runs), the plan does not blame a parse-time default while calling the query code \"not visible\" when its body was given, and the card flags any such claim. Impact for a read-path bug (#4386) keeps table writers in Related, not Files to edit. Report must-surface for #4478 and #4386 against their own run 8 verdicts, request by request"
+      "check": "For #4386, the plan context and plan name the page handlers (`internal/ui/feed_entries.go`, and `category_entries.go` as its twin); report the plan's must-surface and the result card's check notes. For #4479 (optional since #1177; only when it runs), the plan does not blame a parse-time default while calling the query code \"not visible\" when its body was given, and the card flags any such claim. Impact for a read-path bug (#4386) keeps table writers in Related, not Files to edit. Report must-surface for #4478 and #4386 against their own run 8 verdicts, request by request, and the #4386 plan's file precision / recall beside run 7's (0% / 0%; moved here from #1060's check by #1177)"
     },
     "1098": {
       "wave": "F",
@@ -349,7 +349,7 @@
     "1130": {
       "wave": "F",
       "phase": "J1.4",
-      "check": "On the review page, a never-edited requirement's card shows itsbody (no `metis:` markers), acceptance criteria and priority, labelled \"No edits were recorded for this requirement; this is its current text.\" A requirement edited after the review was requested shows its pinned text, labelled as rebuilt from recorded edits (run 8: unedited cards showed no body)"
+      "check": "On the review page, a never-edited requirement's card shows its body (no `metis:` markers), acceptance criteria and priority, labelled \"No edits were recorded for this requirement; this is its current text.\" A requirement edited after the review was requested shows its pinned text, labelled as rebuilt from recorded edits (run 8: unedited cards showed no body)"
     }
   },
   "prs": {

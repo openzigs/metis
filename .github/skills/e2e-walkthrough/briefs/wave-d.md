@@ -31,9 +31,12 @@ commands (#931).
 
 - **S3b and S12** (optional) are [2nd user] steps: `developer` signs in, or `coordinator` is
   mentioned and present. The operator made both workspace members at setup (the skill, section
-  1, step 5). Second user mode for this wave: `{{SECOND_USER_MODE}}`. With `operator-run`,
-  return the step as `Operator steps pending: S3b` rather than signing in yourself; never invite
-  from this wave (run 9's classifier refused the invite in wave D).
+  1, step 5). Second user mode for this wave: `{{SECOND_USER_MODE}}`. With `operator-approved`,
+  drive the second user in its own browser context; if that is refused, treat it as
+  `operator-run`. With `operator-run`, do not sign in a second user and do not wait: finish the
+  wave and return the step as `Operator steps pending: S3b` (or `S12`) with its text. You are not
+  re-dispatched for it; the operator does it after you return. Never invite from this wave (run
+  9's classifier refused the invite in wave D) and never call the API as another user.
 - **S6 then S6b changes the design.** Save `plan.md` and `tasks.md` only after S6b to S6d,
   and run `/speckit.analyze` and the handoff after them.
 - **S9 budget** (optional step): the handoff analysis took 20 minutes and $0.35 in run 8, and one Continue

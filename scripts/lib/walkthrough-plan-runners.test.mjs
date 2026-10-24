@@ -475,10 +475,31 @@ describe("Run shape: analyst first, developer smoke test (#1177)", () => {
 
   it("makes wave G conditional on a Spec Kit or impact change, with the command to decide", () => {
     const g = plan.slice(plan.indexOf("## Wave G"));
+    expect(g).toMatch(/^## Wave G — implement the plan \(conditional\)$/m);
     expect(g).toMatch(/only when the release under test touches Spec Kit or impact analysis/);
-    expect(g).toContain("server/src/lib/spec-kit");
-    expect(g).toContain("server/src/lib/impact-analysis");
     expect(g).toMatch(/skipped: no Spec Kit or impact change since/);
+    expect(read(".github/skills/e2e-walkthrough/briefs/wave-g.md")).toContain(
+      "implement the plan (conditional)",
+    );
+  });
+
+  // `git diff --name-only a..b -- <missing path>` prints nothing, so a moved directory would
+  // silently skip wave G as "no change". Every path the command names must exist.
+  it("names only paths that exist in wave G's git diff", () => {
+    const g = plan.slice(plan.indexOf("## Wave G"));
+    const block = /** @type {RegExpMatchArray} */ (
+      g.match(/```bash\n\s*(git diff --name-only[\s\S]*?)```/)
+    )[1];
+    const paths = block
+      .split(" -- ")[1]
+      .replace(/\\\n/g, " ")
+      .split(/\s+/)
+      .map((p) => p.replace(/^'|'$/g, ""))
+      .filter((p) => p.length > 0);
+    expect(paths.length).toBe(8);
+    for (const rel of paths) {
+      expect(fs.existsSync(path.join(repoRoot, ...rel.split("/"))), rel).toBe(true);
+    }
   });
 
   it("gives J1 operator-run or operator-approved second-user steps, never a workaround", () => {
@@ -493,12 +514,57 @@ describe("Run shape: analyst first, developer smoke test (#1177)", () => {
     expect(waveF).toContain("{{J1_RESUME_AT}}");
     expect(waveF).toMatch(/Operator steps pending/);
     expect(waveF).toMatch(/never act as\s+them through the API or SQL/);
+    expect(waveF).toMatch(/not-exercised \(operator-run\)/);
+    // A live check needs an observer; a reload is not one.
+    expect(plan).toMatch(/second, normal window signed in as `admin` \(Priya\)/);
+    expect(plan).toMatch(/recorded `not-exercised\s+\(operator-run\)`, never passed/);
+    // J1.4c: Sam's part is marked, and the #734 check is a UI check, not an API call as Sam.
+    const j14c = /** @type {string} */ (plan.split("\n").find((l) => l.startsWith("| J1.4c |")));
+    expect(j14c.match(/\[2nd user: `developer`\]/g)?.length).toBe(2);
+    expect(j14c).toMatch(/\[2nd user: `coordinator`\]/);
+    expect(j14c).toMatch(/nobody calls the API as Sam/);
+    expect(j14c).not.toMatch(/gets 403/);
+    expect(j14c).toMatch(/new\*\* review: \*\*Request review\*\*/);
+  });
+
+  // Waves C and D have [2nd user] steps too, and are never re-dispatched for them: a second
+  // wave C would repeat Phase 9's docs generation.
+  it("carries SECOND_USER_MODE into waves C and D, with no re-dispatch for their operator steps", () => {
+    for (const wave of ["wave-c.md", "wave-d.md"]) {
+      const text = read(`.github/skills/e2e-walkthrough/briefs/${wave}`);
+      expect(text, wave).toContain("{{SECOND_USER_MODE}}");
+      expect(text, wave).toMatch(/Operator steps pending/);
+      expect(text, wave).toMatch(/not\*?\*?\s+re-dispatched/);
+    }
+    const skill = read(".github/skills/e2e-walkthrough/SKILL.md");
+    expect(skill).toMatch(
+      /`SECOND_USER_MODE` is a run-wide `state\.json` key\.\*\* Set it before filling \*\*wave C\*\*/,
+    );
+    expect(skill).toMatch(/Waves C and D are never re-dispatched for an operator step/);
+  });
+
+  it("checks the workspace invite on the card, which exists, not on a pending list, which does not", () => {
+    const j14 = /** @type {string} */ (plan.split("\n").find((l) => l.startsWith("| J1.4 |")));
+    expect(j14).not.toMatch(/appears as pending/);
+    expect(j14).toMatch(/invite card confirms the invite for `reader@metis\.local`/);
+    const { map } = parsePhaseMap(read("docs/walkthroughs/fix-phase-map.json"));
+    const check = /** @type {{ check?: string }} */ (map?.issues["941"]).check ?? "";
+    expect(check).not.toMatch(/lists a pending invite/);
+    expect(plan).toMatch(/Priya is `admin` \(\*\*System Admin\*\*\)/);
   });
 
   it("checks the BRD's Word and PDF by URL and makes the Jira publish conditional on #1176", () => {
     expect(plan).toMatch(/Fetch the BRD's exports by URL, never by clicking Download/);
-    expect(plan).toContain("?format=docx");
-    expect(plan).toContain("?format=pdf");
+    // The formats the plan asks for are the ones the export route accepts.
+    const route = read("server/src/routes/generated-docs.ts");
+    const accepted = /** @type {RegExpMatchArray} */ (
+      route.match(/z\.enum\(\[([^\]]+)\]\)\.safeParse\(req\.query\.format\)/)
+    )[1]
+      .split(",")
+      .map((s) => s.trim().replace(/^"|"$/g, ""))
+      .sort();
+    const asked = [...new Set([...plan.matchAll(/\?format=([a-z]+)/g)].map((m) => m[1]))].sort();
+    expect(asked).toEqual(accepted);
     const j17 = plan.split("\n").find((l) => l.startsWith("| J1.7 |"));
     expect(j17).toMatch(/Word and PDF exports are fetched by URL and opened/);
     expect(j17).toMatch(/sign-off rubric/);

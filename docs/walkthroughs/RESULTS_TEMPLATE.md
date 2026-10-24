@@ -186,8 +186,19 @@ own earlier rows, never the totals.
 | API-only steps left in the briefs (no UI caller) | – | | | No: optional S-steps are not counted unless they ran |
 | Wave G build proof | – | | | Only when it ran in both runs |
 
-Per phase (run 2 values from its re-run table; "ai ledger" = `ai_token_usages` only). Phases 14
-and 16 are not comparable from run 10 (smoke set; two requests); the others are:
+Per phase (run 2 values from its re-run table; "ai ledger" = `ai_token_usages` only). From run
+10 (#1177):
+
+- **Not comparable:** Phase 14 (the smoke set, not S1–S24) and Phase 16 (two requests, not six).
+- **Comparable with a caveat:**
+  - **Phase 9.** Its Works bar is stricter: "export downloads" became "each export answers 200,
+    and the Word and PDF files open with the markdown's headings". A move from ✅ to ⚠️ can come
+    from the new bar rather than from METIS: say which check caused it.
+  - **Phase 11.** Its second-user checks (mentions, presence, no Edit on another user's message)
+    may be recorded as covered by J1.4b and J1.4c, and run operator-side. Say where each was
+    observed, and treat a Phase 11 verdict built on J1's evidence as not comparable with runs 1
+    to 9 on its own.
+- **Comparable:** every other phase.
 
 | Phase | Run 2 Works / Useful | Run 2 tokens / cost | Run {{N}} Works / Useful | Run {{N}} tokens / cost | Delta |
 |---|---|---|---|---|---|

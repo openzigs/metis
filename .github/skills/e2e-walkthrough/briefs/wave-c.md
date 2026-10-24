@@ -115,11 +115,14 @@ the checkout (#756, PR #892).
 Log in once (20 logins / 15 min). Drive the UI, and keep in-page `fetch` for the ledger and
 for exports. **Fetch doc
 exports — clicking a download button crashes the Playwright page.** Wait 20–40 s after a
-dev-mode navigation before snapshotting. Phase 11's second user (mentions, presence, the 403
+dev-mode navigation before snapshotting. Phase 11's second user (mentions, presence, no Edit
 on another user's message) is a [2nd user] step, mode `{{SECOND_USER_MODE}}` (the plan's
-"Second-user steps"): with `operator-run`, return those checks as `Operator steps pending`
-rather than signing in yourself. Journey 1 (J1.4a to J1.4b) repeats them on the analyst's
-project. A workspace membership change needs `/api/auth/refresh` before the claim updates.
+"Second-user steps"). With `operator-approved`, drive the second user in its own browser context;
+if that is refused, treat it as `operator-run`. With `operator-run`, do not sign in a second user
+and do not wait: finish the rest of the wave and return those checks as `Operator steps pending:
+11.2, 11.4` with their text. You are **not** re-dispatched for them (that would repeat Phase 9's
+docs generation); the operator does them after you return. Never call the API as another user.
+Journey 1 (J1.4a to J1.4c) repeats these checks on the analyst's project. A workspace membership change needs `/api/auth/refresh` before the claim updates.
 
 **Scratch files go in `{{SCRATCH_DIR}}/wave-c/` only.** Evidence goes in
 `.playwright-mcp/walkthrough-706-run{{RUN_NUMBER}}/wave-c/`.
