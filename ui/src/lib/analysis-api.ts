@@ -14,6 +14,7 @@ import type {
   AnalysisAffectedCode,
   AnalysisDatabaseAware,
   AnalysisEscalation,
+  AnalysisCodeContinuationQuote,
   AnalysisLedgerUsage,
   AnalysisLiveAgent,
   AnalysisSkippedRepo,
@@ -345,6 +346,8 @@ export interface AnalysisSnapshot extends AnalysisListItem {
   ledgerUsage?: AnalysisLedgerUsage | null;
   /** Issue #766 — agents running right now, e.g. a Regenerate in progress. */
   liveAgents?: AnalysisLiveAgent[];
+  /** Issue #1131 — the budget Continue would run with; present only while it is offered. */
+  codeContinuation?: AnalysisCodeContinuationQuote | null;
   metadata: Record<string, unknown> | null;
   agentResults: AgentResultSummary[];
   requirements: RequirementSummary[];
@@ -393,6 +396,8 @@ type AnalysisSnapshotPayload = AnalysisListItem &
     databaseAware: AnalysisDatabaseAware | null;
     sourceRequirements: AnalysisSourceRequirement[];
     liveAgents: AnalysisLiveAgent[];
+    ledgerUsage: AnalysisLedgerUsage | null;
+    codeContinuation: AnalysisCodeContinuationQuote | null;
   }>;
 
 export interface AnalysisCostCapStatus {

@@ -21,6 +21,7 @@ import {
   type AnalysisCapabilityPreview,
   type AnalysisDroppedCitations,
   type AnalysisSkippedRepo,
+  type CodeInvestigationGap,
   type RequirementInputAccount,
   deriveCapabilityReasons,
 } from "@metis/shared";
@@ -127,6 +128,14 @@ export interface CapabilityTracker {
    * retrieval health (`exhausted`).
    */
   codeInvestigationCutShort: boolean;
+  /**
+   * #1131 — over the passes that ran out of budget, in distinct requirements
+   * (`summarizePassReaches`): how many they never reached, and how many they
+   * reached that are still inconclusive. Absent when no pass was cut short.
+   */
+  codeInvestigationGap?: CodeInvestigationGap;
+  /** #1131 — per repository, the requirement ids a budget-cut pass never reached. */
+  codeInvestigationScope?: Record<string, string[]>;
   /**
    * #1388 — a code pass stopped early on its own with working retrieval, so its
    * `code-agent-degraded` reason stands in for #19's coverage-only
@@ -238,6 +247,15 @@ export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapabili
       ? { requirementInputAccount: tracker.requirementInputAccount }
       : {}),
     codeInvestigationCutShort: tracker.codeInvestigationCutShort,
+    // #1131 — omitted unless a cut-short pass counted, so other records are unchanged.
+    ...(tracker.codeInvestigationCutShort && tracker.codeInvestigationGap
+      ? { codeInvestigationUnreached: { ...tracker.codeInvestigationGap } }
+      : {}),
+    ...(tracker.codeInvestigationCutShort &&
+    tracker.codeInvestigationScope &&
+    Object.keys(tracker.codeInvestigationScope).length > 0
+      ? { codeInvestigationScope: structuredClone(tracker.codeInvestigationScope) }
+      : {}),
     // #1388 — omitted unless set, so a plain run's record is unchanged.
     ...(codeAgentStoppedEarly ? { codeAgentStoppedEarly: true } : {}),
     // #1143 — omitted when nothing was dropped, so a clean run's record is unchanged.
@@ -261,6 +279,9 @@ export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapabili
       newRequirementsProvided: tracker.newRequirementsProvided,
       requirementInputAccount: tracker.requirementInputAccount,
       codeInvestigationCutShort: tracker.codeInvestigationCutShort,
+      codeInvestigationUnreached: tracker.codeInvestigationCutShort
+        ? tracker.codeInvestigationGap
+        : undefined,
       codeAgentStoppedEarly,
       droppedCitations: tracker.droppedCitations,
     }),

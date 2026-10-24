@@ -112,7 +112,12 @@
  *
  * Pure + dependency-free: same tool calls in ⇒ same health out.
  */
-import type { AnalysisRetrievalHealth, RequirementVerdict, SearchedQuery } from "@metis/shared";
+import type {
+  AnalysisRetrievalHealth,
+  CodeInvestigationGap,
+  RequirementVerdict,
+  SearchedQuery,
+} from "@metis/shared";
 import { deriveRequirementVerdict, type VerdictFindingInput } from "./requirement-verdict.js";
 import { isErroredCall, type ToolCallRecord } from "./tool-telemetry.js";
 
@@ -595,6 +600,12 @@ export function mergeRetrievalHealth(
           unverifiedRequirements: passes.reduce((n, p) => n + (p.unverifiedRequirements ?? 0), 0),
         }
       : {}),
+    // #1131 — likewise, so a record with no count still reads "unknown".
+    ...(passes.some((p) => p.unreachedRequirements !== undefined)
+      ? {
+          unreachedRequirements: passes.reduce((n, p) => n + (p.unreachedRequirements ?? 0), 0),
+        }
+      : {}),
     degraded: passes.some((p) => p.degraded),
     searchedScope,
   };
@@ -667,6 +678,121 @@ export function unverifiedRequirementIds(
     if (verdict === "could-not-verify") unverified.push(id);
   }
   return unverified;
+}
+
+/**
+ * #1131 — a finding the classifier below can judge "reached" by: its gated
+ * verdict, and whether it kept a grounded code citation.
+ */
+export interface ReachBearingFinding extends VerdictBearingFinding {
+  /** The finding cites code that survived the #734 grounding gate. */
+  codeCited?: boolean;
+}
+
+/**
+ * #1131 — {@link unverifiedRequirementIds}, split by whether the pass REACHED
+ * the requirement. `inconclusive`: a finding about it cites code the agent
+ * read (or settles it), yet it still reads `could-not-verify` — the agent
+ * looked and the code did not settle it, which a larger budget does not
+ * change. `unreached`: everything else, INCLUDING a requirement whose only
+ * finding is an uncited could-not-verify: the agentic prompt tells the model
+ * to write exactly that placeholder for a requirement it ran out of budget
+ * before reaching (`VERDICT_RULE` in `prompts.ts`), so a finding's presence is
+ * no evidence of a look. What counts as `codeCited` is the caller's: the
+ * pipeline passes #1388's `checkedRequirementIds` (a grounded code citation, or
+ * a search that bore on the requirement); a continuation, reading persisted
+ * findings, can see only the citation half, so it re-investigates a requirement
+ * that was searched but left uncited rather than skip one never reached.
+ * Input order.
+ */
+export function classifyUnverifiedRequirements(
+  findings: readonly ReachBearingFinding[],
+  requirementIds: Iterable<string>,
+): { unreached: string[]; inconclusive: string[] } {
+  const ids = [...requirementIds];
+  const reached = new Set<string>();
+  for (const finding of findings) {
+    if (!finding.requirementId) continue;
+    if (
+      finding.codeCited === true ||
+      finding.verdict === "implemented" ||
+      finding.verdict === "gap-confirmed"
+    ) {
+      reached.add(finding.requirementId);
+    }
+  }
+  const unreached: string[] = [];
+  const inconclusive: string[] = [];
+  for (const id of unverifiedRequirementIds(findings, ids)) {
+    (reached.has(id) ? inconclusive : unreached).push(id);
+  }
+  return { unreached, inconclusive };
+}
+
+/**
+ * #1131 — what a pass cut short by its budget left behind, from its reported
+ * health: `undefined` unless the pass was `exhausted` AND counted what it never
+ * reached (pre-#1131 records and single-shot passes did not).
+ */
+export function investigationGapFromHealth(
+  health: AnalysisRetrievalHealth,
+): CodeInvestigationGap | undefined {
+  if (health.exhausted !== true || health.unreachedRequirements === undefined) return undefined;
+  const unreached = Math.max(0, health.unreachedRequirements);
+  return {
+    unreached,
+    inconclusive: Math.max(0, (health.unverifiedRequirements ?? 0) - unreached),
+    total: health.requirementCount,
+  };
+}
+
+/**
+ * #1131 — what one agentic code pass reached, by requirement id: the input to
+ * {@link summarizePassReaches}. `repo` is the pass's connector id, or `""`.
+ */
+export interface CodePassReach {
+  repo: string;
+  /** Every requirement the pass was given. */
+  ids: string[];
+  unreached: string[];
+  inconclusive: string[];
+  /** The pass ran out of its turn or token budget. */
+  exhausted: boolean;
+}
+
+/**
+ * #1131 — a run's code passes summed in DISTINCT requirements, so the banner's
+ * "N of M" and the continuation's scope count the same thing (a requirement
+ * investigated in two repositories is one requirement):
+ *
+ *   - `gap.unreached`: requirements some budget-cut pass never reached;
+ *   - `gap.inconclusive`: requirements a budget-cut pass reached without
+ *     settling, and that no budget-cut pass left unreached;
+ *   - `gap.total`: the distinct requirements the run's passes were given;
+ *   - `scope`: per repository, the requirements its budget-cut passes never
+ *     reached — exactly what "Continue with a larger budget" re-investigates.
+ *
+ * `undefined` when no pass was cut short by its budget.
+ */
+export function summarizePassReaches(
+  reaches: readonly CodePassReach[],
+): { gap: CodeInvestigationGap; scope: Record<string, string[]> } | undefined {
+  const cut = reaches.filter((r) => r.exhausted);
+  if (cut.length === 0) return undefined;
+  const unreached = new Set(cut.flatMap((r) => r.unreached));
+  const inconclusive = new Set(
+    cut.flatMap((r) => r.inconclusive).filter((id) => !unreached.has(id)),
+  );
+  const total = new Set(reaches.flatMap((r) => r.ids));
+  const scope: Record<string, string[]> = {};
+  for (const r of cut) {
+    if (r.unreached.length === 0) continue;
+    scope[r.repo] = [...new Set([...(scope[r.repo] ?? []), ...r.unreached])];
+  }
+  return {
+    gap: { unreached: unreached.size, inconclusive: inconclusive.size, total: total.size },
+    scope,
+  };
 }
 
 const REQUIREMENT_VERDICTS: ReadonlySet<string> = new Set<RequirementVerdict>([

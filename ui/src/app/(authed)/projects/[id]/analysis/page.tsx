@@ -1043,6 +1043,13 @@ export default function AnalysisPage(): React.ReactElement {
                         : undefined
                     }
                     continuing={continueInvestigation.isPending}
+                    // Issue #1131 — quote the continuation before it starts, and
+                    // show it running on the summary, where it was started.
+                    continuationQuote={detail.data.codeContinuation}
+                    ledgerUsage={detail.data.ledgerUsage}
+                    liveContinuation={
+                      liveAgents.find((l) => l.agentKey === "code" && l.continuation) ?? null
+                    }
                   />
 
                   {/* Issue #1006 — the imported requirements this run started from. */}

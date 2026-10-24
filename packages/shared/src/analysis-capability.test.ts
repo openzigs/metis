@@ -4,8 +4,11 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  type AnalysisCapabilityReason,
   type CapabilityReasonInput,
+  codeInvestigationContinueOffered,
   deriveCapabilityReasons,
+  MAX_CODE_INVESTIGATION_CONTINUATIONS,
   isAnalysisDegraded,
   readDroppedCitations,
 } from "./analysis.js";
@@ -179,5 +182,78 @@ describe("isAnalysisDegraded", () => {
   });
   it("is true when any reason is present", () => {
     expect(isAnalysisDegraded({ reasons: ["no-code-graph"] })).toBe(true);
+  });
+});
+
+/**
+ * #1131 — #706 run 8: Continue was offered on runs whose remaining requirements
+ * all carried a "Could not verify" finding (the agent reached them; the code
+ * did not settle them), and on a run in which every requirement was grounded.
+ * A larger budget changes neither.
+ */
+describe("#1131 — unreached versus inconclusive requirements", () => {
+  const cutShort = (gap: CapabilityReasonInput["codeInvestigationUnreached"]) =>
+    deriveCapabilityReasons({
+      ...fullyCapable,
+      codeInvestigationCutShort: true,
+      codeInvestigationUnreached: gap,
+    });
+
+  it("offers cut-short when the pass left requirements unreached", () => {
+    expect(cutShort({ unreached: 3, inconclusive: 2, total: 19 })).toEqual([
+      "code-investigation-cut-short",
+    ]);
+  });
+
+  it("names a run whose only gaps are inconclusive as inconclusive, not cut short", () => {
+    expect(cutShort({ unreached: 0, inconclusive: 3, total: 19 })).toEqual([
+      "code-investigation-inconclusive",
+    ]);
+  });
+
+  it("raises nothing when every requirement has a grounded verdict", () => {
+    expect(cutShort({ unreached: 0, inconclusive: 0, total: 5 })).toEqual([]);
+  });
+
+  it("keeps the old reason for a record that carries no counts", () => {
+    expect(cutShort(undefined)).toEqual(["code-investigation-cut-short"]);
+  });
+
+  it("is gated behind codeAnalysisRequested like every code reason", () => {
+    expect(
+      deriveCapabilityReasons({
+        ...fullyCapable,
+        codeAnalysisRequested: false,
+        codeInvestigationCutShort: true,
+        codeInvestigationUnreached: { unreached: 0, inconclusive: 3, total: 3 },
+      }),
+    ).toEqual([]);
+  });
+});
+
+describe("#1131 — codeInvestigationContinueOffered", () => {
+  const base = {
+    reasons: ["code-investigation-cut-short"] as AnalysisCapabilityReason[],
+    codeInvestigationContinuations: 0,
+  };
+  it("is offered while the run is cut short and under the limit", () => {
+    expect(codeInvestigationContinueOffered(base)).toBe(true);
+  });
+  it("is not offered for an inconclusive-only or fully grounded run", () => {
+    expect(
+      codeInvestigationContinueOffered({ ...base, reasons: ["code-investigation-inconclusive"] }),
+    ).toBe(false);
+    expect(codeInvestigationContinueOffered({ ...base, reasons: [] })).toBe(false);
+  });
+  it("is not offered past the continuation limit", () => {
+    expect(
+      codeInvestigationContinueOffered({
+        ...base,
+        codeInvestigationContinuations: MAX_CODE_INVESTIGATION_CONTINUATIONS,
+      }),
+    ).toBe(false);
+  });
+  it("is not offered without a capability record", () => {
+    expect(codeInvestigationContinueOffered(null)).toBe(false);
   });
 });

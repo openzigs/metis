@@ -87,6 +87,26 @@ vi.mock("../prisma.js", () => ({
         store.findings = store.findings.filter((f) => f.agentResultId !== where.id);
         return { id: where.id };
       }),
+      // #1131 — replace removes EVERY prior row in its (analysis, agent[, connector]) scope.
+      deleteMany: vi.fn(
+        async ({
+          where,
+        }: {
+          where: { analysisId: string; agentKey: string; connectorId?: string };
+        }) => {
+          const gone = store.agentResults.filter(
+            (a) =>
+              a.analysisId === where.analysisId &&
+              a.agentKey === where.agentKey &&
+              (where.connectorId === undefined ||
+                (a as { connectorId?: string | null }).connectorId === where.connectorId),
+          );
+          const ids = new Set(gone.map((a) => a.id));
+          store.agentResults = store.agentResults.filter((a) => !ids.has(a.id));
+          store.findings = store.findings.filter((f) => !ids.has(f.agentResultId));
+          return { count: ids.size };
+        },
+      ),
       create: vi.fn(async ({ data }: { data: Partial<AgentResultRow> }) => {
         const row: AgentResultRow = {
           id: `ar_${++store.seq}`,
@@ -257,6 +277,41 @@ describe("resume persistence seams (#741)", () => {
     expect(flat.map((f) => f.title).sort()).toEqual(["repo-A gap v2", "repo-B gap", "repo-C gap"]);
     // Exactly one code row per connector — no orphan/duplicate accumulation.
     expect(store.agentResults.filter((a) => a.agentKey === "code")).toHaveLength(3);
+  });
+
+  // #1131 — "Continue with a larger budget" appends a second code row beside the
+  // first. A replace that removed only ONE prior row left the other's findings
+  // doubled beside the new ones.
+  it("#1131 replace removes every prior row in its scope, appended ones included", async () => {
+    const persistCode = (title: string, connectorId?: string, mode?: "replace" | "append") =>
+      persistAgentResult({
+        analysisId: ANALYSIS_ID,
+        agentKey: "code",
+        status: "completed",
+        output: codeOutput(title),
+        startedAt: new Date(),
+        completedAt: new Date(),
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        ...(connectorId ? { connectorId } : {}),
+        mode,
+      });
+
+    await persistCode("repo-A first pass", "repo-A");
+    await persistCode("repo-A continuation", "repo-A", "append");
+    await persistCode("repo-B pass", "repo-B");
+
+    // A re-run of repo A replaces BOTH of its rows, and leaves repo B alone.
+    await persistCode("repo-A rerun", "repo-A");
+    expect((await readFlattenedFindings(ANALYSIS_ID)).map((f) => f.title).sort()).toEqual([
+      "repo-A rerun",
+      "repo-B pass",
+    ]);
+
+    // A single-shot regenerate (no connector) replaces every code row.
+    await persistCode("repo-A continuation 2", "repo-A", "append");
+    await persistCode("single-shot");
+    expect((await readFlattenedFindings(ANALYSIS_ID)).map((f) => f.title)).toEqual(["single-shot"]);
+    expect(store.agentResults.filter((a) => a.agentKey === "code")).toHaveLength(1);
   });
 
   it("default replace mode still clobbers the prior code row (regression guard)", async () => {

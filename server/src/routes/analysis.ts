@@ -70,6 +70,7 @@ import {
   AnalysisOrchestrator,
   AnalysisNotRegeneratableError,
   CodeInvestigationContinueLimitError,
+  CodeInvestigationContinueNotOfferedError,
   CostCapExceededError,
   assertCanStartAnalysis,
   type OrchestratorDeps,
@@ -653,6 +654,10 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         } catch (err) {
           if (err instanceof CodeInvestigationContinueLimitError) {
             throw new AppError(409, err.code, err.message, { continuations: err.continuations });
+          }
+          // #1131 — nothing was left unreached, so a larger budget cannot help.
+          if (err instanceof CodeInvestigationContinueNotOfferedError) {
+            throw new AppError(409, err.code, err.message);
           }
           throw err;
         }

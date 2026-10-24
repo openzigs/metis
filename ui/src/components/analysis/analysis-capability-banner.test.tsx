@@ -95,10 +95,12 @@ describe("AnalysisCapabilityBanner continue action (#1001)", () => {
     );
   });
 
-  it("invokes onContinueInvestigation when clicked", () => {
+  it("invokes onContinueInvestigation once the analyst confirms (#1131)", () => {
     const onContinue = vi.fn();
     render(<AnalysisCapabilityBanner capability={cutShort} onContinueInvestigation={onContinue} />);
     fireEvent.click(screen.getByTestId("continue-code-investigation"));
+    expect(onContinue).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("confirm-continue-code-investigation"));
     expect(onContinue).toHaveBeenCalledTimes(1);
   });
 
