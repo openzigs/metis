@@ -13,6 +13,9 @@ export const queryKeys = {
     list: (filters?: Record<string, unknown>) =>
       [...queryKeys.projects.all, "list", filters ?? {}] as const,
     detail: (id: string) => [...queryKeys.projects.all, "detail", id] as const,
+    /** #1169 — under `detail`, so invalidating the project refreshes it too. */
+    prReviewBudget: (id: string) =>
+      [...queryKeys.projects.all, "detail", id, "pr-review-budget"] as const,
     /** Epic #164 — usage rollup window. */
     usage: (id: string, window?: { from?: string; to?: string }) =>
       [...queryKeys.projects.all, "usage", id, window ?? {}] as const,

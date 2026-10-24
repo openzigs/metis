@@ -37,6 +37,21 @@ const { card } = vi.hoisted(() => ({
 vi.mock("@/components/projects/ai-provider-picker", () => ({ AiProviderPicker: card("provider") }));
 vi.mock("@/components/projects/ai-model-picker", () => ({ AiModelPicker: card("model") }));
 vi.mock("@/components/projects/primary-repo-card", () => ({ PrimaryRepoCard: card("repo") }));
+// #1169 — renders the props the page passes, so the wiring is checked here.
+vi.mock("@/components/projects/auto-review-prs-settings-card", () => ({
+  AutoReviewPrsSettingsCard: (p: {
+    enabled?: boolean;
+    monthlyBudgetCents?: number | null;
+    canEdit: boolean;
+  }) => (
+    <div
+      data-testid="card-auto-review"
+      data-enabled={String(p.enabled)}
+      data-limit={String(p.monthlyBudgetCents)}
+      data-can-edit={String(p.canEdit)}
+    />
+  ),
+}));
 vi.mock("@/components/projects/safety-settings-card", () => ({
   SafetySettingsCard: card("safety"),
 }));
@@ -81,6 +96,7 @@ const SETTINGS_CARDS = [
   "provider",
   "model",
   "repo",
+  "auto-review",
   "inference",
   "safety",
   "budget",
@@ -146,6 +162,27 @@ describe("project Settings page (⚙)", () => {
       "href",
       "/library?tab=skills&projectId=p1",
     );
+  });
+
+  it("#1169 — passes the auto-review flag, its limit and the project.update gate to its card", async () => {
+    getProject.mockResolvedValue({
+      ...PROJECT,
+      autoReviewPrs: true,
+      prReviewMonthlyBudgetCents: 2500,
+    } as never);
+    const { unmount } = render(<ProjectSettingsPage />, {
+      wrapper: makeWrapper({ initialUser: TEST_USER }),
+    });
+    const readOnly = await screen.findByTestId("card-auto-review");
+    expect(readOnly).toHaveAttribute("data-enabled", "true");
+    expect(readOnly).toHaveAttribute("data-limit", "2500");
+    expect(readOnly).toHaveAttribute("data-can-edit", "false");
+    unmount();
+
+    render(<ProjectSettingsPage />, {
+      wrapper: makeWrapper({ initialUser: { ...TEST_USER, permissions: ["project.update"] } }),
+    });
+    expect(await screen.findByTestId("card-auto-review")).toHaveAttribute("data-can-edit", "true");
   });
 
   it("archives an active project and hides Archive once archived", async () => {
