@@ -248,6 +248,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(firedTriggers().sort()).toEqual(["t-a", "t-b", "t-c"]);
     });
 
+    it("a GUID GitHub shares across webhooks dedups only this webhook's own retry", async () => {
+      await trigger("t-a", { event: "push" });
+      await trigger("t-c", { event: "push", secret: OTHER_SECRET });
+      const guid = "shared-guid-1492";
+      // The PR-review receiver already recorded this GUID for its own webhook.
+      await db.prReviewWebhookDelivery.create({
+        data: { deliveryId: guid, eventType: "pull_request" },
+      });
+      const body = pushBody(30);
+
+      expect((await deliver(body, "push", guid)).body.data.fired).toHaveLength(1);
+      // A second registration, with its own secret, gets the very same GUID.
+      expect((await deliver(body, "push", guid, OTHER_SECRET)).body.data.fired).toHaveLength(1);
+      expect(firedTriggers().sort()).toEqual(["t-a", "t-c"]);
+
+      // GitHub's own retry of either webhook's delivery is still deduped by id.
+      expect((await deliver(body, "push", guid)).body.data.reason).toBe("DUPLICATE_DELIVERY");
+      expect((await deliver(body, "push", guid, OTHER_SECRET)).body.data.reason).toBe(
+        "DUPLICATE_DELIVERY",
+      );
+      expect(firedTriggers()).toHaveLength(2);
+    });
+
     it("writes nothing when the signature does not verify", async () => {
       await trigger("t-push", { event: "push" });
       const body = pushBody(6);

@@ -477,7 +477,17 @@ export function triggersWebhookRouter(): Router {
 
     // Delivery-id dedup, as on the other GitHub receivers: a duplicate id is
     // GitHub's own retry; a dedup failure never blocks the delivery.
-    const deliveryId = (req.header("x-github-delivery") ?? "").trim();
+    //
+    // GitHub gives one GUID to EVERY webhook subscribed to an event, and the
+    // dedup table is keyed on the id alone across receivers. So the key is
+    // scoped to this receiver and to the signer: the lowest id among the
+    // triggers this secret verified. A trigger has one secret, so two secrets
+    // never verify the same trigger. A PR-review webhook, or a second trigger
+    // webhook with its own secret, therefore gets its own key for the same
+    // GUID, and only a retry of THIS webhook's delivery is deduped.
+    const guid = (req.header("x-github-delivery") ?? "").trim();
+    const signerId = verified.map((t) => t.id).sort()[0];
+    const deliveryId = guid ? `github-trigger:${signerId}:${guid}` : "";
     let deliveryRecorded = false;
     if (deliveryId) {
       try {
