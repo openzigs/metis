@@ -310,7 +310,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite = createMigratedSqlite("129-routes");
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
-      await seedAgentsFixture(db);
+      await seedAgentsFixture(db, { enableOwnCustomAgents: true });
       const tok = (userId: string) =>
         issueTokens({ userId, username: userId, role: "developer", permissions: [] }).accessToken;
       alice = tok(IDS.alice);

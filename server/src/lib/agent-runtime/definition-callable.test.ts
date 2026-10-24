@@ -44,7 +44,8 @@ function customRow(i: number) {
 function fakeDb(customCount: number): PrismaClient {
   const custom = Array.from({ length: customCount }, (_, i) => customRow(i));
   return {
-    customAgentEnablement: { findMany: async () => [] },
+    // #1445 — off until enabled: every agent here is switched on for the project.
+    customAgentEnablement: { findMany: async () => custom.map((c) => ({ customAgentId: c.id })) },
     customAgent: { findMany: async () => custom },
     projectAgentAllowlist: { findMany: async () => [] },
     agent: { findMany: async () => [] },

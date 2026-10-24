@@ -264,6 +264,29 @@ describe("<ChatPage /> — a read-only session (#149)", () => {
     await waitFor(() => expect(aiClient.loadActiveSessionId()).toBe("sess-new"));
   });
 
+  it("#1445 — a resumed chat whose agent is off says so, keeps the composer, and New chat clears it", async () => {
+    aiClient.storeActiveSessionId("sess-stored");
+    const notice =
+      'This chat\'s agent "Go SQL reviewer" is switched off for this project, so the chat runs without its persona, tools and skills. Ask a workspace admin to enable it under Custom agents.';
+    resumeMock.mockResolvedValue({
+      session: storedSession,
+      messages: [{ role: "user", content: "earlier question", ordinal: 1 }],
+      readOnlyReason: null,
+      agentNotice: notice,
+    } as never);
+
+    render(<ChatPage />, { wrapper: makeWrapper() });
+
+    const shown = await screen.findByTestId("chat-session-agent-notice");
+    expect(shown).toHaveTextContent(notice);
+    expect(shown).toHaveAttribute("role", "status");
+    // Not read-only: the chat still works, without the agent.
+    expect(screen.getByLabelText("Message")).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /new chat/i }));
+    expect(screen.queryByTestId("chat-session-agent-notice")).toBeNull();
+  });
+
   it("a resumed session with no reason keeps the composer enabled", async () => {
     aiClient.storeActiveSessionId("sess-stored");
     resumeMock.mockResolvedValue({
@@ -281,5 +304,6 @@ describe("<ChatPage /> — a read-only session (#149)", () => {
     expect(screen.queryByTestId("chat-read-only-notice")).toBeNull();
     expect(screen.getByLabelText("Message")).not.toBeDisabled();
     expect(screen.getByTestId("chat-fork-2")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-session-agent-notice")).toBeNull();
   });
 });

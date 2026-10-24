@@ -14,7 +14,8 @@ vi.mock("../../prisma.js", () => ({
     customAgentEnablement: {
       findMany: vi.fn(async () => {
         if (state.fail) throw new Error("db unreachable");
-        return [];
+        // #1445 — off until enabled: the project switched its agent on.
+        return [{ customAgentId: "own" }];
       }),
     },
     customAgent: {

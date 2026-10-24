@@ -190,6 +190,21 @@ describe("resumeChatSession — read-only sessions (#149)", () => {
       .mockResolvedValueOnce(jsonResponse({ success: true, data: { session: { id: "s1" } } }));
     const r = await resumeChatSession("s1");
     expect(r?.readOnlyReason).toBeNull();
+    // #1445 — likewise a missing agent notice.
+    expect(r?.agentNotice).toBeNull();
+  });
+
+  it("#1445 — carries the server's agentNotice through to the page", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        jsonResponse({
+          success: true,
+          data: { session: { id: "s1" }, messages: [], agentNotice: "agent is switched off" },
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ success: true, data: { session: { id: "s1" } } }));
+    const r = await resumeChatSession("s1");
+    expect(r?.agentNotice).toBe("agent is switched off");
   });
 });
 

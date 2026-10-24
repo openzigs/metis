@@ -40,6 +40,7 @@ const invocations: Record<keyof typeof sdkApi, () => unknown> = {
   invokeAgent: () => sdkApi.invokeAgent("a1", { projectId: "p1", input: "hi" }),
   // Enablement
   listEnabledAgents: () => sdkApi.listEnabledAgents("p1"),
+  listDisabledAgentIds: () => sdkApi.listDisabledAgentIds("p1"),
   setAgentEnablement: () => sdkApi.setAgentEnablement("a1", { projectId: "p1", enabled: true }),
   // Hooks
   listHooks: () => sdkApi.listHooks("p1"),

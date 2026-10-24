@@ -49,7 +49,10 @@ export const SKILLS = [
 
 export const bodyMarker = (key: string): string => `BODY-MARKER-${key}-${"x".repeat(400)}`;
 
-export async function seedAgentsFixture(db: PrismaClient): Promise<void> {
+export async function seedAgentsFixture(
+  db: PrismaClient,
+  opts: { enableOwnCustomAgents?: boolean } = {},
+): Promise<void> {
   for (const id of [IDS.alice, IDS.bob]) {
     await db.user.create({
       data: { id, username: id, displayName: id, email: `${id}@example.test` },
@@ -132,4 +135,16 @@ export async function seedAgentsFixture(db: PrismaClient): Promise<void> {
       tools: "[]",
     },
   });
+  // #1445 — custom agents are off until enabled, owned ones included. Chat
+  // suites switch each project's own agents on for it; analysis suites leave
+  // them off so the analysis phase runs only the agents they enable.
+  if (opts.enableOwnCustomAgents) {
+    for (const [customAgentId, projectId] of [
+      [IDS.helper, IDS.project],
+      [IDS.writer, IDS.project],
+      [IDS.outsider, IDS.otherProject],
+    ]) {
+      await db.customAgentEnablement.create({ data: { customAgentId, projectId, enabled: true } });
+    }
+  }
 }

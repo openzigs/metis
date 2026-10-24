@@ -233,6 +233,12 @@ export interface ResumedChat {
    * read as `null` (writable).
    */
   readOnlyReason?: string | null;
+  /**
+   * #1445 — non-null when the session's custom agent can no longer run in its
+   * project, so the chat runs without its persona, tools and skills. Shown
+   * as-is. Absent is read as `null`.
+   */
+  agentNotice?: string | null;
 }
 
 /**
@@ -464,6 +470,7 @@ async function openChatSession(
       session,
       messages,
       readOnlyReason: res.session?.readOnlyReason ?? null,
+      agentNotice: res.agentNotice ?? null,
     };
   } catch (err) {
     // #1412 — the server's 404 (unknown, deleted, someone else's, or in a

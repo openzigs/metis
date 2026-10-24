@@ -546,6 +546,28 @@ export async function listEnabledAgentsForProject(projectId: string): Promise<Cu
   return found.map(toDto);
 }
 
+/** #1445 review — does (agent, project) have an enablement row, either way? */
+export async function hasEnablementRow(customAgentId: string, projectId: string): Promise<boolean> {
+  const row = await prisma.customAgentEnablement.findUnique({
+    where: { customAgentId_projectId: { customAgentId, projectId } },
+    select: { enabled: true },
+  });
+  return row !== null;
+}
+
+/**
+ * #1445 review — the ids of agents explicitly switched OFF for a project (an
+ * `enabled: false` row). The Custom agents card tells "Off" (someone turned it
+ * off) apart from "Off until enabled" (nobody has switched it).
+ */
+export async function listDisabledAgentIdsForProject(projectId: string): Promise<string[]> {
+  const rows = (await prisma.customAgentEnablement.findMany({
+    where: { projectId, enabled: false },
+    select: { customAgentId: true },
+  })) as Array<{ customAgentId: string }>;
+  return rows.map((r) => r.customAgentId);
+}
+
 export async function deleteAgent(id: string, actorId?: string): Promise<void> {
   const existing = await prisma.customAgent.findUnique({ where: { id } });
   if (!existing) throw new CustomAgentError("Agent not found");
