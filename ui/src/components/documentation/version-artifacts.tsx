@@ -41,6 +41,17 @@ interface ProvenanceSummary {
     count: number;
     examples: Array<{ kind: string; text: string }>;
   }>;
+  /**
+   * #1133 — an architecture document's sections, as checked against the
+   * database schema for the names they write as tables or columns; absent or
+   * empty = not checked (no schema, or another kind of document).
+   */
+  schemaClaims?: Array<{
+    section: string;
+    judged: number;
+    unmatched: string[];
+    notChecked: number;
+  }>;
   /** #1070 — a planned document's topic plan; absent = not planned. */
   topicPlan?: {
     budgetChars: number;
@@ -299,6 +310,60 @@ function CodeIdentifiers({
   );
 }
 
+const plural = (n: number, one: string, many: string): string =>
+  `${n.toLocaleString()} ${n === 1 ? one : many}`;
+
+/**
+ * #1133 — what the schema check found in an architecture document: per
+ * section, how many table and column names were compared with the database
+ * schema, the ones it does not have (each is marked "not in schema" in the
+ * text), and how many could not be checked. Nothing is shown for a document
+ * that was not checked.
+ */
+function SchemaClaims({
+  checked,
+  testId,
+}: {
+  checked: NonNullable<ProvenanceSummary["schemaClaims"]>;
+  testId: string;
+}): React.ReactElement | null {
+  const sections = checked.filter((entry) => entry.judged > 0 || entry.notChecked > 0);
+  if (sections.length === 0) return null;
+  const judged = sections.reduce((n, entry) => n + entry.judged, 0);
+  const unmatched = sections.reduce((n, entry) => n + entry.unmatched.length, 0);
+  return (
+    <div className="mt-1" data-testid={testId}>
+      <p className="font-medium">
+        {unmatched === 0
+          ? `Schema check: every table and column name checked (${judged.toLocaleString()}) matches the database schema`
+          : `Schema check: ${plural(unmatched, "name", "names")} not in the database schema, of ${plural(judged, "table or column name", "table and column names")} checked`}
+      </p>
+      <ul className="max-h-48 overflow-y-auto">
+        {sections.map((entry, i) => (
+          <li key={`${i}:${entry.section}`}>
+            <span className="text-muted-foreground">
+              {entry.section}: {plural(entry.judged, "name", "names")} checked
+              {entry.unmatched.length > 0 &&
+                `, ${entry.unmatched.length.toLocaleString()} not in schema`}
+              {entry.notChecked > 0 &&
+                `, ${entry.notChecked.toLocaleString()} could not be checked`}
+            </span>
+            {entry.unmatched.length > 0 && (
+              <ul className="list-disc pl-4">
+                {entry.unmatched.map((name) => (
+                  <li key={name}>
+                    <code className="break-all">{name}</code>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function VersionArtifacts({
   projectId,
   docId,
@@ -438,6 +503,10 @@ export function VersionArtifacts({
               <CodeIdentifiers
                 checked={provenance.data.codeIdentifiers ?? []}
                 testId={`version-code-identifiers-${versionId}`}
+              />
+              <SchemaClaims
+                checked={provenance.data.schemaClaims ?? []}
+                testId={`version-schema-claims-${versionId}`}
               />
               <button
                 type="button"

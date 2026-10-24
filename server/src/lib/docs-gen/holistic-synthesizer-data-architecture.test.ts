@@ -273,7 +273,9 @@ const state: {
   finish: "stop" | "length";
   /** When set, the fact-check finds a claim of that section unsupported. */
   unsupported: boolean;
-} = { dataSection: INVENTED, prompts: [], finish: "stop", unsupported: false };
+  /** #1133 — what the model writes for another section, by group label. */
+  other: Record<string, string>;
+} = { dataSection: INVENTED, prompts: [], finish: "stop", unsupported: false, other: {} };
 /** A claim only the Data Architecture section's fact-check is given. */
 const UNSUPPORTED_CLAIM = "The scheduler persists refresh jobs.";
 const loadConfig = vi.hoisted(() => vi.fn());
@@ -305,7 +307,7 @@ const provider = {
         yield { type: "done", finishReason: state.finish };
         return;
       } else {
-        yield { type: "delta", content: `## ${label}\n\nSource facts.` };
+        yield { type: "delta", content: state.other[label] ?? `## ${label}\n\nSource facts.` };
       }
     } else {
       yield { type: "delta", content: "PURPOSE\n- Source facts." };
@@ -385,6 +387,7 @@ beforeEach(() => {
   state.prompts = [];
   state.finish = "stop";
   state.unsupported = false;
+  state.other = {};
   loadConfig.mockReturnValue({
     provider: "bedrock-gateway",
     model: "fixture",
@@ -432,6 +435,25 @@ describe("synthesizeFinalDocument — a stored Data Architecture section and the
 
   const dataRecord = (result: Result) =>
     result.sectionSynthesis?.records.find((r) => r.sectionId === "data-architecture");
+
+  // #1133 review — the clean line is written over the fitted text on every run,
+  // so a stored section gets it without being written again (no model call),
+  // and its stored record is not changed by it.
+  it("gives a reused clean section its one line, with no model call and no change to its record", async () => {
+    state.dataSection =
+      "## Data Architecture\n\n| Table | Purpose |\n|---|---|\n| `users` | People |\n| `feeds` | Feeds |";
+    const cold = await run(LIVE);
+    expect(dataRecord(cold)?.markdown).not.toContain("> **Schema check.**");
+    state.prompts = [];
+    const warm = await run(LIVE, cold);
+    expect(state.prompts).toEqual([]);
+    expect(warm.regeneration?.mode).toBe("unchanged");
+    expect(dataRecord(warm)).toEqual(dataRecord(cold));
+    expect(warm.markdown).toContain(
+      `> **Schema check.** 2 table and column names in this section were compared with ${LIVE.label}, and every one matched.`,
+    );
+    expect(warm.markdown).toBe(cold.markdown);
+  });
 
   // #1061 second review — the first fix wrote such a section again on EVERY
   // later run, with no bound and no trace, for as long as the model named the
@@ -791,5 +813,76 @@ describe("synthesizeFinalDocument — Data Architecture is checked against the s
     expect(result.markdown).not.toContain("not in schema");
     expect(result.warnings).toEqual([]);
     expect(state.prompts[0]).toContain("No database schema is available for this project.");
+  });
+});
+
+// #1133 — walkthrough run 8: an invented `certificate_cache`, written as a
+// PostgreSQL table twice outside Data Architecture, went unmarked.
+describe("synthesizeFinalDocument — table names in the text of every section (#1133)", () => {
+  const OPS = [
+    "## Key Algorithms & Calculations",
+    "",
+    "Feeds are refreshed by priority.",
+    "",
+    "## Operational Considerations",
+    "",
+    "- **TLS:** ACME certificates are persisted through an `autocert.Cache` adapter backed by " +
+      "PostgreSQL (`certificate_cache`), declared in `certificate_cache.go`.",
+    "",
+    "## Technology Stack",
+    "",
+    "- **Key tables:** `users`, `feeds` (one row per subscription), and `certificate_cache`[^src-8].",
+  ].join("\n");
+  const CLEAN_DATA = [
+    "## Data Architecture",
+    "",
+    "### Tables and Their Roles",
+    "",
+    "| Table | Purpose | Written by |",
+    "|---|---|---|",
+    "| `users` | Accounts | storage |",
+    "| `feeds` | Subscriptions | storage |",
+  ].join("\n");
+
+  it("marks the invented table in both sections, lists it, and records the check in provenance", async () => {
+    state.dataSection = CLEAN_DATA;
+    state.other["Algorithms, Operations & Stack"] = OPS;
+    const result = await synth(LIVE);
+    const doc = result.markdown;
+    expect(doc).toContain("backed by PostgreSQL (`certificate_cache` *(not in schema)*)");
+    expect(doc).toContain("and `certificate_cache` *(not in schema)*[^");
+    // Code identifiers that are not tables are left alone.
+    expect(doc).toContain("an `autocert.Cache` adapter");
+    expect(doc).toContain("declared in `certificate_cache.go`.");
+    expect(doc).not.toContain("`users` *(not in schema");
+    // The Data Architecture section ran clean, and says so.
+    expect(doc).toContain(
+      `> **Schema check.** 2 table and column names in this section were compared with ${LIVE.label}, and every one matched.`,
+    );
+    const listed = result.warnings.filter((w) => w.kind === "schema-unverified");
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({
+      section: "Algorithms, Operations & Stack",
+      severity: "info",
+    });
+    expect(listed[0].message).toContain("1 name written as a database table or column");
+    expect(listed[0].message).toContain("(certificate_cache)");
+    const ops = result.sections.find((s) => s.sectionLabel === "Algorithms, Operations & Stack");
+    expect(ops?.schemaClaims).toEqual({
+      judged: 3,
+      unmatched: ["certificate_cache"],
+      notChecked: 0,
+    });
+    const data = result.sections.find((s) => s.sectionLabel === "Data Architecture");
+    expect(data?.schemaClaims).toEqual({ judged: 2, unmatched: [], notChecked: 0 });
+    // Informational: the document is not degraded by it.
+    expect(result.warnings.every((w) => w.severity === "info")).toBe(true);
+  });
+
+  it("checks nothing, and writes no record, when there is no schema to check against", async () => {
+    state.other["Algorithms, Operations & Stack"] = OPS;
+    const result = await synth();
+    expect(result.markdown).not.toContain("not in schema");
+    expect(result.sections.every((s) => s.schemaClaims === undefined)).toBe(true);
   });
 });

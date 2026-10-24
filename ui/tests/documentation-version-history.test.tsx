@@ -577,6 +577,85 @@ describe("DocumentationPage — version history", () => {
     expect(within(panel).queryByTestId("version-code-identifiers-v2")).not.toBeInTheDocument();
   });
 
+  it("shows the schema check of an architecture document, by section, with the names not in the schema (#1133)", async () => {
+    setup(
+      docDetail({
+        versions: [
+          { id: "v2", version: 2, diffSummary: "Latest", createdAt: "2026-06-02T00:00:00.000Z" },
+        ],
+      }),
+      {
+        ...PROVENANCE_SUMMARY,
+        schemaClaims: [
+          { section: "Overview & Context", judged: 0, unmatched: [], notChecked: 0 },
+          { section: "Data Architecture", judged: 14, unmatched: [], notChecked: 1 },
+          {
+            section: "Algorithms, Operations & Stack",
+            judged: 13,
+            unmatched: ["certificate_cache"],
+            notChecked: 0,
+          },
+        ],
+      },
+    );
+    await openDoc();
+    fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+    const panel = await screen.findByTestId("version-provenance-v2");
+    const check = await within(panel).findByTestId("version-schema-claims-v2");
+    expect(
+      within(check).getByText(
+        "Schema check: 1 name not in the database schema, of 27 table and column names checked",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(check).getByText("Data Architecture: 14 names checked, 1 could not be checked"),
+    ).toBeInTheDocument();
+    expect(
+      within(check).getByText("Algorithms, Operations & Stack: 13 names checked, 1 not in schema"),
+    ).toBeInTheDocument();
+    expect(within(check).getByText("certificate_cache")).toBeInTheDocument();
+    // A section that names no table is not listed.
+    expect(within(check).queryByText(/Overview & Context/)).not.toBeInTheDocument();
+  });
+
+  it("says every name matched when the schema check found nothing (#1133)", async () => {
+    setup(
+      docDetail({
+        versions: [
+          { id: "v2", version: 2, diffSummary: "Latest", createdAt: "2026-06-02T00:00:00.000Z" },
+        ],
+      }),
+      {
+        ...PROVENANCE_SUMMARY,
+        schemaClaims: [{ section: "Data Architecture", judged: 1, unmatched: [], notChecked: 0 }],
+      },
+    );
+    await openDoc();
+    fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+    const panel = await screen.findByTestId("version-provenance-v2");
+    const check = await within(panel).findByTestId("version-schema-claims-v2");
+    expect(
+      within(check).getByText(
+        "Schema check: every table and column name checked (1) matches the database schema",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no schema check for a document that was not checked (#1133)", async () => {
+    setup(
+      docDetail({
+        versions: [
+          { id: "v2", version: 2, diffSummary: "Latest", createdAt: "2026-06-02T00:00:00.000Z" },
+        ],
+      }),
+    );
+    await openDoc();
+    fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+    const panel = await screen.findByTestId("version-provenance-v2");
+    await within(panel).findByText("gendoc:proj_test:doc_1:v2");
+    expect(within(panel).queryByTestId("version-schema-claims-v2")).not.toBeInTheDocument();
+  });
+
   it("shows no omitted-topics list when nothing was left out (#995)", async () => {
     setup(
       docDetail({

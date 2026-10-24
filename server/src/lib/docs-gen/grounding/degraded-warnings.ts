@@ -1147,6 +1147,35 @@ export function schemaUnverifiedWarning(
 }
 
 /**
+ * #1133 — names a section writes AS a database table or `table.column` in its
+ * text (any section, not only Data Architecture) that could not be matched.
+ * Each is marked ` *(not in schema)*` where it stands; there is no note in the
+ * section, so this line is where the reader is told what the marks are.
+ * Informational, like {@link schemaUnverifiedWarning}. Callers do not call
+ * this with an empty list.
+ */
+export function schemaUnverifiedInTextWarning(
+  section: string,
+  unmatched: readonly string[],
+  inventory: Pick<SchemaInventory, "label" | "source" | "reads">,
+): DocWarning {
+  const { what, caveat } = schemaComparisonWords(inventory);
+  const shown = unmatched.slice(0, 8).join(", ");
+  const more = unmatched.length > 8 ? ` and ${unmatched.length - 8} more` : "";
+  const names = unmatched.length === 1 ? "1 name" : `${unmatched.length} names`;
+  return {
+    kind: "schema-unverified",
+    section,
+    message:
+      `${names} written as a database table or column in the text of ${section} could not be ` +
+      `matched to ${what} (${shown}${more}). Compared with ${inventory.label}. Each is marked ` +
+      `"not in schema" where it stands; nothing was removed or changed. ${caveat}, so an ` +
+      `unmatched name can be real.`,
+    severity: "info",
+  };
+}
+
+/**
  * Whether a warning counts toward the document's status. An `info` one does
  * not: it is a note for the reader (#1061's `schema-unverified`).
  */

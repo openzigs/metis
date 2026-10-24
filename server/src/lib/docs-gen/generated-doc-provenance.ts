@@ -3,13 +3,18 @@ import { z } from "zod";
 import type { EvidencePolicy } from "./evidence-policy.js";
 import type { DocType } from "./holistic-synthesizer.js";
 import type { CitedLine } from "./citation-footnotes.js";
-import type { GroundingSource } from "./grounding/grounding-context.js";
+import { canonicalFactsSourceId, type GroundingSource } from "./grounding/grounding-context.js";
 import {
   CODE_IDENTIFIER_EXAMPLE_MAX_CHARS,
   CODE_IDENTIFIER_EXAMPLES_MAX,
   CODE_IDENTIFIER_KINDS,
   type CodeIdentifierReport,
 } from "./main-part-language.js";
+import {
+  SCHEMA_CLAIM_NAME_MAX_CHARS,
+  SCHEMA_CLAIMS_LISTED_MAX,
+  type SchemaClaimsRecord,
+} from "./schema-claim-check.js";
 import {
   MAX_RECORDED_DROPPED_TOPICS,
   MAX_RECORDED_FINDINGS,
@@ -130,6 +135,22 @@ const sectionManifestSchema = z
               .strict(),
           )
           .max(CODE_IDENTIFIER_EXAMPLES_MAX),
+      })
+      .strict()
+      .optional(),
+    /**
+     * #1133 — on a section of a document checked against a schema: the names
+     * it writes as tables or columns, how many were compared, which did not
+     * match (each is marked in the text), and how many were not checked.
+     * Absent = not checked (no schema, or not an architecture document).
+     */
+    schemaClaims: z
+      .object({
+        judged: z.number().int().min(0),
+        unmatched: z
+          .array(z.string().min(1).max(SCHEMA_CLAIM_NAME_MAX_CHARS))
+          .max(SCHEMA_CLAIMS_LISTED_MAX),
+        notChecked: z.number().int().min(0),
       })
       .strict()
       .optional(),
@@ -370,7 +391,35 @@ const legacySchemaV1ManifestSchema = provenanceManifestSchema
 
 export type GeneratedDocVersionManifest = z.infer<typeof provenanceManifestSchema>;
 
+/**
+ * Parse a stored provenance manifest, of any version this server has written.
+ *
+ * #1356 — each section's `factsSourceIds` comes back in canonical form
+ * (`canonicalFactsSourceId`): a manifest written before #1356 recorded a
+ * repository-less module (an uploaded document, an archive) by its raw dir,
+ * while the document's citations used the sanitised id, so a join between the
+ * two missed it. The stored row is not rewritten. The section-synthesis
+ * snapshot is returned exactly as stored: its records are hashed
+ * (`section-reuse.ts`), and the synthesizer canonicalises a reused record's ids
+ * where it reads them.
+ */
 export function parseGeneratedDocVersionManifest(raw: unknown): GeneratedDocVersionManifest {
+  const manifest = parseManifestAsStored(raw);
+  return {
+    ...manifest,
+    sections: manifest.sections.map((section) => withCanonicalFactsSourceIds(section)),
+  };
+}
+
+/** `section` with its `factsSourceIds` in canonical form (#1356); the same object when they are. */
+export function withCanonicalFactsSourceIds<T extends { factsSourceIds: string[] }>(section: T): T {
+  const canonical = section.factsSourceIds.map(canonicalFactsSourceId);
+  return canonical.every((id, i) => id === section.factsSourceIds[i])
+    ? section
+    : { ...section, factsSourceIds: canonical };
+}
+
+function parseManifestAsStored(raw: unknown): GeneratedDocVersionManifest {
   const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
   const current = provenanceManifestSchema.safeParse(parsed);
   if (current.success) return current.data;
@@ -602,6 +651,8 @@ export function buildGeneratedDocVersionManifest(input: {
     omittedTopics?: string[];
     /** #1223 — code identifiers in a reader-layout main section. */
     codeIdentifiers?: CodeIdentifierReport;
+    /** #1133 — the schema check of the names the section writes as tables or columns. */
+    schemaClaims?: SchemaClaimsRecord;
   }>;
 }): string {
   const primary =
@@ -710,6 +761,15 @@ export function buildGeneratedDocVersionManifest(input: {
             codeIdentifiers: {
               count: section.codeIdentifiers.count,
               examples: section.codeIdentifiers.examples.map((e) => ({ ...e })),
+            },
+          }
+        : {}),
+      ...(section.schemaClaims
+        ? {
+            schemaClaims: {
+              judged: section.schemaClaims.judged,
+              unmatched: [...section.schemaClaims.unmatched],
+              notChecked: section.schemaClaims.notChecked,
             },
           }
         : {}),

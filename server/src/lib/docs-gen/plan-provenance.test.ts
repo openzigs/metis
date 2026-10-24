@@ -8,6 +8,7 @@ import { MAX_LISTED_STATEMENTS, type ConsistencyReport } from "./fact-consistenc
 import {
   buildGeneratedDocVersionManifest,
   parseGeneratedDocVersionManifest,
+  withCanonicalFactsSourceIds,
 } from "./generated-doc-provenance.js";
 import { summarizeGeneratedDocVersionManifest } from "./generated-doc-version-reads.js";
 import {
@@ -250,5 +251,42 @@ describe("the provenance manifest and its summary", () => {
     );
     long.topicPlan.sections[1].dropped[0] = "z".repeat(MAX_RECORDED_TEXT_CHARS + 1);
     expect(() => parseGeneratedDocVersionManifest(long)).toThrow();
+  });
+});
+
+describe("#1356 — a manifest stored with raw-dir facts ids", () => {
+  const section = (factsSourceIds: string[]) => ({
+    sectionLabel: "Overview",
+    sectionIndex: 0,
+    providerKind: "anthropic" as const,
+    model: "m",
+    factsSourceIds,
+    groundingSourceIds: ["rag:doc:0"],
+  });
+
+  it("reads back each section's facts ids in the form its citations use; the row is not rewritten", () => {
+    const stored = buildGeneratedDocVersionManifest({
+      ...manifestInput({}),
+      sections: [
+        section([
+          "facts:uploads/Claims Policy.docx:0",
+          "facts:claims-archive.zip/sas/etl:1",
+          "facts:src_m00:2",
+        ]),
+      ],
+    });
+    expect(stored).toContain("facts:uploads/Claims Policy.docx:0");
+    const parsed = parseGeneratedDocVersionManifest(stored);
+    expect(parsed.sections[0].factsSourceIds).toEqual([
+      "facts:uploads_Claims_Policy.docx:0",
+      "facts:claims-archive.zip_sas_etl:1",
+      "facts:src_m00:2",
+    ]);
+    expect(parsed.sections[0].groundingSourceIds).toEqual(["rag:doc:0"]);
+  });
+
+  it("returns a section already in canonical form as the same object", () => {
+    const already = section(["facts:src_m00:0"]);
+    expect(withCanonicalFactsSourceIds(already)).toBe(already);
   });
 });

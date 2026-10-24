@@ -6,6 +6,8 @@ import {
   ragSourceId,
   webSourceId,
   factsSourceId,
+  factsSourceIdOf,
+  canonicalFactsSourceId,
   mergeFactsIntoContext,
   ragChunkFromMetadata,
   type RagChunk,
@@ -74,6 +76,60 @@ describe("source id helpers", () => {
 
   it("produces stable (deterministic) ids for the same input", () => {
     expect(factsSourceId("sas/etl", 2)).toBe(factsSourceId("sas/etl", 2));
+  });
+
+  describe("#1356 — one id per facts source, and the alias for ids stored before it", () => {
+    const repository = { repoConnectorId: "rc1", codeGraphId: "g1" };
+
+    it("factsSourceIdOf mints exactly what factsSourceId does, with or without a repository", () => {
+      expect(factsSourceIdOf({ moduleDir: "uploads/Claims Policy.docx", idx: 0 })).toBe(
+        "facts:uploads_Claims_Policy.docx:0",
+      );
+      expect(factsSourceIdOf({ moduleDir: "src/m00", idx: 2, repository })).toBe(
+        factsSourceId("src/m00", 2, repository),
+      );
+    });
+
+    it.each([
+      [
+        "an uploaded document",
+        "facts:uploads/Claims Policy.docx:0",
+        "facts:uploads_Claims_Policy.docx:0",
+      ],
+      [
+        "an archive member",
+        "facts:claims-archive.zip/sas/etl:3",
+        "facts:claims-archive.zip_sas_etl:3",
+      ],
+      ["a dir holding a colon", "facts:a b:c\\d:1", "facts:a_b_c_d:1"],
+      ["a dir of separators only", "facts:///:0", "facts:module:0"],
+    ])("maps the raw-dir id of %s to the id its citations use", (_what, stored, canonical) => {
+      expect(canonicalFactsSourceId(stored)).toBe(canonical);
+    });
+
+    it("matches what the grounding context mints for the same module", () => {
+      for (const dir of ["uploads/Claims Policy.docx", "claims-archive.zip/sas/etl", "src/m00"]) {
+        expect(canonicalFactsSourceId(`facts:${dir}:4`)).toBe(factsSourceId(dir, 4));
+      }
+    });
+
+    it("leaves canonical, repository-backed and non-facts ids unchanged", () => {
+      const repoId = factsSourceId("src/m00", 1, repository);
+      for (const id of [
+        "facts:src_m00:0",
+        "facts:claims-archive.zip_sas_etl:3",
+        repoId,
+        "rag:doc1:c1",
+        "web:d1",
+        "facts:no-index",
+        "facts:src/m00:x",
+      ]) {
+        expect(canonicalFactsSourceId(id)).toBe(id);
+      }
+      // Idempotent.
+      const once = canonicalFactsSourceId("facts:uploads/a b.pdf:0");
+      expect(canonicalFactsSourceId(once)).toBe(once);
+    });
   });
 
   it("converts VectorMetadata to a RagChunk", () => {

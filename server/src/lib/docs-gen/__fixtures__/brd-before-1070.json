@@ -103,16 +103,16 @@
       "providerKind": "anthropic",
       "model": "claude-sonnet-4-6",
       "factsSourceIds": [
-        "facts:src/m00:0",
-        "facts:src/m01:1",
-        "facts:src/m02:2",
-        "facts:src/m03:3",
-        "facts:src/m04:4",
-        "facts:src/m05:5",
-        "facts:src/m06:6",
-        "facts:src/m07:7",
-        "facts:src/m08:8",
-        "facts:src/m09:9"
+        "facts:src_m00:0",
+        "facts:src_m01:1",
+        "facts:src_m02:2",
+        "facts:src_m03:3",
+        "facts:src_m04:4",
+        "facts:src_m05:5",
+        "facts:src_m06:6",
+        "facts:src_m07:7",
+        "facts:src_m08:8",
+        "facts:src_m09:9"
       ],
       "groundingSourceIds": [],
       "omittedTopics": [
@@ -132,16 +132,16 @@
       "providerKind": "anthropic",
       "model": "claude-sonnet-4-6",
       "factsSourceIds": [
-        "facts:src/m00:0",
-        "facts:src/m01:1",
-        "facts:src/m02:2",
-        "facts:src/m03:3",
-        "facts:src/m04:4",
-        "facts:src/m05:5",
-        "facts:src/m06:6",
-        "facts:src/m07:7",
-        "facts:src/m08:8",
-        "facts:src/m09:9"
+        "facts:src_m00:0",
+        "facts:src_m01:1",
+        "facts:src_m02:2",
+        "facts:src_m03:3",
+        "facts:src_m04:4",
+        "facts:src_m05:5",
+        "facts:src_m06:6",
+        "facts:src_m07:7",
+        "facts:src_m08:8",
+        "facts:src_m09:9"
       ],
       "groundingSourceIds": [],
       "omittedTopics": [
@@ -161,16 +161,16 @@
       "providerKind": "anthropic",
       "model": "claude-sonnet-4-6",
       "factsSourceIds": [
-        "facts:src/m00:0",
-        "facts:src/m01:1",
-        "facts:src/m02:2",
-        "facts:src/m03:3",
-        "facts:src/m04:4",
-        "facts:src/m05:5",
-        "facts:src/m06:6",
-        "facts:src/m07:7",
-        "facts:src/m08:8",
-        "facts:src/m09:9"
+        "facts:src_m00:0",
+        "facts:src_m01:1",
+        "facts:src_m02:2",
+        "facts:src_m03:3",
+        "facts:src_m04:4",
+        "facts:src_m05:5",
+        "facts:src_m06:6",
+        "facts:src_m07:7",
+        "facts:src_m08:8",
+        "facts:src_m09:9"
       ],
       "groundingSourceIds": [],
       "omittedTopics": [
@@ -190,16 +190,16 @@
       "providerKind": "anthropic",
       "model": "claude-sonnet-4-6",
       "factsSourceIds": [
-        "facts:src/m00:0",
-        "facts:src/m01:1",
-        "facts:src/m02:2",
-        "facts:src/m03:3",
-        "facts:src/m04:4",
-        "facts:src/m05:5",
-        "facts:src/m06:6",
-        "facts:src/m07:7",
-        "facts:src/m08:8",
-        "facts:src/m09:9"
+        "facts:src_m00:0",
+        "facts:src_m01:1",
+        "facts:src_m02:2",
+        "facts:src_m03:3",
+        "facts:src_m04:4",
+        "facts:src_m05:5",
+        "facts:src_m06:6",
+        "facts:src_m07:7",
+        "facts:src_m08:8",
+        "facts:src_m09:9"
       ],
       "groundingSourceIds": [],
       "omittedTopics": [
@@ -219,16 +219,16 @@
       "providerKind": "anthropic",
       "model": "claude-sonnet-4-6",
       "factsSourceIds": [
-        "facts:src/m00:0",
-        "facts:src/m01:1",
-        "facts:src/m02:2",
-        "facts:src/m03:3",
-        "facts:src/m04:4",
-        "facts:src/m05:5",
-        "facts:src/m06:6",
-        "facts:src/m07:7",
-        "facts:src/m08:8",
-        "facts:src/m09:9"
+        "facts:src_m00:0",
+        "facts:src_m01:1",
+        "facts:src_m02:2",
+        "facts:src_m03:3",
+        "facts:src_m04:4",
+        "facts:src_m05:5",
+        "facts:src_m06:6",
+        "facts:src_m07:7",
+        "facts:src_m08:8",
+        "facts:src_m09:9"
       ],
       "groundingSourceIds": [],
       "omittedTopics": [
@@ -248,16 +248,16 @@
       "providerKind": "anthropic",
       "model": "claude-sonnet-4-6",
       "factsSourceIds": [
-        "facts:src/m00:0",
-        "facts:src/m01:1",
-        "facts:src/m02:2",
-        "facts:src/m03:3",
-        "facts:src/m04:4",
-        "facts:src/m05:5",
-        "facts:src/m06:6",
-        "facts:src/m07:7",
-        "facts:src/m08:8",
-        "facts:src/m09:9"
+        "facts:src_m00:0",
+        "facts:src_m01:1",
+        "facts:src_m02:2",
+        "facts:src_m03:3",
+        "facts:src_m04:4",
+        "facts:src_m05:5",
+        "facts:src_m06:6",
+        "facts:src_m07:7",
+        "facts:src_m08:8",
+        "facts:src_m09:9"
       ],
       "groundingSourceIds": [],
       "omittedTopics": [
@@ -277,16 +277,16 @@
       "providerKind": "anthropic",
       "model": "claude-sonnet-4-6",
       "factsSourceIds": [
-        "facts:src/m00:0",
-        "facts:src/m01:1",
-        "facts:src/m02:2",
-        "facts:src/m07:3",
-        "facts:src/m03:4",
-        "facts:src/m04:5",
-        "facts:src/m05:6",
-        "facts:src/m06:7",
-        "facts:src/m08:8",
-        "facts:src/m09:9"
+        "facts:src_m00:0",
+        "facts:src_m01:1",
+        "facts:src_m02:2",
+        "facts:src_m07:3",
+        "facts:src_m03:4",
+        "facts:src_m04:5",
+        "facts:src_m05:6",
+        "facts:src_m06:7",
+        "facts:src_m08:8",
+        "facts:src_m09:9"
       ],
       "groundingSourceIds": [],
       "omittedTopics": [
@@ -315,16 +315,16 @@
           "providerKind": "anthropic",
           "model": "claude-sonnet-4-6",
           "factsSourceIds": [
-            "facts:src/m00:0",
-            "facts:src/m01:1",
-            "facts:src/m02:2",
-            "facts:src/m03:3",
-            "facts:src/m04:4",
-            "facts:src/m05:5",
-            "facts:src/m06:6",
-            "facts:src/m07:7",
-            "facts:src/m08:8",
-            "facts:src/m09:9"
+            "facts:src_m00:0",
+            "facts:src_m01:1",
+            "facts:src_m02:2",
+            "facts:src_m03:3",
+            "facts:src_m04:4",
+            "facts:src_m05:5",
+            "facts:src_m06:6",
+            "facts:src_m07:7",
+            "facts:src_m08:8",
+            "facts:src_m09:9"
           ],
           "groundingSourceIds": [],
           "omittedTopics": [
@@ -347,7 +347,7 @@
           "config": "ecdabc418cc9da7afc640e5df62862987c8ea4279996f54913930f9840adb04a",
           "prompts": "6734619bae0b367aadeafc84335b4a87a6dc074a1b520697d38ced52e6dd2778"
         },
-        "outputHash": "e76c08be4285b4e4ebf191976f8d8cbd921272d3db1d17601a32e7a3b9f77c00"
+        "outputHash": "957560b4bfaf4b25d781ea73eb8371e2b760147828aaf7be2d4e8b3b4f6abcb6"
       },
       {
         "markdown": "## Core Business Capabilities\n\n### About m00\n\nm00 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 5. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 6. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 7. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 8. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 9. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 10. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 11. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 12. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 13. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 14. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 15. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n### About m01\n\nm01 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 5. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 6. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 7. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 8. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 9. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 10. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 11. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 12. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 13. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 14. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 15. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n### About m02\n\nm02 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 5. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 6. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 7. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 8. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 9. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 10. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 11. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 12. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 13. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 14. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 15. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n### About m03\n\nm03 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm03 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm03 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm03 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm03 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n> **Shortened for length.** This section is limited to about 9k characters (DOCS_GEN_SECTION_MAX_CHARS / DOCS_GEN_DOCUMENT_MAX_CHARS). 6 further topics were left out: About m04; About m05; About m06; About m07; About m08; About m09. Narrow the document with path prefixes, or raise the limit, for the full detail.",
@@ -359,16 +359,16 @@
           "providerKind": "anthropic",
           "model": "claude-sonnet-4-6",
           "factsSourceIds": [
-            "facts:src/m00:0",
-            "facts:src/m01:1",
-            "facts:src/m02:2",
-            "facts:src/m03:3",
-            "facts:src/m04:4",
-            "facts:src/m05:5",
-            "facts:src/m06:6",
-            "facts:src/m07:7",
-            "facts:src/m08:8",
-            "facts:src/m09:9"
+            "facts:src_m00:0",
+            "facts:src_m01:1",
+            "facts:src_m02:2",
+            "facts:src_m03:3",
+            "facts:src_m04:4",
+            "facts:src_m05:5",
+            "facts:src_m06:6",
+            "facts:src_m07:7",
+            "facts:src_m08:8",
+            "facts:src_m09:9"
           ],
           "groundingSourceIds": [],
           "omittedTopics": [
@@ -391,7 +391,7 @@
           "config": "ecdabc418cc9da7afc640e5df62862987c8ea4279996f54913930f9840adb04a",
           "prompts": "73ead52a307e191a426661e356b16fd8f284e24105b498f711543c71afedb5c4"
         },
-        "outputHash": "921eb44dba0be0cf7db0b615276f24b1f291cc9d5023dd62c4612721f655d010"
+        "outputHash": "29183d9c2aa55166dd9dad74a6e269c519b69a9c7f682315af2193305a86060f"
       },
       {
         "markdown": "## Business Rules & Policies\n\n### About m00\n\nm00 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 5. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 6. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 7. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 8. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 9. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 10. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 11. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 12. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 13. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 14. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 15. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 16. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 17. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 18. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 19. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 20. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 21. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 22. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 23. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n---\n\n### About m01\n\nm01 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 5. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 6. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 7. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 8. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 9. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 10. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 11. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 12. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 13. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 14. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 15. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 16. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 17. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 18. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 19. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 20. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 21. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 22. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 23. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n---\n\n### About m02\n\nm02 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n> **Shortened for length.** This section is limited to about 9k characters (DOCS_GEN_SECTION_MAX_CHARS / DOCS_GEN_DOCUMENT_MAX_CHARS). 7 further topics were left out: About m03; About m04; About m05; About m06; About m07; About m08; About m09. Narrow the document with path prefixes, or raise the limit, for the full detail.",
@@ -403,16 +403,16 @@
           "providerKind": "anthropic",
           "model": "claude-sonnet-4-6",
           "factsSourceIds": [
-            "facts:src/m00:0",
-            "facts:src/m01:1",
-            "facts:src/m02:2",
-            "facts:src/m03:3",
-            "facts:src/m04:4",
-            "facts:src/m05:5",
-            "facts:src/m06:6",
-            "facts:src/m07:7",
-            "facts:src/m08:8",
-            "facts:src/m09:9"
+            "facts:src_m00:0",
+            "facts:src_m01:1",
+            "facts:src_m02:2",
+            "facts:src_m03:3",
+            "facts:src_m04:4",
+            "facts:src_m05:5",
+            "facts:src_m06:6",
+            "facts:src_m07:7",
+            "facts:src_m08:8",
+            "facts:src_m09:9"
           ],
           "groundingSourceIds": [],
           "omittedTopics": [
@@ -436,7 +436,7 @@
           "config": "2867a910ad92fe874ed5d4573edbead8b6a49f3ec698785eecbdd6968f113274",
           "prompts": "cff11fc72c80af158e3690e01891124f4c82e3856fa3eef68eccae7209f16815"
         },
-        "outputHash": "853e2fcdbe5abf9f73311a5905a7255b5d0c5980d6d749583e755a9bd25795e3"
+        "outputHash": "5d6db839562d2c4bd8929ef986cc537c2efa005f373415ecf7a83410698c4153"
       },
       {
         "markdown": "## Key Workflows\n\n### About m00\n\nm00 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 5. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 6. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 7. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 8. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 9. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 10. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 11. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 12. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 13. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 14. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 15. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 16. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 17. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 18. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 19. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 20. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n---\n\n### About m01\n\nm01 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 5. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 6. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 7. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 8. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 9. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 10. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 11. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 12. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 13. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 14. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 15. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 16. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 17. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 18. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 19. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 20. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n---\n\n### About m02\n\nm02 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 5. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 6. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 7. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 8. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 9. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 10. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n> **Shortened for length.** This section is limited to about 9k characters (DOCS_GEN_SECTION_MAX_CHARS / DOCS_GEN_DOCUMENT_MAX_CHARS). 7 further topics were left out: About m03; About m04; About m05; About m06; About m07; About m08; About m09. Narrow the document with path prefixes, or raise the limit, for the full detail.",
@@ -448,16 +448,16 @@
           "providerKind": "anthropic",
           "model": "claude-sonnet-4-6",
           "factsSourceIds": [
-            "facts:src/m00:0",
-            "facts:src/m01:1",
-            "facts:src/m02:2",
-            "facts:src/m03:3",
-            "facts:src/m04:4",
-            "facts:src/m05:5",
-            "facts:src/m06:6",
-            "facts:src/m07:7",
-            "facts:src/m08:8",
-            "facts:src/m09:9"
+            "facts:src_m00:0",
+            "facts:src_m01:1",
+            "facts:src_m02:2",
+            "facts:src_m03:3",
+            "facts:src_m04:4",
+            "facts:src_m05:5",
+            "facts:src_m06:6",
+            "facts:src_m07:7",
+            "facts:src_m08:8",
+            "facts:src_m09:9"
           ],
           "groundingSourceIds": [],
           "omittedTopics": [
@@ -481,7 +481,7 @@
           "config": "c9a947582b00e61266d9017e6b4b6cc01df2979fecc5b204ac070371466fd6d6",
           "prompts": "371564b77e48fd47c006d63908c8e96d030a299a3c367842f30dd49fc53f96b8"
         },
-        "outputHash": "cd289a315106c04bcdedebaff843ca6bc25ed59a2c64c347bb674573e0527981"
+        "outputHash": "fa730c955feea1ec961d028afc382ebf13deb9c3a76181335343a0d417089518"
       },
       {
         "markdown": "## Calculations & Formulas\n\n### About m00\n\nm00 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 5. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 6. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 7. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 8. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 9. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 10. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 11. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 12. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 13. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 14. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 15. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 16. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 17. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 18. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n---\n\n### About m01\n\nm01 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 5. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 6. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 7. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 8. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 9. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 10. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 11. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 12. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 13. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 14. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 15. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 16. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 17. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 18. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n---\n\n### About m02\n\nm02 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 5. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 6. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 7. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 8. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 9. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 10. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 11. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 12. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 13. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 14. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n> **Shortened for length.** This section is limited to about 9k characters (DOCS_GEN_SECTION_MAX_CHARS / DOCS_GEN_DOCUMENT_MAX_CHARS). 7 further topics were left out: About m03; About m04; About m05; About m06; About m07; About m08; About m09. Narrow the document with path prefixes, or raise the limit, for the full detail.",
@@ -493,16 +493,16 @@
           "providerKind": "anthropic",
           "model": "claude-sonnet-4-6",
           "factsSourceIds": [
-            "facts:src/m00:0",
-            "facts:src/m01:1",
-            "facts:src/m02:2",
-            "facts:src/m03:3",
-            "facts:src/m04:4",
-            "facts:src/m05:5",
-            "facts:src/m06:6",
-            "facts:src/m07:7",
-            "facts:src/m08:8",
-            "facts:src/m09:9"
+            "facts:src_m00:0",
+            "facts:src_m01:1",
+            "facts:src_m02:2",
+            "facts:src_m03:3",
+            "facts:src_m04:4",
+            "facts:src_m05:5",
+            "facts:src_m06:6",
+            "facts:src_m07:7",
+            "facts:src_m08:8",
+            "facts:src_m09:9"
           ],
           "groundingSourceIds": [],
           "omittedTopics": [
@@ -526,7 +526,7 @@
           "config": "2867a910ad92fe874ed5d4573edbead8b6a49f3ec698785eecbdd6968f113274",
           "prompts": "9a38d5dd6379231a705792c79e4dea1ecb360367042497308235664b47ee5d2c"
         },
-        "outputHash": "3b023b971a26b90a116eb666edec918565dc2774a540671aecdef38d6231f2b5"
+        "outputHash": "4bd1af056eeaecb43c759e9e47a779d02bec41d5dcc89157fb9613742f6d69ce"
       },
       {
         "markdown": "## Data & Domain Model\n\n### About m00\n\nm00 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 5. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 6. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 7. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 8. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 9. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 10. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 11. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 12. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 13. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 14. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 15. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 16. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 17. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 18. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n---\n\n### About m01\n\nm01 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 5. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 6. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 7. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 8. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 9. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 10. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 11. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 12. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 13. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 14. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 15. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 16. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 17. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 18. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n---\n\n### About m02\n\nm02 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 5. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 6. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 7. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 8. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 9. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 10. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 11. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 12. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 13. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 14. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n> **Shortened for length.** This section is limited to about 9k characters (DOCS_GEN_SECTION_MAX_CHARS / DOCS_GEN_DOCUMENT_MAX_CHARS). 7 further topics were left out: About m03; About m04; About m05; About m06; About m07; About m08; About m09. Narrow the document with path prefixes, or raise the limit, for the full detail.",
@@ -538,16 +538,16 @@
           "providerKind": "anthropic",
           "model": "claude-sonnet-4-6",
           "factsSourceIds": [
-            "facts:src/m00:0",
-            "facts:src/m01:1",
-            "facts:src/m02:2",
-            "facts:src/m03:3",
-            "facts:src/m04:4",
-            "facts:src/m05:5",
-            "facts:src/m06:6",
-            "facts:src/m07:7",
-            "facts:src/m08:8",
-            "facts:src/m09:9"
+            "facts:src_m00:0",
+            "facts:src_m01:1",
+            "facts:src_m02:2",
+            "facts:src_m03:3",
+            "facts:src_m04:4",
+            "facts:src_m05:5",
+            "facts:src_m06:6",
+            "facts:src_m07:7",
+            "facts:src_m08:8",
+            "facts:src_m09:9"
           ],
           "groundingSourceIds": [],
           "omittedTopics": [
@@ -571,7 +571,7 @@
           "config": "c9a947582b00e61266d9017e6b4b6cc01df2979fecc5b204ac070371466fd6d6",
           "prompts": "bf72f74c977ecee8538ea15c2a441c24219517d6649f490f7c502f52ba63a021"
         },
-        "outputHash": "a3d6cfac6ef75d761087179c5e7b5114d447c7ab4de501e6a4ef2f1debd83c76"
+        "outputHash": "ffe1303e87c1261ac28e085e728cca97e143893195526644f11e03497483df63"
       },
       {
         "markdown": "## Integrations & Glossary\n\n### About m00\n\nm00 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 5. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 6. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 7. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 8. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 9. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 10. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 11. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 12. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 13. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 14. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm00 rule 15. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n### About m01\n\nm01 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 5. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 6. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 7. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 8. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 9. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 10. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 11. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 12. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 13. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 14. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm01 rule 15. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n### About m02\n\nm02 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 5. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 6. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 7. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 8. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 9. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 10. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 11. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 12. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 13. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 14. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm02 rule 15. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n### About m07\n\nm07 rule 0. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm07 rule 1. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm07 rule 2. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm07 rule 3. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\nm07 rule 4. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. \n\n> **Shortened for length.** This section is limited to about 9k characters (DOCS_GEN_SECTION_MAX_CHARS / DOCS_GEN_DOCUMENT_MAX_CHARS). 6 further topics were left out: About m03; About m04; About m05; About m06; About m08; About m09. Narrow the document with path prefixes, or raise the limit, for the full detail.",
@@ -583,16 +583,16 @@
           "providerKind": "anthropic",
           "model": "claude-sonnet-4-6",
           "factsSourceIds": [
-            "facts:src/m00:0",
-            "facts:src/m01:1",
-            "facts:src/m02:2",
-            "facts:src/m07:3",
-            "facts:src/m03:4",
-            "facts:src/m04:5",
-            "facts:src/m05:6",
-            "facts:src/m06:7",
-            "facts:src/m08:8",
-            "facts:src/m09:9"
+            "facts:src_m00:0",
+            "facts:src_m01:1",
+            "facts:src_m02:2",
+            "facts:src_m07:3",
+            "facts:src_m03:4",
+            "facts:src_m04:5",
+            "facts:src_m05:6",
+            "facts:src_m06:7",
+            "facts:src_m08:8",
+            "facts:src_m09:9"
           ],
           "groundingSourceIds": [],
           "omittedTopics": [
@@ -615,7 +615,7 @@
           "config": "2867a910ad92fe874ed5d4573edbead8b6a49f3ec698785eecbdd6968f113274",
           "prompts": "6af9df2aa849a31a535a14fac005a119399070697e5e68fe2010e1720b1b4b76"
         },
-        "outputHash": "027af6f3f8e03a36685d464cc8c86c706e3e0702a20d051e17314e943e2772e6"
+        "outputHash": "9e8235914b0c9b36fbd69001092c5ff17f11378aa9d3ef4f02c96b16834467d9"
       }
     ]
   }
