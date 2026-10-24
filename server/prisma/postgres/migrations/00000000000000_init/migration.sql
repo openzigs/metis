@@ -4389,3 +4389,21 @@ CREATE UNIQUE INDEX "user_identities_provider_issuer_subject_key" ON "user_ident
 
 -- AddForeignKey
 ALTER TABLE "user_identities" ADD CONSTRAINT "user_identities_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- Issue #1484 — webhook replay guard keyed on the signed body.
+-- CreateTable
+CREATE TABLE "webhook_payload_digests" (
+    "id" TEXT NOT NULL,
+    "receiver" TEXT NOT NULL,
+    "eventType" TEXT NOT NULL,
+    "bodySha256" TEXT NOT NULL,
+    "receivedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "webhook_payload_digests_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE UNIQUE INDEX "webhook_payload_digests_receiver_eventType_bodySha256_key" ON "webhook_payload_digests"("receiver", "eventType", "bodySha256");
+
+-- CreateIndex
+CREATE INDEX "webhook_payload_digests_receivedAt_idx" ON "webhook_payload_digests"("receivedAt");

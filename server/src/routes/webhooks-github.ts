@@ -25,7 +25,13 @@ import {
   type ReconcileDeps,
   type ReconcileResult,
 } from "../lib/sync/index.js";
-import { recordDelivery } from "../lib/agents/pr-reviewer/webhook-dedup.js";
+import { recordDelivery, releaseDelivery } from "../lib/agents/pr-reviewer/webhook-dedup.js";
+import {
+  claimPayload,
+  isStaleSignedEvent,
+  releasePayload,
+  type PayloadClaim,
+} from "../lib/webhooks/payload-replay.js";
 import { githubIssuesWebhookRateLimiter } from "../middleware/github-issues-webhook-rate-limit.js";
 import { webhookReceiverRateLimiter } from "../middleware/webhook-receiver-rate-limit.js";
 import type { PrReviewQueue } from "../lib/agents/pr-reviewer/queue.js";
@@ -93,6 +99,15 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
       return;
     }
     const signer = verdict.signer;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const payload = req.body as any;
+
+    // #1484 — the payload's own `updated_at` is signed; a captured delivery
+    // older than the replay window is refused before any database write.
+    if (isStaleSignedEvent(payload)) {
+      res.status(200).json({ ok: true, handled: false, reason: "STALE_DELIVERY" });
+      return;
+    }
 
     // Epic #394 P2 (#403) — webhook delivery dedup. We short-circuit
     // duplicate `X-GitHub-Delivery` UUIDs so re-deliveries (GitHub
@@ -121,9 +136,33 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
       }
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const payload = req.body as any;
+    // #1484 — the delivery id above is unsigned, so a replay under a fresh id
+    // passes it. Claim the signed body too, scoped to the receiver that
+    // verified it; the event is this route's own, never the unsigned header.
+    const claim: PayloadClaim = {
+      receiver: signer.kind === "connector" ? `github-pr:c:${signer.connectorId}` : "github-pr",
+      eventType: "pull_request",
+      rawBody: rawBody(req),
+    };
+    const claimed = await claimSignedPayload(claim, deps, deliveryId);
+    if (claimed === "unavailable") {
+      replayGuardUnavailable(res);
+      return;
+    }
+    if (claimed === "duplicate") {
+      res.status(200).json({ ok: true, handled: false, reason: "DUPLICATE_PAYLOAD" });
+      return;
+    }
+
     const installationId = payload?.installation?.id ? String(payload.installation.id) : null;
+    // #1484 — a delivery whose processing throws gives both claims back, so
+    // GitHub's "Redeliver" of it is processed instead of read as a duplicate.
+    const releaseClaims = async () => {
+      await Promise.allSettled([
+        claimed === "claimed" ? releasePayload(claim) : Promise.resolve(),
+        deliveryId && !deps.skipDedup ? releaseDelivery(deliveryId) : Promise.resolve(),
+      ]);
+    };
     const out = await dispatchGithubPrEvent(payload, {
       onMerged: async ({ pr, repo }) => {
         // #1475 — a connector-signed merge touches only its own project's
@@ -242,6 +281,9 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
           },
         );
       },
+    }).catch(async (err: unknown) => {
+      await releaseClaims();
+      throw err;
     });
     res.status(200).json({ ok: true, ...out });
   };
@@ -258,13 +300,16 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
   r.post("/github/issues", issuesLimiters, async (req: Request, res: Response) => {
     const secret = deps.resolveSecret?.() ?? process.env.GITHUB_WEBHOOK_SECRET ?? "";
     const sig = req.header("x-hub-signature-256") ?? undefined;
-    const ts = req.header("x-webhook-timestamp") ?? undefined;
-    const verdict = verifyGithubPrSignature(rawBody(req), secret, {
-      signature: sig,
-      timestamp: ts,
-    });
+    const verdict = verifyGithubPrSignature(rawBody(req), secret, { signature: sig });
     if (!verdict.ok) {
       res.status(401).json({ ok: false, reason: verdict.reason ?? "BAD_SIGNATURE" });
+      return;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const payload = req.body as any;
+    // #1484 — see the PR receiver: a signed `updated_at` past the window is a replay.
+    if (isStaleSignedEvent(payload)) {
+      res.status(200).json({ ok: true, handled: false, reason: "STALE_DELIVERY" });
       return;
     }
     // Issue #438 — replay protection. Reuses the existing
@@ -288,8 +333,20 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
         });
       }
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const payload = req.body as any;
+    // #1484 — claim the signed body as well: the delivery id is unsigned.
+    const claimed = await claimSignedPayload(
+      { receiver: "github-issues", eventType: "issues", rawBody: rawBody(req) },
+      deps,
+      deliveryId,
+    );
+    if (claimed === "unavailable") {
+      replayGuardUnavailable(res);
+      return;
+    }
+    if (claimed === "duplicate") {
+      res.status(200).json({ ok: true, handled: false, reason: "DUPLICATE_PAYLOAD" });
+      return;
+    }
     // Issue #96 — ONE receiver, two pipelines. The drift reconciler used to
     // register its own `POST /github/issues` on the same `/webhooks` prefix,
     // after this one, so it was never reached. Both run on every verified,
@@ -378,10 +435,39 @@ type DeliverySigner =
 type DeliveryVerdict = { ok: true; signer: DeliverySigner } | { ok: false; reason: string };
 
 function signatureHeaders(req: Request) {
-  return {
-    signature: req.header("x-hub-signature-256") ?? undefined,
-    timestamp: req.header("x-webhook-timestamp") ?? undefined,
-  };
+  // #1484 — no `X-Webhook-Timestamp`: it is unsigned (see `living-spec/webhook.ts`).
+  return { signature: req.header("x-hub-signature-256") ?? undefined };
+}
+
+/**
+ * #1484 — claim a verified delivery's signed body. A claim that cannot be
+ * written (database down) fails CLOSED: `unavailable` — processing it would be
+ * exactly the unguarded replay this exists to stop. The caller answers 503 and
+ * gives back the delivery-id row it may have written, so nothing was recorded
+ * and GitHub's "Redeliver" processes the delivery once the database is back.
+ */
+async function claimSignedPayload(
+  claim: PayloadClaim,
+  deps: GithubPrRouterDeps,
+  deliveryId: string,
+): Promise<"claimed" | "duplicate" | "skipped" | "unavailable"> {
+  if (deps.skipDedup) return "skipped";
+  try {
+    return (await claimPayload(claim)).duplicate ? "duplicate" : "claimed";
+  } catch (err) {
+    log.warn("webhook.payload_claim_failed", {
+      receiver: claim.receiver,
+      deliveryId,
+      error: (err as Error).message,
+    });
+    if (deliveryId) await releaseDelivery(deliveryId).catch(() => undefined);
+    return "unavailable";
+  }
+}
+
+/** #1484 — the answer when the replay guard cannot record a delivery. */
+function replayGuardUnavailable(res: Response): void {
+  res.status(503).json({ ok: false, reason: "REPLAY_GUARD_UNAVAILABLE" });
 }
 
 /** #1475 — `/github/pr` verifies against the deployment secret only; no database read. */

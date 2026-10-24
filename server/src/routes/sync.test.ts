@@ -6,7 +6,23 @@ import express, { type Request, type Response, type NextFunction } from "express
 import request from "supertest";
 import { syncWebhookRouter, syncDriftRouter } from "./sync.js";
 
-const { seenDeliveries } = vi.hoisted(() => ({ seenDeliveries: new Set<string>() }));
+const { seenDeliveries, seenBodies } = vi.hoisted(() => ({
+  seenDeliveries: new Set<string>(),
+  seenBodies: new Set<string>(),
+}));
+
+// #1484 — stateful mock of the signed-body replay claim, keyed as the real one is.
+vi.mock("../lib/webhooks/payload-replay.js", () => ({
+  claimPayload: vi.fn(async (c: { receiver: string; eventType: string; rawBody: string }) => {
+    const key = `${c.receiver}|${c.eventType}|${c.rawBody}`;
+    const dup = seenBodies.has(key);
+    if (!dup) seenBodies.add(key);
+    return { duplicate: dup };
+  }),
+  releasePayload: vi.fn(async (c: { receiver: string; eventType: string; rawBody: string }) => {
+    seenBodies.delete(`${c.receiver}|${c.eventType}|${c.rawBody}`);
+  }),
+}));
 
 // #681 — stateful mock of the shared delivery-dedup so the replay test is
 // deterministic and never touches the real pr_review_webhook_deliveries table.
@@ -17,6 +33,9 @@ vi.mock("../lib/agents/pr-reviewer/webhook-dedup.js", () => ({
     const dup = seenDeliveries.has(id);
     if (!dup) seenDeliveries.add(id);
     return { duplicate: dup, deliveryId: id };
+  }),
+  releaseDelivery: vi.fn(async (deliveryId: string) => {
+    seenDeliveries.delete((deliveryId ?? "").trim());
   }),
 }));
 
@@ -122,6 +141,7 @@ function createApp() {
 
 beforeEach(() => {
   seenDeliveries.clear();
+  seenBodies.clear();
   vi.clearAllMocks();
   accessibleProjectIds = ["proj-1"];
   authedUser = { userId: "user-1", role: "coordinator", username: "test" };
@@ -182,6 +202,55 @@ describe("Jira issues webhook route", () => {
     const replay = await send();
     expect(replay.status).toBe(200);
     expect(replay.body.reason).toBe("DUPLICATE_DELIVERY");
+  });
+
+  it("#1484 — the same signed body under a new X-Atlassian-Webhook-Id is a no-op", async () => {
+    const app = createApp();
+    const send = (id: string) =>
+      request(app)
+        .post("/webhooks/jira/issues")
+        .set("x-hub-signature", "valid-sig")
+        .set("x-atlassian-webhook-id", id)
+        .send({ webhookEvent: "jira:issue_updated", issue: { id: "1", key: "P-1" } });
+    expect((await send("jira-original")).body.reason).not.toBe("DUPLICATE_PAYLOAD");
+    const replay = await send("jira-forged");
+    expect(replay.status).toBe(200);
+    expect(replay.body).toEqual({ ok: true, handled: false, reason: "DUPLICATE_PAYLOAD" });
+  });
+
+  it("#1484 — a body claim that throws gives the delivery-id row back, so the same-id retry is processed", async () => {
+    const { claimPayload } = await import("../lib/webhooks/payload-replay.js");
+    vi.mocked(claimPayload).mockRejectedValueOnce(new Error("db down"));
+    const { reconcileIssueChange } = await import("../lib/sync/index.js");
+    const app = createApp();
+    const send = () =>
+      request(app)
+        .post("/webhooks/jira/issues")
+        .set("x-hub-signature", "valid-sig")
+        .set("x-atlassian-webhook-id", "jira-claim-fail-1")
+        .send({ webhookEvent: "jira:issue_updated", issue: { id: "1", key: "P-1" } });
+    expect((await send()).status).toBe(500);
+    expect(vi.mocked(reconcileIssueChange)).not.toHaveBeenCalled();
+    const retry = await send();
+    expect(retry.status).toBe(200);
+    expect(retry.body).toMatchObject({ ok: true, handled: true });
+  });
+
+  it("#1484 — a reconcile that fails gives its claims back, so the resend is processed", async () => {
+    const { reconcileIssueChange } = await import("../lib/sync/index.js");
+    vi.mocked(reconcileIssueChange).mockRejectedValueOnce(new Error("db down"));
+    const app = createApp();
+    const send = () =>
+      request(app)
+        .post("/webhooks/jira/issues")
+        .set("x-hub-signature", "valid-sig")
+        .set("x-atlassian-webhook-id", "jira-retry-1")
+        .send({ webhookEvent: "jira:issue_updated", issue: { id: "1", key: "P-1" } });
+    expect((await send()).status).toBe(500);
+    const retry = await send();
+    expect(retry.status).toBe(200);
+    expect(retry.body).toMatchObject({ ok: true, handled: true });
+    expect(vi.mocked(reconcileIssueChange)).toHaveBeenCalledTimes(2);
   });
 });
 

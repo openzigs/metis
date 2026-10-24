@@ -30,6 +30,13 @@ const { reconcileCalls, syncIssueEventMock } = vi.hoisted(() => ({
 // The behavioural half below drives a signed delivery through the REAL composed
 // router. Only the two pipeline endpoints and the dedup table are stubbed, so
 // "which handler served the request" is the thing under test.
+// #1484 — this suite's prisma double has no `webhookPayloadDigest`; the replay
+// claim fails closed (503) without one, so stub it as "first time seen".
+vi.mock("../src/lib/webhooks/payload-replay.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/webhooks/payload-replay.js")>()),
+  claimPayload: vi.fn(async () => ({ duplicate: false })),
+  releasePayload: vi.fn(async () => undefined),
+}));
 vi.mock("../src/lib/sync/reconcile-service.js", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return {

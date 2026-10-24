@@ -11,6 +11,14 @@ import zlib from "node:zlib";
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
+// #1484 — this suite's prisma double has no `webhookPayloadDigest`; the replay
+// claim fails closed (503) without one, so stub it as "first time seen".
+vi.mock("../src/lib/webhooks/payload-replay.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/webhooks/payload-replay.js")>()),
+  claimPayload: vi.fn(async () => ({ duplicate: false })),
+  releasePayload: vi.fn(async () => undefined),
+}));
+
 vi.mock("../src/lib/prisma.js", async () => {
   const { withRouteAuth } = await import("./helpers/route-auth-prisma.js");
   const users = new Map<

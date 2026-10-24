@@ -33,28 +33,14 @@ describe("verifyGithubPrSignature", () => {
     expect(r.reason).toBe("BAD_SIGNATURE");
   });
 
-  it("validates optional timestamp skew when provided", () => {
-    const now = Date.now();
+  it("#1484 — has no timestamp check: an unsigned header can protect nothing", () => {
+    // The verifier takes no timestamp at all now; a header a replayer can set
+    // to "now" is not consulted, so a stale or garbage value changes nothing.
+    // Replay protection is the signed-body claim (lib/webhooks/payload-replay).
     const sig = sign(body, secret);
-    const ts = Math.floor(now / 1000).toString();
-    const fresh = verifyGithubPrSignature(body, secret, { signature: sig, timestamp: ts }, now);
-    expect(fresh.ok).toBe(true);
-    const stale = verifyGithubPrSignature(
-      body,
-      secret,
-      { signature: sig, timestamp: String(Math.floor(now / 1000) - 60 * 60) },
-      now,
-    );
-    expect(stale.ok).toBe(false);
-    expect(stale.reason).toBe("EXPIRED");
-    const bogus = verifyGithubPrSignature(
-      body,
-      secret,
-      { signature: sig, timestamp: "not-a-number" },
-      now,
-    );
-    expect(bogus.ok).toBe(false);
-    expect(bogus.reason).toBe("BAD_TIMESTAMP");
+    const withHeaders = { signature: sig, timestamp: "1" } as { signature: string };
+    expect(verifyGithubPrSignature(body, secret, withHeaders)).toEqual({ ok: true });
+    expect(verifyGithubPrSignature.length).toBe(3);
   });
 
   it("rejects malformed hex signatures", () => {

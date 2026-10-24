@@ -708,14 +708,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect([...state.touched]).toEqual([]);
       });
 
-      it("a delivery outside the timestamp window is refused as expired", async () => {
+      it("#1484 — the unsigned X-Webhook-Timestamp header is not consulted", async () => {
+        // It sits outside the HMAC, so a replayer sets it to "now"; refusing on
+        // it protected nothing. Replays are refused on the signed body instead
+        // (webhook-payload-replay-1484.sqlite.test.ts).
         const secretB = await ownSecret(`repo-${PB}`, "nonce-b");
         const res = await deliver(secretB, payloadOf(REPO, 27), connUrl(`repo-${PB}`), {
           "X-Webhook-Timestamp": "1",
         });
-        expect(res.status).toBe(401);
-        expect(res.body.reason).toBe("EXPIRED");
-        expect(enqueuedFor()).toEqual([]);
+        expect(res.status).toBe(200);
+        expect(enqueuedFor()).toEqual([PB]);
       });
 
       it("works on a server with no deployment secret", async () => {

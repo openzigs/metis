@@ -7,8 +7,12 @@
  * twice and double-post. We persist each delivery id under a unique
  * constraint so the second insert fails predictably and we short-circuit.
  *
- * The table is opportunistically purged of rows older than 24h on every
- * successful insert to keep it bounded without a background sweeper.
+ * The table is purged of rows older than 24h hourly by the PR-review worker
+ * (`worker.ts`), which keeps it bounded.
+ *
+ * #1484 — the delivery id is an unsigned header, so this dedup alone does not
+ * stop a replay under a fresh id; `lib/webhooks/payload-replay.ts` keys the
+ * same deliveries on their signed body as well.
  */
 import { prisma } from "../../prisma.js";
 import { isUniqueViolation } from "../../db/prisma-errors.js";
@@ -87,9 +91,18 @@ export async function attachRunId(deliveryId: string, runId: string): Promise<vo
 }
 
 /**
- * Drop dedup rows older than `retentionMs` (default 24h). Best-effort —
- * called opportunistically from `recordDelivery` so the table doesn't
- * grow unbounded between background sweeps.
+ * #1484 — give a delivery id back when processing failed, so GitHub's
+ * redelivery of that same delivery is processed rather than deduped.
+ */
+export async function releaseDelivery(deliveryId: string): Promise<void> {
+  const id = deliveryId.trim();
+  if (!id) return;
+  await table().deleteMany({ where: { deliveryId: id } });
+}
+
+/**
+ * Drop dedup rows older than `retentionMs` (default 24h). Called hourly by
+ * the PR-review worker (`worker.ts`), which keeps the table bounded.
  */
 export async function purgeOldDeliveries(
   retentionMs: number = DEFAULT_RETENTION_MS,

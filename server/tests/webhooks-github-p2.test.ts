@@ -13,6 +13,13 @@ const recordDeliveryMock = vi.hoisted(() =>
   })),
 );
 
+// #1484 — this suite's prisma double has no `webhookPayloadDigest`; the replay
+// claim fails closed (503) without one, so stub it as "first time seen".
+vi.mock("../src/lib/webhooks/payload-replay.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/webhooks/payload-replay.js")>()),
+  claimPayload: vi.fn(async () => ({ duplicate: false })),
+  releasePayload: vi.fn(async () => undefined),
+}));
 vi.mock("../src/lib/agents/pr-reviewer/webhook-dedup.js", () => ({
   recordDelivery: recordDeliveryMock,
   attachRunId: vi.fn(async () => undefined),
