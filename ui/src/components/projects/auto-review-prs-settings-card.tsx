@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * #1169 — automatic PR review switch on project Settings.
+ * #1169 — automatic PR review switch and its monthly limit, on project Settings.
  *
  * `Project.autoReviewPrs` is the only gate the GitHub pull-request webhook
  * reads before it queues a review, and nothing could set it. The switch saves
@@ -10,6 +10,11 @@
  * A review only ever starts for a GitHub repository connected to this project,
  * so the switch is disabled — with the reason shown — until one is. It stays
  * switchable OFF if it is on and the repository has since gone.
+ *
+ * `Project.prReviewMonthlyBudgetCents` is the only cap on what those reviews
+ * spend (`checkBudget`, `lib/agents/pr-reviewer/budget-guard.ts`). It is set
+ * here in dollars, next to this month's spend from
+ * `GET /api/projects/:id/pr-review-budget`; empty means no limit.
  */
 import Link from "next/link";
 import { useState } from "react";
@@ -18,10 +23,15 @@ import { toast } from "sonner";
 import { projectsApi } from "@/lib/projects-api";
 import { repoConnectorsApi } from "@/lib/connectors-api";
 import { queryKeys } from "@/lib/query-keys";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 interface Props {
   projectId: string;
   enabled: boolean | undefined;
+  /** Saved monthly limit in cents; null/undefined = no limit. */
+  monthlyBudgetCents?: number | null;
   /** The caller holds `project.update`, which the server requires. */
   canEdit: boolean;
 }
@@ -29,10 +39,44 @@ interface Props {
 /** Providers whose pull requests reach the GitHub webhook. */
 const GITHUB_PROVIDERS = new Set(["github", "github_enterprise"]);
 
-export function AutoReviewPrsSettingsCard({ projectId, enabled, canEdit }: Props) {
+/** Mirrors `PR_REVIEW_MONTHLY_BUDGET_MAX_CENTS` in `@metis/shared`. */
+const MAX_LIMIT_CENTS = 10_000_000;
+
+function centsToField(c: number | null | undefined): string {
+  return c == null ? "" : (c / 100).toFixed(2);
+}
+
+function formatUsd(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+/** Empty → null (no limit); otherwise whole cents, or an error to show. */
+function parseLimit(raw: string): number | null | { error: string } {
+  const s = raw.trim();
+  if (s === "") return null;
+  const n = Number(s);
+  const cents = Math.round(n * 100);
+  if (!Number.isFinite(n) || cents < 1) {
+    return { error: "Enter an amount of at least $0.01, or leave it empty for no limit." };
+  }
+  if (cents > MAX_LIMIT_CENTS) {
+    return { error: `The limit can be at most ${formatUsd(MAX_LIMIT_CENTS)} a month.` };
+  }
+  return cents;
+}
+
+export function AutoReviewPrsSettingsCard({
+  projectId,
+  enabled,
+  monthlyBudgetCents,
+  canEdit,
+}: Props) {
   const qc = useQueryClient();
   const [on, setOn] = useState(Boolean(enabled));
   const [error, setError] = useState<string | null>(null);
+  const [savedLimit, setSavedLimit] = useState(centsToField(monthlyBudgetCents));
+  const [draftLimit, setDraftLimit] = useState(savedLimit);
+  const [limitError, setLimitError] = useState<string | null>(null);
 
   const repos = useQuery({
     queryKey: ["connectors", "repos", projectId],
@@ -40,6 +84,12 @@ export function AutoReviewPrsSettingsCard({ projectId, enabled, canEdit }: Props
     enabled: Boolean(projectId),
   });
   const hasGithubRepo = (repos.data ?? []).some((r) => GITHUB_PROVIDERS.has(r.provider));
+
+  const budget = useQuery({
+    queryKey: queryKeys.projects.prReviewBudget(projectId),
+    queryFn: () => projectsApi.getPrReviewBudget(projectId),
+    enabled: Boolean(projectId),
+  });
 
   const save = useMutation({
     mutationFn: (next: boolean) => projectsApi.update(projectId, { autoReviewPrs: next }),
@@ -53,6 +103,24 @@ export function AutoReviewPrsSettingsCard({ projectId, enabled, canEdit }: Props
       setError(err instanceof Error && err.message ? err.message : "Update failed");
     },
   });
+
+  const saveLimit = useMutation({
+    mutationFn: () => {
+      const parsed = parseLimit(draftLimit);
+      if (parsed !== null && typeof parsed === "object") throw new Error(parsed.error);
+      return projectsApi.update(projectId, { prReviewMonthlyBudgetCents: parsed });
+    },
+    onSuccess: () => {
+      setSavedLimit(draftLimit.trim() === "" ? "" : centsToField(parseLimit(draftLimit) as number));
+      setLimitError(null);
+      toast.success("Monthly limit saved");
+      qc.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
+    },
+    onError: (err: unknown) => {
+      setLimitError(err instanceof Error && err.message ? err.message : "Update failed");
+    },
+  });
+  const limitDirty = draftLimit.trim() !== savedLimit;
 
   let reason: React.ReactNode = null;
   if (!canEdit) {
@@ -87,8 +155,8 @@ export function AutoReviewPrsSettingsCard({ projectId, enabled, canEdit }: Props
           When on, every pull request opened or updated in this project&apos;s connected GitHub
           repository is reviewed against the project&apos;s requirements, and the review is posted
           on the pull request. Each review spends model budget, so a busy repository costs more.
-          GitHub must also be set up to send pull-request events to METIS (a webhook your
-          administrator adds to the repository).
+          Without a monthly limit there is no cap on this spend. GitHub must also be set up to send
+          pull-request events to METIS (a webhook your administrator adds to the repository).
         </p>
       </div>
       <label className="flex items-center gap-2 text-sm">
@@ -111,6 +179,65 @@ export function AutoReviewPrsSettingsCard({ projectId, enabled, canEdit }: Props
           {error}
         </p>
       ) : null}
+
+      <div className="space-y-1">
+        <Label htmlFor="auto-review-prs-limit">Monthly limit for automatic PR reviews (USD)</Label>
+        <div className="flex items-end gap-2">
+          <Input
+            id="auto-review-prs-limit"
+            data-testid="auto-review-prs-limit-input"
+            type="number"
+            min="0.01"
+            step="0.01"
+            inputMode="decimal"
+            value={draftLimit}
+            disabled={!canEdit}
+            onChange={(e) => setDraftLimit(e.target.value)}
+            placeholder="No limit"
+          />
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => saveLimit.mutate()}
+            disabled={!canEdit || !limitDirty || saveLimit.isPending}
+            data-testid="auto-review-prs-limit-save"
+          >
+            {saveLimit.isPending ? "Saving…" : "Save"}
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Leave it empty for no limit. Once a month&apos;s reviews reach the limit, new pull
+          requests are not reviewed until the next month starts.
+        </p>
+        {limitError ? (
+          <p
+            className="text-sm text-destructive"
+            role="alert"
+            data-testid="auto-review-prs-limit-error"
+          >
+            {limitError}
+          </p>
+        ) : null}
+        {budget.data ? (
+          <p className="text-xs text-muted-foreground" data-testid="auto-review-prs-spend">
+            Spent on automatic PR reviews this month: {formatUsd(budget.data.spentCents)}
+            {budget.data.capCents != null
+              ? ` of ${formatUsd(budget.data.capCents)}.`
+              : " (no limit)."}
+          </p>
+        ) : null}
+        {budget.data && !budget.data.allowed ? (
+          <p
+            className="rounded border border-warning/40 bg-warning-muted p-2 text-xs text-warning"
+            role="alert"
+            data-testid="auto-review-prs-limit-reached"
+          >
+            This month&apos;s limit is reached, so new pull requests are not being reviewed. Reviews
+            resume on {new Date(budget.data.resetAt).toLocaleDateString()}, or sooner if you raise
+            the limit.
+          </p>
+        ) : null}
+      </div>
     </section>
   );
 }

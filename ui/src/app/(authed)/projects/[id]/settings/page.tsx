@@ -97,6 +97,7 @@ export default function ProjectSettingsPage() {
         <AutoReviewPrsSettingsCard
           projectId={id}
           enabled={p.autoReviewPrs}
+          monthlyBudgetCents={p.prReviewMonthlyBudgetCents}
           canEdit={canManageSkills}
         />
         <InferenceProfileCard projectId={id} />

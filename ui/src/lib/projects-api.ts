@@ -35,6 +35,8 @@ export interface Project {
   allowCredentialScan?: boolean;
   /** #1169 — a GitHub pull-request webhook queues a model-backed review. */
   autoReviewPrs?: boolean;
+  /** #1169 — monthly limit on automatic PR-review spend, in cents; null = no limit. */
+  prReviewMonthlyBudgetCents?: number | null;
   /** Epic #852 — per-project database-aware analysis intent (`auto`/`on`/`off`). */
   databaseAwareAnalysis?: DatabaseAwareAnalysisSetting;
   /** Epic #882 — per-project SQL-lineage extraction intent (`auto`/`on`/`off`). */
@@ -42,6 +44,16 @@ export interface Project {
   createdById: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** #1169 — `GET /projects/:id/pr-review-budget`. */
+export interface PrReviewBudgetStatus {
+  allowed: boolean;
+  capCents: number | null;
+  spentCents: number;
+  spentUsd: number;
+  monthBucket: string;
+  resetAt: string;
 }
 
 /**
@@ -152,6 +164,7 @@ export const projectsApi = {
       aiProviderId: string | null;
       aiModel: string | null;
       autoReviewPrs: boolean;
+      prReviewMonthlyBudgetCents: number | null;
     }>,
   ) => apiFetch<Project>(`/projects/${id}`, { method: "PATCH", body: input }),
   archive: (id: string) => apiFetch<Project>(`/projects/${id}/archive`, { method: "POST" }),
@@ -166,6 +179,9 @@ export const projectsApi = {
     apiFetch<Project>(`/projects/${id}/budget`, { method: "PATCH", body }),
   updateAutopilot: (id: string, body: { enabled: boolean; costCeilingCents?: number | null }) =>
     apiFetch<Project>(`/projects/${id}/autopilot`, { method: "PATCH", body }),
+  // #1169 — the PR-review monthly limit, this month's spend and whether the next review may run.
+  getPrReviewBudget: (id: string) =>
+    apiFetch<PrReviewBudgetStatus>(`/projects/${id}/pr-review-budget`),
   // Epic #701 — toggle credential extraction during repo scans.
   updateAllowCredentialScan: (id: string, body: { allowCredentialScan: boolean }) =>
     apiFetch<Project>(`/projects/${id}/allow-credential-scan`, { method: "PATCH", body }),

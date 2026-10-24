@@ -90,6 +90,28 @@ export async function checkBudget(
   };
 }
 
+/** #1169 — what Project settings shows: the cap, this month's spend, and the verdict. */
+export interface PrReviewBudgetStatus extends CheckBudgetResult {
+  /** Month-to-date spend in US dollars, unrounded (the figure the guard compares). */
+  spentUsd: number;
+}
+
+/**
+ * #1169 — {@link checkBudget}'s verdict plus the month's spend even when there
+ * is no cap (`checkBudget` skips that read on its no-cap fast path). Reads the
+ * same rows the guard sums, so the figure shown is the figure enforced.
+ */
+export async function getPrReviewBudgetStatus(
+  projectId: string,
+  prisma: PrismaClient = defaultPrisma,
+  now: Date = new Date(),
+): Promise<PrReviewBudgetStatus> {
+  const verdict = await checkBudget(projectId, prisma, now);
+  const { startOfMonth, startOfNextMonth } = monthBoundsUTC(now);
+  const spent = await sumPrReviewSpendCents(prisma, projectId, startOfMonth, startOfNextMonth);
+  return { ...verdict, spentCents: Math.round(spent), spentUsd: spent / 100 };
+}
+
 /**
  * Persist a `TokenUsage` row for a completed PR review. Failures are
  * swallowed (logged via Prisma) so a spend-tracking outage never blocks a

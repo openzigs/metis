@@ -101,6 +101,14 @@ export default function ProjectPullsPage(): React.ReactElement {
     enabled: Boolean(id),
   });
   const reviewOff = projectQuery.data ? !projectQuery.data.autoReviewPrs : false;
+  // #1169 — past the monthly limit, the worker skips each review before any
+  // model call (`checkBudget`); say so here, where the missing reviews show.
+  const budgetQuery = useQuery({
+    queryKey: queryKeys.projects.prReviewBudget(id),
+    queryFn: () => projectsApi.getPrReviewBudget(id),
+    enabled: Boolean(id) && projectQuery.data?.autoReviewPrs === true,
+  });
+  const limitReached = !reviewOff && budgetQuery.data ? !budgetQuery.data.allowed : false;
 
   if (!id) {
     return <p className="p-4 text-sm text-muted-foreground">Loading project…</p>;
@@ -124,6 +132,21 @@ export default function ProjectPullsPage(): React.ReactElement {
             Project settings
           </Link>
           .
+        </p>
+      ) : null}
+
+      {limitReached && budgetQuery.data ? (
+        <p
+          className="rounded-md border border-warning/40 bg-warning-muted p-3 text-sm text-warning"
+          data-testid="auto-review-limit-reached"
+        >
+          This month&apos;s limit for automatic PR reviews is reached, so new pull requests are not
+          being reviewed until {new Date(budgetQuery.data.resetAt).toLocaleDateString()}. Raise the
+          limit in{" "}
+          <Link className="underline" href={`/projects/${id}/settings`}>
+            Project settings
+          </Link>{" "}
+          to resume sooner.
         </p>
       ) : null}
 

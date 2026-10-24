@@ -74,6 +74,8 @@ import { generateOverview, OverviewError } from "../lib/code-graph/overview.js";
 import { createDefaultCodeSearcher } from "../lib/code-graph/project-code-searcher.js";
 import { projectWorkspaceRateLimiter } from "../middleware/project-workspace-rate-limit.js";
 import { codeSearchRateLimiter } from "../middleware/code-search-rate-limit.js";
+import { prReviewBudgetRateLimiter } from "../middleware/pr-review-budget-rate-limit.js";
+import { getPrReviewBudgetStatus } from "../lib/agents/pr-reviewer/budget-guard.js";
 import { jobEvents, genericFailureMessage } from "../lib/socket/job-events.js";
 import { recordJobScope } from "../lib/socket/job-scope-store.js";
 import { randomUUID } from "node:crypto";
@@ -801,6 +803,24 @@ export function projectsRouter(): Router {
         metadata: { value: parsed.data.autoApproveTrustedSources },
       });
       res.json(ok(updated));
+    },
+  );
+
+  // ── Automatic PR-review budget status (#1169) ───────────────────────────
+  // GET /api/projects/:id/pr-review-budget — the monthly limit
+  // (`prReviewMonthlyBudgetCents`, set through `PATCH /:id`), this month's
+  // PR-review spend, and whether the next review is allowed. Covered by the
+  // `/:id/:sub` project-scope chokepoint above (404 outside the workspace).
+  r.get(
+    "/:id/pr-review-budget",
+    prReviewBudgetRateLimiter,
+    requireAuth,
+    requirePermission("project.read"),
+    async (req: Request, res: Response) => {
+      const projectId = String(req.params.id);
+      const project = await getProject(projectId);
+      if (!project) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
+      res.json(ok(await getPrReviewBudgetStatus(projectId)));
     },
   );
 
