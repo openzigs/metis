@@ -1100,6 +1100,9 @@ async function attachSubIssueWithRetry(args: AttachArgs): Promise<void> {
       return;
     } catch (err) {
       lastErr = err;
+      // #1478 — a deterministic refusal (a redirect off the origin) fails the
+      // same way every time: never spend the backoff budget retrying it.
+      if (err instanceof PublishError && !err.retryable) throw err;
       const status = (err as { status?: number }).status;
       // M2: capability-detect older GHE that doesn't expose the sub-issue
       // API. Cache the verdict per-process per-baseUrl so a single batch

@@ -9,6 +9,7 @@ import {
   documentSchema,
   documentSourceSchema,
   knowledgeChunkSchema,
+  PR_REVIEW_MONTHLY_BUDGET_MAX_CENTS,
   projectSchema,
   retrievedChunkSchema,
   updateProjectSchema,
@@ -52,6 +53,30 @@ describe("project domain", () => {
           updatedAt: now,
         }),
       ).toMatchObject({ status: "active" });
+    });
+
+    it("#1478 — bounds a hydrated row's monthly PR-review limit like the write schema", () => {
+      const row = (prReviewMonthlyBudgetCents: unknown) => ({
+        id: validId,
+        name: "Acme",
+        slug: "acme",
+        description: "",
+        status: "active",
+        createdById: validId,
+        deletedAt: null,
+        createdAt: now,
+        updatedAt: now,
+        prReviewMonthlyBudgetCents,
+      });
+      const ok = (v: unknown) => projectSchema.safeParse(row(v)).success;
+      expect(ok(null)).toBe(true);
+      expect(ok(2500)).toBe(true);
+      expect(ok(PR_REVIEW_MONTHLY_BUDGET_MAX_CENTS)).toBe(true);
+      // 0 is a stored "no limit" (the budget guard reads it so), never refused on read.
+      expect(ok(0)).toBe(true);
+      expect(ok(PR_REVIEW_MONTHLY_BUDGET_MAX_CENTS + 1)).toBe(false);
+      expect(ok(-1)).toBe(false);
+      expect(ok(1.5)).toBe(false);
     });
   });
 

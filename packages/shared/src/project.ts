@@ -14,6 +14,12 @@ import {
 import { dateSchema, idSchema, timestampsSchema } from "./common.js";
 
 // ---- Project ---------------------------------------------------------------
+/**
+ * #1169 — the largest monthly PR-review limit accepted: $100,000. A typo
+ * guard, not a policy.
+ */
+export const PR_REVIEW_MONTHLY_BUDGET_MAX_CENTS = 10_000_000;
+
 export const projectSchema = z
   .object({
     id: idSchema,
@@ -51,9 +57,17 @@ export const projectSchema = z
     autoReviewPrs: z.boolean().optional().default(false),
     /**
      * #1169 — monthly cap on automatic PR-review spend, in US cents. `null`
-     * means no cap: every review runs whatever it costs.
+     * means no cap: every review runs whatever it costs. #1478 — bounded like
+     * the write schema (`prReviewMonthlyBudgetCentsSchema`) except that 0 is
+     * read, not refused: the budget guard treats a stored 0 as no limit.
      */
-    prReviewMonthlyBudgetCents: z.number().int().nullable().optional(),
+    prReviewMonthlyBudgetCents: z
+      .number()
+      .int()
+      .min(0)
+      .max(PR_REVIEW_MONTHLY_BUDGET_MAX_CENTS)
+      .nullable()
+      .optional(),
     createdById: idSchema,
     deletedAt: dateSchema.nullable(),
   })
@@ -89,11 +103,6 @@ export type CreateProjectWithRepoInput = z.infer<typeof createProjectWithRepoSch
 
 // #346 — `patchSchemaOf`, not `.partial()`: zod 4 would fill `description: ""`
 // into every PATCH that omitted it.
-/**
- * #1169 — the largest monthly PR-review limit accepted: $100,000. A typo
- * guard, not a policy.
- */
-export const PR_REVIEW_MONTHLY_BUDGET_MAX_CENTS = 10_000_000;
 
 /**
  * #1169 — a monthly PR-review limit in cents, or `null` for no limit. At

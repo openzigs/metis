@@ -7,6 +7,7 @@
  * validation (`resolvePublishTarget`) and client cache run.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { estimateUsageCostUsd } from "../../ai/token-tracker.js";
 import type { AIProvider, ChatResponse } from "../../ai/types.js";
 
 const resolveProjectProviderMock = vi.hoisted(() => vi.fn());
@@ -142,6 +143,28 @@ describe("judgeFromProvider", () => {
     expect(typeof out === "object" && out.costUsd).toBeGreaterThan(0);
     expect(typeof out === "object" && out.model).toBe("no-such-snapshot-1471");
   });
+
+  it.each([
+    ["a cheaper priced id than the configured model", "claude-sonnet-4-6", "claude-haiku-4-5"],
+    ["a dearer priced id than the configured model", "claude-haiku-4-5", "claude-opus-4-1"],
+  ])(
+    "#1478 — a reply naming %s records the larger estimate",
+    async (_label, configured, replied) => {
+      const usage = { promptTokens: 1000, completionTokens: 200, totalTokens: 1200 };
+      const configuredCost = estimateUsageCostUsd(configured, usage, "anthropic");
+      const repliedCost = estimateUsageCostUsd(replied, usage, "anthropic");
+      // The two must be priced and differ, or the case proves nothing.
+      expect(configuredCost).not.toBeNull();
+      expect(repliedCost).not.toBeNull();
+      expect(configuredCost).not.toBe(repliedCost);
+      const provider = stubProvider({ model: configured }, { model: replied, usage });
+      const out = await judgeFromProvider(provider).evaluate({ system: "S", user: "U" });
+      expect(typeof out === "object" && out.costUsd).toBe(
+        Math.max(configuredCost as number, repliedCost as number),
+      );
+      expect(typeof out === "object" && out.model).toBe(replied);
+    },
+  );
 });
 
 describe("resolvePrReviewJudge", () => {
