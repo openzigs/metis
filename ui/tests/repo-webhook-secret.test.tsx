@@ -24,6 +24,7 @@ import { ApiError } from "@/lib/api-client";
 const api = vi.mocked(repoConnectorsApi);
 const SECRET = "s3cr3t-value-shown-once-AAAAAAAAAAAAAAAAAAAAA";
 const PATH = "/api/webhooks/github/pr/c/r1";
+const ISSUES_PATH = "/api/webhooks/github/issues/c/r1";
 
 function renderIt(
   connector: {
@@ -45,6 +46,7 @@ function renderIt(
             status: "connected",
             webhookSecretNeedsRenewal: false,
             webhookPath: connector.provider.startsWith("github") ? PATH : null,
+            issuesWebhookPath: connector.provider.startsWith("github") ? ISSUES_PATH : null,
             ...connector,
           } as never
         }
@@ -80,6 +82,11 @@ describe("RepoWebhookSecret (#1475)", () => {
     expect(api.generateWebhookSecret).toHaveBeenCalledWith("p1", "r1");
     expect(await screen.findByLabelText("Webhook secret (shown only now)")).toHaveValue(SECRET);
     expect(screen.getByLabelText("Payload URL path")).toHaveValue(PATH);
+    // #1483 — the same secret signs the connection's own issue-events URL.
+    expect(screen.getByLabelText("Issue events payload URL path")).toHaveValue(ISSUES_PATH);
+    expect(screen.getByTestId("webhook-issues-hint-r1")).toHaveTextContent(
+      /only at the issue events/,
+    );
     expect(onChanged).toHaveBeenCalled();
 
     const writeText = vi.fn(async () => undefined);
@@ -181,5 +188,14 @@ describe("RepoWebhookSecret (#1475)", () => {
   it("renders nothing for a connection GitHub does not deliver to", () => {
     renderIt({ provider: "local", webhookSecretConfigured: false });
     expect(screen.queryByText(/GitHub webhook/)).toBeNull();
+  });
+
+  it("#1483 — a connection with its own secret lists both receiver paths", () => {
+    renderIt({ provider: "github", webhookSecretConfigured: true });
+    expect(screen.getByText(PATH)).toBeInTheDocument();
+    expect(screen.getByText(ISSUES_PATH)).toBeInTheDocument();
+    expect(screen.getByTestId("webhook-issues-hint-r1")).toHaveTextContent(
+      /only at the issue events/,
+    );
   });
 });

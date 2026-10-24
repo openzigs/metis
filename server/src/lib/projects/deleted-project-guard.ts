@@ -138,7 +138,8 @@ export type BackgroundPath =
   | "async-runner"
   | "pr-review"
   | "mcp-health"
-  | "notification";
+  | "notification"
+  | "spec-kit.issue-sync";
 
 /** One structured log line per skipped unit of work, so a skip is never silent. */
 export function logDeletedProjectSkip(input: {

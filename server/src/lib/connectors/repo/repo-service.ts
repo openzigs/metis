@@ -52,6 +52,7 @@ import type { RepoFetcher } from "../../library/import.js";
 import { validateLocalSourcePath } from "./local-source.js";
 import { sourceIngestSummary } from "../source-ingest-state.js";
 import {
+  connectorIssuesWebhookPath,
   connectorSecretState,
   connectorWebhookPath,
   connectorWebhookSecret,
@@ -862,6 +863,7 @@ function webhookSecretFlags(row: {
     webhookSecretConfigured: state === "active",
     webhookSecretNeedsRenewal: state === "stale",
     webhookPath: github ? connectorWebhookPath(row.id) : null,
+    issuesWebhookPath: github ? connectorIssuesWebhookPath(row.id) : null,
   };
 }
 

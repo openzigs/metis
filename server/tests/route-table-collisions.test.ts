@@ -37,6 +37,20 @@ vi.mock("../src/lib/webhooks/payload-replay.js", async (importOriginal) => ({
   claimPayload: vi.fn(async () => ({ duplicate: false })),
   releasePayload: vi.fn(async () => undefined),
 }));
+// #1483 — a shared-secret issues delivery reads the repository's connectors to
+// decide whom it is for, and fails closed (503) when it cannot: answer "no
+// project connects it", leaving every other delegate real.
+vi.mock("../src/lib/prisma.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/prisma.js")>();
+  const repoConnection = { findMany: async () => [], findFirst: async () => null };
+  return {
+    ...actual,
+    prisma: new Proxy(actual.prisma, {
+      get: (target, prop, receiver) =>
+        prop === "repoConnection" ? repoConnection : Reflect.get(target, prop, receiver),
+    }),
+  };
+});
 vi.mock("../src/lib/sync/reconcile-service.js", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
   return {

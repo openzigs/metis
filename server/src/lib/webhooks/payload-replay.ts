@@ -42,9 +42,12 @@ export const PAYLOAD_DIGEST_RETENTION_MS = 7 * DAY_MS;
 export const SIGNED_EVENT_MAX_AGE_MS = 4 * DAY_MS;
 
 export interface PayloadClaim {
-  /** Endpoint scope: `github-pr`, `github-pr:c:<connectorId>`, `github-issues`, `jira-issues`. */
+  /**
+   * Endpoint scope: `github-pr`, `github-pr:c:<connectorId>`, `github-issues`,
+   * `github-issues:c:<connectorId>` (#1483), `jira-issues`.
+   */
   receiver: string;
-  /** The route's fixed event type — never an unsigned header. */
+  /** The event the signed body is (`signedGithubEvent`) — never an unsigned header. */
   eventType: string;
   /** The exact body the signature was verified over. */
   rawBody: string;
@@ -128,4 +131,51 @@ export function signedEventTime(payload: unknown): number | null {
 export function isStaleSignedEvent(payload: unknown, now: number = Date.now()): boolean {
   const at = signedEventTime(payload);
   return at !== null && now - at > SIGNED_EVENT_MAX_AGE_MS;
+}
+
+/** #1483 — the GitHub events a signed body can be told apart as. */
+export type SignedGithubEvent =
+  | "pull_request"
+  | "pull_request_review"
+  | "pull_request_review_comment"
+  | "pull_request_review_thread"
+  | "issues"
+  | "issue_comment";
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+/**
+ * #1483 — the event a GitHub delivery is, read from its SIGNED body rather than
+ * the unsigned `X-GitHub-Event` header, which a replay can rewrite (a captured
+ * `issue_comment` body sent again as `issues`, or a body captured at one
+ * receiver sent to the other).
+ *
+ * GitHub's payloads for these events have distinct top-level shapes: every
+ * pull-request event carries `pull_request`, and the review ones add `review`,
+ * `comment` or `thread`; an `issue_comment` carries `issue` and `comment`; an
+ * `issues` event carries `issue` and none of those. `null` means the body is
+ * none of them (a `ping`, a `push`, …), and no receiver here processes it.
+ *
+ * Each body therefore names exactly one receiver that acts on it: `/github/pr`
+ * acts on `pull_request` only and `/github/issues` on `issues` only, so a body
+ * one of them accepted does nothing at the other.
+ */
+export function signedGithubEvent(payload: unknown): SignedGithubEvent | null {
+  if (!isObject(payload)) return null;
+  if (isObject(payload.pull_request)) {
+    if (isObject(payload.review)) return "pull_request_review";
+    if (isObject(payload.comment)) return "pull_request_review_comment";
+    if (isObject(payload.thread)) return "pull_request_review_thread";
+    return "pull_request";
+  }
+  if (isObject(payload.issue)) {
+    if (isObject(payload.comment)) return "issue_comment";
+    // An `issues` event always carries its action and repository. Requiring
+    // both keeps another event that happens to embed an `issue` object from
+    // reading as `issues`.
+    return typeof payload.action === "string" && isObject(payload.repository) ? "issues" : null;
+  }
+  return null;
 }

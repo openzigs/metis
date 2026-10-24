@@ -36,6 +36,7 @@ vi.mock("../src/lib/webhooks/payload-replay.js", async (importOriginal) => ({
 }));
 vi.mock("../src/lib/agents/pr-reviewer/webhook-dedup.js", () => ({
   recordDelivery: recordDeliveryMock,
+  releaseDelivery: vi.fn(async () => undefined),
   attachRunId: vi.fn(async () => undefined),
   purgeOldDeliveries: vi.fn(async () => 0),
 }));
@@ -55,8 +56,12 @@ vi.mock("../src/lib/sync/reconcile-service.js", async (importOriginal) => {
   return { ...actual, reconcileIssueChange: reconcileMock };
 });
 
+// #1483 — a shared-secret delivery reads the connectors to decide whom it is
+// for (and fails closed without them): here no project connects the repository.
 vi.mock("../src/lib/prisma.js", () => ({
-  prisma: { repoConnection: { findFirst: vi.fn(async () => null) } },
+  prisma: {
+    repoConnection: { findFirst: vi.fn(async () => null), findMany: vi.fn(async () => []) },
+  },
 }));
 
 import { githubPrWebhookRouter } from "../src/routes/webhooks-github.js";
@@ -293,14 +298,51 @@ describe("POST /api/webhooks/github/issues — drift reconcile (#96)", () => {
   });
 
   it("does not reconcile a non-`issues` event, e.g. an issue_comment edit", async () => {
-    const body = JSON.stringify(issuesPayload({ action: "edited", number: 23 }));
+    // #1483 — told apart by the signed body (an issue_comment carries `comment`),
+    // whatever the unsigned `X-GitHub-Event` header says.
+    const body = JSON.stringify({
+      ...issuesPayload({ action: "edited", number: 23 }),
+      comment: { id: 1, body: "c" },
+    });
     const resp = await post(makeApp(), body, {
-      "X-GitHub-Event": "issue_comment",
+      "X-GitHub-Event": "issues",
       "X-GitHub-Delivery": "delivery-23",
     });
     expect(resp.status).toBe(200);
     expect(resp.body.drift).toEqual({ handled: false, reason: "NOT_ISSUES_EVENT" });
     expect(reconcileMock).not.toHaveBeenCalled();
+    expect(syncIssueEventMock).not.toHaveBeenCalled();
+  });
+
+  it("#1483 — an `issues` body is reconciled whatever the unsigned header says", async () => {
+    const body = JSON.stringify(issuesPayload({ action: "edited", number: 24 }));
+    const resp = await post(makeApp(), body, {
+      "X-GitHub-Event": "issue_comment",
+      "X-GitHub-Delivery": "delivery-24",
+    });
+    expect(resp.status).toBe(200);
+    expect(reconcileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("#1483 — a failed attribution lookup fails closed and gives the delivery back", async () => {
+    const { prisma } = await import("../src/lib/prisma.js");
+    const { releaseDelivery } = await import("../src/lib/agents/pr-reviewer/webhook-dedup.js");
+    const { releasePayload } = await import("../src/lib/webhooks/payload-replay.js");
+    vi.mocked(prisma.repoConnection.findMany).mockRejectedValueOnce(new Error("db down"));
+    const body = JSON.stringify(issuesPayload({ action: "closed", number: 25 }));
+    const resp = await post(makeApp(), body, {
+      "X-GitHub-Event": "issues",
+      "X-GitHub-Delivery": "delivery-25",
+    });
+    expect(resp.status).toBe(503);
+    expect(resp.body).toEqual({ ok: false, reason: "ATTRIBUTION_UNAVAILABLE" });
+    expect(syncIssueEventMock).not.toHaveBeenCalled();
+    expect(reconcileMock).not.toHaveBeenCalled();
+    expect(releaseDelivery).toHaveBeenCalledWith("delivery-25");
+    // The signed-body claim is given back too, or "Redeliver" reads DUPLICATE_PAYLOAD.
+    expect(releasePayload).toHaveBeenCalledWith(
+      expect.objectContaining({ receiver: "github-issues", eventType: "issues", rawBody: body }),
+    );
   });
 
   it("passes an unsupported action through as the normalizer's reason", async () => {

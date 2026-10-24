@@ -36,6 +36,11 @@ import {
   jiraLabels,
 } from "../publishing/label-sync.js";
 import { withoutParentEpicLink, withoutUnverifiedNote } from "../publishing/published-body.js";
+import {
+  OPEN_ATTRIBUTION,
+  projectIdFilter,
+  type IssueAttribution,
+} from "../webhooks/issue-attribution.js";
 
 const log = createChildLogger("sync-reconcile");
 
@@ -99,24 +104,58 @@ export interface ReconcileDeps {
 const defaultEmitDrift = createSocketDriftEmitter();
 
 /**
+ * #1483 — the project a change to `issueId` is reconciled in: the attributed
+ * project, or (open) the live, non-excluded project whose publication of the
+ * issue is the earliest.
+ */
+async function owningProjectId(
+  issueId: string,
+  attribution: IssueAttribution,
+): Promise<string | null> {
+  if (attribution.kind === "project") return attribution.projectId;
+  const projectId = projectIdFilter(attribution);
+  const first = await prisma.publishedIssue.findFirst({
+    where: {
+      issueId,
+      batch: { project: { deletedAt: null }, ...(projectId === undefined ? {} : { projectId }) },
+    },
+    orderBy: [{ publishedAt: "asc" }, { id: "asc" }],
+    select: { batch: { select: { projectId: true } } },
+  });
+  return first?.batch.projectId ?? null;
+}
+
+/**
  * Process a normalized issue change event: look up the PublishedIssue,
  * compute diffs, persist a DriftEvent row, and emit the socket event.
  */
 export async function reconcileIssueChange(
   event: IssueChangeEvent,
   deps: ReconcileDeps = {},
+  attribution: IssueAttribution = OPEN_ATTRIBUTION,
 ): Promise<ReconcileResult> {
   // 1. Find the PublishedIssue by external id. One issue has a row per batch
   // that published it; the newest one describes what the issue carries now
   // (#1049 review: its batch's Additional labels), and Adopt reads the same row.
-  const publishedIssue = await prisma.publishedIssue.findFirst({
-    where: { issueId: event.externalId },
-    orderBy: [{ publishedAt: "desc" }, { id: "desc" }],
-    include: {
-      batch: { include: { project: true } },
-      draft: true,
-    },
-  });
+  //
+  // #1483 — only in a project the delivery's signer may act on, never in a
+  // soft-deleted one. With more than one such project (a shared-secret
+  // delivery for a repository nobody connected), the project that published
+  // the issue FIRST owns it, so the answer does not move with each publish.
+  const owner = await owningProjectId(event.externalId, attribution);
+  const publishedIssue = !owner
+    ? null
+    : await prisma.publishedIssue.findFirst({
+        where: {
+          issueId: event.externalId,
+          batch: { projectId: owner, project: { deletedAt: null } },
+        },
+        orderBy: [{ publishedAt: "desc" }, { id: "desc" }],
+        include: {
+          batch: { include: { project: true } },
+          draft: true,
+        },
+      });
 
   if (!publishedIssue) {
     log.debug("sync.reconcile.no_published_issue", { externalId: event.externalId });

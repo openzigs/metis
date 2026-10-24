@@ -4,7 +4,8 @@
  * Mounted under `/api/webhooks`: `POST github/pr` and `POST github/issues`
  * (spec-kit task sync #433 + drift reconcile #96). Verifies the
  * `X-Hub-Signature-256` HMAC against `GITHUB_WEBHOOK_SECRET` (or, on
- * `github/pr/c/:connectorId`, against that connector's own secret, #1475), then dispatches
+ * `github/pr/c/:connectorId` and `github/issues/c/:connectorId`, against that
+ * connector's own secret, #1475 / #1483), then dispatches
  * to the living-spec sync (#192/A.5) on `pull_request.closed+merged` and
  * the PR-reviewer agent (#192/A.4 → #394 MVP) on `pull_request.opened|synchronize`.
  *
@@ -30,8 +31,10 @@ import {
   claimPayload,
   isStaleSignedEvent,
   releasePayload,
+  signedGithubEvent,
   type PayloadClaim,
 } from "../lib/webhooks/payload-replay.js";
+import type { IssueAttribution } from "../lib/webhooks/issue-attribution.js";
 import { githubIssuesWebhookRateLimiter } from "../middleware/github-issues-webhook-rate-limit.js";
 import { webhookReceiverRateLimiter } from "../middleware/webhook-receiver-rate-limit.js";
 import type { PrReviewQueue } from "../lib/agents/pr-reviewer/queue.js";
@@ -106,6 +109,14 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
     // older than the replay window is refused before any database write.
     if (isStaleSignedEvent(payload)) {
       res.status(200).json({ ok: true, handled: false, reason: "STALE_DELIVERY" });
+      return;
+    }
+    // #1483 — a body the signature says is another event (an `issues` body
+    // captured at `/github/issues`, a review comment) is not acted on and not
+    // claimed here: whatever the unsigned `X-GitHub-Event` header claims.
+    const signedEvent = signedGithubEvent(payload);
+    if (signedEvent !== null && signedEvent !== "pull_request") {
+      res.status(200).json({ ok: true, handled: false, reason: "NOT_PULL_REQUEST_EVENT" });
       return;
     }
 
@@ -297,19 +308,42 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
   // re-write `tasks.md` twice.
   // #105 — keeps the shared receiver budget it had via the leak, now counted once.
   const issuesLimiters = [webhookReceiverRateLimiter, githubIssuesWebhookRateLimiter];
-  r.post("/github/issues", issuesLimiters, async (req: Request, res: Response) => {
-    const secret = deps.resolveSecret?.() ?? process.env.GITHUB_WEBHOOK_SECRET ?? "";
-    const sig = req.header("x-hub-signature-256") ?? undefined;
-    const verdict = verifyGithubPrSignature(rawBody(req), secret, { signature: sig });
+  // #1483 — two receivers, as for pull requests: `/github/issues` takes the
+  // deployment secret only, `/github/issues/c/:connectorId` that connector's
+  // own secret only, and who signed decides which project the delivery is for.
+  const handleIssuesDelivery = async (req: Request, res: Response) => {
+    const connectorId = typeof req.params.connectorId === "string" ? req.params.connectorId : null;
+    // An issue hook sits on the repository issues are published to, which is
+    // often not the connector's own: the connector names its project, not the repo.
+    const verdict =
+      connectorId === null
+        ? verifyDeploymentDelivery(req, deps)
+        : await verifyConnectorDelivery(req, connectorId, { requireRepoMatch: false });
     if (!verdict.ok) {
-      res.status(401).json({ ok: false, reason: verdict.reason ?? "BAD_SIGNATURE" });
+      res.status(401).json({ ok: false, reason: verdict.reason });
       return;
     }
+    const signer = verdict.signer;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const payload = req.body as any;
     // #1484 — see the PR receiver: a signed `updated_at` past the window is a replay.
     if (isStaleSignedEvent(payload)) {
       res.status(200).json({ ok: true, handled: false, reason: "STALE_DELIVERY" });
+      return;
+    }
+    // #1483 — the event is the one the SIGNED body is, never the unsigned
+    // `X-GitHub-Event` header: a captured `issue_comment` body re-sent as
+    // `issues`, or a pull-request body captured at `/github/pr`, does nothing
+    // here, and is not claimed (so a genuine delivery of it elsewhere is not
+    // read as a duplicate).
+    const event = signedGithubEvent(payload);
+    if (event !== "issues") {
+      res.status(200).json({
+        ok: true,
+        handled: false,
+        reason: event === null ? "MISSING_ISSUE_OR_REPO" : "NOT_ISSUES_EVENT",
+        drift: { handled: false, reason: "NOT_ISSUES_EVENT" },
+      });
       return;
     }
     // Issue #438 — replay protection. Reuses the existing
@@ -334,11 +368,13 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
       }
     }
     // #1484 — claim the signed body as well: the delivery id is unsigned.
-    const claimed = await claimSignedPayload(
-      { receiver: "github-issues", eventType: "issues", rawBody: rawBody(req) },
-      deps,
-      deliveryId,
-    );
+    const claim: PayloadClaim = {
+      receiver:
+        signer.kind === "connector" ? `github-issues:c:${signer.connectorId}` : "github-issues",
+      eventType: event,
+      rawBody: rawBody(req),
+    };
+    const claimed = await claimSignedPayload(claim, deps, deliveryId);
     if (claimed === "unavailable") {
       replayGuardUnavailable(res);
       return;
@@ -347,28 +383,52 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
       res.status(200).json({ ok: true, handled: false, reason: "DUPLICATE_PAYLOAD" });
       return;
     }
+    // #1483 — whom the delivery is for. A failed lookup fails CLOSED: acting
+    // on the delivery unscoped is the cross-project write this exists to stop.
+    // Both claims are given back, so GitHub's "Redeliver" is processed later.
+    let attribution: IssueAttribution;
+    try {
+      attribution = await issueAttributionFor(signer);
+    } catch (err) {
+      log.warn("issues_webhook.attribution_failed", {
+        deliveryId,
+        error: (err as Error).message,
+      });
+      await Promise.allSettled([
+        claimed === "claimed" ? releasePayload(claim) : Promise.resolve(),
+        deliveryId && !deps.skipDedup ? releaseDelivery(deliveryId) : Promise.resolve(),
+      ]);
+      res.status(503).json({ ok: false, reason: "ATTRIBUTION_UNAVAILABLE" });
+      return;
+    }
     // Issue #96 — ONE receiver, two pipelines. The drift reconciler used to
     // register its own `POST /github/issues` on the same `/webhooks` prefix,
     // after this one, so it was never reached. Both run on every verified,
     // non-duplicate delivery; the spec-kit outcome keeps the top level of the
     // envelope (unchanged for existing callers) and drift is reported under
     // `drift`. Neither pipeline's failure may 5xx GitHub or skip the other.
-    const specKit = await runSpecKitIssueSync(payload);
+    const specKit = await runSpecKitIssueSync(payload, attribution);
     const drift = await runDriftReconcile({
-      eventType: req.header("x-github-event") ?? "",
+      eventType: event,
       deliveryId: deliveryId || crypto.randomUUID(),
       payload,
+      attribution,
       reconcileDeps: deps.reconcileDeps,
     });
     res.status(200).json({ ok: true, ...specKit, drift });
-  });
+  };
+  r.post("/github/issues", issuesLimiters, handleIssuesDelivery);
+  r.post("/github/issues/c/:connectorId", issuesLimiters, handleIssuesDelivery);
 
   return r;
 }
 
 /** Issue #433 — spec-kit issue → `tasks.md` sync; never throws. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function runSpecKitIssueSync(payload: any): Promise<Record<string, unknown>> {
+async function runSpecKitIssueSync(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  payload: any,
+  attribution: IssueAttribution,
+): Promise<Record<string, unknown>> {
   const action = String(payload?.action ?? "") as IssuesEventAction;
   const issue = payload?.issue;
   const repo = payload?.repository;
@@ -391,6 +451,7 @@ async function runSpecKitIssueSync(payload: any): Promise<Record<string, unknown
       action,
       ...(typeof issue.title === "string" ? { newTitle: issue.title } : {}),
       ...(payload?.changes ? { changes: payload.changes } : {}),
+      attribution,
     });
     return { ...outcome };
   } catch (err) {
@@ -411,11 +472,17 @@ async function runDriftReconcile(input: {
   eventType: string;
   deliveryId: string;
   payload: unknown;
+  attribution: IssueAttribution;
   reconcileDeps?: ReconcileDeps;
 }): Promise<ReconcileResult> {
   try {
     return await reconcileGithubIssueDelivery(
-      { eventType: input.eventType, deliveryId: input.deliveryId, payload: input.payload },
+      {
+        eventType: input.eventType,
+        deliveryId: input.deliveryId,
+        payload: input.payload,
+        attribution: input.attribution,
+      },
       input.reconcileDeps,
     );
   } catch (err) {
@@ -428,7 +495,7 @@ async function runDriftReconcile(input: {
   }
 }
 
-/** #1475 — who signed a verified `pull_request` delivery. */
+/** #1475 / #1483 — who signed a verified `pull_request` or `issues` delivery. */
 type DeliverySigner =
   { kind: "deployment" } | { kind: "connector"; connectorId: string; projectId: string };
 
@@ -487,13 +554,21 @@ const GITHUB_PROVIDERS = new Set(["github", "github_enterprise"]);
  *
  * An unsigned delivery is refused before the lookup. A connector that is
  * unknown, deleted, in a deleted project, not a GitHub connector, without an
- * own secret that still verifies (`connectorSecretState`), or that names a
- * different repository than the payload, gets the same `BAD_SIGNATURE` a
- * wrong signature does, and the HMAC is computed either way.
+ * own secret that still verifies (`connectorSecretState`), or (pull requests
+ * only, `requireRepoMatch`) that names a different repository than the
+ * payload, gets the same `BAD_SIGNATURE` a wrong signature does, and the HMAC
+ * is computed either way.
+ *
+ * #1483 — the issues receiver passes `requireRepoMatch: false`: its hook sits
+ * on the repository issues are published to, which is often not the
+ * connected one (Spec Kit export and draft PRs refuse an analysed repository;
+ * a saved publish target is usually a separate tracker). The connector then
+ * names only the project, and its secret is held by that project alone.
  */
 async function verifyConnectorDelivery(
   req: Request,
   connectorId: string,
+  opts: { requireRepoMatch: boolean } = { requireRepoMatch: true },
 ): Promise<DeliveryVerdict> {
   const headers = signatureHeaders(req);
   if (!headers.signature) return { ok: false, reason: "MISSING_SIGNATURE" };
@@ -524,10 +599,11 @@ async function verifyConnectorDelivery(
     !!conn &&
     GITHUB_PROVIDERS.has(conn.provider) &&
     connectorSecretState(conn, root) === "active" &&
-    typeof fullName === "string" &&
-    // Exact, as the queued worker's `resolveProjectForQueuedReview` matches it:
-    // a delivery accepted here is never then dropped there.
-    fullName === `${conn.ownerOrOrg ?? ""}/${conn.repoName ?? ""}`;
+    (!opts.requireRepoMatch ||
+      (typeof fullName === "string" &&
+        // Exact, as the queued worker's `resolveProjectForQueuedReview` matches
+        // it: a delivery accepted here is never then dropped there.
+        fullName === `${conn.ownerOrOrg ?? ""}/${conn.repoName ?? ""}`));
   const secret =
     usable && conn?.webhookSecretNonce && root
       ? connectorWebhookSecret(root, conn.id, conn.webhookSecretNonce)
@@ -760,4 +836,64 @@ export async function findProjectForRepo(
     }
   }
   return null;
+}
+
+/**
+ * #1483 — the live projects with a GitHub connector whose own secret still
+ * verifies, for any repository. Such a project takes `issues` deliveries only
+ * at that connector's own URL. The exclusion is per project, not per
+ * repository as it is for pull requests: an issue hook usually sits on the
+ * repository issues are published to, not on the connected one, so a
+ * per-repository rule would leave the shared secret able to forge an issue
+ * event into a project that took its own.
+ *
+ * Cost per shared-secret `issues` delivery: one query returning only the
+ * connectors that have an own secret (`webhookSecretNonce` set; a few per
+ * deployment, not every connector), selecting four short columns, plus one
+ * truncated HMAC per row for `connectorSecretState`. It runs after the
+ * signature verifies and is throttled by the issues receiver's limiters.
+ *
+ * Only `active` secrets exclude. After a `VAULT_MASTER_KEY` rotation every own
+ * secret reads `stale`, and its project takes shared-secret deliveries again
+ * until the secret is replaced: the same lapse #1475 has for pull requests,
+ * and documented in the USER_GUIDE.
+ */
+async function projectsWithAnyOwnSecret(): Promise<string[]> {
+  const conns = await prisma.repoConnection.findMany({
+    where: {
+      deletedAt: null,
+      webhookSecretNonce: { not: null },
+      provider: { in: [...GITHUB_PROVIDERS] },
+      project: { deletedAt: null },
+    },
+    select: { id: true, projectId: true, webhookSecretNonce: true, webhookSecretCheck: true },
+  });
+  const root = webhookSecretRootKey();
+  return [
+    ...new Set(
+      conns.filter((c) => connectorSecretState(c, root) === "active").map((c) => c.projectId),
+    ),
+  ];
+}
+
+/**
+ * #1483 — whom a verified `issues` delivery is for.
+ *
+ * - Connector-signed (`/github/issues/c/:connectorId`): that connector's
+ *   project only, whatever repository the issue is in.
+ * - Deployment-signed (`/github/issues`): never a project that took its own
+ *   secret (the #1475 rule: such a project takes only what that secret
+ *   signs). Among the rest, the export or publication row names the project:
+ *   the earliest matching row in a live project wins (`IssueAttribution`).
+ *
+ * Unlike a pull request, an issue event names its project through a row (the
+ * Spec Kit export, the published issue), so the #1475 "earliest connected
+ * connector" pick is not used here: it would drop the events of a project
+ * that publishes into a repository another project connects, and would add no
+ * protection, because the shared secret is equally able to reach that project
+ * through a repository nobody connects.
+ */
+async function issueAttributionFor(signer: DeliverySigner): Promise<IssueAttribution> {
+  if (signer.kind === "connector") return { kind: "project", projectId: signer.projectId };
+  return { kind: "open", excludeProjectIds: await projectsWithAnyOwnSecret() };
 }

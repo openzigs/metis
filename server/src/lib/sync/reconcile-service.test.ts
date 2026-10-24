@@ -79,6 +79,34 @@ describe("reconcileIssueChange", () => {
     vi.clearAllMocks();
   });
 
+  it("#1483 — looks only in the attributed project, and never in a deleted one", async () => {
+    vi.mocked(prisma.publishedIssue.findFirst).mockResolvedValue(null);
+    await reconcileIssueChange(makeEvent(), {}, { kind: "project", projectId: "p-1" });
+    expect(prisma.publishedIssue.findFirst).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(prisma.publishedIssue.findFirst).mock.calls[0]![0]).toMatchObject({
+      where: { issueId: "node-id-abc", batch: { projectId: "p-1", project: { deletedAt: null } } },
+    });
+  });
+
+  it("#1483 — open attribution: the first live, non-excluded publisher owns the issue", async () => {
+    vi.mocked(prisma.publishedIssue.findFirst).mockResolvedValue(null);
+    const result = await reconcileIssueChange(
+      makeEvent(),
+      {},
+      { kind: "open", excludeProjectIds: ["p-own"] },
+    );
+    expect(result).toEqual({ handled: false, reason: "NO_PUBLISHED_ISSUE" });
+    expect(vi.mocked(prisma.publishedIssue.findFirst).mock.calls[0]![0]).toMatchObject({
+      where: {
+        issueId: "node-id-abc",
+        batch: { project: { deletedAt: null }, projectId: { notIn: ["p-own"] } },
+      },
+      orderBy: [{ publishedAt: "asc" }, { id: "asc" }],
+    });
+    // No owner found: the newest-row lookup never runs.
+    expect(prisma.publishedIssue.findFirst).toHaveBeenCalledTimes(1);
+  });
+
   it("returns not handled when no published issue found", async () => {
     vi.mocked(prisma.publishedIssue.findFirst).mockResolvedValue(null);
 

@@ -1,6 +1,7 @@
 /** #1475 — per-connector webhook secret derivation and its check. */
 import { describe, expect, it } from "vitest";
 import {
+  connectorIssuesWebhookPath,
   connectorSecretState,
   connectorWebhookPath,
   connectorWebhookSecret,
@@ -82,6 +83,10 @@ describe("connectorSecretState", () => {
 describe("connectorWebhookPath / newWebhookSecretNonce", () => {
   it("names the connector's own receiver", () => {
     expect(connectorWebhookPath("c 1")).toBe("/api/webhooks/github/pr/c/c%201");
+  });
+
+  it("#1483 — names the connector's own issues receiver", () => {
+    expect(connectorIssuesWebhookPath("c 1")).toBe("/api/webhooks/github/issues/c/c%201");
   });
 
   it("nonces are random and URL-safe", () => {

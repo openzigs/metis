@@ -2,9 +2,10 @@
  * #1475 — per-connector GitHub webhook secrets.
  *
  * A GitHub repository connector can carry its own webhook secret. Deliveries
- * signed with it arrive at the connector's own receiver URL
- * (`/api/webhooks/github/pr/c/:connectorId`) and go to that connector's
- * project only. The secret is never stored: it is derived, on demand, from
+ * signed with it arrive at the connector's own receiver URLs
+ * (`/api/webhooks/github/pr/c/:connectorId`, and for issue events
+ * `/api/webhooks/github/issues/c/:connectorId`, #1483) and go to that
+ * connector's project only. The secret is never stored: it is derived, on demand, from
  * the vault master key, the connector id and a random nonce kept on the
  * connector (`webhookSecretNonce`). Replacing the secret is a new nonce;
  * removing it clears the nonce.
@@ -58,6 +59,16 @@ export function webhookSecretRootKey(
  */
 export function connectorWebhookPath(connectorId: string): string {
   return `/api/webhooks/github/pr/c/${encodeURIComponent(connectorId)}`;
+}
+
+/**
+ * #1483 — the connector's own `issues` receiver path, signed with the same
+ * secret: `githubPrWebhookRouter`'s `/github/issues/c/:connectorId`. Its
+ * deliveries go to the connector's project only, whichever repository the
+ * hook is on (the one its issues are published to).
+ */
+export function connectorIssuesWebhookPath(connectorId: string): string {
+  return `/api/webhooks/github/issues/c/${encodeURIComponent(connectorId)}`;
 }
 
 /** A fresh nonce for {@link connectorWebhookSecret}. */

@@ -90,6 +90,8 @@ export const repoConnectorSchema = z
     webhookSecretConfigured: z.boolean().default(false),
     webhookSecretNeedsRenewal: z.boolean().default(false),
     webhookPath: z.string().nullable().default(null),
+    // #1483 — the same secret's receiver path for `issues` events.
+    issuesWebhookPath: z.string().nullable().default(null),
     status: z.enum(CONNECTOR_STATUSES).default("pending"),
     errorMessage: z.string().nullable().default(null),
     lastTestedAt: dateSchema.nullable().default(null),
