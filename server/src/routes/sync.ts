@@ -23,8 +23,8 @@ import { requirePermission } from "../middleware/require-permission.js";
 import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { AppError } from "../middleware/error-handler.js";
 import { webhookReceiverRateLimiter } from "../middleware/webhook-receiver-rate-limit.js";
-import { recordDelivery } from "../lib/agents/pr-reviewer/webhook-dedup.js";
-import { claimPayload } from "../lib/webhooks/payload-replay.js";
+import { recordDelivery, releaseDelivery } from "../lib/agents/pr-reviewer/webhook-dedup.js";
+import { claimPayload, releasePayload } from "../lib/webhooks/payload-replay.js";
 import {
   reconcileIssueChange,
   resolveDriftEvent,
@@ -101,11 +101,8 @@ export function syncWebhookRouter(deps: SyncRouterDeps = {}): Router {
     // #1484 — that delivery id is an unsigned header, so a replay under a fresh
     // id passed it. Claim the signed body too (a missing `timestamp` leaves
     // Jira's own window open, so this is the only check in that case).
-    const replay = await claimPayload({
-      receiver: "jira-issues",
-      eventType: "jira-issue",
-      rawBody: body,
-    });
+    const claim = { receiver: "jira-issues", eventType: "jira-issue", rawBody: body };
+    const replay = await claimPayload(claim);
     if (replay.duplicate) {
       log.debug("sync.webhook.jira.duplicate_payload", { deliveryId: rawDelivery });
       res.status(200).json({ ok: true, handled: false, reason: "DUPLICATE_PAYLOAD" });
@@ -120,7 +117,14 @@ export function syncWebhookRouter(deps: SyncRouterDeps = {}): Router {
       return;
     }
 
-    const result = await reconcileIssueChange(event, deps.reconcileDeps);
+    // #1484 — a reconcile that throws gives both claims back, so Jira's retry
+    // (or an operator's resend) of that same delivery is processed, not deduped.
+    const result = await reconcileIssueChange(event, deps.reconcileDeps).catch(
+      async (err: unknown) => {
+        await Promise.allSettled([releasePayload(claim), releaseDelivery(rawDelivery)]);
+        throw err;
+      },
+    );
     res.status(200).json({ ok: true, ...result });
   });
 

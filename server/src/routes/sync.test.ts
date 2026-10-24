@@ -19,6 +19,9 @@ vi.mock("../lib/webhooks/payload-replay.js", () => ({
     if (!dup) seenBodies.add(key);
     return { duplicate: dup };
   }),
+  releasePayload: vi.fn(async (c: { receiver: string; eventType: string; rawBody: string }) => {
+    seenBodies.delete(`${c.receiver}|${c.eventType}|${c.rawBody}`);
+  }),
 }));
 
 // #681 — stateful mock of the shared delivery-dedup so the replay test is
@@ -30,6 +33,9 @@ vi.mock("../lib/agents/pr-reviewer/webhook-dedup.js", () => ({
     const dup = seenDeliveries.has(id);
     if (!dup) seenDeliveries.add(id);
     return { duplicate: dup, deliveryId: id };
+  }),
+  releaseDelivery: vi.fn(async (deliveryId: string) => {
+    seenDeliveries.delete((deliveryId ?? "").trim());
   }),
 }));
 
@@ -210,6 +216,23 @@ describe("Jira issues webhook route", () => {
     const replay = await send("jira-forged");
     expect(replay.status).toBe(200);
     expect(replay.body).toEqual({ ok: true, handled: false, reason: "DUPLICATE_PAYLOAD" });
+  });
+
+  it("#1484 — a reconcile that fails gives its claims back, so the resend is processed", async () => {
+    const { reconcileIssueChange } = await import("../lib/sync/index.js");
+    vi.mocked(reconcileIssueChange).mockRejectedValueOnce(new Error("db down"));
+    const app = createApp();
+    const send = () =>
+      request(app)
+        .post("/webhooks/jira/issues")
+        .set("x-hub-signature", "valid-sig")
+        .set("x-atlassian-webhook-id", "jira-retry-1")
+        .send({ webhookEvent: "jira:issue_updated", issue: { id: "1", key: "P-1" } });
+    expect((await send()).status).toBe(500);
+    const retry = await send();
+    expect(retry.status).toBe(200);
+    expect(retry.body).toMatchObject({ ok: true, handled: true });
+    expect(vi.mocked(reconcileIssueChange)).toHaveBeenCalledTimes(2);
   });
 });
 
