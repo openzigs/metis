@@ -145,6 +145,10 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
       rawBody: rawBody(req),
     };
     const claimed = await claimSignedPayload(claim, deps, deliveryId);
+    if (claimed === "unavailable") {
+      replayGuardUnavailable(res);
+      return;
+    }
     if (claimed === "duplicate") {
       res.status(200).json({ ok: true, handled: false, reason: "DUPLICATE_PAYLOAD" });
       return;
@@ -335,6 +339,10 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
       deps,
       deliveryId,
     );
+    if (claimed === "unavailable") {
+      replayGuardUnavailable(res);
+      return;
+    }
     if (claimed === "duplicate") {
       res.status(200).json({ ok: true, handled: false, reason: "DUPLICATE_PAYLOAD" });
       return;
@@ -432,15 +440,17 @@ function signatureHeaders(req: Request) {
 }
 
 /**
- * #1484 — claim a verified delivery's signed body. Like the delivery-id dedup
- * beside it, a claim that cannot be written (database down) is logged and the
- * delivery proceeds rather than failing GitHub's request: `skipped`.
+ * #1484 — claim a verified delivery's signed body. A claim that cannot be
+ * written (database down) fails CLOSED: `unavailable` — processing it would be
+ * exactly the unguarded replay this exists to stop. The caller answers 503 and
+ * gives back the delivery-id row it may have written, so nothing was recorded
+ * and GitHub's "Redeliver" processes the delivery once the database is back.
  */
 async function claimSignedPayload(
   claim: PayloadClaim,
   deps: GithubPrRouterDeps,
   deliveryId: string,
-): Promise<"claimed" | "duplicate" | "skipped"> {
+): Promise<"claimed" | "duplicate" | "skipped" | "unavailable"> {
   if (deps.skipDedup) return "skipped";
   try {
     return (await claimPayload(claim)).duplicate ? "duplicate" : "claimed";
@@ -450,8 +460,14 @@ async function claimSignedPayload(
       deliveryId,
       error: (err as Error).message,
     });
-    return "skipped";
+    if (deliveryId) await releaseDelivery(deliveryId).catch(() => undefined);
+    return "unavailable";
   }
+}
+
+/** #1484 — the answer when the replay guard cannot record a delivery. */
+function replayGuardUnavailable(res: Response): void {
+  res.status(503).json({ ok: false, reason: "REPLAY_GUARD_UNAVAILABLE" });
 }
 
 /** #1475 — `/github/pr` verifies against the deployment secret only; no database read. */

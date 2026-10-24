@@ -134,8 +134,25 @@ export function startWorker(opts: StartWorkerOptions): PrReviewWorkerHandle {
     });
   // #1484 — the signed-body replay claims are purged on the same cadence, each
   // table on its own retention, so both stay bounded.
+  // They run independently: one throwing never skips the other (the failure is
+  // logged below as `pr_review.dedup_purge_failed`, with the table named).
   const purgeFn =
-    opts.purge ?? (async () => (await purgeOldDeliveries()) + (await purgeOldPayloadDigests()));
+    opts.purge ??
+    (async () => {
+      const tables = ["pr_review_webhook_deliveries", "webhook_payload_digests"] as const;
+      const results = await Promise.allSettled([purgeOldDeliveries(), purgeOldPayloadDigests()]);
+      let deleted = 0;
+      results.forEach((r, i) => {
+        if (r.status === "fulfilled") deleted += r.value;
+        else {
+          log.warn("pr_review.dedup_purge_failed", {
+            table: tables[i],
+            error: r.reason instanceof Error ? r.reason.message : String(r.reason),
+          });
+        }
+      });
+      return deleted;
+    });
   const purgeMs = opts.purgeIntervalMs ?? DEFAULT_PURGE_INTERVAL_MS;
 
   const processor = opts.processor ?? buildDefaultProcessor(opts.processorDeps);

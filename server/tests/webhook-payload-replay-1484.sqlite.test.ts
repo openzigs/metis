@@ -278,6 +278,52 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(enqueued.map((j) => j.prNumber)).toEqual([5]);
     });
 
+    it("a claim that cannot be written fails closed (503) and records nothing, so Redeliver works", async () => {
+      // The replay-guard table is unavailable; everything else is the real database.
+      state.db = new Proxy(db, {
+        get(target, prop) {
+          if (prop === "webhookPayloadDigest") {
+            return {
+              create: async () => {
+                throw new Error("SQLITE_BUSY: database is locked");
+              },
+            };
+          }
+          const v = Reflect.get(target, prop, target);
+          return typeof v === "function" ? v.bind(target) : v;
+        },
+      });
+      const body = prBody(20);
+      const issuesBody = JSON.stringify({
+        action: "edited",
+        issue: { number: 20, title: "T", updated_at: new Date().toISOString() },
+        repository: { full_name: REPO },
+      });
+      try {
+        const res = await pr(body, "delivery-20");
+        expect(res.status).toBe(503);
+        expect(res.body).toEqual({ ok: false, reason: "REPLAY_GUARD_UNAVAILABLE" });
+        const issues = await post(
+          "/api/webhooks/github/issues",
+          issuesBody,
+          SECRET,
+          { "X-GitHub-Delivery": "issues-20" },
+          "issues",
+        );
+        expect(issues.status).toBe(503);
+      } finally {
+        state.db = db;
+      }
+      expect(enqueued).toEqual([]);
+      // The delivery-id rows written before the claim were given back.
+      expect(await db.prReviewWebhookDelivery.count()).toBe(0);
+
+      const redelivered = await pr(body, "delivery-20");
+      expect(redelivered.status).toBe(200);
+      expect(redelivered.body).toMatchObject({ handled: true });
+      expect(enqueued.map((j) => j.prNumber)).toEqual([20]);
+    });
+
     it("an event whose signed updated_at is past the replay window is refused before any write", async () => {
       const old = new Date(Date.now() - SIGNED_EVENT_MAX_AGE_MS - DAY).toISOString();
       const res = await pr(prBody(6, old), "delivery-6", { "X-Webhook-Timestamp": nowTs() });

@@ -101,9 +101,8 @@ export async function releaseDelivery(deliveryId: string): Promise<void> {
 }
 
 /**
- * Drop dedup rows older than `retentionMs` (default 24h). Best-effort —
- * called opportunistically from `recordDelivery` so the table doesn't
- * grow unbounded between background sweeps.
+ * Drop dedup rows older than `retentionMs` (default 24h). Called hourly by
+ * the PR-review worker (`worker.ts`), which keeps the table bounded.
  */
 export async function purgeOldDeliveries(
   retentionMs: number = DEFAULT_RETENTION_MS,

@@ -102,7 +102,12 @@ export function syncWebhookRouter(deps: SyncRouterDeps = {}): Router {
     // id passed it. Claim the signed body too (a missing `timestamp` leaves
     // Jira's own window open, so this is the only check in that case).
     const claim = { receiver: "jira-issues", eventType: "jira-issue", rawBody: body };
-    const replay = await claimPayload(claim);
+    // Fails closed (500) like the delivery-id dedup above; the delivery-id row
+    // it wrote is given back first, so Jira's same-id retry is processed.
+    const replay = await claimPayload(claim).catch(async (err: unknown) => {
+      await releaseDelivery(rawDelivery).catch(() => undefined);
+      throw err;
+    });
     if (replay.duplicate) {
       log.debug("sync.webhook.jira.duplicate_payload", { deliveryId: rawDelivery });
       res.status(200).json({ ok: true, handled: false, reason: "DUPLICATE_PAYLOAD" });

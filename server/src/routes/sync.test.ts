@@ -218,6 +218,24 @@ describe("Jira issues webhook route", () => {
     expect(replay.body).toEqual({ ok: true, handled: false, reason: "DUPLICATE_PAYLOAD" });
   });
 
+  it("#1484 — a body claim that throws gives the delivery-id row back, so the same-id retry is processed", async () => {
+    const { claimPayload } = await import("../lib/webhooks/payload-replay.js");
+    vi.mocked(claimPayload).mockRejectedValueOnce(new Error("db down"));
+    const { reconcileIssueChange } = await import("../lib/sync/index.js");
+    const app = createApp();
+    const send = () =>
+      request(app)
+        .post("/webhooks/jira/issues")
+        .set("x-hub-signature", "valid-sig")
+        .set("x-atlassian-webhook-id", "jira-claim-fail-1")
+        .send({ webhookEvent: "jira:issue_updated", issue: { id: "1", key: "P-1" } });
+    expect((await send()).status).toBe(500);
+    expect(vi.mocked(reconcileIssueChange)).not.toHaveBeenCalled();
+    const retry = await send();
+    expect(retry.status).toBe(200);
+    expect(retry.body).toMatchObject({ ok: true, handled: true });
+  });
+
   it("#1484 — a reconcile that fails gives its claims back, so the resend is processed", async () => {
     const { reconcileIssueChange } = await import("../lib/sync/index.js");
     vi.mocked(reconcileIssueChange).mockRejectedValueOnce(new Error("db down"));

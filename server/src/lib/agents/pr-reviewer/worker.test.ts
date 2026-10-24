@@ -102,6 +102,32 @@ describe("startWorker", () => {
     await w.shutdown();
   });
 
+  it("#1484 — one purge throwing does not skip the other", async () => {
+    let intervalCb: (() => void) | null = null;
+    purges.deliveries.mockClear();
+    purges.digests.mockClear();
+    purges.deliveries.mockRejectedValueOnce(new Error("db down"));
+    const w = startWorker({
+      processor: async () => {},
+      setInterval: (cb) => {
+        intervalCb = cb;
+        return 0;
+      },
+      clearInterval: () => undefined,
+    });
+    intervalCb!();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(purges.deliveries).toHaveBeenCalledTimes(1);
+    expect(purges.digests).toHaveBeenCalledTimes(1);
+    // …and the other way round.
+    purges.digests.mockRejectedValueOnce(new Error("db down"));
+    intervalCb!();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(purges.deliveries).toHaveBeenCalledTimes(2);
+    expect(purges.digests).toHaveBeenCalledTimes(2);
+    await w.shutdown();
+  });
+
   it("invokes purge() on each interval tick and survives purge errors", async () => {
     let intervalCb: (() => void) | null = null;
     const purge = vi.fn().mockResolvedValueOnce(3).mockRejectedValueOnce(new Error("db down"));

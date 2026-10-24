@@ -154,15 +154,13 @@ export function evalRouter(deps: EvalRouterDeps = {}): Router {
       }
       const enabled = (deps.isEnabled ?? isEvalEnabled)();
       if (!enabled) {
-        res
-          .status(202)
-          .json(
-            ok({
-              benchRunId: null,
-              status: "disabled",
-              reason: "EVAL_NIGHTLY_ENABLED is not 'true'",
-            }),
-          );
+        res.status(202).json(
+          ok({
+            benchRunId: null,
+            status: "disabled",
+            reason: "EVAL_NIGHTLY_ENABLED is not 'true'",
+          }),
+        );
         return;
       }
       if (!deps.triggerRunner) {

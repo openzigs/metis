@@ -4067,7 +4067,8 @@ model WebhookPayloadDigest {
   /// Which receiver accepted it: `github-pr`, `github-pr:c:<connectorId>`,
   /// `github-issues`, `jira-issues`.
   receiver   String
-  /// Event type header (`pull_request`, `issues`, `jira-issue`).
+  /// The receiving route's own event constant (`pull_request`, `issues`,
+  /// `jira-issue`) — never the unsigned `X-GitHub-Event` header.
   eventType  String
   /// Hex SHA-256 of the raw request body the signature was verified over.
   bodySha256 String
