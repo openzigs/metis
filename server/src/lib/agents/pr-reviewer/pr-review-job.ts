@@ -56,7 +56,7 @@ async function recordOutcome(
       repo: `${job.owner}/${job.repo}`,
       prNumber: job.prNumber,
       status: outcome.status,
-      error: (err as Error).message,
+      error: errorMessage(err),
     });
   }
 }
@@ -259,6 +259,9 @@ export async function executePrReviewJob(
         installationId,
         actor,
         linkedIssueNumbers: acResult.linkedIssueNumbers,
+        // #1486 — spend is recorded under this run's session, which is what
+        // `computeRunCost` reads back for it below.
+        sessionId,
       },
       { judge: deps.judge, budget },
     );
@@ -272,16 +275,18 @@ export async function executePrReviewJob(
   // Every step is best-effort and logged; none decides the review's outcome.
   // (Idempotency on the post alone would not do: the model call comes first.)
   const bestEffort = (step: string, fn: () => Promise<unknown>) =>
-    fn().catch((err: unknown) => {
-      log.warn("pr_review.bookkeeping_failed", {
-        deliveryId: job.deliveryId,
-        repo: `${job.owner}/${job.repo}`,
-        prNumber: job.prNumber,
-        runId,
-        step,
-        error: (err as Error).message,
+    Promise.resolve()
+      .then(fn)
+      .catch((err: unknown) => {
+        log.warn("pr_review.bookkeeping_failed", {
+          deliveryId: job.deliveryId,
+          repo: `${job.owner}/${job.repo}`,
+          prNumber: job.prNumber,
+          runId,
+          step,
+          error: errorMessage(err),
+        });
       });
-    });
 
   // `recordOutcome` already never throws.
   await recordOutcome(
@@ -306,7 +311,7 @@ export async function executePrReviewJob(
       kind: "tool_result",
       content: result
         ? { kind: "pr_review", action, result }
-        : { kind: "pr_review_error", error: (reviewError as Error).message },
+        : { kind: "pr_review_error", error: errorMessage(reviewError) },
     }),
   );
   // Attribute the run's LLM cost from in-window TokenUsage rows — on a failed
@@ -316,6 +321,11 @@ export async function executePrReviewJob(
     finishRun({ runId, status: result ? "completed" : "failed", ...cost }),
   );
   return { skipped: null, runId };
+}
+
+/** #1486 — a rejection's message, for any thrown value (`undefined` included). */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function parseSkipGlobs(raw: string | null): string[] | null {

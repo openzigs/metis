@@ -27,6 +27,9 @@ import {
   type PrReviewSkipReason,
 } from "./pr-audit.js";
 import { PR_REVIEW_SESSION_PREFIX, checkBudget, recordPrReviewSpend } from "./budget-guard.js";
+import { createChildLogger } from "../../logger.js";
+
+const log = createChildLogger("pr-review-agent");
 
 /**
  * Minimal judge-LLM interface. The legacy form returns a raw JSON string
@@ -79,6 +82,13 @@ export interface RunPrReviewInput {
   installationId?: string | null;
   actor?: { type: "user" | "system" | "webhook"; id: string | null };
   linkedIssueNumbers?: number[];
+  /**
+   * #1486 — the session the spend row is written under: the caller's run's
+   * own, so `computeRunCost` attributes it to that run. Must carry the
+   * `pr-review-` prefix the monthly limit sums by; otherwise (or when absent)
+   * a per-review session is minted.
+   */
+  sessionId?: string;
 }
 
 export interface RunPrReviewDeps {
@@ -267,15 +277,24 @@ export async function runPrReview(
     try {
       await deps.budget.record({
         projectId: input.projectId,
-        sessionId: `${PR_REVIEW_SESSION_PREFIX}${input.owner}-${input.repo}-${input.prNumber}-${startedAt}`,
+        sessionId: input.sessionId?.startsWith(PR_REVIEW_SESSION_PREFIX)
+          ? input.sessionId
+          : `${PR_REVIEW_SESSION_PREFIX}${input.owner}-${input.repo}-${input.prNumber}-${startedAt}`,
         provider: envelope.provider ?? "unknown",
         model: model ?? "unknown",
         inputTokens,
         outputTokens,
         costUsd,
       });
-    } catch {
-      // Spend tracking is best-effort — never fail a review on a TokenUsage write.
+    } catch (err) {
+      // Spend tracking is best-effort — never fail a review on a TokenUsage
+      // write — but an unrecorded spend escapes the limit, so say so.
+      log.warn("pr_review.spend_record_failed", {
+        projectId: input.projectId,
+        repo: `${input.owner}/${input.repo}`,
+        prNumber: input.prNumber,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

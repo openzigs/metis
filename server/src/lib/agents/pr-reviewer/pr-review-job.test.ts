@@ -247,6 +247,64 @@ describe("bookkeeping after the review never makes the queue run it again (#1486
     );
   });
 
+  it("passes the run's own session to the review, so its spend is attributed to the run", async () => {
+    await executePrReviewJob(input(), deps);
+    expect(m.startRun).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "pr-review-7-d1" }),
+    );
+    expect(m.runPrReview).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "pr-review-7-d1" }),
+      expect.anything(),
+    );
+  });
+
+  it.each([undefined, null, "a bare string"])(
+    "a review rejecting with %s is recorded as failed and never reaches the queue",
+    async (thrown) => {
+      m.runPrReview.mockImplementation(() => Promise.reject(thrown));
+      const timers: Array<() => void> = [];
+      const q = createPrReviewQueue({
+        processor: async (job) => {
+          await executePrReviewJob(input({ job }), deps);
+        },
+        maxAttempts: 3,
+        backoffMs: [10, 10],
+        setTimer: (cb) => {
+          timers.push(cb);
+          return 0;
+        },
+      });
+      q.enqueue({
+        deliveryId: "d1",
+        projectId: "p1",
+        owner: "acme",
+        repo: "site",
+        prNumber: 7,
+        context: { action: "opened", headSha: "head-sha" },
+      });
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      expect(m.runPrReview).toHaveBeenCalledTimes(1);
+      expect(timers).toHaveLength(0);
+      expect(q.deadLetters()).toHaveLength(0);
+      expect(m.record).toHaveBeenCalledWith(KEY, { status: "failed", runId: "run_1" });
+      expect(m.recordStep).toHaveBeenCalledWith(
+        expect.objectContaining({ content: { kind: "pr_review_error", error: String(thrown) } }),
+      );
+      expect(m.finishRun).toHaveBeenCalledWith(expect.objectContaining({ status: "failed" }));
+    },
+  );
+
+  it("a failed state write rejecting with undefined is still only logged", async () => {
+    m.record.mockImplementationOnce(() => Promise.reject(undefined));
+    const out = await executePrReviewJob(input(), deps);
+    expect(out).toEqual({ skipped: null, runId: "run_1" });
+    expect(m.warn).toHaveBeenCalledWith(
+      "pr_review.state_write_failed",
+      expect.objectContaining({ error: "undefined" }),
+    );
+  });
+
   it("through the queue: the model is called and the review posted once, never retried", async () => {
     m.recordStep.mockRejectedValue(new Error("db down"));
     m.finishRun.mockRejectedValue(new Error("db down"));

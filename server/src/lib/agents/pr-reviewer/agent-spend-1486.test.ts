@@ -12,6 +12,10 @@ import { runPrReview, type JudgeEnvelope, type RunPrReviewDeps } from "./agent.j
 import { checkBudget, recordPrReviewSpend, type RecordSpendInput } from "./budget-guard.js";
 import type { OctokitLike } from "./github-review-poster.js";
 
+const warn = vi.hoisted(() => vi.fn());
+vi.mock("../../logger.js", () => ({
+  createChildLogger: () => ({ warn, info: vi.fn(), error: vi.fn(), debug: vi.fn() }),
+}));
 vi.mock("./pr-audit.js", () => ({
   auditPrReviewed: vi.fn(),
   auditPrReviewErrored: vi.fn(),
@@ -178,5 +182,45 @@ describe("PR-review spend is counted on every path after the model answers (#148
     await expect(runPrReview(input(posts()), { judge, budget })).rejects.toThrow("LLM unavailable");
     expect(record).not.toHaveBeenCalled();
     expect(rows).toHaveLength(0);
+  });
+
+  it("records under the caller's session when it carries the pr-review- prefix", async () => {
+    const { prisma, rows } = ledger();
+    const { budget } = budgetOver(prisma);
+    await runPrReview(
+      { ...input(posts()), sessionId: "pr-review-7-delivery-1" },
+      { judge: judgeAnswering(VALID), budget },
+    );
+    expect(rows.map((r) => r.sessionId)).toEqual(["pr-review-7-delivery-1"]);
+  });
+
+  it("never records outside the prefix the limit sums: an unprefixed session is replaced", async () => {
+    const { prisma, rows } = ledger();
+    const { budget } = budgetOver(prisma);
+    await runPrReview(
+      { ...input(posts()), sessionId: "chat-session-1" },
+      { judge: judgeAnswering(VALID), budget },
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].sessionId).toMatch(/^pr-review-acme-site-7-\d+$/);
+    expect((await checkBudget(PROJECT, prisma)).spentCents).toBe(5);
+  });
+
+  it("a spend write that fails is logged, without secrets, and the review still posts", async () => {
+    const judge = judgeAnswering(VALID);
+    const budget: NonNullable<RunPrReviewDeps["budget"]> = {
+      check: async () => ({ allowed: true, capCents: null, spentCents: 0, resetAt: "x" }),
+      record: async () => {
+        throw new Error("db down");
+      },
+    };
+    const out = await runPrReview(input(posts()), { judge, budget });
+    expect(out.reviewId).toBe(9);
+    expect(warn).toHaveBeenCalledWith("pr_review.spend_record_failed", {
+      projectId: PROJECT,
+      repo: "acme/site",
+      prNumber: 7,
+      error: "db down",
+    });
   });
 });
