@@ -3,8 +3,7 @@
  *
  * Two workspaces, each with a project that exported a Spec Kit task to, and
  * published an issue into, the SAME tracker repository (the repository issues
- * are published to, which no project connects: publishing refuses an analysed
- * repository). Driven against a REAL SQLite database built by the migration
+ * are published to, which is usually not a connected one). Driven against a REAL SQLite database built by the migration
  * chain, through the real webhook router; nothing reaches GitHub.
  *
  * - `/github/issues/c/:connectorId` takes that connector's own secret and
@@ -426,7 +425,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
       });
 
-      it("a connected tracker follows the #1475 owner rule: its earliest connected connector's project only", async () => {
+      it("the export's project gets the event even when another project connects the tracker", async () => {
+        // A connects the tracker (first connected, then only pending): neither
+        // pins B's issue to A nor blocks it. The row names the project.
         await db.repoConnection.create({
           data: {
             id: "tracker-a-1483",
@@ -441,18 +442,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
         await exportTask(PB, 25, T1);
         const res = await deliver(DEPLOYMENT_SECRET, issuesBody(25));
-        expect(res.body).toMatchObject({ handled: false, reason: "NO_TASK_EXPORT" });
-        expect(await checked(PB)).toBe(false);
+        expect(res.body).toMatchObject({ handled: true });
+        expect(await checked(PB)).toBe(true);
+        expect(await checked(PA)).toBe(false);
 
-        // Only a pending connector connects it: nobody takes the delivery.
+        await db.specKitFeatureArtifact.updateMany({ data: { content: TASKS } });
         await db.repoConnection.update({
           where: { id: "tracker-a-1483" },
           data: { status: "pending" },
         });
-        await exportTask(PA, 26, T1);
-        const blocked = await deliver(DEPLOYMENT_SECRET, issuesBody(26));
-        expect(blocked.body).toMatchObject({ handled: false, reason: "NO_ELIGIBLE_PROJECT" });
-        expect(await checked(PA)).toBe(false);
+        const pending = await deliver(DEPLOYMENT_SECRET, issuesBody(25));
+        expect(pending.body).toMatchObject({ handled: true });
+        expect(await checked(PB)).toBe(true);
       });
 
       it("a single-project install is unchanged", async () => {

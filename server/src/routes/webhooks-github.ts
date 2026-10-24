@@ -314,7 +314,7 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
   const handleIssuesDelivery = async (req: Request, res: Response) => {
     const connectorId = typeof req.params.connectorId === "string" ? req.params.connectorId : null;
     // An issue hook sits on the repository issues are published to, which is
-    // not the connector's own: the connector names its project, not the repo.
+    // often not the connector's own: the connector names its project, not the repo.
     const verdict =
       connectorId === null
         ? verifyDeploymentDelivery(req, deps)
@@ -386,9 +386,9 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
     // #1483 — whom the delivery is for. A failed lookup fails CLOSED: acting
     // on the delivery unscoped is the cross-project write this exists to stop.
     // Both claims are given back, so GitHub's "Redeliver" is processed later.
-    let attribution: IssueAttribution | null;
+    let attribution: IssueAttribution;
     try {
-      attribution = await issueAttributionFor(signer, payload, deliveryId);
+      attribution = await issueAttributionFor(signer);
     } catch (err) {
       log.warn("issues_webhook.attribution_failed", {
         deliveryId,
@@ -399,15 +399,6 @@ export function githubPrWebhookRouter(deps: GithubPrRouterDeps = {}): Router {
         deliveryId && !deps.skipDedup ? releaseDelivery(deliveryId) : Promise.resolve(),
       ]);
       res.status(503).json({ ok: false, reason: "ATTRIBUTION_UNAVAILABLE" });
-      return;
-    }
-    if (!attribution) {
-      res.status(200).json({
-        ok: true,
-        handled: false,
-        reason: "NO_ELIGIBLE_PROJECT",
-        drift: { handled: false, reason: "NO_ELIGIBLE_PROJECT" },
-      });
       return;
     }
     // Issue #96 — ONE receiver, two pipelines. The drift reconciler used to
@@ -569,9 +560,10 @@ const GITHUB_PROVIDERS = new Set(["github", "github_enterprise"]);
  * is computed either way.
  *
  * #1483 — the issues receiver passes `requireRepoMatch: false`: its hook sits
- * on the repository issues are published to, which publishing keeps apart
- * from the analysed (connected) one. The connector then names only the
- * project, and its secret is held by that project alone.
+ * on the repository issues are published to, which is often not the
+ * connected one (Spec Kit export and draft PRs refuse an analysed repository;
+ * a saved publish target is usually a separate tracker). The connector then
+ * names only the project, and its secret is held by that project alone.
  */
 async function verifyConnectorDelivery(
   req: Request,
@@ -776,31 +768,9 @@ export async function findProjectForRepo(
   deliveryId?: string,
   repoHtmlUrl?: string | null,
 ): Promise<WebhookProjectConfig | null> {
-  const owner = await sharedSecretOwner(repoFullName, deliveryId, repoHtmlUrl, "pr_review");
-  return owner.kind === "owned" ? toConfig(owner.project) : null;
-}
-
-/**
- * #1475 / #1483 — the shared-secret owner of a repository, as
- * `findProjectForRepo` documents. `blocked`: GitHub connectors for the
- * repository on the delivery's host exist in live projects, but none may take a
- * shared-secret delivery (pending, errored, or with their own secret).
- * `unconnected`: no live project connects the repository on that host.
- */
-type SharedSecretOwner =
-  | { kind: "owned"; projectId: string; project: Parameters<typeof toConfig>[0] }
-  | { kind: "blocked" }
-  | { kind: "unconnected" };
-
-async function sharedSecretOwner(
-  repoFullName: string,
-  deliveryId: string | undefined,
-  repoHtmlUrl: string | null | undefined,
-  logPrefix: "pr_review" | "issues_webhook",
-): Promise<SharedSecretOwner> {
-  if (!repoFullName) return { kind: "unconnected" };
+  if (!repoFullName) return null;
   const [owner, name] = repoFullName.split("/");
-  if (!owner || !name) return { kind: "unconnected" };
+  if (!owner || !name) return null;
   const conns = await prisma.repoConnection.findMany({
     where: { ownerOrOrg: owner, repoName: name, deletedAt: null },
     include: { project: true },
@@ -828,7 +798,7 @@ async function sharedSecretOwner(
       (p) => p !== winner.projectId,
     );
     if (others.length > 0) {
-      log.warn(`${logPrefix}.webhook_owner_ambiguous`, {
+      log.warn("pr_review.webhook_owner_ambiguous", {
         deliveryId,
         repo: repoFullName,
         deliveredTo: winner.projectId,
@@ -836,12 +806,12 @@ async function sharedSecretOwner(
         hint: "give each project's repository connection its own webhook secret",
       });
     }
-    return { kind: "owned", projectId: winner.projectId, project: winner.project };
+    return toConfig(winner.project);
   }
   if (live.length > 0) {
     // Connected to the repository but none may take this delivery: say why,
     // per connector, so the operator can tell the project to click Test.
-    log.warn(`${logPrefix}.webhook_no_eligible_connector`, {
+    log.warn("pr_review.webhook_no_eligible_connector", {
       deliveryId,
       repo: repoFullName,
       host,
@@ -854,7 +824,7 @@ async function sharedSecretOwner(
       })),
       hint: "a connection takes shared-secret deliveries only while its Test succeeds (status connected)",
     });
-  } else if (logPrefix === "pr_review") {
+  } else {
     const deleted = conns.find((c) => c.project?.deletedAt);
     if (deleted) {
       logDeletedProjectSkip({
@@ -865,21 +835,16 @@ async function sharedSecretOwner(
       });
     }
   }
-  // Only a GitHub connector for this host makes the repository "connected": a
-  // GitLab connector, or another GitHub server's, says nothing about whom
-  // GitHub delivers this repository's events to.
-  return live.some((c) => connectorHost(c) === host)
-    ? { kind: "blocked" }
-    : { kind: "unconnected" };
+  return null;
 }
 
 /**
  * #1483 — the live projects with a GitHub connector whose own secret still
  * verifies, for any repository. Such a project takes `issues` deliveries only
- * at that connector's own URL. The repository an issue hook sits on is usually
- * the publish target, not a connected one (publishing refuses an analysed
- * repository), so the exclusion is per project, not per repository as it is
- * for pull requests: otherwise the shared secret could still forge an issue
+ * at that connector's own URL. The exclusion is per project, not per
+ * repository as it is for pull requests: an issue hook usually sits on the
+ * repository issues are published to, not on the connected one, so a
+ * per-repository rule would leave the shared secret able to forge an issue
  * event into a project that took its own.
  */
 async function projectsWithAnyOwnSecret(): Promise<string[]> {
@@ -905,37 +870,19 @@ async function projectsWithAnyOwnSecret(): Promise<string[]> {
  *
  * - Connector-signed (`/github/issues/c/:connectorId`): that connector's
  *   project only, whatever repository the issue is in.
- * - Deployment-signed (`/github/issues`): the #1475 rule. A repository a live
- *   project connects goes to its earliest connected connector's project
- *   (`sharedSecretOwner`), or to nobody while none is eligible. A repository
- *   nobody connects (the usual publish target) may match any live project,
- *   the earliest matching row first. Either way, never a project that took its
- *   own secret.
+ * - Deployment-signed (`/github/issues`): never a project that took its own
+ *   secret (the #1475 rule: such a project takes only what that secret
+ *   signs). Among the rest, the export or publication row names the project:
+ *   the earliest matching row in a live project wins (`IssueAttribution`).
  *
- * `null` means the delivery is for no project.
+ * Unlike a pull request, an issue event names its project through a row (the
+ * Spec Kit export, the published issue), so the #1475 "earliest connected
+ * connector" pick is not used here: it would drop the events of a project
+ * that publishes into a repository another project connects, and would add no
+ * protection, because the shared secret is equally able to reach that project
+ * through a repository nobody connects.
  */
-async function issueAttributionFor(
-  signer: DeliverySigner,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  payload: any,
-  deliveryId: string,
-): Promise<IssueAttribution | null> {
+async function issueAttributionFor(signer: DeliverySigner): Promise<IssueAttribution> {
   if (signer.kind === "connector") return { kind: "project", projectId: signer.projectId };
-  const repo = payload?.repository;
-  const fullName = typeof repo?.full_name === "string" ? repo.full_name : "";
-  const htmlUrl = typeof repo?.html_url === "string" ? repo.html_url : null;
-  const [owner, excluded] = await Promise.all([
-    sharedSecretOwner(fullName, deliveryId, htmlUrl, "issues_webhook"),
-    projectsWithAnyOwnSecret(),
-  ]);
-  if (owner.kind === "blocked") return null;
-  if (owner.kind === "unconnected") return { kind: "open", excludeProjectIds: excluded };
-  if (!excluded.includes(owner.projectId)) return { kind: "project", projectId: owner.projectId };
-  log.warn("issues_webhook.owner_has_own_secret", {
-    deliveryId,
-    repo: fullName,
-    projectId: owner.projectId,
-    hint: "this project takes issue deliveries only at its connection's own issues URL",
-  });
-  return null;
+  return { kind: "open", excludeProjectIds: await projectsWithAnyOwnSecret() };
 }

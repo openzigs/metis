@@ -327,6 +327,7 @@ describe("POST /api/webhooks/github/issues — drift reconcile (#96)", () => {
   it("#1483 — a failed attribution lookup fails closed and gives the delivery back", async () => {
     const { prisma } = await import("../src/lib/prisma.js");
     const { releaseDelivery } = await import("../src/lib/agents/pr-reviewer/webhook-dedup.js");
+    const { releasePayload } = await import("../src/lib/webhooks/payload-replay.js");
     vi.mocked(prisma.repoConnection.findMany).mockRejectedValueOnce(new Error("db down"));
     const body = JSON.stringify(issuesPayload({ action: "closed", number: 25 }));
     const resp = await post(makeApp(), body, {
@@ -338,6 +339,10 @@ describe("POST /api/webhooks/github/issues — drift reconcile (#96)", () => {
     expect(syncIssueEventMock).not.toHaveBeenCalled();
     expect(reconcileMock).not.toHaveBeenCalled();
     expect(releaseDelivery).toHaveBeenCalledWith("delivery-25");
+    // The signed-body claim is given back too, or "Redeliver" reads DUPLICATE_PAYLOAD.
+    expect(releasePayload).toHaveBeenCalledWith(
+      expect.objectContaining({ receiver: "github-issues", eventType: "issues", rawBody: body }),
+    );
   });
 
   it("passes an unsupported action through as the normalizer's reason", async () => {
