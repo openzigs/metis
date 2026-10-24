@@ -166,6 +166,11 @@ vi.mock("../src/lib/connectors/network-allowlist.js", () => ({
 vi.mock("../src/lib/connectors/vault-resolver.js", () => ({
   resolveVaultRef: vi.fn(async (ref: string | null) => (ref ? `pat_${ref}` : null)),
   readBoundSecret: vi.fn(async (id: string) => `pat_${id}`),
+  // #1499 — Test and metadata reads also return the envelope they decrypted.
+  readBoundSecretWithEnvelope: vi.fn(async (id: string) => ({
+    plaintext: `pat_${id}`,
+    envelope: ciphertextOf(id),
+  })),
 }));
 
 // #480 — binding a reference to its secret id is exercised against a real
@@ -199,7 +204,7 @@ import {
   type OctokitLike,
   type SimpleGitLike,
 } from "../src/lib/connectors/repo/repo-service.js";
-import { readBoundSecret } from "../src/lib/connectors/vault-resolver.js";
+import { readBoundSecretWithEnvelope } from "../src/lib/connectors/vault-resolver.js";
 import { resolveAndAssertConnectorHost } from "../src/lib/connectors/network-allowlist.js";
 import { audit } from "../src/lib/audit/audit-service.js";
 import { ConnectorError } from "../src/lib/connectors/types.js";
@@ -956,7 +961,7 @@ describe("#1488 — a failure that is not about the credential leaves the status
     const id = await connectedAdmin("te-vault");
     // An AbortError would read as transient had GitHub been asked: only the
     // `askedGithub` guard keeps a vault-side one from leaving the status alone.
-    vi.mocked(readBoundSecret).mockRejectedValueOnce(
+    vi.mocked(readBoundSecretWithEnvelope).mockRejectedValueOnce(
       Object.assign(new Error("vault read aborted"), { name: "AbortError" }),
     );
     await expect(testRepoConnector("proj_1", id, "user_1")).rejects.toBeTruthy();
@@ -1881,6 +1886,28 @@ describe("#1499 — a check whose binding changed under it records nothing", () 
       code: "REPO_CONNECTOR_CHANGED",
     });
     expect(rows.get(id)!.status).toBe("pending");
+  });
+
+  it("a rotate-and-undo inside one Test records nothing (no ABA on the envelope)", async () => {
+    const id = await create("mid-aba");
+    // The row is read with envelope A; the secret is rotated to B before the
+    // token is decrypted, so the Test calls GitHub with B ...
+    vi.mocked(readBoundSecretWithEnvelope).mockImplementationOnce(async (secretId: string) => {
+      secretCiphertexts.set(secretId, "ct:B");
+      return { plaintext: "pat_B", envelope: "ct:B" };
+    });
+    // ... and the undo restores A, byte for byte, before the Test writes.
+    githubThat(() => {
+      secretCiphertexts.delete("gh-pat");
+    });
+    await expect(testRepoConnector("proj_1", id, "user_1")).rejects.toMatchObject({
+      code: "REPO_CONNECTOR_CHANGED",
+    });
+    // Guarded on the row's envelope, B's `admin` landed against credential A.
+    expect(rows.get(id)!.status).toBe("pending");
+    expect(
+      (rows.get(id) as unknown as { repoPermission?: string | null }).repoPermission ?? null,
+    ).toBeNull();
   });
 
   it("the 409 from a failing Test's guarded write is audited", async () => {

@@ -149,7 +149,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         candidates: 2,
         recorded: 2,
         failed: 0,
-        alreadyRecorded: 0,
+        noLongerCandidate: 0,
       });
       // Serial and spaced: one wait between two checks, of the configured length.
       expect(noSleep.mock.calls).toEqual([[1500]]);
@@ -221,6 +221,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         test,
         sleep: noSleep,
         env: { REPO_PERMISSION_RECHECK_INTERVAL_MS: "700" },
+        order: (xs) => [...xs], // id order, so "first" is checked first
       });
       // On main every candidate in the list read at start was re-tested.
       expect(test.mock.calls.map((c) => c[1])).toEqual(["c-first", "c-third"]);
@@ -229,10 +230,26 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         candidates: 3,
         recorded: 2,
         failed: 0,
-        alreadyRecorded: 1,
+        noLongerCandidate: 1,
       });
       // One wait: between the two GitHub calls, none for the skipped candidate.
       expect(noSleep.mock.calls).toEqual([[700]]);
+    });
+
+    it("#1499 — each replica checks in its own random order, so replicas booted together drift apart", async () => {
+      await seed("c-1");
+      await seed("c-2");
+      await seed("c-3");
+      const test = vi.fn(async (_p: string, _id: string) => ({}) as never);
+      // Fisher-Yates over [c-1, c-2, c-3] with every draw 0 gives [c-2, c-3, c-1].
+      const random = vi.spyOn(Math, "random").mockReturnValue(0);
+      try {
+        await recheckUnrecordedRepoPermissions({ test, sleep: noSleep, env: {} });
+      } finally {
+        random.mockRestore();
+      }
+      // On the first cut every replica walked the same `id asc` list.
+      expect(test.mock.calls.map((c) => c[1])).toEqual(["c-2", "c-3", "c-1"]);
     });
 
     it("#1499 — the re-check is unattended, so a DNS failure at boot leaves a connector as it was", async () => {

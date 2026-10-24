@@ -45,7 +45,7 @@ import {
   type ConnectorEmitter,
 } from "../types.js";
 import { isDriverDetailCode, sanitizeDriverError } from "../driver-error.js";
-import { readBoundSecret } from "../vault-resolver.js";
+import { readBoundSecret, readBoundSecretWithEnvelope } from "../vault-resolver.js";
 import { bindSecretRef, VAULT_REF_UNRESOLVED } from "../../vault/bound-secret.js";
 import { AppError } from "../../../middleware/error-handler.js";
 import type { RepoFetcher } from "../../library/import.js";
@@ -888,15 +888,18 @@ function webhookSecretFlags(row: {
  * and nothing is recorded (otherwise an `admin` read from the attacker's own
  * repository lands on a row that now names the victim's).
  */
-function bindingWhere(row: {
-  id: string;
-  provider: string;
-  ownerOrOrg: string | null;
-  repoName: string | null;
-  apiBaseUrl: string | null;
-  secretId: string | null;
-  secret?: { ciphertext: string } | null;
-}) {
+function bindingWhere(
+  row: {
+    id: string;
+    provider: string;
+    ownerOrOrg: string | null;
+    repoName: string | null;
+    apiBaseUrl: string | null;
+    secretId: string | null;
+    secret?: { ciphertext: string } | null;
+  },
+  decryptedEnvelope?: string | null,
+) {
   return {
     id: row.id,
     deletedAt: null,
@@ -906,14 +909,25 @@ function bindingWhere(row: {
     apiBaseUrl: row.apiBaseUrl,
     secretId: row.secretId,
     // #1499 — a vault rotation rewrites a secret's value under the same id, so
-    // the id alone does not name the credential the check read. Every value
-    // write stores a fresh envelope (random salt and IV), so the stored
-    // ciphertext does: a rotation that lands while the check is in flight
-    // makes this write match nothing. The rotation itself also clears the
-    // recorded permission (`VaultService`), which covers a check that finished
-    // first.
+    // the id alone does not name the credential the check used. The stored
+    // envelope does: every value write stores a fresh one (random salt and
+    // IV), so a rotation that lands while the check is in flight makes this
+    // write match nothing. The rotation itself also clears the recorded
+    // permission (`VaultService`), which covers a check that finished first.
+    //
+    // Once the token has been decrypted, the guard is the envelope it was
+    // decrypted FROM (`decryptedEnvelope`, one row read with the plaintext),
+    // not the one read with the connector row. `undoRotation` restores an
+    // earlier envelope byte for byte, so guarding on the row's envelope let a
+    // rotate-and-undo inside one Test record the rotated value's permission
+    // against the restored one (an ABA). Before the token is read (a failure
+    // reading the vault or pinning the host) the row's envelope is all there is.
     ...(row.secretId !== null
-      ? { secret: { is: { ciphertext: row.secret?.ciphertext ?? "" } } }
+      ? {
+          secret: {
+            is: { ciphertext: decryptedEnvelope ?? row.secret?.ciphertext ?? "" },
+          },
+        }
       : {}),
   };
 }
@@ -1005,7 +1019,8 @@ export async function testRepoConnector(
 ) {
   // #1488 — one read gives both the DTO and the binding the writes are guarded on.
   const row = await readRepoConnectorRow(projectId, id);
-  const binding = bindingWhere(row);
+  // #1499 — re-bound to the envelope the token is decrypted from, once it is.
+  let binding = bindingWhere(row);
   const conn = toApi(row);
   const git = assertGitConnector(conn);
   await assertHostFromBaseUrl(conn.apiBaseUrl);
@@ -1014,10 +1029,11 @@ export async function testRepoConnector(
   // raised while reading the credential (vault) or pinning the host is not.
   let askedGithub = false;
   try {
-    const { octokit, authenticated } = await acquireOctokitWithAuth(
+    const { octokit, authenticated, envelope } = await acquireOctokitWithAuth(
       conn.apiBaseUrl,
       conn.secretRef,
     );
+    binding = bindingWhere(row, envelope);
     askedGithub = true;
     // #762 — no `connector:progress` here: a Test is one request answered in
     // well under a second, and its count-less progress event left a stuck
@@ -1302,11 +1318,15 @@ export async function fetchRepoMetadata(
   actorId: string,
 ): Promise<RepoMetadata> {
   const row = await readRepoConnectorRow(projectId, id);
-  const binding = bindingWhere(row);
   const conn = toApi(row);
   const git = assertGitConnector(conn);
   await assertHostFromBaseUrl(conn.apiBaseUrl);
-  const { octokit, authenticated } = await acquireOctokitWithAuth(conn.apiBaseUrl, conn.secretRef);
+  const { octokit, authenticated, envelope } = await acquireOctokitWithAuth(
+    conn.apiBaseUrl,
+    conn.secretRef,
+  );
+  // #1499 — guarded on the envelope the token was decrypted from.
+  const binding = bindingWhere(row, envelope);
 
   emitter().progress({ connectorId: id, projectId, kind: "repo", phase: "metadata", step: "repo" });
   const repo = await octokit.rest.repos.get({ owner: git.ownerOrOrg, repo: git.repoName });
@@ -1924,13 +1944,28 @@ export async function restoreCloneAtCommit(
 // ---- Helpers ---------------------------------------------------------------
 
 async function acquireOctokit(apiBaseUrl: string | null, secretRef: string): Promise<OctokitLike> {
-  return (await acquireOctokitWithAuth(apiBaseUrl, secretRef)).octokit;
+  const token = (await resolveSecret(secretRef)) ?? undefined;
+  return (await octokitFor(apiBaseUrl, token)).octokit;
 }
 
-/** #1488 — as `acquireOctokit`, also saying whether the client sends a token. */
+/**
+ * #1488 — as `acquireOctokit`, also saying whether the client sends a token.
+ * #1499 — and the stored envelope that token was decrypted from (null with no
+ * token), which the Test and metadata writes are guarded on.
+ */
 async function acquireOctokitWithAuth(
   apiBaseUrl: string | null,
   secretRef: string,
+): Promise<{ octokit: OctokitLike; authenticated: boolean; envelope: string | null }> {
+  const secretId = secretRef ? extractRefBody(secretRef) : null;
+  const read = secretId ? await readBoundSecretWithEnvelope(secretId, getVaultService()) : null;
+  const { octokit, authenticated } = await octokitFor(apiBaseUrl, read?.plaintext);
+  return { octokit, authenticated, envelope: read?.envelope ?? null };
+}
+
+async function octokitFor(
+  apiBaseUrl: string | null,
+  token: string | undefined,
 ): Promise<{ octokit: OctokitLike; authenticated: boolean }> {
   // Normalize GHE base URL: users may paste a browse URL like
   // "https://git.example.com/Org/repo/tree/main" or just the host
@@ -1950,7 +1985,6 @@ async function acquireOctokitWithAuth(
       // If URL parsing fails, pass through as-is (will fail at Octokit level)
     }
   }
-  const token = (await resolveSecret(secretRef)) ?? undefined;
   const host = normalizedBase ? hostnameOrThrow(normalizedBase) : "api.github.com";
   const pinned = await resolveAndAssertConnectorHost(host, "repo");
   const args: OctokitFactoryArgs = {

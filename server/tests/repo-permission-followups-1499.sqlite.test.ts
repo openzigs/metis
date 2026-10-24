@@ -252,6 +252,80 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await permissionOf("c-other")).toBe("push");
     });
 
+    describe("a value write and its permission clear land together or not at all", () => {
+      /**
+       * The real database, except that inside a transaction the permission
+       * clear fails. Thrown inside the real interactive transaction, so the
+       * rollback is SQLite's, not a mock's.
+       */
+      const withFailingClear = (real: PrismaClient) =>
+        new Proxy(real, {
+          get(target, prop) {
+            if (prop === "$transaction") {
+              return (fn: (tx: unknown) => Promise<unknown>) =>
+                target.$transaction((tx) =>
+                  fn(
+                    new Proxy(tx, {
+                      get(t, p) {
+                        if (p === "repoConnection") {
+                          return {
+                            updateMany: async () => {
+                              throw new Error("database went away mid-clear");
+                            },
+                          };
+                        }
+                        return Reflect.get(t, p);
+                      },
+                    }),
+                  ),
+                );
+            }
+            return Reflect.get(target, prop);
+          },
+        });
+      const valueOf = async () => (await getVaultService().read(rotatedSecretId)).plaintext;
+
+      it.each(["rotate", "rotateUndoable", "upsert"] as const)(
+        "%s: a failed clear writes no value and reports the failure",
+        async (write) => {
+          await connect("c-atomic", P1, rotatedSecretId, "admin");
+          const vault = getVaultService();
+          state.db = withFailingClear(db);
+          try {
+            const attempt =
+              write === "rotate"
+                ? vault.rotate(rotatedSecretId, READ_TOKEN)
+                : write === "rotateUndoable"
+                  ? vault.rotateUndoable(rotatedSecretId, READ_TOKEN)
+                  : vault.upsert("rotated-pat-1499", READ_TOKEN, "global");
+            await expect(attempt).rejects.toThrow(/mid-clear/);
+          } finally {
+            state.db = db;
+          }
+          // #593 — a throw means nothing was written: the old value stands, and
+          // so does the record that describes it.
+          expect(await valueOf()).toBe(ADMIN_TOKEN);
+          expect(await permissionOf("c-atomic")).toBe("admin");
+        },
+      );
+
+      it("undoRotation: a failed clear restores nothing and reports the failure", async () => {
+        const vault = getVaultService();
+        const undo = await vault.rotateUndoable(rotatedSecretId, READ_TOKEN);
+        await connect("c-atomic", P1, rotatedSecretId, "read");
+        state.db = withFailingClear(db);
+        try {
+          await expect(vault.undoRotation(undo)).rejects.toThrow(/mid-clear/);
+        } finally {
+          state.db = db;
+        }
+        // The restore did not land, so "could not undo" (secret-retirement.ts)
+        // and the missing `restored` audit row are true of the database.
+        expect(await valueOf()).toBe(READ_TOKEN);
+        expect(await permissionOf("c-atomic")).toBe("read");
+      });
+    });
+
     it("a Test in flight when the secret is rotated records nothing", async () => {
       await connect("c-inflight", P1, rotatedSecretId, "read");
       await db.repoConnection.update({

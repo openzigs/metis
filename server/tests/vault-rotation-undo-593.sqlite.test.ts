@@ -10,7 +10,7 @@
  * the secret back through the vault, as a real consumer would.
  */
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, type Prisma } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import {
@@ -73,6 +73,46 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         if (calls === n) throw new Error("vault unavailable");
         return real(...args);
       });
+    }
+
+    /**
+     * #1499 — the vault's compare-and-swap runs inside a transaction (with the
+     * clear of the recorded repository permissions), so it goes through the
+     * transaction client, not `db.secret`. Spy on the swap where it runs:
+     * `impl` gets the transaction's real `updateMany` and the call's args.
+     */
+    function spyOnSwap(
+      impl: (
+        real: (args: never) => Promise<{ count: number }>,
+        args: { where: { id?: string } },
+      ) => Promise<{ count: number }>,
+    ) {
+      const realTransaction = db.$transaction.bind(db) as (
+        fn: (tx: Prisma.TransactionClient) => Promise<unknown>,
+      ) => Promise<unknown>;
+      const swap = vi.fn(impl);
+      vi.spyOn(db, "$transaction").mockImplementation(((
+        fn: (tx: Prisma.TransactionClient) => Promise<unknown>,
+      ) =>
+        realTransaction((tx) =>
+          fn(
+            new Proxy(tx, {
+              get(t, p) {
+                const value = Reflect.get(t, p);
+                if (p !== "secret") return value;
+                return new Proxy(value as object, {
+                  get(s, q) {
+                    const inner = Reflect.get(s, q) as (args: never) => Promise<{ count: number }>;
+                    if (q !== "updateMany") return inner;
+                    return (args: never) =>
+                      swap(inner.bind(s), args as unknown as { where: { id?: string } });
+                  },
+                });
+              },
+            }),
+          ),
+        )) as never);
+      return swap;
     }
 
     beforeAll(async () => {
@@ -198,13 +238,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const caId = before.tlsCaSecretId!;
       // Every swap on the CA cert misses, as if another writer won each time;
       // the token's rotation, and every undo, go through for real.
-      const realUpdateMany = db.secret.updateMany.bind(db.secret);
-      vi.spyOn(db.secret, "updateMany").mockImplementation((async (args: {
-        where: { id?: string };
-      }) => {
+      spyOnSwap(async (real, args) => {
         if (args.where.id === caId) return { count: 0 };
-        return realUpdateMany(args as never);
-      }) as never);
+        return real(args as never);
+      });
 
       const err = await jira
         .updateJiraConnection(before.id, { apiToken: "new-token", tlsCaCert: "new-ca" }, OWNER)
@@ -296,14 +333,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     it("rotateUndoable retries when a write interleaves between its read and its swap", async () => {
       const s = await ownerSecret();
-      const realUpdateMany = db.secret.updateMany.bind(db.secret);
+      // The concurrent write lands after rotateUndoable's read and before its
+      // swap. #1499 — it is injected after the read rather than inside the
+      // swap's transaction: SQLite runs one write transaction at a time, so a
+      // write started from inside it would wait on itself.
+      const realFindFirst = db.secret.findFirst.bind(db.secret);
       let interleaved = false;
-      vi.spyOn(db.secret, "updateMany").mockImplementation((async (args: never) => {
+      vi.spyOn(db.secret, "findFirst").mockImplementation((async (args: never) => {
+        const read = await realFindFirst(args);
         if (!interleaved) {
           interleaved = true;
           await vault().rotate(s.id, "concurrent");
         }
-        return realUpdateMany(args);
+        return read;
       }) as never);
 
       const undo = await vault().rotateUndoable(s.id, "v1");
@@ -316,13 +358,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     it("rotateUndoable gives up rather than overwrite a value it never read", async () => {
       const s = await ownerSecret();
-      vi.spyOn(db.secret, "updateMany").mockResolvedValue({ count: 0 } as never);
+      const swap = spyOnSwap(async () => ({ count: 0 }));
 
       await expect(vault().rotateUndoable(s.id, "v1")).rejects.toMatchObject({
         status: 409,
         code: "CONCURRENT_UPDATE",
       });
-      expect(db.secret.updateMany).toHaveBeenCalledTimes(3);
+      expect(swap).toHaveBeenCalledTimes(3);
       vi.restoreAllMocks();
       expect(await plaintext(s.id)).toBe("v0");
     });

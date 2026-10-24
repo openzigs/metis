@@ -123,6 +123,29 @@ export const VAULT_BINDING_STALE = "VAULT_BINDING_STALE";
  * @throws ConnectorError 409 VAULT_BINDING_STALE when the bound secret is gone.
  */
 export async function readBoundSecret(secretId: string, vault: VaultService): Promise<string> {
+  await assertBoundSecretLive(secretId);
+  const { plaintext } = await vault.read(secretId);
+  return plaintext;
+}
+
+/**
+ * #1499 — {@link readBoundSecret}, plus the stored envelope the plaintext was
+ * decrypted from (one row read). A repository Test guards the permission it
+ * records on this envelope, so the guard names the value actually sent to
+ * GitHub, even across a rotate-and-undo that restores an earlier envelope.
+ *
+ * @throws ConnectorError 409 VAULT_BINDING_STALE when the bound secret is gone.
+ */
+export async function readBoundSecretWithEnvelope(
+  secretId: string,
+  vault: VaultService,
+): Promise<{ plaintext: string; envelope: string }> {
+  await assertBoundSecretLive(secretId);
+  const { plaintext, envelope } = await vault.readWithEnvelope(secretId);
+  return { plaintext, envelope };
+}
+
+async function assertBoundSecretLive(secretId: string): Promise<void> {
   const live = await prisma.secret.findFirst({
     where: { id: secretId, deletedAt: null },
     select: { id: true },
@@ -134,8 +157,6 @@ export async function readBoundSecret(secretId: string, vault: VaultService): Pr
       "the vault secret this resource was bound to has been deleted; select a secret again",
     );
   }
-  const { plaintext } = await vault.read(secretId);
-  return plaintext;
 }
 
 function preview(s: string): string {

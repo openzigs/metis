@@ -165,6 +165,18 @@ export function onServerListening(port: number | string): void {
   startRepoPermissionRecheck();
 }
 
+/**
+ * #1499 — start listening, running {@link onServerListening} once bound. The
+ * boot block's only `listen` call, so its wiring is tested by behaviour with a
+ * fake server.
+ */
+export function listenAndStart(
+  server: { listen: (port: number, onListening: () => void) => unknown },
+  port: number,
+): void {
+  server.listen(port, () => onServerListening(port));
+}
+
 function isMainModule(): boolean {
   // Detect direct execution (`node dist/index.js`) vs test/library import.
   try {
@@ -316,7 +328,7 @@ if (isMainModule() && process.env.METIS_NO_LISTEN !== "1") {
   // #622 — `bootServer` resolves the Socket.IO cluster adapter (awaiting its
   // attachments table) before building the server on it.
   const { http: httpServer, io, acp, prReviewWorker, socketCluster } = await bootServer();
-  httpServer.listen(PORT, () => onServerListening(PORT));
+  listenAndStart(httpServer, PORT);
 
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {

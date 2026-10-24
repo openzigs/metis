@@ -85,8 +85,12 @@ vi.mock("../src/lib/prisma.js", () => ({
       ),
     },
     // #1499 — every value write forgets the recorded repository permission of
-    // the connectors bound to the secret.
+    // the connectors bound to the secret, in one transaction with the write.
     repoConnection: { updateMany: vi.fn(async () => ({ count: 0 })) },
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+      const { prisma } = await import("../src/lib/prisma.js");
+      return fn(prisma);
+    }),
   },
 }));
 
