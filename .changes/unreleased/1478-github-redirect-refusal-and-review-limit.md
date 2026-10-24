@@ -5,7 +5,7 @@ section: Fixed
 
 - A GitHub redirect off the request's origin (host, port or scheme) now fails
   with a clear, non-retryable error rather than a retried "server error"; a PR
-  review is no longer re-run, model call and all, for it.
+  review Re-run whose pull request read is refused fails at once.
 - A POST answered with a 301, 302 or 303 is followed as a GET without the old
   body's content type.
 - PR-review spend is recorded at the larger of the configured and reported

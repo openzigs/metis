@@ -180,6 +180,30 @@ describe("#1471 — the real publish client's transport", () => {
     expect(otherHits).toBe(0);
   });
 
+  it.each([500, 503])(
+    "#1486 — a real GitHub %i still reaches callers as Octokit's RequestError with its status",
+    async (status) => {
+      handler = (_req, res) => {
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(JSON.stringify({ message: "Server Error" }));
+      };
+      const gh = await client(`t-5xx-${status}`);
+      const err = (await gh.request({ method: "GET", url: "/repos/acme/site" }).then(
+        () => {
+          throw new Error("expected the request to fail");
+        },
+        (e: unknown) => e,
+      )) as { name?: string; status?: number; response?: { status?: number } };
+      // Only a refusal from `buildPublishFetch` is unwrapped; GitHub's own
+      // error answer is passed through untouched, so status classifiers work.
+      expect(err).not.toBeInstanceOf(PublishError);
+      expect(err.name).toBe("HttpError");
+      expect(err.status).toBe(status);
+      expect(err.response?.status).toBe(status);
+      expect(seen).toHaveLength(1);
+    },
+  );
+
   it("#1478 — refuses a redirect to the same host on another port", async () => {
     // Same hostname, so a hostname-only check would follow it — through the
     // pin, to the other server's port.

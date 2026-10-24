@@ -44,6 +44,8 @@ import {
   type OctokitResponseLike,
   type PublishOctokitLike,
   type PublishRateLimitConfig,
+  GITHUB_REDIRECT_REFUSED,
+  GITHUB_TOO_MANY_REDIRECTS,
   PublishError,
 } from "./types.js";
 
@@ -284,14 +286,14 @@ async function buildPublishFetch(args: OctokitFactoryArgs): Promise<typeof fetch
       if (next.origin !== origin) {
         throw new PublishError(
           502,
-          "GITHUB_REDIRECT_REFUSED",
+          GITHUB_REDIRECT_REFUSED,
           "GitHub redirected the request to another origin; it was not followed",
         );
       }
       if (hop >= PUBLISH_MAX_REDIRECTS) {
         throw new PublishError(
           502,
-          "GITHUB_TOO_MANY_REDIRECTS",
+          GITHUB_TOO_MANY_REDIRECTS,
           "GitHub redirected the request too many times",
         );
       }

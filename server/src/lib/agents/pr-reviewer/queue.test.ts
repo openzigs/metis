@@ -278,6 +278,48 @@ describe("createPrReviewQueue", () => {
       expect(events.filter((e) => e.phase === "failed")).toHaveLength(1);
     });
 
+    it("#1486 — dead-letters a GITHUB_TOO_MANY_REDIRECTS refusal at once", async () => {
+      let runs = 0;
+      const timers: Array<() => void> = [];
+      const q = createPrReviewQueue({
+        processor: async () => {
+          runs += 1;
+          throw new PublishError(502, "GITHUB_TOO_MANY_REDIRECTS", "too many redirects");
+        },
+        maxAttempts: 3,
+        backoffMs: [10, 10],
+        setTimer: (cb) => {
+          timers.push(cb);
+          return 0;
+        },
+      });
+      q.enqueue(makePayload({ deliveryId: "loop" }));
+      await new Promise((r) => setImmediate(r));
+      expect(runs).toBe(1);
+      expect(timers).toHaveLength(0);
+      expect(q.deadLetters()).toHaveLength(1);
+    });
+
+    it("#1486 — still retries any other PublishError, retryable flag or not", async () => {
+      const timers: Array<() => void> = [];
+      const q = createPrReviewQueue({
+        processor: async () => {
+          // `retryable` defaults to false: the gate is the redirect codes, not the flag.
+          throw new PublishError(500, "GITHUB_REQUEST_FAILED", "GitHub had a bad moment");
+        },
+        maxAttempts: 2,
+        backoffMs: [10],
+        setTimer: (cb) => {
+          timers.push(cb);
+          return 0;
+        },
+      });
+      q.enqueue(makePayload({ deliveryId: "other-publish-error" }));
+      await new Promise((r) => setImmediate(r));
+      expect(timers).toHaveLength(1);
+      expect(q.deadLetters()).toHaveLength(0);
+    });
+
     it("#1478 — still retries a retryable PublishError", async () => {
       const timers: Array<() => void> = [];
       const q = createPrReviewQueue({
