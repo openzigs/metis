@@ -41,6 +41,32 @@ try {
   _katexJsPath = null;
 }
 
+// #1324 — KaTeX's stylesheet names its fonts by relative URL (`fonts/*.woff2`),
+// which resolves to nothing on the about:blank export page, and the page may
+// make no request anyway (#1017). So each `@font-face` keeps only its woff2
+// source, inlined as a `data:` URL (the CSP's `font-src data:` admits it), and
+// the woff / ttf fallbacks every Chromium can do without are dropped. Built
+// once, on first use, then shared by every export.
+let _katexStylesheet: string | null | undefined;
+
+/** The KaTeX stylesheet with its fonts inlined, or null when KaTeX is not installed. */
+export function katexStylesheet(): string | null {
+  if (_katexStylesheet !== undefined) return _katexStylesheet;
+  if (!_katexCssPath) return (_katexStylesheet = null);
+  const fontDir = path.join(path.dirname(_katexCssPath), "fonts");
+  _katexStylesheet = readFileSync(_katexCssPath, "utf8").replace(
+    /@font-face\{([^}]*)\}/g,
+    (_rule, decls: string) =>
+      `@font-face{${decls.replace(/src:[^;}]*/, (src) => {
+        const woff2 = /url\(fonts\/([\w-]+\.woff2)\)/.exec(src);
+        if (!woff2) return "";
+        const data = readFileSync(path.join(fontDir, woff2[1]!)).toString("base64");
+        return `src:url(data:font/woff2;base64,${data}) format("woff2")`;
+      })}}`,
+  );
+  return _katexStylesheet;
+}
+
 export interface ExportResult {
   buffer: Buffer;
   mimeType: string;
@@ -223,7 +249,7 @@ export function isExportRequestAllowed(url: string): boolean {
 // refuses every fetch-like channel outright: no WebSocket, beacon, EventSource
 // or fetch (`connect-src 'none'`), no frame, object, form or <base>, and
 // images and fonts from `data:` only. Inline script and style stay allowed:
-// `addScriptTag({ path })` / `addStyleTag({ path })` insert the bundles as
+// `addScriptTag({ path })` / `addStyleTag({ content })` insert the bundles as
 // inline elements, and mermaid writes inline styles into its SVG.
 export const EXPORT_PAGE_CSP = [
   "default-src 'none'",
@@ -254,34 +280,23 @@ export async function blockExternalRequests(page: Page): Promise<void> {
   });
 }
 
-async function exportToPdf(markdown: string, title: string): Promise<ExportResult> {
-  let puppeteer: typeof import("puppeteer") | undefined;
-  try {
-    puppeteer = (await import("puppeteer")) as unknown as typeof import("puppeteer");
-  } catch {
-    return fallbackHtmlExport(markdown, title);
-  }
+/**
+ * Lay the export out on `page`: the document HTML, then mermaid diagrams and
+ * KaTeX math rendered in place. The caller owns the page and its network guards
+ * ({@link blockExternalRequests}) and prints it.
+ */
+export async function renderPdfPage(page: Page, markdown: string, title: string): Promise<void> {
+  const html = await buildHtmlDocument(markdown, title);
+  // domcontentloaded is sufficient — mermaid is injected below via addScriptTag
+  await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 30_000 });
 
-  let browser: Browser | null = null;
-  try {
-    browser = await puppeteer.default.launch({
-      headless: true,
-      args: chromeLaunchArgs(),
-    });
-    const page = await browser.newPage();
-    await blockExternalRequests(page);
+  // Inject mermaid from the local filesystem; the page may not fetch it (#1017).
+  if (_mermaidPath) await page.addScriptTag({ path: _mermaidPath });
 
-    const html = await buildHtmlDocument(markdown, title);
-    // domcontentloaded is sufficient — mermaid is injected below via addScriptTag
-    await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 30_000 });
-
-    // Inject mermaid from the local filesystem; the page may not fetch it (#1017).
-    if (_mermaidPath) await page.addScriptTag({ path: _mermaidPath });
-
-    // Render diagrams now that mermaid is loaded, with per-diagram error handling.
-    // Without mermaid (a broken install) the diagrams stay as source text rather
-    // than the whole PDF degrading to the HTML fallback.
-    await page.evaluate(`
+  // Render diagrams now that mermaid is loaded, with per-diagram error handling.
+  // Without mermaid (a broken install) the diagrams stay as source text rather
+  // than the whole PDF degrading to the HTML fallback.
+  await page.evaluate(`
       (async () => {
         if (typeof mermaid === 'undefined') return;
         ${mermaidInitScript({ startOnLoad: false, theme: "neutral", maxTextSize: 500000, flowchart: { useMaxWidth: true }, sequence: { useMaxWidth: true } })}
@@ -338,17 +353,18 @@ async function exportToPdf(markdown: string, title: string): Promise<ExportResul
           svg.style.maxWidth = '100%';
         });
       })()
-    `);
+  `);
 
-    // Inject KaTeX and render math expressions. The stylesheet is inlined from
-    // the local file: a `<link>` to it would be a request, which the page may
-    // not make (#1017). Its relative font URLs still resolve to nothing (#1324).
-    if (_katexJsPath && _katexAutoRenderPath) {
-      if (_katexCssPath) await page.addStyleTag({ path: _katexCssPath });
-      await page.addScriptTag({ path: _katexJsPath });
-      await page.addScriptTag({ path: _katexAutoRenderPath });
-    }
-    await page.evaluate(`
+  // Inject KaTeX and render math expressions. The stylesheet goes in as inline
+  // text with its fonts as data: URLs: a `<link>` to it, or a relative font URL
+  // in it, would be a request, which the page may not make (#1017, #1324).
+  if (_katexJsPath && _katexAutoRenderPath) {
+    const katexCss = katexStylesheet();
+    if (katexCss) await page.addStyleTag({ content: katexCss });
+    await page.addScriptTag({ path: _katexJsPath });
+    await page.addScriptTag({ path: _katexAutoRenderPath });
+  }
+  await page.evaluate(`
       // Render pre-extracted display math blocks via katex.renderToString
       if (typeof katex !== 'undefined') {
         document.querySelectorAll('.math-display[data-formula]').forEach(function(el) {
@@ -371,7 +387,26 @@ async function exportToPdf(markdown: string, title: string): Promise<ExportResul
           });
         }
       }
-    `);
+  `);
+}
+
+async function exportToPdf(markdown: string, title: string): Promise<ExportResult> {
+  let puppeteer: typeof import("puppeteer") | undefined;
+  try {
+    puppeteer = (await import("puppeteer")) as unknown as typeof import("puppeteer");
+  } catch {
+    return fallbackHtmlExport(markdown, title);
+  }
+
+  let browser: Browser | null = null;
+  try {
+    browser = await puppeteer.default.launch({
+      headless: true,
+      args: chromeLaunchArgs(),
+    });
+    const page = await browser.newPage();
+    await blockExternalRequests(page);
+    await renderPdfPage(page, markdown, title);
 
     const pdfBuffer = await page.pdf({
       format: "A4",

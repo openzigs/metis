@@ -27,6 +27,7 @@ import {
   EXPORT_PAGE_CSP_META,
   chromeLaunchArgs,
   exportDocument,
+  renderPdfPage,
 } from "../src/lib/docs-gen/exporters.js";
 
 const enabled = process.env.RUN_INTEGRATION_TESTS === "1";
@@ -89,6 +90,64 @@ describe.runIf(enabled)("document export against a real Chromium (integration)",
     // the embedded image part directly.
     expect(result.buffer.includes(Buffer.from("word/media/"))).toBe(true);
   });
+  // #1324 — KaTeX's stylesheet used to reach the page as a file:// <link>,
+  // which Chrome refuses to about:blank, and after #1017 as inline CSS whose
+  // relative font URLs resolved to nothing. Either way formulas printed in
+  // fallback serif fonts. Under the exporter's full network posture, the math
+  // must now be laid out in KaTeX's own font, loaded, with no request refused.
+  it("renders math with KaTeX's stylesheet and fonts loaded, under the full network posture (#1324)", async () => {
+    const browser = await puppeteer.launch({ headless: true, args: chromeLaunchArgs() });
+    try {
+      const page = await browser.newPage();
+      await blockExternalRequests(page);
+      const refused: string[] = [];
+      page.on("requestfailed", (r) => refused.push(r.url().slice(0, 80)));
+      const blocked: string[] = [];
+      page.on("console", (m) => {
+        if (/Content Security Policy|Failed to load/i.test(m.text()))
+          blocked.push(m.text().slice(0, 160));
+      });
+
+      await renderPdfPage(page, "# Maths\n\n$$E = mc^2$$\n\nInline $a^2 + b^2$ too.\n", "maths");
+
+      const seen = (await page.evaluate(`(async () => {
+        await document.fonts.ready;
+        const katexEl = document.querySelector(".math-display .katex");
+        const faces = [...document.fonts].filter((f) => f.family.replace(/"/g, "") === "KaTeX_Main");
+        return {
+          fontFamily: katexEl ? getComputedStyle(katexEl).fontFamily : null,
+          mainFaces: faces.map((f) => f.status),
+          rendered: document.querySelectorAll(".katex").length,
+        };
+      })()`)) as { fontFamily: string | null; mainFaces: string[]; rendered: number };
+
+      expect(seen.rendered).toBeGreaterThanOrEqual(2);
+      expect(seen.fontFamily).toMatch(/^"?KaTeX_Main"?,/);
+      // The regular KaTeX_Main face the formula uses was fetched and decoded.
+      expect(seen.mainFaces).toContain("loaded");
+      expect(seen.mainFaces).not.toContain("error");
+      expect(refused).toEqual([]);
+      expect(blocked).toEqual([]);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("embeds KaTeX's own fonts in the exported PDF (#1324)", async () => {
+    const result = await exportDocument(
+      "# Maths\n\n$$E = mc^2$$\n\nInline $a^2 + b^2$ too.\n",
+      "maths",
+      "pdf",
+    );
+    expect(result.mimeType).toBe("application/pdf");
+    // Skia writes each embedded font's PostScript name, subset-prefixed, into an
+    // uncompressed /BaseFont entry; before #1324 only fallback serif fonts appeared.
+    const baseFonts =
+      result.buffer.toString("latin1").match(/\/BaseFont\s*\/[A-Z]+\+[\w-]+/g) ?? [];
+    expect(baseFonts.some((f) => f.endsWith("+KaTeX_Main-Regular"))).toBe(true);
+    expect(baseFonts.some((f) => f.endsWith("+KaTeX_Math-Italic"))).toBe(true);
+  });
+
   // #1017 — the export browser's three network guards, in a real Chromium,
   // against probe servers that record every HTTP request, WebSocket upgrade,
   // TURN-over-TCP connection and STUN (UDP) packet they receive. Content that
