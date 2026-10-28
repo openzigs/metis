@@ -31,7 +31,7 @@ interface Recorded {
   /** Per page: whether interception was on when `setContent` ran, and its handlers. */
   pages: Array<{ interceptingAtSetContent: boolean | null; handlers: RequestHandler[] }>;
   /** Every addScriptTag / addStyleTag call, in order. */
-  injected: Array<{ kind: "script" | "style"; path?: string; url?: string }>;
+  injected: Array<{ kind: "script" | "style"; path?: string; url?: string; content?: string }>;
 }
 
 const rec: Recorded = {
@@ -63,7 +63,7 @@ function fakePage() {
     addScriptTag: async (opts: { path?: string; url?: string }) => {
       rec.injected.push({ kind: "script", ...opts });
     },
-    addStyleTag: async (opts: { path?: string; url?: string }) => {
+    addStyleTag: async (opts: { path?: string; url?: string; content?: string }) => {
       rec.injected.push({ kind: "style", ...opts });
     },
     evaluate: async (script: string) => {
@@ -103,6 +103,7 @@ const {
   EXPORT_PAGE_CSP,
   EXPORT_PAGE_CSP_META,
   EXPORT_NETWORK_LOCKDOWN_ARGS,
+  katexStylesheet,
 } = await import("../../src/lib/docs-gen/exporters.js");
 
 /** The directives of a CSP string, as a name -> sources map. */
@@ -404,16 +405,57 @@ describe("mermaid render security (#686)", () => {
       expectLockedDownHtml(rec.contents[0]!);
     });
 
-    it("injects mermaid and KaTeX (script and stylesheet) from local paths, never a URL", async () => {
+    it("injects mermaid and KaTeX from local paths and KaTeX's stylesheet inline, never a URL", async () => {
       await exportDocument("# Maths\n\n$$x^2$$\n", "t", "pdf");
       expect(rec.injected.filter((i) => i.url !== undefined)).toEqual([]);
-      const paths = rec.injected.map((i) => `${i.kind}:${i.path?.split(/[\\/]/).pop()}`);
+      const paths = rec.injected.map(
+        (i) => `${i.kind}:${i.content !== undefined ? "inline" : i.path?.split(/[\\/]/).pop()}`,
+      );
       expect(paths).toEqual([
         "script:mermaid.min.js",
-        "style:katex.min.css",
+        "style:inline",
         "script:katex.min.js",
         "script:auto-render.min.js",
       ]);
+      // #1324 — the inline text is the font-inlined stylesheet, not the raw file.
+      expect(rec.injected[1]!.content).toBe(katexStylesheet());
+    });
+
+    // #1324 — KaTeX's relative font URLs resolve to nothing on about:blank and
+    // would be requests the page may not make; each face carries its woff2 inline.
+    describe("katexStylesheet", () => {
+      const css = katexStylesheet()!;
+      const faces = css.match(/@font-face\{[^}]*\}/g) ?? [];
+
+      it("keeps every @font-face, each with exactly one source: an inline woff2", () => {
+        expect(faces).toHaveLength(20);
+        for (const face of faces) {
+          const urls = face.match(/url\([^)]*\)/g) ?? [];
+          expect(urls, face.slice(0, 80)).toHaveLength(1);
+          expect(urls[0]).toMatch(/^url\(data:font\/woff2;base64,[A-Za-z0-9+/]+=*\)$/);
+          expect(face).toContain('format("woff2")');
+        }
+      });
+
+      it("refers to nothing outside itself: every url() in the sheet is a data: URL", () => {
+        const urls = css.match(/url\([^)]*\)/g) ?? [];
+        expect(urls.length).toBe(faces.length);
+        expect(urls.filter((u) => !u.startsWith("url(data:"))).toEqual([]);
+        expect(css).not.toMatch(/fonts\//);
+      });
+
+      it("inlines the real font bytes: each data: URL decodes to a WOFF2 file", () => {
+        for (const face of faces) {
+          const b64 = /base64,([^)]*)\)/.exec(face)![1]!;
+          const bytes = Buffer.from(b64, "base64");
+          expect(bytes.subarray(0, 4).toString("latin1")).toBe("wOF2");
+          expect(bytes.length).toBeGreaterThan(1000);
+        }
+      });
+
+      it("keeps the rest of KaTeX's rules", () => {
+        expect(css).toMatch(/\.katex\{[^}]*font:normal 1\.21em KaTeX_Main/);
+      });
     });
 
     // PR #1321 review — without the CDN fallback a missing mermaid must not throw in the page.
