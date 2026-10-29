@@ -308,6 +308,22 @@ describe.skipIf(!isSqlite)("#1527 — the home is recorded on attach and decides
     expect((await get(`/api/products/${id}`, "mallory")).status).toBe(404);
   });
 
+  it("a product bound only to another workspace's project is absent from a member's list and 404 by id", async () => {
+    const id = await create("mallory", "bound-ws2");
+    // The bound-project branch of the list filter: no repo, just a project in WS2.
+    await db.project.update({ where: { id: PB }, data: { productId: id } });
+    try {
+      expect(await listedIds("mallory")).toContain(id);
+      expect(await listedIds("bob")).not.toContain(id);
+      for (const path of ["", "/analyses", "/documents"]) {
+        expect((await get(`/api/products/${id}${path}`, "mallory")).status, path).toBe(200);
+        expect((await get(`/api/products/${id}${path}`, "bob")).status, path).toBe(404);
+      }
+    } finally {
+      await db.project.update({ where: { id: PB }, data: { productId: null } });
+    }
+  });
+
   describe("the creator's later standing does not move the product (decision for finding 2)", () => {
     it("removing the creator from the workspace keeps the product with the team", async () => {
       const id = await create("carl", "carls");

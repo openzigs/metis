@@ -7,3 +7,4 @@ section: Security
 - Products: removing a product's creator from the workspace, or taking away their admin role, no longer hides their products from the team.
 - Products: the product list no longer fails once a member can reach more than about 1,000 projects.
 - Products: the upgrade gives existing products a home from their earliest-attached repo that their creator could have attached.
+- Products: the upgrade cannot recover a product whose creator had already left the workspace or lost admin; it stays hidden from non-admins until an admin attaches a repo from the intended workspace, which homes it.
