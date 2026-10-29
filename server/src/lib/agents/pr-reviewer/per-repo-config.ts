@@ -15,7 +15,8 @@
  * a top-level review comment so the repo author sees the parse error
  * without needing to dig through audit logs.
  */
-import yaml from "js-yaml";
+import { FAILSAFE_SCHEMA } from "js-yaml";
+import { loadYamlDocument } from "../../yaml-load.js";
 import { z } from "zod";
 
 export const PR_REVIEW_CONFIG_PATH = ".metis/pr-review.yaml";
@@ -163,7 +164,7 @@ export async function loadPerRepoConfig(input: LoadConfigInput): Promise<LoadedP
 
   let parsed: unknown;
   try {
-    parsed = yaml.load(raw, { schema: yaml.FAILSAFE_SCHEMA });
+    parsed = loadYamlDocument(raw, { schema: FAILSAFE_SCHEMA });
   } catch (err) {
     return {
       config: {},

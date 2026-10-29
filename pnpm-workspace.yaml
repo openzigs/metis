@@ -332,6 +332,11 @@ overrides:
   # (`'js-yaml' does not provide an export named 'default'`). The major is
   # separate work needing its own justification.
   #
+  # That separate work landed with #915: server/ now depends on js-yaml 5
+  # DIRECTLY (named imports via server/src/lib/yaml-load.ts). This override
+  # still governs only the transitive 4.x copies — the `@4` selector never
+  # matches a 5.x resolution, so it neither blocks nor rewrites the direct dep.
+  #
   # 4.3.1 DID NOT HOLD (#1363). GHSA-2883-xcg3-v3hh (CVSS 7.5, published
   # 2026-09-08) records `introduced 4.0.0, fixed 4.3.2` — unbounded memory in
   # anchor expansion, a billion-laughs DoS from untrusted YAML. The floor moves

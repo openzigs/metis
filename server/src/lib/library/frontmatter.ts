@@ -19,7 +19,8 @@
  * the Phase 4 ApprovalGate + Phase 6 MCP per-project allow-list, never here.
  */
 import crypto from "node:crypto";
-import yaml from "js-yaml";
+import { FAILSAFE_SCHEMA } from "js-yaml";
+import { loadYamlDocument } from "../yaml-load.js";
 import { z } from "zod";
 
 // Hard ceilings keep a malicious skill bundle from blowing up the prompt or
@@ -198,7 +199,7 @@ function parseYamlSafely(yamlText: string): Record<string, unknown> {
   // No `!!js/function`, no `!!python/object`, no `!!binary` payload coercion.
   let parsed: unknown;
   try {
-    parsed = yaml.load(yamlText, { schema: yaml.FAILSAFE_SCHEMA });
+    parsed = loadYamlDocument(yamlText, { schema: FAILSAFE_SCHEMA });
   } catch (err) {
     throw new FrontmatterError("YAML_PARSE_ERROR", `YAML parse failed: ${(err as Error).message}`);
   }
