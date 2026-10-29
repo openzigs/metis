@@ -20,7 +20,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { loadRepositorySources, resolveSourcePath } from "./repository-sources.js";
 import { ensureRepositorySourcesReady } from "./source-preflight.js";
 import { SQL_SCAN_DIR_CAP } from "./module-grouping.js";
-import { loadAIConfig } from "../ai/config.js";
+import { loadAIConfig, type AIConfig } from "../ai/config.js";
 import { isJunkSourcePath } from "@metis/shared";
 import {
   approvedRequirementsFacts,
@@ -58,6 +58,21 @@ function canonical(value: unknown): unknown {
 
 function hash(value: unknown): string {
   return inputHash(canonical(value));
+}
+
+/**
+ * #1541 — the AI config as the settings item hashes it: every credential field
+ * (`sdkProvider.apiKey` / `authToken`, `gatewayApiKey`, `localApiKey`) removed.
+ * A secret must not sit in an unsalted persisted digest, and rotating a key
+ * changes nothing a document is written from, so it must not mark every
+ * generated document stale. A config holding no credentials (offline)
+ * projects to an equal object, so its hash is what it always was.
+ */
+export function fingerprintableAIConfig(config: AIConfig) {
+  const { gatewayApiKey: _gateway, localApiKey: _local, sdkProvider, ...rest } = config;
+  if (!sdkProvider) return rest;
+  const { apiKey: _apiKey, authToken: _authToken, ...endpoint } = sdkProvider;
+  return { ...rest, sdkProvider: endpoint };
 }
 
 /**
@@ -362,7 +377,7 @@ export async function captureGenerationInputs(
     policy: json(doc.evidencePolicy),
     resolvedPolicy: { ...policy, sharedDocumentIds: [...policy.sharedDocumentIds].sort() },
     project,
-    config: loadAIConfig(),
+    config: fingerprintableAIConfig(loadAIConfig()),
     phase1: bundle(phase1),
     phase2: bundle(phase2.primary),
     hybrid: phase2.hybrid

@@ -3,8 +3,9 @@ import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { EvidencePolicy } from "./evidence-policy.js";
-import { captureGenerationInputs } from "./generation-inputs.js";
+import { captureGenerationInputs, fingerprintableAIConfig } from "./generation-inputs.js";
 import { isGraphRowsOnlyChange, planRegeneration } from "./regeneration-plan.js";
+import type { AIConfig } from "../ai/config.js";
 
 const mocks = vi.hoisted(() => ({
   symbols: vi.fn(),
@@ -24,7 +25,13 @@ const mocks = vi.hoisted(() => ({
   resolve: vi.fn(),
   approved: vi.fn(),
   layout: vi.fn(),
+  inputHash: vi.fn(),
 }));
+// #1541 — a pass-through spy, so a test can read every value that is hashed.
+vi.mock("./regeneration-plan.js", async (original) => {
+  const plan = await original<typeof import("./regeneration-plan.js")>();
+  return { ...plan, inputHash: mocks.inputHash.mockImplementation(plan.inputHash) };
+});
 vi.mock("../prisma.js", () => ({
   prisma: {
     codeSymbol: { findMany: mocks.symbols },
@@ -703,6 +710,68 @@ describe("captureGenerationInputs", () => {
       expect((await capture()).fingerprint).not.toBe(baseline.fingerprint);
     },
   );
+
+  describe("#1541 — provider credentials are not inputs", () => {
+    const credentialed = (secret: string): AIConfig => ({
+      provider: "anthropic",
+      model: "model",
+      offline: false,
+      rateLimit: { windowMs: 1000, max: 1 },
+      pingTimeoutMs: 100,
+      sdkProvider: {
+        type: "anthropic",
+        baseUrl: "http://localhost/v1",
+        apiKey: `${secret}-api-key`,
+        authToken: `${secret}-auth-token`,
+      },
+      gatewayBaseUrl: "http://gateway/v1",
+      gatewayApiKey: `${secret}-gateway-key`,
+      localBaseUrl: "http://local/v1",
+      localApiKey: `${secret}-local-key`,
+      modelProfileMap: { x: "profile-x" },
+    });
+    const CREDENTIAL = /apiKey|authToken|gatewayApiKey|localApiKey|SECRET-/;
+
+    it("rotating every credential leaves the settings item and the fingerprint unchanged", async () => {
+      mocks.config.mockReturnValue(credentialed("SECRET-OLD"));
+      const before = await capture();
+      mocks.config.mockReturnValue(credentialed("SECRET-NEW"));
+      const after = await capture();
+      expect(after.items.settings).toBe(before.items.settings);
+      expect(after.fingerprint).toBe(before.fingerprint);
+    });
+
+    it("hashes no credential field or value, while the endpoint still counts", async () => {
+      mocks.config.mockReturnValue(credentialed("SECRET-OLD"));
+      const before = await capture();
+      const hashed = mocks.inputHash.mock.calls.map(([value]) => JSON.stringify(value));
+      expect(hashed.some((value) => value.includes("http://localhost/v1"))).toBe(true);
+      expect(hashed.filter((value) => CREDENTIAL.test(value))).toEqual([]);
+      // A non-credential provider field is still an input.
+      const moved = credentialed("SECRET-OLD");
+      moved.sdkProvider!.baseUrl = "http://elsewhere/v1";
+      mocks.config.mockReturnValue(moved);
+      expect((await capture()).items.settings).not.toBe(before.items.settings);
+    });
+
+    it("fingerprintableAIConfig keeps the shape and drops only the credential fields", () => {
+      const projected = fingerprintableAIConfig(credentialed("SECRET-OLD"));
+      expect(JSON.stringify(projected)).not.toMatch(CREDENTIAL);
+      const {
+        gatewayApiKey: _g,
+        localApiKey: _l,
+        sdkProvider,
+        ...rest
+      } = credentialed("SECRET-OLD");
+      expect(projected).toEqual({
+        ...rest,
+        sdkProvider: { type: sdkProvider!.type, baseUrl: sdkProvider!.baseUrl },
+      });
+      // A config with no credentials (offline) projects to itself, so its hash is unchanged.
+      const offline = { ...rest, provider: "offline-stub", offline: true } as AIConfig;
+      expect(fingerprintableAIConfig(offline)).toEqual(offline);
+    });
+  });
 
   it("fingerprints actual fallback model, hybrid bundles, env tuning and endpoints", async () => {
     const baseline = await capture();
