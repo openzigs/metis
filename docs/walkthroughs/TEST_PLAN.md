@@ -619,7 +619,7 @@ Replaces the Test Coverage page, whose imports and runs were removed in #818 and
 - **Steps:**
   1. Visit `/admin`. It must redirect to `/settings` (`ui/src/lib/legacy-routes.ts`).
   2. Visit `/settings/workspaces`, `/settings/workspaces/:id`, `/settings/auth`, `/settings/embeddings` and `/settings/audit`, plus `/eval/leaderboard` and `/products`.
-  3. Check the admin APIs: `/api/admin/usage`, `/api/admin/token-budgets/:userId`, `/api/admin/cache-telemetry` and `/api/admin/auth/providers`.
+  3. Check the admin APIs: `/api/admin/usage`, `/api/admin/token-budgets/:userId`, `/api/admin/cache-telemetry`, `/api/admin/auth/providers` and `GET /api/admin/auth/saml/group-overage` (#1552: `total` 0 and no warning on the SAML 2.0 tab unless a SAML sign-in arrived with a group overage).
   4. Sign out from the account menu.
 - **Works:** every legacy `/admin/*` URL redirects (`legacy-routes.ts`), and the admin pages load for an admin while showing 403 for a non-admin. Signing out lands on the plain sign-in page, not `/login?reason=expired` (#720). `/settings/auth` loads with no console error.
 - **Useful:** cache telemetry shows DeepSeek cache reads, if DeepSeek reports them (#796).
