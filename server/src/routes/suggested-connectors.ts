@@ -221,7 +221,16 @@ export function suggestedConnectorsRouter(): Router {
       // (admins). Everyone else learns that a password is stored
       // (`hasStoredPassword`) and provisions with it server-side by omitting
       // `password` — never by receiving it.
-      const mayReveal = req.user ? hasPermission(req.user.role, "vault.reveal") : false;
+      // #1554 — a reveal also needs an MFA sign-in, the same rule as
+      // GET /api/vault/:id/reveal. Withheld rather than refused: the suggestion
+      // itself stays readable, as it is for a non-admin.
+      const mfaOk = req.user?.mfaPassed !== false;
+      const mayReveal = req.user ? hasPermission(req.user.role, "vault.reveal") && mfaOk : false;
+      const mfaWithheld =
+        Boolean(row.passwordVaultRef) &&
+        !mfaOk &&
+        Boolean(req.user) &&
+        hasPermission(req.user!.role, "vault.reveal");
       let password: string | null = null;
       if (row.passwordVaultRef && mayReveal) {
         try {
@@ -244,7 +253,12 @@ export function suggestedConnectorsRouter(): Router {
         actor: actorIdOf(req),
         action: "suggested_connector.credential_read",
         target: { type: "suggested_connector", id: row.id },
-        metadata: { projectId, hasPassword: password !== null, passwordWithheld: !mayReveal },
+        metadata: {
+          projectId,
+          hasPassword: password !== null,
+          passwordWithheld: !mayReveal,
+          ...(mfaWithheld ? { reason: "mfa_required" } : {}),
+        },
       });
 
       res.json(

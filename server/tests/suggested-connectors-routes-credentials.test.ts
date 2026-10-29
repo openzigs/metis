@@ -184,6 +184,44 @@ describe("suggested-connectors routes — credentials (#704)", () => {
       );
     });
 
+    it.each([
+      [false, null, true],
+      [true, "hunter2", false],
+      [undefined, "hunter2", false],
+    ])(
+      "#1554 admin session with mfaPassed=%s: password %s (withheld %s)",
+      async (mfaPassed, expected, withheld) => {
+        const sc = addSuggestion({ passwordVaultRef: "vault_abc" });
+        vaultRead.mockResolvedValue({ summary: { id: "vault_abc" }, plaintext: "hunter2" });
+        const { issueTokens } = await import("../src/lib/auth/jwt.js");
+        const { getPermissionsForRole } = await import("../src/lib/auth/permissions.js");
+        const accessToken = issueTokens({
+          userId: "user_admin",
+          username: "admin",
+          role: "admin",
+          permissions: getPermissionsForRole("admin"),
+          ...(mfaPassed === undefined ? {} : { mfaPassed }),
+        }).accessToken;
+
+        const res = await request(app)
+          .get(`/api/projects/proj-1/suggested-connectors/${sc.id}`)
+          .set("Authorization", `Bearer ${accessToken}`);
+        expect(res.status).toBe(200);
+        expect(res.body.data.password).toBe(expected);
+        expect(res.body.data.passwordWithheld).toBe(withheld);
+        expect(res.body.data.hasStoredPassword).toBe(true);
+        if (withheld) {
+          expect(vaultRead).not.toHaveBeenCalled();
+          expect(auditSpy).toHaveBeenCalledWith(
+            expect.objectContaining({
+              action: "suggested_connector.credential_read",
+              metadata: expect.objectContaining({ reason: "mfa_required", passwordWithheld: true }),
+            }),
+          );
+        }
+      },
+    );
+
     it("returns null password when no vault ref", async () => {
       const sc = addSuggestion();
       const res = await request(app)
