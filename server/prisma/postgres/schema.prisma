@@ -1231,7 +1231,12 @@ model Analysis {
   id           String    @id @default(cuid())
   projectId    String
   status       String    @default("pending") // pending|running|completed|failed|cancelled
-  startedById  String
+  /// The user who started the run. #1528 — NULL for a run the system started
+  /// (a scheduled `rerun-analysis` task), which has no user: the orchestrator
+  /// is handed `SYSTEM_ACTOR_ID` and `createAnalysis` stores it as NULL, as the
+  /// audit log does (#1518). `onDelete: Restrict` (the required relation's
+  /// action) is kept, so NULL never means a deleted user.
+  startedById  String?
   startedAt    DateTime  @default(now())
   completedAt  DateTime?
   inputTokens  Int       @default(0)
@@ -1244,7 +1249,7 @@ model Analysis {
   deletedAt    DateTime?
 
   project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  startedBy User    @relation(fields: [startedById], references: [id])
+  startedBy User?   @relation(fields: [startedById], references: [id], onDelete: Restrict)
 
   agentResults         AgentResult[]
   requirements         Requirement[]

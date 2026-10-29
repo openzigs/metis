@@ -267,7 +267,8 @@ export interface RequirementSummary {
 export interface AnalysisListItem {
   id: string;
   projectId: string;
-  startedById: string;
+  /** #1528 — null for a run the system started (a scheduled re-run). */
+  startedById: string | null;
   status: AnalysisStatus;
   startedAt: string;
   completedAt: string | null;

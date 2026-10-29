@@ -30,6 +30,7 @@
  * Blocked decisions are audited (`review.gate.blocked`) via the standard
  * fire-and-forget audit queue, consistent with publishing-service.
  */
+import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { audit } from "../audit/audit-service.js";
 import { createChildLogger } from "../logger.js";
@@ -165,7 +166,7 @@ interface BlockDetails {
 
 function blocked(projectId: string, gate: GateContext, details: BlockDetails): AppError {
   audit({
-    actor: { id: gate.actorId ?? "system" },
+    actor: { id: gate.actorId ?? SYSTEM_ACTOR_ID },
     action: "review.gate.blocked",
     target: { type: "project", id: projectId },
     metadata: { context: gate.context, ...details },
@@ -192,7 +193,7 @@ async function failClosed(
   } catch (err) {
     if (err instanceof AppError) throw err;
     audit({
-      actor: { id: gate.actorId ?? "system" },
+      actor: { id: gate.actorId ?? SYSTEM_ACTOR_ID },
       action: "review.gate.error",
       target: { type: "project", id: projectId },
       metadata: { context: gate.context, error: err instanceof Error ? err.message : String(err) },

@@ -19,6 +19,7 @@
  * It never produces a clone at a commit other than the one it was asked for: the
  * code graph's symbols and line numbers describe that commit and no other.
  */
+import { SYSTEM_ACTOR_ID } from "../../audit/system-actor.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
@@ -210,7 +211,7 @@ export async function ensureConnectorClone(
       return { status: "migrated", path: target };
     }
     try {
-      await deps.restore(input.projectId, input.connectorId, commitSha, "system");
+      await deps.restore(input.projectId, input.connectorId, commitSha, SYSTEM_ACTOR_ID);
     } catch (err) {
       log.warn("Could not restore a missing or hollow repository clone", {
         connectorId: input.connectorId,

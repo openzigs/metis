@@ -16,6 +16,7 @@
  *   DELETE /:docId               — soft-delete a document
  *   POST   /:docId/cancel        — cancel a pending or running generation (#855)
  */
+import { SYSTEM_ACTOR_ID } from "../lib/audit/system-actor.js";
 import { Router, type Request, type Response } from "express";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -529,7 +530,7 @@ export function generatedDocsRouter(): Router {
           scopeFilter: JSON.stringify({
             ...parsed.data.scopeFilter,
             docType: parsed.data.docType,
-            actorId: req.user?.userId ?? "system",
+            actorId: req.user?.userId ?? SYSTEM_ACTOR_ID,
             // #283 — stash the opt-in domain web-research flag (no schema migration).
             groundDomainWithWebResearch: parsed.data.groundDomainWithWebResearch,
             ...(pathPrefixes ? { pathPrefixes } : {}),

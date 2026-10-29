@@ -21,6 +21,7 @@
  * Unlike the old per-symbol approach, the output is a single narrative
  * document rather than a flat list of class summaries.
  */
+import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import { createHash, randomBytes } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
@@ -1922,7 +1923,7 @@ async function runHolisticSynthesis(
     policy: provenance?.policy ?? {
       projectId,
       generatedDocumentId: provenance?.revision.generatedDocumentId ?? "pending",
-      actor: { userId: "system", role: "admin" },
+      actor: { userId: SYSTEM_ACTOR_ID, role: "admin" },
       aclSubjects: [],
       ...(repoConnectorId ? { repoConnectorId } : {}),
       ...(repoConnectorId ? { codeGraphId: symbolWhere.codeGraphId } : {}),

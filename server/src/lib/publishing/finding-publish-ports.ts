@@ -7,6 +7,7 @@
  * through these, and supply their own idempotency key (`findExistingLink` /
  * `saveLink`) on top.
  */
+import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
 import { readBoundSecret } from "../connectors/vault-resolver.js";
@@ -52,7 +53,7 @@ function noPublishTargetError(): PublishError {
 function publishAuditPort(subject: PublishAuditSubject): PublisherPorts["audit"] {
   return async (action, sourceId, meta) => {
     audit({
-      actor: { id: "system" },
+      actor: { id: SYSTEM_ACTOR_ID },
       action,
       target: { type: subject.targetType, id: sourceId },
       metadata: { ...meta, source: subject.source },
