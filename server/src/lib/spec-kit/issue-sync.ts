@@ -151,10 +151,10 @@ function toggleCheckbox(line: string, closed: boolean, issueNumber?: number): st
  * `issues.edited` payload so the webhook handler MUST scrub them.
  */
 function sanitiseTitleForTasksMd(raw: string): string {
-  return (
-    // #1542 — escape `\` then `|` so a title's `a\|b` cannot end the cell
-    // early. First, because no later step adds or removes either character.
-    escapeTableCell(raw)
+  // #1542 — escape `\` then `|` last, so a title's `a\|b` cannot end the cell
+  // early. No step of the scrub adds or removes either character.
+  return escapeTableCell(
+    raw
       .replace(/\r\n|\r|\n/g, " ") // collapse newlines to a single space
       // Issue #17.2 — strip HTML comments outright. A title containing
       // `<!-- closed via #N -->` (or any `<!-- ... -->`) would otherwise be
@@ -170,7 +170,7 @@ function sanitiseTitleForTasksMd(raw: string): string {
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
       .replace(/\s+/g, " ") // collapse runs of whitespace from the prior step
-      .trim()
+      .trim(),
   );
 }
 
