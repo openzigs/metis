@@ -214,6 +214,12 @@ export interface IssueTokensInput {
    * (and the sockets bound to it) survives rotation.
    */
   sid?: string;
+  /**
+   * #1552 — whether the SSO sign-in proved MFA (`requireMfa` refuses `false`).
+   * Omitted for sign-ins that make no MFA claim (mock, LDAP); a refresh carries
+   * the presented token's value forward, so the session keeps it.
+   */
+  mfaPassed?: boolean;
 }
 
 /**
@@ -236,6 +242,8 @@ export interface RefreshPayload {
   workspaces?: string[];
   /** #1414 — see {@link IssueTokensInput.sid}. */
   sid?: string;
+  /** #1552 — see {@link IssueTokensInput.mfaPassed}. */
+  mfaPassed?: boolean;
   tokenId: string;
   type: "refresh";
   iat?: number;
@@ -274,6 +282,7 @@ export function issueTokens(input: IssueTokensInput): TokenPair {
       role: input.role,
       permissions: input.permissions,
       ...(input.workspaces?.length ? { workspaces: input.workspaces } : {}),
+      ...(typeof input.mfaPassed === "boolean" ? { mfaPassed: input.mfaPassed } : {}),
       sid,
     } satisfies Omit<AuthPayload, "iat" | "exp">,
     secret,
@@ -286,6 +295,7 @@ export function issueTokens(input: IssueTokensInput): TokenPair {
       role: input.role,
       permissions: input.permissions,
       ...(input.workspaces?.length ? { workspaces: input.workspaces } : {}),
+      ...(typeof input.mfaPassed === "boolean" ? { mfaPassed: input.mfaPassed } : {}),
       sid,
       tokenId,
       type: "refresh",
@@ -489,5 +499,8 @@ export async function refreshAccessToken(
     // #1414 — the session survives rotation. A token from before #1414 has
     // none, and its first refresh mints one.
     sid: sessionIdOf(decoded),
+    // #1552 — the MFA result of the sign-in survives rotation, or a refreshed
+    // session would lose the `false` that `requireMfa` refuses.
+    ...(typeof decoded.mfaPassed === "boolean" ? { mfaPassed: decoded.mfaPassed } : {}),
   });
 }

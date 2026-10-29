@@ -272,6 +272,7 @@ export function ssoRouter(): Router {
       role: userRow.role,
       permissions,
       workspaces: await readWorkspaceIds(userRow.id),
+      mfaPassed: result.user.mfaPassed,
     });
 
     setBrowserSession(res, tokens);
@@ -287,6 +288,21 @@ export function ssoRouter(): Router {
         mfaPassed: result.user.mfaPassed,
       },
     });
+    if (result.user.groupOverage) {
+      // #1552 — visible to admins in the audit log: the user signed in with the
+      // default role because the IdP listed no groups (Entra's overage claim).
+      audit({
+        actor: { id: userRow.id },
+        action: "sso.saml.group_overage",
+        target: { type: "user", id: userRow.id },
+        metadata: {
+          username: userRow.username,
+          role: userRow.role,
+          mode: "saml",
+          remedy: "In Entra ID, set the group claim to 'Groups assigned to the application'",
+        },
+      });
+    }
 
     res.redirect(ssoLandingUrl());
   });
@@ -377,6 +393,7 @@ export function ssoRouter(): Router {
       role: userRow.role,
       permissions,
       workspaces: await readWorkspaceIds(userRow.id),
+      mfaPassed: result.user.mfaPassed,
     });
 
     setBrowserSession(res, tokens);

@@ -107,6 +107,14 @@ true`.
   mismatched `InResponseTo` is rejected; minor clock skew within tolerance still
   authenticates. The test mints a throwaway self-signed cert at runtime (no
   committed key material) and signs with `xml-crypto`.
+- `server/src/lib/auth/__tests__/saml-provider-entra.test.ts` (#1552) does the
+  same with Microsoft Entra ID-shaped Responses and Federation Metadata XML
+  (`entra-saml-fixtures.ts`): group object IDs and app roles are read, a group
+  overage is flagged, a password-only sign-in is not MFA while `multipleauthn` is,
+  and an assertion-only Response is refused with a message naming Entra's "Sign
+  SAML response and assertion" setting. `tests/saml-entra-1552.sqlite.test.ts`
+  drives the same through the ACS route and checks the issued session. Setup:
+  [azure-ad.md](azure-ad.md).
 - `saml-request-id-cache*.test.ts` cover the cache contract + cross-replica
   behaviour; `tests/saml-request-id-cache-postgres.integration.test.ts` proves it
   end-to-end against a real Postgres (gated, in the `postgres-adapter` CI job).

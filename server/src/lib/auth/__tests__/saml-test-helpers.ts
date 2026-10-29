@@ -93,8 +93,14 @@ export interface SamlResponseOptions {
   notOnOrAfter?: string;
   /** NotBefore as an ISO string. Defaults to -1min. */
   notBefore?: string;
-  /** Extra attributes to embed (claim name -> value). */
-  attributes?: Record<string, string>;
+  /** Extra attributes to embed (claim name -> value, or values for a multi-valued claim). */
+  attributes?: Record<string, string | string[]>;
+  /**
+   * The AuthnStatement's AuthnContextClassRef. Defaults to
+   * `PasswordProtectedTransport` (password over TLS), what a generic IdP sends
+   * for a password sign-in.
+   */
+  authnContextClassRef?: string;
 }
 
 const ASSERTION_ID = "_assertion_id_1234567890";
@@ -111,12 +117,17 @@ export function buildSamlResponseXml(opts: SamlResponseOptions): string {
   const attrs = Object.entries(opts.attributes ?? {})
     .map(
       ([name, value]) =>
-        `<saml:Attribute Name="${name}"><saml:AttributeValue>${value}</saml:AttributeValue></saml:Attribute>`,
+        `<saml:Attribute Name="${name}">${(Array.isArray(value) ? value : [value])
+          .map((v) => `<saml:AttributeValue>${v}</saml:AttributeValue>`)
+          .join("")}</saml:Attribute>`,
     )
     .join("");
+  const classRef =
+    opts.authnContextClassRef ??
+    "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport";
   const attrStatement = attrs ? `<saml:AttributeStatement>${attrs}</saml:AttributeStatement>` : "";
 
-  return `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="${RESPONSE_ID}" Version="2.0" IssueInstant="${issueInstant}"${inResponseToAttr} Destination="${opts.recipient}"><saml:Issuer>${opts.issuer}</saml:Issuer><samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status><saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="${ASSERTION_ID}" Version="2.0" IssueInstant="${issueInstant}"><saml:Issuer>${opts.issuer}</saml:Issuer><saml:Subject><saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">${opts.nameId}</saml:NameID><saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer"><saml:SubjectConfirmationData${subjectInResponseTo} NotOnOrAfter="${notOnOrAfter}" Recipient="${opts.recipient}"/></saml:SubjectConfirmation></saml:Subject><saml:Conditions NotBefore="${notBefore}" NotOnOrAfter="${notOnOrAfter}"><saml:AudienceRestriction><saml:Audience>${opts.audience}</saml:Audience></saml:AudienceRestriction></saml:Conditions><saml:AuthnStatement AuthnInstant="${issueInstant}"><saml:AuthnContext><saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport</saml:AuthnContextClassRef></saml:AuthnContext></saml:AuthnStatement>${attrStatement}</saml:Assertion></samlp:Response>`;
+  return `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="${RESPONSE_ID}" Version="2.0" IssueInstant="${issueInstant}"${inResponseToAttr} Destination="${opts.recipient}"><saml:Issuer>${opts.issuer}</saml:Issuer><samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status><saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="${ASSERTION_ID}" Version="2.0" IssueInstant="${issueInstant}"><saml:Issuer>${opts.issuer}</saml:Issuer><saml:Subject><saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">${opts.nameId}</saml:NameID><saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer"><saml:SubjectConfirmationData${subjectInResponseTo} NotOnOrAfter="${notOnOrAfter}" Recipient="${opts.recipient}"/></saml:SubjectConfirmation></saml:Subject><saml:Conditions NotBefore="${notBefore}" NotOnOrAfter="${notOnOrAfter}"><saml:AudienceRestriction><saml:Audience>${opts.audience}</saml:Audience></saml:AudienceRestriction></saml:Conditions><saml:AuthnStatement AuthnInstant="${issueInstant}"><saml:AuthnContext><saml:AuthnContextClassRef>${classRef}</saml:AuthnContextClassRef></saml:AuthnContext></saml:AuthnStatement>${attrStatement}</saml:Assertion></samlp:Response>`;
 }
 
 /**

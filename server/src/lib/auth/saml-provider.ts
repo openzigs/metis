@@ -55,15 +55,73 @@ const log = createChildLogger("saml-provider");
  */
 const SAML_CLOCK_SKEW_MS = 30_000;
 
-/** MFA AuthnContext class refs that indicate MFA was performed. */
-const MFA_AUTHN_CONTEXTS = [
-  "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport",
+/**
+ * AuthnContextClassRef values that mean a second factor was used (#754, #1552).
+ *
+ * Not `PasswordProtectedTransport` (a password over TLS — what ADFS and generic
+ * IdPs report for a password-only sign-in) and not `X509` (Entra reports it for
+ * single-factor certificate and device authentication). Entra reports
+ * `MobileTwoFactorContract` when Authenticator, SMS, phone or e-mail completes
+ * MFA and `SmartcardPKI` for FIDO2, passkeys, Windows Hello and multi-factor
+ * CBA; ADFS reports `multipleauthn` as a class ref. Source: Microsoft Learn,
+ * "Single sign-on SAML protocol" (AuthnStatement table).
+ */
+const MFA_AUTHN_CONTEXTS: ReadonlySet<string> = new Set([
   "urn:oasis:names:tc:SAML:2.0:ac:classes:MobileTwoFactorUnregistered",
   "urn:oasis:names:tc:SAML:2.0:ac:classes:MobileTwoFactorContract",
   "urn:oasis:names:tc:SAML:2.0:ac:classes:SmartcardPKI",
-  "urn:oasis:names:tc:SAML:2.0:ac:classes:X509",
   "http://schemas.microsoft.com/claims/multipleauthn",
-];
+]);
+
+/**
+ * `authnmethodsreferences` values that mean MFA was completed. Entra emits
+ * `multipleauthn` "only when the user completed multifactor authentication"
+ * (Microsoft Learn, "Single sign-on SAML protocol", authnmethodsreferences).
+ */
+const MFA_AUTHN_METHODS: ReadonlySet<string> = new Set([
+  "http://schemas.microsoft.com/claims/multipleauthn",
+]);
+
+/**
+ * Claims METIS reads group-to-role mapping values from (#1552). The values of
+ * every claim present are pooled, so a mapping on a group object id or on an
+ * app role value both match. Sources: Microsoft Learn, "SAML 2.0 token claims
+ * reference" (Entra `groups` and `role`); ADFS's `Group`; generic IdPs.
+ */
+const GROUP_CLAIMS = [
+  "http://schemas.microsoft.com/ws/2008/06/identity/claims/groups",
+  "http://schemas.microsoft.com/ws/2008/06/identity/claims/role",
+  "http://schemas.xmlsoap.org/claims/Group",
+  "groups",
+  "memberOf",
+] as const;
+
+/**
+ * Entra sends this INSTEAD of `groups` when the user is in more than 150
+ * groups (Microsoft Learn, "SAML 2.0 token claims reference", Groups Overage
+ * Indicator), so the user arrives with no group at all.
+ */
+export const ENTRA_GROUPS_OVERAGE_CLAIM = "http://schemas.microsoft.com/claims/groups.link";
+
+const AUTHN_METHODS_CLAIM = "http://schemas.microsoft.com/claims/authnmethodsreferences";
+const AUTHN_CLASS_CLAIM = "http://schemas.microsoft.com/claims/authnclassreference";
+
+/**
+ * node-saml rejects a Response whose envelope signature is missing or does not
+ * verify, when `wantAuthnResponseSigned` is on, with exactly this message.
+ */
+const NODE_SAML_RESPONSE_SIGNATURE_ERROR = "Invalid document signature";
+
+/**
+ * What an admin sees instead (#1552). Entra's default signing option, "Sign
+ * SAML assertion", leaves the Response envelope unsigned (Microsoft Learn,
+ * "Certificate signing options in a SAML token").
+ */
+export const UNSIGNED_RESPONSE_MESSAGE =
+  "Invalid document signature: the SAML Response envelope is not signed, or its signature " +
+  "does not verify against the IdP certificate. METIS requires the whole Response to be " +
+  "signed. In Microsoft Entra ID, set the enterprise application's SAML Signing Certificate > " +
+  'Signing Option to "Sign SAML response and assertion".';
 
 /**
  * Largest IdP metadata document accepted (#1540). Real metadata, even with a
@@ -130,11 +188,22 @@ export function parseIdPMetadata(xml: string): {
       .find((loc) => loc.length > 0);
   const ssoUrl = locationFor(SAML_BINDING_REDIRECT) ?? locationFor(SAML_BINDING_POST) ?? "";
 
-  // X509 certificates (any namespace prefix).
+  // Token-signing certificates: the IDPSSODescriptor's KeyDescriptors (any
+  // namespace prefix), not every X509Certificate in the document. Entra's
+  // metadata repeats its certificate in two WS-Federation RoleDescriptors and in
+  // the document signature's KeyInfo (#1552); the metadata signer is not
+  // thereby a token signer.
   const certs: string[] = [];
-  for (const el of elementsByLocalName(doc, "X509Certificate")) {
-    const cert = (el.textContent ?? "").replace(/\s/g, "");
-    if (cert) certs.push(cert);
+  for (const descriptor of elementsByLocalName(doc, "IDPSSODescriptor")) {
+    for (const keyDescriptor of Array.from(
+      descriptor.getElementsByTagNameNS("*", "KeyDescriptor"),
+    )) {
+      if (keyDescriptor.getAttribute("use") === "encryption") continue;
+      for (const el of Array.from(keyDescriptor.getElementsByTagNameNS("*", "X509Certificate"))) {
+        const cert = (el.textContent ?? "").replace(/\s/g, "");
+        if (cert && !certs.includes(cert)) certs.push(cert);
+      }
+    }
   }
 
   return { ssoUrl, certs, issuer };
@@ -271,50 +340,43 @@ export async function validateSAMLResponse(
       return { success: false, error: "No profile in SAML response" };
     }
 
+    const claims = profile as Record<string, unknown>;
     const email =
-      (profile as Record<string, unknown>)[
-        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"
-      ] ??
-      (profile as Record<string, unknown>).email ??
+      claims["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"] ??
+      claims.email ??
       profile.nameID ??
       "";
     const displayName =
-      (profile as Record<string, unknown>)[
-        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name"
-      ] ??
-      (profile as Record<string, unknown>).displayName ??
-      (profile as Record<string, unknown>).cn ??
+      claims["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name"] ??
+      claims.displayName ??
+      claims.cn ??
       String(email);
     const username =
-      (profile as Record<string, unknown>)[
-        "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn"
-      ] ??
-      (profile as Record<string, unknown>).uid ??
+      claims["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn"] ??
+      claims.uid ??
       String(email).split("@")[0] ??
       "";
 
-    // Extract groups from claims
-    const groupClaim =
-      (profile as Record<string, unknown>)["http://schemas.xmlsoap.org/claims/Group"] ??
-      (profile as Record<string, unknown>).groups ??
-      (profile as Record<string, unknown>).memberOf ??
-      [];
-    const groups = Array.isArray(groupClaim)
-      ? (groupClaim as string[])
-      : typeof groupClaim === "string"
-        ? [groupClaim]
-        : [];
+    const groups = [...new Set(GROUP_CLAIMS.flatMap((claim) => claimValues(claims[claim])))];
+    const groupOverage = claimValues(claims[ENTRA_GROUPS_OVERAGE_CLAIM]).length > 0;
+    if (groupOverage) {
+      log.warn(
+        "SAML group overage: the IdP sent a groups link instead of the user's groups, so no " +
+          "group mapping can match. In Entra ID, emit 'Groups assigned to the application'.",
+        { username: String(username) },
+      );
+    }
 
-    // Check for MFA via AuthnContextClassRef (#754)
-    const authnContext =
-      (profile as Record<string, unknown>).authnContext ??
-      (profile as Record<string, unknown>)[
-        "http://schemas.microsoft.com/claims/authnclassreference"
-      ] ??
-      "";
+    // MFA (#754, #1552): the signed assertion's AuthnContextClassRef, the
+    // `authnclassreference` claim ADFS sends, or Entra's authnmethodsreferences.
+    const classRefs = [
+      ...authnContextClassRefs(profile.getAssertion?.()),
+      ...claimValues(claims.authnContext),
+      ...claimValues(claims[AUTHN_CLASS_CLAIM]),
+    ];
     const mfaPassed =
-      MFA_AUTHN_CONTEXTS.some((ctx) => String(authnContext).includes(ctx)) ||
-      String(authnContext).toLowerCase().includes("mfa");
+      classRefs.some((ref) => MFA_AUTHN_CONTEXTS.has(ref)) ||
+      claimValues(claims[AUTHN_METHODS_CLAIM]).some((method) => MFA_AUTHN_METHODS.has(method));
 
     return {
       success: true,
@@ -324,16 +386,51 @@ export async function validateSAMLResponse(
         email: String(email),
         groups,
         mfaPassed,
+        ...(groupOverage ? { groupOverage } : {}),
         rawClaims: profile as unknown as Record<string, unknown>,
       },
     };
   } catch (err) {
     log.error("SAML response validation failed", { error: err });
+    const message = err instanceof Error ? err.message : "SAML validation failed";
     return {
       success: false,
-      error: err instanceof Error ? err.message : "SAML validation failed",
+      error: message === NODE_SAML_RESPONSE_SIGNATURE_ERROR ? UNSIGNED_RESPONSE_MESSAGE : message,
     };
   }
+}
+
+/** A claim's string values: node-saml gives one value bare and several as an array. */
+function claimValues(value: unknown): string[] {
+  const values = Array.isArray(value) ? value : [value];
+  return values.filter((v): v is string => typeof v === "string" && v.length > 0);
+}
+
+/** `<x>text</x>` as xml2js parses it with `explicitCharkey` (node-saml's setting). */
+function textOf(node: unknown): string | undefined {
+  if (typeof node === "string") return node;
+  const text = (node as { _?: unknown } | null)?._;
+  return typeof text === "string" ? text.trim() : undefined;
+}
+
+/** Child elements named `name` of an xml2js node (prefix already stripped). */
+function children(node: unknown, name: string): unknown[] {
+  const value = (node as Record<string, unknown> | null)?.[name];
+  return Array.isArray(value) ? value : [];
+}
+
+/**
+ * Every AuthnStatement/AuthnContext/AuthnContextClassRef of the validated
+ * assertion. node-saml verifies the assertion but copies none of these onto the
+ * profile, so the class ref was never read before #1552.
+ */
+function authnContextClassRefs(parsedAssertion: unknown): string[] {
+  const assertion = (parsedAssertion as { Assertion?: unknown } | null)?.Assertion;
+  return children(assertion, "AuthnStatement")
+    .flatMap((statement) => children(statement, "AuthnContext"))
+    .flatMap((context) => children(context, "AuthnContextClassRef"))
+    .map(textOf)
+    .filter((ref): ref is string => !!ref);
 }
 
 /**
