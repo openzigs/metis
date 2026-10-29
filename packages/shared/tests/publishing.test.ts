@@ -112,10 +112,18 @@ describe("publishing domain", () => {
         ["a control character", "sprint\u000742"],
         ["a newline", "sprint\n42"],
         ["a bidi override", `sprint${String.fromCodePoint(0x202e)}24`],
+        // #1311 — every invisible format character (Unicode Cf), not only bidi ones.
+        ["a zero-width space", `sprint${String.fromCodePoint(0x200b)}42`],
+        ["a word joiner", `sprint${String.fromCodePoint(0x2060)}42`],
+        ["a zero-width no-break space", `sprint${String.fromCodePoint(0xfeff)}42`],
       ])("refuses a label holding %s", (_what, label) => {
         const r = parse([label]);
         expect(r.success).toBe(false);
         expect(JSON.stringify(r.error?.issues)).toContain("control");
+      });
+
+      it("accepts a label with an emoji and accented letters", () => {
+        expect(parse(["🐛 bug", "priorité"]).success).toBe(true);
       });
 
       it("trims the labels it accepts, and refuses a blank one", () => {

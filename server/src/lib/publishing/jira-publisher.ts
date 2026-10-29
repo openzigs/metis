@@ -273,8 +273,11 @@ export async function publishDraftToJira(opts: {
   /**
    * #1103 review — records the created issue (the `PublishedIssue` row) as
    * soon as it exists, BEFORE the `metis.source` round trip: a crash or a
-   * timeout there must not leave a Jira issue METIS has no record of, which a
-   * retry would file again. An error here propagates, as the row write did.
+   * timeout there must not leave a Jira issue METIS has no record of. That row
+   * is what the poll worker and drift tracking find the issue by. #1311 — it
+   * does NOT stop a retry filing the issue again: the Jira leg never reads
+   * existing rows, so a retried batch creates every issue anew. An error here
+   * propagates, naming the issue that was created.
    */
   onCreated?: (result: JiraPublishResult) => Promise<void>;
 }): Promise<JiraPublishResult> {
@@ -330,9 +333,40 @@ export async function publishDraftToJira(opts: {
       projectKey: opts.projectKey,
     },
   });
-  await opts.onCreated?.(result);
+  try {
+    await opts.onCreated?.(result);
+  } catch (err) {
+    // #1311 — the issue exists on Jira; say which one, so the operator can
+    // find the issue METIS holds no record of.
+    throw new JiraIssueNotRecordedError(result, err);
+  }
   await setSourceProperty(client, result.issueKey, draft, opts);
   return result;
+}
+
+/**
+ * #1311 — a Jira issue was created but `onCreated` (the `PublishedIssue` row
+ * write) failed. Carries the created issue so the batch can report it.
+ */
+export class JiraIssueNotRecordedError extends Error {
+  constructor(
+    readonly result: JiraPublishResult,
+    cause: unknown,
+  ) {
+    super(
+      `Jira issue ${result.issueKey} was created but METIS could not record it: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+      { cause },
+    );
+    this.name = "JiraIssueNotRecordedError";
+  }
+}
+
+/** #1311 — where a Jira batch stopped, and why. */
+export interface JiraBatchStop {
+  draftId: string;
+  message: string;
 }
 
 /**
@@ -356,6 +390,12 @@ export async function publishBatchToJira(opts: {
   results: JiraPublishResult[];
   publishedCount: number;
   failedCount: number;
+  /**
+   * #1311 — set when a draft threw rather than failed (its issue could not be
+   * recorded, or the draft is gone): the batch stopped there, and the drafts
+   * after it were not attempted.
+   */
+  stopped: JiraBatchStop | null;
 }> {
   const delay = opts.delayMs ?? 500;
   const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
@@ -363,19 +403,37 @@ export async function publishBatchToJira(opts: {
   const results: JiraPublishResult[] = [];
   let publishedCount = 0;
   let failedCount = 0;
+  let stopped: JiraBatchStop | null = null;
 
   for (let i = 0; i < opts.draftIds.length; i++) {
     const draftId = opts.draftIds[i];
-    const result = await publishDraftToJira({
-      draftId,
-      batchId: opts.batchId,
-      connectionId: opts.connectionId,
-      projectKey: opts.projectKey,
-      fieldMapping: opts.fieldMapping,
-      actorId: opts.actorId,
-      additionalLabels: opts.additionalLabels,
-      ...(opts.onCreated ? { onCreated: (r) => opts.onCreated!(draftId, r) } : {}),
-    });
+    let result: JiraPublishResult;
+    try {
+      result = await publishDraftToJira({
+        draftId,
+        batchId: opts.batchId,
+        connectionId: opts.connectionId,
+        projectKey: opts.projectKey,
+        fieldMapping: opts.fieldMapping,
+        actorId: opts.actorId,
+        additionalLabels: opts.additionalLabels,
+        ...(opts.onCreated ? { onCreated: (r) => opts.onCreated!(draftId, r) } : {}),
+      });
+    } catch (err) {
+      // #1311 — stop: when the row write failed, the next draft's would most
+      // likely fail too, leaving more Jira issues METIS has no record of. The
+      // batch is still audited below, and the caller is told where it stopped.
+      const message = err instanceof Error ? err.message : String(err);
+      log.error("Jira batch stopped", { batchId: opts.batchId, draftId, error: message });
+      stopped = { draftId, message };
+      failedCount++;
+      results.push(
+        err instanceof JiraIssueNotRecordedError
+          ? { ...err.result, status: "failed", errorMessage: message }
+          : { issueKey: "", issueId: "", htmlUrl: "", status: "failed", errorMessage: message },
+      );
+      break;
+    }
 
     results.push(result);
     if (result.status === "created") publishedCount++;
@@ -395,8 +453,9 @@ export async function publishBatchToJira(opts: {
       total: opts.draftIds.length,
       publishedCount,
       failedCount,
+      ...(stopped ? { stoppedAtDraftId: stopped.draftId } : {}),
     },
   });
 
-  return { results, publishedCount, failedCount };
+  return { results, publishedCount, failedCount, stopped };
 }

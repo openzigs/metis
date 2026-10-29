@@ -10,6 +10,8 @@ import {
   isInternalPublishLabel,
   labelsToSync,
   jiraLabels,
+  labelsSentBefore,
+  parseSentLabels,
   publishableLabels,
   sameLabels,
   syncLabels,
@@ -200,6 +202,42 @@ describe("#1049 — issueLabels / batchAdditionalLabels", () => {
     "reads %j as no labels",
     (meta) => {
       expect(batchAdditionalLabels(meta)).toEqual([]);
+    },
+  );
+});
+
+describe("#1311 — labelsSentBefore / parseSentLabels", () => {
+  it("the recorded set wins over the batch-label approximation", () => {
+    expect(
+      labelsSentBefore({ sentLabels: ["feature"], additionalLabels: ["sprint-42"] }, [
+        "feature",
+        "security",
+      ]),
+    ).toEqual(["feature"]);
+  });
+
+  it("a row with no recorded set falls back to the draft's labels plus its batch's", () => {
+    expect(
+      labelsSentBefore({ sentLabels: null, additionalLabels: ["sprint-42"] }, ["feature"]),
+    ).toEqual(["feature", "sprint-42"]);
+  });
+
+  it.each([[{}], [{ additionalLabels: null }], [{ sentLabels: null, additionalLabels: null }]])(
+    "nothing known reads as unknown (%o)",
+    (existing) => {
+      expect(labelsSentBefore(existing, ["feature"])).toBeNull();
+    },
+  );
+
+  it("reads a recorded JSON array of strings", () => {
+    expect(parseSentLabels('["feature","sprint-42"]')).toEqual(["feature", "sprint-42"]);
+    expect(parseSentLabels("[]")).toEqual([]);
+  });
+
+  it.each([null, undefined, "", "not json", '{"a":1}', '["ok",3]'])(
+    "anything else is unknown (%s)",
+    (json) => {
+      expect(parseSentLabels(json)).toBeNull();
     },
   );
 });

@@ -307,7 +307,11 @@ describe("publishDraftToJira", () => {
       );
     });
 
-    it("review — the local record is written before the property, so a retry cannot duplicate", async () => {
+    // #1311 — the row does not stop a retry duplicating the issue: the Jira leg
+    // never reads existing rows, so a retried batch creates every issue again.
+    // Written first, it means a Jira issue never exists without the row the
+    // poll worker and drift tracking find it by.
+    it("review — the local record is written before the property, so no Jira issue is left unrecorded", async () => {
       seedConnection();
       seedDraft();
       const order: string[] = [];
@@ -553,6 +557,76 @@ describe("publishBatchToJira", () => {
 
     expect(result.publishedCount).toBe(1);
     expect(result.failedCount).toBe(1);
+    expect(result.stopped).toBeNull();
+  });
+
+  describe("#1311 — an issue METIS could not record stops the batch, and the batch is still audited", () => {
+    async function runWithFailingRecord() {
+      seedConnection();
+      seedDraft("d1", { title: "First" });
+      seedDraft("d2", { title: "Second" });
+      mockCreateIssue
+        .mockResolvedValueOnce({ id: "10001", key: "PROJ-1", self: "" })
+        .mockResolvedValueOnce({ id: "10002", key: "PROJ-2", self: "" });
+      return publishBatchToJira({
+        batchId: "batch_1",
+        draftIds: ["d1", "d2"],
+        connectionId: "conn_1",
+        projectKey: "PROJ",
+        actorId: "user_1",
+        delayMs: 0,
+        sleep: async () => {},
+        onCreated: async () => {
+          throw new Error("SQLITE_BUSY: database is locked");
+        },
+      });
+    }
+
+    it("stops at that draft: the next one is not created", async () => {
+      const result = await runWithFailingRecord();
+      expect(mockCreateIssue).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ publishedCount: 0, failedCount: 1 });
+      expect(result.stopped).toEqual({
+        draftId: "d1",
+        message: expect.stringContaining("PROJ-1"),
+      });
+      expect(result.stopped!.message).toContain("SQLITE_BUSY");
+      expect(result.results).toEqual([
+        expect.objectContaining({ status: "failed", issueKey: "PROJ-1" }),
+      ]);
+    });
+
+    it("still writes the batch_completed audit, saying where it stopped", async () => {
+      await runWithFailingRecord();
+      expect(vi.mocked(audit)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "publish.jira.batch_completed",
+          metadata: expect.objectContaining({
+            total: 2,
+            publishedCount: 0,
+            failedCount: 1,
+            stoppedAtDraftId: "d1",
+          }),
+        }),
+      );
+    });
+
+    it("a draft that no longer exists stops the batch the same way", async () => {
+      seedConnection();
+      const result = await publishBatchToJira({
+        batchId: "batch_1",
+        draftIds: ["gone"],
+        connectionId: "conn_1",
+        projectKey: "PROJ",
+        actorId: "user_1",
+        delayMs: 0,
+        sleep: async () => {},
+      });
+      expect(result.stopped).toEqual({ draftId: "gone", message: "Issue draft not found" });
+      expect(vi.mocked(audit)).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "publish.jira.batch_completed" }),
+      );
+    });
   });
 });
 

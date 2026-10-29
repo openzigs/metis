@@ -9,7 +9,7 @@
 import { type DryRunAction, type DryRunPlan } from "./internal-shared.js";
 import type { ApprovalGateCheckResult, CredentialCheckResult } from "@metis/shared";
 import type { Prisma } from "@prisma/client";
-import { issueLabels, labelsToSync, sameLabels } from "./label-sync.js";
+import { issueLabels, labelsSentBefore, labelsToSync, sameLabels } from "./label-sync.js";
 import {
   computeDraftBodyHash,
   computeDedupHash,
@@ -37,7 +37,13 @@ export interface DryRunInput {
   /** dedupHash → existing issue number (from PublishedIssue rows). */
   existingByHash: Map<
     string,
-    { issueNumber: number; bodyHash: string | null; additionalLabels?: string[] | null }
+    {
+      issueNumber: number;
+      bodyHash: string | null;
+      additionalLabels?: string[] | null;
+      /** #1311 — the labels the matched row recorded sending the issue. */
+      sentLabels?: string[] | null;
+    }
   >;
   /**
    * #1106 — draft id → the issue number METIS's own record names for a draft
@@ -104,10 +110,7 @@ export function buildDryRunPlan(input: DryRunInput): DryRunPlan {
         // #1049 review — as the live run: a skipped issue whose labels differ
         // from the ones METIS last sent it gets a labels-only update.
         const draft = input.drafts.find((x) => x.id === d.id)!;
-        const sentBefore =
-          existing.additionalLabels === undefined || existing.additionalLabels === null
-            ? null
-            : issueLabels(draft.labels, existing.additionalLabels);
+        const sentBefore = labelsSentBefore(existing, draft.labels);
         const relabel = !sameLabels(d.labels, sentBefore);
         actions.push({
           kind: "issue.skipDuplicate",

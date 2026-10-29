@@ -74,7 +74,9 @@ import {
 import {
   batchAdditionalLabels,
   issueLabels,
+  labelsSentBefore,
   labelsToSync,
+  parseSentLabels,
   sameLabels,
   syncLabels,
 } from "./label-sync.js";
@@ -565,6 +567,10 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
     // body as published: an issue sent before its epic's number was known, or
     // with the `unverified` label, is updated once to carry the new text.
     const bodyHash = computeDraftBodyHash(body);
+    // What the issue carries once this draft is published: its own labels,
+    // then the batch's (#1049). #1311 — recorded on the row as `sentLabels`.
+    const labels = issueLabels(parseLabels(draft.labels), additionalLabels);
+    const sentLabels = JSON.stringify(labels);
     // #1091 — set as soon as the remote issue provably exists, so the catch
     // block can record the divergence and the rollback can actually close it
     // even when the local write is what failed.
@@ -581,13 +587,11 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
           // #1049 review — the row upserted below says this batch published the
           // issue, and drift detection reads this batch's labels off the newest
           // row. So the issue must carry them: when they differ from the ones
-          // METIS last sent it (the matched row's batch), PATCH the labels only.
-          const draftLabels = parseLabels(draft.labels);
-          const labels = issueLabels(draftLabels, additionalLabels);
-          const sentBefore =
-            existing.additionalLabels === null
-              ? null
-              : issueLabels(draftLabels, existing.additionalLabels);
+          // METIS last sent it, PATCH the labels only. #1311 — "last sent" is
+          // the set the matched row recorded, so a change to the draft's own
+          // labels relabels the issue too. The PATCH replaces the issue's whole
+          // label set, as the update below does (docs/USER_GUIDE.md).
+          const sentBefore = labelsSentBefore(existing, parseLabels(draft.labels));
           if (!sameLabels(labels, sentBefore)) {
             await client.request<GhIssue>({
               method: "PATCH",
@@ -605,7 +609,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
               metadata: { batchId: batch.id, projectId: batch.projectId },
             });
           }
-          existingByHash.set(hash, { ...existing, additionalLabels });
+          existingByHash.set(hash, { ...existing, additionalLabels, sentLabels: labels });
           // Refresh draft → published linkage in case caller lost it.
           await prisma.publishedIssue.upsert({
             where: {
@@ -628,6 +632,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
               status: "updated",
               dedupHash: hash,
               bodyHash,
+              sentLabels,
               errorMessage: null,
             },
             create: {
@@ -640,6 +645,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
               destination: "github",
               dedupHash: hash,
               bodyHash,
+              sentLabels,
               parentIssueNumber: existing.parentIssueNumber ?? null,
             },
           });
@@ -663,7 +669,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
           data: {
             title: draft.title,
             body: stampedBody,
-            labels: issueLabels(parseLabels(draft.labels), additionalLabels),
+            labels,
           },
         });
         const identity = readIssueIdentity(updated.data);
@@ -687,7 +693,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
           data: {
             title: draft.title,
             body: stampedBody,
-            labels: issueLabels(parseLabels(draft.labels), additionalLabels),
+            labels,
             assignees: parseLabels(draft.assignees),
           },
         });
@@ -750,6 +756,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
           parentIssueNumber,
           dedupHash: hash,
           bodyHash,
+          sentLabels,
           errorMessage: null,
         },
         create: {
@@ -763,6 +770,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
           parentIssueNumber,
           dedupHash: hash,
           bodyHash,
+          sentLabels,
         },
       });
       await prisma.issueDraft.update({
@@ -776,6 +784,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
         htmlUrl,
         parentIssueNumber,
         additionalLabels,
+        sentLabels: labels,
       });
       publishedCount += 1;
       audit({
@@ -834,6 +843,7 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
                 htmlUrl: remoteCreated.htmlUrl,
                 dedupHash: hash,
                 bodyHash,
+                sentLabels,
               }
             : {}),
         },
@@ -850,6 +860,8 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
           destination: "github",
           dedupHash: hash,
           bodyHash,
+          // #1311 — what the issue was created with, when it was.
+          sentLabels: remoteCreated ? sentLabels : null,
           errorMessage: message,
         },
       });
@@ -1337,6 +1349,11 @@ interface ExistingMatch {
    * `null` when unknown.
    */
   additionalLabels: string[] | null;
+  /**
+   * #1311 — the labels the matched row recorded sending the issue
+   * (`labelsSentBefore` prefers them); `null` on a row from before #1311.
+   */
+  sentLabels: string[] | null;
 }
 
 /**
@@ -1381,6 +1398,7 @@ async function loadExistingByHash(
       bodyHash: row.bodyHash,
       parentIssueNumber: row.parentIssueNumber,
       additionalLabels: row.batch ? batchAdditionalLabels(row.batch.metadata) : null,
+      sentLabels: parseSentLabels(row.sentLabels),
     });
   }
   return out;
@@ -1513,6 +1531,8 @@ interface RecoverableIssue {
   dedupHash: string | null;
   parentIssueNumber: number | null;
   additionalLabels: string[] | null;
+  /** #1311 — as {@link ExistingMatch.sentLabels}, from the same (newest) row. */
+  sentLabels: string[] | null;
 }
 
 /**
@@ -1596,6 +1616,7 @@ async function loadRecoverableIssues(
       dedupHash: row.dedupHash,
       parentIssueNumber: row.parentIssueNumber ?? null,
       additionalLabels: batchAdditionalLabels(row.batch.metadata),
+      sentLabels: parseSentLabels(row.sentLabels),
     });
   }
   return out;
@@ -1764,6 +1785,7 @@ async function reconcileFromRemote(args: ReconcileArgs): Promise<ReconcileOutcom
       bodyHash: computeBodyHash(stripped),
       parentIssueNumber: candidate.parentIssueNumber,
       additionalLabels: candidate.additionalLabels,
+      sentLabels: candidate.sentLabels,
     });
     log.info("publish.reconcile.recovered", {
       batchId: args.batchId,

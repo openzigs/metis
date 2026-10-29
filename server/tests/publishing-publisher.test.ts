@@ -73,6 +73,8 @@ interface PublishedIssueRow {
   publishedAt: Date;
   /** `github` when left out, as the column defaults. */
   destination?: string;
+  /** #1311 — JSON array of the labels the issue was sent; left out on older rows. */
+  sentLabels?: string | null;
 }
 
 const batches = new Map<string, BatchRow>();
@@ -97,6 +99,13 @@ function pubIssueKey(batchId: string, draftId: string): string {
  */
 function assertPublishedIssueColumnTypes(data: Record<string, unknown>): void {
   const stringCols = ["issueId", "htmlUrl", "status", "batchId", "draftId"];
+  // #1311 — a nullable String column: `null` is allowed, an array is not.
+  if (Array.isArray(data.sentLabels)) {
+    throw new Error(
+      "Invalid `prisma.publishedIssue` invocation: Argument `sentLabels`: " +
+        "Invalid value provided. Expected String or Null, provided Array.",
+    );
+  }
   for (const col of stringCols) {
     if (col in data && data[col] !== undefined && typeof data[col] !== "string") {
       throw new Error(
@@ -729,6 +738,160 @@ describe("#1049 — the batch's Additional labels reach every issue it writes", 
     expect(preview.actions.find((a) => a.kind === "issue.create")!.labels).toEqual([
       "feature",
       "sprint-42",
+    ]);
+  });
+});
+
+describe("#1311 — the labels METIS sent an issue are recorded, so a draft's label change relabels it", () => {
+  async function publishRecording(batchId = "batch_1"): Promise<OctokitRequestArgs[]> {
+    const calls: OctokitRequestArgs[] = [];
+    // A second run in one test must not reuse the first run's cached client.
+    __resetPublishOctokitCache();
+    const base = makeFakeOctokit();
+    __setPublishOctokitFactory(async () =>
+      fakeOctokit({
+        request: async (args) => {
+          calls.push(args);
+          return base.request(args);
+        },
+      }),
+    );
+    await runBatch({ batchId, dryRun: false, secretRef: "${vault:gh}", sleep: noopSleep });
+    return calls;
+  }
+  const issuePatches = (calls: OctokitRequestArgs[]) =>
+    calls.filter((c) => c.method === "PATCH" && /\/issues\/55$/.test(c.url ?? ""));
+  const sentLabelsOf = (batchId: string): unknown =>
+    JSON.parse(issues.get(pubIssueKey(batchId, "feat_1"))!.sentLabels!);
+
+  /** Issue #55, published with body "same body" by `batch_0`, which recorded what it sent. */
+  function seedEarlierPublish(draftLabels: string[], sentLabels: string[] | null) {
+    seedDraft({
+      id: "feat_1",
+      title: "[Feature] Login",
+      body: "same body",
+      labels: JSON.stringify(draftLabels),
+    });
+    seedBatch({
+      id: "batch_0",
+      status: "completed",
+      metadata: JSON.stringify({ draftIds: ["feat_1"], additionalLabels: ["sprint-42"] }),
+    });
+    issues.set(pubIssueKey("batch_0", "feat_1"), {
+      id: "pi_old",
+      batchId: "batch_0",
+      draftId: "feat_1",
+      issueNumber: 55,
+      issueId: "I_kwDOold55",
+      htmlUrl: "https://github.com/acme/metis/issues/55",
+      status: "created",
+      parentIssueNumber: null,
+      dedupHash: computeDedupHash("acme", "metis", "[Feature] Login"),
+      bodyHash: computeBodyHash("same body"),
+      errorMessage: null,
+      publishedAt: new Date("2026-10-01T00:00:00Z"),
+      sentLabels: sentLabels === null ? null : JSON.stringify(sentLabels),
+    });
+    seedBatch({
+      metadata: JSON.stringify({ draftIds: ["feat_1"], additionalLabels: ["sprint-42"] }),
+    });
+  }
+
+  it("a created issue's row records the labels it was sent", async () => {
+    seedDraft({ id: "feat_1", title: "[Feature] Login", labels: '["feature"]' });
+    seedBatch({
+      metadata: JSON.stringify({ draftIds: ["feat_1"], additionalLabels: ["sprint-42"] }),
+    });
+    await publishRecording();
+    expect(issues.get(pubIssueKey("batch_1", "feat_1"))!.status).toBe("created");
+    expect(sentLabelsOf("batch_1")).toEqual(["feature", "sprint-42"]);
+  });
+
+  it("an updated issue's row records the labels it was sent", async () => {
+    seedEarlierPublish(["feature", "security"], ["feature", "sprint-42"]);
+    drafts.get("feat_1")!.body = "new body";
+    await publishRecording();
+    expect(issues.get(pubIssueKey("batch_1", "feat_1"))!.status).toBe("updated");
+    expect(sentLabelsOf("batch_1")).toEqual(["feature", "security", "sprint-42"]);
+  });
+
+  it("an unchanged issue whose draft gained a label is relabelled (labels only)", async () => {
+    // batch_0 sent ["feature", "sprint-42"]; the draft has since gained `security`.
+    seedEarlierPublish(["feature", "security"], ["feature", "sprint-42"]);
+    const calls = await publishRecording();
+    expect(issuePatches(calls).map((c) => c.data)).toEqual([
+      { labels: ["feature", "security", "sprint-42"] },
+    ]);
+    expect(batches.get("batch_1")!.dedupSkipped).toBe(1);
+    expect(sentLabelsOf("batch_1")).toEqual(["feature", "security", "sprint-42"]);
+  });
+
+  it("an unchanged issue whose draft dropped a label is relabelled too", async () => {
+    seedEarlierPublish(["feature"], ["feature", "security", "sprint-42"]);
+    const calls = await publishRecording();
+    expect(issuePatches(calls).map((c) => c.data)).toEqual([{ labels: ["feature", "sprint-42"] }]);
+  });
+
+  it("an unchanged issue sent these labels before is not touched, and its row keeps them", async () => {
+    seedEarlierPublish(["feature"], ["Feature", "sprint-42"]);
+    const calls = await publishRecording();
+    expect(issuePatches(calls)).toEqual([]);
+    expect(sentLabelsOf("batch_1")).toEqual(["feature", "sprint-42"]);
+  });
+
+  it("a row from before #1311 keeps the earlier comparison (the draft's labels plus its batch's)", async () => {
+    seedEarlierPublish(["feature", "security"], null);
+    const calls = await publishRecording();
+    expect(issuePatches(calls)).toEqual([]);
+  });
+
+  it("the next batch compares with what this one recorded", async () => {
+    seedEarlierPublish(["feature"], null);
+    await publishRecording();
+    const draft = drafts.get("feat_1")!;
+    draft.labels = '["feature","security"]';
+    draft.status = "approved";
+    seedBatch({
+      id: "batch_2",
+      metadata: JSON.stringify({ draftIds: ["feat_1"], additionalLabels: ["sprint-42"] }),
+    });
+    const calls = await publishRecording("batch_2");
+    expect(issuePatches(calls).map((c) => c.data)).toEqual([
+      { labels: ["feature", "security", "sprint-42"] },
+    ]);
+  });
+
+  it("the dry run says the skipped issue's labels will be updated", async () => {
+    seedEarlierPublish(["feature", "security"], ["feature", "sprint-42"]);
+    seedBatch({
+      dryRun: true,
+      metadata: JSON.stringify({ draftIds: ["feat_1"], additionalLabels: ["sprint-42"] }),
+    });
+    await runBatch({ batchId: "batch_1", dryRun: true, secretRef: null, sleep: noopSleep });
+    const plan = JSON.parse(batches.get("batch_1")!.dryRunPlan!) as {
+      actions: Array<{ kind: string; reason?: string; labels?: string[] }>;
+    };
+    expect(plan.actions.find((a) => a.kind === "issue.skipDuplicate")).toMatchObject({
+      reason: "body unchanged; labels updated",
+      labels: ["feature", "security", "sprint-42"],
+    });
+  });
+
+  it("an issue recovered from an archived batch is compared with what that row recorded", async () => {
+    seedEarlierPublish(["feature", "security"], ["feature", "sprint-42"]);
+    batches.get("batch_0")!.archived = true;
+    const hash = computeDedupHash("acme", "metis", "[Feature] Login");
+    remoteIssues.set(
+      55,
+      makeRemoteIssue(
+        55,
+        `same body\n\n<!-- metis-publish: batch=batch_0 draft=feat_1 hash=${hash} -->\n`,
+      ),
+    );
+    const calls = await publishRecording();
+    expect(calls.some((c) => c.method === "GET" && /\/issues\/55$/.test(c.url ?? ""))).toBe(true);
+    expect(issuePatches(calls).map((c) => c.data)).toEqual([
+      { labels: ["feature", "security", "sprint-42"] },
     ]);
   });
 });

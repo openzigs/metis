@@ -29,7 +29,7 @@ import { isVaultRef } from "../connectors/vault-resolver.js";
 import { bindSecretRef } from "../vault/bound-secret.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { refBodyOf } from "../vault/secret-binding.js";
-import { planJiraIssues, publishBatchToJira } from "./jira-publisher.js";
+import { planJiraIssues, publishBatchToJira, type JiraBatchStop } from "./jira-publisher.js";
 import { batchAdditionalLabels } from "./label-sync.js";
 import { createChildLogger } from "../logger.js";
 
@@ -529,17 +529,19 @@ async function executeBatchInner(opts: {
   }
 
   // Jira publish
+  // #1311 — what the Jira leg did, for a Jira-only batch's status below.
+  let jiraLeg: JiraLegOutcome | null = null;
   if (
     (destination === "jira" || destination === "both") &&
     !batch.dryRun &&
     project?.jiraConnectionId &&
     project?.jiraProjectKey
   ) {
+    const draftIds =
+      meta && "draftIds" in meta ? ((meta as { draftIds?: string[] }).draftIds ?? []) : [];
     try {
-      const draftIds =
-        meta && "draftIds" in meta ? ((meta as { draftIds?: string[] }).draftIds ?? []) : [];
       if (draftIds.length > 0) {
-        await publishBatchToJira({
+        const leg = await publishBatchToJira({
           batchId: opts.batchId,
           draftIds,
           connectionId: project.jiraConnectionId,
@@ -564,6 +566,7 @@ async function executeBatchInner(opts: {
             });
           },
         });
+        jiraLeg = { total: draftIds.length, ...leg, error: null };
       }
     } catch (err) {
       log.error("Jira publish failed for batch", {
@@ -571,19 +574,80 @@ async function executeBatchInner(opts: {
         error: String(err),
       });
       // Don't fail the whole batch — Jira is best-effort when destination=both
+      jiraLeg = {
+        total: draftIds.length,
+        publishedCount: 0,
+        failedCount: 0,
+        stopped: null,
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
   }
 
-  // For jira-only destination, update batch status
+  // For jira-only destination, update batch status. #1311 — from what the
+  // Jira leg did: it was `completed` even when every draft failed.
   if (destination === "jira") {
+    const outcome = jiraOnlyOutcome(jiraLeg);
     await prisma.publishBatch.update({
       where: { id: opts.batchId },
-      data: { status: "completed", completedAt: new Date() },
+      data: { ...outcome, completedAt: new Date() },
     });
-    return { status: "completed" };
+    return { status: outcome.status };
   }
 
   return githubResult;
+}
+
+/** #1311 — what the Jira leg of a live batch did. */
+interface JiraLegOutcome {
+  total: number;
+  publishedCount: number;
+  failedCount: number;
+  stopped: JiraBatchStop | null;
+  /** The leg threw before it could report. */
+  error: string | null;
+}
+
+/**
+ * #1311 — a Jira-only batch's status, counts and message, read the way the
+ * GitHub leg reads its own run: `failed` when more than half the drafts
+ * failed, `completed` (with the failures named) otherwise. Jira has no
+ * rollback, so a failed batch says the issues it did create are kept. A leg
+ * that stopped (an issue it could not record) or threw is `failed`. No leg (a
+ * dry run, or no drafts) is `completed`, as before.
+ */
+function jiraOnlyOutcome(leg: JiraLegOutcome | null): {
+  status: "completed" | "failed";
+  totalDrafts?: number;
+  publishedCount?: number;
+  failedCount?: number;
+  errorMessage?: string | null;
+} {
+  if (!leg) return { status: "completed" };
+  const counts = {
+    totalDrafts: leg.total,
+    publishedCount: leg.publishedCount,
+    failedCount: leg.failedCount,
+  };
+  if (leg.error !== null) {
+    return { status: "failed", ...counts, errorMessage: `Jira publish failed: ${leg.error}` };
+  }
+  const kept =
+    leg.publishedCount > 0
+      ? `the ${leg.publishedCount} Jira issue(s) created are kept (Jira issues are not closed on failure)`
+      : "no Jira issue was created";
+  if (leg.stopped) {
+    return {
+      status: "failed",
+      ...counts,
+      errorMessage: `stopped at draft ${leg.stopped.draftId}: ${leg.stopped.message}; ${kept}`,
+    };
+  }
+  const failedOf = `${leg.failedCount} of ${leg.total} drafts failed on Jira`;
+  if (leg.failedCount * 2 > leg.total) {
+    return { status: "failed", ...counts, errorMessage: `${failedOf}; ${kept}` };
+  }
+  return { status: "completed", ...counts, errorMessage: leg.failedCount > 0 ? failedOf : null };
 }
 
 /**
