@@ -59,6 +59,25 @@ curl -fsSH "Authorization: Bearer $METRICS_TOKEN" https://metis.example.com/metr
 
 The third call should return Prometheus-format text. If you see `404`, `METRICS_TOKEN` is unset and the route is intentionally disabled (fail-closed).
 
+### 1.5 The app-wide request budget (#1539)
+
+Every `/api` route and the `/metrics` scrape share one outer request budget, counted
+per signed-in user. A request without an access token this server signed counts per
+client address the UI signed (`METIS_UI_PROXY_SECRET`, sent on sign-in, refresh and
+sign-out), and otherwise per connecting peer. A caller past the budget gets
+`429 API_RATE_LIMITED` with `Retry-After`. The per-route limiters (sign-in, AI, Agent
+Runs, connectors and the rest) still apply inside it as tighter budgets.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `API_RATE_LIMIT_MAX` | `600` | Requests allowed per user (or anonymous client) per window. Environment variable, read per request. |
+| `API_RATE_LIMIT_WINDOW_MS` | `60000` (one minute) | The window. Environment variable, read at startup. |
+
+Anonymous traffic behind the UI with no `METIS_UI_PROXY_SECRET` counts as one client: the
+UI server. If the rate-limit backend (`DISCUSSION_RATE_LIMIT_BACKEND`) fails, this budget
+lets requests through rather than failing every route; the per-route limiters still
+refuse.
+
 ---
 
 ## 2. Monitoring

@@ -2,8 +2,8 @@
  * #1445 review — the pre-auth guard for the custom-agent routes that act on a
  * project: the playground invoke (`POST /custom-agents/:id/invoke`, which also
  * sits behind chat's per-user `aiRateLimiter`) and the card's
- * `GET /custom-agents/projects/:projectId/disabled` read. The app has no global
- * limiter, and CodeQL `js/missing-rate-limiting` counts only a limiter that
+ * `GET /custom-agents/projects/:projectId/disabled` read. The app had no global
+ * limiter then (`api-rate-limit.ts` is #1539's), and CodeQL `js/missing-rate-limiting` counts only a limiter that
  * runs BEFORE the authorization step, so this one is mounted in front of
  * `requireAuth`.
  *

@@ -1,7 +1,8 @@
 /**
  * Connector-route rate limiters (Phase 8 SEC L2).
  *
- * Layered ON TOP of the global limiter. Bounds the impact of a misbehaving
+ * Tighter inner budgets under the app-wide `/api` limiter (`api-rate-limit.ts`,
+ * #1539). Bounds the impact of a misbehaving
  * client (or a compromised account) on expensive connector operations:
  *
  *   - /query    : real database execution → 30/min/user

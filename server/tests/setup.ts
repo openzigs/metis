@@ -16,6 +16,9 @@ process.env.VAULT_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
 process.env.METIS_NO_LISTEN = "1";
 process.env.RATE_LIMIT_MAX = "100000";
 process.env.AUTH_ACCOUNT_RATE_LIMIT_MAX = "100000";
+// #1539 — the app-wide `/api` limiter is one module-level instance, so its
+// counters survive across `createApp()` calls in a file. Its own tests lower it.
+process.env.API_RATE_LIMIT_MAX = "100000";
 // Connector route limiters are lazy module-level singletons that survive across
 // `createApp()` instances, so a large suite can exhaust the per-user budget
 // purely by ordering. Set sky-high limits in tests; production envs override.
@@ -49,6 +52,7 @@ beforeAll(() => {
   process.env.METIS_NO_LISTEN = "1";
   process.env.RATE_LIMIT_MAX = "100000";
   process.env.AUTH_ACCOUNT_RATE_LIMIT_MAX = "100000";
+  process.env.API_RATE_LIMIT_MAX = "100000";
   process.env.CONNECTOR_QUERY_LIMIT_MAX = "100000";
   process.env.CONNECTOR_TEST_LIMIT_MAX = "100000";
   process.env.CONNECTOR_METADATA_LIMIT_MAX = "100000";

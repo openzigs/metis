@@ -9,7 +9,7 @@
  * Also re-syncs MCP gauge values on each scrape so the gauge stays accurate
  * even between status-change events.
  */
-import { type Router, Router as makeRouter, type RequestHandler } from "express";
+import type { RequestHandler } from "express";
 import { timingSafeEqual } from "node:crypto";
 import { getMetricsRegistry, setMcpServerStatus } from "./index.js";
 import { createChildLogger } from "../logger.js";
@@ -89,11 +89,5 @@ const handler: RequestHandler = async (req, res) => {
   res.setHeader("Content-Type", registry.contentType);
   res.status(200).send(await registry.metrics());
 };
-
-export function metricsRouter(): Router {
-  const r = makeRouter();
-  r.get("/", handler);
-  return r;
-}
 
 export const metricsHandler: RequestHandler = handler;
