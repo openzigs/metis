@@ -447,7 +447,7 @@ describe("PUT /api/admin/auth/providers/saml — minimal metadata (#1540)", () =
     const list = await request(app).get("/api/admin/auth/providers");
     expect(list.status).toBe(200);
     expect(JSON.stringify(list.body)).toContain("Legacy SAML");
-    expect(getPublicEnabledProviders().map((p) => p.name)).toContain("Legacy SAML");
+    expect(getPublicEnabledProviders().map((p) => p.label)).toContain("Legacy SAML");
 
     // The admin form never round-trips the metadata (#451), so a rename or
     // disable sends it blank — that must not re-validate the stored document.
