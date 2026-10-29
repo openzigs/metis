@@ -178,6 +178,9 @@ export default defineConfig({
             // which failed token-usage.spec.ts with 429s.
             ADMIN_RATE_LIMIT_MAX: process.env.ADMIN_RATE_LIMIT_MAX ?? "100000",
             MCP_RATE_LIMIT_MAX: process.env.MCP_RATE_LIMIT_MAX ?? "100000",
+            // #1539 — and the app-wide `/api` budget (600 / minute per user):
+            // parallel workers all sign in as the one admin.
+            API_RATE_LIMIT_MAX: process.env.API_RATE_LIMIT_MAX ?? "100000",
             // #221 — never close an idle keep-alive socket from the server side.
             // Each APIRequestContext pools its sockets in a keep-alive
             // http.Agent (one per context since playwright-core 1.63; one shared

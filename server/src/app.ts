@@ -8,7 +8,8 @@
  *   4. cookie-parser — required by auth/refresh routes.
  *   5. compression — runs after parsers so encoded bodies aren't touched.
  *   6. requestLogger — assigns the correlation id as early as possible.
- *   7. routes (`/api`, plus `/healthz`, `/readyz` and `/source`).
+ *   7. routes (`/api`, plus `/healthz`, `/readyz`, `/source` and `/metrics`).
+ *      `/api` and `/metrics` start with the app-wide `apiRateLimiter` (#1539).
  *   8. notFound, then global error handler (last).
  *
  * `createApp()` is pure — no `listen()`. The HTTP bootstrap lives in
@@ -33,6 +34,7 @@ import { assertValidEmbedConfig } from "./lib/rag/embed-model-config.js";
 import { assertRerankOnnxSingleThread } from "./lib/rag/reranker.js";
 import { metricsMiddleware } from "./lib/metrics/middleware.js";
 import { metricsHandler } from "./lib/metrics/route.js";
+import { apiRateLimiter } from "./middleware/api-rate-limit.js";
 import { mountSlackReceiver } from "./lib/slack/slack-receiver.js";
 import { JSON_LIMIT_BYTES } from "./lib/config/json-limit.js";
 import { parseCorsOrigins } from "./lib/config/cors-origins.js";
@@ -83,8 +85,6 @@ export { parseCorsOrigins };
 export interface CreateAppOptions {
   /** Override CORS origin — defaults to `process.env.CORS_ORIGIN` or localhost:3000. */
   corsOrigin?: string;
-  /** Disable rate limiting — used by tests that hammer auth endpoints. */
-  disableRateLimit?: boolean;
 }
 
 export function createApp(opts: CreateAppOptions = {}): Application {
@@ -166,9 +166,12 @@ export function createApp(opts: CreateAppOptions = {}): Application {
   app.get("/source", sourceHandler);
   // Prometheus scrape endpoint — gated by Bearer METRICS_TOKEN. Disabled
   // (returns 404) when METRICS_TOKEN is unset to fail closed by default.
-  app.get("/metrics", metricsHandler);
+  // #1539 — the token check is unauthenticated, so the app-wide budget fronts it.
+  app.get("/metrics", apiRateLimiter, metricsHandler);
 
-  app.use("/api", apiRouter());
+  // #1539 — the app-wide budget runs first on every `/api` route; the per-route
+  // limiters inside are tighter inner budgets (middleware/api-rate-limit.ts).
+  app.use("/api", apiRateLimiter, apiRouter());
 
   app.use(notFoundHandler);
   app.use(errorHandler);

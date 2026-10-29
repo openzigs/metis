@@ -201,30 +201,41 @@ describe("auth rate limiter", () => {
  * `vi.resetModules()`, no env mutation, no 30 s hook.
  *
  * `standardHeaders: true` means a request the limiter counted carries
- * `ratelimit-*`; one it skipped carries none. That is a direct read of whether
- * the middleware ran, and it holds at the suite's sky-high `RATE_LIMIT_MAX`.
+ * `RateLimit-Policy: <max>;w=<window seconds>`. Since #1539 the app-wide `/api`
+ * limiter writes one on every request too, with its own one-minute window, so
+ * the auth limiter ran exactly when the policy carries ITS 15-minute window
+ * (it runs later and overwrites). That holds at the suite's sky-high maxima.
  */
 describe("auth rate limiter wiring (#1288)", () => {
   const app = createApp();
+  const AUTH_POLICY_WINDOW = /;w=900$/;
+  const authCounted = (res: request.Response) =>
+    AUTH_POLICY_WINDOW.test(String(res.headers["ratelimit-policy"] ?? ""));
+
+  it("tells the two windows apart (the premise of the checks below)", async () => {
+    const res = await request(app).get("/api/source");
+    expect(res.headers["ratelimit-policy"]).toMatch(/;w=60$/);
+    expect(authCounted(res)).toBe(false);
+  });
 
   it("counts POST /api/auth/login — the credential route is throttled", async () => {
     const res = await request(app)
       .post("/api/auth/login")
       .set("X-Forwarded-For", "6.6.6.6")
       .send({ username: "nope", password: "nope" });
-    expect(res.headers).toHaveProperty("ratelimit-limit");
+    expect(authCounted(res)).toBe(true);
   });
 
   it("skips GET /api/auth/me — the exemption is wired, not just unit-tested", async () => {
     const res = await request(app).get("/api/auth/me").set("X-Forwarded-For", "6.6.6.7");
     expect(res.status).toBe(401);
-    expect(res.headers).not.toHaveProperty("ratelimit-limit");
+    expect(authCounted(res)).toBe(false);
   });
 
   it("skips GET /api/auth/sso/providers and still serves it 200 (#452)", async () => {
     const res = await request(app).get("/api/auth/sso/providers").set("X-Forwarded-For", "6.6.6.8");
     expect(res.status).toBe(200);
-    expect(res.headers).not.toHaveProperty("ratelimit-limit");
+    expect(authCounted(res)).toBe(false);
   });
 
   // #1393 review — Express routes `/login/`, `/LOGIN` and `/Login` to the login
