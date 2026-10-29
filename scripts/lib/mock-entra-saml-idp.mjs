@@ -12,6 +12,8 @@
  *     checks the SP-initiated AuthnRequest as Entra does (a known Issuer, the
  *     registered ACS URL), signs the configured user in at once, and answers
  *     with Entra's auto-posting form carrying the SAML Response (HTTP-POST).
+ *     Given `accounts` (#1559, `scripts/entra-idp.mjs`), it shows an account
+ *     picker instead, which POSTs back with the account and signing option.
  *
  * The Response is Entra-shaped: Issuer `https://sts.windows.net/<tenant>/`, the
  * user's UPN as an e-mail NameID, and Entra's claim URIs (`objectidentifier`,
@@ -28,8 +30,9 @@
  * committed. Signatures are made with `xml-crypto` (enveloped, exclusive c14n,
  * RSA-SHA256), the algorithms Entra uses.
  *
- * Used by `server/tests/saml-entra-mock-idp-1553.sqlite.test.ts` and the
- * Playwright spec `e2e/tests/sso-saml-entra.spec.ts`.
+ * Used by `server/tests/saml-entra-mock-idp-1553.sqlite.test.ts`, the
+ * Playwright spec `e2e/tests/sso-saml-entra.spec.ts`, and the local runner
+ * `scripts/entra-idp.mjs` (`make entra-up`, #1559).
  */
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -107,6 +110,17 @@ export const DEFAULT_PROFILE = Object.freeze({
  * @property {Partial<EntraProfile>} [profile]
  * @property {string} [tenantId]   default: a random UUID per instance
  * @property {string} [host]       bind address, default 127.0.0.1
+ * @property {number} [port]       listen port, default 0 (ephemeral)
+ * @property {EntraAccount[]} [accounts]
+ *   #1559 — when given, the SAML endpoint shows an account picker offering
+ *   these instead of signing `user` in at once.
+ */
+
+/**
+ * @typedef {object} EntraAccount  a preset account on the account picker
+ * @property {EntraUser} user
+ * @property {Partial<EntraProfile>} [profile]  e.g. `{ mfa: true }`; the picker's signing option wins
+ * @property {string} [note]                    one line shown beside the name
  */
 
 /** @param {string} value */
@@ -376,7 +390,83 @@ function send(res, status, contentType, body) {
 }
 
 /**
- * Start the IdP on an ephemeral port.
+ * Entra's signing options, as the account picker offers them.
+ * @type {ReadonlyArray<readonly [EntraProfile["signing"], string]>}
+ */
+export const SIGNING_OPTIONS = Object.freeze([
+  /** @type {const} */ (["both", "Sign SAML response and assertion"]),
+  /** @type {const} */ (["assertion", "Sign SAML assertion (Entra's default)"]),
+  /** @type {const} */ (["response", "Sign SAML response"]),
+]);
+
+/**
+ * #1559 — an account picker, the page Entra shows when it cannot choose the
+ * account itself, so a person signs in by hand as any preset account under any
+ * signing option. It posts the request back to the SAML endpoint.
+ *
+ * @param {{
+ *   action: string, samlRequest: string, relayState: string | null,
+ *   accounts: ReadonlyArray<EntraAccount>, signing: EntraProfile["signing"],
+ * }} input
+ */
+export function accountPickerPage(input) {
+  const relay =
+    input.relayState === null
+      ? ""
+      : `<input type="hidden" name="RelayState" value="${escapeXml(input.relayState)}" />`;
+  const options = SIGNING_OPTIONS.map(
+    ([value, label]) =>
+      `<option value="${value}"${value === input.signing ? " selected" : ""}>${escapeXml(label)}</option>`,
+  ).join("");
+  const buttons = input.accounts
+    .map(
+      (account, i) =>
+        `<li><button type="submit" name="account" value="${i}">` +
+        `<strong>${escapeXml(account.user.displayName)}</strong> &lt;${escapeXml(account.user.upn)}&gt;` +
+        (account.note ? ` <small>${escapeXml(account.note)}</small>` : "") +
+        `</button></li>`,
+    )
+    .join("");
+  return (
+    `<!DOCTYPE html><html><head><title>Pick an account (mock Entra ID)</title></head><body>` +
+    `<h1>Pick an account</h1><p>Mock Microsoft Entra ID, for local testing only.</p>` +
+    `<form method="POST" action="${escapeXml(input.action)}">` +
+    `<input type="hidden" name="SAMLRequest" value="${escapeXml(input.samlRequest)}" />${relay}` +
+    `<label>Signing option <select name="signing">${options}</select></label>` +
+    `<ul>${buttons}</ul></form></body></html>`
+  );
+}
+
+/** The largest picker form read; an AuthnRequest is a few hundred bytes. */
+export const MAX_FORM_BYTES = 64 * 1024;
+
+/**
+ * The picker's urlencoded form, or null past MAX_FORM_BYTES.
+ * @param {import("node:http").IncomingMessage} req
+ * @returns {Promise<URLSearchParams | null>}
+ */
+function readForm(req) {
+  return new Promise((resolve, reject) => {
+    /** @type {Buffer[]} */
+    const chunks = [];
+    let size = 0;
+    req.on("data", (/** @type {Buffer} */ chunk) => {
+      size += chunk.length;
+      if (size > MAX_FORM_BYTES) {
+        req.removeAllListeners("data");
+        req.resume();
+        resolve(null);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(new URLSearchParams(Buffer.concat(chunks).toString("utf8"))));
+    req.on("error", reject);
+  });
+}
+
+/**
+ * Start the IdP on loopback, on `options.port` or an ephemeral port.
  *
  * @param {MockEntraSamlIdpOptions} options
  */
@@ -385,6 +475,7 @@ export async function startMockEntraSamlIdp(options) {
   const tenantId = options.tenantId ?? randomUUID();
   const issuer = `https://sts.windows.net/${tenantId}/`;
   const host = options.host ?? "127.0.0.1";
+  const accounts = options.accounts ?? [];
   let user = options.user;
   /** @type {EntraProfile} */
   let profile = { ...DEFAULT_PROFILE, ...options.profile };
@@ -392,6 +483,84 @@ export async function startMockEntraSamlIdp(options) {
   let lastResponse;
   const calls = { metadata: 0, sso: 0 };
   const ids = { tenantId, issuer, ssoUrl: "", baseUrl: "" };
+
+  /**
+   * Check an SP-initiated AuthnRequest as Entra does.
+   * @param {string | null} encoded  the `SAMLRequest` value
+   * @returns {{ request: ReturnType<typeof readAuthnRequest> } | { error: string }}
+   */
+  function checkRequest(encoded) {
+    if (!encoded) return { error: "AADSTS750054: SAMLRequest must be present." };
+    let request;
+    try {
+      request = readAuthnRequest(encoded);
+    } catch {
+      return { error: "AADSTS7500529: The SAML request is not valid." };
+    }
+    if (request.issuer !== options.spEntityId) {
+      return {
+        error: `AADSTS700016: Application with identifier '${request.issuer}' was not found in the directory.`,
+      };
+    }
+    if (request.acsUrl !== undefined && request.acsUrl !== options.acsUrl) {
+      return {
+        error: `AADSTS50011: The redirect URI '${request.acsUrl}' does not match the redirect URIs configured for the application.`,
+      };
+    }
+    return { request };
+  }
+
+  /**
+   * Sign `who` in under `as` and answer with Entra's auto-posting form.
+   * @param {import("node:http").ServerResponse} res
+   * @param {string} inResponseTo
+   * @param {string | null} relayState
+   * @param {EntraUser} who
+   * @param {EntraProfile} as
+   */
+  function answer(res, inResponseTo, relayState, who, as) {
+    const xml = buildEntraResponse(
+      {
+        issuer,
+        tenantId,
+        spEntityId: options.spEntityId,
+        acsUrl: options.acsUrl,
+        inResponseTo,
+        user: who,
+        profile: as,
+      },
+      identity,
+    );
+    lastResponse = Buffer.from(xml, "utf8").toString("base64");
+    send(
+      res,
+      200,
+      "text/html; charset=utf-8",
+      autoPostForm(options.acsUrl, lastResponse, relayState),
+    );
+  }
+
+  /**
+   * The picker's POST: the chosen account under the chosen signing option.
+   * @param {import("node:http").IncomingMessage} req
+   * @param {import("node:http").ServerResponse} res
+   */
+  async function pick(req, res) {
+    const form = await readForm(req);
+    if (form === null) return send(res, 413, "text/plain", "The form is too large.");
+    const checked = checkRequest(form.get("SAMLRequest"));
+    if ("error" in checked) return send(res, 400, "text/plain", checked.error);
+    const index = form.get("account") ?? "";
+    const account = /^\d+$/.test(index) ? accounts[Number(index)] : undefined;
+    if (account === undefined) return send(res, 400, "text/plain", "Unknown account.");
+    const signing = SIGNING_OPTIONS.find(([value]) => value === form.get("signing"))?.[0];
+    if (signing === undefined) return send(res, 400, "text/plain", "Unknown signing option.");
+    answer(res, checked.request.id, form.get("RelayState"), account.user, {
+      ...profile,
+      ...account.profile,
+      signing,
+    });
+  }
 
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", ids.baseUrl || "http://localhost");
@@ -411,54 +580,34 @@ export async function startMockEntraSamlIdp(options) {
     if (req.method === "GET" && path === `/${tenantId}/saml2`) {
       calls.sso += 1;
       const encoded = url.searchParams.get("SAMLRequest");
-      if (!encoded)
-        return send(res, 400, "text/plain", "AADSTS750054: SAMLRequest must be present.");
-      let request;
-      try {
-        request = readAuthnRequest(encoded);
-      } catch {
-        return send(res, 400, "text/plain", "AADSTS7500529: The SAML request is not valid.");
-      }
-      if (request.issuer !== options.spEntityId) {
-        return send(
-          res,
-          400,
-          "text/plain",
-          `AADSTS700016: Application with identifier '${request.issuer}' was not found in the directory.`,
-        );
-      }
-      if (request.acsUrl !== undefined && request.acsUrl !== options.acsUrl) {
-        return send(
-          res,
-          400,
-          "text/plain",
-          `AADSTS50011: The redirect URI '${request.acsUrl}' does not match the redirect URIs configured for the application.`,
-        );
-      }
-      const xml = buildEntraResponse(
-        {
-          issuer,
-          tenantId,
-          spEntityId: options.spEntityId,
-          acsUrl: options.acsUrl,
-          inResponseTo: request.id,
-          user,
-          profile,
-        },
-        identity,
-      );
-      lastResponse = Buffer.from(xml, "utf8").toString("base64");
+      const checked = checkRequest(encoded);
+      if ("error" in checked) return send(res, 400, "text/plain", checked.error);
+      const relayState = url.searchParams.get("RelayState");
+      if (accounts.length === 0) return answer(res, checked.request.id, relayState, user, profile);
       return send(
         res,
         200,
         "text/html; charset=utf-8",
-        autoPostForm(options.acsUrl, lastResponse, url.searchParams.get("RelayState")),
+        accountPickerPage({
+          action: ids.ssoUrl,
+          samlRequest: /** @type {string} */ (encoded),
+          relayState,
+          accounts,
+          signing: profile.signing,
+        }),
       );
+    }
+    if (req.method === "POST" && path === `/${tenantId}/saml2` && accounts.length > 0) {
+      pick(req, res).catch(() => send(res, 400, "text/plain", "The request is not valid."));
+      return;
     }
     send(res, 404, "text/plain", "not found");
   });
 
-  await new Promise((resolve) => server.listen(0, host, () => resolve(undefined)));
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(options.port ?? 0, host, () => resolve(undefined));
+  });
   const address = /** @type {import("node:net").AddressInfo} */ (server.address());
   ids.baseUrl = `http://${host}:${address.port}`;
   ids.ssoUrl = `${ids.baseUrl}/${tenantId}/saml2`;

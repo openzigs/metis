@@ -16,6 +16,11 @@
 #   make saml-up         # gen keys, start the mock SAML IdP, seed METIS
 #   make saml-down       # stop the mock SAML IdP (keeps keys)
 #
+# Issue #1559 adds the Entra-profile mock SAML IdP (no Docker):
+#
+#   make entra-up        # start the mock Entra IdP on :4510, seed METIS
+#   make entra-down      # stop it
+#
 # Issue #521 (Epic #517) adds the local OIDC test harness targets:
 #
 #   make oidc-up         # start Keycloak (realm import), seed METIS OIDC provider
@@ -29,7 +34,7 @@
 # See docs/auth/saml-local-testing.md, docs/auth/oidc-local-testing.md and
 # docs/auth/ldap-local-testing.md.
 # =============================================================================
-.PHONY: chart-validate kind-smoke k3d-test saml-up saml-down oidc-up oidc-down ldap-up ldap-down help
+.PHONY: chart-validate kind-smoke k3d-test saml-up saml-down entra-up entra-down oidc-up oidc-down ldap-up ldap-down help
 
 help:
 	@echo "METIS chart-validation targets:"
@@ -39,6 +44,8 @@ help:
 	@echo "METIS local-auth harness targets:"
 	@echo "  make saml-up         - start the mock SAML IdP and seed the METIS SAML provider"
 	@echo "  make saml-down       - stop the mock SAML IdP"
+	@echo "  make entra-up        - start the Entra-profile mock SAML IdP and seed the METIS SAML provider"
+	@echo "  make entra-down      - stop the Entra-profile mock SAML IdP"
 	@echo "  make oidc-up         - start Keycloak (realm import) and seed the METIS OIDC provider"
 	@echo "  make oidc-down       - stop Keycloak"
 	@echo "  make ldap-up         - start OpenLDAP (LDIF seed), verify the directory, print AUTH_LDAP_*"
@@ -66,6 +73,17 @@ saml-up:
 
 saml-down:
 	bash scripts/saml-harness/down.sh
+
+# Entra-profile mock SAML IdP (#1559): the in-process mock from #1553, detached
+# on 127.0.0.1:4510 with an account picker of preset users, seeding the METIS
+# SAML provider from its Federation Metadata. Requires a running METIS server
+# (AUTH_MODE=mock), node and openssl; no Docker. `pnpm saml:entra` runs the same
+# mock in the foreground. ENTRA_SIGNING=assertion starts on Entra's default.
+entra-up:
+	bash scripts/saml-harness/entra-up.sh
+
+entra-down:
+	bash scripts/saml-harness/entra-down.sh
 
 # Local OIDC test harness (#521). Brings up Keycloak with a deterministically
 # imported realm (confidential client + test user + groups + a `groups`-claim

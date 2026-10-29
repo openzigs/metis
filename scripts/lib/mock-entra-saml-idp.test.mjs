@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_PROFILE,
   ENTRA_CLAIM,
+  MAX_FORM_BYTES,
   escapeXml,
   readAuthnRequest,
   startMockEntraSamlIdp,
@@ -265,5 +266,155 @@ describe("helpers", () => {
   it("readAuthnRequest refuses XML that is not an AuthnRequest", () => {
     const notRequest = deflateRawSync(Buffer.from("<LogoutRequest ID='x'/>")).toString("base64");
     expect(() => readAuthnRequest(notRequest)).toThrow(/not an AuthnRequest/);
+  });
+});
+
+describe("mock Entra SAML IdP (#1559) — account picker", () => {
+  const ACCOUNTS = [
+    { user: USER, profile: { mfa: true }, note: "admins <MFA>" },
+    {
+      user: { upn: "max@contoso.example", objectId: "m-1", displayName: "Max", groups: ["g-m"] },
+      profile: { groupOverage: true },
+    },
+  ];
+  /** @type {Awaited<ReturnType<typeof startMockEntraSamlIdp>>} */
+  let picker;
+  beforeEach(async () => {
+    picker = await startMockEntraSamlIdp({
+      spEntityId: SP,
+      acsUrl: ACS,
+      user: USER,
+      accounts: ACCOUNTS,
+      profile: { signing: "both" },
+    });
+  });
+  afterEach(async () => {
+    await picker.close();
+  });
+
+  /** A deflated AuthnRequest addressed to the picker IdP. */
+  function pickerRequest({ issuer = SP } = {}) {
+    const xml = `<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="_pick1559" Version="2.0" AssertionConsumerServiceURL="${ACS}"><saml:Issuer xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">${issuer}</saml:Issuer></samlp:AuthnRequest>`;
+    return deflateRawSync(Buffer.from(xml, "utf8")).toString("base64");
+  }
+
+  /** POST the picker's form. @param {Record<string, string>} fields */
+  function post(fields) {
+    return fetch(picker.ssoUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(fields),
+    });
+  }
+
+  /** The Response the picker IdP last posted, as XML. */
+  const lastXml = () =>
+    Buffer.from(/** @type {string} */ (picker.lastResponse()), "base64").toString("utf8");
+
+  it("shows the accounts, escaped, with the request and the default signing option, and signs no one in", async () => {
+    const samlRequest = pickerRequest();
+    const res = await fetch(
+      `${picker.ssoUrl}?${new URLSearchParams({ SAMLRequest: samlRequest, RelayState: 'r"1' })}`,
+    );
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    expect(html).toContain(`<form method="POST" action="${picker.ssoUrl}">`);
+    expect(html).toContain(`name="SAMLRequest" value="${escapeXml(samlRequest)}"`);
+    expect(html).toContain('name="RelayState" value="r&quot;1"');
+    expect(html).toContain('<option value="both" selected>Sign SAML response and assertion');
+    expect(html).toContain('<option value="assertion">');
+    expect(html).toContain(
+      '<button type="submit" name="account" value="0"><strong>Ada &lt;Admin&gt;</strong> &lt;ada@contoso.example&gt; <small>admins &lt;MFA&gt;</small></button>',
+    );
+    expect(html).toContain('value="1"><strong>Max</strong> &lt;max@contoso.example&gt;</button>');
+    expect(html).not.toContain("SAMLResponse");
+    expect(picker.lastResponse()).toBeUndefined();
+  });
+
+  it("checks the request before showing the picker", async () => {
+    const query = new URLSearchParams({
+      SAMLRequest: pickerRequest({ issuer: "https://other.example/sp" }),
+    });
+    const res = await fetch(`${picker.ssoUrl}?${query}`);
+    expect(res.status).toBe(400);
+    expect(await res.text()).toMatch(/AADSTS700016/);
+  });
+
+  it("signs the picked account in under its profile and the picked signing option", async () => {
+    const res = await post({
+      SAMLRequest: pickerRequest(),
+      RelayState: "rs-9",
+      account: "0",
+      signing: "both",
+    });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain(`action="${ACS}"`);
+    expect(/name="RelayState" value="([^"]*)"/.exec(html)?.[1]).toBe("rs-9");
+    const xml = lastXml();
+    expect(xml).toMatch(/InResponseTo="_pick1559"/);
+    expect(claim(xml, ENTRA_CLAIM.emailAddress)).toEqual([USER.upn]);
+    expect(claim(xml, ENTRA_CLAIM.authnMethodsReferences)).toContain(
+      "http://schemas.microsoft.com/claims/multipleauthn",
+    );
+    expect(signatures(xml)).toHaveLength(2);
+  });
+
+  it("the second account sends groups.link, and Entra's default signs the assertion only", async () => {
+    const res = await post({ SAMLRequest: pickerRequest(), account: "1", signing: "assertion" });
+    expect(res.status).toBe(200);
+    expect(await res.text()).not.toContain('name="RelayState"');
+    const xml = lastXml();
+    expect(claim(xml, ENTRA_CLAIM.emailAddress)).toEqual(["max@contoso.example"]);
+    expect(claim(xml, ENTRA_CLAIM.groups)).toBeUndefined();
+    expect(claim(xml, ENTRA_CLAIM.groupsLink)).toHaveLength(1);
+    expect(signatures(xml)).toHaveLength(1);
+    expect(xml).toContain("ac:classes:Password</AuthnContextClassRef>");
+  });
+
+  it.each([
+    ["an account past the list", { account: "2", signing: "both" }, /Unknown account/],
+    ["an account that is not an index", { account: "0x0", signing: "both" }, /Unknown account/],
+    ["no account", { signing: "both" }, /Unknown account/],
+    ["an unknown signing option", { account: "0", signing: "none" }, /Unknown signing option/],
+    [
+      "a request for another application",
+      { account: "0", signing: "both", issuer: "x" },
+      /AADSTS700016/,
+    ],
+    ["no request", { account: "0", signing: "both", omit: "1" }, /AADSTS750054/],
+  ])("refuses %s", async (_label, spec, message) => {
+    const { issuer, omit, ...fields } = /** @type {Record<string, string>} */ (spec);
+    const res = await post({
+      ...(omit ? {} : { SAMLRequest: pickerRequest(issuer ? { issuer } : {}) }),
+      ...fields,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.text()).toMatch(message);
+    expect(picker.lastResponse()).toBeUndefined();
+  });
+
+  it("refuses a form past its size limit", async () => {
+    const res = await post({
+      SAMLRequest: pickerRequest(),
+      account: "0",
+      signing: "both",
+      pad: "x".repeat(MAX_FORM_BYTES),
+    });
+    expect(res.status).toBe(413);
+    expect(picker.lastResponse()).toBeUndefined();
+  });
+
+  it("without accounts there is no picker to post to", async () => {
+    const res = await fetch(idp.ssoUrl, { method: "POST", body: "account=0" });
+    expect(res.status).toBe(404);
+  });
+
+  it("listens on the port it is given, and fails to start on a port in use", async () => {
+    const port = Number(new URL(picker.ssoUrl).port);
+    await expect(
+      startMockEntraSamlIdp({ spEntityId: SP, acsUrl: ACS, user: USER, port }),
+    ).rejects.toMatchObject({ code: "EADDRINUSE" });
   });
 });
