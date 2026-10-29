@@ -19,7 +19,6 @@
  * the Phase 4 ApprovalGate + Phase 6 MCP per-project allow-list, never here.
  */
 import crypto from "node:crypto";
-import { FAILSAFE_SCHEMA } from "js-yaml";
 import { loadYamlDocument } from "../yaml-load.js";
 import { z } from "zod";
 
@@ -199,7 +198,7 @@ function parseYamlSafely(yamlText: string): Record<string, unknown> {
   // No `!!js/function`, no `!!python/object`, no `!!binary` payload coercion.
   let parsed: unknown;
   try {
-    parsed = loadYamlDocument(yamlText, { schema: FAILSAFE_SCHEMA });
+    parsed = loadYamlDocument(yamlText, { schema: "failsafe" });
   } catch (err) {
     throw new FrontmatterError("YAML_PARSE_ERROR", `YAML parse failed: ${(err as Error).message}`);
   }
@@ -209,7 +208,8 @@ function parseYamlSafely(yamlText: string): Record<string, unknown> {
   if (typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new FrontmatterError("INVALID_FRONTMATTER", "Frontmatter must be a YAML mapping");
   }
-  // FAILSAFE_SCHEMA returns scalars as strings only; the schema layer below
+  // FAILSAFE_SCHEMA returns scalars as strings only, and an empty value
+  // (`model:`) as null, so zod rejects it rather than storing ""; the schema layer below
   // does the boolean/number coercion explicitly via z.coerce when needed.
   // We keep this object as `Record<string, unknown>` for the zod step.
   return parsed as Record<string, unknown>;

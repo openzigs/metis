@@ -124,6 +124,19 @@ describe("parseLocaleFile", () => {
     );
     expect([...parsed.keys()]).toEqual(["ok_key"]);
   });
+
+  it("#915 — resolves YAML scalars as js-yaml 4's JSON schema did: non-strings are not messages", () => {
+    const parsed = parseLocaleFile(
+      "config/locales/en.yml",
+      "en:\n  blank:\n  tilde: ~\n  upper_null: NULL\n  bool: True\n  hex: 0x1F\n  half: .5\n  ok: Hello\n",
+    );
+    expect([...parsed.entries()]).toEqual([["ok", "Hello"]]);
+  });
+
+  it("#915 — an empty or comment-only YAML locale file yields nothing instead of throwing", () => {
+    expect(parseLocaleFile("locales/en.yml", "").size).toBe(0);
+    expect(parseLocaleFile("locales/en.yml", "# translations go here\n").size).toBe(0);
+  });
 });
 
 describe("sanitizeMessageText — locale text is untrusted repository content", () => {

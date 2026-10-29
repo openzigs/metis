@@ -27,7 +27,6 @@
  */
 import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { JSON_SCHEMA } from "js-yaml";
 import { loadYamlDocument } from "../yaml-load.js";
 import {
   scrubSectionFenceLookalikes,
@@ -201,7 +200,7 @@ export function parseLocaleFile(relativePath: string, content: string): Map<stri
   try {
     if (ext === ".json") parsed = JSON.parse(content);
     else if (ext === ".properties") parsed = parseProperties(content);
-    else parsed = loadYamlDocument(content, { schema: JSON_SCHEMA });
+    else parsed = loadYamlDocument(content, { schema: "core" });
   } catch {
     return out;
   }

@@ -23,7 +23,7 @@
  * database transaction: a database error part-way can still leave a mixed set.
  */
 import * as yaml from "js-yaml";
-import { CORE_WITH_MERGE_SCHEMA, loadYamlDocument } from "../../yaml-load.js";
+import { loadYamlDocument } from "../../yaml-load.js";
 import {
   assertFeatureArtifactWritable,
   writeFeatureArtifact,
@@ -561,7 +561,7 @@ export function ensureValidOpenAPI(raw: string, featureSlug: string): string {
   body = body.replace(/^```(?:ya?ml)?\s*\n/i, "").replace(/\n```\s*$/i, "");
   let doc: Record<string, unknown> | null = null;
   try {
-    const loaded = loadYamlDocument(body, { schema: CORE_WITH_MERGE_SCHEMA });
+    const loaded = loadYamlDocument(body, { schema: "core-merge" });
     if (loaded && typeof loaded === "object") doc = loaded as Record<string, unknown>;
   } catch {
     doc = null;

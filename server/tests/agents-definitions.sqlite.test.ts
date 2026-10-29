@@ -242,6 +242,43 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           /AGENT_CONTAINS_SECRET/,
         );
       });
+
+      // #915 — under js-yaml 5's FAILSAFE schema `model:` reads as "", which passed
+      // zod and wiped the stored model / produced version "" or "-1". js-yaml 4
+      // read it as null, which zod rejects; the import path must keep doing so.
+      it("rejects a blank `model:` / `version:` on create and re-import, leaving the agent intact", async () => {
+        const agentSrc = (extra: string, body: string) =>
+          ["---", "name: blank-915", extra, "---", body].join("\n");
+        const created = await svc().create(
+          { source: agentSrc("model: gpt-4.1\nversion: 1.0.0", "v1") },
+          actor,
+        );
+        await expect(svc().create({ source: agentSrc("version:", "x") }, actor)).rejects.toThrow(
+          /VALIDATION_ERROR/,
+        );
+        for (const blank of ["model:", "version:"]) {
+          await expect(
+            svc().update(created.id, { source: agentSrc(blank, "v2") }, actor),
+          ).rejects.toThrow(/VALIDATION_ERROR/);
+        }
+        const row = await db.agent.findUnique({ where: { id: created.id } });
+        expect(row).toMatchObject({ model: "gpt-4.1", version: "1.0.0", systemPrompt: "v1" });
+      });
+
+      it('rejects a blank skill `version:` on create and update instead of storing ""', async () => {
+        const skills = new SkillService(db);
+        const skillSrc = (extra: string, body: string) =>
+          ["---", "name: blank-skill-915", extra, "---", body].join("\n");
+        await expect(skills.create({ source: skillSrc("version:", "x") }, actor)).rejects.toThrow(
+          /VALIDATION_ERROR/,
+        );
+        const created = await skills.create({ source: skillSrc("version: 2.0.0", "v1") }, actor);
+        await expect(
+          skills.update(created.id, { source: skillSrc("version:", "v2") }, actor),
+        ).rejects.toThrow(/VALIDATION_ERROR/);
+        const row = await db.skill.findUnique({ where: { id: created.id } });
+        expect(row?.version).toBe("2.0.0");
+      });
     });
 
     // ── #146 Agent Skills import ─────────────────────────────────────────

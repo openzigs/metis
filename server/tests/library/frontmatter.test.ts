@@ -126,6 +126,28 @@ describe("parseSkillSource", () => {
   it("rejects fields that fail zod validation", () => {
     expect(() => parseSkillSource(`---\nname: ""\n---\nbody`)).toThrow(/VALIDATION_ERROR/);
   });
+
+  // #915 — js-yaml 5's FAILSAFE schema reads `key:` as "", which would pass
+  // z.string() and slip past every `?? fallback`. js-yaml 4 read it as null.
+  it.each(["version", "description", "trigger", "model"])(
+    "rejects a blank `%s:` instead of storing an empty string",
+    (key) => {
+      expect(() => parseSkillSource(`---\nname: s\n${key}:\n---\nbody`)).toThrow(
+        /VALIDATION_ERROR/,
+      );
+    },
+  );
+});
+
+describe("parseAgentSource — blank values (#915)", () => {
+  it.each(["model", "version", "description", "displayName"])(
+    "rejects a blank `%s:` instead of storing an empty string",
+    (key) => {
+      expect(() => parseAgentSource(`---\nname: a\n${key}:\n---\nbody`)).toThrow(
+        /VALIDATION_ERROR/,
+      );
+    },
+  );
 });
 
 describe("parseAgentSource", () => {

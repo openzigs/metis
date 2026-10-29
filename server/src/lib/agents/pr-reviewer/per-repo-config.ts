@@ -15,7 +15,6 @@
  * a top-level review comment so the repo author sees the parse error
  * without needing to dig through audit logs.
  */
-import { FAILSAFE_SCHEMA } from "js-yaml";
 import { loadYamlDocument } from "../../yaml-load.js";
 import { z } from "zod";
 
@@ -164,7 +163,7 @@ export async function loadPerRepoConfig(input: LoadConfigInput): Promise<LoadedP
 
   let parsed: unknown;
   try {
-    parsed = loadYamlDocument(raw, { schema: FAILSAFE_SCHEMA });
+    parsed = loadYamlDocument(raw, { schema: "failsafe" });
   } catch (err) {
     return {
       config: {},

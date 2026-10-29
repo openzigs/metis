@@ -194,6 +194,18 @@ skipAuthors:
     expect(out.config.maxDiffBytes).toBe(2048);
     expect(out.config.skipDraftPrs).toBe(true);
   });
+
+  it("#915 — a blank maxDiffBytes is rejected, never applied as a 0-byte cap", async () => {
+    const out = await loadPerRepoConfig({
+      octokit: mkOctokit("maxDiffBytes:\n"),
+      owner: "o",
+      repo: "r",
+      ref: "abc",
+    });
+    expect(out.config.maxDiffBytes).not.toBe(0);
+    expect(out.config).toEqual({});
+    expect(out.warnings.join(" ")).toMatch(/schema error/);
+  });
 });
 
 describe("mergePerRepoConfig", () => {
