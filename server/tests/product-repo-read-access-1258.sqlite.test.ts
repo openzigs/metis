@@ -255,7 +255,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
 
       it("hides the product's own workspace repos from the foreign repo's member", async () => {
-        // Mallory reaches the product only through the row the old route let in.
+        // Mallory reaches the product through legacy repo L, open to everyone. The
+        // cross-workspace row B no longer opens it (#1259: Alice is not in ws2).
         const res = await get(`/api/products/${productX}`, "mallory");
         expect(res.status).toBe(200);
         expect(repoIds(res.body.data.repos)).toEqual([rc.b, rc.l].sort());

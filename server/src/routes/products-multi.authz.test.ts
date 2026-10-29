@@ -88,13 +88,41 @@ const REPO_CONNECTIONS = [
 
 const mockPrisma = {
   product: {
+    // #1259 — each product's creator is a member of its repo's workspace, so the
+    // repo counts towards the footprint.
     findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
       if (where.id === "p-mine")
-        return { projects: [], repos: [{ repoConnection: { projectId: "proj-mine" } }] };
+        return {
+          createdById: "u-mine",
+          projects: [],
+          repos: [
+            { repoConnection: { projectId: "proj-mine", project: { workspaceId: "ws-mine" } } },
+          ],
+        };
       if (where.id === "p-foreign")
-        return { projects: [], repos: [{ repoConnection: { projectId: "proj-foreign" } }] };
+        return {
+          createdById: "u-foreign",
+          projects: [],
+          repos: [
+            {
+              repoConnection: { projectId: "proj-foreign", project: { workspaceId: "ws-foreign" } },
+            },
+          ],
+        };
       return null;
     }),
+  },
+  // #1259 — the product creators the footprint rule reads: non-admins, each a
+  // member of their own workspace.
+  user: {
+    findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+      where.id.in.map((id) => ({
+        id,
+        authRoleAuthority: "unknown",
+        roles: [{ source: "local", role: { key: "coordinator" } }],
+        workspaceMemberships: [{ workspaceId: id === "u-mine" ? "ws-mine" : "ws-foreign" }],
+      })),
+    ),
   },
   project: {
     findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
@@ -136,9 +164,27 @@ const mockPrisma = {
     ),
   },
   // #1258 — the documents read resolves the product's repos and their projects.
+  // #1259 — so does the list filter's repo branch (by project, not product).
   productRepo: {
-    findMany: vi.fn(async ({ where }: { where: { productId: string } }) =>
-      where.productId === "p-mine" ? [{ repoConnectionId: "rc-mine" }] : [],
+    findMany: vi.fn(
+      async ({
+        where,
+      }: {
+        where: { productId?: string; repoConnection?: { projectId: { in: string[] } } };
+      }) => {
+        if (where.repoConnection) {
+          return where.repoConnection.projectId.in.includes("proj-mine")
+            ? [
+                {
+                  productId: "p-mine",
+                  product: { createdById: "u-mine" },
+                  repoConnection: { projectId: "proj-mine", project: { workspaceId: "ws-mine" } },
+                },
+              ]
+            : [];
+        }
+        return where.productId === "p-mine" ? [{ repoConnectionId: "rc-mine" }] : [];
+      },
     ),
   },
   repoConnection: {
@@ -240,7 +286,11 @@ describe("products-multi object-level authz (#677)", () => {
     });
 
     it("GET /:id on an unbound product (no repos/projects) is open to authed users", async () => {
-      mockPrisma.product.findUnique.mockResolvedValueOnce({ projects: [], repos: [] });
+      mockPrisma.product.findUnique.mockResolvedValueOnce({
+        createdById: "u-mine",
+        projects: [],
+        repos: [],
+      });
       const res = await request(app).get("/products/p-unbound");
       expect(res.status).toBe(200);
       expect(mockGetProduct).toHaveBeenCalledWith("p-unbound");

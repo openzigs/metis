@@ -4353,6 +4353,18 @@ records none is judged against all the product's repos). A soft-deleted connecti
 is refused on attach like a missing id. `pnpm audit:product-repos` (read-only; `--sql`
 prints the query for Postgres) lists existing attachments that cross a workspace.
 
+**Who can open a product (#1259).** A product's footprint is its bound projects
+(`Project.productId`) plus the project of each attached repo **its creator could have
+attached**: the creator is a system admin (`resolveEffectiveRoleFromRows`), holds a
+membership row in the repo project's workspace, or the project has no workspace (legacy,
+open to all). `assertProductAccessible` and `buildProductAccessWhere` admit a member who
+can open any project in that footprint, so a cross-workspace row no longer opens the
+product to the foreign workspace. The membership row is read whatever the creator's
+account state, so a deprovisioned creator's team keeps the product; removing the creator
+from the workspace closes it to non-admins. A product with no bound project and no repo
+is still open to every authenticated user; one whose repos all fall outside the footprint
+is not, and answers 404.
+
 **Partial documents, detach audit, soft-deleted repos (#1261).** A member's `/analyze`
 with hidden repos is *marked, not refused*: every document it writes records
 `metadata.partial` and `metadata.inaccessibleRepoCount` — the unified doc counts every
