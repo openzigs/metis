@@ -3,7 +3,7 @@
 #
 # Self-contained for PR validation; do not depend on a previously-published
 # ghcr.io/metis-mcps/node-runner:latest image.
-FROM node:22-alpine3.23
+FROM node:25-alpine3.23
 
 RUN npm install -g npm@latest \
  && npm install -g --omit=dev --ignore-scripts mcp-proxy@2.10.0 \
