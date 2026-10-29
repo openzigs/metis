@@ -89,6 +89,8 @@ below, which emits Entra's group and app-role claims.
 
 ## Entra ID profile (in-process, runs in CI)
 
+To click through it by hand, see [`make entra-up`](#click-through-an-entra-sign-in-by-hand-make-entra-up).
+
 Most customers connect METIS to **Microsoft Entra ID**, whose claim URIs,
 signing default, group overage and metadata shape the generic mock above cannot
 reproduce. `scripts/lib/mock-entra-saml-idp.mjs` (#1553) is an in-process SAML
@@ -142,6 +144,72 @@ Entra's defaults):
 
 `idp.lastResponse()` returns the last SAMLResponse it posted, for a replay test.
 
+### Click through an Entra sign-in by hand (`make entra-up`)
+
+The same mock runs next to a dev server for a walkthrough or a demo (#1559). It
+needs `node` and `openssl`, no Docker, and a running METIS server with
+`AUTH_MODE=mock`, like `make saml-up`:
+
+```bash
+pnpm dev            # 1. the METIS server (:4000) and UI (:3000)
+make entra-up       # 2. the mock, detached; `make entra-down` stops it
+# or: pnpm saml:entra   (the same mock in the foreground; Ctrl-C stops it)
+```
+
+`make entra-up` runs `scripts/saml-harness/entra-up.sh`, which starts
+`scripts/entra-idp.mjs` in the background (pid and log in the gitignored
+`scripts/saml-harness/.entra/`) and waits until it is ready. The runner:
+
+1. starts the mock on the fixed loopback port **`127.0.0.1:4510`**, with a fixed
+   tenant id, so its Federation Metadata URL is the same every time:
+   `http://127.0.0.1:4510/1559e17a-0000-4000-8000-000000000001/federationmetadata/2007-06/federationmetadata.xml`;
+2. seeds METIS's SAML provider **Microsoft Entra ID (mock)** through the admin API,
+   as `scripts/seed-saml.mjs` does: it logs in as the mock `admin`, `PUT`s the
+   Federation Metadata to `/api/admin/auth/providers/saml` with the SP Entity ID
+   `<METIS_API_URL>/api/auth/saml/metadata`, the ACS URL `<METIS_API_URL>/api/auth/saml/acs`,
+   `requireSignedResponse: true`, and each preset group mapped to a role, then reads
+   the provider back and checks it is enabled;
+3. prints the METIS login URL and the users, and serves until stopped.
+
+Sign in from `http://localhost:3000/login` with the **Microsoft Entra ID (mock)**
+button (or open `http://localhost:4000/api/auth/saml/login`). Instead of signing
+someone in at once, the mock shows an **account picker**, the page Entra shows when
+it cannot choose the account itself. Pick a user (no password):
+
+| User | Entra groups and sign-in | METIS role |
+|------|--------------------------|------------|
+| Ada Admin, `ada.admin@contoso.example` | `METIS Admins` group, MFA | `admin` |
+| Max Member, `max.member@contoso.example` | `METIS Members` group, password only | `developer` |
+| Olga Overage, `olga.overage@contoso.example` | over 150 groups: `groups.link`, no `groups` (MFA) | `reader` (the default role), and the overage warning on **Admin → Authentication** |
+
+The picker's **Signing option** is **Sign SAML response and assertion** by default,
+which is what [azure-ad.md](./azure-ad.md) tells admins to choose. Pick **Sign SAML
+assertion (Entra's default)** to reproduce the refusal a misconfigured enterprise
+app meets: METIS's ACS answers `SAML_AUTH_FAILED` naming "Sign SAML response and
+assertion". To start with Entra's default selected, run
+`ENTRA_SIGNING=assertion make entra-up` (or `pnpm saml:entra --signing=assertion`).
+
+The signing key and certificate are generated at startup and kept in memory only:
+nothing is written to the repository. Each start re-seeds METIS with the new
+certificate. The tenant, user object ids and group object ids are fixed, so a
+restart signs the same people in as the same METIS users (#1395 binds a username
+to the issuer and subject that first used it). `make entra-down` leaves METIS's
+SAML provider configured, as `make saml-down` does; delete or disable it on
+**Admin → Authentication** when you are done.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ENTRA_IDP_PORT` (`--port=`) | `4510` | The mock's loopback port. |
+| `ENTRA_SIGNING` (`--signing=`) | `both` | The picker's default signing option: `both`, `assertion` or `response`. |
+| `METIS_API_URL` | `http://localhost:4000` | METIS server the seed calls and the SP endpoints name. |
+| `METIS_APP_URL` | `http://localhost:3000` | The UI whose `/login` the runner prints. |
+| `METIS_ADMIN_USER` / `METIS_ADMIN_PASSWORD` | `admin` / `password` | Mock-auth admin credentials the seed logs in with. |
+| `ENTRA_PROVIDER_NAME` | `Microsoft Entra ID (mock)` | The provider's label on the login page. |
+| `SKIP_SEED=1` (`--no-seed`) | — | Start the mock without seeding; the runner prints what to paste instead. |
+
+`make entra-up` refuses to start a second copy; `make entra-down` signals only a
+process that is still `scripts/entra-idp.mjs`.
+
 Where it runs:
 
 - `scripts/lib/mock-entra-saml-idp.test.mjs` — the mock's own contract (`scripts`
@@ -154,6 +222,10 @@ Where it runs:
   `/login` page's SAML button, ending on the dashboard or on the ACS's refusal,
   and the overage warning on **Admin → Authentication**. It runs in the sharded
   `e2e` CI job.
+- `scripts/lib/entra-idp-harness.test.mjs`, `scripts/lib/entra-idp-runner.test.mjs`
+  and `server/tests/saml-entra-local-harness-1559.sqlite.test.ts` — the
+  `make entra-up` runner: its settings, the seed through METIS's real admin API,
+  and each preset user signing in through the account picker with the role above.
 
 The e2e stack has no Ingress, so the spec routes the SAML button's
 `/api/auth/saml/login` (on the UI's port) to the API's port, as the Ingress does
@@ -232,7 +304,8 @@ as it is in production.
   tested (`scripts/lib/saml-harness.test.mjs`, 100% coverage) in the existing
   `scripts` vitest workspace. This runs on every PR.
 - **Manual only:** spinning the live `boxyhq/mock-saml` container + its end-to-end
-  login round-trip, and the [real Entra tenant smoke test](#smoke-test-against-a-real-entra-tenant). Like the [`make kind-smoke`](../../Makefile) Kubernetes smoke
+  login round-trip, clicking through the Entra mock with `make entra-up` (its
+  runner and seed are unit tested in CI), and the [real Entra tenant smoke test](#smoke-test-against-a-real-entra-tenant). Like the [`make kind-smoke`](../../Makefile) Kubernetes smoke
   (#545), this is a documented local `make` target, **not** a CI job — a job that
   spins an external IdP container would be flaky and is intentionally avoided.
 

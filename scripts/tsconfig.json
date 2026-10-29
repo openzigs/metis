@@ -13,7 +13,7 @@
     "sourceMap": false,
     "paths": {}
   },
-  "include": ["lib/**/*.mjs", "local-llm/**/*.mjs", "seed-saml.mjs"],
+  "include": ["lib/**/*.mjs", "local-llm/**/*.mjs", "seed-saml.mjs", "entra-idp.mjs"],
   "exclude": [
     "node_modules",
     "coverage",

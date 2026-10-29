@@ -45,6 +45,7 @@
     "red-team": "pnpm --filter @metis/server red-team",
     "dr:check": "pnpm --filter @metis/server dr:check",
     "embeddings:migrate": "pnpm --filter @metis/server embeddings:migrate",
+    "saml:entra": "node scripts/entra-idp.mjs",
     "review:adversarial-tally": "node scripts/adversarial-tally.mjs",
     "review:adversarial-required": "node scripts/adversarial-required.mjs",
     "cache:report": "pnpm --filter @metis/server cache:report",

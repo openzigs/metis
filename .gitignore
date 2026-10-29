@@ -193,6 +193,8 @@ eval-data/corpus/*/docs/
 # generated per-developer by scripts/saml-harness/up.sh. NEVER commit private
 # keys (also trips the Semgrep secret-detection gate).
 scripts/saml-harness/.keys/
+# #1559 — make entra-up's pid and log (the mock Entra IdP keeps its key in memory).
+scripts/saml-harness/.entra/
 
 # Claude Code — commit shared config (.claude/settings.json, .claude/agents/,
 # .mcp.json) but keep each developer's machine-local files out of the repo.
