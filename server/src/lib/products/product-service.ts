@@ -9,6 +9,7 @@ import type {
 } from "@metis/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../prisma.js";
+import { resolveEffectiveRoleFromRows } from "../auth/durable-roles.js";
 
 export class ProductError extends Error {
   readonly status: number;
@@ -175,6 +176,7 @@ export async function addProductRepo(productId: string, input: AddProductRepoInp
   }
   const repo = await prisma.repoConnection.findUnique({
     where: { id: input.repoConnectionId },
+    include: { project: { select: { workspaceId: true } } },
   });
   // #1258 — a soft-deleted connection is refused exactly like a missing one (the
   // picker lists only live connections), for admins too.
@@ -196,7 +198,8 @@ export async function addProductRepo(productId: string, input: AddProductRepoInp
       `Repo ${input.repoConnectionId} is already associated with this product`,
     );
   }
-  return prisma.productRepo.create({
+  const home = await homeToRecord(product, repo.project?.workspaceId ?? null);
+  const link = prisma.productRepo.create({
     data: {
       productId,
       repoConnectionId: input.repoConnectionId,
@@ -204,6 +207,45 @@ export async function addProductRepo(productId: string, input: AddProductRepoInp
     },
     include: { repoConnection: true },
   });
+  if (!home) return link;
+  // #1527 — the home is written with the link, and only while still unset, so a
+  // concurrent attach from another workspace cannot move it.
+  const [created] = await prisma.$transaction([
+    link,
+    prisma.product.updateMany({
+      where: { id: productId, workspaceId: null },
+      data: { workspaceId: home },
+    }),
+  ]);
+  return created;
+}
+
+/**
+ * #1527 — the home workspace to record for a product as a repo of `workspaceId`
+ * is attached, or `null` to leave it alone. Recorded once: only while the
+ * product has none, only for a repo in a workspace (a legacy repo opens the
+ * product to everyone anyway), and only when the product's CREATOR could have
+ * attached that repo — a system admin (the role the login path resolves), or a
+ * member of its workspace. So attaching your own repo to someone else's
+ * unbound product homes it nowhere (#1524 is unchanged by this).
+ */
+async function homeToRecord(
+  product: { createdById: string; workspaceId: string | null },
+  workspaceId: string | null,
+): Promise<string | null> {
+  if (product.workspaceId || !workspaceId) return null;
+  const creator = await prisma.user.findUnique({
+    where: { id: product.createdById },
+    select: {
+      authRoleAuthority: true,
+      roles: { select: { source: true, role: { select: { key: true } } } },
+      workspaceMemberships: { where: { workspaceId }, select: { id: true } },
+    },
+  });
+  if (!creator) return null;
+  const isAdmin =
+    resolveEffectiveRoleFromRows(creator.roles, creator.authRoleAuthority).role === "admin";
+  return isAdmin || creator.workspaceMemberships.length > 0 ? workspaceId : null;
 }
 
 export async function removeProductRepo(productId: string, repoId: string) {

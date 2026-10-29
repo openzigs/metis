@@ -11,6 +11,14 @@
  * repo project's workspace, or the project has no workspace (legacy, open to
  * all). Bound projects (`Project.productId`) still count as before.
  *
+ * #1527 — the rule is now RECORDED: each product's home workspace is written
+ * when the first repo its creator could attach is attached, and only repos in
+ * the home (or in no workspace) count. These rows are written in the pre-#1527
+ * shape and then meet that migration, as a deployed database does, so every
+ * expectation below is also a check of its backfill. One changed: an
+ * admin-created product no longer opens to every workspace its repos sit in,
+ * only to its home — the workspace of its earliest-attached repo.
+ *
  * Workspace `ws1` holds project A (Alice, Bob, and Erin — whose account was since
  * deprovisioned). Mallory is in `ws2` with projects B and W. Ada is a system
  * admin in no workspace. Every caller below is a non-admin member.
@@ -59,6 +67,8 @@ const PA = "proj-a-1259";
 const PB = "proj-b-1259";
 const PW = "proj-w-1259";
 const PL = "proj-legacy-1259";
+/** The migration that records each product's home workspace (#1527). */
+const HOME_MIGRATION = "20261104001527_issue1527_product_home_workspace";
 
 /** Strings only a reader of Product X may see. */
 const X_NAME = "Product X 1259";
@@ -84,7 +94,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       x: "",
       /** Alice's: repo B alone — repos, but none Alice could attach. */
       foreignOnly: "",
-      /** Ada's (system admin, no workspace): repos A and B. */
+      /** Ada's (system admin, no workspace): repo A, then repo B. */
       adminMade: "",
       /** Erin's (deprovisioned since): repo A. */
       departed: "",
@@ -121,7 +131,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     };
 
     beforeAll(async () => {
-      sqlite = createMigratedSqlite("1259-product-footprint");
+      // Built as it stood before #1527: products carry no home workspace yet.
+      sqlite = createMigratedSqlite("1259-product-footprint", { stopBefore: HOME_MIGRATION });
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
       for (const key of ["coordinator", "admin"]) {
@@ -142,8 +153,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }
       }
 
-      const make = async (slug: string, createdById: string, name = slug) =>
-        (await db.product.create({ data: { name, slug: `${slug}-1259`, createdById } })).id;
+      // Raw SQL: the head client would write the column the migration adds.
+      const make = async (slug: string, createdById: string, name = slug) => {
+        const id = `prod-${slug}-1259`;
+        sqlite.exec(
+          `INSERT INTO "products" ("id","name","slug","createdById","createdAt","updatedAt")
+           VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+          [id, name, `${slug}-1259`, createdById],
+        );
+        return id;
+      };
       product.x = await make("x", "alice", X_NAME);
       product.foreignOnly = await make("foreign-only", "alice");
       product.adminMade = await make("admin-made", "ada");
@@ -173,7 +192,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           })
         ).id;
       }
-      // Straight to the table, as the unguarded pre-#1257 route wrote them.
+      // Straight to the table, as the unguarded pre-#1257 route wrote them, each
+      // attached a minute after the one before it (the backfill reads the order).
+      let attached = 0;
       for (const [productId, keys] of [
         [product.x, ["a", "b"]],
         [product.foreignOnly, ["b"]],
@@ -183,7 +204,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         [product.legacy, ["b", "l"]],
       ] as const) {
         for (const key of keys) {
-          await db.productRepo.create({ data: { productId, repoConnectionId: rc[key] } });
+          sqlite.exec(
+            `INSERT INTO "product_repos" ("id","productId","repoConnectionId","createdAt")
+             VALUES (?, ?, ?, ?)`,
+            [
+              `pr-${productId}-${key}`,
+              productId,
+              rc[key],
+              new Date(Date.UTC(2026, 0, 1, 0, attached++)).toISOString(),
+            ],
+          );
         }
       }
       await db.productAnalysis.create({
@@ -194,6 +224,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         where: { id: "erin" },
         data: { status: "disabled", deletedAt: new Date() },
       });
+
+      // #1527 — the migration meets these rows, then the head client reads them.
+      await db.$disconnect();
+      sqlite.applyRemaining();
+      db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
+      state.db = db;
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
@@ -263,12 +299,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
-    describe("what still widens the footprint", () => {
-      it("every repo of an admin-created product counts", async () => {
-        for (const who of ["bob", "mallory"] as const) {
-          expect((await get(`/api/products/${product.adminMade}`, who)).status, who).toBe(200);
-          expect(await listedIds(who), who).toContain(product.adminMade);
-        }
+    describe("what widens the footprint", () => {
+      it("an admin-created product opens to its home workspace only (#1527)", async () => {
+        // Repo A was attached first, so the backfill homed it in ws1.
+        expect((await get(`/api/products/${product.adminMade}`, "bob")).status).toBe(200);
+        expect(await listedIds("bob")).toContain(product.adminMade);
+        // Before #1527 repo B, in ws2, opened it to Mallory too.
+        expect((await get(`/api/products/${product.adminMade}`, "mallory")).status).toBe(404);
+        expect(await listedIds("mallory")).not.toContain(product.adminMade);
       });
 
       it("a project bound to the product counts whoever created it", async () => {

@@ -21,8 +21,11 @@ const mockProduct = {
   count: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
+  updateMany: vi.fn(),
   delete: vi.fn(),
 };
+const mockUser = { findUnique: vi.fn() };
+const mockTransaction = vi.fn();
 const mockProductRepo = {
   findUnique: vi.fn(),
   create: vi.fn(),
@@ -41,8 +44,11 @@ vi.mock("../prisma.js", () => ({
       count: (...args: unknown[]) => mockProduct.count(...args),
       create: (...args: unknown[]) => mockProduct.create(...args),
       update: (...args: unknown[]) => mockProduct.update(...args),
+      updateMany: (...args: unknown[]) => mockProduct.updateMany(...args),
       delete: (...args: unknown[]) => mockProduct.delete(...args),
     },
+    user: { findUnique: (...args: unknown[]) => mockUser.findUnique(...args) },
+    $transaction: (...args: unknown[]) => mockTransaction(...args),
     productRepo: {
       findUnique: (...args: unknown[]) => mockProductRepo.findUnique(...args),
       create: (...args: unknown[]) => mockProductRepo.create(...args),
@@ -212,6 +218,79 @@ describe("product-service", () => {
         status: 409,
         code: "REPO_ALREADY_ASSOCIATED",
       });
+    });
+  });
+
+  describe("addProductRepo records the product's home workspace (#1527)", () => {
+    const LINK = { id: "pr1", productId: "p1", repoConnectionId: "r1" };
+    const UPDATE = { kind: "home-update" };
+    const creator = (opts: { admin?: boolean; member?: boolean }) => ({
+      authRoleAuthority: "unknown",
+      roles: [{ source: "local", role: { key: opts.admin ? "admin" : "coordinator" } }],
+      workspaceMemberships: opts.member ? [{ id: "m1" }] : [],
+    });
+    const attach = async (opts: {
+      productHome?: string | null;
+      repoWorkspace?: string | null;
+      creator?: ReturnType<typeof creator> | null;
+    }) => {
+      mockProduct.findUnique.mockResolvedValue({
+        id: "p1",
+        createdById: "u1",
+        workspaceId: opts.productHome ?? null,
+      });
+      mockRepoConnection.findUnique.mockResolvedValue({
+        id: "r1",
+        deletedAt: null,
+        project: { workspaceId: opts.repoWorkspace === undefined ? "ws1" : opts.repoWorkspace },
+      });
+      mockProductRepo.findUnique.mockResolvedValue(null);
+      mockProductRepo.create.mockReturnValue(LINK);
+      mockProduct.updateMany.mockReturnValue(UPDATE);
+      mockUser.findUnique.mockResolvedValue(opts.creator === undefined ? null : opts.creator);
+      mockTransaction.mockImplementation(async (ops: unknown[]) => ops);
+      return addProductRepo("p1", { repoConnectionId: "r1" });
+    };
+
+    it("writes the repo's workspace with the link when the creator is a member of it", async () => {
+      expect(await attach({ creator: creator({ member: true }) })).toBe(LINK);
+      expect(mockUser.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: "u1" },
+          select: expect.objectContaining({
+            workspaceMemberships: { where: { workspaceId: "ws1" }, select: { id: true } },
+          }),
+        }),
+      );
+      // Only while still unset, in one transaction with the link.
+      expect(mockProduct.updateMany).toHaveBeenCalledWith({
+        where: { id: "p1", workspaceId: null },
+        data: { workspaceId: "ws1" },
+      });
+      expect(mockTransaction).toHaveBeenCalledWith([LINK, UPDATE]);
+    });
+
+    it("writes it when the creator is a system admin in no workspace", async () => {
+      await attach({ creator: creator({ admin: true }) });
+      expect(mockTransaction).toHaveBeenCalledWith([LINK, UPDATE]);
+    });
+
+    it("leaves it alone when the creator could not have attached the repo", async () => {
+      expect(await attach({ creator: creator({}) })).toBe(LINK);
+      expect(mockProduct.updateMany).not.toHaveBeenCalled();
+      expect(mockTransaction).not.toHaveBeenCalled();
+    });
+
+    it("leaves it alone when the creator row is gone", async () => {
+      await attach({ creator: null });
+      expect(mockTransaction).not.toHaveBeenCalled();
+    });
+
+    it("never moves a recorded home, and a legacy repo records none (no creator read)", async () => {
+      await attach({ productHome: "ws0", creator: creator({ admin: true }) });
+      await attach({ repoWorkspace: null, creator: creator({ admin: true }) });
+      expect(mockUser.findUnique).not.toHaveBeenCalled();
+      expect(mockTransaction).not.toHaveBeenCalled();
     });
   });
 

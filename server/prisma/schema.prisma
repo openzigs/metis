@@ -4281,6 +4281,13 @@ model Product {
   description String   @default("")
   slug        String   @unique
   createdById String
+  /// #1527 — the product's home workspace: an attached repo opens the product
+  /// to its project's members only when that project is in this workspace (or
+  /// has none). Recorded when the first repo the creator could have attached
+  /// is attached, then kept, so the creator leaving the workspace or losing
+  /// admin changes nothing. Null until then. Not a foreign key, like
+  /// `notifications.projectId` (#1447).
+  workspaceId String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -4293,6 +4300,7 @@ model Product {
   contractDocs ProductContractDoc[]
 
   @@index([createdById])
+  @@index([workspaceId])
   @@map("products")
 }
 
