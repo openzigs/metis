@@ -209,6 +209,22 @@ describe("mock Entra SAML IdP (#1553) — sign-in", () => {
     expect(xml).toContain("<Audience>https://another-application.example/sp</Audience>");
   });
 
+  it("an issuer override names another tenant in the Response and the assertion, signed with the same key (#1555)", async () => {
+    const other = "https://sts.windows.net/0b1ec700-1555-4000-8000-0000000074e2/";
+    idp.setProfile({ signing: "both", issuer: other });
+    const { xml } = await signIn();
+
+    expect(xml).not.toContain(idp.issuer);
+    expect(/^<samlp:Response [^>]*><Issuer [^>]*>([^<]*)<\/Issuer>/.exec(xml)?.[1]).toBe(other);
+    expect(/<Assertion [^>]*><Issuer>([^<]*)<\/Issuer>/.exec(xml)?.[1]).toBe(other);
+    const sigs = signatures(xml);
+    expect(sigs).toHaveLength(2);
+    for (const sig of sigs) expect(verifies(xml, sig)).toBe(true);
+
+    idp.setProfile({});
+    expect((await signIn()).xml).toContain(`<Issuer>${idp.issuer}</Issuer>`);
+  });
+
   it("setProfile returns unnamed fields to Entra's defaults; setUser changes who signs in", async () => {
     idp.setProfile({ mfa: true, signing: "both" });
     idp.setProfile({ groupOverage: true });
