@@ -89,6 +89,11 @@ export interface SSOAuthResult {
     groups: string[];
     /** Whether MFA was confirmed via amr/AuthnContext. */
     mfaPassed: boolean;
+    /**
+     * #1552 — the IdP said the user is in too many groups to list (Entra's
+     * `groups.link` overage claim), so `groups` is empty for that reason.
+     */
+    groupOverage?: boolean;
     /** Raw claims from the IdP. */
     rawClaims: Record<string, unknown>;
   };

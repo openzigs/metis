@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/lib/auth-context";
 import { PageHeader } from "@/components/ui/page-header";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 /**
  * Admin view of an SSO provider (Issue #451): the config-read API masks stored
@@ -51,6 +52,15 @@ interface SSOProvider {
   };
 }
 
+/**
+ * #1552 — SAML sign-ins whose IdP sent no groups (Microsoft Entra ID sends a
+ * Graph link instead past 150 groups), so the user got the default role.
+ */
+interface SamlGroupOverage {
+  total: number;
+  recent: Array<{ userId: string; username: string | null; at: string }>;
+}
+
 export default function AdminAuthPage() {
   const { user } = useAuth();
   const [_providers, setProviders] = useState<SSOProvider[]>([]);
@@ -65,6 +75,7 @@ export default function AdminAuthPage() {
   const [samlMetadata, setSamlMetadata] = useState("");
   const [samlMetadataConfigured, setSamlMetadataConfigured] = useState(false);
   const [samlEnabled, setSamlEnabled] = useState(false);
+  const [samlOverage, setSamlOverage] = useState<SamlGroupOverage | null>(null);
 
   // OIDC form state
   const [oidcName, setOidcName] = useState("OIDC Provider");
@@ -136,10 +147,23 @@ export default function AdminAuthPage() {
     }
   }, []);
 
+  const fetchSamlOverage = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/auth/saml/group-overage");
+      if (res.ok) {
+        const body = await res.json();
+        setSamlOverage(body.data ?? null);
+      }
+    } catch {
+      /* the warning is advisory: no warning on a failed read */
+    }
+  }, []);
+
   useEffect(() => {
     fetchProviders();
     fetchLDAPConfig();
-  }, [fetchProviders]);
+    fetchSamlOverage();
+  }, [fetchProviders, fetchSamlOverage]);
 
   const fetchLDAPConfig = async () => {
     try {
@@ -353,6 +377,31 @@ export default function AdminAuthPage() {
               <CardDescription>Upload IdP metadata and configure SP settings.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {samlOverage && samlOverage.total > 0 && (
+                <Alert variant="warning" data-testid="saml-group-overage-warning">
+                  <AlertTitle>
+                    {samlOverage.total === 1
+                      ? "1 SAML sign-in arrived without the user's groups"
+                      : `${samlOverage.total} SAML sign-ins arrived without the user's groups`}
+                  </AlertTitle>
+                  <AlertDescription>
+                    <p>
+                      The identity provider sent a link to the groups instead of the groups
+                      (Microsoft Entra ID does this for a user in more than 150 groups), so these
+                      users got the default role:{" "}
+                      {samlOverage.recent
+                        .map((event) => event.username ?? event.userId)
+                        .filter((name, i, all) => all.indexOf(name) === i)
+                        .join(", ")}
+                      .
+                    </p>
+                    <p>
+                      In Microsoft Entra ID, edit the group claim and choose &ldquo;Groups assigned
+                      to the application&rdquo;.
+                    </p>
+                  </AlertDescription>
+                </Alert>
+              )}
               <div className="space-y-1.5">
                 <Label htmlFor="saml-name">Provider Name</Label>
                 <Input

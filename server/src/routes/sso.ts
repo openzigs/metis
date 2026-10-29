@@ -35,6 +35,7 @@ import {
   validateSAMLResponse,
   generateAuthnRequestUrl,
 } from "../lib/auth/saml-provider.js";
+import { SAML_GROUP_OVERAGE_ACTION } from "../lib/auth/saml-group-overage.js";
 import { generateAuthorizationUrl, exchangeCodeForTokens } from "../lib/auth/oidc-provider.js";
 import { reconcileTrustedLoginRole } from "../lib/auth/durable-roles.js";
 import { oidcAssertedIdentities, samlAssertedIdentities } from "../lib/auth/bootstrap-admins.js";
@@ -272,6 +273,7 @@ export function ssoRouter(): Router {
       role: userRow.role,
       permissions,
       workspaces: await readWorkspaceIds(userRow.id),
+      mfaPassed: result.user.mfaPassed,
     });
 
     setBrowserSession(res, tokens);
@@ -287,6 +289,22 @@ export function ssoRouter(): Router {
         mfaPassed: result.user.mfaPassed,
       },
     });
+    if (result.user.groupOverage) {
+      // #1552 — the user signed in with the default role because the IdP listed
+      // no groups (Entra's overage claim). The admin Authentication page warns
+      // from these events (`samlGroupOverageSummary`).
+      audit({
+        actor: { id: userRow.id },
+        action: SAML_GROUP_OVERAGE_ACTION,
+        target: { type: "user", id: userRow.id },
+        metadata: {
+          username: userRow.username,
+          role: userRow.role,
+          mode: "saml",
+          remedy: "In Entra ID, set the group claim to 'Groups assigned to the application'",
+        },
+      });
+    }
 
     res.redirect(ssoLandingUrl());
   });
@@ -377,6 +395,7 @@ export function ssoRouter(): Router {
       role: userRow.role,
       permissions,
       workspaces: await readWorkspaceIds(userRow.id),
+      mfaPassed: result.user.mfaPassed,
     });
 
     setBrowserSession(res, tokens);
