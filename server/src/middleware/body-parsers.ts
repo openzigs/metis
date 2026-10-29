@@ -2,15 +2,16 @@
  * #1458 — every request-body parser the API installs, built in one place so none of
  * them can decompress a request body.
  *
- * body-parser 2.2.2 (via express 5.2.1) carries GHSA-27r3-jxmh-p828 (high): a
- * Denial of Service through trailing bytes after a *compressed* request body. The
- * fix, 2.4.0, is held back by the 7-day pnpm `minimumReleaseAge` until 2026-10-29.
- * The vulnerable code runs only when the parser inflates a `Content-Encoding:
- * gzip | deflate | br` body. No METIS client or integration sends one (browsers via
- * the Next.js proxy, GitHub / Slack / Bot Framework / trigger webhooks, SCIM — all
- * uncompressed; MCP is stdio-only), so with `inflate: false` body-parser refuses any
- * non-`identity` encoding with a 415 (`encoding.unsupported`) before a zlib stream
- * exists. The error handler maps that to `UNSUPPORTED_CONTENT_ENCODING`.
+ * body-parser 2.2.2 (via express 5.2.1) carried GHSA-27r3-jxmh-p828 (high): a
+ * Denial of Service through trailing bytes after a *compressed* request body. #1458
+ * closed that path here while the fix, 2.4.0, served out the 7-day pnpm
+ * `minimumReleaseAge`; #1460 has since upgraded to 2.4.0 (a `pnpm-workspace.yaml`
+ * override). `inflate: false` stays as the default anyway: no METIS client or
+ * integration sends a compressed body (browsers via the Next.js proxy, GitHub /
+ * Slack / Bot Framework / trigger webhooks, SCIM — all uncompressed; MCP is
+ * stdio-only), so decompression is attack surface with no user. body-parser refuses
+ * any non-`identity` encoding with a 415 (`encoding.unsupported`) before a zlib
+ * stream exists, and the error handler maps that to `UNSUPPORTED_CONTENT_ENCODING`.
  *
  * Construct parsers through these helpers only — the guard test
  * `body-parsers.inflate.test.ts` fails on a direct `express.json()` /

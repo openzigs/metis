@@ -131,7 +131,8 @@ export function createApp(opts: CreateAppOptions = {}): Application {
   }
   app.use("/api/admin/auth/role-reconciliation", reconciliationJson);
   // #1458 — both global parsers refuse compressed bodies (415) rather than
-  // inflate them: body-parser GHSA-27r3-jxmh-p828. See middleware/body-parsers.ts.
+  // inflate them (body-parser GHSA-27r3-jxmh-p828, since fixed by the 2.4.0
+  // upgrade in #1460; kept as the default). See middleware/body-parsers.ts.
   app.use(
     jsonBodyParser({
       limit: JSON_LIMIT,

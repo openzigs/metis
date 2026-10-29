@@ -129,6 +129,14 @@ overrides:
   #   proxy-addr GHSA-jqcg-44mw-7w3h (CVSS 9.1, IPv4-mapped IPv6 trust bypass),
   #   fixed 2.0.8 — via express@5.2.1 (`~2.0.7`) in server and embeddings-svc.
   proxy-addr@<2.0.8: ^2.0.8
+  # body-parser GHSA-27r3-jxmh-p828 (HIGH, CVSS 7.5): DoS through trailing bytes
+  #   after a compressed request body, affected `>=2.0.0 <2.4.0` (#1458, #1460).
+  #   Via express@5.2.1 in server and embeddings-svc; even express 5.3.0 only asks
+  #   for `^2.3.0`, so an override is what forces the fix. 2.4.0 was published
+  #   2026-10-22T11:39Z and resolved only after it cleared minimumReleaseAge; it
+  #   returns zero vulns on api.osv.dev (2026-10-29). Bound and floor move together
+  #   (#1208). Guarded by scripts/lib/dependency-audit-1458-body-parser.test.mjs.
+  body-parser@>=2.0.0 <2.4.0: ^2.4.0
   #   seroval GHSA-p6vx-979v-rg4c (CVSS 9.8, fixed 1.6.2) and GHSA-jp82-f5mq-hwhp
   #   (CVSS 7.5, fixed 1.6.3) — via solid-js@1.9.15 (`seroval: ~1.5.4`) under
   #   ui's @tanstack/react-query-devtools. This crosses solid-js's declared

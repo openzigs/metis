@@ -208,28 +208,6 @@ jobs:
                             "patched 3.x; botbuilder breaks on zod 4; not reachable "
                             "pre-auth (#1453).",
               },
-              # body-parser GHSA-27r3-jxmh-p828 (HIGH, CVSS 7.5), `>=2.0.0 <2.4.0`:
-              # DoS via trailing bytes after a COMPRESSED request body. 2.4.0 was
-              # published 2026-10-22T11:39Z and minimumReleaseAge holds it until
-              # 2026-10-29T11:39Z; we wait rather than bypass. Mitigated meanwhile:
-              # body-parser@2.2.2 has two consumers, the API (server/) and the
-              # embeddings sidecar (server/embeddings-svc/), both via express 5.2.1.
-              # Every parser in both is built with `inflate: false`
-              # (server/src/middleware/body-parsers.ts; the sidecar's app.ts), so a
-              # gzip/deflate/br body is refused 415 before any zlib stream exists;
-              # guarded by server/tests/body-parser-inflate-1458.test.ts,
-              # server/embeddings-svc/tests/body-inflate-1458.test.ts and the
-              # inventory scan in server/src/middleware/body-parsers.inflate.test.ts.
-              # Scoped to the one resolved copy. Expires the day after the release age clears: upgrade
-              # and DELETE this entry, never re-date it.
-              "GHSA-27r3-jxmh-p828": {
-                  "expires": "2026-10-30",
-                  "packages": ["body-parser@2.2.2"],
-                  "reason": "body-parser@2.2.2 only: 2.4.0 held by minimumReleaseAge "
-                            "until 2026-10-29; every parser in the API and the "
-                            "embeddings sidecar sets inflate: false, so the "
-                            "compressed-body path is unreachable (#1458).",
-              },
               # @azure/msal-node GHSA-xcx6-jx8p-x3h5 (HIGH, CVSS 7.5), `introduced
               # 5.0.0-beta.0, fixed 7.1.0`: the AUTHORIZATION-CODE flow
               # (acquireTokenByCode, and acquireTokenInteractive, which ends in it) may
@@ -251,23 +229,6 @@ jobs:
                   "reason": "@azure/msal-node@5.3.0 only (via @azure/identity 4.13.1, "
                             "botframework-connector): no parent accepts 7.x; METIS never "
                             "runs the MSAL authorization-code flow (#1464).",
-              },
-              # multer GHSA-q7qp-rjg7-q26m (HIGH, CVSS 7.5), `introduced 2.0.0, fixed
-              # 2.5.0`: a pending ASYNC fileFilter resumes a torn-down busboy stream and
-              # crashes the process. 2.5.0 was published 2026-10-22T11:58Z and
-              # minimumReleaseAge holds it until 2026-10-29T11:58Z; we wait rather than
-              # bypass. Not reachable meanwhile: none of the three multer instances
-              # (routes/documents.ts, connectors.ts, analysis.ts) sets a fileFilter, so
-              # multer's synchronous default runs, which the advisory says is not
-              # affected. Guarded by scripts/lib/dependency-audit-1464-advisories.test.mjs,
-              # which fails on any asynchronous fileFilter. Expires the day after the
-              # release age clears: upgrade (#1460) and DELETE this entry, never re-date.
-              "GHSA-q7qp-rjg7-q26m": {
-                  "expires": "2026-10-30",
-                  "packages": ["multer@2.4.0"],
-                  "reason": "multer@2.4.0 only: 2.5.0 held by minimumReleaseAge until "
-                            "2026-10-29; no METIS upload sets a fileFilter, so the "
-                            "async-fileFilter crash is unreachable (#1464).",
               },
           }
           today = datetime.date.today()
