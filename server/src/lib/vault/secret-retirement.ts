@@ -35,6 +35,7 @@
  * live secrets (a bounded batch, each at most once per interval) and retires
  * the ones nothing references any more.
  */
+import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
 import { CONCURRENT_UPDATE } from "../connectors/types.js";
@@ -387,7 +388,7 @@ export async function sweepReplacedSecrets(
         secretId: row.id,
       });
       audit({
-        actor: { id: "system" },
+        actor: { id: SYSTEM_ACTOR_ID },
         action: "vault.delete",
         target: { type: "secret", id: row.id },
         metadata: { source: "replaced_secret_sweep", reason: "replaced_no_longer_referenced" },

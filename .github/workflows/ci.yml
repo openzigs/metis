@@ -1161,6 +1161,13 @@ jobs:
         working-directory: server
         run: pnpm test:integration product-home-1527-postgres
 
+      # Issue #1528 — a scheduled analysis re-run starts on real Postgres: the
+      # real scheduler handler and orchestrator (stub model) record the system
+      # start as a NULL startedById, which the analyses foreign key accepts.
+      - name: Prove a scheduled analysis re-run starts on real Postgres
+        working-directory: server
+        run: pnpm test:integration scheduled-analysis-system-start-1528-postgres
+
       # Issue #492 — the partial (live-rows-only) repo label index on real
       # Postgres: delete-then-re-add under one label succeeds, a rename onto a
       # live label is a 409 through the real router, including a lost race.

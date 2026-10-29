@@ -46,6 +46,7 @@
  * the `String` column, every write that would have stored one threw instead.
  * No row can hold a bad value.
  */
+import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import { GITHUB_API_VERSION, type CredentialCheckResult, type DryRunPlan } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
@@ -1712,7 +1713,7 @@ async function reconcileFromRemote(args: ReconcileArgs): Promise<ReconcileOutcom
         message: e.message,
       });
       audit({
-        actor: { id: "system" },
+        actor: { id: SYSTEM_ACTOR_ID },
         action: "publish.reconcile.read_failed",
         target: { type: "github_issue", id: issueRef },
         metadata: {
@@ -1763,7 +1764,7 @@ async function reconcileFromRemote(args: ReconcileArgs): Promise<ReconcileOutcom
         markersRead: markers.length,
       });
       audit({
-        actor: { id: "system" },
+        actor: { id: SYSTEM_ACTOR_ID },
         action,
         target: { type: "github_issue", id: issueRef },
         metadata: {

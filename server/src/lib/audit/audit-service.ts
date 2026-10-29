@@ -38,6 +38,7 @@
 import crypto from "node:crypto";
 import { createChildLogger, isTokenCountExempt } from "../logger.js";
 import { prisma } from "../prisma.js";
+import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 
 const log = createChildLogger("audit");
 
@@ -55,16 +56,8 @@ const SENSITIVE_KEY_PATTERNS = [
 
 const REDACTED = "[REDACTED]";
 
-/**
- * #1518 — the actor id system-initiated work passes in place of a user id: the
- * boot permission re-check, the scheduled connector refresh, the publish
- * reconcile, the replaced-secret sweep, library auto-discover. No `User` row
- * has this id, and `AuditLog.actorId` is a foreign key to `User`, so persisting
- * it verbatim failed the insert and lost the row. {@link buildAuditLogData}
- * writes it as `actorId: null` with `actorType: "system"` in the metadata — the
- * shape the PR-review audit (`pr-audit.ts`) already writes for a system actor.
- */
-export const SYSTEM_ACTOR_ID = "system";
+// #1518 — the actor id for system-initiated work; see `system-actor.ts`.
+export { SYSTEM_ACTOR_ID };
 
 export interface AuditEntry {
   /**

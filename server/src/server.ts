@@ -3,6 +3,7 @@
  * does NOT call `listen()` — callers (production entrypoint, tests) decide
  * when to start accepting connections.
  */
+import { SYSTEM_ACTOR_ID } from "./lib/audit/system-actor.js";
 import http from "node:http";
 import { createApp, type CreateAppOptions } from "./app.js";
 import { bootstrapMCP, type MCPBootstrap } from "./lib/mcp/index.js";
@@ -421,7 +422,7 @@ export function createServer(opts: CreateServerOptions = {}): MetisServer {
   // when LIBRARY_AUTO_DISCOVER_ROOT is unset (i.e. tests + production).
   const discoverRoot = process.env.LIBRARY_AUTO_DISCOVER_ROOT;
   if (discoverRoot && process.env.NODE_ENV !== "test") {
-    autoDiscoverFromWorkspace(discoverRoot, { id: "system" }).catch((err) => {
+    autoDiscoverFromWorkspace(discoverRoot, { id: SYSTEM_ACTOR_ID }).catch((err) => {
       log.warn("Library auto-discover failed", { error: (err as Error).message });
     });
   }

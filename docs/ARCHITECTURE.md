@@ -1231,8 +1231,13 @@ Deferred events keep their server emitter and a `TODO(#406)` allow-list reason r
 
 Every lifecycle event writes an `AuditLog` row through `audit({actor, action, target, metadata})`.
 `AuditLog.actorId` is a foreign key to `User`, so system-initiated work (boot re-checks, the
-scheduler, sweeps) passes `SYSTEM_ACTOR_ID` (`"system"`) and `buildAuditLogData` persists it as
-`actorId: null` with `actorType: "system"` in the metadata (#1518):
+scheduler, sweeps) passes `SYSTEM_ACTOR_ID` (`"system"`, from `lib/audit/system-actor.ts`, a
+module with no imports so call sites can name it under a mocked audit service) and
+`buildAuditLogData` persists it as `actorId: null` with `actorType: "system"` in the metadata
+(#1518). `Analysis.startedById` follows the same rule (#1528): a scheduled `rerun-analysis`
+passes `SYSTEM_ACTOR_ID` and `createAnalysis` stores it as `NULL`. The column is nullable for
+that reason alone; its foreign key keeps `ON DELETE RESTRICT`, so `NULL` never means a deleted
+user. `tests/system-actor-literal-1528.test.ts` fails on an actor id spelled as the bare literal.
 
 - `analysis.start` — `{projectId, agentKeys, documentCount, model}`
 - `analysis.complete` — `{tokens, agentCount}`
@@ -4462,7 +4467,7 @@ Retry backoff is exponential and bounded:
 | ------------------------------- | ---------------------------------------------------- |
 | `refresh-repo-connector`        | Re-pull metadata + re-ingest a repo connector.       |
 | `refresh-db-connector-schema`   | Re-introspect schema + samples for a DB connector.   |
-| `rerun-analysis`                | Trigger Phase 7 analysis on a project.               |
+| `rerun-analysis`                | Trigger Phase 7 analysis on a project (started by the system: `startedById` NULL, #1528). |
 | `publish-batch`                 | Re-run a Phase 9 publish (idempotent).               |
 | `http-webhook`                  | POST a JSON payload to a vetted external URL.        |
 

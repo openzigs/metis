@@ -9,6 +9,7 @@
  * row is created so history is preserved (#57 AC1). Cascade-on-archive is
  * already wired via Prisma `onDelete: Cascade` on the project relation.
  */
+import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import { mergeHiddenRequirementLabels, parseRequirementLabels } from "./requirement-labels.js";
 import {
   analysisFailedAgents,
@@ -139,6 +140,7 @@ export { BACKGROUND_ANALYSIS_SOURCES } from "./requirement-runs.js";
 
 export interface CreateAnalysisInput {
   projectId: string;
+  /** The starting user's id, or `SYSTEM_ACTOR_ID` for a system start (#1528). */
   startedById: string;
   agentKeys: AnalysisSpecialistAgentKey[];
   documentIds?: string[];
@@ -222,7 +224,9 @@ export async function createAnalysis(input: CreateAnalysisInput) {
   return prisma.analysis.create({
     data: {
       projectId: input.projectId,
-      startedById: input.startedById,
+      // #1528 — a system start (a scheduled re-run) has no user row to point
+      // at, so it is stored as NULL, as the audit log stores it (#1518).
+      startedById: input.startedById === SYSTEM_ACTOR_ID ? null : input.startedById,
       status: "running",
       metadata: JSON.stringify({
         agentKeys: input.agentKeys,

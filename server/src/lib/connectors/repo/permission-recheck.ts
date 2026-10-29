@@ -31,6 +31,7 @@
  * replica checks in its own random order, so a multi-replica deployment does
  * not repeat every check per replica.
  */
+import { SYSTEM_ACTOR_ID } from "../../audit/system-actor.js";
 import { prisma } from "../../prisma.js";
 import { createChildLogger } from "../../logger.js";
 import { connectorSecretState } from "./webhook-secret.js";
@@ -171,7 +172,7 @@ export async function recheckUnrecordedRepoPermissions(
     try {
       // #1499 — unattended: a DNS or connection failure at boot leaves the
       // connector as it was rather than marking it `error`.
-      await test(current.projectId, current.id, "system", { unattended: true });
+      await test(current.projectId, current.id, SYSTEM_ACTOR_ID, { unattended: true });
       recorded += 1;
     } catch (err) {
       failed += 1;

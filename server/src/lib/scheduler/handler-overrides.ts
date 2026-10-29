@@ -18,6 +18,7 @@
  * `signal.aborted` check before returning so an in-flight cancel never sees
  * a stale "completed" status.
  */
+import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import {
   fetchRepoMetadata,
   pullOrCloneRepo,
@@ -108,12 +109,12 @@ export function buildSchedulerHandlerOverrides(
         const lease = acquireConnectorIngest(connectorId, "scheduled-refresh");
         try {
           // Step 1 — pull latest commits (or re-clone if clone is missing/corrupt)
-          const clone = await pullOrCloneRepo(projectId, connectorId, "system");
+          const clone = await pullOrCloneRepo(projectId, connectorId, SYSTEM_ACTOR_ID);
           abortGuard(signal);
           // Step 2 — incremental code-graph re-ingest (only changed files).
           // Best-effort SQL-lineage wiring from the project's DB connector
           // (#316/#317); never blocks the scheduled refresh if unavailable.
-          const schemaWiring = await buildCodeGraphSchemaWiring(projectId, "system");
+          const schemaWiring = await buildCodeGraphSchemaWiring(projectId, SYSTEM_ACTOR_ID);
           const graphStats = await ingestCodeGraph(prisma, {
             projectId,
             rootDir: clone.path,
@@ -137,16 +138,21 @@ export function buildSchedulerHandlerOverrides(
           const srcSummary = await ingestSourceAsKnowledge(
             projectId,
             connectorId,
-            "system",
+            SYSTEM_ACTOR_ID,
             clone.path,
             { lease },
           );
           abortGuard(signal);
           // Step 4 — refresh metadata (README, manifests, connectivity check)
-          const meta = await fetchRepoMetadata(projectId, connectorId, "system");
-          const metadataSummary = await ingestRepoMetadata(projectId, connectorId, "system", meta);
+          const meta = await fetchRepoMetadata(projectId, connectorId, SYSTEM_ACTOR_ID);
+          const metadataSummary = await ingestRepoMetadata(
+            projectId,
+            connectorId,
+            SYSTEM_ACTOR_ID,
+            meta,
+          );
           abortGuard(signal);
-          const test = await testRepoConnector(projectId, connectorId, "system");
+          const test = await testRepoConnector(projectId, connectorId, SYSTEM_ACTOR_ID);
           // #449 — a scheduling failure no longer fails the refresh: the ingest
           // landed, and a `schedule-regeneration` task retries the scheduling
           // alone. Only when that retry could not be queued does the refresh
@@ -183,12 +189,12 @@ export function buildSchedulerHandlerOverrides(
       (async (connectorId, signal) => {
         abortGuard(signal);
         const projectId = await fetchDbConnectorProjectId(connectorId);
-        const snap = await inspectDbConnector(projectId, connectorId, "system");
+        const snap = await inspectDbConnector(projectId, connectorId, SYSTEM_ACTOR_ID);
         abortGuard(signal);
         // Re-ingest the fresh snapshot so the RAG knowledge base stays current.
         // Without this the scheduled refresh only introspects and discards the
         // result — chat/analysis schema context goes stale.
-        const ingestSummary = await ingestDbSchema(projectId, connectorId, "system", snap);
+        const ingestSummary = await ingestDbSchema(projectId, connectorId, SYSTEM_ACTOR_ID, snap);
         return {
           tableCount: snap.tables.length,
           durationMs: snap.durationMs,
@@ -212,7 +218,7 @@ export function buildSchedulerHandlerOverrides(
           const out = await runAutopilot({
             projectId,
             triggeredBy: "scheduler",
-            run: async () => orchestrator.start({ projectId, startedById: "system" }),
+            run: async () => orchestrator.start({ projectId, startedById: SYSTEM_ACTOR_ID }),
           });
           if (out.status === "aborted") {
             throw new Error(`autopilot ${out.reason ?? "aborted"}`);
@@ -222,7 +228,7 @@ export function buildSchedulerHandlerOverrides(
         }
         const started = await orchestrator.start({
           projectId,
-          startedById: "system",
+          startedById: SYSTEM_ACTOR_ID,
         });
         return { analysisId: started.id };
       }),
