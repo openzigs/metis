@@ -55,8 +55,22 @@ const SENSITIVE_KEY_PATTERNS = [
 
 const REDACTED = "[REDACTED]";
 
+/**
+ * #1518 — the actor id system-initiated work passes in place of a user id: the
+ * boot permission re-check, the scheduled connector refresh, the publish
+ * reconcile, the replaced-secret sweep, library auto-discover. No `User` row
+ * has this id, and `AuditLog.actorId` is a foreign key to `User`, so persisting
+ * it verbatim failed the insert and lost the row. {@link buildAuditLogData}
+ * writes it as `actorId: null` with `actorType: "system"` in the metadata — the
+ * shape the PR-review audit (`pr-audit.ts`) already writes for a system actor.
+ */
+export const SYSTEM_ACTOR_ID = "system";
+
 export interface AuditEntry {
-  /** User id of the actor; `null` for system-initiated actions. */
+  /**
+   * User id of the actor; `null` or {@link SYSTEM_ACTOR_ID} for system-initiated
+   * actions (the latter is persisted as `null` with `actorType: "system"`).
+   */
   actorId?: string | null;
   /** Verb-style identifier — e.g. `user.login`, `vault.read`, `analysis.start`. */
   action: string;
@@ -175,14 +189,15 @@ export function buildAuditLogData(entry: AuditEntry): {
 } {
   const argsHash = entry.args ? hashJson(redact(entry.args)) : null;
   const resultHash = entry.result ? hashJson(redact(entry.result)) : null;
+  const system = entry.actorId === SYSTEM_ACTOR_ID;
   return {
-    actorId: entry.actorId ?? null,
+    actorId: system ? null : (entry.actorId ?? null),
     action: entry.action,
     targetType: entry.targetType,
     targetId: entry.targetId,
     argsHash,
     resultHash,
-    metadata: buildMetadata(entry, argsHash, resultHash),
+    metadata: buildMetadata(entry, argsHash, resultHash, system),
   };
 }
 
@@ -226,6 +241,7 @@ function buildMetadata(
   entry: AuditEntry,
   argsHash: string | null,
   resultHash: string | null,
+  system: boolean,
 ): string | null {
   const meta: Record<string, unknown> = {};
   if (entry.metadata) Object.assign(meta, redact(entry.metadata) as Record<string, unknown>);
@@ -235,5 +251,7 @@ function buildMetadata(
   }
   if (argsHash) meta.argsHashAlgorithm = "sha256";
   if (resultHash) meta.resultHashAlgorithm = "sha256";
+  // Set after the caller's metadata, so it cannot relabel a system row.
+  if (system) meta.actorType = "system";
   return Object.keys(meta).length ? JSON.stringify(meta) : null;
 }

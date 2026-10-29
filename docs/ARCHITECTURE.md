@@ -1229,7 +1229,10 @@ Deferred events keep their server emitter and a `TODO(#406)` allow-list reason r
 
 ### 7.7 Audit Trail
 
-Every lifecycle event writes an `AuditLog` row through `audit({actor, action, target, metadata})`:
+Every lifecycle event writes an `AuditLog` row through `audit({actor, action, target, metadata})`.
+`AuditLog.actorId` is a foreign key to `User`, so system-initiated work (boot re-checks, the
+scheduler, sweeps) passes `SYSTEM_ACTOR_ID` (`"system"`) and `buildAuditLogData` persists it as
+`actorId: null` with `actorType: "system"` in the metadata (#1518):
 
 - `analysis.start` — `{projectId, agentKeys, documentCount, model}`
 - `analysis.complete` — `{tokens, agentCount}`
