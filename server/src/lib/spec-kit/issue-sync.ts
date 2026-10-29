@@ -17,6 +17,7 @@ import { prisma } from "../prisma.js";
 import { writeFeatureArtifact, getFeatureArtifact } from "./feature-artifacts.js";
 import { audit } from "../audit/audit-service.js";
 import { splitTaskTitle } from "./tasks-parser.js";
+import { escapeTableCell } from "../documents/markdown-utils.js";
 import { issueTitle } from "./commands/taskstoissues.js";
 import { createChildLogger } from "../logger.js";
 import { logDeletedProjectSkip } from "../projects/deleted-project-guard.js";
@@ -150,26 +151,25 @@ function toggleCheckbox(line: string, closed: boolean, issueNumber?: number): st
  * `issues.edited` payload so the webhook handler MUST scrub them.
  */
 function sanitiseTitleForTasksMd(raw: string): string {
-  return (
-    raw
-      .replace(/\r\n|\r|\n/g, " ") // collapse newlines to a single space
-      // Issue #17.2 — strip HTML comments outright. A title containing
-      // `<!-- closed via #N -->` (or any `<!-- ... -->`) would otherwise be
-      // mistaken for the status markers this module writes into table rows, or
-      // smuggle a comment into the rendered tasks.md. Handle unterminated
-      // comments too (`<!--` with no closing `-->`).
-      .replace(/<!--[\s\S]*?-->/g, "")
-      .replace(/<!--[\s\S]*$/g, "")
-      // Issue #17.2 — neutralise any remaining angle brackets so a malicious
-      // title (e.g. `<script>`, `<img onerror=...>`) cannot inject inline HTML
-      // when the markdown is rendered. Encode to HTML entities so the original
-      // text is still legible as literal characters.
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/\|/g, "\\|") // escape pipes so they don't break table cells
-      .replace(/\s+/g, " ") // collapse runs of whitespace from the prior step
-      .trim()
-  );
+  const neutralised = raw
+    .replace(/\r\n|\r|\n/g, " ") // collapse newlines to a single space
+    // Issue #17.2 — strip HTML comments outright. A title containing
+    // `<!-- closed via #N -->` (or any `<!-- ... -->`) would otherwise be
+    // mistaken for the status markers this module writes into table rows, or
+    // smuggle a comment into the rendered tasks.md. Handle unterminated
+    // comments too (`<!--` with no closing `-->`).
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<!--[\s\S]*$/g, "")
+    // Issue #17.2 — neutralise any remaining angle brackets so a malicious
+    // title (e.g. `<script>`, `<img onerror=...>`) cannot inject inline HTML
+    // when the markdown is rendered. Encode to HTML entities so the original
+    // text is still legible as literal characters.
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  // #1542 — escape `\` then `|`, so a title's `a\|b` cannot end the cell early.
+  return escapeTableCell(neutralised)
+    .replace(/\s+/g, " ") // collapse runs of whitespace from the prior step
+    .trim();
 }
 
 /** Escape regex metacharacters so an id can be embedded as a literal. */

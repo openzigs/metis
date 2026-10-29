@@ -4,11 +4,60 @@
 import { describe, expect, it } from "vitest";
 import {
   cleanPdfText,
+  escapeTableCell,
   expandMergedCells,
   htmlToMarkdown,
   rowsToMarkdownTable,
   type MergeRange,
 } from "../src/lib/documents/markdown-utils.js";
+import { tableRows } from "./helpers/gfm-table.js";
+
+/**
+ * #1542 (CodeQL 460–465) — a cell is escaped `\` first, then `|`, so a value
+ * holding `a\|b` renders as itself in one cell. Read back through a real GFM
+ * renderer, not by substring.
+ */
+describe("escapeTableCell() (#1542)", () => {
+  const cell = (value: string) => `| h |\n| --- |\n| ${value} |\n`;
+
+  it.each(["a\\|b", "a|b", "C:\\x", "trailing\\", "a\\\\|b", "plain"])(
+    "round-trips %j through a GFM table in one cell",
+    (value) => {
+      expect(tableRows(cell(escapeTableCell(value)))).toEqual([["h"], [value]]);
+    },
+  );
+
+  it("rowsToMarkdownTable escapes with it, so a\\|b keeps its row's shape", () => {
+    expect(
+      tableRows(
+        rowsToMarkdownTable([
+          ["A", "B"],
+          ["a\\|b", "next"],
+        ]),
+      ),
+    ).toEqual([
+      ["A", "B"],
+      ["a\\|b", "next"],
+    ]);
+  });
+
+  it("in a code span, leaves a backslash literal and keeps a pipe in its cell", () => {
+    const code = (value: string) => cell(`\`${escapeTableCell(value, { codeSpan: true })}\``);
+    expect(tableRows(code("C:\\x"))).toEqual([["h"], ["C:\\x"]]);
+    expect(tableRows(code("a|b"))).toEqual([["h"], ["a|b"]]);
+    // GFM cannot show a literal `\` before `|` in a code span: the cell stays
+    // whole, with the backslash doubled.
+    expect(tableRows(code("a\\|b"))).toEqual([["h"], ["a\\\\|b"]]);
+  });
+});
+
+describe("htmlToMarkdown() entity decoding (#1542)", () => {
+  it("decodes &amp; last, so the literal text &amp;lt; becomes &lt;, not <", () => {
+    expect(htmlToMarkdown("<p>&amp;lt;b&amp;gt; &amp;amp; &lt;i&gt;</p>")).toBe(
+      "&lt;b&gt; &amp; <i>",
+    );
+  });
+});
 
 describe("htmlToMarkdown()", () => {
   it("converts headings h1–h6", () => {

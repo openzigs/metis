@@ -240,12 +240,13 @@ async function parsePptx(buffer: Buffer): Promise<ParseResult> {
         } else if (node.type === "list") {
           sections.push(`- ${node.text}`);
         } else if (node.type === "table") {
+          // #1542 — raw cell text: `rowsToMarkdownTable` escapes each cell
+          // (`escapeTableCell`) and folds newlines. Escaping here as well
+          // escaped every `|` twice, which split the cell it was in.
           const rows = (node.children ?? [])
             .filter((r) => r.type === "row")
             .map((row) =>
-              (row.children ?? [])
-                .filter((c) => c.type === "cell")
-                .map((c) => (c.text ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ")),
+              (row.children ?? []).filter((c) => c.type === "cell").map((c) => c.text ?? ""),
             );
           if (rows.length > 0) {
             const mdTable = rowsToMarkdownTable(rows);
@@ -346,14 +347,15 @@ export function sanitiseHtml(html: string): string {
   // Strip remaining tags.
   out = out.replace(/<[^>]+>/g, "");
   // Decode the most common HTML entities — full entity decoding is overkill
-  // for our embedding purposes.
+  // for our embedding purposes. `&amp;` goes last (#1542): decoded first, the
+  // literal text `&amp;lt;` would become `&lt;` and then `<`.
   out = out
     .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
     .replace(/&lt;/gi, "<")
     .replace(/&gt;/gi, ">")
     .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'");
+    .replace(/&#39;/gi, "'")
+    .replace(/&amp;/gi, "&");
   // Collapse runs of whitespace.
   out = out.replace(/[\t ]+/g, " ").replace(/\n{3,}/g, "\n\n");
   return out.trim();

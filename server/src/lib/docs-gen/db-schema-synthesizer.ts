@@ -35,6 +35,7 @@ import { DOCS_GEN_AGENT_STEP, noteRunUsage } from "./run-cost.js";
 import { scopedToGeneration } from "./generation-control.js";
 import { isGenerationStop, throwIfGenerationStopped } from "./generation-scope.js";
 import { buildErDiagram, MAX_TABLES_ER, renderColumnTable } from "./schema-render.js";
+import { escapeTableCell } from "../documents/markdown-utils.js";
 
 // The renderers live in `schema-render.ts` (#1061) so the architecture document can
 // use them without loading the connector stack; re-exported for existing importers.
@@ -330,11 +331,6 @@ export function buildProseWarnings(prose: ProseResult, totalTables: number): Doc
 // Used-objects classification section (Epic #292 — #299)
 // ---------------------------------------------------------------------------
 
-/** Escape `|` so identifiers don't break the markdown table layout. */
-function escapeCell(s: string): string {
-  return s.replace(/\|/g, "\\|");
-}
-
 /** Human label for a usage class. `uncertain` is always clearly flagged. */
 const USAGE_CLASS_LABEL: Record<string, string> = {
   used: "used",
@@ -348,7 +344,7 @@ function renderEvidence(evidence: UsageEvidence[]): string {
   return evidence
     .slice(0, 5)
     .map((e) => {
-      const from = e.fromQualifiedName ? escapeCell(e.fromQualifiedName) : "?";
+      const from = e.fromQualifiedName ? escapeTableCell(e.fromQualifiedName) : "?";
       const recon = e.reconciliation ? ` (${e.reconciliation})` : "";
       return `${e.edgeKind} ← ${from} [${e.source}]${recon}`;
     })
@@ -394,10 +390,11 @@ export function buildUsageClassificationSection(views: SchemaUsageClassification
   for (const v of views) {
     const objectName =
       v.kind === "column" && v.columnName
-        ? `${escapeCell(v.tableName)}.${escapeCell(v.columnName)}`
-        : escapeCell(v.tableName);
-    const klass = USAGE_CLASS_LABEL[v.usageClass] ?? escapeCell(v.usageClass);
-    const reason = v.usageClass === "uncertain" ? escapeCell(v.uncertainReason ?? "unknown") : "—";
+        ? `${escapeTableCell(v.tableName)}.${escapeTableCell(v.columnName)}`
+        : escapeTableCell(v.tableName);
+    const klass = USAGE_CLASS_LABEL[v.usageClass] ?? escapeTableCell(v.usageClass);
+    const reason =
+      v.usageClass === "uncertain" ? escapeTableCell(v.uncertainReason ?? "unknown") : "—";
     lines.push(
       `| ${objectName} | ${v.kind} | ${klass} | ${reason} | ${renderEvidence(v.evidence)} |`,
     );
