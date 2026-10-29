@@ -138,6 +138,7 @@ Entra's defaults):
 | `groupOverage` | `false` | sends `groups.link` (a Graph link) instead of `groups`, as Entra does past 150 groups ([group claims](https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/how-to-connect-fed-group-claims)) |
 | `expired` | `false` | the assertion was issued two hours ago and its windows closed 50 minutes ago |
 | `wrongAudience` | `false` | the Audience names another application |
+| `issuer` | the IdP's own | the Issuer the Response and the assertion name, still signed with the IdP's key; another tenant's `https://sts.windows.net/<tenant-id>/` is refused (#1555) |
 
 `idp.lastResponse()` returns the last SAMLResponse it posted, for a replay test.
 
@@ -147,8 +148,8 @@ Where it runs:
   workspace).
 - `server/tests/saml-entra-mock-idp-1553.sqlite.test.ts` — every profile through
   METIS's real routes: roles from group object IDs, both refused signing options,
-  MFA in the session, the overage admin warning, and refused replay, wrong-audience
-  and expired assertions.
+  MFA in the session, the overage admin warning, and refused replay, wrong-audience,
+  expired and other-tenant-Issuer assertions.
 - `e2e/tests/sso-saml-entra.spec.ts` — the same in a real browser from the
   `/login` page's SAML button, ending on the dashboard or on the ACS's refusal,
   and the overage warning on **Admin → Authentication**. It runs in the sharded

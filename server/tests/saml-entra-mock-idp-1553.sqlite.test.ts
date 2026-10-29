@@ -54,6 +54,7 @@ interface EntraProfile {
   groupOverage: boolean;
   expired: boolean;
   wrongAudience: boolean;
+  issuer: string;
 }
 interface MockEntraIdp {
   tenantId: string;
@@ -275,6 +276,24 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const acs = await signIn(entraUser("eve", [ADMINS]), { signing: "both", ...profile });
       expect(acs.status).toBe(401);
       expect(acs.body.error.message).toMatch(message);
+    });
+
+    it("#1555: a Response signed with the same key whose Issuer names another tenant is refused", async () => {
+      await configure();
+      const otherTenant = "https://sts.windows.net/0b1ec700-1555-4000-8000-0000000074e2/";
+      expect(otherTenant).not.toBe(idp.issuer);
+      const acs = await signIn(entraUser("ivy", [ADMINS]), {
+        signing: "both",
+        issuer: otherTenant,
+      });
+      expect(acs.status).toBe(401);
+      expect(acs.body.error.message).toBe(
+        `SAML assertion Issuer "${otherTenant}" does not match the configured IdP issuer ` +
+          `"${idp.issuer}"`,
+      );
+      expect(acs.headers["set-cookie"] ?? []).not.toEqual(
+        expect.arrayContaining([expect.stringMatching(/^metis\.at=/)]),
+      );
     });
   },
 );

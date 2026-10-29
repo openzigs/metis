@@ -19,8 +19,8 @@
  * `role`, `authnmethodsreferences`). A profile, changeable between sign-ins,
  * selects the signing option (Entra's default "Sign SAML assertion", "Sign
  * SAML response", or both), MFA or password-only, a groups overage
- * (`groups.link` instead of `groups`), and an expired or wrong-audience
- * assertion. Every shape is cited from Microsoft Learn in
+ * (`groups.link` instead of `groups`), an expired or wrong-audience
+ * assertion, and another Issuer signed with the same key (#1555). Every shape is cited from Microsoft Learn in
  * docs/auth/saml-local-testing.md.
  *
  * The signing key and its self-signed certificate are generated at startup
@@ -88,6 +88,8 @@ const DSIG = {
  * @property {boolean} groupOverage   send `groups.link` instead of `groups`
  * @property {boolean} expired        the assertion's validity window has passed
  * @property {boolean} wrongAudience  the Audience is not the SP's entity id
+ * @property {string} [issuer]        the Issuer the Response and assertion name, signed with
+ *   this IdP's own key (#1555: another tenant's issuer); default: this IdP's issuer
  */
 
 /** Entra's own defaults: assertion-only signing, a password sign-in. */
@@ -97,6 +99,7 @@ export const DEFAULT_PROFILE = Object.freeze({
   groupOverage: false,
   expired: false,
   wrongAudience: false,
+  issuer: /** @type {string | undefined} */ (undefined),
 });
 
 /**
@@ -437,7 +440,7 @@ export async function startMockEntraSamlIdp(options) {
       }
       const xml = buildEntraResponse(
         {
-          issuer,
+          issuer: profile.issuer ?? issuer,
           tenantId,
           spEntityId: options.spEntityId,
           acsUrl: options.acsUrl,

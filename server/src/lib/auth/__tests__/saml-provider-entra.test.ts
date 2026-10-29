@@ -75,16 +75,25 @@ const alice: EntraUser = {
 /** An Entra Response for `user`, signed both ways unless `signing` says otherwise. */
 function entraResponse(
   user: EntraUser,
-  opts: { classRef?: string; signing?: "assertion" | "both"; extra?: Record<string, string> } = {},
+  opts: {
+    classRef?: string;
+    signing?: "assertion" | "both";
+    extra?: Record<string, string>;
+    /** The Issuer of the Response and the assertion. */
+    issuer?: string;
+    /** Rewrite the unsigned XML before it is signed. */
+    edit?: (xml: string) => string;
+  } = {},
 ): string {
-  const xml = buildSamlResponseXml({
+  const built = buildSamlResponseXml({
     audience: ENTITY_ID,
     recipient: ACS_URL,
-    issuer: ENTRA_ISSUER,
+    issuer: opts.issuer ?? ENTRA_ISSUER,
     nameId: user.upn,
     authnContextClassRef: opts.classRef ?? ENTRA_CLASS_REF.password,
     attributes: { ...entraAttributes(user), ...opts.extra },
   });
+  const xml = opts.edit ? opts.edit(built) : built;
   const assertionSigned = signAssertion(xml, key);
   return toBase64(
     opts.signing === "assertion" ? assertionSigned : signResponse(assertionSigned, key),
@@ -303,5 +312,75 @@ describe("#1552 Entra Federation Metadata XML", () => {
     });
     expect(result.success).toBe(true);
     expect(result.user?.rawClaims[ENTRA_CLAIM.tenantId]).toBe(ENTRA_ISSUER.split("/")[3]);
+    // #1555: the metadata entityID is exactly the Issuer Entra sends, trailing slash included.
+    expect(parsed.issuer).toBe(ENTRA_ISSUER);
+    expect(result.user?.rawClaims.issuer).toBe(parsed.issuer);
+  });
+});
+
+describe("#1555 the assertion Issuer must be the configured IdP issuer", () => {
+  const OTHER_TENANT_ISSUER = "https://sts.windows.net/00000000-1555-4000-8000-0000000074e2/";
+  const ASSERTION_ISSUER = `<saml:Issuer>${ENTRA_ISSUER}</saml:Issuer><saml:Subject>`;
+
+  it("accepts the configured issuer", async () => {
+    const result = await validateSAMLResponse(entraResponse(alice), config);
+    expect(result.success).toBe(true);
+  });
+
+  it("refuses a Response signed with the right key that names another tenant, naming both issuers", async () => {
+    const result = await validateSAMLResponse(
+      entraResponse(alice, { issuer: OTHER_TENANT_ISSUER }),
+      config,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.user).toBeUndefined();
+    expect(result.error).toBe(
+      `SAML assertion Issuer "${OTHER_TENANT_ISSUER}" does not match the configured IdP ` +
+        `issuer "${ENTRA_ISSUER}"`,
+    );
+  });
+
+  it("compares exactly: the issuer without Entra's trailing slash is refused", async () => {
+    const result = await validateSAMLResponse(
+      entraResponse(alice, { issuer: ENTRA_ISSUER.slice(0, -1) }),
+      config,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain(`"${ENTRA_ISSUER.slice(0, -1)}"`);
+  });
+
+  it("reads the assertion's Issuer, not the Response envelope's", async () => {
+    const edit = (xml: string) => {
+      expect(xml).toContain(ASSERTION_ISSUER);
+      return xml.replace(
+        ASSERTION_ISSUER,
+        `<saml:Issuer>${OTHER_TENANT_ISSUER}</saml:Issuer><saml:Subject>`,
+      );
+    };
+    const result = await validateSAMLResponse(entraResponse(alice, { edit }), config);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain(`"${OTHER_TENANT_ISSUER}"`);
+  });
+
+  it("refuses an assertion with no Issuer", async () => {
+    const edit = (xml: string) => xml.replace(ASSERTION_ISSUER, "<saml:Subject>");
+    const result = await validateSAMLResponse(entraResponse(alice, { edit }), config);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe(
+      `The SAML assertion has no Issuer; the configured IdP issuer is "${ENTRA_ISSUER}"`,
+    );
+  });
+
+  it("does not check the Issuer when no IdP issuer is configured", async () => {
+    const result = await validateSAMLResponse(
+      entraResponse(alice, { issuer: OTHER_TENANT_ISSUER }),
+      { ...config, idpIssuer: "" },
+    );
+
+    expect(result.success).toBe(true);
   });
 });
