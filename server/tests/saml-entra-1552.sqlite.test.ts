@@ -4,8 +4,9 @@
  * Response carrying that request's id, and the session the route issues.
  *
  *   - a group object id mapped to a METIS role yields that role;
- *   - a groups overage signs the user in with the default role and records an
- *     admin-visible audit event;
+ *   - a groups overage signs the user in with the default role, and the admin
+ *     endpoint behind the Authentication page's warning reports it (read back
+ *     from the real audit table);
  *   - the sign-in's MFA result reaches the session token (and survives a
  *     refresh), so `requireMfa` refuses a password-only session;
  *   - Entra's default assertion-only signing is refused with the setting named.
@@ -34,10 +35,8 @@ vi.mock("../src/lib/prisma.js", async () => {
     Prisma,
   };
 });
-vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 const { createApp } = await import("../src/app.js");
-const { audit } = await import("../src/lib/audit/audit-service.js");
 const { upsertProvider, __resetProviders } = await import("../src/lib/auth/sso-config.js");
 const { __resetSAMLInstances } = await import("../src/lib/auth/saml-provider.js");
 const { verifyAccessToken } = await import("../src/lib/auth/jwt.js");
@@ -94,7 +93,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     afterEach(() => {
       __resetProviders();
       __resetSAMLInstances();
-      vi.mocked(audit).mockClear();
     });
 
     /** Configure SAML from Entra's Federation Metadata XML, as an admin would. */
@@ -181,31 +179,49 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         groups: [entra.ENTRA_GROUP.metisMembers],
       });
       expect(await roleOf(member)).toBe("developer");
-      expect(vi.mocked(audit).mock.calls.map(([e]) => e.action)).not.toContain(
-        "sso.saml.group_overage",
-      );
     });
 
-    it("a groups overage signs in with the default role and records an audit event", async () => {
+    it("a groups overage signs in with the default role and the admin page's endpoint reports it", async () => {
       await configureFromEntraMetadata();
+      const admin = await signIn({
+        upn: "ada@contoso.example",
+        objectId: "ada00000-1552-4000-8000-000000000001",
+        displayName: "Ada",
+        groups: [entra.ENTRA_GROUP.metisAdmins],
+      });
+      const adminToken = cookieValue(admin, "metis.at");
+      const overageSummary = () =>
+        request(app)
+          .get("/api/admin/auth/saml/group-overage")
+          .set("Authorization", `Bearer ${adminToken}`);
+      // Ordinary sign-ins (this test's and the previous one's) record nothing.
+      expect((await overageSummary()).body.data).toEqual({ total: 0, recent: [] });
+
       const acs = await signIn({
         upn: "olga@contoso.example",
         objectId: "ada00000-1552-4000-8000-000000000003",
         displayName: "Olga",
         groupOverage: true,
       });
-
       expect(acs.status).toBe(302);
       expect(await roleOf(acs)).toBe("reader");
-      const overage = vi
-        .mocked(audit)
-        .mock.calls.map(([e]) => e)
-        .find((e) => e.action === "sso.saml.group_overage");
-      expect(overage).toMatchObject({
-        target: { type: "user" },
-        metadata: { username: "olga", role: "reader", mode: "saml" },
+
+      // The audit write is queued; read it back through the admin endpoint.
+      await vi.waitFor(async () => {
+        const res = await overageSummary();
+        expect(res.status).toBe(200);
+        expect(res.body.data.total).toBe(1);
       });
-      expect(String(overage?.metadata?.remedy)).toMatch(/Groups assigned to the application/);
+      const summary = (await overageSummary()).body.data;
+      expect(summary.recent).toEqual([
+        { userId: expect.any(String), username: "olga", at: expect.any(String) },
+      ]);
+
+      // Admin-only.
+      const olga = await request(app)
+        .get("/api/admin/auth/saml/group-overage")
+        .set("Authorization", `Bearer ${cookieValue(acs, "metis.at")}`);
+      expect(olga.status).toBe(403);
     });
 
     it("a password-only session is refused by requireMfa, an MFA session is not, across a refresh", async () => {

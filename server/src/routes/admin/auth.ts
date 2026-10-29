@@ -21,6 +21,7 @@ import {
   toAdminProviderView,
 } from "../../lib/auth/sso-config.js";
 import { parseIdPMetadata } from "../../lib/auth/saml-provider.js";
+import { samlGroupOverageSummary } from "../../lib/auth/saml-group-overage.js";
 import {
   getLDAPConfigForUI,
   setLDAPConfig,
@@ -51,6 +52,14 @@ export function adminAuthRouter(): Router {
   r.get("/providers", (_req: Request, res: Response) => {
     const providers = getAllProvidersForAdmin();
     const body: ApiResponse = { success: true, data: { providers } };
+    res.json(body);
+  });
+
+  // --- SAML sign-ins that hit a group overage (#1552) ---
+  // Users the IdP sent no groups for (Entra past 150 groups), who therefore got
+  // the default role. Usernames and times only.
+  r.get("/saml/group-overage", async (_req: Request, res: Response) => {
+    const body: ApiResponse = { success: true, data: await samlGroupOverageSummary() };
     res.json(body);
   });
 

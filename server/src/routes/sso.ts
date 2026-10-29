@@ -35,6 +35,7 @@ import {
   validateSAMLResponse,
   generateAuthnRequestUrl,
 } from "../lib/auth/saml-provider.js";
+import { SAML_GROUP_OVERAGE_ACTION } from "../lib/auth/saml-group-overage.js";
 import { generateAuthorizationUrl, exchangeCodeForTokens } from "../lib/auth/oidc-provider.js";
 import { reconcileTrustedLoginRole } from "../lib/auth/durable-roles.js";
 import { oidcAssertedIdentities, samlAssertedIdentities } from "../lib/auth/bootstrap-admins.js";
@@ -289,11 +290,12 @@ export function ssoRouter(): Router {
       },
     });
     if (result.user.groupOverage) {
-      // #1552 — visible to admins in the audit log: the user signed in with the
-      // default role because the IdP listed no groups (Entra's overage claim).
+      // #1552 — the user signed in with the default role because the IdP listed
+      // no groups (Entra's overage claim). The admin Authentication page warns
+      // from these events (`samlGroupOverageSummary`).
       audit({
         actor: { id: userRow.id },
-        action: "sso.saml.group_overage",
+        action: SAML_GROUP_OVERAGE_ACTION,
         target: { type: "user", id: userRow.id },
         metadata: {
           username: userRow.username,

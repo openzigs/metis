@@ -71,8 +71,9 @@ or an app role value.
 in a SAML token, nested groups included. Past that it omits the groups claim
 entirely and sends `http://schemas.microsoft.com/claims/groups.link` (a Graph
 link) instead. METIS does not call Graph: such a user signs in with the
-provider's **default role**, the server logs a `SAML group overage` warning, and
-an `sso.saml.group_overage` event appears in the admin audit log naming the user.
+provider's **default role**, the server logs a `SAML group overage` warning, the
+sign-in is recorded as an `sso.saml.group_overage` audit event, and **Admin →
+Authentication → SAML 2.0** shows a warning naming the users it happened to.
 "Groups assigned to the application" emits only the groups assigned to the METIS
 app (direct members only), which keeps users under the limit. Sources: Microsoft
 Learn, [Configure group claims for applications](https://learn.microsoft.com/en-us/entra/identity/hybrid/connect/how-to-connect-fed-group-claims)
@@ -189,6 +190,6 @@ Default mappings should work. Ensure:
 | "AADSTS50011" error | Ensure Reply URL exactly matches ACS URL (no trailing slash) |
 | No group claims | Verify group claim is configured and users are assigned to groups |
 | "Invalid document signature: the SAML Response envelope is not signed" | Set **SAML Signing Certificate → Signing Option** to **Sign SAML response and assertion** (step 3) |
-| A user gets the default role; audit log shows `sso.saml.group_overage` | The user is in more than 150 groups: set the group claim to **Groups assigned to the application** (step 4) |
+| A user gets the default role; the SAML 2.0 tab warns of a group overage | The user is in more than 150 groups: set the group claim to **Groups assigned to the application** (step 4) |
 | Mapping by group name does nothing | Entra sends group object IDs by default: map the GUID, not the display name |
 | SCIM provisioning fails | Check Secret Token is valid; Azure requires SCIM 2.0 compliance |
