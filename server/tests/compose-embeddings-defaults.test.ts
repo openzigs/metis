@@ -17,7 +17,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import yaml from "js-yaml";
+import { loadYamlDocument } from "../src/lib/yaml-load.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadAIConfig } from "../src/lib/ai/config.js";
 import { resolveBackendKey } from "../src/lib/rag/embedder-registry.js";
@@ -50,7 +50,9 @@ export function expandComposeValue(raw: string, hostEnv: Record<string, string> 
 
 /** The server service's environment, as `docker compose up` with no host overrides. */
 function composeServerEnv(hostEnv: Record<string, string> = {}): Record<string, string> {
-  const doc = yaml.load(fs.readFileSync(COMPOSE_PATH, "utf8")) as ComposeFile;
+  const doc = loadYamlDocument(fs.readFileSync(COMPOSE_PATH, "utf8"), {
+    schema: "core-merge",
+  }) as ComposeFile;
   const raw = doc.services.server.environment ?? {};
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(raw)) {

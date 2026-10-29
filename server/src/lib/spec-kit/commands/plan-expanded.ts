@@ -22,7 +22,8 @@
  * set whole rather than a mix of old and new. The five writes are not one
  * database transaction: a database error part-way can still leave a mixed set.
  */
-import yaml from "js-yaml";
+import * as yaml from "js-yaml";
+import { loadYamlDocument } from "../../yaml-load.js";
 import {
   assertFeatureArtifactWritable,
   writeFeatureArtifact,
@@ -560,7 +561,7 @@ export function ensureValidOpenAPI(raw: string, featureSlug: string): string {
   body = body.replace(/^```(?:ya?ml)?\s*\n/i, "").replace(/\n```\s*$/i, "");
   let doc: Record<string, unknown> | null = null;
   try {
-    const loaded = yaml.load(body) as unknown;
+    const loaded = loadYamlDocument(body, { schema: "core-merge" });
     if (loaded && typeof loaded === "object") doc = loaded as Record<string, unknown>;
   } catch {
     doc = null;
