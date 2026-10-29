@@ -151,25 +151,27 @@ function toggleCheckbox(line: string, closed: boolean, issueNumber?: number): st
  * `issues.edited` payload so the webhook handler MUST scrub them.
  */
 function sanitiseTitleForTasksMd(raw: string): string {
-  const neutralised = raw
-    .replace(/\r\n|\r|\n/g, " ") // collapse newlines to a single space
-    // Issue #17.2 — strip HTML comments outright. A title containing
-    // `<!-- closed via #N -->` (or any `<!-- ... -->`) would otherwise be
-    // mistaken for the status markers this module writes into table rows, or
-    // smuggle a comment into the rendered tasks.md. Handle unterminated
-    // comments too (`<!--` with no closing `-->`).
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/<!--[\s\S]*$/g, "")
-    // Issue #17.2 — neutralise any remaining angle brackets so a malicious
-    // title (e.g. `<script>`, `<img onerror=...>`) cannot inject inline HTML
-    // when the markdown is rendered. Encode to HTML entities so the original
-    // text is still legible as literal characters.
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-  // #1542 — escape `\` then `|`, so a title's `a\|b` cannot end the cell early.
-  return escapeTableCell(neutralised)
-    .replace(/\s+/g, " ") // collapse runs of whitespace from the prior step
-    .trim();
+  return (
+    // #1542 — escape `\` then `|` so a title's `a\|b` cannot end the cell
+    // early. First, because no later step adds or removes either character.
+    escapeTableCell(raw)
+      .replace(/\r\n|\r|\n/g, " ") // collapse newlines to a single space
+      // Issue #17.2 — strip HTML comments outright. A title containing
+      // `<!-- closed via #N -->` (or any `<!-- ... -->`) would otherwise be
+      // mistaken for the status markers this module writes into table rows, or
+      // smuggle a comment into the rendered tasks.md. Handle unterminated
+      // comments too (`<!--` with no closing `-->`).
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/<!--[\s\S]*$/g, "")
+      // Issue #17.2 — neutralise any remaining angle brackets so a malicious
+      // title (e.g. `<script>`, `<img onerror=...>`) cannot inject inline HTML
+      // when the markdown is rendered. Encode to HTML entities so the original
+      // text is still legible as literal characters.
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/\s+/g, " ") // collapse runs of whitespace from the prior step
+      .trim()
+  );
 }
 
 /** Escape regex metacharacters so an id can be embedded as a literal. */

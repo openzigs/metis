@@ -7,9 +7,11 @@
 import { micromark } from "micromark";
 import { gfm, gfmHtml } from "micromark-extension-gfm";
 
+/** The text nodes of the renderer's own cell HTML (not a sanitiser: nothing here is rendered). */
 function text(html: string): string {
   return html
-    .replace(/<[^>]+>/g, "")
+    .split(/<[^>]*>/)
+    .join("")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
