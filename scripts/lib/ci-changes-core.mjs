@@ -63,6 +63,11 @@ export const POSTGRES_PATTERNS = Object.freeze([
   // *-pgvector integration suites.
   "server/src/lib/analysis/analysis-service.ts",
   "server/src/lib/analysis/approval-checkpoint.ts",
+  // #1528 — scheduled-analysis-system-start-1528-postgres drives the real handler
+  // and orchestrator.
+  "server/src/lib/analysis/orchestrator.ts",
+  "server/src/lib/ai/types.ts",
+  "server/src/lib/scheduler/handler-overrides.ts",
   "server/src/lib/auth/jwt.ts",
   "server/src/lib/auth/live-auth-payload.ts",
   "server/src/lib/auth/login-identity.ts",

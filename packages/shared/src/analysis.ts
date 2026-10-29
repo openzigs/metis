@@ -52,7 +52,8 @@ export const analysisSchema = z
     id: idSchema,
     projectId: idSchema,
     status: z.enum(ANALYSIS_STATUSES),
-    startedById: idSchema,
+    /** #1528 — null for a run the system started (a scheduled re-run). */
+    startedById: idSchema.nullable(),
     startedAt: dateSchema,
     completedAt: dateSchema.nullable(),
     inputTokens: z.number().int().min(0),

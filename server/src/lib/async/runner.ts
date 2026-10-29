@@ -16,6 +16,7 @@
  * `BG_HEARTBEAT_TIMEOUT_MS` (default 60s) are reset to `queued` on
  * `recoverStaleRuns()` (called once at server boot).
  */
+import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import PQueue from "p-queue";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
@@ -310,7 +311,7 @@ export class AsyncRunner {
         await getHookBus().emit("sessionStart", {
           sessionId: row.sessionId,
           projectId: row.projectId,
-          userId: "system",
+          userId: SYSTEM_ACTOR_ID,
           provider: "background",
           model: row.kind,
         });
@@ -330,7 +331,7 @@ export class AsyncRunner {
         await getHookBus().emit("sessionEnd", {
           sessionId: row.sessionId,
           projectId: row.projectId,
-          userId: "system",
+          userId: SYSTEM_ACTOR_ID,
           totalTokens: 0,
           status: "succeeded",
         });
