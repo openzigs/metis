@@ -6,9 +6,12 @@
 import { describe, expect, it } from "vitest";
 import {
   createPublishBatchSchema,
+  dryRunPlanSchema,
+  generateDraftsSchema,
   githubOwnerSchema,
   githubPublishTargetSchema,
   publishDestinationConfigSchema,
+  publishBatchSchema,
   publishFindingSchema,
 } from "../src/index.js";
 
@@ -163,4 +166,22 @@ describe("githubOwnerSchema — one owner rule for every publish path (#733)", (
       expect(batch(owner)).toBe(false);
     },
   );
+});
+
+describe("targetBaseUrl is capped at 2048 characters (#1540)", () => {
+  const prefix = "https://github.example.com/";
+  const atCap = prefix + "a".repeat(2048 - prefix.length);
+  const overCap = `${atCap}a`;
+  const fields = {
+    createPublishBatchSchema: createPublishBatchSchema.shape.targetBaseUrl,
+    publishBatchSchema: publishBatchSchema.shape.targetBaseUrl,
+    generateDraftsSchema: generateDraftsSchema.shape.targetBaseUrl,
+    dryRunPlanSchema: dryRunPlanSchema.shape.targetBaseUrl,
+  };
+
+  it.each(Object.entries(fields))("%s accepts 2048 and refuses 2049", (_name, field) => {
+    expect(atCap).toHaveLength(2048);
+    expect(field.safeParse(atCap).success).toBe(true);
+    expect(field.safeParse(overCap).success).toBe(false);
+  });
 });

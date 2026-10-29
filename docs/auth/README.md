@@ -86,7 +86,7 @@ accepts in [`server/src/routes/admin/auth.ts`](../../server/src/routes/admin/aut
 | `name` | string | **Yes** | Display name of the provider. |
 | `entityId` | string | **Yes** | SP Entity ID (becomes node-saml `issuer`). |
 | `acsUrl` | string | **Yes** | Assertion Consumer Service (ACS) URL. |
-| `idpMetadataXml` | string (XML) | On first config | IdP metadata XML. METIS's `parseIdPMetadata` extracts the IdP **SSO URL** (node-saml `entryPoint`), **signing cert(s)** (`idpCert`), and **issuer** from it — you do not set those three directly. May be omitted on update (the parsed values are preserved). |
+| `idpMetadataXml` | string (XML) | On first config | IdP metadata XML. METIS's `parseIdPMetadata` extracts the IdP **SSO URL** (node-saml `entryPoint`), **signing cert(s)** (`idpCert`), and **issuer** from it — you do not set those three directly. At most 256 KB, parsed as namespace-well-formed XML (a prefix such as `md:` or `ds:` must be declared, as it is in any IdP's exported metadata); a larger document is a 400 (#1540). May be omitted on update (the parsed values are preserved). |
 | `signRequests` | boolean | No (default `false`) | Sign outbound AuthnRequests. |
 | `requireSignedResponse` | boolean | No (**default `true`** — secure) | Require the SAML **Response envelope** to be signed (node-saml `wantAuthnResponseSigned`). Set `false` only for an IdP that cannot sign the envelope — assertion signing stays on. See [saml.md](./saml.md#the-one-configurable-knob-requiresignedresponse). |
 | `spPrivateKey` | string (PEM) | No | SP private key (masked in the read API; omit on update to keep stored). |

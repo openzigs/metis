@@ -511,6 +511,30 @@ describe("/api/projects/:projectId/connectors/dbs", () => {
     expect(badQuery.status).toBe(400);
   });
 
+  it("caps sql at 8,000 characters, like the AI tool path (#1540)", async () => {
+    const token = await login("admin");
+    const create = await request(app)
+      .post("/api/projects/proj_1/connectors/dbs")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ label: "capped", driver: "postgres", host: "db.example.com" });
+    expect(create.status).toBe(201);
+    const path = `/api/projects/proj_1/connectors/dbs/${create.body.data.id}/query`;
+    const select = "SELECT 1";
+
+    const atCap = await request(app)
+      .post(path)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ sql: select + " ".repeat(8_000 - select.length) });
+    expect(atCap.status).toBe(200);
+
+    const overCap = await request(app)
+      .post(path)
+      .set("Authorization", `Bearer ${token}`)
+      .send({ sql: select + " ".repeat(8_001 - select.length) });
+    expect(overCap.status).toBe(400);
+    expect(overCap.body.error.code).toBe("VALIDATION_ERROR");
+  });
+
   it("reader cannot run queries (403)", async () => {
     const token = await login("admin");
     const create = await request(app)

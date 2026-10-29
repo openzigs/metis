@@ -103,6 +103,13 @@ export function adminAuthRouter(): Router {
     let resolvedMetadataXml = existingSaml?.idpMetadataXml ?? "";
     if (idpMetadataXml && idpMetadataXml.trim().length > 0) {
       const parsed = parseIdPMetadata(idpMetadataXml);
+      if (!parsed.ssoUrl || parsed.certs.length === 0) {
+        throw new AppError(
+          400,
+          "VALIDATION_ERROR",
+          "IdP metadata has no SingleSignOnService URL or no X509 certificate",
+        );
+      }
       idpSsoUrl = parsed.ssoUrl;
       idpCerts = parsed.certs;
       idpIssuer = parsed.issuer;

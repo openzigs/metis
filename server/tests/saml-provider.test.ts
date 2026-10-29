@@ -3,8 +3,15 @@
  * Epic #748, Issue #749.
  */
 import { describe, expect, it } from "vitest";
-import { parseIdPMetadata, generateSPMetadata } from "../src/lib/auth/saml-provider.js";
+import {
+  parseIdPMetadata,
+  generateSPMetadata,
+  SAML_METADATA_MAX_CHARS,
+} from "../src/lib/auth/saml-provider.js";
+import { AppError } from "../src/middleware/error-handler.js";
 import type { SAMLConfig } from "../src/lib/auth/sso-types.js";
+
+const MD_NS = "urn:oasis:names:tc:SAML:2.0:metadata";
 
 const SAMPLE_IDP_METADATA = `<?xml version="1.0" encoding="UTF-8"?>
 <md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata"
@@ -45,7 +52,7 @@ describe("SAML Provider", () => {
     });
 
     it("handles metadata with no certificates gracefully", () => {
-      const noCert = `<md:EntityDescriptor entityID="https://x.com">
+      const noCert = `<md:EntityDescriptor xmlns:md="${MD_NS}" entityID="https://x.com">
         <md:IDPSSODescriptor>
           <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://x.com/sso"/>
         </md:IDPSSODescriptor>
@@ -63,13 +70,99 @@ describe("SAML Provider", () => {
     });
 
     it("falls back to POST binding if no Redirect binding", () => {
-      const postOnly = `<md:EntityDescriptor entityID="https://y.com">
+      const postOnly = `<md:EntityDescriptor xmlns:md="${MD_NS}" entityID="https://y.com">
         <md:IDPSSODescriptor>
           <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://y.com/post"/>
         </md:IDPSSODescriptor>
       </md:EntityDescriptor>`;
       const result = parseIdPMetadata(postOnly);
       expect(result.ssoUrl).toBe("https://y.com/post");
+    });
+
+    // #1540 — parsed as XML, not with polynomial regexes.
+    it("reads Location before Binding, unprefixed elements and several certs", () => {
+      const xml = `<EntityDescriptor xmlns="${MD_NS}" entityID="https://z.com">
+        <IDPSSODescriptor>
+          <KeyDescriptor><KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#"><X509Data>
+            <X509Certificate>
+              AAAA
+              BBBB
+            </X509Certificate>
+          </X509Data></KeyInfo></KeyDescriptor>
+          <KeyDescriptor><KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#"><X509Data>
+            <X509Certificate>CCCC</X509Certificate>
+          </X509Data></KeyInfo></KeyDescriptor>
+          <SingleSignOnService Location="https://z.com/post" Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"/>
+          <SingleSignOnService Location="https://z.com/redirect" Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"/>
+        </IDPSSODescriptor>
+      </EntityDescriptor>`;
+      expect(parseIdPMetadata(xml)).toEqual({
+        issuer: "https://z.com",
+        ssoUrl: "https://z.com/redirect",
+        certs: ["AAAABBBB", "CCCC"],
+      });
+    });
+
+    it("ignores a SingleSignOnService with an unknown binding", () => {
+      const xml = `<md:EntityDescriptor xmlns:md="${MD_NS}" entityID="https://u.com">
+        <md:IDPSSODescriptor>
+          <md:SingleSignOnService Binding="urn:example:artifact" Location="https://u.com/a"/>
+        </md:IDPSSODescriptor>
+      </md:EntityDescriptor>`;
+      expect(parseIdPMetadata(xml).ssoUrl).toBe("");
+    });
+
+    it.each([
+      ["leading whitespace", "\n  "],
+      ["a UTF-8 BOM", "\uFEFF"],
+      ["a BOM and whitespace", "\uFEFF\r\n"],
+    ])("parses metadata with %s before the xml declaration", (_label, prefix) => {
+      const xml = `${prefix}<?xml version="1.0" encoding="UTF-8"?><md:EntityDescriptor xmlns:md="${MD_NS}" entityID="https://b.com"><md:IDPSSODescriptor><md:SingleSignOnService Binding="${"urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"}" Location="https://b.com/sso"/></md:IDPSSODescriptor></md:EntityDescriptor>`;
+      expect(parseIdPMetadata(xml)).toMatchObject({
+        issuer: "https://b.com",
+        ssoUrl: "https://b.com/sso",
+      });
+    });
+
+    it("returns empty values for XML that is not well formed", () => {
+      expect(parseIdPMetadata("<md:EntityDescriptor entityID='x'><oops>")).toEqual({
+        issuer: "",
+        ssoUrl: "",
+        certs: [],
+      });
+    });
+
+    it("does not expand a DTD-declared entity into the parsed values", () => {
+      const xml = `<!DOCTYPE md:EntityDescriptor [<!ENTITY e "https://evil.example">]>
+        <md:EntityDescriptor xmlns:md="${MD_NS}" entityID="&e;"/>`;
+      expect(parseIdPMetadata(xml).issuer).not.toContain("evil");
+    });
+
+    it("rejects metadata over the size cap with a 400", () => {
+      const xml = `<md:EntityDescriptor xmlns:md="${MD_NS}" entityID="https://x.com">${" ".repeat(
+        SAML_METADATA_MAX_CHARS,
+      )}</md:EntityDescriptor>`;
+      let caught: unknown;
+      try {
+        parseIdPMetadata(xml);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(AppError);
+      expect((caught as AppError).statusCode).toBe(400);
+    });
+
+    it("parses adversarial metadata just under the cap in under 1000 ms", () => {
+      // 380 KB took 2.7 s under the old `SingleSignOnService[^>]+…` regexes.
+      const open = `<md:EntityDescriptor xmlns:md="${MD_NS}" entityID="https://x.com"><md:SingleSignOnService a="`;
+      const filler = "SingleSignOnService ".repeat(
+        Math.floor((SAML_METADATA_MAX_CHARS - open.length - 64) / 20),
+      );
+      const xml = `${open}${filler}"/></md:EntityDescriptor>`;
+      expect(xml.length).toBeLessThanOrEqual(SAML_METADATA_MAX_CHARS);
+      const started = performance.now();
+      parseIdPMetadata(xml);
+      expect(performance.now() - started).toBeLessThan(1000);
     });
   });
 

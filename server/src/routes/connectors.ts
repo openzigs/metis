@@ -38,6 +38,7 @@ import {
   updateDatabaseConnectorSchema,
   updateRepoConnectorSchema,
   MAX_UPLOAD_ARCHIVE_BYTES,
+  QUERY_DB_MAX_SQL_CHARS,
   REPO_PROVIDER_LOCAL,
   REPO_PROVIDER_UPLOAD,
 } from "@metis/shared";
@@ -1132,6 +1133,15 @@ export function connectorsRouter(): Router {
     requirePermission("connector.query"),
     async (req, res) => {
       const sql = typeof req.body?.sql === "string" ? req.body.sql : "";
+      // #1540: the cap the AI tool path applies, so the validator's regexes
+      // never see an unbounded body.
+      if (sql.length > QUERY_DB_MAX_SQL_CHARS) {
+        throw new AppError(
+          400,
+          "VALIDATION_ERROR",
+          `sql must be at most ${QUERY_DB_MAX_SQL_CHARS} characters`,
+        );
+      }
       try {
         const result = await queryDbConnector(
           projectIdOf(req),

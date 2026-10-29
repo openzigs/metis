@@ -221,10 +221,27 @@ function extractClause(block: string, keyword: "given" | "when" | "then"): strin
   return text.length > 0 ? text : null;
 }
 
+/**
+ * A `tasks.md` line is LLM output with no length bound (#1540); only this
+ * prefix of a line is parsed. A real checklist task is one short line.
+ */
+export const MAX_TASK_LINE_CHARS = 2_000;
+
+/**
+ * Trailing `satisfies: AC-1, AC-2` clause. Every separator is written so that
+ * a run of whitespace can be matched exactly one way: `(?:\s*,\s*|\s*)` is
+ * either a comma (which pins the split) or a single whitespace run. The old
+ * `(?:AC-\d+\s*,?\s*)+$` let two adjacent `\s*` share each gap, so a failed
+ * match backtracked through 2^n splits (#1540, CodeQL alert 2).
+ */
+const TRAILING_AC_CLAUSE_RE =
+  /\b(?:satisfies|maps?\s*to|ac)(?:\s*:\s*|\s*)AC-\d+(?:(?:\s*,\s*|\s*)AC-\d+)*(?:\s*,\s*|\s*)$/i;
+
 /** Parse checklist tasks out of a `tasks.md` body. */
 export function parseContractTasks(markdown: string): ParsedContractTask[] {
   const out: ParsedContractTask[] = [];
-  for (const line of markdown.split(/\r?\n/)) {
+  for (const raw of markdown.split(/\r?\n/)) {
+    const line = raw.length > MAX_TASK_LINE_CHARS ? raw.slice(0, MAX_TASK_LINE_CHARS) : raw;
     const m = /^\s*[-*]\s*\[([ xX])\]\s+(.*\S)\s*$/.exec(line);
     if (!m) continue;
     const checked = m[1]!.toLowerCase() === "x";
@@ -233,7 +250,7 @@ export function parseContractTasks(markdown: string): ParsedContractTask[] {
     // Title = body with a trailing AC reference clause stripped, when present.
     const title = body
       .replace(/\(\s*(?:satisfies|maps?\s*(?:to)?|ac)\s*:?\s*AC-[\d,\s-]*AC?-?\d*\s*\)/i, "")
-      .replace(/\b(?:satisfies|maps?\s*to|ac)\s*:?\s*(?:AC-\d+\s*,?\s*)+$/i, "")
+      .replace(TRAILING_AC_CLAUSE_RE, "")
       .trim();
     out.push({ checked, title: title.length > 0 ? title : body.trim(), acIds, raw: line });
   }

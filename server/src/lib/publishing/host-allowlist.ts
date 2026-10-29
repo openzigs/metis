@@ -71,6 +71,12 @@ export async function resolvePublishTarget(input: ResolveTargetInput): Promise<R
   };
 }
 
+/**
+ * A loop, not `/\/+$/`: the regex is retried from every slash of a long run
+ * that does not reach the end, quadratic in the input (#1540).
+ */
 function stripTrailingSlash(s: string): string {
-  return s.replace(/\/+$/, "");
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 0x2f /* "/" */) end--;
+  return s.slice(0, end);
 }
