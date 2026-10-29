@@ -18,6 +18,7 @@ import type { AuthPayload, PermissionKey, RoleKey } from "@metis/shared";
 import { createChildLogger } from "../logger.js";
 import { revocationStore, type RevocationStore } from "./revocation-store.js";
 import { readLiveWorkspaceIds } from "./live-workspace-ids.js";
+import { prisma } from "../prisma.js";
 import { disconnectUserSockets } from "../socket/user-disconnect.js";
 import { endUserSessionsIssuedBy } from "../socket/session-disconnect.js";
 import { ACCESS_EXPIRY, parseExpiryToSeconds } from "./token-ttl.js";
@@ -455,10 +456,14 @@ async function releaseClaimQuietly(tokenId: string, claimedAt: Date): Promise<vo
  * carried forward from the old token: a member removed from a workspace (or a
  * workspace soft-deleted, #549) would otherwise keep it in scope until the
  * refresh token expired. `resolveWorkspaces` is injectable for tests.
+ *
+ * #1554 — a token without `mfaPassed` gets one from the account's provider
+ * kind (`resolveAuthSource`, injectable for tests): see {@link carriedMfaPassed}.
  */
 export async function refreshAccessToken(
   refreshToken: string,
   resolveWorkspaces: (userId: string) => Promise<string[]> = readLiveWorkspaceIds,
+  resolveAuthSource: (userId: string) => Promise<string | null> = readAuthSource,
 ): Promise<TokenPair> {
   const decoded = await verifyRefreshToken(refreshToken);
   const expiresAt =
@@ -467,6 +472,7 @@ export async function refreshAccessToken(
       : new Date(Date.now() + refreshTtlSeconds() * 1000);
   // Read before revoking, so a failed read leaves the presented token usable.
   const workspaces = await resolveWorkspaces(decoded.userId);
+  const mfaPassed = await carriedMfaPassed(decoded, resolveAuthSource);
   // #582 — the revoke is the gate, not `verifyRefreshToken`'s check: two
   // concurrent refreshes with one token both pass the check, and only the one
   // that wins this atomic revoke-if-not-revoked may mint a new pair.
@@ -501,6 +507,35 @@ export async function refreshAccessToken(
     sid: sessionIdOf(decoded),
     // #1552 — the MFA result of the sign-in survives rotation, or a refreshed
     // session would lose the `false` that `requireMfa` refuses.
-    ...(typeof decoded.mfaPassed === "boolean" ? { mfaPassed: decoded.mfaPassed } : {}),
+    ...(typeof mfaPassed === "boolean" ? { mfaPassed } : {}),
   });
+}
+
+/** Provider kinds whose sign-in reports MFA (#1552), so their sessions carry `mfaPassed`. */
+const SSO_AUTH_SOURCES: ReadonlySet<string> = new Set(["saml", "oidc"]);
+
+/** #1554 — the provider kind of `userId` (`users.authSource`), or null if unknown. */
+async function readAuthSource(userId: string): Promise<string | null> {
+  const row = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { authSource: true },
+  });
+  return row?.authSource ?? null;
+}
+
+/**
+ * #1554 — the `mfaPassed` a refreshed pair carries: the presented token's, or,
+ * for a token without one, `false` when the account signs in through SAML or
+ * OIDC. Every SSO sign-in since #1552 records a boolean, so an SSO session
+ * without one began before #1552 and never proved MFA: it must sign in again
+ * to perform an MFA-gated action. Password sessions (mock, LDAP) make no claim
+ * and keep none. A failed read rejects, before the token is claimed.
+ */
+async function carriedMfaPassed(
+  decoded: RefreshPayload,
+  resolveAuthSource: (userId: string) => Promise<string | null>,
+): Promise<boolean | undefined> {
+  if (typeof decoded.mfaPassed === "boolean") return decoded.mfaPassed;
+  const source = await resolveAuthSource(decoded.userId);
+  return source !== null && SSO_AUTH_SOURCES.has(source) ? false : undefined;
 }

@@ -62,14 +62,17 @@ const SAML_CLOCK_SKEW_MS = 30_000;
  * IdPs report for a password-only sign-in) and not `X509` (Entra reports it for
  * single-factor certificate and device authentication). Entra reports
  * `MobileTwoFactorContract` when Authenticator, SMS, phone or e-mail completes
- * MFA and `SmartcardPKI` for FIDO2, passkeys, Windows Hello and multi-factor
- * CBA; ADFS reports `multipleauthn` as a class ref. Source: Microsoft Learn,
- * "Single sign-on SAML protocol" (AuthnStatement table).
+ * MFA and for passwordless phone sign-in, `SmartcardPKI` for FIDO2 security
+ * keys, device-bound passkeys, Windows Hello for Business and multi-factor CBA,
+ * and `SoftwarePKI` for synced passkeys (#1554); ADFS reports `multipleauthn`
+ * as a class ref. Source: Microsoft Learn, "Single sign-on SAML protocol"
+ * (AuthnStatement table).
  */
 const MFA_AUTHN_CONTEXTS: ReadonlySet<string> = new Set([
   "urn:oasis:names:tc:SAML:2.0:ac:classes:MobileTwoFactorUnregistered",
   "urn:oasis:names:tc:SAML:2.0:ac:classes:MobileTwoFactorContract",
   "urn:oasis:names:tc:SAML:2.0:ac:classes:SmartcardPKI",
+  "urn:oasis:names:tc:SAML:2.0:ac:classes:SoftwarePKI",
   "http://schemas.microsoft.com/claims/multipleauthn",
 ]);
 

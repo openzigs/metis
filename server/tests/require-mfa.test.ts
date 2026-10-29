@@ -4,7 +4,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import type { Request, Response, NextFunction } from "express";
-import { requireMfa } from "../src/lib/auth/require-mfa.js";
+import { assertMfa, MFA_REQUIRED_MESSAGE, requireMfa } from "../src/lib/auth/require-mfa.js";
 
 function createMockReq(user?: Record<string, unknown>): Partial<Request> {
   return { user: user as Request["user"] };
@@ -41,6 +41,24 @@ describe("requireMfa middleware", () => {
     expect(err).toBeDefined();
     expect(err.statusCode).toBe(403);
     expect(err.code).toBe("MFA_REQUIRED");
+    expect(err.message).toBe(MFA_REQUIRED_MESSAGE);
+  });
+
+  // #1554 — the refusal says what is wrong and who can fix it.
+  it("names MFA, signing in again, and the Entra Conditional Access fix", () => {
+    expect(MFA_REQUIRED_MESSAGE).toMatch(/multi-factor authentication/);
+    expect(MFA_REQUIRED_MESSAGE).toMatch(/sign in\s+again with MFA/);
+    expect(MFA_REQUIRED_MESSAGE).toMatch(
+      /Conditional Access policy requiring MFA for the METIS app/,
+    );
+  });
+
+  it("assertMfa refuses only an explicit false", () => {
+    const base = { userId: "u1", username: "a", role: "admin" as const, permissions: [] };
+    expect(() => assertMfa({ ...base, mfaPassed: false })).toThrow(MFA_REQUIRED_MESSAGE);
+    expect(() => assertMfa({ ...base, mfaPassed: true })).not.toThrow();
+    expect(() => assertMfa(base)).not.toThrow();
+    expect(() => assertMfa(undefined)).toThrow("Authentication required");
   });
 
   it("returns 401 when no user on request", () => {

@@ -25,6 +25,7 @@ import { randomUUID } from "node:crypto";
 import { AppError } from "../../middleware/error-handler.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { requirePermission } from "../../middleware/require-permission.js";
+import { requireMfa } from "../../lib/auth/require-mfa.js";
 import { getEmbedder, listBackendDescriptors } from "../../lib/rag/embedder.js";
 import { getKnowledgeService, ReindexConflictError } from "../../lib/rag/knowledge-service.js";
 import {
@@ -246,6 +247,7 @@ export function embeddingsAdminRouter(): Router {
     "/projects/:projectId/reindex",
     requireAuth,
     requirePermission("admin.write"),
+    requireMfa,
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const projectId = parseProjectId(String(req.params.projectId));
@@ -274,6 +276,7 @@ export function embeddingsAdminRouter(): Router {
     "/projects/:projectId/reindex",
     requireAuth,
     requirePermission("admin.write"),
+    requireMfa,
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const projectId = parseProjectId(String(req.params.projectId));

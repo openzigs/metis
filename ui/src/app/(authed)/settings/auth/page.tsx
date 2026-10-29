@@ -16,6 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/lib/auth-context";
 import { PageHeader } from "@/components/ui/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { apiErrorMessage } from "@/lib/api-client";
 
 /**
  * Admin view of an SSO provider (Issue #451): the config-read API masks stored
@@ -213,7 +214,7 @@ export default function AdminAuthPage() {
         fetchLDAPConfig();
       } else {
         const body = await res.json();
-        setMessage(body.error?.message ?? "Failed to save");
+        setMessage(apiErrorMessage(body.error, "Failed to save"));
       }
     } catch {
       setMessage("Network error");
@@ -240,7 +241,7 @@ export default function AdminAuthPage() {
       if (res.ok) {
         setLdapTestResult("✓ Connection successful");
       } else {
-        setLdapTestResult(body.error?.message ?? "Connection failed");
+        setLdapTestResult(apiErrorMessage(body.error, "Connection failed"));
       }
     } catch {
       setLdapTestResult("Network error");
@@ -269,7 +270,7 @@ export default function AdminAuthPage() {
         fetchProviders();
       } else {
         const body = await res.json();
-        setMessage(body.error?.message ?? "Failed to save");
+        setMessage(apiErrorMessage(body.error, "Failed to save"));
       }
     } catch {
       setMessage("Network error");
@@ -303,7 +304,7 @@ export default function AdminAuthPage() {
         fetchProviders();
       } else {
         const body = await res.json();
-        setMessage(body.error?.message ?? "Failed to save");
+        setMessage(apiErrorMessage(body.error, "Failed to save"));
       }
     } catch {
       setMessage("Network error");
@@ -319,6 +320,9 @@ export default function AdminAuthPage() {
         const body = await res.json();
         setScimToken(body.data?.token ?? null);
         setMessage("SCIM token rotated — copy it now, it won't be shown again");
+      } else {
+        const body = await res.json();
+        setMessage(apiErrorMessage(body.error, "Failed to rotate SCIM token"));
       }
     } catch {
       setMessage("Failed to rotate SCIM token");

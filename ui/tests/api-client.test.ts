@@ -1,7 +1,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
   ApiError,
+  apiErrorMessage,
   apiFetch,
+  MFA_REQUIRED_MESSAGE,
   streamFetch,
   refreshAccessToken,
   setOnRefreshFailure,
@@ -32,6 +34,40 @@ function makeResponse(body: unknown, init: { status?: number; ok?: boolean } = {
     text: () => Promise.resolve(text),
   } as unknown as Response;
 }
+
+describe("#1554 — an action that needs an MFA sign-in", () => {
+  const refusal = {
+    success: false,
+    error: { code: "MFA_REQUIRED", message: "server wording" },
+  };
+
+  it("surfaces the UI's MFA message once: no refresh, no retry, no logout", async () => {
+    const onFailure = vi.fn();
+    setOnRefreshFailure(onFailure);
+    fetchMock.mockResolvedValue(makeResponse(refusal, { status: 403 }));
+
+    const err = await apiFetch("/vault/s1/reveal").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ status: 403, code: "MFA_REQUIRED", message: MFA_REQUIRED_MESSAGE });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
+  it("says the fix is MFA at sign-in, set by the Entra administrator in Conditional Access", () => {
+    expect(MFA_REQUIRED_MESSAGE).toMatch(/needs a sign-in with multi-factor authentication/);
+    expect(MFA_REQUIRED_MESSAGE).toMatch(/sign in again with MFA/);
+    expect(MFA_REQUIRED_MESSAGE).toMatch(
+      /Microsoft Entra administrator to require MFA for the METIS app in Conditional Access/,
+    );
+  });
+
+  it("apiErrorMessage maps only MFA_REQUIRED, else the server message, else the fallback", () => {
+    expect(apiErrorMessage(refusal.error, "x")).toBe(MFA_REQUIRED_MESSAGE);
+    expect(apiErrorMessage({ code: "FORBIDDEN", message: "nope" }, "x")).toBe("nope");
+    expect(apiErrorMessage({ code: "FORBIDDEN" }, "fallback")).toBe("fallback");
+    expect(apiErrorMessage(undefined, "fallback")).toBe("fallback");
+  });
+});
 
 describe("apiFetch", () => {
   it("unwraps the data payload from a success envelope", async () => {

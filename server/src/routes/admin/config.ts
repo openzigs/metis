@@ -16,6 +16,7 @@ import { z } from "zod";
 import { AppError } from "../../middleware/error-handler.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { requirePermission } from "../../middleware/require-permission.js";
+import { requireMfa } from "../../lib/auth/require-mfa.js";
 import {
   ConfigBootstrapError,
   ConfigUnknownKeyError,
@@ -149,6 +150,7 @@ export function configRouter(): Router {
     "/:key",
     requireAuth,
     requirePermission("admin.write"),
+    requireMfa,
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const key = parseKeyParam(req.params.key);
@@ -199,6 +201,7 @@ export function configRouter(): Router {
     "/:key",
     requireAuth,
     requirePermission("admin.write"),
+    requireMfa,
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const key = parseKeyParam(req.params.key);

@@ -15,6 +15,28 @@ export class ApiError extends Error {
   }
 }
 
+/** #1554 — the server's code for an action that needs a sign-in with MFA. */
+export const MFA_REQUIRED_CODE = "MFA_REQUIRED";
+
+/**
+ * #1554 — what the UI says for {@link MFA_REQUIRED_CODE}: the action needs an
+ * MFA sign-in, and when the sign-in never asked for a second factor the fix is
+ * the Entra administrator's, not a retry.
+ */
+export const MFA_REQUIRED_MESSAGE =
+  "This action needs a sign-in with multi-factor authentication (MFA). Sign out and sign in " +
+  "again with MFA. If you were not asked for a second factor, ask your Microsoft Entra " +
+  "administrator to require MFA for the METIS app in Conditional Access.";
+
+/** The message to show for an API error envelope, or `fallback` when it has none. */
+export function apiErrorMessage(
+  error: { code?: string; message?: string } | undefined,
+  fallback: string,
+): string {
+  if (error?.code === MFA_REQUIRED_CODE) return MFA_REQUIRED_MESSAGE;
+  return error?.message ?? fallback;
+}
+
 export interface ApiFetchOptions extends Omit<RequestInit, "body"> {
   /** JSON-encoded automatically. Pass a plain object or array. */
   body?: unknown;
@@ -294,7 +316,7 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
   }
 
   if (!response.ok || (payload && payload.success === false)) {
-    const message = payload?.error?.message ?? response.statusText ?? "Request failed";
+    const message = apiErrorMessage(payload?.error, response.statusText ?? "Request failed");
     // Most errors carry structured data under `error.details`. Some endpoints
     // (e.g. the optimistic-lock 409) attach conflict fields directly on the
     // `error` object instead — fall back to the whole error payload so callers

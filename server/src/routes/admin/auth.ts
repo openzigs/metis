@@ -8,6 +8,7 @@ import { Router, type Request, type Response } from "express";
 import type { ApiResponse, AuthPayload } from "@metis/shared";
 import { requireAuth } from "../../middleware/auth.js";
 import { requireRole } from "../../middleware/require-role.js";
+import { requireMfa } from "../../lib/auth/require-mfa.js";
 import { audit } from "../../lib/audit/audit-service.js";
 import {
   getAllProvidersForAdmin,
@@ -42,7 +43,7 @@ export function adminAuthRouter(): Router {
   /** Coerce Express v5 params to string. */
   const p = (v: string | string[] | undefined): string => (Array.isArray(v) ? v[0] : (v ?? ""));
 
-  // All routes require admin role
+  // All routes require admin role; every write also needs an MFA sign-in (#1554).
   r.use(requireAuth, requireRole("admin"));
 
   // --- List all SSO providers ---
@@ -75,7 +76,7 @@ export function adminAuthRouter(): Router {
   });
 
   // --- Create/update SAML provider ---
-  r.put("/providers/saml", async (req: Request, res: Response) => {
+  r.put("/providers/saml", requireMfa, async (req: Request, res: Response) => {
     const {
       id,
       name,
@@ -176,7 +177,7 @@ export function adminAuthRouter(): Router {
   });
 
   // --- Create/update OIDC provider ---
-  r.put("/providers/oidc", async (req: Request, res: Response) => {
+  r.put("/providers/oidc", requireMfa, async (req: Request, res: Response) => {
     const {
       id,
       name,
@@ -248,7 +249,7 @@ export function adminAuthRouter(): Router {
   });
 
   // --- Delete a provider ---
-  r.delete("/providers/:id", (req: Request, res: Response) => {
+  r.delete("/providers/:id", requireMfa, (req: Request, res: Response) => {
     const deleted = deleteProvider(p(req.params.id));
     if (!deleted) {
       throw new AppError(404, "NOT_FOUND", "Provider not found");
@@ -265,7 +266,7 @@ export function adminAuthRouter(): Router {
   });
 
   // --- Rotate SCIM token ---
-  r.post("/scim/rotate-token", (req: Request, res: Response) => {
+  r.post("/scim/rotate-token", requireMfa, (req: Request, res: Response) => {
     const newToken = rotateScimToken();
 
     audit({
@@ -287,7 +288,7 @@ export function adminAuthRouter(): Router {
   });
 
   // --- Save LDAP config ---
-  r.put("/ldap", (req: Request, res: Response) => {
+  r.put("/ldap", requireMfa, (req: Request, res: Response) => {
     const {
       url,
       baseDN,
@@ -334,7 +335,7 @@ export function adminAuthRouter(): Router {
   });
 
   // --- Test LDAP connection ---
-  r.post("/ldap/test", async (req: Request, res: Response) => {
+  r.post("/ldap/test", requireMfa, async (req: Request, res: Response) => {
     const { url, baseDN, bindDN, bindPassword, tlsSkipVerify, connectionTimeout } = req.body;
 
     // Use submitted values for test, falling back to stored config
