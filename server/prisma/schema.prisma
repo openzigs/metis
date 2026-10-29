@@ -1839,6 +1839,11 @@ model PublishedIssue {
   parentIssueNumber Int?
   dedupHash         String?
   bodyHash          String?
+  /// #1311 — JSON array of the label names METIS sent the GitHub issue (or
+  /// found it already carrying) on this row's publish, so a later unchanged
+  /// publish can tell when the draft's own labels changed. Null on rows written
+  /// before #1311 and on Jira rows.
+  sentLabels        String?
   errorMessage      String?
   publishedAt       DateTime @default(now())
 

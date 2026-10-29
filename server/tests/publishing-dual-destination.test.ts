@@ -157,7 +157,7 @@ vi.mock("../src/lib/publishing/jira-publisher.js", async (importOriginal) => ({
         htmlUrl: `https://jira.example.com/browse/MET-${id}`,
       }));
       for (const [i, r] of results.entries()) await opts.onCreated?.(opts.draftIds[i]!, r);
-      return { results, publishedCount: opts.draftIds.length, failedCount: 0 };
+      return { results, publishedCount: opts.draftIds.length, failedCount: 0, stopped: null };
     },
   ),
 }));
@@ -239,6 +239,102 @@ describe("executeBatch — destination=both, dry run (#1103)", () => {
     expect(plan.targetOwner).toBe("acme");
     expect(plan.jira.issues).toHaveLength(1);
     expect(publishBatchToJira).not.toHaveBeenCalled();
+  });
+});
+
+describe("#1311 — a Jira-only batch's status says what the Jira leg did", () => {
+  type Prisma = {
+    project: { findUnique: Mock<(args: unknown) => Promise<unknown>> };
+    publishBatch: { update: Mock<(args: unknown) => Promise<unknown>> };
+  };
+  async function runJiraOnly(
+    leg: () => Promise<unknown>,
+  ): Promise<{ status: string; data: Record<string, unknown> }> {
+    const { prisma } = (await import("../src/lib/prisma.js")) as unknown as { prisma: Prisma };
+    prisma.project.findUnique.mockResolvedValueOnce({
+      publishDestination: "jira",
+      jiraConnectionId: "jc_1",
+      jiraProjectKey: "MET",
+      requireApprovedReview: false,
+    });
+    vi.mocked(publishBatchToJira).mockImplementationOnce(
+      leg as unknown as typeof publishBatchToJira,
+    );
+    const result = await executeBatch({ batchId: "batch_dual", actorId: "user_1" });
+    const writes = prisma.publishBatch.update.mock.calls.map(
+      (c) => (c[0] as { data: Record<string, unknown> }).data,
+    );
+    return { status: result.status, data: writes.at(-1)! };
+  }
+  const failed = { status: "failed", issueKey: "", issueId: "", htmlUrl: "" };
+  const created = { status: "created", issueKey: "MET-1", issueId: "1", htmlUrl: "u" };
+
+  it("every draft published: completed, with the counts", async () => {
+    const r = await runJiraOnly(async () => ({
+      results: [created, created],
+      publishedCount: 2,
+      failedCount: 0,
+      stopped: null,
+    }));
+    expect(r.status).toBe("completed");
+    expect(r.data).toMatchObject({
+      status: "completed",
+      totalDrafts: 2,
+      publishedCount: 2,
+      failedCount: 0,
+      errorMessage: null,
+    });
+  });
+
+  it("some drafts failed, no more than half: completed, and the failures are recorded", async () => {
+    const r = await runJiraOnly(async () => ({
+      results: [created, failed],
+      publishedCount: 1,
+      failedCount: 1,
+      stopped: null,
+    }));
+    expect(r.status).toBe("completed");
+    expect(r.data).toMatchObject({ status: "completed", publishedCount: 1, failedCount: 1 });
+    expect(r.data.errorMessage).toBe("1 of 2 drafts failed on Jira");
+  });
+
+  it("more than half failed: failed", async () => {
+    const r = await runJiraOnly(async () => ({
+      results: [failed, failed],
+      publishedCount: 0,
+      failedCount: 2,
+      stopped: null,
+    }));
+    expect(r.status).toBe("failed");
+    expect(r.data).toMatchObject({ status: "failed", publishedCount: 0, failedCount: 2 });
+    expect(r.data.errorMessage).toBe("2 of 2 drafts failed on Jira; no Jira issue was created");
+  });
+
+  it("the leg stopped at a draft: failed, saying where, why, and that created issues are kept", async () => {
+    const r = await runJiraOnly(async () => ({
+      results: [created, failed],
+      publishedCount: 1,
+      failedCount: 1,
+      stopped: {
+        draftId: "draft_2",
+        message: "Jira issue MET-2 was created but METIS could not record it: busy",
+      },
+    }));
+    expect(r.status).toBe("failed");
+    expect(r.data).toMatchObject({ publishedCount: 1, failedCount: 1, totalDrafts: 2 });
+    expect(r.data.errorMessage).toBe(
+      "stopped at draft draft_2: Jira issue MET-2 was created but METIS could not record it: busy; " +
+        "the 1 Jira issue(s) created are kept (Jira issues are not closed on failure)",
+    );
+  });
+
+  it("the leg threw: failed, with the error", async () => {
+    const r = await runJiraOnly(async () => {
+      throw new Error("connection refused");
+    });
+    expect(r.status).toBe("failed");
+    expect(r.data).toMatchObject({ status: "failed" });
+    expect(r.data.errorMessage).toContain("connection refused");
   });
 });
 

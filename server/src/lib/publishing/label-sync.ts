@@ -155,6 +155,40 @@ export function sameLabels(a: readonly string[], b: readonly string[] | null): b
 }
 
 /**
+ * #1311 — the labels METIS last sent an issue, to compare with the ones it
+ * would send now: the set the matched `PublishedIssue` row recorded
+ * (`sentLabels`). A row written before that column existed recorded none, so
+ * the draft's CURRENT labels plus that row's batch's Additional labels stand in
+ * (#1049); that misses a change to the draft's own labels until the issue's
+ * next publish records the set. `null` when neither is known, which matches
+ * nothing ({@link sameLabels}).
+ */
+export function labelsSentBefore(
+  existing: { sentLabels?: string[] | null; additionalLabels?: string[] | null },
+  draftLabels: readonly string[],
+): string[] | null {
+  if (existing.sentLabels) return existing.sentLabels;
+  if (existing.additionalLabels === undefined || existing.additionalLabels === null) return null;
+  return issueLabels(draftLabels, existing.additionalLabels);
+}
+
+/**
+ * #1311 — a row's recorded `sentLabels` JSON, or `null` when it recorded none
+ * (a row from before #1311, a Jira row) or holds anything but an array of
+ * strings.
+ */
+export function parseSentLabels(json: string | null | undefined): string[] | null {
+  if (!json) return null;
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    if (Array.isArray(parsed) && parsed.every((l) => typeof l === "string")) return parsed;
+  } catch {
+    /* malformed — unknown */
+  }
+  return null;
+}
+
+/**
  * #1049 (adversarial review) — the labels a Jira issue carries: as
  * {@link issueLabels}, with each run of whitespace made a `-`. Jira refuses a
  * label containing a space, and the batch's free-text labels may hold one

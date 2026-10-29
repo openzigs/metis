@@ -126,8 +126,13 @@ export type PublishBatch = z.infer<typeof publishBatchSchema>;
  */
 export const GITHUB_LABEL_NAME_MAX = 50;
 
-/** Control characters, and the bidi controls that can reorder displayed text. */
-const LABEL_CONTROL_RE = /[\p{Cc}\p{Bidi_Control}]/u;
+/**
+ * Control characters (Cc) and invisible format characters (Cf): the bidi
+ * controls that can reorder displayed text, and the zero-width ones (U+200B,
+ * U+2060, U+FEFF…) that make two labels look identical. #1311 — Cf covers the
+ * bidi controls the earlier `\p{Bidi_Control}` named, and the rest.
+ */
+const LABEL_CONTROL_RE = /[\p{Cc}\p{Cf}]/u;
 
 /** #1049 review — one "Additional labels" entry: trimmed, 1–50 characters, printable. */
 export const batchLabelSchema = z
@@ -138,7 +143,7 @@ export const batchLabelSchema = z
     message: `A label can be at most ${GITHUB_LABEL_NAME_MAX} characters (GitHub's limit).`,
   })
   .refine((s) => !LABEL_CONTROL_RE.test(s), {
-    message: "A label cannot contain control or text-direction characters.",
+    message: "A label cannot contain control, text-direction or invisible characters.",
   });
 
 export const createPublishBatchSchema = z.object({

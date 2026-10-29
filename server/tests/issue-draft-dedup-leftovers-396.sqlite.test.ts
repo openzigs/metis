@@ -262,9 +262,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("changes nothing", async () => {
+      // Raw rows: this database stops at #369/#402, so a column a later
+      // migration adds (#1311's `sentLabels`) is not there for the client to read.
       const snapshot = async () => ({
-        drafts: await db.issueDraft.findMany({ orderBy: { id: "asc" } }),
-        issues: await db.publishedIssue.findMany({ orderBy: { id: "asc" } }),
+        drafts: await db.$queryRawUnsafe("SELECT * FROM issue_drafts ORDER BY id"),
+        issues: await db.$queryRawUnsafe("SELECT * FROM published_issues ORDER BY id"),
       });
       const before = await snapshot();
       await report();
