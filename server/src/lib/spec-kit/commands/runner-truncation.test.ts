@@ -6,6 +6,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatMessage } from "../../ai/types.js";
+import { loadYamlDocument } from "../../yaml-load.js";
 
 vi.mock("../../finops/index.js", () => ({
   assertWithinBudget: vi.fn().mockResolvedValue(undefined),
@@ -185,7 +186,6 @@ describe("runSpecKitAgent output-cap recovery (#944)", () => {
   });
 
   it("a cut-off YAML artifact gets a # comment note and still parses", async () => {
-    const yaml = await import("js-yaml");
     const { provider } = scriptedProvider([
       {
         content: "- a\n- b\n- par",
@@ -203,7 +203,7 @@ describe("runSpecKitAgent output-cap recovery (#944)", () => {
     expect(out.truncated).toBe(true);
     expect(out.content).not.toContain("> **Incomplete");
     expect(out.content.trimEnd().endsWith(SPEC_KIT_TRUNCATION_NOTE_YAML)).toBe(true);
-    const doc = yaml.load(out.content) as string[];
+    const doc = loadYamlDocument(out.content, { schema: "core" }) as string[];
     expect(doc[0]).toBe("a");
   });
 

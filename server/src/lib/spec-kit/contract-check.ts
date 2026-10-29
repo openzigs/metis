@@ -12,7 +12,7 @@
  * Pure (text in → findings out), so `/speckit.plan` and `/speckit.analyze`
  * share it and it is testable without a model.
  */
-import yaml from "js-yaml";
+import { loadYamlDocument } from "../yaml-load.js";
 
 /**
  * The line `/speckit.plan` asks plan.md to carry when the feature adds or
@@ -115,7 +115,7 @@ export function planDeclaresNoRestSurface(plan: string): boolean {
 export function listContractOperations(contract: string): ContractOperation[] | null {
   let doc: unknown;
   try {
-    doc = yaml.load(contract);
+    doc = loadYamlDocument(contract, { schema: "core-merge" });
   } catch {
     return null;
   }
