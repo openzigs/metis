@@ -11,6 +11,7 @@
 import { test, expect, request, type APIRequestContext } from "@playwright/test";
 import { primeAdminUser } from "../fixtures/seed-user.js";
 import { apiBase } from "../fixtures/api-base.js";
+import { MINIMAL_IDP_METADATA_XML } from "../fixtures/saml-metadata.js";
 import { SSOLoginPage } from "../pages/sso-login.page.js";
 
 const API_BASE = apiBase();
@@ -78,7 +79,7 @@ test.describe("SSO Login — Provider Buttons (#755)", () => {
           name: "Okta SAML",
           entityId: "https://metis.example.com/sp",
           acsUrl: "https://metis.example.com/api/auth/saml/acs",
-          idpMetadataXml: "<EntityDescriptor></EntityDescriptor>",
+          idpMetadataXml: MINIMAL_IDP_METADATA_XML,
           enabled: true,
           groupMappings: [{ claimValue: "admins", role: "admin" }],
           defaultRole: "reader",
@@ -137,7 +138,7 @@ test.describe("SSO Login — Provider Buttons (#755)", () => {
           name: "Enterprise IdP",
           entityId: "https://metis.example.com/sp",
           acsUrl: "https://metis.example.com/api/auth/saml/acs",
-          idpMetadataXml: "<EntityDescriptor></EntityDescriptor>",
+          idpMetadataXml: MINIMAL_IDP_METADATA_XML,
           enabled: true,
           groupMappings: [{ claimValue: "admins", role: "admin" }],
           defaultRole: "reader",

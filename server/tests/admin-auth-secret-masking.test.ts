@@ -46,6 +46,7 @@ import { errorHandler } from "../src/middleware/error-handler.js";
 import {
   getProvider,
   getAllProvidersForAdmin,
+  getPublicEnabledProviders,
   upsertProvider,
   __resetProviders,
   MASKED_SECRET,
@@ -396,5 +397,71 @@ describe("PUT /api/admin/auth/providers/saml — unusable IdP metadata", () => {
     });
     expect(res.status).toBe(400);
     expect(getProvider(cfg.id)?.saml?.idpMetadataXml).toBe(SAML_SECRETS.metadataXml);
+  });
+});
+
+// PR #1546 e2e regression: the old regex parser accepted `<EntityDescriptor>`
+// metadata with no SSO URL and no certificate and stored a provider that could
+// never log anyone in. The save now refuses it with a message the admin page
+// shows verbatim — but a row stored that way BEFORE the change is never
+// re-parsed, so it must keep listing and keep saving (rename/disable).
+describe("PUT /api/admin/auth/providers/saml — minimal metadata (#1540)", () => {
+  const MINIMAL_METADATA = [
+    "<EntityDescriptor></EntityDescriptor>",
+    '<EntityDescriptor entityID="https://idp.example.com"></EntityDescriptor>',
+  ];
+
+  it.each(MINIMAL_METADATA)("refuses %s with a 400 naming what is missing", async (xml) => {
+    const res = await request(app).put("/api/admin/auth/providers/saml").send({
+      name: "Okta SAML",
+      entityId: "metis-sp",
+      acsUrl: "https://app/acs",
+      enabled: true,
+      idpMetadataXml: xml,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error.message).toBe(
+      "IdP metadata has no SingleSignOnService URL or no X509 certificate",
+    );
+    expect(getAllProvidersForAdmin()).toHaveLength(0);
+  });
+
+  it("keeps a provider stored from minimal metadata listable and saveable", async () => {
+    const stored = upsertProvider({
+      name: "Legacy SAML",
+      mode: "saml",
+      enabled: true,
+      groupMappings: [{ claimValue: "admins", role: "admin" }],
+      defaultRole: "reader",
+      saml: {
+        entityId: "metis-sp",
+        acsUrl: "https://app/acs",
+        idpMetadataXml: "<EntityDescriptor></EntityDescriptor>",
+        idpSsoUrl: "",
+        idpCerts: [],
+        idpIssuer: "",
+        signRequests: false,
+      },
+    });
+
+    const list = await request(app).get("/api/admin/auth/providers");
+    expect(list.status).toBe(200);
+    expect(JSON.stringify(list.body)).toContain("Legacy SAML");
+    expect(getPublicEnabledProviders().map((p) => p.name)).toContain("Legacy SAML");
+
+    // The admin form never round-trips the metadata (#451), so a rename or
+    // disable sends it blank — that must not re-validate the stored document.
+    const res = await request(app).put("/api/admin/auth/providers/saml").send({
+      name: "Legacy SAML (renamed)",
+      entityId: "metis-sp",
+      acsUrl: "https://app/acs",
+      enabled: false,
+      idpMetadataXml: "",
+    });
+    expect(res.status).toBe(200);
+    const after = getProvider(stored.id);
+    expect(after?.name).toBe("Legacy SAML (renamed)");
+    expect(after?.enabled).toBe(false);
+    expect(after?.saml?.idpMetadataXml).toBe("<EntityDescriptor></EntityDescriptor>");
   });
 });

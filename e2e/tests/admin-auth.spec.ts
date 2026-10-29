@@ -15,6 +15,7 @@
  */
 import { test, expect, request, type APIRequestContext } from "@playwright/test";
 import { apiBase } from "../fixtures/api-base.js";
+import { MINIMAL_IDP_METADATA_XML } from "../fixtures/saml-metadata.js";
 import { LoginPage } from "../pages/login.page.js";
 import { AdminAuthPage } from "../pages/admin-auth.page.js";
 
@@ -99,7 +100,7 @@ test.describe("Admin Auth Configuration — Tabbed UI (#756)", () => {
         name: "Test SAML IdP",
         entityId: "https://metis.test/sp",
         acsUrl: "https://metis.test/api/auth/saml/acs",
-        metadataXml: '<EntityDescriptor entityID="https://idp.example.com"></EntityDescriptor>',
+        metadataXml: MINIMAL_IDP_METADATA_XML,
         enabled: true,
       });
       await authPage.samlSaveButton.click();
@@ -188,7 +189,7 @@ test.describe("Admin Auth Configuration — Tabbed UI (#756)", () => {
         name: "Validation Test IdP",
         entityId: "https://metis.test/sp",
         acsUrl: "https://metis.test/api/auth/saml/acs",
-        metadataXml: "<EntityDescriptor></EntityDescriptor>",
+        metadataXml: MINIMAL_IDP_METADATA_XML,
         enabled: true,
       });
     });
