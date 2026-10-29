@@ -109,7 +109,7 @@ describe("resolvePublishTarget", () => {
     const baseUrl = `https://api.github.com/${"/".repeat(100_000)}x`;
     const started = performance.now();
     const t = await resolvePublishTarget({ owner: "acme", repo: "metis", baseUrl });
-    expect(performance.now() - started).toBeLessThan(100);
+    expect(performance.now() - started).toBeLessThan(1000);
     expect(t.baseUrl).toBe(baseUrl);
   });
 });

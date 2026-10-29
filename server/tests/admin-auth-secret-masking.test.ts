@@ -382,3 +382,19 @@ describe("(d) no-leak across ALL audited secret fields", () => {
     expect(res.body.data.ldap).not.toHaveProperty("bindPassword");
   });
 });
+
+describe("PUT /api/admin/auth/providers/saml — unusable IdP metadata", () => {
+  it("rejects metadata that parses to no SSO URL or certificate with 400", async () => {
+    const cfg = seedSaml();
+    const res = await request(app).put("/api/admin/auth/providers/saml").send({
+      id: cfg.id,
+      name: "Okta SAML",
+      entityId: "metis-sp",
+      acsUrl: "https://app/acs",
+      enabled: false,
+      idpMetadataXml: "<md:EntityDescriptor entityID='x'><oops>",
+    });
+    expect(res.status).toBe(400);
+    expect(getProvider(cfg.id)?.saml?.idpMetadataXml).toBe(SAML_SECRETS.metadataXml);
+  });
+});

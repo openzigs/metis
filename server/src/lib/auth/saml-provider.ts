@@ -98,14 +98,19 @@ export function parseIdPMetadata(xml: string): {
     throw new AppError(
       400,
       "VALIDATION_ERROR",
-      `IdP metadata XML must be at most ${SAML_METADATA_MAX_CHARS / 1024} KB`,
+      `IdP metadata XML must be at most ${SAML_METADATA_MAX_CHARS} characters`,
     );
   }
   let doc: XmlDocument;
   try {
     // A non-fatal `error` (an undeclared entity, say) is ignored; only a fatal
     // well-formedness error throws.
-    doc = new DOMParser({ onError: () => undefined }).parseFromString(xml, "text/xml");
+    // xmldom treats whitespace or a BOM before `<?xml …?>` as fatal, and a pasted
+    // textarea or an ADFS FederationMetadata.xml routinely carries both.
+    doc = new DOMParser({ onError: () => undefined }).parseFromString(
+      xml.replace(/^\uFEFF/, "").trim(),
+      "text/xml",
+    );
   } catch {
     return { ssoUrl: "", certs: [], issuer: "" };
   }

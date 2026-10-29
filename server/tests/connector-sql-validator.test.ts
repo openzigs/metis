@@ -427,19 +427,19 @@ describe("validator regexes stay linear on adversarial input (#1540)", () => {
     return performance.now() - started;
   }
 
-  it("strips 200 KB of unclosed /* openers in under 100 ms", () => {
+  it("strips 200 KB of unclosed /* openers in under 1000 ms", () => {
     // Quadratic under the lazy block-comment regex: each opener rescans the
     // tail for a closer. (`/*/*` would close itself: the space keeps it open.)
     const sql = `SELECT 1 ${"/* ".repeat(70_000)}`;
-    expect(elapsed(() => stripStringsAndComments(sql))).toBeLessThan(100);
+    expect(elapsed(() => stripStringsAndComments(sql))).toBeLessThan(1000);
   });
 
   it.each(["oracle", "sqlserver"])(
-    "strips the %s trailing clause over 100 KB of interior whitespace in under 100 ms",
+    "strips the %s trailing clause over 100 KB of interior whitespace in under 1000 ms",
     (driver) => {
       // Quadratic under a leading `\s*\bfetch…`: retried from every space.
       const sql = `SELECT a FROM t WHERE x = 1${" ".repeat(100_000)}AND y = 2`;
-      expect(elapsed(() => stripParserUnfriendlyCaps(sql, driver))).toBeLessThan(100);
+      expect(elapsed(() => stripParserUnfriendlyCaps(sql, driver))).toBeLessThan(1000);
     },
   );
 

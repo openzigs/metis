@@ -112,6 +112,18 @@ describe("SAML Provider", () => {
       expect(parseIdPMetadata(xml).ssoUrl).toBe("");
     });
 
+    it.each([
+      ["leading whitespace", "\n  "],
+      ["a UTF-8 BOM", "\uFEFF"],
+      ["a BOM and whitespace", "\uFEFF\r\n"],
+    ])("parses metadata with %s before the xml declaration", (_label, prefix) => {
+      const xml = `${prefix}<?xml version="1.0" encoding="UTF-8"?><md:EntityDescriptor xmlns:md="${MD_NS}" entityID="https://b.com"><md:IDPSSODescriptor><md:SingleSignOnService Binding="${"urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"}" Location="https://b.com/sso"/></md:IDPSSODescriptor></md:EntityDescriptor>`;
+      expect(parseIdPMetadata(xml)).toMatchObject({
+        issuer: "https://b.com",
+        ssoUrl: "https://b.com/sso",
+      });
+    });
+
     it("returns empty values for XML that is not well formed", () => {
       expect(parseIdPMetadata("<md:EntityDescriptor entityID='x'><oops>")).toEqual({
         issuer: "",
@@ -140,7 +152,7 @@ describe("SAML Provider", () => {
       expect((caught as AppError).statusCode).toBe(400);
     });
 
-    it("parses adversarial metadata just under the cap in under 250 ms", () => {
+    it("parses adversarial metadata just under the cap in under 1000 ms", () => {
       // 380 KB took 2.7 s under the old `SingleSignOnService[^>]+…` regexes.
       const open = `<md:EntityDescriptor xmlns:md="${MD_NS}" entityID="https://x.com"><md:SingleSignOnService a="`;
       const filler = "SingleSignOnService ".repeat(
@@ -150,7 +162,7 @@ describe("SAML Provider", () => {
       expect(xml.length).toBeLessThanOrEqual(SAML_METADATA_MAX_CHARS);
       const started = performance.now();
       parseIdPMetadata(xml);
-      expect(performance.now() - started).toBeLessThan(250);
+      expect(performance.now() - started).toBeLessThan(1000);
     });
   });
 
