@@ -3,9 +3,19 @@
  * Issue #677 (epic #671, OWASP A01 / BOLA).
  *
  * Products are a multi-repo aggregation. A product has NO direct `projectId`;
- * it is bound to projects via (a) its direct many-to-many `projects` relation
- * and (b) its associated repo-connections' `projectId`. The union of those is a
- * product's tenant footprint.
+ * it is bound to projects via (a) its direct `projects` relation
+ * (`Project.productId`) and (b) its associated repo-connections' `projectId`.
+ * The union of those is a product's tenant footprint.
+ *
+ * #1259 — (b) counts a repo's project only when the product's CREATOR could
+ * have attached it: the creator is a system admin, or holds a membership row in
+ * that project's workspace, or the project has no workspace (legacy, open to
+ * all). A row attached across workspaces while the #1250 hole was open — or by
+ * a teammate from a workspace the creator is not in — therefore no longer opens
+ * the product to the foreign workspace's members. The membership row is read
+ * whatever the creator's account state, so a deprovisioned creator's team keeps
+ * the product (#612 keeps those rows); removing the creator from the workspace
+ * does close it to non-admins.
  *
  * One rule — the project-access rule (`assertProjectAccess`), with the
  * caller's workspaces read live from the database rather than from the token's
@@ -25,8 +35,10 @@
  * `project.delete` for a delete, on the routes), so a reader-role member reads
  * only.
  *
- * A product bound to NO project (pre-migration/global) is treated as open to any
- * authenticated user, matching `assertProjectAccess`'s null-workspace convention.
+ * A product bound to NO project and carrying NO repo (pre-migration/global) is
+ * treated as open to any authenticated user, matching `assertProjectAccess`'s
+ * null-workspace convention. A product whose repos all fall outside the
+ * footprint (#1259) is not unbound: it is closed to non-admins.
  */
 import type { AuthPayload } from "@metis/shared";
 import type { Prisma } from "@prisma/client";
@@ -38,31 +50,97 @@ import {
   isAdminActor,
   listMemberAccessibleProjectIds,
 } from "../scheduler/project-access.js";
+import { resolveEffectiveRoleFromRows } from "../auth/durable-roles.js";
 import { repoConnectionNotFound, repoNotAssociated } from "./product-service.js";
 
 function actorOf(user: AuthPayload): { id: string; role: AuthPayload["role"] } {
   return { id: user.userId, role: user.role };
 }
 
+/** One attached repo, as the footprint rule reads it (#1259). */
+interface FootprintRepo {
+  productId: string;
+  /** The product's creator. */
+  createdById: string;
+  projectId: string;
+  /** The repo project's workspace; `null` for a legacy, workspace-less project. */
+  workspaceId: string | null;
+}
+
 /**
- * Resolve the set of project ids a product is bound to (m2m projects ∪ repos'
- * repo-connection projects). Returns `null` when the product does not exist.
+ * #1259 — the attached repos that widen their product's footprint: those its
+ * creator could have attached (see the module comment). One query for every
+ * creator and workspace at once, and none when no repo sits in a workspace.
  */
-export async function resolveProductProjectIds(productId: string): Promise<string[] | null> {
+async function reposInCreatorReach(repos: FootprintRepo[]): Promise<FootprintRepo[]> {
+  const scoped = repos.filter((r) => r.workspaceId !== null);
+  if (scoped.length === 0) return repos;
+  const creators = await prisma.user.findMany({
+    where: { id: { in: [...new Set(scoped.map((r) => r.createdById))] } },
+    select: {
+      id: true,
+      authRoleAuthority: true,
+      roles: { select: { source: true, role: { select: { key: true } } } },
+      workspaceMemberships: {
+        where: { workspaceId: { in: [...new Set(scoped.map((r) => r.workspaceId!))] } },
+        select: { workspaceId: true },
+      },
+    },
+  });
+  const admins = new Set<string>();
+  const memberships = new Set<string>();
+  for (const c of creators) {
+    // The role the login path gives the creator (`resolveDurableRole`).
+    if (resolveEffectiveRoleFromRows(c.roles, c.authRoleAuthority).role === "admin") {
+      admins.add(c.id);
+    }
+    for (const m of c.workspaceMemberships) memberships.add(`${c.id} ${m.workspaceId}`);
+  }
+  return repos.filter(
+    (r) =>
+      r.workspaceId === null ||
+      admins.has(r.createdById) ||
+      memberships.has(`${r.createdById} ${r.workspaceId}`),
+  );
+}
+
+/**
+ * Resolve the project ids a product is bound to: its bound projects plus the
+ * projects of the repos its creator could have attached (#1259). `unbound` is
+ * true only when the product has no bound project AND no repo at all. Returns
+ * `null` when the product does not exist.
+ */
+export async function resolveProductProjectIds(
+  productId: string,
+): Promise<{ projectIds: string[]; unbound: boolean } | null> {
   const product = await prisma.product.findUnique({
     where: { id: productId },
     select: {
+      createdById: true,
       projects: { select: { id: true } },
-      repos: { select: { repoConnection: { select: { projectId: true } } } },
+      repos: {
+        select: {
+          repoConnection: {
+            select: { projectId: true, project: { select: { workspaceId: true } } },
+          },
+        },
+      },
     },
   });
   if (!product) return null;
-  const ids = new Set<string>();
-  for (const p of product.projects) ids.add(p.id);
-  for (const r of product.repos) {
-    if (r.repoConnection?.projectId) ids.add(r.repoConnection.projectId);
-  }
-  return [...ids];
+  const counted = await reposInCreatorReach(
+    product.repos.map(({ repoConnection }) => ({
+      productId,
+      createdById: product.createdById,
+      projectId: repoConnection.projectId,
+      workspaceId: repoConnection.project.workspaceId,
+    })),
+  );
+  const ids = new Set([...product.projects.map((p) => p.id), ...counted.map((r) => r.projectId)]);
+  return {
+    projectIds: [...ids],
+    unbound: product.projects.length === 0 && product.repos.length === 0,
+  };
 }
 
 /**
@@ -77,13 +155,14 @@ export async function resolveProductProjectIds(productId: string): Promise<strin
  */
 export async function assertProductAccessible(user: AuthPayload, productId: string): Promise<void> {
   if (user.role === "admin") return;
-  const projectIds = await resolveProductProjectIds(productId);
-  if (projectIds === null) {
+  const footprint = await resolveProductProjectIds(productId);
+  if (footprint === null) {
     throw new AppError(404, "NOT_FOUND", "Product not found");
   }
   // Unbound product (no repos, no project associations) → open to authed users,
   // mirroring assertProjectAccess's null-workspace convention.
-  if (projectIds.length === 0) return;
+  if (footprint.unbound) return;
+  const { projectIds } = footprint;
   const actor = actorOf(user);
   // Bounded to the product's own projects: one query, a handful of rows.
   const accessible = new Set(await listMemberAccessibleProjectIds(actor, projectIds));
@@ -102,7 +181,9 @@ export async function assertProductAccessible(user: AuthPayload, productId: stri
 /**
  * Prisma `where` fragment restricting a product list to the caller's accessible
  * projects. Returns `undefined` (no restriction) for admins. Non-admins see
- * products bound to an accessible project, plus unbound products.
+ * products bound to an accessible project, products carrying a repo of an
+ * accessible project that their creator could have attached (#1259), plus
+ * unbound products.
  */
 export async function buildProductAccessWhere(
   user: AuthPayload,
@@ -110,9 +191,27 @@ export async function buildProductAccessWhere(
   const actor = actorOf(user);
   if (isAdminActor(actor)) return undefined;
   const accessibleIds = await listMemberAccessibleProjectIds(actor);
+  // #1259 — the creator rule pairs each repo with its product's creator, which a
+  // relation filter cannot correlate, so the repo branch is resolved to ids.
+  const links = await prisma.productRepo.findMany({
+    where: { repoConnection: { projectId: { in: accessibleIds } } },
+    select: {
+      productId: true,
+      product: { select: { createdById: true } },
+      repoConnection: { select: { projectId: true, project: { select: { workspaceId: true } } } },
+    },
+  });
+  const viaRepos = await reposInCreatorReach(
+    links.map((l) => ({
+      productId: l.productId,
+      createdById: l.product.createdById,
+      projectId: l.repoConnection.projectId,
+      workspaceId: l.repoConnection.project.workspaceId,
+    })),
+  );
   return {
     OR: [
-      { repos: { some: { repoConnection: { projectId: { in: accessibleIds } } } } },
+      { id: { in: [...new Set(viaRepos.map((r) => r.productId))] } },
       { projects: { some: { id: { in: accessibleIds } } } },
       // Unbound products (no repos AND no project associations) stay visible,
       // mirroring the by-id "open" convention above.
