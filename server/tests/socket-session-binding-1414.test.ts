@@ -174,7 +174,11 @@ describe("#1414 session id on issued tokens", () => {
     expect(sidB).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
     expect(sidA).not.toBe(sidB);
 
-    const rotated = await refreshAccessToken(first.refreshToken, async () => []);
+    const rotated = await refreshAccessToken(
+      first.refreshToken,
+      async () => [],
+      async () => null,
+    );
     expect(sessionIdOf(verifyAccessToken(rotated.accessToken))).toBe(sidA);
   });
 
@@ -184,7 +188,11 @@ describe("#1414 session id on issued tokens", () => {
       resolveJwtSecret().secret,
       { expiresIn: 60 },
     );
-    const rotated = await refreshAccessToken(legacyRefresh, async () => []);
+    const rotated = await refreshAccessToken(
+      legacyRefresh,
+      async () => [],
+      async () => null,
+    );
     expect(sessionIdOf(verifyAccessToken(rotated.accessToken))).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
   });
 

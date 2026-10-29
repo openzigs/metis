@@ -40,6 +40,8 @@ function base64url(input) {
  * @property {string} name
  * @property {string[]} [groups]
  * @property {boolean} [emailVerified]  the `email_verified` claim, default true
+ * @property {string[]} [amr]  the `amr` claim (#1554); omitted when unset, as
+ *   Microsoft Entra ID omits it from a v2.0 ID token unless the app requests it
  */
 
 /**
@@ -215,6 +217,7 @@ export async function startMockOidcIdp(options) {
             email_verified: user.emailVerified ?? true,
             name: user.name,
             groups: user.groups ?? [],
+            ...(user.amr ? { amr: user.amr } : {}),
           },
           privateKey,
         );

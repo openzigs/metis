@@ -452,7 +452,7 @@ AUTH_MODE=oidc
 ```
 - Users click an SSO button on the login page and are redirected to the OIDC provider
 - PKCE (Proof Key for Code Exchange) is always enabled for security
-- MFA passthrough: if the IdP's token contains `amr` values indicating MFA, the session is flagged `mfaPassed=true`
+- MFA passthrough: if the IdP's token contains `amr` values indicating MFA, the session is flagged `mfaPassed=true`. A session without MFA is refused the security-sensitive actions (admin and SSO settings changes, revealing or rotating vault secrets, role changes) with `403 MFA_REQUIRED`; see `docs/auth/azure-ad.md` "MFA Integration"
 - Configure the OIDC provider details (Discovery URL, Client ID, Client Secret, Redirect URI) in the Settings → SSO & authentication → OIDC tab
 - See `docs/auth/google-workspace.md`, `docs/auth/keycloak.md` for provider-specific guides
 

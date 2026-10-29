@@ -23,8 +23,12 @@ const { getEmbedder, listBackendDescriptors, coverageReport, reindexProject, rei
     }),
   }));
 
+// A password (non-SSO) admin session: no MFA claim, so the #1554 gate lets it through.
 vi.mock("../../../src/middleware/auth.js", () => ({
-  requireAuth: (_req: unknown, _res: unknown, next: () => void) => next(),
+  requireAuth: (req: { user?: unknown }, _res: unknown, next: () => void) => {
+    req.user = { userId: "u-admin", username: "admin", role: "admin", permissions: [] };
+    next();
+  },
 }));
 vi.mock("../../../src/middleware/require-permission.js", () => ({
   requirePermission: () => (_req: unknown, _res: unknown, next: () => void) => next(),

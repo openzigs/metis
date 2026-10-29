@@ -17,6 +17,7 @@ import type { ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { requireRole } from "../middleware/require-role.js";
+import { requireMfa } from "../lib/auth/require-mfa.js";
 import { AppError } from "../middleware/error-handler.js";
 import { getUsageService } from "../lib/usage/usage-service.js";
 import { getTokenBudgetController } from "../lib/ai/token-budget-controller.js";
@@ -147,19 +148,25 @@ export function adminTokenBudgetRouter(): Router {
     res.json(ok({ budgets, status: check }));
   });
 
-  r.put("/:userId", requireAuth, requireRole("admin"), async (req: Request, res: Response) => {
-    const userId = String(req.params.userId);
-    const parsed = budgetSchema.safeParse(req.body);
-    if (!parsed.success) {
-      throw new AppError(
-        400,
-        "VALIDATION_ERROR",
-        parsed.error.issues[0]?.message ?? "Invalid input",
-      );
-    }
-    const budget = await ctrl.setUserBudget(userId, parsed.data);
-    res.json(ok({ budget }));
-  });
+  r.put(
+    "/:userId",
+    requireAuth,
+    requireRole("admin"),
+    requireMfa,
+    async (req: Request, res: Response) => {
+      const userId = String(req.params.userId);
+      const parsed = budgetSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new AppError(
+          400,
+          "VALIDATION_ERROR",
+          parsed.error.issues[0]?.message ?? "Invalid input",
+        );
+      }
+      const budget = await ctrl.setUserBudget(userId, parsed.data);
+      res.json(ok({ budget }));
+    },
+  );
 
   return r;
 }

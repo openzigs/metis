@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import jwt from "jsonwebtoken";
 import {
   issueTokens,
-  refreshAccessToken,
+  refreshAccessToken as refreshWithResolvers,
   revokeRefreshToken,
   revokeAllUserSessions,
   isUserDisabled,
@@ -39,6 +39,15 @@ interface Backing {
 
 /** #561 — refresh re-reads memberships; these tests are about rotation. */
 const noMemberships = async (): Promise<string[]> => [];
+
+/** #1554 — an account of no known provider kind: the refresh adds no `mfaPassed`. */
+const noAuthSource = async (): Promise<string | null> => null;
+
+/** The rotation tests' refresh: memberships as given, no provider kind. */
+const refreshAccessToken = (
+  token: string,
+  resolveWorkspaces: (userId: string) => Promise<string[]> = noMemberships,
+) => refreshWithResolvers(token, resolveWorkspaces, noAuthSource);
 
 class InMemoryRevocationStore implements RevocationStore {
   constructor(private readonly db: Backing) {}
@@ -345,6 +354,57 @@ describe("jwt", () => {
       const token = withClaim();
       await expect(
         refreshAccessToken(token, async () => {
+          throw new Error("db down");
+        }),
+      ).rejects.toThrow("db down");
+      await expect(verifyRefreshToken(token)).resolves.toBeTruthy();
+    });
+  });
+
+  describe("#1554 — a refreshed session's MFA result", () => {
+    const tokenFor = (mfaPassed?: boolean) =>
+      issueTokens({
+        userId: "u1",
+        username: "alice",
+        role: "admin",
+        permissions: [],
+        ...(mfaPassed === undefined ? {} : { mfaPassed }),
+      }).refreshToken;
+    const source = (value: string | null) => async () => value;
+
+    it.each([
+      ["saml", false],
+      ["oidc", false],
+      ["ldap", undefined],
+      ["mock", undefined],
+      ["scim", undefined],
+      [null, undefined],
+    ] as const)(
+      "a token from before #1552 of a %s account carries mfaPassed %s",
+      async (authSource, expected) => {
+        const pair = await refreshWithResolvers(tokenFor(), noMemberships, source(authSource));
+        expect(verifyAccessToken(pair.accessToken).mfaPassed).toBe(expected);
+        expect((await verifyRefreshToken(pair.refreshToken)).mfaPassed).toBe(expected);
+      },
+    );
+
+    it.each([true, false])(
+      "a token's own mfaPassed %s is kept, without reading the account",
+      async (mfaPassed) => {
+        const seen: string[] = [];
+        const pair = await refreshWithResolvers(tokenFor(mfaPassed), noMemberships, async (id) => {
+          seen.push(id);
+          return "saml";
+        });
+        expect(verifyAccessToken(pair.accessToken).mfaPassed).toBe(mfaPassed);
+        expect(seen).toEqual([]);
+      },
+    );
+
+    it("a failed provider-kind read fails the refresh and leaves the token usable", async () => {
+      const token = tokenFor();
+      await expect(
+        refreshWithResolvers(token, noMemberships, async () => {
           throw new Error("db down");
         }),
       ).rejects.toThrow("db down");

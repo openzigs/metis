@@ -145,25 +145,87 @@ Add these permissions:
 
 ## MFA Integration
 
+### Which actions require MFA
+
+METIS does not ask for MFA at sign-in; Entra does. METIS reads whether the sign-in
+used MFA and requires it for **security-sensitive actions only** (#1554):
+
+| Action | Routes |
+|--------|--------|
+| **Admin and SSO settings**: every state-changing admin route | `PUT`/`DELETE /api/admin/config/:key`; `PUT /api/admin/auth/providers/saml`, `PUT /api/admin/auth/providers/oidc`, `DELETE /api/admin/auth/providers/:id`; `POST /api/admin/auth/scim/rotate-token`; `PUT /api/admin/auth/ldap`, `POST /api/admin/auth/ldap/test`; `PUT /api/admin/token-budgets/:userId`; `POST`/`DELETE /api/admin/embeddings/projects/:projectId/reindex` |
+| **Vault**: revealing and rotating a secret | `GET /api/vault/:id/reveal`, `POST /api/vault/:id/rotate` |
+| **User roles**: any change to a user's role or workspace role | `POST /api/admin/auth/role-reconciliation/confirm`; `PATCH /api/workspaces/:id/members/:memberId`; `POST /api/workspaces/:id/transfer`; `POST /api/workspaces/:id/invites` (an invite grants a workspace role) |
+
+Read-only pages (including the admin pages and role inspection), analysis, chat,
+review and publishing are **not** gated. An SSO session whose sign-in did not use
+MFA gets `403 MFA_REQUIRED` on the actions above, and the UI says the action needs
+a sign-in with MFA and that the fix is for the Entra administrator to require MFA
+for the METIS app in Conditional Access. Signing out and in again with MFA clears it.
+
+**Recommended:** in Entra, create a Conditional Access policy that targets the METIS
+enterprise application (or app registration) and grants access only with
+**Require multifactor authentication** (or an authentication strength such as
+phishing-resistant MFA). Every SSO session then passes the gate.
+
+**Not gated:** sessions from the password form, that is mock and LDAP/AD sign-ins,
+make no MFA claim and are never asked for MFA. That includes a **local
+break-glass admin account**: it bypasses MFA by design, so it still works when
+Entra is unreachable. Protect it accordingly (a long random password, kept
+offline, its use audited).
+
+**Sessions from before this change:** an SSO session started before METIS recorded
+the MFA result (#1552) carries none. Its next refresh records "no MFA", so it must
+sign in again before a gated action; until that refresh (at most one access-token
+lifetime, an hour) it is treated like a password session.
+
+### How METIS reads MFA
+
 METIS records whether a sign-in used MFA (`mfaPassed` on the session):
 
-- **OIDC**: the `amr` claim in the ID token includes `mfa`.
+- **OIDC**: the `amr` claim in the ID token includes `mfa` (or another MFA method
+  value). Entra omits `amr` from a v2.0 ID token unless the app asks for it: add the
+  optional claim **`amr`** to the ID token under **Token configuration** of the app
+  registration. **An Entra OIDC sign-in without an `amr` claim counts as not MFA**,
+  so its user is refused the gated actions. With the claim, Entra sends `mfa` for
+  every MFA method, including passwordless ones (`fido` + `mfa` for FIDO2 keys and
+  passkeys, `hwk` + `mfa` + `ngcmfa` for Windows Hello for Business, `hwk` + `mfa`
+  for multi-factor certificate-based authentication); a password (`pwd`) or a
+  single-factor certificate (`x509`) is not MFA. Source: Microsoft Learn,
+  [Optional claims reference](https://learn.microsoft.com/en-us/entra/identity-platform/optional-claims-reference)
+  (AMR values for Microsoft Entra authentication methods).
 - **SAML**: either of
-  - the assertion's `AuthnContextClassRef` is `MobileTwoFactorContract` or
-    `SmartcardPKI` (Entra's classes for Authenticator/SMS/phone MFA and for
-    FIDO2, passkeys, Windows Hello and multi-factor CBA), or
+  - the assertion's `AuthnContextClassRef` is `MobileTwoFactorContract`,
+    `SmartcardPKI` or `SoftwarePKI` (Entra's classes for Authenticator, SMS, phone
+    and e-mail MFA and passwordless phone sign-in; for FIDO2 security keys,
+    device-bound passkeys, Windows Hello for Business and multi-factor CBA; and for
+    synced passkeys), or
   - the `http://schemas.microsoft.com/claims/authnmethodsreferences` claim
     contains `http://schemas.microsoft.com/claims/multipleauthn`, which Entra
-    emits only when the user completed MFA. Microsoft documents that SAML apps
-    other than Salesforce must request it: add the optional `amr` claim with the
-    `include_granular_amr` additional property to the app registration.
+    emits only when the user completed MFA, passwordless methods included. Microsoft
+    documents that SAML apps other than Salesforce must request it: add the
+    optional `amr` claim with the `include_granular_amr` additional property to
+    the app registration.
+
+Passwordless sign-ins count as MFA:
+
+| Entra method | SAML class ref | SAML `authnmethodsreferences` | OIDC `amr` |
+|--------------|----------------|-------------------------------|------------|
+| Passwordless phone sign-in (Authenticator) | `MobileTwoFactorContract` | `swk`, `multipleauthn` | `swk`, `rsa`, `mfa` |
+| FIDO2 security key | `SmartcardPKI` | `fido`, `multipleauthn` | `fido`, `mfa` |
+| Passkey, device-bound | `SmartcardPKI` | `fido`, `multipleauthn` | `fido`, `mfa` |
+| Passkey, synced | `SoftwarePKI` | `fido`, `multipleauthn` | `fido`, `mfa` |
+| Windows Hello for Business | `SmartcardPKI` | `hwk`, `multipleauthn` | `hwk`, `mfa`, `ngcmfa` |
+| Certificate-based auth, multi-factor | `SmartcardPKI` | `x509`, `multipleauthn` | `hwk`, `mfa`, `rsa` |
 
 A password-only sign-in is **not** MFA: Entra reports it as the `Password` class
 and `authenticationmethod/password`, and METIS also does not count
 `PasswordProtectedTransport` (a password over TLS) or `X509` (single-factor
 certificate) as MFA. Source: Microsoft Learn,
 [Single sign-on SAML protocol](https://learn.microsoft.com/en-us/entra/identity-platform/single-sign-on-saml-protocol)
-(AuthnStatement and authnmethodsreferences tables).
+(AuthnStatement and authnmethodsreferences tables). Each method is an Entra-mock
+profile (`scripts/lib/mock-entra-saml-idp.mjs`), signed in end to end by
+`server/tests/saml-entra-mock-idp-1553.sqlite.test.ts` and
+`e2e/tests/sso-saml-entra.spec.ts`.
 
 ## SCIM Provisioning
 

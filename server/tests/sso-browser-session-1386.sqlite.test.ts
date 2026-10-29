@@ -50,6 +50,7 @@ const { upsertProvider, __resetProviders } = await import("../src/lib/auth/sso-c
 const { seedSsoProvidersFromEnv } = await import("../src/lib/auth/sso-env-providers.js");
 const { __clearDiscoveryCache } = await import("../src/lib/auth/oidc-provider.js");
 const { __resetSAMLInstances } = await import("../src/lib/auth/saml-provider.js");
+const { verifyAccessToken } = await import("../src/lib/auth/jwt.js");
 const helpers = await import("../src/lib/auth/__tests__/saml-test-helpers.js");
 
 interface MockIdp {
@@ -63,6 +64,7 @@ interface MockIdp {
     name: string;
     groups?: string[];
     emailVerified?: boolean;
+    amr?: string[];
   }): void;
   close(): Promise<void>;
 }
@@ -80,6 +82,7 @@ const { startMockOidcIdp } = (await import(mockIdpModule.href)) as {
       name: string;
       groups?: string[];
       emailVerified?: boolean;
+      amr?: string[];
     };
   }): Promise<MockIdp>;
 };
@@ -238,6 +241,79 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const replay = await request(app).get(`/api/auth/oidc/callback${search}`);
         expect(replay.status).toBe(401);
         expect(cookiesByName(replay).size).toBe(0);
+      } finally {
+        await idp.close();
+      }
+    });
+
+    it("OIDC (#1554): no amr claim is not MFA and is refused an MFA-gated route; Entra's MFA amr values are", async () => {
+      const idp = await startMockOidcIdp({
+        clientId: "metis-test",
+        clientSecret: "metis-test-secret",
+        redirectUri: REDIRECT_URI,
+        user: { sub: "nobody", preferredUsername: "nobody", email: "n@example.test", name: "n" },
+      });
+      upsertProvider({
+        mode: "oidc",
+        name: "Mock OIDC",
+        enabled: true,
+        groupMappings: [{ claimValue: "metis-admins", role: "admin" }],
+        defaultRole: "reader",
+        oidc: {
+          discoveryUrl: idp.discoveryUrl,
+          clientId: "metis-test",
+          clientSecret: "metis-test-secret",
+          redirectUri: REDIRECT_URI,
+          scopes: ["openid", "profile", "email"],
+          pkceEnabled: true,
+        },
+      });
+      const signIn = async (sub: string, amr?: string[]) => {
+        idp.setUser({
+          sub,
+          preferredUsername: sub,
+          email: `${sub}@example.test`,
+          name: sub,
+          groups: ["metis-admins"],
+          ...(amr ? { amr } : {}),
+        });
+        const start = await request(app).get("/api/auth/oidc/login");
+        const atIdp = await fetch(start.headers.location, { redirect: "manual" });
+        const search = new URL(atIdp.headers.get("location")!).search;
+        const callback = await request(app).get(`/api/auth/oidc/callback${search}`);
+        expect(callback.status).toBe(302);
+        return cookieValue(cookiesByName(callback).get("metis.at"));
+      };
+      const gated = (accessToken: string) =>
+        request(app)
+          .put("/api/admin/auth/ldap")
+          .set("Authorization", `Bearer ${accessToken}`)
+          .send({});
+      try {
+        // Entra omits `amr` from a v2.0 ID token unless the app adds the optional claim.
+        for (const [sub, amr] of [
+          ["oidc.noamr", undefined],
+          ["oidc.pwd", ["pwd"]],
+          ["oidc.x509", ["x509"]],
+        ] as const) {
+          const token = await signIn(sub, amr ? [...amr] : undefined);
+          expect(verifyAccessToken(token).mfaPassed).toBe(false);
+          const refused = await gated(token);
+          expect(refused.status).toBe(403);
+          expect(refused.body.error.code).toBe("MFA_REQUIRED");
+        }
+        // Microsoft Learn, "Optional claims reference", AMR values for OIDC v2.0.
+        for (const [sub, amr] of [
+          ["oidc.push", ["rsa", "ngcmfa", "mfa"]],
+          ["oidc.fido", ["fido", "mfa"]],
+          ["oidc.whfb", ["hwk", "mfa", "ngcmfa"]],
+          ["oidc.cba", ["hwk", "mfa", "rsa"]],
+          ["oidc.phone", ["swk", "rsa", "mfa"]],
+        ] as const) {
+          const token = await signIn(sub, [...amr]);
+          expect(verifyAccessToken(token).mfaPassed).toBe(true);
+          expect((await gated(token)).body.error?.code).not.toBe("MFA_REQUIRED");
+        }
       } finally {
         await idp.close();
       }

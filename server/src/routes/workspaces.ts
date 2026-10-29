@@ -10,6 +10,7 @@ import crypto from "node:crypto";
 import type { ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requireWorkspaceRole } from "../middleware/require-workspace-role.js";
+import { requireMfa } from "../lib/auth/require-mfa.js";
 import { inviteAcceptRateLimiter } from "../middleware/invite-accept-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
@@ -224,6 +225,7 @@ export function workspacesRouter(): Router {
     "/:id/transfer",
     requireAuth,
     requireWorkspaceRole("owner"),
+    requireMfa,
     async (req: Req, res: Response) => {
       const { targetUserId } = z.object({ targetUserId: z.string().min(1) }).parse(req.body);
       const workspaceId = req.params.id;
@@ -264,6 +266,7 @@ export function workspacesRouter(): Router {
     "/:id/members/:memberId",
     requireAuth,
     requireWorkspaceRole("admin"),
+    requireMfa,
     async (req: Req, res: Response) => {
       const parsed = updateMemberRoleSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -349,6 +352,8 @@ export function workspacesRouter(): Router {
     "/:id/invites",
     requireAuth,
     requireWorkspaceRole("admin"),
+    // #1554 — an invite grants a workspace role, so it is a role change.
+    requireMfa,
     async (req: Req, res: Response) => {
       const parsed = inviteSchema.safeParse(req.body);
       if (!parsed.success) {

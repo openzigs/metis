@@ -98,6 +98,22 @@ the insecure path), preserved across updates that omit it, and surfaced
 configs stored before #520 are reported and treated as `requireSignedResponse:
 true`.
 
+## MFA for security-sensitive actions (#1554)
+
+A SAML sign-in records whether it used MFA (the assertion's
+`AuthnContextClassRef`, or Entra's `authnmethodsreferences` claim; see
+[azure-ad.md](azure-ad.md#how-metis-reads-mfa)). A session whose sign-in did not
+gets `403 MFA_REQUIRED` on the security-sensitive actions only: state-changing
+admin routes (SSO settings included), revealing and rotating vault secrets, and
+changing a user's role or workspace role. The full route list is in
+[azure-ad.md](azure-ad.md#which-actions-require-mfa). Reading, analysis, chat,
+review and publishing are not gated.
+
+**Non-SSO sessions are not gated.** A sign-in through the password form (mock or
+LDAP/AD) makes no MFA claim and is never asked for MFA, and that includes a local
+break-glass admin account, which bypasses MFA by design so it still works when the
+IdP is down. Protect it accordingly.
+
 ## Tests
 
 - `server/src/lib/auth/__tests__/saml-provider-security.test.ts` drives the **real**

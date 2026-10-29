@@ -1,5 +1,6 @@
 import { Router, type RequestHandler } from "express";
 import { requireAuth } from "../../middleware/auth.js";
+import { requireMfa } from "../../lib/auth/require-mfa.js";
 import { jsonBodyParser } from "../../middleware/body-parsers.js";
 import { AppError } from "../../middleware/error-handler.js";
 import {
@@ -41,7 +42,8 @@ export function authReconciliationRouter(): Router {
     const target = reconciliationTargetSchema.parse(req.body);
     res.json({ success: true, data: await inspectRolesForAdmin(req.user!.userId, target) });
   });
-  router.post("/confirm", async (req, res) => {
+  // #1554 — a role change needs an MFA sign-in; inspecting does not.
+  router.post("/confirm", requireMfa, async (req, res) => {
     const input = reconciliationSchema.parse(req.body);
     res.json({ success: true, data: await confirmRolesForAdmin(req.user!.userId, input) });
   });

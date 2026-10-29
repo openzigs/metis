@@ -10,6 +10,10 @@
  * from the login page's SAML button in a real browser; this file covers every
  * profile the IdP offers, quickly, so a mock or METIS regression shows here
  * first.
+ *
+ * #1554 — every Entra authentication method the IdP offers, with each MFA
+ * signal alone, decides the session's `mfaPassed`, and a password-only
+ * session is refused an MFA-gated route that an MFA session reaches.
  */
 import type { NextFunction, Request, Response } from "express";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
@@ -48,9 +52,21 @@ interface EntraUser {
   groups?: string[];
   roles?: string[];
 }
+type EntraAuthMethod =
+  | "password"
+  | "passwordAndMfa"
+  | "phoneSignIn"
+  | "fido2SecurityKey"
+  | "passkeyDeviceBound"
+  | "passkeySynced"
+  | "windowsHelloForBusiness"
+  | "certificateMultiFactor"
+  | "certificateSingleFactor";
 interface EntraProfile {
   signing: "assertion" | "response" | "both";
   mfa: boolean;
+  method: EntraAuthMethod;
+  mfaSignals: "both" | "amr" | "classRef";
   groupOverage: boolean;
   expired: boolean;
   wrongAudience: boolean;
@@ -69,7 +85,8 @@ interface MockEntraIdp {
 }
 // A URL specifier: the scripts package ships plain `.mjs` with no declarations.
 const mockIdpModule = new URL("../../scripts/lib/mock-entra-saml-idp.mjs", import.meta.url);
-const { startMockEntraSamlIdp } = (await import(mockIdpModule.href)) as {
+const { startMockEntraSamlIdp, ENTRA_AUTH_METHODS } = (await import(mockIdpModule.href)) as {
+  ENTRA_AUTH_METHODS: Record<EntraAuthMethod, { amr: string[]; classRef: string; mfa: boolean }>;
   startMockEntraSamlIdp(options: {
     spEntityId: string;
     acsUrl: string;
@@ -237,6 +254,77 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const mfa = await signIn(entraUser("mia"), { signing: "both", mfa: true });
       expect(verifyAccessToken(cookieValue(mfa, "metis.at")).mfaPassed).toBe(true);
       expect(requireMfaVerdict(cookieValue(mfa, "metis.at"))).toBeUndefined();
+    });
+
+    // #1554 — Microsoft Learn's table of what Entra sends per method; each
+    // signal alone must decide, so a regression in one is not masked by the other.
+    const METHODS = Object.keys(ENTRA_AUTH_METHODS) as EntraAuthMethod[];
+    it("offers every Entra method #1554 names, passwordless ones as MFA", () => {
+      expect(METHODS.filter((m) => ENTRA_AUTH_METHODS[m].mfa)).toEqual([
+        "passwordAndMfa",
+        "phoneSignIn",
+        "fido2SecurityKey",
+        "passkeyDeviceBound",
+        "passkeySynced",
+        "windowsHelloForBusiness",
+        "certificateMultiFactor",
+      ]);
+      expect(METHODS.filter((m) => !ENTRA_AUTH_METHODS[m].mfa)).toEqual([
+        "password",
+        "certificateSingleFactor",
+      ]);
+    });
+
+    describe.each(["both", "amr", "classRef"] as const)("with MFA signals: %s", (mfaSignals) => {
+      it.each(METHODS)("a %s sign-in sets mfaPassed as Entra means it", async (method) => {
+        await configure();
+        const acs = await signIn(entraUser(method), { signing: "both", method, mfaSignals });
+        expect(acs.status).toBe(302);
+        expect(verifyAccessToken(cookieValue(acs, "metis.at")).mfaPassed).toBe(
+          ENTRA_AUTH_METHODS[method].mfa,
+        );
+      });
+    });
+
+    it("mfa: true alone still reads as MFA through each signal", async () => {
+      await configure();
+      for (const mfaSignals of ["amr", "classRef"] as const) {
+        const acs = await signIn(entraUser("mia"), { signing: "both", mfa: true, mfaSignals });
+        expect(verifyAccessToken(cookieValue(acs, "metis.at")).mfaPassed).toBe(true);
+      }
+    });
+
+    it("a password-only admin is refused an MFA-gated route, also after a refresh; an MFA admin is not", async () => {
+      await configure();
+      const gated = (accessToken: string) =>
+        request(app)
+          .put("/api/admin/auth/ldap")
+          .set("Authorization", `Bearer ${accessToken}`)
+          .send({});
+
+      const password = await signIn(entraUser("pat", [ADMINS]), { signing: "both" });
+      expect(await roleOf(password)).toBe("admin");
+      const refused = await gated(cookieValue(password, "metis.at"));
+      expect(refused.status).toBe(403);
+      expect(refused.body.error.code).toBe("MFA_REQUIRED");
+
+      const refreshed = await request(app)
+        .post("/api/auth/refresh")
+        .set("X-METIS-CSRF", "1")
+        .set("Cookie", `refreshToken=${cookieValue(password, "metis.rt")}`);
+      expect(refreshed.status).toBe(200);
+      expect((await gated(refreshed.body.data.accessToken)).body.error?.code).toBe("MFA_REQUIRED");
+
+      for (const method of [
+        "passwordAndMfa",
+        "windowsHelloForBusiness",
+        "passkeySynced",
+      ] as const) {
+        const mfa = await signIn(entraUser(method, [ADMINS]), { signing: "both", method });
+        const allowed = await gated(cookieValue(mfa, "metis.at"));
+        expect(allowed.body.error?.code).not.toBe("MFA_REQUIRED");
+        expect(allowed.status).toBe(400);
+      }
     });
 
     it("a groups overage signs in with the default role and reaches the admin warning", async () => {

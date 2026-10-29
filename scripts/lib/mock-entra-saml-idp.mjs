@@ -20,9 +20,13 @@
  * `tenantid`, `displayname`, `emailaddress`, `name`, `groups` as object ids,
  * `role`, `authnmethodsreferences`). A profile, changeable between sign-ins,
  * selects the signing option (Entra's default "Sign SAML assertion", "Sign
- * SAML response", or both), MFA or password-only, a groups overage
+ * SAML response", or both), MFA or password-only — or a named Entra
+ * authentication method (#1554: passwordless phone sign-in, FIDO2, passkeys,
+ * Windows Hello for Business, certificate-based authentication) and which of
+ * the two MFA signals the Response carries — a groups overage
  * (`groups.link` instead of `groups`), an expired or wrong-audience
- * assertion, and another Issuer signed with the same key (#1555). Every shape is cited from Microsoft Learn in
+ * assertion, and another Issuer signed with the same key (#1555). Every shape
+ * is cited from Microsoft Learn in
  * docs/auth/saml-local-testing.md.
  *
  * The signing key and its self-signed certificate are generated at startup
@@ -56,11 +60,38 @@ export const ENTRA_CLAIM = Object.freeze({
   authnMethodsReferences: "http://schemas.microsoft.com/claims/authnmethodsreferences",
 });
 
-const AMR_PASSWORD =
-  "http://schemas.microsoft.com/ws/2008/06/identity/authenticationmethod/password";
+const AMR_METHOD_NS = "http://schemas.microsoft.com/ws/2008/06/identity/authenticationmethod/";
 const AMR_MULTIPLE_AUTHN = "http://schemas.microsoft.com/claims/multipleauthn";
-const CLASS_PASSWORD = "urn:oasis:names:tc:SAML:2.0:ac:classes:Password";
-const CLASS_MFA = "urn:oasis:names:tc:SAML:2.0:ac:classes:MobileTwoFactorContract";
+const CLASS_NS = "urn:oasis:names:tc:SAML:2.0:ac:classes:";
+
+/**
+ * #1554 — what Entra reports for each authentication method: the
+ * `authnmethodsreferences` values (each under the `authenticationmethod/`
+ * namespace, except `multipleauthn`) and the AuthnContextClassRef class name.
+ * Source: Microsoft Learn, "Single sign-on SAML protocol", the AuthnStatement
+ * and authnmethodsreferences tables. `passwordAndMfa` is a password plus a
+ * second factor, as in that page's sample Response; `mfa: true` selects it.
+ */
+export const ENTRA_AUTH_METHODS = Object.freeze({
+  password: { amr: ["password"], classRef: "Password", mfa: false },
+  passwordAndMfa: {
+    amr: ["password", "multipleauthn"],
+    classRef: "MobileTwoFactorContract",
+    mfa: true,
+  },
+  phoneSignIn: { amr: ["swk", "multipleauthn"], classRef: "MobileTwoFactorContract", mfa: true },
+  fido2SecurityKey: { amr: ["fido", "multipleauthn"], classRef: "SmartcardPKI", mfa: true },
+  passkeyDeviceBound: { amr: ["fido", "multipleauthn"], classRef: "SmartcardPKI", mfa: true },
+  passkeySynced: { amr: ["fido", "multipleauthn"], classRef: "SoftwarePKI", mfa: true },
+  windowsHelloForBusiness: { amr: ["hwk", "multipleauthn"], classRef: "SmartcardPKI", mfa: true },
+  certificateMultiFactor: { amr: ["x509", "multipleauthn"], classRef: "SmartcardPKI", mfa: true },
+  certificateSingleFactor: { amr: ["x509"], classRef: "X509", mfa: false },
+});
+
+/** @param {string} value  an `authnmethodsreferences` value from the table */
+function amrUri(value) {
+  return value === "multipleauthn" ? AMR_MULTIPLE_AUTHN : `${AMR_METHOD_NS}${value}`;
+}
 const BINDING_REDIRECT = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect";
 const BINDING_POST = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST";
 const DSIG = {
@@ -87,7 +118,14 @@ const DSIG = {
  * @property {"assertion" | "response" | "both"} signing
  *   Entra's "Signing Option": "Sign SAML assertion" (Entra's default), "Sign
  *   SAML response", or "Sign SAML response and assertion".
- * @property {boolean} mfa            the user completed MFA
+ * @property {boolean} mfa            the user completed MFA (a password and a second factor)
+ * @property {keyof typeof ENTRA_AUTH_METHODS} [method]
+ *   the authentication method; overrides `mfa` when set
+ * @property {"both" | "amr" | "classRef"} mfaSignals
+ *   which signals the Response carries: both (default); `amr` alone, with the
+ *   class ref `Password` as in Microsoft's sample Response; or `classRef` alone,
+ *   with no `authnmethodsreferences` claim, as for an app that has not added the
+ *   optional `amr` claim
  * @property {boolean} groupOverage   send `groups.link` instead of `groups`
  * @property {boolean} expired        the assertion's validity window has passed
  * @property {boolean} wrongAudience  the Audience is not the SP's entity id
@@ -99,6 +137,7 @@ const DSIG = {
 export const DEFAULT_PROFILE = Object.freeze({
   signing: /** @type {const} */ ("assertion"),
   mfa: false,
+  mfaSignals: /** @type {const} */ ("both"),
   groupOverage: false,
   expired: false,
   wrongAudience: false,
@@ -290,14 +329,18 @@ export function buildEntraResponse(input, identity) {
     ? "https://another-application.example/sp"
     : input.spEntityId;
   const issuerXml = escapeXml(input.issuer);
+  const method =
+    ENTRA_AUTH_METHODS[profile.method ?? (profile.mfa ? "passwordAndMfa" : "password")];
+  if (!method) throw new Error(`unknown Entra authentication method: ${profile.method}`);
+  const signals = profile.mfaSignals ?? "both";
+  const classRef = `${CLASS_NS}${signals === "amr" ? "Password" : method.classRef}`;
   const attrs = [
     attribute(ENTRA_CLAIM.tenantId, input.tenantId),
     attribute(ENTRA_CLAIM.objectId, user.objectId),
     attribute(ENTRA_CLAIM.identityProvider, input.issuer),
-    attribute(
-      ENTRA_CLAIM.authnMethodsReferences,
-      profile.mfa ? [AMR_PASSWORD, AMR_MULTIPLE_AUTHN] : [AMR_PASSWORD],
-    ),
+    ...(signals === "classRef"
+      ? []
+      : [attribute(ENTRA_CLAIM.authnMethodsReferences, method.amr.map(amrUri))]),
     attribute(ENTRA_CLAIM.displayName, user.displayName),
     attribute(ENTRA_CLAIM.emailAddress, user.upn),
     attribute(ENTRA_CLAIM.name, user.upn),
@@ -325,7 +368,7 @@ export function buildEntraResponse(input, identity) {
     `<AudienceRestriction><Audience>${escapeXml(audience)}</Audience></AudienceRestriction></Conditions>` +
     `<AttributeStatement>${attrs.join("")}</AttributeStatement>` +
     `<AuthnStatement AuthnInstant="${iso(issued - 1_000)}" SessionIndex="${assertionId}"><AuthnContext>` +
-    `<AuthnContextClassRef>${profile.mfa ? CLASS_MFA : CLASS_PASSWORD}</AuthnContextClassRef>` +
+    `<AuthnContextClassRef>${classRef}</AuthnContextClassRef>` +
     `</AuthnContext></AuthnStatement></Assertion>`;
   let xml =
     `<samlp:Response ID="${responseId}" Version="2.0" IssueInstant="${iso(issued)}" Destination="${escapeXml(input.acsUrl)}" InResponseTo="${escapeXml(input.inResponseTo)}" xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol">` +

@@ -15,9 +15,10 @@
  * button's navigation the way the Ingress would; the button, the AuthnRequest,
  * the IdP, the ACS and the landing are all real.
  *
- * Not covered: refusing a password-only session on an MFA-required route. No
- * route requires MFA yet (#1554); the spec asserts the session's MFA claim,
- * which is what such a route reads.
+ * #1554: a password-only admin is refused an MFA-gated action (revealing a
+ * vault secret) with the UI's MFA message and no retry, while an MFA admin
+ * reveals it; each MFA signal alone, and each passwordless Entra method,
+ * yields an MFA session.
  */
 import { randomUUID } from "node:crypto";
 import { expect, request, test, type APIRequestContext, type Page } from "@playwright/test";
@@ -25,7 +26,11 @@ import { apiBase, uiBase } from "../fixtures/api-base.js";
 import { primeAdminUser } from "../fixtures/seed-user.js";
 import { AdminAuthPage } from "../pages/admin-auth.page.js";
 import { SSOLoginPage } from "../pages/sso-login.page.js";
-import { startMockEntraSamlIdp } from "../../scripts/lib/mock-entra-saml-idp.mjs";
+import { VaultPage } from "../pages/vault.page.js";
+import {
+  ENTRA_AUTH_METHODS,
+  startMockEntraSamlIdp,
+} from "../../scripts/lib/mock-entra-saml-idp.mjs";
 
 const API_BASE = apiBase();
 const UI_BASE = uiBase();
@@ -62,6 +67,8 @@ test.describe.serial("SAML sign-in against an Entra-profile IdP (#1553)", () => 
   let idp: Idp;
   let admin: APIRequestContext;
   let providerId: string | undefined;
+  const SECRET_LABEL = `entra-mfa-${RUN}`;
+  let secretId: string | undefined;
 
   test.beforeAll(async () => {
     idp = await startMockEntraSamlIdp({
@@ -93,9 +100,16 @@ test.describe.serial("SAML sign-in against an Entra-profile IdP (#1553)", () => 
     expect(res.status(), await res.text()).toBe(200);
     providerId = ((await res.json()) as { data?: { provider?: { id?: string } } }).data?.provider
       ?.id;
+    // #1554 — a secret for the Entra admins to reveal.
+    const secret = await admin.post("/api/vault", {
+      data: { label: SECRET_LABEL, value: `value-${RUN}`, scope: "global" },
+    });
+    expect(secret.status(), await secret.text()).toBe(201);
+    secretId = ((await secret.json()) as { data: { id: string } }).data.id;
   });
 
   test.afterAll(async () => {
+    if (secretId) await admin.delete(`/api/vault/${secretId}`);
     if (providerId) await admin.delete(`/api/admin/auth/providers/${providerId}`);
     await admin?.dispose();
     await idp?.close();
@@ -156,6 +170,66 @@ test.describe.serial("SAML sign-in against an Entra-profile IdP (#1553)", () => 
     await signInWithSamlButton(page, entraUser("mia"), { signing: "both", mfa: true });
     await expectSignedInAs(page, "reader");
     expect((await sessionClaims(page)).mfaPassed).toBe(true);
+  });
+
+  test("a password-only admin is refused a vault reveal with the MFA message, once; an MFA admin reveals it", async ({
+    page,
+  }) => {
+    const reveals: string[] = [];
+    page.on("request", (req) => {
+      if (/\/api\/vault\/[^/]+\/reveal$/.test(new URL(req.url()).pathname)) reveals.push(req.url());
+    });
+    const vault = new VaultPage(page);
+
+    await signInWithSamlButton(page, entraUser("pia", [ADMINS]), { signing: "both", mfa: false });
+    await expectSignedInAs(page, "admin");
+    await vault.goto();
+    await vault.open(SECRET_LABEL);
+    await vault.revealButton.click();
+    await expect(vault.revealError).toContainText(
+      "This action needs a sign-in with multi-factor authentication (MFA).",
+    );
+    await expect(vault.revealError).toContainText(
+      "ask your Microsoft Entra administrator to require MFA for the METIS app in Conditional Access",
+    );
+    await expect(vault.copyButton).toHaveCount(0);
+    // One request, refused: no retry and no refresh loop.
+    await expect(vault.revealButton).toBeEnabled();
+    expect(reveals).toHaveLength(1);
+
+    await signInWithSamlButton(page, entraUser("mo", [ADMINS]), { signing: "both", mfa: true });
+    await expectSignedInAs(page, "admin");
+    await vault.goto();
+    await vault.open(SECRET_LABEL);
+    await vault.revealButton.click();
+    await expect(vault.copyButton).toBeVisible();
+    await expect(vault.revealError).toHaveCount(0);
+  });
+
+  test("each MFA signal alone yields an MFA session", async ({ page }) => {
+    for (const mfaSignals of ["amr", "classRef"] as const) {
+      await signInWithSamlButton(page, entraUser(`sig-${mfaSignals}`), {
+        signing: "both",
+        mfa: true,
+        mfaSignals,
+      });
+      await expectSignedInAs(page, "reader");
+      expect((await sessionClaims(page)).mfaPassed, mfaSignals).toBe(true);
+    }
+  });
+
+  test("passwordless Entra methods are MFA; single-factor certificate auth is not", async ({
+    page,
+  }) => {
+    for (const [method, { mfa }] of Object.entries(ENTRA_AUTH_METHODS)) {
+      if (method === "password" || method === "passwordAndMfa") continue;
+      await signInWithSamlButton(page, entraUser(method.toLowerCase()), {
+        signing: "both",
+        method: method as keyof typeof ENTRA_AUTH_METHODS,
+      });
+      await expectSignedInAs(page, "reader");
+      expect((await sessionClaims(page)).mfaPassed, method).toBe(mfa);
+    }
   });
 
   test("a groups overage signs in with the default role and the admin sees the warning", async ({

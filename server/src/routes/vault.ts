@@ -29,6 +29,7 @@ import { z } from "zod";
 import { hasPermission, type ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { assertMfa, requireMfa } from "../lib/auth/require-mfa.js";
 import { vaultRevealRateLimiter } from "../middleware/vault-reveal-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
 import {
@@ -247,139 +248,145 @@ export function vaultRouter(): Router {
   });
 
   // ── Rotate ──────────────────────────────────────────────────────────────
-  r.post("/:id/rotate", requireAuth, requirePermission("vault.write"), async (req, res) => {
-    const parsed = rotateSchema.safeParse(req.body);
-    if (!parsed.success) {
-      throw new AppError(400, "INVALID_BODY", "Invalid rotation body", parsed.error.flatten());
-    }
-    const id = String(req.params.id);
-    const aId = actorId(req);
-    // #482 — the owner may have bound this secret to a destination they chose,
-    // so another user's secret is rotated only on an explicit confirm. The
-    // refusal names the owner and bindings. #502 — the confirm must name the
-    // bindings it was shown, and a confirmed rotation makes the admin the owner.
-    const secret = await secretOwnerOf(id);
-    const foreignOwnerId =
-      secret?.createdById && secret.createdById !== aId ? secret.createdById : null;
-    let confirmedBindings: ConfirmedBinding[] | null = null;
-    let confirmedSetDigest = "";
-    if (secret && foreignOwnerId) {
-      const details = await describeForeignOwner({
-        id,
-        name: secret.name,
-        createdById: foreignOwnerId,
-      });
-      const confirmed = parsed.data.confirmedBindings;
-      const confirmedDigest = parsed.data.confirmedBindingsDigest;
-      if (
-        parsed.data.confirmForeignOwner !== true ||
-        (confirmed === undefined && confirmedDigest === undefined)
-      ) {
-        throw new AppError(
-          409,
-          VAULT_ROTATE_FOREIGN_OWNER,
-          foreignOwnerMessage(details),
-          foreignOwnerView(details) as unknown as Record<string, unknown>,
-        );
+  r.post(
+    "/:id/rotate",
+    requireAuth,
+    requirePermission("vault.write"),
+    requireMfa,
+    async (req, res) => {
+      const parsed = rotateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        throw new AppError(400, "INVALID_BODY", "Invalid rotation body", parsed.error.flatten());
       }
-      // #552 — a binding write stamped this secret and may still be landing,
-      // so the list above may already be stale.
-      if (bindingWriteInProgress(secret.bindingWriteUntil)) {
-        throw new AppError(
-          409,
-          VAULT_ROTATE_BINDING_IN_PROGRESS,
-          bindingInProgressMessage(details),
-          foreignOwnerView(details) as unknown as Record<string, unknown>,
-        );
-      }
-      const digestStale =
-        confirmedDigest !== undefined && !digestsEqual(confirmedDigest, details.bindingsDigest);
-      // #629 (PR #635 review) — over the cap a list cannot name every binding, so
-      // its mismatch says nothing about a change: refuse it as a list, so a client
-      // that echoes the 409's listing is told to send the digest, not to resend.
-      if (
-        !digestStale &&
-        confirmed !== undefined &&
-        details.bindings.length > MAX_CONFIRMED_BINDINGS
-      ) {
-        throw new AppError(
-          409,
-          VAULT_ROTATE_CONFIRM_BY_DIGEST,
-          confirmByDigestMessage(details),
-          foreignOwnerView(details) as unknown as Record<string, unknown>,
-        );
-      }
-      // #611 — whichever form the confirm takes must match the live set; both, if both are sent.
-      if (digestStale || (confirmed !== undefined && bindingsDiffer(details, confirmed))) {
-        throw new AppError(
-          409,
-          VAULT_ROTATE_BINDINGS_CHANGED,
-          bindingsChangedMessage(details),
-          foreignOwnerView(details) as unknown as Record<string, unknown>,
-        );
-      }
-      // A digest matched the live set exactly, so the live list is what was confirmed.
-      confirmedBindings = confirmed ?? details.bindings;
-      confirmedSetDigest = details.bindingsDigest;
-    }
-    let summary: SecretSummary;
-    try {
-      // The owner seen above is the owner written against (compare-and-swap),
-      // so the check and the rotate cannot straddle an ownership change. #552 —
-      // likewise the binding-write stamp read before the bindings were listed,
-      // so a binding write that started since refuses the rotation.
-      summary = await getVaultService().rotate(id, parsed.data.value, {
-        ...(secret ? { onlyIfCreatedBy: secret.createdById } : {}),
-        ...(secret && foreignOwnerId
-          ? { transferOwnerTo: aId, onlyIfBindingWriteUntil: secret.bindingWriteUntil }
-          : {}),
-      });
-    } catch (err) {
-      // #1499 — the write could not get a database transaction (a long one held
-      // it): nothing was written and a retry will succeed, so it is the 503 it
-      // says, not a missing secret, and not a rotation failure to page about.
-      if (err instanceof AppError && err.code === DATABASE_BUSY) throw err;
-      if (secret && foreignOwnerId && confirmedBindings && err instanceof SecretNotFoundError) {
-        await refuseIfBindingsMoved(id, secret, foreignOwnerId, confirmedBindings);
-      }
-      // Issue #580 — a key rotation FAILURE is a sev-1 operational event. Fire a
-      // best-effort PagerDuty incident to the designated ops workspace (env
-      // PAGERDUTY_OPS_WORKSPACE_ID) before surfacing the HTTP error. Vault secrets
-      // are platform/project scoped (not workspace-scoped), so platform infra
-      // alerts route to the ops workspace's PagerDuty service. Fire-and-forget:
-      // it must not change the route's behaviour. No-op when unconfigured.
-      const ws = opsWorkspaceId();
-      if (ws) {
-        void pagerDutyVaultRotationFailure({
-          workspaceId: ws,
-          secretId: id,
-          label: id,
-          reason: (err as Error).message,
+      const id = String(req.params.id);
+      const aId = actorId(req);
+      // #482 — the owner may have bound this secret to a destination they chose,
+      // so another user's secret is rotated only on an explicit confirm. The
+      // refusal names the owner and bindings. #502 — the confirm must name the
+      // bindings it was shown, and a confirmed rotation makes the admin the owner.
+      const secret = await secretOwnerOf(id);
+      const foreignOwnerId =
+        secret?.createdById && secret.createdById !== aId ? secret.createdById : null;
+      let confirmedBindings: ConfirmedBinding[] | null = null;
+      let confirmedSetDigest = "";
+      if (secret && foreignOwnerId) {
+        const details = await describeForeignOwner({
+          id,
+          name: secret.name,
+          createdById: foreignOwnerId,
         });
+        const confirmed = parsed.data.confirmedBindings;
+        const confirmedDigest = parsed.data.confirmedBindingsDigest;
+        if (
+          parsed.data.confirmForeignOwner !== true ||
+          (confirmed === undefined && confirmedDigest === undefined)
+        ) {
+          throw new AppError(
+            409,
+            VAULT_ROTATE_FOREIGN_OWNER,
+            foreignOwnerMessage(details),
+            foreignOwnerView(details) as unknown as Record<string, unknown>,
+          );
+        }
+        // #552 — a binding write stamped this secret and may still be landing,
+        // so the list above may already be stale.
+        if (bindingWriteInProgress(secret.bindingWriteUntil)) {
+          throw new AppError(
+            409,
+            VAULT_ROTATE_BINDING_IN_PROGRESS,
+            bindingInProgressMessage(details),
+            foreignOwnerView(details) as unknown as Record<string, unknown>,
+          );
+        }
+        const digestStale =
+          confirmedDigest !== undefined && !digestsEqual(confirmedDigest, details.bindingsDigest);
+        // #629 (PR #635 review) — over the cap a list cannot name every binding, so
+        // its mismatch says nothing about a change: refuse it as a list, so a client
+        // that echoes the 409's listing is told to send the digest, not to resend.
+        if (
+          !digestStale &&
+          confirmed !== undefined &&
+          details.bindings.length > MAX_CONFIRMED_BINDINGS
+        ) {
+          throw new AppError(
+            409,
+            VAULT_ROTATE_CONFIRM_BY_DIGEST,
+            confirmByDigestMessage(details),
+            foreignOwnerView(details) as unknown as Record<string, unknown>,
+          );
+        }
+        // #611 — whichever form the confirm takes must match the live set; both, if both are sent.
+        if (digestStale || (confirmed !== undefined && bindingsDiffer(details, confirmed))) {
+          throw new AppError(
+            409,
+            VAULT_ROTATE_BINDINGS_CHANGED,
+            bindingsChangedMessage(details),
+            foreignOwnerView(details) as unknown as Record<string, unknown>,
+          );
+        }
+        // A digest matched the live set exactly, so the live list is what was confirmed.
+        confirmedBindings = confirmed ?? details.bindings;
+        confirmedSetDigest = details.bindingsDigest;
       }
-      throw new AppError(404, "SECRET_NOT_FOUND", `Secret not found: ${(err as Error).message}`);
-    }
-    audit({
-      actor: { id: aId },
-      action: "vault.rotate",
-      target: { type: "secret", id: summary.id },
-      metadata: {
-        label: summary.label,
-        scope: summary.scope,
-        source: "vault_ui",
-        ...(foreignOwnerId
-          ? {
-              foreignOwnerConfirmed: true,
-              ownerId: foreignOwnerId,
-              // #629 — every binding up to the cap; over it, the digest, total and counts.
-              ...confirmedBindingsAudit(confirmedBindings ?? [], confirmedSetDigest),
-              ownershipTransferredTo: aId,
-            }
-          : {}),
-      },
-    });
-    res.json(ok(summaryToView(summary)));
-  });
+      let summary: SecretSummary;
+      try {
+        // The owner seen above is the owner written against (compare-and-swap),
+        // so the check and the rotate cannot straddle an ownership change. #552 —
+        // likewise the binding-write stamp read before the bindings were listed,
+        // so a binding write that started since refuses the rotation.
+        summary = await getVaultService().rotate(id, parsed.data.value, {
+          ...(secret ? { onlyIfCreatedBy: secret.createdById } : {}),
+          ...(secret && foreignOwnerId
+            ? { transferOwnerTo: aId, onlyIfBindingWriteUntil: secret.bindingWriteUntil }
+            : {}),
+        });
+      } catch (err) {
+        // #1499 — the write could not get a database transaction (a long one held
+        // it): nothing was written and a retry will succeed, so it is the 503 it
+        // says, not a missing secret, and not a rotation failure to page about.
+        if (err instanceof AppError && err.code === DATABASE_BUSY) throw err;
+        if (secret && foreignOwnerId && confirmedBindings && err instanceof SecretNotFoundError) {
+          await refuseIfBindingsMoved(id, secret, foreignOwnerId, confirmedBindings);
+        }
+        // Issue #580 — a key rotation FAILURE is a sev-1 operational event. Fire a
+        // best-effort PagerDuty incident to the designated ops workspace (env
+        // PAGERDUTY_OPS_WORKSPACE_ID) before surfacing the HTTP error. Vault secrets
+        // are platform/project scoped (not workspace-scoped), so platform infra
+        // alerts route to the ops workspace's PagerDuty service. Fire-and-forget:
+        // it must not change the route's behaviour. No-op when unconfigured.
+        const ws = opsWorkspaceId();
+        if (ws) {
+          void pagerDutyVaultRotationFailure({
+            workspaceId: ws,
+            secretId: id,
+            label: id,
+            reason: (err as Error).message,
+          });
+        }
+        throw new AppError(404, "SECRET_NOT_FOUND", `Secret not found: ${(err as Error).message}`);
+      }
+      audit({
+        actor: { id: aId },
+        action: "vault.rotate",
+        target: { type: "secret", id: summary.id },
+        metadata: {
+          label: summary.label,
+          scope: summary.scope,
+          source: "vault_ui",
+          ...(foreignOwnerId
+            ? {
+                foreignOwnerConfirmed: true,
+                ownerId: foreignOwnerId,
+                // #629 — every binding up to the cap; over it, the digest, total and counts.
+                ...confirmedBindingsAudit(confirmedBindings ?? [], confirmedSetDigest),
+                ownershipTransferredTo: aId,
+              }
+            : {}),
+        },
+      });
+      res.json(ok(summaryToView(summary)));
+    },
+  );
 
   // ── Reveal (admin-only, audited) ───────────────────────────────────────
   // #324 — plaintext needs `vault.reveal` (admin only); `vault.read` holders may
@@ -406,6 +413,13 @@ export function vaultRouter(): Router {
     if (!role || !hasPermission(role, "vault.reveal")) {
       auditReveal("denied");
       throw new AppError(403, "FORBIDDEN", "Requires permission vault.reveal");
+    }
+    // #1554 — a reveal needs an MFA sign-in; the refusal is audited like any other.
+    try {
+      assertMfa(req.user);
+    } catch (err) {
+      auditReveal("denied", { reason: "mfa_required" });
+      throw err;
     }
     let result: { summary: SecretSummary; plaintext: string };
     try {
