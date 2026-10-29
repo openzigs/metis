@@ -2,8 +2,8 @@
  * #789 — rate limiter for `DELETE /api/projects/:id/spec-kit/features/:slug/artifacts/*key`.
  *
  * Each call deletes a stored artifact and writes an audit row, so an
- * unbounded loop could empty a feature and flood the audit log. Layered on
- * top of the global limiter.
+ * unbounded loop could empty a feature and flood the audit log. A tighter
+ * inner budget under the app-wide `/api` limiter (`api-rate-limit.ts`, #1539).
  *
  * It sits in front of `requireAuth` (CodeQL js/missing-rate-limiting wants the
  * limiter ahead of every auth check, as in `traceability-gaps-rate-limit.ts`).

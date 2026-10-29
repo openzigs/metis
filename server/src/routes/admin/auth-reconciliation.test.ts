@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { once } from "node:events";
 import express from "express";
 import cookieParser from "cookie-parser";
 import request from "supertest";
@@ -480,20 +481,31 @@ describe("auth reconciliation HTTP validation and service results", () => {
       const raw = globalJson
         ? JSON.stringify({ ...confirmation, reason: "r".repeat(4200) })
         : `{${" ".repeat(4200)}"targetId":"target-1","username":"alice"}`;
-      const pending = request(app(globalJson))
-        .post(`${base}/${globalJson ? "confirm" : "inspect"}`)
-        .set("Authorization", `Bearer ${tokens().accessToken}`)
-        .set("Content-Type", "application/json")
-        .set("Transfer-Encoding", "chunked");
-      pending.write(raw);
-      const response = await pending;
-      expect(response.status).toBe(413);
-      expect(response.body).toMatchObject({
-        success: false,
-        error: { code: "PAYLOAD_TOO_LARGE" },
-      });
-      expect(db.$transaction).not.toHaveBeenCalled();
-      expectNoWrites();
+      // Supertest >= 7.3.1 starts an unbound app asynchronously and fills in the
+      // port only at end(), so a write() before end() would open the request
+      // against a portless URL (port 80, ECONNREFUSED) and never reach the
+      // parser. Bind the listener first so the streamed body hits the route.
+      const server = app(globalJson).listen(0, "127.0.0.1");
+      try {
+        await once(server, "listening");
+        const pending = request(server)
+          .post(`${base}/${globalJson ? "confirm" : "inspect"}`)
+          .set("Authorization", `Bearer ${tokens().accessToken}`)
+          .set("Content-Type", "application/json")
+          .set("Transfer-Encoding", "chunked");
+        expect(pending.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\//);
+        pending.write(raw);
+        const response = await pending;
+        expect(response.status).toBe(413);
+        expect(response.body).toMatchObject({
+          success: false,
+          error: { code: "PAYLOAD_TOO_LARGE" },
+        });
+        expect(db.$transaction).not.toHaveBeenCalled();
+        expectNoWrites();
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
     },
   );
 });

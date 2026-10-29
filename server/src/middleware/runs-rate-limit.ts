@@ -1,7 +1,7 @@
 /**
  * #1007 — rate limiters for the five routes of `runsRouter` (the run list, the
  * chat-turn list, a run, its replay and its sandbox sessions). The router had
- * none and the app has no global one, so every route on it was CodeQL
+ * none and the app had no global one (#1539 added `api-rate-limit.ts`), so every route on it was CodeQL
  * `js/missing-rate-limiting` (alert 520 on the list; 562 on `GET /chat-turns`,
  * a failing check on #1112). #1116 — and on every route of
  * `backgroundRunsRouter` (background runs, run groups, steering), which shares
@@ -76,13 +76,13 @@ function intFromEnv(name: string, fallback: number): number {
 }
 
 /** The TCP peer: the UI server or the proxy in front of the API. Never a header. */
-function peerKey(req: Request): string {
+export function peerKey(req: Request): string {
   const socket = req.socket;
   return `peer:${ipKeyGenerator(socket?.remoteAddress ?? "", socket?.remoteFamily === "IPv6" ? 64 : 32)}`;
 }
 
 /** The access token a request presents, read where `requireAuth` reads it. */
-function presentedAccessToken(req: Request): string | undefined {
+export function presentedAccessToken(req: Request): string | undefined {
   const auth = req.headers.authorization;
   if (auth?.startsWith("Bearer ")) {
     const token = auth.slice("Bearer ".length).trim();

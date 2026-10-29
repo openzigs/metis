@@ -444,8 +444,20 @@ export class LocalVectorStore implements VectorStore {
     }));
   }
 
+  /**
+   * #1541 — the one place a project id becomes a path, so it guards itself
+   * rather than relying on every caller's `assertProjectId`. The containment
+   * check also refuses `.`, which passes the name check but resolves to the
+   * root itself: `dropTable(".")` would otherwise delete every project's table.
+   */
   private tableDir(projectId: string): string {
-    return path.join(this.root, projectId);
+    assertProjectId(projectId);
+    const root = path.resolve(this.root);
+    const dir = path.resolve(root, projectId);
+    if (!dir.startsWith(root + path.sep)) {
+      throw new Error("invalid projectId: resolves outside the vector store root");
+    }
+    return dir;
   }
 
   private tableFile(projectId: string): string {

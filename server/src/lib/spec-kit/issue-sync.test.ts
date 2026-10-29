@@ -3,6 +3,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { applyIssueEventToTasksMarkdown, syncIssueEvent } from "./issue-sync.js";
+import { tableRows } from "../../../tests/helpers/gfm-table.js";
 
 const artifactMocks = vi.hoisted(() => ({
   getFeatureArtifact: vi.fn(),
@@ -126,6 +127,15 @@ describe("applyIssueEventToTasksMarkdown", () => {
     const countUnescaped = (s: string) => (s.match(/(?<!\\)\|/g) ?? []).length;
     const originalRow = table.split("\n").find((l) => l.includes("T02"))!;
     expect(countUnescaped(renamed)).toBe(countUnescaped(originalRow));
+  });
+
+  // #1542 — the title comes from an external `issues.edited` payload. Escaping
+  // `|` without `\` first turned `a\|b` into `a\\|b`: a literal backslash and a
+  // live separator, shifting every later column. Read back by a GFM renderer.
+  it("keeps a title holding a\\|b in its own cell (table row)", () => {
+    const r = applyIssueEventToTasksMarkdown(table, "T02", "edited", "Split a\\|b here");
+    expect(r.change).toBe("title");
+    expect(tableRows(r.content)).toContainEqual(["T02", "Split a\\|b here", "5", "T01", ""]);
   });
 
   it("escapes pipes and collapses newlines in the new title (bullet row)", () => {

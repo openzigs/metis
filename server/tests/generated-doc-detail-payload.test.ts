@@ -414,7 +414,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
     });
 
     it("the real app gzip-compresses the detail and provenance responses", async () => {
-      const app = createApp({ disableRateLimit: true });
+      const app = createApp();
       for (const path of [
         "/api/projects/project/docs/doc",
         "/api/projects/project/docs/doc/versions/v3/provenance",
@@ -607,7 +607,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
       });
 
       it("the real app serves Brotli to a client that accepts it", async () => {
-        const app = createApp({ disableRateLimit: true });
+        const app = createApp();
         const res = await request(app)
           .get("/api/projects/project/docs/doc")
           .set("Authorization", authorization())

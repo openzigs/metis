@@ -13,6 +13,7 @@ import {
   OverviewError,
   type OverviewPrismaShape,
 } from "../../../src/lib/code-graph/overview.js";
+import { tableRows } from "../../helpers/gfm-table.js";
 
 interface SymbolRow {
   id: string;
@@ -432,6 +433,47 @@ describe("generateOverview()", () => {
     const md = (await generateOverview(prisma, "proj_1")).markdown;
     expect(md).toContain("x \\| weird");
     expect(md).toContain("src/has\\|pipe.ts");
+  });
+
+  it("#1542 — a backslash before a pipe cannot split a row, and a lone backslash stays literal", async () => {
+    const sym: SymbolRow = {
+      id: "sym_0",
+      qualifiedName: "a\\|b",
+      kind: "function",
+      filePath: "src\\win.ts",
+      language: "ts",
+      startLine: 1,
+      endLine: 2,
+      projectId: "proj_1",
+    };
+    const prisma = makePrisma({
+      project: { id: "proj_1", name: "Demo", slug: "demo" },
+      graph: {
+        id: "g1",
+        symbolCount: 1,
+        edgeCount: 1,
+        languageStats: "{}",
+        lastIndexedAt: null,
+        commitSha: null,
+      },
+      symbols: [sym],
+      edges: [
+        {
+          id: "e_1",
+          fromSymbolId: "sym_0",
+          toSymbolId: "sym_0",
+          kind: "calls",
+          projectId: "proj_1",
+        },
+      ],
+      findings: [],
+    });
+    const md = (await generateOverview(prisma, "proj_1")).markdown;
+    const ranked = tableRows(md).find((cells) => cells[0] === "1");
+    // Code-span cells: the row keeps its five cells, the path's backslash is
+    // shown once, and the `\|` (which GFM cannot show inside a code span)
+    // shows with its backslash doubled rather than ending the cell.
+    expect(ranked).toEqual(["1", "a\\\\|b", "function", "1", "src\\win.ts"]);
   });
 
   it("completes in <2s for a synthetic 1k-symbol / 4k-edge graph (perf gate)", async () => {

@@ -219,3 +219,31 @@ describe("LocalVectorStore", () => {
     expect(() => new LocalVectorStore({ root: "" })).toThrow(/root/);
   });
 });
+
+/**
+ * #1541 (CodeQL 22, 23) — `tableDir` is where a project id becomes a
+ * filesystem path, so it guards itself rather than trusting every caller to
+ * have called `assertProjectId` first.
+ */
+describe("LocalVectorStore.tableDir path guard (#1541)", () => {
+  const tableDir = (id: string) =>
+    (store as unknown as { tableDir(projectId: string): string }).tableDir(id);
+
+  it("rejects a traversing project id itself, not only behind a public method", () => {
+    expect(() => tableDir("../x")).toThrow(/invalid projectId for filesystem table name/);
+  });
+
+  it("rejects an id that resolves to the root itself, which the name check lets through", () => {
+    expect(() => tableDir(".")).toThrow(/outside the vector store root/);
+  });
+
+  it("dropTable('.') throws and leaves the root's tables on disk", async () => {
+    await store.ensureTable("p1");
+    await expect(store.dropTable(".")).rejects.toThrow(/outside the vector store root/);
+    await expect(fs.stat(path.join(root, "p1", "table.json"))).resolves.toBeTruthy();
+  });
+
+  it("resolves an ordinary project id inside the root", () => {
+    expect(tableDir("p1")).toBe(path.join(path.resolve(root), "p1"));
+  });
+});

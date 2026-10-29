@@ -227,6 +227,12 @@ describe("parseDocument", () => {
 });
 
 describe("sanitiseHtml", () => {
+  it("decodes &amp; last, so the literal text &amp;lt; becomes &lt;, not < (#1542)", () => {
+    expect(sanitiseHtml("<p>&amp;lt;b&amp;gt; &amp;amp; &lt;i&gt; &amp;nbsp;</p>")).toBe(
+      "&lt;b&gt; &amp; <i> &nbsp;",
+    );
+  });
+
   it("removes <script> blocks entirely", () => {
     const out = sanitiseHtml("<p>before</p><script>alert(1)</script><p>after</p>");
     expect(out).not.toContain("alert(1)");

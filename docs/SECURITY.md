@@ -70,6 +70,7 @@ IdP-verified e-mail equal to the account's; a disabled or deleted account is ref
 |---|---|---|
 | `/api/auth/*` | 20 / 15min / client address (see below) | `RATE_LIMIT_*` |
 | `POST /api/auth/login` (every path Express routes there) | 10 **failed** sign-ins / 15min / account (username, NFKC-folded) | `AUTH_ACCOUNT_RATE_LIMIT_MAX` (window: `RATE_LIMIT_WINDOW_MS`) |
+| Every `/api` route and `/metrics` (outer budget, #1539) | 600 / 1min / user or signed client address; the shared peer bucket 6000 / 1min | `API_RATE_LIMIT_MAX`, `API_RATE_LIMIT_PEER_MAX` (window: `API_RATE_LIMIT_WINDOW_MS`) |
 | AI chat / stream | 60 / 15min / user | `AI_RATE_LIMIT_*` |
 | Connector mutations | 30 / 5min / user | `CONNECTOR_RATE_LIMIT_*` |
 | Document upload | 10 / 1min / user | `UPLOAD_RATE_LIMIT_*` |

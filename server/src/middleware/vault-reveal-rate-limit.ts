@@ -4,7 +4,8 @@
  *
  * Mounted BEFORE `requireAuth`, so it is keyed by client IP and also bounds
  * unauthenticated floods against JWT verification — the shape CodeQL's
- * `js/missing-rate-limiting` asks for. Layered on top of the global limiter.
+ * `js/missing-rate-limiting` asks for. A tighter inner budget under the
+ * app-wide `/api` limiter (`api-rate-limit.ts`, #1539).
  * Default 30 requests/min/IP, tunable via `VAULT_REVEAL_LIMIT_MAX` and
  * `VAULT_REVEAL_RATE_LIMIT_WINDOW_MS`.
  */
