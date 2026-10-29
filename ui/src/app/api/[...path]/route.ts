@@ -16,7 +16,11 @@ import { NextResponse, type NextRequest } from "next/server";
 import { ACCESS_COOKIE, UPSTREAM_API_BASE } from "@/lib/config";
 import { isUnsafeProxySegment, pathBelowUpstreamBase } from "@/lib/proxy-upstream";
 import { CSRF_HEADER, rejectCrossOrigin } from "@/lib/csrf-guard";
-import { CLIENT_ADDRESS_HEADER, CLIENT_ADDRESS_SIGNATURE_HEADER } from "@/lib/client-address";
+import {
+  CLIENT_ADDRESS_HEADER,
+  CLIENT_ADDRESS_SIGNATURE_HEADER,
+  clientAddressHeaders,
+} from "@/lib/client-address";
 import {
   isSpecKitCommandRequest,
   specKitCommandFetch,
@@ -32,8 +36,8 @@ const NON_FORWARDABLE = new Set([
   "host",
   "connection",
   "content-length", // re-derived by fetch
-  // #1385 — only the auth proxy vouches for a client address; a browser's own
-  // copy (replayed, say) never reaches the API through here.
+  // #1385 — a browser's own copy (replayed, say) never reaches the API through
+  // here; the proxy signs the address it trusts itself, below (#1539).
   CLIENT_ADDRESS_HEADER,
   CLIENT_ADDRESS_SIGNATURE_HEADER,
 ]);
@@ -99,6 +103,9 @@ async function handle(req: NextRequest, ctx: RouteCtx): Promise<NextResponse> {
   // #913 — the request passed the same-origin check above; vouch for it to the
   // API, which demands this header on a cookie-authenticated write.
   headers.set(CSRF_HEADER, "1");
+  // #1539 — the API's app-wide limiter keys anonymous requests on this, else on
+  // this pod: one bucket for every anonymous caller (webhooks, SCIM, /health).
+  for (const [k, v] of Object.entries(await clientAddressHeaders(req.headers))) headers.set(k, v);
 
   const init: UpstreamRequestInit = {
     method: req.method,

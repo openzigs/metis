@@ -180,4 +180,18 @@ describe("auth proxy forwards the signed client address (#1385)", () => {
     expect(sent.get(CLIENT_ADDRESS_HEADER)).toBeNull();
     expect(sent.get(CLIENT_ADDRESS_SIGNATURE_HEADER)).toBeNull();
   });
+  it("the generic /api proxy signs the trusted client address itself (#1539)", async () => {
+    process.env.METIS_TRUSTED_PROXY_HOPS = "1";
+    process.env.METIS_UI_PROXY_SECRET = SECRET;
+    fetchMock.mockImplementation(async () => new Response("{}"));
+    const req = new NextRequest(
+      new Request("http://localhost/api/webhooks/github", {
+        headers: { "x-forwarded-for": "198.51.100.9" },
+      }),
+    );
+    await GET(req, { params: Promise.resolve({ path: ["webhooks", "github"] }) });
+    const sent = fetchMock.mock.calls[0]![1]!.headers as Headers;
+    expect(sent.get(CLIENT_ADDRESS_HEADER)).toBe("198.51.100.9");
+    expect(sent.get(CLIENT_ADDRESS_SIGNATURE_HEADER)).toBe(apiSignature("198.51.100.9"));
+  });
 });

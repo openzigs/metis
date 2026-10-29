@@ -9,6 +9,7 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 import request from "supertest";
+import jwt from "jsonwebtoken";
 import { getPermissionsForRole } from "@metis/shared";
 import { createApp } from "../src/app.js";
 import { issueTokens } from "../src/lib/auth/jwt.js";
@@ -36,6 +37,7 @@ afterEach(() => {
   process.env.API_RATE_LIMIT_MAX = "100000";
   delete process.env.METIS_UI_PROXY_SECRET;
   delete process.env.METRICS_TOKEN;
+  delete process.env.API_RATE_LIMIT_PEER_MAX;
 });
 
 describe("the app-wide /api limiter on the real app", () => {
@@ -50,7 +52,7 @@ describe("the app-wide /api limiter on the real app", () => {
     expect(res.body.error.code).toBe("API_RATE_LIMITED");
   });
 
-  it("runs before authentication: a spent user is 429 even where auth would refuse", async () => {
+  it("the budget is per user, not per route: a spent user is 429 on another route too", async () => {
     process.env.API_RATE_LIMIT_MAX = "1";
     const auth = bearerFor("u-app-preauth");
     await request(app).get("/api/source").set("Authorization", auth);
@@ -83,6 +85,7 @@ describe("the app-wide /api limiter on the real app", () => {
 
   it("covers the unauthenticated token checks: SCIM, the Slack OAuth callback and /metrics", async () => {
     process.env.API_RATE_LIMIT_MAX = "3";
+    process.env.API_RATE_LIMIT_PEER_MAX = "3";
     process.env.METRICS_TOKEN = "metrics-token-for-1539";
     const scim = () =>
       request(app).get("/api/scim/v2/Users").set("Authorization", "Bearer guessed-scim-token");
@@ -99,5 +102,38 @@ describe("the app-wide /api limiter on the real app", () => {
       expect(res.status).toBe(429);
       expect(res.body.error.code).toBe("API_RATE_LIMITED");
     }
+  });
+  it("a spent signed-address bucket is 401 for a request whose token resolved to no user, 429 otherwise", async () => {
+    process.env.API_RATE_LIMIT_MAX = "1";
+    process.env.METIS_UI_PROXY_SECRET = SECRET;
+    const from = (address: string, authorization?: string) => {
+      const r = request(app)
+        .get("/api/source")
+        .set(CLIENT_ADDRESS_HEADER, address)
+        .set(CLIENT_ADDRESS_SIGNATURE_HEADER, clientAddressSignature(SECRET, address));
+      return authorization ? r.set("Authorization", authorization) : r;
+    };
+    expect((await from("198.51.100.31")).status).toBe(200);
+    const expired = await from(
+      "198.51.100.31",
+      `Bearer ${jwt.sign({ userId: "u-x", exp: 1 }, "some-other-secret")}`,
+    );
+    expect(expired.status).toBe(401);
+    expect(expired.headers["retry-after"]).toBeUndefined();
+    const anonymous = await from("198.51.100.31");
+    expect(anonymous.status).toBe(429);
+    expect(anonymous.body.error.code).toBe("API_RATE_LIMITED");
+  });
+
+  it("the shared anonymous peer bucket has its own, larger budget (#1539 review: one client cannot lock out webhooks and /health)", async () => {
+    process.env.API_RATE_LIMIT_MAX = "1";
+    process.env.API_RATE_LIMIT_PEER_MAX = "100000";
+    for (let i = 0; i < 5; i++) {
+      expect((await request(app).get(`/api/no-such-route-${i}`)).status).toBe(404);
+    }
+    expect((await request(app).get("/api/health")).status).not.toBe(429);
+    // …and it is still a budget.
+    process.env.API_RATE_LIMIT_PEER_MAX = "1";
+    expect((await request(app).get("/api/source")).status).toBe(429);
   });
 });

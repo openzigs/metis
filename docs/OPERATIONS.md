@@ -63,18 +63,27 @@ The third call should return Prometheus-format text. If you see `404`, `METRICS_
 
 Every `/api` route and the `/metrics` scrape share one outer request budget, counted
 per signed-in user. A request without an access token this server signed counts per
-client address the UI signed (`METIS_UI_PROXY_SECRET`, sent on sign-in, refresh and
-sign-out), and otherwise per connecting peer. A caller past the budget gets
-`429 API_RATE_LIMITED` with `Retry-After`. The per-route limiters (sign-in, AI, Agent
+client address the UI signed (needs `METIS_UI_PROXY_SECRET` and
+`METIS_TRUSTED_PROXY_HOPS`; the UI sends it on every proxied request), and otherwise
+per connecting peer. A caller past the budget gets `429 API_RATE_LIMITED` with
+`Retry-After`; a request that presented a JWT this server cannot resolve to a user
+gets `401` instead, so the UI refreshes the session. The per-route limiters (sign-in, AI, Agent
 Runs, connectors and the rest) still apply inside it as tighter budgets.
 
 | Setting | Default | What it does |
 |---|---|---|
 | `API_RATE_LIMIT_MAX` | `600` | Requests allowed per user (or anonymous client) per window. Environment variable, read per request. |
+| `API_RATE_LIMIT_PEER_MAX` | `6000` | The larger budget for the shared connecting-peer bucket (anonymous requests with no signed client address, every tenant). Environment variable, read per request. |
 | `API_RATE_LIMIT_WINDOW_MS` | `60000` (one minute) | The window. Environment variable, read at startup. |
 
-Anonymous traffic behind the UI with no `METIS_UI_PROXY_SECRET` counts as one client: the
-UI server. If the rate-limit backend (`DISCUSSION_RATE_LIMIT_BACKEND`) fails, this budget
+Anonymous traffic the UI cannot attach a signed client address to (no
+`METIS_UI_PROXY_SECRET`, or `METIS_TRUSTED_PROXY_HOPS` left at 0), and SSO logins that
+reach the API through the Ingress, count as one client: the connecting peer. It has its own
+larger budget (`API_RATE_LIMIT_PEER_MAX`). The Slack events receiver
+(`/api/integrations/slack/events`) is mounted ahead of this budget and is not counted;
+it is HMAC-verified. Every `/api` request makes one rate-limit store round trip (an atomic
+write on the postgres backend, a network call on valkey), so size the backend for your
+request rate. If the rate-limit backend (`DISCUSSION_RATE_LIMIT_BACKEND`) fails, this budget
 lets requests through rather than failing every route; the per-route limiters still
 refuse.
 

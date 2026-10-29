@@ -67,6 +67,7 @@ function appWith(limiter: express.RequestHandler) {
 
 afterEach(() => {
   delete process.env.API_RATE_LIMIT_MAX;
+  delete process.env.API_RATE_LIMIT_PEER_MAX;
   delete process.env.METIS_UI_PROXY_SECRET;
   delete process.env.RUNS_LIMIT_MAX;
   delete process.env.RUNS_PREAUTH_LIMIT_MAX;
@@ -182,6 +183,7 @@ describe("apiRateLimiter — the budget", () => {
 
   it("a spent user bucket does not spend the anonymous one, nor the other way", async () => {
     process.env.API_RATE_LIMIT_MAX = "1";
+    process.env.API_RATE_LIMIT_PEER_MAX = "1";
     const a = appWith(apiRateLimiter);
     const carol = `Bearer ${tokenFor("u-carol")}`;
     await request(a).get("/open").set("Authorization", carol);
