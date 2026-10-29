@@ -214,9 +214,7 @@ function whitelistMessage(err: unknown, kind: "table" | "column"): string {
  */
 function computeAppliedLimit(stmt: Record<string, unknown>): number {
   const limitNode = stmt.limit as
-    | { seperator?: string; value?: Array<{ type?: string; value?: number }> }
-    | null
-    | undefined;
+    { seperator?: string; value?: Array<{ type?: string; value?: number }> } | null | undefined;
   if (limitNode && Array.isArray(limitNode.value) && limitNode.value.length > 0) {
     // Two AST shapes:
     //   `LIMIT n` / `LIMIT n OFFSET m` → seperator "offset" (or empty for plain LIMIT);
@@ -350,17 +348,44 @@ function containsForbiddenStatementKeyword(sql: string): boolean {
   return FORBIDDEN.test(s);
 }
 
+/**
+ * Replace each block comment (a `/*` up to the first closing star-slash after
+ * it) with a space. An unclosed `/*`, or a stray closing marker, is left in
+ * place for the caller.
+ */
+function stripBalancedBlockComments(sql: string): string {
+  let out = "";
+  let from = 0;
+  for (;;) {
+    const open = sql.indexOf("/*", from);
+    if (open === -1) break;
+    const close = sql.indexOf("*/", open + 2);
+    // No close after this `/*` means none after any later `/*` either.
+    if (close === -1) break;
+    out += `${sql.slice(from, open)} `;
+    from = close + 2;
+  }
+  return out + sql.slice(from);
+}
+
 /** Remove string literals + comments from SQL so keyword scanning sees only code. */
 export function stripStringsAndComments(sql: string): string {
   // 1. Block comments — including a hostile attempt to nest. We reject nested
   //    block comments by treating them as a single greedy `/* … */` chunk; any
   //    leftover `/*` after stripping signals an unbalanced/nested comment which
   //    we replace with the SQL-rejection sentinel so the keyword scan tags it.
-  let out = sql.replace(/\/\*[\s\S]*?\*\//g, " ");
-  if (/\/\*/.test(out) || /\*\//.test(out)) {
+  //    Scanned with indexOf, not a lazy regex: `/\/\*[\s\S]*?\*\//g` restarts
+  //    its scan at every unclosed `/*`, quadratic in the input (#1540).
+  let out = stripBalancedBlockComments(sql);
+  const danglingOpen = out.indexOf("/*");
+  if (danglingOpen !== -1) {
     // Unbalanced — strip aggressively to avoid hiding a keyword behind
     // dangling comment markers.
-    out = out.replace(/\/\*[\s\S]*$/g, " ").replace(/^[\s\S]*?\*\//g, " ");
+    out = `${out.slice(0, danglingOpen)} `;
+  }
+  const danglingClose = out.indexOf("*/");
+  if (danglingClose !== -1) {
+    out = ` ${out.slice(danglingClose + 2)}`;
   }
   // 2. Line comments.
   out = out.replace(/--[^\n\r]*/g, " ");
@@ -377,6 +402,11 @@ export function stripStringsAndComments(sql: string): string {
   return out;
 }
 
+/** Trailing `FETCH FIRST|NEXT n ROWS ONLY`, on trimmed SQL. */
+const TRAILING_FETCH_RE = /\bfetch\s+(?:first|next)\s+(\d+)\s+rows?\s+only$/i;
+/** Trailing `OFFSET n ROWS FETCH NEXT m ROWS ONLY`, on trimmed SQL. */
+const TRAILING_OFFSET_FETCH_RE = /\boffset\s+\d+\s+rows?\s+fetch\s+next\s+(\d+)\s+rows?\s+only$/i;
+
 /**
  * Pre-strip dialect-specific row-cap clauses that the PostgreSQL grammar can't
  * parse. Returns the parser-friendly SQL plus the user-supplied cap value (if
@@ -388,20 +418,23 @@ export function stripStringsAndComments(sql: string): string {
  *   - leading `SELECT TOP n` / `SELECT TOP (n)` (replaced with bare SELECT)
  *   - trailing `OFFSET n ROWS FETCH NEXT m ROWS ONLY`
  */
-function stripParserUnfriendlyCaps(
+export function stripParserUnfriendlyCaps(
   sql: string,
   driver: string,
 ): { stripped: string; suppliedCap: number | null } {
+  // Trim first, so each trailing-clause pattern can start at its keyword: a
+  // leading `\s*` is retried from every position of a long whitespace run, and
+  // a trailing `\s*$` re-scans it, quadratic in the input (#1540).
+  const trimmed = sql.trim();
   if (driver === "oracle") {
-    const fetchRe = /\s*\bfetch\s+(?:first|next)\s+(\d+)\s+rows?\s+only\s*$/i;
-    const m = fetchRe.exec(sql);
+    const m = TRAILING_FETCH_RE.exec(trimmed);
     if (m) {
-      return { stripped: sql.replace(fetchRe, ""), suppliedCap: Number(m[1]) };
+      return { stripped: trimmed.slice(0, m.index).trimEnd(), suppliedCap: Number(m[1]) };
     }
-    return { stripped: sql, suppliedCap: null };
+    return { stripped: trimmed, suppliedCap: null };
   }
   if (driver === "sqlserver") {
-    let stripped = sql;
+    let stripped = trimmed;
     let cap: number | null = null;
     const topParenRe = /\bselect\s+top\s*\(\s*(\d+)\s*\)/i;
     const topBareRe = /\bselect\s+top\s+(\d+)\b/i;
@@ -416,20 +449,12 @@ function stripParserUnfriendlyCaps(
         stripped = stripped.replace(topBareRe, "SELECT");
       }
     }
-    const fetchRe = /\s*\boffset\s+\d+\s+rows?\s+fetch\s+next\s+(\d+)\s+rows?\s+only\s*$/i;
-    const fm = fetchRe.exec(stripped);
+    const fm = TRAILING_OFFSET_FETCH_RE.exec(stripped) ?? TRAILING_FETCH_RE.exec(stripped);
     if (fm) {
       cap = cap === null ? Number(fm[1]) : Math.min(cap, Number(fm[1]));
-      stripped = stripped.replace(fetchRe, "");
-    } else {
-      const onlyFetch = /\s*\bfetch\s+(?:first|next)\s+(\d+)\s+rows?\s+only\s*$/i;
-      const fm2 = onlyFetch.exec(stripped);
-      if (fm2) {
-        cap = cap === null ? Number(fm2[1]) : Math.min(cap, Number(fm2[1]));
-        stripped = stripped.replace(onlyFetch, "");
-      }
+      stripped = stripped.slice(0, fm.index).trimEnd();
     }
     return { stripped, suppliedCap: cap };
   }
-  return { stripped: sql, suppliedCap: null };
+  return { stripped: trimmed, suppliedCap: null };
 }

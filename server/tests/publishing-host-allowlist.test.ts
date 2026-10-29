@@ -85,4 +85,31 @@ describe("resolvePublishTarget", () => {
       }),
     ).rejects.toBeTruthy();
   });
+
+  it("strips every trailing slash from the base URL", async () => {
+    const t = await resolvePublishTarget({
+      owner: "acme",
+      repo: "metis",
+      baseUrl: "https://api.github.com///",
+    });
+    expect(t.baseUrl).toBe("https://api.github.com");
+  });
+
+  it("keeps interior slashes when stripping trailing ones", async () => {
+    const t = await resolvePublishTarget({
+      owner: "acme",
+      repo: "metis",
+      baseUrl: "https://github.example.com//api/v3/",
+    });
+    expect(t.baseUrl).toBe("https://github.example.com//api/v3");
+  });
+
+  it("strips trailing slashes in linear time on a long slash run (#1540)", async () => {
+    // `/\/+$/` retried from every slash: 40 KB took 550 ms, this 100 KB ~11 s.
+    const baseUrl = `https://api.github.com/${"/".repeat(100_000)}x`;
+    const started = performance.now();
+    const t = await resolvePublishTarget({ owner: "acme", repo: "metis", baseUrl });
+    expect(performance.now() - started).toBeLessThan(100);
+    expect(t.baseUrl).toBe(baseUrl);
+  });
 });

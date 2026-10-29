@@ -98,7 +98,7 @@ export const publishBatchSchema = z
     status: z.enum(PUBLISH_BATCH_STATUSES),
     targetOwner: z.string().min(1).max(128),
     targetRepo: z.string().min(1).max(128),
-    targetBaseUrl: z.string().url().nullable(),
+    targetBaseUrl: z.string().max(2048).url().nullable(),
     provider: z.enum(PUBLISH_PROVIDERS),
     dryRun: z.boolean(),
     totalDrafts: z.number().int().min(0),
@@ -155,7 +155,7 @@ export const createPublishBatchSchema = z.object({
    * `generateDraftsSchema` gives the field, so the two requests name one target.
    * A batch calls this host, so anything that is not a URL is refused here.
    */
-  targetBaseUrl: z.string().url().optional(),
+  targetBaseUrl: z.string().max(2048).url().optional(),
   provider: z.enum(PUBLISH_PROVIDERS).default("github"),
   draftIds: z.array(idSchema).min(1).max(MAX_BATCH_ISSUES),
   dryRun: z.boolean().default(false),
@@ -402,7 +402,7 @@ export const dryRunPlanSchema = z.object({
   batchId: idSchema,
   targetOwner: z.string(),
   targetRepo: z.string(),
-  targetBaseUrl: z.string().nullable(),
+  targetBaseUrl: z.string().max(2048).nullable(),
   provider: z.enum(PUBLISH_PROVIDERS),
   totalActions: z.number().int().min(0),
   estimatedDurationMs: z.number().int().min(0),

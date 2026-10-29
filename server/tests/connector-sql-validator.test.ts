@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { validateSelectOnly } from "../src/lib/connectors/db/sql-validator.js";
+import {
+  stripParserUnfriendlyCaps,
+  stripStringsAndComments,
+  validateSelectOnly,
+} from "../src/lib/connectors/db/sql-validator.js";
 import { ConnectorError } from "../src/lib/connectors/types.js";
 
 function expectCode(fn: () => unknown, expected: string | RegExp): void {
@@ -412,5 +416,56 @@ describe("parseDbConnectorAllowList (#882)", () => {
     expect(parseDbConnectorAllowList('"oops"')).toEqual({ tables: [] });
     expect(parseDbConnectorAllowList("null")).toEqual({ tables: [] });
     expect(parseDbConnectorAllowList("[1,2,3]")).toEqual({ tables: [] });
+  });
+});
+
+// ── #1540: the validator's regexes on adversarial input ──────────────────
+describe("validator regexes stay linear on adversarial input (#1540)", () => {
+  function elapsed(fn: () => unknown): number {
+    const started = performance.now();
+    fn();
+    return performance.now() - started;
+  }
+
+  it("strips 200 KB of unclosed /* openers in under 100 ms", () => {
+    // Quadratic under the lazy block-comment regex: each opener rescans the
+    // tail for a closer. (`/*/*` would close itself: the space keeps it open.)
+    const sql = `SELECT 1 ${"/* ".repeat(70_000)}`;
+    expect(elapsed(() => stripStringsAndComments(sql))).toBeLessThan(100);
+  });
+
+  it.each(["oracle", "sqlserver"])(
+    "strips the %s trailing clause over 100 KB of interior whitespace in under 100 ms",
+    (driver) => {
+      // Quadratic under a leading `\s*\bfetch…`: retried from every space.
+      const sql = `SELECT a FROM t WHERE x = 1${" ".repeat(100_000)}AND y = 2`;
+      expect(elapsed(() => stripParserUnfriendlyCaps(sql, driver))).toBeLessThan(100);
+    },
+  );
+
+  it("keeps the comment-stripping semantics", () => {
+    expect(stripStringsAndComments("a /* x */ b /* y */ c")).toBe("a   b   c");
+    // Unclosed opener: everything from it is dropped.
+    expect(stripStringsAndComments("a /* x */ b /* y DROP")).toBe("a   b  ");
+    // Stray closer: everything up to it is dropped.
+    expect(stripStringsAndComments("DROP */ SELECT 1")).toBe("  SELECT 1");
+    // `/*/` does not close itself.
+    expect(stripStringsAndComments("a /*/ b */ c")).toBe("a   c");
+  });
+
+  it.each([
+    ["oracle", "SELECT * FROM t  FETCH FIRST 5 ROWS ONLY  ", "SELECT * FROM t", 5],
+    ["oracle", "SELECT * FROM t", "SELECT * FROM t", null],
+    [
+      "sqlserver",
+      "SELECT * FROM t ORDER BY a OFFSET 10 ROWS FETCH NEXT 7 ROWS ONLY",
+      "SELECT * FROM t ORDER BY a",
+      7,
+    ],
+    ["sqlserver", "SELECT TOP (3) * FROM t FETCH NEXT 7 ROWS ONLY", "SELECT * FROM t", 3],
+    ["sqlserver", "SELECT TOP 9 * FROM t", "SELECT * FROM t", 9],
+    ["postgres", " SELECT 1 FETCH FIRST 5 ROWS ONLY ", "SELECT 1 FETCH FIRST 5 ROWS ONLY", null],
+  ] as const)("%s: strips %j to %j with cap %s", (driver, sql, stripped, cap) => {
+    expect(stripParserUnfriendlyCaps(sql, driver)).toEqual({ stripped, suppliedCap: cap });
   });
 });

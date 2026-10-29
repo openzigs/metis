@@ -21,7 +21,7 @@
  * Wire-up: registered at server boot via {@link registerQueryDatabase}.
  */
 import { z } from "zod";
-import { QUERY_DB_MAX_ROWS } from "@metis/shared";
+import { QUERY_DB_MAX_ROWS, QUERY_DB_MAX_SQL_CHARS } from "@metis/shared";
 import { queryDbConnector } from "../../connectors/db/db-service.js";
 import { AppError } from "../../../middleware/error-handler.js";
 import type { ToolDefinition, ToolResult, ToolContext } from "../types.js";
@@ -33,7 +33,7 @@ export const queryDatabaseSchema = z.object({
   sql: z
     .string()
     .min(1)
-    .max(8_000)
+    .max(QUERY_DB_MAX_SQL_CHARS)
     .describe("A single read-only SELECT statement. Writes/DDL are rejected."),
   /** Optional client-side cap; effective cap is min(maxRows, QUERY_DB_MAX_ROWS). */
   maxRows: z.number().int().min(1).max(QUERY_DB_MAX_ROWS).optional(),

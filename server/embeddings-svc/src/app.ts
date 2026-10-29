@@ -89,6 +89,21 @@ function readToken(): string | null {
   return raw.trim();
 }
 
+/**
+ * The token of a `Bearer <token>` Authorization header (scheme
+ * case-insensitive), trimmed; "" when the header is anything else. A prefix
+ * check and `slice` rather than `/^Bearer\s+(.+)$/i`, whose overlapping
+ * `\s+` and `.+` backtrack quadratically on a long whitespace run (#1540).
+ */
+export function bearerToken(header: string): string {
+  const scheme = "bearer";
+  if (header.slice(0, scheme.length).toLowerCase() !== scheme) return "";
+  const rest = header.slice(scheme.length);
+  // The scheme must be followed by whitespace: `Bearertoken` is not a bearer.
+  if (rest.length === 0 || rest.trimStart().length === rest.length) return "";
+  return rest.trim();
+}
+
 function authMiddleware(req: Request, res: Response, next: NextFunction): void {
   const expected = readToken();
   if (!expected) {
@@ -99,9 +114,7 @@ function authMiddleware(req: Request, res: Response, next: NextFunction): void {
     });
     return;
   }
-  const header = req.header("authorization") ?? "";
-  const match = header.match(/^Bearer\s+(.+)$/i);
-  const presented = match?.[1]?.trim() ?? "";
+  const presented = bearerToken(req.header("authorization") ?? "");
   // Pad both sides to the same length to guarantee timingSafeEqual works.
   const a = Buffer.from(presented);
   const b = Buffer.from(expected);

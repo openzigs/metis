@@ -30,6 +30,12 @@ import {
   type SamlConfig,
   type CacheProvider,
 } from "@node-saml/passport-saml";
+import {
+  DOMParser,
+  type Document as XmlDocument,
+  type Element as XmlElement,
+} from "@xmldom/xmldom";
+import { AppError } from "../../middleware/error-handler.js";
 import { createChildLogger } from "../logger.js";
 import {
   DEFAULT_REQUEST_ID_EXPIRATION_MS,
@@ -60,42 +66,69 @@ const MFA_AUTHN_CONTEXTS = [
 ];
 
 /**
+ * Largest IdP metadata document accepted (#1540). Real metadata, even with a
+ * few rolled-over signing certificates, is a few KB; an unbounded body let an
+ * admin (or a compromised admin session) pin the event loop for seconds.
+ */
+export const SAML_METADATA_MAX_CHARS = 256 * 1024;
+
+const SAML_BINDING_REDIRECT = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect";
+const SAML_BINDING_POST = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST";
+
+/** Elements with this local name, in any (or no) namespace, in document order. */
+function elementsByLocalName(doc: XmlDocument, localName: string): XmlElement[] {
+  return Array.from(doc.getElementsByTagNameNS("*", localName));
+}
+
+/**
  * Parse IdP metadata XML to extract SSO URL, certificates, and issuer.
- * Uses basic XML parsing to avoid heavy dependencies.
+ *
+ * Parsed with `@xmldom/xmldom` rather than regexes (#1540: the old
+ * `SingleSignOnService[^>]+…[^>]+` patterns were polynomial, 2.7 s on 380 KB).
+ * xmldom does not resolve external entities nor expand DTD-declared ones.
+ * Metadata that is not well-formed XML yields empty values, as before; a
+ * document over {@link SAML_METADATA_MAX_CHARS} is a 400.
  */
 export function parseIdPMetadata(xml: string): {
   ssoUrl: string;
   certs: string[];
   issuer: string;
 } {
-  // Extract entityID
-  const entityIdMatch = xml.match(/entityID="([^"]+)"/);
-  const issuer = entityIdMatch?.[1] ?? "";
+  if (xml.length > SAML_METADATA_MAX_CHARS) {
+    throw new AppError(
+      400,
+      "VALIDATION_ERROR",
+      `IdP metadata XML must be at most ${SAML_METADATA_MAX_CHARS / 1024} KB`,
+    );
+  }
+  let doc: XmlDocument;
+  try {
+    // A non-fatal `error` (an undeclared entity, say) is ignored; only a fatal
+    // well-formedness error throws.
+    doc = new DOMParser({ onError: () => undefined }).parseFromString(xml, "text/xml");
+  } catch {
+    return { ssoUrl: "", certs: [], issuer: "" };
+  }
 
-  // Extract SSO URL (HTTP-Redirect binding preferred, fallback to POST)
-  const redirectMatch = xml.match(
-    /SingleSignOnService[^>]+Binding="urn:oasis:names:tc:SAML:2\.0:bindings:HTTP-Redirect"[^>]+Location="([^"]+)"/,
-  );
-  const postMatch = xml.match(
-    /SingleSignOnService[^>]+Binding="urn:oasis:names:tc:SAML:2\.0:bindings:HTTP-POST"[^>]+Location="([^"]+)"/,
-  );
-  // Also handle Location before Binding
-  const redirectMatch2 = xml.match(
-    /SingleSignOnService[^>]+Location="([^"]+)"[^>]+Binding="urn:oasis:names:tc:SAML:2\.0:bindings:HTTP-Redirect"/,
-  );
-  const postMatch2 = xml.match(
-    /SingleSignOnService[^>]+Location="([^"]+)"[^>]+Binding="urn:oasis:names:tc:SAML:2\.0:bindings:HTTP-POST"/,
-  );
-  const ssoUrl =
-    redirectMatch?.[1] ?? redirectMatch2?.[1] ?? postMatch?.[1] ?? postMatch2?.[1] ?? "";
+  // entityID of the (first) EntityDescriptor.
+  const issuer =
+    elementsByLocalName(doc, "EntityDescriptor")
+      .map((el) => el.getAttribute("entityID") ?? "")
+      .find((id) => id.length > 0) ?? "";
 
-  // Extract X509 certificates (handles both ds: prefixed and non-prefixed)
-  const certMatches = xml.matchAll(
-    /<(?:ds:)?X509Certificate>([\s\S]*?)<\/(?:ds:)?X509Certificate>/g,
-  );
+  // SSO URL: HTTP-Redirect binding preferred, fallback to POST.
+  const services = elementsByLocalName(doc, "SingleSignOnService");
+  const locationFor = (binding: string): string | undefined =>
+    services
+      .filter((el) => el.getAttribute("Binding") === binding)
+      .map((el) => el.getAttribute("Location") ?? "")
+      .find((loc) => loc.length > 0);
+  const ssoUrl = locationFor(SAML_BINDING_REDIRECT) ?? locationFor(SAML_BINDING_POST) ?? "";
+
+  // X509 certificates (any namespace prefix).
   const certs: string[] = [];
-  for (const match of certMatches) {
-    const cert = match[1].replace(/\s/g, "");
+  for (const el of elementsByLocalName(doc, "X509Certificate")) {
+    const cert = (el.textContent ?? "").replace(/\s/g, "");
     if (cert) certs.push(cert);
   }
 

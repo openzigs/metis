@@ -166,4 +166,41 @@ describe("embeddings sidecar HTTP surface", () => {
     const res = await send(app, "GET", "/unknown");
     expect(res.status).toBe(404);
   });
+
+  it("accepts a lower-case scheme and surrounding whitespace (#1540)", async () => {
+    const app = await loadApp();
+    const res = await send(
+      app,
+      "POST",
+      "/embed",
+      { texts: ["hi"] },
+      { authorization: "bearer \t test-secret-token-12345  " },
+    );
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("bearerToken (#1540)", () => {
+  it.each([
+    ["Bearer abc", "abc"],
+    ["bearer abc", "abc"],
+    ["BEARER\tabc  ", "abc"],
+    ["Bearer    ", ""],
+    ["Bearer", ""],
+    ["Bearerabc", ""],
+    ["Basic abc", ""],
+    ["", ""],
+  ])("reads %j as %j", async (header, token) => {
+    const { bearerToken } = await import("../src/app.js");
+    expect(bearerToken(header)).toBe(token);
+  });
+
+  it("parses a long whitespace run in under 50 ms", async () => {
+    const { bearerToken } = await import("../src/app.js");
+    // Quadratic under `/^Bearer\s+(.+)$/i`: `\s+` and `.+` share every space.
+    const header = `Bearer${" ".repeat(100_000)}\n`;
+    const started = performance.now();
+    bearerToken(header);
+    expect(performance.now() - started).toBeLessThan(50);
+  });
 });

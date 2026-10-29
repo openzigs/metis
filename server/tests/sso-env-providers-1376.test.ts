@@ -15,7 +15,7 @@ const OIDC = {
   AUTH_OIDC_REDIRECT_URI: "https://metis.example.test/api/auth/oidc/callback",
 };
 
-const METADATA = `<EntityDescriptor entityID="https://idp.example.test/saml"><IDPSSODescriptor><KeyDescriptor><ds:KeyInfo><ds:X509Data><ds:X509Certificate>MIIBcert</ds:X509Certificate></ds:X509Data></ds:KeyInfo></KeyDescriptor><SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.example.test/sso"/></IDPSSODescriptor></EntityDescriptor>`;
+const METADATA = `<EntityDescriptor entityID="https://idp.example.test/saml"><IDPSSODescriptor><KeyDescriptor><ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"><ds:X509Data><ds:X509Certificate>MIIBcert</ds:X509Certificate></ds:X509Data></ds:KeyInfo></KeyDescriptor><SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.example.test/sso"/></IDPSSODescriptor></EntityDescriptor>`;
 const SAML = {
   AUTH_SAML_ENTITY_ID: "https://metis.example.test/api/auth/saml/metadata",
   AUTH_SAML_ACS_URL: "https://metis.example.test/api/auth/saml/acs",

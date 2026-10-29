@@ -676,6 +676,12 @@ export type ConnectorStatus = (typeof CONNECTOR_STATUSES)[number];
 /** Hard ceiling on rows returned by the query-database tool. */
 export const QUERY_DB_MAX_ROWS = 100;
 
+/**
+ * Longest SQL accepted for a connector query, from the AI tool and from
+ * `POST /dbs/:id/query` alike (#1540): the validator's regexes run over it.
+ */
+export const QUERY_DB_MAX_SQL_CHARS = 8_000;
+
 /** Default statement timeout for connector-issued SQL (ms). */
 export const DEFAULT_DB_STATEMENT_TIMEOUT_MS = 10_000;
 
