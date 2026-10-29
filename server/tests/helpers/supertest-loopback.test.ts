@@ -10,29 +10,34 @@ async function close(server: Server): Promise<void> {
   });
 }
 
+/** A wildcard IPv6 fixture sharing its port with an IPv4 one must still get the request. */
+async function expectWildcardFixtureReachedOverIpv6(): Promise<void> {
+  const other = createServer((_req, res) => res.writeHead(404).end("wrong fixture"));
+  const server = createServer((_req, res) => res.end("correct fixture"));
+  try {
+    other.listen(0, "127.0.0.1");
+    await once(other, "listening");
+    const otherAddress = other.address();
+    if (!otherAddress || typeof otherAddress === "string") throw new Error("Missing TCP port");
+    // ipv6Only reproduces macOS's dual-stack collision on Linux as well.
+    server.listen({ port: otherAddress.port, host: "::", ipv6Only: true });
+    await once(server, "listening");
+    const pending = request(server).get("/fixture");
+    const address = server.address();
+    expect(address).toMatchObject({ address: "::", family: "IPv6" });
+    expect(pending.url).toMatch(/^http:\/\/\[::1\]:\d+\/fixture$/);
+    const response = await pending;
+    expect(response.status).toBe(200);
+    expect(response.text).toBe("correct fixture");
+  } finally {
+    await close(server);
+    await close(other);
+  }
+}
+
 describe("Supertest loopback isolation", () => {
   it("addresses a wildcard fixture via IPv6 instead of another IPv4 fixture", async () => {
-    const other = createServer((_req, res) => res.writeHead(404).end("wrong fixture"));
-    const server = createServer((_req, res) => res.end("correct fixture"));
-    try {
-      other.listen(0, "127.0.0.1");
-      await once(other, "listening");
-      const otherAddress = other.address();
-      if (!otherAddress || typeof otherAddress === "string") throw new Error("Missing TCP port");
-      // ipv6Only reproduces macOS's dual-stack collision on Linux as well.
-      server.listen({ port: otherAddress.port, host: "::", ipv6Only: true });
-      await once(server, "listening");
-      const pending = request(server).get("/fixture");
-      const address = server.address();
-      expect(address).toMatchObject({ address: "::", family: "IPv6" });
-      expect(pending.url).toMatch(/^http:\/\/\[::1\]:\d+\/fixture$/);
-      const response = await pending;
-      expect(response.status).toBe(200);
-      expect(response.text).toBe("correct fixture");
-    } finally {
-      await close(server);
-      await close(other);
-    }
+    await expectWildcardFixtureReachedOverIpv6();
   });
 
   it("preserves explicitly bound IPv4 listeners after the previous test restores mocks", async () => {
@@ -49,11 +54,18 @@ describe("Supertest loopback isolation", () => {
   });
 
   it("reinstalls IPv6 isolation after restoreAllMocks", async () => {
+    // The previous test ended with vi.restoreAllMocks(); this fails unless the
+    // beforeEach in tests/setup.ts put the serverAddress spy back.
+    await expectWildcardFixtureReachedOverIpv6();
+  });
+
+  it("binds a Supertest-started fixture to the IPv4 loopback it connects to", async () => {
     const server = createServer((_req, res) => res.end("fresh fixture"));
     try {
       const pending = request(server).get("/fixture");
-      expect(pending.url).toMatch(/^http:\/\/\[::1\]:\d+\/fixture$/);
+      // supertest >= 7.3.1 listens on 127.0.0.1 and fills in the port at end().
       expect((await pending).text).toBe("fresh fixture");
+      expect(pending.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/fixture$/);
     } finally {
       await close(server);
     }
