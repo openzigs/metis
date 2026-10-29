@@ -32,6 +32,7 @@ The relevant threats and the controls that mitigate them:
 | **Response replay** — an attacker captures a valid `SAMLResponse` and re-POSTs it to ACS. | `validateInResponseTo: ifPresent` + a **single-use request-id cache**. The id minted on the AuthnRequest is consumed on first validation; a replayed Response carries an `InResponseTo` that is already gone, so it is rejected. |
 | **Forged / tampered Response envelope** — an attacker injects or rewrites the Response around a stolen assertion. | `wantAuthnResponseSigned: true` (the default) — the Response envelope itself must carry a valid XML signature, not just the assertion. |
 | **Forged assertion** | `wantAssertionsSigned: true` (always on) — the assertion must be signed by the IdP cert. |
+| **Assertion from another issuer** — one certificate signs for several issuers (another Entra tenant, say). | METIS compares the assertion's `Issuer` exactly with the configured IdP issuer (the metadata `entityID`; for Entra `https://sts.windows.net/<tenant-id>/`, trailing slash included) and refuses a mismatch or a missing `Issuer`, naming both values (#1555). node-saml 5.1.0 checks `idpIssuer` only on logout messages. With no issuer configured (metadata without an `entityID`) the signature check is the only control. |
 | **Stale / out-of-window assertion** | `acceptedClockSkewMs` enforces the assertion `NotBefore` / `NotOnOrAfter` and the SubjectConfirmationData window with a small (30s) tolerance. |
 | **Unsolicited / mismatched `InResponseTo`** | An `InResponseTo` that was never issued (or does not match an outstanding request id) misses the cache and is rejected. |
 
@@ -112,7 +113,9 @@ true`.
   (`entra-saml-fixtures.ts`): group object IDs and app roles are read, a group
   overage is flagged, a password-only sign-in is not MFA while `multipleauthn` is,
   and an assertion-only Response is refused with a message naming Entra's "Sign
-  SAML response and assertion" setting. `tests/saml-entra-1552.sqlite.test.ts`
+  SAML response and assertion" setting. Its #1555 cases sign a Response with the
+  trusted key but another tenant's Issuer (or Entra's issuer without its trailing
+  slash, or no assertion Issuer at all) and see it refused. `tests/saml-entra-1552.sqlite.test.ts`
   drives the same through the ACS route and checks the issued session. Setup:
   [azure-ad.md](azure-ad.md).
 - `saml-request-id-cache*.test.ts` cover the cache contract + cross-replica

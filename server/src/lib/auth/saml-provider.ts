@@ -340,6 +340,12 @@ export async function validateSAMLResponse(
       return { success: false, error: "No profile in SAML response" };
     }
 
+    const issuerError = assertionIssuerError(profile.issuer, config.idpIssuer);
+    if (issuerError) {
+      log.warn("SAML assertion Issuer refused", { error: issuerError });
+      return { success: false, error: issuerError };
+    }
+
     const claims = profile as Record<string, unknown>;
     const email =
       claims["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress"] ??
@@ -398,6 +404,31 @@ export async function validateSAMLResponse(
       error: message === NODE_SAML_RESPONSE_SIGNATURE_ERROR ? UNSIGNED_RESPONSE_MESSAGE : message,
     };
   }
+}
+
+/**
+ * Why the validated assertion's Issuer is refused, or `undefined` (#1555).
+ *
+ * node-saml 5.1.0 hands `idpIssuer` only to its LogoutRequest/LogoutResponse
+ * check, so a login assertion from any issuer whose signature verifies against
+ * the pinned certificate was accepted. The comparison is exact, as the IdP sends
+ * it: the configured value is the metadata entityID, which for Entra is
+ * `https://sts.windows.net/<tenant-id>/` with its trailing slash, the same
+ * string as the assertion's Issuer. With no issuer configured there is nothing
+ * to compare against, and the signature check stays the only control.
+ */
+function assertionIssuerError(
+  assertionIssuer: string | undefined,
+  idpIssuer: string,
+): string | undefined {
+  if (!idpIssuer) return undefined;
+  if (!assertionIssuer) {
+    return `The SAML assertion has no Issuer; the configured IdP issuer is "${idpIssuer}"`;
+  }
+  if (assertionIssuer !== idpIssuer) {
+    return `SAML assertion Issuer "${assertionIssuer}" does not match the configured IdP issuer "${idpIssuer}"`;
+  }
+  return undefined;
 }
 
 /** A claim's string values: node-saml gives one value bare and several as an array. */
