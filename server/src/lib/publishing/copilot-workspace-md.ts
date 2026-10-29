@@ -12,6 +12,7 @@
  * its output into a single GitHub `PUT /repos/{o}/{r}/contents/.copilot-workspace.md`
  * commit when `metadata.copilotWorkspace === true`.
  */
+import { escapeTableCell } from "../documents/markdown-utils.js";
 
 export interface WorkspaceSubIssue {
   number: number;
@@ -86,7 +87,7 @@ export function renderCopilotWorkspaceMarkdown(input: RenderWorkspaceInput): str
         sub.dependencies && sub.dependencies.length > 0
           ? sub.dependencies.map((n) => `#${n}`).join(", ")
           : "—";
-      const safeTitle = escapeTableCell(sub.title);
+      const safeTitle = escapeTableCell(sub.title).replace(/\n/g, " ").trim();
       lines.push(`| #${sub.number} | ${safeTitle} | ${sp} | ${deps} |`);
     }
     lines.push("");
@@ -107,8 +108,4 @@ export function renderCopilotWorkspaceMarkdown(input: RenderWorkspaceInput): str
 export async function workspaceContentHash(content: string): Promise<string> {
   const { createHash } = await import("node:crypto");
   return createHash("sha256").update(content, "utf-8").digest("hex");
-}
-
-function escapeTableCell(s: string): string {
-  return s.replace(/\|/g, "\\|").replace(/\n/g, " ").trim();
 }

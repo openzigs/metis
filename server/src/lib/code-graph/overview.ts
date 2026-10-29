@@ -24,6 +24,7 @@
  */
 
 import { isTestFilePath } from "./call-resolution.js";
+import { escapeTableCell } from "../documents/markdown-utils.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export interface OverviewPrismaShape {
@@ -382,7 +383,7 @@ export async function generateOverview(
     lines.push("| ---: | --- | --- | ---: | --- |");
     godNodes.forEach((g, i) => {
       lines.push(
-        `| ${i + 1} | \`${escapePipes(g.qualifiedName)}\` | ${g.kind} | ${g.inDegree} | \`${escapePipes(g.filePath)}\` |`,
+        `| ${i + 1} | \`${escapeTableCell(g.qualifiedName, { codeSpan: true })}\` | ${g.kind} | ${g.inDegree} | \`${escapeTableCell(g.filePath, { codeSpan: true })}\` |`,
       );
     });
   }
@@ -398,7 +399,7 @@ export async function generateOverview(
     lines.push("| --- | --- | --- |");
     entryPoints.forEach((e) => {
       lines.push(
-        `| \`${escapePipes(e.qualifiedName)}\` | ${e.kind} | \`${escapePipes(e.filePath)}\` |`,
+        `| \`${escapeTableCell(e.qualifiedName, { codeSpan: true })}\` | ${e.kind} | \`${escapeTableCell(e.filePath, { codeSpan: true })}\` |`,
       );
     });
   }
@@ -449,10 +450,6 @@ const LANGUAGE_DISPLAY: Record<string, string> = {
 
 function displayLanguage(code: string): string {
   return LANGUAGE_DISPLAY[code] ?? code;
-}
-
-function escapePipes(value: string): string {
-  return value.replace(/\|/g, "\\|");
 }
 
 /**

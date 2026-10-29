@@ -34,6 +34,31 @@ export function expandMergedCells(rows: string[][], merges: MergeRange[]): strin
 
 // ── Markdown table ──────────────────────────────────────────────────────────
 
+/**
+ * #1542 — escape a value for one cell of a GFM table, so the cell renders as
+ * the value and never splits. Every site that writes a table cell uses this.
+ *
+ * A GFM row is split on every `|` not taken by a backslash escape, and a
+ * backslash escapes whatever follows it, another backslash included. Escaping
+ * `|` alone turns a value's `a\|b` into `a\\|b`: an escaped backslash, then a
+ * bare pipe that ends the cell. So in plain cell text `\` is escaped first,
+ * then `|`.
+ *
+ * Inside a code span (`codeSpan: true`) a backslash is literal and only `\|` is
+ * unescaped, so doubling every backslash would show `C:\x` as `C:\\x`. There
+ * only the backslashes directly before a `|` are doubled. That keeps the cell
+ * whole, but a value's `\|` shows as `\\|`: GFM has no way to put a literal
+ * backslash before a pipe inside a code span in a table.
+ *
+ * Newlines are left to the caller, which decides how its cells handle them.
+ */
+export function escapeTableCell(value: string, opts: { codeSpan?: boolean } = {}): string {
+  if (opts.codeSpan) {
+    return value.replace(/(\\*)\|/g, (_match, run: string) => `${run}${run}\\|`);
+  }
+  return value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+}
+
 export function rowsToMarkdownTable(rows: string[][]): string {
   if (rows.length === 0) return "";
 
@@ -41,11 +66,7 @@ export function rowsToMarkdownTable(rows: string[][]): string {
   const normalized = rows.map((row) => {
     const padded = [...row];
     while (padded.length < maxCols) padded.push("");
-    return padded.map((cell) =>
-      String(cell ?? "")
-        .replace(/\|/g, "\\|")
-        .replace(/\n/g, " "),
-    );
+    return padded.map((cell) => escapeTableCell(String(cell ?? "")).replace(/\n/g, " "));
   });
 
   if (normalized.length === 0) return "";
@@ -102,12 +123,13 @@ export function htmlToMarkdown(html: string): string {
   // Strip remaining tags
   md = md.replace(/<[^>]+>/g, "");
 
-  // Decode HTML entities
-  md = md.replace(/&amp;/g, "&");
+  // Decode HTML entities. `&amp;` goes last (#1542): decoded first, the
+  // literal text `&amp;lt;` would become `&lt;` and then `<`.
   md = md.replace(/&lt;/g, "<");
   md = md.replace(/&gt;/g, ">");
   md = md.replace(/&quot;/g, '"');
   md = md.replace(/&#39;/g, "'");
+  md = md.replace(/&amp;/g, "&");
 
   // Clean up whitespace
   md = md.replace(/\n{3,}/g, "\n\n");

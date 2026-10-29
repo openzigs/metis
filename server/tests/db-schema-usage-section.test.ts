@@ -13,6 +13,7 @@
 import { describe, expect, it } from "vitest";
 import type { SchemaUsageClassificationView } from "@metis/shared";
 import { buildUsageClassificationSection } from "../src/lib/docs-gen/db-schema-synthesizer.js";
+import { tableRows } from "./helpers/gfm-table.js";
 
 function view(over: Partial<SchemaUsageClassificationView>): SchemaUsageClassificationView {
   return {
@@ -34,6 +35,35 @@ function view(over: Partial<SchemaUsageClassificationView>): SchemaUsageClassifi
 describe("buildUsageClassificationSection", () => {
   it("returns an empty string when there is no classification (section omitted)", () => {
     expect(buildUsageClassificationSection([])).toBe("");
+  });
+
+  it("#1542 — names holding a\\|b render as themselves, and the row keeps its five cells", () => {
+    const md = buildUsageClassificationSection([
+      view({
+        kind: "column",
+        tableName: "odd\\|table",
+        columnName: "col|x",
+        usageClass: "uncertain",
+        uncertainReason: "dynamic-reference",
+        evidence: [
+          {
+            edgeKind: "reads",
+            source: "mybatis",
+            fromQualifiedName: "Mapper\\|find",
+            reconciliation: "matched",
+          },
+        ],
+      }),
+    ]);
+    const row = tableRows(md).find((cells) => cells[1] === "column");
+    expect(row).toHaveLength(5);
+    expect(row!.slice(0, 4)).toEqual([
+      "odd\\|table.col|x",
+      "column",
+      "uncertain",
+      "dynamic-reference",
+    ]);
+    expect(row![4]).toContain("Mapper\\|find");
   });
 
   it("renders a heading and a row per object with its class", () => {

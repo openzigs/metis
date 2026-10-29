@@ -17,6 +17,7 @@ import { prisma } from "../prisma.js";
 import { writeFeatureArtifact, getFeatureArtifact } from "./feature-artifacts.js";
 import { audit } from "../audit/audit-service.js";
 import { splitTaskTitle } from "./tasks-parser.js";
+import { escapeTableCell } from "../documents/markdown-utils.js";
 import { issueTitle } from "./commands/taskstoissues.js";
 import { createChildLogger } from "../logger.js";
 import { logDeletedProjectSkip } from "../projects/deleted-project-guard.js";
@@ -150,7 +151,9 @@ function toggleCheckbox(line: string, closed: boolean, issueNumber?: number): st
  * `issues.edited` payload so the webhook handler MUST scrub them.
  */
 function sanitiseTitleForTasksMd(raw: string): string {
-  return (
+  // #1542 — escape `\` then `|` last, so a title's `a\|b` cannot end the cell
+  // early. No step of the scrub adds or removes either character.
+  return escapeTableCell(
     raw
       .replace(/\r\n|\r|\n/g, " ") // collapse newlines to a single space
       // Issue #17.2 — strip HTML comments outright. A title containing
@@ -166,9 +169,8 @@ function sanitiseTitleForTasksMd(raw: string): string {
       // text is still legible as literal characters.
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
-      .replace(/\|/g, "\\|") // escape pipes so they don't break table cells
       .replace(/\s+/g, " ") // collapse runs of whitespace from the prior step
-      .trim()
+      .trim(),
   );
 }
 

@@ -7,6 +7,7 @@ import {
   workspaceContentHash,
   COPILOT_WORKSPACE_PATH,
 } from "../src/lib/publishing/copilot-workspace-md.js";
+import { tableRows } from "./helpers/gfm-table.js";
 
 describe("renderCopilotWorkspaceMarkdown", () => {
   it("renders the workspace header", () => {
@@ -50,6 +51,19 @@ describe("renderCopilotWorkspaceMarkdown", () => {
       ],
     });
     expect(md).toContain("Title \\| with pipe and newline");
+  });
+
+  it("#1542 — a title holding a\\|b renders as itself, in one cell", () => {
+    const md = renderCopilotWorkspaceMarkdown({
+      epics: [
+        {
+          number: 1,
+          title: "Epic",
+          subIssues: [{ number: 2, title: "a\\|b", storyPoints: 5, dependencies: [] }],
+        },
+      ],
+    });
+    expect(tableRows(md)).toContainEqual(["#2", "a\\|b", "5", "—"]);
   });
 
   it("notes when an epic has no sub-issues", () => {
