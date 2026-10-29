@@ -10,15 +10,16 @@ page only ties them together and tells you **which harness tests what**.
 |----------|-----|----------------|-------------|---------------------|---------|
 | `make oidc-up` | Keycloak (`quay.io/keycloak/keycloak:26.6.4`) on `:4600` | OIDC: PKCE S256 + state + nonce, `groups` claim | stays `mock` (admin-API configured) | **Yes** — `tester`→admin, `dev`→developer | [oidc-local-testing.md](./oidc-local-testing.md) |
 | `make saml-up` | `boxyhq/mock-saml` on `:4500` | SAML: signed-Response + `InResponseTo` replay + `NotOnOrAfter` (#520) | stays `mock` (admin-API configured) | **No** — mock emits only `email`; role falls to `defaultRole` | [saml-local-testing.md](./saml-local-testing.md) |
+| in-process (tests) | `scripts/lib/mock-entra-saml-idp.mjs` on loopback | SAML as **Microsoft Entra ID** sends it: claim URIs, signing options, MFA, group overage, signed Federation Metadata (#1553) | stays `mock` | **Yes** — group object IDs and app roles | [saml-local-testing.md](./saml-local-testing.md#entra-id-profile-in-process-runs-in-ci) |
 | `make ldap-up` | OpenLDAP (`bitnamilegacy/openldap:2.6`, digest-pinned) on `:4400` | LDAP: service bind → search → user bind (password verify) | set to **`ldap`** (env-driven) | **Yes** — `alice`→admin, `bob`→developer (needs `groupMappings`, see below) | [ldap-local-testing.md](./ldap-local-testing.md) |
 
-> **Why the SAML harness can't test roles, but OIDC and LDAP can.** The mock SAML
+> **Why the `make saml-up` harness can't test roles.** The boxyhq mock SAML
 > IdP emits only an `email` attribute — no group/role claim — so a SAML login
 > there always resolves to the provider's `defaultRole`. To exercise
 > IdP-group→METIS-role mapping (`resolveRoleFromGroups`), use the **Keycloak OIDC
 > harness** (its realm puts each test user in a group and emits a `groups` claim)
-> or the **LDAP harness** (users have `memberOf` group DNs). This split is by
-> design — see the SAML harness doc for the rationale.
+> or the **LDAP harness** (users have `memberOf` group DNs), or for SAML the
+> in-process **Entra ID profile** mock, which emits group and app-role claims.
 
 ## The one big difference: env-driven vs admin-API configured
 
