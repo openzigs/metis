@@ -48,13 +48,13 @@ async function signIn(query = { SAMLRequest: authnRequest(), RelayState: "rs-1" 
   expect(res.status).toBe(200);
   expect(res.headers.get("content-type")).toMatch(/^text\/html/);
   const html = await res.text();
-  const field = (name) => new RegExp(`name="${name}" value="([^"]*)"`).exec(html)?.[1];
+  const samlResponse = /name="SAMLResponse" value="([^"]*)"/.exec(html)?.[1];
   return {
     html,
     action: /<form method="POST" name="hiddenform" action="([^"]*)"/.exec(html)?.[1],
-    relayState: field("RelayState"),
-    encoded: /** @type {string} */ (field("SAMLResponse")),
-    xml: Buffer.from(/** @type {string} */ (field("SAMLResponse")), "base64").toString("utf8"),
+    relayState: /name="RelayState" value="([^"]*)"/.exec(html)?.[1],
+    encoded: /** @type {string} */ (samlResponse),
+    xml: Buffer.from(/** @type {string} */ (samlResponse), "base64").toString("utf8"),
   };
 }
 
@@ -79,7 +79,10 @@ function verifies(xml, signature) {
 
 /** The values of one Attribute in a Response. */
 function claim(xml, name) {
-  const body = new RegExp(`<Attribute Name="${name}">(.*?)</Attribute>`).exec(xml)?.[1];
+  const open = `<Attribute Name="${name}">`;
+  const start = xml.indexOf(open);
+  const body =
+    start < 0 ? undefined : xml.slice(start + open.length, xml.indexOf("</Attribute>", start));
   return body === undefined
     ? undefined
     : [...body.matchAll(/<AttributeValue>([^<]*)<\/AttributeValue>/g)].map((m) => m[1]);

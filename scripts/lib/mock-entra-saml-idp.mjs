@@ -342,11 +342,9 @@ export function readAuthnRequest(encoded) {
   const xml = inflateRawSync(Buffer.from(encoded, "base64")).toString("utf8");
   const head = /<(?:\w+:)?AuthnRequest\b([^>]*)>/.exec(xml)?.[1];
   if (head === undefined) throw new Error("not an AuthnRequest");
-  /** @param {string} name */
-  const attr = (name) => new RegExp(`\\b${name}="([^"]*)"`).exec(head)?.[1];
   return {
-    id: attr("ID") ?? "",
-    acsUrl: attr("AssertionConsumerServiceURL"),
+    id: /\bID="([^"]*)"/.exec(head)?.[1] ?? "",
+    acsUrl: /\bAssertionConsumerServiceURL="([^"]*)"/.exec(head)?.[1],
     issuer: /<(?:\w+:)?Issuer\b[^>]*>([^<]*)<\/(?:\w+:)?Issuer>/.exec(xml)?.[1]?.trim() ?? "",
   };
 }
