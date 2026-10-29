@@ -131,10 +131,11 @@ export function createApp(): Express {
 
   const app = express();
   app.disable("x-powered-by");
-  // #1458 — never inflate a request body: body-parser GHSA-27r3-jxmh-p828 is a DoS
-  // through trailing bytes after a COMPRESSED body, and this parser runs ahead of
-  // the per-route token check. The server's embed client sends plain JSON, so a
-  // gzip/deflate/br body is refused 415 before any zlib stream exists.
+  // #1458 — never inflate a request body: body-parser GHSA-27r3-jxmh-p828 was a DoS
+  // through trailing bytes after a COMPRESSED body (fixed by the 2.4.0 upgrade in
+  // #1460), and this parser runs ahead of the per-route token check. The server's
+  // embed client sends plain JSON, so a gzip/deflate/br body is refused 415 before
+  // any zlib stream exists; decompression stays off as attack surface with no user.
   app.use(express.json({ limit: "8mb", inflate: false }));
 
   /**

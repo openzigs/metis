@@ -22,7 +22,20 @@
     "packages exactly (scripts/lib/image-scan-waivers-mirror.test.mjs). Retire both together.",
     "An empty `waivers` list is the goal."
   ],
-  "expired": [],
+  "expired": [
+    {
+      "id": "CVE-2026-111181",
+      "retired": "2026-10-29",
+      "reason": "Fixed, not waived: body-parser is upgraded to 2.4.0 by a pnpm override (body-parser@>=2.0.0 <2.4.0: ^2.4.0) after it cleared minimumReleaseAge, and the GHSA-27r3-jxmh-p828 waiver is deleted from sast.yml in the same change (#1460). Was scoped to body-parser@2.2.2 in the server and embeddings-svc images.",
+      "images": ["server", "embeddings-svc"]
+    },
+    {
+      "id": "CVE-2026-113872",
+      "retired": "2026-10-29",
+      "reason": "Fixed, not waived: server/package.json moves multer to ^2.5.0 after it cleared minimumReleaseAge, and the GHSA-q7qp-rjg7-q26m waiver is deleted from sast.yml in the same change (#1460). Was scoped to multer@2.4.0 in the server image.",
+      "images": ["server"]
+    }
+  ],
   "waivers": [
     {
       "id": "CVE-2026-76642",
@@ -73,30 +86,6 @@
       "packages": ["@azure/msal-node@5.3.0"],
       "reason": "@azure/msal-node@5.3.0 only (via @azure/identity 4.13.1, botframework-connector 4.23.3): the fix is 7.1.0 and no parent accepts 7.x (@azure/identity 4.14.0 moves only to ^6), so it cannot be installed. METIS never runs the MSAL authorization-code flow (#1464). Mirrors the sast.yml waiver; re-check @azure/identity for a ^7 release on the review date.",
       "guards": ["server/src/lib/teams/msal-auth-code-reachability.test.ts"]
-    },
-    {
-      "id": "CVE-2026-111181",
-      "mirrors": "GHSA-27r3-jxmh-p828",
-      "expires": "2026-10-30",
-      "allowFixed": true,
-      "images": ["server", "embeddings-svc"],
-      "packages": ["body-parser@2.2.2"],
-      "reason": "body-parser@2.2.2 only (express 5.2.1 in the API and the embeddings sidecar): 2.4.0 is held by pnpm minimumReleaseAge until 2026-10-29T11:39Z. Every parser in both services sets inflate: false, so the compressed-body path is unreachable (#1458). Upgrade in #1460 and move this entry to `expired`; never re-date it.",
-      "guards": [
-        "server/tests/body-parser-inflate-1458.test.ts",
-        "server/embeddings-svc/tests/body-inflate-1458.test.ts",
-        "server/src/middleware/body-parsers.inflate.test.ts"
-      ]
-    },
-    {
-      "id": "CVE-2026-113872",
-      "mirrors": "GHSA-q7qp-rjg7-q26m",
-      "expires": "2026-10-30",
-      "allowFixed": true,
-      "images": ["server"],
-      "packages": ["multer@2.4.0"],
-      "reason": "multer@2.4.0 only: 2.5.0 is held by pnpm minimumReleaseAge until 2026-10-29T11:58Z. No METIS upload sets a fileFilter, so the async-fileFilter crash is unreachable (#1464). Upgrade in #1460 and move this entry to `expired`; never re-date it.",
-      "guards": ["scripts/lib/dependency-audit-1464-advisories.test.mjs"]
     },
     {
       "id": "CVE-2023-54404",
