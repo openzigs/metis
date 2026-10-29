@@ -25,6 +25,8 @@ export class AdminAuthPage {
   readonly samlMetadataXml: Locator;
   readonly samlEnabledCheckbox: Locator;
   readonly samlSaveButton: Locator;
+  /** #1552 — warns of SAML sign-ins that arrived with a group overage. */
+  readonly samlGroupOverageWarning: Locator;
 
   // OIDC form fields
   readonly oidcProviderName: Locator;
@@ -65,6 +67,9 @@ export class AdminAuthPage {
     this.samlMetadataXml = page.getByLabel("IdP Metadata XML");
     this.samlEnabledCheckbox = page.getByLabel("Enable SAML Provider");
     this.samlSaveButton = page.getByRole("button", { name: "Save SAML Configuration" });
+    this.samlGroupOverageWarning = page
+      .getByRole("alert")
+      .filter({ hasText: /arrived without the user's groups/ });
 
     // OIDC
     this.oidcProviderName = page.getByLabel("Provider Name");
