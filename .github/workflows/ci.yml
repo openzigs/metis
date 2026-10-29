@@ -1154,6 +1154,13 @@ jobs:
         working-directory: server
         run: pnpm test:integration notification-project-1447-postgres
 
+      # Issue #1527 — the product home-workspace backfill, run verbatim over seeded
+      # products (scratch schema): member, admin and IdP-admin creators, the
+      # attach order, and a re-run that changes nothing.
+      - name: Prove the product home-workspace backfill on real Postgres
+        working-directory: server
+        run: pnpm test:integration product-home-1527-postgres
+
       # Issue #1528 — a scheduled analysis re-run starts on real Postgres: the
       # real scheduler handler and orchestrator (stub model) record the system
       # start as a NULL startedById, which the analyses foreign key accepts.

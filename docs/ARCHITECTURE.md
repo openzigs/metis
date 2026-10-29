@@ -4361,17 +4361,22 @@ records none is judged against all the product's repos). A soft-deleted connecti
 is refused on attach like a missing id. `pnpm audit:product-repos` (read-only; `--sql`
 prints the query for Postgres) lists existing attachments that cross a workspace.
 
-**Who can open a product (#1259).** A product's footprint is its bound projects
-(`Project.productId`) plus the project of each attached repo **its creator could have
-attached**: the creator is a system admin (`resolveEffectiveRoleFromRows`), holds a
-membership row in the repo project's workspace, or the project has no workspace (legacy,
-open to all). `assertProductAccessible` and `buildProductAccessWhere` admit a member who
-can open any project in that footprint, so a cross-workspace row no longer opens the
-product to the foreign workspace. The membership row is read whatever the creator's
-account state, so a deprovisioned creator's team keeps the product; removing the creator
-from the workspace closes it to non-admins. A product with no bound project and no repo
-is still open to every authenticated user; one whose repos all fall outside the footprint
-is not, and answers 404.
+**Who can open a product (#1259, #1527).** A product's footprint is its bound projects
+(`Project.productId`) plus the project of each attached repo in the product's **home
+workspace** (`Product.workspaceId`) or in no workspace (legacy, open to all).
+`assertProductAccessible` and `buildProductAccessWhere` admit a member who can open any
+project in that footprint, so a cross-workspace row does not open the product to the
+foreign workspace, and an admin-created product opens to its home only. The home is
+recorded by `addProductRepo` when the first repo **its creator could have attached** is
+attached (the creator is a system admin by `resolveEffectiveRoleFromRows`, or holds a
+membership row in the repo's workspace), and never moves after that: the creator leaving
+the workspace, being deprovisioned or losing admin leaves the product with the team. The
+#1527 migration backfilled existing products from their earliest-attached such repo; a
+product with none stays unhomed, and its workspace repos open it to no non-admin. The list
+filter is a relation filter on `accessibleProjectWhere`, one branch per workspace the
+caller is a live member of, so it binds no id list that grows with the tenant. A product
+with no bound project and no repo is still open to every authenticated user; one whose
+repos all fall outside the footprint is not, and answers 404.
 
 **Partial documents, detach audit, soft-deleted repos (#1261).** A member's `/analyze`
 with hidden repos is *marked, not refused*: every document it writes records

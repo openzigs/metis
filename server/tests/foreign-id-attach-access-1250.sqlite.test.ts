@@ -167,10 +167,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           })
         ).id;
       }
-      // Product A is bound to project A through repo connection A.
+      // Product A is bound to project A through repo connection A, so it is homed
+      // in WS1 (#1527), as attaching repo A through the route records.
       productA = (
         await db.product.create({
-          data: { name: "Product A", slug: "product-a-1250", createdById: "alice" },
+          data: {
+            name: "Product A",
+            slug: "product-a-1250",
+            createdById: "alice",
+            workspaceId: WS1,
+          },
         })
       ).id;
       await db.productRepo.create({ data: { productId: productA, repoConnectionId: rc.a } });

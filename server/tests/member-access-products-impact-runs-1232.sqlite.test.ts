@@ -153,8 +153,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const rc = await db.repoConnection.create({
           data: { projectId, label: `rc-${key}`, repoName: `repo-${key}`, createdById },
         });
+        // Homed in the repo's workspace (#1527), as attaching it through the route records.
+        const { workspaceId } = await db.project.findUniqueOrThrow({ where: { id: projectId } });
         const p = await db.product.create({
-          data: { name: `Product ${key}`, slug: `product-${key}-1232`, createdById },
+          data: { name: `Product ${key}`, slug: `product-${key}-1232`, createdById, workspaceId },
         });
         await db.productRepo.create({ data: { productId: p.id, repoConnectionId: rc.id } });
         product[key] = p.id;
