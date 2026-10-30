@@ -8,7 +8,8 @@
  * routes into its thread view. The interactive, testable pieces (message list,
  * composer, realtime wiring) live in `@/components/chat/discussion-*`.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import type { DiscussionChangedEvent } from "@metis/shared";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -17,6 +18,9 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { createThread, listThreads } from "@/lib/discussions-api";
+import { useSocket } from "@/lib/socket-client";
+import { keepSubscribed } from "@/lib/socket-subscription";
+import { projectJoin } from "@/lib/socket-rooms";
 import { PageHeader } from "@/components/ui/page-header";
 
 export default function DiscussionsListPage() {
@@ -36,6 +40,27 @@ export default function DiscussionsListPage() {
     queryFn: () => listThreads(projectId),
     enabled: !!projectId,
   });
+
+  // #1574 — a teammate's new thread (or a thread's changed settings) appears
+  // without a reload. The push goes to the `project:{id}` room, whose join rule
+  // is the thread list's own, and carries identifiers only; the re-read is the
+  // REST list.
+  const socket = useSocket();
+  useEffect(() => {
+    if (!socket || !projectId) return;
+    const refresh = () =>
+      void queryClient.invalidateQueries({ queryKey: ["discussions", projectId] });
+    // #642 — re-join on reconnect; #646 — and re-read, for a push in the gap.
+    const release = keepSubscribed(socket, projectJoin(socket, projectId), refresh);
+    const onChanged = (event: DiscussionChangedEvent) => {
+      if (event.projectId === projectId) refresh();
+    };
+    socket.on("discussion:changed", onChanged);
+    return () => {
+      release();
+      socket.off("discussion:changed", onChanged);
+    };
+  }, [socket, projectId, queryClient]);
 
   async function handleCreate() {
     if (creating) return;

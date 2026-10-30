@@ -28,6 +28,7 @@ import { parseRequirementLabels } from "../analysis/requirement-labels.js";
 import { buildAuditLogData } from "../audit/audit-service.js";
 import { Prisma, prisma, resolveDatabaseProvider } from "../prisma.js";
 import { dispatchReviewDecision, dispatchReviewSubmitted } from "./notify.js";
+import { emitReviewChanged } from "./review-events.js";
 import { noteRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
 import { attachSharedCriteria } from "./review-shared-criteria.js";
 import {
@@ -598,6 +599,8 @@ export async function submitReview(
     actorId,
     reviewerIds: review.assignments.map((a) => a.reviewerId),
   });
+  // #1574 — an open review page shows the new status without a reload.
+  emitReviewChanged(review.projectId, reviewId);
 
   return updated;
 }
@@ -803,6 +806,8 @@ export async function recordDecision(
     outcome: result.aggregate === "pending" ? null : (result.status as "approved" | "rejected"),
     baselineId: result.baselineId,
   });
+  // #1574 — an open review page shows the decision (and any outcome) live.
+  emitReviewChanged(review.projectId, reviewId);
   // #1230 — a verdict reached sets the scope's review statuses: a reader BRD
   // listing approved requirements may now be stale. Post-commit; never throws.
   if (result.aggregate !== "pending") {
@@ -857,6 +862,8 @@ async function transitionReview(
       include: REVIEW_DETAIL_INCLUDE,
     });
   });
+  // #1574 — post-commit: an open review page shows the withdraw or close live.
+  emitReviewChanged(review.projectId, reviewId);
 
   return updated;
 }

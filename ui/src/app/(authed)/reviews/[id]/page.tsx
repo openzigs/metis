@@ -13,10 +13,14 @@
  */
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import type { ReviewChangedEvent } from "@metis/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
+import { useSocket } from "@/lib/socket-client";
+import { keepSubscribed } from "@/lib/socket-subscription";
+import { projectJoin } from "@/lib/socket-rooms";
 import { queryKeys } from "@/lib/query-keys";
 import {
   reviewsApi,
@@ -72,6 +76,29 @@ export default function ReviewDetailPage() {
   });
 
   const review = detail.data?.review;
+  const projectId = review?.projectId ?? null;
+
+  // #1574 — while the page is open, re-read the review when anyone submits,
+  // decides, withdraws or closes it: the requester watching it sees the
+  // decision without a reload. The push goes to the `project:{id}` room and
+  // carries identifiers only; the re-read is the permission-checked REST route.
+  const socket = useSocket();
+  useEffect(() => {
+    if (!socket || !projectId || !reviewId) return;
+    const key = queryKeys.reviews.detail(reviewId);
+    const refresh = () => void qc.invalidateQueries({ queryKey: key });
+    // #642 — re-join on reconnect; #646 — and re-read, for a push in the gap.
+    const release = keepSubscribed(socket, projectJoin(socket, projectId), refresh);
+    const onChanged = (event: ReviewChangedEvent) => {
+      if (event.reviewId === reviewId) refresh();
+    };
+    socket.on("review:changed", onChanged);
+    return () => {
+      release();
+      socket.off("review:changed", onChanged);
+    };
+  }, [socket, projectId, reviewId, qc]);
+
   const myAssignment = review ? findMyAssignment(review, userId) : null;
 
   const decide = useMutation({
