@@ -83,9 +83,12 @@ vi.mock("../src/lib/prisma.js", () => ({
       count: vi.fn(({ where }: { where: Record<string, unknown> }) => {
         let f = approvals.filter((r) => r.analysisId === where.analysisId);
         if (where.status) f = f.filter((r) => r.status === where.status);
+        if (where.type) f = f.filter((r) => r.type === where.type);
         return Promise.resolve(f.length);
       }),
     },
+    // #1569 — read only on a degraded synthesis, for the rows already persisted.
+    requirement: { count: vi.fn(() => Promise.resolve(0)) },
   },
 }));
 
@@ -95,6 +98,15 @@ const persisted = {
   requirements: [] as Array<Record<string, unknown>>,
   agentResults: [] as Array<Record<string, unknown>>,
 };
+
+/** #1569 — the reviewed list `appendStructuredRequirements` appends to; null for none. */
+const structuredStore: {
+  list: {
+    requirements: Array<Record<string, unknown>>;
+    totalAmbiguities: number;
+    totalEvidenceNeeds: number;
+  } | null;
+} = { list: null };
 
 vi.mock("../src/lib/analysis/analysis-service.js", () => ({
   persistAnalysisEnhancement: vi.fn((id: string, patch: Record<string, unknown>) => {
@@ -110,7 +122,24 @@ vi.mock("../src/lib/analysis/analysis-service.js", () => ({
     return Promise.resolve();
   }),
   readFlattenedFindings: vi.fn(() => Promise.resolve([])),
-  getStructuredRequirements: vi.fn(() => Promise.resolve(null)),
+  // #1569 — the in-memory reviewed list when a test sets one, else none.
+  getStructuredRequirements: vi.fn(() =>
+    Promise.resolve(
+      structuredStore.list
+        ? { ...structuredStore.list, requirements: [...structuredStore.list.requirements] }
+        : null,
+    ),
+  ),
+  // #1569 — appends to the in-memory reviewed list a test sets up.
+  appendStructuredRequirements: vi.fn(
+    (_id: string, offer: (current: unknown[]) => Array<Record<string, unknown>>) => {
+      const list = structuredStore.list;
+      if (!list) return Promise.resolve([]);
+      const appended = offer(list.requirements);
+      list.requirements = [...list.requirements, ...appended];
+      return Promise.resolve(appended);
+    },
+  ),
   createAnalysis: vi.fn(),
   finalizeAnalysisDelta: vi.fn(),
   markAnalysisCancelled: vi.fn(),
@@ -224,6 +253,7 @@ beforeEach(() => {
   persisted.enhancement = [];
   persisted.requirements = [];
   persisted.agentResults = [];
+  structuredStore.list = null;
   vi.clearAllMocks();
 });
 
@@ -623,6 +653,86 @@ describe("#216 — promotion is gated on resolved approvals", () => {
       awaitingRequirementCount: 2,
       synthesisRequirementCount: 2,
       setDifference: { reviewedWithoutItem: 1, itemsWithoutReviewed: 1 },
+    });
+  });
+
+  describe("#1569 — an item that restates no reviewed requirement is offered for approval", () => {
+    const reviewedReq = {
+      id: "r1",
+      title: "Feed URL must be absolute",
+      description: "Feed URL must be absolute.",
+      type: "functional" as const,
+      stakeholders: [],
+      priority: "should-have" as const,
+      ambiguities: [],
+      evidenceNeeds: [],
+      rawSource: "",
+    };
+    const items = [
+      { title: "Absolute feed URLs", body: "Feed URL must be absolute.", structuredIds: ["r1"] },
+      {
+        title: "Export subscriptions as OPML",
+        body: "OPML export.",
+        structuredIds: [],
+        acceptanceCriteria: ["An OPML file downloads"],
+      },
+      // Did not say what it restates: not offered, still reported as unmatched.
+      { title: "Harden the media proxy", body: "Not an open proxy." },
+    ];
+
+    async function runBlocked(analysisId: string, degraded?: unknown): Promise<void> {
+      structuredStore.list = {
+        requirements: [reviewedReq],
+        totalAmbiguities: 0,
+        totalEvidenceNeeds: 0,
+      };
+      runSynthesisMock.mockResolvedValueOnce({
+        output: { requirements: items },
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        ...(degraded ? { degraded } : {}),
+      });
+      await approvalSvc.createApprovalRequests(analysisId, [{ type: "requirement", itemId: "r1" }]);
+      const { orch } = makeOrchestrator();
+      await (orch as unknown as PrivateOrchestrator).runSynthesisAndPersist({
+        analysisId,
+        ...synthInput,
+      });
+    }
+
+    it("adds it to the reviewed list with a pending approval, and records the count", async () => {
+      await runBlocked("ana-offer");
+
+      const offered = structuredStore.list!.requirements.slice(1);
+      expect(offered).toEqual([
+        expect.objectContaining({
+          title: "Export subscriptions as OPML",
+          synthesisItemKey: expect.any(String),
+        }),
+      ]);
+      expect(approvals.map((a) => [a.itemId, a.status])).toEqual([
+        ["r1", "pending"],
+        [offered[0]!.id, "pending"],
+      ]);
+      const blocked = persisted.enhancement.find((e) => "promotionBlocked" in e);
+      expect(blocked!.promotionBlocked).toMatchObject({
+        pendingCount: 2,
+        awaitingRequirementCount: 2,
+        synthesisRequirementCount: 3,
+        setDifference: { reviewedWithoutItem: 0, itemsWithoutReviewed: 1, offeredFromSynthesis: 1 },
+      });
+      expect(persisted.requirements).toHaveLength(0);
+    });
+
+    it("offers nothing from a degraded synthesis, whose items are findings", async () => {
+      await runBlocked("ana-offer-degraded", { reason: "schema-invalid" });
+
+      expect(structuredStore.list!.requirements).toHaveLength(1);
+      expect(approvals.map((a) => a.itemId)).toEqual(["r1"]);
+      const blocked = persisted.enhancement.find((e) => "promotionBlocked" in e);
+      expect(blocked!.promotionBlocked).toMatchObject({
+        pendingCount: 1,
+        setDifference: { itemsWithoutReviewed: 2, offeredFromSynthesis: 0 },
+      });
     });
   });
 

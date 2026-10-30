@@ -337,3 +337,77 @@ describe("#930 — describeSetDifference", () => {
     expect(describeSetDifference(3, 4)).not.toBeNull();
   });
 });
+
+describe("#1569 — requirements offered from the synthesis", () => {
+  const OFFERED_NOTE =
+    "2 requirement(s) below were written up by the analysis and match none it extracted, so " +
+    "they are listed for review with their own acceptance criteria and evidence.";
+
+  it("says they are listed for review even when nothing else differs", () => {
+    expect(
+      describeSetDifference(4, 4, {
+        reviewedWithoutItem: 0,
+        itemsWithoutReviewed: 0,
+        offeredFromSynthesis: 2,
+      }),
+    ).toBe(OFFERED_NOTE);
+  });
+
+  it("adds to the #930 sentences rather than replacing them", () => {
+    expect(
+      describeSetDifference(4, 5, {
+        reviewedWithoutItem: 0,
+        itemsWithoutReviewed: 1,
+        offeredFromSynthesis: 2,
+      }),
+    ).toBe(
+      "Approving promotes the 4 requirement(s) reviewed below. 1 requirement(s) the analysis " +
+        "wrote up match nothing in the reviewed list, so their acceptance criteria and " +
+        `evidence will not be carried over to any requirement. ${OFFERED_NOTE}`,
+    );
+    // A run recorded before #1569 reads as it did.
+    expect(describeSetDifference(4, 4, { reviewedWithoutItem: 0, itemsWithoutReviewed: 0 })).toBe(
+      null,
+    );
+  });
+
+  it("marks an offered requirement's card and names the count in the banner", async () => {
+    listApprovals.mockResolvedValue({
+      items: [approval(), approval({ id: "ap_2", itemId: "SYN-abc" })],
+      ticketStatus: { allowed: false, pendingCount: 2, rejectedCount: 0 },
+    });
+    const req = (id: string, title: string, extra: Record<string, unknown> = {}) => ({
+      id,
+      title,
+      description: `${title}.`,
+      ambiguities: [],
+      evidenceNeeds: [],
+      ...extra,
+    });
+    renderPanel({
+      structuredRequirements: {
+        requirements: [
+          req("r1", "Feed URL must be absolute"),
+          req("SYN-abc", "Export subscriptions as OPML", { synthesisItemKey: "abc" }),
+        ],
+        totalAmbiguities: 0,
+        totalEvidenceNeeds: 0,
+      },
+      promotionBlocked: {
+        blocked: true,
+        pendingCount: 2,
+        rejectedCount: 0,
+        awaitingRequirementCount: 2,
+        synthesisRequirementCount: 2,
+        setDifference: { reviewedWithoutItem: 0, itemsWithoutReviewed: 0, offeredFromSynthesis: 1 },
+      },
+    });
+
+    const offeredCard = await screen.findByTestId("approval-ap_2");
+    expect(offeredCard).toHaveTextContent("Written up by the analysis");
+    expect(screen.getByTestId("approval-ap_1")).not.toHaveTextContent("Written up by the analysis");
+    expect(await screen.findByTestId("approved-set-difference")).toHaveTextContent(
+      "1 requirement(s) below were written up by the analysis",
+    );
+  });
+});

@@ -11,11 +11,14 @@
 import { describe, expect, it } from "vitest";
 import { parseAcceptanceCriteria, type SynthesizedRequirement } from "@metis/shared";
 import {
+  OFFERED_REQUIREMENT_ID_PREFIX,
   buildApprovedRequirementSet,
   compareReviewedWithSynthesis,
   matchSynthesized,
+  offerUnmatchedSynthesisItems,
   planApprovedRequirementSet,
 } from "./approved-requirement-set.js";
+import { synthesisItemKey } from "./promotion-pairing.js";
 import type { StructuredRequirement } from "./types/requirements.js";
 
 function structured(id: string, title: string, description = title): StructuredRequirement {
@@ -685,5 +688,133 @@ describe("#930 — the reviewed list and the synthesis compared by identity", ()
       synth("Hardening", { structuredIds: ["REQ-1", "REQ-2"] }),
     ]);
     expect(out).toEqual({ reviewedWithoutItem: 0, itemsWithoutReviewed: 0 });
+  });
+});
+
+// ── #1569 — items that restate no reviewed requirement are offered ──────
+
+describe("#1569 — a synthesis item that matches nothing reviewed is offered, not dropped", () => {
+  // #706 run 10, trimmed: one item per reviewed requirement, plus additions the
+  // code and database agents found, which say they restate none (`[]`).
+  const MARK_READ = structured("REQ-1", "Mark-all-as-read returns 204");
+  const OPENAPI = synth("Publish a machine-readable OpenAPI description for the v1 API", {
+    body: "Publish an OpenAPI document for /v1.",
+    structuredIds: [],
+    priority: "high",
+    type: "chore",
+    labels: ["docs"],
+    acceptanceCriteria: ["An OpenAPI 3 document is served", "It lists every /v1 route"],
+    evidenceFindingIndexes: [3, 7],
+  });
+  const PROXY = synth("Harden the media proxy against being used as an open proxy", {
+    structuredIds: [],
+    priority: "critical",
+    acceptanceCriteria: ["The proxy refuses an unsigned URL"],
+  });
+  const ITEMS = [
+    synth("Confirm PUT mark-all-as-read returns 204 No Content", {
+      structuredIds: ["REQ-1"],
+      acceptanceCriteria: ["Returns 204"],
+    }),
+    OPENAPI,
+    PROXY,
+  ];
+
+  it("offers each item that says it restates none, as a requirement keyed to it", () => {
+    const offered = offerUnmatchedSynthesisItems([MARK_READ], ITEMS);
+    expect(offered.map((r) => r.title)).toEqual([OPENAPI.title, PROXY.title]);
+    expect(offered[0]).toMatchObject({
+      id: `${OFFERED_REQUIREMENT_ID_PREFIX}${synthesisItemKey(OPENAPI).slice(0, 12)}`,
+      description: OPENAPI.body,
+      priority: "must-have",
+      ambiguities: [],
+      evidenceNeeds: [],
+      synthesisItemKey: synthesisItemKey(OPENAPI),
+    });
+    expect(offered[1]!.priority).toBe("must-have");
+  });
+
+  it("offers no item that names a listed requirement, or did not say", () => {
+    const offered = offerUnmatchedSynthesisItems(
+      [MARK_READ],
+      [
+        synth("Mark everything read", { structuredIds: ["REQ-1"] }),
+        // Did not say: may restate a listed requirement in other words.
+        synth("Rate-limit the API"),
+        // Names only an id no longer listed: a re-extraction, not an addition.
+        synth("Old list item", { structuredIds: ["REQ-OLD"] }),
+      ],
+    );
+    expect(offered).toEqual([]);
+  });
+
+  it("offers an item once: not again once listed, and identical items as one", () => {
+    const first = offerUnmatchedSynthesisItems([MARK_READ], [...ITEMS, OPENAPI]);
+    expect(first.map((r) => r.title)).toEqual([OPENAPI.title, PROXY.title]);
+    expect(offerUnmatchedSynthesisItems([MARK_READ, ...first], ITEMS)).toEqual([]);
+  });
+
+  it("once offered, no item matches nothing reviewed", () => {
+    expect(compareReviewedWithSynthesis([MARK_READ], ITEMS)).toEqual({
+      reviewedWithoutItem: 0,
+      itemsWithoutReviewed: 2,
+    });
+    const list = [MARK_READ, ...offerUnmatchedSynthesisItems([MARK_READ], ITEMS)];
+    expect(compareReviewedWithSynthesis(list, ITEMS)).toEqual({
+      reviewedWithoutItem: 0,
+      itemsWithoutReviewed: 0,
+    });
+  });
+
+  it("approving an offered requirement promotes it with its item's criteria, evidence and priority", () => {
+    const list = [MARK_READ, ...offerUnmatchedSynthesisItems([MARK_READ], ITEMS)];
+    const plan = planApprovedRequirementSet({
+      structured: list,
+      approvedIds: new Set(list.map((r) => r.id)),
+      synthesis: { summary: "s", requirements: ITEMS },
+    });
+    const [, openapi, proxy] = plan.output.requirements;
+    expect(openapi).toMatchObject({
+      title: OPENAPI.title,
+      body: OPENAPI.body,
+      type: "chore",
+      priority: "high",
+      labels: ["docs"],
+      acceptanceCriteria: OPENAPI.acceptanceCriteria,
+      evidenceFindingIndexes: [3, 7],
+    });
+    // The item's own priority: the list's "must-have" would have read back as "high".
+    expect(proxy).toMatchObject({
+      priority: "critical",
+      acceptanceCriteria: ["The proxy refuses an unsigned URL"],
+    });
+    // A reviewed requirement keeps its reviewed classification as a label.
+    expect(plan.output.requirements[0]!.labels).toContain("functional");
+    expect(plan.pairings[1]).toEqual({
+      structuredId: list[1]!.id,
+      synthesisKeys: [synthesisItemKey(OPENAPI)],
+    });
+  });
+
+  it("an offered requirement's item is never a title candidate for another requirement", () => {
+    const offered = offerUnmatchedSynthesisItems([], [OPENAPI])[0]!;
+    // A later synthesis wrote the same item without saying what it restates;
+    // a reviewed requirement with the same words must not take it.
+    const resaid = { ...OPENAPI, structuredIds: undefined };
+    const lookalike = structured("REQ-9", "Publish an OpenAPI description for the v1 API");
+    const matches = matchSynthesized([lookalike, offered], [resaid], [lookalike, offered]);
+    expect(matches.get(offered.id)?.title).toBe(OPENAPI.title);
+    expect(matches.has("REQ-9")).toBe(false);
+  });
+
+  it("a rejected offered requirement takes its item with it", () => {
+    const list = [MARK_READ, ...offerUnmatchedSynthesisItems([MARK_READ], ITEMS)];
+    const plan = planApprovedRequirementSet({
+      structured: list,
+      approvedIds: new Set([MARK_READ.id]),
+      synthesis: { summary: "s", requirements: ITEMS },
+    });
+    expect(plan.output.requirements.map((r) => r.title)).toEqual([MARK_READ.title]);
+    expect(plan.output.requirements[0]!.acceptanceCriteria).toEqual(["Returns 204"]);
   });
 });
