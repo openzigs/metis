@@ -454,15 +454,12 @@ describe("block rendering", () => {
   // #1567 — `published_at < X` was stored as `published_at X`: the `<` was
   // replaced with a space, inverting or blanking a comparison in the answer.
   describe("#1567 — comparison operators survive verbatim", () => {
-    /** The text a Markdown reader sees: `marked` keeps raw HTML, as the BRD export does. */
-    const renderedText = (markdown: string): string =>
-      (marked.parse(markdown, { async: false }) as string)
-        .replace(/<[^>]*>/g, "")
-        .replace(/&lt;/g, "<")
-        .replace(/&gt;/g, ">")
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/&amp;/g, "&");
+    /** The HTML `marked` (the BRD export's parser, which keeps raw HTML) makes of the block. */
+    const renderedHtml = (markdown: string): string =>
+      marked.parse(markdown, { async: false }) as string;
+    /** `typed` as HTML text: what the rendered block must contain if it reads as `typed`. */
+    const asHtmlText = (typed: string): string =>
+      typed.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
     it.each([
       "exclusive (published_at < X)",
@@ -473,7 +470,7 @@ describe("block rendering", () => {
       "x<y and </close> and <!-- not a comment -->",
     ])("stores %j so that it renders as exactly that text", (typed) => {
       const block = renderClarificationBlock([answer({ answer: typed })]);
-      expect(renderedText(block)).toContain(typed);
+      expect(renderedHtml(block)).toContain(asHtmlText(typed));
     });
 
     it("stores a plain comparison byte for byte — no entity where Markdown needs none", () => {
