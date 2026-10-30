@@ -350,6 +350,505 @@
       "wave": "F",
       "phase": "J1.4",
       "check": "On the review page, a never-edited requirement's card shows its body (no `metis:` markers), acceptance criteria and priority, labelled \"No edits were recorded for this requirement; this is its current text.\" A requirement edited after the review was requested shows its pinned text, labelled as rebuilt from recorded edits (run 8: unedited cards showed no body)"
+    },
+    "1539": {
+      "wave": "A",
+      "phase": "1",
+      "check": "No request answers 429 `API_RATE_LIMITED` during normal UI use (the app-wide `/api` limiter, keyed per user, default 600 per minute): watch the console and network panel from sign-in onward and report any 429 with its URL and the page that sent it. Later waves report a 429 the same way"
+    },
+    "1395": {
+      "wave": "A",
+      "phase": "1",
+      "check": "Mock sign-in as `admin` lands on the existing account with its workspaces and role, with no `409 ACCOUNT_LINK_REQUIRED`; report the same for the `coordinator` and `developer` sign-ins the operator does"
+    },
+    "1376": {
+      "wave": "A",
+      "phase": "1",
+      "check": "Mock sign-in as `admin` succeeds first time with no 429 from `/api/auth/login`, and the session survives a page reload (the login limiter now keys per client and account)"
+    },
+    "838": {
+      "wave": "A",
+      "phase": "1",
+      "check": "Ordinary UI writes (creating the project, saving its settings and budget) succeed with no 403 from the cross-origin write guard; report any 403 with its URL"
+    },
+    "1377": {
+      "wave": "A",
+      "phase": "2",
+      "check": "Live updates reach the page with no reload: the ingest job's progress streams and the connector card turns connected; the console shows no Socket.IO connect error"
+    },
+    "1349": {
+      "wave": "A",
+      "phase": "2",
+      "check": "The browser's live socket connects from the UI origin: the console shows no `ORIGIN_REJECTED` connect error, and the ingest progress streams without a reload"
+    },
+    "1542": {
+      "wave": "A",
+      "phase": "4",
+      "check": "The project overview's tables render as tables, with no row split into extra cells and no literal `\\|` in a cell"
+    },
+    "1540": {
+      "wave": "B",
+      "phase": "5",
+      "check": "The DB connector's read-only query still accepts a normal `SELECT`, and a `SELECT` longer than 8,000 characters (pad `SELECT 1` with a long `/* … */` comment, sent by in-page fetch) is refused with 400 `VALIDATION_ERROR`. Do not save SAML settings for this fix: the same PR's metadata parsing is covered by tests"
+    },
+    "1220": {
+      "wave": "B",
+      "phase": "6",
+      "check": "Step 1a: after **Run now**, an edited imported requirement keeps its edit and the run's badge says \"kept 1 local edit\"; a diverged one shows **Diverged from source** with **Compare** and **Keep mine**, and **Keep mine** clears the badge with no new version"
+    },
+    "95": {
+      "wave": "B",
+      "phase": "7",
+      "check": "The new-analysis form's clarifying-questions toggle defaults on (an opt-out). After approval and clarification, each answer lands on the promoted requirement it was asked about, not one with a similar title"
+    },
+    "780": {
+      "wave": "B",
+      "phase": "7",
+      "check": "Step 4 (#780): on a run with a requirement you reviewed, Regenerate is withheld and the notice offers **Review changes**; the comparison lists new, changed and left-out requirements by title, and **Apply changes** keeps each reviewed requirement's status and links with a History version under your name"
+    },
+    "921": {
+      "wave": "B",
+      "phase": "7",
+      "check": "The Affected code panel names the ranking used (`hybrid` or `bm25-only`) and gives absolute confidences (top links are not all 1.00); report the mode and the top link's confidence for one requirement"
+    },
+    "1005": {
+      "wave": "B",
+      "phase": "7",
+      "check": "After disabling the custom agent, chat's agent picker no longer offers it, and reopening a chat bound to it shows a notice naming the agent as switched off for the project, at once, with no approval prompt or stall"
+    },
+    "1081": {
+      "wave": "B",
+      "phase": "7",
+      "check": "A model answer METIS could not read shows as a failed step (for example the cross-document panel saying its check could not be read, or a synthesis field-repair notice), never as an empty \"no gaps\" result; report which such notices appeared, or none"
+    },
+    "1155": {
+      "wave": "B",
+      "phase": "7",
+      "check": "A finding whose citations were dropped says so on the finding, and the run pickers on the publish page and `/workbench` mark a run that dropped citations; report the count, or n/a if none were dropped"
+    },
+    "1204": {
+      "wave": "B",
+      "phase": "7",
+      "check": "A requirement left without criteria or answers because the match was ambiguous says so on its card instead of showing nothing; report how many cards carry the notice, or n/a"
+    },
+    "1237": {
+      "wave": "B",
+      "phase": "7",
+      "check": "After clarification answers are applied, no requirement body keeps METIS's criteria-flag sentence or a stray blank line where it was, and an append notice lists only items the requirement does not already carry"
+    },
+    "1330": {
+      "wave": "B",
+      "phase": "7",
+      "check": "The Affected code panel names the rule that decided each link (measured similarity or the keyword rule) and why the keyword rule applied; it advises a re-run only while symbols are still embedding"
+    },
+    "1355": {
+      "wave": "B",
+      "phase": "7",
+      "check": "If structured extraction failed, the Approvals tab says METIS could not read the requirements from the model's answer and that nothing was put up for approval, not \"This run has no approval checkpoints\"; record n/a if extraction succeeded"
+    },
+    "1388": {
+      "wave": "B",
+      "phase": "7",
+      "check": "A code agent whose pass ended shallow shows **degraded** with a plain reason on its card; a code card reading done with 0 findings and no degraded badge is a FAIL. Report the code agent's tool calls and findings"
+    },
+    "1389": {
+      "wave": "B",
+      "phase": "7",
+      "check": "Step 4 (#1389): after a Regenerate, every approved requirement still reads **approved** with the criteria it was approved with; materially different criteria appear only as the one notice **Re-synthesis suggested different acceptance criteria for N approved requirements**"
+    },
+    "1417": {
+      "wave": "B",
+      "phase": "7",
+      "check": "On the Affected code panel, a symbol whose vector the search lost is not shown as a confident link; links decided by the keyword rule name their cause (not embedded, embedding pending, other model)"
+    },
+    "1445": {
+      "wave": "B",
+      "phase": "7",
+      "check": "Once saved, the custom agent reads **Off until enabled** on the project's Custom agents card and chat's agent picker does not offer it; after enabling, the card reads **On** and the picker offers it"
+    },
+    "1500": {
+      "wave": "B",
+      "phase": "7",
+      "check": "The project's Custom agents card lists enabled agents without their system prompts (`GET /api/custom-agents/projects/:id/enabled` returns only id, name, description, isBuiltIn and projectId), and an agent known only from that list offers no Edit"
+    },
+    "1033": {
+      "wave": "B",
+      "phase": "8",
+      "check": "Approved requirements keep their acceptance criteria and code links when synthesis combined several into one item; report how many promoted requirements have no criteria and how many have no code link"
+    },
+    "1137": {
+      "wave": "B",
+      "phase": "8",
+      "check": "The analysis Traceability tab opens a page at a time (gap report and requirement diff paged), the workspace roll-up counts coverage over analysed requirements, and **New baseline** says how many it pins and leaves out, leaving out unapproved imports"
+    },
+    "737": {
+      "wave": "C",
+      "phase": "9",
+      "check": "BRD footnotes that cite a mined rule name its source `file:line`, and the document cancelled on purpose renders its finished sections' citations as footnotes"
+    },
+    "1017": {
+      "wave": "C",
+      "phase": "9",
+      "check": "Each export renders completely with external requests blocked: the PDF carries every heading and its diagrams, and a requirements-scoped BRD of a review shows the requirement versions that review pinned"
+    },
+    "1132": {
+      "wave": "C",
+      "phase": "9",
+      "check": "A section the model cut off ends on its last complete sub-section (no empty heading or bare `**Purpose**`), its note counts what is missing, and the finished document offers **Regenerate unfinished sections**; record n/a if no section was cut off"
+    },
+    "1133": {
+      "wave": "C",
+      "phase": "9",
+      "check": "The architecture document's schema check reads every section, not only Data Architecture, and its citation footnotes resolve to provenance entries"
+    },
+    "1174": {
+      "wave": "C",
+      "phase": "9",
+      "check": "No BRD section ends degraded with `stream failed … terminated`; the operator greps the server log for `terminated` and reports whether a dropped section stream was retried"
+    },
+    "1175": {
+      "wave": "C",
+      "phase": "9",
+      "check": "With `DOCS_GEN_BRD_LAYOUT=reader`, the full-scope BRD is a main document followed by `# Appendix: Module-by-Module Detail`; score it on the sign-off rubric SO1 to SO4 and report its sign-off line"
+    },
+    "1218": {
+      "wave": "C",
+      "phase": "9",
+      "check": "The reader BRD's requirements section lists the project's approved requirements (SO1), each with its criteria, not requirements reconstructed from code"
+    },
+    "1223": {
+      "wave": "C",
+      "phase": "9",
+      "check": "Provenance shows the reader BRD main part's code-name check with its count, and it counts acronym runs such as `MinifluxSessionID`; report the count (SO3)"
+    },
+    "1231": {
+      "wave": "C",
+      "phase": "9",
+      "check": "The reader BRD's code-name check flags no business prose (\"GET / POST requests\", brand names, `24/7`, a web address without `https://`), and approving one more requirement marks the reader BRD out of date"
+    },
+    "1278": {
+      "wave": "C",
+      "phase": "9",
+      "check": "The PDF export and a print of a long document render every section and every Mermaid diagram, never raw Markdown or \"Rendering diagram…\" for sections that were off screen. Mermaid is now 12 (dependabot #917): every diagram also renders in the documentation previewer with no console error"
+    },
+    "1323": {
+      "wave": "C",
+      "phase": "9",
+      "check": "The BRD quotes a user-facing message by its on-screen English text, never as a translation key such as `error.feed_not_found`, and Provenance names left-out topics readably"
+    },
+    "1324": {
+      "wave": "C",
+      "phase": "9",
+      "check": "If the BRD contains a math formula, its PDF export shows it typeset rather than as raw `$…$` text; otherwise record n/a"
+    },
+    "1322": {
+      "wave": "C",
+      "phase": "9",
+      "check": "The full-scope BRD is generated from the repository's source: no warning that code modules could not be read, and Provenance cites real files"
+    },
+    "1469": {
+      "wave": "C",
+      "phase": "9",
+      "check": "The architecture document's Provenance panel names what the schema check compared and the true unmatched count, and no line says every name matched while some could not be checked"
+    },
+    "1106": {
+      "wave": "C",
+      "phase": "12",
+      "check": "After a batch publishes, a fresh dry-run preview of the same drafts treats them as already published (update or skip), not as new `issue.create`; dry run only"
+    },
+    "1049": {
+      "wave": "C",
+      "phase": "12",
+      "check": "A batch's **Additional labels** appear on each issue in the dry-run plan and on the published sandbox issue, and no `finding:`, `review:` or `unverified` label reaches it"
+    },
+    "1136": {
+      "wave": "C",
+      "phase": "12",
+      "check": "The dry-run plan lists every issue title even past 25 rows, and after publishing the page shows each created sandbox issue's number and link"
+    },
+    "1180": {
+      "wave": "C",
+      "phase": "12",
+      "check": "If another project connects `openzigs/flux-v2`, publishing a finding asks for confirmation (naming that project or \"another project\") before anything is written; record n/a if no other project connects it"
+    },
+    "1311": {
+      "wave": "C",
+      "phase": "12",
+      "check": "After the batch publishes, changing one published draft's labels (body unchanged) and running the dry run again shows a label update for that issue, not a skip; do not publish again"
+    },
+    "734": {
+      "wave": "C",
+      "phase": "11",
+      "check": "Editing your own discussion message shows \"(edited)\" and deleting one removes it, both live in the second context; a teammate's live message shows their display name, not a user id"
+    },
+    "1236": {
+      "wave": "C",
+      "phase": "13",
+      "check": "Pause, resume and edit of the Phase 13 scheduler job round-trip; an edit saved from a stale page (the job changed in another tab) is refused with a conflict message, not saved over"
+    },
+    "955": {
+      "wave": "E",
+      "phase": "17",
+      "check": "**Tested by** marks no requirement tested only through a shared entry point such as `internal/api/api.go` `NewHandler` (at most the weakest `entry-point` relation) or through a whole-file mapping with no line range"
+    },
+    "1116": {
+      "wave": "E",
+      "phase": "18",
+      "check": "`/runs` and its **Chat turns** table load and page with no 429 or 401 while you browse them"
+    },
+    "1466": {
+      "wave": "E",
+      "phase": "19",
+      "check": "`/settings/integrations/teams` loads with no console error and its managed-identity app type reads `UserAssignedMsi`; do not install a bot"
+    },
+    "1504": {
+      "wave": "E",
+      "phase": "19",
+      "check": "On `/settings/triggers`, the GitHub trigger's config placeholder reads `{\"repo\":\"acme/app\",\"event\":\"issues\"}`, and saving a `github` trigger with `\"event\":\"issues.opened\"` is refused with a message naming the bare event `issues`. js-yaml is now 5 (dependabot #915): a test skill or agent saved on `/library` with front matter still saves, and one with a blank `version:` is refused"
+    },
+    "1169": {
+      "wave": "E",
+      "phase": "15",
+      "check": "The sandbox project's settings show an **Automatic PR review** card; switching it on persists across a reload, and with it off `/projects/:id/pulls` says review is off"
+    },
+    "1470": {
+      "wave": "E",
+      "phase": "15",
+      "check": "`/projects/:id/pulls` on the sandbox project lists the PR's row with its status and either a verdict with **Review on GitHub** or a plain-worded skip reason; record blocked without a public webhook"
+    },
+    "1471": {
+      "wave": "E",
+      "phase": "15",
+      "check": "The sandbox PR's review uses the project's AI model and its connector's token: the row reads Reviewed, or names what is missing, and **Re-run review** records the PR's current head SHA; record blocked without a public webhook"
+    },
+    "1472": {
+      "wave": "E",
+      "phase": "15",
+      "check": "Signed in as `coordinator`, the sandbox project's `/projects/:id/pulls` list and PR detail open and **Re-run review** is shown; look only, do not click it"
+    },
+    "1475": {
+      "wave": "E",
+      "phase": "15",
+      "check": "On the sandbox connector's card, **Create webhook secret** shows the secret once with the path `/api/webhooks/github/pr/c/<connector id>`, and after a reload the secret is not shown again"
+    },
+    "1478": {
+      "wave": "E",
+      "phase": "15",
+      "check": "On the sandbox project's Automatic PR review card, a monthly limit of 0 reads as no limit"
+    },
+    "1483": {
+      "wave": "E",
+      "phase": "15",
+      "check": "After **Create webhook secret**, the sandbox connector's card also shows the **Issue events payload URL path** `/api/webhooks/github/issues/c/<connector id>`"
+    },
+    "1486": {
+      "wave": "E",
+      "phase": "15",
+      "check": "Once a review has run, Project settings' **this month** figure for automatic reviews includes its spend; record blocked without a public webhook"
+    },
+    "1258": {
+      "wave": "E",
+      "phase": "20",
+      "check": "`/products` and a product's page load for an admin with no console error, listing every attached repository; record n/a if no product exists"
+    },
+    "1261": {
+      "wave": "E",
+      "phase": "20",
+      "check": "A product document built without a repository the runner could not read is marked \"Incomplete document. Built without N repos…\"; record n/a if no product document exists"
+    },
+    "1414": {
+      "wave": "E",
+      "phase": "20",
+      "check": "After **Sign out** (step 4) and signing back in, live updates arrive again with no reload, and the console shows no repeating socket `UNAUTHORIZED` errors"
+    },
+    "1552": {
+      "wave": "E",
+      "phase": "20",
+      "check": "`/settings/auth` shows the **SAML 2.0** tab with no console error, and `GET /api/admin/auth/saml/group-overage` answers 200 with `total` 0 and the tab shows no group-overage warning (no SAML sign-in this run); do not save SAML settings"
+    },
+    "1554": {
+      "wave": "E",
+      "phase": "20",
+      "check": "The mock-auth admin session is a password session, so MFA does not gate it: saving `MODEL_PRICES` on `/settings/api-keys` and the Phase 19 vault reveal and rotate succeed with no 403 `MFA_REQUIRED`"
+    },
+    "104": {
+      "wave": "F",
+      "phase": "J1.4a",
+      "check": "With no reload, the reviewer's comment and Sam's reply appear in Priya's open comment panel (#997), and the discussion and review notifications reach her drawer live (#104)"
+    },
+    "1318": {
+      "wave": "F",
+      "phase": "J1.4a",
+      "check": "Priya's live mention notification names who mentioned her and where (`<name> mentioned you on \"<requirement>\"`), quotes the comment, and opens the requirement with its comment panel"
+    },
+    "1016": {
+      "wave": "F",
+      "phase": "J1.4",
+      "check": "A second review of requirements already in review can be requested; withdrawing one leaves them in review while the other is open, and withdrawing the last restores each one's status from before the first request"
+    },
+    "1203": {
+      "wave": "F",
+      "phase": "J1.4",
+      "check": "A requirement whose criteria were written for a group says \"Shared with … — the analysis wrote these acceptance criteria for the group\" with links to the others, on its card and the review card; record n/a if none"
+    },
+    "1031": {
+      "wave": "F",
+      "phase": "J1.3",
+      "check": "Each clarification answer lands in the requirement its question was about, never the neighbouring one (run 6: \"older than X\" answers landed on \"Mark all items up to here as read\")"
+    },
+    "1162": {
+      "wave": "F",
+      "phase": "J1.3",
+      "check": "Applying clarification answers adds a History version (\"Clarification answers applied\"), while a review status change adds none"
+    },
+    "1225": {
+      "wave": "F",
+      "phase": "J1.3",
+      "check": "Applying clarification answers keeps the body's indentation and line breaks, and re-saving unchanged answers adds no History version"
+    },
+    "1269": {
+      "wave": "F",
+      "phase": "J1.3",
+      "check": "No requirement body on the hub or the review keeps METIS's criteria-flag sentence after its criteria were updated, however it was wrapped"
+    },
+    "1212": {
+      "wave": "F",
+      "phase": "J1.4b",
+      "check": "Signed in as `developer`, the project's live updates (job progress, usage, a teammate's change) arrive on the project's pages with no reload"
+    },
+    "1139": {
+      "wave": "F",
+      "phase": "J1.6",
+      "check": "`/chat` opens on the project shown in the top bar, opening it saves no empty \"New Chat\", and the session is saved on the first send"
+    },
+    "1170": {
+      "wave": "F",
+      "phase": "J1.7",
+      "check": "The requirements-scoped BRD shows no raw `metis:` markers, keeps each body's headings under its requirement (no \"Clarifications\" entries in Contents), names the run by start time, not id, and renders all five requirements"
+    },
+    "1171": {
+      "wave": "F",
+      "phase": "J1.8",
+      "check": "If another project connects `openzigs/flux-v2`, the dry run is not refused, and the live publish opens a confirm naming that project with **Publish anyway**; the batch form defaults to the saved target"
+    },
+    "1276": {
+      "wave": "F",
+      "phase": "J1.8",
+      "check": "A published sub-issue whose epic already has an issue names it with number and link on its `Parent epic` line, the epic's title counts its scope, and no `unverified` label reaches the issues"
+    },
+    "1541": {
+      "skip": "internal hardening: vector-store path guard and credential-free docs-gen fingerprint; no UI surface on a fresh run"
+    },
+    "1528": {
+      "skip": "scheduled rerun-analysis job: needs a paid analysis the plan does not schedule; covered by tests"
+    },
+    "1509": {
+      "skip": "Jira webhook delivery ids; no sandbox Jira (#1176) and no public webhook"
+    },
+    "1499": {
+      "skip": "webhook-routing state cleared on vault rotation; no UI surface"
+    },
+    "1506": {
+      "skip": "webhook receiver dedup keys; needs two live GitHub hooks"
+    },
+    "1492": {
+      "skip": "trigger webhook replay guard; needs signed GitHub deliveries"
+    },
+    "1497": {
+      "skip": "rate limiter on GET /api/run-reviews/:runId; no UI caller"
+    },
+    "1488": {
+      "skip": "shared-secret PR webhook routing and Test status on GitHub 403/5xx; not reproducible in a run"
+    },
+    "1484": {
+      "skip": "webhook replay guard on signed bodies; needs captured deliveries"
+    },
+    "1208": {
+      "skip": "performance of the promotion/clarify matcher; no visible change"
+    },
+    "1458": {
+      "skip": "request-body decompression refused (dependency advisory mitigation); no UI surface"
+    },
+    "1447": {
+      "skip": "notification redaction needs a member removed after a notification; not in the plan"
+    },
+    "1438": {
+      "skip": "background work for soft-deleted projects; the plan deletes no project"
+    },
+    "1432": {
+      "skip": "ChatOps workspace scope and assignee access; no Slack/Teams bot in the run"
+    },
+    "1431": {
+      "skip": "ChatOps identity bindings; no Slack/Teams bot in the run"
+    },
+    "1430": {
+      "skip": "soft-deleted project access for non-admins; the plan deletes no project"
+    },
+    "1429": {
+      "skip": "chronicle delete scoped to its project (cross-tenant IDOR); covered by tests"
+    },
+    "1297": {
+      "skip": "chat and socket rooms of a soft-deleted project; the plan deletes no project"
+    },
+    "1422": {
+      "skip": "test-only: linearity tests count work or CPU time"
+    },
+    "1122": {
+      "skip": "runs lists for a soft-deleted project; the plan deletes no project"
+    },
+    "1369": {
+      "skip": "prompt-injection hardening of impact and docs-gen prompts; no visible change on clean input"
+    },
+    "1368": {
+      "skip": "BRD batch-hold ordering internals; Phase 9's left-out topic count covers the outcome"
+    },
+    "1360": {
+      "skip": "prompt-fence forging hardening; no visible change on clean input"
+    },
+    "1352": {
+      "skip": "BRD planning footnote reserve; Phase 9's body-size checks cover the outcome"
+    },
+    "1114": {
+      "skip": "Unicode look-alike fence scrub; no visible change on clean input"
+    },
+    "960": {
+      "skip": "defence in depth: Spec Kit routes were already guarded by the projects mount; no change for members"
+    },
+    "1290": {
+      "skip": "socket rooms re-judged on member removal or delete; not in the plan"
+    },
+    "1289": {
+      "skip": "merged-PR requirement linking by repository; needs a merged-PR webhook"
+    },
+    "1246": {
+      "skip": "repository- or path-scoped reader BRD; the plan generates the BRD at full scope only"
+    },
+    "1251": {
+      "skip": "impact job rooms re-judged on member removal; not in the plan"
+    },
+    "1277": {
+      "skip": "prompt-cache write tuning; cost only, no visible change"
+    },
+    "1209": {
+      "skip": "metering of retried attempts and drop wording; appears only on a provider drop"
+    },
+    "1238": {
+      "skip": "chat metering of a dropped attempt and tool-name collision; no visible change"
+    },
+    "1250": {
+      "skip": "foreign-id access on product and impact writes; needs two workspaces"
+    },
+    "1232": {
+      "skip": "workspace-member access to products and impact; the waves sign in as admin"
+    },
+    "1221": {
+      "skip": "workspace-member access to schedules, tasks and roll-up; the waves sign in as admin"
+    },
+    "1096": {
+      "skip": "Oracle introspection only; the run uses Postgres"
+    },
+    "1172": {
+      "skip": "walkthrough tooling: run 9's TEST_PLAN, fix map and runbook corrections"
     }
   },
   "prs": {
@@ -357,6 +856,45 @@
       "wave": "C",
       "phase": "9",
       "check": "The full-scope BRD is generated with `DOCS_GEN_TOPIC_PLAN=on` (it is off by default; state the value in force and record not-exercised if it is off). Compare it with run 7's BRD, which had no plan: the topics listed as left out (run 7: 87), and how many of them are listed as `(not planned)`, dropped by priority before writing, rather than cut at a section's tail; how many times the feed scheduler formula is written out and how many are wrong (run 7: 4 times, 2 wrong); whether each discrepancy in the consistency note shown with the document is real; the BRD's docs-gen cost (run 7: $0.67 synthesis + $0.46 fact-check); and its #1041 scores (run 7: coverage 15/15, accuracy 13/15, 5 hallucinations). No section is over 60,000 characters and the body is not over 250,000"
+    },
+    "1516": {
+      "skip": "docs-gen prompt-cache and warm-up tuning (refs #1329, #1427); cost only"
+    },
+    "1451": {
+      "wave": "B",
+      "phase": "7",
+      "check": "If the code agent's banner offers **Continue with a larger budget…**, clicking it opens a confirm panel naming the N of M requirements it re-runs, the token budget and a cost estimate, and nothing starts before **Start the continuation**; start it only if the wave's budget allows"
+    },
+    "1449": {
+      "wave": "C",
+      "phase": "9",
+      "check": "The reader BRD's main part, from the start to the appendix heading, is at least 40,000 characters (SO4); report its length"
+    },
+    "1416": {
+      "skip": "docs-gen grounding moved ahead of facts for prompt caching (refs #1329); cost only"
+    },
+    "1372": {
+      "wave": "B",
+      "phase": "7",
+      "check": "Regenerating the code agent shows its progress on the agent card while it runs (steps and elapsed time); report the regenerate's tokens and code-cited findings"
+    },
+    "1353": {
+      "skip": "BRD batch hold by priority (refs #1327); Phase 9's left-out topic count covers the outcome"
+    },
+    "1316": {
+      "wave": "C",
+      "phase": "9",
+      "check": "With the reader layout, Provenance shows the BRD's topic plan and its consistency check, and topics dropped at planning are listed as `(not planned)`; report how many"
+    },
+    "1249": {
+      "wave": "C",
+      "phase": "9",
+      "check": "The reader BRD's Approved Requirements section lists the approved requirements of the run the Requirements hub opens on"
+    },
+    "1226": {
+      "wave": "C",
+      "phase": "9",
+      "check": "The reader BRD's main part is written in business language (no function names, file paths, SQL or endpoints), and Provenance shows its code-name check (SO3)"
     }
   }
 }
