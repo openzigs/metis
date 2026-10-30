@@ -133,6 +133,7 @@ import {
 } from "@/components/requirements/MergeConflictModal";
 import { requirementUpdateApi, assignmentApi } from "@/lib/collaboration-api";
 import { MessageSquare } from "lucide-react";
+import { HoverHint } from "@/components/spec-kit/hover-hint";
 import { PageHeader } from "@/components/ui/page-header";
 import { TabsContent } from "@/components/ui/tabs";
 // Issue #30 — tabbed, paged, filterable results.
@@ -478,6 +479,11 @@ export default function AnalysisPage(): React.ReactElement {
   }
   // Epic #34 — collaboration state.
   const { user } = useAuth();
+  // #1566 — Edit, Approve and Reject are `project.update` writes server-side
+  // (both the PUT the card calls and the analysis PATCH); a viewer without it
+  // gets the controls disabled with the reason rather than a 403 afterwards.
+  const canEditRequirements = user?.permissions.includes("project.update") ?? false;
+  const requirementWriteHint = canEditRequirements ? undefined : "Requires project.update";
   const [commentsReqId, setCommentsReqId] = useState<string | null>(null);
   // AC2 — pending optimistic-lock conflict awaiting 3-way merge resolution.
   const [conflict, setConflict] = useState<{
@@ -1207,14 +1213,16 @@ export default function AnalysisPage(): React.ReactElement {
                               ) : null}
                             </div>
                             <div className="flex gap-1">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => setEditingReq(req)}
-                                disabled={editMutation.isPending}
-                              >
-                                Edit
-                              </Button>
+                              <HoverHint hint={requirementWriteHint}>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => setEditingReq(req)}
+                                  disabled={!canEditRequirements || editMutation.isPending}
+                                >
+                                  Edit
+                                </Button>
+                              </HoverHint>
                               {/* Epic #34 (AC1) — open comments for this requirement. */}
                               <Button
                                 size="sm"
@@ -1236,34 +1244,38 @@ export default function AnalysisPage(): React.ReactElement {
                               >
                                 History
                               </Button>
-                              <Button
-                                size="sm"
-                                variant={req.reviewStatus === "approved" ? "default" : "outline"}
-                                onClick={() =>
-                                  review.mutate({
-                                    reqId: req.id,
-                                    reviewStatus: "approved",
-                                    version: req.version,
-                                  })
-                                }
-                                disabled={review.isPending}
-                              >
-                                Approve
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant={req.reviewStatus === "rejected" ? "default" : "outline"}
-                                onClick={() =>
-                                  review.mutate({
-                                    reqId: req.id,
-                                    reviewStatus: "rejected",
-                                    version: req.version,
-                                  })
-                                }
-                                disabled={review.isPending}
-                              >
-                                Reject
-                              </Button>
+                              <HoverHint hint={requirementWriteHint}>
+                                <Button
+                                  size="sm"
+                                  variant={req.reviewStatus === "approved" ? "default" : "outline"}
+                                  onClick={() =>
+                                    review.mutate({
+                                      reqId: req.id,
+                                      reviewStatus: "approved",
+                                      version: req.version,
+                                    })
+                                  }
+                                  disabled={!canEditRequirements || review.isPending}
+                                >
+                                  Approve
+                                </Button>
+                              </HoverHint>
+                              <HoverHint hint={requirementWriteHint}>
+                                <Button
+                                  size="sm"
+                                  variant={req.reviewStatus === "rejected" ? "default" : "outline"}
+                                  onClick={() =>
+                                    review.mutate({
+                                      reqId: req.id,
+                                      reviewStatus: "rejected",
+                                      version: req.version,
+                                    })
+                                  }
+                                  disabled={!canEditRequirements || review.isPending}
+                                >
+                                  Reject
+                                </Button>
+                              </HoverHint>
                             </div>
                           </div>
                           {/* Epic #34 (AC4) — assignee picker + SLA badge. */}

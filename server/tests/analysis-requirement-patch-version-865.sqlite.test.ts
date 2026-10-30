@@ -131,18 +131,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           data: { id, projectId: PROJECT, startedById: "u-dev", status: "completed" },
         });
       }
-      // A developer who did NOT create the project but is a workspace member.
+      // A workspace member who did NOT create the project. #1566 — a coordinator,
+      // the lowest role holding the `project.update` a requirement write needs.
       DEV = issueTokens({
         userId: "u-dev",
         username: "u-dev",
-        role: "developer",
+        role: "coordinator",
         permissions: [],
         workspaces: ["ws-865"],
       }).accessToken;
       OUTSIDER = issueTokens({
         userId: "u-out",
         username: "u-out",
-        role: "developer",
+        role: "coordinator",
         permissions: [],
         workspaces: ["ws-865-x"],
       }).accessToken;

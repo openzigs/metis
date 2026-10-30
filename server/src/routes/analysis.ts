@@ -729,7 +729,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
   topLevel.patch(
     "/:id/requirements/:reqId",
     requireAuth,
-    requirePermission("analysis.run"),
+    // #1566 — an edit or a review verdict is a requirement write, the same as
+    // `PUT /api/requirements/:id`, so it needs the same `project.update`.
+    // `analysis.run` (which `developer` holds) let a developer edit, approve or
+    // reject here what the PUT route refuses them.
+    requirePermission("project.update"),
     // #1099 — no path project here; authorize against the analysis's own.
     // Runs BEFORE the lock, whose 409 diff would otherwise describe a row the
     // caller cannot reach.
