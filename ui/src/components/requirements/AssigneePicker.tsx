@@ -15,6 +15,7 @@ import { assignmentApi } from "@/lib/collaboration-api";
 import type { Assignment } from "@/lib/collaboration-api";
 import { apiFetch } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { HoverHint } from "@/components/spec-kit/hover-hint";
 
 interface User {
   id: string;
@@ -30,6 +31,12 @@ interface AssigneePickerProps {
    */
   projectId: string;
   className?: string;
+  /**
+   * #1587 — why the viewer cannot make this write (they lack `project.update`,
+   * which the server requires). Set: the write controls are disabled and carry
+   * this hint. Omitted: they are enabled.
+   */
+  writeHint?: string;
 }
 
 async function searchUsers(q: string, projectId: string): Promise<User[]> {
@@ -47,7 +54,12 @@ function assignmentQueryKey(requirementId: string) {
   return ["assignments", requirementId] as const;
 }
 
-export function AssigneePicker({ requirementId, projectId, className }: AssigneePickerProps) {
+export function AssigneePicker({
+  requirementId,
+  projectId,
+  className,
+  writeHint,
+}: AssigneePickerProps) {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
@@ -94,24 +106,30 @@ export function AssigneePicker({ requirementId, projectId, className }: Assignee
             className="flex items-center gap-1 rounded-full bg-info-muted px-2 py-0.5 text-xs text-info"
           >
             @{a.assignee?.username ?? a.assigneeId}
-            <button
-              aria-label={`Remove ${a.assignee?.username ?? a.assigneeId}`}
-              onClick={() => removeMutation.mutate(a.assigneeId)}
-              className="ml-0.5 rounded-full p-0.5 hover:bg-info-muted"
-            >
-              <X className="h-2.5 w-2.5" />
-            </button>
+            <HoverHint hint={writeHint}>
+              <button
+                aria-label={`Remove ${a.assignee?.username ?? a.assigneeId}`}
+                disabled={Boolean(writeHint)}
+                onClick={() => removeMutation.mutate(a.assigneeId)}
+                className="ml-0.5 rounded-full p-0.5 hover:bg-info-muted disabled:pointer-events-none disabled:opacity-50"
+              >
+                <X className="h-2.5 w-2.5" />
+              </button>
+            </HoverHint>
           </span>
         ))}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6"
-          aria-label="Add assignee"
-          onClick={() => setOpen((v) => !v)}
-        >
-          <UserPlus className="h-3.5 w-3.5" />
-        </Button>
+        <HoverHint hint={writeHint}>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6"
+            aria-label="Add assignee"
+            disabled={Boolean(writeHint)}
+            onClick={() => setOpen((v) => !v)}
+          >
+            <UserPlus className="h-3.5 w-3.5" />
+          </Button>
+        </HoverHint>
       </div>
 
       {open && (

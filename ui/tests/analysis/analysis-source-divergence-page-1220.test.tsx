@@ -8,6 +8,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { makeWrapper, TEST_USER } from "../test-utils";
+import { ROLE_PERMISSIONS, type RoleKey } from "@metis/shared";
+import type { AuthUser } from "@/lib/auth-types";
 
 vi.mock("next/navigation", async () => {
   const actual = await vi.importActual<typeof import("next/navigation")>("next/navigation");
@@ -233,8 +235,15 @@ vi.mock("@/components/requirements/requirement-links-panel", () => ({
 
 import AnalysisPage from "@/app/(authed)/projects/[id]/analysis/page";
 
-function renderPage() {
-  render(<AnalysisPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+/** #1587 — answering is a `project.update` write: a coordinator answers here. */
+const userAs = (role: RoleKey): AuthUser => ({
+  ...TEST_USER,
+  role,
+  permissions: [...ROLE_PERMISSIONS[role]],
+});
+
+function renderPage(user: AuthUser = userAs("coordinator")) {
+  render(<AnalysisPage />, { wrapper: makeWrapper({ initialUser: user }) });
 }
 
 beforeEach(() => {
@@ -249,9 +258,9 @@ describe("Analysis page — a requirement diverged from its import source (#1220
   };
 
   /** The run opens on Summary; the cards are on the Requirements tab. */
-  const openRequirements = async () => {
+  const openRequirements = async (viewer?: AuthUser) => {
     const user = userEvent.setup();
-    renderPage();
+    renderPage(viewer);
     await user.click(await screen.findByRole("tab", { name: /^Requirements/ }));
     return user;
   };
@@ -302,5 +311,23 @@ describe("Analysis page — a requirement diverged from its import source (#1220
       sourceFingerprint: "v1:src-1220",
       version: 3,
     });
+  });
+
+  // #1587 — the server refuses both answers without `project.update`.
+  it("disables both answers for a developer, with the reason, and still lets them compare", async () => {
+    const user = await openRequirements(userAs("developer"));
+    await screen.findByText("Import feeds");
+    const diverged = within(card("req-diverged"));
+    for (const name of ["Keep mine", "Take the source version"]) {
+      const button = diverged.getByRole("button", { name });
+      expect(button).toBeDisabled();
+      expect(button.closest("[data-hover-hint]")).toHaveAttribute(
+        "title",
+        "Requires project.update",
+      );
+      await user.click(button);
+    }
+    expect(resolveDivergence).not.toHaveBeenCalled();
+    expect(diverged.getByRole("button", { name: "Compare" })).toBeEnabled();
   });
 });

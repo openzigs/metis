@@ -1153,6 +1153,7 @@ export default function AnalysisPage(): React.ReactElement {
                         invalidateKeys={
                           selectedAnalysisId ? [queryKeys.analyses.detail(selectedAnalysisId)] : []
                         }
+                        writeHint={requirementWriteHint}
                       />
                       {detail.data.requirements.length === 0 ? (
                         /* Issue #1104 (finding B) — distinguish "produced nothing"
@@ -1195,6 +1196,7 @@ export default function AnalysisPage(): React.ReactElement {
                                     ? [queryKeys.analyses.detail(selectedAnalysisId)]
                                     : []
                                 }
+                                writeHint={requirementWriteHint}
                               />
                               {/* #1389 — a re-synthesis kept the approved criteria
                                 and suggested others; answered while reviewing them. */}
@@ -1210,6 +1212,7 @@ export default function AnalysisPage(): React.ReactElement {
                                       ? [queryKeys.analyses.detail(selectedAnalysisId)]
                                       : []
                                   }
+                                  writeHint={requirementWriteHint}
                                 />
                               ) : null}
                             </div>
@@ -1280,7 +1283,11 @@ export default function AnalysisPage(): React.ReactElement {
                             </div>
                           </div>
                           {/* Epic #34 (AC4) — assignee picker + SLA badge. */}
-                          <RequirementCollabRow requirementId={req.id} projectId={projectId} />
+                          <RequirementCollabRow
+                            requirementId={req.id}
+                            projectId={projectId}
+                            writeHint={requirementWriteHint}
+                          />
                           {/* #979 — Markdown, sanitized, internal markers hidden. */}
                           <RequirementBody body={req.body} />
                           {/* Epic #1107 (#1110) — the panel's rolled-up confidence
@@ -1766,9 +1773,12 @@ export default function AnalysisPage(): React.ReactElement {
 function RequirementCollabRow({
   requirementId,
   projectId,
+  writeHint,
 }: {
   requirementId: string;
   projectId: string;
+  /** #1587 — assigning is a `project.update` write; set when the viewer lacks it. */
+  writeHint?: string;
 }): React.ReactElement {
   const { data: assignments = [] } = useQuery({
     queryKey: ["assignments", requirementId],
@@ -1783,7 +1793,7 @@ function RequirementCollabRow({
   return (
     <div className="mt-2 flex items-center gap-2" data-testid={`req-collab-${requirementId}`}>
       <span className="text-xs text-muted-foreground">Assignees</span>
-      <AssigneePicker requirementId={requirementId} projectId={projectId} />
+      <AssigneePicker requirementId={requirementId} projectId={projectId} writeHint={writeHint} />
       <SLABadge deadline={nextDeadline ?? null} />
     </div>
   );

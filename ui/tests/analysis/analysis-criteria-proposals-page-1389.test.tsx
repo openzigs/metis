@@ -8,6 +8,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { makeWrapper, TEST_USER } from "../test-utils";
+import { ROLE_PERMISSIONS, type RoleKey } from "@metis/shared";
+import type { AuthUser } from "@/lib/auth-types";
 
 vi.mock("next/navigation", async () => {
   const actual = await vi.importActual<typeof import("next/navigation")>("next/navigation");
@@ -229,8 +231,15 @@ vi.mock("@/components/requirements/requirement-links-panel", () => ({
 
 import AnalysisPage from "@/app/(authed)/projects/[id]/analysis/page";
 
-function renderPage() {
-  render(<AnalysisPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+/** #1587 — answering is a `project.update` write: a coordinator answers here. */
+const userAs = (role: RoleKey): AuthUser => ({
+  ...TEST_USER,
+  role,
+  permissions: [...ROLE_PERMISSIONS[role]],
+});
+
+function renderPage(user: AuthUser = userAs("coordinator")) {
+  render(<AnalysisPage />, { wrapper: makeWrapper({ initialUser: user }) });
 }
 
 beforeEach(() => {
@@ -243,9 +252,9 @@ describe("Analysis page — re-synthesis suggested different criteria (#1389)", 
     if (!el) throw new Error(`no requirement card for ${id}`);
     return el;
   };
-  const openRequirements = async () => {
+  const openRequirements = async (viewer?: AuthUser) => {
     const user = userEvent.setup();
-    renderPage();
+    renderPage(viewer);
     await user.click(await screen.findByRole("tab", { name: /^Requirements/ }));
     return user;
   };
@@ -291,5 +300,30 @@ describe("Analysis page — re-synthesis suggested different criteria (#1389)", 
     await user.click(screen.getByRole("button", { name: "Keep approved criteria for all" }));
     expect(dismissAll).toHaveBeenCalledTimes(1);
     expect(dismissAll).toHaveBeenCalledWith("p1", "an-1");
+  });
+
+  // #1587 — the server refuses every answer without `project.update`.
+  it("disables every answer for a developer, with the reason; Review still filters", async () => {
+    const user = await openRequirements(userAs("developer"));
+    await screen.findByText("Import feeds");
+    const hinted = (button: HTMLElement) => {
+      expect(button).toBeDisabled();
+      expect(button.closest("[data-hover-hint]")).toHaveAttribute(
+        "title",
+        "Requires project.update",
+      );
+    };
+    hinted(screen.getByRole("button", { name: "Keep approved criteria for all" }));
+    await user.click(screen.getByRole("button", { name: "Review" }));
+    const proposed = within(card("req-proposed"));
+    for (const verb of ["Accept", "Dismiss"]) {
+      const button = proposed.getByRole("button", {
+        name: `${verb} suggested acceptance criteria for Feed listing`,
+      });
+      hinted(button);
+      await user.click(button);
+    }
+    expect(resolveProposal).not.toHaveBeenCalled();
+    expect(dismissAll).not.toHaveBeenCalled();
   });
 });

@@ -586,6 +586,25 @@ describe("AnalysisPage requirement write controls (#1566)", () => {
     expect(updateMock.update).not.toHaveBeenCalled();
   });
 
+  // #1587 — assigning is a `project.update` write too.
+  it("disables Add assignee for a viewer without project.update, with the reason", async () => {
+    renderPage(DEVELOPER);
+    await waitForRequirement();
+    const add = screen.getByRole("button", { name: /add assignee/i });
+    expect(add).toBeDisabled();
+    expect(add.closest("[data-hover-hint]")).toHaveAttribute("title", "Requires project.update");
+    fireEvent.click(add);
+    expect(screen.queryByPlaceholderText("Search users…")).not.toBeInTheDocument();
+  });
+
+  it("leaves Add assignee enabled, with no hint, for a project.update holder", async () => {
+    renderPage(WRITER);
+    await waitForRequirement();
+    const add = screen.getByRole("button", { name: /add assignee/i });
+    expect(add).toBeEnabled();
+    expect(add.closest("[data-hover-hint]")).toBeNull();
+  });
+
   it("leaves the controls enabled, with no hint, for a project.update holder", async () => {
     renderPage(WRITER);
     await waitForRequirement();

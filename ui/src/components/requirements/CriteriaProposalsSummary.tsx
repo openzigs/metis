@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { useAppMutation } from "@/lib/use-app-mutation";
 import { analysisApi } from "@/lib/analysis-api";
 import type { QueryKey } from "@tanstack/react-query";
+import { HoverHint } from "@/components/spec-kit/hover-hint";
 
 export interface CriteriaProposalsSummaryProps {
   projectId: string;
@@ -22,6 +23,12 @@ export interface CriteriaProposalsSummaryProps {
   reviewing: boolean;
   onReviewChange: (reviewing: boolean) => void;
   invalidateKeys?: QueryKey[];
+  /**
+   * #1587 — why the viewer cannot make this write (they lack `project.update`,
+   * which the server requires). Set: the write controls are disabled and carry
+   * this hint. Omitted: they are enabled.
+   */
+  writeHint?: string;
 }
 
 export function CriteriaProposalsSummary({
@@ -31,6 +38,7 @@ export function CriteriaProposalsSummary({
   reviewing,
   onReviewChange,
   invalidateKeys = [],
+  writeHint,
 }: CriteriaProposalsSummaryProps): React.ReactElement | null {
   const keepAll = useAppMutation({
     mutationFn: () => analysisApi.dismissAllCriteriaProposals(projectId, analysisId),
@@ -65,14 +73,16 @@ export function CriteriaProposalsSummary({
         >
           {reviewing ? "Show all requirements" : "Review"}
         </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={keepAll.isPending}
-          onClick={() => keepAll.mutate()}
-        >
-          Keep approved criteria for all
-        </Button>
+        <HoverHint hint={writeHint}>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={Boolean(writeHint) || keepAll.isPending}
+            onClick={() => keepAll.mutate()}
+          >
+            Keep approved criteria for all
+          </Button>
+        </HoverHint>
       </div>
     </div>
   );
