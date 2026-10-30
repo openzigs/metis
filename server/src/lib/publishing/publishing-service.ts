@@ -919,6 +919,7 @@ export async function generateDrafts(opts: {
     targetBaseUrl: opts.targetBaseUrl,
     defaultLabels: opts.defaultLabels,
     requirementIds: opts.requirementIds,
+    actorId: opts.actorId,
   });
   audit({
     actor: { id: opts.actorId },

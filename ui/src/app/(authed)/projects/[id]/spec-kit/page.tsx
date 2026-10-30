@@ -89,6 +89,7 @@ import {
   type CreatedIssueLink,
 } from "@/lib/spec-kit-export";
 import { IssueLinks } from "@/components/spec-kit/issue-links";
+import { REQUIRES_PROJECT_UPDATE } from "@/lib/permission-hints";
 import {
   CrossProjectConfirmDialog,
   CrossProjectDryRunNotice,
@@ -135,8 +136,6 @@ function pastJobNotice(job: SpecKitJobDto): JobNotice {
   };
 }
 
-/** Shown on a write control the viewer cannot use (#789 — the server gates it). */
-const REQUIRES_UPDATE = "Requires project.update";
 /** #936 — shown when the server's dry run reports it cannot publish (`publishAvailable: false`). */
 const PUBLISH_UNAVAILABLE =
   "Publishing issues to GitHub is not available on this server yet. The dry run lists the issues it would create.";
@@ -167,7 +166,7 @@ export default function SpecKitPage() {
   // feature archive) is `project.update` server-side; a viewer without it gets
   // the read-only page rather than controls that 403.
   const canWrite = user?.permissions.includes("project.update") ?? false;
-  const writeHint = canWrite ? undefined : REQUIRES_UPDATE;
+  const writeHint = canWrite ? undefined : REQUIRES_PROJECT_UPDATE;
   const [commentsOpen, setCommentsOpen] = useState(false);
 
   const enabledQuery = useQuery({

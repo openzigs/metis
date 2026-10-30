@@ -65,6 +65,7 @@ import {
 } from "./draft-code-links.js";
 import { deriveDraftImpactFiles, type DerivedImpactFiles } from "./draft-impact-files.js";
 import { canCreateTickets } from "../analysis/approval-checkpoint.js";
+import { signOffForUser } from "../analysis/checkpoint-sign-off.js";
 import {
   promoteApprovedRequirements,
   type PromotionOutcome,
@@ -97,6 +98,12 @@ export interface GenerateDraftsOptions {
   defaultLabels?: string[];
   /** #863 — draft only these requirements of the analysis (all when omitted). */
   requirementIds?: string[];
+  /**
+   * #1588 — who asked for the drafts. When generating promotes the approved
+   * requirements first, they are `approved` only if this user holds
+   * `project.update`; omitted, they are promoted as drafts.
+   */
+  actorId?: string | null;
 }
 
 export interface GeneratedDraftSummary {
@@ -250,7 +257,11 @@ async function withdrawRejectedDrafts(
  * orchestrator's own save. A failed or cancelled run is terminal, so — like the
  * Analysis page's promote route — it promotes its resolved approvals.
  */
-async function loadOrPromoteRequirements(analysisId: string, analysisStatus: string) {
+async function loadOrPromoteRequirements(
+  analysisId: string,
+  analysisStatus: string,
+  actorId: string | null | undefined,
+) {
   const requirements = await findLiveRequirements(analysisId);
   if (requirements.length > 0) return requirements;
 
@@ -261,7 +272,8 @@ async function loadOrPromoteRequirements(analysisId: string, analysisStatus: str
   let promotion: PromotionOutcome | null = null;
   if (gate.allowed) {
     try {
-      promotion = await promoteApprovedRequirements(analysisId);
+      // #1588 — the actor's permission decides `approved` vs `draft`.
+      promotion = await promoteApprovedRequirements(analysisId, await signOffForUser(actorId));
     } catch (err) {
       log.warn("lazy promotion before draft generation failed", {
         analysisId,
@@ -388,7 +400,7 @@ export async function generateDrafts(opts: GenerateDraftsOptions): Promise<Gener
   }
   // #744 — rejected requirements produce no draft, and any draft generated
   // for one before it was rejected is withdrawn rather than left publishable.
-  const live = await loadOrPromoteRequirements(opts.analysisId, analysis.status);
+  const live = await loadOrPromoteRequirements(opts.analysisId, analysis.status, opts.actorId);
   const rejectedIds = live.filter(isRejectedRequirement).map((r) => r.id);
   const rejected = new Set(rejectedIds);
   const reviewed = live.filter((r) => !rejected.has(r.id));

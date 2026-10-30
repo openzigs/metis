@@ -167,6 +167,7 @@ import {
   listApprovalRequests,
   type ApprovalPolicy,
 } from "./approval-checkpoint.js";
+import { promotedReviewStatus, signOffForAnalysisStarter } from "./checkpoint-sign-off.js";
 import {
   compareReviewedWithSynthesis,
   latestRequirementApprovals,
@@ -4881,8 +4882,10 @@ export class AnalysisOrchestrator {
               promotionMatches: { ambiguous: plan.ambiguous, shared: plan.shared },
               // #1389 — the user approved each of these in the checkpoint, as
               // `promoteApprovedRequirements` records (#939). A regenerate
-              // re-creating the set left every row unreviewed.
-              reviewStatus: "approved" as const,
+              // re-creating the set left every row unreviewed. #1588 — as
+              // `approved` only when the run's starter holds `project.update`;
+              // a system-started run (no starter) and anyone else: `draft`.
+              reviewStatus: promotedReviewStatus(await signOffForAnalysisStarter(input.analysisId)),
             }
           : {}),
       });

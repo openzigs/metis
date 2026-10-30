@@ -80,8 +80,8 @@ export interface WithheldProposal {
    * through `approvedIndex`, so applying records them for the rows it writes.
    */
   matches?: { ambiguous: AmbiguousPromotionMatch[]; shared: SharedPromotionMatch[] };
-  /** The status the rows would have been inserted with (#939). */
-  reviewStatus?: "approved";
+  /** The status the rows would have been inserted with (#939, #1588). */
+  reviewStatus?: "approved" | "draft";
 }
 
 const isString = (v: unknown): v is string => typeof v === "string";
@@ -138,7 +138,9 @@ export function readWithheldProposal(metadata: Record<string, unknown>): Withhel
     ...(degraded !== undefined ? { degraded } : {}),
     ...readPromotion(p.promotion),
     ...readMatches(p.matches),
-    ...(p.reviewStatus === "approved" ? { reviewStatus: "approved" as const } : {}),
+    ...(p.reviewStatus === "approved" || p.reviewStatus === "draft"
+      ? { reviewStatus: p.reviewStatus }
+      : {}),
   };
 }
 

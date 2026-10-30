@@ -55,7 +55,17 @@ interface ApprovalsPanelProps {
    * Promote action is not offered.
    */
   analysisStatus?: string;
+  /**
+   * #1588 — the viewer does not hold `project.update`: approving here still
+   * completes the checkpoint, but the server promotes the requirements as
+   * drafts for a coordinator to approve, and the panel says so.
+   */
+  approvesAsDraft?: boolean;
 }
+
+/** #1588 — what approving does for a viewer without `project.update`. */
+export const DRAFT_APPROVAL_NOTICE =
+  "Your approval adds these as drafts; a coordinator approves them.";
 
 /**
  * #256 — subscribe to the distinct `analysis:promotion-blocked` socket event so
@@ -513,11 +523,13 @@ function ApproveAllPending({
   projectId,
   analysisId,
   pendingCount,
+  approvesAsDraft,
   onChange,
 }: {
   projectId: string;
   analysisId: string;
   pendingCount: number;
+  approvesAsDraft: boolean;
   onChange: () => void;
 }): React.ReactElement {
   const qc = useQueryClient();
@@ -544,7 +556,10 @@ function ApproveAllPending({
     <div className="space-y-2 rounded border px-3 py-2 text-sm" data-testid="approve-all-confirm">
       <p>
         Approve all {pendingCount} pending approvals? An approval cannot be reopened; approved
-        requirements are promoted as approved.
+        requirements are{" "}
+        {approvesAsDraft
+          ? "added as drafts, for a coordinator to approve."
+          : "promoted as approved."}
       </p>
       <div className="flex gap-2">
         <Button
@@ -669,6 +684,7 @@ export function ApprovalsPanel({
   metadata,
   requirementCount,
   analysisStatus,
+  approvesAsDraft = false,
 }: ApprovalsPanelProps): React.ReactElement | null {
   const inFlight = analysisStatus === "pending" || analysisStatus === "running";
   // #922 — index structured requirements by id so each `requirement` approval
@@ -813,9 +829,18 @@ export function ApprovalsPanel({
               projectId={projectId}
               analysisId={analysisId}
               pendingCount={pending.length}
+              approvesAsDraft={approvesAsDraft}
               onChange={() => query.refetch()}
             />
           </div>
+          {approvesAsDraft && (
+            <p
+              data-testid="approvals-draft-notice"
+              className="rounded border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+            >
+              {DRAFT_APPROVAL_NOTICE}
+            </p>
+          )}
           {split ? (
             <>
               {/* #1129 — the ticked items first, then what the analysis added. */}

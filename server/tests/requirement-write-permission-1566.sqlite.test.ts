@@ -89,7 +89,7 @@ const WRITES = [
 ] as const;
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
-  "#1566 — requirement writes need project.update on every route",
+  "#1566 — requirement writes need project.update on both requirement write routes",
   () => {
     let sqlite: MigratedSqlite;
     let db: PrismaClient;

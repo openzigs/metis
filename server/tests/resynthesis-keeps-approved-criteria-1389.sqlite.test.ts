@@ -65,6 +65,8 @@ const OTHER_PROJECT = "p-1389-x";
 const PROJECT = "p-1389";
 const ANALYST = "u-1389";
 const READER = "u-1389-reader";
+/** #1588 — starts a run without `project.update`. */
+const DEVELOPER = "u-1389-developer";
 const RUN_ID = "extraction-run-1389";
 const MODEL = "claude-sonnet-4-6";
 
@@ -217,9 +219,28 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
       await db.workspace.create({ data: { id: WS, name: "ws", slug: WS } });
-      for (const id of [ANALYST, READER]) {
+      // #1588 — a regenerate re-creates the set `approved` only when the run's
+      // starter holds `project.update`, read from durable roles: the analyst
+      // is a coordinator there, as their token says.
+      const roleIds = new Map<string, string>();
+      for (const key of ["coordinator", "developer", "reader"]) {
+        const role = await db.role.upsert({
+          where: { key },
+          update: {},
+          create: { key, name: key, isSystem: true },
+        });
+        roleIds.set(key, role.id);
+      }
+      for (const [id, role] of [
+        [ANALYST, "coordinator"],
+        [READER, "reader"],
+        [DEVELOPER, "developer"],
+      ] as const) {
         await db.user.create({
           data: { id, username: id, displayName: id, email: `${id}@example.test` },
+        });
+        await db.userRole.create({
+          data: { userId: id, roleId: roleIds.get(role)!, source: "local" },
         });
         await db.workspaceMember.create({ data: { workspaceId: WS, userId: id, role: "member" } });
       }
@@ -252,12 +273,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     async function seedPromotedAnalysis(
       analysisId: string,
       first: typeof firstSynthesis = firstSynthesis,
+      startedById: string | null = ANALYST,
     ): Promise<void> {
       await db.analysis.create({
         data: {
           id: analysisId,
           projectId: PROJECT,
-          startedById: ANALYST,
+          startedById,
           status: "completed",
           metadata: JSON.stringify({
             agentKeys: ["web"],
@@ -287,7 +309,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           reviewedAt: new Date(),
         })),
       });
-      expect(await promoteApprovedRequirements(analysisId)).toEqual({
+      expect(await promoteApprovedRequirements(analysisId, { asApproved: true })).toEqual({
         status: "promoted",
         requirementCount: 2,
       });
@@ -431,6 +453,24 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect((await rowFor(id, s)).reviewStatus).toBe("approved");
       }
     });
+
+    // #1588 — the regenerate re-creates the set with the starter's permission:
+    // a developer's run, or one the system started (no starter), comes back as
+    // drafts, keeping the checkpoint's criteria (#1389) all the same.
+    for (const [label, starter] of [
+      ["a developer", DEVELOPER],
+      ["the system (no starter)", null],
+    ] as const) {
+      it(`a regenerate of a run started by ${label} re-creates the rows as drafts`, async () => {
+        const id = `ana-1389-starter-${starter ?? "system"}`;
+        await seedPromotedAnalysis(id, firstSynthesis, starter);
+        await regenerate(id, REVISED_FEEDS);
+        for (const s of ["REQ-1", "REQ-2"]) {
+          expect((await rowFor(id, s)).reviewStatus).toBe("draft");
+        }
+        expect(await criteriaOf(id, "REQ-2")).toEqual(APPROVED_FEEDS);
+      });
+    }
 
     it("Dismiss keeps the approved criteria, and holds for that requirement for the run", async () => {
       const id = "ana-1389-dismiss";

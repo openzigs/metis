@@ -262,7 +262,7 @@ vi.mock("../src/lib/prisma.js", () => ({
 
 // #723 — publishing promotes a stranded run's approved requirements first.
 const promoteApprovedRequirements = vi.hoisted(() =>
-  vi.fn(async (_analysisId: string): Promise<Record<string, unknown>> => ({
+  vi.fn(async (_analysisId: string, _signOff?: unknown): Promise<Record<string, unknown>> => ({
     status: "unavailable",
     reason: "This analysis has no usable synthesis output to promote.",
   })),
@@ -270,6 +270,12 @@ const promoteApprovedRequirements = vi.hoisted(() =>
 vi.mock("../src/lib/analysis/promote-requirements.js", () => ({
   promoteApprovedRequirements,
 }));
+// #1588 — whether the drafts' requester may sign requirements off; a stand-in
+// for the durable-role read, which `checkpoint-sign-off.test.ts` covers.
+const signOffForUser = vi.hoisted(() =>
+  vi.fn(async (userId: string | null | undefined) => ({ asApproved: userId === "u-coord" })),
+);
+vi.mock("../src/lib/analysis/checkpoint-sign-off.js", () => ({ signOffForUser }));
 // #1230 — a promoted set asks the reader-BRD staleness check to look again.
 const noteRequirementsChanged = vi.hoisted(() => vi.fn(async (_ids: readonly string[]) => {}));
 vi.mock("../src/lib/docs-gen/approved-requirements-staleness.js", () => ({
@@ -934,11 +940,36 @@ describe("generateDrafts", () => {
         targetRepo: "metis",
       });
 
-      expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis_1");
+      expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis_1", { asApproved: false });
       expect(summary.features).toBe(2);
       // #1230 — the promoted rows may be what a reader BRD lists.
       expect(noteRequirementsChanged).toHaveBeenCalledWith(saved.map((r) => r.id));
     });
+
+    // #1588 — the promotion takes the requester's permission: `approved` only
+    // for one holding `project.update`, `draft` for anyone else.
+    for (const [actorId, asApproved] of [
+      ["u-coord", true],
+      ["u-dev", false],
+    ] as const) {
+      it(`promotes as ${asApproved ? "approved" : "draft"} for requester ${actorId}`, async () => {
+        promoteApprovedRequirements.mockImplementationOnce(async () => {
+          requirements.push(...saved);
+          return { status: "promoted", requirementCount: saved.length };
+        });
+
+        await generateDrafts({
+          projectId: "proj_1",
+          analysisId: "analysis_1",
+          targetOwner: "acme",
+          targetRepo: "metis",
+          actorId,
+        });
+
+        expect(signOffForUser).toHaveBeenCalledWith(actorId);
+        expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis_1", { asApproved });
+      });
+    }
 
     it("says the approved requirements could not be promoted — never that they were rejected", async () => {
       promoteApprovedRequirements.mockResolvedValueOnce({
@@ -1009,7 +1040,9 @@ describe("generateDrafts", () => {
             targetRepo: "metis",
           });
 
-          expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis_1");
+          expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis_1", {
+            asApproved: false,
+          });
           expect(summary.features).toBe(2);
         } finally {
           fakeAnalysis.status = "completed";

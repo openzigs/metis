@@ -912,9 +912,12 @@ export interface PersistRequirementsInput {
    * checkpoint passes `"approved"`: a requirement the user approved there is
    * approved, not a draft waiting for a second Approve. The row ids are recorded
    * in `metadata.checkpointApprovedRequirementIds` in the same transaction.
-   * Omitted: rows start with no status (read as `draft`).
+   * Omitted: rows start with no status (read as `draft`). #1588 — `"draft"`
+   * marks a checkpoint-promoted set whose promoter does not hold
+   * `project.update`: recorded like an approved one (its ids, its #1389
+   * criteria), but written as drafts for a coordinator to approve.
    */
-  reviewStatus?: "approved";
+  reviewStatus?: "approved" | "draft";
   /**
    * Issue #1202 — the pairing promotion made, recorded on each row it writes:
    * `pairings[i]` is the structured requirement `synthesis.requirements[i]` was

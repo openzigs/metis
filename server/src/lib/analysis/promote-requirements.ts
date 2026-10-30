@@ -26,6 +26,7 @@ import {
   readFlattenedFindings,
 } from "./analysis-service.js";
 import { canCreateTickets } from "./approval-checkpoint.js";
+import { promotedReviewStatus, type PromotionSignOff } from "./checkpoint-sign-off.js";
 import {
   itemsGivenTo,
   latestRequirementApprovals,
@@ -90,8 +91,15 @@ export async function readSynthesisOutput(analysisId: string): Promise<Synthesis
  * every approval checkpoint is resolved. Never throws for an expected state —
  * each outcome is reported so the caller can tell the user exactly where the
  * work is.
+ *
+ * Issue #1588 — `signOff` says whether whoever caused this promotion holds
+ * `project.update`: the checkpoint-reviewed rows are written `approved` only
+ * then, and `draft` otherwise. Required, so every caller decides.
  */
-export async function promoteApprovedRequirements(analysisId: string): Promise<PromotionOutcome> {
+export async function promoteApprovedRequirements(
+  analysisId: string,
+  signOff: PromotionSignOff,
+): Promise<PromotionOutcome> {
   const analysis = await prisma.analysis.findFirst({
     where: { id: analysisId },
     select: { projectId: true, metadata: true },
@@ -205,6 +213,7 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
         promotedStructuredIds,
         structuredRunId,
         approvedAt,
+        reviewStatus: promotedReviewStatus(signOff),
         ambiguous: appendPlan.ambiguous,
         shared: appendPlan.shared,
         pairings: appendPlan.pairings,
@@ -244,8 +253,9 @@ export async function promoteApprovedRequirements(analysisId: string): Promise<P
       withheld = true;
     },
     // Issue #939 — the user approved each of these in the checkpoint; asking
-    // for a second Approve per requirement on the hub was the bug.
-    ...(reviewed ? { reviewStatus: "approved" as const } : {}),
+    // for a second Approve per requirement on the hub was the bug. #1588 — as
+    // `approved` only when the promoter holds `project.update`; else `draft`.
+    ...(reviewed ? { reviewStatus: promotedReviewStatus(signOff) } : {}),
     // #1202 — each row records the structured requirement it IS.
     ...(plan ? { promotedFrom: { runId: structuredRunId, pairings: plan.pairings } } : {}),
     // #780 — kept with a withheld replacement for when it is applied.
@@ -352,6 +362,8 @@ async function appendNewlyApproved(input: {
   structuredRunId: string | null;
   /** When each approved structured id was approved (its deciding approval). */
   approvedAt: ReadonlyMap<string, Date | null>;
+  /** #1588 — `approved` only when the promoter holds `project.update`. */
+  reviewStatus: "approved" | "draft";
   /** #1204 — the approved requirements the title join could not decide. */
   ambiguous: readonly AmbiguousPromotionMatch[];
   /** #1203 — the approved requirements whose criteria an item wrote for several. */
@@ -440,8 +452,9 @@ async function appendNewlyApproved(input: {
             r.sourceIds,
             readSourceRequirements(locked.metadata),
           ),
-          // Issue #939 — approved in the checkpoint, as on the first promotion.
-          reviewStatus: "approved",
+          // Issue #939 — approved in the checkpoint, as on the first promotion;
+          // #1588 — `draft` when the promoter does not hold `project.update`.
+          reviewStatus: input.reviewStatus,
           // Issue #1202 — the same pairing `persistRequirements` records.
           ...pairingColumns({ runId: input.structuredRunId, pairings: input.pairings }, newIdx[k]!),
         },
