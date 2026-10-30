@@ -107,17 +107,35 @@ export const MAX_PUBLISHED_ANSWER = 4000;
 const TRUNCATION_NOTE = " …[answer truncated in the published body]";
 
 /**
+ * Issue #1567 — the Markdown for `text` as literal text, changing only what a
+ * Markdown reader would otherwise take as markup: a `<` that could open a tag,
+ * comment or declaration (`<tag>`, `</x>`, `<!--`, `<?`) becomes `&lt;`, and an
+ * `&` that would read as an entity (`&lt;`, `&#60;`) becomes `&amp;`. Everything
+ * else stays byte for byte, so `published_at < X`, `<=` and `a < b > c` are
+ * stored exactly as typed. The entity form renders as the typed text in the hub
+ * and review (react-markdown), on GitHub, and through the BRD export, whose
+ * `neutralizeHtml` rewrites only a bare `<`.
+ */
+function escapeMarkupForMarkdown(text: string): string {
+  return text.replace(/&(?=#?[A-Za-z0-9]+;)/g, "&amp;").replace(/<(?=[A-Za-z/!?])/g, "&lt;");
+}
+
+/**
  * Neutralise text before embedding it in a markdown body that becomes a GitHub
- * issue. The answer is user-authored, but it is *rendered into an artifact* —
- * stripping backticks and angle brackets stops it opening a code fence or an
- * HTML tag, and collapsing whitespace keeps it inside its bullet.
+ * issue. The answer is user-authored, but it is *rendered into an artifact*:
+ * stripping backticks stops it opening a code fence (and a code span, inside
+ * which the `&lt;` below would show as those four characters), escaping markup
+ * (#1567, {@link escapeMarkupForMarkdown}) stops it opening an HTML tag or
+ * comment without losing the `<` an analyst typed, and collapsing whitespace
+ * keeps it inside its bullet.
  */
 export function sanitizeClarificationText(text: string | null | undefined): string {
   if (!text) return "";
-  const cleaned = text.replace(/[`<>]/g, " ").replace(/\s+/g, " ").trim();
+  const cleaned = text.replace(/`/g, " ").replace(/\s+/g, " ").trim();
+  // Truncate before escaping, so the cut can never split an entity.
   return cleaned.length > MAX_PUBLISHED_ANSWER
-    ? cleaned.slice(0, MAX_PUBLISHED_ANSWER).trim() + TRUNCATION_NOTE
-    : cleaned;
+    ? escapeMarkupForMarkdown(cleaned.slice(0, MAX_PUBLISHED_ANSWER).trim()) + TRUNCATION_NOTE
+    : escapeMarkupForMarkdown(cleaned);
 }
 
 /**

@@ -6,6 +6,7 @@
  * which answers count, how an answer is matched to a requirement, what the
  * rendered block looks like, and what happens when any of that goes wrong.
  */
+import { marked } from "marked";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClarificationState, StructuredRequirement } from "./types/requirements.js";
 
@@ -448,6 +449,46 @@ describe("block rendering", () => {
     expect(block).not.toContain("```");
     expect(block).not.toContain("<img");
     expect(block).toContain("Fake heading");
+  });
+
+  // #1567 — `published_at < X` was stored as `published_at X`: the `<` was
+  // replaced with a space, inverting or blanking a comparison in the answer.
+  describe("#1567 — comparison operators survive verbatim", () => {
+    /** The HTML `marked` (the BRD export's parser, which keeps raw HTML) makes of the block. */
+    const renderedHtml = (markdown: string): string =>
+      marked.parse(markdown, { async: false }) as string;
+    /** `typed` as HTML text: what the rendered block must contain if it reads as `typed`. */
+    const asHtmlText = (typed: string): string =>
+      typed.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+    it.each([
+      "exclusive (published_at < X)",
+      "inclusive (published_at <= X)",
+      "a < b > c",
+      "wrap it in <tag> first",
+      "AT&T and &lt; literally",
+      "x<y and </close> and <!-- not a comment -->",
+    ])("stores %j so that it renders as exactly that text", (typed) => {
+      const block = renderClarificationBlock([answer({ answer: typed })]);
+      expect(renderedHtml(block)).toContain(asHtmlText(typed));
+    });
+
+    it("stores a plain comparison byte for byte — no entity where Markdown needs none", () => {
+      for (const typed of ["published_at < X", "published_at <= X", "a < b > c", "AT&T"]) {
+        expect(sanitizeClarificationText(typed)).toBe(typed);
+      }
+    });
+
+    it("still keeps a tag-shaped answer from becoming markup", () => {
+      expect(sanitizeClarificationText("<tag>")).toBe("&lt;tag>");
+      expect(sanitizeClarificationText("<!-- x -->")).toBe("&lt;!-- x -->");
+    });
+
+    it("cannot forge the block's end marker from inside an answer", () => {
+      const block = renderClarificationBlock([answer({ answer: CLARIFICATIONS_END })]);
+      expect(block.split(CLARIFICATIONS_END)).toHaveLength(2);
+      expect(stripClarificationBlock(`Body.\n\n${block}`)).toBe("Body.");
+    });
   });
 
   it("announces truncation instead of silently shortening a pathological answer", () => {

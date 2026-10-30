@@ -27,6 +27,21 @@ describe("RequirementBody", () => {
     expect(body.textContent).not.toMatch(/\*\*|##/);
   });
 
+  // #1567 — the stored form the clarification block writes (`<` kept as typed,
+  // a tag-shaped `<` as `&lt;`) reads as the analyst's text on the hub and review.
+  it("shows a clarification answer's comparisons and tag-shaped text as typed", () => {
+    const answered = [
+      "<!-- metis:clarifications:start -->",
+      "- **Q:** Which cutoff?",
+      "  **A:** exclusive (published_at < X), then <=, a < b > c and &lt;tag> AT&T &amp;lt;",
+      "<!-- metis:clarifications:end -->",
+    ].join("\n");
+    render(<RequirementBody body={answered} />);
+    expect(screen.getByTestId("requirement-body").textContent).toContain(
+      "exclusive (published_at < X), then <=, a < b > c and <tag> AT&T &lt;",
+    );
+  });
+
   it("hides the clarification markers", () => {
     render(<RequirementBody body={enriched} />);
     expect(screen.getByTestId("requirement-body").textContent).not.toContain("metis:");
