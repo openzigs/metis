@@ -143,6 +143,35 @@ function reconnectInvalidationKeys(projectId: string): InvalidationKeys {
 }
 
 /**
+ * #1570 — the most often one job's `progress` events refresh its caches. A doc
+ * generation emits one per Phase-1 chunk and per section, and refreshing on each
+ * made one open Documentation page send ~3 GETs a second: it tripped the docs
+ * limiter (900 / 15 min) and froze the page. Every 10 s is ~180 requests per
+ * window for the list and the doc together. Transitions still refresh at once.
+ */
+export const PROGRESS_INVALIDATION_MS = 10_000;
+
+/**
+ * #1570 — what a `progress` event refreshes. A doc generation refreshes the
+ * list and the generating document only, each exactly: the project-wide prefix
+ * also re-read every other cached document and the immutable version bodies,
+ * changed symbols and provenance under it. Other kinds keep their keys.
+ */
+function progressInvalidations(
+  data: JobLifecycleEvent,
+  projectId: string,
+): { queryKey: readonly unknown[]; exact?: boolean }[] {
+  if (data.kind === "doc-generation") {
+    const list = queryKeys.generatedDocs.forProject(projectId);
+    return [
+      { queryKey: list, exact: true },
+      { queryKey: [...list, data.jobId], exact: true },
+    ];
+  }
+  return invalidationKeysFor(data.kind, projectId).map((queryKey) => ({ queryKey }));
+}
+
+/**
  * Project-scoped consumer (#240): joins the `project:{id}` room and invalidates
  * the relevant TanStack Query caches whenever a job in that project transitions,
  * so analysis / doc-generation lists converge without polling or manual refresh.
@@ -168,11 +197,51 @@ export function useProjectJobEvents(
     // #642 — re-join on reconnect; the server drops rooms with the old session.
     const release = keepSubscribed(socket, projectJoin(socket, projectId), reconcile);
 
+    // #1570 — per job: when its caches were last refreshed, and the trailing
+    // progress refresh waiting for the end of the window.
+    const lastRefreshAt = new Map<string, number>();
+    const trailing = new Map<string, ReturnType<typeof setTimeout>>();
+    const throttleKey = (data: JobLifecycleEvent) => `${data.kind}:${data.jobId}`;
+
+    // `cancelRefetch: false`: a progress refresh joins a fetch already in flight
+    // — including one waiting out a 429's Retry-After — instead of restarting it.
+    const refreshProgress = (data: JobLifecycleEvent) => {
+      lastRefreshAt.set(throttleKey(data), Date.now());
+      for (const filters of progressInvalidations(data, projectId)) {
+        void queryClient.invalidateQueries(filters, { cancelRefetch: false });
+      }
+    };
+
+    const onProgress = (data: JobLifecycleEvent) => {
+      const key = throttleKey(data);
+      if (trailing.has(key)) return;
+      const wait = (lastRefreshAt.get(key) ?? -Infinity) + PROGRESS_INVALIDATION_MS - Date.now();
+      if (wait <= 0) {
+        refreshProgress(data);
+        return;
+      }
+      trailing.set(
+        key,
+        setTimeout(() => {
+          trailing.delete(key);
+          refreshProgress(data);
+        }, wait),
+      );
+    };
+
     const onLifecycle = (data: JobLifecycleEvent) => {
       if (data.projectId && data.projectId !== projectId) return;
       setLast(data);
-      // Refresh the affected caches on every transition (started flips a list
-      // into a running state; completed/failed pull the final result).
+      if (data.status === "progress") {
+        onProgress(data);
+        return;
+      }
+      // A transition refreshes at once (started flips a list into a running
+      // state; completed/failed pull the final result) and opens a new window.
+      const jobKey = throttleKey(data);
+      clearTimeout(trailing.get(jobKey));
+      trailing.delete(jobKey);
+      lastRefreshAt.set(jobKey, Date.now());
       for (const key of invalidationKeysFor(data.kind, projectId)) {
         void queryClient.invalidateQueries({ queryKey: key as unknown[] });
       }
@@ -186,6 +255,8 @@ export function useProjectJobEvents(
     return () => {
       release();
       socket.off("job:lifecycle" as never, onLifecycle as never);
+      for (const timer of trailing.values()) clearTimeout(timer);
+      trailing.clear();
     };
   }, [socket, projectId, queryClient]);
 

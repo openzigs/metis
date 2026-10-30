@@ -214,6 +214,55 @@ describe("ApiError", () => {
   });
 });
 
+// #1570 — the query client retries a 429 when the server said when to come back.
+describe("apiFetch reads Retry-After onto the ApiError (#1570)", () => {
+  const limited = (retryAfter: string | null) =>
+    ({
+      ok: false,
+      status: 429,
+      statusText: "Too Many Requests",
+      headers: new Headers(retryAfter === null ? {} : { "retry-after": retryAfter }),
+      text: () =>
+        Promise.resolve(
+          JSON.stringify({ success: false, error: { code: "GENERATED_DOCS_RATE_LIMITED" } }),
+        ),
+    }) as unknown as Response;
+
+  it("turns a delay in seconds into milliseconds", async () => {
+    fetchMock.mockResolvedValueOnce(limited("848"));
+    const err = await apiFetch("/projects/p1/docs").catch((e: unknown) => e);
+    expect(err).toMatchObject({ status: 429, retryAfterMs: 848_000 });
+  });
+
+  it("turns an HTTP date into the milliseconds left until it", async () => {
+    vi.useFakeTimers({ now: new Date("2026-10-30T03:30:00Z") });
+    try {
+      fetchMock.mockResolvedValueOnce(limited("Fri, 30 Oct 2026 03:30:20 GMT"));
+      const err = await apiFetch("/projects/p1/docs").catch((e: unknown) => e);
+      expect(err).toMatchObject({ retryAfterMs: 20_000 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["no header", null],
+    ["an unreadable value", "soon"],
+    ["a negative delay", "-5"],
+  ])("leaves it unset for %s", async (_name, value) => {
+    fetchMock.mockResolvedValueOnce(limited(value));
+    const err = await apiFetch("/projects/p1/docs").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).retryAfterMs).toBeUndefined();
+  });
+
+  it("leaves it unset on a response without headers", async () => {
+    fetchMock.mockResolvedValueOnce(makeResponse({ success: false }, { status: 429 }));
+    const err = await apiFetch("/projects/p1/docs").catch((e: unknown) => e);
+    expect((err as ApiError).retryAfterMs).toBeUndefined();
+  });
+});
+
 describe("401 → refresh → retry", () => {
   it("refreshes once and retries the original request on 401", async () => {
     fetchMock

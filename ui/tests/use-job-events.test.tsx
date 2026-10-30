@@ -2,14 +2,17 @@
  * Unit tests for the job-lifecycle socket consumer (Epic #238 / #240 + #243).
  */
 import React from "react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, renderHook } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import type { DocSectionProgressEvent, JobLifecycleEvent } from "@metis/shared";
+import { ApiError } from "@/lib/api-client";
+import { createQueryClient } from "@/lib/query-client";
 import {
   useJobLifecycle,
   useDocSectionProgress,
   useProjectJobEvents,
+  PROGRESS_INVALIDATION_MS,
 } from "@/hooks/use-job-events";
 
 // ── fake socket ────────────────────────────────────────────────────────────
@@ -359,5 +362,153 @@ describe("useProjectJobEvents", () => {
     );
     expect(spy).toHaveBeenCalledWith({ queryKey: ["documents", "project", "p1"] });
     expect(spy).toHaveBeenCalledWith({ queryKey: ["documents"] });
+  });
+});
+
+// #1570 — a doc generation emits a `progress` event per Phase-1 chunk and per
+// section. Each one used to refetch the whole ["generated-docs", projectId]
+// prefix (the list, every cached doc, its version body, changed symbols and
+// provenance), so one open Documentation page made ~3 GETs a second and
+// tripped the 900 / 15 min docs limiter.
+describe("useProjectJobEvents progress throttling (#1570)", () => {
+  const progress = (over: Partial<JobLifecycleEvent> = {}) =>
+    lifecycle({ kind: "doc-generation", jobId: "doc-1", status: "progress", ...over });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function mount() {
+    const qc = new QueryClient();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const view = renderHook(() => useProjectJobEvents("p1"), { wrapper: wrapper(qc) });
+    return { spy, ...view };
+  }
+
+  it("refreshes the list and only the generating doc, exactly, without cancelling a fetch", () => {
+    const { spy } = mount();
+    act(() => fake.fire("job:lifecycle", progress()));
+    expect(spy.mock.calls).toEqual([
+      [{ queryKey: ["generated-docs", "p1"], exact: true }, { cancelRefetch: false }],
+      [{ queryKey: ["generated-docs", "p1", "doc-1"], exact: true }, { cancelRefetch: false }],
+    ]);
+  });
+
+  it("refreshes at most once per window however many progress events arrive", () => {
+    const { spy } = mount();
+    act(() => {
+      for (let i = 0; i < 50; i++) fake.fire("job:lifecycle", progress({ progress: i }));
+    });
+    expect(spy).toHaveBeenCalledTimes(2);
+    // The window's trailing refresh picks up the last progress.
+    act(() => vi.advanceTimersByTime(PROGRESS_INVALIDATION_MS));
+    expect(spy).toHaveBeenCalledTimes(4);
+    // Nothing more without new events.
+    act(() => vi.advanceTimersByTime(PROGRESS_INVALIDATION_MS * 3));
+    expect(spy).toHaveBeenCalledTimes(4);
+  });
+
+  it("refreshes again at once when the window has passed", () => {
+    const { spy } = mount();
+    act(() => fake.fire("job:lifecycle", progress()));
+    act(() => vi.advanceTimersByTime(PROGRESS_INVALIDATION_MS));
+    act(() => fake.fire("job:lifecycle", progress()));
+    expect(spy).toHaveBeenCalledTimes(4);
+  });
+
+  it("throttles each job on its own", () => {
+    const { spy } = mount();
+    act(() => fake.fire("job:lifecycle", progress({ jobId: "doc-1" })));
+    act(() => fake.fire("job:lifecycle", progress({ jobId: "doc-2" })));
+    expect(spy).toHaveBeenCalledWith(
+      { queryKey: ["generated-docs", "p1", "doc-2"], exact: true },
+      { cancelRefetch: false },
+    );
+  });
+
+  it("refreshes a terminal transition at once, and drops the pending trailing refresh", () => {
+    const { spy } = mount();
+    act(() => fake.fire("job:lifecycle", progress()));
+    act(() => fake.fire("job:lifecycle", progress()));
+    spy.mockClear();
+    act(() => fake.fire("job:lifecycle", progress({ status: "completed" })));
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["generated-docs", "p1"] });
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["documents"] });
+    spy.mockClear();
+    act(() => vi.advanceTimersByTime(PROGRESS_INVALIDATION_MS));
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("starts a window on a transition, so the first progress after `started` waits", () => {
+    const { spy } = mount();
+    act(() => fake.fire("job:lifecycle", progress({ status: "started" })));
+    spy.mockClear();
+    act(() => fake.fire("job:lifecycle", progress()));
+    expect(spy).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(PROGRESS_INVALIDATION_MS));
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the kind's own keys for a progress event of another kind", () => {
+    const { spy } = mount();
+    act(() => fake.fire("job:lifecycle", lifecycle({ kind: "analysis", status: "progress" })));
+    expect(spy).toHaveBeenCalledWith(
+      { queryKey: ["analyses", "project", "p1"] },
+      { cancelRefetch: false },
+    );
+  });
+
+  // The whole path with the app's own query client: a doc detail answered 429
+  // waits out Retry-After, and progress events meanwhile do not restart it.
+  it("leaves a doc detail waiting out a 429's Retry-After alone, then retries it", async () => {
+    const qc = createQueryClient();
+    const queryFn = vi
+      .fn()
+      .mockResolvedValueOnce({ id: "doc-1", status: "generating" })
+      .mockRejectedValueOnce(
+        new ApiError(429, "Too many", "GENERATED_DOCS_RATE_LIMITED", undefined, 60_000),
+      )
+      .mockResolvedValue({ id: "doc-1", status: "ready" });
+    renderHook(
+      () => {
+        useProjectJobEvents("p1");
+        return useQuery({ queryKey: ["generated-docs", "p1", "doc-1"], queryFn });
+      },
+      { wrapper: wrapper(qc) },
+    );
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(queryFn).toHaveBeenCalledTimes(1);
+
+    // The first progress refetches, and is answered 429.
+    act(() => fake.fire("job:lifecycle", progress()));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(queryFn).toHaveBeenCalledTimes(2);
+
+    // Progress keeps arriving through the wait; none of it reaches the server.
+    for (let s = 0; s < 50; s++) {
+      act(() => fake.fire("job:lifecycle", progress()));
+      await act(() => vi.advanceTimersByTimeAsync(1_000));
+    }
+    expect(queryFn).toHaveBeenCalledTimes(2);
+
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(queryFn).toHaveBeenCalledTimes(3);
+    expect(qc.getQueryState(["generated-docs", "p1", "doc-1"])).toMatchObject({
+      status: "success",
+      data: { id: "doc-1", status: "ready" },
+    });
+  });
+
+  it("cancels a pending trailing refresh on unmount", () => {
+    const { spy, unmount } = mount();
+    act(() => fake.fire("job:lifecycle", progress()));
+    act(() => fake.fire("job:lifecycle", progress()));
+    spy.mockClear();
+    unmount();
+    act(() => vi.advanceTimersByTime(PROGRESS_INVALIDATION_MS));
+    expect(spy).not.toHaveBeenCalled();
   });
 });
