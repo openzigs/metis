@@ -457,6 +457,21 @@ export interface ServerToClientEvents {
    * only, no comment body: the panel re-reads it over the REST route.
    */
   "comment:changed": (data: CommentChangedEvent) => void;
+  /**
+   * #1574 — a review was submitted, decided (each reviewer's decision and the
+   * outcome it reached), withdrawn or closed. Sent to the `project:{id}` room so
+   * an open review page re-reads its status and decisions without a reload.
+   * Identifiers only: the page re-reads the review over the permission-checked
+   * REST route.
+   */
+  "review:changed": (data: ReviewChangedEvent) => void;
+  /**
+   * #1574 — a discussion thread was created or its settings changed. Sent to
+   * the `project:{id}` room, whose join rule is the discussion routes' own
+   * (`canAccessProjectDiscussions`), so an open discussions list re-reads its
+   * threads. Identifiers only, as for `comment:changed`.
+   */
+  "discussion:changed": (data: DiscussionChangedEvent) => void;
   /** Epic #475 (#489) — a project member was @mentioned in a discussion message. */
   "discussion:mention": (data: DiscussionMentionEvent) => void;
   /**
@@ -487,6 +502,20 @@ export interface CommentChangedEvent {
   requirementId: string | null;
   /** Set for a Spec Kit artifact's thread, null for a requirement's. */
   artifactName: string | null;
+  ts: number;
+}
+
+/** #1574 — payload of `review:changed` (see {@link ServerToClientEvents}). */
+export interface ReviewChangedEvent {
+  projectId: string;
+  reviewId: string;
+  ts: number;
+}
+
+/** #1574 — payload of `discussion:changed` (see {@link ServerToClientEvents}). */
+export interface DiscussionChangedEvent {
+  projectId: string;
+  threadId: string;
   ts: number;
 }
 

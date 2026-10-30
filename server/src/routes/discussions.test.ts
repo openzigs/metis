@@ -122,6 +122,13 @@ vi.mock("../lib/discussions/socket-emitter.js", () => ({
   emitMessageStream: (...a: unknown[]) => emitMessageStream(...a),
 }));
 
+// #1574 — the thread-list push is unit-tested in thread-events.test.ts; here
+// only that create and settings changes send it, and refusals do not.
+const emitDiscussionChanged = vi.fn();
+vi.mock("../lib/discussions/thread-events.js", () => ({
+  emitDiscussionChanged: (...a: unknown[]) => emitDiscussionChanged(...a),
+}));
+
 // AI responder (#484) — unit-tested separately; the route mocks it and asserts
 // it is (or is NOT) invoked depending on the gate, plus SSE wiring. The gate
 // itself (`shouldAIRespond`) is the real pure function so the route's decision
@@ -275,11 +282,19 @@ describe("discussions routes", () => {
       );
     });
 
+    it("#1574: tells the project's open discussion lists about the new thread", async () => {
+      canAccessProjectDiscussions.mockResolvedValue(true);
+      threadCreate.mockResolvedValue({ id: "t1", projectId: "p1" });
+      await request(app).post("/discussions/threads").send({ projectId: "p1" });
+      expect(emitDiscussionChanged).toHaveBeenCalledWith("p1", "t1");
+    });
+
     it("rejects a non-member with 404", async () => {
       canAccessProjectDiscussions.mockResolvedValue(false);
       const res = await request(app).post("/discussions/threads").send({ projectId: "p1" });
       expect(res.status).toBe(404);
       expect(threadCreate).not.toHaveBeenCalled();
+      expect(emitDiscussionChanged).not.toHaveBeenCalled();
       expect(audit).not.toHaveBeenCalledWith(
         expect.objectContaining({ action: "discussion.thread.created" }),
       );
@@ -409,6 +424,8 @@ describe("discussions routes", () => {
         where: { id: "t1" },
         data: { aiResponseMode: "auto" },
       });
+      // #1574 — the list shows each thread's AI mode.
+      expect(emitDiscussionChanged).toHaveBeenCalledWith("p1", "t1");
     });
 
     it.each(["off", "on_mention", "auto"])("accepts the %s mode", async (mode) => {
@@ -443,6 +460,7 @@ describe("discussions routes", () => {
         .send({ aiResponseMode: "off" });
       expect(res.status).toBe(404);
       expect(threadUpdate).not.toHaveBeenCalled();
+      expect(emitDiscussionChanged).not.toHaveBeenCalled();
     });
 
     it("returns 404 for a missing / soft-deleted thread", async () => {

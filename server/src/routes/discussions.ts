@@ -54,6 +54,7 @@ import {
   loadThreadAIRateLimitConfig,
 } from "../lib/discussions/ai-rate-limit.js";
 import { audit } from "../lib/audit/audit-service.js";
+import { emitDiscussionChanged } from "../lib/discussions/thread-events.js";
 import { assertWithinBudget, BudgetExceededError } from "../lib/finops/budget-enforcer.js";
 import { buildProvider, loadAIConfig, type AIProvider } from "../lib/ai/index.js";
 import type { RoleKey } from "@metis/shared";
@@ -286,6 +287,8 @@ export function discussionsRouter(): Router {
       target: { type: "discussion_thread", id: thread.id },
       metadata: { projectId, ...anchorCols },
     });
+    // #1574 — an open discussions list shows the new thread without a reload.
+    emitDiscussionChanged(projectId, thread.id);
 
     res.status(201).json({ success: true, data: thread });
   });
@@ -321,6 +324,8 @@ export function discussionsRouter(): Router {
         ...anchorCols,
       },
     });
+    // #1574 — the list shows each thread's AI mode; keep open lists current.
+    emitDiscussionChanged(access.projectId, threadId);
     res.json({ success: true, data: thread });
   });
 
