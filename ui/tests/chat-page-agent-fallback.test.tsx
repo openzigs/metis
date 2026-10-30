@@ -113,6 +113,39 @@ describe("<ChatPage /> — a saved custom agent this project cannot bind (#236)"
     expect(screen.getAllByTestId("chat-agent-fallback-notice")).toHaveLength(1);
   });
 
+  it("#1573: falling back to the default agent does not abort the turn that created the session", async () => {
+    // Walkthrough run 10: the fallback's agent change re-ran the session effect,
+    // whose cleanup aborted the first turn's stream mid-flight. The server
+    // finished the answer; the page never showed it.
+    listMock.mockResolvedValue([agentOfA]);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let seen: AbortSignal | undefined;
+    vi.mocked(aiClient.streamChat).mockImplementation(async function* (
+      _id: string,
+      _message: string,
+      signal?: AbortSignal,
+      _idle?: number,
+      onAccepted?: () => void,
+    ) {
+      seen = signal;
+      onAccepted?.();
+      await gate;
+      if (signal?.aborted) throw new DOMException("aborted", "AbortError");
+      yield { type: "delta", content: "The orders table holds them." };
+      yield { type: "done" };
+    } as typeof aiClient.streamChat);
+    render(<ChatPage />, { wrapper: makeWrapper({ withAuth: false }) });
+    await sendChatMessage("Which table holds orders?");
+
+    await screen.findByTestId("chat-agent-fallback-notice");
+    await settle();
+    expect(seen).toBeDefined();
+    expect(seen!.aborted).toBe(false);
+    release();
+    expect(await screen.findByText("The orders table holds them.")).toBeInTheDocument();
+  });
+
   it("falls back the same way when the server refused the agent and the client retried", async () => {
     // A stale URL project: its listing 404s, so the choice is sent and the
     // client's one retry (ai-client) reports the agent it dropped.

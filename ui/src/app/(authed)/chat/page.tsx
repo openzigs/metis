@@ -29,6 +29,7 @@ import {
   loadActiveSessionId,
   resumeChatSession,
   CHAT_NOT_FOUND_RESULT,
+  awaitTurnReply,
   storeActiveSessionId,
   streamChat,
 } from "@/lib/ai-client";
@@ -130,6 +131,10 @@ export default function ChatPage() {
   const abortRef = useRef<AbortController | null>(null);
   // A send in progress, known synchronously (see `handleSend`).
   const sendingRef = useRef(false);
+  // #1573 — counts sends, so a re-read of an earlier turn knows it is stale;
+  // and whether the user pressed Stop on the turn in flight.
+  const turnRef = useRef(0);
+  const stopRequestedRef = useRef(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   // Only the FIRST run of the session effect may resume. A later run means the
   // user changed agent or scope, which must start a fresh session.
@@ -248,7 +253,6 @@ export default function ChatPage() {
       setReady(true);
       return () => {
         cancelled = true;
-        abortRef.current?.abort();
       };
     }
     setReady(false);
@@ -298,9 +302,12 @@ export default function ChatPage() {
         if (!cancelled) setReady(true);
       }
     })();
+    // #1573 — the cleanup does NOT abort the turn in flight: a re-run that is
+    // skipped above (the #236 agent fallback, which happens during the very
+    // first send) would otherwise cut that turn's stream off. A re-run that
+    // proceeds aborts it in its body; leaving the page aborts it below.
     return () => {
       cancelled = true;
-      abortRef.current?.abort();
     };
     // A different agent or scope starts a new session (on the next send): the
     // system prompt and default skills are fixed at session-create.
@@ -315,6 +322,9 @@ export default function ChatPage() {
     scopeHydrated,
     resetToolActivity,
   ]);
+
+  // #1573 — leaving the page ends the turn in flight.
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   /**
    * #1139 — the current session, or a new one in the current scope and agent.
@@ -421,6 +431,8 @@ export default function ChatPage() {
     // tick (a double Enter) would both pass it; the ref is set at once.
     if (!ready || !text.trim() || streaming || sendingRef.current || sendBlocked) return;
     sendingRef.current = true;
+    const turn = ++turnRef.current;
+    stopRequestedRef.current = false;
     setStreaming(true);
     setError(null);
     const active = await ensureSession();
@@ -448,6 +460,7 @@ export default function ChatPage() {
     abortRef.current = controller;
     // #422 — whether the server accepted the turn (see the Workbench, #390).
     let accepted = false;
+    let aborted = false;
     try {
       // #136 — only the new message goes up; the server holds the history.
       for await (const ev of streamChat(
@@ -465,7 +478,7 @@ export default function ChatPage() {
       // A user-initiated Stop aborts the controller; that surfaces here as an
       // AbortError. Treat it as a clean cancellation — keep the partial reply,
       // don't show an error banner.
-      const aborted = controller.signal.aborted || (err as Error)?.name === "AbortError";
+      aborted = controller.signal.aborted || (err as Error)?.name === "AbortError";
       if (!aborted) setError((err as Error).message);
     } finally {
       sendingRef.current = false;
@@ -480,9 +493,20 @@ export default function ChatPage() {
       // folded. A failed read keeps what is on screen.
       const sessionId = active.id;
       const afterOrdinal = lastHeldOrdinal(messages);
-      void getTranscriptSince(sessionId, afterOrdinal)
+      const read = () => getTranscriptSince(sessionId, afterOrdinal);
+      // #1573 — a turn the server accepted whose stream was cut off without
+      // the user pressing Stop is still being answered: read until the reply
+      // is on record instead of once, which would find only the question (or
+      // nothing) and replace the turn on screen with it.
+      const interrupted = accepted && aborted && !stopRequestedRef.current;
+      const reread = interrupted
+        ? awaitTurnReply(read, {
+            keepGoing: () => sessionIdRef.current === sessionId && turnRef.current === turn,
+          })
+        : read();
+      void reread
         .then((delta) => {
-          if (sessionIdRef.current !== sessionId) return;
+          if (!delta || sessionIdRef.current !== sessionId) return;
           setMessages((prev) => mergeTranscriptDelta(prev, delta, (m) => fromServer([m])[0]!));
         })
         .catch(() => undefined);
@@ -544,6 +568,7 @@ export default function ChatPage() {
   }
 
   function handleStop() {
+    stopRequestedRef.current = true;
     abortRef.current?.abort();
   }
 

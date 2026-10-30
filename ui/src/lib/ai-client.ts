@@ -395,6 +395,39 @@ export async function getTranscriptSince(
   };
 }
 
+/** #1573 — how often, and how many times, an interrupted turn's reply is looked for. */
+export const TURN_REPLY_POLL_MS = 3_000;
+export const TURN_REPLY_POLL_ATTEMPTS = 40;
+
+/**
+ * #1573 — a turn whose stream was cut off on the client side after the server
+ * accepted it is still running on the server, which stores the answer when it
+ * finishes. Re-read the turn (`read`, a {@link getTranscriptSince} call) until
+ * the delta holds a reply, so the answer appears without a reload. Resolves
+ * the first delta with a reply, or the last one read when the attempts run
+ * out; `null` when `keepGoing` says the reader moved on (another session, or
+ * another turn) or no read succeeded. A failed read is tried again.
+ */
+export async function awaitTurnReply(
+  read: () => Promise<TranscriptDelta>,
+  opts: { keepGoing: () => boolean; intervalMs?: number; attempts?: number },
+): Promise<TranscriptDelta | null> {
+  const { keepGoing, intervalMs = TURN_REPLY_POLL_MS, attempts = TURN_REPLY_POLL_ATTEMPTS } = opts;
+  let last: TranscriptDelta | null = null;
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0) await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    if (!keepGoing()) return null;
+    try {
+      last = await read();
+    } catch {
+      continue;
+    }
+    if (!keepGoing()) return null;
+    if (last.rows.some((r) => r.role === "assistant")) return last;
+  }
+  return last;
+}
+
 /** The whole transcript, every page of it. */
 export async function getTranscript(sessionId: string): Promise<DisplayTurn[]> {
   return (await getTranscriptSince(sessionId, 0)).rows;
