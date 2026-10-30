@@ -23,11 +23,13 @@ earlier answers leak into later ones):
 3. Save the raw response to `{{SCRATCH_DIR}}/ba-reask/q<N>.json`, and the wall time.
 4. Open every cited `file:line` in the ground-truth checkout and mark it correct or not.
 
-Log in once — logins are limited to 20 per 15 min.
+Log in once — logins are limited to 20 per 15 min. Send `X-METIS-CSRF: 1` (any non-empty
+value) with every `POST` that uses the cookie jar; without it the CSRF guard refuses the write.
 
-Since #861 (PR #869), a tool call that needs approval is refused at once when no chat is open,
-and the response lists it under `toolApprovals`; the answer comes without it. Record any
-`toolApprovals` per question. A call that stalls for about 120 s is a regression.
+Since #1139, a tool that needs approval (`inspect_schema`, `query_database`) is **withheld**
+when no chat is open: the model is not offered it, and the response's `data.toolsWithheld`
+names it. There is no `no_interactive_approver` refusal. Record `toolsWithheld` per question.
+A call that stalls for about 120 s is a regression.
 
 ## Fixes to verify this wave
 
@@ -45,7 +47,7 @@ and the response lists it under `toolApprovals`; the answer comes without it. Re
 
 ## Return
 
-1. **Per-question table**: Q | Key claim | Citation | Verified (✅/❌) | Wall time | Hit the tool-call limit? | `toolApprovals`
+1. **Per-question table**: Q | Key claim | Citation | Verified (✅/❌) | Wall time | Hit the tool-call limit? | `toolsWithheld`
 2. **Totals**: answered N/8, correct with a valid citation N/8 (pass bar ≥ 6; run 2 after
    #783: 8/8).
 3. **Per-phase cost row** (the BA re-ask is one row in the results table):

@@ -224,6 +224,10 @@ allowed it in waves D and F. The cap is 2 real sandbox issues per run; assign th
 - **Never** publish, comment or review on `miniflux/v2`.
 - Publish **only** to `openzigs/flux-v2`, **dry run first**, at most **2** issues.
   Spec Kit `taskstoissues` only with that sandbox repo set explicitly.
+- **The 2 sandbox issues belong to J1.8** (wave F), which publishes 2: the whole cap. So
+  wave C's Phase 12 and wave D's S21 **dry-run only** (open the confirm, then Cancel), and
+  their after-publish checks read `not-exercised`. Real publishing happens only in J1.8
+  (run 10). Give S21 a slot only on the operator's say, and then J1.8 publishes 1.
 - Use the GitHub token **only through the METIS vault picker** — never paste it.
 - Real publishing needs the operator's Claude Code auto-mode **allow rule** for the publish
   call; without it the classifier blocks the agent. The operator adds it, not the agent.
@@ -422,8 +426,18 @@ found wrong in `TEST_PLAN.md`, in a PR.
   - **Cost cap:** the per-agent analysis cap is 80,000 tokens (`/api/analyses/cost-cap`, `agentCap`). Most "Could not verify" code findings trace to it (#1001).
 - **Spec Kit contracts:** `tasksGate` needs both `spec.md` and `plan.md`; a feature-artifact
   `PUT` takes `{content}`; feature slugs match `^\d{3}-…`.
-- **Over the chat API, `inspect_schema` and `query_database` are refused** with
-  `no_interactive_approver`, so database-backed BA answers fall back to source.
+- **Over the chat API, `inspect_schema` and `query_database` are withheld** (#1139): the
+  model is not offered them, and the response's `data.toolsWithheld` names them. There is no
+  `no_interactive_approver` refusal any more (run 10). Database-backed BA answers fall back
+  to source.
+- **curl with the cookie jar needs `X-METIS-CSRF`** (any non-empty value) on every
+  state-changing request: cookie-authenticated writes without it are refused by the CSRF
+  guard (`server/src/middleware/csrf-protection.ts`).
+- **The code view is `/projects/:id/overview`.** There is no `/projects/:id/code` page.
+- **Keep the Documentation page closed while documents generate.** It polls `/docs` and
+  `/docs/:id` about 3 times a second and trips its own `GENERATED_DOCS_RATE_LIMITED`
+  limiter (900 per 15 min) within ~5 min, freezing progress for up to 15 min (run 10, #1570).
+  Watch generation from the API or `server/dev.db`, and open the page only to act on it.
   `search_code_graph` does not index string-literal config keys.
 - An enabled custom skill is loaded into later chat sessions. Disable test skills before the
   BA re-ask.
@@ -571,7 +585,7 @@ screenshot path check out.
 | `screenshot` | yes | Image path relative to the evidence folder (`.png`, `.jpg`, `.webp`, `.gif`) |
 | `tutorial` | no | User-facing, imperative "how to" text |
 | `result` | no | Reviewer-facing outcome |
-| `works` | yes | Did it do what it should: `pass` / `partial` / `fail` / `blocked` |
+| `works` | yes | Did it do what it should: `pass` / `partial` / `fail` / `blocked`. A step skipped for a missing prerequisite (J1.8a with no sandbox Jira) is `blocked`, with the reason in `result`: the build rejects `skipped` (run 10) |
 | `useful` | yes | Was it worth using: `pass` / `weak` / `fail` / `n/a` |
 | `issues` | no | Issue numbers, linked to `openzigs/metis` |
 | `tokens` / `costCents` | no | Spend for the step |

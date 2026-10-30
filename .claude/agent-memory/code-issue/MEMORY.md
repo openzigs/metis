@@ -60,6 +60,7 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Affected-code cap 8 < 25 imported](project_affected-code-cap-below-imported-cap.md) — NR-* keyed logic loses items 9+; test >8 (#1158)
 - [Declaration checks mistake calls](project_declaration-check-mistakes-calls.md) — test callback, return, assign and void forms (#1135)
 - [Walkthrough run 9 findings](project_walkthrough-run9-durable-findings.md) — Spec Kit/chat shapes, budgets, harness tips (#1172)
+- [Walkthrough run 10 findings](project_walkthrough-run10-durable-findings.md) — requirement write gates differ; docs polling; sidecar (#706)
 - [Walkthrough docs: read the code](project_walkthrough-docs-describe-code-not-memory.md) — open function + controls; plan gate blind spots
 - [Batch row decides dryRun](project_runbatch-batch-row-decides-dry-run.md) — BATCH_IS_DRY_RUN in runBatch (#1171)
 - [Verify your worktree](project_verify-your-worktree-before-committing.md) — HEAD vs your branch; worktree list; no stash pop; a lock failed
