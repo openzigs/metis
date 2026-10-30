@@ -12,7 +12,10 @@
  * (`routes/reviews.ts`, `review-service.ts`, `state-machine.ts`) is:
  *   - the caller's role holds `review.create`;
  *   - the caller requested the review, or their role holds `review.admin`;
- *   - the review is `in_review` (the only status with a `withdraw` transition).
+ *   - the review is `in_review` (the only status with a `withdraw` transition);
+ *   - #1575 — the caller is not one of its assigned reviewers (a requester
+ *     never is): a reviewer decides the review, and `review.admin` does not let
+ *     them cancel it instead.
  * The check here is a convenience, not the control: a review can be decided
  * between the page loading and the click, so every refusal code is turned into
  * a sentence and the review is re-read.
@@ -30,12 +33,15 @@ import { resolveErrorMessage, useAppMutation } from "@/lib/use-app-mutation";
 
 /** Whether the server would accept a withdraw of `review` from `user` right now. */
 export function canWithdrawReview(
-  review: Pick<ReviewRequest, "status" | "requestedById">,
+  review: Pick<ReviewRequest, "status" | "requestedById" | "assignments">,
   user: Pick<AuthUser, "id" | "role"> | null | undefined,
 ): boolean {
   if (!user || review.status !== "in_review") return false;
   if (!hasPermission(user.role, "review.create")) return false;
-  return review.requestedById === user.id || hasPermission(user.role, "review.admin");
+  if (review.requestedById === user.id) return true;
+  // #1575 — an assigned reviewer is asked to decide, not to withdraw.
+  if (review.assignments.some((a) => a.reviewerId === user.id)) return false;
+  return hasPermission(user.role, "review.admin");
 }
 
 /** The server's refusal, as a sentence the person can act on. */
@@ -46,6 +52,8 @@ export function withdrawErrorMessage(error: unknown): string {
         return "This review is no longer in review, so there is nothing to withdraw. Its current status is shown now.";
       case "REVIEW_STATE_CHANGED":
         return "The review changed while it was being withdrawn. Check its status and try again.";
+      case "REVIEWER_CANNOT_WITHDRAW":
+        return "You are a reviewer of this review, so you cannot withdraw it. Approve or reject it instead.";
       case "NOT_REQUESTER":
         return "Only the person who requested this review, or a review administrator, can withdraw it.";
       case "REVIEW_NOT_FOUND":
@@ -58,7 +66,7 @@ export function withdrawErrorMessage(error: unknown): string {
 }
 
 export interface WithdrawReviewButtonProps {
-  review: Pick<ReviewRequest, "id" | "title" | "status" | "requestedById">;
+  review: Pick<ReviewRequest, "id" | "title" | "status" | "requestedById" | "assignments">;
   user: Pick<AuthUser, "id" | "role"> | null | undefined;
 }
 

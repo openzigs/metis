@@ -5407,7 +5407,11 @@ explain a rejection or record conditions of an approval.
 **Withdraw review** appears on the review page and beside the review's
 row on `/reviews` (#1032). It is offered only when the server would
 accept it: the review is **In review**, and you requested it or your
-role is a review administrator (coordinator or admin). It asks for
+role is a review administrator (coordinator or admin) and you are not
+one of its reviewers. A reviewer is asked to approve or reject the
+review, so a review administrator who is one of its reviewers is not
+offered **Withdraw review**, and the server refuses it from them
+(#1575). It asks for
 confirmation first. Withdrawing puts the review back to **Draft**, so
 its reviewers can no longer decide on it, and each requirement gets
 back the review status it had before the review was requested —

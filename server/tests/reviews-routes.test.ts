@@ -939,6 +939,22 @@ describe("POST /reviews/:reviewId/withdraw", () => {
     expect(res.status).toBe(200);
   });
 
+  it("#1575: 403s a review admin who is an assigned reviewer of this review", async () => {
+    // Walkthrough run 10: the coordinator, asked to decide the review, was
+    // offered (and the server would have accepted) a withdraw — cancelling
+    // the sign-off instead of deciding it.
+    testUser.userId = "user-rev-1";
+    testUser.role = "coordinator";
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(makeReview());
+
+    const res = await request(app).post("/reviews/rev-1/withdraw").send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("REVIEWER_CANNOT_WITHDRAW");
+    expect(mockPrisma.reviewRequest.updateMany).not.toHaveBeenCalled();
+    expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
   it("409s when withdrawing from draft", async () => {
     mockPrisma.reviewRequest.findUnique.mockResolvedValue(makeReview({ status: "draft" }));
 
@@ -978,6 +994,28 @@ describe("POST /reviews/:reviewId/close", () => {
     expect(auditRows()).toContainEqual(
       expect.objectContaining({ action: "review.close", inTx: true }),
     );
+  });
+
+  it("#1575: 403s a review admin who is an assigned reviewer, while the review is in review", async () => {
+    testUser.userId = "user-rev-1";
+    testUser.role = "coordinator";
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(makeReview());
+
+    const res = await request(app).post("/reviews/rev-1/close").send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("REVIEWER_CANNOT_WITHDRAW");
+    expect(mockPrisma.reviewRequest.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("#1575: lets that reviewer-admin close (archive) the review once it has a verdict", async () => {
+    testUser.userId = "user-rev-1";
+    testUser.role = "coordinator";
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(makeReview({ status: "rejected" }));
+
+    const res = await request(app).post("/reviews/rev-1/close").send({});
+
+    expect(res.status).toBe(200);
   });
 
   it("403s a stranger without review.admin", async () => {

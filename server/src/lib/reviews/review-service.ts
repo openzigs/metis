@@ -138,6 +138,26 @@ function assertRequesterOrAdmin(review: ReviewRow, actorId: string, isAdmin: boo
   }
 }
 
+/**
+ * #1575 — 403 when the caller is an assigned reviewer of a review still in
+ * review (never its requester: SELF_REVIEW_FORBIDDEN). A reviewer is asked to
+ * decide the review; a withdraw or close by them would cancel the sign-off
+ * instead (the mirror of SELF_APPROVAL_FORBIDDEN, which stops the requester
+ * deciding it). Holding `review.admin` does not lift this: a review
+ * administrator who is not one of its reviewers still may. Once the review has
+ * a verdict, archiving it is no longer a way round a decision.
+ */
+function assertNotDecidingReviewer(review: ReviewRow, actorId: string): void {
+  if (review.status !== "in_review") return;
+  if (review.assignments.some((a) => a.reviewerId === actorId)) {
+    throw new AppError(
+      403,
+      "REVIEWER_CANNOT_WITHDRAW",
+      "You are a reviewer of this review: record your decision instead of withdrawing or closing it",
+    );
+  }
+}
+
 function requirementIdsInScope(items: ReviewItemRow[]): string[] {
   return items.map((i) => i.requirementId).filter((id): id is string => id !== null);
 }
@@ -824,6 +844,7 @@ async function transitionReview(
 ): Promise<unknown> {
   const review = await loadReviewOr404(reviewId);
   assertRequesterOrAdmin(review, actorId, isAdmin);
+  assertNotDecidingReviewer(review, actorId);
 
   const nextStatus = transition(review.status as ReviewRequestStatus, event);
   // #989 — leaving `in_review` with no verdict (withdraw, or close mid-review)
