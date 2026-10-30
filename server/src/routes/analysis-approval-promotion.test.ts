@@ -110,6 +110,7 @@ const rejectPendingRequirementApprovals = vi.fn();
 const dialogDeps = vi.hoisted(() => [] as Array<{ askFirst?: ReadonlySet<string> }>);
 const getStructuredRequirements = vi.fn();
 const readSynthesisOutput = vi.fn(async (): Promise<unknown> => null);
+const readFlattenedFindings = vi.fn(async (): Promise<unknown[]> => []);
 const listApprovalRequests = vi.fn();
 const canCreateTickets = vi.fn();
 const reopenApprovalRequest = vi.fn(async () => ({
@@ -152,6 +153,7 @@ vi.mock("../lib/analysis/index.js", () => ({
   canCreateTickets,
   promoteApprovedRequirements,
   readSynthesisOutput,
+  readFlattenedFindings,
   deepDiveFinding: vi.fn(),
   loadFindingForDeepDive: vi.fn(),
 }));
@@ -503,6 +505,116 @@ describe("POST .../approvals/approve-all — #939", () => {
   });
 });
 
+describe("#1568 — requirement approvals that would be promoted with no code link", () => {
+  const rows = [
+    {
+      id: "ap_1",
+      analysisId: "analysis-1",
+      type: "requirement",
+      itemId: "REQ-1",
+      status: "pending",
+    },
+    {
+      id: "ap_2",
+      analysisId: "analysis-1",
+      type: "requirement",
+      itemId: "REQ-2",
+      status: "pending",
+    },
+    { id: "ap_3", analysisId: "analysis-1", type: "evidence", itemId: "REQ-2", status: "pending" },
+  ];
+  const synthItem = (title: string, structuredIds: string[], evidenceFindingIndexes: number[]) => ({
+    type: "feature",
+    title,
+    body: title,
+    priority: "medium",
+    labels: [],
+    evidenceFindingIndexes,
+    acceptanceCriteria: [],
+    structuredIds,
+  });
+  const reviewedRun = () => {
+    analysisRow.metadata = {};
+    getStructuredRequirements.mockResolvedValue({
+      requirements: [
+        { id: "REQ-1", title: "Mark all as read older than X", description: "" },
+        { id: "REQ-2", title: "Per-feed read counters", description: "" },
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    readSynthesisOutput.mockResolvedValue({
+      summary: "s",
+      requirements: [
+        synthItem("Mark entries older than a cutoff", ["REQ-1"], [0]),
+        synthItem("GET /v1/feeds/counters", ["REQ-2"], []),
+      ],
+    });
+    readFlattenedFindings.mockResolvedValue([
+      { citations: [{ filePath: "internal/storage/entry.go", startLine: 1, endLine: 9 }] },
+    ]);
+    canCreateTickets.mockResolvedValue({ allowed: false, pendingCount: 3, rejectedCount: 0 });
+  };
+
+  it("marks the requirement whose item cites no code, before anyone approves", async () => {
+    reviewedRun();
+    listApprovalRequests.mockResolvedValue(rows);
+
+    const res = await request(createApp()).get(
+      "/api/projects/proj-1/analyses/analysis-1/approvals",
+    );
+
+    expect(res.status).toBe(200);
+    expect(
+      res.body.data.items.map((i: { itemId: string; noCodeEvidence?: boolean }) => [
+        i.itemId,
+        i.noCodeEvidence,
+      ]),
+    ).toEqual([
+      ["REQ-1", undefined],
+      ["REQ-2", true],
+      // Not a requirement approval: never marked.
+      ["REQ-2", undefined],
+    ]);
+  });
+
+  it("marks nothing before synthesis has run", async () => {
+    reviewedRun();
+    readSynthesisOutput.mockResolvedValue(null);
+    listApprovalRequests.mockResolvedValue(rows);
+
+    const res = await request(createApp()).get(
+      "/api/projects/proj-1/analyses/analysis-1/approvals",
+    );
+
+    expect(res.body.data.items.some((i: { noCodeEvidence?: boolean }) => i.noCodeEvidence)).toBe(
+      false,
+    );
+    expect(readFlattenedFindings).not.toHaveBeenCalled();
+  });
+
+  it("reads every approval for a filtered page, and still answers when the mark cannot be read", async () => {
+    reviewedRun();
+    listApprovalRequests.mockResolvedValueOnce([rows[1]]).mockResolvedValueOnce(rows);
+
+    const filtered = await request(createApp()).get(
+      "/api/projects/proj-1/analyses/analysis-1/approvals?status=pending",
+    );
+    expect(filtered.body.data.items).toEqual([expect.objectContaining({ noCodeEvidence: true })]);
+    expect(listApprovalRequests).toHaveBeenLastCalledWith("analysis-1");
+
+    readFlattenedFindings.mockRejectedValueOnce(new Error("db down"));
+    listApprovalRequests.mockResolvedValue(rows);
+    const failed = await request(createApp()).get(
+      "/api/projects/proj-1/analyses/analysis-1/approvals",
+    );
+    expect(failed.status).toBe(200);
+    expect(failed.body.data.items.some((i: { noCodeEvidence?: boolean }) => i.noCodeEvidence)).toBe(
+      false,
+    );
+  });
+});
+
 describe("ticked vs added requirement approvals — #1129", () => {
   const importedRun = () => {
     analysisRow.metadata = {
@@ -572,7 +684,11 @@ describe("ticked vs added requirement approvals — #1129", () => {
     expect(res.body.data.items.every((i: { origin?: string }) => i.origin === undefined)).toBe(
       true,
     );
-    expect(getStructuredRequirements).not.toHaveBeenCalled();
+    // #1568 reads the reviewed list too, for the no-code-link mark; no synthesis
+    // here, so nothing is marked.
+    expect(res.body.data.items.some((i: { noCodeEvidence?: boolean }) => i.noCodeEvidence)).toBe(
+      false,
+    );
   });
 
   it("rejects exactly the added requirements, computed on the server, then promotes", async () => {

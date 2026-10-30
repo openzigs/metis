@@ -43,7 +43,7 @@ vi.mock("@/lib/analysis-api", async (importOriginal) => {
   };
 });
 
-const { ApprovalsPanel, describeSetDifference, summarisePendingByType } =
+const { ApprovalsPanel, describeNoCodeEvidence, describeSetDifference, summarisePendingByType } =
   await import("@/components/analysis/ApprovalsPanel");
 
 const ANALYSIS_ID = "an_1135";
@@ -335,5 +335,48 @@ describe("#930 — describeSetDifference", () => {
   it("compares counts only for a run recorded before #930", () => {
     expect(describeSetDifference(3, 3)).toBeNull();
     expect(describeSetDifference(3, 4)).not.toBeNull();
+  });
+});
+
+describe("#1568 — pending requirements that would be promoted with no code link", () => {
+  it("counts only pending requirement approvals the server marked", () => {
+    expect(
+      describeNoCodeEvidence([
+        { type: "requirement", noCodeEvidence: true },
+        { type: "requirement" },
+        { type: "requirement", noCodeEvidence: true },
+        { type: "evidence" },
+      ]),
+    ).toBe(
+      "2 of the 3 pending requirement(s) cite no code, so approving promotes them without a " +
+        'code link. Each is marked "No code link" below.',
+    );
+    expect(describeNoCodeEvidence([{ type: "requirement" }, { type: "evidence" }])).toBeNull();
+  });
+
+  it("says so above the pending list and marks each such card, pending only", async () => {
+    listApprovals.mockResolvedValue({
+      items: [
+        approval(),
+        approval({ id: "ap_2", itemId: "r2", noCodeEvidence: true }),
+        approval({ id: "ap_3", itemId: "r3", noCodeEvidence: true, status: "approved" }),
+      ],
+      ticketStatus: { allowed: false, pendingCount: 2, rejectedCount: 0 },
+    });
+    renderPanel();
+
+    expect(await screen.findByTestId("approvals-no-code-evidence")).toHaveTextContent(
+      "1 of the 2 pending requirement(s) cite no code",
+    );
+    expect(screen.getByTestId("approval-ap_2")).toHaveTextContent("No code link");
+    expect(screen.getByTestId("approval-ap_1")).not.toHaveTextContent("No code link");
+    // Already resolved: the mark is about what approving would do.
+    expect(screen.getByTestId("approval-ap_3")).not.toHaveTextContent("No code link");
+  });
+
+  it("shows no notice when every pending requirement cites code", async () => {
+    renderPanel();
+    expect(await screen.findByTestId("approval-ap_1")).toBeInTheDocument();
+    expect(screen.queryByTestId("approvals-no-code-evidence")).toBeNull();
   });
 });

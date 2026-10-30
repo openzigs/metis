@@ -45,6 +45,8 @@ import {
   criteriaProposalUserRateLimiter,
 } from "../middleware/criteria-proposal-rate-limit.js";
 import { dismissAllCriteriaProposals } from "../lib/analysis/analysis-service.js";
+import { requirementsWithoutCodeEvidence } from "../lib/analysis/code-evidence.js";
+import { createChildLogger } from "../lib/logger.js";
 import {
   withheldReplacementPreAuthRateLimiter,
   withheldReplacementUserRateLimiter,
@@ -97,6 +99,8 @@ import {
   promoteApprovedRequirements,
   // Issue #1129 — the run's recorded #1063 provenance for the ticked/added split.
   readSynthesisOutput,
+  // Issue #1568 — the findings synthesis's evidence indexes refer to.
+  readFlattenedFindings,
   type PromotionOutcome,
   // Epic #176 / #178 — finding deep-dive → issue draft.
   deepDiveFinding,
@@ -296,6 +300,52 @@ async function requirementOriginsFor(
     synthesis?.requirements ?? [],
     { rejectedIds },
   );
+}
+
+const log = createChildLogger("analysis-routes");
+
+/**
+ * Issue #1568 — the reviewed requirements approving would promote with no code
+ * link: their synthesis item cites no finding that could become one. Empty
+ * until synthesis has run (before it, no requirement has an item yet, and
+ * saying "no code evidence" of all of them would be wrong) and for an analysis
+ * with no reviewed list.
+ */
+async function requirementsWithoutCodeEvidenceFor(
+  analysisId: string,
+  listed: ReadonlyArray<{ type: string; itemId: string; status: string; createdAt: Date }>,
+  filtered: boolean,
+): Promise<Set<string>> {
+  if (!listed.some((a) => a.type === "requirement")) return new Set();
+  // Best-effort: the approvals list must not fail over an advisory mark.
+  try {
+    // Every approval, not the filtered page, so a rejection still counts.
+    const approvals = filtered ? await listApprovalRequests(analysisId) : listed;
+    const requirementApprovals = approvals.filter((a) => a.type === "requirement");
+    const [structured, synthesis] = await Promise.all([
+      getStructuredRequirements(analysisId),
+      readSynthesisOutput(analysisId),
+    ]);
+    if (!structured || structured.requirements.length === 0 || !synthesis) return new Set();
+    const rejectedIds = new Set(
+      [...latestRequirementApprovals(requirementApprovals).values()]
+        .filter((a) => a.status === "rejected")
+        .map((a) => a.itemId),
+    );
+    return requirementsWithoutCodeEvidence({
+      structured: structured.requirements,
+      synthesized: synthesis.requirements,
+      // As promotion reads them, so the evidence indexes resolve to the same findings.
+      findings: await readFlattenedFindings(analysisId),
+      rejectedIds,
+    });
+  } catch (err) {
+    log.warn("Could not work out which requirements have no code evidence", {
+      analysisId,
+      error: (err as Error).message,
+    });
+    return new Set();
+  }
 }
 
 /**
@@ -1351,9 +1401,20 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // Issue #1129 — say which requirement approvals restate a ticked imported
       // item and which the analysis added, so the panel can separate them.
       const origins = await requirementOriginsFor(analysisId, analysis.metadata);
+      // Issue #1568 — and which would be promoted with no code link.
+      const withoutCode = await requirementsWithoutCodeEvidenceFor(
+        analysisId,
+        rows,
+        statusFilter !== undefined,
+      );
       const items = rows.map((row) => {
-        const origin = row.type === "requirement" ? origins.get(row.itemId) : undefined;
-        return origin ? { ...row, origin } : row;
+        if (row.type !== "requirement") return row;
+        const origin = origins.get(row.itemId);
+        return {
+          ...row,
+          ...(origin ? { origin } : {}),
+          ...(withoutCode.has(row.itemId) ? { noCodeEvidence: true } : {}),
+        };
       });
       const ticketStatus = await canCreateTickets(analysisId);
       res.json(ok({ items, ticketStatus }));

@@ -138,7 +138,15 @@ export function parseCitationTargets(rawEvidence: string | null | undefined): Ci
     return [];
   }
   if (!parsed || typeof parsed !== "object") return [];
-  const citations = (parsed as { citations?: unknown }).citations;
+  return citationTargets((parsed as { citations?: unknown }).citations);
+}
+
+/**
+ * {@link parseCitationTargets} over an already-parsed `citations` value. #1568 —
+ * the Approvals tab reads it to say, before approval, which requirements have
+ * no evidence that could become a code link.
+ */
+export function citationTargets(citations: unknown): CitationTarget[] {
   if (!Array.isArray(citations)) return [];
   const targets: CitationTarget[] = [];
   for (const c of citations as Array<Record<string, unknown> | null>) {
