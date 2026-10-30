@@ -42,6 +42,19 @@ const DEV_WS_A: AuthPayload = {
   role: "developer",
   workspaces: ["ws-a"],
 } as AuthPayload;
+/** #1566 — the lowest role holding `project.update`, which a requirement write needs. */
+const COORD_WS_B: AuthPayload = {
+  userId: "user-b",
+  username: "coord-b",
+  role: "coordinator",
+  workspaces: ["ws-b"],
+} as AuthPayload;
+const COORD_WS_A: AuthPayload = {
+  userId: "user-a",
+  username: "coord-a",
+  role: "coordinator",
+  workspaces: ["ws-a"],
+} as AuthPayload;
 const SYS_ADMIN: AuthPayload = {
   userId: "user-root",
   username: "root",
@@ -218,8 +231,8 @@ const ROUTES = [
       request(app)
         .patch("/api/analyses/an-1/requirements/req-1")
         .send({ reviewStatus: "approved" }),
-    outsider: DEV_WS_B,
-    insider: DEV_WS_A,
+    outsider: COORD_WS_B,
+    insider: COORD_WS_A,
     okStatus: 200,
     sideEffects: () => [updateRequirementRow],
   },
@@ -432,7 +445,7 @@ describe("/api/analyses top-level router — cross-tenant scope (#1099)", () => 
   });
 
   it("PATCH requirements 404s for a requirement outside the analysis, for an in-tenant caller", async () => {
-    currentUser = DEV_WS_A;
+    currentUser = COORD_WS_A;
     updateRequirementRow.mockResolvedValue(null as never);
 
     const res = await request(app)

@@ -12,6 +12,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { makeWrapper, TEST_USER } from "../test-utils";
+import { ROLE_PERMISSIONS } from "@metis/shared";
+import type { AuthUser } from "@/lib/auth-types";
 
 // ---- next/navigation -------------------------------------------------------
 
@@ -229,8 +231,21 @@ const updateMock = requirementUpdateApi as unknown as {
   update: ReturnType<typeof vi.fn>;
 };
 
-function renderPage() {
-  render(<AnalysisPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
+/** #1566 — Edit / Approve / Reject are `project.update` writes server-side. */
+const WRITER: AuthUser = {
+  ...TEST_USER,
+  role: "coordinator",
+  permissions: ROLE_PERMISSIONS.coordinator,
+};
+/** #1566 — `developer` runs analyses but does not hold `project.update`. */
+const DEVELOPER: AuthUser = {
+  ...TEST_USER,
+  role: "developer",
+  permissions: ROLE_PERMISSIONS.developer,
+};
+
+function renderPage(user: AuthUser = WRITER) {
+  render(<AnalysisPage />, { wrapper: makeWrapper({ initialUser: user }) });
 }
 
 async function waitForRequirement() {
@@ -536,6 +551,59 @@ describe("AnalysisPage collaboration (Epic #34)", () => {
       expect(updateMock.update).toHaveBeenLastCalledWith(
         "req-1",
         expect.objectContaining({ title: "Server title", version: 7 }),
+      ),
+    );
+  });
+});
+
+// #1566 — a viewer without `project.update` was offered Edit, Approve and
+// Reject, each of which the server refuses with a 403 after the fact.
+describe("AnalysisPage requirement write controls (#1566)", () => {
+  const writeButtons = () =>
+    [/^edit$/i, /^approve$/i, /^reject$/i].map((name) => screen.getByRole("button", { name }));
+
+  it("disables Edit, Approve and Reject for a viewer without project.update, with the reason", async () => {
+    renderPage(DEVELOPER);
+    await waitForRequirement();
+    for (const button of writeButtons()) {
+      expect(button).toBeDisabled();
+      // A disabled button takes no hover, so the hint sits on its wrapper (#945).
+      expect(button.closest("[data-hover-hint]")).toHaveAttribute(
+        "title",
+        "Requires project.update",
+      );
+    }
+    // Comments and History are reads and stay available.
+    expect(screen.getByRole("button", { name: "Comments for Login screen" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^history$/i })).toBeEnabled();
+  });
+
+  it("opens no edit dialog and sends no write when the disabled controls are clicked", async () => {
+    renderPage(DEVELOPER);
+    await waitForRequirement();
+    for (const button of writeButtons()) fireEvent.click(button);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(updateMock.update).not.toHaveBeenCalled();
+  });
+
+  it("leaves the controls enabled, with no hint, for a project.update holder", async () => {
+    renderPage(WRITER);
+    await waitForRequirement();
+    for (const button of writeButtons()) {
+      expect(button).toBeEnabled();
+      expect(button.closest("[data-hover-hint]")).toBeNull();
+    }
+  });
+
+  it("sends a project.update holder's Reject through the locked PUT", async () => {
+    updateMock.update.mockResolvedValue({ id: "req-1", version: 4, updatedAt: "now" });
+    renderPage(WRITER);
+    await waitForRequirement();
+    fireEvent.click(screen.getByRole("button", { name: /^reject$/i }));
+    await waitFor(() =>
+      expect(updateMock.update).toHaveBeenCalledWith(
+        "req-1",
+        expect.objectContaining({ reviewStatus: "rejected", version: 4 }),
       ),
     );
   });
