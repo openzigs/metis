@@ -422,6 +422,24 @@ describe("#1116 — a clarify answer reaches the persisted requirement AND the p
     expect(currencyRow().body.match(/## Clarifications/g)).toHaveLength(1);
   });
 
+  // #1567 — the walkthrough's `published_at < X` was stored as `published_at X`.
+  it("keeps a typed comparison in the stored row and the published draft, verbatim", async () => {
+    const cutoff = `Exclusive (published_at < X); ${TOKEN} uses <= and a < b > c.`;
+    const dialog = structuredClone(DIALOG);
+    dialog.rounds[0]!.questions[0]!.answer = cutoff;
+    store.dialogState = JSON.stringify(dialog);
+    await persistAndEnrich();
+    expect(currencyRow().body).toContain(`**A:** ${cutoff}`);
+    await generateDrafts({
+      projectId: PROJECT_ID,
+      analysisId: ANALYSIS_ID,
+      targetOwner: "openzigs",
+      targetRepo: "example-requirements",
+    });
+    const draft = store.drafts.find((d) => d.requirementId === currencyRow().id)!;
+    expect(draft.body).toContain(`**A:** ${cutoff}`);
+  });
+
   it("reports 'not yet saved' rather than failing when the approval gate withholds the rows", async () => {
     const application = await applyClarificationsToRequirements(ANALYSIS_ID);
     expect(application).toMatchObject({
