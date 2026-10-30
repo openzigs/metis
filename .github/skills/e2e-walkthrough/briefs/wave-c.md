@@ -23,6 +23,10 @@ run 3 (89%, $8.73). Snapshot the ledger immediately before and after each docume
 cost is attributable. Phase 12 is the only phase allowed to publish, and only under the rules
 below.
 
+**Keep the Documentation page closed while a document generates** (run 10, #1570): it polls
+about 3 times a second and locks itself out with 429 `GENERATED_DOCS_RATE_LIMITED` for up to
+15 min. Watch progress from the API or the database; open the page only to act.
+
 **Order matters:** finish Phase 9's documents before you create or run anything in Phase 13.
 In run 3, a scheduled repo refresh during the BRD failed it at commit after 88 min and $4.61
 (#856). Keep every scheduled job paused until Phase 9 is done.
@@ -74,9 +78,11 @@ ask BA question 1, then follow up with `Show me the exact lines for the first ci
 **Phase 11.** The @mention picker offers only users who can open the project (#870, PR #879).
 The notification names the author and opens the comment (#735, PR #869).
 
-**Phase 12 — publishing (#863, PR #922).** All on `openzigs/flux-v2`, dry run first, inside the
-cap of 2.
-- Publish one batch. Expected: its draft is no longer selected afterwards, and the next batch
+**Phase 12 — publishing (#863, PR #922).** All on `openzigs/flux-v2`, **dry run only**: J1.8
+publishes 2 issues, the whole cap (run 10), so do not publish a batch or a finding here, and
+record the after-publish checks below as `not-exercised` unless the operator gives Phase 12 a
+slot.
+- With a slot only: publish one batch. Expected: its draft is no longer selected afterwards, and the next batch
   preview does not fail with `DRAFT_INELIGIBLE`.
 - **Archive** a settled batch from the batch row (`archive-batch-<id>`), then confirm with a reason.
   It leaves the list. Leave **Also close the issues** unticked; wave D may still need them.

@@ -45,10 +45,13 @@ commands (#931).
 - **S9 handoff:** **Start analysis with these artifacts** once. It must start a new run, never
   `{{ANALYSIS_RUN_ID}}`; record its ID and cost, with test custom agents disabled first.
 - **S21:** the dry run lists the titles and the target repo. #953 has landed, so Publish is
-  enabled after it, and its confirm names the repo and the count. Publish within the 2-issue cap, to `openzigs/flux-v2` only, from a
-  throwaway feature: tick one task in the export picker (#993) and run the dry run again, or
-  cut `tasks.md` to 1 task (see the standing rules below).
-- **S24** (optional): close then reopen the S21 issue. A bullet task is ticked on close and
+  enabled after it, and its confirm names the repo and the count. **Open the confirm, then
+  Cancel**: J1.8 publishes 2 issues, the whole cap, so S21 dry-runs only (run 10). Only if the
+  operator gives S21 a slot, publish within the 2-issue cap, to `openzigs/flux-v2` only, from a throwaway
+  feature: tick one task in the export picker (#993) and run the dry run
+  again, or cut `tasks.md` to 1 task (see the standing rules below).
+- **S24** (optional): needs a **real** S21 issue, so it runs only when S21 got a slot;
+  otherwise record it 🚫 ("no S21 publish: J1.8 holds both slots"). Close then reopen the S21 issue. A bullet task is ticked on close and
   unticked on reopen. A table-form row is never ticked: close writes `<!-- closed via #N -->`
   and reopen replaces it with `<!-- open -->`. It needs a tunnel
   that forwards only `POST /api/webhooks/github/pr|issues`, which the operator sets up.
