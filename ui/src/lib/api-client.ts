@@ -5,14 +5,42 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code: string | undefined;
   readonly details: unknown;
+  /**
+   * #1570 — the response's `Retry-After`, in milliseconds from now, when it
+   * carried a readable one. The query client waits this long before retrying a
+   * 429 instead of giving up on it.
+   */
+  readonly retryAfterMs: number | undefined;
 
-  constructor(status: number, message: string, code?: string, details?: unknown) {
+  constructor(
+    status: number,
+    message: string,
+    code?: string,
+    details?: unknown,
+    retryAfterMs?: number,
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.details = details;
+    this.retryAfterMs = retryAfterMs;
   }
+}
+
+/**
+ * #1570 — parse a `Retry-After` value (RFC 9110 §10.2.3: delay-seconds or an
+ * HTTP-date) into milliseconds from now. Undefined when absent or unreadable.
+ */
+function retryAfterMs(value: string | null | undefined): number | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed) * 1000;
+  // An HTTP-date names its day and month; without the letter check V8 reads
+  // "-5" as the year 5 BC.
+  const at = /[a-z]/i.test(trimmed) ? Date.parse(trimmed) : Number.NaN;
+  if (Number.isNaN(at)) return undefined;
+  return Math.max(0, at - Date.now());
 }
 
 /** #1554 — the server's code for an action that needs a sign-in with MFA. */
@@ -322,7 +350,14 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
     // `error` object instead — fall back to the whole error payload so callers
     // (the 3-way merge flow) can still read `serverVersion`/`diff`.
     const details = payload?.error?.details ?? payload?.error;
-    throw new ApiError(response.status, message, payload?.error?.code, details);
+    throw new ApiError(
+      response.status,
+      message,
+      payload?.error?.code,
+      details,
+      // Optional chaining: some callers' test doubles build a bare object, not a Response.
+      retryAfterMs(response.headers?.get("retry-after")),
+    );
   }
 
   if (payload && "data" in payload) {
