@@ -122,3 +122,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Narrowed key unmasks uniqueness](project_review-heuristics-hidden-uniqueness-and-dead-claims.md) — fail-open reuse; no call site (#1508)
 - [Panel required? exit 2](project_adversarial-panel-trigger-and-gate-scripts.md) — review:adversarial-required; gate snippets fail open (#1482)
 - [Approved re-derived on re-save](project_approved-status-rederived-on-resave.md) — gate re-save paths, not routes only; stacked PR closes (#1588)
+- [Run 10 fix review lessons](project_run10-fix-review-lessons.md) — plain-text views; metadata writers; AbortError mocks; throttle (#1593-#1601)
