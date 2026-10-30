@@ -72,6 +72,12 @@ export interface FusedSymbolHit {
   kind: string;
   score: number;
   snippet?: string | null;
+  /**
+   * #1611 — the `RepoConnection` whose code graph holds the symbol, when the
+   * line lookup knows it. Absent for a graph with no repo (and for lookups that
+   * do not read it).
+   */
+  repoConnectionId?: string;
 }
 
 /** Result of a fused merge. `block` is `""` when no symbol hit survives. */
@@ -127,7 +133,18 @@ export interface SymbolLineLookup {
   resolve(
     symbolIds: string[],
     projectId: string,
-  ): Promise<Map<string, { filePath: string; startLine: number; endLine: number }>>;
+  ): Promise<
+    Map<
+      string,
+      {
+        filePath: string;
+        startLine: number;
+        endLine: number;
+        /** #1611 — the symbol's repo (its code graph's `repoConnectionId`), when known. */
+        repoConnectionId?: string | null;
+      }
+    >
+  >;
 }
 
 const HEADER = [
@@ -352,7 +369,7 @@ export async function buildFusedCodeBlock(opts: {
   }
   if (!raw || raw.length === 0) return empty; // no code graph / no hits → no-op
 
-  let lines: Map<string, { filePath: string; startLine: number; endLine: number }>;
+  let lines: Awaited<ReturnType<SymbolLineLookup["resolve"]>>;
   try {
     lines = await opts.lineLookup.resolve(
       raw.map((r) => r.symbolId),
@@ -379,6 +396,7 @@ export async function buildFusedCodeBlock(opts: {
       kind: r.kind,
       score: r.score,
       snippet: r.snippet ?? null,
+      ...(li.repoConnectionId ? { repoConnectionId: li.repoConnectionId } : {}),
     });
   }
   if (hits.length === 0) return empty;

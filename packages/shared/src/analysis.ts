@@ -307,6 +307,15 @@ export const codeCitationSchema = z.object({
   symbolId: z.string().min(1).max(256).optional(),
   snippet: z.string().min(1).max(2048).optional(),
   score: z.number().min(0).max(1).optional(),
+  /**
+   * #1611 — the `RepoConnection` the cited file belongs to. A project can hold
+   * several repositories, so a bare `filePath` is ambiguous between them.
+   * SERVER-STAMPED only: the grounding gate copies it from the retrieved
+   * chunk's provenance, and {@link salvageCitationList} discards any value a
+   * model supplies. Optional, so a citation persisted before #1611 parses
+   * unchanged; absent also when the repo cannot be told apart.
+   */
+  repoConnectionId: z.string().min(1).max(64).optional(),
 });
 export type CodeCitation = z.infer<typeof codeCitationSchema>;
 
@@ -342,6 +351,9 @@ export interface CitationSalvage {
   dropped: number;
   repaired: number;
 }
+
+/** #1611 — the citation field a model may never set (see {@link codeCitationSchema}). */
+const MODEL_DISCARDED_CITATION_FIELD = "repoConnectionId";
 
 /**
  * Issue #1143 — a model-authored citation list, repaired where it can be and
@@ -381,7 +393,11 @@ export function salvageCitationList(value: unknown): CitationSalvage {
   let dropped = 0;
   for (const raw of list) {
     const isObject = raw !== null && typeof raw === "object" && !Array.isArray(raw);
-    const entries = isObject ? Object.entries(raw) : [];
+    // #1611 — a citation's repo is stamped by the grounding gate from what was
+    // retrieved, never taken from the model: drop it before anything reads it.
+    const entries = (isObject ? Object.entries(raw) : []).filter(
+      ([k]) => k !== MODEL_DISCARDED_CITATION_FIELD,
+    );
     const withoutNulls = entries.filter(([, v]) => v !== null);
     const parsed = citationSchema.safeParse(isObject ? Object.fromEntries(withoutNulls) : raw);
     if (!parsed.success) {

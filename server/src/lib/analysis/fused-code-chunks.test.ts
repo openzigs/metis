@@ -493,3 +493,21 @@ describe("toFusedRagChunkRef (#573)", () => {
     ).toEqual({ filename: "src/a.ts", source: undefined });
   });
 });
+
+describe("#1611 symbolHitToContextChunk carries the hit's repo", () => {
+  const hit = {
+    symbolId: "sym-b",
+    filePath: "src/auth.ts",
+    startLine: 1,
+    endLine: 9,
+    name: "login",
+    kind: "function",
+    score: 0.5,
+  };
+  it("copies repoConnectionId when the hit has one, and adds none when it does not", () => {
+    expect(symbolHitToContextChunk({ ...hit, repoConnectionId: "rc-B" }).repoConnectionId).toBe(
+      "rc-B",
+    );
+    expect(symbolHitToContextChunk(hit)).not.toHaveProperty("repoConnectionId");
+  });
+});

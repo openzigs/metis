@@ -1385,6 +1385,73 @@ describe("AnalysisOrchestrator.start", () => {
     __resetConfigSingleton();
   });
 
+  it("#1611 — persists the provenance repo on a grounded code citation, never the model's claim", async () => {
+    process.env.ANALYSIS_FUSED_CODE_RETRIEVAL = "true";
+    __resetConfigSingleton();
+    const io = makeIO();
+    codeGraphExists = true; // AGENTIC
+    uploadedDocs = ["doc-1"];
+    const fixture = fusedCodeDepsFixture();
+    // The retrieved symbol lives in repo B's code graph.
+    const fusedCode = {
+      searcher: fixture.searcher,
+      lineLookup: {
+        async resolve(ids: string[]) {
+          return new Map(
+            ids.map((sid) => [
+              sid,
+              {
+                filePath: "server/src/auth/session.ts",
+                startLine: 10,
+                endLine: 42,
+                repoConnectionId: "rc-B",
+              },
+            ]),
+          );
+        },
+      },
+    };
+    const provider = makeProvider({
+      docRequirements: [{ id: "REQ-001", text: "Users can reset their password" }],
+      codeFindingCitations: [
+        {
+          filePath: "server/src/auth/session.ts",
+          startLine: 12,
+          endLine: 20,
+          repoConnectionId: "other-tenant-repo",
+        },
+      ],
+    });
+    const orch = new AnalysisOrchestrator({
+      provider,
+      knowledge: stubKnowledge(),
+      fusedCode,
+      io: io as unknown as import("../src/lib/socket/server.js").MetisIOServer,
+      retrieve: async () => [
+        { documentId: "doc-1", chunkIndex: 0, filename: "s.md", text: "c", score: 0.5 },
+      ],
+    });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["document", "code"],
+    });
+    for (let i = 0; i < 400 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const citations = codeFindingCitationsOf(analysisId);
+    expect(citations).toEqual([
+      expect.objectContaining({
+        filePath: "server/src/auth/session.ts",
+        startLine: 12,
+        repoConnectionId: "rc-B",
+      }),
+    ]);
+    expect(JSON.stringify(citations)).not.toContain("other-tenant-repo");
+    delete process.env.ANALYSIS_FUSED_CODE_RETRIEVAL;
+    __resetConfigSingleton();
+  });
+
   it("grounds code citations on the REQUIREMENT-GROUNDED path", async () => {
     process.env.ANALYSIS_FUSED_CODE_RETRIEVAL = "true";
     __resetConfigSingleton();

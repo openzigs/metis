@@ -20,6 +20,10 @@
  *   - A code citation is KEPT only when its `filePath` appears in the allowed
  *     provenance set; otherwise it is DROPPED (hallucinated). When kept it is
  *     enriched with the matching symbol's `symbolId`/`snippet` when available.
+ *   - #1611 — a kept code citation carries the `repoConnectionId` of the chunk
+ *     it is grounded in, taken from provenance and never from the model. When
+ *     the retrieved chunks at that path come from more than one repo and the
+ *     citation does not pin one of them by `symbolId`, it carries no repo.
  */
 import {
   isCodeCitation,
@@ -42,8 +46,12 @@ export function normalizeFilePath(p: string): string {
 interface CodeProvenance {
   /** Fused symbol chunks keyed by their synthetic `code-graph:<symbolId>` documentId. */
   byDocumentId: Map<string, RetrievalContextChunk>;
-  /** Fused symbol chunks keyed by normalised `filePath` (first hit wins). */
-  byFilePath: Map<string, RetrievalContextChunk>;
+  /**
+   * Fused symbol chunks keyed by normalised `filePath`, in retrieval order.
+   * #1611 — every chunk, not only the first: two repos of one project can both
+   * hold `src/auth.ts`.
+   */
+  byFilePath: Map<string, RetrievalContextChunk[]>;
   /** Every filePath the agent may legitimately cite (fused chunks ∪ tool-read files). */
   allowedFilePaths: Set<string>;
 }
@@ -58,13 +66,15 @@ export function buildCodeProvenance(
   extraAllowedFilePaths: Iterable<string> = [],
 ): CodeProvenance {
   const byDocumentId = new Map<string, RetrievalContextChunk>();
-  const byFilePath = new Map<string, RetrievalContextChunk>();
+  const byFilePath = new Map<string, RetrievalContextChunk[]>();
   const allowedFilePaths = new Set<string>();
   for (const c of retrieved) {
     if (c.source !== "code-graph" || !c.filePath) continue;
     byDocumentId.set(c.documentId, c);
     const norm = normalizeFilePath(c.filePath);
-    if (!byFilePath.has(norm)) byFilePath.set(norm, c);
+    const atPath = byFilePath.get(norm);
+    if (atPath) atPath.push(c);
+    else byFilePath.set(norm, [c]);
     allowedFilePaths.add(norm);
   }
   for (const p of extraAllowedFilePaths) {
@@ -83,7 +93,35 @@ function chunkToCodeCitation(chunk: RetrievalContextChunk, snippet?: string): Co
   if (chunk.symbolId) citation.symbolId = chunk.symbolId;
   const snip = (snippet ?? chunk.text)?.trim();
   if (snip) citation.snippet = snip.slice(0, 2048);
+  if (chunk.repoConnectionId) citation.repoConnectionId = chunk.repoConnectionId;
   return citation;
+}
+
+/**
+ * #1611 — the retrieved chunk a code citation names by `symbolId`, if any. The
+ * model's `symbolId` can only SELECT among chunks retrieved at that path; it
+ * never adds provenance.
+ */
+function chunkNamedBySymbol(
+  atPath: readonly RetrievalContextChunk[],
+  symbolId: string | undefined,
+): RetrievalContextChunk | undefined {
+  return symbolId ? atPath.find((ch) => ch.symbolId === symbolId) : undefined;
+}
+
+/**
+ * #1611 — the repo to stamp on a code citation grounded at a path: the named
+ * chunk's repo, else the one repo every retrieved chunk at that path shares.
+ * Chunks from different repos (or a repo-less graph beside a repo) without a
+ * naming `symbolId` are ambiguous, and the citation then carries none.
+ */
+function repoFromProvenance(
+  atPath: readonly RetrievalContextChunk[],
+  named: RetrievalContextChunk | undefined,
+): string | undefined {
+  if (named) return named.repoConnectionId;
+  const repos = new Set(atPath.map((ch) => ch.repoConnectionId));
+  return repos.size === 1 ? [...repos][0] : undefined;
 }
 
 /** Structured record of a citation the grounding gate discarded (observability). */
@@ -130,11 +168,18 @@ export function groundCodeCitations(
         opts?.onDrop?.({ filePath: c.filePath, reason: "file-not-retrieved" });
         continue;
       }
-      const match = provenance.byFilePath.get(norm);
+      const atPath = provenance.byFilePath.get(norm) ?? [];
+      const named = chunkNamedBySymbol(atPath, c.symbolId);
+      const match = named ?? atPath[0];
+      // #1611 — whatever repo the model claimed is discarded; the repo comes
+      // from provenance only (OWASP A01 / LLM output trust).
+      const { repoConnectionId: _modelClaim, ...modelCitation } = c;
+      const repoConnectionId = repoFromProvenance(atPath, named);
       out.push({
-        ...c, // keep the model's span (containment is optional — see doc above)
+        ...modelCitation, // keep the model's span (containment is optional — see doc above)
         symbolId: c.symbolId ?? match?.symbolId,
         snippet: c.snippet ?? match?.text?.trim().slice(0, 2048),
+        ...(repoConnectionId ? { repoConnectionId } : {}),
       });
       continue;
     }

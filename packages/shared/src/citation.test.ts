@@ -89,3 +89,24 @@ describe("citation union", () => {
     expect(documentCitationSchema.safeParse(doc).success).toBe(true);
   });
 });
+
+describe("#1611 — repoConnectionId on a code citation", () => {
+  it("parses a stored pre-#1611 code citation blob unchanged (no field added)", () => {
+    const legacy = JSON.parse(
+      '{"filePath":"src/auth.ts","startLine":12,"endLine":20,"symbolId":"sym-1","snippet":"x"}',
+    );
+    const parsed = citationSchema.parse(legacy);
+    expect(parsed).toEqual(legacy);
+    expect(parsed).not.toHaveProperty("repoConnectionId");
+  });
+
+  it("keeps a server-stamped repoConnectionId and bounds it to 64 characters", () => {
+    const stamped = { filePath: "src/auth.ts", startLine: 1, endLine: 2, repoConnectionId: "rc-B" };
+    expect(codeCitationSchema.parse(stamped)).toEqual(stamped);
+    expect(citationSchema.parse(stamped)).toEqual(stamped);
+    expect(
+      codeCitationSchema.safeParse({ ...stamped, repoConnectionId: "r".repeat(65) }).success,
+    ).toBe(false);
+    expect(codeCitationSchema.safeParse({ ...stamped, repoConnectionId: "" }).success).toBe(false);
+  });
+});

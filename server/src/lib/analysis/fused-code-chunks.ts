@@ -77,6 +77,7 @@ export function symbolHitToContextChunk(hit: FusedSymbolHit): RetrievalContextCh
     filePath: hit.filePath,
     startLine: hit.startLine,
     endLine: hit.endLine,
+    ...(hit.repoConnectionId ? { repoConnectionId: hit.repoConnectionId } : {}),
   };
 }
 

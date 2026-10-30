@@ -405,14 +405,29 @@ export function createDefaultCodeSearcher(deps: CodeSearcherDeps = {}): FusedCod
 export function createDefaultSymbolLineLookup(): SymbolLineLookup {
   return {
     async resolve(symbolIds, projectId) {
-      const map = new Map<string, { filePath: string; startLine: number; endLine: number }>();
+      const map = new Map<
+        string,
+        { filePath: string; startLine: number; endLine: number; repoConnectionId: string | null }
+      >();
       if (symbolIds.length === 0) return map;
       const rows = await prisma.codeSymbol.findMany({
         where: { id: { in: symbolIds }, projectId },
-        select: { id: true, filePath: true, startLine: true, endLine: true },
+        // #1611 — the symbol's repo is its code graph's; a citation is stamped from it.
+        select: {
+          id: true,
+          filePath: true,
+          startLine: true,
+          endLine: true,
+          graph: { select: { repoConnectionId: true } },
+        },
       });
       for (const r of rows) {
-        map.set(r.id, { filePath: r.filePath, startLine: r.startLine, endLine: r.endLine });
+        map.set(r.id, {
+          filePath: r.filePath,
+          startLine: r.startLine,
+          endLine: r.endLine,
+          repoConnectionId: r.graph?.repoConnectionId ?? null,
+        });
       }
       return map;
     },
