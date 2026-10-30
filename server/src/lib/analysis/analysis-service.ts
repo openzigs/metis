@@ -10,6 +10,7 @@
  * already wired via Prisma `onDelete: Cascade` on the project relation.
  */
 import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
+import { CHECKPOINT_SIGN_OFF_KEY } from "./checkpoint-sign-off.js";
 import { mergeHiddenRequirementLabels, parseRequirementLabels } from "./requirement-labels.js";
 import {
   analysisFailedAgents,
@@ -1177,6 +1178,7 @@ async function replaceRequirementSet(
   // #939 — the rows it named are deleted below; rewritten after the inserts
   // when this set is itself checkpoint-approved.
   delete next[CHECKPOINT_APPROVED_IDS_KEY];
+  delete next[CHECKPOINT_SIGN_OFF_KEY];
   // #1389 — the proposals name the rows deleted below; re-derived for the new set.
   delete next[CRITERIA_PROPOSALS_KEY];
   if (input.degraded !== undefined) {
@@ -1281,7 +1283,12 @@ async function replaceRequirementSet(
     ids.push(row.id);
   }
   const written: Record<string, unknown> = { ...next };
-  if (input.reviewStatus) written[CHECKPOINT_APPROVED_IDS_KEY] = ids;
+  // #1588 — only rows written `approved` are the checkpoint's decision (they
+  // are not review work by themselves, #939). A `draft` row is not listed: a
+  // coordinator approving it later is real review work. The status the set
+  // was promoted with is recorded for a later re-save to carry over.
+  if (input.reviewStatus === "approved") written[CHECKPOINT_APPROVED_IDS_KEY] = ids;
+  if (input.reviewStatus) written[CHECKPOINT_SIGN_OFF_KEY] = input.reviewStatus;
   if (record) written[APPROVED_CRITERIA_KEY] = record;
   if (Object.keys(proposals).length > 0) written[CRITERIA_PROPOSALS_KEY] = proposals;
   if (analysisRow && JSON.stringify(written) !== JSON.stringify(next)) {

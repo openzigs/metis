@@ -11,11 +11,15 @@ const loadLiveAuthPayload = vi.hoisted(() =>
 );
 vi.mock("../auth/live-auth-payload.js", () => ({ loadLiveAuthPayload }));
 const findAnalysis = vi.hoisted(() =>
-  vi.fn(async (_args: unknown): Promise<{ startedById: string | null } | null> => null),
+  vi.fn(
+    async (
+      _args: unknown,
+    ): Promise<{ startedById: string | null; metadata?: string | null } | null> => null,
+  ),
 );
 vi.mock("../prisma.js", () => ({ prisma: { analysis: { findFirst: findAnalysis } } }));
 
-const { promotedReviewStatus, signOffForAnalysisStarter, signOffForRole, signOffForUser } =
+const { promotedReviewStatus, signOffForResave, signOffForRole, signOffForUser } =
   await import("./checkpoint-sign-off.js");
 const { SYSTEM_ACTOR_ID } = await import("../audit/system-actor.js");
 
@@ -80,24 +84,44 @@ describe("#1588 — checkpoint sign-off", () => {
     expect(await signOffForUser("u-coordinator")).toEqual({ asApproved: false });
   });
 
-  it("a run's starter is read from the analysis row and judged by durable state", async () => {
-    findAnalysis.mockResolvedValueOnce({ startedById: "u-coordinator" });
+  it("a re-save with no actor falls back to the run's starter, judged by durable state", async () => {
+    findAnalysis.mockResolvedValueOnce({ startedById: "u-coordinator", metadata: "{}" });
     loadLiveAuthPayload.mockResolvedValueOnce(live("coordinator"));
-    expect(await signOffForAnalysisStarter("ana-1")).toEqual({ asApproved: true });
+    expect(await signOffForResave("ana-1")).toEqual({ asApproved: true });
     expect(findAnalysis).toHaveBeenCalledWith({
       where: { id: "ana-1" },
-      select: { startedById: true },
+      select: { startedById: true, metadata: true },
     });
     expect(loadLiveAuthPayload).toHaveBeenCalledWith("u-coordinator");
   });
 
-  it("a run with no starter, no row, or an unreadable row promotes as draft", async () => {
-    findAnalysis.mockResolvedValueOnce({ startedById: null });
-    expect(await signOffForAnalysisStarter("ana-system")).toEqual({ asApproved: false });
+  it("the triggering actor, not the starter, decides when there is one", async () => {
+    findAnalysis.mockResolvedValue({ startedById: "u-coordinator", metadata: null });
+    loadLiveAuthPayload.mockResolvedValueOnce(live("developer"));
+    expect(await signOffForResave("ana-1", "u-developer")).toEqual({ asApproved: false });
+    expect(loadLiveAuthPayload).toHaveBeenCalledWith("u-developer");
+    loadLiveAuthPayload.mockResolvedValueOnce(live("coordinator"));
+    expect(await signOffForResave("ana-1", "u-coordinator")).toEqual({ asApproved: true });
+  });
+
+  it("a set promoted as draft is never widened by a coordinator's re-save", async () => {
+    findAnalysis.mockResolvedValueOnce({
+      startedById: "u-coordinator",
+      metadata: JSON.stringify({ checkpointSignOff: "draft" }),
+    });
+    loadLiveAuthPayload.mockResolvedValue(live("coordinator"));
+    expect(await signOffForResave("ana-1", "u-coordinator")).toEqual({ asApproved: false });
+  });
+
+  it("a run with no starter, no row, or an unreadable row re-saves as draft", async () => {
+    findAnalysis.mockResolvedValueOnce({ startedById: null, metadata: null });
+    expect(await signOffForResave("ana-system")).toEqual({ asApproved: false });
     findAnalysis.mockResolvedValueOnce(null);
-    expect(await signOffForAnalysisStarter("ana-gone")).toEqual({ asApproved: false });
+    expect(await signOffForResave("ana-gone")).toEqual({ asApproved: false });
     findAnalysis.mockRejectedValueOnce(new Error("db down"));
-    expect(await signOffForAnalysisStarter("ana-err")).toEqual({ asApproved: false });
+    expect(await signOffForResave("ana-err", "u-coordinator")).toEqual({ asApproved: false });
+    findAnalysis.mockResolvedValueOnce({ startedById: "u-coordinator", metadata: "{not json" });
+    expect(await signOffForResave("ana-bad-meta", "u-coordinator")).toEqual({ asApproved: false });
     expect(loadLiveAuthPayload).not.toHaveBeenCalled();
   });
 });

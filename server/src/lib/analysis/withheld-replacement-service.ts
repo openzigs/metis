@@ -23,6 +23,7 @@ import {
   readCheckpointApprovedIds,
   reviewedRequirementWhere,
 } from "./analysis-service.js";
+import { CHECKPOINT_SIGN_OFF_KEY } from "./checkpoint-sign-off.js";
 import { CRITERIA_PROPOSALS_KEY, readCriteriaProposals } from "./approved-criteria-carry-over.js";
 import {
   APPLIED_WITHHELD_REPLACEMENT_REASON,
@@ -275,7 +276,8 @@ export async function applyWithheldReplacement(input: {
       // #939 — the checkpoint-approved rows are the surviving ones plus, for an
       // approved set, the rows inserted here.
       const approvedIds = readCheckpointApprovedIds(next).filter((id) => !deleted.has(id));
-      if (pair.proposal.reviewStatus) approvedIds.push(...result.insertedIds);
+      if (pair.proposal.reviewStatus === "approved") approvedIds.push(...result.insertedIds);
+      if (pair.proposal.reviewStatus === "draft") next[CHECKPOINT_SIGN_OFF_KEY] = "draft";
       if (approvedIds.length > 0) next[CHECKPOINT_APPROVED_IDS_KEY] = approvedIds;
       else delete next[CHECKPOINT_APPROVED_IDS_KEY];
       // The applied rows came from a synthesis of this health (#769, #1117).

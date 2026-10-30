@@ -167,7 +167,7 @@ import {
   listApprovalRequests,
   type ApprovalPolicy,
 } from "./approval-checkpoint.js";
-import { promotedReviewStatus, signOffForAnalysisStarter } from "./checkpoint-sign-off.js";
+import { promotedReviewStatus, signOffForResave } from "./checkpoint-sign-off.js";
 import {
   compareReviewedWithSynthesis,
   latestRequirementApprovals,
@@ -1242,6 +1242,7 @@ export class AnalysisOrchestrator {
           signal: controller.signal,
           accumulator: delta,
           sourceRequirements: readSourceRequirements(analysis.metadata),
+          actorId: opts.actorId,
         });
         // #1001 — the regenerated code pass replaced the code findings, so the
         // run's retrieval health and "cut short" reason must describe IT, not the
@@ -1962,6 +1963,7 @@ export class AnalysisOrchestrator {
           signal: controller.signal,
           accumulator: delta,
           sourceRequirements: readSourceRequirements(analysis.metadata),
+          actorId: opts.actorId,
         });
       }
 
@@ -4580,6 +4582,12 @@ export class AnalysisOrchestrator {
     affectedSchema?: string;
     /** #1063 — the imported items the run was started from, when it was. */
     sourceRequirements?: AnalysisSourceRequirement[];
+    /**
+     * #1588 — who triggered this re-synthesis (a regenerate or resume). It, not
+     * the run's starter, decides whether a reviewed set is re-saved `approved`.
+     * Absent for the pipeline's own synthesis: the starter.
+     */
+    actorId?: string;
   }): Promise<SynthesisOutcome> {
     // Epic #1107 (#1110) — RANK by the #1109 panel's confidence before anything
     // downstream numbers these rows. The reorder happens exactly ONCE, on the
@@ -4885,7 +4893,9 @@ export class AnalysisOrchestrator {
               // re-creating the set left every row unreviewed. #1588 — as
               // `approved` only when the run's starter holds `project.update`;
               // a system-started run (no starter) and anyone else: `draft`.
-              reviewStatus: promotedReviewStatus(await signOffForAnalysisStarter(input.analysisId)),
+              reviewStatus: promotedReviewStatus(
+                await signOffForResave(input.analysisId, input.actorId),
+              ),
             }
           : {}),
       });

@@ -274,6 +274,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       analysisId: string,
       first: typeof firstSynthesis = firstSynthesis,
       startedById: string | null = ANALYST,
+      promotedBy: { asApproved: boolean } = { asApproved: true },
     ): Promise<void> {
       await db.analysis.create({
         data: {
@@ -309,7 +310,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           reviewedAt: new Date(),
         })),
       });
-      expect(await promoteApprovedRequirements(analysisId, { asApproved: true })).toEqual({
+      expect(await promoteApprovedRequirements(analysisId, promotedBy)).toEqual({
         status: "promoted",
         requirementCount: 2,
       });
@@ -331,7 +332,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       return snap!.requirements.find((r) => r.id === row.id)!.criteriaProposal ?? null;
     };
 
-    async function regenerate(analysisId: string, feeds: string[], minimal: string[] = []) {
+    async function regenerate(
+      analysisId: string,
+      feeds: string[],
+      minimal: string[] = [],
+      actorId: string = ANALYST,
+    ) {
       const before = await rowFor(analysisId, "REQ-1");
       const provider = scriptedProvider(reSynthesis(feeds, minimal));
       const orch = new AnalysisOrchestrator({
@@ -339,7 +345,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         knowledge: stubKnowledge,
         webSearchConfigured: () => true,
       });
-      await orch.regenerateAgent({ analysisId, agentKey: "web", actorId: ANALYST });
+      await orch.regenerateAgent({ analysisId, agentKey: "web", actorId });
       expect((await db.analysis.findUnique({ where: { id: analysisId } }))?.status).toBe(
         "completed",
       );
@@ -454,23 +460,56 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
     });
 
-    // #1588 — the regenerate re-creates the set with the starter's permission:
-    // a developer's run, or one the system started (no starter), comes back as
-    // drafts, keeping the checkpoint's criteria (#1389) all the same.
-    for (const [label, starter] of [
-      ["a developer", DEVELOPER],
-      ["the system (no starter)", null],
-    ] as const) {
-      it(`a regenerate of a run started by ${label} re-creates the rows as drafts`, async () => {
-        const id = `ana-1389-starter-${starter ?? "system"}`;
-        await seedPromotedAnalysis(id, firstSynthesis, starter);
-        await regenerate(id, REVISED_FEEDS);
-        for (const s of ["REQ-1", "REQ-2"]) {
-          expect((await rowFor(id, s)).reviewStatus).toBe("draft");
-        }
-        expect(await criteriaOf(id, "REQ-2")).toEqual(APPROVED_FEEDS);
-      });
-    }
+    // #1588 — the regenerate re-creates the set with the permission of whoever
+    // triggered it: a developer's Regenerate comes back as drafts, keeping the
+    // checkpoint's criteria (#1389) all the same.
+    it("a developer's Regenerate of a developer's run re-creates the rows as drafts", async () => {
+      const id = "ana-1389-starter-developer";
+      await seedPromotedAnalysis(id, firstSynthesis, DEVELOPER);
+      await regenerate(id, REVISED_FEEDS, [], DEVELOPER);
+      for (const s of ["REQ-1", "REQ-2"]) {
+        expect((await rowFor(id, s)).reviewStatus).toBe("draft");
+      }
+      expect(await criteriaOf(id, "REQ-2")).toEqual(APPROVED_FEEDS);
+    });
+
+    // #1589 review — the regenerate's trigger decides, not only the run's
+    // starter, and the sign-off recorded at promotion is carried over.
+    const statuses = async (id: string) => [
+      (await rowFor(id, "REQ-1")).reviewStatus,
+      (await rowFor(id, "REQ-2")).reviewStatus,
+    ];
+    it("a developer's Regenerate of a coordinator's run (checkpoint approved as draft) stays draft", async () => {
+      const id = "ana-1389-dev-regenerates";
+      await seedPromotedAnalysis(id, firstSynthesis, ANALYST, { asApproved: false });
+      await regenerate(id, REVISED_FEEDS, [], DEVELOPER);
+      expect(await statuses(id)).toEqual(["draft", "draft"]);
+    });
+
+    it("a developer's Regenerate of an approved set re-saves it as draft", async () => {
+      const id = "ana-1389-dev-regenerates-approved";
+      await seedPromotedAnalysis(id);
+      await regenerate(id, REVISED_FEEDS, [], DEVELOPER);
+      expect(await statuses(id)).toEqual(["draft", "draft"]);
+    });
+
+    it("a coordinator's Regenerate does not approve a set promoted as draft", async () => {
+      const id = "ana-1389-coord-regenerates-draft";
+      await seedPromotedAnalysis(id, firstSynthesis, ANALYST, { asApproved: false });
+      await regenerate(id, REVISED_FEEDS);
+      expect(await statuses(id)).toEqual(["draft", "draft"]);
+    });
+
+    it("a row a coordinator approved after a draft promotion is review work: a Regenerate keeps it", async () => {
+      const id = "ana-1389-coord-approves-draft";
+      await seedPromotedAnalysis(id, firstSynthesis, ANALYST, { asApproved: false });
+      const before = await rowFor(id, "REQ-1");
+      await db.requirement.update({ where: { id: before.id }, data: { reviewStatus: "approved" } });
+      await regenerate(id, REVISED_FEEDS);
+      const after = await rowFor(id, "REQ-1");
+      expect(after.id).toBe(before.id);
+      expect(after.reviewStatus).toBe("approved");
+    });
 
     it("Dismiss keeps the approved criteria, and holds for that requirement for the run", async () => {
       const id = "ana-1389-dismiss";

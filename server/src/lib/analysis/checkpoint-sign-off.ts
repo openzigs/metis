@@ -20,6 +20,14 @@ const log = createChildLogger("checkpoint-sign-off");
 /** The permission an `approved` requirement stands for (#1566, #1588). */
 export const REQUIREMENT_SIGN_OFF_PERMISSION = "project.update" as const;
 
+/**
+ * Analysis metadata key recording the status the checkpoint promotion wrote
+ * its rows with (`"approved"` | `"draft"`). A later re-save of the reviewed set
+ * (regenerate, resume) carries it over, so it can narrow the sign-off but never
+ * widen it (#1589 review).
+ */
+export const CHECKPOINT_SIGN_OFF_KEY = "checkpointSignOff";
+
 /** How a checkpoint promotion records the rows it writes. */
 export interface PromotionSignOff {
   /** `true`: the rows are written `approved`; `false`: `draft`. */
@@ -31,14 +39,21 @@ export function promotedReviewStatus(signOff: PromotionSignOff): "approved" | "d
   return signOff.asApproved ? "approved" : "draft";
 }
 
-/** Sign-off for a request's caller, from the role the permission middleware read. */
+/**
+ * Sign-off for a request's caller, from the role the permission middleware read.
+ * That is the token's role claim, as `requirePermission` judges it, so a user
+ * demoted since sign-in keeps the old answer until the token expires; the
+ * paths that read durable roles ({@link signOffForUser}) answer `draft` for
+ * them at once. The routes deliberately match the permission check they sit
+ * behind rather than disagree with it.
+ */
 export function signOffForRole(role: RoleKey): PromotionSignOff {
   return { asApproved: hasPermission(role, REQUIREMENT_SIGN_OFF_PERMISSION) };
 }
 
 /**
- * Sign-off for a user who is not the request's caller — the starter of a run
- * the orchestrator persists, or whoever asked for drafts. Read from durable
+ * Sign-off for a user who is not the request's caller — the trigger of a re-save
+ * the orchestrator makes, or whoever asked for drafts. Read from durable
  * state (`loadLiveAuthPayload`): a run the system started (`startedById` NULL,
  * #1528, or the system actor), a deactivated or deleted user, and a failed
  * lookup all promote as draft. Fails closed, never throws.
@@ -58,25 +73,39 @@ export async function signOffForUser(userId: string | null | undefined): Promise
 }
 
 /**
- * Sign-off for the user who started an analysis (`Analysis.startedById`), read
- * from the row so a continuation or regenerate uses the run's own starter.
- * Fails closed like {@link signOffForUser}: a missing row or a failed read
- * promotes as draft.
+ * Sign-off for the orchestrator re-saving a reviewed requirement set (a
+ * regenerate or a resume). Both must hold, so a re-save never records
+ * `approved` against someone who did not sign off:
+ *
+ * - the sign-off recorded when the set was promoted
+ *   ({@link CHECKPOINT_SIGN_OFF_KEY}) — a set promoted as `draft` stays draft;
+ * - the user who triggered the re-save (`actorId`), or the run's starter when
+ *   there is none (the pipeline's own synthesis).
+ *
+ * Read from durable state; fails closed like {@link signOffForUser}.
  */
-export async function signOffForAnalysisStarter(analysisId: string): Promise<PromotionSignOff> {
+export async function signOffForResave(
+  analysisId: string,
+  actorId?: string,
+): Promise<PromotionSignOff> {
   let startedById: string | null | undefined;
+  let recorded: unknown;
   try {
     const row = await prisma.analysis.findFirst({
       where: { id: analysisId },
-      select: { startedById: true },
+      select: { startedById: true, metadata: true },
     });
     startedById = row?.startedById;
+    if (row?.metadata) {
+      recorded = (JSON.parse(row.metadata) as Record<string, unknown>)[CHECKPOINT_SIGN_OFF_KEY];
+    }
   } catch (err) {
-    log.warn("could not read the run's starter; promoting as draft", {
+    log.warn("could not read the run's sign-off record; promoting as draft", {
       analysisId,
       error: (err as Error).message,
     });
     return { asApproved: false };
   }
-  return signOffForUser(startedById);
+  if (recorded === "draft") return { asApproved: false };
+  return signOffForUser(actorId ?? startedById);
 }

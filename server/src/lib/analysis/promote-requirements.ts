@@ -26,7 +26,11 @@ import {
   readFlattenedFindings,
 } from "./analysis-service.js";
 import { canCreateTickets } from "./approval-checkpoint.js";
-import { promotedReviewStatus, type PromotionSignOff } from "./checkpoint-sign-off.js";
+import {
+  CHECKPOINT_SIGN_OFF_KEY,
+  promotedReviewStatus,
+  type PromotionSignOff,
+} from "./checkpoint-sign-off.js";
 import {
   itemsGivenTo,
   latestRequirementApprovals,
@@ -505,7 +509,13 @@ async function appendNewlyApproved(input: {
         metadata: JSON.stringify({
           ...lockedMetadata,
           promotionMatching,
-          [CHECKPOINT_APPROVED_IDS_KEY]: [...checkpointApproved, ...ids],
+          // #1588 — only rows written `approved` are listed; an append made
+          // without sign-off also makes the recorded sign-off `draft`.
+          [CHECKPOINT_APPROVED_IDS_KEY]:
+            input.reviewStatus === "approved"
+              ? [...checkpointApproved, ...ids]
+              : checkpointApproved,
+          ...(input.reviewStatus === "draft" ? { [CHECKPOINT_SIGN_OFF_KEY]: "draft" } : {}),
           promotedStructuredIds: [
             ...new Set([...(recorded ?? input.promotedStructuredIds), ...appendedIds]),
           ],
