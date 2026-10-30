@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { useAppMutation } from "@/lib/use-app-mutation";
 import { requirementCriteriaProposalApi } from "@/lib/collaboration-api";
 import { useQueryClient, type QueryKey } from "@tanstack/react-query";
+import { HoverHint } from "@/components/spec-kit/hover-hint";
 
 export interface CriteriaProposalNoticeProps {
   requirementId: string;
@@ -29,6 +30,12 @@ export interface CriteriaProposalNoticeProps {
   current: string[];
   /** Refetched once the analyst has answered. */
   invalidateKeys?: QueryKey[];
+  /**
+   * #1587 — why the viewer cannot make this write (they lack `project.update`,
+   * which the server requires). Set: the write controls are disabled and carry
+   * this hint. Omitted: they are enabled.
+   */
+  writeHint?: string;
 }
 
 function CriteriaList({ items, label }: { items: string[]; label: string }): React.ReactElement {
@@ -51,6 +58,7 @@ export function CriteriaProposalNotice({
   proposal,
   current,
   invalidateKeys = [],
+  writeHint,
 }: CriteriaProposalNoticeProps): React.ReactElement | null {
   const [open, setOpen] = React.useState(false);
   const queryClient = useQueryClient();
@@ -107,24 +115,28 @@ export function CriteriaProposalNotice({
         </div>
       ) : null}
       <div className="mt-2 flex gap-2">
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={resolve.isPending}
-          aria-label={`Accept suggested acceptance criteria for ${title}`}
-          onClick={() => resolve.mutate("accept")}
-        >
-          Accept
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={resolve.isPending}
-          aria-label={`Dismiss suggested acceptance criteria for ${title}`}
-          onClick={() => resolve.mutate("dismiss")}
-        >
-          Dismiss
-        </Button>
+        <HoverHint hint={writeHint}>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={Boolean(writeHint) || resolve.isPending}
+            aria-label={`Accept suggested acceptance criteria for ${title}`}
+            onClick={() => resolve.mutate("accept")}
+          >
+            Accept
+          </Button>
+        </HoverHint>
+        <HoverHint hint={writeHint}>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={Boolean(writeHint) || resolve.isPending}
+            aria-label={`Dismiss suggested acceptance criteria for ${title}`}
+            onClick={() => resolve.mutate("dismiss")}
+          >
+            Dismiss
+          </Button>
+        </HoverHint>
       </div>
     </div>
   );
