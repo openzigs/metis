@@ -106,6 +106,27 @@ function makeReview(over: Partial<ReviewRequest> = {}): ReviewRequest {
   };
 }
 
+/** #1575 — a review the coordinator is assigned to decide (walkthrough run 10). */
+function assignedTo(reviewer: AuthUser, over: Partial<ReviewRequest> = {}): ReviewRequest {
+  return makeReview({
+    assignments: [
+      {
+        id: "a-2",
+        reviewerId: reviewer.id,
+        decision: "pending",
+        note: null,
+        decidedAt: null,
+        reviewer: {
+          id: reviewer.id,
+          username: reviewer.username,
+          displayName: reviewer.displayName,
+        },
+      },
+    ],
+    ...over,
+  });
+}
+
 function renderButton(review = makeReview(), as: AuthUser | null = REQUESTER) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const invalidate = vi.spyOn(queryClient, "invalidateQueries");
@@ -142,6 +163,14 @@ describe("canWithdrawReview — mirrors the server's rule", () => {
     expect(canWithdrawReview(makeReview(), undefined)).toBe(false);
   });
 
+  it("#1575: refuses a review administrator who is an assigned reviewer of it", () => {
+    // Withdrawing is the requester's action; a reviewer decides the review.
+    expect(canWithdrawReview(assignedTo(COORDINATOR), COORDINATOR)).toBe(false);
+    expect(canWithdrawReview(assignedTo(ADMIN), ADMIN)).toBe(false);
+    // ...while another review administrator still may.
+    expect(canWithdrawReview(assignedTo(COORDINATOR), ADMIN)).toBe(true);
+  });
+
   it("refuses a requester whose role no longer holds review.create", () => {
     // The route checks the permission before it checks who requested it.
     expect(canWithdrawReview(makeReview({ requestedById: "u-read" }), READER)).toBe(false);
@@ -161,6 +190,7 @@ describe("withdrawErrorMessage — every refusal the route can send", () => {
     [409, "ILLEGAL_REVIEW_TRANSITION", /no longer in review/],
     [409, "REVIEW_STATE_CHANGED", /changed while it was being withdrawn/],
     [403, "NOT_REQUESTER", /Only the person who requested this review/],
+    [403, "REVIEWER_CANNOT_WITHDRAW", /reviewer of this review.*Approve or reject it instead/],
     [404, "REVIEW_NOT_FOUND", /no longer exists, or you no longer have access/],
     [403, "FORBIDDEN", /role is not allowed/],
   ];
@@ -302,6 +332,14 @@ describe("review page (/reviews/[id])", () => {
     expect(screen.queryByTestId("withdraw-review-rev-1")).toBeNull();
   });
 
+  it("#1575: does not offer it to a coordinator who is the review's reviewer", async () => {
+    renderDetail(assignedTo(COORDINATOR), COORDINATOR);
+    await screen.findByTestId("review-header");
+    expect(screen.queryByTestId("withdraw-review-rev-1")).toBeNull();
+    // The decision is what is offered instead.
+    expect(screen.getByRole("button", { name: /approve/i })).toBeTruthy();
+  });
+
   it("does not offer it on an approved review, even to its requester", async () => {
     renderDetail(makeReview({ status: "approved" }), REQUESTER);
     await screen.findByTestId("review-header");
@@ -356,6 +394,15 @@ describe("/reviews", () => {
     for (const id of ["rev-approved", "rev-draft", "rev-theirs"]) {
       expect(screen.queryByTestId(`withdraw-review-${id}`)).toBeNull();
     }
+  });
+
+  it("#1575: offers a coordinator no Withdraw on the rows assigned to them", async () => {
+    renderList(
+      [assignedTo(COORDINATOR, { id: "rev-assigned" }), makeReview({ id: "rev-unassigned" })],
+      COORDINATOR,
+    );
+    expect(await screen.findByTestId("withdraw-review-rev-unassigned")).toBeTruthy();
+    expect(screen.queryByTestId("withdraw-review-rev-assigned")).toBeNull();
   });
 
   it("keeps the button outside the row's link, so clicking it does not open the review", async () => {
