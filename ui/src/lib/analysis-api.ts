@@ -1239,6 +1239,12 @@ export interface ApprovalRequestPayload {
    * Absent on any other run and on non-requirement approvals.
    */
   origin?: "ticked" | "added";
+  /**
+   * Issue #1568 — on a requirement approval, true when the requirement's
+   * synthesis item cites no evidence that could become a code link, so
+   * approving promotes it without one. Absent otherwise, and before synthesis.
+   */
+  noCodeEvidence?: boolean;
 }
 
 export interface TicketStatus {

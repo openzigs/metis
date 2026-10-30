@@ -478,6 +478,12 @@ function ApprovalCard({
 
       {!isResolved && (
         <div className="space-y-2">
+          {/* #1568 — what approving this one would do, said before it is done. */}
+          {approval.noCodeEvidence && (
+            <p data-testid="approval-no-code-evidence" className="text-xs text-warning">
+              No code link: its evidence cites no code, so approving promotes it without one.
+            </p>
+          )}
           <Textarea
             aria-label={`Review note for ${itemName}`}
             placeholder="Optional review note…"
@@ -632,6 +638,24 @@ export function splitPendingByOrigin<T extends Pick<ApprovalRequestPayload, "ori
     added: pending.filter((a) => a.origin === "added"),
     other: pending.filter((a) => !a.origin),
   };
+}
+
+/**
+ * Issue #1568 — before approving, say how many pending requirements would be
+ * promoted with no code link (the server marks them `noCodeEvidence`). In #706
+ * run 10, 13 of 22 were, all of them added by the analysis, and nothing said
+ * so until after approval. `null` when none is marked.
+ */
+export function describeNoCodeEvidence(
+  pending: ReadonlyArray<Pick<ApprovalRequestPayload, "type" | "noCodeEvidence">>,
+): string | null {
+  const requirements = pending.filter((a) => a.type === "requirement");
+  const without = requirements.filter((a) => a.noCodeEvidence).length;
+  if (without === 0) return null;
+  return (
+    `${without} of the ${requirements.length} pending requirement(s) cite no code, so approving ` +
+    `promotes them without a code link. Each is marked "No code link" below.`
+  );
 }
 
 /**
@@ -861,6 +885,14 @@ export function ApprovalsPanel({
               onChange={() => query.refetch()}
             />
           </div>
+          {describeNoCodeEvidence(pending) && (
+            <p
+              data-testid="approvals-no-code-evidence"
+              className="rounded border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+            >
+              {describeNoCodeEvidence(pending)}
+            </p>
+          )}
           {approvesAsDraft && (
             <p
               data-testid="approvals-draft-notice"
