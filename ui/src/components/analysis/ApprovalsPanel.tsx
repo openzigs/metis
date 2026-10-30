@@ -407,16 +407,6 @@ function ApprovalCard({
           ) : (
             <span className="font-mono text-xs text-muted-foreground">{approval.itemId}</span>
           )}
-          {/* #1568 — approving this promotes it without a code link. */}
-          {approval.noCodeEvidence && !isResolved && (
-            <span
-              data-testid="approval-no-code-evidence"
-              title="Its evidence cites no code, so it is promoted without a code link."
-              className="rounded border border-warning/40 px-2 py-0.5 text-xs text-warning"
-            >
-              No code link
-            </span>
-          )}
         </div>
         <span
           className={
@@ -460,6 +450,12 @@ function ApprovalCard({
 
       {!isResolved && (
         <div className="space-y-2">
+          {/* #1568 — what approving this one would do, said before it is done. */}
+          {approval.noCodeEvidence && (
+            <p data-testid="approval-no-code-evidence" className="text-xs text-warning">
+              No code link: its evidence cites no code, so approving promotes it without one.
+            </p>
+          )}
           <Textarea
             aria-label={`Review note for ${itemName}`}
             placeholder="Optional review note…"

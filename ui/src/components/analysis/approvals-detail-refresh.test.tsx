@@ -323,21 +323,6 @@ describe("#909 — warns before approval when the reviewed list is not the synth
   });
 });
 
-describe("#930 — describeSetDifference", () => {
-  it("keeps the count message alone when the counts differ but every item is matched", () => {
-    expect(describeSetDifference(2, 1, { reviewedWithoutItem: 0, itemsWithoutReviewed: 0 })).toBe(
-      "Approving promotes the 2 requirement(s) reviewed below, not the 1 the synthesis produced. " +
-        "Synthesized requirements only contribute acceptance criteria and evidence to a reviewed " +
-        "requirement they match.",
-    );
-  });
-
-  it("compares counts only for a run recorded before #930", () => {
-    expect(describeSetDifference(3, 3)).toBeNull();
-    expect(describeSetDifference(3, 4)).not.toBeNull();
-  });
-});
-
 describe("#1568 — pending requirements that would be promoted with no code link", () => {
   it("counts only pending requirement approvals the server marked", () => {
     expect(
@@ -378,5 +363,20 @@ describe("#1568 — pending requirements that would be promoted with no code lin
     renderPanel();
     expect(await screen.findByTestId("approval-ap_1")).toBeInTheDocument();
     expect(screen.queryByTestId("approvals-no-code-evidence")).toBeNull();
+  });
+});
+
+describe("#930 — describeSetDifference", () => {
+  it("keeps the count message alone when the counts differ but every item is matched", () => {
+    expect(describeSetDifference(2, 1, { reviewedWithoutItem: 0, itemsWithoutReviewed: 0 })).toBe(
+      "Approving promotes the 2 requirement(s) reviewed below, not the 1 the synthesis produced. " +
+        "Synthesized requirements only contribute acceptance criteria and evidence to a reviewed " +
+        "requirement they match.",
+    );
+  });
+
+  it("compares counts only for a run recorded before #930", () => {
+    expect(describeSetDifference(3, 3)).toBeNull();
+    expect(describeSetDifference(3, 4)).not.toBeNull();
   });
 });
