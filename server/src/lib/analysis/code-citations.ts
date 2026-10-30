@@ -54,6 +54,12 @@ interface CodeProvenance {
   byFilePath: Map<string, RetrievalContextChunk[]>;
   /** Every filePath the agent may legitimately cite (fused chunks ∪ tool-read files). */
   allowedFilePaths: Set<string>;
+  /**
+   * #1611 — the subset of `allowedFilePaths` that came from tools. Tool paths
+   * carry no repo (a connector's clone may differ from the repo the fused
+   * retrieval returned), so a fused chunk at such a path cannot vouch for one.
+   */
+  toolFilePaths: Set<string>;
 }
 
 /**
@@ -68,6 +74,7 @@ export function buildCodeProvenance(
   const byDocumentId = new Map<string, RetrievalContextChunk>();
   const byFilePath = new Map<string, RetrievalContextChunk[]>();
   const allowedFilePaths = new Set<string>();
+  const toolFilePaths = new Set<string>();
   for (const c of retrieved) {
     if (c.source !== "code-graph" || !c.filePath) continue;
     byDocumentId.set(c.documentId, c);
@@ -78,9 +85,12 @@ export function buildCodeProvenance(
     allowedFilePaths.add(norm);
   }
   for (const p of extraAllowedFilePaths) {
-    if (typeof p === "string" && p.trim()) allowedFilePaths.add(normalizeFilePath(p));
+    if (typeof p !== "string" || !p.trim()) continue;
+    const norm = normalizeFilePath(p);
+    allowedFilePaths.add(norm);
+    toolFilePaths.add(norm);
   }
-  return { byDocumentId, byFilePath, allowedFilePaths };
+  return { byDocumentId, byFilePath, allowedFilePaths, toolFilePaths };
 }
 
 /** Turn a fused code-graph chunk into a fully-formed code citation. */
@@ -98,30 +108,22 @@ function chunkToCodeCitation(chunk: RetrievalContextChunk, snippet?: string): Co
 }
 
 /**
- * #1611 — the retrieved chunk a code citation names by `symbolId`, if any. The
- * model's `symbolId` can only SELECT among chunks retrieved at that path; it
- * never adds provenance.
+ * #1611 — the retrieved chunk a code citation is grounded in at a path, or
+ * `undefined` when provenance cannot pin one. A `symbolId` can only SELECT among
+ * chunks retrieved at that path; an unmatched `symbolId`, chunks from several
+ * repos (or a repo-less graph beside a repo), or a path that was also reached
+ * through a tool (no repo recorded) are ambiguous: the citation then carries no
+ * repo and is not filled from an arbitrary chunk.
  */
-function chunkNamedBySymbol(
+function groundingChunk(
   atPath: readonly RetrievalContextChunk[],
   symbolId: string | undefined,
+  viaTool: boolean,
 ): RetrievalContextChunk | undefined {
-  return symbolId ? atPath.find((ch) => ch.symbolId === symbolId) : undefined;
-}
-
-/**
- * #1611 — the repo to stamp on a code citation grounded at a path: the named
- * chunk's repo, else the one repo every retrieved chunk at that path shares.
- * Chunks from different repos (or a repo-less graph beside a repo) without a
- * naming `symbolId` are ambiguous, and the citation then carries none.
- */
-function repoFromProvenance(
-  atPath: readonly RetrievalContextChunk[],
-  named: RetrievalContextChunk | undefined,
-): string | undefined {
-  if (named) return named.repoConnectionId;
+  if (symbolId) return atPath.find((ch) => ch.symbolId === symbolId);
+  if (viaTool) return undefined;
   const repos = new Set(atPath.map((ch) => ch.repoConnectionId));
-  return repos.size === 1 ? [...repos][0] : undefined;
+  return repos.size === 1 ? atPath[0] : undefined;
 }
 
 /** Structured record of a citation the grounding gate discarded (observability). */
@@ -169,12 +171,11 @@ export function groundCodeCitations(
         continue;
       }
       const atPath = provenance.byFilePath.get(norm) ?? [];
-      const named = chunkNamedBySymbol(atPath, c.symbolId);
-      const match = named ?? atPath[0];
+      const match = groundingChunk(atPath, c.symbolId, provenance.toolFilePaths.has(norm));
       // #1611 — whatever repo the model claimed is discarded; the repo comes
       // from provenance only (OWASP A01 / LLM output trust).
       const { repoConnectionId: _modelClaim, ...modelCitation } = c;
-      const repoConnectionId = repoFromProvenance(atPath, named);
+      const repoConnectionId = match?.repoConnectionId;
       out.push({
         ...modelCitation, // keep the model's span (containment is optional — see doc above)
         symbolId: c.symbolId ?? match?.symbolId,

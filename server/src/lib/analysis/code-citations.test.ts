@@ -302,4 +302,35 @@ describe("#1611 — a grounded code citation carries the repo it was retrieved f
     expect(out).toMatchObject({ filePath: "src/auth.ts" });
     expect(out).not.toHaveProperty("repoConnectionId");
   });
+
+  it("B1: stamps no repo when the path was also reached through a tool and nothing pins a chunk", () => {
+    // Repo B's chunk was fused-retrieved; the run's own clone (repo A) read the same path.
+    const prov = buildCodeProvenance([authIn("rc-B", "sym-b")], ["src/auth.ts"]);
+    const [out] = groundCodeCitations([cite()], prov);
+    expect(out).toMatchObject({ filePath: "src/auth.ts" });
+    expect(out).not.toHaveProperty("repoConnectionId");
+    expect((out as { symbolId?: string }).symbolId).toBeUndefined();
+    expect((out as { snippet?: string }).snippet).toBeUndefined();
+  });
+
+  it("B1: a symbolId that pins a fused chunk still stamps its repo despite a tool path", () => {
+    const prov = buildCodeProvenance([authIn("rc-B", "sym-b")], ["src/auth.ts"]);
+    const [out] = groundCodeCitations([cite({ symbolId: "sym-b" })], prov);
+    expect(out).toMatchObject({ symbolId: "sym-b", repoConnectionId: "rc-B" });
+  });
+
+  it("L1: a symbolId matching no retrieved chunk at the path stamps no repo", () => {
+    const prov = buildCodeProvenance([authIn("rc-B", "sym-b")]);
+    const [out] = groundCodeCitations([cite({ symbolId: "sym-a" })], prov);
+    expect(out).toMatchObject({ symbolId: "sym-a" });
+    expect(out).not.toHaveProperty("repoConnectionId");
+  });
+
+  it("L2: an ambiguous repo is not filled with the first chunk's symbolId or snippet", () => {
+    const prov = buildCodeProvenance([authIn("rc-A", "sym-a"), authIn("rc-B", "sym-b")]);
+    const [out] = groundCodeCitations([cite()], prov);
+    expect(out).not.toHaveProperty("repoConnectionId");
+    expect((out as { symbolId?: string }).symbolId).toBeUndefined();
+    expect((out as { snippet?: string }).snippet).toBeUndefined();
+  });
 });
