@@ -90,13 +90,16 @@ const MAX_CRITERIA = 20;
  * "Added by the analysis" badge), rather than guessing from words.
  */
 export function matchSynthesized(
-  approved: ReadonlyArray<Pick<StructuredRequirement, "id" | "title">>,
+  approved: ReadonlyArray<JoinableRequirement>,
   synthesized: readonly SynthesizedRequirement[],
-  structured: ReadonlyArray<Pick<StructuredRequirement, "id">> = approved,
+  structured: ReadonlyArray<Pick<StructuredRequirement, "id" | "synthesisItemKey">> = approved,
   paired?: PairedItems,
 ): Map<string, SynthesizedRequirement> {
   return matchSynthesizedReportingRefusals(approved, synthesized, structured, paired).matches;
 }
+
+/** What the join reads of a reviewed requirement. */
+export type JoinableRequirement = Pick<StructuredRequirement, "id" | "title" | "synthesisItemKey">;
 
 /**
  * Issue #1204 — a requirement the title fallback refused: the items it was
@@ -113,9 +116,9 @@ export interface RefusedTitleMatch {
  * re-derived: the refusals are the shared matcher's own `refusedLeftOptions`.
  */
 export function matchSynthesizedReportingRefusals(
-  approved: ReadonlyArray<Pick<StructuredRequirement, "id" | "title">>,
+  approved: ReadonlyArray<JoinableRequirement>,
   synthesized: readonly SynthesizedRequirement[],
-  structured: ReadonlyArray<Pick<StructuredRequirement, "id">> = approved,
+  structured: ReadonlyArray<Pick<StructuredRequirement, "id" | "synthesisItemKey">> = approved,
   paired?: PairedItems,
 ): {
   matches: Map<string, SynthesizedRequirement>;
@@ -128,11 +131,16 @@ export function matchSynthesizedReportingRefusals(
   // candidate for another requirement.
   const pairedIndexes = new Set<number>();
   for (const req of approved) for (const i of paired?.get(req.id) ?? []) pairedIndexes.add(i);
+  // #1569 — an item offered at the checkpoint as a requirement of its own is
+  // that requirement's, joined by its key below, and never a title candidate.
+  const offeredKeys = new Set(structured.flatMap((r) => r.synthesisItemKey ?? []));
+  const itemKeys = offeredKeys.size > 0 ? synthesized.map((s) => synthesisItemKey(s)) : [];
   // Absent: the item did not say. `[]`: it says it restates no listed one.
   // Only ids no longer in the list (a re-extraction) count as not saying.
   const titlePool = synthesized.map(
     (s, i) =>
       !pairedIndexes.has(i) &&
+      !offeredKeys.has(itemKeys[i] ?? "") &&
       (s.structuredIds === undefined ||
         (s.structuredIds.length > 0 && !s.structuredIds.some((id) => listIds.has(id)))),
   );
@@ -155,7 +163,9 @@ export function matchSynthesizedReportingRefusals(
     if (decided.has(req.id)) continue;
     const named: number[] = [];
     synthesized.forEach((s, i) => {
-      if (s.structuredIds?.includes(req.id)) named.push(i);
+      const offeredFrom =
+        req.synthesisItemKey !== undefined && itemKeys[i] === req.synthesisItemKey;
+      if (offeredFrom || s.structuredIds?.includes(req.id)) named.push(i);
     });
     if (named.length === 0) continue;
     byStructuredId.set(req.id, joinItems(named.map((i) => synthesized[i]!)));
@@ -369,7 +379,7 @@ export interface ReviewedSynthesisDifference {
 }
 
 export function compareReviewedWithSynthesis(
-  structured: ReadonlyArray<Pick<StructuredRequirement, "id" | "title">>,
+  structured: ReadonlyArray<JoinableRequirement>,
   synthesized: readonly SynthesizedRequirement[],
 ): ReviewedSynthesisDifference {
   const { given } = matchSynthesizedReportingRefusals(structured, synthesized, structured);
@@ -378,6 +388,67 @@ export function compareReviewedWithSynthesis(
     reviewedWithoutItem: structured.filter((r) => !given.has(r.id)).length,
     itemsWithoutReviewed: synthesized.filter((_, i) => !taken.has(i)).length,
   };
+}
+
+/** Issue #1569 — the id prefix of a requirement offered from a synthesis item. */
+export const OFFERED_REQUIREMENT_ID_PREFIX = "SYN-";
+
+const STRUCTURED_BY_PRIORITY: Record<
+  SynthesizedRequirement["priority"],
+  StructuredRequirement["priority"]
+> = {
+  critical: "must-have",
+  high: "must-have",
+  medium: "should-have",
+  low: "nice-to-have",
+};
+
+/**
+ * Issue #1569 — the synthesis items that say they restate NO listed
+ * requirement (`structuredIds: []`), as requirements to add to the reviewed
+ * list, so the reviewer can approve them with their criteria and evidence
+ * rather than have promotion drop them. In #706 run 10, 17 of an agent run's
+ * 42 items were such additions (security, schema and operations work the
+ * code and database agents found), and none could be promoted.
+ *
+ * Only that explicit signal is offered. An item that did not say (no
+ * `structuredIds`), or that names an id no longer listed, may restate a listed
+ * requirement in other words; offering it could put the same requirement up
+ * for approval twice, so it stays in the #930 notice instead. An item already
+ * offered (its key is on the list) is not offered again, and identical items
+ * become one requirement: the join gives it all of them. Pure: the caller
+ * appends the result to the list and raises an approval for each.
+ */
+export function offerUnmatchedSynthesisItems(
+  structured: ReadonlyArray<Pick<StructuredRequirement, "id" | "synthesisItemKey">>,
+  synthesized: readonly SynthesizedRequirement[],
+): StructuredRequirement[] {
+  const ids = new Set(structured.map((r) => r.id));
+  const keys = new Set(structured.flatMap((r) => r.synthesisItemKey ?? []));
+  const out: StructuredRequirement[] = [];
+  for (const item of synthesized) {
+    if (!Array.isArray(item.structuredIds) || item.structuredIds.length > 0) continue;
+    const key = synthesisItemKey(item);
+    const id = `${OFFERED_REQUIREMENT_ID_PREFIX}${key.slice(0, 12)}`;
+    if (keys.has(key) || ids.has(id)) continue;
+    keys.add(key);
+    ids.add(id);
+    out.push({
+      id,
+      title: item.title.trim().slice(0, MAX_TITLE),
+      description: item.body.trim().slice(0, MAX_BODY),
+      // The reviewed list's classification; the promoted row keeps the item's
+      // own type, priority and labels (see `planApprovedRequirementSet`).
+      type: "functional",
+      stakeholders: [],
+      priority: STRUCTURED_BY_PRIORITY[item.priority] ?? "should-have",
+      ambiguities: [],
+      evidenceNeeds: [],
+      rawSource: "",
+      synthesisItemKey: key,
+    });
+  }
+  return out;
 }
 
 /**
@@ -474,18 +545,21 @@ export function planApprovedRequirementSet(input: {
     const match = matches.get(req.id);
     const title = (req.title.trim() || req.id).slice(0, MAX_TITLE);
     const body = (req.description.trim() || title).slice(0, MAX_BODY);
+    // #1569 — an offered requirement's priority and classification were only
+    // derived from its item, so the item's own are kept.
+    const offered = req.synthesisItemKey !== undefined ? match : undefined;
     return {
       type: match?.type ?? "feature",
       title,
       body,
-      priority: PRIORITY_BY_STRUCTURED[req.priority] ?? match?.priority ?? "medium",
+      priority:
+        offered?.priority ?? PRIORITY_BY_STRUCTURED[req.priority] ?? match?.priority ?? "medium",
       // Issue #909 — the reviewed classification (functional, non-functional,
       // constraint, …) has no counterpart in the row's `type` enum, so it rides
       // as a label rather than being dropped.
-      labels: [...new Set([req.type, ...(match?.labels ?? [])].filter(Boolean))].slice(
-        0,
-        MAX_LABELS,
-      ),
+      labels: [
+        ...new Set([...(offered ? [] : [req.type]), ...(match?.labels ?? [])].filter(Boolean)),
+      ].slice(0, MAX_LABELS),
       ...(match?.storyPoints !== undefined ? { storyPoints: match.storyPoints } : {}),
       evidenceFindingIndexes: match?.evidenceFindingIndexes ?? [],
       acceptanceCriteria: match?.acceptanceCriteria ?? [],

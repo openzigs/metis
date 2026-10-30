@@ -109,6 +109,7 @@ import type { NoVerdictReason } from "./structured-verdict.js";
 import type {
   ClarificationApplication,
   PromotionMatchingRecord,
+  StructuredRequirement,
   StructuredRequirements,
   WebResearchResult,
 } from "./types/requirements.js";
@@ -277,7 +278,15 @@ export interface PromotionBlockedState {
    * synthesis item joins onto, and synthesis items no reviewed requirement
    * takes. Absent on a run recorded before #930 (the UI compares counts then).
    */
-  setDifference?: { reviewedWithoutItem: number; itemsWithoutReviewed: number };
+  setDifference?: {
+    reviewedWithoutItem: number;
+    itemsWithoutReviewed: number;
+    /**
+     * Issue #1569 — how many requirements of the reviewed list were offered from
+     * synthesis items that matched nothing in it. Absent before #1569.
+     */
+    offeredFromSynthesis?: number;
+  };
   /** Issue #1104 — UI-ready one-line explanation of the gate. */
   reason?: string;
 }
@@ -528,6 +537,30 @@ export async function getStructuredRequirements(
   // Issue #909 — which extraction run produced this list (absent before #909).
   const runId = typeof meta.structuredRunId === "string" ? meta.structuredRunId : undefined;
   return { ...(value as StructuredRequirements), ...(runId ? { runId } : {}) };
+}
+
+/**
+ * Issue #1569 — append requirements to the reviewed (structured) list in the
+ * locked read-modify-write every metadata writer uses. `offer` is handed the
+ * list as it is NOW, not as the caller last read it, so a clarify pass that
+ * rewrote a description meanwhile keeps its rewrite. Returns what was
+ * appended; nothing is appended to an analysis with no list.
+ */
+export async function appendStructuredRequirements(
+  id: string,
+  offer: (current: readonly StructuredRequirement[]) => StructuredRequirement[],
+): Promise<StructuredRequirement[]> {
+  let appended: StructuredRequirement[] = [];
+  await mergeAnalysisMetadata(id, (current) => {
+    const list = current.structuredRequirements as StructuredRequirements | undefined;
+    appended = Array.isArray(list?.requirements) ? offer(list.requirements) : [];
+    if (appended.length === 0) return current;
+    return {
+      ...current,
+      structuredRequirements: { ...list, requirements: [...list!.requirements, ...appended] },
+    };
+  });
+  return appended;
 }
 
 /**

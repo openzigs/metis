@@ -39,6 +39,13 @@ export interface StructuredRequirement {
   ambiguities: Ambiguity[];
   evidenceNeeds: EvidenceNeed[];
   rawSource: string;
+  /**
+   * Issue #1569 — present only on a requirement the extraction did not list,
+   * offered at the approval checkpoint from a synthesis item that matched
+   * nothing in the reviewed list: that item's `synthesisItemKey`. Promotion
+   * joins the item (its criteria and evidence) onto this requirement by it.
+   */
+  synthesisItemKey?: string;
 }
 
 export interface StructuredRequirements {

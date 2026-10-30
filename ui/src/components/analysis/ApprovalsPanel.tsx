@@ -176,6 +176,25 @@ export function describeRejections(rejected: ReadonlyArray<{ type: string }>): s
 export function describeSetDifference(
   reviewedCount: number | undefined,
   synthesisCount: number | undefined,
+  identity?: {
+    reviewedWithoutItem: number;
+    itemsWithoutReviewed: number;
+    offeredFromSynthesis?: number;
+  },
+): string | null {
+  const base = describeCountsAndIdentity(reviewedCount, synthesisCount, identity);
+  // Issue #1569 — the analysis's own additions are on the list now, not dropped.
+  const offered = identity?.offeredFromSynthesis ?? 0;
+  if (offered === 0) return base;
+  const note =
+    `${offered} requirement(s) below were written up by the analysis and match none it ` +
+    `extracted, so they are listed for review with their own acceptance criteria and evidence.`;
+  return base ? `${base} ${note}` : note;
+}
+
+function describeCountsAndIdentity(
+  reviewedCount: number | undefined,
+  synthesisCount: number | undefined,
   identity?: { reviewedWithoutItem: number; itemsWithoutReviewed: number },
 ): string | null {
   if (reviewedCount === undefined || synthesisCount === undefined) return null;
@@ -406,6 +425,15 @@ function ApprovalCard({
             <span className="text-sm font-medium text-foreground">{requirement.title}</span>
           ) : (
             <span className="font-mono text-xs text-muted-foreground">{approval.itemId}</span>
+          )}
+          {/* #1569 — offered from the synthesis, not from the extracted list. */}
+          {requirement?.synthesisItemKey && (
+            <span
+              data-testid="approval-offered-from-synthesis"
+              className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground"
+            >
+              Written up by the analysis
+            </span>
           )}
         </div>
         <span

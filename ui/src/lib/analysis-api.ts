@@ -1055,6 +1055,11 @@ export interface StructuredRequirement {
    */
   ambiguities?: RequirementAmbiguity[] | null;
   evidenceNeeds: RequirementEvidenceNeed[];
+  /**
+   * Issue #1569 — present only on a requirement offered at the checkpoint from a
+   * synthesis item that matched nothing extracted. The UI reads only its presence.
+   */
+  synthesisItemKey?: string;
 }
 
 /**
@@ -1110,7 +1115,12 @@ export interface EnhancementMetadata {
      * synthesized one joins onto, and synthesized ones no reviewed requirement
      * takes. Absent on runs recorded before #930, which compare counts only.
      */
-    setDifference?: { reviewedWithoutItem: number; itemsWithoutReviewed: number };
+    setDifference?: {
+      reviewedWithoutItem: number;
+      itemsWithoutReviewed: number;
+      /** Issue #1569 — how many of the reviewed list were offered from the synthesis. */
+      offeredFromSynthesis?: number;
+    };
     reason?: string;
   };
   promotionStatus?: "allowed" | "blocked";

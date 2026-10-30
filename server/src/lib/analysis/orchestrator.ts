@@ -173,12 +173,13 @@ import {
   latestRequirementApprovals,
   planApprovedRequirementSet,
 } from "./approved-requirement-set.js";
+import { offerUnmatchedItemsForReview } from "./offer-synthesis-items.js";
 import {
   ambiguousPromotionRecords,
   promotionMatchingRecord,
   sharedCriteriaRecords,
 } from "./promotion-matching.js";
-import type { ApprovalType } from "./types/requirements.js";
+import type { ApprovalType, StructuredRequirement } from "./types/requirements.js";
 import { runSynthesis, type FlatFinding } from "./synthesis.js";
 import {
   applyClarificationsToRequirements,
@@ -4719,8 +4720,35 @@ export class AnalysisOrchestrator {
       // extended to doc/spec promotion. The blocked state is persisted to
       // analysis metadata and surfaced on the socket so the UI (#217) can show
       // a clear "promotion blocked" notice — never a silent promotion.
-      const ticketStatus = await canCreateTickets(input.analysisId);
+      let ticketStatus = await canCreateTickets(input.analysisId);
       if (!ticketStatus.allowed) {
+        // Issue #1569 — the items synthesis wrote up that restate no reviewed
+        // requirement join onto nothing at promotion, so their criteria and
+        // evidence were dropped. Add them to the reviewed list for approval
+        // instead. Not from a degraded synthesis, whose keyword-fallback items
+        // are findings rather than requirements. Best-effort: a failure leaves
+        // the run as it was before #1569, with the #930 notice.
+        let reviewedList: ReadonlyArray<StructuredRequirement> = refined?.requirements ?? [];
+        if (reviewedList.length > 0 && !result.degraded) {
+          try {
+            const offered = await offerUnmatchedItemsForReview(
+              input.analysisId,
+              result.output.requirements,
+            );
+            if (offered.length > 0) {
+              reviewedList = (await getStructuredRequirements(input.analysisId))?.requirements ?? [
+                ...reviewedList,
+                ...offered,
+              ];
+              ticketStatus = await canCreateTickets(input.analysisId);
+            }
+          } catch (err) {
+            log.error("Could not offer the synthesis requirements that matched nothing reviewed", {
+              analysisId: input.analysisId,
+              error: (err as Error).message,
+            });
+          }
+        }
         // Issue #1104 (finding B) — the run produced requirements; the gate is
         // WITHHOLDING them. Record how many so every surface (metadata, socket,
         // job event, UI) can say "N requirements awaiting approval" instead of
@@ -4729,9 +4757,7 @@ export class AnalysisOrchestrator {
         // when there are any (`promoteApprovedRequirements`), so that list — the
         // one the Approvals tab shows — is what is awaiting, not the synthesis set.
         const awaitingRequirementCount =
-          refinedRequirements.length > 0
-            ? refinedRequirements.length
-            : result.output.requirements.length;
+          reviewedList.length > 0 ? reviewedList.length : result.output.requirements.length;
         const { reason: blockedReason } = describePromotionGate({
           pendingCount: ticketStatus.pendingCount,
           awaitingRequirementCount,
@@ -4754,12 +4780,16 @@ export class AnalysisOrchestrator {
             synthesisRequirementCount: result.output.requirements.length,
             // #930 — and say so when the two name different requirements, not
             // only when their counts differ.
-            ...(refinedRequirements.length > 0
+            // #1569 — and how many of the reviewed list were offered from the
+            // synthesis, so the count is kept per run.
+            ...(reviewedList.length > 0
               ? {
-                  setDifference: compareReviewedWithSynthesis(
-                    refinedRequirements,
-                    result.output.requirements,
-                  ),
+                  setDifference: {
+                    ...compareReviewedWithSynthesis(reviewedList, result.output.requirements),
+                    offeredFromSynthesis: reviewedList.filter(
+                      (r) => r.synthesisItemKey !== undefined,
+                    ).length,
+                  },
                 }
               : {}),
             reason: blockedReason,
