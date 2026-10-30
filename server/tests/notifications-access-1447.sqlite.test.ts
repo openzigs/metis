@@ -311,9 +311,15 @@ describe.skipIf(!isSqlite)("#1447 — migration backfills each notification's pr
       });
       await db.requirement.create({
         data: { id: "req-1", projectId: "p-req", analysisId: "a-1", title: "r", body: "b" },
+        // Only `id` back: this database stops before #1447, and the current
+        // client would otherwise read columns added since (#1612's `kind`).
+        select: { id: true },
       });
       await db.requirement.create({
         data: { id: "req-sla", projectId: "p-sla", analysisId: "a-2", title: "r", body: "b" },
+        // Only `id` back: this database stops before #1447, and the current
+        // client would otherwise read columns added since (#1612's `kind`).
+        select: { id: true },
       });
       await db.commentThread.create({
         data: {

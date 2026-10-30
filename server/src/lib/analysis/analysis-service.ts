@@ -49,7 +49,9 @@ import {
   // Epic #1107 (#1110) — the shared presentation seam's requirement rollup.
   summarizeSupportPanels,
   type FindingVerificationStatus,
+  type NfrCategory,
   type RequirementCoverage,
+  type RequirementKind,
   type RequirementPriority,
   type RequirementReviewStatus,
   type RequirementType,
@@ -106,6 +108,11 @@ import { readLiveAgents } from "./live-agent-progress.js";
 import { CODE_GRAPH_DOCUMENT_PREFIX } from "./fused-code-chunks.js";
 import type { ToolCallTelemetry } from "./tool-telemetry.js";
 import type { NoVerdictReason } from "./structured-verdict.js";
+import {
+  coerceNfrCategory,
+  coerceRequirementKind,
+  requirementKindColumns,
+} from "./requirement-kind.js";
 import type {
   ClarificationApplication,
   PromotionMatchingRecord,
@@ -1286,6 +1293,9 @@ async function replaceRequirementSet(
         // Issue #773 — persist the verdict alongside coverage. Coverage says what
         // evidence exists; the verdict says whether we may tell the user to build it.
         verdict: input.verdicts?.[idx] ?? null,
+        // Issue #1612 — the model's classification, or NULL (unknown); never a
+        // default. The category only beside `non-functional`.
+        ...requirementKindColumns(r),
         // Issue #1063 — which imported item(s) this requirement restates, as
         // checked `NR-*` ids. Null when the run was not started from imported
         // items or synthesis did not say.
@@ -1359,6 +1369,7 @@ function withheldProposalRows(
       storyPoints: r.storyPoints ?? null,
       coverage: input.coverages?.[idx] ?? null,
       verdict: input.verdicts?.[idx] ?? null,
+      ...requirementKindColumns(r),
       sourceCandidateIds: serializeSourceCandidateIds(r.sourceIds, runSources),
       ...pairingColumns(input.promotedFrom, idx),
     };
@@ -1955,6 +1966,10 @@ export async function updateRequirementRow(input: {
     labels?: string[];
     storyPoints?: number | null;
     reviewStatus?: RequirementReviewStatus;
+    /** #1612 — `null` clears it back to unknown. */
+    kind?: RequirementKind | null;
+    /** #1612 — only with `kind: "non-functional"` (the route's schema enforces it). */
+    nfrCategory?: NfrCategory | null;
   };
   /** Recorded on the version row (#865). */
   actorId?: string | null;
@@ -1987,6 +2002,19 @@ export async function updateRequirementRow(input: {
   if (input.patch.priority !== undefined) patch.priority = input.patch.priority;
   if (input.patch.type !== undefined) patch.type = input.patch.type;
   if (input.patch.storyPoints !== undefined) patch.storyPoints = input.patch.storyPoints;
+  // #1612 — tracked like the other content fields, so an analyst's
+  // classification is versioned review work (#769) that a re-run cannot replace.
+  // Any kind but `non-functional` takes the category with it.
+  if (input.patch.kind !== undefined) {
+    patch.kind = input.patch.kind;
+    if (input.patch.kind !== "non-functional") patch.nfrCategory = null;
+  }
+  if (
+    input.patch.nfrCategory !== undefined &&
+    (input.patch.nfrCategory === null || input.patch.kind === "non-functional")
+  ) {
+    patch.nfrCategory = input.patch.nfrCategory;
+  }
   // Review status is a typed column (#M4). #1162 — it is the verdict on a
   // version, not part of one, so it is written untracked (the route audits it).
   const untrackedData =
@@ -2287,6 +2315,9 @@ interface AnalysisRowWithIncludes {
     reviewStatus?: string | null;
     coverage?: string | null;
     verdict?: string | null;
+    /** Issue #1612 — optional so earlier fixtures still type. */
+    kind?: string | null;
+    nfrCategory?: string | null;
     /** Issue #1096 — JSON array column; optional so pre-#1096 fixtures still type. */
     acceptanceCriteria?: string | null;
     /** Issue #1063 — JSON array of NR ids; optional so earlier fixtures still type. */
@@ -2418,6 +2449,9 @@ function toSnapshot(
       // Issue #773 — the deterministic three-state verdict. Null on pre-#773 rows
       // and on runs with no code agent, so the UI renders a neutral state.
       verdict: coerceVerdict(r.verdict),
+      // Issue #1612 — functional / non-functional; null = unknown (or pre-#1612).
+      kind: coerceRequirementKind(r.kind),
+      nfrCategory: coerceNfrCategory(r.nfrCategory, coerceRequirementKind(r.kind)),
       // Issue #1096 — the requirement's own acceptance criteria, so the UI and
       // the issue-draft generator read the same structured data instead of
       // re-deriving (or faking) them.

@@ -214,6 +214,24 @@ export function matchSynthesizedReportingRefusals(
   return { matches: byStructuredId, refused, given };
 }
 
+/**
+ * #1612 — the kind (and NFR category) an approved requirement is written with.
+ * `reviewed` is the reviewed classification (`functional`, `non-functional`,
+ * `constraint`, ...): only the first two are kinds. The category comes from the
+ * synthesis item, and only when the item agrees the requirement is
+ * non-functional. Neither ⇒ no keys at all, which persists as NULL (unknown).
+ */
+function kindOf(
+  reviewed: string | undefined,
+  match: SynthesizedRequirement | undefined,
+): Pick<SynthesizedRequirement, "kind" | "nfrCategory"> {
+  const kind = reviewed === "functional" || reviewed === "non-functional" ? reviewed : match?.kind;
+  if (kind === undefined) return {};
+  const nfrCategory =
+    kind === "non-functional" && match?.kind === "non-functional" ? match.nfrCategory : undefined;
+  return nfrCategory !== undefined ? { kind, nfrCategory } : { kind };
+}
+
 /** Case- and whitespace-insensitive title, for the same-title tier. */
 function titleKey(title: string): string {
   return title.replace(/\s+/g, " ").trim().toLowerCase();
@@ -563,6 +581,9 @@ export function planApprovedRequirementSet(input: {
       ...(match?.storyPoints !== undefined ? { storyPoints: match.storyPoints } : {}),
       evidenceFindingIndexes: match?.evidenceFindingIndexes ?? [],
       acceptanceCriteria: match?.acceptanceCriteria ?? [],
+      // #1612 — the reviewed classification when it is one of the two kinds
+      // (a person approved it), else the synthesis item's; never a default.
+      ...kindOf(offered ? undefined : req.type, match),
       // #1063 — which imported item it came from, when synthesis said.
       ...(match?.sourceIds !== undefined ? { sourceIds: match.sourceIds } : {}),
     };

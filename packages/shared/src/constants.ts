@@ -395,6 +395,15 @@ export type ContradictionScope = (typeof CONTRADICTION_SCOPES)[number];
 export const REQUIREMENT_TYPES = ["feature", "bug", "chore", "epic", "task"] as const;
 export type RequirementType = (typeof REQUIREMENT_TYPES)[number];
 
+/**
+ * Issue #1612 — the requirement's NATURE, orthogonal to its {@link REQUIREMENT_TYPES}
+ * (which is the work-item shape): a `bug` can be functional or non-functional.
+ * Stored nullable: null means unknown, and nothing may default it — the
+ * deterministic synthesis fallback cannot classify, so it leaves it null.
+ */
+export const REQUIREMENT_KINDS = ["functional", "non-functional"] as const;
+export type RequirementKind = (typeof REQUIREMENT_KINDS)[number];
+
 export const REQUIREMENT_PRIORITIES = ["low", "medium", "high", "critical"] as const;
 export type RequirementPriority = (typeof REQUIREMENT_PRIORITIES)[number];
 

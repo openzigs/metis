@@ -12,6 +12,7 @@ import {
   FINDING_SEVERITIES,
   FINDING_VERIFICATION_STATUSES,
   REQUIREMENT_COVERAGES,
+  REQUIREMENT_KINDS,
   REQUIREMENT_PRIORITIES,
   REQUIREMENT_REVIEW_STATUSES,
   REQUIREMENT_TYPES,
@@ -26,6 +27,7 @@ import type {
   FindingSeverity,
   FindingVerificationStatus,
   RequirementCoverage,
+  RequirementKind,
   RequirementPriority,
   RequirementVerdict,
 } from "./constants.js";
@@ -40,6 +42,7 @@ import type { TestLinkRelation } from "./traceability.js";
 // seam imports this module's types. Erased at build, so no import cycle exists.
 import type { RequirementSupportConfidence } from "./support-panel-view.js";
 import { DDL_CHANGE_KINDS, DDL_RISK_CLASSES, SCHEMA_RECONCILIATIONS } from "./schema-impact.js";
+import { NFR_CATEGORIES, type NfrCategory } from "./elicitation.js";
 import type {
   DatabaseAwareAnalysisSetting,
   SchemaEdgeKind,
@@ -245,6 +248,10 @@ export const requirementSchema = z
      * the user to build this.
      */
     verdict: z.enum(REQUIREMENT_VERDICTS).nullable().default(null),
+    /** Issue #1612 — functional / non-functional; null = unknown (and pre-#1612 rows). */
+    kind: z.enum(REQUIREMENT_KINDS).nullable().default(null),
+    /** Issue #1612 — the NFR category of a non-functional requirement, else null. */
+    nfrCategory: z.enum(NFR_CATEGORIES).nullable().default(null),
     deletedAt: dateSchema.nullable(),
   })
   .merge(timestampsSchema);
@@ -822,6 +829,18 @@ export const synthesizedRequirementSchema = z.object({
    */
   acceptanceCriteria: z.array(z.string().min(1).max(1024)).max(20).default([]),
   /**
+   * Issue #1612 — functional or non-functional, when the model says. ABSENT
+   * means unknown and is persisted as null: nothing may default it (the
+   * deterministic fallback cannot classify, #1117). Fails soft like `sourceIds`:
+   * a value outside the enum reads as absent rather than discarding the reply.
+   */
+  kind: z.enum(REQUIREMENT_KINDS).optional().catch(undefined),
+  /**
+   * Issue #1612 — the NFR category (the elicitor's `NFR_CATEGORIES`) when
+   * `kind` is `non-functional`; stored only beside that kind (`requirementKindColumns`).
+   */
+  nfrCategory: z.enum(NFR_CATEGORIES).optional().catch(undefined),
+  /**
    * Issue #1063 — on a run started from imported items, the `NR-*` ids of the
    * items this requirement restates or refines. `[]` is the model saying the
    * requirement is its own addition; ABSENT means it did not say, which must
@@ -1280,15 +1299,28 @@ export const regenerateAgentSchema = z
 export type RegenerateAgentInput = z.infer<typeof regenerateAgentSchema>;
 
 /** PATCH body for an individual requirement (approve / edit / reject). */
-export const updateRequirementSchema = z.object({
-  title: z.string().min(1).max(255).optional(),
-  body: z.string().min(1).max(4096).optional(),
-  priority: z.enum(REQUIREMENT_PRIORITIES).optional(),
-  type: z.enum(REQUIREMENT_TYPES).optional(),
-  labels: z.array(z.string().min(1).max(64)).max(16).optional(),
-  storyPoints: z.number().int().min(0).max(100).nullable().optional(),
-  reviewStatus: z.enum(REQUIREMENT_REVIEW_STATUSES).optional(),
-});
+export const updateRequirementSchema = z
+  .object({
+    title: z.string().min(1).max(255).optional(),
+    body: z.string().min(1).max(4096).optional(),
+    priority: z.enum(REQUIREMENT_PRIORITIES).optional(),
+    type: z.enum(REQUIREMENT_TYPES).optional(),
+    labels: z.array(z.string().min(1).max(64)).max(16).optional(),
+    storyPoints: z.number().int().min(0).max(100).nullable().optional(),
+    reviewStatus: z.enum(REQUIREMENT_REVIEW_STATUSES).optional(),
+    /** #1612 — functional / non-functional; `null` clears it back to unknown. */
+    kind: z.enum(REQUIREMENT_KINDS).nullable().optional(),
+    /**
+     * #1612 — the NFR category, only for a non-functional requirement. Setting
+     * one requires `kind: "non-functional"` in the same patch, so a category can
+     * never sit on a requirement whose kind says it is functional or unknown.
+     */
+    nfrCategory: z.enum(NFR_CATEGORIES).nullable().optional(),
+  })
+  .refine((p) => p.nfrCategory == null || p.kind === "non-functional", {
+    message: 'nfrCategory requires kind: "non-functional" in the same patch',
+    path: ["nfrCategory"],
+  });
 export type UpdateRequirementInput = z.infer<typeof updateRequirementSchema>;
 
 // ---- Finding deep-dive → issue draft (Epic #176 / #178) --------------------
@@ -1579,6 +1611,13 @@ export interface AnalysisSnapshot {
      * analysis, or for rows written before #773.
      */
     verdict: RequirementVerdict | null;
+    /**
+     * Issue #1612 — functional / non-functional. Null means unknown: the model
+     * did not say, the synthesis fell back, or the row predates #1612.
+     */
+    kind: RequirementKind | null;
+    /** Issue #1612 — the NFR category when `kind` is `non-functional`, else null. */
+    nfrCategory: NfrCategory | null;
     /**
      * Issue #1096 — the requirement's own testable acceptance criteria, derived
      * at synthesis from its evidence. Empty means none were derived (rendered as

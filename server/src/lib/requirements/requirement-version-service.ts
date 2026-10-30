@@ -46,6 +46,11 @@ export const TRACKED_FIELDS = [
   // a JSON string (like `labels`); appended last to keep the CSV columns of
   // existing exports where they were.
   "acceptanceCriteria",
+  // #1612 — an analyst's classification is an edit like any other: versioned,
+  // so it counts as review work and a re-run cannot silently replace it (#769).
+  // Appended last, again, to keep the existing CSV columns in place.
+  "kind",
+  "nfrCategory",
 ] as const;
 
 export type TrackedField = (typeof TRACKED_FIELDS)[number];
@@ -322,6 +327,8 @@ const TRACKED_SELECT = {
   labels: true,
   storyPoints: true,
   acceptanceCriteria: true,
+  kind: true,
+  nfrCategory: true,
 } as const;
 
 /** {@link TRACKED_SELECT} plus the untracked columns an update may also write. */

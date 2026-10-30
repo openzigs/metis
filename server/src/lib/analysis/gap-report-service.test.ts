@@ -71,6 +71,8 @@ function snapshot(overrides: Partial<AnalysisSnapshot> = {}): AnalysisSnapshot {
         coverage: "grounded_in_code",
         version: 1,
         verdict: null,
+        kind: null,
+        nfrCategory: null,
         acceptanceCriteria: [],
         supportConfidence: null,
       },
