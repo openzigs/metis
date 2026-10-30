@@ -8,6 +8,17 @@
  */
 
 import type { Browser, Page } from "puppeteer";
+import type { IRunOptions } from "docx";
+import {
+  extractFootnotes,
+  extractInlineMath,
+  FOOTNOTE_REF_OPEN,
+  FOOTNOTE_REF_RE,
+  INLINE_MATH_PLACEHOLDER_RE,
+  INLINE_MATH_SOURCE,
+  latexToText,
+  PAREN_MATH_SOURCE,
+} from "./export-markdown.js";
 import { createRequire } from "module";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
@@ -164,6 +175,10 @@ const PDF_CSS = `
   .mermaid-container.diagram-oversized { page-break-inside: auto; page-break-before: always; }
   .katex-display { overflow-x: auto; padding: 0.5rem 0; }
   .math-display { text-align: center; margin: 1rem 0; overflow-x: auto; }
+  .footnote-ref { font-size: 0.75em; line-height: 0; }
+  .footnote-ref a { color: #2563eb; text-decoration: none; }
+  .footnotes { font-size: 0.85em; }
+  .footnotes li { word-break: break-word; }
   .doc-header { display: flex; align-items: center; gap: 0.75rem; padding-bottom: 1.25rem; margin-bottom: 1.5rem; border-bottom: 2px solid #2563eb; }
   .doc-header img, .doc-header svg { width: 40px; height: 40px; border-radius: 8px; flex-shrink: 0; }
   .doc-header-title { font-size: 1.4rem; font-weight: 700; color: #1e3a5f; }
@@ -375,6 +390,14 @@ export async function renderPdfPage(page: Page, markdown: string, title: string)
             el.textContent = formula;
           }
         });
+        // #1571 — inline formulas, taken out before marked; each keeps its
+        // readable-text seed if KaTeX cannot render it.
+        document.querySelectorAll('.math-inline[data-formula]').forEach(function(el) {
+          const formula = el.getAttribute('data-formula') || '';
+          try {
+            el.innerHTML = katex.renderToString(formula, { displayMode: false, throwOnError: false });
+          } catch (e) {}
+        });
         // Also render any remaining inline $...$ math that marked left intact
         if (typeof renderMathInElement !== 'undefined') {
           renderMathInElement(document.body, {
@@ -463,12 +486,16 @@ async function buildHtmlDocument(markdown: string, title: string): Promise<strin
     },
   });
 
+  // #1571 — citations: marked read each `[^src-n]: …` definition as a link
+  // reference and printed `^src-n` for every reference.
+  const { body, notes } = extractFootnotes(markdown);
+
   // Extract display math ($$...$$) and mermaid blocks BEFORE marked processing.
   // marked splits $$\nformula\n$$ into separate <p> tags, breaking KaTeX delimiter matching.
   const mathBlocks: string[] = [];
   const mermaidBlocks: string[] = [];
 
-  let processedMarkdown = markdown.replace(/\$\$([\s\S]*?)\$\$/g, (_match, formula: string) => {
+  let processedMarkdown = body.replace(/\$\$([\s\S]*?)\$\$/g, (_match, formula: string) => {
     const idx = mathBlocks.length;
     mathBlocks.push(formula.trim());
     return `<!--MATH_PLACEHOLDER_${idx}-->`;
@@ -483,10 +510,31 @@ async function buildHtmlDocument(markdown: string, title: string): Promise<strin
     },
   );
 
-  let htmlContent = await md.parse(processedMarkdown, {
+  // #1571 — inline formulas too: marked read `\_` as `_`, `\{` as `{` and
+  // `_{…}` as emphasis, so KaTeX was left with raw `\text{…}` it could not match.
+  const inlineMath = extractInlineMath(processedMarkdown);
+
+  let htmlContent = await md.parse(inlineMath.body, {
     gfm: true,
     breaks: false,
   });
+
+  // Seeded with readable text, which KaTeX replaces in the page.
+  htmlContent = htmlContent.replace(INLINE_MATH_PLACEHOLDER_RE, (_m, i: string) => {
+    const formula = inlineMath.formulas[Number(i)]!;
+    return `<span class="math-inline" data-formula="${escapeHtml(formula)}">${escapeHtml(latexToText(formula))}</span>`;
+  });
+
+  htmlContent = htmlContent.replace(
+    FOOTNOTE_REF_RE,
+    (_m, n: string) => `<sup class="footnote-ref"><a href="#fn-${n}">${n}</a></sup>`,
+  );
+  if (notes.length > 0) {
+    const items = notes.map(
+      (note) => `<li id="fn-${note.number}">${md.parseInline(note.text) as string}</li>`,
+    );
+    htmlContent += `<section class="footnotes"><h2>Sources</h2><ol>${items.join("")}</ol></section>`;
+  }
 
   // Inject mermaid blocks back (escaped for DOM textContent recovery, not double-processed by marked)
   for (let i = 0; i < mermaidBlocks.length; i++) {
@@ -599,8 +647,11 @@ async function exportToDocx(markdown: string, title: string): Promise<ExportResu
     };
   }
 
+  // #1571 — citations become superscript numbers and a Sources list.
+  const { body, notes } = extractFootnotes(markdown);
+
   // Render Mermaid diagrams to PNG via Puppeteer
-  const mermaidImages = await renderMermaidDiagrams(markdown);
+  const mermaidImages = await renderMermaidDiagrams(body);
 
   const {
     Document,
@@ -619,7 +670,7 @@ async function exportToDocx(markdown: string, title: string): Promise<ExportResu
     ShadingType,
   } = docxMod;
 
-  const paragraphs = markdownToDocxElements(markdown, mermaidImages, {
+  const paragraphs = markdownToDocxElements(body, mermaidImages, {
     Paragraph,
     TextRun,
     HeadingLevel,
@@ -632,6 +683,20 @@ async function exportToDocx(markdown: string, title: string): Promise<ExportResu
     BorderStyle,
     ShadingType,
   });
+  if (notes.length > 0) {
+    paragraphs.push(
+      new Paragraph({ text: "Sources", heading: HeadingLevel.HEADING_1 }),
+      ...notes.map(
+        (note) =>
+          new Paragraph({
+            children: [
+              new TextRun({ text: `${note.number}. ` }),
+              ...parseInlineFormatting(note.text, TextRun),
+            ],
+          }),
+      ),
+    );
+  }
 
   const doc = new Document({
     title,
@@ -920,6 +985,22 @@ function markdownToDocxElements(
       continue;
     }
 
+    // #1571 — a display formula: `$$` on its own line down to the closing `$$`,
+    // or `$$…$$` alone on one line. Word has no LaTeX, so it prints as readable
+    // text on its own centred line. `$$…$$` sharing a line with prose is inline.
+    const displayMath = readDisplayMath(lines, i);
+    if (displayMath) {
+      i = displayMath.next;
+      elements.push(
+        new Paragraph({
+          children: [new TextRun({ text: latexToText(displayMath.formula), font: MATH_FONT })],
+          alignment: AlignmentType.CENTER,
+          spacing: { before: 120, after: 120 },
+        }),
+      );
+      continue;
+    }
+
     // Table detection
     if (line.includes("|") && i + 1 < lines.length && /^\|?[\s\-:|]+\|/.test(lines[i + 1])) {
       const tableLines: string[] = [];
@@ -945,21 +1026,45 @@ function markdownToDocxElements(
       continue;
     }
 
-    // Headings
+    // Headings — #1571: through the inline parser, so a citation or formula in
+    // one prints as such rather than as its markdown.
     if (line.startsWith("#### ")) {
-      elements.push(new Paragraph({ text: line.slice(5), heading: HeadingLevel.HEADING_4 }));
+      elements.push(
+        new Paragraph({
+          children: parseInlineFormatting(line.slice(5), TextRun),
+          heading: HeadingLevel.HEADING_4,
+        }),
+      );
     } else if (line.startsWith("### ")) {
-      elements.push(new Paragraph({ text: line.slice(4), heading: HeadingLevel.HEADING_3 }));
+      elements.push(
+        new Paragraph({
+          children: parseInlineFormatting(line.slice(4), TextRun),
+          heading: HeadingLevel.HEADING_3,
+        }),
+      );
     } else if (line.startsWith("## ")) {
-      elements.push(new Paragraph({ text: line.slice(3), heading: HeadingLevel.HEADING_2 }));
+      elements.push(
+        new Paragraph({
+          children: parseInlineFormatting(line.slice(3), TextRun),
+          heading: HeadingLevel.HEADING_2,
+        }),
+      );
     } else if (line.startsWith("# ")) {
-      elements.push(new Paragraph({ text: line.slice(2), heading: HeadingLevel.HEADING_1 }));
+      elements.push(
+        new Paragraph({
+          children: parseInlineFormatting(line.slice(2), TextRun),
+          heading: HeadingLevel.HEADING_1,
+        }),
+      );
     }
     // Blockquote
     else if (line.startsWith("> ")) {
       elements.push(
         new Paragraph({
-          children: [new TextRun({ text: line.slice(2), italics: true, color: "1e40af" })],
+          children: parseInlineFormatting(line.slice(2), TextRun, {
+            italics: true,
+            color: "1e40af",
+          }),
           indent: { left: 720 },
           shading: { type: ShadingType.SOLID, color: "eff6ff" },
           spacing: { after: 80 },
@@ -1067,7 +1172,7 @@ function parseMarkdownTable(
         new TableCell({
           children: [
             new Paragraph({
-              children: [new TextRun({ text: cell, bold: true, size: 20 })],
+              children: parseInlineFormatting(cell, TextRun, { bold: true, size: 20 }),
             }),
           ],
           shading: { type: ShadingType.SOLID, color: "f8fafc" },
@@ -1110,39 +1215,103 @@ function parseMarkdownTable(
   });
 }
 
+/** #1571 — Word's own math font, for formulas printed as text. */
+const MATH_FONT = "Cambria Math";
+
 /**
- * Parse inline markdown formatting: bold, italic, inline code, links.
+ * #1571 — the display formula starting at `lines[start]`, if one does: `$$`
+ * opening its own line (up to the line holding the closing `$$`, or the end of
+ * the document), or `$$…$$` alone on the line. `next` is the line after it.
+ */
+function readDisplayMath(lines: string[], start: number): { formula: string; next: number } | null {
+  const trimmed = lines[start]!.trim();
+  if (!trimmed.startsWith("$$")) return null;
+  const rest = trimmed.slice(2);
+  const close = rest.indexOf("$$");
+  if (close !== -1) {
+    // Closed on this line: a block only when nothing follows the closing `$$`.
+    return close === rest.length - 2 ? { formula: rest.slice(0, close), next: start + 1 } : null;
+  }
+  const parts = [rest];
+  let i = start + 1;
+  while (i < lines.length && !lines[i]!.includes("$$")) parts.push(lines[i++]!);
+  if (i < lines.length) parts.push(lines[i]!.slice(0, lines[i]!.indexOf("$$")));
+  return { formula: parts.join("\n"), next: i + 1 };
+}
+
+/**
+ * The inline tokens Word renders, the first one at a position winning:
+ * `code`, a citation (#1571), `$$math$$`, `$math$` and `\(math\)` (#1571),
+ * **bold**, *italic*, [link](url).
+ */
+const INLINE_TOKEN_SOURCE = [
+  "`[^`]+`",
+  `${FOOTNOTE_REF_RE.source}`,
+  String.raw`\$\$[^$\n]+?\$\$`,
+  INLINE_MATH_SOURCE,
+  PAREN_MATH_SOURCE,
+  String.raw`\*\*[^*]+\*\*`,
+  String.raw`\*[^*]+\*`,
+  String.raw`\[[^\]]+\]\([^)]+\)`,
+].join("|");
+
+/**
+ * Parse inline markdown formatting: bold, italic, inline code, links, and
+ * (#1571) citations as superscript numbers and formulas as readable text.
+ * `base` is applied to every run (a quote's italics, a header cell's bold).
  */
 function parseInlineFormatting(
   text: string,
   TextRun: typeof import("docx").TextRun,
+  base: IRunOptions = {},
 ): InstanceType<typeof import("docx").TextRun>[] {
   const runs: InstanceType<typeof import("docx").TextRun>[] = [];
 
-  // Split by inline patterns: `code`, **bold**, *italic*, [link](url)
-  const regex = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g;
+  const regex = new RegExp(INLINE_TOKEN_SOURCE, "g");
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
   while ((match = regex.exec(text)) !== null) {
     if (match.index > lastIndex) {
-      runs.push(new TextRun({ text: text.slice(lastIndex, match.index) }));
+      runs.push(new TextRun({ ...base, text: text.slice(lastIndex, match.index) }));
     }
 
     const token = match[0];
     if (token.startsWith("`") && token.endsWith("`")) {
       runs.push(
-        new TextRun({ text: token.slice(1, -1), font: "Consolas", size: 20, color: "dc2626" }),
+        new TextRun({
+          ...base,
+          text: token.slice(1, -1),
+          font: "Consolas",
+          size: 20,
+          color: "dc2626",
+        }),
+      );
+    } else if (token.startsWith(FOOTNOTE_REF_OPEN)) {
+      runs.push(new TextRun({ ...base, text: token.slice(1, -1), superScript: true }));
+    } else if (token.startsWith("$") || token.startsWith("\\(")) {
+      const delimiter = token.startsWith("$$") || token.startsWith("\\(") ? 2 : 1;
+      runs.push(
+        new TextRun({
+          ...base,
+          text: latexToText(token.slice(delimiter, -delimiter)),
+          font: MATH_FONT,
+        }),
       );
     } else if (token.startsWith("**") && token.endsWith("**")) {
-      runs.push(new TextRun({ text: token.slice(2, -2), bold: true }));
+      runs.push(new TextRun({ ...base, text: token.slice(2, -2), bold: true }));
     } else if (token.startsWith("*") && token.endsWith("*")) {
-      runs.push(new TextRun({ text: token.slice(1, -1), italics: true }));
+      runs.push(new TextRun({ ...base, text: token.slice(1, -1), italics: true }));
     } else if (token.startsWith("[")) {
       const linkMatch = token.match(/\[([^\]]+)\]\(([^)]+)\)/);
       if (linkMatch) {
         runs.push(
-          new TextRun({ text: linkMatch[1], underline: { color: "2563eb" }, color: "2563eb" }),
+          new TextRun({
+            ...base,
+            text: linkMatch[1],
+            underline: { color: "2563eb" },
+            color: "2563eb",
+          }),
         );
       }
     }
@@ -1151,11 +1320,11 @@ function parseInlineFormatting(
   }
 
   if (lastIndex < text.length) {
-    runs.push(new TextRun({ text: text.slice(lastIndex) }));
+    runs.push(new TextRun({ ...base, text: text.slice(lastIndex) }));
   }
 
   if (runs.length === 0) {
-    runs.push(new TextRun({ text }));
+    runs.push(new TextRun({ ...base, text }));
   }
 
   return runs;

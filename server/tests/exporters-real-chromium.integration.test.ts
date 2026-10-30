@@ -148,6 +148,52 @@ describe.runIf(enabled)("document export against a real Chromium (integration)",
     expect(baseFonts.some((f) => f.endsWith("+KaTeX_Math-Italic"))).toBe(true);
   });
 
+  // #1571 — the run-10 BRD printed inline formulas with `\_`, `_{…}` and `\{`
+  // as raw `\text{…}` (marked had rewritten them before KaTeX saw them), and
+  // its citations as `^src-n`.
+  it("typesets markdown-hostile inline formulas and links citations to a Sources list (#1571)", async () => {
+    const browser = await puppeteer.launch({ headless: true, args: chromeLaunchArgs() });
+    try {
+      const page = await browser.newPage();
+      await blockExternalRequests(page);
+      await renderPdfPage(
+        page,
+        [
+          "# Rules",
+          "",
+          String.raw`Count $\text{feed\_count}(c) = \text{coalesce}(\text{count}(f), 0)$ where $score_{final} > 0$ and $\#\{e : e.user = u\}$[^src-22].`,
+          "",
+          "[^src-22]: `internal/storage/user.go:41-58`",
+        ].join("\n"),
+        "rules",
+      );
+      const seen = (await page.evaluate(`(() => ({
+        inline: document.querySelectorAll(".math-inline").length,
+        typeset: document.querySelectorAll(".math-inline .katex").length,
+        errors: document.querySelectorAll(".katex-error").length,
+        text: document.body.innerText,
+        ref: document.querySelector("sup.footnote-ref a")?.getAttribute("href"),
+        source: document.querySelector("#fn-1")?.textContent,
+      }))()`)) as {
+        inline: number;
+        typeset: number;
+        errors: number;
+        text: string;
+        ref: string | null;
+        source: string | null;
+      };
+      expect(seen.inline).toBe(3);
+      expect(seen.typeset).toBe(3);
+      expect(seen.errors).toBe(0);
+      expect(seen.text).not.toContain("\\text");
+      expect(seen.text).not.toContain("src-");
+      expect(seen.ref).toBe("#fn-1");
+      expect(seen.source).toBe("internal/storage/user.go:41-58");
+    } finally {
+      await browser.close();
+    }
+  });
+
   // #1017 — the export browser's three network guards, in a real Chromium,
   // against probe servers that record every HTTP request, WebSocket upgrade,
   // TURN-over-TCP connection and STUN (UDP) packet they receive. Content that
