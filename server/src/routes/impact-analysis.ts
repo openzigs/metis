@@ -412,6 +412,24 @@ export function impactRunDeps(actorId: string, projectIds: readonly string[]): I
   };
 }
 
+/**
+ * #1609 — the engine's execution-time access check for a run started by
+ * `actor`. The run executes after the route has answered 202, so the starter's
+ * access is read again when the run reaches its projects; a project they can no
+ * longer open is recorded `not-checked` / `restricted` and never searched. One
+ * read of the project-access rule serves every project of the run.
+ */
+export function executionAccessCheck(
+  actor: SchedulerActor,
+  projectIds: readonly string[],
+): (projectId: string) => Promise<boolean> {
+  let accessible: Promise<Set<string>> | null = null;
+  return async (projectId) => {
+    accessible ??= listMemberAccessibleProjectIds(actor, projectIds).then((ids) => new Set(ids));
+    return (await accessible).has(projectId);
+  };
+}
+
 function actorOf(req: Request): SchedulerActor {
   if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
   return { id: req.user.userId, role: req.user.role as RoleKey };
@@ -840,7 +858,10 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
           includeSchemaImpact: body.includeSchemaImpact,
           includeDependencies: body.includeDependencies,
         },
-        impactRunDeps(actor.id, projectIds),
+        {
+          ...impactRunDeps(actor.id, projectIds),
+          projectAccessible: executionAccessCheck(actor, projectIds),
+        },
       );
 
       const payload: CreateImpactAnalysisResponse = {
@@ -947,7 +968,10 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
           actorId: actor.id,
           rerunOfId: id,
         },
-        impactRunDeps(actor.id, projectIds),
+        {
+          ...impactRunDeps(actor.id, projectIds),
+          projectAccessible: executionAccessCheck(actor, projectIds),
+        },
       );
 
       res.status(202).json(

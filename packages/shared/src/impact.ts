@@ -693,6 +693,44 @@ export interface SharedTableImpact {
   projectIds: string[];
 }
 
+/**
+ * #1609 — what a multi-project run found for ONE of its projects, so a reader
+ * can tell "checked, nothing affected" from "never checked":
+ *   - `affected`              — at least one change produced affected symbols.
+ *   - `checked-none-affected` — the project was searched and nothing matched.
+ *   - `not-checked`           — the project was skipped; `reason` says why.
+ *   - `error`                 — the run failed while working on this project.
+ */
+export const IMPACT_PROJECT_OUTCOMES = [
+  "affected",
+  "checked-none-affected",
+  "not-checked",
+  "error",
+] as const;
+export type ImpactProjectOutcomeKind = (typeof IMPACT_PROJECT_OUTCOMES)[number];
+
+/**
+ * #1609 — why a project was `not-checked`:
+ *   - `restricted` — the run's starter could not access the project when it ran.
+ *   - `no-index`   — the project has no indexed code symbols to search.
+ *   - `timeout` / `budget` — reserved for a run that stops early on a deadline or
+ *     a cost cap. The engine does not stop early yet, so it never writes them.
+ */
+export const IMPACT_NOT_CHECKED_REASONS = ["restricted", "no-index", "timeout", "budget"] as const;
+export type ImpactNotCheckedReason = (typeof IMPACT_NOT_CHECKED_REASONS)[number];
+
+/**
+ * #1609 — one project's outcome on a run. Carries the project id only: no name
+ * and no symbol content, so a `restricted` entry discloses nothing the run's
+ * persisted project list does not already hold.
+ */
+export interface ImpactProjectOutcome {
+  projectId: string;
+  outcome: ImpactProjectOutcomeKind;
+  /** Set only when `outcome === "not-checked"`; null otherwise. */
+  reason: ImpactNotCheckedReason | null;
+}
+
 /** Full per-project breakdown for `GET /api/impact-analyses/:id`. */
 export interface ImpactAnalysisDetail {
   id: string;
@@ -711,6 +749,14 @@ export interface ImpactAnalysisDetail {
    * which is what lets the read routes authorize a run that has no items yet.
    */
   projectIds: string[];
+  /**
+   * #1609 — the per-project outcome of the run, one entry per project the
+   * engine recorded an outcome for, in `projectIds` order. A project with no
+   * affected symbols is listed here as `checked-none-affected` even though it
+   * has no entry in `items`. Empty while a run is pending or running, and for a
+   * run that finished before outcomes were recorded.
+   */
+  projectOutcomes: ImpactProjectOutcome[];
   /**
    * #88 — the actor who started the run. Load-bearing for authorization, not
    * display: a pre-#70 run with neither persisted projects nor items belongs to

@@ -143,14 +143,14 @@ describe("#88 getImpactAnalysisDetail names the run's PERSISTED projects", () =>
  * narrowed `include` cannot pass unnoticed through a permissive double.
  */
 describe("#103 getImpactAnalysisDetail query shape", () => {
-  it("asks for the run by id and includes its persisted projects", async () => {
+  it("asks for the run by id and includes its persisted projects with their #1609 outcomes", async () => {
     const prisma = detailPrisma(detailRow({ projects: [{ projectId: "p-a" }] }));
     await getImpactAnalysisDetail("ia-88", prisma as never);
 
     expect(prisma.impactAnalysis.findFirst).toHaveBeenCalledWith({
       where: { id: "ia-88" },
       include: expect.objectContaining({
-        projects: { select: { projectId: true } },
+        projects: { select: { projectId: true, outcome: true, outcomeReason: true } },
       }),
     });
   });

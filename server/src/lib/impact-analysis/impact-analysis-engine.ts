@@ -18,6 +18,8 @@ import type { PrismaClient } from "@prisma/client";
 import {
   deriveMatchQualityDetailed,
   type ImpactAffectedRelation,
+  type ImpactNotCheckedReason,
+  type ImpactProjectOutcomeKind,
   type MatchQuality,
   type MatchQualityReason,
 } from "@metis/shared";
@@ -991,6 +993,11 @@ export class InMemoryCodeGraphDataSource implements CodeGraphDataSource, CalleeN
     return this.calleeNames;
   }
 
+  /** #1609 — how many symbols the graph holds; zero means the project has no index. */
+  get symbolCount(): number {
+    return this.byId.size;
+  }
+
   async getSymbol(symbolId: string): Promise<GraphSymbol | null> {
     return this.byId.get(symbolId) ?? null;
   }
@@ -1160,6 +1167,34 @@ export interface ImpactServiceDeps {
    * (every existing caller and test is unchanged).
    */
   llmDegradationNotice?: () => string | null;
+  /**
+   * #1609 — whether the run's starter may still open `projectId` when the run
+   * reaches it. The run executes after the route answered, so access can change
+   * in between. A project this returns false for is recorded `not-checked` /
+   * `restricted` and is never searched. Absent ⇒ every project is searched.
+   */
+  projectAccessible?: (projectId: string) => Promise<boolean>;
+}
+
+/** #1609 — one project's outcome, as the engine records it on the run. */
+interface ProjectOutcomeRecord {
+  outcome: ImpactProjectOutcomeKind;
+  reason: ImpactNotCheckedReason | null;
+}
+
+/**
+ * #1609 — the nested write that stores each recorded outcome on the run's
+ * persisted project rows (`impact_analysis_projects`, created with the run).
+ * `updateMany` touches only rows that exist, so a project deleted mid-run
+ * (its row cascades away) cannot fail the run's final write.
+ */
+function projectOutcomeWrites(outcomes: ReadonlyMap<string, ProjectOutcomeRecord>) {
+  return {
+    updateMany: [...outcomes].map(([projectId, o]) => ({
+      where: { projectId },
+      data: { outcome: o.outcome, outcomeReason: o.reason },
+    })),
+  };
 }
 
 export interface TriggerImpactAnalysisInput {
@@ -1383,6 +1418,12 @@ async function runImpactAnalysis(
   // projectId and is delivered only on the `job:{id}` room.
   jobEvents.started("impact-analysis", id, null, "Analyzing impact");
 
+  // #1609 — what the run found for each project, including the ones it found
+  // nothing in or skipped. Written onto the run's project rows at the end.
+  const outcomes = new Map<string, ProjectOutcomeRecord>();
+  // The project being worked on, so a failure can be pinned to it as `error`.
+  let currentProjectId: string | null = null;
+
   try {
     const text = await resolveSourceText(prisma, row);
     const changes = await extractor.extract(text);
@@ -1407,13 +1448,32 @@ async function runImpactAnalysis(
         Math.round((pIdx / Math.max(projectIds.length, 1)) * 100),
         `Project ${pIdx + 1}/${projectIds.length}`,
       );
+      currentProjectId = projectId;
+      // #1609 — re-check access when the run reaches the project. A project the
+      // starter can no longer open is recorded and skipped: nothing is searched,
+      // so no symbol of it can reach the result.
+      if (deps.projectAccessible && !(await deps.projectAccessible(projectId))) {
+        outcomes.set(projectId, { outcome: "not-checked", reason: "restricted" });
+        continue;
+      }
       // Pre-load the entire code graph for this project into memory once.
       // This replaces N×changes×depth individual Prisma queries with 2 bulk
       // loads + O(1) Map lookups for every BFS hop across all changes.
-      const projectGraph = deps.dataSourceFor
-        ? deps.dataSourceFor(projectId)
-        : await loadProjectGraph(prisma, projectId);
+      let projectGraph: CodeGraphDataSource;
+      if (deps.dataSourceFor) {
+        projectGraph = deps.dataSourceFor(projectId);
+      } else {
+        const loaded = await loadProjectGraph(prisma, projectId);
+        // #1609 — a project with no indexed symbols has nothing to search. Say
+        // so rather than report it as checked, and skip the seeding stages.
+        if (loaded.symbolCount === 0) {
+          outcomes.set(projectId, { outcome: "not-checked", reason: "no-index" });
+          continue;
+        }
+        projectGraph = loaded;
+      }
       const dataSourceForProject = (_id: string) => projectGraph;
+      let projectAffected = false;
 
       // Epic #954 (#956) — build the identity resolver ONCE per project (a single
       // preload of the project's resource identities). Best-effort: a build fault
@@ -1473,8 +1533,11 @@ async function runImpactAnalysis(
 
         if (result.retrievalMode === "bm25-only") bm25OnlyProjects.add(projectId);
 
-        // Skip empty (no code hits) results to keep the report focused.
+        // Skip empty (no code hits) results to keep the report focused: a change
+        // with no hits writes no item. #1609 — the project is still recorded,
+        // as `checked-none-affected` when none of its changes hit (below).
         if (result.affectedSymbolCount === 0) continue;
+        projectAffected = true;
 
         // #1005 — the reconciliation advisories are not persisted in their own
         // right (see docs/IMPACT_ANALYSIS_LLM_STAGES.md); they reach a BA through
@@ -1746,7 +1809,12 @@ async function runImpactAnalysis(
 
         totalImpactedSymbols += result.affectedSymbolCount;
       }
+      outcomes.set(projectId, {
+        outcome: projectAffected ? "affected" : "checked-none-affected",
+        reason: null,
+      });
     }
+    currentProjectId = null;
 
     // Deterministic run-level overview (always available). #932 — when the LLM
     // summarizer is wired and produces a GROUNDED overview, prefer it; otherwise
@@ -1801,16 +1869,26 @@ async function runImpactAnalysis(
         completedAt: new Date(),
         totalImpactedSymbols,
         summary,
+        // #1609 — in the same write as the completion, so a completed run is
+        // never read without its outcomes.
+        projects: projectOutcomeWrites(outcomes),
       },
     });
     jobEvents.completed("impact-analysis", id, null, summary);
   } catch (err) {
+    // #1609 — keep what the run settled before it failed, and pin the failure
+    // to the project it was working on. Projects it never reached stay
+    // unrecorded.
+    if (currentProjectId !== null && !outcomes.has(currentProjectId)) {
+      outcomes.set(currentProjectId, { outcome: "error", reason: null });
+    }
     await prisma.impactAnalysis.update({
       where: { id },
       data: {
         status: "failed",
         completedAt: new Date(),
         errorMessage: err instanceof Error ? err.message : String(err),
+        projects: projectOutcomeWrites(outcomes),
       },
     });
     log.error("impact analysis failed", { id, error: String(err) });

@@ -17,6 +17,9 @@ import type {
   ImpactConsumerResolution,
   ImpactConsumerUsage,
   ImpactItemView,
+  ImpactNotCheckedReason,
+  ImpactProjectOutcome,
+  ImpactProjectOutcomeKind,
   ImpactTableConsumerView,
   ImpactTableFeedbackVerdict,
   ImpactTableFeedbackView,
@@ -32,6 +35,8 @@ import {
   impactFileLists,
   IMPACT_CONSUMER_RESOLUTIONS,
   IMPACT_CONSUMER_USAGES,
+  IMPACT_NOT_CHECKED_REASONS,
+  IMPACT_PROJECT_OUTCOMES,
   IMPACT_TABLE_FEEDBACK_VERDICTS,
   SCHEMA_RECONCILIATIONS,
   SCHEMA_SOURCES,
@@ -90,8 +95,36 @@ const ITEM_INCLUDE = {
  */
 const DETAIL_INCLUDE = {
   ...ITEM_INCLUDE,
-  projects: { select: { projectId: true } },
+  // #1609 — with each project's recorded outcome.
+  projects: { select: { projectId: true, outcome: true, outcomeReason: true } },
 } satisfies Prisma.ImpactAnalysisInclude;
+
+/**
+ * #1609 — the recorded per-project outcomes, in `projectIds` order. A project
+ * with no recorded outcome (a run still in flight, or one finished before
+ * #1609) is left out rather than guessed at, and so is a value outside the
+ * shared vocabulary. A reason is kept only on a `not-checked` outcome.
+ */
+export function toProjectOutcomes(
+  projectIds: readonly string[],
+  rows: readonly { projectId: string; outcome?: string | null; outcomeReason?: string | null }[],
+): ImpactProjectOutcome[] {
+  const byProject = new Map(rows.map((r) => [r.projectId, r]));
+  const out: ImpactProjectOutcome[] = [];
+  for (const projectId of projectIds) {
+    const row = byProject.get(projectId);
+    const outcome = row?.outcome;
+    if (!outcome || !(IMPACT_PROJECT_OUTCOMES as readonly string[]).includes(outcome)) continue;
+    const reason =
+      outcome === "not-checked" &&
+      row.outcomeReason &&
+      (IMPACT_NOT_CHECKED_REASONS as readonly string[]).includes(row.outcomeReason)
+        ? (row.outcomeReason as ImpactNotCheckedReason)
+        : null;
+    out.push({ projectId, outcome: outcome as ImpactProjectOutcomeKind, reason });
+  }
+  return out;
+}
 
 interface RawAffectedSymbol {
   id: string;
@@ -1071,6 +1104,8 @@ export async function getImpactAnalysisDetail(
     startedAt: row.startedAt.toISOString(),
     completedAt: row.completedAt ? row.completedAt.toISOString() : null,
     projectIds,
+    // #1609 — every project the run recorded an outcome for, hits or not.
+    projectOutcomes: toProjectOutcomes(projectIds, row.projects ?? []),
     // #88 — carried so the route layer can keep an unattributable legacy run
     // visible to its own starter without a second query.
     startedById: row.startedById,
