@@ -13,7 +13,7 @@
  * report-side check: applied after verdicts are gated, it never changes a verdict.
  */
 import { describe, expect, it } from "vitest";
-import type { AnalysisRetrievalHealth, RequirementVerdict } from "@metis/shared";
+import type { AnalysisRetrievalHealth, FindingVerdict } from "@metis/shared";
 import { deriveRequirementVerdict } from "./requirement-verdict.js";
 import {
   MAX_UNVERIFIED_REQUIREMENT_SHARE,
@@ -175,7 +175,7 @@ describe("#19 countUnverifiedRequirements — agrees with the verdict the page s
         .filter((f) => f.requirementId === id)
         .map((f) => ({
           agentKey: "code",
-          verdict: (f.verdict ?? null) as RequirementVerdict | null,
+          verdict: (f.verdict ?? null) as FindingVerdict | null,
         })),
     });
 

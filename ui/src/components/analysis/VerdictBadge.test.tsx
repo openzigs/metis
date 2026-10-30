@@ -9,7 +9,12 @@ import { VerdictBadge, VERDICT_COPY } from "./VerdictBadge";
 
 describe("VerdictBadge", () => {
   it("renders each verdict with its own label, hue and tooltip", () => {
-    for (const verdict of ["implemented", "gap-confirmed", "could-not-verify"] as const) {
+    for (const verdict of [
+      "implemented",
+      "partial",
+      "gap-confirmed",
+      "could-not-verify",
+    ] as const) {
       const { unmount } = render(<VerdictBadge verdict={verdict} />);
       const badge = screen.getByTestId(`verdict-badge-${verdict}`);
       expect(badge).toHaveTextContent(VERDICT_COPY[verdict].label);
@@ -17,9 +22,17 @@ describe("VerdictBadge", () => {
       expect(badge).toHaveAttribute("data-verdict", verdict);
       unmount();
     }
-    // Three different colours — the states are never visually conflated.
+    // A different colour per state — the states are never visually conflated.
     const hues = new Set(Object.values(VERDICT_COPY).map((c) => c.className));
-    expect(hues.size).toBe(3);
+    expect(hues.size).toBe(4);
+  });
+
+  it("#1610 — says partial means part of it exists and only the rest needs building", () => {
+    render(<VerdictBadge verdict="partial" />);
+    const badge = screen.getByTestId("verdict-badge-partial");
+    expect(badge).toHaveTextContent("Partially implemented");
+    expect(badge.getAttribute("title")).toMatch(/backed by cited code/i);
+    expect(badge.getAttribute("title")).toMatch(/confirmed a gap/i);
   });
 
   it("tells the reader explicitly that could-not-verify is NOT a confirmed gap", () => {

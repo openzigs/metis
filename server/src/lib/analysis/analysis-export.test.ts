@@ -366,6 +366,18 @@ describe("serializeAnalysisReportMarkdown", () => {
  * not check" into "you must build this" (it renders finding bodies verbatim as the
  * gap narrative). These tests pin the separation.
  */
+describe("#1610 — a partial verdict is exported as partly built", () => {
+  it("labels it as partially implemented, not as a gap and not as implemented", () => {
+    const md = serializeAnalysisReportMarkdown({
+      gapReport: gapReport([gapReq({ verdict: "partial" })]),
+      matrix: matrix(),
+    });
+    expect(md).toContain(
+      "**Verdict:** Partially implemented (code evidence cited for some acceptance criteria; a gap confirmed for others)",
+    );
+  });
+});
+
 describe("#773 — could-not-verify is never exported as a gap", () => {
   it("renders unverifiable findings in their own block, NOT under 'Gap'", () => {
     const md = serializeAnalysisReportMarkdown({

@@ -765,7 +765,9 @@ export function buildSynthesisPrompt(input: SynthesisPromptInput): {
     "6. Reference source findings by their integer index (the [N] prefix) in `evidenceFindingIndexes`.",
     // #1096 — the criteria the analysis clearly derives were previously collapsed
     // into `body` prose and the published issue appended a generic placeholder.
-    "7. Populate `acceptanceCriteria` with concrete, testable statements derived from THIS requirement's own evidence — name the artifacts (table, column, endpoint, file) the check applies to, and state the observable pass condition. If the evidence does not support any specific criterion, return an EMPTY array: never emit generic filler such as 'the requirement is satisfied' or 'the change ships'.",
+    "7. Populate `acceptanceCriteria` with concrete, testable statements derived from THIS requirement's own evidence — name the artifacts (table, column, endpoint, file) the check applies to, and state the observable pass condition. If the evidence does not support any specific criterion, return an EMPTY array: never emit generic filler such as 'the requirement is satisfied' or 'the change ships'. " +
+      // #1610 — per-criterion evidence, so the verdict can say "partly there".
+      "Set `acceptanceCriteriaEvidence` to one list per criterion, in the same order as `acceptanceCriteria`: the indexes, from this requirement's own `evidenceFindingIndexes`, of the findings that show whether THAT criterion is met. Use an empty list for a criterion no finding bears on; never cite a finding for a criterion it does not address.",
     "8. Output JSON only.",
     safeRefined
       ? input.refinedHumanAnswered
@@ -796,7 +798,8 @@ export function buildSynthesisPrompt(input: SynthesisPromptInput): {
       "labels": ["..."],
       "storyPoints": <optional int>,
       "evidenceFindingIndexes": [<ints>],
-      "acceptanceCriteria": ["<testable statement naming the artifact and pass condition>"]${
+      "acceptanceCriteria": ["<testable statement naming the artifact and pass condition>"],
+      "acceptanceCriteriaEvidence": [[<ints: findings bearing on the criterion at the same position>]]${
         safeSourceItems ? ',\n      "sourceIds": ["<id from IMPORTED ITEMS>"]' : ""
       }${refinedIds ? `,\n      "structuredIds": ["<id from ${refinedLabel}>"]` : ""}
     }

@@ -197,6 +197,8 @@ function coverageLabel(coverage: RequirementCoverage | null): string {
  */
 const VERDICT_LABEL: Record<RequirementVerdict, string> = {
   implemented: "Implemented (code evidence cited)",
+  partial:
+    "Partially implemented (code evidence cited for some acceptance criteria; a gap confirmed for others)",
   "gap-confirmed": "Gap confirmed (code was searched and does not satisfy this)",
   "could-not-verify": "Could not verify — NOT a confirmed gap (retrieval did not back a verdict)",
 };

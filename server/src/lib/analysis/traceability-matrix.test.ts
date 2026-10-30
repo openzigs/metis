@@ -13,6 +13,7 @@ import {
   escapeMarkdownCell,
   formatCodeLocationCell,
   formatTestsCell,
+  formatVerdictCell,
   isDocumentationFilePath,
   isTestFilePath,
   serializeTraceabilityCsv,
@@ -421,6 +422,18 @@ describe("formatTestsCell (#1108 review)", () => {
       "internal/api/api_test.go::TestA; internal/api/api_test.go::TestB",
     );
     expect(formatTestsCell([])).toBe("none detected");
+  });
+});
+
+describe("formatVerdictCell (#773, #1610)", () => {
+  it.each([
+    ["implemented", "implemented"],
+    ["partial", "partial (some criteria implemented, a gap confirmed for others)"],
+    ["gap-confirmed", "gap-confirmed"],
+    ["could-not-verify", "could-not-verify (NOT a confirmed gap)"],
+    [null, "—"],
+  ] as const)("%s → %s", (verdict, cell) => {
+    expect(formatVerdictCell(verdict)).toBe(cell);
   });
 });
 

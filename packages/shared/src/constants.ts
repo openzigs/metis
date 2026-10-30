@@ -179,8 +179,33 @@ export type RequirementCoverage = (typeof REQUIREMENT_COVERAGES)[number];
  *
  * `null` = no verdict (the code agent did not participate in the run, or the row
  * predates #773). The UI renders null as a neutral, badge-free state.
+ *
+ * Issue #1610 — a FINDING reaches one of these three states (the gate in
+ * `requirement-verdict.ts` produces them); a REQUIREMENT can also be `partial`
+ * (see {@link REQUIREMENT_VERDICTS}). The split keeps `partial` out of the
+ * model-facing finding schema: a model may not claim "partly there" about one
+ * finding, it is only ever derived from per-criterion evidence.
  */
-export const REQUIREMENT_VERDICTS = ["implemented", "gap-confirmed", "could-not-verify"] as const;
+export const FINDING_VERDICTS = ["implemented", "gap-confirmed", "could-not-verify"] as const;
+export type FindingVerdict = (typeof FINDING_VERDICTS)[number];
+
+/**
+ * The per-requirement verdict: the three {@link FINDING_VERDICTS} plus
+ * Issue #1610's `partial`.
+ *
+ *   - `partial` — at least one of the requirement's acceptance criteria is
+ *                 backed by a grounded `implemented` code finding AND at least
+ *                 one is `gap-confirmed`. Derived deterministically from
+ *                 per-criterion evidence (`rollUpCriterionVerdicts`), never from
+ *                 a model judgement. Like `gap-confirmed` it licenses building
+ *                 the missing part; unlike it, it says the rest already exists.
+ */
+export const REQUIREMENT_VERDICTS = [
+  "implemented",
+  "partial",
+  "gap-confirmed",
+  "could-not-verify",
+] as const;
 export type RequirementVerdict = (typeof REQUIREMENT_VERDICTS)[number];
 
 /**

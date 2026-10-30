@@ -109,4 +109,12 @@ describe("synthesis prompt (#1096)", () => {
     // The exact phrases the old placeholder used are named as prohibited.
     expect(systemMessage).toContain("the change ships");
   });
+
+  it("#1610 — asks which findings bear on each criterion, aligned with the criteria", () => {
+    expect(systemMessage).toContain(`"acceptanceCriteriaEvidence"`);
+    expect(systemMessage).toMatch(
+      /one list per criterion, in the same order as `acceptanceCriteria`/,
+    );
+    expect(systemMessage).toMatch(/never cite a finding for a criterion it does not address/);
+  });
 });

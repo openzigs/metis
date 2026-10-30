@@ -115,7 +115,7 @@
 import type {
   AnalysisRetrievalHealth,
   CodeInvestigationGap,
-  RequirementVerdict,
+  FindingVerdict,
   SearchedQuery,
 } from "@metis/shared";
 import { deriveRequirementVerdict, type VerdictFindingInput } from "./requirement-verdict.js";
@@ -667,7 +667,7 @@ export function unverifiedRequirementIds(
     const linked = finding.requirementId ? byRequirement.get(finding.requirementId) : undefined;
     if (!linked) continue;
     const verdict = REQUIREMENT_VERDICTS.has(finding.verdict ?? "")
-      ? (finding.verdict as RequirementVerdict)
+      ? (finding.verdict as FindingVerdict)
       : null;
     // Every finding of the agentic code pass is a CODE finding.
     linked.push({ agentKey: "code", verdict });
@@ -795,7 +795,7 @@ export function summarizePassReaches(
   };
 }
 
-const REQUIREMENT_VERDICTS: ReadonlySet<string> = new Set<RequirementVerdict>([
+const REQUIREMENT_VERDICTS: ReadonlySet<string> = new Set<FindingVerdict>([
   "implemented",
   "gap-confirmed",
   "could-not-verify",

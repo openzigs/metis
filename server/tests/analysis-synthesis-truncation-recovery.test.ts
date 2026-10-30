@@ -542,6 +542,54 @@ describe("#751 synthesis recovers from an output-cap truncation", () => {
     expect(covered(result.output.requirements).size).toBe(36);
   });
 
+  it("#1610 — a merge carries per-criterion evidence onto the kept requirement, clamped to its own findings", async () => {
+    const input = findings(36);
+    const { provider } = thinkingProvider({}, (call, user, maxTokens) => {
+      if (call !== 2) return undefined;
+      const rows = parseFindingRows(user).map((r) => r.index);
+      return {
+        content: JSON.stringify({
+          summary: "s",
+          requirements: [
+            {
+              type: "bug",
+              title: "  resolve finding number 0 about module 0 ",
+              body: "dup",
+              priority: "critical",
+              labels: [],
+              evidenceFindingIndexes: [0, ...rows],
+              acceptanceCriteria: ["a new criterion", "a second new criterion"],
+              // 999 is no finding at all; 1 is a real finding, but not one THIS
+              // requirement cites, so neither may back a criterion.
+              acceptanceCriteriaEvidence: [
+                [0, 999],
+                [rows[0], 1],
+              ],
+            },
+          ],
+        }),
+        finishReason: "end_turn",
+        usage: { promptTokens: 1, completionTokens: maxTokens, totalTokens: 1 },
+        model: "deepseek-flash",
+        provider: "openai",
+      };
+    });
+    const result = await runSynthesis(provider, { projectName: "Miniflux", findings: input });
+    const merged = result.output.requirements.find((r) => /finding number 0 about/i.test(r.title));
+    // The first call's requirement had no per-criterion evidence; the merge
+    // brings the continuation's, keyed by criterion text.
+    expect(merged!.criterionEvidence).toHaveLength(2);
+    expect(merged!.criterionEvidence![0]).toEqual({
+      criterion: "a new criterion",
+      evidenceFindingIndexes: [0],
+    });
+    const second = merged!.criterionEvidence![1]!;
+    expect(second.criterion).toBe("a second new criterion");
+    expect(second.evidenceFindingIndexes).toHaveLength(1);
+    expect(second.evidenceFindingIndexes).not.toContain(1);
+    expect(merged!.evidenceFindingIndexes).toContain(second.evidenceFindingIndexes[0]);
+  });
+
   it("still retries a reply that is unparseable but NOT truncated, then degrades as before", async () => {
     const { provider, calls } = thinkingProvider({}, () => ({
       content: "I think the requirements are fine.",

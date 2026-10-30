@@ -32,6 +32,7 @@ import {
   type Citation,
   type CodeCitation,
   type FindingSeverity,
+  type FindingVerdict,
   type FindingVerificationStatus,
   type GapReport,
   type GapReportCurrentImplementation,
@@ -55,7 +56,7 @@ export interface GapReportRequirementInput {
   body: string;
   priority: RequirementPriority;
   coverage: RequirementCoverage | null;
-  /** Issue #773 — the persisted three-state verdict (null on pre-#773 rows). */
+  /** Issue #773 — the persisted verdict, `partial` since #1610 (null on pre-#773 rows). */
   verdict: RequirementVerdict | null;
   storyPoints: number | null;
   evidenceFindingIds: string[];
@@ -69,7 +70,7 @@ export interface GapReportFindingInput {
   severity: FindingSeverity;
   verificationStatus: FindingVerificationStatus | null;
   /** Issue #773 — the finding's gated verdict (null when it makes no claim). */
-  verdict: RequirementVerdict | null;
+  verdict: FindingVerdict | null;
   citations: Citation[];
 }
 

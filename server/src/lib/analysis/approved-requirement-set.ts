@@ -230,6 +230,11 @@ function joinItems(parts: readonly SynthesizedRequirement[]): SynthesizedRequire
     ? unite((p) => p.sourceIds)
     : undefined;
   const storyPoints = parts.find((p) => p.storyPoints !== undefined)?.storyPoints;
+  // #1610 — every part's per-criterion evidence, keyed by criterion text; the
+  // verdict roll-up reads only the criteria and findings the join kept.
+  const criterionEvidence = parts.some((p) => p.criterionEvidence !== undefined)
+    ? parts.flatMap((p) => p.criterionEvidence ?? [])
+    : undefined;
   return {
     ...first,
     labels: unite((p) => p.labels).slice(0, MAX_LABELS),
@@ -237,6 +242,7 @@ function joinItems(parts: readonly SynthesizedRequirement[]): SynthesizedRequire
     acceptanceCriteria: unite((p) => p.acceptanceCriteria).slice(0, MAX_CRITERIA),
     ...(storyPoints !== undefined ? { storyPoints } : {}),
     ...(sourceIds !== undefined ? { sourceIds } : {}),
+    ...(criterionEvidence !== undefined ? { criterionEvidence } : {}),
   };
 }
 
@@ -563,6 +569,10 @@ export function planApprovedRequirementSet(input: {
       ...(match?.storyPoints !== undefined ? { storyPoints: match.storyPoints } : {}),
       evidenceFindingIndexes: match?.evidenceFindingIndexes ?? [],
       acceptanceCriteria: match?.acceptanceCriteria ?? [],
+      // #1610 — travels with the criteria it describes.
+      ...(match?.criterionEvidence !== undefined
+        ? { criterionEvidence: match.criterionEvidence }
+        : {}),
       // #1063 — which imported item it came from, when synthesis said.
       ...(match?.sourceIds !== undefined ? { sourceIds: match.sourceIds } : {}),
     };
