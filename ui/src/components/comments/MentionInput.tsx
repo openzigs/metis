@@ -6,7 +6,7 @@
  * Wraps a Textarea and detects `@` trigger to show a user search dropdown.
  * Inserts `@username ` on selection.
  */
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Textarea } from "@/components/ui/textarea";
 import { apiFetch } from "@/lib/api-client";
@@ -110,16 +110,20 @@ export function MentionInput({
     ...userHits.filter((u) => !extraUsernames.has(u.username.toLowerCase())),
   ];
 
-  // Reset selected index when suggestions change
-  useEffect(() => {
-    setSelectedIndex(0);
-  }, [suggestions]);
+  // #1572 — the highlight is reset where the list is (re)opened, in
+  // `handleChange`, and clamped here when the list shrinks. It used to be reset
+  // by an effect on `suggestions`, an array rebuilt on every render: the effect
+  // ran after every commit and set state, adding a nested render to every
+  // keystroke (React's "Maximum update depth exceeded" in the composer) and
+  // undoing every ArrowDown.
+  const activeIndex = Math.min(selectedIndex, Math.max(suggestions.length - 1, 0));
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       const newValue = e.target.value;
       onChange(newValue);
       setTrigger(detectMentionTrigger(newValue));
+      setSelectedIndex(0);
     },
     [onChange],
   );
@@ -135,14 +139,14 @@ export function MentionInput({
       }
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setSelectedIndex((i) => Math.min(i + 1, suggestions.length - 1));
+        setSelectedIndex(Math.min(activeIndex + 1, suggestions.length - 1));
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
-        setSelectedIndex((i) => Math.max(i - 1, 0));
+        setSelectedIndex(Math.max(activeIndex - 1, 0));
       } else if (e.key === "Enter" || e.key === "Tab") {
-        if (suggestions[selectedIndex]) {
+        if (suggestions[activeIndex]) {
           e.preventDefault();
-          insertMention(suggestions[selectedIndex]);
+          insertMention(suggestions[activeIndex]);
         }
       } else if (e.key === "Escape") {
         setTrigger(null);
@@ -150,7 +154,7 @@ export function MentionInput({
         onKeyDownProp?.(e);
       }
     },
-    [trigger, suggestions, selectedIndex, onKeyDownProp],
+    [trigger, suggestions, activeIndex, onKeyDownProp],
   );
 
   function insertMention(user: UserHit) {
@@ -158,16 +162,13 @@ export function MentionInput({
     const before = value.slice(0, trigger.triggerStart);
     const after = value.slice(trigger.triggerStart + 1 + trigger.prefix.length);
     const newValue = `${before}@${user.username} ${after}`;
+    // #1572 — the trigger is always the tail of the value, so the mention ends
+    // the new value and the caret is already after it; the textarea keeps focus
+    // (Enter, or a click whose mousedown is prevented). The `setTimeout` that
+    // used to put the caret there fired after keys typed in the meantime and
+    // threw the caret back into the text, scrambling what followed.
     onChange(newValue);
     setTrigger(null);
-    // Restore focus after React state update
-    setTimeout(() => {
-      if (textareaRef.current) {
-        const pos = before.length + 1 + user.username.length + 1;
-        textareaRef.current.setSelectionRange(pos, pos);
-        textareaRef.current.focus();
-      }
-    }, 0);
   }
 
   const showDropdown = trigger !== null && suggestions.length > 0;
@@ -196,10 +197,10 @@ export function MentionInput({
             <li
               key={user.id}
               role="option"
-              aria-selected={idx === selectedIndex}
+              aria-selected={idx === activeIndex}
               className={cn(
                 "flex cursor-pointer items-center gap-2 px-3 py-2 text-sm",
-                idx === selectedIndex
+                idx === activeIndex
                   ? "bg-accent text-accent-foreground"
                   : "hover:bg-accent hover:text-accent-foreground",
               )}
