@@ -15,6 +15,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { specKitApi, type SpecKitFeatureStatus } from "@/lib/spec-kit-api";
 import { queryKeys } from "@/lib/query-keys";
 import { describeSpecKitError } from "@/lib/spec-kit-display";
+import { REQUIRES_PROJECT_UPDATE } from "@/lib/permission-hints";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 
@@ -139,7 +140,7 @@ export function FeaturePanel({ projectId, enabled, canWrite, selectedSlug, onSel
             variant="outline"
             className="w-full"
             disabled={!canWrite || lifecycle.isPending}
-            title={canWrite ? undefined : "Requires project.update"}
+            title={canWrite ? undefined : REQUIRES_PROJECT_UPDATE}
             onClick={() =>
               lifecycle.mutate({ slug: selectedSlug, action: archived ? "restore" : "archive" })
             }

@@ -218,7 +218,7 @@ beforeEach(() => {
 
 describe("#1104 B — promoting the requirements the approval gate withheld", () => {
   it("persists the withheld requirements once every approval is resolved", async () => {
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome).toEqual({ status: "promoted", requirementCount: 2 });
     expect(persistRequirements).toHaveBeenCalledTimes(1);
@@ -233,7 +233,7 @@ describe("#1104 B — promoting the requirements the approval gate withheld", ()
   });
 
   it("#1116 — writes the clarification answers into the rows it just created", async () => {
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(applyClarificationsToRequirements).toHaveBeenCalledWith(ANALYSIS_ID);
     // Order matters: enriching before the rows exist would be a silent no-op.
@@ -246,13 +246,13 @@ describe("#1104 B — promoting the requirements the approval gate withheld", ()
     gate.allowed = false;
     gate.pendingCount = 1;
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(applyClarificationsToRequirements).not.toHaveBeenCalled();
   });
 
   it("clears the durable blocked marker so the UI stops warning", async () => {
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(persistAnalysisEnhancement).toHaveBeenCalledWith(ANALYSIS_ID, {
       promotionBlocked: { blocked: false, pendingCount: 0, rejectedCount: 0 },
@@ -271,7 +271,7 @@ describe("#1104 B — promoting the requirements the approval gate withheld", ()
     gate.allowed = false;
     gate.pendingCount = 3;
 
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome.status).toBe("blocked");
     expect(outcome).toMatchObject({ pendingCount: 3, awaitingRequirementCount: 2 });
@@ -281,7 +281,7 @@ describe("#1104 B — promoting the requirements the approval gate withheld", ()
   it("is idempotent — never re-persists an already-promoted analysis", async () => {
     db.requirementCount = 2;
 
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome).toEqual({ status: "already-promoted", requirementCount: 2 });
     expect(persistRequirements).not.toHaveBeenCalled();
@@ -290,7 +290,7 @@ describe("#1104 B — promoting the requirements the approval gate withheld", ()
   it("reports unavailable (never throws) when there is no synthesis output to promote", async () => {
     db.synthesisOutput = null;
 
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome.status).toBe("unavailable");
     expect(persistRequirements).not.toHaveBeenCalled();
@@ -299,7 +299,7 @@ describe("#1104 B — promoting the requirements the approval gate withheld", ()
   it("reports unavailable when the persisted synthesis output is unparseable", async () => {
     db.synthesisOutput = "{not json";
 
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome.status).toBe("unavailable");
   });
@@ -319,7 +319,7 @@ describe("#1104 B — promoting the requirements the approval gate withheld", ()
       requirements: [grounded, SYNTHESIS_OUTPUT.requirements[1]],
     });
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     const input = persistRequirements.mock.calls[0]?.[0] as {
       findingIdsByIndex: string[];
@@ -334,7 +334,7 @@ describe("#1104 B — promoting the requirements the approval gate withheld", ()
   it("still promotes when the best-effort code-link seeding fails", async () => {
     seedRequirementCodeLinksFromFindings.mockRejectedValueOnce(new Error("graph offline"));
 
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome).toEqual({ status: "promoted", requirementCount: 2 });
     expect(persistAnalysisEnhancement).toHaveBeenCalled();
@@ -343,7 +343,7 @@ describe("#1104 B — promoting the requirements the approval gate withheld", ()
   it("reports unavailable when the analysis does not exist", async () => {
     db.analysis = null;
 
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome.status).toBe("unavailable");
   });
@@ -436,7 +436,7 @@ describe("#730 — promote the requirements the user approved, not a different s
   }
 
   it("persists exactly the approved structured requirements, with the reviewed titles and descriptions", async () => {
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome).toEqual({ status: "promoted", requirementCount: 2 });
     const reqs = persistedRequirements();
@@ -450,7 +450,7 @@ describe("#730 — promote the requirements the user approved, not a different s
   });
 
   it("carries a matching synthesized requirement's criteria and evidence onto the approved one", async () => {
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     const [feed, category, oauth] = persistedRequirements();
     expect(feed).toMatchObject({
@@ -467,7 +467,7 @@ describe("#730 — promote the requirements the user approved, not a different s
   it("#909 — keeps the reviewed requirement type as a label instead of dropping it", async () => {
     (db.structured!.requirements[1] as { type: string }).type = "non-functional";
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     const reqs = persistedRequirements() as unknown as Array<{ labels: string[] }>;
     // Ahead of the matched synthesized requirement's own labels.
@@ -478,7 +478,7 @@ describe("#730 — promote the requirements the user approved, not a different s
   it("leaves out a requirement the reviewer did not approve", async () => {
     db.approvals[1] = { itemId: "REQ-2", status: "rejected" };
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(persistedRequirements().map((r) => r.title)).toEqual([
       "Duplicate Feed URL Subscription Prevention",
@@ -490,7 +490,7 @@ describe("#730 — promote the requirements the user approved, not a different s
     gate.allowed = false;
     gate.pendingCount = 3;
 
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome).toMatchObject({ status: "blocked", awaitingRequirementCount: 3 });
     expect(persistRequirements).not.toHaveBeenCalled();
@@ -499,14 +499,14 @@ describe("#730 — promote the requirements the user approved, not a different s
   it("promotes the approved list even when there is no usable synthesis output", async () => {
     db.synthesisOutput = null;
 
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome.status).toBe("promoted");
     expect(persistedRequirements()).toHaveLength(3);
   });
 
   it("#939 — promotes the reviewed requirements already approved: the checkpoint was the review", async () => {
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(persistRequirements.mock.calls[0]?.[0]).toMatchObject({ reviewStatus: "approved" });
   });
@@ -514,7 +514,7 @@ describe("#730 — promote the requirements the user approved, not a different s
   it("#939 — leaves synthesis-only rows as drafts: nobody has reviewed them", async () => {
     db.approvals = [];
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(persistRequirements.mock.calls[0]?.[0]).not.toHaveProperty("reviewStatus");
   });
@@ -522,7 +522,7 @@ describe("#730 — promote the requirements the user approved, not a different s
   it("keeps promoting the synthesis output when no requirement went through the checkpoint", async () => {
     db.approvals = [];
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(persistedRequirements()).toHaveLength(3);
     expect(persistedRequirements()[0]?.title).toBe("Could not verify: PORT overrides LISTEN_ADDR");
@@ -602,7 +602,7 @@ describe("#1033 — criteria and evidence reach the requirements synthesis names
   }
 
   it("gives the confirmed requirements after the first their criteria and evidence", async () => {
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
     const [basic, publishing, empty, constant] = persisted();
     expect(basic).toMatchObject({
       acceptanceCriteria: ["No Authorization header gets 404."],
@@ -655,7 +655,7 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
   });
 
   it("promotes the approved ones and records which structured ids it promoted", async () => {
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome.status).toBe("promoted");
     const input = persistRequirements.mock.calls[0]?.[0] as {
@@ -688,7 +688,7 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
     db.approvals[1] = { itemId: "REQ-2", status: "approved" };
     gate.rejectedCount = 0;
 
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome).toEqual({ status: "promoted", requirementCount: 1 });
     expect(persistRequirements).not.toHaveBeenCalled();
@@ -710,7 +710,7 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
     };
     db.approvals[1] = { itemId: "REQ-2", status: "approved" };
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     const data = (
       lastTx!.requirement.create.mock.calls[0]?.[0] as { data: Record<string, unknown> }
@@ -754,7 +754,7 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
     });
     db.approvals[1] = { itemId: "REQ-2", status: "approved" };
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     const data = (
       lastTx!.requirement.create.mock.calls[0]?.[0] as { data: Record<string, unknown> }
@@ -771,7 +771,7 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
     };
     db.approvals[1] = { itemId: "REQ-2", status: "approved" };
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     const data = (
       lastTx!.requirement.create.mock.calls[0]?.[0] as { data: Record<string, unknown> }
@@ -787,7 +787,7 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
     };
     db.approvals[1] = { itemId: "REQ-2", status: "approved" };
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(lockRequirementSet).toHaveBeenCalledTimes(1);
     expect(lockRequirementSet).toHaveBeenCalledWith(lastTx, ANALYSIS_ID);
@@ -803,14 +803,16 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
     db.approvals[1] = { itemId: "REQ-2", status: "approved" };
     committed.failCreateAt = 2; // REQ-2 lands, REQ-3 throws
 
-    await expect(promoteApprovedRequirements(ANALYSIS_ID)).rejects.toThrow("connection reset");
+    await expect(promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true })).rejects.toThrow(
+      "connection reset",
+    );
 
     expect(created()).toEqual([]);
     expect(db.analysis.metadata).toBe(metadata);
 
     // The retry then appends each requirement exactly once.
     committed.failCreateAt = 0;
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
     expect(outcome).toEqual({ status: "promoted", requirementCount: 2 });
     expect(created()).toEqual(["Reading speed validation", "Per-host polling concurrency limit"]);
     expect(recordedIds()).toEqual(["REQ-1", "REQ-2", "REQ-3"]);
@@ -825,8 +827,8 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
     db.approvals[1] = { itemId: "REQ-2", status: "approved" };
 
     const outcomes = await Promise.all([
-      promoteApprovedRequirements(ANALYSIS_ID),
-      promoteApprovedRequirements(ANALYSIS_ID),
+      promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true }),
+      promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true }),
     ]);
 
     expect(created()).toEqual(["Reading speed validation"]);
@@ -846,7 +848,7 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
       { itemId: "REQ-3", status: "approved", reviewedAt: before },
     ];
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(created()).toEqual(["Reading speed validation"]);
     expect(recordedIds()).toEqual(["REQ-1", "REQ-2", "REQ-3"]);
@@ -859,7 +861,7 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
       metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1", "REQ-3"] }),
     };
 
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome).toEqual({ status: "already-promoted", requirementCount: 2 });
     expect(created()).toEqual([]);
@@ -910,7 +912,7 @@ describe("#909 — promoted ids are scoped to the extraction run", () => {
   });
 
   it("does not read a re-run's colliding ids as promoted, nor append its list beside the set", async () => {
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     // Nothing appended next to run 1's set ...
     expect(committed.rows).toEqual([]);
@@ -937,7 +939,7 @@ describe("#909 — promoted ids are scoped to the extraction run", () => {
   it("records nothing when that replacement is withheld to protect review work (#769)", async () => {
     db.withhold = true;
 
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome.status).toBe("unavailable");
     expect(outcome).toMatchObject({ reason: expect.stringContaining("withheld") });
@@ -948,7 +950,7 @@ describe("#909 — promoted ids are scoped to the extraction run", () => {
   it("still appends a reopened approval within the SAME run", async () => {
     db.structured!.runId = "run-1";
 
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome).toEqual({ status: "promoted", requirementCount: 1 });
     expect(persistRequirements).not.toHaveBeenCalled();
@@ -986,7 +988,7 @@ describe("#909 — promoted ids are scoped to the extraction run", () => {
     });
     db.analysis = { projectId: PROJECT_ID, metadata: run2 };
 
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome.status).toBe("unavailable");
     expect(outcome).toMatchObject({ reason: expect.stringContaining("replaced by another run") });
@@ -1006,7 +1008,7 @@ describe("#909 — promoted ids are scoped to the extraction run", () => {
       { itemId: "REQ-3", status: "approved", createdAt: new Date("2026-02-01T00:00:00Z") },
     ];
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     const input = persistRequirements.mock.calls[0]?.[0] as {
       synthesis: { requirements: Array<{ title: string }> };
@@ -1070,7 +1072,7 @@ describe("#1204 — promotion records each requirement the title join refused", 
   });
 
   it("keys the refusal by the row it became and names the items it was level on", async () => {
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome).toEqual({ status: "promoted", requirementCount: 2 });
     // The rule is unchanged: the refused requirement gets no item's criteria.
@@ -1094,7 +1096,7 @@ describe("#1204 — promotion records each requirement the title join refused", 
   it("records nothing when the replacement is withheld (#769)", async () => {
     db.withhold = true;
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(persistAnalysisEnhancement).not.toHaveBeenCalled();
   });
@@ -1114,7 +1116,7 @@ describe("#1204 — promotion records each requirement the title join refused", 
       }),
     };
 
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome).toEqual({ status: "promoted", requirementCount: 1 });
     expect(recordOf()).toEqual({
@@ -1153,7 +1155,7 @@ describe("#1204 — promotion records each requirement the title join refused", 
       metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1"] }),
     };
 
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome).toEqual({ status: "promoted", requirementCount: 2 });
     const onlyY = [{ title: Y.title, acceptanceCriteria: Y.acceptanceCriteria }];
@@ -1188,7 +1190,7 @@ describe("#1204 — promotion records each requirement the title join refused", 
       metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1"] }),
     };
 
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome).toEqual({ status: "promoted", requirementCount: 1 });
     expect(recordOf()).toEqual({
@@ -1242,7 +1244,7 @@ describe("#1204 — promotion records each requirement the title join refused", 
         { itemId: "REQ-1", status: "approved" },
         { itemId: "REQ-2", status: "approved" },
       ];
-      expect(await promoteApprovedRequirements(ANALYSIS_ID)).toEqual({
+      expect(await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true })).toEqual({
         status: "promoted",
         requirementCount: 1,
       });
@@ -1259,7 +1261,7 @@ describe("#1204 — promotion records each requirement the title join refused", 
       db.requirementCount = 2;
       db.pairingRows = [...db.pairingRows, second];
       db.approvals = [...db.approvals, { itemId: "REQ-3", status: "approved" }];
-      expect(await promoteApprovedRequirements(ANALYSIS_ID)).toEqual({
+      expect(await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true })).toEqual({
         status: "promoted",
         requirementCount: 1,
       });
@@ -1284,7 +1286,7 @@ describe("#1204 — promotion records each requirement the title join refused", 
         { itemId: "REQ-3", status: "approved" },
       ];
 
-      expect(await promoteApprovedRequirements(ANALYSIS_ID)).toEqual({
+      expect(await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true })).toEqual({
         status: "promoted",
         requirementCount: 1,
       });
@@ -1323,7 +1325,7 @@ describe("#1204 — promotion records each requirement the title join refused", 
         { itemId: "REQ-3", status: "approved" },
       ];
 
-      expect(await promoteApprovedRequirements(ANALYSIS_ID)).toEqual({
+      expect(await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true })).toEqual({
         status: "promoted",
         requirementCount: 1,
       });
@@ -1363,7 +1365,7 @@ describe("#1204 — promotion records each requirement the title join refused", 
       { itemId: "REQ-3", status: "approved", reviewedAt: new Date("2026-01-02T00:00:00Z") },
     ];
 
-    expect(await promoteApprovedRequirements(ANALYSIS_ID)).toEqual({
+    expect(await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true })).toEqual({
       status: "promoted",
       requirementCount: 1,
     });
@@ -1460,7 +1462,7 @@ describe("#1203 — promotion records which requirements share criteria", () => 
     ];
     persistRequirements.mockImplementationOnce(async () => ["rq_1", "rq_2", "rq_3", "rq_4"]);
 
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome).toEqual({ status: "promoted", requirementCount: 4 });
     expect(writtenMatching()?.shared).toEqual([
@@ -1477,7 +1479,7 @@ describe("#1203 — promotion records which requirements share criteria", () => 
       { itemId: "REQ-3", status: "approved" },
     ];
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(writtenMatching()?.shared).toEqual([
       shared("rq_1", "REQ-1", [sib("REQ-2", null, false), sib("REQ-3", "rq_2")]),
@@ -1493,7 +1495,7 @@ describe("#1203 — promotion records which requirements share criteria", () => 
       { itemId: "REQ-3", status: "rejected" },
     ];
     persistRequirements.mockImplementationOnce(async () => ["rq_1"]);
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
     const first = writtenMatching();
     expect(first?.shared).toEqual([
       shared("rq_1", "REQ-1", [sib("REQ-2", null, false), sib("REQ-3", null, false)]),
@@ -1510,7 +1512,7 @@ describe("#1203 — promotion records which requirements share criteria", () => 
 
     // 2. REQ-2 reopened and approved: appended, and REQ-1's note links to it.
     db.approvals[1] = { itemId: "REQ-2", status: "approved" };
-    expect(await promoteApprovedRequirements(ANALYSIS_ID)).toEqual({
+    expect(await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true })).toEqual({
       status: "promoted",
       requirementCount: 1,
     });
@@ -1521,7 +1523,7 @@ describe("#1203 — promotion records which requirements share criteria", () => 
 
     // 3. REQ-3 too: every note now links to both of its siblings.
     db.approvals[2] = { itemId: "REQ-3", status: "approved" };
-    expect(await promoteApprovedRequirements(ANALYSIS_ID)).toEqual({
+    expect(await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true })).toEqual({
       status: "promoted",
       requirementCount: 1,
     });
@@ -1543,7 +1545,7 @@ describe("#1203 — promotion records which requirements share criteria", () => 
       metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1"] }),
     };
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(recordOf()?.shared).toEqual([
       shared("rq_new_1", "REQ-2", [sib("REQ-1", null, true), sib("REQ-3", null, false)]),
@@ -1607,7 +1609,7 @@ describe("#1202 — promotion records the pairing, and an append joins on it", (
   it("hands persistRequirements each row's structured id, run and synthesis items", async () => {
     db.approvals = [{ itemId: "REQ-1", status: "approved" }];
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     const input = persistRequirements.mock.calls[0]?.[0] as { promotedFrom?: unknown };
     expect(input.promotedFrom).toEqual({
@@ -1619,7 +1621,7 @@ describe("#1202 — promotion records the pairing, and an append joins on it", (
   it("records no pairing for a set that never went through the checkpoint", async () => {
     db.structured = null;
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     const input = persistRequirements.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(input).not.toHaveProperty("promotedFrom");
@@ -1643,7 +1645,7 @@ describe("#1202 — promotion records the pairing, and an append joins on it", (
       },
     ];
 
-    const outcome = await promoteApprovedRequirements(ANALYSIS_ID);
+    const outcome = await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(outcome).toEqual({ status: "promoted", requirementCount: 1 });
     const row = createdFor("REQ-2");
@@ -1667,7 +1669,7 @@ describe("#1202 — promotion records the pairing, and an append joins on it", (
       { promotedStructuredId: null, promotedStructuredRunId: null, promotedSynthesisKeys: null },
     ];
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     const row = createdFor("REQ-2");
     expect(JSON.parse(row!.acceptanceCriteria)).toEqual([]);
@@ -1708,7 +1710,7 @@ describe("#1202 — promotion records the pairing, and an append joins on it", (
       },
     ];
 
-    expect(await promoteApprovedRequirements(ANALYSIS_ID)).toEqual({
+    expect(await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true })).toEqual({
       status: "promoted",
       requirementCount: 1,
     });
@@ -1748,7 +1750,7 @@ describe("#1202 — promotion records the pairing, and an append joins on it", (
       },
     ];
 
-    await promoteApprovedRequirements(ANALYSIS_ID);
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
 
     expect(JSON.parse(createdFor("REQ-2")!.acceptanceCriteria)).toEqual([]);
   });

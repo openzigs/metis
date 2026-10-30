@@ -174,6 +174,7 @@ import {
   runSpendLabel,
 } from "@/components/analysis/analysis-usage-header";
 import { runTokensLabel } from "@/lib/run-tokens";
+import { REQUIRES_PROJECT_UPDATE } from "@/lib/permission-hints";
 
 const SPECIALIST_AGENTS: AnalysisAgentKey[] = ["document", "code", "database", "web"];
 
@@ -483,7 +484,7 @@ export default function AnalysisPage(): React.ReactElement {
   // (both the PUT the card calls and the analysis PATCH); a viewer without it
   // gets the controls disabled with the reason rather than a 403 afterwards.
   const canEditRequirements = user?.permissions.includes("project.update") ?? false;
-  const requirementWriteHint = canEditRequirements ? undefined : "Requires project.update";
+  const requirementWriteHint = canEditRequirements ? undefined : REQUIRES_PROJECT_UPDATE;
   const [commentsReqId, setCommentsReqId] = useState<string | null>(null);
   // AC2 — pending optimistic-lock conflict awaiting 3-way merge resolution.
   const [conflict, setConflict] = useState<{
@@ -1579,6 +1580,7 @@ export default function AnalysisPage(): React.ReactElement {
                     metadata={detail.data.metadata}
                     requirementCount={detail.data.requirements.length}
                     analysisStatus={detail.data.status}
+                    approvesAsDraft={!canEditRequirements}
                   />
                 </TabsContent>
 

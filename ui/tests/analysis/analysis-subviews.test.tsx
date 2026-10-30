@@ -12,6 +12,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient } from "@tanstack/react-query";
 import { makeWrapper, TEST_USER } from "../test-utils";
+import { ROLE_PERMISSIONS } from "@metis/shared";
 
 const nav = vi.hoisted(() => ({ search: new URLSearchParams(), replace: vi.fn() }));
 /**
@@ -729,6 +730,36 @@ describe("a stranded run on the Analysis page (#723)", () => {
       within(banner).getByRole("button", { name: "Promote approved requirements" }),
     ).toBeInTheDocument();
   });
+
+  // #1588 — a viewer without `project.update` who approves the checkpoint
+  // adds the requirements as drafts; the page hands the panel that fact.
+  for (const [role, notice] of [
+    ["developer", true],
+    ["coordinator", false],
+  ] as const) {
+    it(`${notice ? "tells" : "does not tell"} a ${role} their approval adds drafts`, async () => {
+      apiMock.listApprovals.mockResolvedValue({
+        items: [approvalItem("a1", "pending")],
+        ticketStatus: { allowed: false, pendingCount: 1, rejectedCount: 0 },
+      });
+      realApprovalsPanel.on = true;
+      nav.search = new URLSearchParams("tab=approvals");
+      render(<AnalysisPage />, {
+        wrapper: makeWrapper({
+          initialUser: { ...TEST_USER, role, permissions: [...ROLE_PERMISSIONS[role]] },
+        }),
+      });
+
+      await screen.findByRole("button", { name: "Approve all 1 pending" });
+      if (notice) {
+        expect(screen.getByTestId("approvals-draft-notice")).toHaveTextContent(
+          "Your approval adds these as drafts; a coordinator approves them.",
+        );
+      } else {
+        expect(screen.queryByTestId("approvals-draft-notice")).not.toBeInTheDocument();
+      }
+    });
+  }
 
   it("withholds the Promote action while the run is still running", async () => {
     apiMock.get.mockResolvedValue({ ...SNAPSHOT, status: "running", requirements: [] });

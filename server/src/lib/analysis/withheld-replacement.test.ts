@@ -118,6 +118,16 @@ describe("readWithheldProposal / readWithheldRecord (#780)", () => {
     ).toEqual({ at: "t", rows: [], degraded: null });
   });
 
+  // #1588 — a checkpoint promotion by someone without `project.update` is
+  // withheld as drafts; applying it later must not lose (or upgrade) that.
+  it("keeps a draft promotion's status, and drops any status it does not know", () => {
+    const read = (reviewStatus: unknown) =>
+      readWithheldProposal({ [WITHHELD_PROPOSAL_KEY]: { at: "t", rows: [], reviewStatus } });
+    expect(read("draft")).toEqual({ at: "t", rows: [], reviewStatus: "draft" });
+    expect(read("approved")).toEqual({ at: "t", rows: [], reviewStatus: "approved" });
+    expect(read("rejected")).toEqual({ at: "t", rows: [] });
+  });
+
   it("reads only a well-formed refusal", () => {
     expect(readWithheldRecord({ requirementReplacementWithheld: WITHHELD })).toEqual(WITHHELD);
     expect(readWithheldRecord({})).toBeNull();

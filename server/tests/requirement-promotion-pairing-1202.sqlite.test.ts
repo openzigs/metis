@@ -169,7 +169,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("promotion records each row's structured id, run and synthesis items", async () => {
-      expect(await promoteApprovedRequirements(CLARIFIED)).toEqual({
+      expect(await promoteApprovedRequirements(CLARIFIED, { asApproved: true })).toEqual({
         status: "promoted",
         requirementCount: 2,
       });
@@ -238,7 +238,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("a re-run's replacement hard-deletes the rows, and their pairing with them", async () => {
-      await promoteApprovedRequirements(RERUN);
+      await promoteApprovedRequirements(RERUN, { asApproved: true });
       const promoted = await pairingOf(RERUN);
       expect(promoted.every((r) => r.promotedStructuredId !== null)).toBe(true);
 
