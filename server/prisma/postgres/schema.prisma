@@ -1417,7 +1417,7 @@ model Requirement {
   coverage         String?
   /// Issue #773 — deterministic three-state verdict computed at synthesis from
   /// the requirement's linked CODE findings + the run's retrieval health:
-  /// `implemented` | `gap-confirmed` | `could-not-verify`. Distinct from
+  /// `implemented` | `partial` (#1610) | `gap-confirmed` | `could-not-verify`. Distinct from
   /// `coverage` (which says what KIND of evidence exists, not whether the
   /// requirement is satisfied): only `gap-confirmed` licenses telling a user to
   /// build something. Nullable — re-runs recompute it (requirements are

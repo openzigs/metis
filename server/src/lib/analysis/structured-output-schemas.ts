@@ -36,8 +36,8 @@ import {
   ANALYSIS_AGENT_KEYS,
   FINDING_CATEGORIES,
   FINDING_SEVERITIES,
+  FINDING_VERDICTS,
   MODEL_ASSERTABLE_FINDING_DERIVATIONS,
-  REQUIREMENT_VERDICTS,
 } from "@metis/shared";
 import type { JsonSchemaResponseFormat } from "../ai/types.js";
 
@@ -94,7 +94,8 @@ const FINDING_SCHEMA = {
     },
     tags: { type: "array", maxItems: 16, items: { type: "string", maxLength: 64 } },
     requirementId: { type: ["string", "null"], maxLength: 128 },
-    verdict: { type: ["string", "null"], enum: [...REQUIREMENT_VERDICTS, null] },
+    // #1610 — a finding's three states only; `partial` is never model-authored.
+    verdict: { type: ["string", "null"], enum: [...FINDING_VERDICTS, null] },
     // #1234 — model-authored provenance. `extracted` is absent from the enum on
     // purpose: it implies confidence 1.0 and is a server-side claim only.
     confidence: { type: ["number", "null"], minimum: 0, maximum: 1 },

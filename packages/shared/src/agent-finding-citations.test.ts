@@ -199,3 +199,16 @@ describe("deriveCapabilityReasons citations-dropped (#1143)", () => {
     ).toEqual([]);
   });
 });
+
+describe("#1611 — a model cannot set a citation's repo", () => {
+  it("discards a model-supplied repoConnectionId at the model boundary, without counting a repair", () => {
+    const claimed = { ...goodCode, repoConnectionId: "other-tenant-repo" };
+    const s = salvageCitationList([claimed]);
+    expect(s.citations).toEqual([goodCode]);
+    expect(s).toMatchObject({ dropped: 0, repaired: 0 });
+
+    const parsed = agentOutputSchema.parse(output([finding("f", [claimed])]));
+    expect(parsed.findings[0]!.citations).toEqual([goodCode]);
+    expect(parsed.findings[0]!.citations[0]).not.toHaveProperty("repoConnectionId");
+  });
+});

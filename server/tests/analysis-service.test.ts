@@ -1078,6 +1078,42 @@ describe("getAnalysisSnapshot rendering", () => {
     expect(where.id.in).not.toContain("code-graph:sym-1");
   });
 
+  it("#1611 returns a stored code citation's repoConnectionId, and a pre-#1611 one unchanged", async () => {
+    const a = await createAnalysis({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["code"],
+    });
+    const stamped = { filePath: "src/auth.ts", startLine: 3, endLine: 9, repoConnectionId: "rc-B" };
+    const legacy = { filePath: "src/auth.ts", startLine: 3, endLine: 9, symbolId: "sym-1" };
+    await persistAgentResult({
+      analysisId: a.id,
+      agentKey: "code",
+      status: "completed",
+      output: {
+        agentKey: "code",
+        summary: "s",
+        findings: [
+          {
+            category: "architecture",
+            severity: "medium",
+            title: "t",
+            body: "b",
+            tags: [],
+            citations: [stamped, legacy],
+          },
+        ],
+        notes: [],
+      },
+      startedAt: new Date(),
+      completedAt: new Date(),
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    });
+
+    const snap = await getAnalysisSnapshot(a.id);
+    expect(snap!.agents[0]!.findings[0]!.citations).toEqual([stamped, legacy]);
+  });
+
   it("renders agent results, findings (with citations + tags), and requirements", async () => {
     const a = await createAnalysis({
       projectId: "proj-abcdefghij",

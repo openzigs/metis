@@ -58,6 +58,7 @@
 import {
   isCodeCitation,
   type Citation,
+  type FindingVerdict,
   type RequirementVerdict,
   type SchemaReconciliation,
 } from "@metis/shared";
@@ -299,7 +300,7 @@ export function schemaEvidenceFromAffectedRows(
 
 export interface GateFindingVerdictInput {
   /** The model's own verdict for this finding, when it emitted one. */
-  modelVerdict?: RequirementVerdict | null;
+  modelVerdict?: FindingVerdict | null;
   /** The finding's citations AFTER the #734 grounding gate (drops removed). */
   groundedCitations: Citation[];
   /** The finding text (fallback classification when the model omitted a verdict). */
@@ -336,7 +337,7 @@ export interface GateFindingVerdictInput {
  * `null` when the finding makes no requirement claim at all (a generic
  * observation), in which case it is neither a gap nor an unverifiable one.
  */
-export function gateFindingVerdict(input: GateFindingVerdictInput): RequirementVerdict | null {
+export function gateFindingVerdict(input: GateFindingVerdictInput): FindingVerdict | null {
   const hasGroundedCode = (input.groundedCitations ?? []).some(isCodeCitation);
   const absenceConfirmable = input.absenceConfirmable === true;
   // A per-claim confirmable absence implies the run's retrieval was healthy, so
@@ -348,7 +349,7 @@ export function gateFindingVerdict(input: GateFindingVerdictInput): RequirementV
   // reason to doubt, never a reason to confirm (a regex over model prose must not
   // manufacture a gap), and a code citation means "cited some code", not
   // "implemented" (that conflation is the #736 coverage bug — see the module doc).
-  const claimed: RequirementVerdict | null =
+  const claimed: FindingVerdict | null =
     input.modelVerdict ??
     (assertsAbsence(input.finding) ? "could-not-verify" : /* no claim to classify */ null);
 
@@ -356,7 +357,7 @@ export function gateFindingVerdict(input: GateFindingVerdictInput): RequirementV
 
   // The base verdict from the retrieval-health gate (#773). Computed first; the
   // #826 schema gate below may only DOWNGRADE it further, never upgrade.
-  const base: RequirementVerdict =
+  const base: FindingVerdict =
     // The model already said it could not verify — always honoured, never upgraded.
     claimed === "could-not-verify"
       ? "could-not-verify"
@@ -420,7 +421,7 @@ export interface VerdictFindingInput {
    * to the roll-up. A finding's citations deliberately do NOT feed it: citing code
    * is not the same as implementing a requirement.
    */
-  verdict: RequirementVerdict | null;
+  verdict: FindingVerdict | null;
 }
 
 export interface DeriveRequirementVerdictInput {
@@ -467,13 +468,108 @@ export function deriveRequirementVerdict(
   return "could-not-verify";
 }
 
-/** Compute the verdict for every synthesized requirement, index-aligned with `requirements`. */
+/**
+ * Issue #1610 — roll per-acceptance-criterion verdicts up into the requirement's
+ * verdict. Each entry is one criterion's verdict, as {@link deriveRequirementVerdict}
+ * computes it over THAT criterion's linked code findings (so a criterion no
+ * finding reached is already `could-not-verify` — the budget-starvation rule).
+ *
+ * Rules, first match wins:
+ *   1. every criterion `implemented`                    → `implemented`
+ *   2. ≥1 `implemented` AND ≥1 `gap-confirmed`          → `partial`
+ *   3. no `implemented` AND ≥1 `gap-confirmed`          → `gap-confirmed`
+ *   4. otherwise (some criterion could not be verified) → `could-not-verify`
+ *
+ * Rule 4 is why `implemented` + `could-not-verify` is NOT `implemented`: one
+ * criterion we never checked cannot be read as met. `partial` needs a criterion
+ * whose `implemented` verdict survived the gate, which requires a grounded code
+ * citation, so an ungrounded "already there" can never produce it.
+ *
+ * An empty list has no criterion to speak for and yields `could-not-verify`.
+ */
+export function rollUpCriterionVerdicts(verdicts: readonly FindingVerdict[]): RequirementVerdict {
+  const implemented = verdicts.filter((v) => v === "implemented").length;
+  const gaps = verdicts.filter((v) => v === "gap-confirmed").length;
+  if (verdicts.length > 0 && implemented === verdicts.length) return "implemented";
+  if (implemented > 0 && gaps > 0) return "partial";
+  if (implemented === 0 && gaps > 0) return "gap-confirmed";
+  return "could-not-verify";
+}
+
+/** A requirement as {@link computeVerdictsForRequirements} reads it. */
+export interface VerdictRequirementInput {
+  evidenceFindingIndexes?: number[];
+  /** #1610 — the requirement's acceptance criteria, in order. */
+  acceptanceCriteria?: string[];
+  /** #1610 — per-criterion evidence, keyed by criterion text (`criterionEvidence`). */
+  criterionEvidence?: Array<{ criterion: string; evidenceFindingIndexes: number[] }>;
+}
+
+/**
+ * Issue #1610 — the requirement's verdict from PER-CRITERION evidence, or
+ * `undefined` when there is none to use (no criteria, no `criterionEvidence`, or
+ * no criterion linked to any of the requirement's own findings), in which case
+ * the three-state roll-up over all its findings applies unchanged.
+ *
+ * Only findings the requirement itself cites count for a criterion: per-criterion
+ * evidence partitions the requirement's evidence, it never widens it. Linked code
+ * findings no criterion claims are not discarded — they form one more bucket, so
+ * a `gap-confirmed` finding the model did not pin to a criterion still stops the
+ * requirement reading `implemented`.
+ */
+function derivePerCriterionVerdict(
+  requirement: VerdictRequirementInput,
+  flatFindings: readonly VerdictFindingInput[],
+  codeAnalysisRan: boolean,
+): RequirementVerdict | null | undefined {
+  const criteria = requirement.acceptanceCriteria ?? [];
+  const evidence = requirement.criterionEvidence;
+  if (criteria.length === 0 || !evidence || evidence.length === 0) return undefined;
+
+  const linked = new Set(requirement.evidenceFindingIndexes ?? []);
+  const byCriterion = new Map<string, Set<number>>();
+  for (const e of evidence) {
+    const key = e.criterion.trim();
+    const set = byCriterion.get(key) ?? new Set<number>();
+    for (const i of e.evidenceFindingIndexes) if (linked.has(i)) set.add(i);
+    byCriterion.set(key, set);
+  }
+  const perCriterion = criteria.map((c) => [...(byCriterion.get(c.trim()) ?? [])]);
+  // Only CODE findings count as per-criterion evidence: a criterion linked solely
+  // to document findings says nothing the roll-up can use, so fall back.
+  const isCode = (i: number): boolean => flatFindings[i]?.agentKey === "code";
+  if (perCriterion.every((ix) => !ix.some(isCode))) return undefined;
+  if (!codeAnalysisRan) return null;
+
+  const resolve = (ix: readonly number[]): VerdictFindingInput[] =>
+    ix.map((i) => flatFindings[i]).filter((f): f is VerdictFindingInput => f != null);
+  // With the code agent run, `deriveRequirementVerdict` returns one of the three
+  // finding states, never `partial` and never null.
+  const verdictOf = (findings: VerdictFindingInput[]): FindingVerdict =>
+    deriveRequirementVerdict({ codeAnalysisRan, findings }) as FindingVerdict;
+  const verdicts = perCriterion.map((ix) => verdictOf(resolve(ix)));
+  const claimed = new Set(perCriterion.flat());
+  const unclaimed = resolve([...linked].filter((i) => !claimed.has(i))).filter(
+    (f) => f.agentKey === "code",
+  );
+  if (unclaimed.length > 0) verdicts.push(verdictOf(unclaimed));
+  return rollUpCriterionVerdicts(verdicts);
+}
+
+/**
+ * Compute the verdict for every synthesized requirement, index-aligned with
+ * `requirements`. #1610 — a requirement with per-criterion evidence is rolled up
+ * per criterion (and may be `partial`); every other requirement keeps the
+ * three-state roll-up over its linked findings.
+ */
 export function computeVerdictsForRequirements(
-  requirements: Array<{ evidenceFindingIndexes?: number[] }>,
+  requirements: VerdictRequirementInput[],
   flatFindings: VerdictFindingInput[],
   codeAnalysisRan: boolean,
 ): Array<RequirementVerdict | null> {
   return requirements.map((r) => {
+    const perCriterion = derivePerCriterionVerdict(r, flatFindings, codeAnalysisRan);
+    if (perCriterion !== undefined) return perCriterion;
     const linked = (r.evidenceFindingIndexes ?? [])
       .map((i) => flatFindings[i])
       .filter((f): f is VerdictFindingInput => f != null);

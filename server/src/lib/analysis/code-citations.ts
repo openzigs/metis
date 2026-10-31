@@ -20,6 +20,10 @@
  *   - A code citation is KEPT only when its `filePath` appears in the allowed
  *     provenance set; otherwise it is DROPPED (hallucinated). When kept it is
  *     enriched with the matching symbol's `symbolId`/`snippet` when available.
+ *   - #1611 — a kept code citation carries the `repoConnectionId` of the chunk
+ *     it is grounded in, taken from provenance and never from the model. When
+ *     the retrieved chunks at that path come from more than one repo and the
+ *     citation does not pin one of them by `symbolId`, it carries no repo.
  */
 import {
   isCodeCitation,
@@ -42,10 +46,20 @@ export function normalizeFilePath(p: string): string {
 interface CodeProvenance {
   /** Fused symbol chunks keyed by their synthetic `code-graph:<symbolId>` documentId. */
   byDocumentId: Map<string, RetrievalContextChunk>;
-  /** Fused symbol chunks keyed by normalised `filePath` (first hit wins). */
-  byFilePath: Map<string, RetrievalContextChunk>;
+  /**
+   * Fused symbol chunks keyed by normalised `filePath`, in retrieval order.
+   * #1611 — every chunk, not only the first: two repos of one project can both
+   * hold `src/auth.ts`.
+   */
+  byFilePath: Map<string, RetrievalContextChunk[]>;
   /** Every filePath the agent may legitimately cite (fused chunks ∪ tool-read files). */
   allowedFilePaths: Set<string>;
+  /**
+   * #1611 — the subset of `allowedFilePaths` that came from tools. Tool paths
+   * carry no repo (a connector's clone may differ from the repo the fused
+   * retrieval returned), so a fused chunk at such a path cannot vouch for one.
+   */
+  toolFilePaths: Set<string>;
 }
 
 /**
@@ -58,19 +72,25 @@ export function buildCodeProvenance(
   extraAllowedFilePaths: Iterable<string> = [],
 ): CodeProvenance {
   const byDocumentId = new Map<string, RetrievalContextChunk>();
-  const byFilePath = new Map<string, RetrievalContextChunk>();
+  const byFilePath = new Map<string, RetrievalContextChunk[]>();
   const allowedFilePaths = new Set<string>();
+  const toolFilePaths = new Set<string>();
   for (const c of retrieved) {
     if (c.source !== "code-graph" || !c.filePath) continue;
     byDocumentId.set(c.documentId, c);
     const norm = normalizeFilePath(c.filePath);
-    if (!byFilePath.has(norm)) byFilePath.set(norm, c);
+    const atPath = byFilePath.get(norm);
+    if (atPath) atPath.push(c);
+    else byFilePath.set(norm, [c]);
     allowedFilePaths.add(norm);
   }
   for (const p of extraAllowedFilePaths) {
-    if (typeof p === "string" && p.trim()) allowedFilePaths.add(normalizeFilePath(p));
+    if (typeof p !== "string" || !p.trim()) continue;
+    const norm = normalizeFilePath(p);
+    allowedFilePaths.add(norm);
+    toolFilePaths.add(norm);
   }
-  return { byDocumentId, byFilePath, allowedFilePaths };
+  return { byDocumentId, byFilePath, allowedFilePaths, toolFilePaths };
 }
 
 /** Turn a fused code-graph chunk into a fully-formed code citation. */
@@ -83,7 +103,27 @@ function chunkToCodeCitation(chunk: RetrievalContextChunk, snippet?: string): Co
   if (chunk.symbolId) citation.symbolId = chunk.symbolId;
   const snip = (snippet ?? chunk.text)?.trim();
   if (snip) citation.snippet = snip.slice(0, 2048);
+  if (chunk.repoConnectionId) citation.repoConnectionId = chunk.repoConnectionId;
   return citation;
+}
+
+/**
+ * #1611 — the retrieved chunk a code citation is grounded in at a path, or
+ * `undefined` when provenance cannot pin one. A `symbolId` can only SELECT among
+ * chunks retrieved at that path; an unmatched `symbolId`, chunks from several
+ * repos (or a repo-less graph beside a repo), or a path that was also reached
+ * through a tool (no repo recorded) are ambiguous: the citation then carries no
+ * repo and is not filled from an arbitrary chunk.
+ */
+function groundingChunk(
+  atPath: readonly RetrievalContextChunk[],
+  symbolId: string | undefined,
+  viaTool: boolean,
+): RetrievalContextChunk | undefined {
+  if (symbolId) return atPath.find((ch) => ch.symbolId === symbolId);
+  if (viaTool) return undefined;
+  const repos = new Set(atPath.map((ch) => ch.repoConnectionId));
+  return repos.size === 1 ? atPath[0] : undefined;
 }
 
 /** Structured record of a citation the grounding gate discarded (observability). */
@@ -130,11 +170,17 @@ export function groundCodeCitations(
         opts?.onDrop?.({ filePath: c.filePath, reason: "file-not-retrieved" });
         continue;
       }
-      const match = provenance.byFilePath.get(norm);
+      const atPath = provenance.byFilePath.get(norm) ?? [];
+      const match = groundingChunk(atPath, c.symbolId, provenance.toolFilePaths.has(norm));
+      // #1611 — whatever repo the model claimed is discarded; the repo comes
+      // from provenance only (OWASP A01 / LLM output trust).
+      const { repoConnectionId: _modelClaim, ...modelCitation } = c;
+      const repoConnectionId = match?.repoConnectionId;
       out.push({
-        ...c, // keep the model's span (containment is optional — see doc above)
+        ...modelCitation, // keep the model's span (containment is optional — see doc above)
         symbolId: c.symbolId ?? match?.symbolId,
         snippet: c.snippet ?? match?.text?.trim().slice(0, 2048),
+        ...(repoConnectionId ? { repoConnectionId } : {}),
       });
       continue;
     }

@@ -10,6 +10,7 @@ import {
   ANALYSIS_STATUSES,
   FINDING_CATEGORIES,
   FINDING_SEVERITIES,
+  FINDING_VERDICTS,
   FINDING_VERIFICATION_STATUSES,
   REQUIREMENT_COVERAGES,
   REQUIREMENT_KINDS,
@@ -25,6 +26,7 @@ import {
 import type {
   FindingCategory,
   FindingSeverity,
+  FindingVerdict,
   FindingVerificationStatus,
   RequirementCoverage,
   RequirementKind,
@@ -314,6 +316,15 @@ export const codeCitationSchema = z.object({
   symbolId: z.string().min(1).max(256).optional(),
   snippet: z.string().min(1).max(2048).optional(),
   score: z.number().min(0).max(1).optional(),
+  /**
+   * #1611 — the `RepoConnection` the cited file belongs to. A project can hold
+   * several repositories, so a bare `filePath` is ambiguous between them.
+   * SERVER-STAMPED only: the grounding gate copies it from the retrieved
+   * chunk's provenance, and {@link salvageCitationList} discards any value a
+   * model supplies. Optional, so a citation persisted before #1611 parses
+   * unchanged; absent also when the repo cannot be told apart.
+   */
+  repoConnectionId: z.string().min(1).max(64).optional(),
 });
 export type CodeCitation = z.infer<typeof codeCitationSchema>;
 
@@ -349,6 +360,9 @@ export interface CitationSalvage {
   dropped: number;
   repaired: number;
 }
+
+/** #1611 — the citation field a model may never set (see {@link codeCitationSchema}). */
+const MODEL_DISCARDED_CITATION_FIELD = "repoConnectionId";
 
 /**
  * Issue #1143 — a model-authored citation list, repaired where it can be and
@@ -388,7 +402,11 @@ export function salvageCitationList(value: unknown): CitationSalvage {
   let dropped = 0;
   for (const raw of list) {
     const isObject = raw !== null && typeof raw === "object" && !Array.isArray(raw);
-    const entries = isObject ? Object.entries(raw) : [];
+    // #1611 — a citation's repo is stamped by the grounding gate from what was
+    // retrieved, never taken from the model: drop it before anything reads it.
+    const entries = (isObject ? Object.entries(raw) : []).filter(
+      ([k]) => k !== MODEL_DISCARDED_CITATION_FIELD,
+    );
     const withoutNulls = entries.filter(([, v]) => v !== null);
     const parsed = citationSchema.safeParse(isObject ? Object.fromEntries(withoutNulls) : raw);
     if (!parsed.success) {
@@ -711,8 +729,9 @@ export const agentFindingPayloadSchema = z.object({
    * threshold, and an `implemented` claim is downgraded unless the finding cites
    * code that survived the #734 provenance gate. The gate can only ever weaken a
    * claim — never strengthen one. Absent on non-code agents and legacy findings.
+   * #1610 — three states only: `partial` is a requirement-level roll-up.
    */
-  verdict: z.enum(REQUIREMENT_VERDICTS).nullish(),
+  verdict: z.enum(FINDING_VERDICTS).nullish(),
   /**
    * Epic #1107 (#1109) — the multi-lens support panel's confidence signal, set
    * by the orchestrator AFTER the deterministic verifier, and only when
@@ -840,6 +859,29 @@ export const synthesizedRequirementSchema = z.object({
    * `kind` is `non-functional`; stored only beside that kind (`requirementKindColumns`).
    */
   nfrCategory: z.enum(NFR_CATEGORIES).optional().catch(undefined),
+  /**
+   * Issue #1610 — which of this requirement's findings bear on EACH acceptance
+   * criterion, keyed by the criterion's own text so the link survives the merges,
+   * de-duplication and caps that reorder `acceptanceCriteria`. It is what lets
+   * the verdict roll-up say `partial` ("some of this exists").
+   *
+   * Never authored in this shape by the model: the model answers with
+   * `acceptanceCriteriaEvidence`, a list aligned with its own `acceptanceCriteria`,
+   * which `repairSynthesizedRequirement` zips into this form before any criterion
+   * is dropped. ABSENT means no per-criterion evidence was given, and the
+   * requirement keeps the three-state roll-up. Fails soft like `sourceIds`: a
+   * malformed value reads as absent rather than discarding the reply.
+   */
+  criterionEvidence: z
+    .array(
+      z.object({
+        criterion: z.string().min(1).max(1024),
+        evidenceFindingIndexes: z.array(z.number().int().min(0)).max(50),
+      }),
+    )
+    .max(20)
+    .optional()
+    .catch(undefined),
   /**
    * Issue #1063 — on a run started from imported items, the `NR-*` ids of the
    * items this requirement restates or refines. `[]` is the model saying the
@@ -1571,7 +1613,7 @@ export interface AnalysisSnapshot {
        * absence claim) is NOT backed by working retrieval — the UI must render
        * it distinctly from a confirmed gap.
        */
-      verdict?: RequirementVerdict | null;
+      verdict?: FindingVerdict | null;
       /**
        * Epic #1107 (#1109) — the multi-lens panel's confidence signal, present
        * only for runs made with `ANALYSIS_LLM_SUPPORT_PANEL` on. A GRADER, not a
@@ -1606,9 +1648,9 @@ export interface AnalysisSnapshot {
      */
     coverage: RequirementCoverage | null;
     /**
-     * Issue #773 — deterministic verdict (`implemented` | `gap-confirmed` |
-     * `could-not-verify`). Null when the code agent did not run for this
-     * analysis, or for rows written before #773.
+     * Issue #773 — deterministic verdict (`implemented` | `partial` (#1610) |
+     * `gap-confirmed` | `could-not-verify`). Null when the code agent did not run
+     * for this analysis, or for rows written before #773.
      */
     verdict: RequirementVerdict | null;
     /**
@@ -2260,7 +2302,7 @@ export interface GapReportFindingRef {
    * Issue #773 — the finding's GATED verdict. `could-not-verify` findings are
    * NOT gaps and must be rendered in a visually + semantically distinct block.
    */
-  verdict: RequirementVerdict | null;
+  verdict: FindingVerdict | null;
   /** This finding's CODE citations only (`filePath:startLine-endLine`, #734). */
   citations: CodeCitation[];
 }

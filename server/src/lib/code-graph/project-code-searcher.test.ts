@@ -369,7 +369,32 @@ describe("createDefaultSymbolLineLookup", () => {
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: { in: ["s1"] }, projectId: "p1" } }),
     );
-    expect(map.get("s1")).toEqual({ filePath: "src/A.ts", startLine: 10, endLine: 42 });
+    // A row whose graph is not read (or has no repo) reports no repo.
+    expect(map.get("s1")).toEqual({
+      filePath: "src/A.ts",
+      startLine: 10,
+      endLine: 42,
+      repoConnectionId: null,
+    });
+  });
+
+  it("#1611 reports each symbol's repo from its code graph", async () => {
+    findMany.mockResolvedValue([
+      {
+        id: "s-b",
+        filePath: "src/auth.ts",
+        startLine: 1,
+        endLine: 9,
+        graph: { repoConnectionId: "rc-B" },
+      },
+    ]);
+    const map = await createDefaultSymbolLineLookup().resolve(["s-b"], "p1");
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({ graph: { select: { repoConnectionId: true } } }),
+      }),
+    );
+    expect(map.get("s-b")).toMatchObject({ repoConnectionId: "rc-B" });
   });
 
   it("short-circuits on an empty id list without querying", async () => {

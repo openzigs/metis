@@ -68,7 +68,7 @@ import {
   isCodeCitation,
   type Citation,
   type FindingVerificationStatus,
-  type RequirementVerdict,
+  type FindingVerdict,
 } from "@metis/shared";
 import type { DroppedCitation } from "./code-citations.js";
 
@@ -103,7 +103,7 @@ export interface FindingVerificationInput {
    * agent citing the test it found while saying it could not verify the rule
    * is still an unverified claim. Omitted ⇒ rule (0) is inert.
    */
-  verdict?: RequirementVerdict | null;
+  verdict?: FindingVerdict | null;
   /**
    * #1155 — malformed non-document citations the shared schema's salvage
    * dropped from this finding (`citation-salvage.ts`). They never reached the

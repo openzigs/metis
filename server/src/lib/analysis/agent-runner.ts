@@ -70,6 +70,11 @@ export interface RetrievalContextChunk {
   filePath?: string;
   startLine?: number;
   endLine?: number;
+  /**
+   * #1611 — the repo the fused symbol came from (its code graph's
+   * `RepoConnection`). The grounding gate stamps code citations from it.
+   */
+  repoConnectionId?: string;
 }
 
 export interface AgentRunInput {
