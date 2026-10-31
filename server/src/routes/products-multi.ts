@@ -9,6 +9,10 @@ import {
   updateProductRepoSchema,
   paginationQuerySchema,
   declareProductEdgeSchema,
+  updateProductEdgeSchema,
+  declareProductResourceSchema,
+  updateProductResourceSchema,
+  type AuthPayload,
 } from "@metis/shared";
 import { ZodError } from "zod";
 import { requireAuth } from "../middleware/auth.js";
@@ -38,7 +42,12 @@ import {
 } from "../lib/products/product-access.js";
 import {
   createDeclaredProductEdge,
+  createDeclaredProductResource,
+  deleteProductEdge,
+  deleteProductResource,
   listReadableProductGraph,
+  updateProductEdge,
+  updateProductResource,
 } from "../lib/products/product-edges.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { prisma } from "../lib/prisma.js";
@@ -59,6 +68,16 @@ function isProductError(err: unknown): err is ProductError {
 /** Extract a single string param (Express 5 params can be string | string[]). */
 function param(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] : (value ?? "");
+}
+
+/**
+ * #1620 — the product's live repos the caller can read (#1258), the set an edge
+ * or resource write is judged against. A missing product is the service's 404.
+ */
+async function readableRepoIdsOf(user: AuthPayload, productId: string): Promise<Set<string>> {
+  const product = await getProduct(productId);
+  const canRead = await productRepoReadAccess(user);
+  return new Set(product.repos.filter(canRead).map((r) => r.repoConnectionId));
 }
 
 export function productsRouter(): Router {
@@ -183,6 +202,117 @@ export function productsRouter(): Router {
       throw err;
     }
   });
+
+  // #1620 — the rest of the declared-edges API. Every verb needs the product
+  // edit right (`project.update`) and access to the product (404 otherwise);
+  // an edge or resource the caller cannot see is answered like a missing one.
+  const sendProductError = (err: unknown, res: Response): boolean => {
+    if (!isProductError(err)) return false;
+    res.status(err.status).json({ error: { code: err.code, message: err.message } });
+    return true;
+  };
+
+  // PATCH /api/products/:id/edges/:edgeId — Change an edge (a detected one: override its classification)
+  r.patch(
+    "/:id/edges/:edgeId",
+    requirePermission("project.update"),
+    async (req: Request, res: Response) => {
+      try {
+        const productId = param(req.params.id);
+        await assertProductAccessible(req.user!, productId);
+        const input = updateProductEdgeSchema.parse(req.body);
+        const readable = await readableRepoIdsOf(req.user!, productId);
+        const edge = await updateProductEdge(
+          productId,
+          param(req.params.edgeId),
+          input,
+          { id: req.user!.userId },
+          readable,
+        );
+        res.json({ data: edge });
+      } catch (err) {
+        if (!sendProductError(err, res)) throw err;
+      }
+    },
+  );
+
+  // DELETE /api/products/:id/edges/:edgeId — Delete a declared edge
+  r.delete(
+    "/:id/edges/:edgeId",
+    requirePermission("project.update"),
+    async (req: Request, res: Response) => {
+      try {
+        const productId = param(req.params.id);
+        await assertProductAccessible(req.user!, productId);
+        const readable = await readableRepoIdsOf(req.user!, productId);
+        await deleteProductEdge(productId, param(req.params.edgeId), readable);
+        res.status(204).send();
+      } catch (err) {
+        if (!sendProductError(err, res)) throw err;
+      }
+    },
+  );
+
+  // POST /api/products/:id/resources — Declare a shared resource
+  r.post(
+    "/:id/resources",
+    requirePermission("project.update"),
+    async (req: Request, res: Response) => {
+      try {
+        const productId = param(req.params.id);
+        await assertProductAccessible(req.user!, productId);
+        const input = declareProductResourceSchema.parse(req.body);
+        await getProduct(productId); // a missing product is a 404, for an admin too
+        const resource = await createDeclaredProductResource(productId, input, {
+          id: req.user!.userId,
+        });
+        res.status(201).json({ data: resource });
+      } catch (err) {
+        if (!sendProductError(err, res)) throw err;
+      }
+    },
+  );
+
+  // PATCH /api/products/:id/resources/:resourceId — Change a resource
+  r.patch(
+    "/:id/resources/:resourceId",
+    requirePermission("project.update"),
+    async (req: Request, res: Response) => {
+      try {
+        const productId = param(req.params.id);
+        await assertProductAccessible(req.user!, productId);
+        const input = updateProductResourceSchema.parse(req.body);
+        const readable = await readableRepoIdsOf(req.user!, productId);
+        const resource = await updateProductResource(
+          productId,
+          param(req.params.resourceId),
+          input,
+          { id: req.user!.userId },
+          readable,
+        );
+        res.json({ data: resource });
+      } catch (err) {
+        if (!sendProductError(err, res)) throw err;
+      }
+    },
+  );
+
+  // DELETE /api/products/:id/resources/:resourceId — Delete a declared resource
+  r.delete(
+    "/:id/resources/:resourceId",
+    requirePermission("project.update"),
+    async (req: Request, res: Response) => {
+      try {
+        const productId = param(req.params.id);
+        await assertProductAccessible(req.user!, productId);
+        const readable = await readableRepoIdsOf(req.user!, productId);
+        await deleteProductResource(productId, param(req.params.resourceId), readable);
+        res.status(204).send();
+      } catch (err) {
+        if (!sendProductError(err, res)) throw err;
+      }
+    },
+  );
 
   // PATCH /api/products/:id — Update product metadata
   r.patch("/:id", requirePermission("project.update"), async (req: Request, res: Response) => {

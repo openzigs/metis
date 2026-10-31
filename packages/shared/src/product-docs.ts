@@ -190,6 +190,34 @@ export const declareProductEdgeSchema = z
   });
 export type DeclareProductEdgeInput = z.infer<typeof declareProductEdgeSchema>;
 
+/**
+ * #1620 — the body of `PATCH /api/products/:id/edges/:edgeId`. Every field is
+ * optional; at least one must be given. On a DETECTED edge only the
+ * classification (`integrationKind`, `strength`, `direction`) may change — its
+ * ends are what detection found — and the edge becomes declared, so the next
+ * detection run leaves the override alone.
+ */
+export const updateProductEdgeSchema = z
+  .object({
+    targetRepoId: idSchema.nullable().optional(),
+    resourceId: idSchema.nullable().optional(),
+    contractDocId: idSchema.nullable().optional(),
+    edgeType: z.enum(PRODUCT_EDGE_TYPES).optional(),
+    integrationKind: z.enum(PRODUCT_INTEGRATION_KINDS).optional(),
+    strength: z.enum(PRODUCT_COUPLING_STRENGTHS).optional(),
+    direction: z.enum(PRODUCT_EDGE_DIRECTIONS).optional(),
+  })
+  .strict()
+  .refine((e) => Object.keys(e).length > 0, { message: "nothing to update" });
+export type UpdateProductEdgeInput = z.infer<typeof updateProductEdgeSchema>;
+
+/** The edge fields a PATCH may change on a detected edge (#1620). */
+export const DETECTED_EDGE_OVERRIDABLE_FIELDS = [
+  "integrationKind",
+  "strength",
+  "direction",
+] as const;
+
 // ---- ProductResource (#1618) -----------------------------------------------
 export const productResourceSchema = z.object({
   id: idSchema,
@@ -201,6 +229,46 @@ export const productResourceSchema = z.object({
   declaredById: z.string().nullable(),
 });
 export type ProductResource = z.infer<typeof productResourceSchema>;
+
+/**
+ * #1620 — a resource locator says where a resource lives, never how to get in:
+ * a URL carrying a user name or password is refused.
+ */
+const resourceLocatorSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(512)
+  .refine((v) => !/^[a-z][a-z0-9+.-]*:\/\/[^/@\s]*@/i.test(v), {
+    message: "a locator must not carry credentials",
+  });
+
+const resourceNameSchema = z.string().trim().min(1).max(256);
+
+/** #1620 — the body of `POST /api/products/:id/resources`. */
+export const declareProductResourceSchema = z
+  .object({
+    kind: z.enum(PRODUCT_RESOURCE_KINDS),
+    name: resourceNameSchema,
+    locator: resourceLocatorSchema.nullable().optional(),
+  })
+  .strict();
+export type DeclareProductResourceInput = z.infer<typeof declareProductResourceSchema>;
+
+/**
+ * #1620 — the body of `PATCH /api/products/:id/resources/:resourceId`. A
+ * detected resource keeps its kind and name (detection would recreate it under
+ * the old ones); its locator may be set, which makes it declared.
+ */
+export const updateProductResourceSchema = z
+  .object({
+    kind: z.enum(PRODUCT_RESOURCE_KINDS).optional(),
+    name: resourceNameSchema.optional(),
+    locator: resourceLocatorSchema.nullable().optional(),
+  })
+  .strict()
+  .refine((r) => Object.keys(r).length > 0, { message: "nothing to update" });
+export type UpdateProductResourceInput = z.infer<typeof updateProductResourceSchema>;
 
 // ---- ProductAnalysis -------------------------------------------------------
 export const productAnalysisSchema = z.object({
