@@ -1676,6 +1676,99 @@ describe("listImpactAnalyses / getImpactAnalysisDetail", () => {
  * inspecting the row `create` returned: a write that reports success while the
  * read cannot see it is exactly the shape this issue was.
  */
+describe("executeImpactAnalysis — #1609 records an outcome for every project", () => {
+  const ONE_CHANGE = {
+    extract: async () => [
+      { requirementId: null, title: "t", body: "b", changeType: "added" as const, bodyDelta: 10 },
+    ],
+  };
+  const HIT = {
+    codeSymbolId: "A",
+    filePath: "A.ts",
+    qualifiedName: "pkg.A",
+    startLine: 1,
+    endLine: 5,
+    confidence: 0.8,
+  };
+  /** The `projects` write on the run's final (completed or failed) update. */
+  const finalProjectsWrite = (prisma: ReturnType<typeof serviceePrismaMock>["prisma"]) => {
+    const calls = prisma.impactAnalysis.update.mock.calls as unknown as Array<
+      [{ data: { status?: string; projects?: unknown } }]
+    >;
+    const final = calls.filter(([a]) => a.data.status !== "running").at(-1);
+    return final?.[0].data.projects;
+  };
+  const write = (projectId: string, outcome: string, outcomeReason: string | null = null) => ({
+    where: { projectId },
+    data: { outcome, outcomeReason },
+  });
+
+  it("writes affected, checked-none-affected and restricted on the completed run, and never searches a restricted project", async () => {
+    const { prisma, analyses, items } = serviceePrismaMock();
+    analyses.set("ia-o", { id: "ia-o", sourceText: "text", documentId: null });
+    const mapRequirement = vi.fn(async (_req: unknown, projectId: string) =>
+      projectId === "proj-1" ? [HIT] : [],
+    );
+    await executeImpactAnalysis("ia-o", ["proj-1", "proj-2", "proj-3"], {
+      prisma: prisma as never,
+      extractor: ONE_CHANGE,
+      mapRequirement,
+      dataSourceFor: () => mockDataSource(GRAPH),
+      projectAccessible: async (projectId) => projectId !== "proj-3",
+    });
+
+    expect(analyses.get("ia-o")?.status).toBe("completed");
+    expect(finalProjectsWrite(prisma)).toEqual({
+      updateMany: [
+        write("proj-1", "affected"),
+        write("proj-2", "checked-none-affected"),
+        write("proj-3", "not-checked", "restricted"),
+      ],
+    });
+    expect(mapRequirement.mock.calls.map((c) => c[1])).toEqual(["proj-1", "proj-2"]);
+    // Zero-hit and skipped projects still write no item.
+    expect(items.map((i) => i.projectId)).toEqual(["proj-1"]);
+  });
+
+  it("marks the project a failed run was working on as error, keeps the settled ones, and leaves unreached ones unrecorded", async () => {
+    const { prisma, analyses } = serviceePrismaMock();
+    analyses.set("ia-f", { id: "ia-f", sourceText: "text", documentId: null });
+    await executeImpactAnalysis("ia-f", ["proj-1", "proj-2", "proj-3"], {
+      prisma: prisma as never,
+      extractor: ONE_CHANGE,
+      mapRequirement: async (_req, projectId) => {
+        if (projectId === "proj-2") throw new Error("graph unavailable");
+        return [HIT];
+      },
+      dataSourceFor: () => mockDataSource(GRAPH),
+    });
+
+    expect(analyses.get("ia-f")?.status).toBe("failed");
+    expect(finalProjectsWrite(prisma)).toEqual({
+      updateMany: [write("proj-1", "affected"), write("proj-2", "error")],
+    });
+  });
+
+  it("fails closed when the access check itself throws: the project is error, not searched", async () => {
+    const { prisma, analyses } = serviceePrismaMock();
+    analyses.set("ia-x", { id: "ia-x", sourceText: "text", documentId: null });
+    const mapRequirement = vi.fn(async () => [HIT]);
+    await executeImpactAnalysis("ia-x", ["proj-1"], {
+      prisma: prisma as never,
+      extractor: ONE_CHANGE,
+      mapRequirement,
+      dataSourceFor: () => mockDataSource(GRAPH),
+      projectAccessible: async () => {
+        throw new Error("access store down");
+      },
+    });
+
+    expect(analyses.get("ia-x")?.status).toBe("failed");
+    expect(mapRequirement).not.toHaveBeenCalled();
+    expect(finalProjectsWrite(prisma)).toEqual({ updateMany: [write("proj-1", "error")] });
+  });
+});
+
 describe("triggerImpactAnalysis — #70 persists the selected projects", () => {
   /** A store both the write and the read see, as one database would be. */
   function roundTripPrisma() {

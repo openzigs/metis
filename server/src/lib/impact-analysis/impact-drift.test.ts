@@ -95,6 +95,7 @@ function detail(id: string, items: ImpactItemView[]): ImpactAnalysisDetail {
     projectIds: [...new Set(items.map((i) => i.projectId))],
     startedById: "user-1",
     items,
+    projectOutcomes: [],
     sharedTableImpacts: [],
     rerunOfId: id === "head" ? "base" : null,
   };

@@ -115,7 +115,7 @@ vi.mock("../lib/connectors/db/db-service.js", () => ({
     (inspectDbConnectorMock as (...a: unknown[]) => unknown)(...args),
 }));
 
-const { impactAnalysisRouter, defaultLiveIndexIntrospectorFor } =
+const { impactAnalysisRouter, defaultLiveIndexIntrospectorFor, executionAccessCheck } =
   await import("./impact-analysis.js");
 const { errorHandler } = await import("../middleware/error-handler.js");
 
@@ -156,6 +156,20 @@ describe("impact-analyses router", () => {
   });
 
   describe("POST /", () => {
+    it("#1609 — hands the engine an execution-time access check bound to the caller", async () => {
+      const res = await request(app)
+        .post("/impact-analyses")
+        .send({ text: "Change something.", projectIds: ["project-001", "project-002"] });
+      expect(res.status).toBe(202);
+      const deps = (triggerImpactAnalysis.mock.calls[0] as unknown[])[1] as {
+        projectAccessible?: (projectId: string) => Promise<boolean>;
+      };
+      // Access is read again when the run executes: by then it has changed.
+      accessibleIds = ["project-001"];
+      expect(await deps.projectAccessible?.("project-001")).toBe(true);
+      expect(await deps.projectAccessible?.("project-002")).toBe(false);
+    });
+
     it("triggers an analysis and returns 202 with project ids", async () => {
       const res = await request(app)
         .post("/impact-analyses")
@@ -636,5 +650,21 @@ describe("defaultLiveIndexIntrospectorFor (#958)", () => {
     dbInspectError = new Error("connector offline");
     const introspect = defaultLiveIndexIntrospectorFor("actor-1");
     await expect(introspect("project-001")).resolves.toBeNull();
+  });
+});
+
+describe("executionAccessCheck (#1609)", () => {
+  it("reads the access rule once per run, bounded to the run's projects, and answers per project", async () => {
+    const { listMemberAccessibleProjectIds } = await import("../lib/scheduler/project-access.js");
+    const list = vi.mocked(listMemberAccessibleProjectIds);
+    list.mockClear();
+    list.mockResolvedValueOnce(["p-1"]);
+    const actor = { id: "user-1", role: "coordinator" as const };
+    const check = executionAccessCheck(actor, ["p-1", "p-2"]);
+    expect(list).not.toHaveBeenCalled();
+    expect(await check("p-1")).toBe(true);
+    expect(await check("p-2")).toBe(false);
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledWith(actor, ["p-1", "p-2"]);
   });
 });
