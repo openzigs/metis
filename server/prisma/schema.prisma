@@ -1535,6 +1535,9 @@ model Requirement {
   /// source (outgoing) / target (incoming) endpoint.
   outgoingLinks     RequirementLink[]           @relation("RequirementLinkSource")
   incomingLinks     RequirementLink[]           @relation("RequirementLinkTarget")
+  /// #1621 — portfolio assessments started from this requirement (SetNull: an
+  /// assessment outlives the re-run that recreates its requirement).
+  portfolioAssessments PortfolioAssessment[]
 
   @@unique([projectId, externalSource, externalId], name: "requirement_external_dedup")
   @@index([projectId])
@@ -1571,6 +1574,94 @@ model RequirementLink {
   @@index([sourceRequirementId])
   @@index([targetRequirementId])
   @@map("requirement_links")
+}
+
+/// Epic #1608 (#1621) — a requirement assessed across the product portfolio:
+/// which products cover it (gap analysis) and which it would change or reach
+/// downstream (impact). The record is a SNAPSHOT: `statement` holds the text
+/// assessed, because requirements are delete+recreated on every analysis re-run
+/// (see `Requirement.coverage`), so `sourceRequirementId` is SetNull — the
+/// assessment outlives the row it started from. `sourceProjectId` and
+/// `createdById` are scalar soft-links (no FK), like RequirementLink's, and
+/// `productIds` is the JSON id list the run was scoped to. Each enum column is
+/// one of the `PORTFOLIO_*` vocabularies in `@metis/shared`.
+model PortfolioAssessment {
+  id                  String   @id @default(cuid())
+  /// The requirement text assessed, as it read at the time.
+  statement           String
+  sourceRequirementId String?
+  sourceProjectId     String?
+  /// product | all-accessible.
+  scope               String
+  /// JSON string[] of the product ids assessed.
+  productIds          String   @default("[]")
+  /// pending | running | completed | failed.
+  status              String   @default("pending")
+  /// covers | partial | not-covered | not-checked (PORTFOLIO_COVERAGES); null until computed.
+  portfolioVerdict    String?
+  /// The business-analyst summary.
+  summary             String   @default("")
+  costUsd             Float    @default(0)
+  createdById         String
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  sourceRequirement Requirement?                 @relation(fields: [sourceRequirementId], references: [id], onDelete: SetNull)
+  products          PortfolioAssessmentProduct[]
+  repos             PortfolioAssessmentRepo[]
+
+  @@index([sourceRequirementId])
+  @@index([sourceProjectId])
+  @@index([createdById])
+  @@map("portfolio_assessments")
+}
+
+/// #1621 — one product's part in a portfolio assessment. `productId` is a
+/// scalar soft-link (no FK) so the record outlives the product. `edgeIds` is the
+/// JSON list of the ProductEdge ids the impact went through; `technicalDetail`
+/// is a JSON object for the technical deep dive.
+model PortfolioAssessmentProduct {
+  id              String   @id @default(cuid())
+  assessmentId    String
+  productId       String
+  /// covers | partial | not-covered | not-checked | restricted.
+  coverage        String
+  /// direct-change | downstream-consumer | none.
+  impactKind      String   @default("none")
+  /// The integration kind the impact crosses (PRODUCT_INTEGRATION_KINDS), if any.
+  via             String?
+  edgeIds         String   @default("[]")
+  severity        String?
+  baSummary       String   @default("")
+  technicalDetail String   @default("{}")
+  createdAt       DateTime @default(now())
+
+  assessment PortfolioAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  @@unique([assessmentId, productId])
+  @@index([productId])
+  @@map("portfolio_assessment_products")
+}
+
+/// #1621 — one repo's verdict in a portfolio assessment, under the product it
+/// was assessed for. `verdict` is one of REQUIREMENT_VERDICTS (implemented |
+/// partial | gap-confirmed | could-not-verify); `citations` is the JSON list of
+/// repo-aware code citations (#1611). Both ids are scalar soft-links.
+model PortfolioAssessmentRepo {
+  id               String   @id @default(cuid())
+  assessmentId     String
+  productId        String
+  repoConnectionId String
+  verdict          String
+  citations        String   @default("[]")
+  createdAt        DateTime @default(now())
+
+  assessment PortfolioAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  // Named: the default name is over Postgres's 63-character identifier limit.
+  @@unique([assessmentId, productId, repoConnectionId], map: "portfolio_assessment_repos_assessment_repo_key")
+  @@index([repoConnectionId])
+  @@map("portfolio_assessment_repos")
 }
 
 /// Epic #192 (A.5) — per-PR implementation record. One row per file/range
