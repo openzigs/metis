@@ -47,6 +47,8 @@ const ELICITATION_SYSTEM_PROMPT = [
   '  - metric: a measurable target if stated (e.g. "p95 < 200ms", "99.9% uptime"),',
   "    else an empty string",
   '  - priority: one of "must-have", "should-have", "nice-to-have"',
+  '  - evidenceIds: the ids (shown as "id=...") of the input sections that state',
+  "    this NFR; an empty array if no section states it",
   "",
   "For each acceptance criterion output a JSON object with:",
   "  - statement: what the criterion verifies",
@@ -113,7 +115,7 @@ function withId(raw: unknown): unknown {
 /** The shape quoted back to the model in the re-prompt. */
 const NFR_SHAPE =
   '{ "nfrs": [ { "category": string, "title": string, "description": string, ' +
-  '"metric": string, "priority": string } ], "acceptanceCriteria": [ { "statement": string, ' +
+  '"metric": string, "priority": string, "evidenceIds": [string] } ], "acceptanceCriteria": [ { "statement": string, ' +
   '"given": string, "when": string, "then": string } ] }';
 
 function zeroUsage(): TokenUsage {

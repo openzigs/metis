@@ -124,6 +124,20 @@ export function formatElicitedArtifacts(artifacts: ElicitationArtifacts): string
   return sections.join("\n");
 }
 
+/**
+ * Issue #1613 — an NFR's `evidenceIds` reduced to the sections the corpus
+ * actually carried (`joinCorpus` sends only non-blank segments). An id the
+ * model invented, or one naming a blank section it never saw, is dropped:
+ * evidence is persisted as a citation, and a citation must exist.
+ */
+export function keepSentEvidence(nfrs: Nfr[], segments: DocSegment[]): Nfr[] {
+  const sent = new Set(segments.filter((s) => s.content.trim().length > 0).map((s) => s.id));
+  return nfrs.map((n) => ({
+    ...n,
+    evidenceIds: [...new Set((n.evidenceIds ?? []).filter((id) => sent.has(id)))],
+  }));
+}
+
 /** True when the result carries no artifacts at all. */
 export function isEmptyElicitation(artifacts: ElicitationArtifacts): boolean {
   return (
@@ -178,7 +192,7 @@ export async function runElicitation(input: ElicitationPipelineInput): Promise<E
   ].filter((s): s is UnreadAnalysisStep => s !== null);
 
   return {
-    nfrs: nfrResult.nfrs,
+    nfrs: keepSentEvidence(nfrResult.nfrs, input.segments),
     acceptanceCriteria: nfrResult.acceptanceCriteria,
     assumptions: arResult.assumptions,
     risks: arResult.risks,

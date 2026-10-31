@@ -193,6 +193,7 @@ import {
   isEmptyElicitation,
   runElicitation,
 } from "./elicitation-pipeline.js";
+import { elicitedNfrRequirements } from "./elicited-nfr-requirements.js";
 import { runAgentLoop, buildCachedSystemPrompt, resolveAnalysisNativeTools } from "./agent-loop.js";
 import {
   buildEvidenceDigest,
@@ -302,6 +303,7 @@ import { computeRequirementEscalations } from "./escalation-context.js";
 import { splitEscalationBudget, type EscalationPolicyConfig } from "./escalation-policy.js";
 import {
   MAX_RECORDED_SYNTHESIS_REPAIRS,
+  type Nfr,
   type RequirementEscalation,
   type SpecKitHandoffRecord,
   type UnreadAnalysisStep,
@@ -4834,7 +4836,8 @@ export class AnalysisOrchestrator {
       // first-class analysis output. Best-effort: a detection failure (or an
       // offline provider that can't emit parseable JSON) never fails the
       // analysis — it just yields an empty cross-doc finding set.
-      await this.runCrossDocDetectionAndPersist({
+      // #1613 — and the NFRs it elicited, persisted below as draft requirements.
+      const elicitedNfrs = await this.runCrossDocDetectionAndPersist({
         analysisId: input.analysisId,
         flatFindings: flat,
         model: input.model,
@@ -4894,6 +4897,15 @@ export class AnalysisOrchestrator {
         verdictFindings,
         codeAnalysisRan,
       );
+      // Issue #1613 — each elicited NFR the set does not already state, as a
+      // draft non-functional requirement, its coverage and verdict rolled up
+      // by the same rules from the findings it cites. None elicited: the set
+      // is written exactly as before.
+      const elicited = elicitedNfrRequirements({
+        nfrs: elicitedNfrs,
+        findingIdsByIndex,
+        existing: toPersist.requirements,
+      });
 
       // Issue #723 — reported explicitly: an empty id list cannot tell a
       // withheld replacement from an approved set that is genuinely empty.
@@ -4905,6 +4917,19 @@ export class AnalysisOrchestrator {
         findingIdsByIndex,
         coverages,
         verdicts,
+        ...(elicited.length > 0
+          ? {
+              elicited: {
+                requirements: elicited,
+                coverages: computeCoverageForRequirements(elicited, findings),
+                verdicts: computeVerdictsForRequirements(
+                  elicited,
+                  verdictFindings,
+                  codeAnalysisRan,
+                ),
+              },
+            }
+          : {}),
         // Issue #769 — a degraded set never replaces a healthy one. A reviewed
         // set is the reviewer's, not the degraded synthesis's (#730).
         degraded: reviewed ? null : (result.degraded ?? null),
@@ -5041,11 +5066,15 @@ export class AnalysisOrchestrator {
     model?: string;
     signal: AbortSignal;
     accumulator: TokenUsage;
-  }): Promise<void> {
+  }): Promise<Nfr[]> {
     // #1081 — the steps whose answer could not be read, recorded on the
     // analysis so the panel never presents an unread check as "none found".
     // Declared outside the try so the catch keeps what was already collected.
     const unreadSteps: UnreadAnalysisStep[] = [];
+    // Issue #1613 — the elicited NFRs, returned for synthesis to persist as
+    // draft requirements. Outside the try for the same reason: a detection
+    // failure after elicitation succeeded does not discard them.
+    let nfrs: Nfr[] = [];
     try {
       const segments: DocSegment[] = input.flatFindings
         .map((f) => ({
@@ -5055,7 +5084,7 @@ export class AnalysisOrchestrator {
         }))
         .filter((s) => s.content.trim().length > 0);
 
-      if (segments.length === 0) return;
+      if (segments.length === 0) return nfrs;
 
       // Epic #208 (E6.4) — elicit NFRs/ACs/assumptions/risks over the corpus
       // and feed them into the completeness checklist as additional context so
@@ -5073,6 +5102,7 @@ export class AnalysisOrchestrator {
         input.accumulator.completionTokens += elicitation.usage.completionTokens;
         input.accumulator.totalTokens += elicitation.usage.totalTokens;
         unreadSteps.push(...(elicitation.unreadSteps ?? []));
+        nfrs = elicitation.nfrs;
         if (!isEmptyElicitation(elicitation)) {
           elicitedArtifacts = formatElicitedArtifacts(elicitation);
         }
@@ -5108,6 +5138,7 @@ export class AnalysisOrchestrator {
         contradictions: detection.contradictionCount,
         completenessGaps: detection.completenessGapCount,
       });
+      return nfrs;
     } catch (err) {
       if ((err as { name?: string }).name === "AbortError") throw err;
       log.error("Cross-doc detection failed (non-fatal)", {
@@ -5120,6 +5151,7 @@ export class AnalysisOrchestrator {
         ...unreadSteps,
         { step: "cross-doc-detection", reason: "provider-error", failedCalls: 1, totalCalls: 1 },
       ]);
+      return nfrs;
     }
   }
 

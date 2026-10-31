@@ -47,6 +47,13 @@ export const nfrSchema = z.object({
   /** Measurable target, e.g. "p95 < 200ms", "99.9% uptime". Optional. */
   metric: z.string().trim().max(500).default(""),
   priority: z.enum(ELICITATION_PRIORITIES).default("should-have"),
+  /**
+   * Issue #1613 — the ids of the corpus sections (each one an analysis
+   * finding) the model says state this NFR. The elicitation pipeline keeps
+   * only ids that name a section it actually sent, so an invented id is never
+   * persisted as evidence. Fails soft: a malformed list reads as absent.
+   */
+  evidenceIds: z.array(z.string().min(1).max(128)).max(50).optional().catch(undefined),
 });
 export type Nfr = z.infer<typeof nfrSchema>;
 
