@@ -4406,6 +4406,21 @@ cannot read still detaches it, and audits `product.repo.detach.unreadable`. A co
 soft-deleted after it was attached keeps its `ProductRepo` row but is left out of every
 product read and of `/analyze` (`LIVE_PRODUCT_REPOS`).
 
+**Declared edges and resources (#1620).** `PATCH`/`DELETE /api/products/:id/edges/:edgeId`
+and `POST /api/products/:id/resources`, `PATCH`/`DELETE …/resources/:resourceId` complete
+the declare API. Every verb takes `project.update` and product access, and judges the
+edge or resource against the caller's readable repos: one of another product, a missing
+one, and one touching a repo the caller cannot read (or a resource only such edges go
+through) are the same 404. A write records `origin: declared` and `declaredById`. A
+**detected** edge may only have its `integrationKind` / `strength` / `direction`
+overridden (`DETECTED_EDGE_OVERRIDABLE_FIELDS`), which makes it declared, so re-detection
+leaves the override alone. Moving its ends is a 409, and deleting it is a 409 that says to
+override its strength instead. A detected resource keeps its kind and name, though its
+locator may be set; it cannot be deleted. Deleting a declared resource deletes the
+repo-less edges through it in the same transaction, while the rest lose only the
+`resourceId`. A locator carrying `user:pass@` credentials is a 400. Code:
+`server/src/lib/products/product-edges.ts`.
+
 **Typed product edges and shared resources (#1618, epic #1608).** A `ProductEdge` says
 what crosses the boundary (`integrationKind`: api, event, database, shared-library,
 identity), how tightly the two ends are coupled (`strength`, strongest first: intrusive >
