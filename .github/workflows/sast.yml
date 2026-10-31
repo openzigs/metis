@@ -230,6 +230,27 @@ jobs:
                             "botframework-connector): no parent accepts 7.x; METIS never "
                             "runs the MSAL authorization-code flow (#1464).",
               },
+              # follow-redirects GHSA-mrwp-f3q8-3g9p (HIGH, CVSS 8.2), `introduced
+              # 1.16.0, fixed 1.16.2`: a cross-realm `sensitiveHeaders` array is
+              # replaced with an empty list, so a caller-declared custom credential
+              # header can follow a cross-origin redirect. 1.16.2 was published
+              # 2026-10-25T21:32Z and clears minimumReleaseAge at 2026-11-01T21:32Z;
+              # the advisory landed 2026-10-30T22:59Z, inside that window. The one
+              # copy comes from axios 1.20.0 (@slack/bolt, @slack/web-api, botbuilder,
+              # botframework-connector, vectordb). Not reachable: the advisory states
+              # axios 1.20.0 with follow-redirects 1.16.1 does NOT reproduce, because
+              # axios normalises the array; built-in Authorization / Cookie stripping
+              # is unaffected; no METIS source imports axios or follow-redirects
+              # (guarded by scripts/lib/follow-redirects-1635-waiver.test.mjs).
+              # Delete this entry when the lockfile takes 1.16.2 (#1635); do NOT
+              # re-date it.
+              "GHSA-mrwp-f3q8-3g9p": {
+                  "expires": "2026-11-03",
+                  "packages": ["follow-redirects@1.16.1"],
+                  "reason": "follow-redirects@1.16.1 only (via axios 1.20.0): fix 1.16.2 "
+                            "inside minimumReleaseAge until 2026-11-01; advisory says "
+                            "axios 1.20.0 is not affected (#1635).",
+              },
           }
           today = datetime.date.today()
 

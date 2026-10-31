@@ -142,6 +142,7 @@ function detail(over: Partial<ImpactAnalysisDetail> & { id: string }): ImpactAna
     // case: an unattributable run is now readable by its starter alone.
     startedById: over.startedById ?? "user-1",
     items: over.items ?? [],
+    projectOutcomes: [],
     sharedTableImpacts: [],
     rerunOfId: over.rerunOfId ?? null,
   };
@@ -182,6 +183,19 @@ describe("POST /:id/rerun (#965)", () => {
       }),
       expect.any(Object),
     );
+  });
+
+  it("#1609 — hands the re-run an execution-time access check bound to the caller", async () => {
+    getImpactAnalysisDetail.mockResolvedValue(
+      detail({ id: "orig-1", sourceText: "reuse me", projectIds: ["project-001"] }),
+    );
+    expect((await request(app).post("/impact-analyses/orig-1/rerun").send({})).status).toBe(202);
+    const deps = (triggerImpactAnalysis.mock.calls[0] as unknown[])[1] as {
+      projectAccessible?: (projectId: string) => Promise<boolean>;
+    };
+    // Access is read again when the re-run executes: by then it is gone.
+    accessibleIds = [];
+    expect(await deps.projectAccessible?.("project-001")).toBe(false);
   });
 
   it("reuses a documentId source verbatim when the original had no text", async () => {

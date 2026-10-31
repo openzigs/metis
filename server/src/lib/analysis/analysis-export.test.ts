@@ -896,6 +896,7 @@ function impactDetail(overrides: Partial<ImpactAnalysisDetail> = {}): ImpactAnal
     projectIds: ["project-001", "project-002"],
     startedById: "user-1",
     items: [impactItem()],
+    projectOutcomes: [],
     sharedTableImpacts: [],
     ...overrides,
   };

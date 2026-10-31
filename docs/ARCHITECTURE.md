@@ -2508,6 +2508,18 @@ the measurement lessons behind the split — is documented once in
 [Impact Analysis — LLM vs deterministic stages](./IMPACT_ANALYSIS_LLM_STAGES.md)
 (#1005). Read it before adding or removing an LLM call here.
 
+**Every project gets an outcome (#1609).** A change with no affected symbols still
+writes no `ImpactItem`, so the report stays focused, but the run records what it
+found for each project on that project's `impact_analysis_projects` row
+(`outcome`, `outcomeReason`), in the same write that completes the run:
+`affected`, `checked-none-affected`, `not-checked` with a reason (`restricted`: the
+starter could no longer open the project when the run reached it, checked through
+`ImpactServiceDeps.projectAccessible`; `no-index`: the project has no code
+symbols), or `error` (the run failed while working on it). `GET
+/api/impact-analyses/:id` returns them as `projectOutcomes` (`ImpactProjectOutcome`
+in `@metis/shared`); a `restricted` entry carries the project id and nothing else.
+`timeout` and `budget` are in the vocabulary but nothing writes them yet.
+
 | Module                         | Responsibility                                                                                          |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------- |
 | `extract-changes.ts`           | Splits the source document into discrete changed requirements (`ChangeExtractor` / `heuristicChangeExtractor`). Since #1036 this is the reader for a multi-requirement document only; see `change-request.ts`. |
