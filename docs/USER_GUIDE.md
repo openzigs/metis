@@ -1290,7 +1290,7 @@ When you click **"Run Analysis"** on a project, here's what happens behind the s
    - Merges findings from all four agents
    - Removes duplicates (when multiple agents discover the same thing)
    - Groups findings by category (security, performance, API changes, etc.)
-   - Assigns a requirement type to each finding (feature, schema-change, security, etc.)
+   - Assigns a requirement type to each requirement (`feature`, `bug`, `chore`, `epic` or `task`)
    - Assigns a priority level (critical, high, medium, low)
    - Generates acceptance criteria (specific conditions for completion)
 
@@ -1575,7 +1575,7 @@ A **requirement** is a specific, actionable piece of work that was discovered du
 
 > **Title**: Implement OAuth 2.0 Authentication Flow  
 > **Description**: Replace the current basic authentication with OAuth 2.0 to align with industry security standards and enable single sign-on capability across the platform.  
-> **Type**: Security  
+> **Type**: Feature  
 > **Priority**: High  
 > **Source**: "" API Security Policy v3.2, Section 4.1"
 
@@ -1588,7 +1588,7 @@ Each requirement has these properties:
 | **ID** | Unique identifier (auto-generated) | `REQ-001` |
 | **Title** | Brief summary of what's needed | "Add rate limiting to public API" |
 | **Description** | Detailed explanation of the requirement | Full paragraph with context and rationale |
-| **Type** | Category of work | `feature`, `schema-change`, `api-change`, `security`, `performance` |
+| **Type** | The shape of the work item. Security, performance and similar qualities are not types: they are the category of a non-functional **Kind** (below) | `feature`, `bug`, `chore`, `epic`, `task` |
 | **Priority** | Urgency level | `critical`, `high`, `medium`, `low` |
 | **Kind** | Functional (what the system does) or non-functional (how well it does it), separate from Type. A non-functional requirement also names its category. Blank when the analysis could not tell; METIS never guesses it. Shown on each requirement card; the **Kind** filter above the list narrows it to functional, non-functional or not-classified requirements. Set through `PATCH /api/analyses/:id/requirements/:reqId` (`kind`, `nfrCategory`); a set kind survives a re-run | `functional`, `non-functional` + `performance` |
 | **Status** | Where it is in the workflow | `generated`, `reviewing`, `approved`, `published` |
@@ -5104,7 +5104,7 @@ Every new project is seeded with 4 default templates:
 2. Fill in the template details:
    - **Name**: A descriptive name (e.g., "Security Review Template")
    - **Platform**: `github` or `jira`
-   - **Type**: `epic`, `feature`, `story`, `bug`, or `task`
+   - **Type**: the issue type the template is for: `epic`, `feature`, `story`, `bug`, or `task`. This is the template's own list, not a requirement type (requirement types are `feature`, `bug`, `chore`, `epic` and `task`, see 12.2)
 3. Add **sections** to define the issue structure. Each section has:
    - **Key**: Machine-readable identifier (e.g., `acceptance_criteria`)
    - **Label**: Human-readable heading (e.g., "Acceptance Criteria")
