@@ -124,3 +124,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Approved re-derived on re-save](project_approved-status-rederived-on-resave.md) — gate re-save paths, not routes only; stacked PR closes (#1588)
 - [Run 10 fix review lessons](project_run10-fix-review-lessons.md) — plain-text views; metadata writers; AbortError mocks; throttle (#1593-#1601)
 - [Portfolio phase-1 lessons](project_portfolio-phase1-review-lessons.md) — memoized access; repo provenance; TRACKED_SELECT; waiver re-run (#1608)
+- [Portfolio phase-2 lessons](project_portfolio-phase2-review-lessons.md) — LLM dedupe; partition seeds; edge order; body-ref access (#1608)
