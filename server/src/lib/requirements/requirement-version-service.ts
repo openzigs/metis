@@ -317,23 +317,23 @@ export function originalVersionOf(
 // Database operations
 // ---------------------------------------------------------------------------
 
-const TRACKED_SELECT = {
-  id: true,
-  version: true,
-  title: true,
-  body: true,
-  priority: true,
-  type: true,
-  labels: true,
-  storyPoints: true,
-  acceptanceCriteria: true,
-  kind: true,
-  nfrCategory: true,
-} as const;
+/**
+ * #1612 — the Prisma `select` for exactly the tracked columns, DERIVED from
+ * {@link TRACKED_FIELDS}. Every reader that does `pickTracked(row)` and replays
+ * version diffs (this service, the history route, baseline snapshots) must use
+ * it: a hand-listed select that misses a newly tracked field reads it as null
+ * and so reconstructs every past version with the wrong value.
+ */
+export const TRACKED_SELECT = Object.fromEntries(
+  TRACKED_FIELDS.map((field) => [field, true as const]),
+) as { readonly [F in TrackedField]: true };
+
+/** {@link TRACKED_SELECT} plus the identity every reader needs. */
+const TRACKED_ROW_SELECT = { id: true, version: true, ...TRACKED_SELECT } as const;
 
 /** {@link TRACKED_SELECT} plus the untracked columns an update may also write. */
 const UPDATE_SELECT = {
-  ...TRACKED_SELECT,
+  ...TRACKED_ROW_SELECT,
   reviewStatus: true,
   externalUrl: true,
   importSourceId: true,
@@ -664,7 +664,7 @@ async function restoreOnce(
         deletedAt: null,
         ...(params.projectId ? { projectId: params.projectId } : {}),
       },
-      select: TRACKED_SELECT,
+      select: TRACKED_ROW_SELECT,
     })) as (RequirementSnapshot & { id: string; version: number }) | null;
 
     if (!existing) {

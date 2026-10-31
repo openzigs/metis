@@ -23,6 +23,7 @@ import { assertRequirementsExportable } from "../lib/reviews/approval-gate.js";
 import {
   TRACKED_FIELDS,
   pickTracked,
+  TRACKED_SELECT,
   buildHistoryEntries,
   originalVersionOf,
   restoreRequirementVersion,
@@ -33,19 +34,14 @@ import {
 import { toCsv } from "../lib/requirements/csv.js";
 import { toSourceDecision } from "../lib/importers/source-sync.js";
 
-const TRACKED_SELECT = {
+const HISTORY_ROW_SELECT = {
   id: true,
   projectId: true,
   version: true,
   // #1220 — the last "take the source version" / "keep mine" answer.
   sourceDecision: true,
-  title: true,
-  body: true,
-  priority: true,
-  type: true,
-  labels: true,
-  storyPoints: true,
-  acceptanceCriteria: true,
+  // #1612 — derived from TRACKED_FIELDS, so a new tracked field cannot be missed.
+  ...TRACKED_SELECT,
 } as const;
 
 const MAX_PAGE_SIZE = 100;
@@ -93,7 +89,7 @@ async function loadRequirementOr404(
     // Issue #1118 — narrowed to the project `requireRequirementAccess` resolved
     // for this caller, so the scope lives in the query, not only in the guard.
     where: { id: requirementId, deletedAt: null, ...requirementScopeWhere(req) },
-    select: TRACKED_SELECT,
+    select: HISTORY_ROW_SELECT,
   })) as (Record<string, unknown> & { version: number }) | null;
   if (!row) {
     throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");

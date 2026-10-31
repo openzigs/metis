@@ -24,6 +24,7 @@ import {
   computeChangedFields,
   parseChangedFields,
   pickTracked,
+  TRACKED_SELECT,
   type ChangedFields,
   type RequirementSnapshot,
   type VersionRow,
@@ -41,13 +42,8 @@ const REVIEW_SELECT = { id: true, title: true, status: true } as const;
 const SNAPSHOT_SOURCE_SELECT = {
   id: true,
   version: true,
-  title: true,
-  body: true,
-  priority: true,
-  type: true,
-  labels: true,
-  storyPoints: true,
-  acceptanceCriteria: true,
+  // #1612 — derived from TRACKED_FIELDS, so a new tracked field cannot be missed.
+  ...TRACKED_SELECT,
   deletedAt: true,
 } as const;
 

@@ -209,6 +209,21 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
+    it("a stale-version PATCH of kind is a 409 whose diff names the kind", async () => {
+      const { analysisId, ids } = await analysisWithSet(synthesis("Session timeout"));
+      expect((await patch(analysisId, ids[0]!, { kind: "functional" })).status).toBe(200);
+
+      const stale = await patch(analysisId, ids[0]!, { kind: "non-functional", version: 0 });
+
+      expect(stale.status).toBe(409);
+      expect(stale.body.error.code).toBe("VERSION_CONFLICT");
+      expect(stale.body.error.diff).toContainEqual({
+        field: "kind",
+        server: "functional",
+        client: "non-functional",
+      });
+    });
+
     it("changing kind to functional clears the category; null clears kind", async () => {
       const { analysisId, ids } = await analysisWithSet(
         synthesis("Uptime", { kind: "non-functional", nfrCategory: "availability" }),
@@ -257,6 +272,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
 
       expect(withheld).toBe(true);
+      // The refused result is stored for the analyst to compare (#780), kind
+      // included: the proposal is a second writer of the classification.
+      const stored = await db.analysis.findUniqueOrThrow({
+        where: { id: analysisId },
+        select: { metadata: true },
+      });
+      const proposal = JSON.parse(stored.metadata ?? "{}").withheldReplacementProposal as {
+        rows: Array<{ title: string; kind: string | null }>;
+      };
+      expect(proposal.rows).toHaveLength(1);
+      expect(proposal.rows[0]).toMatchObject({
+        title: "Audit logins (re-run)",
+        kind: "functional",
+      });
       const after = await readBack(analysisId);
       expect(after).toHaveLength(1);
       expect(after[0]).toMatchObject({

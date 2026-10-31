@@ -10,6 +10,10 @@
 -- server/tests/requirement-kind-migration-1612.sqlite.test.ts runs up, this,
 -- and up again over seeded rows.
 
+-- One transaction: if the DELETE failed, the columns would be gone while the
+-- migration still read as applied, and `migrate deploy` would not re-add them.
+BEGIN;
 ALTER TABLE "requirements" DROP COLUMN "nfrCategory";
 ALTER TABLE "requirements" DROP COLUMN "kind";
 DELETE FROM "_prisma_migrations" WHERE "migration_name" = '20261105001612_issue1612_requirement_kind';
+COMMIT;
