@@ -34,6 +34,7 @@ vi.mock("@/lib/plugins-api", () => ({
 }));
 
 import { GapReport } from "./gap-report";
+import { CodeCitationRepoNamesContext } from "@/components/findings/code-citation-repo-context";
 
 const REPORT: TGapReport = {
   analysisId: "an-1",
@@ -124,6 +125,58 @@ describe("GapReport", () => {
     getGapReport.mockResolvedValue(REPORT);
   });
   afterEach(() => cleanup());
+
+  it("#1615 — names the repo of two same-path citations from different repos, once each", async () => {
+    const twoRepos = (c: { repoConnectionId: string }) => ({
+      filePath: "src/auth.ts",
+      startLine: 1,
+      endLine: 5,
+      ...c,
+    });
+    const [first, ...rest] = REPORT.requirements;
+    getGapReport.mockResolvedValue({
+      ...REPORT,
+      requirements: [
+        {
+          ...first!,
+          currentImplementation: {
+            hasEvidence: true,
+            citations: [
+              twoRepos({ repoConnectionId: "rc-A" }),
+              twoRepos({ repoConnectionId: "rc-B" }),
+            ],
+            citedFindingCount: 1,
+          },
+          gapFindings: [],
+        },
+        ...rest,
+      ],
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <CodeCitationRepoNamesContext.Provider
+          value={{ "rc-A": "billing-api", "rc-B": "billing-web" }}
+        >
+          <GapReport projectId="proj-1" analysisId="an-1" enabled />
+        </CodeCitationRepoNamesContext.Provider>
+      </QueryClientProvider>,
+    );
+    const impl = within(await screen.findByTestId("gap-report-card-req-1")).getByTestId(
+      "gap-current-impl",
+    );
+    expect(
+      within(impl)
+        .getAllByTestId("code-citation-repo")
+        .map((el) => el.textContent),
+    ).toEqual(["billing-api", "billing-web"]);
+    // Same file:line, two repos: two distinct React keys, so no duplicate-key warning.
+    expect(consoleError.mock.calls.some((args) => String(args[0]).includes("same key"))).toBe(
+      false,
+    );
+    consoleError.mockRestore();
+  });
 
   it("renders nothing when disabled and never fetches", () => {
     renderPanel(false);

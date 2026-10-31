@@ -427,6 +427,57 @@ describe("Analysis results hierarchy (#1232)", () => {
   });
 });
 
+// #1615 — the requirement list shows each requirement's kind (#1612) and
+// filters on it. Asserted on the rendered rows, not on filter state.
+describe("requirement kind filter (#1615)", () => {
+  const base = SNAPSHOT.requirements[0]!;
+  const withKinds = {
+    ...SNAPSHOT,
+    requirements: [
+      { ...base, id: "req-f", title: "Export to CSV", kind: "functional", nfrCategory: null },
+      {
+        ...base,
+        id: "req-nf",
+        title: "Pages load in two seconds",
+        kind: "non-functional",
+        nfrCategory: "performance",
+      },
+      { ...base, id: "req-u", title: "Legacy row", kind: null, nfrCategory: null },
+    ],
+  };
+
+  it("toggling the kind filter changes which requirement rows render", async () => {
+    const user = userEvent.setup();
+    apiMock.get.mockResolvedValue(withKinds);
+    nav.search = new URLSearchParams("tab=requirements");
+    renderPage();
+    await screen.findByText("Export to CSV");
+    const list = screen.getByTestId("requirements-section");
+    expect(within(list).getByText("Pages load in two seconds")).toBeInTheDocument();
+    expect(within(list).getByText("Legacy row")).toBeInTheDocument();
+    // The kind is on the card; an unclassified requirement carries none.
+    expect(
+      within(list)
+        .getAllByTestId("requirement-kind")
+        .map((el) => el.textContent),
+    ).toEqual(["Functional", "Non-functional · performance"]);
+
+    await user.click(screen.getByTestId("kind-filter-non-functional"));
+    expect(within(list).getByText("Pages load in two seconds")).toBeInTheDocument();
+    expect(within(list).queryByText("Export to CSV")).not.toBeInTheDocument();
+    expect(within(list).queryByText("Legacy row")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("kind-filter-unclassified"));
+    expect(within(list).getByText("Legacy row")).toBeInTheDocument();
+    expect(within(list).queryByText("Pages load in two seconds")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("kind-filter-all"));
+    expect(within(list).getByText("Export to CSV")).toBeInTheDocument();
+    expect(within(list).getByText("Pages load in two seconds")).toBeInTheDocument();
+    expect(within(list).getByText("Legacy row")).toBeInTheDocument();
+  });
+});
+
 // #322 — an upload returns with its document still `pending` (ingest is
 // queued). The page read the documents list once and never again, so the new
 // document stayed unselectable until a reload. It must keep re-reading the list

@@ -50,6 +50,7 @@ import { CodeCitation } from "@/components/findings/code-citation";
 import { DocumentCitation } from "@/components/findings/document-citation";
 import {
   CodeCitationRepoContext,
+  CodeCitationRepoNamesContext,
   useCodeCitationRepo,
 } from "@/components/findings/code-citation-repo-context";
 import { DerivationBadge } from "@/components/findings/derivation-badge";
@@ -88,6 +89,12 @@ import { AffectedCodePanel } from "@/components/analysis/affected-code-panel";
 import { AnalysisDepthPanel } from "@/components/analysis/analysis-depth-panel";
 import { AnalysisDatabaseAwareIndicator } from "@/components/analysis/analysis-database-aware-indicator";
 import { CoverageBadge } from "@/components/analysis/CoverageBadge";
+import {
+  matchesKindFilter,
+  RequirementKindBadge,
+  RequirementKindFilter,
+  type RequirementKindFilterValue,
+} from "@/components/analysis/RequirementKind";
 // Epic #1107 (#1110) — the support panel's confidence treatment. Ranking,
 // wording and the second-class card classes all live in the component module
 // (measured by coverage); this page only wires them in.
@@ -319,6 +326,7 @@ export default function AnalysisPage(): React.ReactElement {
     // showed "No findings match" under a select that read "All".
     setFindingFilters(NO_FINDING_FILTERS);
     setCoverageFilter(null);
+    setKindFilter(null);
     updateUrl({ analysisId: id, ...findingFiltersParams(NO_FINDING_FILTERS) });
   };
   const changeFindingFilters = (next: FindingFilters) => {
@@ -458,6 +466,8 @@ export default function AnalysisPage(): React.ReactElement {
   // Epic #726 (#736) — filter the requirement list by coverage classification.
   // `null` = show all; otherwise show only requirements with that coverage.
   const [coverageFilter, setCoverageFilter] = useState<RequirementCoverage | null>(null);
+  // #1615 — filter the requirement list by kind (#1612); `null` = show all.
+  const [kindFilter, setKindFilter] = useState<RequirementKindFilterValue>(null);
   // #1389 — the list filtered to requirements with suggested criteria.
   const [reviewingProposals, setReviewingProposals] = useState(false);
   // Issue #487 — a soft navigation to a link naming a different run switches
@@ -476,6 +486,7 @@ export default function AnalysisPage(): React.ReactElement {
       setFindingsPage(0);
       setRequirementsPage(0);
       setCoverageFilter(null);
+      setKindFilter(null);
     }
   }
   // Epic #34 — collaboration state.
@@ -691,6 +702,7 @@ export default function AnalysisPage(): React.ReactElement {
     (detail.data?.requirements ?? []).filter(
       (req) =>
         (coverageFilter === null || (req.coverage ?? null) === coverageFilter) &&
+        matchesKindFilter(req, kindFilter) &&
         (!showProposals || req.criteriaProposal),
     ),
     requirementsPage,
@@ -728,6 +740,7 @@ export default function AnalysisPage(): React.ReactElement {
     if (page === null) return;
     appliedRequirementLink.current = key;
     setCoverageFilter(null);
+    setKindFilter(null);
     setRequirementsPage(page);
     if (!requestedTab) setTab("requirements");
     if (!requestedTab || parseAnalysisTab(requestedTab) === "requirements")
@@ -1118,6 +1131,14 @@ export default function AnalysisPage(): React.ReactElement {
                         </Button>
                       ))}
                     </div>
+                    {/* #1615 — filter the list by functional / non-functional kind. */}
+                    <RequirementKindFilter
+                      value={kindFilter}
+                      onChange={(next) => {
+                        setKindFilter(next);
+                        setRequirementsPage(0);
+                      }}
+                    />
                     <div className="space-y-2">
                       {/* Issue #1117 (findings B + C) — when synthesis degraded,
                       every requirement below is typed "feature" and has no
@@ -1178,6 +1199,11 @@ export default function AnalysisPage(): React.ReactElement {
                                 <div className="text-sm font-medium">{req.title}</div>
                                 {/* Epic #726 (#736) — coverage classification badge. */}
                                 <CoverageBadge coverage={req.coverage} />
+                                {/* #1615 — functional / non-functional (#1612). */}
+                                <RequirementKindBadge
+                                  kind={req.kind}
+                                  nfrCategory={req.nfrCategory}
+                                />
                               </div>
                               <div className="text-xs text-muted-foreground">
                                 {req.type} · {req.priority} · {req.reviewStatus}
@@ -1757,10 +1783,13 @@ export default function AnalysisPage(): React.ReactElement {
     </div>
   );
   // #728 — every CodeCitation below (findings, gap report, requirement diff)
-  // links into this repo; null keeps them plain text.
+  // links into this repo; null keeps them plain text. #1615 — and names the
+  // repo a citation stamped with its `repoConnectionId` came from.
   return (
     <CodeCitationRepoContext.Provider value={citationRepo}>
-      {content}
+      <CodeCitationRepoNamesContext.Provider value={repoNames}>
+        {content}
+      </CodeCitationRepoNamesContext.Provider>
     </CodeCitationRepoContext.Provider>
   );
 }

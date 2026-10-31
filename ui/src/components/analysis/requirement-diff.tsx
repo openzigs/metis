@@ -21,6 +21,7 @@ import {
   type AnalysisListItem,
   type RequirementDiffEntry,
   type RequirementDiffSeverity,
+  codeCitationKey,
 } from "@/lib/analysis-api";
 import { Card } from "@/components/ui/card";
 import { CodeCitation } from "@/components/findings/code-citation";
@@ -201,10 +202,7 @@ function DiffCard({ entry }: { entry: RequirementDiffEntry }): React.ReactElemen
                   {entry.current.hasEvidence ? (
                     <ul className="space-y-1">
                       {entry.current.codeCitations.map((c) => (
-                        <CodeCitation
-                          key={`${c.filePath}:${c.startLine}-${c.endLine}`}
-                          citation={c}
-                        />
+                        <CodeCitation key={codeCitationKey(c)} citation={c} />
                       ))}
                     </ul>
                   ) : (

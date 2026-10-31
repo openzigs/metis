@@ -152,6 +152,24 @@ describe("RequirementHistoryTab", () => {
     );
   });
 
+  it("#1615 — a version that only reclassifies the requirement shows its kind in the diff", async () => {
+    const same = { title: "T", body: "B" };
+    list.mockResolvedValue(
+      page([
+        entry(2, { snapshot: { ...same, kind: "non-functional", nfrCategory: "security" } }),
+        entry(1, { snapshot: { ...same, kind: "functional", nfrCategory: null } }),
+      ]),
+    );
+    render(<RequirementHistoryTab requirementId="req-1" />);
+    await waitFor(() => expect(screen.getByText("Version 2")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /Version 2/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Version 1/ }));
+
+    const newer = await screen.findByTestId("diff-new");
+    expect(newer).toHaveTextContent("kind: non-functional");
+    expect(newer).toHaveTextContent("nfrCategory: security");
+  });
+
   it("#1162 — the compared text has no review status line, which is not versioned", async () => {
     list.mockResolvedValue(
       page([entry(2, { snapshot: { title: "T2" } }), entry(1, { snapshot: { title: "T1" } })]),

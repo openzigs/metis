@@ -47,6 +47,10 @@ const FIELD_ORDER = [
   // #1162 — no `reviewStatus`: it is the verdict on a version, not versioned.
   // #990 — versioned since the Edit dialog can change it.
   "acceptanceCriteria",
+  // #1615 — versioned since #1612, so a version that only reclassifies the
+  // requirement must not render as an identical diff.
+  "kind",
+  "nfrCategory",
 ] as const;
 
 export interface RequirementHistoryTabProps {
