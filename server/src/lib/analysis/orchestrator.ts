@@ -43,12 +43,13 @@ import {
   deriveCapabilityReasons,
   isCodeCitation,
   MAX_REQUIREMENTS_FOR_RETRIEVAL,
-  // Epic #1107 (#1110) — the shared ranking primitive. Imported from the seam
-  // rather than re-exported through `synthesis.js` so it stays available in the
-  // many pipeline tests that mock that module wholesale.
-  orderByPanelConfidence,
   REQUIREMENT_RETRIEVAL_CONCURRENCY,
 } from "@metis/shared";
+// Epic #1107 (#1110) — the shared ranking, by way of the one function every
+// reader of synthesis's evidence indexes uses (#1603). Its own module rather
+// than `synthesis.js`, so it stays available in the many pipeline tests that
+// mock that module wholesale.
+import { inSynthesisOrder } from "./synthesis-finding-order.js";
 import { audit } from "../audit/audit-service.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
@@ -4599,10 +4600,9 @@ export class AnalysisOrchestrator {
     // answers with still resolve to the right Finding row. Sorting any later
     // (inside `runSynthesis`, say) would silently mis-attribute evidence.
     // Flag off ⇒ no row carries a panel ⇒ the sort is the identity function.
-    const flat = orderByPanelConfidence(
-      await readFlattenedFindings(input.analysisId),
-      (f) => f.supportPanel,
-    );
+    // #1603 — through `inSynthesisOrder`, which every reader of these indexes
+    // (promotion, the append, the Approvals evidence mark) uses too.
+    const flat = inSynthesisOrder(await readFlattenedFindings(input.analysisId));
     const findings: FlatFinding[] = flat.map((f) => ({
       agentKey: f.agentKey,
       category: f.category,

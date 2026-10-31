@@ -51,6 +51,7 @@ import {
   withoutGivenItems,
 } from "./promotion-matching.js";
 import { computeCoverageForRequirements } from "./requirement-coverage.js";
+import { inSynthesisOrder } from "./synthesis-finding-order.js";
 import { computeVerdictsForRequirements, type VerdictFindingInput } from "./requirement-verdict.js";
 import { requirementKindColumns } from "./requirement-kind.js";
 
@@ -230,7 +231,9 @@ export async function promoteApprovedRequirements(
     }
   }
 
-  const flat = await readFlattenedFindings(analysisId);
+  // #1603 — numbered as synthesis numbered them, so `evidenceFindingIndexes`
+  // (and the coverage and verdicts read through them) name the cited finding.
+  const flat = inSynthesisOrder(await readFlattenedFindings(analysisId));
   const findingIdsByIndex = flat.map((f) => f.findingId);
   const coverages = computeCoverageForRequirements(
     toPromote.requirements,
@@ -378,7 +381,8 @@ async function appendNewlyApproved(input: {
   /** #1204 — the synthesis items the set promoted with `ids` gave its rows. */
   itemsGivenTo: (ids: ReadonlySet<string>) => ReadonlySet<number>;
 }): Promise<number | "superseded"> {
-  const flat = await readFlattenedFindings(input.analysisId);
+  // #1603 — the same numbering synthesis used, as on the first promotion.
+  const flat = inSynthesisOrder(await readFlattenedFindings(input.analysisId));
   let superseded = false;
 
   const requirementIds = await prisma.$transaction(async (tx) => {
