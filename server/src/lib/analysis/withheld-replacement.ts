@@ -27,6 +27,7 @@ import {
 } from "@metis/shared";
 import { createHash } from "node:crypto";
 import { normalizeCriterion } from "./approved-criteria-carry-over.js";
+import { requirementKindColumns } from "./requirement-kind.js";
 import type { AmbiguousPromotionMatch, SharedPromotionMatch } from "./approved-requirement-set.js";
 
 /** Analysis-metadata key of the stored {@link WithheldProposal}. */
@@ -52,6 +53,9 @@ export interface WithheldProposalRow {
   storyPoints: number | null;
   coverage: string | null;
   verdict: string | null;
+  /** #1612 — absent on proposals stored before #1612 (the insert then writes NULL). */
+  kind?: string | null;
+  nfrCategory?: string | null;
   sourceCandidateIds: string | null;
   promotedStructuredId?: string;
   promotedStructuredRunId?: string | null;
@@ -102,6 +106,7 @@ function readRow(raw: unknown): WithheldProposalRow | null {
     storyPoints: typeof r.storyPoints === "number" ? r.storyPoints : null,
     coverage: isString(r.coverage) ? r.coverage : null,
     verdict: isString(r.verdict) ? r.verdict : null,
+    ...requirementKindColumns(r),
     sourceCandidateIds: isString(r.sourceCandidateIds) ? r.sourceCandidateIds : null,
   };
   if (isString(r.promotedStructuredId)) {

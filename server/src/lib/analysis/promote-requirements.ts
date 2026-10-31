@@ -52,6 +52,7 @@ import {
 } from "./promotion-matching.js";
 import { computeCoverageForRequirements } from "./requirement-coverage.js";
 import { computeVerdictsForRequirements, type VerdictFindingInput } from "./requirement-verdict.js";
+import { requirementKindColumns } from "./requirement-kind.js";
 
 const log = createChildLogger("promote-requirements");
 
@@ -451,6 +452,8 @@ async function appendNewlyApproved(input: {
           storyPoints: r.storyPoints ?? null,
           coverage: coverages[k] ?? null,
           verdict: verdicts[k] ?? null,
+          // Issue #1612 — same classification `persistRequirements` writes.
+          ...requirementKindColumns(r),
           // Issue #1063 — same provenance `persistRequirements` writes.
           sourceCandidateIds: serializeSourceCandidateIds(
             r.sourceIds,

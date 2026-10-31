@@ -25,6 +25,8 @@ function snap(overrides: Partial<RequirementSnapshot> = {}): RequirementSnapshot
     labels: null,
     storyPoints: 5,
     acceptanceCriteria: "[]",
+    kind: null,
+    nfrCategory: null,
     ...overrides,
   };
 }

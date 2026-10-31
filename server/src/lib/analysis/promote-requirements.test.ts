@@ -720,6 +720,38 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
     expect(meta.checkpointApprovedRequirementIds).toEqual(["rq_1", "rq_3", "rq_new_1"]);
   });
 
+  it("#1612 — an appended requirement is written with the kind its reviewed type carries", async () => {
+    db.requirementCount = 2;
+    db.analysis = {
+      projectId: PROJECT_ID,
+      metadata: JSON.stringify({ promotedStructuredIds: ["REQ-1", "REQ-3"] }),
+    };
+    db.synthesisOutput = JSON.stringify({
+      summary: "s",
+      requirements: [
+        {
+          type: "feature",
+          title: "Reading speed validation",
+          body: "Reading speed validation.",
+          priority: "medium",
+          labels: [],
+          evidenceFindingIndexes: [],
+          acceptanceCriteria: [],
+        },
+      ],
+    });
+    db.approvals[1] = { itemId: "REQ-2", status: "approved" };
+
+    await promoteApprovedRequirements(ANALYSIS_ID, { asApproved: true });
+
+    const data = (
+      lastTx!.requirement.create.mock.calls[0]?.[0] as { data: Record<string, unknown> }
+    ).data;
+    // REQ-2's reviewed type is "functional"; the append is a writer of `kind`
+    // like persistRequirements, so the column is set, not left to the default.
+    expect(data).toMatchObject({ kind: "functional", nfrCategory: null });
+  });
+
   it("#1063 — an appended requirement keeps the imported item it came from", async () => {
     const sourceRequirements = [
       {

@@ -1586,6 +1586,7 @@ Each requirement has these properties:
 | **Description** | Detailed explanation of the requirement | Full paragraph with context and rationale |
 | **Type** | Category of work | `feature`, `schema-change`, `api-change`, `security`, `performance` |
 | **Priority** | Urgency level | `critical`, `high`, `medium`, `low` |
+| **Kind** | Functional (what the system does) or non-functional (how well it does it), separate from Type. A non-functional requirement also names its category. Blank when the analysis could not tell; METIS never guesses it. Set through `PATCH /api/analyses/:id/requirements/:reqId` (`kind`, `nfrCategory`); a set kind survives a re-run | `functional`, `non-functional` + `performance` |
 | **Status** | Where it is in the workflow | `generated`, `reviewing`, `approved`, `published` |
 | **Source** | What document/code/database it came from | "API Security Policy v3.2, Section 4.1" |
 | **Tags** | Keywords for categorization | `security`, `authentication`, `api` |

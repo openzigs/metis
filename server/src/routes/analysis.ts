@@ -415,6 +415,9 @@ async function loadLockedAnalysisRequirement(req: Request) {
       type: true,
       labels: true,
       storyPoints: true,
+      // #1612 — so a stale-version PATCH of kind reports its diff in the 409.
+      kind: true,
+      nfrCategory: true,
       reviewStatus: true,
     },
   });

@@ -12,7 +12,11 @@
  * orchestrator never trusts the model's word for it.
  */
 import type { AnalysisAgentKey } from "@metis/shared";
-import { FINDING_CATEGORIES, MODEL_ASSERTABLE_FINDING_DERIVATIONS } from "@metis/shared";
+import {
+  FINDING_CATEGORIES,
+  MODEL_ASSERTABLE_FINDING_DERIVATIONS,
+  NFR_CATEGORIES,
+} from "@metis/shared";
 import { scrubFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
 import { getPersona } from "./personas.js";
 
@@ -762,7 +766,11 @@ export function buildSynthesisPrompt(input: SynthesisPromptInput): {
     "3. Drop findings that are obviously hallucinated, redundant, or contradicted by another finding.",
     "4. A finding prefixed with [UNVERIFIED] failed automated code-evidence grounding: its cited source could not be confirmed. A finding prefixed with [UNGROUNDED] came from an agent with no code access: it cites nothing and nothing in it was checked against the source. Treat both as WEAKER evidence — do NOT let an [UNVERIFIED] or [UNGROUNDED] finding on its own justify a high/critical requirement, and prefer confirmed findings when they conflict. Keep it (still surface the requirement), but down-weight its priority and note the uncertainty in the body. Never silently drop it solely for being unverified or ungrounded.",
     "5. Apply priority rules: any compliance OR critical-severity finding => 'critical'; high-severity OR security => 'high'; medium => 'medium'; info => 'low'.",
-    "6. Reference source findings by their integer index (the [N] prefix) in `evidenceFindingIndexes`.",
+    "6. Reference source findings by their integer index (the [N] prefix) in `evidenceFindingIndexes`." +
+      // #1612 — the requirement's nature, orthogonal to `type`.
+      " Set `kind` to `functional` (what the system does) or `non-functional` (how well it does it: performance, security, availability, ...), independent of `type`; for a non-functional requirement also set `nfrCategory` to one of: " +
+      NFR_CATEGORIES.join(", ") +
+      ". Omit `kind` when the findings do not show which it is; never guess.",
     // #1096 — the criteria the analysis clearly derives were previously collapsed
     // into `body` prose and the published issue appended a generic placeholder.
     "7. Populate `acceptanceCriteria` with concrete, testable statements derived from THIS requirement's own evidence — name the artifacts (table, column, endpoint, file) the check applies to, and state the observable pass condition. If the evidence does not support any specific criterion, return an EMPTY array: never emit generic filler such as 'the requirement is satisfied' or 'the change ships'. " +
@@ -799,7 +807,9 @@ export function buildSynthesisPrompt(input: SynthesisPromptInput): {
       "storyPoints": <optional int>,
       "evidenceFindingIndexes": [<ints>],
       "acceptanceCriteria": ["<testable statement naming the artifact and pass condition>"],
-      "acceptanceCriteriaEvidence": [[<ints: findings bearing on the criterion at the same position>]]${
+      "acceptanceCriteriaEvidence": [[<ints: findings bearing on the criterion at the same position>]],
+      "kind": "functional|non-functional",
+      "nfrCategory": "<only when kind is non-functional>"${
         safeSourceItems ? ',\n      "sourceIds": ["<id from IMPORTED ITEMS>"]' : ""
       }${refinedIds ? `,\n      "structuredIds": ["<id from ${refinedLabel}>"]` : ""}
     }

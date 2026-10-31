@@ -1421,6 +1421,14 @@ model Requirement {
   /// build something. Nullable — re-runs recompute it (requirements are
   /// delete+recreated), doc-only runs leave it null, and pre-#773 rows read null.
   verdict          String?
+  /// Issue #1612 — the requirement's nature: `functional` | `non-functional`,
+  /// orthogonal to `type` (the work-item shape). NULL means unknown: the model
+  /// did not say, synthesis fell back to keyword grouping (which never
+  /// classifies), or the row predates this column. Never defaulted.
+  kind             String?
+  /// Issue #1612 — the NFR category (`NFR_CATEGORIES`, e.g. `performance`) of a
+  /// non-functional requirement; NULL for any other kind.
+  nfrCategory      String?
   /// Issue #1096 — JSON array of testable acceptance criteria derived at
   /// synthesis time from this requirement's own evidence. `"[]"` is a truthful
   /// "none could be derived" and renders as an explicit note downstream; it is
