@@ -7,15 +7,20 @@
  * - **Idempotent.** A stored detected edge is matched to a new one by its ends,
  *   type and resource (`detectedEdgeKey`) and updated in place, so re-running on
  *   unchanged input changes nothing. A detected edge no longer found is deleted.
- * - **Declared edges are never touched.** Only `origin: detected` rows are
- *   updated or deleted, and a detected edge with the key of a declared one is
- *   not written: the person's declaration stands for it.
+ * - **Declared edges are never touched.** Only rows detection owns are updated
+ *   or deleted, and a detected edge with the key of a declared one is not
+ *   written: the person's declaration stands for it. Detection owns `detected`
+ *   rows and `overridden` ones (#1647): an overridden edge keeps the person's
+ *   classification when found again, and is deleted like any detected edge
+ *   once it is not.
  * - **Scoped to the repos crawled.** An edge with an end outside this run (a
  *   repo the caller cannot read, or one with no files to crawl) is left as it
  *   is, so a member's run never erases what an admin's run found.
  */
+import { randomUUID } from "node:crypto";
 import type { AuthPayload } from "@metis/shared";
 import { prisma } from "../prisma.js";
+import { DYNAMIC_PLACEHOLDER_PREFIX } from "../code-graph/schema-graph.js";
 import { ProductError, LIVE_PRODUCT_REPOS } from "./product-service.js";
 import { productRepoReadAccess } from "./product-access.js";
 import { crawlFiles, type CrawlTableRef, type FileEntry } from "./repo-crawler.js";
@@ -51,6 +56,9 @@ export interface DetectionResult extends EdgeSyncResult {
   scannedRepoIds: string[];
 }
 
+/** The origins of an edge or resource detection owns and may refresh or drop (#1647). */
+const DETECTION_OWNED_ORIGINS = ["detected", "overridden"];
+
 const SCHEMA_EDGE_ACCESS: Record<string, CrawlTableRef["access"]> = {
   reads: "read",
   writes: "write",
@@ -85,7 +93,9 @@ export async function loadCodeGraphTables(
   for (const row of rows) {
     const repoId = row.graph.repoConnectionId;
     const table = row.toSymbol?.qualifiedName.toLowerCase();
-    if (!repoId || !table) continue;
+    // #1647 — a `?dynamic:` placeholder stands for a table the extractor could
+    // not resolve; two repos that both build SQL dynamically share no table.
+    if (!repoId || !table || table.startsWith(DYNAMIC_PLACEHOLDER_PREFIX)) continue;
     const list = out.get(repoId) ?? [];
     list.push({
       table,
@@ -114,19 +124,33 @@ export async function syncDetectedProductEdges(
     scope.has(source) && (target === null || scope.has(target));
   const wanted = detected.filter((e) => inScope(e.sourceRepoId, e.targetRepoId));
 
-  // Resources first: the edges need their ids.
+  // Resources first: the edges need their ids. A resource the product already
+  // has keeps its row (and a declared one its origin); a new one gets its id
+  // here, so it is created in the same batch transaction as the edges that go
+  // through it (#1647) and a failed run leaves no orphaned detected resource.
   const resourceIds = new Map<string, string>();
-  const resourceKey = (r: DetectedResource) => `${r.kind}/${r.name}`;
-  for (const r of wanted.flatMap((e) => (e.resource ? [e.resource] : []))) {
-    if (resourceIds.has(resourceKey(r))) continue;
-    const row = await prisma.productResource.upsert({
-      where: { productId_kind_name: { productId, kind: r.kind, name: r.name } },
-      create: { productId, kind: r.kind, name: r.name, origin: "detected" },
-      update: {},
-      select: { id: true },
+  const resourceKey = (r: { kind: string; name: string }) => `${r.kind}/${r.name}`;
+  const wantedResources = new Map(
+    wanted.flatMap((e) => (e.resource ? [[resourceKey(e.resource), e.resource] as const] : [])),
+  );
+  if (wantedResources.size > 0) {
+    // All of the product's resources, not an `in` list: a run can find more
+    // shared tables than SQLite binds in one statement (#1346).
+    const known = await prisma.productResource.findMany({
+      where: { productId },
+      select: { id: true, kind: true, name: true },
     });
-    resourceIds.set(resourceKey(r), row.id);
+    for (const r of known) resourceIds.set(resourceKey(r), r.id);
   }
+  const resourceCreates = [...wantedResources.entries()]
+    .filter(([key]) => !resourceIds.has(key))
+    .map(([key, r]) => {
+      const id = randomUUID();
+      resourceIds.set(key, id);
+      return prisma.productResource.create({
+        data: { id, productId, kind: r.kind, name: r.name, origin: "detected" },
+      });
+    });
 
   // The latest contract version of each API edge's target repo.
   const apiTargets = [
@@ -155,8 +179,11 @@ export async function syncDetectedProductEdges(
       edgeType: e.edgeType,
       resource: e.resource as DetectedResource | null,
     });
-  const declaredKeys = new Set(existing.filter((e) => e.origin !== "detected").map(keyOf));
-  const stored = new Map(existing.filter((e) => e.origin === "detected").map((e) => [keyOf(e), e]));
+  // A declared edge is the person's; one detection owns (`detected`, or
+  // `overridden` by a person, #1647) is matched, refreshed and, once no longer
+  // found, deleted.
+  const declaredKeys = new Set(existing.filter((e) => e.origin === "declared").map(keyOf));
+  const stored = new Map(existing.filter((e) => e.origin !== "declared").map((e) => [keyOf(e), e]));
 
   const result: EdgeSyncResult = { created: 0, updated: 0, deleted: 0, keptDeclared: 0 };
   const writes = [];
@@ -167,21 +194,27 @@ export async function syncDetectedProductEdges(
       result.keptDeclared++;
       continue;
     }
-    const data = {
+    const facts = {
       confidence: edge.confidence,
       evidence: JSON.stringify(edge.evidence),
       sourceFile: edge.sourceFile ?? null,
       targetFile: edge.targetFile ?? null,
-      integrationKind: edge.integrationKind,
-      strength: edge.strength,
-      direction: edge.direction,
       contractDocId:
         edge.integrationKind === "api" ? (contractOf.get(edge.targetRepoId) ?? null) : null,
     };
+    const classification = {
+      integrationKind: edge.integrationKind,
+      strength: edge.strength,
+      direction: edge.direction,
+    };
+    const data = { ...facts, ...classification };
     const prior = stored.get(key);
     if (prior) {
       kept.add(key);
-      writes.push(prisma.productEdge.update({ where: { id: prior.id }, data }));
+      // An overridden edge keeps the person's classification; only what
+      // detection found (evidence, confidence, files, contract) is refreshed.
+      const update = prior.origin === "overridden" ? facts : data;
+      writes.push(prisma.productEdge.update({ where: { id: prior.id }, data: update }));
       result.updated++;
     } else {
       writes.push(
@@ -205,16 +238,23 @@ export async function syncDetectedProductEdges(
   const stale = [...stored.entries()].filter(([key]) => !kept.has(key)).map(([, e]) => e.id);
   if (stale.length > 0) {
     writes.push(
-      prisma.productEdge.deleteMany({ where: { id: { in: stale }, origin: "detected" } }),
+      prisma.productEdge.deleteMany({
+        where: { id: { in: stale }, origin: { in: DETECTION_OWNED_ORIGINS } },
+      }),
     );
     result.deleted = stale.length;
   }
-  // One batch: a failure leaves the stored edges as they were.
-  await prisma.$transaction(writes);
-  // A detected resource no edge goes through any more is dropped; a declared one stays.
-  await prisma.productResource.deleteMany({
-    where: { productId, origin: "detected", edges: { none: {} } },
-  });
+  // One batch: the new resources, the edge writes and the orphan cleanup land
+  // together, so a failure leaves the stored edges and resources as they were.
+  // A resource detection owns that no edge goes through any more is dropped; a
+  // declared one stays.
+  await prisma.$transaction([
+    ...resourceCreates,
+    ...writes,
+    prisma.productResource.deleteMany({
+      where: { productId, origin: { in: DETECTION_OWNED_ORIGINS }, edges: { none: {} } },
+    }),
+  ]);
   return result;
 }
 
@@ -234,6 +274,9 @@ export async function runProductEdgeDetection(opts: {
     include: {
       repos: {
         where: LIVE_PRODUCT_REPOS,
+        // #1647 — a stable order; `detectRelationships` sorts again, as it must
+        // not let input order decide an edge's direction.
+        orderBy: { repoConnectionId: "asc" },
         include: {
           repoConnection: {
             select: { projectId: true, repoName: true, ownerOrOrg: true, defaultBranch: true },

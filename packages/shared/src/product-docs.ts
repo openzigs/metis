@@ -58,8 +58,14 @@ export const PRODUCT_EDGE_DIRECTIONS = [
 ] as const;
 export type ProductEdgeDirection = (typeof PRODUCT_EDGE_DIRECTIONS)[number];
 
-/** #1618 — whether detection found an edge or resource, or a person declared it. */
-export const PRODUCT_EDGE_ORIGINS = ["detected", "declared"] as const;
+/**
+ * #1618 — whether detection found an edge or resource, or a person declared it.
+ * #1647 — `overridden`: detection found it and a person then re-classified it
+ * (an edge's kind, strength or direction; a resource's locator). Detection
+ * still owns it: its identity stays locked, it cannot be deleted, re-detection
+ * keeps the person's classification, and a run that no longer finds it drops it.
+ */
+export const PRODUCT_EDGE_ORIGINS = ["detected", "declared", "overridden"] as const;
 export type ProductEdgeOrigin = (typeof PRODUCT_EDGE_ORIGINS)[number];
 
 /** #1618 — a resource a product's repos share without one of them owning it. */
@@ -194,8 +200,8 @@ export type DeclareProductEdgeInput = z.infer<typeof declareProductEdgeSchema>;
  * #1620 — the body of `PATCH /api/products/:id/edges/:edgeId`. Every field is
  * optional; at least one must be given. On a DETECTED edge only the
  * classification (`integrationKind`, `strength`, `direction`) may change — its
- * ends are what detection found — and the edge becomes declared, so the next
- * detection run leaves the override alone.
+ * ends are what detection found — and the edge becomes `overridden`, so the
+ * next detection run keeps the override (#1647).
  */
 export const updateProductEdgeSchema = z
   .object({
@@ -231,15 +237,36 @@ export const productResourceSchema = z.object({
 export type ProductResource = z.infer<typeof productResourceSchema>;
 
 /**
+ * #1647 — the shapes a credential takes inside a connection string, each
+ * bounded (no nested quantifiers): a URL's `user@` or `user:password@`, a
+ * `password=` style parameter (JDBC `;password=`, a query's `?password=`),
+ * a `user/password@` (Oracle's `scott/tiger@orcl`, and a URL password holding
+ * a `/`, which the first pattern stops short of), and a scheme-less
+ * `user:password@host`.
+ */
+const LOCATOR_CREDENTIAL_PATTERNS: readonly RegExp[] = [
+  /^[a-z][a-z0-9+.-]*:\/\/[^/@\s]*@/i,
+  /(?:^|[;?&\s])(?:password|passwd|pwd|pass|secret|token|api[-_]?key|access[-_]?key|sig)\s*=/i,
+  /(?:^|:)[^\s/@:]+\/[^\s@]+@/,
+  /^[^\s/@:]+:[^\s@:]+@/,
+];
+
+/** Whether a resource locator carries a credential (#1620, #1647). */
+export function locatorCarriesCredential(locator: string): boolean {
+  return LOCATOR_CREDENTIAL_PATTERNS.some((re) => re.test(locator));
+}
+
+/**
  * #1620 — a resource locator says where a resource lives, never how to get in:
- * a URL carrying a user name or password is refused.
+ * one carrying a user name, a password or a token is refused. It is free text
+ * otherwise, so a UI (#1628) must render it as text, never as a raw `href`.
  */
 const resourceLocatorSchema = z
   .string()
   .trim()
   .min(1)
   .max(512)
-  .refine((v) => !/^[a-z][a-z0-9+.-]*:\/\/[^/@\s]*@/i.test(v), {
+  .refine((v) => !locatorCarriesCredential(v), {
     message: "a locator must not carry credentials",
   });
 
@@ -258,7 +285,7 @@ export type DeclareProductResourceInput = z.infer<typeof declareProductResourceS
 /**
  * #1620 — the body of `PATCH /api/products/:id/resources/:resourceId`. A
  * detected resource keeps its kind and name (detection would recreate it under
- * the old ones); its locator may be set, which makes it declared.
+ * the old ones); its locator may be set, which makes it `overridden` (#1647).
  */
 export const updateProductResourceSchema = z
   .object({

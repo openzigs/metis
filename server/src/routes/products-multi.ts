@@ -80,6 +80,25 @@ async function readableRepoIdsOf(user: AuthPayload, productId: string): Promise<
   return new Set(product.repos.filter(canRead).map((r) => r.repoConnectionId));
 }
 
+/**
+ * #1647 — every write to a product's edges and resources is audited, as a
+ * repo detach is: who changed which edge or resource of which product. The
+ * metadata names ids and field names only, never a locator.
+ */
+function auditProductGraphWrite(
+  req: Request,
+  productId: string,
+  action: string,
+  metadata: Record<string, unknown>,
+): void {
+  audit({
+    actor: { id: req.user!.userId },
+    action,
+    target: { type: "product", id: productId },
+    metadata,
+  });
+}
+
 export function productsRouter(): Router {
   const r = Router();
 
@@ -192,7 +211,18 @@ export function productsRouter(): Router {
       if (input.targetRepoId) {
         await assertProductRepoReadable(req.user!, productId, input.targetRepoId);
       }
-      const edge = await createDeclaredProductEdge(productId, input, { id: req.user!.userId });
+      // #1647 — and no resource or contract the caller cannot see either.
+      const readable = await readableRepoIdsOf(req.user!, productId);
+      const edge = await createDeclaredProductEdge(
+        productId,
+        input,
+        { id: req.user!.userId },
+        readable,
+      );
+      auditProductGraphWrite(req, productId, "product.edge.create", {
+        edgeId: edge.id,
+        origin: edge.origin,
+      });
       res.status(201).json({ data: edge });
     } catch (err) {
       if (isProductError(err)) {
@@ -229,6 +259,11 @@ export function productsRouter(): Router {
           { id: req.user!.userId },
           readable,
         );
+        auditProductGraphWrite(req, productId, "product.edge.update", {
+          edgeId: edge.id,
+          fields: Object.keys(input),
+          origin: edge.origin,
+        });
         res.json({ data: edge });
       } catch (err) {
         if (!sendProductError(err, res)) throw err;
@@ -245,7 +280,9 @@ export function productsRouter(): Router {
         const productId = param(req.params.id);
         await assertProductAccessible(req.user!, productId);
         const readable = await readableRepoIdsOf(req.user!, productId);
-        await deleteProductEdge(productId, param(req.params.edgeId), readable);
+        const edgeId = param(req.params.edgeId);
+        await deleteProductEdge(productId, edgeId, readable);
+        auditProductGraphWrite(req, productId, "product.edge.delete", { edgeId });
         res.status(204).send();
       } catch (err) {
         if (!sendProductError(err, res)) throw err;
@@ -265,6 +302,10 @@ export function productsRouter(): Router {
         await getProduct(productId); // a missing product is a 404, for an admin too
         const resource = await createDeclaredProductResource(productId, input, {
           id: req.user!.userId,
+        });
+        auditProductGraphWrite(req, productId, "product.resource.create", {
+          resourceId: resource.id,
+          kind: resource.kind,
         });
         res.status(201).json({ data: resource });
       } catch (err) {
@@ -290,6 +331,11 @@ export function productsRouter(): Router {
           { id: req.user!.userId },
           readable,
         );
+        auditProductGraphWrite(req, productId, "product.resource.update", {
+          resourceId: resource.id,
+          fields: Object.keys(input),
+          origin: resource.origin,
+        });
         res.json({ data: resource });
       } catch (err) {
         if (!sendProductError(err, res)) throw err;
@@ -306,7 +352,18 @@ export function productsRouter(): Router {
         const productId = param(req.params.id);
         await assertProductAccessible(req.user!, productId);
         const readable = await readableRepoIdsOf(req.user!, productId);
-        await deleteProductResource(productId, param(req.params.resourceId), readable);
+        const resourceId = param(req.params.resourceId);
+        const { hiddenEdgeCount } = await deleteProductResource(productId, resourceId, readable);
+        auditProductGraphWrite(req, productId, "product.resource.delete", { resourceId });
+        // #1647 — like detaching a repo the caller cannot read (#1261): allowed,
+        // but the edges it changed out of the caller's sight are recorded.
+        if (hiddenEdgeCount > 0) {
+          auditProductGraphWrite(req, productId, "product.resource.delete.unreadable", {
+            reason: "project-access-denied",
+            resourceId,
+            hiddenEdgeCount,
+          });
+        }
         res.status(204).send();
       } catch (err) {
         if (!sendProductError(err, res)) throw err;

@@ -110,10 +110,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       request(app()).get(path).set("Authorization", bearer(who));
     const post = (path: string, who: Who, body: object) =>
       request(app()).post(path).set("Authorization", bearer(who)).send(body);
+    // `imports`, not the legacy edges' `calls`: a declared copy of an edge the
+    // product already has is refused (#1647).
     const declared = (over: Record<string, unknown> = {}) => ({
       sourceRepoId: rc.a1,
       targetRepoId: rc.a2,
-      edgeType: "calls",
+      edgeType: "imports",
       integrationKind: "api",
       strength: "contract",
       direction: "consumes",
@@ -284,7 +286,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           productId: p1,
           sourceRepoId: rc.a1,
           targetRepoId: rc.a2,
-          edgeType: "calls",
+          edgeType: "imports",
           confidence: 1,
           evidence: [],
           sourceFile: null,
@@ -413,6 +415,65 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           expect(res.status).toBe(404);
           expect(res.body.error.code).toBe("REPO_NOT_ASSOCIATED");
         }
+      });
+
+      it("refuses a repo attached to another product only (partition, #1647)", async () => {
+        // rc.b is on p1, not p2; the admin reads every repo, so only the
+        // product filter on the attached-repo lookup can refuse it.
+        const before = await db.productEdge.count({ where: { productId: p2 } });
+        const res = await post(
+          `/api/products/${p2}/edges`,
+          "ada",
+          declared({ targetRepoId: rc.b }),
+        );
+        expect(res.status).toBe(404);
+        expect(res.body.error.code).toBe("REPO_NOT_ASSOCIATED");
+        await expect(
+          assertEdgeReferencesInProduct(p2, { sourceRepoId: rc.b, targetRepoId: rc.a1 }),
+        ).rejects.toMatchObject({ status: 404, code: "REPO_NOT_ASSOCIATED" });
+        expect(await db.productEdge.count({ where: { productId: p2 } })).toBe(before);
+      });
+
+      it("refuses an edge from a repo to itself (#1647)", async () => {
+        const res = await post(
+          `/api/products/${p1}/edges`,
+          "bob",
+          declared({ targetRepoId: rc.a1 }),
+        );
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe("EDGE_SELF_REFERENCE");
+      });
+
+      it("refuses a second edge with the same ends, type and resource, of either origin (#1647)", async () => {
+        const first = await post(
+          `/api/products/${p1}/edges`,
+          "bob",
+          declared({ edgeType: "extends" }),
+        );
+        expect(first.status).toBe(201);
+        const before = await db.productEdge.count({ where: { productId: p1 } });
+        const again = await post(
+          `/api/products/${p1}/edges`,
+          "bob",
+          declared({ edgeType: "extends" }),
+        );
+        expect(again.status).toBe(409);
+        expect(again.body.error.code).toBe("EDGE_EXISTS");
+        // The legacy (detected) a1 -> a2 `calls` edge holds that key too.
+        const copy = await post(
+          `/api/products/${p1}/edges`,
+          "bob",
+          declared({ edgeType: "calls" }),
+        );
+        expect(copy.status).toBe(409);
+        // A different resource is a different edge.
+        const via = await post(
+          `/api/products/${p1}/edges`,
+          "bob",
+          declared({ edgeType: "extends", resourceId: resource1 }),
+        );
+        expect(via.status).toBe(201);
+        expect(await db.productEdge.count({ where: { productId: p1 } })).toBe(before + 1);
       });
 
       it("answers a repo the caller cannot open as not attached; an admin may use it", async () => {
