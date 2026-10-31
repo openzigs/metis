@@ -38,6 +38,8 @@ export * from "./rag-hardening.js";
 export * from "./sdk-alignment.js";
 export * from "./spec-kit.js";
 export * from "./product-docs.js";
+// Epic #1608 (#1621) — the persisted portfolio assessment.
+export * from "./portfolio-assessment.js";
 export * from "./sync.js";
 export * from "./traceability.js";
 export * from "./stakeholder.js";

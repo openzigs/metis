@@ -1312,6 +1312,27 @@ project-scoped traceability spine (#229) — it never rewrites it. Two reads:
    (`routes/traceability.ts` → `workspaceTraceabilityRouter`) and rendered by the
    workspace **Traceability** tab.
 
+**Portfolio assessments (#1621, epic #1608).** `RequirementLink` is
+requirement-to-requirement only. A requirement assessed across the product portfolio is
+stored in its own records:
+
+- `PortfolioAssessment`: one run. It holds the `statement` snapshot, `scope` (`product` |
+  `all-accessible`), the `productIds` assessed, `status`, `portfolioVerdict`, the BA
+  `summary` and `costUsd`.
+- `PortfolioAssessmentProduct`: one row per product, with `coverage` (`covers` | `partial` |
+  `not-covered` | `not-checked` | `restricted`), `impactKind`, `via`, `edgeIds`,
+  `severity`, `baSummary` and `technicalDetail`.
+- `PortfolioAssessmentRepo`: one row per repo, with a `REQUIREMENT_VERDICTS` verdict and
+  repo-aware `citations`.
+
+Requirements are deleted and recreated on every analysis re-run, so the assessment is a
+snapshot: `sourceRequirementId` is `ON DELETE SET NULL`, and product, repo, project and
+user ids are soft-links. `createPortfolioAssessment` (`server/src/lib/portfolio/assessment-store.ts`)
+validates the `@metis/shared` schema. It writes every row in one batch transaction, with
+child inserts sized under SQLite's 999 bound values (`rowsPerInsert`, #1346).
+`getPortfolioAssessment` reads a run back. The engines that fill these records are
+#1622 and #1623; the routes are #1625.
+
 ---
 
 ## 8. Knowledge & RAG Pipeline

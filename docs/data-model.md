@@ -59,6 +59,9 @@ fails if the two schema bodies diverge or if regeneration would produce a diff.
 | `CodeSymbol` | 7 (Epic #298) | One row per AST-extracted definition (`function` \| `class` \| `interface` \| `type` \| `module` \| `method`). Carries `qualifiedName`, file path, line range, `language`, `contentHash` for incremental ingest. | — |
 | `CodeEdge` | 7 (Epic #298) | One row per AST-extracted relationship (`calls` \| `imports` \| `defines` \| `references`). Nullable `toSymbolId` (with `toQualifiedName`) for unresolved external refs. JSON `metadata` carries edge-specific data such as `{ "typeOnly": true }` for TS type-only imports. | — |
 | `Requirement` | 1, 4 | Synthesized requirement; supports parent/child hierarchy. | `analysis.ts` |
+| `PortfolioAssessment` | Epic #1608 (#1621) | A requirement assessed across products: `statement` snapshot, `scope`, `productIds` (JSON), `status`, `portfolioVerdict`, BA `summary`, `costUsd`. `sourceRequirementId` is SetNull, because requirements are recreated on every re-run. | `portfolio-assessment.ts` |
+| `PortfolioAssessmentProduct` | Epic #1608 (#1621) | One product's coverage, `impactKind`, `via`, `edgeIds` (JSON), `severity`, `baSummary`, `technicalDetail` (JSON). Cascades with the assessment. | `portfolio-assessment.ts` |
+| `PortfolioAssessmentRepo` | Epic #1608 (#1621) | One repo's verdict (`REQUIREMENT_VERDICTS`) and repo-aware `citations` (JSON) under a product. Cascades with the assessment. | `portfolio-assessment.ts` |
 | `IssueDraft` | 1, 5 | Pre-publish draft (title/body/labels/assignees). | `publishing.ts` |
 | `PublishBatch` | 1, 5 | Group of drafts pushed to a target repo. | `publishing.ts` |
 | `PublishedIssue` | 1, 5 | Idempotent record of `{issueNumber, issueId, htmlUrl}`. | `publishing.ts` |
