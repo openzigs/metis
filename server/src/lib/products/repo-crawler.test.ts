@@ -261,3 +261,39 @@ message CreateUserRequest {
     });
   });
 });
+
+describe("repo-crawler — #1619 event topics and tables", () => {
+  const file = (path: string, content: string): FileEntry => ({
+    path,
+    content,
+    size: content.length,
+  });
+
+  it("reads an AsyncAPI document's channels and keeps it as a spec", () => {
+    const doc = "asyncapi: '2.6.0'\nchannels:\n  orders.created:\n    subscribe: {}\n";
+    const result = crawlFiles([file("docs/asyncapi.yaml", doc)], "r1");
+    expect(result.specs.map((s) => s.format)).toEqual(["asyncapi"]);
+    expect(result.topics).toEqual([
+      {
+        topic: "orders.created",
+        role: "publish",
+        filePath: "docs/asyncapi.yaml",
+        source: "asyncapi",
+      },
+    ]);
+    expect(result.tables).toEqual([]);
+  });
+
+  it("reads topic calls and SQL tables from code, skipping vendored directories", () => {
+    const result = crawlFiles(
+      [
+        file("src/c.ts", "consumer.subscribe({ topic: 'orders.created' });"),
+        file("db/q.sql", "INSERT INTO orders (id) VALUES (1);"),
+        file("node_modules/x/q.sql", "INSERT INTO hidden (id) VALUES (1);"),
+      ],
+      "r1",
+    );
+    expect(result.topics?.map((t) => `${t.role}:${t.topic}`)).toEqual(["subscribe:orders.created"]);
+    expect(result.tables?.map((t) => `${t.access}:${t.table}`)).toEqual(["write:orders"]);
+  });
+});

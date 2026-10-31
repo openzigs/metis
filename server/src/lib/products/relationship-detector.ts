@@ -3,9 +3,35 @@
  *
  * Scans crawled product repos and infers cross-repo relationships
  * (calls, imports, produces, consumes) with confidence scores.
+ *
+ * #1619 — every edge is also classified (#1618): what crosses the boundary
+ * (`integrationKind`), how tightly (`strength`) and in which `direction`, read
+ * from the source repo's side. Two heuristics go through a shared resource: an
+ * event topic one repo publishes and another subscribes to, and a table two
+ * repos' SQL touches.
  */
-import type { ProductEdgeType, ProductEdgeEvidence } from "@metis/shared";
-import type { CrawlResult, CrawlSpec, CrawlRoute, CrawlTypeDecl } from "./repo-crawler.js";
+import type {
+  ProductCouplingStrength,
+  ProductEdgeDirection,
+  ProductEdgeEvidence,
+  ProductEdgeType,
+  ProductIntegrationKind,
+  ProductResourceKind,
+} from "@metis/shared";
+import type {
+  CrawlResult,
+  CrawlSpec,
+  CrawlRoute,
+  CrawlTableRef,
+  CrawlTopicRef,
+  CrawlTypeDecl,
+} from "./repo-crawler.js";
+
+/** The shared resource a detected edge goes through. */
+export interface DetectedResource {
+  kind: ProductResourceKind;
+  name: string;
+}
 
 export interface DetectedEdge {
   sourceRepoId: string;
@@ -15,6 +41,10 @@ export interface DetectedEdge {
   evidence: ProductEdgeEvidence[];
   sourceFile?: string;
   targetFile?: string;
+  integrationKind: ProductIntegrationKind;
+  strength: ProductCouplingStrength;
+  direction: ProductEdgeDirection;
+  resource?: DetectedResource;
 }
 
 export interface RepoCrawlData {
@@ -22,7 +52,21 @@ export interface RepoCrawlData {
   crawlResult: CrawlResult;
   repoName: string;
   ownerOrOrg: string;
+  /**
+   * #1619 — tables the repo's code graph says it reads or writes (its
+   * `reads` / `writes` / `persists-to` schema edges), merged with the tables
+   * the crawl found in its SQL.
+   */
+  codeGraphTables?: CrawlTableRef[];
 }
+
+/**
+ * The classification of each repo-to-repo heuristic: an API spec, a route
+ * consumer, a protobuf package or a GraphQL type crosses as a versioned
+ * contract; a shared type is a shared domain model.
+ */
+const API_CONTRACT = { integrationKind: "api", strength: "contract" } as const;
+const SHARED_MODEL = { integrationKind: "shared-library", strength: "model" } as const;
 
 /**
  * Detect cross-repo relationships from crawled data of all repos in a product.
@@ -36,9 +80,122 @@ export function detectRelationships(repos: RepoCrawlData[]): DetectedEdge[] {
   edges.push(...detectRouteConsumers(repos));
   edges.push(...detectProtobufPackages(repos));
   edges.push(...detectGraphQLReferences(repos));
+  edges.push(...detectEventTopics(repos));
+  edges.push(...detectSharedTables(repos));
 
-  // Deduplicate edges with same source/target/type, keeping highest confidence
+  // Deduplicate edges with same source/target/type/resource, keeping highest confidence
   return deduplicateEdges(edges);
+}
+
+/**
+ * #1619 — a topic one repo publishes to and another subscribes to is an
+ * `event` edge from the subscriber to the publisher (the subscriber depends on
+ * it), through a `topic` resource. Publishing is read from an AsyncAPI document
+ * or from producer calls in code, subscribing likewise. A topic only one side
+ * names is no edge, so a topic seen only in a comment (which the crawl never
+ * extracts) or published with nobody listening creates nothing.
+ */
+function detectEventTopics(repos: RepoCrawlData[]): DetectedEdge[] {
+  const byTopic = new Map<
+    string,
+    { publish: Map<string, CrawlTopicRef>; subscribe: Map<string, CrawlTopicRef> }
+  >();
+  for (const repo of repos) {
+    for (const ref of repo.crawlResult.topics ?? []) {
+      const entry = byTopic.get(ref.topic) ?? { publish: new Map(), subscribe: new Map() };
+      const side = entry[ref.role];
+      // An AsyncAPI document outranks a code call as the evidence for a side.
+      const prior = side.get(repo.repoConnectionId);
+      if (!prior || (prior.source === "code" && ref.source === "asyncapi")) {
+        side.set(repo.repoConnectionId, ref);
+      }
+      byTopic.set(ref.topic, entry);
+    }
+  }
+  const edges: DetectedEdge[] = [];
+  for (const [topic, { publish, subscribe }] of byTopic) {
+    for (const [subscriberId, sub] of subscribe) {
+      for (const [publisherId, pub] of publish) {
+        if (subscriberId === publisherId) continue;
+        const documented = sub.source === "asyncapi" || pub.source === "asyncapi";
+        edges.push({
+          sourceRepoId: subscriberId,
+          targetRepoId: publisherId,
+          edgeType: "consumes",
+          confidence: documented ? 0.9 : 0.75,
+          evidence: [sub, pub].map((ref) => ({
+            filePath: ref.filePath,
+            ...(ref.lineNumber !== undefined && { lineNumber: ref.lineNumber }),
+            pattern: ref.source === "asyncapi" ? "asyncapi_channel" : "topic_client_call",
+            snippet: `${ref.role === "publish" ? "Publishes to" : "Subscribes to"} topic '${topic}'`,
+            matchType: "event_topic",
+          })),
+          sourceFile: sub.filePath,
+          targetFile: pub.filePath,
+          integrationKind: "event",
+          strength: "contract",
+          direction: "consumes",
+          resource: { kind: "topic", name: topic },
+        });
+      }
+    }
+  }
+  return edges;
+}
+
+/**
+ * #1619 — a table the SQL of two repos touches is a `database` edge through a
+ * `table` resource. It is `intrusive` when either side writes the table (the
+ * writer reaches into data the other depends on) and `model` when both only
+ * read it. The edge runs from the writer (`direction: writes`); between two
+ * readers, or two writers, from the repo listed first.
+ */
+function detectSharedTables(repos: RepoCrawlData[]): DetectedEdge[] {
+  const byTable = new Map<string, Map<string, CrawlTableRef>>();
+  for (const repo of repos) {
+    for (const ref of [...(repo.crawlResult.tables ?? []), ...(repo.codeGraphTables ?? [])]) {
+      const users = byTable.get(ref.table) ?? new Map<string, CrawlTableRef>();
+      const prior = users.get(repo.repoConnectionId);
+      if (!prior || (prior.access === "read" && ref.access === "write")) {
+        users.set(repo.repoConnectionId, ref);
+      }
+      byTable.set(ref.table, users);
+    }
+  }
+  const order = new Map(repos.map((r, i) => [r.repoConnectionId, i]));
+  const edges: DetectedEdge[] = [];
+  for (const [table, users] of byTable) {
+    const list = [...users.entries()].sort(([a], [b]) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        let [source, target] = [list[i], list[j]];
+        if (source[1].access === "read" && target[1].access === "write") {
+          [source, target] = [target, source];
+        }
+        const writes = source[1].access === "write";
+        edges.push({
+          sourceRepoId: source[0],
+          targetRepoId: target[0],
+          edgeType: writes ? "produces" : "consumes",
+          confidence: 0.8,
+          evidence: [source[1], target[1]].map((ref) => ({
+            filePath: ref.filePath,
+            ...(ref.lineNumber !== undefined && { lineNumber: ref.lineNumber }),
+            pattern: ref.access === "write" ? "sql_table_write" : "sql_table_read",
+            snippet: `${ref.access === "write" ? "Writes" : "Reads"} table '${table}'`,
+            matchType: "shared_table",
+          })),
+          sourceFile: source[1].filePath,
+          targetFile: target[1].filePath,
+          integrationKind: "database",
+          strength: writes ? "intrusive" : "model",
+          direction: writes ? "writes" : "reads",
+          resource: { kind: "table", name: table },
+        });
+      }
+    }
+  }
+  return edges;
 }
 
 /**
@@ -84,6 +241,8 @@ function detectApiSpecReferences(repos: RepoCrawlData[]): DetectedEdge[] {
               },
             ],
             sourceFile: spec.filePath,
+            ...API_CONTRACT,
+            direction: "consumes",
           });
         }
       }
@@ -144,6 +303,8 @@ function detectSharedTypes(repos: RepoCrawlData[]): DetectedEdge[] {
         ],
         sourceFile: target.type.filePath,
         targetFile: source.type.filePath,
+        ...SHARED_MODEL,
+        direction: "depends-on",
       });
     }
   }
@@ -197,6 +358,8 @@ function detectRouteConsumers(repos: RepoCrawlData[]): DetectedEdge[] {
               ],
               sourceFile: spec.filePath,
               targetFile: route.filePath,
+              ...API_CONTRACT,
+              direction: "consumes",
             });
             break; // One edge per spec-route combo
           }
@@ -261,6 +424,8 @@ function detectProtobufPackages(repos: RepoCrawlData[]): DetectedEdge[] {
           ],
           sourceFile: occurrences[i].filePath,
           targetFile: occurrences[j].filePath,
+          ...API_CONTRACT,
+          direction: "depends-on",
         });
       }
     }
@@ -330,6 +495,8 @@ function detectGraphQLReferences(repos: RepoCrawlData[]): DetectedEdge[] {
           ],
           sourceFile: ext.filePath,
           targetFile: def.filePath,
+          ...API_CONTRACT,
+          direction: "depends-on",
         });
       }
     }
@@ -339,13 +506,27 @@ function detectGraphQLReferences(repos: RepoCrawlData[]): DetectedEdge[] {
 }
 
 /**
+ * The identity of a detected edge: its ends, its type and the resource it goes
+ * through. Re-detection (#1619) matches a stored edge to a new one by it.
+ */
+export function detectedEdgeKey(edge: {
+  sourceRepoId: string;
+  targetRepoId: string | null;
+  edgeType: string;
+  resource?: DetectedResource | null;
+}): string {
+  const via = edge.resource ? `${edge.resource.kind}/${edge.resource.name}` : "";
+  return `${edge.sourceRepoId}:${edge.targetRepoId ?? ""}:${edge.edgeType}:${via}`;
+}
+
+/**
  * Deduplicate edges, keeping the highest confidence for identical
- * source/target/type combinations.
+ * source/target/type/resource combinations.
  */
 function deduplicateEdges(edges: DetectedEdge[]): DetectedEdge[] {
   const map = new Map<string, DetectedEdge>();
   for (const edge of edges) {
-    const key = `${edge.sourceRepoId}:${edge.targetRepoId}:${edge.edgeType}`;
+    const key = detectedEdgeKey(edge);
     const existing = map.get(key);
     if (!existing || edge.confidence > existing.confidence) {
       // Merge evidence from both

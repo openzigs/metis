@@ -3,11 +3,21 @@
  *
  * Crawls a repository at medium depth: API specs, route handlers, and shared
  * type declarations. Does NOT do full AST of every file. This feeds the
- * cross-repo relationship detector.
+ * cross-repo relationship detector. #1619 — and the event topics a repo
+ * publishes or subscribes to, and the tables its SQL reads or writes.
  */
+import {
+  extractTableRefs,
+  extractTopicRefs,
+  parseAsyncApiChannels,
+  type CrawlTableRef,
+  type CrawlTopicRef,
+} from "./coupling-signals.js";
+
+export type { CrawlTableRef, CrawlTopicRef } from "./coupling-signals.js";
 
 export interface CrawlSpec {
-  format: "openapi" | "swagger" | "graphql" | "protobuf";
+  format: "openapi" | "swagger" | "graphql" | "protobuf" | "asyncapi";
   filePath: string;
   content: string;
 }
@@ -43,8 +53,15 @@ export interface CrawlResult {
   specs: CrawlSpec[];
   routes: CrawlRoute[];
   types: CrawlTypeDecl[];
+  /** #1619 — topics published or subscribed to; absent on a crawl made before. */
+  topics?: CrawlTopicRef[];
+  /** #1619 — tables the repo's SQL reads or writes; absent on a crawl made before. */
+  tables?: CrawlTableRef[];
   metadata: CrawlMetadata;
 }
+
+/** #1619 — an AsyncAPI document, by its conventional file name. */
+const ASYNCAPI_FILE = /asyncapi\.(ya?ml|json)$/i;
 
 /** File patterns for API spec discovery. */
 const SPEC_PATTERNS: Array<{ pattern: RegExp; format: CrawlSpec["format"] }> = [
@@ -54,6 +71,7 @@ const SPEC_PATTERNS: Array<{ pattern: RegExp; format: CrawlSpec["format"] }> = [
   { pattern: /\.gql$/i, format: "graphql" },
   { pattern: /schema\.gql$/i, format: "graphql" },
   { pattern: /\.proto$/i, format: "protobuf" },
+  { pattern: ASYNCAPI_FILE, format: "asyncapi" },
 ];
 
 /** Directories to skip during crawl. */
@@ -226,6 +244,8 @@ export function crawlFiles(
   const specs: CrawlSpec[] = [];
   const routes: CrawlRoute[] = [];
   const types: CrawlTypeDecl[] = [];
+  const topics: CrawlTopicRef[] = [];
+  const tables: CrawlTableRef[] = [];
 
   let filesScanned = 0;
   let totalBytes = 0;
@@ -247,6 +267,16 @@ export function crawlFiles(
         specs.push({ format, filePath: file.path, content: file.content });
         break;
       }
+    }
+
+    // #1619 — the event topics the repo uses and the tables its SQL touches.
+    if (ASYNCAPI_FILE.test(file.path)) {
+      for (const channel of parseAsyncApiChannels(file.path, file.content)) {
+        topics.push({ ...channel, filePath: file.path, source: "asyncapi" });
+      }
+    } else {
+      topics.push(...extractTopicRefs(file.path, file.content));
+      tables.push(...extractTableRefs(file.path, file.content));
     }
 
     // Check for route handlers
@@ -309,6 +339,8 @@ export function crawlFiles(
     specs,
     routes,
     types,
+    topics,
+    tables,
     metadata: {
       repoConnectionId,
       commitSha: options?.commitSha,

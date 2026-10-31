@@ -4424,6 +4424,28 @@ repo is left out, and so is a resource that only such edges go through.
 attached. `/analyze` draws only repo-to-repo edges. Reverse scripts:
 `server/prisma/rollbacks/` and `server/prisma/postgres/rollbacks/`.
 
+**Detected edges (#1619).** `relationship-detector.ts` classifies each heuristic: an
+OpenAPI reference, route consumer, protobuf package or GraphQL extension is
+`api`/`contract`; a shared exported type is `shared-library`/`model`. Two heuristics go
+through a resource. **Event:** the crawl reads an `asyncapi.(yaml|json)` document's
+channels (2.x `subscribe` = the application publishes; 3.x `operations.*.action`) and
+producer/consumer calls of the common clients (kafkajs, node-rdkafka, kafka-python, Spring
+Kafka, NATS/Redis/MQTT `publish`/`subscribe`); a subscriber of a topic another repo
+publishes gets an `event`/`contract` edge to it through a `topic` resource.
+**Database:** tables from `.sql` files, from code string literals that open with a SQL
+verb, and from the repo's code graph (`reads`/`writes`/`persists-to` edges to a `table`
+symbol, `loadCodeGraphTables`); two repos on one table get a `database` edge through a
+`table` resource, `intrusive` from the writer when either writes, `model` when both read.
+`coupling-signals.ts` blanks comments before any pattern runs, so a name only in a comment
+is never a signal. `runProductEdgeDetection` (`edge-detection.ts`) crawls only the
+product's live repos the caller can read (`productRepoReadAccess`) and
+`syncDetectedProductEdges` stores the result idempotently: a detected edge is matched by
+its ends, type and resource (`detectedEdgeKey`) and updated in place, one no longer found
+is deleted, a declared edge is never updated or deleted and its key is not written as a
+detected copy, and an edge with an end outside the run's repos is left alone. An API edge
+links to its target repo's latest `ProductContractDoc`. No route calls it yet: products
+have no production crawl source (the `/analyze` contract docs run with `specs: []`).
+
 **Concurrent job edits (#1245).** `PATCH /api/scheduler/:id` (and pause / resume,
 which go through the same `updateJob`) writes every field from the server's read of
 the job, so the write is conditional on the job's `version` from that read and bumps

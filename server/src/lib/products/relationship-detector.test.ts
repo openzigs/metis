@@ -74,6 +74,13 @@ describe("relationship-detector", () => {
       expect(edge).toBeDefined();
       expect(edge!.edgeType).toBe("calls");
       expect(edge!.confidence).toBe(0.95);
+      // #1619 — an API spec reference crosses as a versioned contract.
+      expect(edge).toMatchObject({
+        integrationKind: "api",
+        strength: "contract",
+        direction: "consumes",
+      });
+      expect(edge!.resource).toBeUndefined();
     });
   });
 
@@ -117,6 +124,12 @@ describe("relationship-detector", () => {
       const edge = edges.find((e) => e.edgeType === "imports");
       expect(edge).toBeDefined();
       expect(edge!.confidence).toBe(0.8);
+      // #1619 — a shared type is a shared domain model.
+      expect(edge).toMatchObject({
+        integrationKind: "shared-library",
+        strength: "model",
+        direction: "depends-on",
+      });
     });
 
     it("ignores non-exported types", () => {
@@ -235,6 +248,7 @@ describe("relationship-detector", () => {
       const protoEdge = edges.find((e) => e.edgeType === "produces");
       expect(protoEdge).toBeDefined();
       expect(protoEdge!.confidence).toBe(0.9);
+      expect(protoEdge).toMatchObject({ integrationKind: "api", strength: "contract" });
     });
   });
 
@@ -277,6 +291,161 @@ describe("relationship-detector", () => {
       expect(extendsEdge!.sourceRepoId).toBe("r2");
       expect(extendsEdge!.targetRepoId).toBe("r1");
       expect(extendsEdge!.confidence).toBe(0.85);
+      expect(extendsEdge).toMatchObject({ integrationKind: "api", strength: "contract" });
+    });
+  });
+
+  // #1619 — the two heuristics that go through a shared resource.
+  describe("event topics", () => {
+    const repo = (id: string, topics: NonNullable<CrawlResult["topics"]>): RepoCrawlData => ({
+      repoConnectionId: id,
+      repoName: id,
+      ownerOrOrg: "org",
+      crawlResult: makeCrawlResult({ topics }),
+    });
+
+    it("links a subscriber to the publisher of the same topic, through the topic", () => {
+      const edges = detectRelationships([
+        repo("pub", [
+          {
+            topic: "orders.created",
+            role: "publish",
+            filePath: "asyncapi.yaml",
+            source: "asyncapi",
+          },
+        ]),
+        repo("sub", [
+          {
+            topic: "orders.created",
+            role: "subscribe",
+            filePath: "src/c.ts",
+            lineNumber: 4,
+            source: "code",
+          },
+        ]),
+      ]);
+      expect(edges).toHaveLength(1);
+      expect(edges[0]).toMatchObject({
+        sourceRepoId: "sub",
+        targetRepoId: "pub",
+        edgeType: "consumes",
+        integrationKind: "event",
+        strength: "contract",
+        direction: "consumes",
+        confidence: 0.9,
+        resource: { kind: "topic", name: "orders.created" },
+        sourceFile: "src/c.ts",
+        targetFile: "asyncapi.yaml",
+      });
+      expect(edges[0].evidence.map((e) => e.pattern)).toEqual([
+        "topic_client_call",
+        "asyncapi_channel",
+      ]);
+    });
+
+    it("is less confident with no AsyncAPI document on either side", () => {
+      const edges = detectRelationships([
+        repo("pub", [{ topic: "t", role: "publish", filePath: "a.ts", source: "code" }]),
+        repo("sub", [{ topic: "t", role: "subscribe", filePath: "b.ts", source: "code" }]),
+      ]);
+      expect(edges[0].confidence).toBe(0.75);
+    });
+
+    it("prefers the AsyncAPI document as a side's evidence when code names the topic too", () => {
+      const edges = detectRelationships([
+        repo("pub", [
+          { topic: "t", role: "publish", filePath: "a.ts", source: "code" },
+          { topic: "t", role: "publish", filePath: "asyncapi.yaml", source: "asyncapi" },
+        ]),
+        repo("sub", [{ topic: "t", role: "subscribe", filePath: "b.ts", source: "code" }]),
+      ]);
+      expect(edges[0].targetFile).toBe("asyncapi.yaml");
+    });
+
+    it("draws nothing for a topic only one side names, or for a repo that talks to itself", () => {
+      expect(
+        detectRelationships([
+          repo("a", [
+            { topic: "t", role: "publish", filePath: "a.ts", source: "code" },
+            { topic: "t", role: "subscribe", filePath: "a.ts", source: "code" },
+          ]),
+          repo("b", [{ topic: "other", role: "publish", filePath: "b.ts", source: "code" }]),
+        ]),
+      ).toEqual([]);
+    });
+  });
+
+  describe("shared tables", () => {
+    const repo = (
+      id: string,
+      tables: NonNullable<CrawlResult["tables"]>,
+      codeGraphTables?: RepoCrawlData["codeGraphTables"],
+    ): RepoCrawlData => ({
+      repoConnectionId: id,
+      repoName: id,
+      ownerOrOrg: "org",
+      crawlResult: makeCrawlResult({ tables }),
+      codeGraphTables,
+    });
+
+    it("is intrusive from the writer when one side writes the table", () => {
+      const edges = detectRelationships([
+        repo("reader", [{ table: "orders", access: "read", filePath: "r.py", lineNumber: 2 }]),
+        repo("writer", [{ table: "orders", access: "write", filePath: "w.sql" }]),
+      ]);
+      expect(edges).toHaveLength(1);
+      expect(edges[0]).toMatchObject({
+        sourceRepoId: "writer",
+        targetRepoId: "reader",
+        edgeType: "produces",
+        integrationKind: "database",
+        strength: "intrusive",
+        direction: "writes",
+        resource: { kind: "table", name: "orders" },
+      });
+    });
+
+    it("is model coupling when both only read it", () => {
+      const edges = detectRelationships([
+        repo("a", [{ table: "orders", access: "read", filePath: "a.sql" }]),
+        repo("b", [{ table: "orders", access: "read", filePath: "b.sql" }]),
+      ]);
+      expect(edges[0]).toMatchObject({
+        sourceRepoId: "a",
+        targetRepoId: "b",
+        edgeType: "consumes",
+        strength: "model",
+        direction: "reads",
+      });
+    });
+
+    it("counts the code graph's tables, and a write there outranks a read in the crawl", () => {
+      const edges = detectRelationships([
+        repo(
+          "a",
+          [{ table: "orders", access: "read", filePath: "a.sql" }],
+          [{ table: "orders", access: "write", filePath: "src/repo.go", lineNumber: 9 }],
+        ),
+        repo("b", [], [{ table: "orders", access: "read", filePath: "src/q.ts" }]),
+      ]);
+      expect(edges).toHaveLength(1);
+      expect(edges[0]).toMatchObject({ sourceRepoId: "a", strength: "intrusive" });
+      expect(edges[0].sourceFile).toBe("src/repo.go");
+    });
+
+    it("draws one edge per table, and none for a table one repo alone touches", () => {
+      const edges = detectRelationships([
+        repo("a", [
+          { table: "orders", access: "write", filePath: "a.sql" },
+          { table: "carts", access: "write", filePath: "a.sql" },
+          { table: "mine", access: "write", filePath: "a.sql" },
+        ]),
+        repo("b", [
+          { table: "orders", access: "read", filePath: "b.sql" },
+          { table: "carts", access: "read", filePath: "b.sql" },
+        ]),
+      ]);
+      expect(edges.map((e) => e.resource?.name).sort()).toEqual(["carts", "orders"]);
     });
   });
 
