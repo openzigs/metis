@@ -111,6 +111,30 @@ describe("parseNfrAcceptance", () => {
       acceptanceCriteria: [],
     });
   });
+
+  // #1613 — the sections an NFR is drawn from, kept as its evidence ids; a
+  // malformed list reads as absent and never discards the NFR itself.
+  it("reads an NFR's evidenceIds and fails soft on a malformed list", () => {
+    const parsed = parseNfrAcceptance(
+      JSON.stringify({
+        nfrs: [
+          { category: "performance", title: "Fast", description: "d", evidenceIds: ["f-1"] },
+          { category: "security", title: "Safe", description: "d", evidenceIds: "f-2" },
+        ],
+      }),
+    );
+    expect(parsed?.nfrs.map((n) => n.evidenceIds)).toEqual([["f-1"], undefined]);
+  });
+
+  it("asks the model for each NFR's evidence ids", async () => {
+    let system = "";
+    await new NfrElicitor({
+      provider: mockProvider(JSON.stringify({ nfrs: [], acceptanceCriteria: [] }), (m) => {
+        system = String(m[0].content);
+      }),
+    }).elicit("### spec (id=f-1)\nfast");
+    expect(system).toContain("evidenceIds");
+  });
 });
 
 describe("NfrElicitor.elicit — #1081 unreadable answers", () => {

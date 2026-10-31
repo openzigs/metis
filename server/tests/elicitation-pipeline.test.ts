@@ -12,6 +12,7 @@ import {
   formatElicitedArtifacts,
   isEmptyElicitation,
   joinCorpus,
+  keepSentEvidence,
   runElicitation,
 } from "../src/lib/analysis/elicitation-pipeline.js";
 
@@ -231,5 +232,45 @@ describe("runElicitation", () => {
     const result = await runElicitation({ provider, segments: SEGMENTS });
     expect(result.unreadSteps).toEqual([]);
     expect(isEmptyElicitation(result)).toBe(true);
+  });
+});
+
+// #1613 — evidence is persisted as a citation, so it must name a section sent.
+describe("keepSentEvidence", () => {
+  const n = (evidenceIds?: string[]) => ({
+    id: "n",
+    category: "performance" as const,
+    title: "t",
+    description: "d",
+    metric: "",
+    priority: "should-have" as const,
+    evidenceIds,
+  });
+
+  it("keeps sent sections once and drops invented and blank-section ids", () => {
+    expect(
+      keepSentEvidence([n(["docA", "invented", "docB", "docA"]), n()], SEGMENTS).map(
+        (x) => x.evidenceIds,
+      ),
+    ).toEqual([["docA"], []]);
+  });
+
+  it("runElicitation returns NFRs with only the evidence the corpus carried", async () => {
+    const provider = queuedProvider([
+      JSON.stringify({
+        nfrs: [
+          {
+            category: "security",
+            title: "Auth",
+            description: "must authenticate",
+            evidenceIds: ["docA", "made-up"],
+          },
+        ],
+        acceptanceCriteria: [],
+      }),
+      JSON.stringify({ assumptions: [], risks: [] }),
+    ]);
+    const result = await runElicitation({ provider, segments: SEGMENTS });
+    expect(result.nfrs[0].evidenceIds).toEqual(["docA"]);
   });
 });

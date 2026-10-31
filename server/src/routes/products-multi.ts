@@ -8,6 +8,7 @@ import {
   addProductRepoSchema,
   updateProductRepoSchema,
   paginationQuerySchema,
+  declareProductEdgeSchema,
 } from "@metis/shared";
 import { ZodError } from "zod";
 import { requireAuth } from "../middleware/auth.js";
@@ -35,6 +36,10 @@ import {
   repoConnectionProjectFilter,
   withReadableProductRepos,
 } from "../lib/products/product-access.js";
+import {
+  createDeclaredProductEdge,
+  listReadableProductGraph,
+} from "../lib/products/product-edges.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { prisma } from "../lib/prisma.js";
 import { generateUnifiedArchitectureDoc } from "../lib/products/unified-doc-generator.js";
@@ -140,7 +145,36 @@ export function productsRouter(): Router {
       // #1258 — a repo attached across workspaces before #1257 is not shown to a
       // caller who cannot open its project.
       const canRead = await productRepoReadAccess(req.user!);
-      res.json({ data: withReadableProductRepos(product, canRead) });
+      const visible = withReadableProductRepos(product, canRead);
+      // #1618 — the typed edges and shared resources, limited to the repos shown.
+      const graph = await listReadableProductGraph(
+        product.id,
+        new Set(visible.repos.map((r) => r.repoConnectionId)),
+      );
+      res.json({ data: { ...visible, ...graph } });
+    } catch (err) {
+      if (isProductError(err)) {
+        res.status(err.status).json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      throw err;
+    }
+  });
+
+  // POST /api/products/:id/edges — Declare an edge detection cannot see (#1618)
+  r.post("/:id/edges", requirePermission("project.update"), async (req: Request, res: Response) => {
+    try {
+      const productId = param(req.params.id);
+      await assertProductAccessible(req.user!, productId);
+      const input = declareProductEdgeSchema.parse(req.body);
+      // A declared edge may not name a repo the caller cannot open (#1258): such
+      // a repo is answered as not attached, like one that is not.
+      await assertProductRepoReadable(req.user!, productId, input.sourceRepoId);
+      if (input.targetRepoId) {
+        await assertProductRepoReadable(req.user!, productId, input.targetRepoId);
+      }
+      const edge = await createDeclaredProductEdge(productId, input, { id: req.user!.userId });
+      res.status(201).json({ data: edge });
     } catch (err) {
       if (isProductError(err)) {
         res.status(err.status).json({ error: { code: err.code, message: err.message } });
@@ -315,8 +349,13 @@ export function productsRouter(): Router {
         });
       }
       const readableRepoIds = new Set(readable.map((r) => r.repoConnectionId));
+      // #1618 — the generated documents are repo-to-repo, so an edge through a
+      // resource with no target repo is not drawn in them.
       const readableEdges = product.edges.filter(
-        (e) => readableRepoIds.has(e.sourceRepoId) && readableRepoIds.has(e.targetRepoId),
+        (e): e is typeof e & { targetRepoId: string } =>
+          e.targetRepoId !== null &&
+          readableRepoIds.has(e.sourceRepoId) &&
+          readableRepoIds.has(e.targetRepoId),
       );
 
       // Create an analysis record
@@ -377,7 +416,7 @@ export function productsRouter(): Router {
         const skippedNeighbours = (repoId: string) =>
           new Set(
             product.edges.flatMap((e) =>
-              e.sourceRepoId === repoId && skippedIds.has(e.targetRepoId)
+              e.sourceRepoId === repoId && e.targetRepoId !== null && skippedIds.has(e.targetRepoId)
                 ? [e.targetRepoId]
                 : e.targetRepoId === repoId && skippedIds.has(e.sourceRepoId)
                   ? [e.sourceRepoId]

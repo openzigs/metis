@@ -65,6 +65,9 @@ const mockPrisma = {
   productDocument: { deleteMany: vi.fn(), create: vi.fn(), findMany: vi.fn() },
   productContractDoc: { findFirst: vi.fn(), create: vi.fn() },
   repoConnection: { findMany: vi.fn() },
+  // #1618 — GET /:id also reads the product's edges and resources.
+  productEdge: { findMany: vi.fn(async () => []) },
+  productResource: { findMany: vi.fn(async () => []) },
 };
 vi.mock("../lib/prisma.js", () => ({ prisma: mockPrisma }));
 

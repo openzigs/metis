@@ -58,6 +58,7 @@ import {
   type RequirementType,
   type RequirementVerdict,
   type SynthesisOutput,
+  type SynthesizedRequirement,
   ANALYSIS_AGENT_KEYS,
   CONTRADICTION_SCOPES,
   CROSS_DOC_FINDING_KINDS,
@@ -975,6 +976,22 @@ export interface PersistRequirementsInput {
    * caller writes them itself after a replacement that was allowed.
    */
   promotionMatches?: WithheldProposal["matches"];
+  /**
+   * Issue #1613 — elicited NFRs (`elicitedNfrRequirements`), written after the
+   * set as non-functional rows with no review status (read as `draft`), whatever
+   * `reviewStatus` the set itself is written with: no reviewer has seen them, so
+   * a checkpoint approval never covers them and they are never recorded as its
+   * decision. `coverages` / `verdicts` are index-aligned with `requirements`.
+   * Written only when the replacement is allowed; a withheld one keeps the
+   * current set, and its stored proposal carries the synthesis rows only (the
+   * next run elicits again). Omitted or empty: the set is written exactly as
+   * before #1613.
+   */
+  elicited?: {
+    requirements: SynthesizedRequirement[];
+    coverages: RequirementCoverage[];
+    verdicts: Array<RequirementVerdict | null>;
+  };
 }
 
 /**
@@ -1341,6 +1358,43 @@ async function replaceRequirementSet(
       where: { id: input.analysisId },
       data: { metadata: JSON.stringify(written) },
     });
+  }
+  // Issue #1613 — after the checkpoint's id list above was taken, so an
+  // elicited NFR is never recorded as approved there.
+  return [...ids, ...(await writeElicitedRequirements(tx, input))];
+}
+
+/** Issue #1613 — the elicited NFR rows (see `PersistRequirementsInput.elicited`). */
+async function writeElicitedRequirements(
+  tx: Prisma.TransactionClient,
+  input: PersistRequirementsInput,
+): Promise<string[]> {
+  const elicited = input.elicited;
+  if (!elicited) return [];
+  const ids: string[] = [];
+  for (const [idx, r] of elicited.requirements.entries()) {
+    const evidenceIds = r.evidenceFindingIndexes
+      .map((i) => input.findingIdsByIndex[i])
+      .filter((id): id is string => Boolean(id));
+    const row = await tx.requirement.create({
+      data: {
+        analysisId: input.analysisId,
+        projectId: input.projectId,
+        type: r.type,
+        title: r.title.slice(0, 255),
+        body: r.body,
+        priority: r.priority,
+        labels: JSON.stringify([
+          ...new Set([...r.labels, ...evidenceIds.map((id) => `finding:${id}`)]),
+        ]),
+        acceptanceCriteria: JSON.stringify(r.acceptanceCriteria ?? []),
+        coverage: elicited.coverages[idx] ?? null,
+        verdict: elicited.verdicts[idx] ?? null,
+        ...requirementKindColumns(r),
+      },
+      select: { id: true },
+    });
+    ids.push(row.id);
   }
   return ids;
 }

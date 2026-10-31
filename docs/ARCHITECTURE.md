@@ -4427,6 +4427,24 @@ cannot read still detaches it, and audits `product.repo.detach.unreadable`. A co
 soft-deleted after it was attached keeps its `ProductRepo` row but is left out of every
 product read and of `/analyze` (`LIVE_PRODUCT_REPOS`).
 
+**Typed product edges and shared resources (#1618, epic #1608).** A `ProductEdge` says
+what crosses the boundary (`integrationKind`: api, event, database, shared-library,
+identity), how tightly the two ends are coupled (`strength`, strongest first: intrusive >
+functional > model > contract, after Khononov's integration strength), its `direction`
+from the source repo's side, and its `origin` (`detected` or `declared`); the enums live in
+`@metis/shared` (`PRODUCT_*`). An edge may go through a `ProductResource` (database,
+table, topic, identity provider, bucket — one product's own) and then needs no target repo;
+`assertEdgeReferencesInProduct` (`server/src/lib/products/product-edges.ts`) refuses an
+edge with neither, a repo not attached to the product, and a resource or contract document
+of another product (same 404 as a missing id). Edges written before #1618 read as
+`detected` with the new fields null. `GET /api/products/:id` returns `edges` and
+`resources`, limited to the repos the caller can read (#1258): an edge touching a hidden
+repo is left out, and so is a resource that only such edges go through.
+`POST /api/products/:id/edges` (`project.update`) declares a fully typed edge
+(`origin: declared`, `declaredById`); a repo the caller cannot read is answered as not
+attached. `/analyze` draws only repo-to-repo edges. Reverse scripts:
+`server/prisma/rollbacks/` and `server/prisma/postgres/rollbacks/`.
+
 **Concurrent job edits (#1245).** `PATCH /api/scheduler/:id` (and pause / resume,
 which go through the same `updateJob`) writes every field from the server's read of
 the job, so the write is conditional on the job's `version` from that read and bumps

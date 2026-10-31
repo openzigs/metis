@@ -4411,6 +4411,7 @@ model Product {
   analyses     ProductAnalysis[]
   documents    ProductDocument[]
   contractDocs ProductContractDoc[]
+  resources    ProductResource[]
 
   @@index([createdById])
   @@index([workspaceId])
@@ -4434,30 +4435,88 @@ model ProductRepo {
   @@map("product_repos")
 }
 
-/// Cross-repo edges discovered by the relationship detector.
+/// Cross-repo edges: discovered by the relationship detector (`origin` =
+/// `detected`) or declared by an analyst (`declared`).
+///
+/// #1618 — an edge also says WHAT crosses the boundary (`integrationKind`), HOW
+/// tightly the two sides are coupled (`strength`, strongest first: intrusive >
+/// functional > model > contract) and in which `direction`, after the Backstage
+/// system model and Khononov's integration strength. Each is one of the
+/// `PRODUCT_*` enums in `@metis/shared`; null on an edge written before #1618
+/// (not classified). An edge may go THROUGH a shared `resource` (a table, a
+/// topic, an identity provider), and then `targetRepoId` may be null (repo ->
+/// table); `createProductEdge` refuses an edge with neither a target repo nor a
+/// resource. `contractDocId` links an API edge to the contract it crosses.
 model ProductEdge {
-  id           String   @id @default(cuid())
-  productId    String
-  sourceRepoId String // RepoConnection ID
-  targetRepoId String // RepoConnection ID
-  edgeType     String // calls | imports | produces | consumes | extends | implements
-  confidence   Float // 0.0 to 1.0
-  evidence     String   @default("[]") // JSON array of evidence objects
-  sourceFile   String?
-  targetFile   String?
-  commitSha    String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id              String   @id @default(cuid())
+  productId       String
+  sourceRepoId    String // RepoConnection ID
+  /// RepoConnection ID. Null only for an edge through a resource (#1618).
+  targetRepoId    String?
+  edgeType        String // calls | imports | produces | consumes | extends | implements
+  confidence      Float // 0.0 to 1.0
+  evidence        String   @default("[]") // JSON array of evidence objects
+  sourceFile      String?
+  targetFile      String?
+  commitSha       String?
+  /// #1618 — api | event | database | shared-library | identity.
+  integrationKind String?
+  /// #1618 — contract | model | functional | intrusive.
+  strength        String?
+  /// #1618 — provides | consumes | reads | writes | depends-on, read from the
+  /// source repo's side.
+  direction       String?
+  /// #1618 — detected | declared. Re-detection never overwrites a declared edge.
+  origin          String   @default("detected")
+  /// #1618 — the shared resource the edge goes through, in the same product.
+  resourceId      String?
+  /// #1618 — the API contract the edge crosses, in the same product.
+  contractDocId   String?
+  /// #1618 — the user who declared the edge. Not a foreign key, like
+  /// `ProductAnalysis.triggeredBy`, so the record outlives the account.
+  declaredById    String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
-  product    Product        @relation(fields: [productId], references: [id], onDelete: Cascade)
-  sourceRepo RepoConnection @relation("ProductSourceEdges", fields: [sourceRepoId], references: [id], onDelete: Cascade)
-  targetRepo RepoConnection @relation("ProductTargetEdges", fields: [targetRepoId], references: [id], onDelete: Cascade)
+  product     Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
+  sourceRepo  RepoConnection      @relation("ProductSourceEdges", fields: [sourceRepoId], references: [id], onDelete: Cascade)
+  targetRepo  RepoConnection?     @relation("ProductTargetEdges", fields: [targetRepoId], references: [id], onDelete: Cascade)
+  resource    ProductResource?    @relation(fields: [resourceId], references: [id], onDelete: SetNull)
+  contractDoc ProductContractDoc? @relation(fields: [contractDocId], references: [id], onDelete: SetNull)
 
   @@index([productId])
   @@index([sourceRepoId])
   @@index([targetRepoId])
   @@index([productId, edgeType])
+  @@index([resourceId])
+  @@index([contractDocId])
   @@map("product_edges")
+}
+
+/// #1618 — a resource a product's repos share without one of them owning it: a
+/// database or table, a topic, an identity provider, a bucket. Scoped to one
+/// product; an edge may only go through a resource of its own product.
+/// `locator` says where it lives (a host and schema, a topic URL), never a
+/// credential.
+model ProductResource {
+  id           String   @id @default(cuid())
+  productId    String
+  /// database | table | topic | identity-provider | bucket.
+  kind         String
+  name         String
+  locator      String?
+  /// detected | declared, as on ProductEdge.
+  origin       String   @default("detected")
+  /// The user who declared it. Not a foreign key, as on ProductEdge.
+  declaredById String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  product Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  edges   ProductEdge[]
+
+  @@unique([productId, kind, name])
+  @@map("product_resources")
 }
 
 /// Tracks product-level cross-repo analysis jobs.
@@ -4539,7 +4598,8 @@ model ProductContractDoc {
   generatedAt DateTime @default(now())
   createdAt   DateTime @default(now())
 
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  product Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  edges   ProductEdge[]
 
   @@unique([productId, repoId, version])
   @@index([productId])
