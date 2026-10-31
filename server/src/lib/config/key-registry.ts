@@ -579,6 +579,31 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Upper bound on symbol hits fetched from the code graph per analysis retrieval before dedupe/budget (#729). Default 12.",
     sensitive: false,
   },
+  // ── #1622 — portfolio gap analysis fan-out bounds ─────────────────────
+  PORTFOLIO_GAP_RUN_COST_CAP_CENTS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(0),
+    description:
+      "US cents one portfolio gap analysis may spend on model calls across every product (#1622). Once reached, no new call starts and the repos not yet evaluated read could-not-verify (budget), never not-covered. Default 200 ($2.00).",
+    sensitive: false,
+  },
+  PORTFOLIO_GAP_PRODUCT_COST_CAP_CENTS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(0),
+    description:
+      "US cents a portfolio gap analysis may spend on the repos of ONE product (#1622). Past it, that product's remaining repos read could-not-verify (budget). Default 50 ($0.50).",
+    sensitive: false,
+  },
+  PORTFOLIO_GAP_CONCURRENCY: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(1).max(32),
+    description:
+      "Products a portfolio gap analysis evaluates at once (#1622); each runs one model call at a time, so this bounds the calls in flight. Default 4.",
+    sensitive: false,
+  },
   // ── P0 #769 — agentic code-agent depth knobs ───────────────────────────
   ANALYSIS_AGENTIC_MAX_TURNS: {
     tier: "tunable",
