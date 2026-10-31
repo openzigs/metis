@@ -116,7 +116,9 @@ function fakeStore() {
         return { ...row, items: nestedItems };
       }),
       update: vi.fn(async ({ where, data }: { where: { id: string }; data: Row }) => {
-        const row = { ...analyses.get(where.id), ...data };
+        // #1609 — `projects` is a nested relation write, not a column; not modelled here.
+        const { projects: _nestedProjectsWrite, ...columns } = data;
+        const row = { ...analyses.get(where.id), ...columns };
         analyses.set(where.id, row);
         return row;
       }),

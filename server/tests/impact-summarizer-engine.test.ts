@@ -79,7 +79,9 @@ function reconstructingPrisma(store: Store) {
       ),
       update: vi.fn(
         async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
-          const row = { ...store.analyses.get(where.id), ...data };
+          // #1609 — `projects` is a nested relation write, not a column; not modelled here.
+          const { projects: _nestedProjectsWrite, ...columns } = data;
+          const row = { ...store.analyses.get(where.id), ...columns };
           store.analyses.set(where.id, row);
           return row;
         },

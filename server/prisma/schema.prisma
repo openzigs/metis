@@ -2166,9 +2166,16 @@ model ImpactAnalysis {
 /// the same write as the run, so membership and access never depend on work the
 /// run has not done yet. Items remain the basis for the per-project DETAIL view.
 model ImpactAnalysisProject {
-  analysisId String
-  projectId  String
-  createdAt  DateTime @default(now())
+  analysisId    String
+  projectId     String
+  createdAt     DateTime @default(now())
+  /// Issue #1609 — what the run found for this project:
+  /// affected | checked-none-affected | not-checked | error. NULL until the run
+  /// records it (pending/running runs, and runs finished before #1609).
+  outcome       String?
+  /// Issue #1609 — why a `not-checked` project was skipped:
+  /// restricted | no-index | timeout | budget. NULL for every other outcome.
+  outcomeReason String?
 
   analysis ImpactAnalysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
   project  Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
