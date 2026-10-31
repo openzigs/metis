@@ -137,6 +137,7 @@ export interface AnalysisReposSkippedEvent {
  * Added by #406/#419: `pr-review`, `import-sync`, `embeddings-reindex`,
  * `spec-kit`, `overview-regenerate`.
  * Added by #373: `repo-ingest` (a repository connector's Deep Ingest).
+ * Added by #1625: `portfolio-assessment` (a requirement checked across products).
  * Removed by #804: `scan` (the bug scanner never emitted it).
  *
  * See `docs/ARCHITECTURE.md` § "Realtime job-events bus" for the full contract.
@@ -150,7 +151,8 @@ export type JobKind =
   | "embeddings-reindex"
   | "spec-kit"
   | "overview-regenerate"
-  | "repo-ingest";
+  | "repo-ingest"
+  | "portfolio-assessment";
 
 /** Lifecycle phase of a job. */
 export type JobStatus = "started" | "progress" | "completed" | "failed";

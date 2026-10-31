@@ -42,6 +42,7 @@ import { prisma } from "../prisma.js";
 import { canAccessProjectDiscussions, canAccessThread } from "../discussions/access.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { loadAccessibleImpactDetail } from "../impact-analysis/impact-detail-access.js";
+import { resolveReaderAccess, viewPortfolioAssessment } from "../portfolio/assessment-view.js";
 import { getJobScope, type JobScope } from "./job-events.js";
 import { readJobScope } from "./job-scope-store.js";
 import { createChildLogger } from "../logger.js";
@@ -202,16 +203,18 @@ async function lookupJobScope(
   onStoreError: "deny" | "throw",
 ): Promise<JobScope | null> {
   const select = { projectId: true };
-  const [analysis, doc, importRun, impact] = await Promise.all([
+  const [analysis, doc, importRun, impact, portfolio] = await Promise.all([
     prisma.analysis.findFirst({ where: { id: jobId, deletedAt: null }, select }),
     prisma.generatedDocument.findFirst({ where: { id: jobId, deletedAt: null }, select }),
     prisma.importRun.findFirst({ where: { id: jobId }, select }),
     prisma.impactAnalysis.findFirst({ where: { id: jobId }, select: { id: true } }),
+    prisma.portfolioAssessment.findFirst({ where: { id: jobId }, select: { id: true } }),
   ]);
   if (analysis) return { kind: "analysis", projectId: analysis.projectId };
   if (doc) return { kind: "doc-generation", projectId: doc.projectId };
   if (importRun) return { kind: "import-sync", projectId: importRun.projectId };
   if (impact) return { kind: "impact-analysis", projectId: null };
+  if (portfolio) return { kind: "portfolio-assessment", projectId: null };
   try {
     return await readJobScope(jobId);
   } catch (err) {
@@ -255,6 +258,9 @@ export async function resolveJobRoomScope(
     allowed = await passes(() =>
       loadAccessibleImpactDetail({ id: user.userId, role: user.role }, jobId),
     );
+  } else if (scope.kind === "portfolio-assessment") {
+    // #1625 — the rule of `GET /api/portfolio-assessments/:id`.
+    allowed = (await viewPortfolioAssessment(await resolveReaderAccess(user), jobId)) !== null;
   } else {
     allowed = user.role === "admin";
   }

@@ -148,3 +148,60 @@ export interface PortfolioAssessment {
   products: Array<Required<z.output<typeof portfolioAssessmentProductInputSchema>>>;
   repos: Array<Required<z.output<typeof portfolioAssessmentRepoInputSchema>>>;
 }
+
+// ─── #1625 — the HTTP contract ──────────────────────────────────────────────
+
+/** Products a `product`-scoped assessment may name. */
+export const PORTFOLIO_ASSESSMENT_MAX_PRODUCTS = 100;
+
+/**
+ * `POST /api/portfolio-assessments`: exactly one of `statement` and
+ * `requirementId`, and a `product` scope names at least one product.
+ */
+export const createPortfolioAssessmentSchema = z
+  .object({
+    statement: z.string().trim().min(1).max(8_000).optional(),
+    requirementId: z.string().min(1).max(64).optional(),
+    scope: z.enum(PORTFOLIO_ASSESSMENT_SCOPES),
+    productIds: z
+      .array(z.string().min(1).max(64))
+      .max(PORTFOLIO_ASSESSMENT_MAX_PRODUCTS)
+      .optional(),
+  })
+  .strict()
+  .refine((v) => (v.statement === undefined) !== (v.requirementId === undefined), {
+    message: "Give exactly one of statement and requirementId",
+    path: ["statement"],
+  })
+  .refine((v) => v.scope !== "product" || (v.productIds?.length ?? 0) > 0, {
+    message: 'A "product" scope names at least one product',
+    path: ["productIds"],
+  });
+export type CreatePortfolioAssessmentInput = z.input<typeof createPortfolioAssessmentSchema>;
+
+/** The portfolio verdict in the requirement-verdict vocabulary (#1622). */
+export type PortfolioVerdict = (typeof REQUIREMENT_VERDICTS)[number];
+
+/**
+ * An assessment as one reader may see it (#1625): every product the reader
+ * cannot read now is `restricted` and carries nothing, and the verdict and
+ * summary are recomputed whenever the reader sees less than the run did.
+ */
+export interface PortfolioAssessmentView extends PortfolioAssessment {
+  verdict: PortfolioVerdict | null;
+  /** Names of the products in the assessment that the reader can read now. */
+  productNames: Record<string, string>;
+}
+
+/** One row of `GET /api/portfolio-assessments`. */
+export interface PortfolioAssessmentListItem {
+  id: string;
+  statement: string;
+  scope: PortfolioAssessmentScope;
+  status: PortfolioAssessmentStatus;
+  verdict: PortfolioVerdict | null;
+  productCount: number;
+  createdById: string;
+  createdAt: string;
+  updatedAt: string;
+}

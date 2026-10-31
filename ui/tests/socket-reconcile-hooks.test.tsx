@@ -158,6 +158,7 @@ describe("query-backed hooks re-read on reconnect (#646)", () => {
       "spec-kit": true,
       "overview-regenerate": true,
       "repo-ingest": true,
+      "portfolio-assessment": true,
     } satisfies Record<JobKind, true>) as JobKind[];
     const invalidate = vi.spyOn(qc, "invalidateQueries");
     const seen = () =>

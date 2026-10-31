@@ -171,6 +171,8 @@ vi.mock("../src/lib/prisma.js", () => ({
         args.where.id === "ia1" ? { id: "ia1" } : null,
       ),
     },
+    // #1625 — a portfolio assessment job; none exists in these tests.
+    portfolioAssessment: { findFirst: vi.fn(async () => null) },
     // #1297 — `subscribe:task` / `subscribe:publish` authorize like their REST
     // reads: `t1` / `b1` belong to `p1`, `t-gone` / `b-gone` to the soft-deleted
     // `p-gone`, `t-sys` is a system task (no project); nothing else exists.

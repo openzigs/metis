@@ -1095,7 +1095,7 @@ Beyond the analysis-specific events above, every long-running flow shares a sing
 
 **Replay on `subscribe:job`.** A room only delivers what is emitted while the socket is in it, so the emitter remembers each job's last `job:lifecycle` event and the latest `job:doc-section` event per section (both in-process, bounded to the 500 most recently touched jobs). A `started` event clears the job's remembered sections, so a new run on a reused job id (regenerating a document keys the job by its doc id) begins with none rather than replaying the previous run's. `subscribe:job` replays them to the subscribing socket: a late subscriber learns where a short job got to, and a socket re-joining after a reconnect (`ui/src/lib/job-rooms.ts`) catches up on sections that finished while it was down (#510). Replay follows an authorized join, and sends only events of the scope the join was authorized against.
 
-**Who may join `job:{id}` (#655).** `resolveJobRoomScope` (`server/src/lib/socket/room-access.ts`) authorizes the join against the job's scope: its kind and project, remembered from every event emitted for it (same 500-job bound), from `rememberJobScope` for an id handed out before its first event (a queued PR review; a separate 500-entry store that other jobs' events do not evict), and otherwise from the row the id names (analysis, generated document, import run, impact analysis) or, for a job with no row, from its durable `job_scopes` record (#674). A job with a project takes the rule of that project's room (`canAccessProjectDiscussions`: `assertProjectAccess` with live workspaces, and closed to non-admins once the project is soft-deleted, #1251); an impact analysis takes `GET /api/impact-analyses/:id`'s rule; any other job without a project is admin-only. Anything else — an unknown id, another project, a failed lookup — answers the same `auth:error` (`{ message: "FORBIDDEN: no access to job", room: "job:{id}" }`). `subscribe:connector` and `subscribe:bg-run` likewise take the rule of the connector's and the background run's REST read, and their refusals name the room too. A refusal that names a room is not shown to the user (`ui/src/lib/socket-client.ts`): the UI re-subscribes to every followed job on each reconnect, and a job without a row is refused after a server restart, so `ui/src/lib/job-rooms.ts` drops the refused room from its follow set instead. An `auth:error` with no `room` is still surfaced. The remembered scope is per process, so the routes that start a job with no row (spec-kit, overview regenerate, embeddings reindex, repo ingest, PR review) also await `recordJobScope` (`server/src/lib/socket/job-scope-store.ts`) before the id leaves the server: it writes the kind and project to `job_scopes` with a 24-hour expiry and prunes lapsed rows on each write. Any replica, a restarted process, or one whose in-process store evicted the id therefore reads the same scope, and because the record is committed before the client can know the id, a `subscribe:job` can never arrive ahead of it (#674). A failed write is logged, not thrown; the job runs and a subscriber on the starting replica is still authorized from memory.
+**Who may join `job:{id}` (#655).** `resolveJobRoomScope` (`server/src/lib/socket/room-access.ts`) authorizes the join against the job's scope: its kind and project, remembered from every event emitted for it (same 500-job bound), from `rememberJobScope` for an id handed out before its first event (a queued PR review; a separate 500-entry store that other jobs' events do not evict), and otherwise from the row the id names (analysis, generated document, import run, impact analysis, portfolio assessment) or, for a job with no row, from its durable `job_scopes` record (#674). A job with a project takes the rule of that project's room (`canAccessProjectDiscussions`: `assertProjectAccess` with live workspaces, and closed to non-admins once the project is soft-deleted, #1251); an impact analysis takes `GET /api/impact-analyses/:id`'s rule, and a portfolio assessment `GET /api/portfolio-assessments/:id`'s (#1625); any other job without a project is admin-only. Anything else — an unknown id, another project, a failed lookup — answers the same `auth:error` (`{ message: "FORBIDDEN: no access to job", room: "job:{id}" }`). `subscribe:connector` and `subscribe:bg-run` likewise take the rule of the connector's and the background run's REST read, and their refusals name the room too. A refusal that names a room is not shown to the user (`ui/src/lib/socket-client.ts`): the UI re-subscribes to every followed job on each reconnect, and a job without a row is refused after a server restart, so `ui/src/lib/job-rooms.ts` drops the refused room from its follow set instead. An `auth:error` with no `room` is still surfaced. The remembered scope is per process, so the routes that start a job with no row (spec-kit, overview regenerate, embeddings reindex, repo ingest, PR review) also await `recordJobScope` (`server/src/lib/socket/job-scope-store.ts`) before the id leaves the server: it writes the kind and project to `job_scopes` with a 24-hour expiry and prunes lapsed rows on each write. Any replica, a restarted process, or one whose in-process store evicted the id therefore reads the same scope, and because the record is committed before the client can know the id, a `subscribe:job` can never arrive ahead of it (#674). A failed write is logged, not thrown; the job runs and a subscriber on the starting replica is still authorized from memory.
 
 **Re-judging `job:{id}` (#1251).** A join is judged once, so the writes that can revoke one re-judge the sockets already in job rooms with the join's own rule (`rejudgeJobRooms`, `server/src/lib/socket/job-rooms.ts`), the way `project:{id}` rooms are (#1212): a member removed from a workspace re-judges every job room of their sockets; a project soft-deleted or assigned to a workspace, and a deleted workspace's projects, re-judge the job rooms of those projects, of every impact analysis (whose scope names no project) and of any job this process holds no scope for. They run from `project-room-eviction.ts`, share its eviction epoch and cluster relay, and the re-validation pass (`revalidateLocalSockets`) re-judges job rooms too, so a lost relay is applied on the next pass. A `subscribe:job` whose check was in flight while an eviction ran is judged again once in the room (`recheckJobJoinAfterEviction`), and replay goes only to a socket still in it. A re-judgement reads a failed `job_scopes` lookup as an error, not a refusal, so a periodic sweep keeps the room through a database blip; failing closed, it leaves the room and closes the transport so the client re-subscribes from live state.
 
@@ -1114,6 +1114,7 @@ Beyond the analysis-specific events above, every long-running flow shares a sing
 | `spec-kit` | Spec Kit command runs | #406/#419 |
 | `overview-regenerate` | Code-overview regeneration | #406/#419 |
 | `repo-ingest` | Repository connector Deep Ingest (`202 { jobId }`, runs in the background) | #373 |
+| `portfolio-assessment` | A requirement checked across the product portfolio (`202 { id }`; `progress` per product checked) | #1625 |
 
 `scan` was removed in #804: the AI bug scanner never emitted it, and the scanner itself is gone (#799).
 
@@ -1373,6 +1374,31 @@ a gap. Fan-out is bounded by `PORTFOLIO_GAP_RUN_COST_CAP_CENTS` (200),
 `PORTFOLIO_GAP_PRODUCT_COST_CAP_CENTS` (50) and `PORTFOLIO_GAP_CONCURRENCY` (4 products at
 once, each one call at a time). A cap stops new calls; the spend can pass it by the calls
 already in flight. Cost is priced from the provider's usage; an unpriced model counts 0.
+
+**Portfolio assessment API (#1625)** (`server/src/routes/portfolio-assessments.ts`):
+
+| Route | Answer |
+|---|---|
+| `POST /api/portfolio-assessments` `{ statement? (1..8000) \| requirementId?, scope, productIds? }` | `202 { id }`; the run continues in the background (`pending` → `running` → `completed` \| `failed`) with `job:{id}` lifecycle events |
+| `GET /api/portfolio-assessments?productId=` | the newest 25 assessments naming that product (empty when the caller cannot read it), or else the caller's own |
+| `GET /api/portfolio-assessments/:id` | `PortfolioAssessmentView`: the assessment, `verdict` and `productNames` |
+| `GET /api/portfolio-assessments/:id/export?format=md` | the same view as a Markdown attachment |
+
+Exactly one of `statement` and `requirementId` (`createPortfolioAssessmentSchema`, 400
+otherwise). A `requirementId` must name a requirement in a project the caller can read (404
+otherwise); its title, body and acceptance criteria become the statement and criteria, and
+it is recorded as the source. Starting takes `analysis.run`, reading `analysis.read`. Each
+route has a pre-auth limiter and a per-user one (`portfolio-assessments-rate-limit.ts`:
+10 starts, 300 reads per 15 minutes); CSRF is the app-wide `csrfProtection` (#913).
+
+Reads never trust what was stored (`viewPortfolioAssessment`,
+`server/src/lib/portfolio/assessment-view.ts`). An assessment is readable by an admin, or by
+a reader who can read its source project and who started it or can read one of its
+products; anyone else gets 404, and the `job:{id}` room takes the same rule. For that
+reader, every product they cannot read now is `restricted` with nothing in it, every repo
+they cannot read now (or whose connection was deleted) is dropped with its citations and
+its product's coverage recomputed with it counted hidden, and when they see less than the
+run did, the verdict and summary are recomputed from what they see.
 
 ---
 
