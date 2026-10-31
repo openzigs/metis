@@ -72,6 +72,7 @@ const detail: ImpactAnalysisDetail = {
   startedAt: "2024-01-01T00:00:00.000Z",
   completedAt: "2024-01-01T00:01:00.000Z",
   projectIds: ["project-001"],
+  projectOutcomes: [],
   sharedTableImpacts: [],
   rerunOfId: null,
   items: [],

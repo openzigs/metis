@@ -24,6 +24,7 @@ import {
   computeSharedTableImpacts,
   computeWritePathGaps,
   getImpactAnalysisDetail,
+  toProjectOutcomes,
   WRITE_PATH_BRIDGE_MAX_DEPTH,
   WRITE_PATH_SERVICE_CALL_MAX_DEPTH,
 } from "./impact-analysis-read.js";
@@ -161,7 +162,10 @@ function reconstructingPrisma(store: Store) {
       }),
       update: vi.fn(
         async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
-          const row = { ...store.analyses.get(where.id), ...data };
+          // #1609 — `projects` is a nested relation write (outcomes on the
+          // run's project rows), not a column: this store does not model it.
+          const { projects: _nestedProjectsWrite, ...columns } = data;
+          const row = { ...store.analyses.get(where.id), ...columns };
           store.analyses.set(where.id, row);
           return row;
         },
@@ -2361,5 +2365,39 @@ describe("#1051 — stored column proposals on the read path", () => {
     const detail = await getImpactAnalysisDetail("ia-962", prismaWith(undefined) as never);
     expect(detail!.items[0].droppedColumnProposals).toEqual([]);
     expect(detail!.items[0].optionalColumnProposals).toEqual([]);
+  });
+});
+
+describe("#1609 toProjectOutcomes", () => {
+  it("lists recorded outcomes in the run's project order, keeping a reason only on not-checked", () => {
+    expect(
+      toProjectOutcomes(
+        ["p-a", "p-b", "p-c", "p-d"],
+        [
+          { projectId: "p-c", outcome: "not-checked", outcomeReason: "no-index" },
+          { projectId: "p-a", outcome: "affected", outcomeReason: "restricted" },
+          { projectId: "p-b", outcome: "checked-none-affected", outcomeReason: null },
+          { projectId: "p-d", outcome: "error", outcomeReason: null },
+        ],
+      ),
+    ).toEqual([
+      { projectId: "p-a", outcome: "affected", reason: null },
+      { projectId: "p-b", outcome: "checked-none-affected", reason: null },
+      { projectId: "p-c", outcome: "not-checked", reason: "no-index" },
+      { projectId: "p-d", outcome: "error", reason: null },
+    ]);
+  });
+
+  it("leaves out unrecorded projects and values outside the vocabulary, and drops an unknown reason", () => {
+    expect(
+      toProjectOutcomes(
+        ["legacy", "unknown", "odd-reason", "item-only"],
+        [
+          { projectId: "legacy", outcome: null, outcomeReason: null },
+          { projectId: "unknown", outcome: "maybe", outcomeReason: null },
+          { projectId: "odd-reason", outcome: "not-checked", outcomeReason: "vibes" },
+        ],
+      ),
+    ).toEqual([{ projectId: "odd-reason", outcome: "not-checked", reason: null }]);
   });
 });
