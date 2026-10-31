@@ -1,0 +1,21 @@
+# Synthetic fixture for #1619 — not production content.
+# The orders service documents the one event it sends.
+asyncapi: 3.0.0
+info:
+  title: Orders service
+  version: 1.0.0
+channels:
+  orderCreated:
+    address: orders.created
+    messages:
+      orderCreated:
+        payload:
+          type: object
+          properties:
+            orderId:
+              type: string
+operations:
+  publishOrderCreated:
+    action: send
+    channel:
+      $ref: "#/channels/orderCreated"
