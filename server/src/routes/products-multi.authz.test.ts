@@ -185,6 +185,9 @@ const mockPrisma = {
     // regression test asserts this is never called.
     create: vi.fn(async () => ({ id: "a-new", status: "running" })),
   },
+  // #1618 — GET /:id also reads the product's edges and resources.
+  productEdge: { findMany: vi.fn(async () => []) },
+  productResource: { findMany: vi.fn(async () => []) },
 };
 vi.mock("../lib/prisma.js", () => ({ prisma: mockPrisma }));
 vi.mock("../lib/audit/audit-service.js", () => ({ audit: vi.fn() }));

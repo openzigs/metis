@@ -4407,3 +4407,26 @@ CREATE UNIQUE INDEX "webhook_payload_digests_receiver_eventType_bodySha256_key" 
 
 -- CreateIndex
 CREATE INDEX "webhook_payload_digests_receivedAt_idx" ON "webhook_payload_digests"("receivedAt");
+
+-- Issue #1618 — shared-resource nodes on a product (the coupling columns on
+-- product_edges are added by 20261106001618_issue1618_product_edge_coupling).
+-- CreateTable
+CREATE TABLE "product_resources" (
+    "id" TEXT NOT NULL,
+    "productId" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "locator" TEXT,
+    "origin" TEXT NOT NULL DEFAULT 'detected',
+    "declaredById" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "product_resources_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE UNIQUE INDEX "product_resources_productId_kind_name_key" ON "product_resources"("productId", "kind", "name");
+
+-- AddForeignKey
+ALTER TABLE "product_resources" ADD CONSTRAINT "product_resources_productId_fkey" FOREIGN KEY ("productId") REFERENCES "products"("id") ON DELETE CASCADE ON UPDATE CASCADE;
