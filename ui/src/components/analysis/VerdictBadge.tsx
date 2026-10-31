@@ -37,7 +37,7 @@ export const VERDICT_COPY: Record<RequirementVerdict, VerdictCopy> = {
   partial: {
     label: "Partially implemented",
     tooltip:
-      "Some of this requirement's acceptance criteria are backed by cited code, and the code agent confirmed a gap for at least one other. Build only the missing part — check the gap report for which criteria are met.",
+      "Some of this requirement's acceptance criteria are backed by cited code, and the code agent confirmed a gap for at least one other. Build only the missing part — the gap findings below show what is still missing.",
     className: "border-warning/40 bg-warning-muted text-warning",
   },
   "gap-confirmed": {

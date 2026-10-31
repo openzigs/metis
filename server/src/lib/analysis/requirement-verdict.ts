@@ -535,7 +535,10 @@ function derivePerCriterionVerdict(
     byCriterion.set(key, set);
   }
   const perCriterion = criteria.map((c) => [...(byCriterion.get(c.trim()) ?? [])]);
-  if (perCriterion.every((ix) => ix.length === 0)) return undefined;
+  // Only CODE findings count as per-criterion evidence: a criterion linked solely
+  // to document findings says nothing the roll-up can use, so fall back.
+  const isCode = (i: number): boolean => flatFindings[i]?.agentKey === "code";
+  if (perCriterion.every((ix) => !ix.some(isCode))) return undefined;
   if (!codeAnalysisRan) return null;
 
   const resolve = (ix: readonly number[]): VerdictFindingInput[] =>

@@ -234,3 +234,32 @@ describe("#1610 — without per-criterion evidence the three-state rules apply u
     expect(computeVerdictsForRequirements([req], flat, true)).toEqual(["gap-confirmed"]);
   });
 });
+
+describe("#1610 — the no-linked-criterion fallback is observable", () => {
+  // An all-implemented fixture: the legacy roll-up reads `implemented`, whereas the
+  // per-criterion path (no fallback) would read could-not-verify (nothing claimed
+  // by a criterion, so no criterion verdict), distinguishing the two paths.
+  const flat = [
+    gated("implemented", { cites: [grounded] }),
+    gated("implemented", { cites: [grounded] }),
+  ];
+  const doc: VerdictFindingInput = { agentKey: "docs", verdict: "gap-confirmed" };
+
+  it("criterionEvidence linking no criterion to any finding → legacy implemented", () => {
+    const req: VerdictRequirementInput = {
+      evidenceFindingIndexes: [0, 1],
+      acceptanceCriteria: [AC1, AC2],
+      criterionEvidence: [
+        { criterion: AC1, evidenceFindingIndexes: [] },
+        { criterion: "A criterion this requirement does not have", evidenceFindingIndexes: [0] },
+      ],
+    };
+    expect(computeVerdictsForRequirements([req], flat, true)).toEqual(["implemented"]);
+  });
+
+  it("a criterion linked only to a document finding does not count as evidence (falls back)", () => {
+    const req = requirement([[2], []]);
+    req.evidenceFindingIndexes = [0, 1, 2];
+    expect(computeVerdictsForRequirements([req], [...flat, doc], true)).toEqual(["implemented"]);
+  });
+});
