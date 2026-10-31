@@ -217,7 +217,7 @@ export interface RequirementSummary {
    */
   coverage?: RequirementCoverage | null;
   /**
-   * Issue #773 — the three-state verdict: `implemented` | `gap-confirmed` |
+   * Issue #773 — the verdict: `implemented` | `partial` (#1610) | `gap-confirmed` |
    * `could-not-verify`. Null on doc-only runs and pre-#773 rows.
    */
   verdict?: RequirementVerdict | null;

@@ -12,6 +12,7 @@
  * | labels                   | absent, silently     | not a list → dropped; bad entries dropped; > 16 → first 16 |
  * | acceptanceCriteria       | absent, silently     | not a list → dropped; bad entries dropped; > 20 → first 20 |
  * | evidenceFindingIndexes   | absent, silently     | not a list → dropped; non-index entries dropped; > 50 → first 50 |
+ * | acceptanceCriteriaEvidence | absent, silently   | zipped into `criterionEvidence` (#1610); a non-list entry is no evidence for its criterion |
  * | type / priority          | absent → default, silently; `null` → default, recorded | unknown → default, recorded (case/space differences read losslessly) |
  * | title / body             | requirement dropped  | over the cap → shortened                          |
  * | summary                  | generated, recorded  | over the cap → shortened                          |
@@ -107,6 +108,8 @@ export function repairSynthesizedRequirement(
     L.labels,
     repairs,
   );
+  // #1610 — before any criterion is dropped, so the alignment still holds.
+  zipCriterionEvidence(r);
   repairList(
     r,
     "acceptanceCriteria",
@@ -127,6 +130,43 @@ export function repairSynthesizedRequirement(
 
   for (const [field, action] of repairs) out.push(record(field, action, number, keptTitle));
   return r;
+}
+
+/**
+ * Issue #1610 — turn the model's `acceptanceCriteriaEvidence` (a list of finding
+ * indexes per criterion, ALIGNED with its `acceptanceCriteria`) into
+ * `criterionEvidence`, keyed by the criterion's text. Keyed by text because the
+ * alignment does not survive what happens next: a bad criterion is dropped by
+ * the repair below, merges unite criteria lists, and the approval checkpoint
+ * rebuilds them.
+ *
+ * Silent, like every optional list: absent or malformed evidence leaves the
+ * requirement on the three-state roll-up, which is what it had before #1610. A
+ * `criterionEvidence` the model wrote itself is discarded — only this zip may
+ * produce one. Indexes are only shape-checked here; `runSynthesis` clamps them to
+ * the findings table and to the requirement's own `evidenceFindingIndexes`.
+ */
+function zipCriterionEvidence(r: Record<string, unknown>): void {
+  const aligned = r.acceptanceCriteriaEvidence;
+  delete r.acceptanceCriteriaEvidence;
+  delete r.criterionEvidence;
+  const criteria = r.acceptanceCriteria;
+  if (!Array.isArray(aligned) || !Array.isArray(criteria)) return;
+  const zipped: Array<{ criterion: string; evidenceFindingIndexes: number[] }> = [];
+  criteria.forEach((c, i) => {
+    if (typeof c !== "string") return;
+    const criterion = c.trim();
+    if (criterion.length === 0 || criterion.length > L.criterionChars) return;
+    const ix: unknown = aligned[i];
+    if (!Array.isArray(ix)) return;
+    const indexes = [
+      ...new Set(
+        ix.filter((e): e is number => typeof e === "number" && Number.isInteger(e) && e >= 0),
+      ),
+    ].slice(0, L.evidenceIndexes);
+    zipped.push({ criterion, evidenceFindingIndexes: indexes });
+  });
+  if (zipped.length > 0) r.criterionEvidence = zipped.slice(0, L.acceptanceCriteria);
 }
 
 /**

@@ -1482,8 +1482,9 @@ Below the traceability matrix, the results page shows a **Gap report** — a per
 
 The **verdict** badge leads each card and is the field to act on:
 
-- **Implemented** — METIS retrieved and cited code that satisfies the requirement.
-- **Gap confirmed** — METIS successfully searched the codebase and the code it read does **not** satisfy the requirement. This is the **only** verdict that means "this needs building".
+- **Implemented** — METIS retrieved and cited code that satisfies the requirement. When the requirement has acceptance criteria that METIS checked one by one, every one of them is backed by cited code.
+- **Partially implemented** — some of the requirement's acceptance criteria are backed by cited code, and for at least one other METIS searched the code and confirmed it is missing. Build only the missing part. METIS gives this verdict only when it checked each criterion against the findings that bear on it; a criterion it could not check never counts as built, so a requirement with one criterion met and another unchecked reads **Could not verify**, not **Implemented**.
+- **Gap confirmed** — METIS successfully searched the codebase and the code it read does **not** satisfy the requirement. With **Partially implemented**, this is the verdict that means "this needs building"; here, none of it is built.
 - **Could not verify** — METIS could **not** tell: its code searches failed, came back empty, or the investigation ran out of budget before reaching this requirement. **This is not a gap.** The functionality may well already exist. These findings are shown in their own **"Could not verify — not a confirmed gap"** block, never mixed into the Gap section, and never exported as gaps. Re-run the analysis (or check the code yourself) before planning work from one.
 
 A requirement with **no verdict** simply means the code agent did not take part in that run.

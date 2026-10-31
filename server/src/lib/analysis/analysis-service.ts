@@ -48,6 +48,7 @@ import {
   findingFaithfulnessSchema,
   // Epic #1107 (#1110) — the shared presentation seam's requirement rollup.
   summarizeSupportPanels,
+  type FindingVerdict,
   type FindingVerificationStatus,
   type RequirementCoverage,
   type RequirementPriority,
@@ -60,6 +61,7 @@ import {
   CROSS_DOC_FINDING_KINDS,
   DEFAULT_FINDING_CONFIDENCE,
   FINDING_SEVERITIES,
+  FINDING_VERDICTS,
   FINDING_VERIFICATION_STATUSES,
   MODEL_ASSERTABLE_FINDING_DERIVATIONS,
   REQUIREMENT_COVERAGES,
@@ -2128,7 +2130,7 @@ const EMPTY_EVIDENCE = {
   citations: [] as Citation[],
   tags: [] as string[],
   requirementId: null as string | null,
-  verdict: null as RequirementVerdict | null,
+  verdict: null as FindingVerdict | null,
   supportPanel: null as FindingSupportPanel | null,
   faithfulness: null as FindingFaithfulness | null,
 };
@@ -2150,7 +2152,7 @@ function parseEvidence(raw: string | null): typeof EMPTY_EVIDENCE {
       requirementId: typeof obj.requirementId === "string" ? obj.requirementId : null,
       // Issue #773 — the gated verdict. Unknown / legacy values collapse to null
       // (a neutral, badge-free state) rather than leaking a bad label to the UI.
-      verdict: coerceVerdict(obj.verdict),
+      verdict: coerceFindingVerdict(obj.verdict),
       // Epic #1107 (#1109) — the panel signal, validated on the way OUT as well
       // as in: a blob written by an older/newer shape reads as "no panel" rather
       // than reaching the UI half-formed. Absent for every flag-off run.
@@ -2200,6 +2202,14 @@ function coerceVerdict(value: unknown): RequirementVerdict | null {
   return REQUIREMENT_VERDICTS.includes(value as RequirementVerdict)
     ? (value as RequirementVerdict)
     : null;
+}
+
+/**
+ * Issue #1610 — a FINDING's verdict has three states; `partial` is a
+ * requirement-level roll-up only, so a finding blob carrying it reads as none.
+ */
+function coerceFindingVerdict(value: unknown): FindingVerdict | null {
+  return FINDING_VERDICTS.includes(value as FindingVerdict) ? (value as FindingVerdict) : null;
 }
 
 function parseAgentOutputBlob(raw: string | null): {

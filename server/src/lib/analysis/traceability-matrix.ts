@@ -193,6 +193,8 @@ export function formatVerdictCell(verdict: RequirementVerdict | null): string {
   switch (verdict) {
     case "implemented":
       return "implemented";
+    case "partial":
+      return "partial (some criteria implemented, a gap confirmed for others)";
     case "gap-confirmed":
       return "gap-confirmed";
     case "could-not-verify":

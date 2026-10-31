@@ -538,6 +538,37 @@ const normalizeTitle = (title: string): string => title.trim().toLowerCase().rep
 const union = <T>(a: readonly T[], b: readonly T[], cap: number): T[] =>
   Array.from(new Set([...a, ...b])).slice(0, cap);
 
+type CriterionEvidence = NonNullable<SynthesizedRequirement["criterionEvidence"]>;
+
+/**
+ * Issue #1610 — unite two `criterionEvidence` lists by criterion text, keeping
+ * only indexes in `allowed` (the requirement's own evidence) and, when given,
+ * only the criteria the requirement still has. `undefined` when nothing is left.
+ */
+function mergeCriterionEvidence(
+  a: CriterionEvidence,
+  b: CriterionEvidence,
+  allowed: ReadonlySet<number>,
+  criteria?: readonly string[],
+): CriterionEvidence | undefined {
+  const keep = criteria ? new Set(criteria.map((c) => c.trim())) : null;
+  const byCriterion = new Map<string, number[]>();
+  for (const e of [...a, ...b]) {
+    const key = e.criterion.trim();
+    if (keep && !keep.has(key)) continue;
+    const list = byCriterion.get(key) ?? [];
+    for (const i of e.evidenceFindingIndexes) {
+      if (allowed.has(i) && !list.includes(i)) list.push(i);
+    }
+    byCriterion.set(key, list);
+  }
+  const out = [...byCriterion].map(([criterion, ix]) => ({
+    criterion,
+    evidenceFindingIndexes: ix.slice(0, MAX_EVIDENCE),
+  }));
+  return out.length > 0 ? out.slice(0, MAX_CRITERIA) : undefined;
+}
+
 export async function runSynthesis(
   provider: AIProvider,
   input: SynthesisInput,
@@ -629,9 +660,16 @@ export async function runSynthesis(
       const sourceIds = cleanSourceIds(claimedSourceIds, knownSourceIds);
       // #1033 — the same check for the extracted requirements it restates.
       const structuredIds = cleanSourceIds(claimedStructuredIds, knownStructuredIds);
+      const { criterionEvidence: claimedCriterionEvidence, ...fields } = rest;
+      const evidenceFindingIndexes = r.evidenceFindingIndexes.filter(isValidIndex);
+      // #1610 — a criterion may only cite this requirement's own, real findings.
+      const criterionEvidence = claimedCriterionEvidence
+        ? mergeCriterionEvidence(claimedCriterionEvidence, [], new Set(evidenceFindingIndexes))
+        : undefined;
       const clean: SynthesizedRequirement = {
-        ...rest,
-        evidenceFindingIndexes: r.evidenceFindingIndexes.filter(isValidIndex),
+        ...fields,
+        evidenceFindingIndexes,
+        ...(criterionEvidence !== undefined ? { criterionEvidence } : {}),
         ...(sourceIds !== undefined ? { sourceIds } : {}),
         ...(structuredIds !== undefined ? { structuredIds } : {}),
       };
@@ -669,6 +707,18 @@ export async function runSynthesis(
           clean.acceptanceCriteria,
           MAX_CRITERIA,
         );
+        // #1610 — the merged requirement's per-criterion evidence: both halves'
+        // links, for the criteria it kept and the findings it still cites.
+        if (prior.criterionEvidence !== undefined || clean.criterionEvidence !== undefined) {
+          const merged = mergeCriterionEvidence(
+            prior.criterionEvidence ?? [],
+            clean.criterionEvidence ?? [],
+            new Set(prior.evidenceFindingIndexes),
+            prior.acceptanceCriteria,
+          );
+          if (merged !== undefined) prior.criterionEvidence = merged;
+          else delete prior.criterionEvidence;
+        }
         continue;
       }
       if (kept.length >= MAX_REQUIREMENTS) {
