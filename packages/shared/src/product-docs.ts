@@ -25,6 +25,53 @@ export const PRODUCT_EDGE_TYPES = [
 ] as const;
 export type ProductEdgeType = (typeof PRODUCT_EDGE_TYPES)[number];
 
+/**
+ * #1618 — what crosses the boundary between the two ends of an edge, after the
+ * Backstage system model (`providesApi` / `consumesApi` / `dependsOn`).
+ */
+export const PRODUCT_INTEGRATION_KINDS = [
+  "api",
+  "event",
+  "database",
+  "shared-library",
+  "identity",
+] as const;
+export type ProductIntegrationKind = (typeof PRODUCT_INTEGRATION_KINDS)[number];
+
+/**
+ * #1618 — how tightly an edge couples its two ends (Khononov's integration
+ * strength), STRONGEST FIRST: `intrusive` (writes a shared table, reaches
+ * internals) > `functional` (a duplicated business rule) > `model` (a shared
+ * library or domain type) > `contract` (a versioned API or event schema).
+ * Severity ranks by this order.
+ */
+export const PRODUCT_COUPLING_STRENGTHS = ["intrusive", "functional", "model", "contract"] as const;
+export type ProductCouplingStrength = (typeof PRODUCT_COUPLING_STRENGTHS)[number];
+
+/** #1618 — an edge's direction, read from its source repo's side. */
+export const PRODUCT_EDGE_DIRECTIONS = [
+  "provides",
+  "consumes",
+  "reads",
+  "writes",
+  "depends-on",
+] as const;
+export type ProductEdgeDirection = (typeof PRODUCT_EDGE_DIRECTIONS)[number];
+
+/** #1618 — whether detection found an edge or resource, or a person declared it. */
+export const PRODUCT_EDGE_ORIGINS = ["detected", "declared"] as const;
+export type ProductEdgeOrigin = (typeof PRODUCT_EDGE_ORIGINS)[number];
+
+/** #1618 — a resource a product's repos share without one of them owning it. */
+export const PRODUCT_RESOURCE_KINDS = [
+  "database",
+  "table",
+  "topic",
+  "identity-provider",
+  "bucket",
+] as const;
+export type ProductResourceKind = (typeof PRODUCT_RESOURCE_KINDS)[number];
+
 export const PRODUCT_ANALYSIS_STATUSES = ["pending", "running", "completed", "failed"] as const;
 export type ProductAnalysisStatus = (typeof PRODUCT_ANALYSIS_STATUSES)[number];
 
@@ -99,15 +146,61 @@ export const productEdgeSchema = z.object({
   id: idSchema,
   productId: idSchema,
   sourceRepoId: idSchema,
-  targetRepoId: idSchema,
+  /** #1618 — null only for an edge through a resource. */
+  targetRepoId: idSchema.nullable(),
   edgeType: z.enum(PRODUCT_EDGE_TYPES),
   confidence: z.number().min(0).max(1),
   evidence: z.array(productEdgeEvidenceSchema),
   sourceFile: z.string().nullable().optional(),
   targetFile: z.string().nullable().optional(),
   commitSha: z.string().nullable().optional(),
+  // #1618 — null on an edge written before the coupling model (not classified).
+  integrationKind: z.enum(PRODUCT_INTEGRATION_KINDS).nullable(),
+  strength: z.enum(PRODUCT_COUPLING_STRENGTHS).nullable(),
+  direction: z.enum(PRODUCT_EDGE_DIRECTIONS).nullable(),
+  origin: z.enum(PRODUCT_EDGE_ORIGINS),
+  resourceId: idSchema.nullable(),
+  contractDocId: idSchema.nullable(),
+  declaredById: z.string().nullable(),
 });
 export type ProductEdge = z.infer<typeof productEdgeSchema>;
+
+/**
+ * #1618 — the body of `POST /api/products/:id/edges`: an edge a person declares.
+ * A declared edge is fully typed (kind, strength, direction) and goes to a
+ * target repo, through a resource, or both — never neither. Ids are checked
+ * against the product by the service (a resource or contract of another
+ * product is refused as not found).
+ */
+export const declareProductEdgeSchema = z
+  .object({
+    sourceRepoId: idSchema,
+    targetRepoId: idSchema.nullable().optional(),
+    resourceId: idSchema.nullable().optional(),
+    contractDocId: idSchema.nullable().optional(),
+    edgeType: z.enum(PRODUCT_EDGE_TYPES),
+    integrationKind: z.enum(PRODUCT_INTEGRATION_KINDS),
+    strength: z.enum(PRODUCT_COUPLING_STRENGTHS),
+    direction: z.enum(PRODUCT_EDGE_DIRECTIONS),
+  })
+  .strict()
+  .refine((e) => Boolean(e.targetRepoId || e.resourceId), {
+    message: "an edge needs a targetRepoId, a resourceId, or both",
+    path: ["targetRepoId"],
+  });
+export type DeclareProductEdgeInput = z.infer<typeof declareProductEdgeSchema>;
+
+// ---- ProductResource (#1618) -----------------------------------------------
+export const productResourceSchema = z.object({
+  id: idSchema,
+  productId: idSchema,
+  kind: z.enum(PRODUCT_RESOURCE_KINDS),
+  name: z.string(),
+  locator: z.string().nullable(),
+  origin: z.enum(PRODUCT_EDGE_ORIGINS),
+  declaredById: z.string().nullable(),
+});
+export type ProductResource = z.infer<typeof productResourceSchema>;
 
 // ---- ProductAnalysis -------------------------------------------------------
 export const productAnalysisSchema = z.object({
