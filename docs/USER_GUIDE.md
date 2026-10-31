@@ -1598,6 +1598,8 @@ Each requirement has these properties:
 | **Coverage** | How strongly the requirement is backed by evidence | `Grounded in code`, `Docs only`, `No evidence` |
 | **GitHub Issue #** | Linked issue number (after publishing) | `#142` |
 
+**Elicited non-functional requirements.** While it checks the documents for gaps, the analysis also elicits non-functional requirements (performance targets, security, availability and the like). Each one the synthesized set does not already state is added to the list as a **draft** non-functional requirement with its category, tagged `elicited-nfr`, so you can review, edit, approve or reject it like any other. Its evidence is the findings the elicitation drew it from; one that cites none shows **No evidence** and is never reported as implemented. An approval checkpoint never approves these on your behalf: they stay drafts until someone approves them.
+
 **Coverage badge.** Every requirement row shows a small colour-coded **coverage** badge that tells you, at a glance, how well the analysis could back the requirement up with evidence. Metis works this out automatically when it synthesizes the requirements — it looks at the findings each requirement was built from and checks whether they point at real source code, only at documents, or at nothing concrete. Hover the badge for a plain-language explanation.
 
 | Badge | Colour | Meaning | What to do |
