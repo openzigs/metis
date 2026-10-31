@@ -14,13 +14,17 @@ import { describe, expect, it } from "vitest";
  * `sensitiveHeaders` bug, and no METIS source calls axios or follow-redirects
  * directly (a direct caller is the advisory's precondition). If either stops
  * being true the waiver's reason is false, so this fails.
+ *
+ * Lifetime: the first arm requires a copy of 1.16.1 to exist, so it goes red once the
+ * lockfile takes 1.16.2. That is deliberate — the #1635 bump PR must delete this file
+ * together with the GHSA-mrwp-f3q8-3g9p waiver in sast.yml.
  */
 
 const repoRoot = path.resolve(path.dirname(path.dirname(fileURLToPath(import.meta.url))), "..");
 const lockfile = fs.readFileSync(path.join(repoRoot, "pnpm-lock.yaml"), "utf8");
 
 describe("GHSA-mrwp-f3q8-3g9p waiver reachability (#1635)", () => {
-  it("every lockfile parent of follow-redirects@1.16.1 is axios@1.20.0", () => {
+  it("every package-snapshot parent of follow-redirects@1.16.1 is axios@1.20.0, and no importer depends on it directly", () => {
     const parents = [];
     let current = null;
     for (const line of lockfile.split("\n")) {
@@ -30,10 +34,16 @@ describe("GHSA-mrwp-f3q8-3g9p waiver reachability (#1635)", () => {
     }
     expect(parents.length).toBeGreaterThan(0);
     for (const parent of parents) expect(parent).toMatch(/^axios@1\.20\.0(\(|$)/);
+    // An importer (a workspace package.json) writes a direct dependency as a
+    // multi-line `follow-redirects:` / `specifier:` block under `importers:`.
+    const importers = lockfile.split(/^packages:\s*$/m)[0];
+    expect(importers).not.toMatch(/^ {6}(axios|follow-redirects):\s*$/m);
   });
 
   it("no METIS source imports axios or follow-redirects", () => {
-    const dirs = ["server/src", "ui/src", "packages"].map((d) => path.join(repoRoot, d));
+    const dirs = ["server/src", "ui/src", "packages", "e2e", "scripts"].map((d) =>
+      path.join(repoRoot, d),
+    );
     const result = spawnSync(
       "grep",
       [
@@ -43,9 +53,12 @@ describe("GHSA-mrwp-f3q8-3g9p waiver reachability (#1635)", () => {
         "--include=*.mts",
         "--include=*.js",
         "--include=*.mjs",
+        "--include=*.cjs",
+        "--include=*.cts",
+        "--include=*.jsx",
         "--exclude-dir=node_modules",
         "--exclude-dir=dist",
-        "(from|require\\(|import\\()\\s*['\"](axios|follow-redirects)['\"/]",
+        "(from|import|require\\(|import\\()\\s*['\"](axios|follow-redirects)['\"/]",
         ...dirs,
       ],
       { encoding: "utf8" },
