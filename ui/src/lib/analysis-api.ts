@@ -24,6 +24,8 @@ import type {
   RequirementCoverage,
   RequirementSupportConfidence,
   RequirementVerdict,
+  RequirementKind,
+  NfrCategory,
   SynthesisDegradation,
   RequirementReplacementWithheld,
   WithheldReplacementApplyResult,
@@ -131,6 +133,19 @@ export interface AnalysisCodeCitation {
   symbolId?: string;
   snippet?: string;
   score?: number;
+  /**
+   * #1611 — the project's `RepoConnection` the file belongs to, stamped by the
+   * server. Absent on pre-#1611 rows and when the repo could not be told apart.
+   */
+  repoConnectionId?: string;
+}
+
+/**
+ * #1615 — a React key for a code citation. The same `file:line` can be cited
+ * from two of a project's repos, so the repo is part of its identity.
+ */
+export function codeCitationKey(c: AnalysisCodeCitation): string {
+  return `${c.repoConnectionId ?? ""}:${formatCodeCitationLocator(c)}`;
 }
 
 export type AnalysisCitation = AnalysisDocumentCitation | AnalysisCodeCitation;
@@ -221,6 +236,13 @@ export interface RequirementSummary {
    * `could-not-verify`. Null on doc-only runs and pre-#773 rows.
    */
   verdict?: RequirementVerdict | null;
+  /**
+   * Issue #1612 — functional / non-functional. Null (or absent, on pre-#1612
+   * rows) means the analysis did not classify it.
+   */
+  kind?: RequirementKind | null;
+  /** Issue #1612 — the NFR category when `kind` is `non-functional`, else null. */
+  nfrCategory?: NfrCategory | null;
   /**
    * Issue #1096 — the requirement's own testable acceptance criteria, derived at
    * synthesis. Empty (or absent, on pre-#1096 rows) means none were derived and

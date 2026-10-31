@@ -1483,11 +1483,15 @@ Below the traceability matrix, the results page shows a **Gap report** — a per
 The **verdict** badge leads each card and is the field to act on:
 
 - **Implemented** — METIS retrieved and cited code that satisfies the requirement. When the requirement has acceptance criteria that METIS checked one by one, every one of them is backed by cited code.
-- **Partially implemented** — some of the requirement's acceptance criteria are backed by cited code, and for at least one other METIS searched the code and confirmed it is missing. Build only the missing part. METIS gives this verdict only when it checked each criterion against the findings that bear on it; a criterion it could not check never counts as built, so a requirement with one criterion met and another unchecked reads **Could not verify**, not **Implemented**.
-- **Gap confirmed** — METIS successfully searched the codebase and the code it read does **not** satisfy the requirement. With **Partially implemented**, this is the verdict that means "this needs building"; here, none of it is built.
+- **Partly implemented** — some of the requirement's acceptance criteria are backed by cited code, and for at least one other METIS searched the code and confirmed it is missing. Build only the missing part. METIS gives this verdict only when it checked each criterion against the findings that bear on it; a criterion it could not check never counts as built, so a requirement with one criterion met and another unchecked reads **Could not verify**, not **Implemented**.
+- **Gap confirmed** — METIS successfully searched the codebase and the code it read does **not** satisfy the requirement. With **Partly implemented**, this is the verdict that means "this needs building"; here, none of it is built.
 - **Could not verify** — METIS could **not** tell: its code searches failed, came back empty, or the investigation ran out of budget before reaching this requirement. **This is not a gap.** The functionality may well already exist. These findings are shown in their own **"Could not verify — not a confirmed gap"** block, never mixed into the Gap section, and never exported as gaps. Re-run the analysis (or check the code yourself) before planning work from one.
 
-A requirement with **no verdict** simply means the code agent did not take part in that run.
+A requirement with **no verdict** simply means the code agent did not take part in that run. A verdict this version of METIS does not recognise (from a newer server) shows a grey **Verdict unknown** badge: treat it as unverified.
+
+The report does not yet say which acceptance criteria a **Partly implemented** requirement meets: read the cited code under **Current implementation** for what exists and the gap items for what is missing.
+
+When a project has several repositories, each code citation names the repository its `file:line` is in, so the same path in two repositories reads as two files. A citation from before this was recorded, or one whose repository METIS could not tell apart, shows no repository name: METIS never guesses it.
 
 The report shows 10 requirements at a time; use **Previous** / **Next** below the cards. When database-aware analysis is on, each card has a **Show database changes** button that loads that requirement's affected tables and columns. They are loaded on request because working them out for every requirement at once made the tab slow and very long. The **Export report (Markdown)** download still includes them for every requirement.
 
@@ -1586,7 +1590,7 @@ Each requirement has these properties:
 | **Description** | Detailed explanation of the requirement | Full paragraph with context and rationale |
 | **Type** | Category of work | `feature`, `schema-change`, `api-change`, `security`, `performance` |
 | **Priority** | Urgency level | `critical`, `high`, `medium`, `low` |
-| **Kind** | Functional (what the system does) or non-functional (how well it does it), separate from Type. A non-functional requirement also names its category. Blank when the analysis could not tell; METIS never guesses it. Set through `PATCH /api/analyses/:id/requirements/:reqId` (`kind`, `nfrCategory`); a set kind survives a re-run | `functional`, `non-functional` + `performance` |
+| **Kind** | Functional (what the system does) or non-functional (how well it does it), separate from Type. A non-functional requirement also names its category. Blank when the analysis could not tell; METIS never guesses it. Shown on each requirement card; the **Kind** filter above the list narrows it to functional, non-functional or not-classified requirements. Set through `PATCH /api/analyses/:id/requirements/:reqId` (`kind`, `nfrCategory`); a set kind survives a re-run | `functional`, `non-functional` + `performance` |
 | **Status** | Where it is in the workflow | `generated`, `reviewing`, `approved`, `published` |
 | **Source** | What document/code/database it came from | "API Security Policy v3.2, Section 4.1" |
 | **Tags** | Keywords for categorization | `security`, `authentication`, `api` |
@@ -2149,6 +2153,13 @@ dependencies).
 
    The card's headline counts both (*"3 files to edit · 41 more to review"*), and
    the markdown export has the same two sections.
+6. Projects with nothing to show are listed together below the report, in a
+   collapsed **Not affected or not checked** group, each with what happened:
+   **Checked: nothing affected** (METIS searched it and nothing matched),
+   **Not checked: no access** (you could not open the project when the run
+   reached it; it is shown without its name), **Not checked: no code index**
+   (the project has no indexed code to search), or **Error: the check failed**.
+   A run from before these outcomes were recorded shows every project as before.
 
 Only projects you have access to appear in the picker, and you can only open a
 report whose projects are all visible to you.

@@ -13,10 +13,13 @@
  * provider, a non-GitHub connector, several candidate repos, or an unsafe path —
  * it stays non-link text. The copy button remains either way, so an analyst can
  * paste the locator into an editor / `git blame`.
+ *
+ * #1615 — a citation stamped with its repo (#1611) also names the repo before
+ * the locator, from `CodeCitationRepoNamesContext`.
  */
 import { formatCodeCitationLocator, type AnalysisCodeCitation } from "@/lib/analysis-api";
 import { buildCodeCitationBlobUrl } from "@/lib/code-citation-blob-url";
-import { useCodeCitationRepoContext } from "./code-citation-repo-context";
+import { useCodeCitationRepoContext, useCodeCitationRepoName } from "./code-citation-repo-context";
 import { useTransientFlag } from "@/hooks/use-transient-toast";
 
 export function CodeCitation({ citation }: { citation: AnalysisCodeCitation }) {
@@ -24,6 +27,9 @@ export function CodeCitation({ citation }: { citation: AnalysisCodeCitation }) {
   const { active: copied, show: showCopied } = useTransientFlag(1500);
   const locator = formatCodeCitationLocator(citation);
   const href = buildCodeCitationBlobUrl(useCodeCitationRepoContext(), citation);
+  // #1615 — which of the project's repos the file is in. Nothing when the
+  // server withheld the repo (absent or ambiguous): never guessed.
+  const repoName = useCodeCitationRepoName(citation.repoConnectionId);
 
   async function handleCopy() {
     try {
@@ -43,6 +49,15 @@ export function CodeCitation({ citation }: { citation: AnalysisCodeCitation }) {
       >
         code
       </span>
+      {repoName ? (
+        <span
+          className="text-[11px] font-medium text-muted-foreground"
+          title={`Repository: ${repoName}`}
+          data-testid="code-citation-repo"
+        >
+          {repoName}
+        </span>
+      ) : null}
       {href ? (
         <a
           href={href}

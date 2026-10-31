@@ -164,8 +164,9 @@ function buildCurrentImplementation(
     if (codeCitations.length > 0) citedFindingCount += 1;
     for (const citation of codeCitations) {
       // Dedupe on the canonical locator + symbol so the same line range cited by
-      // two findings appears once.
-      const key = `${formatCodeCitationLocator(citation)}::${citation.symbolId ?? ""}`;
+      // two findings appears once. #1615 — and on the repo: the same path in two
+      // of the project's repos is two files, not one.
+      const key = `${citation.repoConnectionId ?? ""}::${formatCodeCitationLocator(citation)}::${citation.symbolId ?? ""}`;
       if (seen.has(key)) continue;
       seen.add(key);
       citations.push(citation);

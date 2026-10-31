@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { VerdictBadge, VERDICT_COPY } from "./VerdictBadge";
+import { UNKNOWN_VERDICT_COPY, VerdictBadge, VERDICT_COPY } from "./VerdictBadge";
 
 describe("VerdictBadge", () => {
   it("renders each verdict with its own label, hue and tooltip", () => {
@@ -30,9 +30,37 @@ describe("VerdictBadge", () => {
   it("#1610 — says partial means part of it exists and only the rest needs building", () => {
     render(<VerdictBadge verdict="partial" />);
     const badge = screen.getByTestId("verdict-badge-partial");
-    expect(badge).toHaveTextContent("Partially implemented");
+    expect(badge).toHaveTextContent("Partly implemented");
+    expect(badge.getAttribute("aria-label")).toMatch(/^Verdict: Partly implemented\./);
     expect(badge.getAttribute("title")).toMatch(/backed by cited code/i);
     expect(badge.getAttribute("title")).toMatch(/confirmed a gap/i);
+  });
+
+  it("#1615 — a partial requirement renders the partial badge, not the gap or implemented one", () => {
+    render(<VerdictBadge verdict="partial" />);
+    expect(screen.getByTestId("verdict-badge-partial")).toBeInTheDocument();
+    expect(screen.queryByTestId("verdict-badge-gap-confirmed")).toBeNull();
+    expect(screen.queryByTestId("verdict-badge-implemented")).toBeNull();
+    expect(screen.getByRole("status")).not.toHaveTextContent(/gap confirmed|^implemented$/i);
+  });
+
+  it("#1615 — the partial tooltip promises nothing the gap report does not show", () => {
+    // The gap report has no per-criterion met/unmet view (criterionEvidence is
+    // not on the snapshot), so the tooltip must not send the BA there for it.
+    expect(VERDICT_COPY.partial.tooltip).not.toMatch(/which criteria are met/i);
+  });
+
+  it("#1615 — an unknown future verdict renders the neutral state, not a crash", () => {
+    render(<VerdictBadge verdict={"mostly-done" as never} />);
+    const badge = screen.getByTestId("verdict-badge-unknown");
+    expect(badge).toHaveTextContent(UNKNOWN_VERDICT_COPY.label);
+    expect(badge).toHaveAttribute("data-verdict", "unknown");
+    expect(badge.className).toContain("bg-muted");
+    // Never borrows a real verdict's colour or words.
+    for (const copy of Object.values(VERDICT_COPY)) {
+      expect(badge.className).not.toBe(copy.className);
+      expect(badge).not.toHaveTextContent(copy.label);
+    }
   });
 
   it("tells the reader explicitly that could-not-verify is NOT a confirmed gap", () => {
@@ -42,8 +70,10 @@ describe("VerdictBadge", () => {
     expect(badge.getAttribute("title")).toMatch(/may well already exist/i);
   });
 
-  it("renders nothing for a null / unknown verdict (no misleading placeholder)", () => {
+  it("renders nothing for a null / absent verdict (no misleading placeholder)", () => {
     const { container } = render(<VerdictBadge verdict={null} />);
     expect(container).toBeEmptyDOMElement();
+    const { container: absent } = render(<VerdictBadge verdict={undefined} />);
+    expect(absent).toBeEmptyDOMElement();
   });
 });

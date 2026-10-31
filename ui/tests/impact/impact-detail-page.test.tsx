@@ -275,6 +275,77 @@ describe("ImpactAnalysisDetailPage", () => {
     expect(screen.queryByTestId("affected-symbol-link")).not.toBeInTheDocument();
   });
 
+  describe("zero-hit and unchecked projects (#1615)", () => {
+    const multi: ImpactAnalysisDetail = {
+      ...detail,
+      projectIds: ["project-001", "project-002", "project-003"],
+      projectOutcomes: [
+        { projectId: "project-001", outcome: "affected", reason: null },
+        { projectId: "project-002", outcome: "checked-none-affected", reason: null },
+        { projectId: "project-003", outcome: "not-checked", reason: "restricted" },
+      ],
+    };
+
+    beforeEach(async () => {
+      const { projectsApi } = await import("@/lib/projects-api");
+      vi.mocked(projectsApi.list).mockResolvedValue({
+        items: [
+          { id: "project-001", name: "Alpha" },
+          { id: "project-002", name: "Beta" },
+        ],
+      } as never);
+    });
+
+    it("shows 'Checked: nothing affected' for a zero-hit project and 'Not checked: no access' for a restricted one", async () => {
+      mockUse.mockReturnValue(state({ data: multi }));
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      const group = screen.getByTestId("impact-project-outcomes");
+      await waitFor(() => expect(group).toHaveTextContent("Beta — Checked: nothing affected"));
+      expect(group).toHaveTextContent("A project you cannot access — Not checked: no access");
+    });
+
+    it("gives the quiet projects no per-project section, so a restricted project shows no content", async () => {
+      mockUse.mockReturnValue(state({ data: multi }));
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      await waitFor(() =>
+        expect(screen.getByTestId("project-impact-section")).toHaveTextContent("Alpha"),
+      );
+      const sections = screen.getAllByTestId("project-impact-section");
+      expect(sections.map((el) => el.getAttribute("data-project-id"))).toEqual(["project-001"]);
+      // Neither the restricted project's id nor a section, matrix column or
+      // repo lookup of its own appears anywhere on the page.
+      expect(screen.getByTestId("impact-detail-root").outerHTML).not.toContain("project-003");
+      expect(listRepoConnectors).not.toHaveBeenCalledWith("project-003");
+    });
+
+    it("still lists the outcomes when no project was affected", async () => {
+      mockUse.mockReturnValue(
+        state({
+          data: {
+            ...multi,
+            items: [],
+            totalImpactedSymbols: 0,
+            projectOutcomes: [
+              { projectId: "project-001", outcome: "checked-none-affected", reason: null },
+              { projectId: "project-002", outcome: "not-checked", reason: "no-index" },
+            ],
+          },
+        }),
+      );
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      expect(screen.getByTestId("impact-detail-empty")).toBeInTheDocument();
+      const group = screen.getByTestId("impact-project-outcomes");
+      await waitFor(() => expect(group).toHaveTextContent("Alpha — Checked: nothing affected"));
+      expect(group).toHaveTextContent("Beta — Not checked: no code index");
+    });
+
+    it("lists no outcomes while the run is still going", () => {
+      mockUse.mockReturnValue(state({ data: { ...multi, status: "running", items: [] } }));
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      expect(screen.queryByTestId("impact-project-outcomes")).toBeNull();
+    });
+  });
+
   it("shows empty state when completed with no items", () => {
     mockUse.mockReturnValue(state({ data: { ...detail, items: [], totalImpactedSymbols: 0 } }));
     render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });

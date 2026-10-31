@@ -21,6 +21,7 @@ import {
   type GapReportFindingRef,
   type GapReportRequirement,
   type SqlLineageCoverage,
+  codeCitationKey,
 } from "@/lib/analysis-api";
 import { triggerDownload } from "@/lib/plugins-api";
 import { Button } from "@/components/ui/button";
@@ -85,7 +86,7 @@ function FindingItem({ f }: { f: GapReportFindingRef }): React.ReactElement {
       {f.citations.length > 0 ? (
         <ul className="mt-1 space-y-1">
           {f.citations.map((c) => (
-            <CodeCitation key={`${c.filePath}:${c.startLine}-${c.endLine}`} citation={c} />
+            <CodeCitation key={codeCitationKey(c)} citation={c} />
           ))}
         </ul>
       ) : null}
@@ -194,7 +195,7 @@ function GapReportCard({
             </p>
             <ul className="space-y-1">
               {citations.map((c) => (
-                <CodeCitation key={`${c.filePath}:${c.startLine}-${c.endLine}`} citation={c} />
+                <CodeCitation key={codeCitationKey(c)} citation={c} />
               ))}
             </ul>
           </>

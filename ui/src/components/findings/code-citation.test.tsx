@@ -7,7 +7,10 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CodeCitation } from "./code-citation";
-import { CodeCitationRepoContext } from "./code-citation-repo-context";
+import {
+  CodeCitationRepoContext,
+  CodeCitationRepoNamesContext,
+} from "./code-citation-repo-context";
 import {
   formatCodeCitationLocator,
   isCodeCitation,
@@ -100,5 +103,80 @@ describe("CodeCitation — #728 GitHub blob links", () => {
     );
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
     expect(screen.getByText("../secret.go:1-1")).toBeInTheDocument();
+  });
+});
+
+describe("CodeCitation repo name (#1615)", () => {
+  const NAMES = { "rc-A": "billing-api", "rc-B": "billing-web" };
+
+  it("shows each citation's own repo, so the same path from two repos reads as two files", () => {
+    render(
+      <CodeCitationRepoNamesContext.Provider value={NAMES}>
+        <ul>
+          <CodeCitation
+            citation={{
+              filePath: "src/auth.ts",
+              startLine: 1,
+              endLine: 5,
+              repoConnectionId: "rc-A",
+            }}
+          />
+          <CodeCitation
+            citation={{
+              filePath: "src/auth.ts",
+              startLine: 1,
+              endLine: 5,
+              repoConnectionId: "rc-B",
+            }}
+          />
+        </ul>
+      </CodeCitationRepoNamesContext.Provider>,
+    );
+    const repos = screen.getAllByTestId("code-citation-repo").map((el) => el.textContent);
+    expect(repos).toEqual(["billing-api", "billing-web"]);
+    expect(screen.getAllByText("src/auth.ts:1-5")).toHaveLength(2);
+  });
+
+  it("shows no repo when the citation carries none (pre-#1611, or ambiguous)", () => {
+    render(
+      <CodeCitationRepoNamesContext.Provider value={NAMES}>
+        <ul>
+          <CodeCitation citation={{ filePath: "src/auth.ts", startLine: 1, endLine: 5 }} />
+        </ul>
+      </CodeCitationRepoNamesContext.Provider>,
+    );
+    expect(screen.queryByTestId("code-citation-repo")).toBeNull();
+  });
+
+  it("does not guess when the repo id is not one of the project's repos", () => {
+    render(
+      <CodeCitationRepoNamesContext.Provider value={NAMES}>
+        <ul>
+          <CodeCitation
+            citation={{
+              filePath: "src/auth.ts",
+              startLine: 1,
+              endLine: 5,
+              repoConnectionId: "rc-gone",
+            }}
+          />
+        </ul>
+      </CodeCitationRepoNamesContext.Provider>,
+    );
+    expect(screen.queryByTestId("code-citation-repo")).toBeNull();
+    expect(screen.getByText("src/auth.ts:1-5")).toBeInTheDocument();
+  });
+
+  it("does not read an inherited property as a repo name", () => {
+    render(
+      <CodeCitationRepoNamesContext.Provider value={NAMES}>
+        <ul>
+          <CodeCitation
+            citation={{ filePath: "a.ts", startLine: 1, endLine: 2, repoConnectionId: "toString" }}
+          />
+        </ul>
+      </CodeCitationRepoNamesContext.Provider>,
+    );
+    expect(screen.queryByTestId("code-citation-repo")).toBeNull();
   });
 });

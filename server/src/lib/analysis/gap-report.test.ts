@@ -139,6 +139,23 @@ describe("buildGapReport", () => {
     expect(ci.citedFindingCount).toBe(2);
   });
 
+  it("#1615 — keeps the same path and lines from two different repos as two citations", () => {
+    const inRepo = (repoConnectionId: string): Citation =>
+      ({ filePath: "src/auth.ts", startLine: 10, endLine: 20, repoConnectionId }) as Citation;
+    const f1 = finding({ id: "f-1", citations: [inRepo("rc-A")] });
+    const f2 = finding({ id: "f-2", citations: [inRepo("rc-B"), inRepo("rc-A")] });
+    const report = buildGapReport({
+      analysisId: "an-1",
+      projectId: "proj-1",
+      requirements: [requirement({ evidenceFindingIds: ["f-1", "f-2"] })],
+      findingsById: mapOf(f1, f2),
+    });
+    const ci = report.requirements[0]!.currentImplementation;
+    // Different files that share a path: neither is a duplicate of the other.
+    // The repeated rc-A citation still collapses.
+    expect(ci.citations.map((c) => c.repoConnectionId)).toEqual(["rc-A", "rc-B"]);
+  });
+
   it("orders confirmed + code-cited findings ahead of weaker evidence", () => {
     const weak = finding({
       id: "f-weak",

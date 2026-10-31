@@ -31,6 +31,10 @@ import { SharedTableImpactSection } from "@/components/impact/shared-table-impac
 import { RequirementImpactMatrix } from "@/components/impact/requirement-impact-matrix";
 import { ImpactDriftSection } from "@/components/impact/impact-drift-section";
 import {
+  ImpactProjectOutcomesGroup,
+  quietProjectIds,
+} from "@/components/impact/project-outcomes-group";
+import {
   ImpactSymbolRepoContext,
   useImpactProjectRepos,
 } from "@/components/impact/impact-symbol-repo-context";
@@ -61,7 +65,10 @@ export default function ImpactAnalysisDetailPage() {
 
   const grouped = useMemo(() => {
     const byProject = new Map<string, ImpactItemView[]>();
-    for (const pid of data?.projectIds ?? []) byProject.set(pid, []);
+    // #1615 — a project the run checked and found nothing in, or did not check,
+    // is listed in the outcomes group instead of an empty section of its own.
+    const quiet = quietProjectIds(data?.projectOutcomes);
+    for (const pid of data?.projectIds ?? []) if (!quiet.has(pid)) byProject.set(pid, []);
     for (const item of data?.items ?? []) {
       const list = byProject.get(item.projectId) ?? [];
       list.push(item);
@@ -138,8 +145,19 @@ function ImpactAnalysisDetailView({
     data.status === "completed" && Boolean(data.rerunOfId),
   );
 
+  // #1615 — a project the starter could not access is shown with no content:
+  // no matrix column under its bare id, and no repo lookup for it.
+  const visibleProjectIds = useMemo(() => {
+    const restricted = new Set(
+      (data.projectOutcomes ?? [])
+        .filter((o) => o.outcome === "not-checked" && o.reason === "restricted")
+        .map((o) => o.projectId),
+    );
+    return data.projectIds.filter((pid) => !restricted.has(pid));
+  }, [data.projectIds, data.projectOutcomes]);
+
   // #992 — each project's GitHub repo, so impacted symbols link to file:line.
-  const symbolRepos = useImpactProjectRepos(data.projectIds);
+  const symbolRepos = useImpactProjectRepos(visibleProjectIds);
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="impact-detail-root">
@@ -302,7 +320,7 @@ function ImpactAnalysisDetailView({
               single-project run degrades to a ranked list. */}
             <RequirementImpactMatrix
               items={data.items}
-              projects={data.projectIds.map((pid) => ({ id: pid, name: projectName(pid) }))}
+              projects={visibleProjectIds.map((pid) => ({ id: pid, name: projectName(pid) }))}
             />
             {/* #956 — run-level shared-table rollup (multi-project runs only). */}
             <SharedTableImpactSection
@@ -325,6 +343,13 @@ function ImpactAnalysisDetailView({
           </div>
         </ImpactSymbolRepoContext.Provider>
       )}
+
+      {/* #1615 — the run's zero-hit, unchecked and failed projects (#1609), in
+          one collapsed group with the reason, so "checked, nothing affected"
+          never reads like "never checked". */}
+      {!isRunning ? (
+        <ImpactProjectOutcomesGroup outcomes={data.projectOutcomes} projectName={projectName} />
+      ) : null}
     </div>
   );
 }

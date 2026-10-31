@@ -11,8 +11,23 @@ import { createContext, useContext, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { repoConnectorsApi } from "@/lib/connectors-api";
 import { selectCodeCitationRepo, type CodeCitationRepo } from "@/lib/code-citation-blob-url";
+import type { RepoNameMap } from "@/hooks/use-repo-names";
 
 export const CodeCitationRepoContext = createContext<CodeCitationRepo | null>(null);
+
+/**
+ * #1615 — the project's repo connector id → repo name (`useRepoNames`), so a
+ * citation stamped with a `repoConnectionId` (#1611) can say which repo its
+ * `file:line` is in. With no provider the map is empty and no repo is shown.
+ */
+export const CodeCitationRepoNamesContext = createContext<RepoNameMap>({});
+
+/** #1615 — the repo name of a citation, or null when it has none or it is not the project's. */
+export function useCodeCitationRepoName(repoConnectionId: string | undefined): string | null {
+  const names = useContext(CodeCitationRepoNamesContext);
+  if (!repoConnectionId || !Object.hasOwn(names, repoConnectionId)) return null;
+  return names[repoConnectionId] ?? null;
+}
 
 export function useCodeCitationRepoContext(): CodeCitationRepo | null {
   return useContext(CodeCitationRepoContext);

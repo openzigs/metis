@@ -16,7 +16,9 @@
  *                                    read as "it does not exist".
  *
  * A `null` verdict (no code agent in the run, or a pre-#773 row) renders nothing
- * rather than an alarming placeholder.
+ * rather than an alarming placeholder. #1615 — a verdict string this build does
+ * not know (a newer server) renders a neutral "Verdict unknown" badge: never
+ * nothing (it is a verdict), never a crash, and never a known verdict's colour.
  */
 import type { RequirementVerdict } from "@/lib/analysis-api";
 
@@ -35,9 +37,12 @@ export const VERDICT_COPY: Record<RequirementVerdict, VerdictCopy> = {
     className: "border-success/40 bg-success-muted text-success",
   },
   partial: {
-    label: "Partially implemented",
+    label: "Partly implemented",
+    // #1615 — the gap report has no per-criterion met/unmet view (the snapshot
+    // does not carry `criterionEvidence`), so this must not send the reader there
+    // to learn which criteria are met: it points at what IS shown.
     tooltip:
-      "Some of this requirement's acceptance criteria are backed by cited code, and the code agent confirmed a gap for at least one other. Build only the missing part — the gap findings below show what is still missing.",
+      "Some of this requirement's acceptance criteria are backed by cited code, and the code agent confirmed a gap for at least one other. Build only the missing part: the cited code shows what exists, the gap findings show what is still missing.",
     className: "border-warning/40 bg-warning-muted text-warning",
   },
   "gap-confirmed": {
@@ -54,18 +59,28 @@ export const VERDICT_COPY: Record<RequirementVerdict, VerdictCopy> = {
   },
 };
 
+/** #1615 — the neutral state for a verdict string this build does not recognise. */
+export const UNKNOWN_VERDICT_COPY: VerdictCopy = {
+  label: "Verdict unknown",
+  tooltip:
+    "The analysis returned a verdict this version of METIS does not recognise. Treat this requirement as unverified and check the cited code before planning work.",
+  className: "border-muted-foreground/40 bg-muted text-muted-foreground",
+};
+
 interface Props {
   verdict: RequirementVerdict | null | undefined;
   className?: string;
 }
 
 export function VerdictBadge({ verdict, className = "" }: Props): React.ReactElement | null {
-  if (!verdict || !(verdict in VERDICT_COPY)) return null;
-  const copy = VERDICT_COPY[verdict];
+  if (!verdict) return null;
+  const known = Object.hasOwn(VERDICT_COPY, verdict);
+  const copy = known ? VERDICT_COPY[verdict] : UNKNOWN_VERDICT_COPY;
+  const key = known ? verdict : "unknown";
   return (
     <span
-      data-testid={`verdict-badge-${verdict}`}
-      data-verdict={verdict}
+      data-testid={`verdict-badge-${key}`}
+      data-verdict={key}
       role="status"
       aria-label={`Verdict: ${copy.label}. ${copy.tooltip}`}
       title={copy.tooltip}
