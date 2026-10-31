@@ -574,6 +574,91 @@ export async function appendStructuredRequirements(
 }
 
 /**
+ * Issue #1602 — a clarify round's result applied to the reviewed list as it is
+ * NOW. The round read the list (`before`) and then waited on the model, so the
+ * list it hands back (`after`) is that old copy with its rewrites; writing it
+ * whole erased whatever another writer added meanwhile, such as the
+ * requirements synthesis offers for review (#1569). So only what the round
+ * changed is carried over: each field of a requirement that differs between
+ * `before` and `after`, onto the requirement with the same id in `current`.
+ * A requirement `current` gained is kept, and one it lost is not brought back.
+ * The remaining-ambiguity count is the round's, plus the ambiguities of the
+ * requirements the round never saw.
+ *
+ * Returns null when `current` comes from another extraction run than the one
+ * the round read (`before.runId`, as `getStructuredRequirements` decorates it):
+ * that run numbers its requirements afresh, so `REQ-1` is no longer the
+ * requirement the answers were about, and the round's rewrites are dropped.
+ * With no stored list, `after` is the list.
+ */
+export function mergeClarifiedList(
+  current: StructuredRequirements | undefined,
+  currentRunId: string | undefined,
+  before: StructuredRequirements & { runId?: string },
+  after: StructuredRequirements & { runId?: string },
+): StructuredRequirements | null {
+  const { runId: _afterRunId, ...clarified } = after;
+  if (!current || !Array.isArray(current.requirements)) return clarified;
+  if (before.runId && currentRunId && before.runId !== currentRunId) return null;
+  const beforeById = new Map(before.requirements.map((r) => [r.id, r]));
+  const afterById = new Map(after.requirements.map((r) => [r.id, r]));
+  const requirements = current.requirements.map((req) => {
+    const was = beforeById.get(req.id);
+    const now = afterById.get(req.id);
+    if (!was || !now) return req;
+    const changed = (Object.keys(now) as Array<keyof StructuredRequirement>).filter(
+      (key) => JSON.stringify(now[key]) !== JSON.stringify(was[key]),
+    );
+    if (changed.length === 0) return req;
+    return { ...req, ...Object.fromEntries(changed.map((key) => [key, now[key]])) };
+  });
+  const unseen = current.requirements
+    .filter((r) => !beforeById.has(r.id))
+    .reduce((sum, r) => sum + (Array.isArray(r.ambiguities) ? r.ambiguities.length : 0), 0);
+  return {
+    ...current,
+    requirements,
+    totalAmbiguities: clarified.totalAmbiguities + unseen,
+  };
+}
+
+/**
+ * Issue #1602 — persist a clarify round (`before` → `after`, see
+ * {@link mergeClarifiedList}) in the same locked read-modify-write as
+ * {@link appendStructuredRequirements}, so the two writers serialise and
+ * neither writes over the other. Returns false when the round's list was
+ * replaced by another extraction run meanwhile, and nothing was written.
+ */
+export async function persistClarifiedRequirements(
+  id: string,
+  before: StructuredRequirements & { runId?: string },
+  after: StructuredRequirements & { runId?: string },
+): Promise<boolean> {
+  let written = true;
+  await mergeAnalysisMetadata(id, (current) => {
+    const runId = typeof current.structuredRunId === "string" ? current.structuredRunId : undefined;
+    const merged = mergeClarifiedList(
+      current.structuredRequirements as StructuredRequirements | undefined,
+      runId,
+      before,
+      after,
+    );
+    if (!merged) {
+      written = false;
+      return current;
+    }
+    return { ...current, structuredRequirements: merged };
+  });
+  if (!written) {
+    log.warn("Clarify round not written: its requirements list was replaced by a new run", {
+      analysisId: id,
+      roundRunId: before.runId,
+    });
+  }
+  return written;
+}
+
+/**
  * Epic #204 (#222) — read the persisted web-research digests for the most
  * recently-completed analysis of a project, for injection into doc synthesis as
  * grounding evidence. Returns `null` when no analysis has web research.
