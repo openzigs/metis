@@ -175,14 +175,19 @@ describe("viewPortfolioAssessment", () => {
     expect(v.summary).toBe("Could not verify across the portfolio: of 2 products, 1 not checked.");
   });
 
-  it("a detail it cannot read in part is shown as not checked, with nothing of it", async () => {
+  it("a detail it cannot read in part is shown as not checked, with nothing of it but why", async () => {
     readableProjects.delete("proj-web");
     const a = assessment();
     a.products[0].technicalDetail = { unexpected: true };
     store.getPortfolioAssessment.mockResolvedValue(a);
     const v = (await view())!;
+    // #1673 — the row carries the reason the roll-up uses, so the page can say it.
     expect(v.products[0]).toEqual(
-      expect.objectContaining({ coverage: "not-checked", baSummary: "", technicalDetail: {} }),
+      expect.objectContaining({
+        coverage: "not-checked",
+        baSummary: "",
+        technicalDetail: { reason: "repos-restricted" },
+      }),
     );
     expect(v.verdict).toBe("could-not-verify");
   });
@@ -350,19 +355,19 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
     expect(db.repoConnection.findMany.mock.calls[0][0].where.id.in).toContain("rc-three");
   });
 
-  it("a path through a repo hidden now is withheld whole; the impact kind stays", async () => {
+  it("a path through a repo hidden now is withheld whole, and its impact reads restricted (#1673)", async () => {
     readableProjects.delete("proj-three");
     const v = (await view())!;
     const p3 = v.products.find((p) => p.productId === "p3")!;
     expect(p3).toEqual(
       expect.objectContaining({
-        impactKind: "downstream-consumer",
+        impactKind: "restricted",
         via: null,
         edgeIds: [],
         severity: null,
         technicalDetail: { outOfScope: true, impactWithheld: true },
         // #1668 — its summary restated the withheld path's kind and severity.
-        baSummary: "Downstream consumer.",
+        baSummary: "May be reached through a restricted product.",
       }),
     );
     expect(JSON.stringify(v)).not.toContain("rc-three");
@@ -386,16 +391,49 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
     expect(p2.baSummary).toBe("Does not cover it | at all.");
   });
 
-  it("a path through a product the reader cannot read is withheld", async () => {
+  it("a path through a product the reader cannot read is withheld, and reads restricted (#1673)", async () => {
     db.product.findMany.mockResolvedValue([
       { id: "p2", name: "Two" },
       { id: "p3", name: "Three" },
     ]);
     const v = (await view())!;
-    expect(v.products.find((p) => p.productId === "p3")!.technicalDetail).toEqual({
-      outOfScope: true,
-      impactWithheld: true,
-    });
+    const p3 = v.products.find((p) => p.productId === "p3")!;
+    expect(p3.technicalDetail).toEqual({ outOfScope: true, impactWithheld: true });
+    expect(p3.impactKind).toBe("restricted");
+    // Two's path starts at p1 too. The overview names both restricted, and says nothing
+    // was "not followed": the run walked from p1, which only this reader cannot read.
+    expect(v.products.find((p) => p.productId === "p2")!.impactKind).toBe("restricted");
+    expect(v.summary).toContain(
+      "Restricted: Two, Three may be reached through a restricted product, so their impact is not shown.",
+    );
+    expect(v.summary).not.toContain("not followed");
+  });
+
+  it("a row an earlier run stored none after stopping at a restricted product reads restricted (#1673)", async () => {
+    const a = withImpactRows();
+    a.products[1] = {
+      ...a.products[1],
+      impactKind: "none",
+      via: null,
+      edgeIds: [],
+      severity: null,
+      technicalDetail: {
+        ...a.products[1].technicalDetail,
+        impact: { ...impact([]), severity: null, stoppedAtRestricted: 1 },
+      },
+    };
+    a.summary = "Stored summary.";
+    store.getPortfolioAssessment.mockResolvedValue(a);
+    const v = (await view())!;
+    const p2 = v.products.find((p) => p.productId === "p2")!;
+    expect(p2.impactKind).toBe("restricted");
+    // Only relabelled: it hides nothing the run saw, so the stored summary stands.
+    expect(p2.technicalDetail).toEqual(a.products[1].technicalDetail);
+    expect(v.summary).toBe("Stored summary.");
+    // Without the stop it stays not affected.
+    delete (a.products[1].technicalDetail as { impact: Record<string, unknown> }).impact
+      .stoppedAtRestricted;
+    expect((await view())!.products.find((p) => p.productId === "p2")!.impactKind).toBe("none");
   });
 
   it("a product the reader cannot read is restricted, keeping only its impact kind", async () => {
@@ -432,7 +470,7 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
     expect(v.verdict).toBe("gap-confirmed");
     // #1624 — the recomputed summary carries the impact overview; p3 is counted, not named.
     expect(v.summary).toBe(
-      "Nothing in the portfolio covers this.\n\nMust change: One. Downstream: Two (api, low). 1 downstream product is restricted for this run, so impact past it was not followed.",
+      "Nothing in the portfolio covers this.\n\nMust change: One. Downstream: Two (api, low). 1 downstream product is restricted, so it is not named.",
     );
   });
 

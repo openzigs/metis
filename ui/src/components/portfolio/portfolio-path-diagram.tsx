@@ -2,13 +2,18 @@
  * Epic #1608 (#1627) — the hop chain from a product that must change to a
  * downstream product, as a small SVG: one box per product, one labelled arrow
  * per hop. The whole chain is also its accessible name, in words.
+ *
+ * #1673 — an arrow's label is the words its accessible name uses ("a shared
+ * library", not the stored "shared-library"), and the drawing keeps its own
+ * width: on a narrow screen its container scrolls, rather than the text being
+ * scaled down until it cannot be read.
  */
 import { useId } from "react";
 import { viaLabel } from "@/lib/portfolio-impact";
 
 const BOX_W = 132;
 const BOX_H = 36;
-const GAP = 96;
+const GAP = 128;
 const PAD = 4;
 const NAME_MAX = 18;
 
@@ -26,9 +31,8 @@ export function PortfolioPathDiagram({
   const markerId = `portfolio-path-arrow-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
   if (path.length < 2) return null;
   const names = path.map((p) => p.name ?? "A product you cannot read");
-  const words = names
-    .map((n, i) => (i === 0 ? n : `${viaLabel(edges[i - 1]) ?? "an unclassified link"} to ${n}`))
-    .join(", then ");
+  const linkLabel = (i: number) => viaLabel(edges[i] ?? null) ?? "an unclassified link";
+  const words = names.map((n, i) => (i === 0 ? n : `${linkLabel(i - 1)} to ${n}`)).join(", then ");
   const width = PAD * 2 + path.length * BOX_W + (path.length - 1) * GAP;
   const height = BOX_H + PAD * 2 + 16;
   return (
@@ -38,7 +42,7 @@ export function PortfolioPathDiagram({
       viewBox={`0 0 ${width} ${height}`}
       width={width}
       height={height}
-      className="max-w-full text-foreground"
+      className="max-w-none shrink-0 text-foreground"
       data-testid="portfolio-path-diagram"
     >
       <defs>
@@ -96,7 +100,7 @@ export function PortfolioPathDiagram({
                   fontSize={11}
                   fill="currentColor"
                 >
-                  {edges[i] ?? "unclassified"}
+                  {linkLabel(i)}
                 </text>
               </>
             ) : null}

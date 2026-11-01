@@ -11,7 +11,7 @@ Refunds post to the ledger within 2 seconds | &lt;b&gt;fast&lt;/b&gt;
 
 Partly covered by Orders (acme/orders-api).
 
-Must change: Orders. Downstream: Reporting (database, medium); Storefront (api, medium). 1 downstream product is restricted for this run, so impact past it was not followed.
+Must change: Orders. Downstream: Reporting (database, medium); Storefront (api, medium). 1 downstream product is restricted, so it is not named.
 
 Refunds are only partly delivered today. Orders must change, and Reporting is hit hardest.
 
@@ -97,7 +97,7 @@ Restricted: you cannot read this product, so nothing about it is shown.
 
 **Severity derivation**
 
-- Hop 1: intrusive coupling starts at high; -1 for low confidence (0.3): medium.
+- Hop 1: intrusive coupling starts at high; −1 step for low confidence (0.3): medium.
 - Path: medium (a path is as severe as its weakest hop).
 
 ### Storefront
@@ -123,7 +123,7 @@ Restricted: you cannot read this product, so nothing about it is shown.
 
 **Severity derivation**
 
-- Hop 1: contract coupling starts at low; +1 because the provider's latest contract version made a breaking change: medium.
+- Hop 1: contract coupling starts at low; +1 step because the provider's latest contract version made a breaking change: medium.
 - Path: medium (a path is as severe as its weakest hop).
 
 ### Notifications

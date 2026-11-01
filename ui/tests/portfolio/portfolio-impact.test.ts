@@ -4,7 +4,7 @@
  * affected (never left out).
  */
 import { describe, expect, it } from "vitest";
-import { impactGroups, storedImpact, viaLabel } from "@/lib/portfolio-impact";
+import { IMPACT_LABEL, impactGroups, storedImpact, viaLabel } from "@/lib/portfolio-impact";
 import { product } from "./fixtures";
 import { hop, impactDetail, impactView } from "./impact-fixtures";
 
@@ -46,7 +46,9 @@ describe("impactGroups", () => {
         label: "Billing → Ledger",
         strength: "contract",
         base: "low",
-        modifiers: ["+1 step for a breaking contract change"],
+        modifiers: [
+          "+1 step because the provider's latest contract version made a breaking change",
+        ],
         confidence: 0.9,
         severity: "medium",
       },
@@ -89,11 +91,15 @@ describe("impactGroups", () => {
       repos: [{ label: "acme/p-warehouse", role: "consumer" }],
       files: [],
       contract: null,
-      tables: [
-        { name: "payments", detail: "table" },
-        { name: "public.ledger_entries", detail: "table, used" },
+      resources: [
+        {
+          heading: "Tables and columns",
+          items: [
+            { name: "payments", detail: null },
+            { name: "public.ledger_entries", detail: "table, used" },
+          ],
+        },
       ],
-      topics: [],
     });
 
     const ledger = impactGroups(impactView()).affected[1];
@@ -106,8 +112,9 @@ describe("impactGroups", () => {
     });
 
     const events = impactGroups(impactView()).affected[3];
-    expect(events.deepDive.topics).toEqual(["invoice.paid"]);
-    expect(events.deepDive.tables).toEqual([]);
+    expect(events.deepDive.resources).toEqual([
+      { heading: "Topics", items: [{ name: "invoice.paid", detail: null }] },
+    ]);
   });
 
   it("lists a must-change product's own repos and cited files", () => {
@@ -140,7 +147,7 @@ describe("impactGroups", () => {
       summary: "",
       derivation: [],
       path: [],
-      deepDive: { repos: [], files: [], contract: null, tables: [], topics: [] },
+      deepDive: { repos: [], files: [], contract: null, resources: [] },
     });
   });
 
@@ -153,6 +160,22 @@ describe("impactGroups", () => {
     const ledger = impactGroups(v).affected.find((p) => p.productId === "p-ledger")!;
     expect(ledger.impactWithheld).toBe(true);
     expect(ledger.derivation).toEqual([]);
+  });
+
+  it("#1673 — lists a product reached only through a restricted one as affected, last, never not affected", () => {
+    const v = impactView();
+    v.products[1] = { ...v.products[1], impactKind: "restricted" };
+    const { affected, notAffected } = impactGroups(v);
+    expect(notAffected.map((p) => p.productId)).not.toContain("p-crm");
+    expect(affected.at(-1)).toMatchObject({
+      productId: "p-crm",
+      name: "CRM",
+      restricted: false,
+      impactKind: "restricted",
+      severity: null,
+      impactWithheld: false,
+    });
+    expect(IMPACT_LABEL.restricted).toBe("Restricted");
   });
 
   it("names an unreadable hop end plainly", () => {
