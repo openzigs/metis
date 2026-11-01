@@ -54,6 +54,7 @@ import { productsRouter as productsMultiRouter } from "./products-multi.js";
 import { jiraRouter } from "./jira.js";
 import { changeAnalysisRouter } from "./change-analysis.js";
 import { impactAnalysisRouter } from "./impact-analysis.js";
+import { portfolioAssessmentsRouter } from "./portfolio-assessments.js";
 import { syncWebhookRouter, syncDriftRouter } from "./sync.js";
 import { initModelPreferenceRouter, initModelRecommendationRouter } from "./model-preferences.js";
 import { projectUsageRouter, projectTokenBudgetRouter } from "./usage.js";
@@ -179,6 +180,8 @@ export function apiRouter(): Router {
   r.use("/search", searchRouter());
   // Epic #159 — multi-project requirement-change → code-impact analysis.
   r.use("/impact-analyses", impactAnalysisRouter());
+  // Epic #1608 (#1625) — a requirement checked across the product portfolio.
+  r.use("/portfolio-assessments", portfolioAssessmentsRouter());
   // Epic #544 — multi-repo product documentation.
   r.use("/products", productsRateLimiter, productsMultiRouter());
   // Epic #556 — Jira integration.

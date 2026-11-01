@@ -4,7 +4,9 @@
 import { describe, expect, it } from "vitest";
 import {
   PORTFOLIO_ASSESSMENT_LIMITS,
+  PORTFOLIO_ASSESSMENT_MAX_PRODUCTS,
   PORTFOLIO_COVERAGES,
+  createPortfolioAssessmentSchema,
   portfolioAssessmentInputSchema,
   portfolioAssessmentProductInputSchema,
   portfolioAssessmentRepoInputSchema,
@@ -141,5 +143,46 @@ describe("portfolio assessment schemas", () => {
         }).success,
       ).toBe(false);
     });
+  });
+});
+
+describe("createPortfolioAssessmentSchema (#1625)", () => {
+  const ok = (v: unknown) => createPortfolioAssessmentSchema.safeParse(v).success;
+
+  it("takes exactly one of statement and requirementId", () => {
+    expect(ok({ statement: "Reset by email", scope: "all-accessible" })).toBe(true);
+    expect(ok({ requirementId: "r1", scope: "all-accessible" })).toBe(true);
+    expect(ok({ scope: "all-accessible" })).toBe(false);
+    expect(ok({ statement: "s", requirementId: "r1", scope: "all-accessible" })).toBe(false);
+  });
+
+  it("bounds the statement and the products", () => {
+    expect(ok({ statement: " ", scope: "all-accessible" })).toBe(false);
+    expect(ok({ statement: "x".repeat(8_001), scope: "all-accessible" })).toBe(false);
+    const ids = (n: number) => Array.from({ length: n }, (_, i) => `p${i}`);
+    // The list is ignored for all-accessible, but still bounded.
+    expect(
+      ok({
+        statement: "s",
+        scope: "all-accessible",
+        productIds: ids(PORTFOLIO_ASSESSMENT_MAX_PRODUCTS),
+      }),
+    ).toBe(true);
+    expect(
+      ok({
+        statement: "s",
+        scope: "all-accessible",
+        productIds: ids(PORTFOLIO_ASSESSMENT_MAX_PRODUCTS + 1),
+      }),
+    ).toBe(false);
+  });
+
+  it('a "product" scope names exactly one product; an unknown field is refused', () => {
+    expect(ok({ statement: "s", scope: "product" })).toBe(false);
+    expect(ok({ statement: "s", scope: "product", productIds: [] })).toBe(false);
+    expect(ok({ statement: "s", scope: "product", productIds: ["p1"] })).toBe(true);
+    expect(ok({ statement: "s", scope: "product", productIds: ["p1", "p2"] })).toBe(false);
+    expect(ok({ statement: "s", scope: "all-accessible", extra: true })).toBe(false);
+    expect(ok({ statement: "s", scope: "everything" })).toBe(false);
   });
 });

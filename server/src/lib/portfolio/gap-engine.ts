@@ -41,6 +41,7 @@ import {
   type CodeCitation,
   type FindingVerdict,
   type PortfolioAssessmentInput,
+  type PortfolioAssessmentProductInput,
   type PortfolioAssessmentScope,
   type PortfolioCoverage,
   type RequirementVerdict,
@@ -201,6 +202,8 @@ export interface PortfolioGapDeps {
   /** USD one model response cost; defaults to the price table (unpriced reads as 0). */
   costOf?: (response: ChatResponse) => number;
   signal?: AbortSignal;
+  /** Called as each product in scope finishes (#1625 job progress). */
+  onProgress?: (progress: { done: number; total: number }) => void;
 }
 
 // ─── Budget ─────────────────────────────────────────────────────────────────
@@ -591,7 +594,11 @@ function describeProduct(p: PortfolioProductResult): string {
   return `${p.name ?? p.productId} (${repos.map((r) => r.label).join(", ")})`;
 }
 
-function portfolioSummary(verdict: RequirementVerdict, products: PortfolioProductResult[]): string {
+/** The BA summary of a portfolio verdict over its products. */
+export function portfolioSummary(
+  verdict: RequirementVerdict,
+  products: readonly PortfolioProductResult[],
+): string {
   const with_ = (c: PortfolioCoverage) => products.filter((p) => p.coverage === c);
   switch (verdict) {
     case "implemented": {
@@ -621,7 +628,8 @@ function portfolioSummary(verdict: RequirementVerdict, products: PortfolioProduc
   }
 }
 
-function productSummary(p: PortfolioProductResult, criteria: readonly string[]): string {
+/** The BA summary of one product's coverage. */
+export function productSummary(p: PortfolioProductResult, criteria: readonly string[]): string {
   switch (p.coverage) {
     case "covers":
       return `Covers it: ${describeProduct(p)}.`;
@@ -690,9 +698,13 @@ export async function evaluatePortfolioGap(
     user,
     scoped.filter((p) => p.readable).map((p) => p.id),
   );
-  const products = await mapWithConcurrency(scoped, limits.concurrency, (p) =>
-    evaluateProduct(ctx, p, repos.get(p.id) ?? { repos: [], hidden: 0 }),
-  );
+  let done = 0;
+  const products = await mapWithConcurrency(scoped, limits.concurrency, async (p) => {
+    const result = await evaluateProduct(ctx, p, repos.get(p.id) ?? { repos: [], hidden: 0 });
+    done += 1;
+    deps.onProgress?.({ done, total: scoped.length });
+    return result;
+  });
   const verdict = rollUpPortfolioVerdict(products.map((p) => p.coverage));
   return {
     statement: input.statement,
@@ -703,6 +715,38 @@ export async function evaluatePortfolioGap(
     verdict,
     summary: portfolioSummary(verdict, products),
     costUsd: ctx.budget.total,
+  };
+}
+
+/** One product's #1621 record: its coverage, BA summary and technical detail. */
+export function toProductRecord(
+  p: PortfolioProductResult,
+  criteria: readonly string[],
+): PortfolioAssessmentProductInput {
+  return {
+    productId: p.productId,
+    coverage: p.coverage,
+    baSummary: productSummary(p, criteria),
+    technicalDetail:
+      p.coverage === "restricted"
+        ? {}
+        : {
+            reason: p.reason,
+            criteria: criteria.map((criterion, i) => ({
+              criterion,
+              coveredBy: p.criteriaCoveredBy[i],
+            })),
+            repos: p.repos.map((r) => ({
+              repoConnectionId: r.repoConnectionId,
+              label: r.label,
+              verdict: r.verdict,
+              criteria: r.criteria,
+              reason: r.reason,
+              costUsd: r.costUsd,
+            })),
+            inaccessibleRepoCount: p.inaccessibleRepoCount,
+            costUsd: p.costUsd,
+          },
   };
 }
 
@@ -722,31 +766,7 @@ export function toAssessmentInput(
     summary: result.summary,
     costUsd: result.costUsd,
     createdById: meta.createdById,
-    products: result.products.map((p) => ({
-      productId: p.productId,
-      coverage: p.coverage,
-      baSummary: productSummary(p, result.criteria),
-      technicalDetail:
-        p.coverage === "restricted"
-          ? {}
-          : {
-              reason: p.reason,
-              criteria: result.criteria.map((criterion, i) => ({
-                criterion,
-                coveredBy: p.criteriaCoveredBy[i],
-              })),
-              repos: p.repos.map((r) => ({
-                repoConnectionId: r.repoConnectionId,
-                label: r.label,
-                verdict: r.verdict,
-                criteria: r.criteria,
-                reason: r.reason,
-                costUsd: r.costUsd,
-              })),
-              inaccessibleRepoCount: p.inaccessibleRepoCount,
-              costUsd: p.costUsd,
-            },
-    })),
+    products: result.products.map((p) => toProductRecord(p, result.criteria)),
     repos: result.products.flatMap((p) =>
       p.repos.map((r) => ({
         productId: p.productId,

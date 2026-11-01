@@ -150,6 +150,7 @@ const KIND_LABELS: Record<JobKind, string> = {
   "spec-kit": "Spec Kit",
   "overview-regenerate": "Overview regenerate",
   "repo-ingest": "Repository deep ingest",
+  "portfolio-assessment": "Portfolio assessment",
 };
 
 export function jobKindLabel(kind: JobKind): string {

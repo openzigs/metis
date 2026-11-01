@@ -70,6 +70,8 @@ const GENERIC_FAILURE_MESSAGE: Record<JobKind, string> = {
   // #373 — a repository connector's Deep Ingest, run in the background.
   "repo-ingest":
     "Repository ingestion failed. The details are in the server log; run the ingest again to retry.",
+  // #1625 — a requirement checked across the product portfolio.
+  "portfolio-assessment": "The portfolio assessment failed. Please try again.",
 };
 
 /**

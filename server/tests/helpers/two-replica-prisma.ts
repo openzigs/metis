@@ -129,6 +129,7 @@ export function prismaModuleMock() {
     generatedDocument: { findFirst: vi.fn(async () => null) },
     importRun: { findFirst: vi.fn(async () => null) },
     impactAnalysis: { findFirst: vi.fn(async () => null) },
+    portfolioAssessment: { findFirst: vi.fn(async () => null) },
     jobScopeRecord: {
       upsert: vi.fn(async ({ create }: { create: JobScopeRow }) => {
         db.jobScopes.set(create.jobId, { ...create });

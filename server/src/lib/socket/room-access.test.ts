@@ -14,6 +14,7 @@ vi.mock("../prisma.js", () => ({
     generatedDocument: { findFirst: none },
     importRun: { findFirst: none },
     impactAnalysis: { findFirst: none },
+    portfolioAssessment: { findFirst: none },
   },
 }));
 const readJobScope = vi.hoisted(() => vi.fn());

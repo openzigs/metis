@@ -162,6 +162,50 @@ export function scriptedProvider(opts: { delayMs?: number } = {}): ScriptedProvi
 }
 
 /**
+ * #1625 — seed the portfolio (workspaces, projects, products, repos) into a
+ * migrated database, with each user a live member of the workspaces named.
+ */
+export async function seedPortfolio(
+  db: import("@prisma/client").PrismaClient,
+  users: Record<string, string[]>,
+): Promise<void> {
+  await db.role.create({ data: { id: "role-coordinator", key: "coordinator", name: "c" } });
+  for (const ws of [WS_A, WS_B]) {
+    await db.workspace.create({ data: { id: ws, name: ws, slug: ws } });
+  }
+  for (const [id, workspaces] of Object.entries(users)) {
+    await db.user.create({
+      data: { id, username: id, displayName: id, email: `${id}@example.test` },
+    });
+    await db.userRole.create({ data: { userId: id, roleId: "role-coordinator" } });
+    for (const workspaceId of workspaces) {
+      await db.workspaceMember.create({ data: { workspaceId, userId: id, role: "member" } });
+    }
+  }
+  const owner = Object.keys(users)[0];
+  for (const p of PROJECTS) {
+    await db.project.create({
+      data: { ...p, name: p.id, slug: p.id, createdById: owner, status: "active" },
+    });
+  }
+  for (const p of PRODUCTS) {
+    await db.product.create({ data: { ...p, slug: p.id, createdById: owner } });
+  }
+  for (const r of REPOS) {
+    await db.repoConnection.create({
+      data: {
+        id: r.id,
+        projectId: r.projectId,
+        label: r.name,
+        ownerOrOrg: r.owner,
+        repoName: r.name,
+      },
+    });
+    await db.productRepo.create({ data: { productId: r.productId, repoConnectionId: r.id } });
+  }
+}
+
+/**
  * A knowledge service whose project search returns each repo's {@link CODE} as
  * repository source chunks (`connector:repo:<id>:src/<path>`, #717 `path`).
  */

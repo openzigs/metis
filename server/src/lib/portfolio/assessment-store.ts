@@ -19,7 +19,11 @@ import {
   type PortfolioAssessment,
   type PortfolioAssessmentInput,
 } from "@metis/shared";
-import { Prisma, prisma } from "../prisma.js";
+// `Prisma` from the client package, not ../prisma.js: the column counts below are
+// read at import, and test files that mock ../prisma.js without `Prisma` load this
+// module through the socket job-room scope (#1625).
+import { Prisma } from "@prisma/client";
+import { prisma } from "../prisma.js";
 
 /** Bound values per statement kept under SQLite's 999, with room to spare. */
 export const SQLITE_SAFE_BIND_VALUES = 900;
@@ -43,16 +47,14 @@ function chunks<T>(rows: T[], size: number): T[][] {
   return out;
 }
 
-/**
- * Write an assessment, its product rows and its repo rows. Input is validated
- * against the `@metis/shared` schema (enums, lengths). Returns the new id.
- */
-export async function createPortfolioAssessment(raw: PortfolioAssessmentInput): Promise<string> {
-  const input = portfolioAssessmentInputSchema.parse(raw);
-  const id = randomUUID();
+/** The child rows of an assessment, each naming `assessmentId`. */
+function childRows(
+  assessmentId: string,
+  input: ReturnType<typeof portfolioAssessmentInputSchema.parse>,
+): Prisma.PrismaPromise<unknown>[] {
   const productRows: Prisma.PortfolioAssessmentProductCreateManyInput[] = input.products.map(
     (p) => ({
-      assessmentId: id,
+      assessmentId,
       productId: p.productId,
       coverage: p.coverage,
       impactKind: p.impactKind,
@@ -64,12 +66,29 @@ export async function createPortfolioAssessment(raw: PortfolioAssessmentInput): 
     }),
   );
   const repoRows: Prisma.PortfolioAssessmentRepoCreateManyInput[] = input.repos.map((r) => ({
-    assessmentId: id,
+    assessmentId,
     productId: r.productId,
     repoConnectionId: r.repoConnectionId,
     verdict: r.verdict,
     citations: JSON.stringify(r.citations),
   }));
+  return [
+    ...chunks(productRows, rowsPerInsert(PRODUCT_COLUMNS)).map((data) =>
+      prisma.portfolioAssessmentProduct.createMany({ data }),
+    ),
+    ...chunks(repoRows, rowsPerInsert(REPO_COLUMNS)).map((data) =>
+      prisma.portfolioAssessmentRepo.createMany({ data }),
+    ),
+  ];
+}
+
+/**
+ * Write an assessment, its product rows and its repo rows. Input is validated
+ * against the `@metis/shared` schema (enums, lengths). Returns the new id.
+ */
+export async function createPortfolioAssessment(raw: PortfolioAssessmentInput): Promise<string> {
+  const input = portfolioAssessmentInputSchema.parse(raw);
+  const id = randomUUID();
   await prisma.$transaction([
     prisma.portfolioAssessment.create({
       data: {
@@ -86,14 +105,66 @@ export async function createPortfolioAssessment(raw: PortfolioAssessmentInput): 
         createdById: input.createdById,
       },
     }),
-    ...chunks(productRows, rowsPerInsert(PRODUCT_COLUMNS)).map((data) =>
-      prisma.portfolioAssessmentProduct.createMany({ data }),
-    ),
-    ...chunks(repoRows, rowsPerInsert(REPO_COLUMNS)).map((data) =>
-      prisma.portfolioAssessmentRepo.createMany({ data }),
-    ),
+    ...childRows(id, input),
   ]);
   return id;
+}
+
+/**
+ * #1625 — fill in an assessment created `pending`: its result fields and every
+ * child row, in one batch transaction. Child rows already there (a retried
+ * completion) are replaced, never doubled. The source, scope and creator it
+ * was started with do not change.
+ */
+export async function completePortfolioAssessment(
+  id: string,
+  raw: PortfolioAssessmentInput,
+): Promise<void> {
+  const input = portfolioAssessmentInputSchema.parse(raw);
+  await prisma.$transaction([
+    prisma.portfolioAssessmentProduct.deleteMany({ where: { assessmentId: id } }),
+    prisma.portfolioAssessmentRepo.deleteMany({ where: { assessmentId: id } }),
+    prisma.portfolioAssessment.update({
+      where: { id },
+      data: {
+        statement: input.statement,
+        productIds: JSON.stringify(input.productIds),
+        status: input.status,
+        portfolioVerdict: input.portfolioVerdict,
+        summary: input.summary,
+        costUsd: input.costUsd,
+      },
+    }),
+    ...childRows(id, input),
+  ]);
+}
+
+/** #1625 — move an assessment to `running` or `failed`. */
+export async function setPortfolioAssessmentStatus(
+  id: string,
+  status: "running" | "failed",
+): Promise<void> {
+  await prisma.portfolioAssessment.updateMany({ where: { id }, data: { status } });
+}
+
+/**
+ * #1625 — the newest assessments naming `productId`, or else those `createdById`
+ * started, newest first. Ids only: every reader re-filters what it may see.
+ */
+export async function listPortfolioAssessmentIds(filter: {
+  productId?: string;
+  createdById?: string;
+  take: number;
+}): Promise<string[]> {
+  const rows = await prisma.portfolioAssessment.findMany({
+    where: filter.productId
+      ? { products: { some: { productId: filter.productId } } }
+      : { createdById: filter.createdById },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: filter.take,
+    select: { id: true },
+  });
+  return rows.map((r) => r.id);
 }
 
 function parseJson<T>(raw: string, fallback: T): T {
