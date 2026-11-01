@@ -3,17 +3,7 @@
  * tables. When the model could not write it, or the reader sees less than the
  * run did, the page says so rather than presenting the template as prose.
  */
-import type { PortfolioAssessmentView } from "@metis/shared";
-
-const DEGRADED_REASON: Record<string, string> = {
-  "model-unavailable": "no model is configured",
-  "model-offline": "the model is offline",
-  "model-error": "the model call failed",
-  "model-unparseable": "the model's answer could not be read",
-  "model-empty": "the model's answer was empty",
-  "post-check-rejected":
-    "every sentence the model wrote named something the assessment does not contain",
-};
+import { PORTFOLIO_DEGRADED_REASON, type PortfolioAssessmentView } from "@metis/shared";
 
 export function PortfolioBaSummary({ view }: { view: PortfolioAssessmentView }) {
   const paragraphs = view.summary
@@ -39,8 +29,8 @@ export function PortfolioBaSummary({ view }: { view: PortfolioAssessmentView }) 
       {report?.degraded ? (
         <p className="text-xs text-muted-foreground" data-testid="portfolio-summary-degraded">
           Written from a template because{" "}
-          {DEGRADED_REASON[report.degradedReason ?? ""] ?? "the model could not write it"}. Business
-          and stakeholder impact were not assessed.
+          {PORTFOLIO_DEGRADED_REASON[report.degradedReason ?? ""] ?? "the model could not write it"}
+          . Business and stakeholder impact were not assessed.
         </p>
       ) : null}
       {report?.withheld ? (

@@ -18,7 +18,7 @@ import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { portfolioApi } from "@/lib/portfolio-api";
 import { triggerDownload } from "@/lib/plugins-api";
-import { isTerminalStatus, usePortfolioAssessment } from "@/lib/portfolio-hooks";
+import { isFinalReadError, isTerminalStatus, usePortfolioAssessment } from "@/lib/portfolio-hooks";
 import { coverageHeadline, coverageRows } from "@/lib/portfolio-coverage";
 import { impactGroups } from "@/lib/portfolio-impact";
 import { PortfolioCoverageHeadline } from "@/components/portfolio/portfolio-coverage-headline";
@@ -27,7 +27,13 @@ import { PortfolioAssessmentProgress } from "@/components/portfolio/portfolio-as
 import { PortfolioBaSummary } from "@/components/portfolio/portfolio-ba-summary";
 import { PortfolioImpactView } from "@/components/portfolio/portfolio-impact-view";
 
-/** #1627 — the #1624 Markdown export; off until the run has finished. */
+/**
+ * #1627 — the #1624 Markdown export; off until the run has finished.
+ *
+ * #1673 — a failed check exports too, on purpose: the file records what was
+ * asked, where it looked and that it failed, which is what an analyst needs to
+ * report the failure or try again.
+ */
 function ExportButton({ view }: { view: PortfolioAssessmentView }) {
   const exportMutation = useMutation({
     mutationFn: () => portfolioApi.exportMarkdown(view.id),
@@ -74,7 +80,7 @@ export default function PortfolioAssessmentPage() {
       </p>
     );
   }
-  if (query.isError || !view) {
+  if (!view) {
     return (
       <Card
         className="m-2 border-destructive p-4 text-sm text-destructive"
@@ -107,6 +113,18 @@ export default function PortfolioAssessmentPage() {
         </p>
       </section>
 
+      {query.isError ? (
+        // #1673 — a failed re-read keeps the last good answer on screen.
+        <p
+          role="status"
+          className="rounded-md border border-border p-3 text-sm text-muted-foreground"
+          data-testid="portfolio-detail-stale"
+        >
+          {isFinalReadError(query.error)
+            ? "This check can no longer be refreshed: it may have been removed, or you may no longer have access to it. Showing what was last loaded."
+            : "Could not refresh this check just now. Showing what was last loaded; it will try again."}
+        </p>
+      ) : null}
       {running ? <PortfolioAssessmentProgress status={view.status} job={job} /> : null}
       {headline ? <PortfolioCoverageHeadline headline={headline} /> : null}
       {view.status === "completed" ? <PortfolioBaSummary view={view} /> : null}
@@ -121,7 +139,10 @@ export default function PortfolioAssessmentPage() {
           <p className="text-sm text-muted-foreground" data-testid="portfolio-matrix-empty">
             {running
               ? "The products in scope are listed as soon as the check has found them."
-              : "No products were in scope."}
+              : view.status === "failed"
+                ? // #1673 — an all-accessible check resolves its products only as it runs.
+                  "The check failed before it found the products in scope."
+                : "No products were in scope."}
           </p>
         )}
       </section>

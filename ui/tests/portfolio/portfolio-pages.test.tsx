@@ -46,6 +46,7 @@ vi.mock("@/hooks/use-job-events", () => ({
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 import { portfolioApi } from "@/lib/portfolio-api";
+import { productsApi } from "@/lib/products-api";
 import { ApiError } from "@/lib/api-client";
 import PortfolioAssessmentPage from "@/app/(authed)/portfolio/[id]/page";
 import PortfolioPage from "@/app/(authed)/portfolio/page";
@@ -283,5 +284,85 @@ describe("portfolio entry page", () => {
     const { container } = render(<PortfolioPage />, { wrapper: makeWrapper() });
     await screen.findByTestId("portfolio-recent-empty");
     expect(await axeViolations(container)).toEqual([]);
+  });
+});
+
+describe("#1673 — the coverage pages' follow-ups", () => {
+  const products = vi.mocked(productsApi.list);
+
+  it("keeps the last answer on screen when a re-read fails, and says so", async () => {
+    api.get.mockResolvedValueOnce(view({ status: "running", productIds: ["p-billing"] }));
+    const { rerender } = render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    await screen.findByTestId("portfolio-detail-root");
+    api.get.mockRejectedValue(new ApiError(503, "Unavailable"));
+    // A job event re-reads it; the read fails.
+    useJobLifecycle.mockReturnValue({ jobId: "pa-0000000001", status: "started" });
+    rerender(<PortfolioAssessmentPage />);
+    expect(await screen.findByTestId("portfolio-detail-stale")).toHaveTextContent(
+      "Could not refresh this check just now. Showing what was last loaded",
+    );
+    expect(screen.getByTestId("portfolio-detail-statement")).toBeVisible();
+    expect(screen.queryByTestId("portfolio-detail-error")).toBeNull();
+  });
+
+  it("says a check that is gone or no longer readable cannot be refreshed", async () => {
+    api.get.mockResolvedValueOnce(view({ status: "running" }));
+    const { rerender } = render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    await screen.findByTestId("portfolio-detail-root");
+    api.get.mockRejectedValue(new ApiError(404, "Portfolio assessment not found"));
+    useJobLifecycle.mockReturnValue({ jobId: "pa-0000000001", status: "started" });
+    rerender(<PortfolioAssessmentPage />);
+    expect(await screen.findByTestId("portfolio-detail-stale")).toHaveTextContent(
+      "This check can no longer be refreshed",
+    );
+  });
+
+  it("says a failed check failed before it found its products, not that there were none", async () => {
+    api.get.mockResolvedValue(view({ status: "failed", productIds: [] }));
+    render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByTestId("portfolio-matrix-empty")).toHaveTextContent(
+      "The check failed before it found the products in scope.",
+    );
+    // A failed check still exports, on purpose: what was asked, and that it failed.
+    expect(screen.getByTestId("portfolio-export-md")).toBeEnabled();
+  });
+
+  it("starts the form afresh when the search params change, so it never sends a stale requirement", async () => {
+    const user = userEvent.setup();
+    api.list.mockResolvedValue([]);
+    api.create.mockResolvedValue({ id: "pa-new" });
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams({ requirementId: "req-1", title: "First" }) as never,
+    );
+    const { rerender } = render(<PortfolioPage />, { wrapper: makeWrapper() });
+    expect(screen.getByTestId("portfolio-form-requirement")).toHaveTextContent("First");
+    // A client navigation to the same page with another requirement.
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams({ requirementId: "req-2", title: "Second" }) as never,
+    );
+    rerender(<PortfolioPage />);
+    expect(screen.getByTestId("portfolio-form-requirement")).toHaveTextContent("Second");
+    await user.click(screen.getByRole("button", { name: "Check coverage" }));
+    await waitFor(() =>
+      expect(api.create).toHaveBeenCalledWith({ requirementId: "req-2", scope: "all-accessible" }),
+    );
+  });
+
+  it("searches every product, a full page at a time, and says when the list is partial", async () => {
+    const user = userEvent.setup();
+    api.list.mockResolvedValue([]);
+    products.mockResolvedValue({
+      items: [
+        { id: "p-billing", name: "Billing" },
+        { id: "p-crm", name: "CRM" },
+      ],
+      total: 140,
+    } as never);
+    render(<PortfolioPage />, { wrapper: makeWrapper() });
+    await user.click(screen.getByRole("radio", { name: "One product" }));
+    expect(products).toHaveBeenCalledWith({ pageSize: 100 });
+    expect(await screen.findByText(/Showing 2 of 140 products/)).toBeVisible();
+    await user.type(screen.getByLabelText("Find a product"), "ledg");
+    await waitFor(() => expect(products).toHaveBeenCalledWith({ pageSize: 100, search: "ledg" }));
   });
 });

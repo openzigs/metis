@@ -55,10 +55,13 @@ describe("PortfolioCoverageMatrix", () => {
     renderMatrix();
     const toggle = screen.getByRole("button", { name: /show 2 citations for billing/i });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // #1673 — the visible label says what a click does, not only the accessible name.
+    expect(toggle).toHaveTextContent("Show 2 citations");
     expect(screen.queryByTestId("portfolio-citations")).toBeNull();
 
     await user.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(toggle).toHaveTextContent("Hide 2 citations");
     const panel = screen.getByTestId("portfolio-citations");
     expect(toggle).toHaveAttribute("aria-controls", panel.id);
     expect(

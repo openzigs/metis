@@ -17,6 +17,11 @@ export interface OverviewRow {
 /**
  * The impact in one or two plain sentences: what must change and what is
  * downstream. A product the reader cannot read is counted, never named.
+ *
+ * #1673 — a readable product whose impact runs, or may run, through one the
+ * reader cannot read (`restricted` impact) is named as such. Nothing says the
+ * walk "was not followed": that was true only of the run, and a narrower
+ * reader's restricted product may be one the run walked through.
  */
 export function impactOverview(
   rows: readonly OverviewRow[],
@@ -27,6 +32,7 @@ export function impactOverview(
   const downstream = rows.filter((r) => r.impactKind === "downstream-consumer");
   const shown = downstream.filter((r) => named(r));
   const hidden = downstream.length - shown.length;
+  const behind = rows.filter((r) => r.impactKind === "restricted" && named(r));
   const parts: string[] = [];
   if (direct.length > 0) parts.push(`Must change: ${direct.map((r) => named(r)).join(", ")}.`);
   if (shown.length > 0) {
@@ -37,11 +43,15 @@ export function impactOverview(
     parts.push(`Downstream: ${shown.map(detail).join("; ")}.`);
   }
   if (hidden > 0) {
-    // #1668 — and the walk never goes through one, so say what it did not follow.
     parts.push(
       hidden === 1
-        ? "1 downstream product is restricted for this run, so impact past it was not followed."
-        : `${hidden} downstream products are restricted for this run, so impact past them was not followed.`,
+        ? "1 downstream product is restricted, so it is not named."
+        : `${hidden} downstream products are restricted, so they are not named.`,
+    );
+  }
+  if (behind.length > 0) {
+    parts.push(
+      `Restricted: ${behind.map((r) => named(r)).join(", ")} may be reached through a restricted product, so ${behind.length === 1 ? "its impact is" : "their impact is"} not shown.`,
     );
   }
   return parts.join(" ");
@@ -55,5 +65,7 @@ export function impactOverview(
 export function impactSentence(p: Pick<OverviewRow, "impactKind" | "via" | "severity">): string {
   if (p.impactKind === "direct-change") return "Must change to deliver this requirement.";
   if (p.impactKind === "none") return "Not affected.";
+  // #1673 — reached, or maybe reached, through a product the reader cannot read.
+  if (p.impactKind === "restricted") return "May be reached through a restricted product.";
   return `Downstream consumer${p.via ? ` via ${p.via}` : ""}${p.severity ? ` (${p.severity})` : ""}.`;
 }

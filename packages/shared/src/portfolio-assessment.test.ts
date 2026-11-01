@@ -6,11 +6,101 @@ import {
   PORTFOLIO_ASSESSMENT_LIMITS,
   PORTFOLIO_ASSESSMENT_MAX_PRODUCTS,
   PORTFOLIO_COVERAGES,
+  PORTFOLIO_DEGRADED_REASON,
+  PORTFOLIO_RESOURCE_GROUPS,
   createPortfolioAssessmentSchema,
   portfolioAssessmentInputSchema,
   portfolioAssessmentProductInputSchema,
   portfolioAssessmentRepoInputSchema,
+  portfolioModifierText,
+  portfolioResourceGroup,
+  portfolioResourceLists,
 } from "./portfolio-assessment.js";
+import { PRODUCT_RESOURCE_KINDS } from "./product-docs.js";
+
+describe("#1673 — the wording the page and the export share", () => {
+  it("accepts a restricted impact kind on a product row", () => {
+    expect(
+      portfolioAssessmentProductInputSchema.parse({
+        productId: "p",
+        coverage: "not-covered",
+        impactKind: "restricted",
+      }).impactKind,
+    ).toBe("restricted");
+  });
+
+  it("puts each severity modifier into words, and an unknown one as stored", () => {
+    expect(portfolioModifierText({ kind: "breaking-contract" })).toBe(
+      "+1 step because the provider's latest contract version made a breaking change",
+    );
+    expect(portfolioModifierText({ kind: "low-confidence", confidence: 0.4 })).toBe(
+      "−1 step for low confidence (0.4)",
+    );
+    expect(portfolioModifierText({ kind: "low-confidence" })).toBe(
+      "−1 step for low confidence (unknown)",
+    );
+    expect(portfolioModifierText({ kind: "future-kind" })).toBe("future-kind");
+  });
+
+  it("gives every resource kind its own heading, and an unknown one a fallback", () => {
+    expect(PRODUCT_RESOURCE_KINDS.map((k) => portfolioResourceGroup(k))).toEqual([
+      "Databases",
+      "Tables and columns",
+      "Topics",
+      "Identity providers",
+      "Buckets",
+    ]);
+    expect(new Set(Object.values(PORTFOLIO_RESOURCE_GROUPS)).size).toBe(
+      PRODUCT_RESOURCE_KINDS.length,
+    );
+    expect(portfolioResourceGroup("queue")).toBe("Other resources");
+  });
+
+  it("groups a hop's resources by kind, not every one under tables (#1673)", () => {
+    const orders = {
+      schemaName: "public",
+      objectName: "orders",
+      objectType: "table",
+      usageClass: "reads",
+    };
+    expect(portfolioResourceLists({ kind: "identity-provider", name: "okta" }, [])).toEqual([
+      { heading: "Identity providers", items: [{ name: "okta", detail: null }] },
+    ]);
+    expect(portfolioResourceLists({ kind: "bucket", name: "exports" }, [])[0].heading).toBe(
+      "Buckets",
+    );
+    expect(portfolioResourceLists({ kind: "queue", name: "jobs" }, [])).toEqual([
+      { heading: "Other resources", items: [{ name: "jobs", detail: "queue" }] },
+    ]);
+    // A database resource and the tables both ends use: two lists, databases first.
+    expect(portfolioResourceLists({ kind: "database", name: "main" }, [orders])).toEqual([
+      { heading: "Databases", items: [{ name: "main", detail: null }] },
+      {
+        heading: "Tables and columns",
+        items: [{ name: "public.orders", detail: "table, reads" }],
+      },
+    ]);
+    // The resource is not listed twice when the classifications already name it.
+    expect(portfolioResourceLists({ kind: "table", name: "orders" }, [orders])).toEqual([
+      {
+        heading: "Tables and columns",
+        items: [{ name: "public.orders", detail: "table, reads" }],
+      },
+    ]);
+    expect(portfolioResourceLists(null, [])).toEqual([]);
+  });
+
+  it("names every degraded reason the report writes", () => {
+    expect(Object.keys(PORTFOLIO_DEGRADED_REASON).sort()).toEqual([
+      "model-empty",
+      "model-error",
+      "model-offline",
+      "model-unavailable",
+      "model-unparseable",
+      "post-check-rejected",
+    ]);
+  });
+});
 
 describe("portfolio assessment schemas", () => {
   it("fills the defaults an engine may leave out", () => {

@@ -175,7 +175,11 @@ export interface RepoConnectionOption {
 }
 
 export const productsApi = {
-  list: async (params?: { search?: string; limit?: number; offset?: number }) =>
+  /**
+   * #1673 — `GET /products` pages by `page` and `pageSize` (`paginationQuerySchema`,
+   * at most `MAX_PAGE_SIZE`); the `limit` this used to send was ignored.
+   */
+  list: async (params?: { search?: string; page?: number; pageSize?: number }) =>
     apiFetch<{ items: Product[]; total: number }>("/products", { params }),
 
   get: async (id: string) => apiFetch<ProductWithRepos>(`/products/${id}`),

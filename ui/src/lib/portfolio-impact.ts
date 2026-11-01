@@ -7,7 +7,14 @@
  * already withheld from this reader any path through a repo or product they
  * cannot read (#1625). This reads those fields and puts them into words.
  */
-import type { CodeCitation, PortfolioAssessmentView } from "@metis/shared";
+import {
+  CHANGE_SEVERITIES,
+  portfolioModifierText,
+  portfolioResourceLists,
+  type CodeCitation,
+  type PortfolioAssessmentView,
+  type PortfolioResourceList,
+} from "@metis/shared";
 import { storedRepos } from "@/lib/portfolio-coverage";
 
 type Product = PortfolioAssessmentView["products"][number];
@@ -15,6 +22,7 @@ type Product = PortfolioAssessmentView["products"][number];
 export const IMPACT_LABEL: Record<Product["impactKind"], string> = {
   "direct-change": "Must change",
   "downstream-consumer": "Downstream consumer",
+  restricted: "Restricted",
   none: "Not affected",
 };
 
@@ -30,9 +38,6 @@ const VIA_LABEL: Record<string, string> = {
 export function viaLabel(via: string | null): string | null {
   return via ? (VIA_LABEL[via] ?? via) : null;
 }
-
-/** Strongest first: the order `CHANGE_SEVERITIES` uses. */
-const SEVERITY_ORDER = ["critical", "high", "medium", "low"];
 
 /** One hop of a stored impact path (#1623 `ImpactHop`), as far as this view reads it. */
 export interface ImpactHop {
@@ -147,14 +152,6 @@ export interface HopDerivation {
   severity: string;
 }
 
-function modifierText(m: ImpactHop["severity"]["modifiers"][number]): string {
-  if (m.kind === "breaking-contract") return "+1 step for a breaking contract change";
-  if (m.kind === "low-confidence") {
-    return `−1 step for low confidence (${m.confidence ?? "unknown"})`;
-  }
-  return m.kind;
-}
-
 export interface DeepDive {
   repos: Array<{ label: string; role: string }>;
   files: Array<{ location: string; repo: string; callSite: boolean }>;
@@ -162,8 +159,12 @@ export interface DeepDive {
     version: number;
     items: Array<{ id: string; change: string; breaking: boolean }>;
   } | null;
-  tables: Array<{ name: string; detail: string }>;
-  topics: string[];
+  /**
+   * #1673 — the shared resources the last hop crosses, one list per
+   * `ProductResource.kind` (databases, tables and columns, topics, identity
+   * providers, buckets), as the Markdown export lists them.
+   */
+  resources: PortfolioResourceList[];
 }
 
 export interface AffectedProduct {
@@ -232,18 +233,6 @@ function deepDiveFor(
       callSite: true,
     })),
   ];
-  const shared = last?.sharedObjects ?? [];
-  const resource = last?.resource ?? null;
-  const resourceListed = resource && shared.some((o) => o.objectName === resource.name);
-  const tables = [
-    ...(resource && resource.kind !== "topic" && !resourceListed
-      ? [{ name: resource.name, detail: resource.kind }]
-      : []),
-    ...shared.map((o) => ({
-      name: o.schemaName ? `${o.schemaName}.${o.objectName}` : o.objectName,
-      detail: `${o.objectType}, ${o.usageClass}`,
-    })),
-  ];
   return {
     repos: [...repoRows.values()],
     files,
@@ -251,22 +240,24 @@ function deepDiveFor(
       last?.contract && last.contract.items.length > 0
         ? { version: last.contract.version, items: last.contract.items }
         : null,
-    tables,
-    topics: resource?.kind === "topic" ? [resource.name] : [],
+    resources: portfolioResourceLists(last?.resource ?? null, last?.sharedObjects ?? []),
   };
 }
 
+/** Must change first, then by severity (`CHANGE_SEVERITIES`, strongest first), restricted last. */
 function rank(p: AffectedProduct): number {
   if (p.impactKind === "direct-change") return -1;
-  const i = SEVERITY_ORDER.indexOf(p.severity ?? "");
-  return i === -1 ? SEVERITY_ORDER.length : i;
+  if (p.impactKind === "restricted") return CHANGE_SEVERITIES.length + 1;
+  const i = (CHANGE_SEVERITIES as readonly string[]).indexOf(p.severity ?? "");
+  return i === -1 ? CHANGE_SEVERITIES.length : i;
 }
 
 /**
  * Every product the requirement reaches, and every one it does not. Products
  * that must change come first, then downstream consumers from most to least
- * severe. Nothing in the view is left out: a product is in one list or the
- * other.
+ * severe, then (#1673) those it may reach only through a product the reader
+ * cannot read: never listed not affected. Nothing in the view is left out: a
+ * product is in one list or the other.
  */
 export function impactGroups(view: PortfolioAssessmentView): {
   affected: AffectedProduct[];
@@ -296,7 +287,7 @@ export function impactGroups(view: PortfolioAssessmentView): {
         label: `${nameOf(h.fromProductId) ?? "A product"} → ${nameOf(h.toProductId) ?? "a product"}`,
         strength: h.severity.strength ?? "unclassified",
         base: h.severity.base,
-        modifiers: h.severity.modifiers.map(modifierText),
+        modifiers: h.severity.modifiers.map(portfolioModifierText),
         confidence: h.confidence,
         severity: h.severity.severity,
       })),
@@ -312,7 +303,7 @@ export function impactGroups(view: PortfolioAssessmentView): {
       impactWithheld:
         !restricted && (p.technicalDetail as { impactWithheld?: unknown }).impactWithheld === true,
       deepDive: restricted
-        ? { repos: [], files: [], contract: null, tables: [], topics: [] }
+        ? { repos: [], files: [], contract: null, resources: [] }
         : deepDiveFor(view, p, impact),
     });
   }

@@ -1450,9 +1450,11 @@ requirement needs no change. Cross-product coupling is a repo on several product
   its repo. A consumer product they cannot read is `restricted`: its id and
   `downstream-consumer`, nothing else, and the walk never goes through it. The walk
   records how many it stopped at (`stoppedAtRestricted`, stored in every readable row's
-  `technicalDetail.impact`), the summary says impact past them was not followed, and the
-  export reads a product nothing reached as "Not reached", not "Not affected", in that
-  case (#1668; a fuller reading of FR-3 for such a product is the owner's to confirm).
+  `technicalDetail.impact`). When it stopped at any, a readable product nothing readable
+  reached has the impact kind `restricted`, not `none`: it may be reached through one, so
+  it is never stated unaffected (#1668; the owner's AC3 decision, #1673). The view, the
+  page and the export all read it "Restricted", and a row an earlier run stored `none`
+  with a stop is relabelled at read time.
 - **Severity** (`impact-severity.ts`, `CHANGE_SEVERITIES`). Base from the strength
   (`intrusive`/`functional` high, `model` medium, `contract` low, unclassified medium);
   +1 when the provider's own latest `ProductContractDoc` diff breaks (`isBreakingDiff`: an
@@ -1471,9 +1473,15 @@ product reached outside the scope gets its own `downstream-consumer` row (`not-c
 with `technicalDetail.outOfScope`, or `restricted`); the schema admits a row outside
 `productIds` only for that, and such a row never enters the portfolio verdict or the
 read rule. At read time a path through a repo or product the reader cannot read now is
-withheld whole (`impactWithheld`, kept on a row whose coverage is recomputed); the impact
-kind stays, and an out-of-scope row's summary is rebuilt without the path's kind and
-severity (#1668). The walk is read-only: no writes, no DDL, no connector call.
+withheld whole (`impactWithheld`, kept on a row whose coverage is recomputed); a
+`downstream-consumer` row whose path is withheld reads `restricted` for that reader
+(#1673), and an out-of-scope row's summary is rebuilt without the path's kind and
+severity (#1668). The overview names `restricted` products and counts the unreadable
+ones; it never says impact "was not followed", which a narrower reader could not know.
+The page and the export share their wording through `@metis/shared`
+(`PORTFOLIO_DEGRADED_REASON`, `portfolioModifierText`, `portfolioResourceLists`, which
+groups a hop's resources by `ProductResource.kind`). The walk is read-only: no writes,
+no DDL, no connector call.
 
 **BA report and export (#1624)** (`server/src/lib/portfolio/assessment-report.ts`,
 `assessment-markdown.ts`). After the impact walk, one model call through the provider

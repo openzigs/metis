@@ -8,11 +8,11 @@ import type { PortfolioAssessmentInput } from "@metis/shared";
 import {
   directChangeProductIds,
   edgeFlows,
-  impactSentence,
   withImpact,
   type PortfolioImpactResult,
   type ProductImpact,
 } from "./impact-engine.js";
+import { impactSentence } from "./report-overview.js";
 
 describe("edgeFlows", () => {
   const flows = (direction: string | null, targetRepoId: string | null = "t") =>
@@ -108,6 +108,10 @@ describe("impactSentence", () => {
       "Must change to deliver this requirement.",
     );
     expect(impactSentence(impactOf({ productId: "p" }))).toBe("Not affected.");
+    // #1673 — reached, or maybe reached, only through a restricted product.
+    expect(impactSentence(impactOf({ productId: "p", impactKind: "restricted" }))).toBe(
+      "May be reached through a restricted product.",
+    );
     expect(
       impactSentence(
         impactOf({
