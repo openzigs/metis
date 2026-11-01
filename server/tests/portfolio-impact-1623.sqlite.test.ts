@@ -359,9 +359,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           hiddenEdgeCount: 0,
         });
         // Not walked through: Ledger is only reachable via Partner's own edges.
-        expect(of(impact, P.ledger).impactKind).toBe("none");
-        // #1668 — and the walk says it stopped there, so `none` is not stated as certain.
+        // #1668 — the walk says it stopped there, and (#1673, the owner's AC3 call) a
+        // readable product it did not reach reads `restricted`, never `none`.
         expect(impact.stoppedAtRestricted).toBe(1);
+        expect(of(impact, P.ledger)).toEqual(
+          expect.objectContaining({
+            impactKind: "restricted",
+            restricted: false,
+            name: "Ledger",
+            via: null,
+            severity: null,
+            hops: [],
+          }),
+        );
         // The edge from a ws-b repo Ana cannot read is not walked, only counted.
         expect(of(impact, P.billing).hiddenEdgeCount).toBe(1);
         const text = JSON.stringify(impact);
@@ -381,6 +391,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           }),
         );
         expect(of(impact, P.ledger).impactKind).toBe("downstream-consumer");
+        expect(impact.products.map((p) => p.impactKind)).not.toContain("restricted");
         expect(of(impact, P.billing).hiddenEdgeCount).toBe(0);
         expect(impact.stoppedAtRestricted).toBe(0);
       });
@@ -411,7 +422,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(stored.products.map((p) => [p.productId, p.coverage, p.impactKind])).toEqual([
           [P.partner, "restricted", "downstream-consumer"],
           [P.billing, "partial", "direct-change"],
-          [P.ledger, "not-covered", "none"],
+          [P.ledger, "not-covered", "restricted"],
         ]);
         const partner = stored.products.find((p) => p.productId === P.partner)!;
         expect(partner).toEqual(
@@ -426,7 +437,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(stored.products.find((p) => p.productId === P.billing)!.technicalDetail).toEqual(
           expect.objectContaining({ impact: expect.objectContaining({ hiddenEdgeCount: 1 }) }),
         );
-        // #1668 — Ledger's `none` carries where the walk stopped.
+        // #1668 — Ledger's `restricted` carries where the walk stopped.
         expect(stored.products.find((p) => p.productId === P.ledger)!.technicalDetail).toEqual(
           expect.objectContaining({
             impact: expect.objectContaining({ stoppedAtRestricted: 1 }),

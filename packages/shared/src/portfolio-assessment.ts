@@ -8,6 +8,7 @@
 import { z } from "zod";
 import { REQUIREMENT_KINDS, REQUIREMENT_VERDICTS } from "./constants.js";
 import { NFR_CATEGORIES } from "./elicitation.js";
+import type { ProductResourceKind } from "./product-docs.js";
 
 /** Which products an assessment looked at: one product, or every one the caller can read. */
 export const PORTFOLIO_ASSESSMENT_SCOPES = ["product", "all-accessible"] as const;
@@ -30,8 +31,20 @@ export const PORTFOLIO_COVERAGES = [
 ] as const;
 export type PortfolioCoverage = (typeof PORTFOLIO_COVERAGES)[number];
 
-/** How the requirement reaches a product: it must change, or it consumes what changes. */
-export const PORTFOLIO_IMPACT_KINDS = ["direct-change", "downstream-consumer", "none"] as const;
+/**
+ * How the requirement reaches a product: it must change, or it consumes what
+ * changes. #1673 — `restricted`: a product the reader can read whose impact
+ * runs, or may run, through a product they cannot read: the walk stopped at a
+ * restricted product and so could not rule it out, or the path to it is
+ * withheld from this reader. Nothing of the path is given, and it is never
+ * stated unaffected.
+ */
+export const PORTFOLIO_IMPACT_KINDS = [
+  "direct-change",
+  "downstream-consumer",
+  "restricted",
+  "none",
+] as const;
 export type PortfolioImpactKind = (typeof PORTFOLIO_IMPACT_KINDS)[number];
 
 const jsonValue: z.ZodType<unknown> = z.unknown();
@@ -289,4 +302,100 @@ export interface PortfolioAssessmentListItem {
   createdById: string;
   createdAt: string;
   updatedAt: string;
+}
+
+// ─── #1673 — wording the page and the Markdown export share ─────────────────
+
+/** Why the BA summary is the deterministic template (`PortfolioReport.degradedReason`). */
+export const PORTFOLIO_DEGRADED_REASON: Readonly<Record<string, string>> = {
+  "model-unavailable": "no model is configured",
+  "model-offline": "the model is offline",
+  "model-error": "the model call failed",
+  "model-unparseable": "the model's answer could not be read",
+  "model-empty": "the model's answer was empty",
+  "post-check-rejected":
+    "every sentence the model wrote named something the assessment does not contain",
+};
+
+/**
+ * One stored severity modifier of an impact hop (#1623 `HopSeverity`), in
+ * words. The breaking contract is read from the provider's latest contract
+ * version, not from this requirement (#1668). An unknown kind is returned as
+ * stored, so a caller that renders markup must escape the result.
+ */
+export function portfolioModifierText(m: { kind: string; confidence?: number }): string {
+  if (m.kind === "breaking-contract") {
+    return "+1 step because the provider's latest contract version made a breaking change";
+  }
+  if (m.kind === "low-confidence") {
+    return `−1 step for low confidence (${m.confidence ?? "unknown"})`;
+  }
+  return m.kind;
+}
+
+/**
+ * The deep-dive heading a shared resource of an impact hop is listed under, by
+ * its `ProductResource.kind` (#1618). The tables and columns the usage
+ * classifications found are listed under `table`'s heading.
+ */
+export const PORTFOLIO_RESOURCE_GROUPS: Readonly<Record<ProductResourceKind, string>> = {
+  database: "Databases",
+  table: "Tables and columns",
+  topic: "Topics",
+  "identity-provider": "Identity providers",
+  bucket: "Buckets",
+};
+
+const OTHER_RESOURCES = "Other resources";
+
+/** The heading for a resource kind, including one this build does not know. */
+export function portfolioResourceGroup(kind: string): string {
+  return (PORTFOLIO_RESOURCE_GROUPS as Record<string, string>)[kind] ?? OTHER_RESOURCES;
+}
+
+/** One deep-dive list of an impact hop's shared resources. */
+export interface PortfolioResourceList {
+  heading: string;
+  /** `detail` is null where the heading already says what the item is. */
+  items: Array<{ name: string; detail: string | null }>;
+}
+
+/**
+ * The resource a hop crosses (#1618 `ProductResource`) and the tables and
+ * columns both ends use (#309), grouped under one heading per resource kind,
+ * in a fixed order. The resource itself is left out when the usage
+ * classifications already list it.
+ */
+export function portfolioResourceLists(
+  resource: { kind: string; name: string } | null,
+  sharedObjects: ReadonlyArray<{
+    schemaName: string | null;
+    objectName: string;
+    objectType: string;
+    usageClass: string;
+  }>,
+): PortfolioResourceList[] {
+  const lists = new Map<string, PortfolioResourceList["items"]>();
+  const add = (heading: string, item: PortfolioResourceList["items"][number]) => {
+    const items = lists.get(heading) ?? [];
+    items.push(item);
+    lists.set(heading, items);
+  };
+  if (resource && !sharedObjects.some((o) => o.objectName === resource.name)) {
+    const heading = portfolioResourceGroup(resource.kind);
+    add(heading, {
+      name: resource.name,
+      detail: heading === OTHER_RESOURCES ? resource.kind : null,
+    });
+  }
+  for (const o of sharedObjects) {
+    add(PORTFOLIO_RESOURCE_GROUPS.table, {
+      name: o.schemaName ? `${o.schemaName}.${o.objectName}` : o.objectName,
+      detail: `${o.objectType}, ${o.usageClass}`,
+    });
+  }
+  return [...Object.values(PORTFOLIO_RESOURCE_GROUPS), OTHER_RESOURCES].flatMap((heading) => {
+    const items = lists.get(heading);
+    return items ? [{ heading, items }] : [];
+  });
 }

@@ -56,6 +56,27 @@ vi.mock("../src/lib/prisma.js", async (importOriginal) => {
   };
 });
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
+// #1673 — what each run's final write returned, so a test can wait on it rather
+// than on a fixed number of ticks. The write itself is the real one.
+const completions = vi.hoisted(() => ({
+  waiters: new Map<string, (written: boolean) => void>(),
+}));
+vi.mock("../src/lib/portfolio/assessment-store.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/portfolio/assessment-store.js")>();
+  return {
+    ...actual,
+    completePortfolioAssessment: async (
+      ...args: Parameters<typeof actual.completePortfolioAssessment>
+    ) => {
+      const written = await actual.completePortfolioAssessment(...args);
+      completions.waiters.get(args[0])?.(written);
+      return written;
+    },
+  };
+});
+/** Resolves with what the final write of run `id` returned. */
+const completionOf = (id: string) =>
+  new Promise<boolean>((resolve) => completions.waiters.set(id, resolve));
 
 const { portfolioAssessmentsRouter } = await import("../src/routes/portfolio-assessments.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
@@ -892,17 +913,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           Date.now() + PORTFOLIO_ASSESSMENT_STALE_MS + 1_000,
         );
         expect(failed.mock.calls.filter((c) => c[1] === id)).toHaveLength(1);
+        const finished = completionOf(id);
         release();
-        // Give the finished run every chance to write its result.
-        for (let i = 0; i < 40; i++) {
-          const row = await db.portfolioAssessment.findUniqueOrThrow({
-            where: { id },
-            include: { products: true },
-          });
-          expect(row.status).toBe("failed");
-          expect(row.products).toEqual([]);
-          await new Promise((r) => setTimeout(r, 10));
-        }
+        // #1673 — the finished run's write is refused: wait for it, not for a fixed time.
+        expect(await finished).toBe(false);
+        const row = await db.portfolioAssessment.findUniqueOrThrow({
+          where: { id },
+          include: { products: true },
+        });
+        expect(row.status).toBe("failed");
+        expect(row.products).toEqual([]);
         expect(completed.mock.calls.filter((c) => c[1] === id)).toEqual([]);
         expect(failed.mock.calls.filter((c) => c[1] === id)).toHaveLength(1);
       });

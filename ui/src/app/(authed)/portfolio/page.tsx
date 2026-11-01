@@ -6,17 +6,25 @@
  * Arrives from a product page with `?productId=` (that product starts chosen),
  * and from a requirement's detail with `?requirementId=&title=` (the title is
  * display-only; the server reads the requirement itself, with access).
+ *
+ * #1673 — the form is keyed on the search params, so arriving at this page
+ * again with other ones (a client navigation keeps the component mounted)
+ * starts it afresh: it can never submit the requirement or product it was
+ * first given. The product picker searches every product the analyst can
+ * read, a page at a time, rather than showing only the first page.
  */
 "use client";
 
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { MAX_PAGE_SIZE } from "@metis/shared";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { ApiError } from "@/lib/api-client";
 import { productsApi } from "@/lib/products-api";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useCreatePortfolioAssessment, usePortfolioAssessments } from "@/lib/portfolio-hooks";
 import { PortfolioAssessmentForm } from "@/components/portfolio/portfolio-assessment-form";
 
@@ -30,8 +38,16 @@ const VERDICT_LABEL: Record<string, string> = {
 };
 
 export default function PortfolioPage() {
-  const router = useRouter();
   const searchParams = useSearchParams();
+  return <PortfolioEntry key={searchParams?.toString() ?? ""} searchParams={searchParams} />;
+}
+
+function PortfolioEntry({
+  searchParams,
+}: {
+  searchParams: { get(name: string): string | null } | null;
+}) {
+  const router = useRouter();
   const initialProductId = searchParams?.get("productId") ?? null;
   const requirementId = searchParams?.get("requirementId") ?? null;
   const [requirement, setRequirement] = useState(() =>
@@ -43,10 +59,14 @@ export default function PortfolioPage() {
       : null,
   );
 
+  const [productQuery, setProductQuery] = useState("");
+  const search = useDebouncedValue(productQuery.trim(), 300);
   const productsQuery = useQuery({
-    queryKey: ["portfolio", "products"],
-    queryFn: () => productsApi.list({ limit: 100 }),
+    queryKey: ["portfolio", "products", search],
+    queryFn: () =>
+      productsApi.list(search ? { pageSize: MAX_PAGE_SIZE, search } : { pageSize: MAX_PAGE_SIZE }),
     retry: false,
+    placeholderData: keepPreviousData,
   });
   const recent = usePortfolioAssessments(initialProductId ?? undefined);
   const create = useCreatePortfolioAssessment();
@@ -67,6 +87,9 @@ export default function PortfolioPage() {
       <PortfolioAssessmentForm
         products={(productsQuery.data?.items ?? []).map((p) => ({ id: p.id, name: p.name }))}
         productsLoading={productsQuery.isLoading}
+        productQuery={productQuery}
+        onProductQueryChange={setProductQuery}
+        productTotal={productsQuery.data?.total}
         initialProductId={initialProductId}
         requirement={requirement}
         onClearRequirement={() => setRequirement(null)}

@@ -59,7 +59,7 @@ describe("PortfolioImpactView", () => {
       .getAllByRole("listitem")
       .map((li) => li.textContent);
     expect(steps).toEqual([
-      "Billing → Ledger: contract coupling starts at low; +1 step for a breaking contract change, so medium. Confidence 0.9.",
+      "Billing → Ledger: contract coupling starts at low; +1 step because the provider's latest contract version made a breaking change, so medium. Confidence 0.9.",
       "Ledger → Warehouse: intrusive coupling starts at high; −1 step for low confidence (0.4), so medium. Confidence 0.4.",
     ]);
     expect(panel).toHaveTextContent("Overall: medium. A path is as severe as its weakest hop.");
@@ -83,7 +83,9 @@ describe("PortfolioImpactView", () => {
     await user.click(within(warehouse).getByRole("button", { name: "Technical deep dive" }));
     const wdive = within(warehouse).getByTestId("portfolio-deep-dive");
     expect(wdive).toHaveTextContent("Tables and columns");
-    expect(wdive).toHaveTextContent("payments (table)");
+    // #1673 — grouped by kind, so the heading says what it is: no "(table)".
+    expect(wdive).toHaveTextContent("Tables and columnspayments");
+    expect(wdive).not.toHaveTextContent("payments (table)");
     expect(wdive).toHaveTextContent("public.ledger_entries (table, used)");
     expect(wdive).toHaveTextContent(
       "2 links out of this product touch a repository you cannot read",
@@ -127,6 +129,18 @@ describe("PortfolioImpactView", () => {
       "Downstream consumer",
     );
     expect(within(restricted).queryAllByRole("button")).toHaveLength(0);
+  });
+
+  it("#1673 — says a product the walk could not rule out is restricted, not affected or not", () => {
+    const v = impactView();
+    v.products[1] = { ...v.products[1], impactKind: "restricted" };
+    renderView(v);
+    const crm = card("CRM");
+    expect(within(crm).getByTestId("portfolio-impact-kind")).toHaveTextContent("Restricted");
+    expect(within(crm).getByTestId("portfolio-impact-unknown")).toHaveTextContent(
+      "The check stopped at a product you cannot read, so whether the change reaches this one is not known.",
+    );
+    expect(within(crm).queryByRole("button", { name: "Why this severity?" })).toBeNull();
   });
 
   it("says when a path was withheld", () => {
@@ -212,7 +226,11 @@ describe("PortfolioPathDiagram", () => {
     expect(svg.querySelectorAll("rect")).toHaveLength(2);
     expect(svg.querySelectorAll("line")).toHaveLength(1);
     const texts = [...svg.querySelectorAll("text")].map((t) => t.textContent);
-    expect(texts).toEqual(["A very long produ…", "identity", "A product you can…"]);
+    // #1673 — the arrow's label is the accessible name's words, not the stored kind.
+    expect(texts).toEqual(["A very long produ…", "shared identity", "A product you can…"]);
+    // It keeps its own width, so a narrow screen scrolls it rather than shrinking it.
+    expect(svg).not.toHaveClass("max-w-full");
+    expect(svg).toHaveAttribute("width", String(svg.getAttribute("viewBox")!.split(" ")[2]));
   });
 });
 

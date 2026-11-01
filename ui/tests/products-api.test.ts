@@ -18,11 +18,11 @@ beforeEach(() => {
 });
 
 describe("productsApi", () => {
-  it("list passes params", async () => {
+  it("list passes the params the route pages by (#1673)", async () => {
     mockApiFetch.mockResolvedValue({ items: [], total: 0 });
-    await productsApi.list({ search: "x", limit: 10, offset: 0 });
+    await productsApi.list({ search: "x", page: 2, pageSize: 100 });
     expect(mockApiFetch).toHaveBeenCalledWith("/products", {
-      params: { search: "x", limit: 10, offset: 0 },
+      params: { search: "x", page: 2, pageSize: 100 },
     });
   });
 

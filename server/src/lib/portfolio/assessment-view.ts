@@ -172,11 +172,25 @@ function impactReferences(stored: StoredProduct): { repos: string[]; products: s
 }
 
 /**
+ * #1668 — how many restricted products the run's walk stopped at, as an earlier
+ * run stored it on a readable row (`technicalDetail.impact.stoppedAtRestricted`).
+ */
+function stoppedAtRestricted(stored: StoredProduct): number {
+  const impact = (stored.technicalDetail as { impact?: { stoppedAtRestricted?: unknown } }).impact;
+  const n = impact?.stoppedAtRestricted;
+  return typeof n === "number" && n > 0 ? n : 0;
+}
+
+/**
  * #1623 — a product's impact as the reader may see it. A path through a repo or
  * a product the reader cannot read now is withheld whole (its edges, severity
- * and hops would describe what they cannot see); the impact kind stays. So
- * does nothing that restates the path (#1668): an out-of-scope row's summary
- * is its impact sentence, rebuilt here from the withheld fields.
+ * and hops would describe what they cannot see), and (#1673) its impact reads
+ * `restricted`: it is reached only through what this reader cannot see. Nothing
+ * restates the path either (#1668): an out-of-scope row's summary is its impact
+ * sentence, rebuilt here from the withheld fields.
+ *
+ * #1673 — a row an earlier run stored `none` after its walk stopped at a
+ * restricted product reads `restricted` too, as a run now writes it.
  */
 function readableImpact(
   stored: StoredProduct,
@@ -184,10 +198,20 @@ function readableImpact(
   readableProduct: (productId: string) => boolean,
 ): StoredProduct {
   const refs = impactReferences(stored);
-  if (refs.repos.every(keepRepo) && refs.products.every(readableProduct)) return stored;
+  if (refs.repos.every(keepRepo) && refs.products.every(readableProduct)) {
+    return stored.impactKind === "none" && stoppedAtRestricted(stored) > 0
+      ? { ...stored, impactKind: "restricted" }
+      : stored;
+  }
   const detail: Record<string, unknown> = { ...stored.technicalDetail };
   delete detail.impact;
-  const withheld = { impactKind: stored.impactKind, via: null, edgeIds: [], severity: null };
+  const withheld = {
+    impactKind:
+      stored.impactKind === "downstream-consumer" ? ("restricted" as const) : stored.impactKind,
+    via: null,
+    edgeIds: [],
+    severity: null,
+  };
   return {
     ...stored,
     ...withheld,
@@ -341,7 +365,8 @@ export async function viewPortfolioAssessment(
       continue;
     }
     const stored = readableImpact(raw, keepRepo, readableProduct);
-    if (stored !== raw) withheldImpact = true;
+    // A row only relabelled `restricted` (#1673) hides nothing the run saw.
+    if (stored.technicalDetail !== raw.technicalDetail) withheldImpact = true;
     const name = names.get(pid) ?? null;
     const dropsRepo = a.repos.some((r) => r.productId === pid && !keepRepo(r.repoConnectionId));
     const view = asResult(stored, name, citations, keepRepo);
@@ -369,8 +394,13 @@ export async function viewPortfolioAssessment(
       });
       result(view.result);
     } else {
-      // A detail this reader cannot be shown in part: nothing of it is shown.
-      products.push({ ...restrictedRecord(pid, stored.impactKind), coverage: "not-checked" });
+      // A detail this reader cannot be shown in part: nothing of it is shown but
+      // why it reads not checked (#1673), the reason the verdict roll-up uses.
+      products.push({
+        ...restrictedRecord(pid, stored.impactKind),
+        coverage: "not-checked",
+        technicalDetail: { reason: "repos-restricted" },
+      });
       result(bareResult(pid, name, "not-checked", "repos-restricted"));
     }
   }

@@ -142,20 +142,18 @@ function DeepDive({ product }: { product: AffectedProduct }) {
           ))}
         />
       ) : null}
-      <List
-        title="Tables and columns"
-        items={d.tables.map((t) => (
-          <>
-            <Mono>{t.name}</Mono> ({t.detail})
-          </>
-        ))}
-      />
-      <List
-        title="Topics"
-        items={d.topics.map((t) => (
-          <Mono key={t}>{t}</Mono>
-        ))}
-      />
+      {d.resources.map((group) => (
+        <List
+          key={group.heading}
+          title={group.heading}
+          items={group.items.map((r) => (
+            <>
+              <Mono>{r.name}</Mono>
+              {r.detail ? ` (${r.detail})` : ""}
+            </>
+          ))}
+        />
+      ))}
       {product.path.length > 1 ? (
         <div className="space-y-1">
           <h4 className="text-xs font-semibold uppercase text-muted-foreground">Edge path</h4>
@@ -197,6 +195,12 @@ function AffectedCard({ product }: { product: AffectedProduct }) {
       {product.impactWithheld ? (
         <p className="text-xs text-muted-foreground">
           Its impact path goes through a repository or product you cannot read, so it is not shown.
+        </p>
+      ) : product.impactKind === "restricted" ? (
+        // #1673 — the walk stopped at a product the reader cannot read: not "not affected".
+        <p className="text-xs text-muted-foreground" data-testid="portfolio-impact-unknown">
+          The check stopped at a product you cannot read, so whether the change reaches this one is
+          not known.
         </p>
       ) : null}
       {product.restricted ? null : (

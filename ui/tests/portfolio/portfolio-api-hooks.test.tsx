@@ -19,11 +19,17 @@ vi.mock("@/hooks/use-job-events", () => ({
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
-import { apiFetch } from "@/lib/api-client";
+import { ApiError, apiFetch } from "@/lib/api-client";
 import { portfolioApi } from "@/lib/portfolio-api";
 import {
+  PORTFOLIO_POLL_BACKOFF_MS,
+  PORTFOLIO_POLL_MS,
+  PORTFOLIO_PROGRESS_REFRESH_MS,
+  PORTFOLIO_SOCKET_LIVE_MS,
+  isFinalReadError,
   isTerminalStatus,
   portfolioKeys,
+  portfolioPollInterval,
   useCreatePortfolioAssessment,
   usePortfolioAssessment,
   usePortfolioAssessments,
@@ -129,6 +135,85 @@ describe("usePortfolioAssessment", () => {
     useJobLifecycle.mockReturnValue({ jobId: "pa-1", status: "completed" });
     rerender();
     await waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey: portfolioKeys.list() }));
+  });
+});
+
+describe("#1673 — polling within the read limiter", () => {
+  const running = { data: { status: "running" as const }, error: null };
+  const NOW = 1_000_000;
+
+  it("stops on a terminal status, and on a 403 or 404 that no later read will change", () => {
+    expect(portfolioPollInterval({ data: { status: "completed" }, error: null }, 0, NOW)).toBe(
+      false,
+    );
+    expect(portfolioPollInterval({ data: { status: "failed" }, error: null }, 0, NOW)).toBe(false);
+    // `isTerminalStatus(undefined)` is false: without this, a 404 was polled forever.
+    expect(portfolioPollInterval({ error: new ApiError(404, "gone") }, 0, NOW)).toBe(false);
+    expect(portfolioPollInterval({ error: new ApiError(403, "no") }, 0, NOW)).toBe(false);
+    expect(isFinalReadError(new ApiError(500, "x"))).toBe(false);
+    expect(isFinalReadError(new Error("x"))).toBe(false);
+  });
+
+  it("keeps polling through a transient error, and waits out a 429", () => {
+    expect(portfolioPollInterval({ ...running, error: new ApiError(503, "x") }, 0, NOW)).toBe(
+      PORTFOLIO_POLL_MS,
+    );
+    expect(portfolioPollInterval({ ...running, error: new ApiError(429, "slow") }, 0, NOW)).toBe(
+      PORTFOLIO_POLL_BACKOFF_MS,
+    );
+    const later = new ApiError(429, "slow", undefined, undefined, 60_000);
+    expect(later.retryAfterMs).toBe(60_000);
+    expect(portfolioPollInterval({ ...running, error: later }, 0, NOW)).toBe(60_000);
+  });
+
+  it("backs off while job events arrive, and falls back to the fast poll when they stop", () => {
+    expect(portfolioPollInterval(running, 0, NOW)).toBe(PORTFOLIO_POLL_MS);
+    expect(portfolioPollInterval(running, NOW - 1_000, NOW)).toBe(PORTFOLIO_POLL_BACKOFF_MS);
+    expect(portfolioPollInterval(running, NOW - PORTFOLIO_SOCKET_LIVE_MS, NOW)).toBe(
+      PORTFOLIO_POLL_MS,
+    );
+    // The backed-off rate stays well inside 300 reads per 15 minutes.
+    expect((15 * 60_000) / PORTFOLIO_POLL_BACKOFF_MS).toBeLessThanOrEqual(60);
+  });
+
+  it("stops polling an assessment that answers 404", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      fetchMock.mockRejectedValue(new ApiError(404, "Portfolio assessment not found"));
+      const { result } = renderHook(() => usePortfolioAssessment("pa-1"), {
+        wrapper: wrapper(client()),
+      });
+      await waitFor(() => expect(result.current.query.isError).toBe(true));
+      const calls = fetchMock.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(fetchMock.mock.calls.length).toBe(calls);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("re-reads on progress at most once per window, but always on a transition", async () => {
+    const qc = client();
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    fetchMock.mockResolvedValue(view({ status: "running" }));
+    useJobLifecycle.mockReturnValue({ jobId: "pa-1", status: "progress", progress: 10 });
+    const { rerender } = renderHook(() => usePortfolioAssessment("pa-1"), {
+      wrapper: wrapper(qc),
+    });
+    const detailCalls = () =>
+      spy.mock.calls.filter(
+        (c) => JSON.stringify(c[0]) === JSON.stringify({ queryKey: portfolioKeys.detail("pa-1") }),
+      ).length;
+    await waitFor(() => expect(detailCalls()).toBe(1));
+    useJobLifecycle.mockReturnValue({ jobId: "pa-1", status: "progress", progress: 20 });
+    rerender();
+    useJobLifecycle.mockReturnValue({ jobId: "pa-1", status: "progress", progress: 30 });
+    rerender();
+    expect(detailCalls()).toBe(1);
+    useJobLifecycle.mockReturnValue({ jobId: "pa-1", status: "completed" });
+    rerender();
+    await waitFor(() => expect(detailCalls()).toBe(2));
+    expect(PORTFOLIO_PROGRESS_REFRESH_MS).toBeGreaterThan(0);
   });
 });
 

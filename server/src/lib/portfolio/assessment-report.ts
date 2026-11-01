@@ -177,9 +177,21 @@ const VERDICT_TEXT: Record<RequirementVerdict, string> = {
   "could-not-verify": "not verifiable across the portfolio",
 };
 
+/**
+ * Whether a product gets an impact paragraph: it must change, or it is
+ * downstream. A `restricted` impact (#1673) has no path to write about.
+ */
+function isAffected(p: Pick<ReportProduct, "impactKind">): boolean {
+  return p.impactKind === "direct-change" || p.impactKind === "downstream-consumer";
+}
+
 function impactText(p: ReportProduct, nameOf: (id: string) => string): string {
   if (p.impactKind === "direct-change") return "must change";
   if (p.impactKind === "none") return "not affected";
+  // #1673 — reached, or maybe reached, only through a restricted product.
+  if (p.impactKind === "restricted") {
+    return "may be reached through a restricted product (do not describe how)";
+  }
   const from = p.path.length >= 2 ? `, through ${nameOf(p.path[p.path.length - 2])}` : "";
   return `downstream consumer via ${p.via ?? "an unclassified coupling"}${
     p.severity ? `, severity ${p.severity}` : ""
@@ -200,7 +212,7 @@ export function buildReportPrompt(ctx: ReportContext, refs: ReadonlyMap<string, 
       ? [`Restricted products downstream: ${restricted} (do not name or describe them).`]
       : []),
   ];
-  const affected = shown.filter((p) => p.impactKind !== "none").map((p) => refs.get(p.productId));
+  const affected = shown.filter(isAffected).map((p) => refs.get(p.productId));
   return [
     "<<<REQUIREMENT>>>",
     fenced(ctx.statement),
@@ -306,7 +318,7 @@ export async function generatePortfolioReport(
   const readable = ctx.products.filter((p) => !p.restricted && p.name !== null);
   const names = new Map(readable.map((p) => [p.productId, p.name!]));
   const nameOf = (id: string) => names.get(id) ?? id;
-  const affected = readable.filter((p) => p.impactKind !== "none");
+  const affected = readable.filter(isAffected);
   const refs = new Map(readable.map((p, i) => [p.productId, `P${i + 1}`]));
   const byRef = new Map([...refs].map(([id, ref]) => [ref, id]));
   const index = new EntityIndex({ products: names, texts: [ctx.statement, ...ctx.criteria] });

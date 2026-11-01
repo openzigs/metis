@@ -95,7 +95,7 @@ function fixture(): PortfolioAssessment {
     portfolioVerdict: "partial",
     summary: [
       "Partly covered by Orders (acme/orders-api).",
-      "Must change: Orders. Downstream: Reporting (database, medium); Storefront (api, medium). 1 downstream product is restricted for this run, so impact past it was not followed.",
+      "Must change: Orders. Downstream: Reporting (database, medium); Storefront (api, medium). 1 downstream product is restricted, so it is not named.",
       "Refunds are only partly delivered today. Orders must change, and Reporting is hit hardest.",
     ].join("\n\n"),
     report: {
@@ -426,12 +426,12 @@ describe("renderPortfolioAssessmentMarkdown (#1624)", () => {
     expect(await exported()).toContain("_Degraded: the model could not write this summary,");
   });
 
-  it("a product nothing reached reads not reached, not unaffected, when the walk stopped at a restricted one (#1668)", async () => {
+  it("a product the change may reach only through a restricted one reads Restricted (#1668, #1673)", async () => {
     const a = fixture();
     a.products.push({
       productId: "p-ledger",
       coverage: "not-covered",
-      impactKind: "none",
+      impactKind: "restricted",
       via: null,
       edgeIds: [],
       severity: null,
@@ -460,13 +460,26 @@ describe("renderPortfolioAssessmentMarkdown (#1624)", () => {
     ]);
     const md = await exported();
     const row = md.split("\n").find((l) => l.startsWith("| Ledger |"));
-    expect(row).toContain("| Not reached (impact past 1 restricted product was not followed) |");
+    expect(row).toContain("| Restricted |");
+    expect(md).not.toContain("Not reached");
+    // Its deep dive says why, without a path.
+    const dive = md.slice(md.indexOf("### Ledger"));
+    expect(dive).toContain("**Impact:** Restricted");
+    expect(dive).toContain(
+      "_The check stopped at a product you cannot read, so whether the change reaches this one is not known._",
+    );
+    expect(dive).not.toContain("**Edge path**");
+
+    // An earlier run stored it `none` with the stop: it reads the same (the view relabels it).
+    const legacy = a.products.at(-1)!;
+    legacy.impactKind = "none";
+    expect((await exported()).split("\n").find((l) => l.startsWith("| Ledger |"))).toContain(
+      "| Restricted |",
+    );
     // Without the stop, `none` is stated plainly.
-    const clean = a.products.at(-1)!.technicalDetail as { impact: Record<string, unknown> };
-    clean.impact.stoppedAtRestricted = 2;
-    expect(await exported()).toContain("impact past 2 restricted products was not followed");
-    delete clean.impact.stoppedAtRestricted;
-    const plain = (await exported()).split("\n").find((l) => l.includes("Does not cover it. |"));
+    delete (legacy.technicalDetail as { impact: Record<string, unknown> }).impact
+      .stoppedAtRestricted;
+    const plain = (await exported()).split("\n").find((l) => l.startsWith("| Ledger |"));
     expect(plain).toContain("| Not affected |");
   });
 
