@@ -195,12 +195,51 @@ describe("viewPortfolioAssessment", () => {
     expect(v.repos.map((r) => r.repoConnectionId)).toEqual(["rc-web", "rc-two"]);
   });
 
-  it("an admin sees everything without a repo lookup", async () => {
-    db.product.findMany.mockResolvedValue([]);
+  it("an admin sees everything without a repo lookup, or a listing of every product (#1657)", async () => {
     const v = (await view(ADMIN))!;
     expect(db.repoConnection.findMany).not.toHaveBeenCalled();
     expect(v.products.map((p) => p.coverage)).toEqual(["covers", "not-covered"]);
-    expect(v.productNames).toEqual({});
+    // One product read: the names of this assessment's own products.
+    expect(db.product.findMany).toHaveBeenCalledTimes(1);
+    expect(db.product.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: { in: ["p1", "p2"] } } }),
+    );
+    expect(access.buildProductAccessWhere).not.toHaveBeenCalled();
+    expect(v.productNames).toEqual({ p1: "One", p2: "Two" });
+  });
+
+  it("the cost is recomputed from what the reader sees when they see less (#1657)", async () => {
+    store.getPortfolioAssessment.mockResolvedValue(assessment({ costUsd: 0.05 }));
+    expect((await view())!.costUsd).toBe(0.05);
+    readableProjects.delete("proj-api");
+    // rc-api's call is hidden: only rc-web's and rc-two's remain.
+    expect((await view())!.costUsd).toBeCloseTo(0.02, 10);
+  });
+
+  it("a restricted row does not make a reader of that product one of its readers (#1657)", async () => {
+    // The starter could not read p2: the run stored it restricted.
+    const a = assessment();
+    a.products[1] = {
+      ...a.products[1],
+      coverage: "restricted",
+      baSummary: "",
+      technicalDetail: {},
+    };
+    a.repos = a.repos.filter((r) => r.productId !== "p2");
+    store.getPortfolioAssessment.mockResolvedValue(a);
+    db.product.findMany.mockResolvedValue([{ id: "p2", name: "Two" }]);
+    expect(await view()).toBeNull();
+    // A reader of p1, which the run could read, still reads it.
+    db.product.findMany.mockResolvedValue([{ id: "p1", name: "One" }]);
+    expect(await view()).not.toBeNull();
+  });
+
+  it("an assessment with no product rows yet is its starter's alone (#1657)", async () => {
+    store.getPortfolioAssessment.mockResolvedValue(
+      assessment({ status: "pending", portfolioVerdict: null, products: [], repos: [] }),
+    );
+    // `productIds` names p1 and p2, which this reader can read: not enough.
+    expect(await view()).toBeNull();
   });
 
   it("an unreadable source project closes the assessment, even to its starter", async () => {
@@ -227,7 +266,13 @@ describe("viewPortfolioAssessment", () => {
 
   it("a run not yet complete keeps a null verdict", async () => {
     store.getPortfolioAssessment.mockResolvedValue(
-      assessment({ status: "running", portfolioVerdict: null, products: [], repos: [] }),
+      assessment({
+        status: "running",
+        portfolioVerdict: null,
+        products: [],
+        repos: [],
+        createdById: "reader",
+      }),
     );
     const v = (await view())!;
     expect(v.verdict).toBeNull();
@@ -405,7 +450,13 @@ describe("renderPortfolioAssessmentMarkdown", () => {
 
   it("says when there is no verdict yet", async () => {
     store.getPortfolioAssessment.mockResolvedValue(
-      assessment({ status: "pending", portfolioVerdict: null, products: [], repos: [] }),
+      assessment({
+        status: "pending",
+        portfolioVerdict: null,
+        products: [],
+        repos: [],
+        createdById: "reader",
+      }),
     );
     expect(renderPortfolioAssessmentMarkdown((await view())!)).toContain(
       "**Verdict:** Not yet assessed",

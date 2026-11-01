@@ -558,6 +558,28 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect((await graphOf(t.productId)).edges).toEqual([]);
       });
 
+      it("leaves an edge of an origin detection does not own alone, and does not count it deleted (#1657)", async () => {
+        const t = await twoRepoProduct(
+          "foreign",
+          [sql("w.sql", "insert into ledgers (id) values (1);")],
+          [sql("r.sql", "select id from ledgers;")],
+        );
+        await detect(t.productId);
+        const [edge] = (await graphOf(t.productId)).edges;
+        // An origin from outside detection (an import, a later origin kind).
+        await db.productEdge.update({ where: { id: edge.id }, data: { origin: "imported" } });
+        // Found again: kept as a declared edge is, not refreshed or copied.
+        const again = await detect(t.productId);
+        expect(again).toMatchObject({ created: 0, updated: 0, deleted: 0, keptDeclared: 1 });
+        // Not found any more: still not detection's to delete, and not counted.
+        files.set(t.y, []);
+        const gone = await detect(t.productId);
+        expect(gone.deleted).toBe(0);
+        expect(await db.productEdge.findUnique({ where: { id: edge.id } })).toMatchObject({
+          origin: "imported",
+        });
+      });
+
       it("keeps a declared resource no edge goes through, and drops a detected one (orphan cleanup)", async () => {
         const t = await twoRepoProduct("orphans", [], []);
         const declared = await db.productResource.create({

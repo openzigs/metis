@@ -7,18 +7,23 @@
  * prompt between `<<<LABEL>>>` / `<<<END LABEL>>>` fences, the traceability
  * prompts' shape (#1351). Before that, every run of three or more angle
  * brackets in it, and every `END REQUIREMENT` look-alike, is scrubbed
- * (`scrubRequirementFenceLookalikes`, #1114), so no untrusted text can close
- * or open any fence of these prompts and carry on as instructions.
+ * (`scrubRequirementFenceLookalikes`, #1114), and so is every `END CODE`,
+ * `END CRITERIA` and `END REPOSITORY` look-alike (`scrubGapFenceLookalikes`,
+ * #1657), so no untrusted text can close or open any fence of these prompts
+ * and carry on as instructions.
  */
 import { z } from "zod";
 import { FINDING_VERDICTS } from "@metis/shared";
-import { scrubRequirementFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
+import {
+  scrubGapFenceLookalikes,
+  scrubRequirementFenceLookalikes,
+} from "../ai/tool-runtime/fence-scrub.js";
 
 const REDACTED = "[REDACTED-FENCE]";
 
 /** Untrusted text, defanged so it cannot close or forge a fence. */
 export function fenced(text: string): string {
-  return scrubRequirementFenceLookalikes(text, REDACTED);
+  return scrubGapFenceLookalikes(scrubRequirementFenceLookalikes(text, REDACTED), REDACTED);
 }
 
 /** Characters of one retrieved chunk shown to the model. */

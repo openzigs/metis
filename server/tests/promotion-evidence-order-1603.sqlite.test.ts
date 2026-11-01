@@ -291,8 +291,26 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         status: "promoted",
         requirementCount: 1,
       });
-      expect((await links(id))[R1.title]?.findings).toEqual([invoices]);
-      expect((await links(id))[R2.title]?.findings).toEqual([archive]);
+      // #1657 — and its code links are seeded from that finding's citations.
+      expect(await links(id)).toEqual({
+        [R1.title]: { findings: [invoices], files: ["src/invoices.ts"] },
+        [R2.title]: { findings: [archive], files: ["src/archive.ts"] },
+      });
+    });
+
+    it("reads findings in the order they were written, not the storage order (#1657)", async () => {
+      const { id, archive, invoices } = await seedAnalysis({ r1: "pending", r2: "pending" });
+      // Storage order stays archive, invoices (SQLite's rowid order); the
+      // write order, `createdAt`, now says invoices came first. Only an
+      // `orderBy` reads the second: Postgres guarantees no order without one.
+      await db.finding.update({
+        where: { id: invoices },
+        data: { createdAt: new Date(Date.now() - 60_000) },
+      });
+      expect((await readFlattenedFindings(id)).map((f) => f.findingId)).toEqual([
+        invoices,
+        archive,
+      ]);
     });
 
     it("marks 'no code evidence' on the Approvals tab by the finding synthesis cited", async () => {

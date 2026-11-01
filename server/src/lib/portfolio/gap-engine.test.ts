@@ -11,7 +11,10 @@ import type { FederatedSearchResult } from "../rag/federated-search-service.js";
 const db = vi.hoisted(() => ({
   product: { findMany: vi.fn() },
   productRepo: { findMany: vi.fn() },
+  requirement: { findFirst: vi.fn() },
 }));
+const discussions = vi.hoisted(() => ({ canAccessProjectDiscussions: vi.fn() }));
+vi.mock("../discussions/access.js", () => discussions);
 // `Prisma` stays real: assessment-store sizes its batches from the generated
 // client's scalar-field enums (#1647).
 vi.mock("../prisma.js", async (importOriginal) => ({
@@ -35,8 +38,15 @@ vi.mock("../rag/federated-search-service.js", () => ({
   getFederatedSearchService: () => ({ searchAcrossProjects: defaults.searchAcrossProjects }),
 }));
 
-const { evaluatePortfolioGap, portfolioGapInputSchema, readPortfolioGapLimits, toAssessmentInput } =
-  await import("./gap-engine.js");
+const {
+  evaluatePortfolioGap,
+  mapWithConcurrency,
+  portfolioGapInputSchema,
+  querySearchedFor,
+  readPortfolioGapLimits,
+  runPortfolioGapAnalysis,
+  toAssessmentInput,
+} = await import("./gap-engine.js");
 const { AppError } = await import("../../middleware/error-handler.js");
 
 const USER: AuthPayload = {
@@ -128,12 +138,85 @@ describe("portfolioGapInputSchema", () => {
 });
 
 describe("readPortfolioGapLimits", () => {
-  it("defaults to $2 per run, $0.50 per product and 4 at once", () => {
+  it("defaults to $2 per run, $0.50 per product, 4 at once and 250 model calls", () => {
     expect(readPortfolioGapLimits()).toMatchObject({
       runCostCapUsd: 2,
       productCostCapUsd: 0.5,
       concurrency: 4,
+      maxModelCalls: 250,
     });
+  });
+});
+
+describe("querySearchedFor (#1657)", () => {
+  it("is true for a criterion the query carries whole, or by two of its terms", () => {
+    expect(querySearchedFor("s\nc1", "c1")).toBe(true);
+    expect(querySearchedFor("download the invoices in PDF", "Invoices download as a PDF")).toBe(
+      true,
+    );
+    expect(querySearchedFor("download the reports", "Invoices download as a PDF")).toBe(false);
+    expect(querySearchedFor("lorem ipsum", "Invoices download as a PDF")).toBe(false);
+  });
+});
+
+describe("mapWithConcurrency (#1657)", () => {
+  it("starts no new item once one has failed", async () => {
+    const started: number[] = [];
+    const run = mapWithConcurrency([0, 1, 2, 3, 4], 2, async (n) => {
+      started.push(n);
+      if (n === 0) throw new Error("boom");
+      await new Promise((r) => setTimeout(r, 5));
+      return n;
+    });
+    await expect(run).rejects.toThrow("boom");
+    // Let the other worker finish the item it had already started.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(started).toEqual([0, 1]);
+  });
+});
+
+describe("runPortfolioGapAnalysis source (#1657)", () => {
+  const withSource = (extra: object) => ({ statement: "s", ...ALL, ...extra });
+
+  it("404 for a source requirement the starter cannot read, deleted or unknown, before any work", async () => {
+    db.requirement.findFirst.mockResolvedValue({
+      id: "r1",
+      projectId: "proj-x",
+      title: "t",
+      body: "b",
+      acceptanceCriteria: null,
+    });
+    discussions.canAccessProjectDiscussions.mockResolvedValue(false);
+    const p = provider(() => "{}");
+    await expect(
+      runPortfolioGapAnalysis(
+        USER,
+        withSource({ sourceRequirementId: "r1", sourceProjectId: "proj-x" }),
+        {
+          provider: p,
+          limits,
+        },
+      ),
+    ).rejects.toMatchObject({ statusCode: 404 });
+    // A soft-deleted one is not found: the read filters on `deletedAt`, and on the project.
+    expect(db.requirement.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "r1", deletedAt: null, projectId: "proj-x" } }),
+    );
+    db.requirement.findFirst.mockResolvedValue(null);
+    await expect(
+      runPortfolioGapAnalysis(USER, withSource({ sourceRequirementId: "r1" }), {
+        provider: p,
+        limits,
+      }),
+    ).rejects.toMatchObject({ statusCode: 404 });
+    expect(p.chat).not.toHaveBeenCalled();
+    expect(db.product.findMany).not.toHaveBeenCalled();
+  });
+
+  it("400 for a source project with no source requirement", async () => {
+    await expect(
+      runPortfolioGapAnalysis(USER, withSource({ sourceProjectId: "proj-x" }), { limits }),
+    ).rejects.toMatchObject({ statusCode: 400 });
   });
 });
 
@@ -366,6 +449,51 @@ describe("evaluatePortfolioGap", () => {
         },
       ),
     ).rejects.toThrow("cancelled");
+  });
+
+  it("the call cap stops new model calls, counting the decomposition (#1657)", async () => {
+    const answer = () =>
+      JSON.stringify({
+        criteria: [{ index: 1, verdict: "implemented", excerpts: [1] }],
+      });
+    const search = async () => found([hit("rc-p1", "a.ts", "a"), hit("rc-p2", "b.ts", "b")]);
+    // Unpriced: the cost caps never bind, the call cap does.
+    const capped = provider(answer);
+    const one = await evaluatePortfolioGap(
+      USER,
+      { statement: "s", criteria: ["c1"], ...ALL },
+      { provider: capped, search, limits: { ...limits, maxModelCalls: 1 }, costOf: () => 0 },
+    );
+    expect(capped.chat).toHaveBeenCalledTimes(1);
+    expect(one.products.map((p) => p.repos[0].reason)).toEqual([null, "budget"]);
+    // The decomposition is a call too: with one allowed, no repo is judged.
+    const decomposing = provider(() => '{"criteria": ["c1"]}');
+    const none = await evaluatePortfolioGap(
+      USER,
+      { statement: "s", ...ALL },
+      { provider: decomposing, search, limits: { ...limits, maxModelCalls: 1 }, costOf: () => 0 },
+    );
+    expect(decomposing.chat).toHaveBeenCalledTimes(1);
+    expect(none.products.every((p) => p.repos[0].reason === "budget")).toBe(true);
+  });
+
+  it("a criterion the query never carried is not a confirmed gap (#1657)", async () => {
+    // The query is cut at 4,000 characters, so this criterion never reaches it.
+    const statement = "lorem ".repeat(700).trim();
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement, criteria: ["Invoices are exported as PDF"], ...ALL },
+      {
+        provider: provider(() =>
+          JSON.stringify({ criteria: [{ index: 1, verdict: "gap-confirmed" }] }),
+        ),
+        search: async () => found([hit("rc-p1", "a.ts", "a"), hit("rc-p2", "b.ts", "b")]),
+        limits,
+      },
+    );
+    expect(result.products[0].repos[0].criteria).toEqual(["could-not-verify"]);
+    expect(result.products.map((p) => p.coverage)).toEqual(["not-checked", "not-checked"]);
+    expect(result.verdict).toBe("could-not-verify");
   });
 
   it("uses the deployment provider, the federated search and the price table by default", async () => {

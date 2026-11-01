@@ -482,6 +482,26 @@ const FOLDED_ITEMS_FENCE = new RegExp(
 );
 
 /**
+ * #1657 — the portfolio gap prompts' other `<<<LABEL>>> … <<<END LABEL>>>`
+ * fences (`CRITERIA`, `REPOSITORY`, `CODE`), whose near-miss terminators
+ * (`<<END CODE>>`, `<END CRITERIA>`, `END REPOSITORY>>`) the requirement scrub
+ * does not read: the same shapes as {@link FOLDED_ITEMS_FENCE}. A run of three
+ * or more brackets is {@link FOLDED_REQUIREMENT_FENCE}'s. `</code>` and
+ * `<code>` have no `END`, so HTML in a code excerpt is untouched.
+ */
+const GAP_FENCE_LABEL = `(?:${[
+  spaced("CODE"),
+  pluralisable("CRITERIA"),
+  pluralisable("CRITERION"),
+  spaced("REPOSITORY"),
+].join("|")})`;
+const FOLDED_GAP_FENCE = new RegExp(
+  `(?<!<)<+[\\s_/-]*${END}${SEP}${GAP_FENCE_LABEL}(?:${SEP}>+)?` +
+    `|(?<![A-Z0-9])${END}${SEP}${GAP_FENCE_LABEL}${SEP}>{2,}`,
+  "g",
+);
+
+/**
  * HTML character references, read as the character they encode. Bounded: at most
  * 7 decimal or 6 hex digits, so each `&` costs a constant amount of scanning.
  * `&lt` / `&gt` also decode WITHOUT the semicolon, as HTML's legacy parsing does
@@ -640,6 +660,16 @@ export function scrubSectionFenceLookalikes(raw: string, replacement: string): s
  */
 export function scrubItemsFenceLookalikes(raw: string, replacement: string): string {
   return scrubFolded(raw, replacement, FOLDED_ITEMS_FENCE);
+}
+
+/**
+ * #1657 — the portfolio gap prompts' `END CODE` / `END CRITERIA` /
+ * `END REPOSITORY` terminators ({@link FOLDED_GAP_FENCE}). Use AFTER
+ * {@link scrubRequirementFenceLookalikes}. Returns `raw` itself when there is
+ * no such span. `replacement` must contain no `<`, `>` and no label.
+ */
+export function scrubGapFenceLookalikes(raw: string, replacement: string): string {
+  return scrubFolded(raw, replacement, FOLDED_GAP_FENCE);
 }
 
 /**

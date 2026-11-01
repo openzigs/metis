@@ -184,22 +184,10 @@ describe("createPortfolioAssessmentSchema (#1625)", () => {
   it("bounds the statement and the products", () => {
     expect(ok({ statement: " ", scope: "all-accessible" })).toBe(false);
     expect(ok({ statement: "x".repeat(8_001), scope: "all-accessible" })).toBe(false);
-    const ids = (n: number) => Array.from({ length: n }, (_, i) => `p${i}`);
-    // The list is ignored for all-accessible, but still bounded.
-    expect(
-      ok({
-        statement: "s",
-        scope: "all-accessible",
-        productIds: ids(PORTFOLIO_ASSESSMENT_MAX_PRODUCTS),
-      }),
-    ).toBe(true);
-    expect(
-      ok({
-        statement: "s",
-        scope: "all-accessible",
-        productIds: ids(PORTFOLIO_ASSESSMENT_MAX_PRODUCTS + 1),
-      }),
-    ).toBe(false);
+    // #1657 — an all-accessible scope names no product: a list it would ignore is refused.
+    expect(PORTFOLIO_ASSESSMENT_MAX_PRODUCTS).toBe(1);
+    expect(ok({ statement: "s", scope: "all-accessible", productIds: [] })).toBe(true);
+    expect(ok({ statement: "s", scope: "all-accessible", productIds: ["p1"] })).toBe(false);
   });
 
   it('a "product" scope names exactly one product; an unknown field is refused', () => {
