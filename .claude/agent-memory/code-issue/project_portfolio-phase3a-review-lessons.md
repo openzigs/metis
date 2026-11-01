@@ -1,6 +1,6 @@
 ---
 name: portfolio-phase3a-review-lessons
-description: Durable findings from the #1608 phase-3 reviews (#1622-#1625, #1647, #1657) and the 2026-11-01 CI break - walk skip guards, redaction of model fields, regex shapes the linear-time suite misses, zod refine after max, engine limits that shrink input, mocked access filters, raw-SQL timestamps.
+description: Durable findings from the #1608 phase-3 and phase-4 reviews (#1622-#1627, #1647, #1657, #1668) and the 2026-11-01 CI break - walk skip guards, redaction of model fields, regex shapes the linear-time suite misses, zod refine after max, engine limits that shrink input, mocked access filters, raw-SQL timestamps.
 metadata:
   type: project
 ---
@@ -73,3 +73,16 @@ Phase 3b: the reviews of #1665 (#1657), #1666 (#1623) and #1667 (#1624), 2026-11
   as the id first. When it matches nothing it throws `P2025`, and the whole batch rolls
   back, child rows included. `updateMany` returns a count instead, so it can't abort a
   batch.
+
+Phase 4: the reviews of #1671 (#1668), #1670 (#1626) and #1672 (#1627), 2026-11-01. Follow-ups: #1673.
+
+- **Generation-time wording is recomputed for narrower readers (#1668).** Sentences and
+  counts written when the run generates its report (`impactOverview`,
+  `stoppedAtRestricted`, `baSummary`) are recomputed or passed through at read time for
+  readers with less access. Check every "restricted / not followed / not affected"
+  wording against assessment-view's narrower-reader path, not only against the run's
+  actor.
+- **Check UI polling against the per-user read limiter (#1626).** The portfolio read
+  limiter allows 300 requests per 15 min, one every 3 s, which is exactly the page's poll
+  interval, so a long run uses the whole budget. TanStack v5's `refetchInterval` keeps
+  firing on error, so a function that checks only `data?.status` polls a 404 forever.
