@@ -271,6 +271,15 @@ async function seedPortfolio(): Promise<Seeded> {
       const { items } = ((await res.json()) as Envelope<{ items: Array<{ id: string }> }>).data;
       const leftovers = items.filter((p) => p.id !== payments && p.id !== reporting);
       if (leftovers.length === 0) break;
+      // With E2E_SKIP_WEBSERVER the stack is the developer's own (e2e/README.md):
+      // never delete their products; refuse to run instead.
+      if (process.env.E2E_SKIP_WEBSERVER) {
+        throw new Error(
+          `The coordinator can see ${leftovers.length} other product(s) on this reused stack. ` +
+            "This spec deletes them on a fresh e2e stack only; run it without E2E_SKIP_WEBSERVER, " +
+            "or remove them yourself.",
+        );
+      }
       expect(round, "leftover products keep reappearing").toBeLessThan(50);
       for (const p of leftovers) {
         const del = await admin.api.delete(`/api/products/${p.id}`);
@@ -374,7 +383,10 @@ test.describe.serial("Portfolio gap and impact analysis (#1629)", () => {
     await expect(card).not.toContainText("via");
     await expect(card.getByRole("button")).toHaveCount(0);
     // Nothing on the page names it, or its repo.
-    await expect(page.getByText(PORTFOLIO.products.reporting, { exact: true })).toHaveCount(0);
-    await expect(page.getByText(REPORTING_SERVICE.label)).toHaveCount(0);
+    // A substring check, so a leak inside a longer sentence or label also fails.
+    const main = page.getByRole("main");
+    await expect(main).not.toContainText(PORTFOLIO.products.reporting);
+    await expect(main).not.toContainText(PORTFOLIO.workspaces.b);
+    await expect(main).not.toContainText(REPORTING_SERVICE.label);
   });
 });
