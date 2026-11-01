@@ -339,9 +339,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         // P1 still covers it for Ana.
         expect(v.verdict).toBe("implemented");
         // #1657 — the cost is of what she sees: P1's two calls and P2's one,
-        // not the decomposition or P3's call (0.01 each; Mia sees all five).
+        // not the decomposition, P3's call or the #1624 report call (0.01 each;
+        // Mia sees all six).
         expect(v.costUsd).toBeCloseTo(0.03, 10);
-        expect((await settled(miaRun, "mia")).costUsd).toBeCloseTo(0.05, 10);
+        expect((await settled(miaRun, "mia")).costUsd).toBeCloseTo(0.06, 10);
       });
 
       it("a repo whose connection was deleted is dropped, with its citations (#1657)", async () => {
