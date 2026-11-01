@@ -99,6 +99,16 @@
         "server/src/lib/teams/botbuilder-zod3-reachability.test.ts",
         "scripts/lib/dependency-audit-1453-zod.test.mjs"
       ]
+    },
+    {
+      "id": "CVE-2026-116689",
+      "mirrors": "GHSA-mrwp-f3q8-3g9p",
+      "expires": "2026-11-03",
+      "allowFixed": true,
+      "images": ["server"],
+      "packages": ["follow-redirects@1.16.1"],
+      "reason": "follow-redirects@1.16.1 only (via axios 1.20.0): the fix 1.16.2 is inside pnpm's minimumReleaseAge until 2026-11-01T21:32Z, so it cannot be installed yet, and the advisory says axios 1.20.0 with 1.16.1 does not reproduce; no METIS source imports axios or follow-redirects (#1635). Mirrors the sast.yml waiver; delete both when the lockfile takes 1.16.2, do not re-date.",
+      "guards": ["scripts/lib/follow-redirects-1635-waiver.test.mjs"]
     }
   ]
 }

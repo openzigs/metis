@@ -83,14 +83,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await seedProject(db, "p-legacy");
       await db.$disconnect();
       // Rows in the pre-#761 shape: one priced, one unpriced (#22). `createdAt`
-      // defaults to now, so the windowed readers below see them.
+      // is written explicitly as Prisma writes it (ISO-8601). The column's
+      // CURRENT_TIMESTAMP default is `YYYY-MM-DD HH:MM:SS`, which compares as
+      // text below the month window's `YYYY-MM-DDT00:00…` start on the 1st of
+      // a month, so the windowed readers dropped both rows that day.
+      const NOW_ISO = new Date().toISOString();
       sqlite.exec(
-        `INSERT INTO "token_usages" ("id","projectId","provider","model","totalTokens","costCents") VALUES (?,?,?,?,?,?)`,
-        ["t-priced", "p-legacy", "openai", "gpt-4o", 5000, 7],
+        `INSERT INTO "token_usages" ("id","projectId","provider","model","totalTokens","costCents","createdAt") VALUES (?,?,?,?,?,?,?)`,
+        ["t-priced", "p-legacy", "openai", "gpt-4o", 5000, 7, NOW_ISO],
       );
       sqlite.exec(
-        `INSERT INTO "token_usages" ("id","projectId","provider","model","totalTokens","costCents") VALUES (?,?,?,?,?,?)`,
-        ["t-unpriced", "p-legacy", "anthropic", "deepseek-v4-pro", 900, null],
+        `INSERT INTO "token_usages" ("id","projectId","provider","model","totalTokens","costCents","createdAt") VALUES (?,?,?,?,?,?,?)`,
+        ["t-unpriced", "p-legacy", "anthropic", "deepseek-v4-pro", 900, null, NOW_ISO],
       );
       sqlite.apply(MIGRATION);
       // The readers below are today's code, whose queries select columns added
