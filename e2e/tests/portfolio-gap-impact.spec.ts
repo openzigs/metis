@@ -5,7 +5,7 @@
  *   1. A requirement product A covers: the answer names A and its repo, and B
  *      is listed as not covering it.
  *   2. A requirement nothing covers: "Nothing in your portfolio covers this",
- *      with both products listed.
+ *      with both products listed, and a product with no repos named (#1677).
  *   3. A requirement A covers only in part: A must change, B is downstream
  *      through the shared database at severity high, and the export downloads.
  *   4. A second user, outside B's workspace, opens that check: B is restricted,
@@ -26,16 +26,16 @@
  *
  * then keep only the new fixtures whose prompt starts `<<<REQUIREMENT>>>`.
  *
- * "All products I can access" checks every product the analyst can read, so
- * the products other specs left behind (an unbound product is visible to every
- * user) would be in scope and stop a gap from ever being confirmed (#1677). The seed
- * therefore removes every product the analyst can see that it did not create.
+ * "All products I can access" checks every product the analyst can read, which
+ * includes any product other specs left behind (an unbound product is visible to
+ * every user). A product with no repos had nothing to check, so it does not stop
+ * a gap from being confirmed (#1677); the seed adds one of its own, `UNCONFIGURED`,
+ * so Journey 2 checks that on every run.
  */
 import { readFile } from "node:fs/promises";
 import { test, expect, request, type APIRequestContext, type Page } from "@playwright/test";
 import { io } from "socket.io-client";
 import { apiBase } from "../fixtures/api-base.js";
-import { ADMIN_USER } from "../fixtures/seed-user.js";
 import {
   PAYMENTS_API,
   PAYMENTS_DB,
@@ -50,6 +50,8 @@ import { PortfolioCheckPage, PortfolioEntryPage } from "../pages/portfolio.page.
 
 const API_BASE = apiBase();
 const ANALYST = { username: "coordinator", password: "password" };
+/** A product with no repos (#1677); unique per run, so a reused stack's earlier ones differ. */
+const UNCONFIGURED = `Unconfigured-${Date.now()}`;
 /** In "Portfolio A" only: cannot read Reporting or its repo. */
 const OUTSIDER = { username: "developer", password: "password", email: "developer@metis.local" };
 
@@ -154,7 +156,6 @@ async function seedPortfolio(): Promise<Seeded> {
   const stamp = `${Date.now()}`;
   let analyst = await signIn(ANALYST.username, ANALYST.password);
   const outsider = await signIn(OUTSIDER.username, OUTSIDER.password);
-  const admin = await signIn(ADMIN_USER.username, ADMIN_USER.password);
   try {
     const workspace = async (name: string, slug: string) =>
       (
@@ -263,34 +264,11 @@ async function seedPortfolio(): Promise<Seeded> {
       "the shared-table edge",
     );
 
-    // Only these two products may be in the analyst's portfolio (see the header).
-    // Each round removes the first page of leftovers, until none is left.
-    for (let round = 0; ; round += 1) {
-      const res = await analyst.api.get("/api/products", { params: { pageSize: 100 } });
-      expect(res.status(), `list products: ${await res.text()}`).toBe(200);
-      const { items } = ((await res.json()) as Envelope<{ items: Array<{ id: string }> }>).data;
-      const leftovers = items.filter((p) => p.id !== payments && p.id !== reporting);
-      if (leftovers.length === 0) break;
-      // With E2E_SKIP_WEBSERVER the stack is the developer's own (e2e/README.md):
-      // never delete their products; refuse to run instead.
-      if (process.env.E2E_SKIP_WEBSERVER) {
-        throw new Error(
-          `The coordinator can see ${leftovers.length} other product(s) on this reused stack. ` +
-            "This spec deletes them on a fresh e2e stack only; run it without E2E_SKIP_WEBSERVER, " +
-            "or remove them yourself.",
-        );
-      }
-      expect(round, "leftover products keep reappearing").toBeLessThan(50);
-      for (const p of leftovers) {
-        const del = await admin.api.delete(`/api/products/${p.id}`);
-        expect([204, 404], `remove a leftover product: ${await del.text()}`).toContain(
-          del.status(),
-        );
-      }
-    }
+    // An unbound product: no repos, so nothing in it to check (#1677).
+    await product(UNCONFIGURED, []);
     return { payments, reporting };
   } finally {
-    await Promise.all([analyst.api.dispose(), outsider.api.dispose(), admin.api.dispose()]);
+    await Promise.all([analyst.api.dispose(), outsider.api.dispose()]);
   }
 }
 
@@ -331,10 +309,15 @@ test.describe.serial("Portfolio gap and impact analysis (#1629)", () => {
 
     const check = new PortfolioCheckPage(page);
     await check.waitForAnswer("Nothing in your portfolio covers this");
-    // A header row, then one row per product in scope.
-    await expect(check.matrix.getByRole("rowheader")).toHaveCount(2);
     await expect(check.matrixRow("Payments")).toContainText("Does not cover it");
     await expect(check.matrixRow("Reporting")).toContainText("Does not cover it");
+    // #1677 — a product with no repos does not stop the gap, and is still named.
+    await expect(check.matrixRow(UNCONFIGURED)).toContainText("it has no repositories attached");
+    await expect(page.getByTestId("portfolio-coverage-headline")).toContainText(UNCONFIGURED);
+    // Every other product in scope is one with nothing to check, left by another spec.
+    const products = check.matrix.getByRole("row").filter({ has: page.getByRole("rowheader") });
+    const empty = await products.filter({ hasText: "it has no repositories attached" }).count();
+    await expect(products).toHaveCount(2 + empty);
   });
 
   test("Journey 3 — Reporting is downstream through the shared database at high, and the export downloads", async ({

@@ -22,7 +22,9 @@
  * Product -> portfolio: any `covers` -> `implemented`; else any `partial` ->
  * `partial`; else every product `not-covered` -> `gap-confirmed` ("nothing in
  * the portfolio covers this"); else `could-not-verify`. A `restricted` or
- * `not-checked` product therefore stops a portfolio from reading as a gap.
+ * `not-checked` product therefore stops a portfolio from reading as a gap,
+ * except one with no repos at all (#1677, {@link rollUpPortfolio}): there was
+ * nothing in it to check, rather than something that could not be checked.
  */
 import type { FindingVerdict, PortfolioCoverage, RequirementVerdict } from "@metis/shared";
 
@@ -77,6 +79,30 @@ export function rollUpPortfolioVerdict(
   if (coverages.includes("partial")) return "partial";
   if (coverages.length > 0 && coverages.every((c) => c === "not-covered")) return "gap-confirmed";
   return "could-not-verify";
+}
+
+/** A product with no repos at all: there was nothing in it to check (#1677). */
+export function hadNothingToCheck(p: {
+  coverage: PortfolioCoverage;
+  reason: string | null;
+}): boolean {
+  return p.coverage === "not-checked" && p.reason === "no-repos";
+}
+
+/**
+ * The portfolio verdict over the products in scope, leaving out the ones with
+ * no repos (#1677). An unbound product is visible to every user, so one empty
+ * product anywhere would otherwise stop every "all products" check from
+ * confirming a gap. A product whose repos the reader cannot see is not left
+ * out: those repos were not checked. With nothing left the verdict is
+ * `could-not-verify`, as for an empty scope.
+ */
+export function rollUpPortfolio(
+  products: readonly { coverage: PortfolioCoverage; reason: string | null }[],
+): RequirementVerdict {
+  return rollUpPortfolioVerdict(
+    products.filter((p) => !hadNothingToCheck(p)).map((p) => p.coverage),
+  );
 }
 
 /**

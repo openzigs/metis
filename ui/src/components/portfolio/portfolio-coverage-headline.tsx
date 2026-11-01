@@ -28,7 +28,10 @@ export function PortfolioCoverageHeadline({ headline }: { headline: CoverageHead
       data-tone={headline.tone}
     >
       <Icon className="mt-0.5 h-5 w-5 shrink-0" aria-hidden />
-      <h2 className="text-lg font-semibold">{headline.text}</h2>
+      <div>
+        <h2 className="text-lg font-semibold">{headline.text}</h2>
+        {headline.note ? <p className="mt-1 text-sm">{headline.note}</p> : null}
+      </div>
     </div>
   );
 }

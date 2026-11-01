@@ -305,6 +305,38 @@ describe("evaluatePortfolioGap", () => {
     ]);
   });
 
+  it("a product with no repos does not stop a confirmed gap, and is named (#1677)", async () => {
+    db.product.findMany.mockResolvedValue([
+      { id: "p1", name: "One" },
+      { id: "p3", name: "Empty" },
+      { id: "p2", name: "Two" },
+    ]);
+    const withRepos = db.productRepo.findMany.getMockImplementation()!;
+    db.productRepo.findMany.mockImplementation(async (args) =>
+      (await withRepos(args)).filter((r: { productId: string }) => r.productId !== "p3"),
+    );
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement: "s", criteria: ["c1"], ...ALL },
+      {
+        provider: provider(() =>
+          JSON.stringify({ criteria: [{ index: 1, verdict: "gap-confirmed" }] }),
+        ),
+        search: async () => found([hit("rc-p1", "a.ts", "a"), hit("rc-p2", "b.ts", "b")]),
+        limits,
+      },
+    );
+    expect(result.products.map((p) => [p.productId, p.coverage, p.reason])).toEqual([
+      ["p1", "not-covered", null],
+      ["p2", "not-covered", null],
+      ["p3", "not-checked", "no-repos"],
+    ]);
+    expect(result.verdict).toBe("gap-confirmed");
+    expect(result.summary).toBe(
+      "Nothing in the portfolio covers this. Empty has no repositories to check.",
+    );
+  });
+
   it("ignores hits that are not repository source, and a criterion the reply omits is unverified", async () => {
     const answers: string[] = [];
     const result = await evaluatePortfolioGap(
