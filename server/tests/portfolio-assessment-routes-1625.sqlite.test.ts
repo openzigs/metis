@@ -186,6 +186,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           { statement: "s", requirementId: REQ_A, scope: "all-accessible" },
         ],
         ["a product scope naming no product", { statement: "s", scope: "product" }],
+        [
+          "a product scope naming two products",
+          { statement: "s", scope: "product", productIds: ["p1", "p2"] },
+        ],
         ["an over-long statement", { statement: "x".repeat(8_001), scope: "all-accessible" }],
         ["an unknown field", { statement: "s", scope: "all-accessible", extra: 1 }],
       ])("400 on %s", async (_label, body) => {
@@ -336,13 +340,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const id = await start("rex", {
           statement: RESET_STATEMENT,
           scope: "product",
-          productIds: [P1, P2],
+          productIds: [P1],
         });
         const before = await settled(id, "rex");
-        expect(before.products.map((p) => p.coverage)).toEqual(["covers", "partial"]);
+        expect(before.products.map((p) => p.coverage)).toEqual(["covers"]);
         await db.workspaceMember.deleteMany({ where: { userId: "rex" } });
         const after = await settled(id, "rex");
-        expect(after.products.map((p) => p.coverage)).toEqual(["restricted", "restricted"]);
+        expect(after.products.map((p) => p.coverage)).toEqual(["restricted"]);
         expect(after.repos).toEqual([]);
         expect(after.verdict).toBe("could-not-verify");
         expect(JSON.stringify(after)).not.toContain("Accounts");

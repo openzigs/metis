@@ -160,21 +160,28 @@ describe("createPortfolioAssessmentSchema (#1625)", () => {
     expect(ok({ statement: " ", scope: "all-accessible" })).toBe(false);
     expect(ok({ statement: "x".repeat(8_001), scope: "all-accessible" })).toBe(false);
     const ids = (n: number) => Array.from({ length: n }, (_, i) => `p${i}`);
+    // The list is ignored for all-accessible, but still bounded.
     expect(
-      ok({ statement: "s", scope: "product", productIds: ids(PORTFOLIO_ASSESSMENT_MAX_PRODUCTS) }),
+      ok({
+        statement: "s",
+        scope: "all-accessible",
+        productIds: ids(PORTFOLIO_ASSESSMENT_MAX_PRODUCTS),
+      }),
     ).toBe(true);
     expect(
       ok({
         statement: "s",
-        scope: "product",
+        scope: "all-accessible",
         productIds: ids(PORTFOLIO_ASSESSMENT_MAX_PRODUCTS + 1),
       }),
     ).toBe(false);
   });
 
-  it('a "product" scope names a product; an unknown field is refused', () => {
+  it('a "product" scope names exactly one product; an unknown field is refused', () => {
     expect(ok({ statement: "s", scope: "product" })).toBe(false);
     expect(ok({ statement: "s", scope: "product", productIds: [] })).toBe(false);
+    expect(ok({ statement: "s", scope: "product", productIds: ["p1"] })).toBe(true);
+    expect(ok({ statement: "s", scope: "product", productIds: ["p1", "p2"] })).toBe(false);
     expect(ok({ statement: "s", scope: "all-accessible", extra: true })).toBe(false);
     expect(ok({ statement: "s", scope: "everything" })).toBe(false);
   });

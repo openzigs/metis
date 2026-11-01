@@ -151,12 +151,15 @@ export interface PortfolioAssessment {
 
 // ─── #1625 — the HTTP contract ──────────────────────────────────────────────
 
-/** Products a `product`-scoped assessment may name. */
+/**
+ * Ids a request may carry. A `product` scope names exactly one (#1622); the list is
+ * ignored for `all-accessible`.
+ */
 export const PORTFOLIO_ASSESSMENT_MAX_PRODUCTS = 100;
 
 /**
  * `POST /api/portfolio-assessments`: exactly one of `statement` and
- * `requirementId`, and a `product` scope names at least one product.
+ * `requirementId`, and a `product` scope names exactly one product (#1622, #1647).
  */
 export const createPortfolioAssessmentSchema = z
   .object({
@@ -173,8 +176,8 @@ export const createPortfolioAssessmentSchema = z
     message: "Give exactly one of statement and requirementId",
     path: ["statement"],
   })
-  .refine((v) => v.scope !== "product" || (v.productIds?.length ?? 0) > 0, {
-    message: 'A "product" scope names at least one product',
+  .refine((v) => v.scope !== "product" || v.productIds?.length === 1, {
+    message: 'A "product" scope names exactly one product',
     path: ["productIds"],
   });
 export type CreatePortfolioAssessmentInput = z.input<typeof createPortfolioAssessmentSchema>;

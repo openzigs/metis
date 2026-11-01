@@ -19,7 +19,11 @@ import {
   type PortfolioAssessment,
   type PortfolioAssessmentInput,
 } from "@metis/shared";
-import { Prisma, prisma } from "../prisma.js";
+// `Prisma` from the client package, not ../prisma.js: the column counts below are
+// read at import, and test files that mock ../prisma.js without `Prisma` load this
+// module through the socket job-room scope (#1625).
+import { Prisma } from "@prisma/client";
+import { prisma } from "../prisma.js";
 
 /** Bound values per statement kept under SQLite's 999, with room to spare. */
 export const SQLITE_SAFE_BIND_VALUES = 900;
