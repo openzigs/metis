@@ -31,6 +31,8 @@ import { ArrowLeft, Plus, Trash2, RefreshCw, FileText, Network, Server, Code2 } 
 import { PageHeader } from "@/components/ui/page-header";
 import { PortfolioCheckLink } from "@/components/portfolio/portfolio-check-link";
 import { HiddenReposNotice, PartialDocNotice } from "@/components/products/product-access-notices";
+import { ProductEdgesPanel } from "@/components/products/product-edges-panel";
+import { useAuth } from "@/lib/auth-context";
 
 const REPO_ROLES = [
   "frontend",
@@ -48,6 +50,10 @@ type DocTab = "unified-architecture" | "per-service" | "api-contract";
 export default function ProductDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const qc = useQueryClient();
+  const { user } = useAuth();
+  // #1628 — declaring and changing edges is a `project.update` write server-side
+  // (#1620); without it the edge list is shown read-only.
+  const canEditEdges = user?.permissions.includes("project.update") ?? false;
 
   const product = useQuery({
     queryKey: queryKeys.products.detail(id),
@@ -287,6 +293,9 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
           </div>
         )}
       </section>
+
+      {/* The route id, so the panel shares this page's product query. */}
+      <ProductEdgesPanel productId={id} canEdit={canEditEdges} />
 
       {/* Documentation section */}
       <section className="space-y-4">
