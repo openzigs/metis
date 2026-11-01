@@ -30,9 +30,11 @@
  *   omitted. A consumer product the caller cannot read is `restricted`: its id
  *   and the fact it is downstream, nothing else, and the walk never expands
  *   through it (the `workspace-rollup.ts` pattern). How many it stopped at is
- *   returned (`stoppedAtRestricted`), and when it stopped at any, a readable
- *   product nothing readable reaches is `restricted`, not `none`: it may be
- *   reached through one, so it is never stated unaffected (#1668, #1673).
+ *   returned (`stoppedAtRestricted`), and a readable product nothing readable
+ *   reaches is `restricted`, not `none`, when it is next to one the walk
+ *   stopped at (a shared repo, an edge, or a resource both use): it may be
+ *   reached through it, so it is never stated unaffected (#1668, #1673,
+ *   #1680). A product next to none of them stays `none`.
  * - **Cycle-safe and bounded.** A direct-change product is never downstream; a
  *   product is listed once, with its most severe path; a repo is expanded again
  *   only when reached by a more severe path, and never past `maxDepth`.
@@ -643,6 +645,68 @@ function emptyImpact(productId: string, name: string | null, restricted: boolean
 }
 
 /**
+ * #1680 — which of `candidates` sit next to one of `stopped`: they share a
+ * repo, an edge joins a repo of each, or two edges meet at one resource from a
+ * repo of each. Only that an edge exists is read, whatever product records it:
+ * the caller learns nothing of it but the label on a product they can read.
+ */
+async function nextToProducts(stopped: string[], candidates: string[]): Promise<Set<string>> {
+  const stoppedSet = new Set(stopped);
+  const rows = await prisma.productRepo.findMany({
+    where: { productId: { in: [...stopped, ...candidates] }, repoConnection: { deletedAt: null } },
+    select: { productId: true, repoConnectionId: true },
+  });
+  const stoppedRepos = new Set<string>();
+  const candidatesOf = new Map<string, string[]>();
+  for (const r of rows) {
+    if (stoppedSet.has(r.productId)) stoppedRepos.add(r.repoConnectionId);
+    else
+      candidatesOf.set(r.repoConnectionId, [
+        ...(candidatesOf.get(r.repoConnectionId) ?? []),
+        r.productId,
+      ]);
+  }
+  const near = new Set<string>();
+  const mark = (repoId: string | null) => {
+    for (const id of (repoId && candidatesOf.get(repoId)) || []) near.add(id);
+  };
+  // A repo on both is walked from as soon as the stopped product is.
+  for (const id of stoppedRepos) mark(id);
+  const candidateRepos = [...candidatesOf.keys()];
+  if (stoppedRepos.size === 0 || candidateRepos.length === 0) return near;
+  const stoppedIds = [...stoppedRepos];
+  const [between, atResource] = await Promise.all([
+    prisma.productEdge.findMany({
+      where: {
+        OR: [
+          { sourceRepoId: { in: stoppedIds }, targetRepoId: { in: candidateRepos } },
+          { sourceRepoId: { in: candidateRepos }, targetRepoId: { in: stoppedIds } },
+        ],
+      },
+      select: { sourceRepoId: true, targetRepoId: true },
+    }),
+    prisma.productEdge.findMany({
+      where: {
+        targetRepoId: null,
+        resourceId: { not: null },
+        sourceRepoId: { in: [...stoppedIds, ...candidateRepos] },
+      },
+      select: { productId: true, resourceId: true, sourceRepoId: true },
+    }),
+  ]);
+  for (const e of between) mark(stoppedRepos.has(e.sourceRepoId) ? e.targetRepoId : e.sourceRepoId);
+  const meeting = new Map<string, string[]>();
+  for (const e of atResource) {
+    const key = `${e.productId}\u0000${e.resourceId}`;
+    meeting.set(key, [...(meeting.get(key) ?? []), e.sourceRepoId]);
+  }
+  for (const repos of meeting.values()) {
+    if (repos.some((id) => stoppedRepos.has(id))) repos.forEach(mark);
+  }
+  return near;
+}
+
+/**
  * Walk the product graph from the direct-change products and classify every
  * product reached, and every product listed, by how the change reaches it.
  */
@@ -845,11 +909,15 @@ export async function evaluatePortfolioImpact(
 
   // #1673 (owner decision on #1668 AC3) — past a restricted product the walk
   // was not followed, so a readable product it did not reach may be reached
-  // through one: it reads `restricted`, never "not affected".
-  if (stoppedAt.size > 0) {
-    for (const p of out.values()) {
-      if (!p.restricted && p.impactKind === "none") p.impactKind = "restricted";
-    }
+  // through one: it reads `restricted`, never "not affected". #1680 — only a
+  // product next to one the walk stopped at; every other one stays `none`.
+  const unreached = [...out.values()].filter((p) => !p.restricted && p.impactKind === "none");
+  if (stoppedAt.size > 0 && unreached.length > 0) {
+    const near = await nextToProducts(
+      [...stoppedAt],
+      unreached.map((p) => p.productId),
+    );
+    for (const p of unreached) if (near.has(p.productId)) p.impactKind = "restricted";
   }
 
   return {
@@ -872,8 +940,11 @@ export function impactDetail(
     // The path's severity is its weakest hop; each hop records its own derivation.
     severityRule: "weakest-hop",
     hiddenEdgeCount: p.hiddenEdgeCount,
-    // #1668 — the walk stopped at this many restricted products, so `none` is not certain.
-    ...(impact.stoppedAtRestricted > 0 ? { stoppedAtRestricted: impact.stoppedAtRestricted } : {}),
+    // #1668 — the walk stopped at this many restricted products. #1680 — and only a
+    // product next to one of them was relabelled, so a `none` here is the walk's.
+    ...(impact.stoppedAtRestricted > 0
+      ? { stoppedAtRestricted: impact.stoppedAtRestricted, restrictedRule: "adjacent" }
+      : {}),
     hops: p.hops,
   };
 }

@@ -4,7 +4,7 @@ section: Added
 ---
 
 - A product page now has an **Integration edges** section. It lists every edge between
-  the product's repositories with its kind (API, event, database, shared library,
+  the product's repositories that you can see, with its kind (API, event, database, shared library,
   identity), coupling strength, direction, whether detection found it or a person
   declared it, and its confidence, and can be filtered by kind. Architects and analysts
   with edit rights on the product can declare an edge detection cannot see (a shared

@@ -35,8 +35,12 @@ export const portfolioKeys = {
   detail: (id: string) => [...portfolioKeys.all, "detail", id] as const,
 };
 
-/** How often a running assessment is re-read when no socket event arrives. */
-export const PORTFOLIO_POLL_MS = 3_000;
+/**
+ * How often a running assessment is re-read when no socket event arrives.
+ * #1680 — 5 s, not 3 s: 3 s is exactly the read limit (300 per 15 minutes),
+ * which left nothing for a second tab.
+ */
+export const PORTFOLIO_POLL_MS = 5_000;
 /**
  * #1673 — the fallback poll while job events arrive, and the least wait after a
  * 429. The events drive the refreshes then; the poll only covers a missed one.

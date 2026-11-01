@@ -380,6 +380,108 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }
       });
 
+      describe("#1680 — only a product next to the restricted stop reads restricted", () => {
+        const withIdle = () =>
+          evaluatePortfolioImpact(ANA, {
+            directChangeProductIds: [P.billing],
+            listedProductIds: [P.billing, P.ledger, P.idle],
+          });
+        const edgeData = (id: string, sourceRepoId: string, targetRepoId: string | null) => ({
+          id,
+          productId: P.partner,
+          sourceRepoId,
+          targetRepoId,
+          edgeType: "calls",
+          confidence: 0.9,
+          evidence: "[]",
+          integrationKind: "api",
+          strength: "contract",
+          direction: "consumes",
+        });
+
+        it("a product next to nothing the walk stopped at stays none", async () => {
+          const impact = await withIdle();
+          expect(impact.stoppedAtRestricted).toBe(1);
+          // Ledger shares partner-core with Partner, so it may be reached through it.
+          expect(of(impact, P.ledger).impactKind).toBe("restricted");
+          expect(of(impact, P.idle).impactKind).toBe("none");
+        });
+
+        it("an edge between its repo and the stopped product's makes it restricted", async () => {
+          await db.productEdge.create({
+            data: edgeData("e-idle-core-1680", R.idle, R.partnerCore),
+          });
+          try {
+            expect(of(await withIdle(), P.idle).impactKind).toBe("restricted");
+          } finally {
+            await db.productEdge.delete({ where: { id: "e-idle-core-1680" } });
+          }
+          // The other end of the edge counts the same way.
+          await db.productEdge.create({
+            data: edgeData("e-core-idle-1680", R.partnerCore, R.idle),
+          });
+          try {
+            expect(of(await withIdle(), P.idle).impactKind).toBe("restricted");
+          } finally {
+            await db.productEdge.delete({ where: { id: "e-core-idle-1680" } });
+          }
+        });
+
+        it("two edges meeting at a resource from each make it restricted", async () => {
+          await db.productResource.create({
+            data: { id: "res-drop-1680", productId: P.partner, kind: "bucket", name: "drop" },
+          });
+          await db.productEdge.create({
+            data: {
+              ...edgeData("e-core-drop-1680", R.partnerCore, null),
+              resourceId: "res-drop-1680",
+            },
+          });
+          await db.productEdge.create({
+            data: { ...edgeData("e-idle-drop-1680", R.idle, null), resourceId: "res-drop-1680" },
+          });
+          try {
+            expect(of(await withIdle(), P.idle).impactKind).toBe("restricted");
+            // Only the edge from the stopped product's repo: the idle one alone meets nothing.
+            await db.productEdge.delete({ where: { id: "e-core-drop-1680" } });
+            expect(of(await withIdle(), P.idle).impactKind).toBe("none");
+          } finally {
+            await db.productEdge.deleteMany({
+              where: { id: { in: ["e-core-drop-1680", "e-idle-drop-1680"] } },
+            });
+            await db.productResource.delete({ where: { id: "res-drop-1680" } });
+          }
+        });
+
+        it("a listed product the caller cannot read is never relabelled", async () => {
+          // Hidden is in ws-b, shares partner-core with Partner, and nothing reaches it.
+          await db.product.create({
+            data: {
+              id: "p-hidden-1680",
+              name: "Hidden",
+              slug: "p-hidden-1680",
+              workspaceId: "ws-b-1623",
+              createdById: "mia",
+            },
+          });
+          await db.productRepo.create({
+            data: { productId: "p-hidden-1680", repoConnectionId: R.partnerCore },
+          });
+          try {
+            const impact = await evaluatePortfolioImpact(ANA, {
+              directChangeProductIds: [P.billing],
+              listedProductIds: [P.billing, "p-hidden-1680"],
+            });
+            expect(of(impact, "p-hidden-1680")).toEqual(
+              expect.objectContaining({ restricted: true, impactKind: "none" }),
+            );
+          } finally {
+            await db.productRepo.deleteMany({ where: { productId: "p-hidden-1680" } });
+            await db.product.delete({ where: { id: "p-hidden-1680" } });
+          }
+        });
+      });
+
       it("a reader of both workspaces sees the whole path", async () => {
         const impact = await billing(MIA);
         expect(of(impact, P.partner)).toEqual(
@@ -437,10 +539,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(stored.products.find((p) => p.productId === P.billing)!.technicalDetail).toEqual(
           expect.objectContaining({ impact: expect.objectContaining({ hiddenEdgeCount: 1 }) }),
         );
-        // #1668 — Ledger's `restricted` carries where the walk stopped.
+        // #1668 — Ledger's `restricted` carries where the walk stopped, and (#1680) by
+        // which rule it was relabelled.
         expect(stored.products.find((p) => p.productId === P.ledger)!.technicalDetail).toEqual(
           expect.objectContaining({
-            impact: expect.objectContaining({ stoppedAtRestricted: 1 }),
+            impact: expect.objectContaining({ stoppedAtRestricted: 1, restrictedRule: "adjacent" }),
           }),
         );
         // The verdict is still the gap scope's: the restricted product reached outside it is not counted.

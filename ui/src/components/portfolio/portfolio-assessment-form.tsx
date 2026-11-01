@@ -11,6 +11,9 @@
  * `onProductQueryChange` the form offers a search, which the page sends to
  * `GET /products?search=`, and says when the list is not all of them. The
  * product chosen stays chosen while the list changes under it.
+ *
+ * #1680 — a product arrived with (`?productId=`) that is not on the first page
+ * is named by `initialProductName`, which the page reads on its own.
  */
 "use client";
 
@@ -38,6 +41,7 @@ export function PortfolioAssessmentForm({
   products,
   productsLoading = false,
   initialProductId,
+  initialProductName,
   requirement,
   onClearRequirement,
   productQuery = "",
@@ -55,6 +59,8 @@ export function PortfolioAssessmentForm({
   /** How many products match in all, when `products` may be only the first page. */
   productTotal?: number;
   initialProductId?: string | null;
+  /** #1680 — the name of `initialProductId`, for when the list does not hold it. */
+  initialProductName?: string | null;
   requirement?: PortfolioFormRequirement | null;
   onClearRequirement?: () => void;
   pending: boolean;
@@ -70,7 +76,16 @@ export function PortfolioAssessmentForm({
   const [chosenName, setChosenName] = useState<string | null>(null);
   const options =
     productId && !products.some((p) => p.id === productId)
-      ? [{ id: productId, name: chosenName ?? "Selected product" }, ...products]
+      ? [
+          {
+            id: productId,
+            name:
+              chosenName ??
+              (productId === initialProductId ? initialProductName : null) ??
+              "Selected product",
+          },
+          ...products,
+        ]
       : products;
 
   const hasSource = requirement ? true : statement.trim().length > 0;

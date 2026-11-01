@@ -37,6 +37,7 @@ vi.mock("@/lib/products-api", () => ({
       ],
       total: 2,
     }),
+    get: vi.fn().mockResolvedValue({ id: "p-billing", name: "Billing" }),
   },
 }));
 const useJobLifecycle = vi.fn((_id?: string | null) => null as unknown);
@@ -222,6 +223,26 @@ describe("portfolio entry page", () => {
     expect(items[2]).toHaveTextContent("Failed · 2 products");
     expect(screen.getByRole("radio", { name: "One product" })).toBeChecked();
     await waitFor(() => expect(screen.getByLabelText("Product")).toHaveValue("p-billing"));
+  });
+
+  it("names a product it arrived with that is past the first page (#1680)", async () => {
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams({ productId: "p-far" }) as never,
+    );
+    api.list.mockResolvedValue([]);
+    vi.mocked(productsApi.get).mockResolvedValue({ id: "p-far", name: "Treasury" } as never);
+    render(<PortfolioPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByRole("option", { name: "Treasury" })).toHaveValue("p-far");
+    expect(productsApi.get).toHaveBeenCalledWith("p-far");
+  });
+
+  it("encodes the product id it arrived with before reading it", async () => {
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams({ productId: "../workspaces" }) as never,
+    );
+    api.list.mockResolvedValue([]);
+    render(<PortfolioPage />, { wrapper: makeWrapper() });
+    await waitFor(() => expect(productsApi.get).toHaveBeenCalledWith("..%2Fworkspaces"));
   });
 
   it("arrives with a requirement and sends its id", async () => {

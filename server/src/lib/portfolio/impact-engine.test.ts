@@ -189,6 +189,7 @@ describe("withImpact", () => {
             severityRule: "weakest-hop",
             hiddenEdgeCount: 2,
             stoppedAtRestricted: 1,
+            restrictedRule: "adjacent",
             hops: [],
           },
         },
@@ -200,6 +201,7 @@ describe("withImpact", () => {
     // #1668 — a walk that stopped nowhere records nothing of it.
     const clean = withImpact(input, { ...impact, stoppedAtRestricted: 0 }).products!;
     expect(clean[0].technicalDetail!.impact).not.toHaveProperty("stoppedAtRestricted");
+    expect(clean[0].technicalDetail!.impact).not.toHaveProperty("restrictedRule");
   });
 
   it("a product restricted to the run gets its impact kind and nothing else", () => {

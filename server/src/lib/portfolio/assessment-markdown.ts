@@ -217,7 +217,8 @@ function deepDive(
     );
   } else if (p.impactKind === "restricted") {
     out.push(
-      "_The check stopped at a product you cannot read, so whether the change reaches this one is not known._",
+      // #1680 — the run's starter could not read it, which says nothing of this reader.
+      "_It is connected to a product the check could not follow the change through, because the person who ran the check cannot read it, so whether the change reaches this one is not known._",
       "",
     );
   }

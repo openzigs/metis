@@ -176,7 +176,14 @@ function impactReferences(stored: StoredProduct): { repos: string[]; products: s
  * run stored it on a readable row (`technicalDetail.impact.stoppedAtRestricted`).
  */
 function stoppedAtRestricted(stored: StoredProduct): number {
-  const impact = (stored.technicalDetail as { impact?: { stoppedAtRestricted?: unknown } }).impact;
+  const impact = (
+    stored.technicalDetail as {
+      impact?: { stoppedAtRestricted?: unknown; restrictedRule?: unknown };
+    }
+  ).impact;
+  // #1680 — a run that relabelled only the products next to a restricted one
+  // says so; its `none` is the walk's answer and is not relabelled again.
+  if (impact?.restrictedRule === "adjacent") return 0;
   const n = impact?.stoppedAtRestricted;
   return typeof n === "number" && n > 0 ? n : 0;
 }
@@ -190,7 +197,9 @@ function stoppedAtRestricted(stored: StoredProduct): number {
  * sentence, rebuilt here from the withheld fields.
  *
  * #1673 — a row an earlier run stored `none` after its walk stopped at a
- * restricted product reads `restricted` too, as a run now writes it.
+ * restricted product reads `restricted` too. #1680 — a run now relabels only
+ * the products next to the one it stopped at, and marks its rows so
+ * (`restrictedRule: "adjacent"`); those are read as stored.
  */
 function readableImpact(
   stored: StoredProduct,

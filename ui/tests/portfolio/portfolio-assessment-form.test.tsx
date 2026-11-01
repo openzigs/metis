@@ -100,6 +100,12 @@ describe("PortfolioAssessmentForm", () => {
     expect(screen.queryByRole("option", { name: "Selected product" })).toBeNull();
   });
 
+  it("names a product it arrived with by the name it was given (#1680)", () => {
+    setup({ initialProductId: "p-elsewhere", initialProductName: "Treasury" });
+    expect(screen.getByRole("option", { name: "Treasury" })).toHaveValue("p-elsewhere");
+    expect(screen.queryByRole("option", { name: "Selected product" })).toBeNull();
+  });
+
   it("starts on the product it arrived from", async () => {
     const user = userEvent.setup();
     const { onSubmit } = setup({ initialProductId: "p-billing" });

@@ -138,7 +138,7 @@ describe("PortfolioImpactView", () => {
     const crm = card("CRM");
     expect(within(crm).getByTestId("portfolio-impact-kind")).toHaveTextContent("Restricted");
     expect(within(crm).getByTestId("portfolio-impact-unknown")).toHaveTextContent(
-      "The check stopped at a product you cannot read, so whether the change reaches this one is not known.",
+      "It is connected to a product the check could not follow the change through, because the person who ran the check cannot read it, so whether the change reaches this one is not known.",
     );
     expect(within(crm).queryByRole("button", { name: "Why this severity?" })).toBeNull();
   });

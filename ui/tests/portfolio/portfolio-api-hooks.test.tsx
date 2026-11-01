@@ -104,7 +104,7 @@ describe("usePortfolioAssessment", () => {
         wrapper: wrapper(client()),
       });
       await waitFor(() => expect(result.current.query.data?.status).toBe("running"));
-      await vi.advanceTimersByTimeAsync(3_100);
+      await vi.advanceTimersByTimeAsync(PORTFOLIO_POLL_MS + 100);
       await waitFor(() => expect(result.current.query.data?.status).toBe("completed"));
       const calls = fetchMock.mock.calls.length;
       await vi.advanceTimersByTimeAsync(10_000);
@@ -174,6 +174,8 @@ describe("#1673 — polling within the read limiter", () => {
     );
     // The backed-off rate stays well inside 300 reads per 15 minutes.
     expect((15 * 60_000) / PORTFOLIO_POLL_BACKOFF_MS).toBeLessThanOrEqual(60);
+    // #1680 — so does the fast one, with room left for a second tab's reads.
+    expect((15 * 60_000) / PORTFOLIO_POLL_MS).toBeLessThanOrEqual(180);
   });
 
   it("stops polling an assessment that answers 404", async () => {

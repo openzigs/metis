@@ -197,10 +197,12 @@ function AffectedCard({ product }: { product: AffectedProduct }) {
           Its impact path goes through a repository or product you cannot read, so it is not shown.
         </p>
       ) : product.impactKind === "restricted" ? (
-        // #1673 — the walk stopped at a product the reader cannot read: not "not affected".
+        // #1673 — the walk stopped at a product next to this one: not "not affected".
+        // #1680 — the run's starter could not read it, which says nothing of this reader.
         <p className="text-xs text-muted-foreground" data-testid="portfolio-impact-unknown">
-          The check stopped at a product you cannot read, so whether the change reaches this one is
-          not known.
+          It is connected to a product the check could not follow the change through, because the
+          person who ran the check cannot read it, so whether the change reaches this one is not
+          known.
         </p>
       ) : null}
       {product.restricted ? null : (
