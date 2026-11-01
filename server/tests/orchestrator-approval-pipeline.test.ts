@@ -1338,4 +1338,38 @@ describe("#216 — promotion is gated on resolved approvals", () => {
     dialogStateMock.mockResolvedValueOnce(answeredDialog("Seven years."));
     expect((await run()).refinedHumanAnswered).toBe(true);
   });
+
+  // Issue #1603 — synthesis numbers the findings in panel-confidence order, and
+  // records THAT numbering as `findingIdsByIndex`; promotion re-derives it with
+  // the same `inSynthesisOrder`. Here the database holds the unjudged finding
+  // first, so the two orders differ.
+  it("#1603 — numbers the findings by panel confidence, and records that numbering", async () => {
+    const svc = await import("../src/lib/analysis/analysis-service.js");
+    const row = (findingId: string, confidence?: "high") => ({
+      agentKey: "code",
+      findingId,
+      category: "architecture",
+      severity: "info",
+      title: findingId,
+      body: findingId,
+      tags: [],
+      citations: [],
+      verificationStatus: null,
+      verdict: null,
+      supportPanel: confidence ? { confidence } : null,
+    });
+    vi.mocked(svc.readFlattenedFindings).mockResolvedValueOnce([
+      row("f-unjudged"),
+      row("f-high", "high"),
+    ] as never);
+    const { orch } = makeOrchestrator();
+    await (orch as unknown as PrivateOrchestrator).runSynthesisAndPersist({
+      analysisId: "ana-1603",
+      ...synthInput,
+    });
+    const shown = (runSynthesisMock.mock.calls[0]![1] as { findings: Array<{ title: string }> })
+      .findings;
+    expect(shown.map((f) => f.title)).toEqual(["f-high", "f-unjudged"]);
+    expect(persisted.requirements[0]!.findingIdsByIndex).toEqual(["f-high", "f-unjudged"]);
+  });
 });

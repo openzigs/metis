@@ -46,6 +46,7 @@ import {
 } from "../middleware/criteria-proposal-rate-limit.js";
 import { dismissAllCriteriaProposals } from "../lib/analysis/analysis-service.js";
 import { requirementsWithoutCodeEvidence } from "../lib/analysis/code-evidence.js";
+import { inSynthesisOrder } from "../lib/analysis/synthesis-finding-order.js";
 import { createChildLogger } from "../lib/logger.js";
 import {
   withheldReplacementPreAuthRateLimiter,
@@ -82,7 +83,7 @@ import {
   getCostCapStatus,
   getOrchestrator,
   getStructuredRequirements,
-  persistAnalysisEnhancement,
+  persistClarifiedRequirements,
   listAnalysesForProject,
   setOrchestratorForTests,
   updateRequirementRow,
@@ -335,8 +336,9 @@ async function requirementsWithoutCodeEvidenceFor(
     return requirementsWithoutCodeEvidence({
       structured: structured.requirements,
       synthesized: synthesis.requirements,
-      // As promotion reads them, so the evidence indexes resolve to the same findings.
-      findings: await readFlattenedFindings(analysisId),
+      // As synthesis numbered them, and promotion reads them (#1603), so the
+      // evidence indexes resolve to the findings synthesis cited.
+      findings: inSynthesisOrder(await readFlattenedFindings(analysisId)),
       rejectedIds,
     });
   } catch (err) {
@@ -970,12 +972,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           dialog.submitAnswers(analysisId, answers, requirements),
         );
         // Epic #201 (#211) — close the feedback loop: persist the refined
-        // requirements via the existing enhancement path so they reach
-        // `Analysis.metadata` and flow downstream into synthesis (#212).
-        // Idempotent per round: re-submitting overwrites the same metadata key.
-        await persistAnalysisEnhancement(analysisId, {
-          structuredRequirements: result.updatedRequirements,
-        });
+        // requirements so they reach `Analysis.metadata` and flow downstream
+        // into synthesis (#212). Issue #1602 — merged onto the list as it is
+        // now, not written from the copy read before the model call, so a
+        // requirement synthesis offered meanwhile (#1569) survives.
+        await persistClarifiedRequirements(analysisId, requirements, result.updatedRequirements);
         // Issue #1116 — and into the ARTIFACT path. `structuredRequirements` is
         // only what the approval view renders; the drafts (and the GitHub issues
         // they become) are built from the `Requirement` rows, which replay the
@@ -1279,7 +1280,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
    * POST /api/projects/:projectId/analyses/:id/clarify/import
    * Consume a filled CSV, match answers to the current round by `questionId`,
    * and apply them through the EXISTING submit path (`submitAnswers` +
-   * `persistAnalysisEnhancement`). Returns `{ applied, skipped, unmatched }`.
+   * `persistClarifiedRequirements`). Returns `{ applied, skipped, unmatched }`.
    */
   projectScoped.post(
     "/:id/clarify/import",
@@ -1363,9 +1364,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         const result = await runInAnalysisUsageScope({ projectId, sessionId: analysisId }, () =>
           dialog.submitAnswers(analysisId, applied, requirements),
         );
-        await persistAnalysisEnhancement(analysisId, {
-          structuredRequirements: result.updatedRequirements,
-        });
+        // Issue #1602 — merged onto the list as it is now, as the JSON submit is.
+        await persistClarifiedRequirements(analysisId, requirements, result.updatedRequirements);
         // Issue #1116 — the CSV round-trip is the same submit path, so it must
         // reach the artifact the same way.
         await applyClarificationsToRequirements(analysisId);

@@ -9,26 +9,19 @@
  * flag-off run (no finding carries a panel) is byte-identical to a pre-#1109 one.
  */
 import { describe, expect, it } from "vitest";
-import {
-  orderByPanelConfidence,
-  type FindingSupportPanel,
-  type SupportPanelConfidence,
-} from "@metis/shared";
+import { type FindingSupportPanel, type SupportPanelConfidence } from "@metis/shared";
 import {
   fallbackSynthesize,
   formatFindingsTable,
   runSynthesis,
   type FlatFinding,
 } from "./synthesis.js";
-
 /**
- * Exactly the call `runSynthesisAndPersist` makes on the rows it then derives
- * `findings` and `findingIdsByIndex` from. Kept as a local alias so these tests
- * exercise the production ranking, not a paraphrase of it.
+ * The function `runSynthesisAndPersist` orders the rows with before deriving
+ * `findings` and `findingIdsByIndex`, and that promotion re-derives the
+ * numbering with (#1603): the production ranking itself, not a paraphrase.
  */
-const orderFindingsForSynthesis = <T extends { supportPanel?: FindingSupportPanel | null }>(
-  rows: readonly T[],
-): T[] => orderByPanelConfidence(rows, (f) => f.supportPanel);
+import { inSynthesisOrder as orderFindingsForSynthesis } from "./synthesis-finding-order.js";
 import { buildSynthesisPrompt } from "./prompts.js";
 import type { AIProvider, ChatMessage, ChatOptions } from "../ai/types.js";
 
