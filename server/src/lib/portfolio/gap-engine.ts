@@ -399,7 +399,9 @@ async function decompose(
   ctx: Omit<RunContext, "criteria" | "query">,
   given: string[],
 ): Promise<string[]> {
-  if (given.length > 0) return given.slice(0, ctx.limits.maxCriteria);
+  // Every supplied criterion is judged (the schema bounds the count): dropping the tail would let
+  // a product read as covering a requirement whose remaining criteria were never checked.
+  if (given.length > 0) return given;
   if (!ctx.budget.allows(null)) return [ctx.statement];
   try {
     const { parsed } = await callJsonLlm(ctx.provider, {
@@ -620,8 +622,20 @@ function productSummary(p: PortfolioProductResult, criteria: readonly string[]):
     case "covers":
       return `Covers it: ${describeProduct(p)}.`;
     case "partial": {
-      const missing = criteria.filter((_, i) => p.criteriaCoveredBy[i].length === 0);
-      return `Covers part of it: ${describeProduct(p)}. Not found: ${missing.join("; ")}.`;
+      const uncovered = criteria.flatMap((_, i) =>
+        p.criteriaCoveredBy[i].length === 0 ? [i] : [],
+      );
+      // Only a criterion every repo could be checked against is a gap; one any repo could not
+      // verify (budget, model error, no excerpts) is not-checked, never a gap.
+      const unchecked = (i: number) => p.repos.some((r) => r.criteria[i] !== "gap-confirmed");
+      const names = (idx: number[]) => idx.map((i) => criteria[i]).join("; ");
+      const notFound = uncovered.filter((i) => !unchecked(i));
+      const notChecked = uncovered.filter(unchecked);
+      return [
+        `Covers part of it: ${describeProduct(p)}.`,
+        ...(notFound.length > 0 ? [`Not found: ${names(notFound)}.`] : []),
+        ...(notChecked.length > 0 ? [`Not checked: ${names(notChecked)}.`] : []),
+      ].join(" ");
     }
     case "not-covered":
       return "Does not cover it.";
@@ -661,7 +675,7 @@ export async function evaluatePortfolioGap(
   const criteria = scoped.some((p) => p.readable)
     ? await decompose(base, input.criteria)
     : input.criteria.length > 0
-      ? input.criteria.slice(0, limits.maxCriteria)
+      ? input.criteria
       : [input.statement];
   const ctx: RunContext = {
     ...base,

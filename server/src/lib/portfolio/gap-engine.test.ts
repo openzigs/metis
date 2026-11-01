@@ -30,7 +30,7 @@ vi.mock("../rag/federated-search-service.js", () => ({
   getFederatedSearchService: () => ({ searchAcrossProjects: defaults.searchAcrossProjects }),
 }));
 
-const { evaluatePortfolioGap, portfolioGapInputSchema, readPortfolioGapLimits } =
+const { evaluatePortfolioGap, portfolioGapInputSchema, readPortfolioGapLimits, toAssessmentInput } =
   await import("./gap-engine.js");
 const { AppError } = await import("../../middleware/error-handler.js");
 
@@ -285,6 +285,64 @@ describe("evaluatePortfolioGap", () => {
     );
     expect(result.verdict).toBe("partial");
     expect(result.summary).toBe("Partly covered by One (label-p1); Two (label-p2).");
+  });
+
+  it("judges every supplied criterion, even past the decomposition cap", async () => {
+    const criteria = Array.from({ length: 12 }, (_, i) => `c${i + 1}`);
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement: "s", criteria, ...ALL },
+      {
+        provider: provider(() =>
+          JSON.stringify({
+            criteria: criteria.map((_, i) =>
+              i === 11
+                ? { index: i + 1, verdict: "gap-confirmed" }
+                : { index: i + 1, verdict: "implemented", excerpts: [1] },
+            ),
+          }),
+        ),
+        search: async () => found([hit("rc-p1", "a.ts", "a"), hit("rc-p2", "b.ts", "b")]),
+        limits,
+      },
+    );
+    expect(result.criteria).toEqual(criteria);
+    expect(result.products.every((p) => p.coverage === "partial")).toBe(true);
+    expect(result.verdict).toBe("partial");
+    expect(
+      toAssessmentInput(result, {
+        createdById: "u",
+        sourceRequirementId: null,
+        sourceProjectId: null,
+      }).products?.[0]?.baSummary,
+    ).toContain("Not found: c12.");
+  });
+
+  it("a partial product reports a criterion it could not verify as not checked, not as a gap", async () => {
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement: "s", criteria: ["c1", "c2", "c3"], ...ALL },
+      {
+        provider: provider(() =>
+          JSON.stringify({
+            criteria: [
+              { index: 1, verdict: "implemented", excerpts: [1] },
+              { index: 2, verdict: "gap-confirmed" },
+            ],
+          }),
+        ),
+        search: async () => found([hit("rc-p1", "a.ts", "a"), hit("rc-p2", "b.ts", "b")]),
+        limits,
+      },
+    );
+    const summary = toAssessmentInput(result, {
+      createdById: "u",
+      sourceRequirementId: null,
+      sourceProjectId: null,
+    }).products?.[0]?.baSummary;
+    expect(summary).toContain("Not found: c2.");
+    expect(summary).toContain("Not checked: c3.");
+    expect(summary).not.toContain("Not found: c2; c3");
   });
 
   it("an abort stops the run instead of reading as a failed repo", async () => {
