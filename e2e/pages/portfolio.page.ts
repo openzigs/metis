@@ -14,7 +14,11 @@ export class PortfolioEntryPage {
 
   constructor(page: Page) {
     this.page = page;
-    this.heading = page.getByRole("heading", { name: "Portfolio coverage", level: 1 });
+    this.heading = page.getByRole("heading", {
+      name: "Portfolio coverage",
+      level: 1,
+      exact: true,
+    });
     this.statement = page.getByLabel("Requirement statement");
     this.allProducts = page.getByRole("radio", { name: "All products I can access" });
     this.submit = page.getByRole("button", { name: "Check coverage" });
