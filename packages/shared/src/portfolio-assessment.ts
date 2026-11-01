@@ -43,7 +43,7 @@ export const portfolioAssessmentProductInputSchema = z
     impactKind: z.enum(PORTFOLIO_IMPACT_KINDS).default("none"),
     /** The integration kind the impact crosses (#1618 `PRODUCT_INTEGRATION_KINDS`). */
     via: z.string().min(1).max(32).nullable().default(null),
-    edgeIds: z.array(z.string().min(1).max(64)).default([]),
+    edgeIds: z.array(z.string().min(1).max(64)).max(2_000).default([]),
     severity: z.string().min(1).max(32).nullable().default(null),
     baSummary: z.string().max(20_000).default(""),
     technicalDetail: z.record(z.string(), jsonValue).default({}),
@@ -58,10 +58,19 @@ export const portfolioAssessmentRepoInputSchema = z
     repoConnectionId: z.string().min(1).max(64),
     verdict: z.enum(REQUIREMENT_VERDICTS),
     /** Repo-aware code citations (#1611), stored as given. */
-    citations: z.array(jsonValue).default([]),
+    citations: z.array(jsonValue).max(500).default([]),
   })
   .strict();
 export type PortfolioAssessmentRepoInput = z.input<typeof portfolioAssessmentRepoInputSchema>;
+
+/**
+ * #1647 — the most an assessment may name. Generous for a whole portfolio
+ * (#1621 measured 1,200 repos over 40 products) and still a bound on one write.
+ */
+export const PORTFOLIO_ASSESSMENT_LIMITS = {
+  products: 2_000,
+  repos: 20_000,
+} as const;
 
 /** A whole assessment as the engine writes it. */
 export const portfolioAssessmentInputSchema = z
@@ -70,16 +79,54 @@ export const portfolioAssessmentInputSchema = z
     sourceRequirementId: z.string().min(1).max(64).nullable().default(null),
     sourceProjectId: z.string().min(1).max(64).nullable().default(null),
     scope: z.enum(PORTFOLIO_ASSESSMENT_SCOPES),
-    productIds: z.array(z.string().min(1).max(64)),
+    productIds: z.array(z.string().min(1).max(64)).max(PORTFOLIO_ASSESSMENT_LIMITS.products),
     status: z.enum(PORTFOLIO_ASSESSMENT_STATUSES).default("pending"),
     portfolioVerdict: z.enum(PORTFOLIO_COVERAGES).nullable().default(null),
     summary: z.string().max(20_000).default(""),
     costUsd: z.number().min(0).default(0),
     createdById: z.string().min(1).max(64),
-    products: z.array(portfolioAssessmentProductInputSchema).default([]),
-    repos: z.array(portfolioAssessmentRepoInputSchema).default([]),
+    products: z
+      .array(portfolioAssessmentProductInputSchema)
+      .max(PORTFOLIO_ASSESSMENT_LIMITS.products)
+      .default([]),
+    repos: z
+      .array(portfolioAssessmentRepoInputSchema)
+      .max(PORTFOLIO_ASSESSMENT_LIMITS.repos)
+      .default([]),
   })
-  .strict();
+  .strict()
+  // #1647 — the parts must agree: a `product` scope names at most one product,
+  // and every product row and repo verdict is under a product the assessment
+  // says it assessed. (A duplicate row is left to the tables' unique keys,
+  // which refuse the whole write.)
+  .superRefine((a, ctx) => {
+    if (a.scope === "product" && a.productIds.length > 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["productIds"],
+        message: "a product-scoped assessment names at most one product",
+      });
+    }
+    const assessed = new Set(a.productIds);
+    a.products.forEach((p, i) => {
+      if (!assessed.has(p.productId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["products", i, "productId"],
+          message: "a product row must be for a product in productIds",
+        });
+      }
+    });
+    a.repos.forEach((r, i) => {
+      if (!assessed.has(r.productId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["repos", i, "productId"],
+          message: "a repo verdict must be under a product in productIds",
+        });
+      }
+    });
+  });
 export type PortfolioAssessmentInput = z.input<typeof portfolioAssessmentInputSchema>;
 
 /** An assessment as it reads back. */

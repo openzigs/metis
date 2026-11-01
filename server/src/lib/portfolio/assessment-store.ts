@@ -19,15 +19,18 @@ import {
   type PortfolioAssessment,
   type PortfolioAssessmentInput,
 } from "@metis/shared";
-import type { Prisma } from "@prisma/client";
-import { prisma } from "../prisma.js";
+import { Prisma, prisma } from "../prisma.js";
 
 /** Bound values per statement kept under SQLite's 999, with room to spare. */
 export const SQLITE_SAFE_BIND_VALUES = 900;
 
-/** Columns of each child table; every one may be bound on insert. */
-const PRODUCT_COLUMNS = 11;
-const REPO_COLUMNS = 7;
+/**
+ * Columns of each child table; every one may be bound on insert. Read from the
+ * generated client's scalar-field enums (#1647), so a column added to the
+ * schema shrinks the batch rather than pushing it past the bind limit.
+ */
+export const PRODUCT_COLUMNS = Object.keys(Prisma.PortfolioAssessmentProductScalarFieldEnum).length;
+export const REPO_COLUMNS = Object.keys(Prisma.PortfolioAssessmentRepoScalarFieldEnum).length;
 
 /** Rows of a `columns`-wide table that fit in one statement. */
 export function rowsPerInsert(columns: number): number {
@@ -115,7 +118,13 @@ function oneOf<T extends string>(
   return value !== null && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
 }
 
-/** Read an assessment back with its product and repo rows, or null when there is none. */
+/**
+ * Read an assessment back with its product and repo rows, or null when there is
+ * none. This checks no access: the table carries no workspace, and an
+ * `all-accessible` assessment names products across workspaces. A route that
+ * serves one (#1625) must re-check the caller's access to each product row and
+ * each repo row's repo, as the product reads do (#1258), before returning it.
+ */
 export async function getPortfolioAssessment(id: string): Promise<PortfolioAssessment | null> {
   const row = await prisma.portfolioAssessment.findUnique({
     where: { id },

@@ -30,8 +30,13 @@ vi.mock("../src/lib/prisma.js", async (importOriginal) => {
   };
 });
 
-const { createPortfolioAssessment, getPortfolioAssessment, rowsPerInsert } =
-  await import("../src/lib/portfolio/assessment-store.js");
+const {
+  createPortfolioAssessment,
+  getPortfolioAssessment,
+  rowsPerInsert,
+  PRODUCT_COLUMNS,
+  REPO_COLUMNS,
+} = await import("../src/lib/portfolio/assessment-store.js");
 const { persistRequirements } = await import("../src/lib/analysis/analysis-service.js");
 
 const USER = "u-1621";
@@ -205,15 +210,31 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(after?.repos).toHaveLength(1);
     });
 
-    it("writes an assessment over 1,200 repos on SQLite", async () => {
-      expect(rowsPerInsert(7) * 7).toBeLessThan(999);
+    it("sizes its batches from the tables' real column counts (#1647)", async () => {
+      // Every scalar column may be bound on insert; a column added to either
+      // table must shrink its batch, so the counts are the live schema's.
+      const columns = async (table: string) =>
+        (
+          await db.$queryRawUnsafe<Array<{ name: string }>>(
+            `SELECT name FROM pragma_table_info('${table}')`,
+          )
+        ).length;
+      expect(PRODUCT_COLUMNS).toBe(await columns("portfolio_assessment_products"));
+      expect(REPO_COLUMNS).toBe(await columns("portfolio_assessment_repos"));
+      expect(rowsPerInsert(PRODUCT_COLUMNS) * PRODUCT_COLUMNS).toBeLessThan(999);
+      expect(rowsPerInsert(REPO_COLUMNS) * REPO_COLUMNS).toBeLessThan(999);
+    });
+
+    it("writes an assessment over 100 products and 1,200 repos on SQLite", async () => {
+      // 100 product rows bind 1,100 values in one statement unless batched (#1647).
+      expect(100 * PRODUCT_COLUMNS).toBeGreaterThan(999);
       const repos = Array.from({ length: 1_200 }, (_, i) => ({
-        productId: `prod-${i % 40}`,
+        productId: `prod-${i % 100}`,
         repoConnectionId: `rc-${i}`,
         verdict: "could-not-verify" as const,
         citations: [],
       }));
-      const products = Array.from({ length: 40 }, (_, i) => ({
+      const products = Array.from({ length: 100 }, (_, i) => ({
         productId: `prod-${i}`,
         coverage: "not-checked" as const,
       }));
@@ -228,7 +249,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await db.portfolioAssessmentRepo.count({ where: { assessmentId: id } })).toBe(1_200);
       const read = await getPortfolioAssessment(id);
       expect(read?.repos).toHaveLength(1_200);
-      expect(read?.products).toHaveLength(40);
+      expect(read?.products).toHaveLength(100);
     });
 
     it("writes nothing when any row fails (one transaction)", async () => {
@@ -257,6 +278,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ["an unknown scope", { scope: "galaxy" }],
       ["an empty statement", { statement: "   " }],
       ["a negative cost", { costUsd: -1 }],
+      [
+        "a row under a product it did not assess (#1647)",
+        { products: [{ productId: "p", coverage: "covers" }] },
+      ],
     ])("refuses %s before writing", async (_label, over) => {
       const before = await db.portfolioAssessment.count();
       // Refused by the schema (a ZodError), not by some later accident.
@@ -278,7 +303,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const id = await createPortfolioAssessment({
         statement: "S",
         scope: "product",
-        productIds: [],
+        productIds: ["p"],
         createdById: USER,
         products: [{ productId: "p", coverage: "covers" }],
         repos: [{ productId: "p", repoConnectionId: "r", verdict: "implemented" }],

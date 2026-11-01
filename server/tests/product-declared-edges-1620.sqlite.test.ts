@@ -44,6 +44,7 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 const { productsRouter } = await import("../src/routes/products-multi.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
+const { audit } = await import("../src/lib/audit/audit-service.js");
 
 const WS1 = "ws1-1620";
 const WS2 = "ws2-1620";
@@ -111,10 +112,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res.status).toBe(200);
       return res.body.data as { edges: EdgeBody[]; resources: ResourceBody[] };
     };
+    // `implements`: `newEdge` seeds a1 -> a2 `calls` edges, and a declared copy
+    // of an edge the product already has is refused (#1647).
     const declaredEdge = (over: Record<string, unknown> = {}) => ({
       sourceRepoId: rc.a1,
       targetRepoId: rc.a2,
-      edgeType: "calls",
+      edgeType: "implements",
       integrationKind: "identity",
       strength: "functional",
       direction: "depends-on",
@@ -208,10 +211,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           edges: await db.productEdge.findMany({ orderBy: { id: "asc" } }),
           resources: await db.productResource.findMany({ orderBy: { id: "asc" } }),
         };
+        vi.mocked(audit).mockClear();
         const reader = await call(verb, path, "rita", body);
         const outsider = await call(verb, path, "mallory", body);
         expect(reader.status).toBe(403);
         expect(outsider.status).toBe(404);
+        // A refused write records no product write (the denial is audited apart).
+        expect(
+          vi
+            .mocked(audit)
+            .mock.calls.map((c) => c[0].action)
+            .filter((a) => /^product\.(edge|resource)\./.test(a)),
+        ).toEqual([]);
         expect({
           edges: await db.productEdge.findMany({ orderBy: { id: "asc" } }),
           resources: await db.productResource.findMany({ orderBy: { id: "asc" } }),
@@ -257,7 +268,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           productId: p,
           sourceRepoId: rc.a1,
           targetRepoId: rc.a2,
-          edgeType: "calls",
+          edgeType: "implements",
           confidence: 1,
           evidence: [],
           sourceFile: null,
@@ -312,7 +323,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect((await db.productEdge.findUnique({ where: { id } }))?.targetRepoId).toBeNull();
       });
 
-      it("PATCH overrides a detected edge's strength, which makes it declared", async () => {
+      it("PATCH overrides a detected edge's strength, which makes it overridden", async () => {
         const id = await newEdge({
           origin: "detected",
           strength: "contract",
@@ -325,9 +336,177 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect((await graph()).edges.find((e) => e.id === id)).toMatchObject({
           strength: "functional",
           integrationKind: "api",
-          origin: "declared",
+          origin: "overridden",
           declaredById: "alice",
         });
+      });
+
+      it("an overridden edge stays as locked and undeletable as a detected one (#1647)", async () => {
+        const id = await newEdge({ origin: "detected", edgeType: "produces" });
+        const override = await call("patch", `/api/products/${p}/edges/${id}`, "alice", {
+          strength: "model",
+        });
+        expect(override.status).toBe(200);
+        // Before #1647 the override made it `declared`, and then anything went.
+        const move = await call("patch", `/api/products/${p}/edges/${id}`, "alice", {
+          targetRepoId: null,
+          resourceId: await newResource({ origin: "declared" }),
+        });
+        expect(move.status).toBe(409);
+        expect(move.body.error.code).toBe("DETECTED_EDGE_LOCKED");
+        const del = await call("delete", `/api/products/${p}/edges/${id}`, "alice");
+        expect(del.status).toBe(409);
+        expect(del.body.error.code).toBe("DETECTED_EDGE_UNDELETABLE");
+        // A second override is still allowed, and it stays overridden.
+        const again = await call("patch", `/api/products/${p}/edges/${id}`, "alice", {
+          direction: "writes",
+        });
+        expect(again.status).toBe(200);
+        expect(await db.productEdge.findUnique({ where: { id } })).toMatchObject({
+          targetRepoId: rc.a2,
+          strength: "model",
+          direction: "writes",
+          origin: "overridden",
+        });
+      });
+
+      it("audits every edge and resource write, naming ids and fields only (#1647)", async () => {
+        vi.mocked(audit).mockClear();
+        const edge = await call(
+          "post",
+          `/api/products/${p}/edges`,
+          "alice",
+          declaredEdge({ sourceRepoId: rc.a2, targetRepoId: rc.a1, edgeType: "calls" }),
+        );
+        expect(edge.status).toBe(201);
+        const edgeId = edge.body.data.id as string;
+        await call("patch", `/api/products/${p}/edges/${edgeId}`, "alice", { strength: "model" });
+        await call("delete", `/api/products/${p}/edges/${edgeId}`, "alice");
+        const resource = await call("post", `/api/products/${p}/resources`, "alice", {
+          kind: "bucket",
+          name: "audited",
+          locator: "s3://audited-bucket",
+        });
+        const resourceId = resource.body.data.id as string;
+        await call("patch", `/api/products/${p}/resources/${resourceId}`, "alice", {
+          locator: "s3://audited-bucket-2",
+        });
+        await call("delete", `/api/products/${p}/resources/${resourceId}`, "alice");
+        const target = { type: "product", id: p };
+        const actor = { id: "alice" };
+        expect(vi.mocked(audit).mock.calls.map((c) => c[0])).toEqual([
+          {
+            actor,
+            action: "product.edge.create",
+            target,
+            metadata: { edgeId, origin: "declared" },
+          },
+          {
+            actor,
+            action: "product.edge.update",
+            target,
+            metadata: { edgeId, fields: ["strength"], origin: "declared" },
+          },
+          { actor, action: "product.edge.delete", target, metadata: { edgeId } },
+          {
+            actor,
+            action: "product.resource.create",
+            target,
+            metadata: { resourceId, kind: "bucket" },
+          },
+          {
+            actor,
+            action: "product.resource.update",
+            target,
+            metadata: { resourceId, fields: ["locator"], origin: "declared" },
+          },
+          { actor, action: "product.resource.delete", target, metadata: { resourceId } },
+        ]);
+      });
+
+      it("PATCH refuses a self-edge and a copy of another edge (#1647)", async () => {
+        const id = await newEdge({ origin: "declared", edgeType: "extends" });
+        const self = await call("patch", `/api/products/${p}/edges/${id}`, "alice", {
+          targetRepoId: rc.a1,
+        });
+        expect(self.status).toBe(400);
+        expect(self.body.error.code).toBe("EDGE_SELF_REFERENCE");
+        const other = await newEdge({ origin: "declared", edgeType: "consumes" });
+        const copy = await call("patch", `/api/products/${p}/edges/${id}`, "alice", {
+          edgeType: "consumes",
+        });
+        expect(copy.status).toBe(409);
+        expect(copy.body.error.code).toBe("EDGE_EXISTS");
+        expect(copy.body.error.message).toContain(other);
+        // Changing only its classification is no copy, though the key is shared.
+        expect(
+          (await call("patch", `/api/products/${p}/edges/${id}`, "alice", { strength: "model" }))
+            .status,
+        ).toBe(200);
+      });
+
+      it("refuses a resource only a hidden repo's edge goes through, on POST and PATCH (#1647)", async () => {
+        const hidden = await newResource({ origin: "declared", locator: "pg-secret/ledger" });
+        await newEdge({
+          origin: "declared",
+          sourceRepoId: rc.b,
+          targetRepoId: null,
+          resourceId: hidden,
+        });
+        const id = await newEdge({ origin: "declared", edgeType: "imports" });
+        const patch = await call("patch", `/api/products/${p}/edges/${id}`, "alice", {
+          resourceId: hidden,
+        });
+        const post = await call(
+          "post",
+          `/api/products/${p}/edges`,
+          "alice",
+          declaredEdge({ edgeType: "produces", resourceId: hidden }),
+        );
+        for (const res of [patch, post]) {
+          expect(res.status).toBe(404);
+          expect(res.body.error.code).toBe("RESOURCE_NOT_FOUND");
+        }
+        expect((await db.productEdge.findUnique({ where: { id } }))?.resourceId).toBeNull();
+        expect((await graph()).resources.map((r) => r.id)).not.toContain(hidden);
+        // The admin reads every repo, so it is an ordinary resource to them.
+        const admin = await call("patch", `/api/products/${p}/edges/${id}`, "ada", {
+          resourceId: hidden,
+        });
+        expect(admin.status).toBe(200);
+      });
+
+      it("refuses a contract document of a repo the caller cannot read (#1647)", async () => {
+        const hiddenDoc = (
+          await db.productContractDoc.create({
+            data: { productId: p, repoId: rc.b, version: 1, contentHash: "h-b", title: "B API" },
+          })
+        ).id;
+        const res = await call(
+          "post",
+          `/api/products/${p}/edges`,
+          "alice",
+          declaredEdge({ edgeType: "consumes", contractDocId: hiddenDoc }),
+        );
+        expect(res.status).toBe(404);
+        expect(res.body.error.code).toBe("CONTRACT_DOC_NOT_FOUND");
+        const ownDoc = (
+          await db.productContractDoc.create({
+            data: { productId: p, repoId: rc.a2, version: 1, contentHash: "h-a2", title: "A2 API" },
+          })
+        ).id;
+        const ok = await call(
+          "post",
+          `/api/products/${p}/edges`,
+          "alice",
+          declaredEdge({
+            sourceRepoId: rc.a2,
+            targetRepoId: rc.a1,
+            edgeType: "consumes",
+            contractDocId: ownDoc,
+          }),
+        );
+        expect(ok.status).toBe(201);
       });
 
       it("PATCH refuses to move a detected edge's ends", async () => {
@@ -475,7 +654,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(clash.body.error.code).toBe("RESOURCE_EXISTS");
       });
 
-      it("PATCH sets a detected resource's locator (making it declared) but not its name", async () => {
+      it("PATCH sets a detected resource's locator (making it overridden) but not its name", async () => {
         const id = await newResource({ origin: "detected", name: "orders" });
         const rename = await call("patch", `/api/products/${p}/resources/${id}`, "alice", {
           name: "orders-v2",
@@ -489,9 +668,50 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(locate.body.data).toMatchObject({
           name: "orders",
           locator: "pg-main/public",
-          origin: "declared",
+          origin: "overridden",
           declaredById: "alice",
         });
+        // #1647 — and it stays locked and undeletable: before, the locator made
+        // it `declared`, and then it could be renamed or deleted.
+        const renameAfter = await call("patch", `/api/products/${p}/resources/${id}`, "alice", {
+          name: "orders-v2",
+        });
+        expect(renameAfter.status).toBe(409);
+        expect(renameAfter.body.error.code).toBe("DETECTED_RESOURCE_LOCKED");
+        const del = await call("delete", `/api/products/${p}/resources/${id}`, "alice");
+        expect(del.status).toBe(409);
+        expect(del.body.error.code).toBe("DETECTED_RESOURCE_UNDELETABLE");
+        expect(await db.productResource.findUnique({ where: { id } })).toMatchObject({
+          name: "orders",
+          origin: "overridden",
+        });
+      });
+
+      it("answers a create or rename that races past the clash check with 409, not 500 (#1647)", async () => {
+        await newResource({ origin: "declared", kind: "bucket", name: "raced" });
+        const renamed = await newResource({ origin: "declared", kind: "bucket", name: "pre-race" });
+        // The pre-check sees no clash, as when two requests run side by side.
+        const spy = vi.spyOn(db.productResource, "findUnique").mockResolvedValue(null);
+        try {
+          const create = await call("post", `/api/products/${p}/resources`, "alice", {
+            kind: "bucket",
+            name: "raced",
+          });
+          expect(create.status).toBe(409);
+          expect(create.body.error.code).toBe("RESOURCE_EXISTS");
+          const rename = await call("patch", `/api/products/${p}/resources/${renamed}`, "alice", {
+            name: "raced",
+          });
+          expect(rename.status).toBe(409);
+          expect(rename.body.error.code).toBe("RESOURCE_EXISTS");
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it("does not return a resource whose stored kind is no longer known (#1647)", async () => {
+        const id = await newResource({ origin: "declared", kind: "mainframe" });
+        expect((await graph()).resources.map((r) => r.id)).not.toContain(id);
       });
 
       it("DELETE removes a declared resource and the repo-less edges through it, keeping the others", async () => {
@@ -513,6 +733,40 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const res = await call("delete", `/api/products/${p}/resources/${id}`, "alice");
         expect(res.status).toBe(409);
         expect(res.body.error.code).toBe("DETECTED_RESOURCE_UNDELETABLE");
+      });
+
+      it("DELETE through edges of a repo the caller cannot read is allowed and audited (#1647)", async () => {
+        const id = await newResource({ origin: "declared" });
+        await newEdge({
+          origin: "declared",
+          edgeType: "consumes",
+          targetRepoId: null,
+          resourceId: id,
+        });
+        const hiddenEdge = await newEdge({
+          origin: "declared",
+          sourceRepoId: rc.b,
+          targetRepoId: null,
+          resourceId: id,
+        });
+        vi.mocked(audit).mockClear();
+        const res = await call("delete", `/api/products/${p}/resources/${id}`, "alice");
+        expect(res.status).toBe(204);
+        expect(await db.productEdge.findUnique({ where: { id: hiddenEdge } })).toBeNull();
+        expect(vi.mocked(audit).mock.calls.map((c) => c[0])).toEqual([
+          {
+            actor: { id: "alice" },
+            action: "product.resource.delete",
+            target: { type: "product", id: p },
+            metadata: { resourceId: id },
+          },
+          {
+            actor: { id: "alice" },
+            action: "product.resource.delete.unreadable",
+            target: { type: "product", id: p },
+            metadata: { reason: "project-access-denied", resourceId: id, hiddenEdgeCount: 1 },
+          },
+        ]);
       });
 
       it("answers a resource only a hidden repo's edge goes through, or another product's, as not found", async () => {

@@ -51,7 +51,8 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 const { productsRouter } = await import("../src/routes/products-multi.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
-const { runProductEdgeDetection } = await import("../src/lib/products/edge-detection.js");
+const { runProductEdgeDetection, syncDetectedProductEdges } =
+  await import("../src/lib/products/edge-detection.js");
 type FileEntry = import("../src/lib/products/repo-crawler.js").FileEntry;
 type DetectionRepo = import("../src/lib/products/edge-detection.js").DetectionRepo;
 
@@ -340,6 +341,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
       it("does not write a detected copy of an edge a person declared, nor change the declaration", async () => {
         const resourceId = (await graphOf(product.table)).resources[0].id;
+        // A person cannot declare a copy of an edge the product already has
+        // (#1647), so the declaration comes first, as it would in practice:
+        // detection then finds the edge the person already declared.
+        await db.productEdge.deleteMany({
+          where: { productId: product.table, origin: "detected", sourceRepoId: rc.writer },
+        });
         const declare = await request(app())
           .post(`/api/products/${product.table}/edges`)
           .set("Authorization", bearer("bob"))
@@ -475,6 +482,162 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           status: 404,
           code: "PRODUCT_NOT_FOUND",
         });
+      });
+    });
+
+    // ── #1647 — review follow-ups ────────────────────────────────────────────
+
+    describe("what a run keeps, refreshes and refuses (#1647)", () => {
+      /** A fresh product over two new repos of project A, with the given files. */
+      const twoRepoProduct = async (slug: string, a: FileEntry[], b: FileEntry[]) => {
+        const ids: string[] = [];
+        for (const [key, entries] of [
+          ["x", a],
+          ["y", b],
+        ] as const) {
+          const id = (
+            await db.repoConnection.create({
+              data: {
+                projectId: PA,
+                label: `${slug}-${key}`,
+                repoName: `${slug}-${key}`,
+                ownerOrOrg: "org",
+              },
+            })
+          ).id;
+          files.set(id, entries);
+          ids.push(id);
+        }
+        const productId = (
+          await db.product.create({
+            data: { name: slug, slug: `${slug}-1647`, createdById: "bob", workspaceId: WS1 },
+          })
+        ).id;
+        for (const id of ids) {
+          await db.productRepo.create({ data: { productId, repoConnectionId: id } });
+        }
+        return { productId, x: ids[0], y: ids[1] };
+      };
+      const sql = (path: string, content: string): FileEntry => ({
+        path,
+        content,
+        size: content.length,
+      });
+
+      it("keeps an overridden edge's classification on re-detection, and drops it once not found", async () => {
+        const t = await twoRepoProduct(
+          "override",
+          [sql("w.sql", "insert into invoices (id) values (1);")],
+          [sql("r.sql", "select id from invoices;")],
+        );
+        await detect(t.productId);
+        const [edge] = (await graphOf(t.productId)).edges;
+        expect(edge).toMatchObject({ strength: "intrusive", origin: "detected" });
+        const patch = await request(app())
+          .patch(`/api/products/${t.productId}/edges/${edge.id}`)
+          .set("Authorization", bearer("bob"))
+          .send({ strength: "functional" });
+        expect(patch.status).toBe(200);
+        // Found again: the person's strength stands, detection's facts refresh.
+        files.set(t.y, [sql("r2.sql", "select id from invoices;")]);
+        const again = await detect(t.productId);
+        expect(again).toMatchObject({ created: 0, updated: 1, deleted: 0 });
+        const read = (await graphOf(t.productId)).edges;
+        expect(read).toHaveLength(1);
+        expect(read[0]).toMatchObject({
+          id: edge.id,
+          strength: "functional",
+          integrationKind: "database",
+          origin: "overridden",
+          targetFile: "r2.sql",
+        });
+        // Not found any more: it goes, as a detected edge would.
+        files.set(t.y, []);
+        const gone = await detect(t.productId);
+        expect(gone.deleted).toBe(1);
+        expect((await graphOf(t.productId)).edges).toEqual([]);
+      });
+
+      it("keeps a declared resource no edge goes through, and drops a detected one (orphan cleanup)", async () => {
+        const t = await twoRepoProduct("orphans", [], []);
+        const declared = await db.productResource.create({
+          data: { productId: t.productId, kind: "bucket", name: "exports", origin: "declared" },
+        });
+        await db.productResource.create({
+          data: { productId: t.productId, kind: "table", name: "stale", origin: "detected" },
+        });
+        await detect(t.productId);
+        expect(
+          (await db.productResource.findMany({ where: { productId: t.productId } })).map(
+            (r) => r.id,
+          ),
+        ).toEqual([declared.id]);
+      });
+
+      it("finds no shared table in two repos' unresolved dynamic SQL", async () => {
+        const t = await twoRepoProduct("dynamic", [], []);
+        for (const repoId of [t.x, t.y]) {
+          const graph = await db.codeGraph.create({
+            data: { projectId: PA, repoConnectionId: repoId },
+          });
+          const sym = (kind: string, name: string) =>
+            db.codeSymbol.create({
+              data: {
+                codeGraphId: graph.id,
+                projectId: PA,
+                kind,
+                name,
+                qualifiedName: name,
+                filePath: "src/Dao.java",
+                startLine: 1,
+                endLine: 2,
+                language: "java",
+                contentHash: `${repoId}-${name}`,
+              },
+            });
+          const fn = await sym("function", `load-${repoId}`);
+          const table = await sym("table", "?dynamic:tableName");
+          await db.codeEdge.create({
+            data: {
+              codeGraphId: graph.id,
+              projectId: PA,
+              kind: "writes",
+              fromSymbolId: fn.id,
+              toSymbolId: table.id,
+              filePath: "src/Dao.java",
+              line: 3,
+            },
+          });
+        }
+        await detect(t.productId);
+        expect((await graphOf(t.productId)).edges).toEqual([]);
+        expect(await db.productResource.count({ where: { productId: t.productId } })).toBe(0);
+      });
+
+      it("writes no detected resource when the run's transaction fails", async () => {
+        const t = await twoRepoProduct("atomic", [], []);
+        // An edge from a repo that does not exist fails its foreign key, after
+        // the resource it goes through would have been created.
+        await expect(
+          syncDetectedProductEdges(
+            t.productId,
+            [t.x, "rc-ghost-1647"],
+            [
+              {
+                sourceRepoId: "rc-ghost-1647",
+                targetRepoId: t.x,
+                edgeType: "produces",
+                confidence: 0.8,
+                evidence: [],
+                integrationKind: "database",
+                strength: "intrusive",
+                direction: "writes",
+                resource: { kind: "table", name: "ghost_orders" },
+              },
+            ],
+          ),
+        ).rejects.toThrow();
+        expect(await db.productResource.count({ where: { productId: t.productId } })).toBe(0);
       });
     });
   },

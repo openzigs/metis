@@ -71,7 +71,14 @@ const SHARED_MODEL = { integrationKind: "shared-library", strength: "model" } as
 /**
  * Detect cross-repo relationships from crawled data of all repos in a product.
  */
-export function detectRelationships(repos: RepoCrawlData[]): DetectedEdge[] {
+export function detectRelationships(input: RepoCrawlData[]): DetectedEdge[] {
+  // #1647 — the heuristics break ties by input order (which of two readers of
+  // a table is the source, which repo's protobuf package comes first). Sorted
+  // by id, a re-run over the same repos in another order finds the same edges
+  // rather than their mirrors.
+  const repos = [...input].sort((a, b) =>
+    a.repoConnectionId < b.repoConnectionId ? -1 : a.repoConnectionId > b.repoConnectionId ? 1 : 0,
+  );
   const edges: DetectedEdge[] = [];
 
   // Run all detection heuristics
@@ -148,7 +155,8 @@ function detectEventTopics(repos: RepoCrawlData[]): DetectedEdge[] {
  * `table` resource. It is `intrusive` when either side writes the table (the
  * writer reaches into data the other depends on) and `model` when both only
  * read it. The edge runs from the writer (`direction: writes`); between two
- * readers, or two writers, from the repo listed first.
+ * readers, or two writers, from the repo listed first (the lower id: the
+ * caller sorts).
  */
 function detectSharedTables(repos: RepoCrawlData[]): DetectedEdge[] {
   const byTable = new Map<string, Map<string, CrawlTableRef>>();
