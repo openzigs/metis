@@ -3,6 +3,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  PORTFOLIO_ASSESSMENT_LIMITS,
   PORTFOLIO_COVERAGES,
   portfolioAssessmentInputSchema,
   portfolioAssessmentProductInputSchema,
@@ -69,5 +70,76 @@ describe("portfolio assessment schemas", () => {
         verdict: "probably",
       }).success,
     ).toBe(false);
+  });
+
+  // #1647 — the parts of one assessment must agree, and every list is bounded.
+  describe("cross-part consistency and size caps", () => {
+    const base = {
+      statement: "S",
+      scope: "all-accessible" as const,
+      productIds: ["p1", "p2"],
+      createdById: "u",
+    };
+    const issues = (input: object) => {
+      const res = portfolioAssessmentInputSchema.safeParse({ ...base, ...input });
+      return res.success ? [] : res.error.issues.map((i) => i.path.join("."));
+    };
+
+    it("accepts rows under the products it assessed", () => {
+      expect(
+        issues({
+          products: [{ productId: "p1", coverage: "covers" }],
+          repos: [{ productId: "p2", repoConnectionId: "r", verdict: "implemented" }],
+        }),
+      ).toEqual([]);
+    });
+
+    it("refuses a product row or repo verdict under a product it did not assess", () => {
+      expect(
+        issues({
+          products: [
+            { productId: "p1", coverage: "covers" },
+            { productId: "p9", coverage: "covers" },
+          ],
+          repos: [{ productId: "p8", repoConnectionId: "r", verdict: "implemented" }],
+        }),
+      ).toEqual(["products.1.productId", "repos.0.productId"]);
+    });
+
+    it("refuses a product-scoped assessment of more than one product", () => {
+      expect(issues({ scope: "product" })).toEqual(["productIds"]);
+      expect(issues({ scope: "product", productIds: ["p1"] })).toEqual([]);
+    });
+
+    it("refuses lists past their caps", () => {
+      const many = (n: number) => Array.from({ length: n }, (_, i) => `p${i}`);
+      expect(issues({ productIds: many(PORTFOLIO_ASSESSMENT_LIMITS.products + 1) })).toEqual([
+        "productIds",
+      ]);
+      expect(
+        issues({
+          repos: Array.from({ length: PORTFOLIO_ASSESSMENT_LIMITS.repos + 1 }, (_, i) => ({
+            productId: "p1",
+            repoConnectionId: `r${i}`,
+            verdict: "implemented",
+          })),
+        }),
+      ).toEqual(["repos"]);
+      expect(
+        portfolioAssessmentProductInputSchema.safeParse({
+          productId: "p",
+          coverage: "covers",
+          edgeIds: many(2_001),
+        }).success,
+      ).toBe(false);
+      expect(
+        portfolioAssessmentRepoInputSchema.safeParse({
+          productId: "p",
+          repoConnectionId: "r",
+          verdict: "implemented",
+          citations: Array.from({ length: 501 }, () => ({})),
+        }).success,
+      ).toBe(false);
+    });
   });
 });

@@ -182,6 +182,80 @@ describe("extractTableRefs", () => {
     expect(tables("x.yml", "q: SELECT * FROM orders")).toEqual([]);
     expect(tables("notes.txt", "SELECT * FROM orders")).toEqual([]);
   });
+
+  it("does not read UI prose that opens with a SQL verb as SQL (#1647)", () => {
+    expect(
+      tables(
+        "a.tsx",
+        `const a = "Select from the list";\nconst b = "Delete from cart";\nconst c = "Select an item from the menu";\nconst d = "Update your settings";\nconst e = "select one from the list, then save";`,
+      ),
+    ).toEqual([]);
+    // A sentence-cased literal is still SQL when something only SQL has follows.
+    expect(
+      tables(
+        "a.ts",
+        `const q = "Select * from orders";\nconst w = "Delete from carts where id = ?";\nconst l = "select id from ledger";`,
+      ),
+    ).toEqual(["read:orders", "write:carts", "read:ledger"]);
+  });
+
+  it("reads no table from a FROM that names none (#1647)", () => {
+    expect(
+      tables(
+        "q.sql",
+        `SELECT EXTRACT(YEAR FROM created_at), TRIM(LEADING '0' FROM code),
+                SUBSTRING(name FROM 2 FOR 3), POSITION('x' IN s) FROM orders o
+          WHERE o.a IS DISTINCT FROM o.b AND o.c IS NOT DISTINCT FROM o.d;
+         WITH recent AS (SELECT * FROM events), totals (n) AS MATERIALIZED (SELECT 1 FROM ledger)
+         SELECT * FROM recent JOIN totals ON 1 = 1;`,
+      ),
+    ).toEqual(["read:orders", "read:events", "read:ledger"]);
+    // A CTE is only its own statement's: the same name elsewhere is a table.
+    expect(tables("q.sql", "WITH t AS (SELECT 1) SELECT * FROM t; SELECT * FROM t;")).toEqual([
+      "read:t",
+    ]);
+  });
+});
+
+describe("string literals and docstrings (#1647)", () => {
+  it("lexes Python's triple-quoted strings, across lines", () => {
+    const src = 'q = """\nSELECT * FROM "orders"\n"""\nr = \'\'\'it\'s\'\'\'\n# done';
+    const { strings, code } = lexSource(src, "a.py");
+    expect(strings.map((s) => s.value)).toEqual(['\nSELECT * FROM "orders"\n', "it's"]);
+    expect(code).not.toContain("done");
+    expect(tables("a.py", src)).toEqual(["read:orders"]);
+  });
+
+  it("finds no topic in a call written inside a string or a docstring", () => {
+    expect(
+      topics(
+        "a.py",
+        `def f():\n    """Example: producer.send('orders.created', v)"""\n    log("call client.publish('audit') to emit")\n    consumer.subscribe(['payments'])`,
+      ),
+    ).toEqual(["subscribe:payments"]);
+    expect(topics("a.ts", "const help = `kafka.produce('x')`; client.publish('real');")).toEqual([
+      "publish:real",
+    ]);
+  });
+});
+
+describe("AsyncAPI channel references (#1647)", () => {
+  it("decodes JSON-pointer escapes and ignores an inherited name", () => {
+    const doc = JSON.stringify({
+      asyncapi: "3.0.0",
+      channels: { "orders/created": {}, "a~b": { address: "tilde.topic" } },
+      operations: {
+        a: { action: "send", channel: { $ref: "#/channels/orders~1created" } },
+        b: { action: "receive", channel: { $ref: "#/channels/a~0b" } },
+        c: { action: "send", channel: { $ref: "#/channels/constructor" } },
+        d: { action: "send", channel: { $ref: "#/channels/__proto__" } },
+      },
+    });
+    expect(parseAsyncApiChannels("asyncapi.json", doc)).toEqual([
+      { topic: "orders/created", role: "publish" },
+      { topic: "tilde.topic", role: "subscribe" },
+    ]);
+  });
 });
 
 // A crawled repo is untrusted text: no input may make a scan super-linear.
@@ -194,11 +268,24 @@ describe("scan cost on hostile input", () => {
     ["unique topics", "", "a.ts"],
     ["KafkaListener openers", "@KafkaListener(", "A.java"],
     ["open block comment", "/*", "a.ts"],
+    // #1647 — the new passes: nested no-table FROM calls, CTE openers, an
+    // unterminated docstring, and topic calls inside one string.
+    ["nested EXTRACT calls", "select extract(", "q.sql"],
+    ["CTE openers", "with x as (select 1 from y), ", "q.sql"],
+    ["spaces after a CTE-shaped name", "select a, b", "q.sql"],
+    ["DISTINCT FROMs", "select a is distinct from ", "q.sql"],
+    ["unterminated docstring", '"""', "a.py"],
+    ["calls inside one string", "' c.publish('t') '", "a.ts"],
   ])("is linear in the size of %s", (label, unit, path) => {
     expectLinearTime(label, (n) => {
       let text: string;
       if (label === "unique tables") {
         text = Array.from({ length: n / 30 }, (_, i) => `INSERT INTO t${i} VALUES (1);\n`).join("");
+      } else if (label === "nested EXTRACT calls") {
+        const depth = Math.ceil(n / 9);
+        text = `select ${"extract(".repeat(depth)}${")".repeat(depth)} from t`;
+      } else if (label === "spaces after a CTE-shaped name") {
+        text = `${unit}${" ".repeat(n)}`;
       } else if (label === "unique topics") {
         text = Array.from({ length: n / 30 }, (_, i) => `c.subscribe('topic-${i}');\n`).join("");
       } else {

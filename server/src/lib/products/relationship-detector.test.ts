@@ -433,6 +433,39 @@ describe("relationship-detector", () => {
       expect(edges[0].sourceFile).toBe("src/repo.go");
     });
 
+    it("finds the same edges whatever order the repos come in (#1647)", () => {
+      // Two readers of a table, two writers of another, a shared type and a
+      // protobuf package: every heuristic that breaks a tie by repo order.
+      const proto = (id: string) => ({
+        format: "protobuf" as const,
+        filePath: `${id}.proto`,
+        content: "package com.org.events;",
+      });
+      const repos: RepoCrawlData[] = ["r-b", "r-a", "r-c"].map((id) => ({
+        repoConnectionId: id,
+        repoName: id,
+        ownerOrOrg: "org",
+        crawlResult: makeCrawlResult({
+          tables: [
+            { table: "orders", access: "read", filePath: `${id}.sql` },
+            { table: "ledger", access: "write", filePath: `${id}.sql` },
+          ],
+          specs: [proto(id)],
+          types: [{ name: "Money", kind: "interface", filePath: "src/money.ts", exported: true }],
+        }),
+      }));
+      const key = (e: { sourceRepoId: string; targetRepoId: string; edgeType: string }) =>
+        `${e.sourceRepoId}>${e.targetRepoId}:${e.edgeType}`;
+      const forward = detectRelationships(repos).map(key).sort();
+      const reversed = detectRelationships([...repos].reverse())
+        .map(key)
+        .sort();
+      expect(forward.length).toBeGreaterThan(0);
+      expect(reversed).toEqual(forward);
+      // Between two readers the edge runs from the lower id.
+      expect(forward).toContain("r-a>r-b:consumes");
+    });
+
     it("draws one edge per table, and none for a table one repo alone touches", () => {
       const edges = detectRelationships([
         repo("a", [

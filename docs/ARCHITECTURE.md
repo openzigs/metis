@@ -1329,9 +1329,15 @@ Requirements are deleted and recreated on every analysis re-run, so the assessme
 snapshot: `sourceRequirementId` is `ON DELETE SET NULL`, and product, repo, project and
 user ids are soft-links. `createPortfolioAssessment` (`server/src/lib/portfolio/assessment-store.ts`)
 validates the `@metis/shared` schema. It writes every row in one batch transaction, with
-child inserts sized under SQLite's 999 bound values (`rowsPerInsert`, #1346).
-`getPortfolioAssessment` reads a run back. The impact engine is #1623; the routes are
-#1625.
+child inserts sized under SQLite's 999 bound values (`rowsPerInsert`, #1346) from each
+table's column count, read from the generated client's scalar-field enums (#1647). The
+schema also checks that the parts agree (a `product` scope names at most one product; every
+product row and repo verdict is under a product in `productIds`) and caps every list
+(`PORTFOLIO_ASSESSMENT_LIMITS`). The tables carry no workspace and the store checks no
+access, so a route that serves an assessment (#1625) must re-check the caller's access to
+each product row and repo before returning it.
+`getPortfolioAssessment` reads a run back. The engines that fill these records are
+#1622 and #1623; the routes are #1625.
 
 **Portfolio gap analysis (#1622).** `runPortfolioGapAnalysis`
 (`server/src/lib/portfolio/gap-engine.ts`) checks one requirement statement against every
@@ -4469,12 +4475,24 @@ edge or resource against the caller's readable repos: one of another product, a 
 one, and one touching a repo the caller cannot read (or a resource only such edges go
 through) are the same 404. A write records `origin: declared` and `declaredById`. A
 **detected** edge may only have its `integrationKind` / `strength` / `direction`
-overridden (`DETECTED_EDGE_OVERRIDABLE_FIELDS`), which makes it declared, so re-detection
-leaves the override alone. Moving its ends is a 409, and deleting it is a 409 that says to
+overridden (`DETECTED_EDGE_OVERRIDABLE_FIELDS`), which makes it **`overridden`** (#1647):
+detection still owns it, so its ends stay locked, it still cannot be deleted, re-detection
+refreshes its evidence but keeps the person's classification, and a run that no longer
+finds it deletes it. Moving its ends is a 409, and deleting it is a 409 that says to
 override its strength instead. A detected resource keeps its kind and name, though its
-locator may be set; it cannot be deleted. Deleting a declared resource deletes the
-repo-less edges through it in the same transaction, while the rest lose only the
-`resourceId`. A locator carrying `user:pass@` credentials is a 400. Code:
+locator may be set (making it `overridden` too); it cannot be deleted. Deleting a declared
+resource deletes the repo-less edges through it in the same transaction, while the rest
+lose only the `resourceId`; when some of those edges touch a repo the caller cannot read,
+the delete still goes ahead and also audits `product.resource.delete.unreadable` with
+their count, after `product.repo.detach.unreadable`. Every write is audited
+(`product.edge.create|update|delete`, `product.resource.create|update|delete`, ids and
+field names only). An edge from a repo to itself is a 400 `EDGE_SELF_REFERENCE`; a second
+edge with the ends, type and resource of one the product already has (either origin) is a
+409 `EDGE_EXISTS`, so impact propagation never counts one coupling twice. A resource name
+race that slips past the clash check is the same 409 `RESOURCE_EXISTS`, not a 500. A
+locator carrying a credential is a 400 (`locatorCarriesCredential`: `user[:pass]@` in a
+URL or without a scheme, `scott/tiger@`, `;password=` / `?token=` style parameters); it is
+free text otherwise, so a UI must render it as text, never as an `href`. Code:
 `server/src/lib/products/product-edges.ts`.
 
 **Typed product edges and shared resources (#1618, epic #1608).** A `ProductEdge` says
@@ -4508,12 +4526,22 @@ verb, and from the repo's code graph (`reads`/`writes`/`persists-to` edges to a 
 symbol, `loadCodeGraphTables`); two repos on one table get a `database` edge through a
 `table` resource, `intrusive` from the writer when either writes, `model` when both read.
 `coupling-signals.ts` blanks comments before any pattern runs, so a name only in a comment
-is never a signal. `runProductEdgeDetection` (`edge-detection.ts`) crawls only the
+is never a signal. #1647 tightened it: a topic call inside a string literal or a Python
+docstring (triple-quoted strings are lexed) is no signal; a sentence-cased literal
+("Delete from cart") is read as SQL only with something only SQL has (`*`, `=`, `?`,
+`where`, `values`, …), and a prose word after FROM ("from the list") is never a table; the
+FROM inside `EXTRACT`/`TRIM`/`SUBSTRING`/`OVERLAY`/`POSITION`, of `IS [NOT] DISTINCT FROM`,
+and of a CTE the statement defines names no table; a code graph's `?dynamic:` placeholder
+table is no shared table. A known gap: MySQL's `#` comment is not blanked in `.sql` files.
+`detectRelationships` sorts the repos by id first, so the input order never decides an
+edge's direction. `runProductEdgeDetection` (`edge-detection.ts`) crawls only the
 product's live repos the caller can read (`productRepoReadAccess`) and
 `syncDetectedProductEdges` stores the result idempotently: a detected edge is matched by
 its ends, type and resource (`detectedEdgeKey`) and updated in place, one no longer found
 is deleted, a declared edge is never updated or deleted and its key is not written as a
-detected copy, and an edge with an end outside the run's repos is left alone. An API edge
+detected copy, and an edge with an end outside the run's repos is left alone. New detected
+resources, the edge writes and the orphan cleanup (a detected or overridden resource no
+edge goes through; a declared one stays) are one batch transaction. An API edge
 links to its target repo's latest `ProductContractDoc`. No route calls it yet: products
 have no production crawl source (the `/analyze` contract docs run with `specs: []`).
 

@@ -12,7 +12,12 @@ const db = vi.hoisted(() => ({
   product: { findMany: vi.fn() },
   productRepo: { findMany: vi.fn() },
 }));
-vi.mock("../prisma.js", () => ({ prisma: db }));
+// `Prisma` stays real: assessment-store sizes its batches from the generated
+// client's scalar-field enums (#1647).
+vi.mock("../prisma.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../prisma.js")>()),
+  prisma: db,
+}));
 
 const access = vi.hoisted(() => ({
   assertProductAccessible: vi.fn(),
@@ -108,14 +113,12 @@ beforeEach(() => {
 });
 
 describe("portfolioGapInputSchema", () => {
-  it('a "product" scope names at least one product', () => {
-    expect(portfolioGapInputSchema.safeParse({ statement: "s", scope: "product" }).success).toBe(
-      false,
-    );
-    expect(
-      portfolioGapInputSchema.safeParse({ statement: "s", scope: "product", productIds: ["p"] })
-        .success,
-    ).toBe(true);
+  it('a "product" scope names exactly one product', () => {
+    const parse = (productIds?: string[]) =>
+      portfolioGapInputSchema.safeParse({ statement: "s", scope: "product", productIds }).success;
+    expect(parse()).toBe(false);
+    expect(parse(["p"])).toBe(true);
+    expect(parse(["p", "q"])).toBe(false);
   });
 
   it("refuses an empty statement and an unknown field", () => {

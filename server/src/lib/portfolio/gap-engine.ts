@@ -84,7 +84,11 @@ import {
 
 const log = createChildLogger("portfolio-gap");
 
-/** Products a "product" scope may name. */
+/**
+ * Ids an input may carry. A "product" scope names exactly one (#1622's "one product or
+ * all products I can access", enforced again by the stored schema, #1647); the list is
+ * ignored for "all-accessible".
+ */
 export const MAX_SCOPE_PRODUCTS = 100;
 /** Output tokens one model call may spend. */
 const MAX_OUTPUT_TOKENS = 2_000;
@@ -101,12 +105,12 @@ export const portfolioGapInputSchema = z
     sourceRequirementId: z.string().min(1).max(64).nullable().default(null),
     sourceProjectId: z.string().min(1).max(64).nullable().default(null),
     scope: z.enum(PORTFOLIO_ASSESSMENT_SCOPES),
-    /** The products a "product" scope names; ignored for "all-accessible". */
+    /** The one product a "product" scope names; ignored for "all-accessible". */
     productIds: z.array(z.string().min(1).max(64)).max(MAX_SCOPE_PRODUCTS).default([]),
   })
   .strict()
-  .refine((v) => v.scope !== "product" || v.productIds.length > 0, {
-    message: 'A "product" scope names at least one product',
+  .refine((v) => v.scope !== "product" || v.productIds.length === 1, {
+    message: 'A "product" scope names exactly one product',
     path: ["productIds"],
   });
 export type PortfolioGapInput = z.input<typeof portfolioGapInputSchema>;

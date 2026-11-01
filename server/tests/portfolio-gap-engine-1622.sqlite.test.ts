@@ -303,28 +303,45 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("access: an unreadable product named explicitly is restricted, with no name and no citations", async () => {
+      // A "product" scope names exactly one product (#1622, #1647), so each case is its own run.
+      for (const id of [P3, "prod-unknown"]) {
+        const provider = scriptedProvider();
+        const a = await run(
+          ANA,
+          { statement: RESET_STATEMENT, scope: "product", productIds: [id] },
+          { provider },
+        );
+        expect(coverageOf(a)).toEqual({ [id]: "restricted" });
+        const row = a.products.find((p) => p.productId === id)!;
+        expect(row.baSummary).toBe("");
+        expect(row.technicalDetail).toEqual({});
+        expect(a.repos.filter((r) => r.productId === id)).toEqual([]);
+        const everything = JSON.stringify(a);
+        expect(everything).not.toContain("Billing");
+        expect(everything).not.toContain(RC_P3);
+        expect(provider.prompts.join("\n")).not.toContain("billing");
+        // Restricted is not "not covered": nothing was checked, so no gap is confirmed.
+        expect(portfolioVerdictFromStored(a.portfolioVerdict)).toBe("could-not-verify");
+      }
+      // A readable product named on its own is assessed as usual.
       const provider = scriptedProvider();
-      const a = await run(
+      const p1 = await run(
         ANA,
-        { statement: RESET_STATEMENT, scope: "product", productIds: [P1, P2, P3, "prod-unknown"] },
+        { statement: RESET_STATEMENT, scope: "product", productIds: [P1] },
         { provider },
       );
-      expect(coverageOf(a)).toEqual({
-        [P1]: "covers",
-        [P2]: "partial",
-        [P3]: "restricted",
-        "prod-unknown": "restricted",
-      });
-      const p3 = a.products.find((p) => p.productId === P3)!;
-      expect(p3.baSummary).toBe("");
-      expect(p3.technicalDetail).toEqual({});
-      expect(a.repos.filter((r) => r.productId === P3)).toEqual([]);
-      const everything = JSON.stringify(a);
-      expect(everything).not.toContain("Billing");
-      expect(everything).not.toContain(RC_P3);
-      expect(provider.prompts.join("\n")).not.toContain("billing");
-      // Restricted is not "not covered": the portfolio still reads implemented by P1.
-      expect(portfolioVerdictFromStored(a.portfolioVerdict)).toBe("implemented");
+      expect(coverageOf(p1)).toEqual({ [P1]: "covers" });
+      expect(portfolioVerdictFromStored(p1.portfolioVerdict)).toBe("implemented");
+    });
+
+    it("refuses a product scope that names more than one product", async () => {
+      await expect(
+        run(
+          ANA,
+          { statement: RESET_STATEMENT, scope: "product", productIds: [P1, P2] },
+          { provider: scriptedProvider() },
+        ),
+      ).rejects.toThrow();
     });
 
     it("a forged fence in the statement or the code is escaped in every prompt", async () => {

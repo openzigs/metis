@@ -1599,7 +1599,7 @@ model PortfolioAssessment {
   productIds          String   @default("[]")
   /// pending | running | completed | failed.
   status              String   @default("pending")
-  /// covers | partial | not-covered | not-checked (PORTFOLIO_COVERAGES); null until computed.
+  /// covers | partial | not-covered | not-checked | restricted (PORTFOLIO_COVERAGES); null until computed.
   portfolioVerdict    String?
   /// The business-analyst summary.
   summary             String   @default("")
@@ -4445,8 +4445,8 @@ model ProductRepo {
 /// `PRODUCT_*` enums in `@metis/shared`; null on an edge written before #1618
 /// (not classified). An edge may go THROUGH a shared `resource` (a table, a
 /// topic, an identity provider), and then `targetRepoId` may be null (repo ->
-/// table); `createProductEdge` refuses an edge with neither a target repo nor a
-/// resource. `contractDocId` links an API edge to the contract it crosses.
+/// table); `assertEdgeReferencesInProduct` refuses an edge with neither a target
+/// repo nor a resource. `contractDocId` links an API edge to the contract it crosses.
 model ProductEdge {
   id              String   @id @default(cuid())
   productId       String
@@ -4466,7 +4466,9 @@ model ProductEdge {
   /// #1618 — provides | consumes | reads | writes | depends-on, read from the
   /// source repo's side.
   direction       String?
-  /// #1618 — detected | declared. Re-detection never overwrites a declared edge.
+  /// #1618 — detected | declared | overridden (#1647). Contract: re-detection
+  /// never updates or deletes a declared edge, and keeps the classification a
+  /// person gave an overridden one.
   origin          String   @default("detected")
   /// #1618 — the shared resource the edge goes through, in the same product.
   resourceId      String?
@@ -4505,7 +4507,7 @@ model ProductResource {
   kind         String
   name         String
   locator      String?
-  /// detected | declared, as on ProductEdge.
+  /// detected | declared | overridden, as on ProductEdge.
   origin       String   @default("detected")
   /// The user who declared it. Not a foreign key, as on ProductEdge.
   declaredById String?
