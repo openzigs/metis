@@ -12,7 +12,13 @@
  * inert span with its backticks stripped.
  */
 import { z } from "zod";
-import type { CodeCitation, PortfolioAssessmentView } from "@metis/shared";
+import {
+  PORTFOLIO_DEGRADED_REASON,
+  portfolioModifierText,
+  portfolioResourceLists,
+  type CodeCitation,
+  type PortfolioAssessmentView,
+} from "@metis/shared";
 import { mdBlock, mdInline } from "../analysis/analysis-export.js";
 import { escapeMarkdownCell } from "../analysis/traceability-matrix.js";
 
@@ -29,6 +35,7 @@ const COVERAGE_LABEL: Record<Row["coverage"], string> = {
 const IMPACT_LABEL: Record<Row["impactKind"], string> = {
   "direct-change": "Must change",
   "downstream-consumer": "Downstream consumer",
+  restricted: "Restricted",
   none: "Not affected",
 };
 
@@ -37,16 +44,6 @@ const VERDICT_LABEL: Record<NonNullable<PortfolioAssessmentView["verdict"]>, str
   partial: "Partly covered",
   "gap-confirmed": "Nothing in the portfolio covers this",
   "could-not-verify": "Could not verify",
-};
-
-const DEGRADED_REASON: Record<string, string> = {
-  "model-unavailable": "no model is configured",
-  "model-offline": "the model is offline",
-  "model-error": "the model call failed",
-  "model-unparseable": "the model's answer could not be read",
-  "model-empty": "the model's answer was empty",
-  "post-check-rejected":
-    "every sentence the model wrote named something the assessment does not contain",
 };
 
 const cell = (value: string) => escapeMarkdownCell(mdInline(value));
@@ -90,7 +87,6 @@ type Hop = z.output<typeof hopSchema>;
 const impactSchema = z.object({
   severity: z.string().nullable(),
   hiddenEdgeCount: z.number().default(0),
-  stoppedAtRestricted: z.number().default(0),
   hops: z.array(hopSchema),
 });
 const reposSchema = z.array(
@@ -108,14 +104,11 @@ function reposOf(p: Row): z.output<typeof reposSchema> {
 }
 
 /**
- * #1668 — the Impact cell. A product nothing reached reads "Not affected" only
- * when the walk stopped nowhere: past a restricted product it was not followed.
+ * The Impact cell. #1673 — a product the change may reach only through one the
+ * reader cannot read reads "Restricted", as the view (#1625) labels it: for
+ * this reader, not from what the run stored.
  */
 function impactCell(p: Row): string {
-  const stopped = p.impactKind === "none" ? (impactOf(p)?.stoppedAtRestricted ?? 0) : 0;
-  if (stopped > 0) {
-    return `Not reached (impact past ${stopped === 1 ? "1 restricted product" : `${stopped} restricted products`} was not followed)`;
-  }
   return `${IMPACT_LABEL[p.impactKind]}${p.via ? ` via ${cell(p.via)}` : ""}`;
 }
 
@@ -124,13 +117,9 @@ function impactHeading(p: Row): string {
   return `${IMPACT_LABEL[p.impactKind]}${tags ? ` (${mdInline(tags)})` : ""}`;
 }
 
+/** #1673 — the page's words (`@metis/shared`), escaped: an unknown kind is stored text. */
 function modifierText(m: Hop["severity"]["modifiers"][number]): string {
-  // #1668 — read from the provider's latest contract version, not from this requirement.
-  if (m.kind === "breaking-contract") {
-    return "+1 because the provider's latest contract version made a breaking change";
-  }
-  if (m.kind === "low-confidence") return `-1 for low confidence (${m.confidence ?? "?"})`;
-  return mdInline(m.kind);
+  return mdInline(portfolioModifierText(m));
 }
 
 function deepDive(
@@ -183,21 +172,14 @@ function deepDive(
       "",
     );
   }
-  const shared = last?.sharedObjects ?? [];
-  // The resource itself, unless the usage classifications already list it.
-  const resourceListed = last?.resource && shared.some((o) => o.objectName === last.resource!.name);
-  const tables = [
-    ...(last?.resource && last.resource.kind !== "topic" && !resourceListed
-      ? [`- ${code(last.resource.name)} (${mdInline(last.resource.kind)})`]
-      : []),
-    ...(last?.sharedObjects ?? []).map(
-      (o) =>
-        `- ${code(o.schemaName ? `${o.schemaName}.${o.objectName}` : o.objectName)} (${mdInline(o.objectType)}, ${mdInline(o.usageClass)})`,
-    ),
-  ];
-  if (tables.length > 0) out.push("**Tables and columns**", "", ...tables, "");
-  if (last?.resource?.kind === "topic") {
-    out.push("**Topics**", "", `- ${code(last.resource.name)}`, "");
+  // #1673 — one list per resource kind, as the page groups them.
+  for (const list of portfolioResourceLists(last?.resource ?? null, last?.sharedObjects ?? [])) {
+    out.push(
+      `**${list.heading}**`,
+      "",
+      ...list.items.map((i) => `- ${code(i.name)}${i.detail ? ` (${mdInline(i.detail)})` : ""}`),
+      "",
+    );
   }
   if (hops.length > 0) {
     out.push(
@@ -233,6 +215,11 @@ function deepDive(
       "_Its impact path goes through a repo or product you cannot read, so it is not shown._",
       "",
     );
+  } else if (p.impactKind === "restricted") {
+    out.push(
+      "_The check stopped at a product you cannot read, so whether the change reaches this one is not known._",
+      "",
+    );
   }
   return out;
 }
@@ -258,7 +245,7 @@ export function renderPortfolioAssessmentMarkdown(v: PortfolioAssessmentView): s
   ];
   if (report?.degraded) {
     lines.push(
-      `_Degraded: ${DEGRADED_REASON[report.degradedReason ?? ""] ?? "the model could not write this summary"}, so this is the deterministic template. Business and stakeholder impact were not assessed._`,
+      `_Degraded: ${PORTFOLIO_DEGRADED_REASON[report.degradedReason ?? ""] ?? "the model could not write this summary"}, so this is the deterministic template. Business and stakeholder impact were not assessed._`,
       "",
     );
   }

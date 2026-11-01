@@ -116,7 +116,7 @@ describe("generatePortfolioReport — the model path", () => {
     expect(out.summary).toBe(
       [
         "Partly covered by Orders (acme/orders-api).",
-        "Must change: Orders. Downstream: Storefront (api, medium). 1 downstream product is restricted for this run, so impact past it was not followed.",
+        "Must change: Orders. Downstream: Storefront (api, medium). 1 downstream product is restricted, so it is not named.",
         "The requirement is only partly delivered today. Orders must change, and Storefront will feel it.",
       ].join("\n\n"),
     );
@@ -255,6 +255,27 @@ describe("generatePortfolioReport — the model path", () => {
     expect(prompt).toContain("one entry for each of P1, P2");
     expect(prompt).not.toContain("p9");
   });
+
+  it("#1673 — a product reached only through a restricted one is said so, and gets no paragraph", () => {
+    const ctx: Ctx = {
+      ...CTX,
+      products: CTX.products.map((p) =>
+        p.productId === "p3" ? { ...p, impactKind: "restricted" } : p,
+      ),
+    };
+    const prompt = buildReportPrompt(
+      ctx,
+      new Map([
+        ["p1", "P1"],
+        ["p2", "P2"],
+        ["p3", "P3"],
+      ]),
+    );
+    expect(prompt).toContain(
+      "Product P3: Idle. Coverage: does not cover it. Impact: may be reached through a restricted product (do not describe how).",
+    );
+    expect(prompt).toMatch(/one entry for each of P1, P2,$/m);
+  });
 });
 
 describe("generatePortfolioReport — no silent fallback", () => {
@@ -269,7 +290,7 @@ describe("generatePortfolioReport — no silent fallback", () => {
     );
     // The template: the verdict and overview, no prose; the criteria as FRs; template paragraphs.
     expect(out.summary).toBe(
-      "Partly covered by Orders (acme/orders-api).\n\nMust change: Orders. Downstream: Storefront (api, medium). 1 downstream product is restricted for this run, so impact past it was not followed.",
+      "Partly covered by Orders (acme/orders-api).\n\nMust change: Orders. Downstream: Storefront (api, medium). 1 downstream product is restricted, so it is not named.",
     );
     expect(out.report.requirements.map((r) => [r.text, r.kind])).toEqual([
       ["A refund posts a ledger entry", "functional"],
@@ -376,9 +397,26 @@ describe("templateParagraph and impactOverview", () => {
   it("the overview names readable products and counts restricted ones", () => {
     const rows = CTX.products.map((p) => ({ ...p, coverage: p.coverage }));
     expect(impactOverview(rows, (id) => (id === "p9" ? null : nameOf(id)))).toBe(
-      "Must change: Orders. Downstream: Storefront (api, medium). 1 downstream product is restricted for this run, so impact past it was not followed.",
+      "Must change: Orders. Downstream: Storefront (api, medium). 1 downstream product is restricted, so it is not named.",
     );
     expect(impactOverview([], () => null)).toBe("");
+    // #1673 — a readable product reached only through a restricted one is named as such.
+    expect(
+      impactOverview(
+        [
+          {
+            productId: "p3",
+            coverage: "not-covered",
+            impactKind: "restricted",
+            via: null,
+            severity: null,
+          },
+        ],
+        nameOf,
+      ),
+    ).toBe(
+      "Restricted: p3 may be reached through a restricted product, so its impact is not shown.",
+    );
     expect(
       impactOverview(
         [
@@ -406,9 +444,7 @@ describe("templateParagraph and impactOverview", () => {
         ],
         (id) => (id === "c" ? "C" : null),
       ),
-    ).toBe(
-      "Downstream: C. 2 downstream products are restricted for this run, so impact past them was not followed.",
-    );
+    ).toBe("Downstream: C. 2 downstream products are restricted, so they are not named.");
   });
 });
 

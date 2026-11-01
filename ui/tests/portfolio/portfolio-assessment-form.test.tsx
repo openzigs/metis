@@ -59,6 +59,47 @@ describe("PortfolioAssessmentForm", () => {
     expect(createPortfolioAssessmentSchema.safeParse(sent).success).toBe(true);
   });
 
+  it("#1673 — offers a search, says the list is partial, and keeps the chosen product as it narrows", async () => {
+    const user = userEvent.setup();
+    const onProductQueryChange = vi.fn();
+    const { onSubmit, rerender } = setup({ onProductQueryChange, productTotal: 140 });
+    await user.type(screen.getByLabelText("Requirement statement"), "Pay by transfer");
+    await user.click(screen.getByRole("radio", { name: "One product" }));
+    expect(screen.getByLabelText("Product")).toHaveAccessibleDescription(
+      "Showing 2 of 140 products. Type part of a name to find another.",
+    );
+    await user.selectOptions(screen.getByLabelText("Product"), "p-crm");
+    await user.type(screen.getByLabelText("Find a product"), "b");
+    expect(onProductQueryChange).toHaveBeenLastCalledWith("b");
+    // The search narrows the list to Billing: CRM stays chosen, by name.
+    rerender(
+      <PortfolioAssessmentForm
+        products={[products[0]]}
+        productTotal={1}
+        onProductQueryChange={onProductQueryChange}
+        pending={false}
+        onSubmit={onSubmit}
+      />,
+    );
+    expect(screen.getByLabelText("Product")).toHaveValue("p-crm");
+    expect(screen.getByRole("option", { name: "CRM" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Check coverage" }));
+    expect(onSubmit.mock.calls[0][0]).toEqual({
+      statement: "Pay by transfer",
+      scope: "product",
+      productIds: ["p-crm"],
+    });
+  });
+
+  it("names a product it arrived with that the list does not hold", async () => {
+    const user = userEvent.setup();
+    setup({ initialProductId: "p-elsewhere" });
+    expect(screen.getByLabelText("Product")).toHaveValue("p-elsewhere");
+    expect(screen.getByRole("option", { name: "Selected product" })).toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText("Product"), "p-billing");
+    expect(screen.queryByRole("option", { name: "Selected product" })).toBeNull();
+  });
+
   it("starts on the product it arrived from", async () => {
     const user = userEvent.setup();
     const { onSubmit } = setup({ initialProductId: "p-billing" });

@@ -30,8 +30,9 @@
  *   omitted. A consumer product the caller cannot read is `restricted`: its id
  *   and the fact it is downstream, nothing else, and the walk never expands
  *   through it (the `workspace-rollup.ts` pattern). How many it stopped at is
- *   returned (`stoppedAtRestricted`), so a product nothing readable reaches is
- *   not stated unaffected with certainty (#1668).
+ *   returned (`stoppedAtRestricted`), and when it stopped at any, a readable
+ *   product nothing readable reaches is `restricted`, not `none`: it may be
+ *   reached through one, so it is never stated unaffected (#1668, #1673).
  * - **Cycle-safe and bounded.** A direct-change product is never downstream; a
  *   product is listed once, with its most severe path; a repo is expanded again
  *   only when reached by a more severe path, and never past `maxDepth`.
@@ -758,6 +759,9 @@ export async function evaluatePortfolioImpact(
           // Only from a direct-change product's repo is the provider's contract
           // the one changing; further out it is cited, not counted. And only the
           // provider's own contract (#1668): an edge may name the consumer's.
+          // `from.hops.length === 0` is the same test as `depth === 1`: a
+          // direct-change product's repos are never re-entered, so every repo
+          // walked from at a later depth carries at least one hop.
           breakingContract:
             from.hops.length === 0 &&
             contract?.breaking === true &&
@@ -839,6 +843,15 @@ export async function evaluatePortfolioImpact(
     frontier = next;
   }
 
+  // #1673 (owner decision on #1668 AC3) — past a restricted product the walk
+  // was not followed, so a readable product it did not reach may be reached
+  // through one: it reads `restricted`, never "not affected".
+  if (stoppedAt.size > 0) {
+    for (const p of out.values()) {
+      if (!p.restricted && p.impactKind === "none") p.impactKind = "restricted";
+    }
+  }
+
   return {
     maxDepth,
     stoppedAtRestricted: stoppedAt.size,
@@ -864,8 +877,6 @@ export function impactDetail(
     hops: p.hops,
   };
 }
-
-export { impactSentence };
 
 /**
  * A gap assessment's record with the impact added: each product row in scope
