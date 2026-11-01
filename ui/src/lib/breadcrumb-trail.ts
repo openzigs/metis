@@ -32,6 +32,7 @@ const DETAIL_LABEL: Record<string, (id: string) => string> = {
   reviews: () => "Review",
   products: () => "Product",
   "impact-analyses": () => "Analysis",
+  portfolio: () => "Check",
   leaderboard: () => "Run",
   workspaces: () => "Workspace",
 };

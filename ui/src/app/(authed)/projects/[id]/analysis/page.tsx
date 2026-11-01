@@ -182,6 +182,7 @@ import {
 } from "@/components/analysis/analysis-usage-header";
 import { runTokensLabel } from "@/lib/run-tokens";
 import { REQUIRES_PROJECT_UPDATE } from "@/lib/permission-hints";
+import { PortfolioCheckLink } from "@/components/portfolio/portfolio-check-link";
 
 const SPECIALIST_AGENTS: AnalysisAgentKey[] = ["document", "code", "database", "web"];
 
@@ -1306,6 +1307,13 @@ export default function AnalysisPage(): React.ReactElement {
                                   Reject
                                 </Button>
                               </HoverHint>
+                              {/* #1626 — an approved requirement can be checked
+                                against every product in the portfolio. */}
+                              {req.reviewStatus === "approved" ? (
+                                <PortfolioCheckLink
+                                  from={{ requirementId: req.id, title: req.title }}
+                                />
+                              ) : null}
                             </div>
                           </div>
                           {/* Epic #34 (AC4) — assignee picker + SLA badge. */}
