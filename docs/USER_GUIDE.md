@@ -49,6 +49,7 @@
     - 12.8 [Linking Requirements to Each Other (Requirement Links)](#128-linking-requirements-to-each-other-requirement-links)
     - 12.9 [Version History & Audit Trail](#129-version-history--audit-trail)
     - 12.10 [Workspace Traceability Rollup](#1210-workspace-traceability-rollup)
+    - 12.11 [Portfolio gap and impact analysis](#1211-portfolio-gap-and-impact-analysis)
 13. [Publishing to GitHub](#13-publishing-to-github)
     - 13.1 [Setting Up GitHub Integration](#131-setting-up-github-integration)
     - 13.2 [Generating Issue Drafts](#132-generating-issue-drafts)
@@ -1817,6 +1818,201 @@ Open your workspace and select the **Traceability** tab (`/workspaces/<id>/trace
 **What you see respects your access.** The rollup only ever includes projects you can access within that workspace, and a cross-project link appears **only when you can access both of its endpoints** — so the view never reveals a requirement, project, or link you aren't entitled to see. Asking for a workspace you don't belong to returns "not found".
 
 > **Following the chain:** on a requirement's traceability view you can also expand **linked** requirements, so a requirement→spec→code chain in one project continues into the chains of the requirements it links to in sibling projects — the same cross-project edges, seen one requirement at a time.
+
+### 12.11 Portfolio gap and impact analysis
+
+Before anyone builds a requirement, check whether a product you already have does it, and
+which other products a change for it would reach. Your *portfolio* is the products you can
+access under **Projects › Products**. A product groups the repositories that make it up (see
+Section 15.5), and the check reads the code in those repositories. [#1608]
+
+#### Running a check
+
+1. Open **Projects › Portfolio coverage** (`/portfolio`).
+2. Describe what the business needs in plain language, up to 8,000 characters. For example:
+   *"Customers can pay an invoice by bank transfer."*
+3. Under **Where to look**, choose **All products I can access**, or **One product** and pick
+   it. **Find a product** searches all your products by name.
+4. Click **Check coverage**.
+
+You can also start a check from two other places. Every **approved** requirement on a
+project's **Requirements** tab has a **Check across portfolio** button, which checks that
+requirement, including its acceptance criteria. A product's page has a **Check across
+portfolio** button too, which starts with that product chosen.
+
+The check runs in the background. Its page (`/portfolio/<id>`) shows progress, and you can
+leave it or reload it: the same check picks up where it is. Your recent checks are listed
+under **Recent checks**. You can start 10 checks in 15 minutes.
+
+What METIS does in a check:
+
+1. It splits the requirement into at most 8 acceptance criteria. A requirement that already
+   has acceptance criteria uses its own.
+2. It searches each product's repositories for code that bears on them.
+3. For each repository, it asks the AI model whether each criterion is already there, and
+   cites the code that shows it.
+
+A claim that something is implemented is accepted only with cited code from that
+repository, and the repository is named next to every citation. The repositories must be
+indexed first: connect them and run a sync or **Deep Ingest** (Section 15).
+
+#### The answer
+
+The page opens with the answer in one sentence:
+
+- **Covered by** *product (repository)*: at least one product covers the whole requirement.
+- **Partly covered by** *product (repository)*: no product covers all of it, and at least one
+  covers part of it.
+- **Nothing in your portfolio covers this**: every product in scope was checked, and none of
+  them has it.
+- **We could not tell whether anything in your portfolio covers this**: at least one product
+  could not be checked, so METIS will not claim a gap.
+- **This check failed before it reached an answer.**
+
+Next comes a summary for business analysts. When the AI model could not write it, the
+summary says *"Written from a template because …"*, and the business and stakeholder
+impact are not assessed.
+
+Below the summary, **Products checked** lists every product in scope with one of these
+states. Each state is shown with an icon and words, never by colour alone:
+
+| State | What it means |
+|---|---|
+| **Covers it** | Code in its repositories meets every criterion. **Show citations** lists them as `repository · file:line`. |
+| **Partly covers it** | Code meets some criteria, but not all. |
+| **Does not cover it** | Every repository was searched for every criterion, and the code shows where it would be and that it is not there. |
+| **Not checked** | METIS could not tell, and the reason is shown underneath: *it has no repositories attached*, *you cannot read its repositories*, *the evidence could not be verified* (no code was found, the search failed, the model's answer could not be used, or the check's budget ran out), or the check had not reached it or failed first. |
+| **Restricted** | You cannot read this product. See *Restricted and Not checked* below. |
+
+A gap is never reported unless it was checked: one **Not checked** or **Restricted**
+product turns "Nothing in your portfolio covers this" into "We could not tell". A product
+with no repositories attached also reads **Not checked**, so it stops a check of *All
+products I can access* from ever confirming a gap. Attach repositories to such a product,
+or leave it out with the **One product** scope (#1677).
+
+#### Impact on your products
+
+When the check finishes, **Impact on your products** lists every product the requirement
+reaches.
+
+- **Starting points.** A product that partly covers the requirement must change to deliver
+  the rest. A product that already covers it needs no change.
+- **Following couplings.** From each product that must change, METIS follows the couplings
+  recorded between products (*edges*, see *Declaring an edge* below) for up to two product
+  boundaries.
+- **Order.** Products that must change come first, then downstream products from the most
+  to the least severe.
+
+| Impact | What it means |
+|---|---|
+| **Must change** | It partly covers the requirement, so the rest must be built there. |
+| **Downstream consumer** | It uses something a changing product provides, *via* an API, an event, a shared database, a shared library or shared identity. It shows a severity badge. |
+| **Restricted** | The change may reach it only through a product you cannot read, so how it is reached is not shown. Its card says why: *"Its impact path goes through a repository or product you cannot read"*, or *"The check stopped at a product you cannot read, so whether the change reaches this one is not known"*. It is never listed as not affected. |
+| **Not affected** | Nothing reaches it. These products are listed in the collapsed **Not affected** group. |
+
+Each product's **Technical deep dive** lists its repositories and files, the contract items
+that changed, and the shared resources the coupling goes through, grouped as databases,
+tables and columns, topics, identity providers and buckets. It also draws the path of
+products the change travels along.
+
+If nothing covers the requirement yet, you can name the product that should host it when
+you start the check through the API (`hostProductId` on `POST /api/portfolio-assessments`).
+That product then reads **Must change**, and its downstream products are listed.
+
+#### How severity is worked out
+
+Severity uses the scale **critical > high > medium > low**. It comes from how tightly the
+two products are coupled, and **Why this severity?** shows each step:
+
+1. **The coupling strength sets the starting point:**
+   - **high** for *intrusive* coupling (one reaches into the other's data, such as writing
+     its tables) and for *functional* coupling (both implement the same rule);
+   - **medium** for *model* coupling (a shared library or data type);
+   - **low** for *contract* coupling (a versioned API or event);
+   - **medium** for a coupling no one has classified.
+2. **One step up** when the provider's latest recorded contract version made a breaking
+   change: an item, field or parameter was removed, a field or parameter changed type, or
+   a required parameter was added.
+   This is a past change of the provider's, not the change your requirement proposes. It
+   counts only on the first coupling out of a product that must change, and never on an
+   intrusive one, which already counts the provider's internals.
+3. **One step down** when the coupling was recorded with low confidence (below 0.5).
+4. **Never above critical or below low.**
+
+A path through several products is as severe as its weakest coupling.
+
+#### Restricted and Not checked
+
+**Restricted** means you cannot read the product: it is outside the workspaces you belong
+to. You see that it is there, and for impact whether the change reaches it, but never its
+name, repositories, evidence or how it is reached. The summary counts restricted products
+and never names them.
+
+**Not checked** means you can read the product, but METIS could not tell whether it covers
+the requirement. The reason is shown under the state. A product whose repositories you
+cannot all read is never shown as **Does not cover it**: the repositories you cannot read
+were not checked for you.
+
+Access is checked again every time you open a check. You can open a check you started,
+or one that covers a product you can read. A check started from a requirement also needs
+you to be able to read that requirement's project. A colleague who can read less than
+the person who ran it sees the products they cannot read as **Restricted**. The answer and
+summary are then worked out again from what they can see, and the AI-written summary and
+impact paragraphs are hidden with the note *"Part of this assessment is hidden from you"*.
+Two people can therefore see different answers for the same check, and neither sees
+anything they are not allowed to.
+
+#### Exporting
+
+**Export Markdown** downloads the check as you see it. The file holds the summary, the
+requirement restated as functional and non-functional requirements, the products table,
+a technical deep dive per affected product, and the code evidence. The button is available
+once the check has finished, failed checks included, so you can report a failure.
+
+#### Declaring an edge
+
+Impact follows the edges recorded on products. METIS does not detect these couplings
+automatically yet, so declare them through the API. You need edit rights on the product
+(`project.update`) and read access to both repositories.
+
+An edge is recorded on one product, between two of its repositories, and it reaches every
+other product either repository is attached to. To couple two products, attach the shared
+repository, or the other product's repository, to the product the edge is recorded on.
+`GET /api/products/<productId>` lists the product's repositories with their
+`repoConnectionId`.
+
+```bash
+# Optional: the shared resource the coupling goes through.
+curl -X POST "$METIS_URL/api/products/$PRODUCT_ID/resources" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"kind": "table", "name": "ledger_entries"}'
+
+# The edge: the payments database writes the table the reporting service reads.
+curl -X POST "$METIS_URL/api/products/$PRODUCT_ID/edges" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{
+        "sourceRepoId": "<writer repoConnectionId>",
+        "targetRepoId": "<reader repoConnectionId>",
+        "resourceId": "<resource id>",
+        "edgeType": "produces",
+        "integrationKind": "database",
+        "strength": "intrusive",
+        "direction": "writes"
+      }'
+```
+
+| Field | Values |
+|---|---|
+| `integrationKind` | What crosses the boundary: `api`, `event`, `database`, `shared-library`, `identity`. |
+| `strength` | How tightly the two sides are coupled, strongest first: `intrusive`, `functional`, `model`, `contract`. This sets the severity. |
+| `direction` | Read from the source repository's side. `consumes` and `depends-on`: the source depends on the target. `provides` and `writes`: the target depends on the source. `reads`: both directions. |
+| `edgeType` | `calls`, `imports`, `produces`, `consumes`, `extends`, `implements`. |
+| `targetRepoId`, `resourceId` | Give one or both. An edge from a repository to a resource alone is paired with the product's other edges through that resource: a repository that writes or provides it reaches every other repository using it. |
+| `kind` (resource) | `database`, `table`, `topic`, `identity-provider`, `bucket`. A resource's `locator` may say where it lives, but never hold a credential. |
+
+Change an edge's classification with `PATCH /api/products/<productId>/edges/<edgeId>`,
+and delete a declared edge with `DELETE` on the same path. A declared edge keeps
+`confidence` 1, since a person asserted it.
 
 ---
 
