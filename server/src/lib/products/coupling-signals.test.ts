@@ -199,6 +199,35 @@ describe("extractTableRefs", () => {
     ).toEqual(["read:orders", "write:carts", "read:ledger"]);
   });
 
+  it("a `?` or `,` in prose does not make it SQL (#1657)", () => {
+    expect(
+      tables(
+        "a.tsx",
+        `const a = "Delete from cart?";\nconst b = "Select from saved, then send";\nconst c = "Update orders, then retry?";`,
+      ),
+    ).toEqual([]);
+    // A `?` placeholder comes with an `=` or a `(`, which still mark SQL.
+    expect(
+      tables(
+        "a.ts",
+        `const w = "Delete from carts where id = ?";\nconst i = "Insert into audit (id) values (?)";`,
+      ),
+    ).toEqual(["write:carts", "write:audit"]);
+  });
+
+  it("keeps the FROM of a subquery inside a no-table FROM call (#1657)", () => {
+    expect(
+      tables(
+        "q.sql",
+        "SELECT EXTRACT(YEAR FROM (SELECT max(d) FROM events)), TRIM(BOTH FROM (SELECT n FROM names)) FROM orders;",
+      ),
+    ).toEqual(["read:events", "read:names", "read:orders"]);
+    // The call's own FROM still names no table.
+    expect(tables("q.sql", "SELECT EXTRACT(YEAR FROM created_at) FROM orders;")).toEqual([
+      "read:orders",
+    ]);
+  });
+
   it("reads no table from a FROM that names none (#1647)", () => {
     expect(
       tables(

@@ -137,7 +137,10 @@ import { resolveNewRequirementCandidateCap } from "../lib/analysis/new-requireme
 import { getRequirementDiff } from "../lib/change-analysis/requirement-diff-service.js";
 // #1137 — the Traceability tab's per-requirement lists are paged.
 import { parseListPageQuery, sliceListPage } from "../lib/analysis/list-page.js";
-import type { StructuredRequirements } from "../lib/analysis/types/requirements.js";
+import {
+  addressedAmbiguities,
+  type StructuredRequirements,
+} from "../lib/analysis/types/requirements.js";
 import { clarifyRequestSchema } from "../lib/analysis/clarify-request-schema.js";
 import { meterAnalysisProvider, runInAnalysisUsageScope } from "../lib/analysis/analysis-usage.js";
 // Issue #1116 — carry the submitted answers into the persisted requirement rows
@@ -190,6 +193,35 @@ async function promoteAndNote(
   const promotion = await promoteApprovedRequirements(analysisId, signOffForRole(req.user!.role));
   if (promotion.status === "promoted") void noteProjectRequirementsChanged(projectId);
   return promotion;
+}
+
+/**
+ * Issue #1602 — persist a clarify round onto the list as it is now. #1657 —
+ * when the list was replaced by another extraction run meanwhile, nothing is
+ * written, so the request is refused (409) rather than answered 200 with an
+ * `updatedRequirements` that was never stored; the caller re-reads the new list.
+ */
+async function persistClarifiedRound(
+  analysisId: string,
+  before: StructuredRequirements & { runId?: string },
+  result: {
+    state: Parameters<typeof addressedAmbiguities>[0];
+    updatedRequirements: StructuredRequirements;
+  },
+): Promise<void> {
+  const written = await persistClarifiedRequirements(
+    analysisId,
+    before,
+    result.updatedRequirements,
+    addressedAmbiguities(result.state),
+  );
+  if (!written) {
+    throw new AppError(
+      409,
+      "REQUIREMENTS_REPLACED",
+      "The requirements were extracted again while your answers were being applied, so they were not saved. Reload the requirements and answer again.",
+    );
+  }
 }
 
 function ok<T>(data: T): ApiResponse<T> {
@@ -947,12 +979,16 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // enhancement pipeline persisted (#924). The client may still override by
       // passing `requirements` in the body, but it no longer has to reconstruct
       // them. Falls back to the request body when nothing was persisted.
-      const requirements =
-        // The schema checks every field the dialog reads; the remaining
-        // `StructuredRequirement` fields are carried through untouched.
-        (body.requirements as StructuredRequirements | undefined) ??
-        (await getStructuredRequirements(analysisId)) ??
-        undefined;
+      const stored = (await getStructuredRequirements(analysisId)) ?? undefined;
+      const override = body.requirements as StructuredRequirements | undefined;
+      const requirements = override
+        ? // The schema checks every field the dialog reads; the remaining
+          // `StructuredRequirement` fields are carried through untouched.
+          // #1657 — stamped with the run of the list stored now, so a run
+          // that replaces the list during the model call is still caught by
+          // the stale-run guard (`mergeClarifiedList`).
+          { ...override, runId: stored?.runId }
+        : stored;
 
       if (body.answers && body.answers.length > 0) {
         // Submitting answers for the current round
@@ -976,7 +1012,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         // into synthesis (#212). Issue #1602 — merged onto the list as it is
         // now, not written from the copy read before the model call, so a
         // requirement synthesis offered meanwhile (#1569) survives.
-        await persistClarifiedRequirements(analysisId, requirements, result.updatedRequirements);
+        await persistClarifiedRound(analysisId, requirements, result);
         // Issue #1116 — and into the ARTIFACT path. `structuredRequirements` is
         // only what the approval view renders; the drafts (and the GitHub issues
         // they become) are built from the `Requirement` rows, which replay the
@@ -1365,7 +1401,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           dialog.submitAnswers(analysisId, applied, requirements),
         );
         // Issue #1602 — merged onto the list as it is now, as the JSON submit is.
-        await persistClarifiedRequirements(analysisId, requirements, result.updatedRequirements);
+        await persistClarifiedRound(analysisId, requirements, result);
         // Issue #1116 — the CSV round-trip is the same submit path, so it must
         // reach the artifact the same way.
         await applyClarificationsToRequirements(analysisId);

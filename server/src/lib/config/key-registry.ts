@@ -604,6 +604,14 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Products a portfolio gap analysis evaluates at once (#1622); each runs one model call at a time, so this bounds the calls in flight. Default 4.",
     sensitive: false,
   },
+  PORTFOLIO_GAP_MAX_MODEL_CALLS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(0).max(100_000),
+    description:
+      "Model calls one portfolio gap analysis may make in all (#1657). The cost caps price each call from the price table and an unpriced model costs 0, so without this cap they never bind. Once reached, no new call starts and the repos not yet evaluated read could-not-verify (budget), never not-covered. Default 250.",
+    sensitive: false,
+  },
   // ── P0 #769 — agentic code-agent depth knobs ───────────────────────────
   ANALYSIS_AGENTIC_MAX_TURNS: {
     tier: "tunable",

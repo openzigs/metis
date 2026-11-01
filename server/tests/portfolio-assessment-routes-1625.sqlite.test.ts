@@ -29,6 +29,7 @@ import {
   P2,
   P3,
   PROJECTS,
+  RC_P1_API,
   RC_P1_WEB,
   RC_P2,
   RC_P3,
@@ -63,6 +64,10 @@ const { FederatedSearchService } = await import("../src/lib/rag/federated-search
 const { jobEvents } = await import("../src/lib/socket/job-events.js");
 const { resolveJobRoomScope } = await import("../src/lib/socket/room-access.js");
 const { createApp } = await import("../src/app.js");
+const { createPortfolioAssessment, listPortfolioAssessmentIds, touchPortfolioAssessment } =
+  await import("../src/lib/portfolio/assessment-store.js");
+const { PORTFOLIO_ASSESSMENT_STALE_MS, sweepInterruptedPortfolioAssessments } =
+  await import("../src/lib/portfolio/interrupted-assessments.js");
 
 const USERS: Record<string, string[]> = {
   mia: [WS_A, WS_B],
@@ -87,6 +92,7 @@ const bearer = (who: Who) => `Bearer ${issueTokens(payload(who)).accessToken}`;
 
 const REQ_A = "req-accounts-1625";
 const REQ_B = "req-billing-1625";
+const REQ_DELETED = "req-deleted-1657";
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   "#1625 — portfolio assessment routes",
@@ -190,14 +196,21 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           { statement: "s", requirementId: REQ_A, scope: "all-accessible" },
         ],
         ["a product scope naming no product", { statement: "s", scope: "product" }],
-        [
-          "a product scope naming two products",
-          { statement: "s", scope: "product", productIds: ["p1", "p2"] },
-        ],
         ["an over-long statement", { statement: "x".repeat(8_001), scope: "all-accessible" }],
         ["an unknown field", { statement: "s", scope: "all-accessible", extra: 1 }],
       ])("400 on %s", async (_label, body) => {
         const res = await post("mia", body);
+        expect(res.status).toBe(400);
+      });
+
+      // #1657 — the HTTP schema is what refuses these: each names a
+      // requirement Ana cannot read, which the route would otherwise answer
+      // 404 before the engine's own schema ever saw the products.
+      it.each([
+        ["a product scope naming two products", { scope: "product", productIds: [P1, P2] }],
+        ["an all-accessible scope naming a product", { scope: "all-accessible", productIds: [P1] }],
+      ])("400 on %s, from the HTTP contract", async (_label, scope) => {
+        const res = await post("ana", { requirementId: REQ_B, ...scope });
         expect(res.status).toBe(400);
       });
 
@@ -219,6 +232,24 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       it("404 for a requirement that does not exist", async () => {
         const res = await post("ana", { requirementId: "req-none", scope: "all-accessible" });
         expect(res.status).toBe(404);
+      });
+
+      it("404 for a soft-deleted requirement, which is never copied into a statement (#1657)", async () => {
+        await db.requirement.create({
+          data: {
+            id: REQ_DELETED,
+            projectId: PROJECTS[0].id,
+            analysisId: `ana-${REQ_A}`,
+            title: "A deleted requirement",
+            body: "Its text must not be assessed.",
+            deletedAt: new Date(),
+          },
+        });
+        const res = await post("ana", { requirementId: REQ_DELETED, scope: "all-accessible" });
+        expect(res.status).toBe(404);
+        expect(
+          await db.portfolioAssessment.count({ where: { sourceRequirementId: REQ_DELETED } }),
+        ).toBe(0);
       });
 
       it("a readable requirement is assessed with its text and acceptance criteria", async () => {
@@ -307,6 +338,48 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(text).not.toContain(RC_P3);
         // P1 still covers it for Ana.
         expect(v.verdict).toBe("implemented");
+        // #1657 — the cost is of what she sees: P1's two calls and P2's one,
+        // not the decomposition or P3's call (0.01 each; Mia sees all five).
+        expect(v.costUsd).toBeCloseTo(0.03, 10);
+        expect((await settled(miaRun, "mia")).costUsd).toBeCloseTo(0.05, 10);
+      });
+
+      it("a repo whose connection was deleted is dropped, with its citations (#1657)", async () => {
+        await db.repoConnection.update({
+          where: { id: RC_P1_API },
+          data: { deletedAt: new Date() },
+        });
+        try {
+          const v = await settled(miaRun, "ana");
+          expect(v.repos.map((r) => r.repoConnectionId)).not.toContain(RC_P1_API);
+          const p1 = v.products.find((p) => p.productId === P1)!;
+          expect(JSON.stringify(p1)).not.toContain("accounts-api");
+          // The hidden repo held P1's evidence, so P1 can no longer read covered.
+          expect(p1.coverage).not.toBe("covers");
+        } finally {
+          await db.repoConnection.update({ where: { id: RC_P1_API }, data: { deletedAt: null } });
+        }
+      });
+
+      it("a product its starter could not read never lists the assessment, or opens it, to that product's readers (#1657)", async () => {
+        // Ana (ws-a) names Billing (ws-b): her run stores it restricted.
+        const id = await start("ana", {
+          statement: CRYPTO_STATEMENT,
+          scope: "product",
+          productIds: [P3],
+        });
+        const own = await settled(id, "ana");
+        expect(own.products.map((p) => p.coverage)).toEqual(["restricted"]);
+        // Ola reads Billing, and must learn nothing of Ana's statement.
+        const list = await get("ola", `?productId=${P3}`);
+        expect(list.body.data.map((r: { id: string }) => r.id)).not.toContain(id);
+        expect((await get("ola", `/${id}`)).status).toBe(404);
+        expect(await resolveJobRoomScope(payload("ola"), id)).toBeNull();
+        // The store does not name it under Billing at all, so it takes no
+        // place in a page that the per-row filter would then leave short.
+        const named = await listPortfolioAssessmentIds({ productId: P3, take: 100 });
+        expect(named.map((r) => r.id)).not.toContain(id);
+        expect(named.map((r) => r.id)).toContain(miaRun);
       });
 
       it("the verdict and summary are recomputed from what the reader can see", async () => {
@@ -462,6 +535,115 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
         expect(res.status).toBe(404);
         expect(await db.portfolioAssessment.count()).toBe(before);
+      });
+    });
+
+    it("a list filtered after the query still fills its page from older rows (#1657)", async () => {
+      // The newest 25 rows naming Accounts come from Billing's project, which
+      // Ana cannot read; behind them is one she can.
+      const write = async (sourceProjectId: string | null, createdAt: Date) => {
+        const assessmentId = await createPortfolioAssessment({
+          statement: "Paged",
+          sourceRequirementId: null,
+          sourceProjectId,
+          scope: "product",
+          productIds: [P1],
+          status: "completed",
+          portfolioVerdict: "not-checked",
+          createdById: "sam",
+          products: [{ productId: P1, coverage: "not-checked" }],
+        });
+        await db.portfolioAssessment.update({
+          where: { id: assessmentId },
+          data: { createdAt },
+        });
+        return assessmentId;
+      };
+      const readable = await write(null, new Date("2099-01-01T00:00:00Z"));
+      const hidden: string[] = [];
+      for (let i = 0; i < 25; i++) {
+        hidden.push(await write(PROJECTS[2].id, new Date(Date.UTC(2099, 1, 1, 0, i))));
+      }
+      const res = await get("ana", `?productId=${P1}`);
+      expect(res.status).toBe(200);
+      const ids = res.body.data.map((r: { id: string }) => r.id);
+      expect(ids[0]).toBe(readable);
+      expect(ids.some((id: string) => hidden.includes(id))).toBe(false);
+      await db.portfolioAssessment.deleteMany({ where: { id: { in: [readable, ...hidden] } } });
+    });
+
+    describe("interrupted runs (#1657)", () => {
+      it("a running assessment refreshes its row while it runs", async () => {
+        const slow = express();
+        slow.use(express.json());
+        slow.use(
+          "/api/portfolio-assessments",
+          portfolioAssessmentsRouter({
+            gap: {
+              provider: scriptedProvider({ delayMs: 60 }),
+              search: federated.searchAcrossProjects.bind(federated),
+              limits: { runCostCapUsd: 100, productCostCapUsd: 100, concurrency: 1 },
+              costOf: () => 0.01,
+            },
+            heartbeatMs: 10,
+          }),
+        );
+        slow.use(errorHandler);
+        const res = await request(slow)
+          .post("/api/portfolio-assessments")
+          .set("Authorization", `Bearer ${issueTokens(payload("mia")).accessToken}`)
+          .send({ statement: RESET_STATEMENT, scope: "all-accessible" });
+        expect(res.status).toBe(202);
+        const id = res.body.data.id as string;
+        let first: Date | null = null;
+        for (let i = 0; i < 100 && !first; i++) {
+          const row = await db.portfolioAssessment.findUnique({ where: { id } });
+          if (row?.status === "running") first = row.updatedAt;
+          else await new Promise((r) => setTimeout(r, 5));
+        }
+        expect(first).not.toBeNull();
+        await new Promise((r) => setTimeout(r, 80));
+        const later = await db.portfolioAssessment.findUniqueOrThrow({ where: { id } });
+        expect(later.status).toBe("running");
+        expect(later.updatedAt.getTime()).toBeGreaterThan(first!.getTime());
+        await settled(id);
+      });
+
+      it("the sweep fails a pending or running row whose heartbeat stopped, and nothing else", async () => {
+        const make = async (status: "pending" | "running" | "completed", ageMs: number) => {
+          const id = await createPortfolioAssessment({
+            statement: `Swept ${status}`,
+            scope: "all-accessible",
+            productIds: [],
+            status,
+            createdById: "sam",
+          });
+          await db.portfolioAssessment.update({
+            where: { id },
+            data: { updatedAt: new Date(Date.now() - ageMs) },
+          });
+          return id;
+        };
+        const old = PORTFOLIO_ASSESSMENT_STALE_MS + 60_000;
+        const stalePending = await make("pending", old);
+        const staleRunning = await make("running", old);
+        const liveRunning = await make("running", 1_000);
+        const staleCompleted = await make("completed", old);
+        expect(await sweepInterruptedPortfolioAssessments()).toBe(2);
+        const status = async (id: string) =>
+          (await db.portfolioAssessment.findUniqueOrThrow({ where: { id } })).status;
+        expect(await status(stalePending)).toBe("failed");
+        expect(await status(staleRunning)).toBe("failed");
+        expect(await status(liveRunning)).toBe("running");
+        expect(await status(staleCompleted)).toBe("completed");
+        // A beat keeps a run out of the next sweep.
+        await db.portfolioAssessment.update({
+          where: { id: liveRunning },
+          data: { updatedAt: new Date(Date.now() - old) },
+        });
+        await touchPortfolioAssessment(liveRunning);
+        expect(await sweepInterruptedPortfolioAssessments()).toBe(0);
+        expect(await status(liveRunning)).toBe("running");
       });
     });
 

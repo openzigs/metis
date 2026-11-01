@@ -279,9 +279,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await expectBothSurvive(id);
     });
 
-    it("writes nothing over a list a new extraction run replaced meanwhile", async () => {
-      const id = await seedAnalysis();
-      const fresh = { ...R1, description: "Run 2's REQ-1: a different requirement." };
+    const fresh = { ...R1, description: "Run 2's REQ-1: a different requirement." };
+    /** A new extraction run replaces the list while the clarify call is out. */
+    const replaceListMeanwhile = (id: string) => {
       state.duringResolution = () =>
         db.analysis.update({
           where: { id },
@@ -296,17 +296,53 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             }),
           },
         });
+    };
+
+    // #1657 — and says so (409), rather than 200 with a list it never stored.
+    it("writes nothing over a list a new extraction run replaced meanwhile, and refuses", async () => {
+      const id = await seedAnalysis();
+      replaceListMeanwhile(id);
       const res = await request(app())
         .post(`${base(id)}/clarify`)
         .set("Authorization", `Bearer ${token()}`)
         .send({ answers: [{ questionId: "q-1", answer: "Only EU invoices" }] });
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("REQUIREMENTS_REPLACED");
+      expect((await reviewedList(id)).requirements).toEqual([fresh]);
+    });
+
+    it("the CSV round-trip refuses the same way (#1657)", async () => {
+      const id = await seedAnalysis();
+      replaceListMeanwhile(id);
+      const csv =
+        "questionId,requirement,ambiguityField,question,suggestedAnswer,answer\r\n" +
+        "q-1,Export the monthly invoice report,scope,Which invoices?,,Only EU invoices\r\n";
+      const res = await request(app())
+        .post(`${base(id)}/clarify/import`)
+        .set("Authorization", `Bearer ${token()}`)
+        .attach("file", Buffer.from(csv), "answers.csv");
+      expect(res.status).toBe(409);
+      expect((await reviewedList(id)).requirements).toEqual([fresh]);
+    });
+
+    it("a requirements list sent in the body is guarded against a replacing run too (#1657)", async () => {
+      const id = await seedAnalysis();
+      replaceListMeanwhile(id);
+      const res = await request(app())
+        .post(`${base(id)}/clarify`)
+        .set("Authorization", `Bearer ${token()}`)
+        .send({
+          answers: [{ questionId: "q-1", answer: "Only EU invoices" }],
+          requirements: { requirements: [R1], totalAmbiguities: 1, totalEvidenceNeeds: 0 },
+        });
+      expect(res.status).toBe(409);
       expect((await reviewedList(id)).requirements).toEqual([fresh]);
     });
   },
 );
 
 describe("mergeClarifiedList (#1602)", () => {
+  const none: ReadonlySet<string> = new Set();
   const req = (id: string, description: string, ambiguities = 0) => ({
     ...R1,
     id,
@@ -328,7 +364,7 @@ describe("mergeClarifiedList (#1602)", () => {
     const after = list([req("REQ-1", "rewritten"), req("REQ-2", "two")]);
     // Meanwhile another writer changed REQ-2's description and title.
     const current = list([{ ...req("REQ-1", "old"), title: "Retitled" }, req("REQ-2", "edited")]);
-    const merged = mergeClarifiedList(current, undefined, before, after)!;
+    const merged = mergeClarifiedList(current, undefined, before, after, none)!;
     expect(merged.requirements).toEqual([
       { ...req("REQ-1", "rewritten"), title: "Retitled" },
       req("REQ-2", "edited"),
@@ -337,33 +373,54 @@ describe("mergeClarifiedList (#1602)", () => {
 
   it("keeps a requirement the list gained, counting its ambiguities, and does not restore one it lost", () => {
     const before = list([req("REQ-1", "a", 2), req("REQ-2", "b", 1)], 3);
+    // The round addressed both of REQ-1's ambiguities; REQ-2's one remained.
     const after = list([req("REQ-1", "a2", 2), req("REQ-2", "b", 1)], 1);
     const current = list([req("REQ-1", "a", 2), req("SYN-x", "offered", 2)]);
-    const merged = mergeClarifiedList(current, "run-1", { ...before, runId: "run-1" }, after)!;
+    const addressed = new Set(["REQ-1:f0", "REQ-1:f1"]);
+    const merged = mergeClarifiedList(
+      current,
+      "run-1",
+      { ...before, runId: "run-1" },
+      after,
+      addressed,
+    )!;
     expect(merged.requirements.map((r) => [r.id, r.description])).toEqual([
       ["REQ-1", "a2"],
       ["SYN-x", "offered"],
     ]);
-    expect(merged.totalAmbiguities).toBe(1 + 2);
+    // #1657 — REQ-2's remaining one went with REQ-2: only SYN-x's two remain.
+    expect(merged.totalAmbiguities).toBe(2);
+  });
+
+  it("a requirement stored with no ambiguities is not read as changed by the round's default (#1657)", () => {
+    const { ambiguities: _none, ...bare } = req("REQ-1", "a");
+    const before = list([bare as never]);
+    const after = list([req("REQ-1", "a")]);
+    // Meanwhile another writer gave REQ-1 an ambiguity.
+    const current = list([req("REQ-1", "a", 1)]);
+    const merged = mergeClarifiedList(current, undefined, before, after, none)!;
+    expect(merged.requirements).toEqual([req("REQ-1", "a", 1)]);
+    expect(merged.totalAmbiguities).toBe(1);
   });
 
   it("is the round's own list when nothing is stored, without the read-side run id", () => {
     const after = { ...list([req("REQ-1", "a")], 0), runId: "run-1" };
-    expect(mergeClarifiedList(undefined, undefined, after, after)).toEqual(
+    expect(mergeClarifiedList(undefined, undefined, after, after, none)).toEqual(
       list([req("REQ-1", "a")]),
     );
   });
 
   it("returns null when the stored list is another run's", () => {
     const before = { ...list([req("REQ-1", "a")]), runId: "run-1" };
-    expect(mergeClarifiedList(list([req("REQ-1", "b")]), "run-2", before, before)).toBeNull();
-    // A list the client sent (no run id) is merged by id.
+    expect(mergeClarifiedList(list([req("REQ-1", "b")]), "run-2", before, before, none)).toBeNull();
+    // A list with no run id is merged by id.
     expect(
       mergeClarifiedList(
         list([req("REQ-1", "b")]),
         "run-2",
         list([req("REQ-1", "b")]),
         list([req("REQ-1", "c")]),
+        none,
       ),
     ).toMatchObject({ requirements: [expect.objectContaining({ description: "c" })] });
   });

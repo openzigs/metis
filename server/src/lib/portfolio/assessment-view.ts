@@ -51,25 +51,32 @@ import {
 export interface ReaderAccess {
   user: AuthPayload;
   admin: boolean;
-  /** Readable product id → name. */
+  /**
+   * Readable product id → name. Empty for an admin, who reads every product:
+   * a view loads the names of its own products instead (#1657).
+   */
   products: Map<string, string>;
   canReadRepo: (repo: { repoConnection: { projectId: string } }) => boolean;
   canReadProject: (projectId: string) => Promise<boolean>;
 }
 
 export async function resolveReaderAccess(user: AuthPayload): Promise<ReaderAccess> {
+  const admin = user.role === "admin";
   const [rows, canReadRepo] = await Promise.all([
-    prisma.product.findMany({
-      // Binds the caller's workspace ids only, never a product or project list.
-      where: await buildProductAccessWhere(user),
-      select: { id: true, name: true },
-    }),
+    // #1657 — an admin reads every product, so listing them all is only cost.
+    admin
+      ? Promise.resolve([])
+      : prisma.product.findMany({
+          // Binds the caller's workspace ids only, never a product or project list.
+          where: await buildProductAccessWhere(user),
+          select: { id: true, name: true },
+        }),
     productRepoReadAccess(user),
   ]);
   const projects = new Map<string, Promise<boolean>>();
   return {
     user,
-    admin: user.role === "admin",
+    admin,
     products: new Map(rows.map((r) => [r.id, r.name])),
     canReadRepo,
     canReadProject: (projectId) => {
@@ -83,18 +90,28 @@ export async function resolveReaderAccess(user: AuthPayload): Promise<ReaderAcce
   };
 }
 
-/** Whether the reader could start this assessment with the same scope. */
+/**
+ * Whether the reader could start this assessment with the same scope.
+ *
+ * #1657 — only a product the run could read makes another reader one of its
+ * readers. A `restricted` row (and the `productIds` entry behind it) is only an
+ * id the starter supplied for a product they could not read: counting it let a
+ * user in one workspace name another workspace's product and show that
+ * workspace's readers their statement. So an assessment with no readable
+ * product row yet (`pending`, `running`, `failed`) is its starter's alone.
+ */
 async function mayRead(access: ReaderAccess, a: PortfolioAssessment): Promise<boolean> {
   if (access.admin) return true;
   if (a.sourceProjectId && !(await access.canReadProject(a.sourceProjectId))) return false;
   if (a.createdById === access.user.userId) return true;
-  // Only the products it was scoped to: reading a product the impact walk reached
-  // downstream (#1623) is not enough to have started it.
+  // Only the products it was scoped to, and only rows its starter could read
+  // (#1657): reading a product the impact walk reached downstream (#1623) is
+  // not enough to have started it.
   const scoped = new Set(a.productIds);
-  return [
-    ...a.productIds,
-    ...a.products.map((p) => p.productId).filter((id) => scoped.has(id)),
-  ].some((id) => access.products.has(id));
+  return a.products.some(
+    (p) =>
+      p.coverage !== "restricted" && scoped.has(p.productId) && access.products.has(p.productId),
+  );
 }
 
 const storedDetailSchema = z.object({
@@ -287,6 +304,17 @@ export async function viewPortfolioAssessment(
   const keepRepo = (repoConnectionId: string) =>
     readableRepos === null || readableRepos.has(repoConnectionId);
   const readableProduct = (productId: string) => access.admin || access.products.has(productId);
+  const names = access.admin
+    ? new Map(
+        (
+          await prisma.product.findMany({
+            // No `orderBy`/`take`: Prisma splits a long `IN` list itself (#1346).
+            where: { id: { in: a.products.map((p) => p.productId) } },
+            select: { id: true, name: true },
+          })
+        ).map((p) => [p.id, p.name]),
+      )
+    : access.products;
 
   const citations = new Map<string, CodeCitation[]>();
   for (const r of a.repos) citations.set(r.repoConnectionId, r.citations as CodeCitation[]);
@@ -310,7 +338,7 @@ export async function viewPortfolioAssessment(
       continue;
     }
     const stored = readableImpact(raw, keepRepo, readableProduct);
-    const name = access.products.get(pid) ?? null;
+    const name = names.get(pid) ?? null;
     const dropsRepo = a.repos.some((r) => r.productId === pid && !keepRepo(r.repoConnectionId));
     const view = asResult(stored, name, citations, keepRepo);
     if (!dropsRepo) {
@@ -347,9 +375,12 @@ export async function viewPortfolioAssessment(
     verdict,
     portfolioVerdict: verdict === null ? null : storedPortfolioVerdict(verdict),
     summary: changed && verdict !== null ? portfolioSummary(verdict, results) : a.summary,
+    // #1657 — the stored total includes the calls on what this reader cannot
+    // see, which tells them it was assessed: recomputed from what they see.
+    costUsd: changed ? results.reduce((sum, p) => sum + p.costUsd, 0) : a.costUsd,
     productNames: Object.fromEntries(
       a.products.flatMap((p) => {
-        const n = readableProduct(p.productId) ? access.products.get(p.productId) : undefined;
+        const n = readableProduct(p.productId) ? names.get(p.productId) : undefined;
         return n === undefined ? [] : [[p.productId, n]];
       }),
     ),

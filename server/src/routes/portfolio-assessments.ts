@@ -20,6 +20,10 @@
  *   scope's `hostProductId` name a product they can read.
  * - Reads never trust what was stored: `viewPortfolioAssessment` re-filters
  *   every product and repo against the reader's access now.
+ *
+ * A run executes in this process only. It refreshes its row as it goes, and
+ * `lib/portfolio/interrupted-assessments.ts` fails one whose refreshes
+ * stopped, so a restart never leaves an assessment `running` for ever (#1657).
  */
 import { Router } from "express";
 import {
@@ -27,6 +31,7 @@ import {
   parseAcceptanceCriteria,
   type ApiResponse,
   type AuthPayload,
+  type PortfolioAssessmentListItem,
 } from "@metis/shared";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth.js";
@@ -37,18 +42,19 @@ import {
   portfolioAssessmentReadRateLimiter,
   portfolioAssessmentStartRateLimiter,
 } from "../middleware/portfolio-assessments-rate-limit.js";
-import { prisma } from "../lib/prisma.js";
 import { createChildLogger } from "../lib/logger.js";
-import { canAccessProjectDiscussions } from "../lib/discussions/access.js";
 import { genericFailureMessage, jobEvents } from "../lib/socket/job-events.js";
 import {
   completePortfolioAssessment,
   createPortfolioAssessment,
   listPortfolioAssessmentIds,
   setPortfolioAssessmentStatus,
+  touchPortfolioAssessment,
 } from "../lib/portfolio/assessment-store.js";
+import { PORTFOLIO_ASSESSMENT_HEARTBEAT_MS } from "../lib/portfolio/interrupted-assessments.js";
 import {
   evaluatePortfolioGap,
+  loadReadableSourceRequirement,
   portfolioGapInputSchema,
   toAssessmentInput,
   type PortfolioGapDeps,
@@ -73,6 +79,8 @@ const log = createChildLogger("portfolio-assessments");
 const KIND = "portfolio-assessment" as const;
 /** Assessments one list returns. */
 export const PORTFOLIO_ASSESSMENT_LIST_LIMIT = 25;
+/** #1657 — rows one list request may look at to fill its page. */
+export const PORTFOLIO_ASSESSMENT_LIST_SCAN = 100;
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -88,6 +96,8 @@ export interface PortfolioAssessmentsRouterDeps {
   gap?: PortfolioGapDeps;
   /** Impact collaborators (#1623). */
   impact?: PortfolioImpactDeps;
+  /** How often a running assessment refreshes its row (#1657); tests shorten it. */
+  heartbeatMs?: number;
 }
 
 /** The engine's input for a start request, or 404 for a requirement the caller cannot read. */
@@ -102,19 +112,8 @@ async function gapInputFor(
   if (body.statement !== undefined) {
     return portfolioGapInputSchema.parse({ statement: body.statement, ...scoped });
   }
-  const requirement = await prisma.requirement.findUnique({
-    where: { id: body.requirementId! },
-    select: { id: true, projectId: true, title: true, body: true, acceptanceCriteria: true },
-  });
-  if (
-    !requirement ||
-    !(await canAccessProjectDiscussions(
-      { id: user.userId, role: user.role },
-      requirement.projectId,
-    ))
-  ) {
-    throw new AppError(404, "NOT_FOUND", "Requirement not found");
-  }
+  // #1657 — a soft-deleted requirement is not found, like one that never existed.
+  const requirement = await loadReadableSourceRequirement(user, body.requirementId!);
   return portfolioGapInputSchema.parse({
     statement: `${requirement.title}\n\n${requirement.body}`.trim().slice(0, 8_000),
     criteria: parseAcceptanceCriteria(requirement.acceptanceCriteria)
@@ -126,6 +125,38 @@ async function gapInputFor(
   });
 }
 
+/**
+ * #1657 — up to {@link PORTFOLIO_ASSESSMENT_LIST_LIMIT} assessments the reader
+ * may read, newest first. Who may read a row is decided per row
+ * (`viewPortfolioAssessment`), after the query, so rows are read a page at a
+ * time until the list is full: filtering one page left it short while more
+ * readable rows existed. At most {@link PORTFOLIO_ASSESSMENT_LIST_SCAN} rows
+ * are looked at, so a reader who may see few of them costs a bounded scan.
+ */
+async function readablePage(
+  access: Awaited<ReturnType<typeof resolveReaderAccess>>,
+  filter: { productId: string } | { createdById: string },
+): Promise<PortfolioAssessmentListItem[]> {
+  const items: PortfolioAssessmentListItem[] = [];
+  let before: { createdAt: Date; id: string } | undefined;
+  for (let scanned = 0; scanned < PORTFOLIO_ASSESSMENT_LIST_SCAN;) {
+    const rows = await listPortfolioAssessmentIds({
+      ...filter,
+      take: PORTFOLIO_ASSESSMENT_LIST_LIMIT,
+      before,
+    });
+    const views = await Promise.all(rows.map((r) => viewPortfolioAssessment(access, r.id)));
+    for (const view of views) {
+      if (view && items.length < PORTFOLIO_ASSESSMENT_LIST_LIMIT) items.push(toListItem(view));
+    }
+    scanned += rows.length;
+    if (items.length >= PORTFOLIO_ASSESSMENT_LIST_LIMIT) break;
+    if (rows.length < PORTFOLIO_ASSESSMENT_LIST_LIMIT) break;
+    before = rows[rows.length - 1];
+  }
+  return items;
+}
+
 /** Run an assessment created `pending` to `completed` or `failed`. Never throws. */
 async function runAssessment(
   id: string,
@@ -133,7 +164,18 @@ async function runAssessment(
   input: PortfolioGapInput & { sourceRequirementId: string | null; sourceProjectId: string | null },
   hostProductId: string | null,
   deps: PortfolioAssessmentsRouterDeps,
+  heartbeatMs: number,
 ): Promise<void> {
+  // #1657 — the heartbeat the interrupted-run sweep reads; stopped however the run ends.
+  const heartbeat = setInterval(() => {
+    touchPortfolioAssessment(id).catch((err: unknown) =>
+      log.warn("Portfolio assessment heartbeat failed", {
+        id,
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
+  }, heartbeatMs);
+  heartbeat.unref?.();
   try {
     await setPortfolioAssessmentStatus(id, "running");
     jobEvents.started(KIND, id, null, "Portfolio assessment started");
@@ -181,6 +223,8 @@ async function runAssessment(
       }),
     );
     jobEvents.failed(KIND, id, null, genericFailureMessage(KIND));
+  } finally {
+    clearInterval(heartbeat);
   }
 }
 
@@ -213,7 +257,14 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
           createdById: user.userId,
         });
         res.status(202).json(ok({ id }));
-        void runAssessment(id, user, input, hostProductId, deps);
+        void runAssessment(
+          id,
+          user,
+          input,
+          hostProductId,
+          deps,
+          deps.heartbeatMs ?? PORTFOLIO_ASSESSMENT_HEARTBEAT_MS,
+        );
       } catch (err) {
         next(err);
       }
@@ -236,17 +287,9 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
           res.json(ok([]));
           return;
         }
-        const ids = await listPortfolioAssessmentIds(
-          productId
-            ? { productId, take: PORTFOLIO_ASSESSMENT_LIST_LIMIT }
-            : { createdById: user.userId, take: PORTFOLIO_ASSESSMENT_LIST_LIMIT },
+        res.json(
+          ok(await readablePage(access, productId ? { productId } : { createdById: user.userId })),
         );
-        const items = [];
-        for (const id of ids) {
-          const view = await viewPortfolioAssessment(access, id);
-          if (view) items.push(toListItem(view));
-        }
-        res.json(ok(items));
       } catch (err) {
         next(err);
       }

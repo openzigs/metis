@@ -582,8 +582,13 @@ export async function appendStructuredRequirements(
  * changed is carried over: each field of a requirement that differs between
  * `before` and `after`, onto the requirement with the same id in `current`.
  * A requirement `current` gained is kept, and one it lost is not brought back.
- * The remaining-ambiguity count is the round's, plus the ambiguities of the
- * requirements the round never saw.
+ *
+ * #1657 — the remaining-ambiguity count is counted on the merged list, as the
+ * round counts its own: every ambiguity of every requirement in it that
+ * `addressed` (the round's `addressedAmbiguities`) does not hold. Adding the
+ * gained requirements' ambiguities to the round's count, as before, never took
+ * away those of the requirements the list lost, so the UI could show a
+ * clarify panel with nothing in it.
  *
  * Returns null when `current` comes from another extraction run than the one
  * the round read (`before.runId`, as `getStructuredRequirements` decorates it):
@@ -596,12 +601,18 @@ export function mergeClarifiedList(
   currentRunId: string | undefined,
   before: StructuredRequirements & { runId?: string },
   after: StructuredRequirements & { runId?: string },
+  addressed: ReadonlySet<string>,
 ): StructuredRequirements | null {
   const { runId: _afterRunId, ...clarified } = after;
   if (!current || !Array.isArray(current.requirements)) return clarified;
   if (before.runId && currentRunId && before.runId !== currentRunId) return null;
-  const beforeById = new Map(before.requirements.map((r) => [r.id, r]));
-  const afterById = new Map(after.requirements.map((r) => [r.id, r]));
+  // #1657 — the round defaults a missing `ambiguities` to `[]` (#382), so the
+  // raw `before` is defaulted the same way: compared undefaulted, a requirement
+  // with no ambiguities always read as changed.
+  const defaulted = (r: StructuredRequirement): StructuredRequirement =>
+    Array.isArray(r.ambiguities) ? r : { ...r, ambiguities: [] };
+  const beforeById = new Map(before.requirements.map((r) => [r.id, defaulted(r)]));
+  const afterById = new Map(after.requirements.map((r) => [r.id, defaulted(r)]));
   const requirements = current.requirements.map((req) => {
     const was = beforeById.get(req.id);
     const now = afterById.get(req.id);
@@ -612,14 +623,15 @@ export function mergeClarifiedList(
     if (changed.length === 0) return req;
     return { ...req, ...Object.fromEntries(changed.map((key) => [key, now[key]])) };
   });
-  const unseen = current.requirements
-    .filter((r) => !beforeById.has(r.id))
-    .reduce((sum, r) => sum + (Array.isArray(r.ambiguities) ? r.ambiguities.length : 0), 0);
-  return {
-    ...current,
-    requirements,
-    totalAmbiguities: clarified.totalAmbiguities + unseen,
-  };
+  const totalAmbiguities = requirements.reduce(
+    (sum, r) =>
+      sum +
+      (Array.isArray(r.ambiguities)
+        ? r.ambiguities.filter((a) => !addressed.has(`${r.id}:${a.field}`)).length
+        : 0),
+    0,
+  );
+  return { ...current, requirements, totalAmbiguities };
 }
 
 /**
@@ -633,6 +645,7 @@ export async function persistClarifiedRequirements(
   id: string,
   before: StructuredRequirements & { runId?: string },
   after: StructuredRequirements & { runId?: string },
+  addressed: ReadonlySet<string>,
 ): Promise<boolean> {
   let written = true;
   await mergeAnalysisMetadata(id, (current) => {
@@ -642,6 +655,7 @@ export async function persistClarifiedRequirements(
       runId,
       before,
       after,
+      addressed,
     );
     if (!merged) {
       written = false;
@@ -2845,8 +2859,13 @@ export async function readFlattenedFindings(analysisId: string): Promise<FlatFin
         { agentKey: { startsWith: "library:" } },
       ],
     },
-    include: { findings: true },
-    orderBy: { startedAt: "asc" },
+    // #1657 — both orders are total, so the flattened order (and the numbering
+    // promotion reads through it, #1603) is reproducible: without an `orderBy`
+    // Postgres may return a relation's rows in any order. Findings are written
+    // one at a time in the order the agent emitted them, and a cuid sorts by
+    // creation within one millisecond, so (createdAt, id) is that order.
+    include: { findings: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] } },
+    orderBy: [{ startedAt: "asc" }, { id: "asc" }],
   });
   const out: FlatFindingFromDb[] = [];
   for (const r of rows) {

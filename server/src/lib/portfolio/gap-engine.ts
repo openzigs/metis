@@ -28,11 +28,16 @@
  *   search, a refused or unparseable reply, or no budget left is
  *   `could-not-verify`, and so is never what makes a product `not-covered`.
  * - **Nothing silently omitted.** Every product in scope is in the result.
- * - **Bounded fan-out.** A per-run cost cap, a per-product cost cap and a cap on
- *   products evaluated at once; each product's repos are evaluated one after
- *   another, so at most `concurrency` model calls are in flight. A cap stops
- *   new calls, it does not cancel one in flight, so the spend can pass a cap by
- *   at most the calls already running.
+ * - **Bounded fan-out.** A per-run cost cap, a per-product cost cap, a cap on
+ *   model calls (#1657: an unpriced model costs 0, so the cost caps alone never
+ *   bind) and a cap on products evaluated at once; each product's repos are
+ *   evaluated one after another, so at most `concurrency` model calls are in
+ *   flight. A cost cap stops new calls, it does not cancel one in flight, so the
+ *   spend can pass it by at most the calls already running; the call cap is
+ *   counted as each call starts, so it is never passed.
+ * - **A gap needs a search for it** (#1657). A criterion is `gap-confirmed` only
+ *   when the query actually sent carried it: the query is cut to 4,000
+ *   characters, so a long requirement's later criteria may never be searched for.
  */
 import { z } from "zod";
 import {
@@ -67,6 +72,8 @@ import {
   productRepoReadAccess,
 } from "../products/product-access.js";
 import { gateFindingVerdict, rollUpCriterionVerdicts } from "../analysis/requirement-verdict.js";
+import { MIN_SHARED_TERMS, extractTerms } from "../analysis/retrieval-health.js";
+import { canAccessProjectDiscussions } from "../discussions/access.js";
 import { createPortfolioAssessment } from "./assessment-store.js";
 import {
   rollUpPortfolioVerdict,
@@ -88,9 +95,11 @@ const log = createChildLogger("portfolio-gap");
 /**
  * Ids an input may carry. A "product" scope names exactly one (#1622's "one product or
  * all products I can access", enforced again by the stored schema, #1647); the list is
- * ignored for "all-accessible".
+ * ignored for "all-accessible". One, as the HTTP contract (#1657).
  */
-export const MAX_SCOPE_PRODUCTS = 100;
+export const MAX_SCOPE_PRODUCTS = 1;
+/** Characters of the federated search query. */
+const MAX_QUERY_CHARS = 4_000;
 /** Output tokens one model call may spend. */
 const MAX_OUTPUT_TOKENS = 2_000;
 /** The prefix of a repository source document's filename: `connector:repo:<id>:src/<path>`. */
@@ -129,6 +138,8 @@ export interface PortfolioGapLimits {
   hitsPerProduct: number;
   /** Criteria a statement is split into, at most. */
   maxCriteria: number;
+  /** Model calls the whole run may make (#1657). */
+  maxModelCalls: number;
 }
 
 export const DEFAULT_PORTFOLIO_GAP_LIMITS: PortfolioGapLimits = {
@@ -137,6 +148,7 @@ export const DEFAULT_PORTFOLIO_GAP_LIMITS: PortfolioGapLimits = {
   concurrency: 4,
   hitsPerProduct: 24,
   maxCriteria: 8,
+  maxModelCalls: 250,
 };
 
 /** The limits from config (`PORTFOLIO_GAP_*`), falling back to the defaults. */
@@ -149,6 +161,7 @@ export function readPortfolioGapLimits(): PortfolioGapLimits {
     productCostCapUsd:
       cfg.getNumber("PORTFOLIO_GAP_PRODUCT_COST_CAP_CENTS", d.productCostCapUsd * 100) / 100,
     concurrency: Math.max(1, cfg.getNumber("PORTFOLIO_GAP_CONCURRENCY", d.concurrency)),
+    maxModelCalls: Math.max(0, cfg.getNumber("PORTFOLIO_GAP_MAX_MODEL_CALLS", d.maxModelCalls)),
   };
 }
 
@@ -210,15 +223,22 @@ export interface PortfolioGapDeps {
 
 class Budget {
   private run = 0;
+  private calls = 0;
   private readonly byProduct = new Map<string, number>();
 
   constructor(private readonly limits: PortfolioGapLimits) {}
 
   /** Whether a new call may start (for a product, or run-wide with `null`). */
   allows(productId: string | null): boolean {
+    if (this.calls >= this.limits.maxModelCalls) return false;
     if (this.run >= this.limits.runCostCapUsd) return false;
     if (productId === null) return true;
     return (this.byProduct.get(productId) ?? 0) < this.limits.productCostCapUsd;
+  }
+
+  /** Count a call as it starts, so the call cap is never passed. */
+  startCall(): void {
+    this.calls += 1;
   }
 
   charge(productId: string | null, usd: number): void {
@@ -376,6 +396,8 @@ interface RunContext {
   limits: PortfolioGapLimits;
   costOf: (response: ChatResponse) => number;
   budget: Budget;
+  /** Per criterion, whether the query sent searched for it (#1657). */
+  searched: boolean[];
   signal?: AbortSignal;
 }
 
@@ -403,7 +425,7 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 }
 
 async function decompose(
-  ctx: Omit<RunContext, "criteria" | "query">,
+  ctx: Omit<RunContext, "criteria" | "query" | "searched">,
   given: string[],
 ): Promise<string[]> {
   // Every supplied criterion is judged (the schema bounds the count): dropping the tail would let
@@ -411,6 +433,7 @@ async function decompose(
   if (given.length > 0) return given;
   if (!ctx.budget.allows(null)) return [ctx.statement];
   try {
+    ctx.budget.startCall();
     const { parsed } = await callJsonLlm(ctx.provider, {
       systemPrompt: DECOMPOSE_SYSTEM_PROMPT,
       userPrompt: buildDecomposePrompt(ctx.statement, ctx.limits.maxCriteria),
@@ -437,6 +460,7 @@ async function evaluateRepo(
   let cost = 0;
   let claims: ReturnType<typeof parseRepoVerdict> = null;
   try {
+    ctx.budget.startCall();
     const { parsed } = await callJsonLlm(ctx.provider, {
       systemPrompt: REPO_VERDICT_SYSTEM_PROMPT,
       userPrompt: buildRepoVerdictPrompt({
@@ -469,13 +493,14 @@ async function evaluateRepo(
     if (!claim) return "could-not-verify";
     const cited = claim.hitIndexes.map((n) => citationFromHit(hits[n], repo.repoConnectionId));
     // Retrieval for this repo worked (it returned this repo's excerpts), so a
-    // gap may be confirmed; `implemented` still needs a grounded citation.
+    // gap may be confirmed when the query searched for this criterion (#1657);
+    // `implemented` still needs a grounded citation.
     const gated =
       gateFindingVerdict({
         modelVerdict: claim.verdict,
         groundedCitations: cited,
         finding: { title: ctx.criteria[i], body: claim.reason },
-        absenceConfirmable: true,
+        absenceConfirmable: ctx.searched[i] === true,
         retrievalHealthy: true,
       }) ?? "could-not-verify";
     if (gated === "implemented") for (const c of cited) citations.set(c.filePath, c);
@@ -571,17 +596,27 @@ async function evaluateProduct(
   };
 }
 
-async function mapWithConcurrency<T, R>(
+/**
+ * `fn` over `items`, `limit` at a time. Once one call rejects no new item is
+ * started (#1657): the run has failed, so further calls are spend for nothing.
+ */
+export async function mapWithConcurrency<T, R>(
   items: readonly T[],
   limit: number,
   fn: (item: T) => Promise<R>,
 ): Promise<R[]> {
   const out = new Array<R>(items.length);
   let next = 0;
+  let failed = false;
   const worker = async (): Promise<void> => {
-    while (next < items.length) {
+    while (!failed && next < items.length) {
       const i = next++;
-      out[i] = await fn(items[i]);
+      try {
+        out[i] = await fn(items[i]);
+      } catch (err) {
+        failed = true;
+        throw err;
+      }
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
@@ -659,6 +694,21 @@ export function productSummary(p: PortfolioProductResult, criteria: readonly str
 }
 
 /**
+ * #1657 — whether `query` searched for `criterion`: it carries the criterion
+ * whole, or at least {@link MIN_SHARED_TERMS} of its significant terms. The
+ * query is cut to {@link MAX_QUERY_CHARS}, so a long requirement's later
+ * criteria can be missing from it, and an absence nobody searched for is not a
+ * confirmed gap.
+ */
+export function querySearchedFor(query: string, criterion: string): boolean {
+  if (query.includes(criterion)) return true;
+  const queryTerms = extractTerms(query);
+  let shared = 0;
+  for (const term of extractTerms(criterion)) if (queryTerms.has(term)) shared += 1;
+  return shared >= MIN_SHARED_TERMS;
+}
+
+/**
  * Evaluate a requirement across the portfolio in scope. Does not persist; see
  * {@link runPortfolioGapAnalysis}.
  */
@@ -667,7 +717,14 @@ export async function evaluatePortfolioGap(
   rawInput: PortfolioGapInput,
   deps: PortfolioGapDeps = {},
 ): Promise<PortfolioGapResult> {
-  const input = portfolioGapInputSchema.parse(rawInput);
+  return evaluateParsed(user, portfolioGapInputSchema.parse(rawInput), deps);
+}
+
+async function evaluateParsed(
+  user: AuthPayload,
+  input: z.output<typeof portfolioGapInputSchema>,
+  deps: PortfolioGapDeps,
+): Promise<PortfolioGapResult> {
   const limits = { ...readPortfolioGapLimits(), ...deps.limits };
   const base = {
     user,
@@ -689,10 +746,12 @@ export async function evaluatePortfolioGap(
     : input.criteria.length > 0
       ? input.criteria
       : [input.statement];
+  const query = [input.statement, ...criteria].join("\n").slice(0, MAX_QUERY_CHARS);
   const ctx: RunContext = {
     ...base,
     criteria,
-    query: [input.statement, ...criteria].join("\n").slice(0, 4_000),
+    query,
+    searched: criteria.map((c) => querySearchedFor(query, c)),
   };
   const repos = await loadRepos(
     user,
@@ -778,6 +837,40 @@ export function toAssessmentInput(
   };
 }
 
+/**
+ * #1657 — the requirement `requirementId`, or 404 unless it is live (not
+ * soft-deleted), in `projectId` when one is given, and in a project `user` can
+ * read: an assessment copies a requirement's text, and records it as its
+ * source, only for a starter who can read it. Unknown, deleted, elsewhere and
+ * unreadable answer alike (no existence oracle).
+ */
+export async function loadReadableSourceRequirement(
+  user: AuthPayload,
+  requirementId: string,
+  projectId?: string | null,
+): Promise<{
+  id: string;
+  projectId: string;
+  title: string;
+  body: string;
+  acceptanceCriteria: string | null;
+}> {
+  const requirement = await prisma.requirement.findFirst({
+    where: { id: requirementId, deletedAt: null, ...(projectId ? { projectId } : {}) },
+    select: { id: true, projectId: true, title: true, body: true, acceptanceCriteria: true },
+  });
+  if (
+    !requirement ||
+    !(await canAccessProjectDiscussions(
+      { id: user.userId, role: user.role },
+      requirement.projectId,
+    ))
+  ) {
+    throw new AppError(404, "NOT_FOUND", "Requirement not found");
+  }
+  return requirement;
+}
+
 /** Evaluate a requirement across the portfolio and persist the assessment (#1621). */
 export async function runPortfolioGapAnalysis(
   user: AuthPayload,
@@ -785,7 +878,14 @@ export async function runPortfolioGapAnalysis(
   deps: PortfolioGapDeps = {},
 ): Promise<{ assessmentId: string; result: PortfolioGapResult }> {
   const input = portfolioGapInputSchema.parse(rawInput);
-  const result = await evaluatePortfolioGap(user, input, deps);
+  // #1657 — a source is recorded only for a starter who can read it, and a
+  // project only with the requirement it holds.
+  if (input.sourceRequirementId) {
+    await loadReadableSourceRequirement(user, input.sourceRequirementId, input.sourceProjectId);
+  } else if (input.sourceProjectId) {
+    throw new AppError(400, "VALIDATION_ERROR", "sourceProjectId needs a sourceRequirementId");
+  }
+  const result = await evaluateParsed(user, input, deps);
   const assessmentId = await createPortfolioAssessment(
     toAssessmentInput(result, {
       createdById: user.userId,

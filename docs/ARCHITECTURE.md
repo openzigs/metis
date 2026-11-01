@@ -1357,11 +1357,14 @@ product in scope and persists the result as a `PortfolioAssessment`:
    that repo's project.
 5. **Repo verdict.** One model call per repo with the repo's own excerpts. Every untrusted
    value sits between `<<<LABEL>>>` fences and is scrubbed with
-   `scrubRequirementFenceLookalikes` (#1114, #1351). Each criterion's claim goes through
-   `gateFindingVerdict` (#773): `implemented` needs a cited excerpt, and a citation can only
-   name an excerpt that repo returned. Citations are file-level (`startLine` 1: source
-   chunks carry no span), with `repoConnectionId` stamped by the engine (#1611). Criteria
-   roll up with `rollUpCriterionVerdicts` (#1610).
+   `scrubRequirementFenceLookalikes` (#1114, #1351) and, for the `CODE`, `CRITERIA` and
+   `REPOSITORY` terminators, `scrubGapFenceLookalikes` (#1657). Each criterion's claim goes
+   through `gateFindingVerdict` (#773): `implemented` needs a cited excerpt, a citation can
+   only name an excerpt that repo returned, and `gap-confirmed` needs the search query to
+   have carried the criterion (`querySearchedFor`: the query is cut at 4,000 characters, so
+   a long requirement's later criteria may never be searched for, #1657). Citations are
+   file-level (`startLine` 1: source chunks carry no span), with `repoConnectionId` stamped
+   by the engine (#1611). Criteria roll up with `rollUpCriterionVerdicts` (#1610).
 6. **Roll-ups** (`gap-rollup.ts`). Product: every criterion met by some repo → `covers`;
    some met → `partial`; every repo `gap-confirmed` and none hidden → `not-covered`; else
    `not-checked`. Portfolio: any `covers` → `implemented`; else any `partial` → `partial`;
@@ -1371,9 +1374,12 @@ product in scope and persists the result as a `PortfolioAssessment`:
 A repo with no excerpts, a failed search, an unparseable reply or no budget left is
 `could-not-verify` with its reason in `technicalDetail.repos`, so starvation never reads as
 a gap. Fan-out is bounded by `PORTFOLIO_GAP_RUN_COST_CAP_CENTS` (200),
-`PORTFOLIO_GAP_PRODUCT_COST_CAP_CENTS` (50) and `PORTFOLIO_GAP_CONCURRENCY` (4 products at
-once, each one call at a time). A cap stops new calls; the spend can pass it by the calls
-already in flight. Cost is priced from the provider's usage; an unpriced model counts 0.
+`PORTFOLIO_GAP_PRODUCT_COST_CAP_CENTS` (50), `PORTFOLIO_GAP_MAX_MODEL_CALLS` (250, #1657)
+and `PORTFOLIO_GAP_CONCURRENCY` (4 products at once, each one call at a time). A cost cap
+stops new calls; the spend can pass it by the calls already in flight. Cost is priced from
+the provider's usage; an unpriced model counts 0, which is why the call cap exists: it is
+counted as each call starts, so it is never passed. Once one product fails the run, no new
+product is started.
 
 **Portfolio assessment API (#1625)** (`server/src/routes/portfolio-assessments.ts`):
 
@@ -1384,21 +1390,28 @@ already in flight. Cost is priced from the provider's usage; an unpriced model c
 | `GET /api/portfolio-assessments/:id` | `PortfolioAssessmentView`: the assessment, `verdict` and `productNames` |
 | `GET /api/portfolio-assessments/:id/export?format=md` | the same view as a Markdown attachment |
 
-Exactly one of `statement` and `requirementId` (`createPortfolioAssessmentSchema`, 400
-otherwise). A `requirementId` must name a requirement in a project the caller can read (404
-otherwise); its title, body and acceptance criteria become the statement and criteria, and
-it is recorded as the source. Starting takes `analysis.run`, reading `analysis.read`. Each
+Exactly one of `statement` and `requirementId`, a `product` scope names exactly one product
+and an `all-accessible` scope names none (`createPortfolioAssessmentSchema`, 400 otherwise;
+#1657). A `requirementId` must name a live (not soft-deleted) requirement in a project the
+caller can read (404 otherwise); its title, body and acceptance criteria become the
+statement and criteria, and it is recorded as the source. A run executes in the process
+that started it and refreshes its row every 30 seconds; a sweep (at boot, then every
+minute: `lib/portfolio/interrupted-assessments.ts`) fails a `pending` or `running` row
+unchanged for five minutes, so a restart never leaves one running for ever (#1657). Starting takes `analysis.run`, reading `analysis.read`. Each
 route has a pre-auth limiter and a per-user one (`portfolio-assessments-rate-limit.ts`:
 10 starts, 300 reads per 15 minutes); CSRF is the app-wide `csrfProtection` (#913).
 
 Reads never trust what was stored (`viewPortfolioAssessment`,
 `server/src/lib/portfolio/assessment-view.ts`). An assessment is readable by an admin, or by
-a reader who can read its source project and who started it or can read one of its
-products; anyone else gets 404, and the `job:{id}` room takes the same rule. For that
+a reader who can read its source project and who started it or can read one of the
+products its run could read; anyone else gets 404, and the `job:{id}` room takes the same
+rule. A product stored `restricted` (its starter could not read it) never counts, and never
+lists the assessment under `?productId=` (#1657). The list reads further pages until it
+holds 25 readable rows or has looked at 100. For that
 reader, every product they cannot read now is `restricted` with nothing in it, every repo
 they cannot read now (or whose connection was deleted) is dropped with its citations and
 its product's coverage recomputed with it counted hidden, and when they see less than the
-run did, the verdict and summary are recomputed from what they see.
+run did, the verdict, summary and `costUsd` are recomputed from what they see (#1657).
 
 **Cross-product impact (#1623)** (`server/src/lib/portfolio/impact-engine.ts`). After the
 gap analysis, the run walks the typed product edges (#1618) from the products whose code

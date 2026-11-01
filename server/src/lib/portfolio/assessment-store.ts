@@ -148,23 +148,70 @@ export async function setPortfolioAssessmentStatus(
 }
 
 /**
+ * #1657 — a running assessment's heartbeat: refresh `updatedAt` (Prisma's
+ * `@updatedAt`) so {@link failInterruptedPortfolioAssessments} can tell a live
+ * run from one whose process stopped. Only a row still `running` is touched.
+ */
+export async function touchPortfolioAssessment(id: string): Promise<void> {
+  await prisma.portfolioAssessment.updateMany({
+    where: { id, status: "running" },
+    data: { status: "running" },
+  });
+}
+
+/**
+ * #1657 — fail every assessment still `pending` or `running` whose row has not
+ * changed since `staleBefore`. A run executes only in the process that started
+ * it, and a live one beats every `PORTFOLIO_ASSESSMENT_HEARTBEAT_MS`, so such a
+ * row has no process left: it is failed, never resumed (resuming would spend
+ * model calls nobody is waiting for). One conditional update, so a row that
+ * beats meanwhile is not taken. Returns how many were failed.
+ */
+export async function failInterruptedPortfolioAssessments(staleBefore: Date): Promise<number> {
+  const { count } = await prisma.portfolioAssessment.updateMany({
+    where: { status: { in: ["pending", "running"] }, updatedAt: { lt: staleBefore } },
+    data: { status: "failed" },
+  });
+  return count;
+}
+
+/**
  * #1625 — the newest assessments naming `productId`, or else those `createdById`
  * started, newest first. Ids only: every reader re-filters what it may see.
+ *
+ * #1657 — "naming" a product means a row the run could read: a `restricted`
+ * row is only the id its starter supplied for a product they could not read,
+ * so it never lists the assessment under that product. `before` pages on
+ * (`createdAt`, `id`) from the last row of the previous page.
  */
 export async function listPortfolioAssessmentIds(filter: {
   productId?: string;
   createdById?: string;
   take: number;
-}): Promise<string[]> {
-  const rows = await prisma.portfolioAssessment.findMany({
-    where: filter.productId
-      ? { products: { some: { productId: filter.productId } } }
-      : { createdById: filter.createdById },
+  before?: { createdAt: Date; id: string };
+}): Promise<Array<{ id: string; createdAt: Date }>> {
+  const scope: Prisma.PortfolioAssessmentWhereInput = filter.productId
+    ? { products: { some: { productId: filter.productId, coverage: { not: "restricted" } } } }
+    : { createdById: filter.createdById };
+  const before = filter.before;
+  return prisma.portfolioAssessment.findMany({
+    where: before
+      ? {
+          AND: [
+            scope,
+            {
+              OR: [
+                { createdAt: { lt: before.createdAt } },
+                { createdAt: before.createdAt, id: { lt: before.id } },
+              ],
+            },
+          ],
+        }
+      : scope,
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: filter.take,
-    select: { id: true },
+    select: { id: true, createdAt: true },
   });
-  return rows.map((r) => r.id);
 }
 
 function parseJson<T>(raw: string, fallback: T): T {

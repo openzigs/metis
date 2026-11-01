@@ -47,7 +47,10 @@ export interface EdgeSyncResult {
   created: number;
   updated: number;
   deleted: number;
-  /** Detected edges not written because a declared edge holds their key. */
+  /**
+   * Detected edges not written because a declared edge (or one of any other
+   * origin detection does not own, #1657) holds their key.
+   */
   keptDeclared: number;
 }
 
@@ -181,9 +184,12 @@ export async function syncDetectedProductEdges(
     });
   // A declared edge is the person's; one detection owns (`detected`, or
   // `overridden` by a person, #1647) is matched, refreshed and, once no longer
-  // found, deleted.
-  const declaredKeys = new Set(existing.filter((e) => e.origin === "declared").map(keyOf));
-  const stored = new Map(existing.filter((e) => e.origin !== "declared").map((e) => [keyOf(e), e]));
+  // found, deleted. #1657 — any other origin is not detection's either, so it
+  // is kept as a declared one is: counting it deleted, when the delete below
+  // matches detection's origins only, reported a delete that never happened.
+  const owned = (e: (typeof existing)[number]) => DETECTION_OWNED_ORIGINS.includes(e.origin);
+  const declaredKeys = new Set(existing.filter((e) => !owned(e)).map(keyOf));
+  const stored = new Map(existing.filter(owned).map((e) => [keyOf(e), e]));
 
   const result: EdgeSyncResult = { created: 0, updated: 0, deleted: 0, keptDeclared: 0 };
   const writes = [];

@@ -154,14 +154,16 @@ export interface PortfolioAssessment {
 // ─── #1625 — the HTTP contract ──────────────────────────────────────────────
 
 /**
- * Ids a request may carry. A `product` scope names exactly one (#1622); the list is
- * ignored for `all-accessible`.
+ * Ids a request may carry: a `product` scope names exactly one (#1622), and an
+ * `all-accessible` one names none (#1657: a list it would ignore is refused, so
+ * the contract says what it accepts).
  */
-export const PORTFOLIO_ASSESSMENT_MAX_PRODUCTS = 100;
+export const PORTFOLIO_ASSESSMENT_MAX_PRODUCTS = 1;
 
 /**
  * `POST /api/portfolio-assessments`: exactly one of `statement` and
- * `requirementId`, and a `product` scope names exactly one product (#1622, #1647).
+ * `requirementId`; a `product` scope names exactly one product (#1622, #1647)
+ * and an `all-accessible` scope names none (#1657).
  */
 export const createPortfolioAssessmentSchema = z
   .object({
@@ -197,7 +199,11 @@ export const createPortfolioAssessmentSchema = z
       message: 'A "product" scope can only host the requirement on its own product',
       path: ["hostProductId"],
     },
-  );
+  )
+  .refine((v) => v.scope !== "all-accessible" || (v.productIds?.length ?? 0) === 0, {
+    message: 'An "all-accessible" scope names no product',
+    path: ["productIds"],
+  });
 export type CreatePortfolioAssessmentInput = z.input<typeof createPortfolioAssessmentSchema>;
 
 /** The portfolio verdict in the requirement-verdict vocabulary (#1622). */

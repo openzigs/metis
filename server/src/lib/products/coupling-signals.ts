@@ -366,10 +366,15 @@ const SQL_LITERAL = /^\s*(?:select|insert|update|delete|merge|with)\b/i;
  * #1647 — a literal whose verb is sentence-cased ("Select from the list",
  * "Delete from cart") is UI prose unless something only SQL has follows: an
  * operator or placeholder, or a clause keyword.
+ *
+ * #1657 — not `?` or `,`: prose has both ("Delete from cart?", "Select from
+ * the list, then save"). A `?` placeholder comes with an `=` or a `(`, which
+ * are markers. What this misses is a sentence-cased select list with nothing
+ * else SQL-only ("Select id, name from users"): an edge missed, never invented.
  */
 const SENTENCE_CASE_VERB = /^\s*[A-Z][a-z]+\b/;
 const SQL_MARKER =
-  /[*=(),;?]|\$\d|:\w|\b(?:where|values|set|join|group\s+by|order\s+by|limit|returning)\b/i;
+  /[*=();]|\$\d|:\w|\b(?:where|values|set|join|group\s+by|order\s+by|limit|returning)\b/i;
 
 /** #1647 — words that follow a FROM in prose and are never a table ("from the list"). */
 const PROSE_WORDS = new Set([
@@ -404,25 +409,26 @@ function isSqlLiteral(value: string): boolean {
 
 /**
  * `text` with the arguments of every {@link NON_TABLE_FROM_CALLS} call blanked
- * to spaces (offsets kept), in one pass over a stack of open parentheses. Only
- * the outermost such call is blanked, so nesting them costs no second pass.
+ * to spaces (offsets kept), in one pass over a stack of open parentheses. A
+ * character is blanked when the innermost parenthesis around it is such a
+ * call's, so a subquery inside one (`EXTRACT(YEAR FROM (SELECT d FROM t))`)
+ * keeps its FROM (#1657), and nesting them costs no second pass.
  */
 function blankNonTableFromCalls(text: string): string {
   const out = text.split("");
   const open: boolean[] = [];
-  let maskedOpen = 0;
-  let maskFrom = -1;
   for (let i = 0; i < text.length; i++) {
-    if (text[i] === "(") {
+    const c = text[i];
+    if (c === "(") {
       let j = i - 1;
       while (j >= 0 && (text[j] === " " || text[j] === "\t")) j--;
       let k = j;
       while (k >= 0 && /[\w$]/.test(text[k])) k--;
-      const masked = NON_TABLE_FROM_CALLS.has(text.slice(k + 1, j + 1).toLowerCase());
-      if (masked && maskedOpen++ === 0) maskFrom = i + 1;
-      open.push(masked);
-    } else if (text[i] === ")" && open.pop() && --maskedOpen === 0) {
-      for (let n = maskFrom; n < i; n++) if (out[n] !== "\n") out[n] = " ";
+      open.push(NON_TABLE_FROM_CALLS.has(text.slice(k + 1, j + 1).toLowerCase()));
+    } else if (c === ")") {
+      open.pop();
+    } else if (open.length > 0 && open[open.length - 1] && c !== "\n") {
+      out[i] = " ";
     }
   }
   return out.join("");
