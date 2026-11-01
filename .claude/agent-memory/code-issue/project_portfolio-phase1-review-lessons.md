@@ -21,8 +21,8 @@ From the reviews of PRs #1631-#1634, #1637 and #1638, 2026-10-31.
   newly tracked field as null and rebuilds history wrong.
 - **Dependency-audit waivers (#1635):** a re-run of a `pull_request` check reuses the old
   merge commit, so a waiver landed on `main` reaches an open PR only after
-  `gh pr update-branch`. The follow-redirects bump PR must delete both the
-  GHSA-mrwp-f3q8-3g9p entry in `sast.yml` and `scripts/lib/follow-redirects-1635-waiver.test.mjs`.
+  `gh pr update-branch`. A bump that retires a waiver deletes its `sast.yml` entry and
+  guard test and moves the image-scan mirror to `expired` (done for #1635 in #1682).
 - **Stacked/parallel PRs on one schema (#1610 + #1612):** both added a field in the same
   three places (`packages/shared/src/analysis.ts` synthesis schema, `approved-requirement-set.ts`
   join, the `prompts.ts` JSON template). Expect that conflict; keep both, mind the comma.
