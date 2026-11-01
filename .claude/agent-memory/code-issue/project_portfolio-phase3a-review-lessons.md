@@ -1,6 +1,6 @@
 ---
 name: portfolio-phase3a-review-lessons
-description: Durable findings from the #1608 phase-3 and phase-4 reviews (#1622-#1627, #1647, #1657, #1668) and the 2026-11-01 CI break - walk skip guards, redaction of model fields, regex shapes the linear-time suite misses, zod refine after max, engine limits that shrink input, mocked access filters, raw-SQL timestamps.
+description: Durable findings from the #1608 phase-3 and phase-4 reviews (#1622-#1630, #1647, #1657, #1668, #1673) and the 2026-11-01 CI break - walk skip guards, redaction of model fields, regex shapes the linear-time suite misses, zod refine after max, engine limits that shrink input, mocked access filters, raw-SQL timestamps.
 metadata:
   type: project
 ---
@@ -86,3 +86,24 @@ Phase 4: the reviews of #1671 (#1668), #1670 (#1626) and #1672 (#1627), 2026-11-
   limiter allows 300 requests per 15 min, one every 3 s, which is exactly the page's poll
   interval, so a long run uses the whole budget. TanStack v5's `refetchInterval` keeps
   firing on error, so a function that checks only `data?.status` polls a 404 forever.
+
+Phase 5: the reviews of #1676 (#1673), #1675 (#1628), #1678 (#1629) and #1679 (#1630), 2026-11-01. Follow-ups: #1680.
+
+- **Reader-relative wording, wider readers too (#1673).** "You cannot read" text stored at
+  run time comes from the starter's access, but `mayRead` also lets admins and wider
+  readers open the run. Check every reader-relative sentence against a reader who sees
+  *more* than the starter, as well as one who sees less.
+- **Two meanings of "restricted" (#1630).** As a coverage state it means the reader can't
+  read the product. As an impact kind (#1673) it marks a product the reader CAN read
+  whose path, or whether it is reached at all, runs through something they can't. Docs
+  and UI copy must keep the two apart.
+- **`GET /products` pages by `pageSize`/`page`** (`paginationQuerySchema`) and silently
+  ignores `limit` (#1673). The portfolio picker sent `limit: 100` and got 25.
+- **e2e leak checks need a substring match (#1629).** `getByText(name, {exact: true})`
+  with a count of 0 only catches an element whose entire text is the name. Use
+  `expect(page.getByRole("main")).not.toContainText(name)`. A spec that cleans up data
+  must refuse to run under `E2E_SKIP_WEBSERVER` (the developer's own stack).
+- **Recording e2e model fixtures without credentials (#1629).** Use `AI_RECORD=1` plus
+  `AI_OFFLINE_SCRIPT_FILE`, matching on a prompt substring unique to each call. A local
+  run's global setup writes 4 untracked clarify fixtures into `e2e/fixtures/llm`; never
+  commit them.
