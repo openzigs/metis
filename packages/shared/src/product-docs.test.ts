@@ -49,4 +49,21 @@ describe("resource locators", () => {
   it("names the overridden origin (#1647)", () => {
     expect(PRODUCT_EDGE_ORIGINS).toEqual(["detected", "declared", "overridden"]);
   });
+
+  it("scans a hostile locator in linear time (#1647)", () => {
+    const hostile = ":a/".repeat(60_000);
+    const t0 = performance.now();
+    locatorCarriesCredential(hostile);
+    expect(performance.now() - t0).toBeLessThan(1000);
+
+    // zod runs the refine even after `.max` fails; the guard keeps it cheap.
+    const t1 = performance.now();
+    const r = declareProductResourceSchema.safeParse({
+      kind: "database",
+      name: "db",
+      locator: hostile,
+    });
+    expect(performance.now() - t1).toBeLessThan(1000);
+    expect(r.success).toBe(false);
+  });
 });

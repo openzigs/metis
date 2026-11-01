@@ -247,7 +247,7 @@ export type ProductResource = z.infer<typeof productResourceSchema>;
 const LOCATOR_CREDENTIAL_PATTERNS: readonly RegExp[] = [
   /^[a-z][a-z0-9+.-]*:\/\/[^/@\s]*@/i,
   /(?:^|[;?&\s])(?:password|passwd|pwd|pass|secret|token|api[-_]?key|access[-_]?key|sig)\s*=/i,
-  /(?:^|:)[^\s/@:]+\/[^\s@]+@/,
+  /(?:^|:)[^\s/@:]+\/[^\s@:]*@/,
   /^[^\s/@:]+:[^\s@:]+@/,
 ];
 
@@ -266,7 +266,8 @@ const resourceLocatorSchema = z
   .trim()
   .min(1)
   .max(512)
-  .refine((v) => !locatorCarriesCredential(v), {
+  // zod runs a refine after `.max` has failed, so bound the input first.
+  .refine((v) => v.length > 512 || !locatorCarriesCredential(v), {
     message: "a locator must not carry credentials",
   });
 

@@ -272,6 +272,7 @@ describe("scan cost on hostile input", () => {
     // unterminated docstring, and topic calls inside one string.
     ["nested EXTRACT calls", "select extract(", "q.sql"],
     ["CTE openers", "with x as (select 1 from y), ", "q.sql"],
+    ["spaces after a CTE-shaped name", "select a, b", "q.sql"],
     ["DISTINCT FROMs", "select a is distinct from ", "q.sql"],
     ["unterminated docstring", '"""', "a.py"],
     ["calls inside one string", "' c.publish('t') '", "a.ts"],
@@ -283,6 +284,8 @@ describe("scan cost on hostile input", () => {
       } else if (label === "nested EXTRACT calls") {
         const depth = Math.ceil(n / 9);
         text = `select ${"extract(".repeat(depth)}${")".repeat(depth)} from t`;
+      } else if (label === "spaces after a CTE-shaped name") {
+        text = `${unit}${" ".repeat(n)}`;
       } else if (label === "unique topics") {
         text = Array.from({ length: n / 30 }, (_, i) => `c.subscribe('topic-${i}');\n`).join("");
       } else {

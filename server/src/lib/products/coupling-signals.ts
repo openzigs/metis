@@ -355,7 +355,7 @@ const NON_TABLE_FROM_CALLS = new Set([
  * CTE, not a table.
  */
 const CTE_NAME = new RegExp(
-  `(?:\\bwith(?:\\s+recursive)?|,)\\s*["\`\\[]?([A-Za-z_][\\w$]{0,127})["\`\\]]?\\s*(?:\\([^()]{0,1000}\\))?\\s+as\\s+(?:(?:not\\s+)?materialized\\s+)?\\(`,
+  `(?:\\bwith(?:\\s+recursive)?|,)\\s*["\`\\[]?([A-Za-z_][\\w$]{0,127})["\`\\]]?(?:\\s*\\([^()]{0,1000}\\))?\\s+as\\s+(?:(?:not\\s+)?materialized\\s+)?\\(`,
   "gi",
 );
 
