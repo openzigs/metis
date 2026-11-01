@@ -45,6 +45,7 @@ import {
   type PortfolioRepo,
 } from "../fixtures/portfolio.js";
 import { buildZip } from "../fixtures/zip.js";
+import { ADMIN_USER } from "../fixtures/seed-user.js";
 import { LoginPage } from "../pages/login.page.js";
 import { PortfolioCheckPage, PortfolioEntryPage } from "../pages/portfolio.page.js";
 
@@ -151,8 +152,33 @@ interface Seeded {
   reporting: string;
 }
 
+/**
+ * Every product a seed creates. `afterAll` deletes them, so a retry's fresh seed
+ * (describe.serial re-runs `beforeAll`) never meets a second "Payments", and a
+ * reused stack is not left with one "Unconfigured-<ts>" per run.
+ */
+const createdProductIds: string[] = [];
+
+async function removeSeededProducts(): Promise<void> {
+  if (createdProductIds.length === 0) return;
+  // Deleting a product needs `project.delete`, which the analyst lacks.
+  const admin = await signIn(ADMIN_USER.username, ADMIN_USER.password);
+  try {
+    for (const id of createdProductIds.splice(0)) {
+      const del = await admin.api.delete(`/api/products/${id}`);
+      expect([204, 404], `remove seeded product ${id}: ${await del.text()}`).toContain(
+        del.status(),
+      );
+    }
+  } finally {
+    await admin.api.dispose();
+  }
+}
+
 /** Build the synthetic portfolio of `fixtures/portfolio.ts` through the API. */
 async function seedPortfolio(): Promise<Seeded> {
+  // A retry's seed starts from a clean slate: drop what the failed attempt made.
+  await removeSeededProducts();
   const stamp = `${Date.now()}`;
   let analyst = await signIn(ANALYST.username, ANALYST.password);
   const outsider = await signIn(OUTSIDER.username, OUTSIDER.password);
@@ -214,6 +240,7 @@ async function seedPortfolio(): Promise<Seeded> {
         }),
         `product ${name}`,
       );
+      createdProductIds.push(id);
       // The first repo attached homes the product in that repo's workspace (#1527).
       for (const repoConnectionId of repoIds) {
         await created(
@@ -285,6 +312,10 @@ test.describe.serial("Portfolio gap and impact analysis (#1629)", () => {
   test.beforeAll(async () => {
     test.setTimeout(480_000);
     await seedPortfolio();
+  });
+
+  test.afterAll(async () => {
+    await removeSeededProducts();
   });
 
   test("Journey 1 — a requirement Payments covers names it and its repo", async ({ page }) => {
