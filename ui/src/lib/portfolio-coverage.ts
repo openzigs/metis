@@ -146,6 +146,26 @@ export type HeadlineTone = "covered" | "partial" | "gap" | "unknown";
 export interface CoverageHeadline {
   tone: HeadlineTone;
   text: string;
+  /** A second sentence under the answer, when it needs one. */
+  note?: string;
+}
+
+/**
+ * #1677 — the products in scope with no repositories at all. The verdict
+ * leaves them out (there was nothing in them to check), so a confirmed gap
+ * names them rather than hiding them.
+ */
+function nothingToCheck(view: PortfolioAssessmentView, rows: CoverageRow[]): CoverageRow[] {
+  const empty = new Set(
+    view.products
+      .filter(
+        (p) =>
+          p.coverage === "not-checked" &&
+          (p.technicalDetail as { reason?: unknown }).reason === "no-repos",
+      )
+      .map((p) => p.productId),
+  );
+  return rows.filter((r) => empty.has(r.productId));
 }
 
 /**
@@ -169,8 +189,18 @@ export function coverageHeadline(view: PortfolioAssessmentView): CoverageHeadlin
         tone: "partial",
         text: `Partly covered by ${named(rows.filter((r) => r.coverage === "partial"))}`,
       };
-    case "gap-confirmed":
-      return { tone: "gap", text: "Nothing in your portfolio covers this" };
+    case "gap-confirmed": {
+      const empty = nothingToCheck(view, rows);
+      return {
+        tone: "gap",
+        text: "Nothing in your portfolio covers this",
+        ...(empty.length > 0
+          ? {
+              note: `${named(empty)} ${empty.length === 1 ? "has" : "have"} no repositories, so there was nothing in ${empty.length === 1 ? "it" : "them"} to check.`,
+            }
+          : {}),
+      };
+    }
     default:
       return {
         tone: "unknown",

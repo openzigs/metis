@@ -41,7 +41,7 @@ import {
 } from "./gap-engine.js";
 import {
   portfolioVerdictFromStored,
-  rollUpPortfolioVerdict,
+  rollUpPortfolio,
   rollUpProductCoverage,
   storedPortfolioVerdict,
 } from "./gap-rollup.js";
@@ -406,10 +406,7 @@ export async function viewPortfolioAssessment(
   }
 
   const stored = portfolioVerdictFromStored(a.portfolioVerdict);
-  const verdict =
-    changed && a.status === "completed"
-      ? rollUpPortfolioVerdict(results.map((p) => p.coverage))
-      : stored;
+  const verdict = changed && a.status === "completed" ? rollUpPortfolio(results) : stored;
   // #1624 — the model's prose was written about what the run saw. A reader who sees
   // less gets the deterministic summary instead, and no impact paragraphs: either
   // could describe a product, repo or path withheld from them.

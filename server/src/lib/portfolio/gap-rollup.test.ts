@@ -2,9 +2,11 @@
  * #1622 — every roll-up rule of the portfolio gap analysis, one case each.
  */
 import { describe, expect, it } from "vitest";
-import { PORTFOLIO_COVERAGES, REQUIREMENT_VERDICTS } from "@metis/shared";
+import { PORTFOLIO_COVERAGES, REQUIREMENT_VERDICTS, type PortfolioCoverage } from "@metis/shared";
 import {
   portfolioVerdictFromStored,
+  hadNothingToCheck,
+  rollUpPortfolio,
   rollUpPortfolioVerdict,
   rollUpProductCoverage,
   storedPortfolioVerdict,
@@ -127,6 +129,46 @@ describe("rollUpPortfolioVerdict", () => {
 
   it("an empty scope cannot be verified", () => {
     expect(rollUpPortfolioVerdict([])).toBe("could-not-verify");
+  });
+});
+
+describe("rollUpPortfolio (#1677)", () => {
+  const p = (coverage: PortfolioCoverage, reason: string | null = null) => ({ coverage, reason });
+
+  it("leaves a product with no repos out, so the rest can confirm a gap", () => {
+    expect(rollUpPortfolio([p("not-covered"), p("not-checked", "no-repos")])).toBe("gap-confirmed");
+    expect(
+      rollUpPortfolio([
+        p("not-checked", "no-repos"),
+        p("not-covered"),
+        p("not-checked", "no-repos"),
+      ]),
+    ).toBe("gap-confirmed");
+  });
+
+  it("keeps a product whose repos could not be read or verified", () => {
+    expect(rollUpPortfolio([p("not-covered"), p("not-checked", "repos-restricted")])).toBe(
+      "could-not-verify",
+    );
+    expect(rollUpPortfolio([p("not-covered"), p("not-checked", "could-not-verify")])).toBe(
+      "could-not-verify",
+    );
+    expect(rollUpPortfolio([p("not-covered"), p("restricted")])).toBe("could-not-verify");
+  });
+
+  it("only products with no repos is not a gap", () => {
+    expect(rollUpPortfolio([p("not-checked", "no-repos")])).toBe("could-not-verify");
+  });
+
+  it("still reads covers and partial through an empty product", () => {
+    expect(rollUpPortfolio([p("covers"), p("not-checked", "no-repos")])).toBe("implemented");
+    expect(rollUpPortfolio([p("partial"), p("not-checked", "no-repos")])).toBe("partial");
+  });
+
+  it("nothing to check is not-checked with the no-repos reason only", () => {
+    expect(hadNothingToCheck(p("not-checked", "no-repos"))).toBe(true);
+    expect(hadNothingToCheck(p("not-covered", "no-repos"))).toBe(false);
+    expect(hadNothingToCheck(p("not-checked", "repos-restricted"))).toBe(false);
   });
 });
 
