@@ -12,6 +12,8 @@
  * starts it afresh: it can never submit the requirement or product it was
  * first given. The product picker searches every product the analyst can
  * read, a page at a time, rather than showing only the first page.
+ * #1680 — the product it arrived with is read by id, so it is named even when
+ * it is not on the first page of the list.
  */
 "use client";
 
@@ -68,6 +70,14 @@ function PortfolioEntry({
     retry: false,
     placeholderData: keepPreviousData,
   });
+  // #1680 — the product arrived with may be past the first page: read its name.
+  const initialProduct = useQuery({
+    queryKey: ["portfolio", "product", initialProductId],
+    // The id is from the URL: encoded, so it can only name a product.
+    queryFn: () => productsApi.get(encodeURIComponent(initialProductId as string)),
+    enabled: initialProductId !== null,
+    retry: false,
+  });
   const recent = usePortfolioAssessments(initialProductId ?? undefined);
   const create = useCreatePortfolioAssessment();
 
@@ -91,6 +101,7 @@ function PortfolioEntry({
         onProductQueryChange={setProductQuery}
         productTotal={productsQuery.data?.total}
         initialProductId={initialProductId}
+        initialProductName={initialProduct.data?.name ?? null}
         requirement={requirement}
         onClearRequirement={() => setRequirement(null)}
         pending={create.isPending}

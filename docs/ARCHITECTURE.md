@@ -1368,15 +1368,16 @@ The rules that hold across the run, each detailed in the paragraphs below:
   | `PORTFOLIO_GAP_RUN_COST_CAP_CENTS` | 200 | the whole run's model spend |
   | `PORTFOLIO_GAP_PRODUCT_COST_CAP_CENTS` | 50 | one product's model spend |
   | `PORTFOLIO_GAP_MAX_MODEL_CALLS` | 250 | the run's model calls, counted as each starts |
-  | `PORTFOLIO_GAP_CONCURRENCY` | 4 | products checked at once, one call each |
+  | `PORTFOLIO_GAP_CONCURRENCY` | 4 | products checked at once, one call at a time per product |
   | `PORTFOLIO_ASSESSMENT_START_RATE_LIMIT_MAX` | 10 | starts per user per 15 minutes |
   | `PORTFOLIO_ASSESSMENT_RATE_LIMIT_MAX` | 300 | reads per user per 15 minutes |
 
   The gap knobs are read in `server/src/lib/portfolio/gap-engine.ts`
   (`readPortfolioGapLimits`), and the limiters live in
-  `server/src/middleware/portfolio-assessments-rate-limit.ts`. A run also takes at most 8
-  criteria and 24 excerpts per product, and walks at most 2 product boundaries
-  (`DEFAULT_IMPACT_DEPTH`, at most `MAX_IMPACT_DEPTH` 4).
+  `server/src/middleware/portfolio-assessments-rate-limit.ts`. A free-text statement is
+  decomposed into at most 8 criteria; a requirement's own acceptance criteria are all
+  judged, up to 50. A run takes at most 24 excerpts per product, and walks at most 2 product
+  boundaries (`DEFAULT_IMPACT_DEPTH`, at most `MAX_IMPACT_DEPTH` 4).
 
 **Portfolio assessments (#1621, epic #1608).** `RequirementLink` is
 requirement-to-requirement only. A requirement assessed across the product portfolio is
@@ -1515,11 +1516,16 @@ requirement needs no change. Cross-product coupling is a repo on several product
   its repo. A consumer product they cannot read is `restricted`: its id and
   `downstream-consumer`, nothing else, and the walk never goes through it. The walk
   records how many it stopped at (`stoppedAtRestricted`, stored in every readable row's
-  `technicalDetail.impact`). When it stopped at any, a readable product nothing readable
-  reached has the impact kind `restricted`, not `none`: it may be reached through one, so
-  it is never stated unaffected (#1668; the owner's AC3 decision, #1673). The view, the
-  page and the export all read it "Restricted", and a row an earlier run stored `none`
-  with a stop is relabelled at read time.
+  `technicalDetail.impact`). A readable product nothing readable reached has the impact
+  kind `restricted`, not `none`, when it is next to a product the walk stopped at: it
+  shares a repo with one, an edge joins a repo of each, or two resource edges of one
+  product meet at a resource from a repo of each (`nextToProducts`). It may be reached
+  through that product, so it is never stated unaffected (#1668; the owner's AC3 decision,
+  #1673). Only the edge's existence is read, whatever product records it. Every other
+  unreached product stays `none` (#1680: relabelling all of them on any stop emptied
+  "Not affected"). The view, the page and the export all read it "Restricted". A run
+  records the rule (`restrictedRule: "adjacent"`); a row an earlier run stored `none` with
+  a stop and no rule is relabelled at read time.
 - **Severity** (`impact-severity.ts`, `CHANGE_SEVERITIES`). Base from the strength
   (`intrusive`/`functional` high, `model` medium, `contract` low, unclassified medium);
   +1 when the provider's own latest `ProductContractDoc` diff breaks (`isBreakingDiff`: an

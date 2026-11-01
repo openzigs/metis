@@ -10,6 +10,12 @@
  * write the GET is fetched again and the rows shown are the server's.
  * Without the product edit right (`project.update`) the list is read-only: no
  * control is rendered, and the server refuses the writes anyway.
+ *
+ * #1680 — both writes that cannot be taken back ask first. Deleting a declared
+ * edge needs a confirmation: detection cannot find it again, and the impact
+ * walk silently stops counting it. A detected edge's strength is chosen, then
+ * applied: overriding marks it `overridden` for good, so one stray pick must
+ * not do it, and the pick stays shown while the request is in flight.
  */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -43,6 +49,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ui/alert-dialog";
 
 const SELECT_CLASS =
   "flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -74,16 +81,6 @@ export function ProductEdgesPanel({ productId, canEdit }: { productId: string; c
       return refetch();
     },
     onError: (err) => setRowError(errorText(err, "Failed to delete the edge.")),
-  });
-
-  const overrideStrength = useMutation({
-    mutationFn: ({ edgeId, strength }: { edgeId: string; strength: EdgeDraft["strength"] }) =>
-      productsApi.updateEdge(productId, edgeId, { strength }),
-    onSuccess: () => {
-      setRowError(null);
-      return refetch();
-    },
-    onError: (err) => setRowError(errorText(err, "Failed to override the strength.")),
   });
 
   if (!product.data) return null;
@@ -179,25 +176,13 @@ export function ProductEdgesPanel({ productId, canEdit }: { productId: string; c
                     <td className="px-3 py-2">{edge.integrationKind ?? "unclassified"}</td>
                     <td className="px-3 py-2">
                       {canEdit && !isDeclaredEdge(edge) ? (
-                        <select
-                          aria-label={`Override strength of ${name}`}
-                          value={edge.strength ?? ""}
-                          disabled={overrideStrength.isPending}
-                          onChange={(e) =>
-                            overrideStrength.mutate({
-                              edgeId: edge.id,
-                              strength: e.target.value as EdgeDraft["strength"],
-                            })
-                          }
-                          className={SELECT_CLASS}
-                        >
-                          {edge.strength === null && <option value="">unclassified</option>}
-                          {PRODUCT_COUPLING_STRENGTHS.map((s) => (
-                            <option key={s} value={s}>
-                              {s}
-                            </option>
-                          ))}
-                        </select>
+                        <StrengthOverride
+                          productId={productId}
+                          edge={edge}
+                          name={name}
+                          onSaved={refetch}
+                          onError={setRowError}
+                        />
                       ) : (
                         (edge.strength ?? "unclassified")
                       )}
@@ -221,15 +206,22 @@ export function ProductEdgesPanel({ productId, canEdit }: { productId: string; c
                             >
                               <Pencil className="h-4 w-4" aria-hidden />
                             </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              aria-label={`Delete ${name}`}
-                              disabled={removeEdge.isPending}
-                              onClick={() => removeEdge.mutate(edge.id)}
-                            >
-                              <Trash2 className="h-4 w-4 text-destructive" aria-hidden />
-                            </Button>
+                            <ConfirmDialog
+                              title="Delete this declared edge?"
+                              description={`The ${name} was declared by a person; detection cannot find it again. Once it is deleted, the impact check no longer follows it.`}
+                              confirmLabel="Delete edge"
+                              onConfirm={() => removeEdge.mutate(edge.id)}
+                              trigger={
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  aria-label={`Delete ${name}`}
+                                  disabled={removeEdge.isPending}
+                                >
+                                  <Trash2 className="h-4 w-4 text-destructive" aria-hidden />
+                                </Button>
+                              }
+                            />
                           </>
                         )}
                       </td>
@@ -255,6 +247,77 @@ export function ProductEdgesPanel({ productId, canEdit }: { productId: string; c
         />
       )}
     </section>
+  );
+}
+
+/**
+ * #1680 — a detected edge's strength: pick one, then Apply. Until applied the
+ * pick can be cancelled; while the request is in flight the pick stays shown.
+ */
+function StrengthOverride({
+  productId,
+  edge,
+  name,
+  onSaved,
+  onError,
+}: {
+  productId: string;
+  edge: ProductEdge;
+  name: string;
+  onSaved: () => Promise<unknown>;
+  onError: (message: string | null) => void;
+}) {
+  const current = edge.strength ?? "";
+  const [choice, setChoice] = useState<string | null>(null);
+  const override = useMutation({
+    mutationFn: (strength: EdgeDraft["strength"]) =>
+      productsApi.updateEdge(productId, edge.id, { strength }),
+    onSuccess: async () => {
+      onError(null);
+      await onSaved();
+      setChoice(null);
+    },
+    onError: (err) => onError(errorText(err, "Failed to override the strength.")),
+  });
+  const changed = choice !== null && choice !== current;
+  return (
+    <div className="flex items-center gap-1">
+      <select
+        aria-label={`Override strength of ${name}`}
+        value={choice ?? current}
+        disabled={override.isPending}
+        onChange={(e) => setChoice(e.target.value)}
+        className={SELECT_CLASS}
+      >
+        {edge.strength === null && <option value="">unclassified</option>}
+        {PRODUCT_COUPLING_STRENGTHS.map((s) => (
+          <option key={s} value={s}>
+            {s}
+          </option>
+        ))}
+      </select>
+      {changed && (
+        <>
+          <Button
+            size="sm"
+            aria-label={`Apply strength of ${name}`}
+            disabled={override.isPending}
+            onClick={() => override.mutate(choice as EdgeDraft["strength"])}
+          >
+            {override.isPending ? "Applying…" : "Apply"}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-label={`Cancel strength of ${name}`}
+            disabled={override.isPending}
+            onClick={() => setChoice(null)}
+          >
+            Cancel
+          </Button>
+        </>
+      )}
+    </div>
   );
 }
 

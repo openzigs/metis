@@ -466,7 +466,7 @@ describe("renderPortfolioAssessmentMarkdown (#1624)", () => {
     const dive = md.slice(md.indexOf("### Ledger"));
     expect(dive).toContain("**Impact:** Restricted");
     expect(dive).toContain(
-      "_The check stopped at a product you cannot read, so whether the change reaches this one is not known._",
+      "_It is connected to a product the check could not follow the change through, because the person who ran the check cannot read it, so whether the change reaches this one is not known._",
     );
     expect(dive).not.toContain("**Edge path**");
 

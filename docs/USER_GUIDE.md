@@ -1901,13 +1901,14 @@ reaches.
   recorded between products (*edges*, see *Declaring an edge* below) for up to two product
   boundaries.
 - **Order.** Products that must change come first, then downstream products from the most
-  to the least severe.
+  to the least severe (a downstream product you cannot read has no severity and comes after
+  them), and **Restricted** products last.
 
 | Impact | What it means |
 |---|---|
 | **Must change** | It partly covers the requirement, so the rest must be built there. |
-| **Downstream consumer** | It uses something a changing product provides, *via* an API, an event, a shared database, a shared library or shared identity. It shows a severity badge. |
-| **Restricted** | The change may reach it only through a product you cannot read, so how it is reached is not shown. Its card says why: *"Its impact path goes through a repository or product you cannot read"*, or *"The check stopped at a product you cannot read, so whether the change reaches this one is not known"*. It is never listed as not affected. |
+| **Downstream consumer** | It uses something a changing product provides, *via* an API, an event, a shared database, a shared library or shared identity. It shows a severity badge. A downstream product you cannot read is listed as *A product you cannot read*, with no name, *via* or severity. |
+| **Restricted** | A product you can read, but whose impact cannot be shown in full. Either the change reaches it along a path that runs through a repository or product you cannot read, so the path is withheld (*"Its impact path goes through a repository or product you cannot read"*). Or it is connected to a product the check could not follow the change through, because the person who ran the check cannot read that product, so whether the change reaches it at all is not known (*"It is connected to a product the check could not follow the change through…"*). Only a product connected to that one, by a shared repository, an edge or a resource both use, reads this way: every other product the change does not reach stays **Not affected**. It is never listed as not affected. |
 | **Not affected** | Nothing reaches it. These products are listed in the collapsed **Not affected** group. |
 
 Each product's **Technical deep dive** lists its repositories and files, the contract items
@@ -1943,10 +1944,15 @@ A path through several products is as severe as its weakest coupling.
 
 #### Restricted and Not checked
 
-**Restricted** means you cannot read the product: it is outside the workspaces you belong
-to. You see that it is there, and for impact whether the change reaches it, but never its
-name, repositories, evidence or how it is reached. The summary counts restricted products
-and never names them.
+**Restricted** means two different things in the two halves of the page.
+
+- **In the coverage table**, it means you cannot read the product: it is outside the
+  workspaces you belong to. You see that it is there, but never its name, repositories or
+  evidence. The summary counts restricted products and never names them.
+- **Under Impact on your products**, it means a product you *can* read whose impact path,
+  or whether the change reaches it at all, runs through something you cannot read (see the
+  table above). A product you cannot read that the change reaches is listed as
+  **Downstream consumer**, named *A product you cannot read*, with no *via* and no severity.
 
 **Not checked** means you can read the product, but METIS could not tell whether it covers
 the requirement. The reason is shown under the state. A product whose repositories you
@@ -1954,7 +1960,7 @@ cannot all read is never shown as **Does not cover it**: the repositories you ca
 were not checked for you.
 
 Access is checked again every time you open a check. You can open a check you started,
-or one that covers a product you can read. A check started from a requirement also needs
+or one whose scope includes a product you can read. A check started from a requirement also needs
 you to be able to read that requirement's project. A colleague who can read less than
 the person who ran it sees the products they cannot read as **Restricted**. The answer and
 summary are then worked out again from what they can see, and the AI-written summary and
@@ -1987,7 +1993,7 @@ curl -X POST "$METIS_URL/api/products/$PRODUCT_ID/resources" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"kind": "table", "name": "ledger_entries"}'
 
-# The edge: the payments database writes the table the reporting service reads.
+# The edge: the payments database repository writes the table the reporting repository reads.
 curl -X POST "$METIS_URL/api/products/$PRODUCT_ID/edges" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{
@@ -2007,6 +2013,7 @@ curl -X POST "$METIS_URL/api/products/$PRODUCT_ID/edges" \
 | `strength` | How tightly the two sides are coupled, strongest first: `intrusive`, `functional`, `model`, `contract`. This sets the severity. |
 | `direction` | Read from the source repository's side. `consumes` and `depends-on`: the source depends on the target. `provides` and `writes`: the target depends on the source. `reads`: both directions. |
 | `edgeType` | `calls`, `imports`, `produces`, `consumes`, `extends`, `implements`. |
+| `contractDocId` | Optional: the provider's contract document the edge crosses (from the product's contracts). Only an edge that names one gets the one-step-up for a breaking contract change (see *How severity is worked out*). |
 | `targetRepoId`, `resourceId` | Give one or both. An edge from a repository to a resource alone is paired with the product's other edges through that resource: a repository that writes or provides it reaches every other repository using it. |
 | `kind` (resource) | `database`, `table`, `topic`, `identity-provider`, `bucket`. A resource's `locator` may say where it lives, but never hold a credential. |
 
@@ -3276,6 +3283,28 @@ The next run by someone who can access every repository (an administrator, for e
 replaces those documents with complete ones and the notice disappears. A repository
 connection that has been deleted no longer appears on the product and is left out of
 its documents. [#1261]
+
+### 15.6 A product's integration edges
+
+A product page's **Integration edges** section lists the couplings between the product's
+repositories that you can see: for each, where it goes from and to, its kind (API, event,
+database, shared library, identity), coupling strength, direction, whether detection found
+it or a person declared it, and its confidence. **Filter by kind** narrows the list. The
+portfolio impact check (Section 12.11) follows these edges. [#1628]
+
+With edit rights on the product (`project.update`) you can also change them:
+
+- **Declare edge** records a coupling detection cannot see, such as a shared identity
+  provider, a nightly file drop or a rule duplicated by hand. **Declare resource** records
+  the shared resource it goes through. A declared edge can be edited, or deleted after you
+  confirm: detection cannot find it again, so once it is deleted the impact check no longer
+  follows it.
+- **A detected edge** cannot be deleted, because the next detection run would find it
+  again. You can override its strength instead: choose the new strength, then select
+  **Apply** (or **Cancel**). An overridden edge reads *Detected (overridden)*, and
+  detection keeps your strength from then on. [#1680]
+
+Without edit rights the list is read-only and marked **Restricted**.
 
 ---
 

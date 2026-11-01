@@ -152,9 +152,51 @@ describe("with edit rights", () => {
     renderPanel(true);
     await screen.findByRole("table");
     await userEvent.selectOptions(within(rows()[0]).getByRole("combobox"), "intrusive");
+    // #1680 — a pick alone sends nothing: it waits for Apply.
+    expect(update).not.toHaveBeenCalled();
+    await userEvent.click(within(rows()[0]).getByRole("button", { name: /^Apply strength/ }));
     expect(update).toHaveBeenCalledWith(PRODUCT_ID, detectedEdge.id, { strength: "intrusive" });
     await waitFor(() => expect(rows()[0]).toHaveTextContent("Detected (overridden)"));
     expect(getMock).toHaveBeenCalledTimes(2);
+    expect(within(rows()[0]).queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("cancels a strength pick without sending it (#1680)", async () => {
+    serve(product());
+    const update = vi.spyOn(productsApi, "updateEdge");
+    renderPanel(true);
+    await screen.findByRole("table");
+    const select = within(rows()[0]).getByRole("combobox");
+    await userEvent.selectOptions(select, "intrusive");
+    expect(select).toHaveValue("intrusive");
+    await userEvent.click(within(rows()[0]).getByRole("button", { name: /^Cancel strength/ }));
+    expect(select).toHaveValue("contract");
+    expect(within(rows()[0]).queryByRole("button")).not.toBeInTheDocument();
+    // Picking the current strength again offers nothing to apply.
+    await userEvent.selectOptions(select, "intrusive");
+    await userEvent.selectOptions(select, "contract");
+    expect(within(rows()[0]).queryByRole("button")).not.toBeInTheDocument();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("shows the strength being applied while the request is in flight (#1680)", async () => {
+    serve(product());
+    let finish: (v: unknown) => void = () => {};
+    vi.spyOn(productsApi, "updateEdge").mockImplementation(
+      () => new Promise((resolve) => (finish = resolve)) as never,
+    );
+    renderPanel(true);
+    await screen.findByRole("table");
+    const select = within(rows()[0]).getByRole("combobox");
+    await userEvent.selectOptions(select, "intrusive");
+    await userEvent.click(within(rows()[0]).getByRole("button", { name: /^Apply strength/ }));
+    await waitFor(() => expect(select).toBeDisabled());
+    expect(select).toHaveValue("intrusive");
+    expect(within(rows()[0]).getByRole("button", { name: /^Apply strength/ })).toHaveTextContent(
+      "Applying…",
+    );
+    finish(detectedEdge);
+    await waitFor(() => expect(select).not.toBeDisabled());
   });
 
   it("declares an edge; the row shown after save is the one the GET returns", async () => {
@@ -259,9 +301,27 @@ describe("with edit rights", () => {
     renderPanel(true);
     await screen.findByRole("table");
     await userEvent.click(within(rows()[1]).getByRole("button", { name: /^Delete edge/ }));
+    // #1680 — it asks first.
+    expect(remove).not.toHaveBeenCalled();
+    const confirm = await screen.findByRole("alertdialog");
+    expect(confirm).toHaveTextContent("detection cannot find it again");
+    await userEvent.click(within(confirm).getByRole("button", { name: "Delete edge" }));
     expect(remove).toHaveBeenCalledWith(PRODUCT_ID, declaredEdge.id);
     await waitFor(() => expect(rows()).toHaveLength(1));
     expect(getMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a declared edge when the delete is cancelled (#1680)", async () => {
+    serve(product());
+    const remove = vi.spyOn(productsApi, "deleteEdge");
+    renderPanel(true);
+    await screen.findByRole("table");
+    await userEvent.click(within(rows()[1]).getByRole("button", { name: /^Delete edge/ }));
+    const confirm = await screen.findByRole("alertdialog");
+    await userEvent.click(within(confirm).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(remove).not.toHaveBeenCalled();
+    expect(rows()).toHaveLength(2);
   });
 
   it("shows a refused delete or override", async () => {
@@ -273,8 +333,12 @@ describe("with edit rights", () => {
     renderPanel(true);
     await screen.findByRole("table");
     await userEvent.click(within(rows()[1]).getByRole("button", { name: /^Delete edge/ }));
+    await userEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete edge" }),
+    );
     expect(await screen.findByRole("alert")).toHaveTextContent("A detected edge cannot be deleted");
     await userEvent.selectOptions(within(rows()[0]).getByRole("combobox"), "model");
+    await userEvent.click(within(rows()[0]).getByRole("button", { name: /^Apply strength/ }));
     await waitFor(() =>
       expect(screen.getByRole("alert")).toHaveTextContent("Failed to override the strength."),
     );
