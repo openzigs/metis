@@ -29,6 +29,7 @@ import {
 import { MarkdownPreviewer } from "@/components/markdown-previewer";
 import { ArrowLeft, Plus, Trash2, RefreshCw, FileText, Network, Server, Code2 } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
+import { PortfolioCheckLink } from "@/components/portfolio/portfolio-check-link";
 import { HiddenReposNotice, PartialDocNotice } from "@/components/products/product-access-notices";
 
 const REPO_ROLES = [
@@ -154,7 +155,11 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
             <ArrowLeft className="h-4 w-4" aria-hidden />
           </Button>
         </Link>
-        <PageHeader title={p.name} description={p.description || "No description"} />
+        <PageHeader
+          title={p.name}
+          description={p.description || "No description"}
+          actions={<PortfolioCheckLink from={{ productId: p.id }} />}
+        />
       </div>
 
       {/* Repositories section */}

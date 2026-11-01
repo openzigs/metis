@@ -58,6 +58,8 @@ export const NAV_ITEMS: readonly NavItem[] = [
       { href: "/repositories", label: "Repositories" },
       { href: "/databases", label: "Databases" },
       { href: "/impact-analyses", label: "Impact analyses" },
+      // #1626 — a requirement checked across every product in the portfolio.
+      { href: "/portfolio", label: "Portfolio coverage" },
     ],
   },
   {

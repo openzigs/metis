@@ -25,6 +25,7 @@ describe("<HubTabs /> (#27)", () => {
       "Repositories",
       "Databases",
       "Impact analyses",
+      "Portfolio coverage",
     ]);
     expect(within(nav).getByRole("link", { name: "Documents" })).toHaveAttribute(
       "href",

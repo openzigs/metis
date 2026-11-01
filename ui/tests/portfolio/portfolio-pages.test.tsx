@@ -1,0 +1,287 @@
+/**
+ * #1626 — the portfolio coverage pages, over the real hooks with the API
+ * mocked: the detail page reads only from `GET /portfolio-assessments/:id`
+ * (so a reload mid-run resumes the same run), puts the answer before the
+ * table, and the entry page starts a check and opens it.
+ */
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { useRouter, useSearchParams } from "next/navigation";
+import { makeWrapper } from "../test-utils";
+import { fiveStates, view } from "./fixtures";
+import { axeViolations } from "./axe";
+
+const params = { id: "pa-0000000001" };
+vi.mock("next/navigation", async () => {
+  const actual = await vi.importActual<typeof import("next/navigation")>("next/navigation");
+  const router = { push: vi.fn(), replace: vi.fn(), refresh: vi.fn(), prefetch: vi.fn() };
+  return {
+    ...actual,
+    useParams: () => params,
+    useRouter: vi.fn(() => router),
+    usePathname: () => "/portfolio",
+    useSearchParams: vi.fn(() => new URLSearchParams()),
+  };
+});
+
+vi.mock("@/lib/portfolio-api", () => ({
+  portfolioApi: { get: vi.fn(), list: vi.fn(), create: vi.fn() },
+}));
+vi.mock("@/lib/products-api", () => ({
+  productsApi: {
+    list: vi.fn().mockResolvedValue({
+      items: [
+        { id: "p-billing", name: "Billing" },
+        { id: "p-crm", name: "CRM" },
+      ],
+      total: 2,
+    }),
+  },
+}));
+const useJobLifecycle = vi.fn((_id?: string | null) => null as unknown);
+vi.mock("@/hooks/use-job-events", () => ({
+  useJobLifecycle: (id: string | null | undefined) => useJobLifecycle(id),
+}));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+
+import { portfolioApi } from "@/lib/portfolio-api";
+import { ApiError } from "@/lib/api-client";
+import PortfolioAssessmentPage from "@/app/(authed)/portfolio/[id]/page";
+import PortfolioPage from "@/app/(authed)/portfolio/page";
+
+const api = vi.mocked(portfolioApi);
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  useJobLifecycle.mockReturnValue(null);
+  vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams() as never);
+});
+
+describe("portfolio assessment page", () => {
+  it("shows progress and every product in scope while it runs, from the GET", async () => {
+    api.get.mockResolvedValue(
+      view({ status: "running", scope: "product", productIds: ["p-billing"], productNames: {} }),
+    );
+    useJobLifecycle.mockReturnValue({
+      jobId: params.id,
+      status: "progress",
+      progress: 0,
+      message: "0 of 1 products checked",
+    });
+    render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByRole("status")).toHaveTextContent("0 of 1 products checked");
+    expect(api.get).toHaveBeenCalledWith(params.id);
+    const row = screen.getByTestId("portfolio-coverage-row");
+    expect(row).toHaveAttribute("data-coverage", "not-checked");
+    expect(row).toHaveTextContent("the check has not reached it yet");
+    expect(screen.queryByTestId("portfolio-coverage-headline")).toBeNull();
+  });
+
+  it("resumes the same assessment after a reload: a fresh mount reads it again by id", async () => {
+    api.get.mockResolvedValue(view({ status: "running", productIds: [] }));
+    const first = render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByTestId("portfolio-assessment-progress")).toBeVisible();
+    expect(screen.getByTestId("portfolio-matrix-empty")).toHaveTextContent(
+      "listed as soon as the check has found them",
+    );
+    first.unmount();
+
+    // A reload: a new query cache, nothing carried over but the URL.
+    api.get.mockResolvedValue(fiveStates());
+    render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    expect(
+      await screen.findByRole("heading", { name: "Covered by Billing (acme/payments)" }),
+    ).toBeVisible();
+    expect(api.get).toHaveBeenCalledTimes(2);
+    expect(api.get.mock.calls.every(([id]) => id === params.id)).toBe(true);
+    expect(screen.queryByTestId("portfolio-assessment-progress")).toBeNull();
+  });
+
+  it("puts the answer before the table", async () => {
+    api.get.mockResolvedValue(fiveStates());
+    render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    const headline = await screen.findByTestId("portfolio-coverage-headline");
+    const table = screen.getByTestId("portfolio-coverage-matrix");
+    expect(headline.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByTestId("portfolio-coverage-row")).toHaveLength(5);
+  });
+
+  it("says nothing in the portfolio covers it", async () => {
+    api.get.mockResolvedValue(
+      view({
+        verdict: "gap-confirmed",
+        productIds: ["p"],
+        productNames: { p: "CRM" },
+        products: [fiveStates().products[2]],
+      }),
+    );
+    render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    expect(
+      await screen.findByRole("heading", { name: "Nothing in your portfolio covers this" }),
+    ).toBeVisible();
+  });
+
+  it("passes axe once completed", async () => {
+    api.get.mockResolvedValue(fiveStates());
+    const { container } = render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    await screen.findByTestId("portfolio-coverage-headline");
+    expect(await axeViolations(container)).toEqual([]);
+  });
+
+  it("says a completed run with no products in scope had none", async () => {
+    api.get.mockResolvedValue(view({ status: "completed", verdict: "could-not-verify" }));
+    render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByTestId("portfolio-matrix-empty")).toHaveTextContent(
+      "No products were in scope.",
+    );
+  });
+
+  it("says it could not load a check it may not read", async () => {
+    api.get.mockRejectedValue(new ApiError(404, "Portfolio assessment not found"));
+    render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByTestId("portfolio-detail-error")).toHaveTextContent(
+      "you may not have access",
+    );
+  });
+
+  it("shows a loading state first", () => {
+    api.get.mockReturnValue(new Promise(() => {}));
+    render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    expect(screen.getByTestId("portfolio-detail-loading")).toBeVisible();
+  });
+});
+
+describe("portfolio entry page", () => {
+  it("starts a check and opens it", async () => {
+    const user = userEvent.setup();
+    api.list.mockResolvedValue([]);
+    api.create.mockResolvedValue({ id: "pa-new" });
+    render(<PortfolioPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByTestId("portfolio-recent-empty")).toBeVisible();
+    await user.type(screen.getByLabelText("Requirement statement"), "Pay by transfer");
+    await user.click(screen.getByRole("button", { name: "Check coverage" }));
+    await waitFor(() =>
+      expect(api.create).toHaveBeenCalledWith({
+        statement: "Pay by transfer",
+        scope: "all-accessible",
+      }),
+    );
+    await waitFor(() =>
+      expect(vi.mocked(useRouter)().push).toHaveBeenCalledWith("/portfolio/pa-new"),
+    );
+  });
+
+  it("arrives with a product chosen and lists that product's checks", async () => {
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams({ productId: "p-billing" }) as never,
+    );
+    api.list.mockResolvedValue([
+      {
+        id: "pa-1",
+        statement: "Pay by transfer",
+        scope: "product",
+        status: "completed",
+        verdict: "gap-confirmed",
+        productCount: 1,
+        createdById: "u1",
+        createdAt: "2026-11-01T10:00:00.000Z",
+        updatedAt: "2026-11-01T10:00:00.000Z",
+      },
+      {
+        id: "pa-2",
+        statement: "x".repeat(200),
+        scope: "all-accessible",
+        status: "running",
+        verdict: null,
+        productCount: 3,
+        createdById: "u1",
+        createdAt: "2026-11-01T10:00:00.000Z",
+        updatedAt: "2026-11-01T10:00:00.000Z",
+      },
+      {
+        id: "pa-3",
+        statement: "Failed one",
+        scope: "all-accessible",
+        status: "failed",
+        verdict: null,
+        productCount: 2,
+        createdById: "u1",
+        createdAt: "2026-11-01T10:00:00.000Z",
+        updatedAt: "2026-11-01T10:00:00.000Z",
+      },
+    ]);
+    render(<PortfolioPage />, { wrapper: makeWrapper() });
+    const items = await screen.findAllByTestId("portfolio-recent-item");
+    expect(api.list).toHaveBeenCalledWith("p-billing");
+    expect(within(items[0]).getByRole("link")).toHaveAttribute("href", "/portfolio/pa-1");
+    expect(items[0]).toHaveTextContent("Nothing covers it · 1 product");
+    expect(items[1]).toHaveTextContent(`${"x".repeat(140)}…`);
+    expect(items[1]).toHaveTextContent("Running · 3 products");
+    expect(items[2]).toHaveTextContent("Failed · 2 products");
+    expect(screen.getByRole("radio", { name: "One product" })).toBeChecked();
+    await waitFor(() => expect(screen.getByLabelText("Product")).toHaveValue("p-billing"));
+  });
+
+  it("arrives with a requirement and sends its id", async () => {
+    const user = userEvent.setup();
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams({ requirementId: "req-1", title: "Pay by transfer" }) as never,
+    );
+    api.list.mockResolvedValue([]);
+    api.create.mockResolvedValue({ id: "pa-new" });
+    render(<PortfolioPage />, { wrapper: makeWrapper() });
+    expect(screen.getByTestId("portfolio-form-requirement")).toHaveTextContent("Pay by transfer");
+    await user.click(screen.getByRole("button", { name: "Check coverage" }));
+    await waitFor(() =>
+      expect(api.create).toHaveBeenCalledWith({ requirementId: "req-1", scope: "all-accessible" }),
+    );
+  });
+
+  it("lets the analyst drop the requirement and type a statement", async () => {
+    const user = userEvent.setup();
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams({ requirementId: "req-1" }) as never,
+    );
+    api.list.mockResolvedValue([]);
+    render(<PortfolioPage />, { wrapper: makeWrapper() });
+    expect(screen.getByTestId("portfolio-form-requirement")).toHaveTextContent(
+      "Selected requirement",
+    );
+    await user.click(screen.getByRole("button", { name: "Type a statement instead" }));
+    expect(screen.getByLabelText("Requirement statement")).toBeVisible();
+  });
+
+  it("shows the server's refusal inline", async () => {
+    const user = userEvent.setup();
+    api.list.mockResolvedValue([]);
+    api.create.mockRejectedValue(new ApiError(404, "Requirement not found"));
+    render(<PortfolioPage />, { wrapper: makeWrapper() });
+    await user.type(screen.getByLabelText("Requirement statement"), "x");
+    await user.click(screen.getByRole("button", { name: "Check coverage" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Requirement not found");
+  });
+
+  it("shows a generic message for an unexpected failure", async () => {
+    const user = userEvent.setup();
+    api.list.mockResolvedValue([]);
+    api.create.mockRejectedValue(new Error("boom"));
+    render(<PortfolioPage />, { wrapper: makeWrapper() });
+    await user.type(screen.getByLabelText("Requirement statement"), "x");
+    await user.click(screen.getByRole("button", { name: "Check coverage" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not start the check");
+  });
+
+  it("says when recent checks could not load", async () => {
+    api.list.mockRejectedValue(new Error("down"));
+    render(<PortfolioPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByText("Could not load recent checks.")).toBeVisible();
+  });
+
+  it("passes axe", async () => {
+    api.list.mockResolvedValue([]);
+    const { container } = render(<PortfolioPage />, { wrapper: makeWrapper() });
+    await screen.findByTestId("portfolio-recent-empty");
+    expect(await axeViolations(container)).toEqual([]);
+  });
+});

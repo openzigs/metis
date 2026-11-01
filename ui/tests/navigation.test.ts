@@ -65,6 +65,7 @@ describe("navigation registry (#27)", () => {
       "/repositories",
       "/databases",
       "/impact-analyses",
+      "/portfolio",
     ]);
   });
 
