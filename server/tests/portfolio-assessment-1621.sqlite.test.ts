@@ -93,6 +93,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         status: "completed",
         portfolioVerdict: "partial",
         summary: "Billing covers part of it.",
+        // #1624 — the BA report round-trips through its JSON column.
+        report: {
+          source: "model",
+          degraded: false,
+          requirements: [
+            { text: "Export an invoice as PDF", kind: "functional" },
+            { text: "Within 2 seconds", kind: "non-functional", nfrCategory: "performance" },
+          ],
+          products: [{ productId: "prod-a", functional: "Billing adds a PDF export." }],
+        },
         costUsd: 0.42,
         createdById: USER,
         products: [
@@ -133,6 +143,28 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         status: "completed",
         portfolioVerdict: "partial",
         summary: "Billing covers part of it.",
+        report: {
+          source: "model",
+          degraded: false,
+          degradedReason: null,
+          requirementsSource: "template",
+          requirements: [
+            { text: "Export an invoice as PDF", kind: "functional", nfrCategory: null },
+            { text: "Within 2 seconds", kind: "non-functional", nfrCategory: "performance" },
+          ],
+          products: [
+            {
+              productId: "prod-a",
+              source: "model",
+              functional: "Billing adds a PDF export.",
+              business: "",
+              stakeholder: "",
+              mentions: [],
+            },
+          ],
+          strippedSentences: 0,
+          withheld: false,
+        },
         costUsd: 0.42,
         createdById: USER,
         createdAt: expect.any(String),

@@ -16,6 +16,7 @@ import {
   PORTFOLIO_IMPACT_KINDS,
   REQUIREMENT_VERDICTS,
   portfolioAssessmentInputSchema,
+  portfolioReportSchema,
   type PortfolioAssessment,
   type PortfolioAssessmentInput,
 } from "@metis/shared";
@@ -101,6 +102,7 @@ export async function createPortfolioAssessment(raw: PortfolioAssessmentInput): 
         status: input.status,
         portfolioVerdict: input.portfolioVerdict,
         summary: input.summary,
+        report: JSON.stringify(input.report ?? {}),
         costUsd: input.costUsd,
         createdById: input.createdById,
       },
@@ -132,6 +134,7 @@ export async function completePortfolioAssessment(
         status: input.status,
         portfolioVerdict: input.portfolioVerdict,
         summary: input.summary,
+        report: JSON.stringify(input.report ?? {}),
         costUsd: input.costUsd,
       },
     }),
@@ -262,6 +265,8 @@ export async function getPortfolioAssessment(id: string): Promise<PortfolioAsses
     status: oneOf(PORTFOLIO_ASSESSMENT_STATUSES, row.status, "failed"),
     portfolioVerdict: oneOf(PORTFOLIO_COVERAGES, row.portfolioVerdict, null),
     summary: row.summary,
+    // `{}` (no report yet, or a row from before #1624) and anything unreadable read as none.
+    report: portfolioReportSchema.safeParse(parseJson<unknown>(row.report, null)).data ?? null,
     costUsd: row.costUsd,
     createdById: row.createdById,
     createdAt: row.createdAt.toISOString(),

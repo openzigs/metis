@@ -1451,6 +1451,47 @@ read rule. At read time a path through a repo or product the reader cannot read 
 withheld whole (`impactWithheld`); the impact kind stays. The walk is read-only: no
 writes, no DDL, no connector call.
 
+**BA report and export (#1624)** (`server/src/lib/portfolio/assessment-report.ts`,
+`assessment-markdown.ts`). After the impact walk, one model call through the provider
+layer writes the business-analyst report. It is stored in `PortfolioAssessment.report`
+(JSON TEXT; migration `20261109001624_issue1624_portfolio_report`, reverse scripts in
+`server/prisma/{,postgres/}rollbacks/`):
+
+- **Summary.** The stored `summary` always opens with the gap engine's deterministic
+  verdict sentence ("Nothing in the portfolio covers this." when nothing does), then
+  the impact overview (`report-overview.ts`: what must change, what is downstream,
+  restricted products counted but never named), then the model's prose.
+- **Per affected product.** One functional, business and stakeholder paragraph each
+  (after arXiv 2511.00262), with the product ids it names (`mentions`).
+- **Requirements.** The statement restated as functional and non-functional
+  requirements (#1612 `kind`, `NFR_CATEGORIES`). When the model gives none, the
+  assessment's criteria stand in and `requirementsSource` says `template`.
+
+The model's prose is never trusted:
+
+- **Post-check.** `report-entities.ts` drops every sentence that names an
+  entity-shaped token the assessment does not contain: a path or `owner/repo`, a file,
+  a code identifier, anything in backticks, or a name before "product", "service",
+  "repo" and similar nouns. Allowed are the products the run could read and the
+  requirement's own words. The scan is linear, with per-token anchored patterns only.
+- **Sanitising.** What survives is sanitised like the published confidence note
+  (backticks, angle and link brackets removed, whitespace collapsed; OWASP LLM02).
+- **Degraded template.** With no model, an offline one, a failed call, an unreadable
+  or empty answer, or one the post-check empties, the report is the deterministic
+  template, marked `degraded` with its reason (#1117).
+- **At read time.** A reader who sees less than the run did (a product or repo
+  restricted now, or an impact path withheld) gets the deterministic summary and no
+  paragraphs (`withheld`). The requirements stay, because they restate the statement.
+
+`GET /api/portfolio-assessments/:id/export?format=md` renders the reader's view in this
+order: the summary, the affected-product paragraphs, the functional and
+non-functional requirements, the products table (coverage, summary, impact,
+severity), a technical deep dive per affected product, and the coverage evidence. The
+deep dive covers repos, files as `file:line` with their repo, contract items, tables
+and columns, topics, the edge path and the severity derivation. A restricted product
+reads "Restricted" and nothing else. A committed golden
+(`server/tests/fixtures/portfolio-report-1624.md.golden`) pins the format.
+
 ---
 
 ## 8. Knowledge & RAG Pipeline

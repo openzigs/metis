@@ -31,9 +31,8 @@ import {
 import { prisma } from "../prisma.js";
 import { buildProductAccessWhere, productRepoReadAccess } from "../products/product-access.js";
 import { canAccessProjectDiscussions } from "../discussions/access.js";
-import { mdBlock, mdInline } from "../analysis/analysis-export.js";
-import { escapeMarkdownCell } from "../analysis/traceability-matrix.js";
 import { getPortfolioAssessment } from "./assessment-store.js";
+import { impactOverview } from "./report-overview.js";
 import {
   portfolioSummary,
   toProductRecord,
@@ -321,6 +320,8 @@ export async function viewPortfolioAssessment(
 
   // Whether this reader sees less than the run did.
   let changed = false;
+  // Whether an impact path was withheld from this reader (#1623).
+  let withheldImpact = false;
   const products: StoredProduct[] = [];
   // Only the products the assessment was scoped to make the portfolio verdict: a
   // product the impact walk reached outside the scope (#1623) does not.
@@ -338,6 +339,7 @@ export async function viewPortfolioAssessment(
       continue;
     }
     const stored = readableImpact(raw, keepRepo, readableProduct);
+    if (stored !== raw) withheldImpact = true;
     const name = names.get(pid) ?? null;
     const dropsRepo = a.repos.some((r) => r.productId === pid && !keepRepo(r.repoConnectionId));
     const view = asResult(stored, name, citations, keepRepo);
@@ -368,13 +370,34 @@ export async function viewPortfolioAssessment(
     changed && a.status === "completed"
       ? rollUpPortfolioVerdict(results.map((p) => p.coverage))
       : stored;
+  // #1624 — the model's prose was written about what the run saw. A reader who sees
+  // less gets the deterministic summary instead, and no impact paragraphs: either
+  // could describe a product, repo or path withheld from them.
+  const seesLess = changed || withheldImpact;
+  const nameOf = (productId: string) =>
+    readableProduct(productId) ? (names.get(productId) ?? null) : null;
+  const report = a.report && {
+    ...a.report,
+    products: seesLess
+      ? []
+      : a.report.products.filter(
+          (p) => readableProduct(p.productId) && p.mentions.every(readableProduct),
+        ),
+    withheld: seesLess && (a.report.products.length > 0 || a.report.source === "model"),
+  };
   return {
     ...a,
     products,
     repos: a.repos.filter((r) => readableProduct(r.productId) && keepRepo(r.repoConnectionId)),
     verdict,
     portfolioVerdict: verdict === null ? null : storedPortfolioVerdict(verdict),
-    summary: changed && verdict !== null ? portfolioSummary(verdict, results) : a.summary,
+    summary:
+      seesLess && verdict !== null
+        ? [portfolioSummary(verdict, results), impactOverview(products, nameOf)]
+            .filter(Boolean)
+            .join("\n\n")
+        : a.summary,
+    report,
     // #1657 — the stored total includes the calls on what this reader cannot
     // see, which tells them it was assessed: recomputed from what they see.
     costUsd: changed ? results.reduce((sum, p) => sum + p.costUsd, 0) : a.costUsd,
@@ -402,70 +425,4 @@ export function toListItem(v: PortfolioAssessmentView): PortfolioAssessmentListI
   };
 }
 
-const COVERAGE_LABEL: Record<StoredProduct["coverage"], string> = {
-  covers: "Covers it",
-  partial: "Covers part of it",
-  "not-covered": "Does not cover it",
-  "not-checked": "Not checked",
-  restricted: "Restricted",
-};
-
-const VERDICT_LABEL: Record<NonNullable<PortfolioAssessmentView["verdict"]>, string> = {
-  implemented: "Implemented",
-  partial: "Partly covered",
-  "gap-confirmed": "Nothing in the portfolio covers this",
-  "could-not-verify": "Could not verify",
-};
-
-const cell = (value: string) => escapeMarkdownCell(mdInline(value));
-
-/** A reader's view as Markdown. Every stored or user-written string is escaped. */
-export function renderPortfolioAssessmentMarkdown(v: PortfolioAssessmentView): string {
-  const name = (productId: string) => v.productNames[productId] ?? productId;
-  const lines = [
-    "# Portfolio assessment",
-    "",
-    "## Requirement",
-    "",
-    mdBlock(v.statement),
-    "",
-    `**Status:** ${mdInline(v.status)}`,
-    `**Verdict:** ${v.verdict ? VERDICT_LABEL[v.verdict] : "Not yet assessed"}`,
-    "",
-    mdBlock(v.summary),
-    "",
-    "## Products",
-    "",
-    "| Product | Coverage | Summary |",
-    "| --- | --- | --- |",
-    ...v.products.map(
-      (p) =>
-        `| ${cell(name(p.productId))} | ${COVERAGE_LABEL[p.coverage]} | ${cell(p.baSummary)} |`,
-    ),
-  ];
-  const labels = new Map<string, string>();
-  for (const p of v.products) {
-    const repos = (p.technicalDetail as { repos?: unknown }).repos;
-    if (!Array.isArray(repos)) continue;
-    for (const r of repos as Array<{ repoConnectionId?: unknown; label?: unknown }>) {
-      if (typeof r.repoConnectionId === "string" && typeof r.label === "string") {
-        labels.set(r.repoConnectionId, r.label);
-      }
-    }
-  }
-  const cited = v.repos.filter((r) => r.citations.length > 0);
-  if (cited.length > 0) {
-    lines.push("", "## Evidence", "");
-    for (const r of cited) {
-      lines.push(
-        `### ${mdInline(name(r.productId))}: ${mdInline(labels.get(r.repoConnectionId) ?? r.repoConnectionId)} (${r.verdict})`,
-        "",
-      );
-      for (const c of r.citations as CodeCitation[]) {
-        lines.push(`- \`${mdInline(c.filePath).replace(/`/g, "'")}\``);
-      }
-      lines.push("");
-    }
-  }
-  return `${lines.join("\n").trimEnd()}\n`;
-}
+export { renderPortfolioAssessmentMarkdown } from "./assessment-markdown.js";
