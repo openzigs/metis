@@ -1313,6 +1313,71 @@ project-scoped traceability spine (#229) — it never rewrites it. Two reads:
    (`routes/traceability.ts` → `workspaceTraceabilityRouter`) and rendered by the
    workspace **Traceability** tab.
 
+**Portfolio gap and impact analysis (epic #1608): the model.** One requirement is checked
+against a set of products in one run. The run finds which products already cover it
+(#1622), which must change and which are reached downstream (#1623), writes it up for a
+business analyst (#1624), and serves it to each reader as they may see it (#1625). The
+analyst's page is `/portfolio` (#1626, #1627; user guide Section 12.11). The model follows
+the Backstage system model (`backstage.io/v1alpha1`):
+
+| METIS | Backstage | Where |
+|---|---|---|
+| `Product` (home workspace `workspaceId`, #1527) | System | `Product`, `server/src/lib/products/product-service.ts` |
+| `RepoConnection` on a product through `ProductRepo`; a repo may be on several products | Component, `partOf` its System | `ProductRepo` |
+| `ProductResource`: `database`, `table`, `topic`, `identity-provider`, `bucket`, one product's own | Resource | `server/src/lib/products/product-edges.ts` |
+| `ProductContractDoc`, versioned per repo, with a diff to the previous version | API | `server/src/lib/products/contract-doc-versioning.ts` |
+| `ProductEdge` with `integrationKind`, `strength`, `direction` (`provides`, `consumes`, `depends-on`, `reads`, `writes`) and `origin` | the `providesApi`, `consumesApi` and `dependsOn` relations | `server/src/lib/products/product-edges.ts`; enums `PRODUCT_*` in `packages/shared/src/product-docs.ts` |
+
+There is no `Domain` above a product. The `all-accessible` scope stands in for a named
+portfolio, and `catalog-info.yaml` import is not built. Coupling is a property of the edge,
+not of the product: `strength` runs, strongest first, `intrusive` > `functional` > `model` >
+`contract` (after Khononov's integration strength), and a downstream product's severity
+derives from it (`server/src/lib/portfolio/impact-severity.ts`). The typed edge and resource
+model is described under *Typed product edges and shared resources (#1618)*. Edges come from
+the declared-edges API (#1620): detection (#1619) is built, but no route calls it yet.
+
+The rules that hold across the run, each detailed in the paragraphs below:
+
+- **Roll-ups.** Per-criterion verdicts roll up to a repo verdict (`rollUpCriterionVerdicts`,
+  `server/src/lib/analysis/requirement-verdict.ts`, #1610). In
+  `server/src/lib/portfolio/gap-rollup.ts`, repo verdicts roll up to a product's
+  coverage: `covers`, `partial`, `not-covered`, or `not-checked` with a reason. Product
+  coverages roll up to the portfolio verdict. Only `not-covered` everywhere confirms a gap,
+  so a `not-checked` or `restricted` product reads `could-not-verify`. Starvation never
+  reads as a gap.
+- **Access never widens.**
+  - *Scope.* `all-accessible` lists only the products `buildProductAccessWhere` admits, and
+    a named product the caller cannot read is `restricted`, carrying only the id given.
+  - *Repos.* Only repos the caller can read are searched (`productRepoReadAccess`, #1258),
+    and the federated search re-intersects with the caller's projects (#1052).
+  - *Impact.* The walk follows only edges on readable products between readable repos, and
+    never walks through a restricted product.
+  - *Every read.* Each read re-filters the stored run against the reader's access now
+    (`viewPortfolioAssessment`, `server/src/lib/portfolio/assessment-view.ts`). A product
+    they cannot read is `restricted` and carries its id and impact kind only. When they see
+    less than the run did, the verdict, summary and cost are recomputed and the model's prose
+    is withheld.
+  - *Live updates.* The `job:{id}` room takes the same rule.
+  - *Scope of the store.* The tables carry no workspace and the store checks no access, so
+    every route serving an assessment must go through the view.
+- **Cost caps.** A run is bounded by call count and spend, and an unpriced model counts 0
+  spend, which is why the call cap exists:
+
+  | Knob | Default | Bounds |
+  |---|---|---|
+  | `PORTFOLIO_GAP_RUN_COST_CAP_CENTS` | 200 | the whole run's model spend |
+  | `PORTFOLIO_GAP_PRODUCT_COST_CAP_CENTS` | 50 | one product's model spend |
+  | `PORTFOLIO_GAP_MAX_MODEL_CALLS` | 250 | the run's model calls, counted as each starts |
+  | `PORTFOLIO_GAP_CONCURRENCY` | 4 | products checked at once, one call each |
+  | `PORTFOLIO_ASSESSMENT_START_RATE_LIMIT_MAX` | 10 | starts per user per 15 minutes |
+  | `PORTFOLIO_ASSESSMENT_RATE_LIMIT_MAX` | 300 | reads per user per 15 minutes |
+
+  The gap knobs are read in `server/src/lib/portfolio/gap-engine.ts`
+  (`readPortfolioGapLimits`), and the limiters live in
+  `server/src/middleware/portfolio-assessments-rate-limit.ts`. A run also takes at most 8
+  criteria and 24 excerpts per product, and walks at most 2 product boundaries
+  (`DEFAULT_IMPACT_DEPTH`, at most `MAX_IMPACT_DEPTH` 4).
+
 **Portfolio assessments (#1621, epic #1608).** `RequirementLink` is
 requirement-to-requirement only. A requirement assessed across the product portfolio is
 stored in its own records:
