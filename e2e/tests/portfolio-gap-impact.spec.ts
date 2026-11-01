@@ -28,7 +28,7 @@
  *
  * "All products I can access" checks every product the analyst can read, so
  * the products other specs left behind (an unbound product is visible to every
- * user) would be in scope and stop a gap from ever being confirmed. The seed
+ * user) would be in scope and stop a gap from ever being confirmed (#1677). The seed
  * therefore removes every product the analyst can see that it did not create.
  */
 import { readFile } from "node:fs/promises";
