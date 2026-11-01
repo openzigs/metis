@@ -9,6 +9,7 @@ section: Added
   restated as functional and non-functional requirements. A technical deep dive per
   affected product lists repos, files, contract items, tables, topics, the dependency
   path and how its severity was worked out. The Markdown export includes all of it.
-  The written summary can only name products the assessment found; any sentence
-  naming something else is dropped. When no model is available, a plain template
+  The written summary can only name products the assessment found; a sentence that names a
+  product, repo or file the assessment does not contain is dropped, as far as the
+  check can recognise one. When no model is available, a plain template
   stands in and the report says it is degraded.

@@ -74,8 +74,11 @@ describe("entityCandidates", () => {
     ]);
     // A leading stopword is not part of the name.
     expect(entityCandidates("Affected Storefront app users see it.")).toEqual(["Storefront"]);
-    // A lowercase word before the noun names nothing.
+    // A stopword before the noun names nothing.
     expect(entityCandidates("Every downstream product is affected.")).toEqual([]);
+    // A lowercase name right before the noun is a name.
+    expect(entityCandidates("The refunder repo must change.")).toEqual(["refunder"]);
+    expect(entityCandidates("The Treasury teams are affected.")).toEqual(["Treasury"]);
     // A name never runs back across the end of a clause.
     expect(entityCandidates("It ships today, Orders service first.")).toEqual(["Orders"]);
   });
@@ -101,6 +104,8 @@ describe("checkProse", () => {
     ["a CamelCase service", "PaymentsGateway service consumes it."],
     ["a file", "Edit src/pay/refund.ts first."],
     ["an unknown product", "The Payments product must change too."],
+    ["a lowercase repo name", "The refunder repo must change."],
+    ["an unknown team", "Ledger and Treasury teams are affected."],
   ])("drops a sentence naming a hallucinated entity: %s", (_label, hallucinated) => {
     const out = checkProse(`Orders must change. ${hallucinated} Storefront follows.`, index);
     expect(out.text).toBe("Orders must change. Storefront follows.");
@@ -134,6 +139,10 @@ describe("checkProse", () => {
 });
 
 describe("sanitizeProse", () => {
+  it("breaks a bare www host so it cannot autolink", () => {
+    expect(sanitizeProse("See www.phish.example now and WWW.Evil.test", 200)).not.toMatch(/www\./i);
+  });
+
   it("strips code, HTML and link brackets, collapses whitespace and caps the length", () => {
     expect(sanitizeProse("A `x` <script>y</script> [link](http://e)\n\n# heading", 200)).toBe(
       "A x script y /script link (http://e) # heading",

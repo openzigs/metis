@@ -116,7 +116,7 @@ describe("generatePortfolioReport — the model path", () => {
     expect(out.summary).toBe(
       [
         "Partly covered by Orders (acme/orders-api).",
-        "Must change: Orders. Downstream: Storefront (api, medium). 1 downstream product is restricted to you.",
+        "Must change: Orders. Downstream: Storefront (api, medium). 1 downstream product is restricted for this run.",
         "The requirement is only partly delivered today. Orders must change, and Storefront will feel it.",
       ].join("\n\n"),
     );
@@ -157,14 +157,39 @@ describe("generatePortfolioReport — the model path", () => {
   it("restates the requirement as FRs and NFRs, dropping an unknown kind", async () => {
     const { report } = await generatePortfolioReport(CTX, { provider: provider(GOOD), costOf });
     expect(report.requirements).toEqual([
-      { text: "A refund posts a ledger entry", kind: "functional", nfrCategory: null },
+      {
+        text: "A refund posts a ledger entry",
+        kind: "functional",
+        nfrCategory: null,
+        mentions: [],
+      },
       {
         text: "Posting takes at most 2 seconds",
         kind: "non-functional",
         nfrCategory: "performance",
+        mentions: [],
       },
-      { text: "Untagged NFR", kind: "non-functional", nfrCategory: null },
+      { text: "Untagged NFR", kind: "non-functional", nfrCategory: null, mentions: [] },
     ]);
+  });
+
+  it("records the products a model requirement names, so a reader without one is not shown it", async () => {
+    const reply = {
+      ...GOOD,
+      requirements: [{ text: "Storefront shows the refund", kind: "functional", category: null }],
+    };
+    const { report } = await generatePortfolioReport(CTX, { provider: provider(reply), costOf });
+    expect(report.requirements).toEqual([
+      expect.objectContaining({ text: "Storefront shows the refund", mentions: ["p2"] }),
+    ]);
+  });
+
+  it("template requirements skip a criterion that sanitises to nothing", async () => {
+    const out = await generatePortfolioReport(
+      { ...CTX, criteria: ["[ ]", "`", "It posts within 2 seconds"] },
+      { provider: provider(null, { offline: true }), costOf },
+    );
+    expect(out.report.requirements.map((r) => r.text)).toEqual(["It posts within 2 seconds"]);
   });
 
   it("a hallucinated repo, file or product never reaches the summary or a paragraph", async () => {
@@ -244,7 +269,7 @@ describe("generatePortfolioReport — no silent fallback", () => {
     );
     // The template: the verdict and overview, no prose; the criteria as FRs; template paragraphs.
     expect(out.summary).toBe(
-      "Partly covered by Orders (acme/orders-api).\n\nMust change: Orders. Downstream: Storefront (api, medium). 1 downstream product is restricted to you.",
+      "Partly covered by Orders (acme/orders-api).\n\nMust change: Orders. Downstream: Storefront (api, medium). 1 downstream product is restricted for this run.",
     );
     expect(out.report.requirements.map((r) => [r.text, r.kind])).toEqual([
       ["A refund posts a ledger entry", "functional"],
@@ -351,7 +376,7 @@ describe("templateParagraph and impactOverview", () => {
   it("the overview names readable products and counts restricted ones", () => {
     const rows = CTX.products.map((p) => ({ ...p, coverage: p.coverage }));
     expect(impactOverview(rows, (id) => (id === "p9" ? null : nameOf(id)))).toBe(
-      "Must change: Orders. Downstream: Storefront (api, medium). 1 downstream product is restricted to you.",
+      "Must change: Orders. Downstream: Storefront (api, medium). 1 downstream product is restricted for this run.",
     );
     expect(impactOverview([], () => null)).toBe("");
     expect(
@@ -381,7 +406,7 @@ describe("templateParagraph and impactOverview", () => {
         ],
         (id) => (id === "c" ? "C" : null),
       ),
-    ).toBe("Downstream: C. 2 downstream products are restricted to you.");
+    ).toBe("Downstream: C. 2 downstream products are restricted for this run.");
   });
 });
 

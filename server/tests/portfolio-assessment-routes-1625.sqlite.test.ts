@@ -561,6 +561,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
                   ],
                   requirements: [
                     { text: "A reset link is emailed", kind: "functional", category: null },
+                    { text: "Billing emails a reset link", kind: "functional", category: null },
                     {
                       text: "The email arrives within a minute",
                       kind: "non-functional",
@@ -621,6 +622,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           );
           expect(report.requirements.map((r: { kind: string }) => r.kind)).toEqual([
             "functional",
+            "functional",
             "non-functional",
           ]);
         });
@@ -646,6 +648,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             `### ${P3}\n\nRestricted: you cannot read this product, so nothing about it is shown.`,
           );
           expect(res.text).not.toContain("Billing");
+          // The detail route hides the model requirement that names it too.
+          const detail = await get("ana", `/${id}`);
+          expect(detail.status).toBe(200);
+          expect(JSON.stringify(detail.body)).not.toContain("Billing");
           expect(res.text).not.toContain("Agents stop resetting by hand.");
           expect(res.text).toContain("the written summary and the impact paragraphs are not shown");
           // The requirements restate the statement the reader can read: they stay.

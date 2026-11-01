@@ -95,7 +95,7 @@ function fixture(): PortfolioAssessment {
     portfolioVerdict: "partial",
     summary: [
       "Partly covered by Orders (acme/orders-api).",
-      "Must change: Orders. Downstream: Reporting (database, medium); Storefront (api, medium). 1 downstream product is restricted to you.",
+      "Must change: Orders. Downstream: Reporting (database, medium); Storefront (api, medium). 1 downstream product is restricted for this run.",
       "Refunds are only partly delivered today. Orders must change, and Reporting is hit hardest.",
     ].join("\n\n"),
     report: {
@@ -104,12 +104,23 @@ function fixture(): PortfolioAssessment {
       degradedReason: null,
       requirementsSource: "model",
       requirements: [
-        { text: "A refund posts a ledger entry", kind: "functional", nfrCategory: null },
-        { text: "Storefront shows the refund status", kind: "functional", nfrCategory: null },
+        {
+          text: "A refund posts a ledger entry",
+          kind: "functional",
+          nfrCategory: null,
+          mentions: [],
+        },
+        {
+          text: "Storefront shows the refund status",
+          kind: "functional",
+          nfrCategory: null,
+          mentions: [],
+        },
         {
           text: "Posting takes at most 2 seconds",
           kind: "non-functional",
           nfrCategory: "performance",
+          mentions: [],
         },
       ],
       products: [

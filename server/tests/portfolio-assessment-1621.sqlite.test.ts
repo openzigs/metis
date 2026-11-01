@@ -99,7 +99,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           degraded: false,
           requirements: [
             { text: "Export an invoice as PDF", kind: "functional" },
-            { text: "Within 2 seconds", kind: "non-functional", nfrCategory: "performance" },
+            {
+              text: "Within 2 seconds",
+              kind: "non-functional",
+              nfrCategory: "performance",
+              mentions: [],
+            },
           ],
           products: [{ productId: "prod-a", functional: "Billing adds a PDF export." }],
         },
@@ -149,8 +154,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           degradedReason: null,
           requirementsSource: "template",
           requirements: [
-            { text: "Export an invoice as PDF", kind: "functional", nfrCategory: null },
-            { text: "Within 2 seconds", kind: "non-functional", nfrCategory: "performance" },
+            {
+              text: "Export an invoice as PDF",
+              kind: "functional",
+              nfrCategory: null,
+              mentions: [],
+            },
+            {
+              text: "Within 2 seconds",
+              kind: "non-functional",
+              nfrCategory: "performance",
+              mentions: [],
+            },
           ],
           products: [
             {

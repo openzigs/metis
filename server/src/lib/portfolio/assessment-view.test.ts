@@ -414,7 +414,7 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
     expect(v.verdict).toBe("gap-confirmed");
     // #1624 — the recomputed summary carries the impact overview; p3 is counted, not named.
     expect(v.summary).toBe(
-      "Nothing in the portfolio covers this.\n\nMust change: One. Downstream: Two (api, low). 1 downstream product is restricted to you.",
+      "Nothing in the portfolio covers this.\n\nMust change: One. Downstream: Two (api, low). 1 downstream product is restricted for this run.",
     );
   });
 
@@ -447,7 +447,14 @@ describe("viewPortfolioAssessment — the BA report (#1624)", () => {
     degraded: false,
     degradedReason: null,
     requirementsSource: "model" as const,
-    requirements: [{ text: "Reset by email", kind: "functional" as const, nfrCategory: null }],
+    requirements: [
+      {
+        text: "Reset by email",
+        kind: "functional" as const,
+        nfrCategory: null,
+        mentions: [] as string[],
+      },
+    ],
     products: [
       {
         productId: "p1",
@@ -502,6 +509,18 @@ describe("viewPortfolioAssessment — the BA report (#1624)", () => {
     expect(v.report!.withheld).toBe(true);
     expect(v.report!.products).toEqual([]);
     expect(v.summary).not.toContain("Model prose");
+  });
+
+  it("a model requirement naming a product the reader cannot read is dropped", async () => {
+    const a = withReport();
+    a.report!.requirements.push({
+      text: "Nine emails a reset link",
+      kind: "functional",
+      nfrCategory: null,
+      mentions: ["p9"],
+    });
+    store.getPortfolioAssessment.mockResolvedValue(a);
+    expect((await view())!.report!.requirements.map((r) => r.text)).toEqual(["Reset by email"]);
   });
 
   it("a paragraph naming a product the reader cannot read is dropped (defence in depth)", async () => {

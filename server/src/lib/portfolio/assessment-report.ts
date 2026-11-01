@@ -139,11 +139,16 @@ export function templateParagraph(p: ReportProduct, nameOf: (id: string) => stri
 
 /** The template requirements: each criterion, as a functional requirement. */
 function templateRequirements(ctx: ReportContext): PortfolioReport["requirements"] {
-  return ctx.criteria.slice(0, MAX_REQUIREMENTS).map((c) => ({
-    text: sanitizeProse(c, REQUIREMENT_CHARS),
-    kind: "functional" as const,
-    nfrCategory: null,
-  }));
+  return ctx.criteria
+    .map((c) => sanitizeProse(c, REQUIREMENT_CHARS))
+    .filter(Boolean) // a criterion of only brackets or backticks sanitises to nothing
+    .slice(0, MAX_REQUIREMENTS)
+    .map((text) => ({
+      text,
+      kind: "functional" as const,
+      nfrCategory: null,
+      mentions: [] as string[],
+    }));
 }
 
 // ─── Prompt ─────────────────────────────────────────────────────────────────
@@ -385,9 +390,16 @@ export async function generatePortfolioReport(
   });
   const requirements = (reply?.requirements ?? []).slice(0, MAX_REQUIREMENTS).flatMap((r) => {
     const kind = asKind(r.kind);
-    const text = checked(r.text, REQUIREMENT_CHARS).text;
+    const { text, mentions } = checked(r.text, REQUIREMENT_CHARS);
     if (!kind || !text) return [];
-    return [{ text, kind, nfrCategory: kind === "non-functional" ? asCategory(r.category) : null }];
+    return [
+      {
+        text,
+        kind,
+        nfrCategory: kind === "non-functional" ? asCategory(r.category) : null,
+        mentions,
+      },
+    ];
   });
 
   // A reply with nothing usable left is no report: say so rather than ship the template as prose.

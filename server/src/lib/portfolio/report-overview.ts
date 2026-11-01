@@ -38,7 +38,7 @@ export function impactOverview(
   }
   if (hidden > 0) {
     parts.push(
-      `${hidden} downstream ${hidden === 1 ? "product is" : "products are"} restricted to you.`,
+      `${hidden} downstream ${hidden === 1 ? "product is" : "products are"} restricted for this run.`,
     );
   }
   return parts.join(" ");

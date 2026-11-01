@@ -378,6 +378,8 @@ export async function viewPortfolioAssessment(
     readableProduct(productId) ? (names.get(productId) ?? null) : null;
   const report = a.report && {
     ...a.report,
+    // A model requirement may name a product this reader cannot read.
+    requirements: a.report.requirements.filter((r) => r.mentions.every(readableProduct)),
     products: seesLess
       ? []
       : a.report.products.filter(

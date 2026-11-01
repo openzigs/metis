@@ -42,7 +42,7 @@ const COMPONENT_NOUNS = new Set(
   (
     "product products service services system systems repo repos repository repositories " +
     "app apps application applications platform platforms module modules library libraries " +
-    "package packages microservice microservices"
+    "package packages microservice microservices team teams"
   ).split(" "),
 );
 
@@ -129,7 +129,9 @@ export function entityCandidates(sentence: string): string[] {
     const name: string[] = [];
     for (let j = i - 1; j >= 0 && name.length < 4; j -= 1) {
       const prev = words[j];
-      if (!prev || !(isCapitalized(prev) || isEntityShaped(prev))) break;
+      // The word right before the noun counts in lowercase too ("the refunder repo").
+      const lowerName = j === i - 1 && /^[a-z]+$/.test(prev) && !STOPWORDS.has(prev);
+      if (!prev || !(isCapitalized(prev) || isEntityShaped(prev) || lowerName)) break;
       // A sentence-final `.` or `,` on the word before ends the name there.
       if (/[.,;:]$/.test(tokens[j])) break;
       name.unshift(prev);
@@ -217,10 +219,14 @@ export function checkProse(text: string, index: EntityIndex): CheckedProse {
  * whitespace collapses, so the prose stays inside the paragraph it is put in.
  */
 export function sanitizeProse(text: string, max: number): string {
-  return text
-    .replace(/[`<>[\]]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, max)
-    .trim();
+  return (
+    text
+      .replace(/[`<>[\]]/g, " ")
+      // GFM autolinks a `www.` host: break it so no clickable link is exported.
+      .replace(/www\./gi, "www ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, max)
+      .trim()
+  );
 }

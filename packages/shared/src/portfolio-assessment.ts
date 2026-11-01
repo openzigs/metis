@@ -85,6 +85,8 @@ export const portfolioReportRequirementSchema = z
     text: z.string().trim().min(1).max(1_000),
     kind: z.enum(REQUIREMENT_KINDS),
     nfrCategory: z.enum(NFR_CATEGORIES).nullable().default(null),
+    /** The products the text names: a reader who cannot read one is not shown it. */
+    mentions: z.array(z.string().min(1).max(64)).max(200).default([]),
   })
   .strict();
 
