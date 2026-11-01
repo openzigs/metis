@@ -137,6 +137,17 @@ describe("PortfolioCoverageHeadline", () => {
       screen.getByRole("heading", { name: "Nothing in your portfolio covers this" }),
     ).toBeVisible();
   });
+
+  it("shows the note under the answer (#1677)", () => {
+    render(
+      <PortfolioCoverageHeadline
+        headline={{ tone: "gap", text: "Nothing in your portfolio covers this", note: "N." }}
+      />,
+    );
+    expect(screen.getByTestId("portfolio-coverage-headline")).toHaveTextContent(
+      "Nothing in your portfolio covers thisN.",
+    );
+  });
 });
 
 describe("PortfolioAssessmentProgress", () => {

@@ -496,6 +496,34 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
     );
   });
 
+  it("a recomputed verdict leaves out a product with no repos, and names it (#1677)", async () => {
+    const a = withImpactRows();
+    a.products[0] = { ...a.products[0], coverage: "not-covered" };
+    a.portfolioVerdict = "not-covered";
+    a.productIds = ["p1", "p2", "p4"];
+    a.products.push({
+      productId: "p4",
+      coverage: "not-checked",
+      impactKind: "none",
+      via: null,
+      edgeIds: [],
+      severity: null,
+      baSummary: "Not checked (no-repos).",
+      technicalDetail: { ...detail([]), reason: "no-repos", costUsd: 0 },
+    });
+    store.getPortfolioAssessment.mockResolvedValue(a);
+    db.product.findMany.mockResolvedValue([
+      { id: "p1", name: "One" },
+      { id: "p2", name: "Two" },
+      { id: "p4", name: "Empty" },
+    ]);
+    const v = (await view())!;
+    expect(v.verdict).toBe("gap-confirmed");
+    expect(v.summary).toContain(
+      "Nothing in the portfolio covers this. Empty has no repositories to check.",
+    );
+  });
+
   it("a list row counts the products in scope, not the rows reached outside it (#1668)", async () => {
     const v = (await view())!;
     expect(v.products).toHaveLength(3);

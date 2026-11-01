@@ -1885,10 +1885,13 @@ states. Each state is shown with an icon and words, never by colour alone:
 | **Restricted** | You cannot read this product. See *Restricted and Not checked* below. |
 
 A gap is never reported unless it was checked: one **Not checked** or **Restricted**
-product turns "Nothing in your portfolio covers this" into "We could not tell". A product
-with no repositories attached also reads **Not checked**, so it stops a check of *All
-products I can access* from ever confirming a gap. Attach repositories to such a product,
-or leave it out with the **One product** scope (#1677).
+product turns "Nothing in your portfolio covers this" into "We could not tell". The
+exception is a product with no repositories attached. It still reads **Not checked**
+(*it has no repositories attached*), but there was nothing in it to check, so it does not
+stop a gap from being confirmed: when every other product does not cover the requirement,
+the answer is "Nothing in your portfolio covers this", with a line underneath naming the
+products that had no repositories (#1677). A check of only such products still reads
+"We could not tell".
 
 #### Impact on your products
 

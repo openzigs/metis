@@ -156,6 +156,13 @@ overrides:
   # Bound and floor move together (#1208). 1.20.0 was published 2026-08-26, well
   # clear of minimumReleaseAge; api.osv.dev returns zero vulns for it (2026-09-30).
   axios@<1.20.0: ^1.20.0
+  # GHSA-mrwp-f3q8-3g9p (HIGH, CVSS 8.2; Trivy alias CVE-2026-116689), `fixed
+  # 1.16.2`: the one copy comes from axios 1.20.0. 1.16.2 published
+  # 2026-10-25T21:32Z and cleared minimumReleaseAge at 2026-11-01T21:32Z; #1635
+  # bumped it at 21:41Z the same day and deleted both dated waivers (sast.yml and
+  # .github/image-scan-waivers.json, the latter moved to `expired`). Move the
+  # `<` bound with the floor (#1208).
+  follow-redirects@<1.16.2: ^1.16.2
   tmp@<0.2.6: ^0.2.6
   esbuild@<0.28.1: ^0.28.1
   # vite GHSA-587h-7wmj-h5pm (CVSS 7.5, launch-editor path check bypass on Windows),

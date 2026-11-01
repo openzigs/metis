@@ -149,6 +149,30 @@ describe("coverageHeadline", () => {
     });
   });
 
+  it("names the products with no repositories under a confirmed gap (#1677)", () => {
+    const v = view({
+      verdict: "gap-confirmed",
+      productIds: ["p", "e1", "e2", "r"],
+      productNames: { p: "Payments", e1: "Empty", e2: "Spare", r: "Restricted repos" },
+      products: [
+        product("p", "not-covered"),
+        product("e1", "not-checked", repoDetail([], "no-repos")),
+        product("e2", "not-checked", repoDetail([], "no-repos")),
+        product("r", "not-checked", repoDetail([], "repos-restricted")),
+      ],
+    });
+    expect(coverageHeadline(v)).toEqual({
+      tone: "gap",
+      text: "Nothing in your portfolio covers this",
+      note: "Empty, Spare have no repositories, so there was nothing in them to check.",
+    });
+    v.productIds = ["p", "e1"];
+    v.products = v.products.slice(0, 2);
+    expect(coverageHeadline(v)?.note).toBe(
+      "Empty has no repositories, so there was nothing in it to check.",
+    );
+  });
+
   it("does not claim a gap it could not verify", () => {
     expect(coverageHeadline(view({ verdict: "could-not-verify" }))?.tone).toBe("unknown");
   });

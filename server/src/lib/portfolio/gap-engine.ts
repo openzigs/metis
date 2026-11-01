@@ -9,7 +9,7 @@
  *     -> federated retrieval      (`FederatedSearchService`, RRF; one call per product)
  *     -> per-repo verdict         (one model call per repo + the #773 verdict gate)
  *     -> product coverage         (`rollUpProductCoverage`)
- *     -> portfolio verdict        (`rollUpPortfolioVerdict`)
+ *     -> portfolio verdict        (`rollUpPortfolio`)
  *     -> persisted                (`createPortfolioAssessment`, #1621)
  *
  * Invariants:
@@ -76,7 +76,8 @@ import { MIN_SHARED_TERMS, extractTerms } from "../analysis/retrieval-health.js"
 import { canAccessProjectDiscussions } from "../discussions/access.js";
 import { createPortfolioAssessment } from "./assessment-store.js";
 import {
-  rollUpPortfolioVerdict,
+  hadNothingToCheck,
+  rollUpPortfolio,
   rollUpProductCoverage,
   storedPortfolioVerdict,
   type ProductNotCheckedReason,
@@ -647,8 +648,18 @@ export function portfolioSummary(
     }
     case "partial":
       return `Partly covered by ${with_("partial").map(describeProduct).join("; ")}.`;
-    case "gap-confirmed":
-      return "Nothing in the portfolio covers this.";
+    case "gap-confirmed": {
+      // #1677 — left out of the verdict, but still named.
+      const empty = products.filter(hadNothingToCheck);
+      return [
+        "Nothing in the portfolio covers this.",
+        ...(empty.length > 0
+          ? [
+              `${empty.map((p) => p.name ?? p.productId).join(", ")} ${empty.length === 1 ? "has" : "have"} no repositories to check.`,
+            ]
+          : []),
+      ].join(" ");
+    }
     default: {
       const unchecked = with_("not-checked").length;
       const restricted = with_("restricted").length;
@@ -764,7 +775,7 @@ async function evaluateParsed(
     deps.onProgress?.({ done, total: scoped.length });
     return result;
   });
-  const verdict = rollUpPortfolioVerdict(products.map((p) => p.coverage));
+  const verdict = rollUpPortfolio(products);
   return {
     statement: input.statement,
     criteria,

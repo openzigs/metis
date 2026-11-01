@@ -1344,7 +1344,10 @@ The rules that hold across the run, each detailed in the paragraphs below:
   coverage: `covers`, `partial`, `not-covered`, or `not-checked` with a reason. Product
   coverages roll up to the portfolio verdict. Only `not-covered` everywhere confirms a gap,
   so a `not-checked` or `restricted` product reads `could-not-verify`. Starvation never
-  reads as a gap.
+  reads as a gap. The one exception is a product with no repos at all (`not-checked`,
+  reason `no-repos`): `rollUpPortfolio` leaves it out, since there was nothing in it to
+  check, and the summary and page still name it (#1677). An unbound product is visible to
+  every user, so counting it let one empty product block every `all-accessible` gap.
 - **Access never widens.**
   - *Scope.* `all-accessible` lists only the products `buildProductAccessWhere` admits, and
     a named product the caller cannot read is `restricted`, carrying only the id given.
@@ -1434,7 +1437,8 @@ product in scope and persists the result as a `PortfolioAssessment`:
 6. **Roll-ups** (`gap-rollup.ts`). Product: every criterion met by some repo → `covers`;
    some met → `partial`; every repo `gap-confirmed` and none hidden → `not-covered`; else
    `not-checked`. Portfolio: any `covers` → `implemented`; else any `partial` → `partial`;
-   every product `not-covered` → `gap-confirmed`; else `could-not-verify`. It is stored in
+   every product `not-covered` → `gap-confirmed`; else `could-not-verify`, over the
+   products in scope less those with no repos (`rollUpPortfolio`, #1677). It is stored in
    the `PORTFOLIO_COVERAGES` vocabulary (`storedPortfolioVerdict`, one to one).
 
 A repo with no excerpts, a failed search, an unparseable reply or no budget left is
