@@ -1339,6 +1339,41 @@ each product row and repo before returning it.
 `getPortfolioAssessment` reads a run back. The engines that fill these records are
 #1622 and #1623; the routes are #1625.
 
+**Portfolio gap analysis (#1622).** `runPortfolioGapAnalysis`
+(`server/src/lib/portfolio/gap-engine.ts`) checks one requirement statement against every
+product in scope and persists the result as a `PortfolioAssessment`:
+
+1. **Scope.** `all-accessible` lists the products `buildProductAccessWhere` admits; a
+   `product` scope checks each named id with `assertProductAccessible`, and one the caller
+   cannot read (or that does not exist) is `restricted`, carrying only the id supplied.
+2. **Criteria.** A requirement's acceptance criteria, or the statement split into at most
+   8 by one model call (the statement itself if that fails).
+3. **Repos.** Each readable product's repos, minus soft-deleted connections and the repos
+   `productRepoReadAccess` hides (#1258), which are counted, never named.
+4. **Retrieval.** One `FederatedSearchService` call per product over its repos' projects
+   (RRF, the #1052 accessible-projects gate). A hit counts for a repo only when it is a
+   repository source chunk (`connector:repo:<id>:src/…`, with a `path`) of that repo, from
+   that repo's project.
+5. **Repo verdict.** One model call per repo with the repo's own excerpts. Every untrusted
+   value sits between `<<<LABEL>>>` fences and is scrubbed with
+   `scrubRequirementFenceLookalikes` (#1114, #1351). Each criterion's claim goes through
+   `gateFindingVerdict` (#773): `implemented` needs a cited excerpt, and a citation can only
+   name an excerpt that repo returned. Citations are file-level (`startLine` 1: source
+   chunks carry no span), with `repoConnectionId` stamped by the engine (#1611). Criteria
+   roll up with `rollUpCriterionVerdicts` (#1610).
+6. **Roll-ups** (`gap-rollup.ts`). Product: every criterion met by some repo → `covers`;
+   some met → `partial`; every repo `gap-confirmed` and none hidden → `not-covered`; else
+   `not-checked`. Portfolio: any `covers` → `implemented`; else any `partial` → `partial`;
+   every product `not-covered` → `gap-confirmed`; else `could-not-verify`. It is stored in
+   the `PORTFOLIO_COVERAGES` vocabulary (`storedPortfolioVerdict`, one to one).
+
+A repo with no excerpts, a failed search, an unparseable reply or no budget left is
+`could-not-verify` with its reason in `technicalDetail.repos`, so starvation never reads as
+a gap. Fan-out is bounded by `PORTFOLIO_GAP_RUN_COST_CAP_CENTS` (200),
+`PORTFOLIO_GAP_PRODUCT_COST_CAP_CENTS` (50) and `PORTFOLIO_GAP_CONCURRENCY` (4 products at
+once, each one call at a time). A cap stops new calls; the spend can pass it by the calls
+already in flight. Cost is priced from the provider's usage; an unpriced model counts 0.
+
 ---
 
 ## 8. Knowledge & RAG Pipeline
