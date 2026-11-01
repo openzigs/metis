@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "key": "2fa69947dcbf439c9d69a072d7f0a1ddf93e4123423441e658fbda5bdf5a1cea",
+  "request": {
+    "promptPreview": "<<<REQUIREMENT>>>\nCustomers can split one invoice across several payment cards.\n<<<END REQUIREMENT>>>\n\nSplit it into 1 to 8 acceptance criteria. Keep each one short and testable,\nand do not add anythi",
+    "messageCount": 2,
+    "options": {
+      "maxTokens": 2000
+    }
+  },
+  "response": {
+    "content": "{\"criteria\": [\"Split one invoice across several payment cards\"]}",
+    "usage": {
+      "promptTokens": 96,
+      "completionTokens": 8,
+      "totalTokens": 104,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0
+    },
+    "model": "offline-stub",
+    "provider": "offline-stub",
+    "offline": true,
+    "finishReason": "stop"
+  },
+  "recordedAt": "2026-11-01T18:59:58.285Z"
+}

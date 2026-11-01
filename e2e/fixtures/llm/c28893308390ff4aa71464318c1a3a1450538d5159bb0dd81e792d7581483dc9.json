@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "key": "c28893308390ff4aa71464318c1a3a1450538d5159bb0dd81e792d7581483dc9",
+  "request": {
+    "promptPreview": "<<<REQUIREMENT>>>\nCustomers can pay an invoice by instant bank transfer and get a receipt by email.\n<<<END REQUIREMENT>>>\n\n<<<CRITERIA>>>\n[1] Pay an invoice by instant bank transfer\n[2] Email a receip",
+    "messageCount": 2,
+    "options": {
+      "maxTokens": 2000
+    }
+  },
+  "response": {
+    "content": "{\"criteria\": [{\"index\": 1, \"verdict\": \"implemented\", \"excerpts\": [1], \"reason\": \"payInvoiceByInstantTransfer in excerpt 1 does this.\"}, {\"index\": 2, \"verdict\": \"gap-confirmed\", \"excerpts\": [1], \"reason\": \"Excerpt 1 is where it would live, and it is not there.\"}]}",
+    "usage": {
+      "promptTokens": 263,
+      "completionTokens": 33,
+      "totalTokens": 296,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0
+    },
+    "model": "offline-stub",
+    "provider": "offline-stub",
+    "offline": true,
+    "finishReason": "stop"
+  },
+  "recordedAt": "2026-11-01T18:59:59.320Z"
+}

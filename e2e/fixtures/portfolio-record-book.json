@@ -1,0 +1,108 @@
+{
+  "_comment": [
+    "#1629 \u2014 the model's answers for the portfolio journeys (e2e/tests/portfolio-gap-impact.spec.ts).",
+    "Not read in CI: CI replays the fixtures in e2e/fixtures/llm that a record run made from this book.",
+    "Re-record after changing a prompt or the synthetic repos (e2e/fixtures/portfolio.ts):",
+    "AI_REPLAY=0 AI_RECORD=1 AI_OFFLINE_SCRIPT_FILE=e2e/fixtures/portfolio-record-book.json pnpm --filter @metis/e2e test portfolio-gap-impact",
+    "Each match is a part of the prompt only that call sends: a statement before the decomposition's",
+    "instructions, or a requirement's last criterion before a repository's name."
+  ],
+  "scenarios": [
+    {
+      "match": "Customers can pay an invoice by instant bank transfer.\n<<<END REQUIREMENT>>>\n\nSplit it into",
+      "turns": [
+        {
+          "content": "{\"criteria\": [\"Pay an invoice by instant bank transfer\"]}"
+        }
+      ]
+    },
+    {
+      "match": "Customers can split one invoice across several payment cards.\n<<<END REQUIREMENT>>>\n\nSplit it into",
+      "turns": [
+        {
+          "content": "{\"criteria\": [\"Split one invoice across several payment cards\"]}"
+        }
+      ]
+    },
+    {
+      "match": "Customers can pay an invoice by instant bank transfer and get a receipt by email.\n<<<END REQUIREMENT>>>\n\nSplit it into",
+      "turns": [
+        {
+          "content": "{\"criteria\": [\"Pay an invoice by instant bank transfer\", \"Email a receipt once an invoice is paid\"]}"
+        }
+      ]
+    },
+    {
+      "match": "[1] Pay an invoice by instant bank transfer\n<<<END CRITERIA>>>\n\n<<<REPOSITORY>>>\npayments-api\n<<<END REPOSITORY>>>",
+      "turns": [
+        {
+          "content": "{\"criteria\": [{\"index\": 1, \"verdict\": \"implemented\", \"excerpts\": [1], \"reason\": \"payInvoiceByInstantTransfer in excerpt 1 does this.\"}]}"
+        }
+      ]
+    },
+    {
+      "match": "[1] Pay an invoice by instant bank transfer\n<<<END CRITERIA>>>\n\n<<<REPOSITORY>>>\npayments-db\n<<<END REPOSITORY>>>",
+      "turns": [
+        {
+          "content": "{\"criteria\": [{\"index\": 1, \"verdict\": \"gap-confirmed\", \"excerpts\": [1], \"reason\": \"Excerpt 1 is where it would live, and it is not there.\"}]}"
+        }
+      ]
+    },
+    {
+      "match": "[1] Pay an invoice by instant bank transfer\n<<<END CRITERIA>>>\n\n<<<REPOSITORY>>>\nreporting-service\n<<<END REPOSITORY>>>",
+      "turns": [
+        {
+          "content": "{\"criteria\": [{\"index\": 1, \"verdict\": \"gap-confirmed\", \"excerpts\": [1], \"reason\": \"Excerpt 1 is where it would live, and it is not there.\"}]}"
+        }
+      ]
+    },
+    {
+      "match": "[1] Split one invoice across several payment cards\n<<<END CRITERIA>>>\n\n<<<REPOSITORY>>>\npayments-api\n<<<END REPOSITORY>>>",
+      "turns": [
+        {
+          "content": "{\"criteria\": [{\"index\": 1, \"verdict\": \"gap-confirmed\", \"excerpts\": [1], \"reason\": \"Excerpt 1 is where it would live, and it is not there.\"}]}"
+        }
+      ]
+    },
+    {
+      "match": "[1] Split one invoice across several payment cards\n<<<END CRITERIA>>>\n\n<<<REPOSITORY>>>\npayments-db\n<<<END REPOSITORY>>>",
+      "turns": [
+        {
+          "content": "{\"criteria\": [{\"index\": 1, \"verdict\": \"gap-confirmed\", \"excerpts\": [1], \"reason\": \"Excerpt 1 is where it would live, and it is not there.\"}]}"
+        }
+      ]
+    },
+    {
+      "match": "[1] Split one invoice across several payment cards\n<<<END CRITERIA>>>\n\n<<<REPOSITORY>>>\nreporting-service\n<<<END REPOSITORY>>>",
+      "turns": [
+        {
+          "content": "{\"criteria\": [{\"index\": 1, \"verdict\": \"gap-confirmed\", \"excerpts\": [1], \"reason\": \"Excerpt 1 is where it would live, and it is not there.\"}]}"
+        }
+      ]
+    },
+    {
+      "match": "[2] Email a receipt once an invoice is paid\n<<<END CRITERIA>>>\n\n<<<REPOSITORY>>>\npayments-api\n<<<END REPOSITORY>>>",
+      "turns": [
+        {
+          "content": "{\"criteria\": [{\"index\": 1, \"verdict\": \"implemented\", \"excerpts\": [1], \"reason\": \"payInvoiceByInstantTransfer in excerpt 1 does this.\"}, {\"index\": 2, \"verdict\": \"gap-confirmed\", \"excerpts\": [1], \"reason\": \"Excerpt 1 is where it would live, and it is not there.\"}]}"
+        }
+      ]
+    },
+    {
+      "match": "[2] Email a receipt once an invoice is paid\n<<<END CRITERIA>>>\n\n<<<REPOSITORY>>>\npayments-db\n<<<END REPOSITORY>>>",
+      "turns": [
+        {
+          "content": "{\"criteria\": [{\"index\": 1, \"verdict\": \"gap-confirmed\", \"excerpts\": [1], \"reason\": \"Excerpt 1 is where it would live, and it is not there.\"}, {\"index\": 2, \"verdict\": \"gap-confirmed\", \"excerpts\": [1], \"reason\": \"Excerpt 1 is where it would live, and it is not there.\"}]}"
+        }
+      ]
+    },
+    {
+      "match": "[2] Email a receipt once an invoice is paid\n<<<END CRITERIA>>>\n\n<<<REPOSITORY>>>\nreporting-service\n<<<END REPOSITORY>>>",
+      "turns": [
+        {
+          "content": "{\"criteria\": [{\"index\": 1, \"verdict\": \"gap-confirmed\", \"excerpts\": [1], \"reason\": \"Excerpt 1 is where it would live, and it is not there.\"}, {\"index\": 2, \"verdict\": \"gap-confirmed\", \"excerpts\": [1], \"reason\": \"Excerpt 1 is where it would live, and it is not there.\"}]}"
+        }
+      ]
+    }
+  ]
+}

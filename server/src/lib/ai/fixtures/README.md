@@ -47,6 +47,23 @@ pnpm --filter @metis/server start   # then drive the generative path once
 Fixtures are written as readable JSON (`key`, `request.promptPreview`, `response`).
 Commit them. To refresh after a prompt change, re-run with `AI_RECORD_OVERWRITE=1`.
 
+### Recording from a script book, with no credentials (#1629)
+
+When a spec needs structured answers but no live model is to hand, record them
+from the offline stub's script book (`AI_OFFLINE_SCRIPT_FILE`, #148): the book
+says what each call answers, by a part of its prompt, and record mode captures
+the exact request the server sent. The portfolio journeys are recorded this way:
+
+```bash
+AI_REPLAY=0 AI_RECORD=1 AI_OFFLINE_SCRIPT_FILE=e2e/fixtures/portfolio-record-book.json \
+  pnpm --filter @metis/e2e test portfolio-gap-impact
+```
+
+A call the server skips for an offline provider (the portfolio BA report checks
+`provider.offline`) is not recorded, and replays as a miss. The run also
+rebuilds the clarify fixtures for a non-replay provider: keep only the new
+files your book answered.
+
 ## Replaying in CI / Playwright e2e
 
 Start the server with replay mode pointed at the committed fixture directory:
