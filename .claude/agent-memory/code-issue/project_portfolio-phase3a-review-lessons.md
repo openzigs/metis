@@ -107,3 +107,14 @@ Phase 5: the reviews of #1676 (#1673), #1675 (#1628), #1678 (#1629) and #1679 (#
   `AI_OFFLINE_SCRIPT_FILE`, matching on a prompt substring unique to each call. A local
   run's global setup writes 4 untracked clarify fixtures into `e2e/fixtures/llm`; never
   commit them.
+
+The #1677 and #1680 reviews, 2026-11-01. Follow-ups: #1685.
+
+- **Adjacency labels need a transitive closure (#1680).** The hops #1668 made free (an
+  edge inside one product, a resource meeting inside one product) mean a one-hop
+  "next to a restricted stop" check can't be the whole reachability answer. Close
+  any adjacency rule through those hops, or "never stated unaffected" fails quietly.
+- **Removing a purge can remove the only cleanup between retries (#1677).** With
+  `retries: 1`, `describe.serial` re-runs `beforeAll`. Fixed fixture names such as
+  "Payments" then get seeded twice, and exact rowheader locators hit strict-mode
+  violations. Track created ids and delete them in `afterAll` and before a reseed.
