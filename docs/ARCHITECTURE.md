@@ -4645,6 +4645,18 @@ URL or without a scheme, `scott/tiger@`, `;password=` / `?token=` style paramete
 free text otherwise, so a UI must render it as text, never as an `href`. Code:
 `server/src/lib/products/product-edges.ts`.
 
+**Declared-edge editor (#1628).** The product page's **Integration edges** section
+(`ui/src/components/products/product-edges-panel.tsx`, pure helpers in
+`ui/src/lib/product-edges.ts`) lists each edge's kind, strength, direction, origin and
+confidence, filtered by kind. It reads the product through the page's own
+`GET /api/products/:id` query and re-reads it after every write, so what it shows is
+the server's. A `declared` edge can be edited (source locked: the PATCH carries no
+`sourceRepoId`) or deleted; an edge detection owns (`detected` or `overridden`) offers
+only a strength override, a PATCH of `strength` alone. Shared resources are listed (the
+locator as text) and can be declared, so an edge can go through one. The controls render
+only for a user holding `project.update`; anyone else sees the list read-only with a
+"Restricted" note, and the server refuses the writes regardless.
+
 **Typed product edges and shared resources (#1618, epic #1608).** A `ProductEdge` says
 what crosses the boundary (`integrationKind`: api, event, database, shared-library,
 identity), how tightly the two ends are coupled (`strength`, strongest first: intrusive >

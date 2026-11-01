@@ -1,7 +1,22 @@
 /**
  * Product multi-repo API client (Epic #544).
  */
+import type {
+  DeclareProductEdgeInput,
+  DeclareProductResourceInput,
+  ProductEdge,
+  ProductResource,
+  UpdateProductEdgeInput,
+} from "@metis/shared";
 import { apiFetch } from "@/lib/api-client";
+
+export type {
+  DeclareProductEdgeInput,
+  DeclareProductResourceInput,
+  ProductEdge,
+  ProductResource,
+  UpdateProductEdgeInput,
+};
 
 export interface Product {
   id: string;
@@ -35,6 +50,10 @@ export interface ProductWithRepos extends Product {
    * `repos`; only this count says they exist.
    */
   inaccessibleRepoCount?: number;
+  /** #1618 — the typed edges between the repos shown, and through shared resources. */
+  edges?: ProductEdge[];
+  /** #1618 — the resources the product's shown repos share. */
+  resources?: ProductResource[];
 }
 
 export interface CreateProductInput {
@@ -195,6 +214,31 @@ export const productsApi = {
 
   getAnalyses: async (productId: string) =>
     apiFetch<ProductAnalysis[]>(`/products/${productId}/analyses`),
+
+  // #1628 — the declared-edge editor, over #1620's API. Every write is `project.update`.
+  declareEdge: async (productId: string, input: DeclareProductEdgeInput) =>
+    apiFetch<ProductEdge>(`/products/${encodeURIComponent(productId)}/edges`, {
+      method: "POST",
+      body: input,
+    }),
+
+  updateEdge: async (productId: string, edgeId: string, input: UpdateProductEdgeInput) =>
+    apiFetch<ProductEdge>(
+      `/products/${encodeURIComponent(productId)}/edges/${encodeURIComponent(edgeId)}`,
+      { method: "PATCH", body: input },
+    ),
+
+  deleteEdge: async (productId: string, edgeId: string) =>
+    apiFetch<void>(
+      `/products/${encodeURIComponent(productId)}/edges/${encodeURIComponent(edgeId)}`,
+      { method: "DELETE" },
+    ),
+
+  declareResource: async (productId: string, input: DeclareProductResourceInput) =>
+    apiFetch<ProductResource>(`/products/${encodeURIComponent(productId)}/resources`, {
+      method: "POST",
+      body: input,
+    }),
 
   listRepoConnections: async (search?: string) =>
     apiFetch<RepoConnectionOption[]>("/products/repo-connections", {
