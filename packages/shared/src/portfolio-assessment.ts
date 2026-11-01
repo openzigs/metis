@@ -98,7 +98,9 @@ export const portfolioAssessmentInputSchema = z
   // #1647 — the parts must agree: a `product` scope names at most one product,
   // and every product row and repo verdict is under a product the assessment
   // says it assessed. (A duplicate row is left to the tables' unique keys,
-  // which refuse the whole write.)
+  // which refuse the whole write.) #1623 — the one exception is a product the
+  // impact walk reached outside the scope: its row is a `downstream-consumer`,
+  // it has no repo verdicts, and it never enters the portfolio verdict.
   .superRefine((a, ctx) => {
     if (a.scope === "product" && a.productIds.length > 1) {
       ctx.addIssue({
@@ -109,7 +111,7 @@ export const portfolioAssessmentInputSchema = z
     }
     const assessed = new Set(a.productIds);
     a.products.forEach((p, i) => {
-      if (!assessed.has(p.productId)) {
+      if (!assessed.has(p.productId) && p.impactKind !== "downstream-consumer") {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["products", i, "productId"],
@@ -170,6 +172,12 @@ export const createPortfolioAssessmentSchema = z
       .array(z.string().min(1).max(64))
       .max(PORTFOLIO_ASSESSMENT_MAX_PRODUCTS)
       .optional(),
+    /**
+     * #1623 — the product chosen to host the requirement where nothing covers it:
+     * it changes directly, and the impact walk starts from it. A `product` scope
+     * may only name its own product.
+     */
+    hostProductId: z.string().min(1).max(64).optional(),
   })
   .strict()
   .refine((v) => (v.statement === undefined) !== (v.requirementId === undefined), {
@@ -179,7 +187,17 @@ export const createPortfolioAssessmentSchema = z
   .refine((v) => v.scope !== "product" || v.productIds?.length === 1, {
     message: 'A "product" scope names exactly one product',
     path: ["productIds"],
-  });
+  })
+  .refine(
+    (v) =>
+      v.scope !== "product" ||
+      v.hostProductId === undefined ||
+      v.hostProductId === v.productIds?.[0],
+    {
+      message: 'A "product" scope can only host the requirement on its own product',
+      path: ["hostProductId"],
+    },
+  );
 export type CreatePortfolioAssessmentInput = z.input<typeof createPortfolioAssessmentSchema>;
 
 /** The portfolio verdict in the requirement-verdict vocabulary (#1622). */

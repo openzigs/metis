@@ -29,6 +29,8 @@ import {
   P2,
   P3,
   PROJECTS,
+  RC_P1_WEB,
+  RC_P2,
   RC_P3,
   RESET_CRITERIA,
   RESET_STATEMENT,
@@ -69,6 +71,8 @@ const USERS: Record<string, string[]> = {
   ola: [WS_B],
   sam: [],
   "rl-1625": [WS_A],
+  // #1623's impact runs: their own start budget, so the rate-limit tests are unchanged.
+  "imp-1623": [WS_A, WS_B],
 };
 type Who = keyof typeof USERS;
 
@@ -392,6 +396,72 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(res.text).toContain("### Accounts: acme/accounts-api (implemented)");
         expect(res.text).not.toContain("Billing");
         expect((await get("ana", `/${miaRun}/export?format=pdf`)).status).toBe(400);
+      });
+    });
+
+    describe("#1623 — impact from the products that change", () => {
+      const EDGE = "e-web-consumes-desk-1623";
+      beforeAll(async () => {
+        // Support's desk API is called by the Accounts web app (an edge on Support).
+        await db.productEdge.create({
+          data: {
+            id: EDGE,
+            productId: P2,
+            sourceRepoId: RC_P1_WEB,
+            targetRepoId: RC_P2,
+            edgeType: "calls",
+            confidence: 0.9,
+            integrationKind: "api",
+            strength: "contract",
+            direction: "consumes",
+          },
+        });
+      });
+      afterAll(async () => {
+        await db.productEdge.deleteMany({ where: { id: EDGE } });
+      });
+
+      it("the partial product and the host change; a consumer of the partial one is downstream", async () => {
+        const id = await start("imp-1623", {
+          statement: RESET_STATEMENT,
+          scope: "all-accessible",
+          hostProductId: P3,
+        });
+        const v = await settled(id, "imp-1623");
+        expect(v.status).toBe("completed");
+        expect(Object.fromEntries(v.products.map((p) => [p.productId, p.impactKind]))).toEqual({
+          [P1]: "downstream-consumer",
+          [P2]: "direct-change",
+          [P3]: "direct-change",
+        });
+        const p1 = v.products.find((p) => p.productId === P1)!;
+        expect(p1).toEqual(
+          expect.objectContaining({ via: "api", severity: "low", edgeIds: [EDGE] }),
+        );
+        // Impact does not move the gap verdict.
+        expect(v.verdict).toBe("implemented");
+        expect(p1.coverage).toBe("covers");
+      });
+
+      it("400 for a product scope hosting on another product", async () => {
+        const res = await post("imp-1623", {
+          statement: CRYPTO_STATEMENT,
+          scope: "product",
+          productIds: [P1],
+          hostProductId: P2,
+        });
+        expect(res.status).toBe(400);
+      });
+
+      it("404 for a host the caller cannot read, before any job starts", async () => {
+        const before = await db.portfolioAssessment.count();
+        const res = await post("ana", {
+          statement: CRYPTO_STATEMENT,
+          scope: "all-accessible",
+          hostProductId: P3,
+        });
+        expect(res.status).toBe(404);
+        expect(await db.portfolioAssessment.count()).toBe(before);
       });
     });
 

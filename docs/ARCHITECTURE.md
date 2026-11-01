@@ -1379,7 +1379,7 @@ already in flight. Cost is priced from the provider's usage; an unpriced model c
 
 | Route | Answer |
 |---|---|
-| `POST /api/portfolio-assessments` `{ statement? (1..8000) \| requirementId?, scope, productIds? }` | `202 { id }`; the run continues in the background (`pending` → `running` → `completed` \| `failed`) with `job:{id}` lifecycle events |
+| `POST /api/portfolio-assessments` `{ statement? (1..8000) \| requirementId?, scope, productIds?, hostProductId? }` | `202 { id }`; the run continues in the background (`pending` → `running` → `completed` \| `failed`) with `job:{id}` lifecycle events |
 | `GET /api/portfolio-assessments?productId=` | the newest 25 assessments naming that product (empty when the caller cannot read it), or else the caller's own |
 | `GET /api/portfolio-assessments/:id` | `PortfolioAssessmentView`: the assessment, `verdict` and `productNames` |
 | `GET /api/portfolio-assessments/:id/export?format=md` | the same view as a Markdown attachment |
@@ -1399,6 +1399,44 @@ reader, every product they cannot read now is `restricted` with nothing in it, e
 they cannot read now (or whose connection was deleted) is dropped with its citations and
 its product's coverage recomputed with it counted hidden, and when they see less than the
 run did, the verdict and summary are recomputed from what they see.
+
+**Cross-product impact (#1623)** (`server/src/lib/portfolio/impact-engine.ts`). After the
+gap analysis, the run walks the typed product edges (#1618) from the products whose code
+must change: every `partial` product, and the `hostProductId` the start request may name
+for a requirement nothing covers (a `product` scope may host only on its own product; an
+`all-accessible` host the caller cannot read is 404). A product that already covers the
+requirement needs no change. Cross-product coupling is a repo on several products
+(`ProductRepo`), so an edge on one product reaches every other product either end is on.
+
+- **Direction.** Read from the edge's source side: `consumes` / `depends-on`, the source
+  is downstream of the target; `provides` / `writes`, the target is downstream; `reads` or
+  unclassified, both ways. Two repo → resource edges through one resource are paired: a
+  repo that writes or provides it reaches every other repo using it.
+- **Depth and cycles.** From the direct-change products' readable repos, then from each
+  consumer repo, up to 2 hops (`maxDepth`, at most 4). A direct-change product is never
+  downstream, each product is listed once with its most severe path, and a repo is walked
+  again only when a more severe path reaches it.
+- **Access.** Only edges on products the caller can read, between repos they can read,
+  are walked. An edge to a repo they cannot read is counted (`hiddenEdgeCount`) on the
+  product it leaves. A consumer product they cannot read is `restricted`: its id and
+  `downstream-consumer`, nothing else, and the walk never goes through it.
+- **Severity** (`impact-severity.ts`, `CHANGE_SEVERITIES`). Base from the strength
+  (`intrusive`/`functional` high, `model` medium, `contract` low, unclassified medium);
+  +1 when the provider's latest `ProductContractDoc` diff breaks (`isBreakingDiff`: an
+  item removed, a field or parameter removed or retyped, a required parameter added),
+  first hop only and never on an intrusive edge; -1 when the edge's confidence is under
+  0.5; capped at both ends. A path is as severe as its weakest hop.
+- **Evidence** per hop (`technicalDetail.impact.hops`): the edges, both repos, the
+  consumer's call sites, the contract items changed, the shared resource, and for a
+  `database` hop the tables and columns both projects use (`crossProjectImpact`, #309).
+
+The impact goes into the product rows (`impactKind`, `via`, `edgeIds`, `severity`). A
+product reached outside the scope gets its own `downstream-consumer` row (`not-checked`
+with `technicalDetail.outOfScope`, or `restricted`); the schema admits a row outside
+`productIds` only for that, and such a row never enters the portfolio verdict or the
+read rule. At read time a path through a repo or product the reader cannot read now is
+withheld whole (`impactWithheld`); the impact kind stays. The walk is read-only: no
+writes, no DDL, no connector call.
 
 ---
 

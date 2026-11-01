@@ -108,6 +108,31 @@ describe("portfolio assessment schemas", () => {
       ).toEqual(["products.1.productId", "repos.0.productId"]);
     });
 
+    it("#1623 — accepts a downstream product reached outside the scope, and only that", () => {
+      expect(
+        issues({
+          products: [
+            { productId: "p1", coverage: "partial", impactKind: "direct-change" },
+            { productId: "p9", coverage: "restricted", impactKind: "downstream-consumer" },
+          ],
+        }),
+      ).toEqual([]);
+      expect(
+        issues({
+          products: [{ productId: "p9", coverage: "not-checked", impactKind: "direct-change" }],
+        }),
+      ).toEqual(["products.0.productId"]);
+      // It has no repo verdicts: those stay under the products assessed.
+      expect(
+        issues({
+          products: [
+            { productId: "p9", coverage: "not-checked", impactKind: "downstream-consumer" },
+          ],
+          repos: [{ productId: "p9", repoConnectionId: "r", verdict: "implemented" }],
+        }),
+      ).toEqual(["repos.0.productId"]);
+    });
+
     it("refuses a product-scoped assessment of more than one product", () => {
       expect(issues({ scope: "product" })).toEqual(["productIds"]);
       expect(issues({ scope: "product", productIds: ["p1"] })).toEqual([]);
@@ -184,5 +209,16 @@ describe("createPortfolioAssessmentSchema (#1625)", () => {
     expect(ok({ statement: "s", scope: "product", productIds: ["p1", "p2"] })).toBe(false);
     expect(ok({ statement: "s", scope: "all-accessible", extra: true })).toBe(false);
     expect(ok({ statement: "s", scope: "everything" })).toBe(false);
+  });
+
+  it("#1623 — a host product: any for all-accessible, only its own for a product scope", () => {
+    expect(ok({ statement: "s", scope: "all-accessible", hostProductId: "p9" })).toBe(true);
+    expect(ok({ statement: "s", scope: "product", productIds: ["p1"], hostProductId: "p1" })).toBe(
+      true,
+    );
+    expect(ok({ statement: "s", scope: "product", productIds: ["p1"], hostProductId: "p2" })).toBe(
+      false,
+    );
+    expect(ok({ statement: "s", scope: "all-accessible", hostProductId: "" })).toBe(false);
   });
 });

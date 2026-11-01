@@ -1,8 +1,9 @@
 /**
  * /api/portfolio-assessments — Epic #1608 (#1625).
  *
- * A requirement checked across the product portfolio (#1622's engine), as an
- * async job:
+ * A requirement checked across the product portfolio (#1622's engine), then
+ * walked downstream from the products that must change (#1623's engine: the
+ * `partial` products and an optional `hostProductId`), as an async job:
  *
  *   POST /             start one; 202 `{ id }`. Progress on `job:{id}`.
  *   GET  /             the newest assessments naming `?productId=`, or else the
@@ -15,7 +16,8 @@
  *   permission (`analysis.run` to start, `analysis.read` to read). CSRF is the
  *   app-wide `csrfProtection` (#913), which runs before every `/api` router.
  * - `requirementId` must name a requirement in a project the caller can read;
- *   anything else is 404 (no existence oracle).
+ *   anything else is 404 (no existence oracle). So must an `all-accessible`
+ *   scope's `hostProductId` name a product they can read.
  * - Reads never trust what was stored: `viewPortfolioAssessment` re-filters
  *   every product and repo against the reader's access now.
  */
@@ -53,6 +55,13 @@ import {
   type PortfolioGapInput,
 } from "../lib/portfolio/gap-engine.js";
 import {
+  directChangeProductIds,
+  evaluatePortfolioImpact,
+  withImpact,
+  type PortfolioImpactDeps,
+} from "../lib/portfolio/impact-engine.js";
+import { assertProductAccessible } from "../lib/products/product-access.js";
+import {
   renderPortfolioAssessmentMarkdown,
   resolveReaderAccess,
   toListItem,
@@ -77,6 +86,8 @@ const exportQuerySchema = z.object({ format: z.literal("md").default("md") });
 export interface PortfolioAssessmentsRouterDeps {
   /** Engine collaborators (tests inject a scripted model and search). */
   gap?: PortfolioGapDeps;
+  /** Impact collaborators (#1623). */
+  impact?: PortfolioImpactDeps;
 }
 
 /** The engine's input for a start request, or 404 for a requirement the caller cannot read. */
@@ -120,13 +131,14 @@ async function runAssessment(
   id: string,
   user: AuthPayload,
   input: PortfolioGapInput & { sourceRequirementId: string | null; sourceProjectId: string | null },
-  deps: PortfolioGapDeps,
+  hostProductId: string | null,
+  deps: PortfolioAssessmentsRouterDeps,
 ): Promise<void> {
   try {
     await setPortfolioAssessmentStatus(id, "running");
     jobEvents.started(KIND, id, null, "Portfolio assessment started");
     const result = await evaluatePortfolioGap(user, input, {
-      ...deps,
+      ...deps.gap,
       onProgress: ({ done, total }) =>
         jobEvents.progress(
           KIND,
@@ -136,13 +148,25 @@ async function runAssessment(
           `${done} of ${total} products checked`,
         ),
     });
+    // #1623 — from the products that must change, the products downstream of them.
+    const impact = await evaluatePortfolioImpact(
+      user,
+      {
+        directChangeProductIds: directChangeProductIds(result, hostProductId),
+        listedProductIds: result.productIds,
+      },
+      deps.impact,
+    );
     await completePortfolioAssessment(
       id,
-      toAssessmentInput(result, {
-        createdById: user.userId,
-        sourceRequirementId: input.sourceRequirementId,
-        sourceProjectId: input.sourceProjectId,
-      }),
+      withImpact(
+        toAssessmentInput(result, {
+          createdById: user.userId,
+          sourceRequirementId: input.sourceRequirementId,
+          sourceProjectId: input.sourceProjectId,
+        }),
+        impact,
+      ),
     );
     jobEvents.completed(KIND, id, null, "Portfolio assessment completed");
   } catch (err) {
@@ -174,6 +198,11 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
         const user = req.user!;
         const body = createPortfolioAssessmentSchema.parse(req.body);
         const input = await gapInputFor(user, body);
+        const hostProductId = body.hostProductId ?? null;
+        // A host the caller cannot read is answered like a missing one (no existence oracle).
+        if (hostProductId && body.scope === "all-accessible") {
+          await assertProductAccessible(user, hostProductId);
+        }
         const id = await createPortfolioAssessment({
           statement: input.statement,
           sourceRequirementId: input.sourceRequirementId,
@@ -184,7 +213,7 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
           createdById: user.userId,
         });
         res.status(202).json(ok({ id }));
-        void runAssessment(id, user, input, deps.gap ?? {});
+        void runAssessment(id, user, input, hostProductId, deps);
       } catch (err) {
         next(err);
       }

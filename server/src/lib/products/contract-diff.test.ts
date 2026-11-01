@@ -16,6 +16,8 @@ import {
   extractContractItems,
   hashContractItems,
   diffContracts,
+  isBreakingChange,
+  isBreakingDiff,
   renderContractDiff,
   summarizeDiff,
   type ContractItem,
@@ -223,5 +225,72 @@ describe("renderContractDiff", () => {
     const items = extractContractItems([openapi({ "/x": { get: {} } })]);
     const md = renderContractDiff(diffContracts(items, [...items]));
     expect(md).toMatch(/no contract changes/i);
+  });
+});
+
+describe("isBreakingDiff (#1623)", () => {
+  const changed = (before: string, after: string) => ({ before, after });
+  const diff = (over: Partial<Parameters<typeof isBreakingDiff>[0]> = {}) => ({
+    removed: [],
+    changed: [],
+    ...over,
+  });
+  const asChanged = (before: string, after: string) => ({
+    id: "graphql type User",
+    format: "graphql" as const,
+    kind: "type" as const,
+    before,
+    after,
+  });
+
+  it("a diff of only additions is not breaking", () => {
+    expect(isBreakingDiff(diff())).toBe(false);
+  });
+
+  it("a removed item is breaking (a rename reads as removed + added)", () => {
+    const item: ContractItem = { format: "openapi", kind: "endpoint", id: "a", signature: "" };
+    expect(isBreakingDiff(diff({ removed: [item] }))).toBe(true);
+  });
+
+  it("a new field is additive; a removed or retyped field is breaking", () => {
+    const before = "kind=type|fields=[email:String, id:ID]";
+    const added = "kind=type|fields=[email:String, id:ID, n:String]";
+    expect(isBreakingChange(changed(before, added))).toBe(false);
+    expect(isBreakingChange(changed(before, "kind=type|fields=[id:ID]"))).toBe(true);
+    expect(isBreakingChange(changed(before, "kind=type|fields=[email:Int, id:ID]"))).toBe(true);
+    expect(isBreakingDiff(diff({ changed: [asChanged(before, "kind=type|fields=[id:ID]")] }))).toBe(
+      true,
+    );
+    expect(isBreakingDiff(diff({ changed: [asChanged(before, added)] }))).toBe(false);
+  });
+
+  it("a changed GraphQL kind is breaking", () => {
+    expect(isBreakingChange(changed("kind=type|fields=[]", "kind=input|fields=[]"))).toBe(true);
+    expect(isBreakingChange(changed("kind=type", "kind=type"))).toBe(false);
+  });
+
+  it("a new optional parameter or summary is additive; a new required one is breaking", () => {
+    const before = "summary=List|params=[limit:query:opt:integer]|responses=[200]";
+    const withParam = (p: string) =>
+      `summary=List all|params=[limit:query:opt:integer, ${p}]|responses=[200]`;
+    expect(isBreakingChange(changed(before, withParam("q:query:opt:string")))).toBe(false);
+    expect(isBreakingChange(changed(before, withParam("q:query:req:string")))).toBe(true);
+    expect(isBreakingChange(changed(before, "summary=List|params=[]|responses=[200]"))).toBe(true);
+  });
+
+  it("a removed protobuf method or response is breaking", () => {
+    expect(isBreakingChange(changed("methods=[A(X)->Y, B(X)->Y]", "methods=[A(X)->Y]"))).toBe(true);
+    expect(
+      isBreakingChange(
+        changed("summary=|params=[]|responses=[200, 404]", "summary=|params=[]|responses=[200]"),
+      ),
+    ).toBe(true);
+  });
+
+  it("stays linear on a long hostile signature", () => {
+    const hostile = `kind=type|fields=[${"a=[".repeat(50_000)}`;
+    const start = performance.now();
+    isBreakingChange(changed(hostile, `${hostile}x`));
+    expect(performance.now() - start).toBeLessThan(500);
   });
 });

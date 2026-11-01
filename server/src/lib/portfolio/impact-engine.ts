@@ -1,0 +1,853 @@
+/**
+ * Epic #1608 (#1623) — cross-product impact propagation: from the products
+ * whose code must change, walk the typed product edges (#1618/#1619/#1620) to
+ * the products downstream of them, and say how each is reached and how badly.
+ *
+ *   direct-change products     (`partial` coverage, and the product chosen to host a gap)
+ *     -> their readable repos   (the frontier)
+ *     -> edges out of them      (readable products' edges between readable repos)
+ *     -> consumer repos          (the other end, by the edge's direction)
+ *     -> consumer products       (every product a consumer repo is attached to)
+ *     -> repeat to `maxDepth`    (default 2 hops), from the consumer repos
+ *
+ * Who is downstream of whom is read from the edge's `direction` (source side):
+ * `consumes` / `depends-on` — the source depends on the target; `provides` /
+ * `writes` — the target depends on the source; `reads` or unclassified — both
+ * ways, since two readers of one table share its model. An edge to a resource
+ * alone (no target repo) is paired with the other edges through the same
+ * resource: a repo that writes or provides it reaches every other repo using it.
+ *
+ * Invariants:
+ *
+ * - **Access never widens.** Only edges recorded on a product the caller can
+ *   read, between repos the caller can read (#1258), are walked. An edge that
+ *   touches a repo the caller cannot read is not walked; it is counted
+ *   (`hiddenEdgeCount`) on the product it leaves, so nothing is silently
+ *   omitted. A consumer product the caller cannot read is `restricted`: its id
+ *   and the fact it is downstream, nothing else, and the walk never expands
+ *   through it (the `workspace-rollup.ts` pattern).
+ * - **Cycle-safe and bounded.** A direct-change product is never downstream; a
+ *   product is listed once, with its most severe path; a repo is expanded again
+ *   only when reached by a more severe path, and never past `maxDepth`.
+ * - **Nothing silently omitted.** Every product the caller asks to list is in
+ *   the result, `none` when nothing reaches it (FR-3, #1609).
+ * - **Read-only.** Reads the product graph, contracts and the cross-project
+ *   usage classifications; writes nothing, runs no DDL, calls no connector.
+ */
+import {
+  PRODUCT_COUPLING_STRENGTHS,
+  PRODUCT_EDGE_DIRECTIONS,
+  PRODUCT_EDGE_ORIGINS,
+  PRODUCT_INTEGRATION_KINDS,
+  type AuthPayload,
+  type ChangeSeverity,
+  type CrossProjectImpactResult,
+  type PortfolioAssessmentInput,
+  type PortfolioImpactKind,
+  type ProductCouplingStrength,
+  type ProductEdgeDirection,
+  type ProductEdgeOrigin,
+  type ProductIntegrationKind,
+} from "@metis/shared";
+import type { ProductEdge as ProductEdgeRow } from "@prisma/client";
+import { prisma } from "../prisma.js";
+import { createChildLogger } from "../logger.js";
+import { buildProductAccessWhere, productRepoReadAccess } from "../products/product-access.js";
+import {
+  isBreakingChange,
+  isBreakingDiff,
+  type ChangedItem,
+  type ContractDiff,
+  type ContractItem,
+} from "../products/contract-diff.js";
+import { crossProjectImpact } from "../cross-project/cross-project-impact.js";
+import type { SchedulerActor } from "../scheduler/project-access.js";
+import { deriveHopSeverity, moreSevere, weaker, type HopSeverity } from "./impact-severity.js";
+import type { PortfolioGapResult } from "./gap-engine.js";
+
+const log = createChildLogger("portfolio-impact");
+
+export const DEFAULT_IMPACT_DEPTH = 2;
+export const MAX_IMPACT_DEPTH = 4;
+/** Evidence one hop keeps, at most, of each kind. */
+const MAX_CALL_SITES = 10;
+const MAX_CONTRACT_ITEMS = 20;
+const MAX_SHARED_OBJECTS = 20;
+
+// ─── Result ─────────────────────────────────────────────────────────────────
+
+export interface ImpactRepoRef {
+  repoConnectionId: string;
+  label: string;
+}
+
+/** A contract item the provider's latest contract version changed. */
+export interface ImpactContractItem {
+  id: string;
+  change: "added" | "removed" | "changed";
+  breaking: boolean;
+}
+
+/** The provider's contract a hop crosses, as its latest version changed it. */
+export interface ImpactContractEvidence {
+  contractDocId: string;
+  repoConnectionId: string | null;
+  version: number;
+  breaking: boolean;
+  items: ImpactContractItem[];
+}
+
+/** A table or column both ends' projects use (`crossProjectImpact`, #309). */
+export interface ImpactSharedObject {
+  schemaName: string | null;
+  objectName: string;
+  objectType: string;
+  usageClass: string;
+}
+
+/** One hop of an impact path: what crossed from a provider repo to a consumer repo. */
+export interface ImpactHop {
+  /** One repo-to-repo edge, or the two edges that meet at a shared resource. */
+  edgeIds: string[];
+  /** The product the edges are recorded on. */
+  edgeProductId: string;
+  fromProductId: string;
+  toProductId: string;
+  provider: ImpactRepoRef;
+  consumer: ImpactRepoRef;
+  integrationKind: ProductIntegrationKind | null;
+  strength: ProductCouplingStrength | null;
+  direction: ProductEdgeDirection | null;
+  confidence: number;
+  origin: ProductEdgeOrigin;
+  resource: { kind: string; name: string } | null;
+  /** Where the consumer uses what changes, as detection recorded it. */
+  callSites: Array<{ filePath: string; line: number | null }>;
+  contract: ImpactContractEvidence | null;
+  sharedObjects: ImpactSharedObject[];
+  severity: HopSeverity;
+}
+
+export interface ProductImpact {
+  productId: string;
+  /** Null for a `restricted` product. */
+  name: string | null;
+  /** The caller cannot read this product: nothing but its id and impact kind is given. */
+  restricted: boolean;
+  impactKind: PortfolioImpactKind;
+  /** The integration kind of the hop that reaches it. */
+  via: ProductIntegrationKind | null;
+  /** The path's severity: its weakest hop. Null for a direct change or no impact. */
+  severity: ChangeSeverity | null;
+  /** Every edge on the path, in hop order. */
+  edgeIds: string[];
+  /** The path from a direct-change product, hop by hop. */
+  hops: ImpactHop[];
+  /** Edges out of this product the caller cannot read, so not walked. */
+  hiddenEdgeCount: number;
+}
+
+export interface PortfolioImpactResult {
+  maxDepth: number;
+  /** Sorted by product id. */
+  products: ProductImpact[];
+}
+
+export interface PortfolioImpactInput {
+  /** Products whose code must change. */
+  directChangeProductIds: readonly string[];
+  /** Products the result lists whether or not anything reaches them. */
+  listedProductIds?: readonly string[];
+  /** Hops from a direct-change product, at most (1..MAX_IMPACT_DEPTH). */
+  maxDepth?: number;
+}
+
+export interface PortfolioImpactDeps {
+  /** The shared tables and columns of a project (defaults to `crossProjectImpact`). */
+  sharedObjects?: (actor: SchedulerActor, projectId: string) => Promise<CrossProjectImpactResult>;
+}
+
+// ─── Direct-change products ─────────────────────────────────────────────────
+
+/**
+ * The products whose code must change for a requirement: each one that covers
+ * it in part (the rest must be built there), and the product chosen to host it.
+ * A product that already covers it needs no change for it.
+ */
+export function directChangeProductIds(
+  gap: Pick<PortfolioGapResult, "products">,
+  hostProductId: string | null = null,
+): string[] {
+  const ids = gap.products
+    .filter((p) => p.coverage === "partial" || p.productId === hostProductId)
+    .map((p) => p.productId);
+  if (hostProductId && !ids.includes(hostProductId)) ids.push(hostProductId);
+  return [...new Set(ids)].sort();
+}
+
+// ─── Edge semantics ─────────────────────────────────────────────────────────
+
+function oneOf<T extends string>(allowed: readonly T[], value: string | null): T | null {
+  return value !== null && (allowed as readonly string[]).includes(value) ? (value as T) : null;
+}
+
+type EdgeRow = Pick<
+  ProductEdgeRow,
+  | "id"
+  | "productId"
+  | "sourceRepoId"
+  | "targetRepoId"
+  | "resourceId"
+  | "contractDocId"
+  | "integrationKind"
+  | "strength"
+  | "direction"
+  | "confidence"
+  | "origin"
+  | "evidence"
+  | "sourceFile"
+  | "targetFile"
+>;
+
+const EDGE_SELECT = {
+  id: true,
+  productId: true,
+  sourceRepoId: true,
+  targetRepoId: true,
+  resourceId: true,
+  contractDocId: true,
+  integrationKind: true,
+  strength: true,
+  direction: true,
+  confidence: true,
+  origin: true,
+  evidence: true,
+  sourceFile: true,
+  targetFile: true,
+} as const;
+
+/** The provider -> consumer pairs a repo-to-repo edge carries impact along. */
+export function edgeFlows(edge: {
+  sourceRepoId: string;
+  targetRepoId: string | null;
+  direction: string | null;
+}): Array<{ provider: string; consumer: string }> {
+  const target = edge.targetRepoId;
+  if (target === null) return [];
+  const sourceDepends = { provider: target, consumer: edge.sourceRepoId };
+  const targetDepends = { provider: edge.sourceRepoId, consumer: target };
+  switch (oneOf(PRODUCT_EDGE_DIRECTIONS, edge.direction)) {
+    case "consumes":
+    case "depends-on":
+      return [sourceDepends];
+    case "provides":
+    case "writes":
+      return [targetDepends];
+    default:
+      // `reads` (two readers share a table's model) or unclassified: both ways.
+      return [targetDepends, sourceDepends];
+  }
+}
+
+/** Whether a repo's edge to a resource alone makes it a provider of that resource. */
+function providesResource(direction: string | null): boolean {
+  const d = oneOf(PRODUCT_EDGE_DIRECTIONS, direction);
+  return d === null || d === "writes" || d === "provides";
+}
+
+function strongerStrength(
+  a: ProductCouplingStrength | null,
+  b: ProductCouplingStrength | null,
+): ProductCouplingStrength | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  return PRODUCT_COUPLING_STRENGTHS.indexOf(a) <= PRODUCT_COUPLING_STRENGTHS.indexOf(b) ? a : b;
+}
+
+interface Evidence {
+  filePath?: unknown;
+  lineNumber?: unknown;
+}
+
+function parseEvidence(raw: string): Evidence[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as Evidence[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The consumer's side of an edge: its file, and the evidence lines in it. */
+function callSitesOf(edge: EdgeRow, consumerIsSource: boolean): ImpactHop["callSites"] {
+  const file = consumerIsSource ? edge.sourceFile : edge.targetFile;
+  if (!file) return [];
+  const lines = parseEvidence(edge.evidence)
+    .filter((e) => e.filePath === file)
+    .map((e) => ({
+      filePath: file,
+      line: typeof e.lineNumber === "number" ? e.lineNumber : null,
+    }));
+  return (lines.length > 0 ? lines : [{ filePath: file, line: null }]).slice(0, MAX_CALL_SITES);
+}
+
+// ─── Loading ────────────────────────────────────────────────────────────────
+
+interface RepoInfo {
+  projectId: string;
+  label: string;
+  readable: boolean;
+}
+
+function repoLabel(rc: { label: string; ownerOrOrg: string | null; repoName: string | null }) {
+  if (rc.ownerOrOrg && rc.repoName) return `${rc.ownerOrOrg}/${rc.repoName}`;
+  return rc.repoName ?? rc.label;
+}
+
+interface Candidate {
+  edges: EdgeRow[];
+  /** The edge whose strength, confidence and call site describe the consumer's side. */
+  consumerEdge: EdgeRow;
+  consumerIsSource: boolean;
+  provider: string;
+  consumer: string;
+  strength: ProductCouplingStrength | null;
+  confidence: number;
+  resourceId: string | null;
+}
+
+/** Where a repo stands in the walk: the product it is affected as, and how badly. */
+interface RepoState {
+  productId: string;
+  /** Null for a repo of a direct-change product. */
+  severity: ChangeSeverity | null;
+  hops: ImpactHop[];
+}
+
+function sortById<T extends { id: string }>(rows: T[]): T[] {
+  return rows.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+class ImpactWalk {
+  private readonly repos = new Map<string, RepoInfo | null>();
+  private readonly productsOfRepo = new Map<string, string[]>();
+  private readonly contracts = new Map<string, ImpactContractEvidence | null>();
+  private readonly shared = new Map<string, CrossProjectImpactResult | null>();
+  private readonly resources = new Map<string, { kind: string; name: string } | null>();
+  private readonly actor: SchedulerActor;
+
+  constructor(
+    user: AuthPayload,
+    private readonly readableProducts: ReadonlyMap<string, string>,
+    private readonly canReadRepo: (repo: { repoConnection: { projectId: string } }) => boolean,
+    private readonly deps: Required<PortfolioImpactDeps>,
+  ) {
+    this.actor = { id: user.userId, role: user.role };
+  }
+
+  /** Load (once) the live connections of `ids`; a deleted or unknown one is null. */
+  async loadRepos(ids: Iterable<string>): Promise<void> {
+    const missing = [...new Set(ids)].filter((id) => !this.repos.has(id));
+    if (missing.length === 0) return;
+    // No `orderBy`/`take`: Prisma splits a plain `IN` list itself (#1346).
+    const rows = await prisma.repoConnection.findMany({
+      where: { id: { in: missing }, deletedAt: null },
+      select: { id: true, projectId: true, label: true, ownerOrOrg: true, repoName: true },
+    });
+    for (const id of missing) this.repos.set(id, null);
+    for (const r of rows) {
+      this.repos.set(r.id, {
+        projectId: r.projectId,
+        label: repoLabel(r),
+        readable: this.canReadRepo({ repoConnection: { projectId: r.projectId } }),
+      });
+    }
+  }
+
+  repo(id: string): RepoInfo | null {
+    return this.repos.get(id) ?? null;
+  }
+
+  readableRepo(id: string): boolean {
+    return this.repo(id)?.readable === true;
+  }
+
+  ref(id: string): ImpactRepoRef {
+    return { repoConnectionId: id, label: this.repo(id)?.label ?? id };
+  }
+
+  /** Every product each repo is attached to (readable or not). */
+  async loadProductsOf(repoIds: Iterable<string>): Promise<void> {
+    const missing = [...new Set(repoIds)].filter((id) => !this.productsOfRepo.has(id));
+    if (missing.length === 0) return;
+    const rows = await prisma.productRepo.findMany({
+      where: { repoConnectionId: { in: missing } },
+      select: { productId: true, repoConnectionId: true },
+    });
+    for (const id of missing) this.productsOfRepo.set(id, []);
+    for (const r of rows) this.productsOfRepo.get(r.repoConnectionId)!.push(r.productId);
+    for (const id of missing) this.productsOfRepo.get(id)!.sort();
+  }
+
+  productsOf(repoId: string): string[] {
+    return this.productsOfRepo.get(repoId) ?? [];
+  }
+
+  /** Edges on readable products touching `repoIds` from either end, and resource partners. */
+  async edgesTouching(repoIds: string[]): Promise<EdgeRow[]> {
+    const [bySource, byTarget] = await Promise.all([
+      prisma.productEdge.findMany({
+        where: { sourceRepoId: { in: repoIds } },
+        select: EDGE_SELECT,
+      }),
+      prisma.productEdge.findMany({
+        where: { targetRepoId: { in: repoIds } },
+        select: EDGE_SELECT,
+      }),
+    ]);
+    const seen = new Map<string, EdgeRow>();
+    for (const e of [...bySource, ...byTarget]) {
+      if (this.readableProducts.has(e.productId)) seen.set(e.id, e);
+    }
+    const resourceIds = [
+      ...new Set(
+        [...seen.values()].filter((e) => e.resourceId && !e.targetRepoId).map((e) => e.resourceId!),
+      ),
+    ];
+    if (resourceIds.length > 0) {
+      const partners = await prisma.productEdge.findMany({
+        where: { resourceId: { in: resourceIds }, targetRepoId: null },
+        select: EDGE_SELECT,
+      });
+      for (const e of partners) {
+        if (this.readableProducts.has(e.productId)) seen.set(e.id, e);
+      }
+    }
+    return sortById([...seen.values()]);
+  }
+
+  async loadResources(ids: Iterable<string>): Promise<void> {
+    const missing = [...new Set(ids)].filter((id) => !this.resources.has(id));
+    if (missing.length === 0) return;
+    const rows = await prisma.productResource.findMany({
+      where: { id: { in: missing } },
+      select: { id: true, kind: true, name: true },
+    });
+    for (const id of missing) this.resources.set(id, null);
+    for (const r of rows) this.resources.set(r.id, { kind: r.kind, name: r.name });
+  }
+
+  resource(id: string | null): { kind: string; name: string } | null {
+    return id ? (this.resources.get(id) ?? null) : null;
+  }
+
+  /**
+   * The provider's contract an edge crosses, as its latest version changed it.
+   * The contract must be the edge's own product's, of a repo the caller can read.
+   */
+  async contract(edge: EdgeRow): Promise<ImpactContractEvidence | null> {
+    const id = edge.contractDocId;
+    if (!id) return null;
+    if (this.contracts.has(id)) return this.contracts.get(id)!;
+    let evidence: ImpactContractEvidence | null = null;
+    const doc = await prisma.productContractDoc.findFirst({
+      where: { id, productId: edge.productId },
+      select: { productId: true, repoId: true },
+    });
+    if (doc && (doc.repoId === null || this.readableRepo(doc.repoId))) {
+      const latest = await prisma.productContractDoc.findFirst({
+        where: { productId: doc.productId, repoId: doc.repoId },
+        orderBy: { version: "desc" },
+        select: { id: true, version: true, diff: true },
+      });
+      if (latest) evidence = contractEvidence(latest, doc.repoId);
+    }
+    this.contracts.set(id, evidence);
+    return evidence;
+  }
+
+  /** The tables and columns both projects use, from the provider project's cross-project impact. */
+  async sharedObjects(
+    providerProjectId: string,
+    consumerProjectId: string,
+    resource: { kind: string; name: string } | null,
+  ): Promise<ImpactSharedObject[]> {
+    if (providerProjectId === consumerProjectId) return [];
+    if (!this.shared.has(providerProjectId)) {
+      let result: CrossProjectImpactResult | null = null;
+      try {
+        result = await this.deps.sharedObjects(this.actor, providerProjectId);
+      } catch (err) {
+        log.warn("Cross-project usage unavailable for an impact hop", {
+          projectId: providerProjectId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      this.shared.set(providerProjectId, result);
+    }
+    const result = this.shared.get(providerProjectId);
+    if (!result) return [];
+    const table = resource?.kind === "table" ? resource.name.toLowerCase() : null;
+    const seen = new Set<string>();
+    return result.affectedObjects
+      .flatMap((o) => {
+        // A table and its columns arrive as one object each; one of each kind is enough.
+        const key = `${o.schemaName ?? ""}.${o.objectName}:${o.objectType}`;
+        if (seen.has(key)) return [];
+        seen.add(key);
+        const usage = o.alsoUsedByProjects.find((u) => u.projectId === consumerProjectId);
+        if (!usage) return [];
+        const qualified = (
+          o.schemaName ? `${o.schemaName}.${o.objectName}` : o.objectName
+        ).toLowerCase();
+        if (table && qualified !== table && o.objectName.toLowerCase() !== table) return [];
+        return [
+          {
+            schemaName: o.schemaName,
+            objectName: o.objectName,
+            objectType: o.objectType,
+            usageClass: usage.usageClass,
+          },
+        ];
+      })
+      .slice(0, MAX_SHARED_OBJECTS);
+  }
+}
+
+function contractEvidence(
+  latest: { id: string; version: number; diff: string | null },
+  repoConnectionId: string | null,
+): ImpactContractEvidence {
+  let diff: Pick<ContractDiff, "added" | "removed" | "changed"> = {
+    added: [],
+    removed: [],
+    changed: [],
+  };
+  try {
+    const parsed = latest.diff ? (JSON.parse(latest.diff) as Partial<ContractDiff>) : null;
+    if (parsed) {
+      diff = {
+        added: Array.isArray(parsed.added) ? (parsed.added as ContractItem[]) : [],
+        removed: Array.isArray(parsed.removed) ? (parsed.removed as ContractItem[]) : [],
+        changed: Array.isArray(parsed.changed) ? (parsed.changed as ChangedItem[]) : [],
+      };
+    }
+  } catch {
+    // An unreadable diff says nothing changed, so it never raises a severity.
+  }
+  const items: ImpactContractItem[] = [
+    ...diff.removed.map((i) => ({ id: i.id, change: "removed" as const, breaking: true })),
+    ...diff.changed.map((i) => ({
+      id: i.id,
+      change: "changed" as const,
+      breaking: isBreakingChange(i),
+    })),
+    ...diff.added.map((i) => ({ id: i.id, change: "added" as const, breaking: false })),
+  ];
+  return {
+    contractDocId: latest.id,
+    repoConnectionId,
+    version: latest.version,
+    breaking: isBreakingDiff(diff),
+    items: items.slice(0, MAX_CONTRACT_ITEMS),
+  };
+}
+
+/** The provider -> consumer hops the edges carry from repos in `frontier`. */
+function candidatesFrom(edges: EdgeRow[], frontier: ReadonlyMap<string, RepoState>): Candidate[] {
+  const out: Candidate[] = [];
+  const strength = (e: EdgeRow) => oneOf(PRODUCT_COUPLING_STRENGTHS, e.strength);
+  for (const e of edges) {
+    for (const flow of edgeFlows(e)) {
+      if (!frontier.has(flow.provider)) continue;
+      out.push({
+        edges: [e],
+        consumerEdge: e,
+        consumerIsSource: flow.consumer === e.sourceRepoId,
+        provider: flow.provider,
+        consumer: flow.consumer,
+        strength: strength(e),
+        confidence: e.confidence,
+        resourceId: e.resourceId,
+      });
+    }
+  }
+  // Two edges meeting at a resource of one product: a provider of it reaches every other user.
+  const atResource = edges.filter((e) => e.resourceId && e.targetRepoId === null);
+  for (const a of atResource) {
+    if (!frontier.has(a.sourceRepoId) || !providesResource(a.direction)) continue;
+    for (const b of atResource) {
+      if (b.id === a.id || b.resourceId !== a.resourceId || b.productId !== a.productId) continue;
+      if (b.sourceRepoId === a.sourceRepoId) continue;
+      out.push({
+        edges: [a, b],
+        consumerEdge: b,
+        consumerIsSource: true,
+        provider: a.sourceRepoId,
+        consumer: b.sourceRepoId,
+        strength: strongerStrength(strength(a), strength(b)),
+        confidence: Math.min(a.confidence, b.confidence),
+        resourceId: a.resourceId,
+      });
+    }
+  }
+  return out;
+}
+
+// ─── Engine ─────────────────────────────────────────────────────────────────
+
+function emptyImpact(productId: string, name: string | null, restricted: boolean): ProductImpact {
+  return {
+    productId,
+    name: restricted ? null : name,
+    restricted,
+    impactKind: "none",
+    via: null,
+    severity: null,
+    edgeIds: [],
+    hops: [],
+    hiddenEdgeCount: 0,
+  };
+}
+
+/**
+ * Walk the product graph from the direct-change products and classify every
+ * product reached, and every product listed, by how the change reaches it.
+ */
+export async function evaluatePortfolioImpact(
+  user: AuthPayload,
+  input: PortfolioImpactInput,
+  deps: PortfolioImpactDeps = {},
+): Promise<PortfolioImpactResult> {
+  const maxDepth = Math.min(
+    MAX_IMPACT_DEPTH,
+    Math.max(1, Math.floor(input.maxDepth ?? DEFAULT_IMPACT_DEPTH)),
+  );
+  const [productRows, canReadRepo] = await Promise.all([
+    prisma.product.findMany({
+      where: await buildProductAccessWhere(user),
+      select: { id: true, name: true },
+    }),
+    productRepoReadAccess(user),
+  ]);
+  const readableProducts = new Map(productRows.map((p) => [p.id, p.name]));
+  const walk = new ImpactWalk(user, readableProducts, canReadRepo, {
+    sharedObjects:
+      deps.sharedObjects ?? ((actor, projectId) => crossProjectImpact(actor, projectId)),
+  });
+
+  const out = new Map<string, ProductImpact>();
+  const entry = (productId: string): ProductImpact => {
+    let hit = out.get(productId);
+    if (!hit) {
+      const readable = readableProducts.has(productId);
+      hit = emptyImpact(productId, readableProducts.get(productId) ?? null, !readable);
+      out.set(productId, hit);
+    }
+    return hit;
+  };
+  for (const id of input.listedProductIds ?? []) entry(id);
+
+  // A product the caller cannot read is not walked from: it stays as listed.
+  const direct = [...new Set(input.directChangeProductIds)]
+    .filter((id) => readableProducts.has(id))
+    .sort();
+  const directSet = new Set(direct);
+  for (const id of direct) entry(id).impactKind = "direct-change";
+
+  let frontier = new Map<string, RepoState>();
+  if (direct.length > 0) {
+    const rows = await prisma.productRepo.findMany({
+      where: { productId: { in: direct }, repoConnection: { deletedAt: null } },
+      select: { productId: true, repoConnectionId: true },
+    });
+    await walk.loadRepos(rows.map((r) => r.repoConnectionId));
+    for (const r of rows.sort((a, b) =>
+      a.productId === b.productId
+        ? a.repoConnectionId.localeCompare(b.repoConnectionId)
+        : a.productId.localeCompare(b.productId),
+    )) {
+      if (!walk.readableRepo(r.repoConnectionId) || frontier.has(r.repoConnectionId)) continue;
+      frontier.set(r.repoConnectionId, { productId: r.productId, severity: null, hops: [] });
+    }
+  }
+
+  /** The most severe state each repo has been expanded with. */
+  const expanded = new Map<string, ChangeSeverity | null>(
+    [...frontier.keys()].map((id) => [id, null]),
+  );
+  const hiddenCounted = new Set<string>();
+
+  for (let depth = 1; depth <= maxDepth && frontier.size > 0; depth += 1) {
+    const edges = await walk.edgesTouching([...frontier.keys()]);
+    await walk.loadRepos(edges.flatMap((e) => [e.sourceRepoId, e.targetRepoId ?? e.sourceRepoId]));
+    const readable: EdgeRow[] = [];
+    for (const e of edges) {
+      const ends = [e.sourceRepoId, ...(e.targetRepoId ? [e.targetRepoId] : [])];
+      if (ends.every((id) => walk.readableRepo(id))) {
+        readable.push(e);
+        continue;
+      }
+      // Not walked; counted once on the product it leaves, if it leaves the frontier.
+      const from = ends.find((id) => frontier.has(id));
+      if (from && !hiddenCounted.has(e.id)) {
+        hiddenCounted.add(e.id);
+        entry(frontier.get(from)!.productId).hiddenEdgeCount += 1;
+      }
+    }
+    const candidates = candidatesFrom(readable, frontier);
+    await Promise.all([
+      walk.loadProductsOf(candidates.map((c) => c.consumer)),
+      walk.loadResources(candidates.flatMap((c) => (c.resourceId ? [c.resourceId] : []))),
+    ]);
+
+    const next = new Map<string, RepoState>();
+    for (const c of candidates) {
+      const from = frontier.get(c.provider)!;
+      const contract = await walk.contract(c.consumerEdge);
+      const hopSeverity = deriveHopSeverity({
+        strength: c.strength,
+        // Only on the first hop is the provider the direct-change product, whose
+        // contract is the one changing; further out it is cited, not counted.
+        breakingContract: depth === 1 && contract?.breaking === true,
+        confidence: c.confidence,
+      });
+      const severity =
+        from.severity === null ? hopSeverity.severity : weaker(from.severity, hopSeverity.severity);
+      const resource = walk.resource(c.resourceId);
+      const integrationKind = oneOf(PRODUCT_INTEGRATION_KINDS, c.consumerEdge.integrationKind);
+      const providerRepo = walk.repo(c.provider)!;
+      const consumerRepo = walk.repo(c.consumer)!;
+      const sharedObjects =
+        integrationKind === "database"
+          ? await walk.sharedObjects(providerRepo.projectId, consumerRepo.projectId, resource)
+          : [];
+      for (const productId of walk.productsOf(c.consumer)) {
+        if (directSet.has(productId) || productId === from.productId) continue;
+        const target = entry(productId);
+        if (target.restricted) {
+          // Downstream, and nothing more: no path, no severity, never walked through.
+          target.impactKind = "downstream-consumer";
+          continue;
+        }
+        const hop: ImpactHop = {
+          edgeIds: c.edges.map((e) => e.id),
+          edgeProductId: c.consumerEdge.productId,
+          fromProductId: from.productId,
+          toProductId: productId,
+          provider: walk.ref(c.provider),
+          consumer: walk.ref(c.consumer),
+          integrationKind,
+          strength: c.strength,
+          direction: oneOf(PRODUCT_EDGE_DIRECTIONS, c.consumerEdge.direction),
+          confidence: c.confidence,
+          origin: oneOf(PRODUCT_EDGE_ORIGINS, c.consumerEdge.origin) ?? "detected",
+          resource,
+          callSites: callSitesOf(c.consumerEdge, c.consumerIsSource),
+          contract,
+          sharedObjects,
+          severity: hopSeverity,
+        };
+        const hops = [...from.hops, hop];
+        if (
+          target.impactKind !== "downstream-consumer" ||
+          target.severity === null ||
+          moreSevere(severity, target.severity)
+        ) {
+          Object.assign(target, {
+            impactKind: "downstream-consumer",
+            via: integrationKind,
+            severity,
+            edgeIds: hops.flatMap((h) => h.edgeIds),
+            hops,
+          });
+        }
+        // Walk on from the consumer repo only when this path is more severe than any before.
+        const seen = expanded.get(c.consumer);
+        const queued = next.get(c.consumer);
+        const better = (s: ChangeSeverity | null | undefined) =>
+          s === undefined || (s !== null && moreSevere(severity, s));
+        if (better(seen) && better(queued?.severity)) {
+          next.set(c.consumer, { productId, severity, hops });
+        }
+      }
+    }
+    for (const [id, state] of next) expanded.set(id, state.severity);
+    frontier = next;
+  }
+
+  return {
+    maxDepth,
+    products: [...out.values()].sort((a, b) => a.productId.localeCompare(b.productId)),
+  };
+}
+
+// ─── Persisting ─────────────────────────────────────────────────────────────
+
+/** The stored impact detail of a readable product (`technicalDetail.impact`). */
+export function impactDetail(p: ProductImpact, maxDepth: number): Record<string, unknown> {
+  return {
+    maxDepth,
+    severity: p.severity,
+    // The path's severity is its weakest hop; each hop records its own derivation.
+    severityRule: "weakest-hop",
+    hiddenEdgeCount: p.hiddenEdgeCount,
+    hops: p.hops,
+  };
+}
+
+/** One sentence on how a product is reached, for a product outside the gap scope. */
+export function impactSentence(p: ProductImpact): string {
+  if (p.impactKind === "direct-change") return "Must change to deliver this requirement.";
+  if (p.impactKind === "none") return "Not affected.";
+  return `Downstream consumer${p.via ? ` via ${p.via}` : ""}${p.severity ? ` (${p.severity})` : ""}.`;
+}
+
+/**
+ * A gap assessment's record with the impact added: each product row in scope
+ * gets its impact kind, path and severity, and each product reached outside the
+ * scope gets a row of its own (`not-checked`, or `restricted`), which never
+ * enters the portfolio verdict. A restricted product carries nothing but its
+ * id, `restricted` and its impact kind.
+ */
+export function withImpact(
+  input: PortfolioAssessmentInput,
+  impact: PortfolioImpactResult,
+): PortfolioAssessmentInput {
+  const byProduct = new Map(impact.products.map((p) => [p.productId, p]));
+  const fields = (p: ProductImpact) =>
+    p.restricted
+      ? { impactKind: p.impactKind, via: null, edgeIds: [], severity: null }
+      : { impactKind: p.impactKind, via: p.via, edgeIds: p.edgeIds, severity: p.severity };
+  const products = (input.products ?? []).map((row) => {
+    const p = byProduct.get(row.productId);
+    if (!p) return row;
+    const restricted = p.restricted || row.coverage === "restricted";
+    return {
+      ...row,
+      ...fields({ ...p, restricted }),
+      ...(restricted
+        ? {}
+        : {
+            technicalDetail: {
+              ...(row.technicalDetail ?? {}),
+              impact: impactDetail(p, impact.maxDepth),
+            },
+          }),
+    };
+  });
+  const listed = new Set(products.map((r) => r.productId));
+  for (const p of impact.products) {
+    if (listed.has(p.productId) || p.impactKind !== "downstream-consumer") continue;
+    products.push({
+      productId: p.productId,
+      coverage: p.restricted ? "restricted" : "not-checked",
+      ...fields(p),
+      baSummary: p.restricted ? "" : impactSentence(p),
+      technicalDetail: p.restricted
+        ? {}
+        : { outOfScope: true, impact: impactDetail(p, impact.maxDepth) },
+    });
+  }
+  return { ...input, products };
+}

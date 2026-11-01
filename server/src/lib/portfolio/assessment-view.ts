@@ -88,9 +88,13 @@ async function mayRead(access: ReaderAccess, a: PortfolioAssessment): Promise<bo
   if (access.admin) return true;
   if (a.sourceProjectId && !(await access.canReadProject(a.sourceProjectId))) return false;
   if (a.createdById === access.user.userId) return true;
-  return [...a.productIds, ...a.products.map((p) => p.productId)].some((id) =>
-    access.products.has(id),
-  );
+  // Only the products it was scoped to: reading a product the impact walk reached
+  // downstream (#1623) is not enough to have started it.
+  const scoped = new Set(a.productIds);
+  return [
+    ...a.productIds,
+    ...a.products.map((p) => p.productId).filter((id) => scoped.has(id)),
+  ].some((id) => access.products.has(id));
 }
 
 const storedDetailSchema = z.object({
@@ -114,16 +118,63 @@ const storedDetailSchema = z.object({
 
 type StoredProduct = PortfolioAssessment["products"][number];
 
-function restrictedRecord(productId: string): StoredProduct {
+/**
+ * A product the reader cannot read: its id, and (#1623) whether the change
+ * reaches it — the one fact a restricted row exists to carry. Nothing else.
+ */
+function restrictedRecord(
+  productId: string,
+  impactKind: StoredProduct["impactKind"] = "none",
+): StoredProduct {
   return {
     productId,
     coverage: "restricted",
-    impactKind: "none",
+    impactKind,
     via: null,
     edgeIds: [],
     severity: null,
     baSummary: "",
     technicalDetail: {},
+  };
+}
+
+/** The repos and products a stored impact path (#1623) names. */
+function impactReferences(stored: StoredProduct): { repos: string[]; products: string[] } {
+  const impact = (stored.technicalDetail as { impact?: { hops?: unknown } }).impact;
+  const hops = Array.isArray(impact?.hops) ? (impact.hops as Array<Record<string, unknown>>) : [];
+  const repos: string[] = [];
+  const products: string[] = [];
+  const str = (v: unknown) => (typeof v === "string" ? [v] : []);
+  for (const h of hops) {
+    for (const end of [h.provider, h.consumer]) {
+      repos.push(...str((end as { repoConnectionId?: unknown } | null)?.repoConnectionId));
+    }
+    repos.push(...str((h.contract as { repoConnectionId?: unknown } | null)?.repoConnectionId));
+    products.push(...str(h.edgeProductId), ...str(h.fromProductId), ...str(h.toProductId));
+  }
+  return { repos, products };
+}
+
+/**
+ * #1623 — a product's impact as the reader may see it. A path through a repo or
+ * a product the reader cannot read now is withheld whole (its edges, severity
+ * and hops would describe what they cannot see); the impact kind stays.
+ */
+function readableImpact(
+  stored: StoredProduct,
+  keepRepo: (repoConnectionId: string) => boolean,
+  readableProduct: (productId: string) => boolean,
+): StoredProduct {
+  const refs = impactReferences(stored);
+  if (refs.repos.every(keepRepo) && refs.products.every(readableProduct)) return stored;
+  const detail: Record<string, unknown> = { ...stored.technicalDetail };
+  delete detail.impact;
+  return {
+    ...stored,
+    via: null,
+    edgeIds: [],
+    severity: null,
+    technicalDetail: { ...detail, impactWithheld: true },
   };
 }
 
@@ -218,7 +269,14 @@ export async function viewPortfolioAssessment(
     : await prisma.repoConnection.findMany({
         // No `orderBy`/`take`: Prisma splits a long `IN` list itself (#1346).
         where: {
-          id: { in: [...new Set(a.repos.map((r) => r.repoConnectionId))] },
+          id: {
+            in: [
+              ...new Set([
+                ...a.repos.map((r) => r.repoConnectionId),
+                ...a.products.flatMap((p) => impactReferences(p).repos),
+              ]),
+            ],
+          },
           deletedAt: null,
         },
         select: { id: true, projectId: true },
@@ -236,31 +294,44 @@ export async function viewPortfolioAssessment(
   // Whether this reader sees less than the run did.
   let changed = false;
   const products: StoredProduct[] = [];
+  // Only the products the assessment was scoped to make the portfolio verdict: a
+  // product the impact walk reached outside the scope (#1623) does not.
+  const scoped = new Set(a.productIds);
   const results: PortfolioProductResult[] = [];
-  for (const stored of a.products) {
-    const pid = stored.productId;
+  const result = (r: PortfolioProductResult) => {
+    if (scoped.has(r.productId)) results.push(r);
+  };
+  for (const raw of a.products) {
+    const pid = raw.productId;
     if (!readableProduct(pid)) {
-      if (stored.coverage !== "restricted") changed = true;
-      products.push(restrictedRecord(pid));
-      results.push(bareResult(pid, null, "restricted", null));
+      if (raw.coverage !== "restricted") changed = true;
+      products.push(restrictedRecord(pid, raw.impactKind));
+      result(bareResult(pid, null, "restricted", null));
       continue;
     }
+    const stored = readableImpact(raw, keepRepo, readableProduct);
     const name = access.products.get(pid) ?? null;
     const dropsRepo = a.repos.some((r) => r.productId === pid && !keepRepo(r.repoConnectionId));
     const view = asResult(stored, name, citations, keepRepo);
     if (!dropsRepo) {
       products.push(stored);
-      results.push(view?.result ?? bareResult(pid, name, stored.coverage, null));
+      result(view?.result ?? bareResult(pid, name, stored.coverage, null));
       continue;
     }
     changed = true;
+    const impact = (stored.technicalDetail as { impact?: unknown }).impact;
     if (view) {
-      products.push({ ...stored, ...toProductRecord(view.result, view.criteria) });
-      results.push(view.result);
+      const record = toProductRecord(view.result, view.criteria);
+      products.push({
+        ...stored,
+        ...record,
+        technicalDetail: { ...record.technicalDetail, ...(impact ? { impact } : {}) },
+      });
+      result(view.result);
     } else {
       // A detail this reader cannot be shown in part: nothing of it is shown.
-      products.push({ ...restrictedRecord(pid), coverage: "not-checked" });
-      results.push(bareResult(pid, name, "not-checked", "repos-restricted"));
+      products.push({ ...restrictedRecord(pid, stored.impactKind), coverage: "not-checked" });
+      result(bareResult(pid, name, "not-checked", "repos-restricted"));
     }
   }
 
