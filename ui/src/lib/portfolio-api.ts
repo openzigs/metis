@@ -5,7 +5,8 @@
  * The server owns access: every read is re-filtered against the reader's
  * access now, so a product they cannot read arrives `restricted` and empty.
  */
-import { apiFetch } from "@/lib/api-client";
+import { apiFetch, streamFetch } from "@/lib/api-client";
+import { filenameFromDisposition, parseStreamError } from "@/lib/plugins-api";
 import type {
   CreatePortfolioAssessmentInput,
   PortfolioAssessmentListItem,
@@ -26,4 +27,26 @@ export const portfolioApi = {
     productId
       ? apiFetch<PortfolioAssessmentListItem[]>(BASE, { params: { productId } })
       : apiFetch<PortfolioAssessmentListItem[]>(BASE),
+
+  /**
+   * #1627 — the reader's view as Markdown (#1624): `GET …/:id/export?format=md`.
+   * The body is raw Markdown, not the `{ success, data }` envelope, so it is
+   * read as a blob.
+   */
+  async exportMarkdown(id: string): Promise<{ blob: Blob; filename: string }> {
+    const res = await streamFetch(`${BASE}/${encodeURIComponent(id)}/export`, {
+      method: "GET",
+      params: { format: "md" },
+      headers: { Accept: "text/markdown" },
+    });
+    if (!res.ok) throw new Error(await parseStreamError(res));
+    const blob = await res.blob();
+    return {
+      blob,
+      filename: filenameFromDisposition(
+        res.headers.get("content-disposition"),
+        `portfolio-assessment-${id}.md`,
+      ),
+    };
+  },
 };
