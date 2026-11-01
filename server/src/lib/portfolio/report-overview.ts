@@ -37,9 +37,23 @@ export function impactOverview(
     parts.push(`Downstream: ${shown.map(detail).join("; ")}.`);
   }
   if (hidden > 0) {
+    // #1668 — and the walk never goes through one, so say what it did not follow.
     parts.push(
-      `${hidden} downstream ${hidden === 1 ? "product is" : "products are"} restricted for this run.`,
+      hidden === 1
+        ? "1 downstream product is restricted for this run, so impact past it was not followed."
+        : `${hidden} downstream products are restricted for this run, so impact past them was not followed.`,
     );
   }
   return parts.join(" ");
+}
+
+/**
+ * One sentence on how a product is reached, for a product outside the gap
+ * scope (#1623). Built from the row's own fields, so a row whose path is
+ * withheld from a reader (#1668: `via` and `severity` null) says no more.
+ */
+export function impactSentence(p: Pick<OverviewRow, "impactKind" | "via" | "severity">): string {
+  if (p.impactKind === "direct-change") return "Must change to deliver this requirement.";
+  if (p.impactKind === "none") return "Not affected.";
+  return `Downstream consumer${p.via ? ` via ${p.via}` : ""}${p.severity ? ` (${p.severity})` : ""}.`;
 }

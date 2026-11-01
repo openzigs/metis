@@ -90,6 +90,7 @@ type Hop = z.output<typeof hopSchema>;
 const impactSchema = z.object({
   severity: z.string().nullable(),
   hiddenEdgeCount: z.number().default(0),
+  stoppedAtRestricted: z.number().default(0),
   hops: z.array(hopSchema),
 });
 const reposSchema = z.array(
@@ -106,13 +107,28 @@ function reposOf(p: Row): z.output<typeof reposSchema> {
   return parsed.success ? parsed.data : [];
 }
 
+/**
+ * #1668 — the Impact cell. A product nothing reached reads "Not affected" only
+ * when the walk stopped nowhere: past a restricted product it was not followed.
+ */
+function impactCell(p: Row): string {
+  const stopped = p.impactKind === "none" ? (impactOf(p)?.stoppedAtRestricted ?? 0) : 0;
+  if (stopped > 0) {
+    return `Not reached (impact past ${stopped === 1 ? "1 restricted product" : `${stopped} restricted products`} was not followed)`;
+  }
+  return `${IMPACT_LABEL[p.impactKind]}${p.via ? ` via ${cell(p.via)}` : ""}`;
+}
+
 function impactHeading(p: Row): string {
   const tags = [p.via ? `via ${p.via}` : null, p.severity].filter(Boolean).join(", ");
   return `${IMPACT_LABEL[p.impactKind]}${tags ? ` (${mdInline(tags)})` : ""}`;
 }
 
 function modifierText(m: Hop["severity"]["modifiers"][number]): string {
-  if (m.kind === "breaking-contract") return "+1 for a breaking contract change";
+  // #1668 — read from the provider's latest contract version, not from this requirement.
+  if (m.kind === "breaking-contract") {
+    return "+1 because the provider's latest contract version made a breaking change";
+  }
   if (m.kind === "low-confidence") return `-1 for low confidence (${m.confidence ?? "?"})`;
   return mdInline(m.kind);
 }
@@ -307,7 +323,7 @@ export function renderPortfolioAssessmentMarkdown(v: PortfolioAssessmentView): s
     ...v.products.map((p) =>
       p.coverage === "restricted"
         ? `| ${cell(name(p.productId))} | Restricted |  |  |  |`
-        : `| ${cell(name(p.productId))} | ${COVERAGE_LABEL[p.coverage]} | ${cell(p.baSummary)} | ${IMPACT_LABEL[p.impactKind]}${p.via ? ` via ${cell(p.via)}` : ""} | ${p.severity ? cell(p.severity) : ""} |`,
+        : `| ${cell(name(p.productId))} | ${COVERAGE_LABEL[p.coverage]} | ${cell(p.baSummary)} | ${impactCell(p)} | ${p.severity ? cell(p.severity) : ""} |`,
     ),
   );
 

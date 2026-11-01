@@ -64,8 +64,13 @@ const { FederatedSearchService } = await import("../src/lib/rag/federated-search
 const { jobEvents } = await import("../src/lib/socket/job-events.js");
 const { resolveJobRoomScope } = await import("../src/lib/socket/room-access.js");
 const { createApp } = await import("../src/app.js");
-const { createPortfolioAssessment, listPortfolioAssessmentIds, touchPortfolioAssessment } =
-  await import("../src/lib/portfolio/assessment-store.js");
+const {
+  completePortfolioAssessment,
+  createPortfolioAssessment,
+  listPortfolioAssessmentIds,
+  setPortfolioAssessmentStatus,
+  touchPortfolioAssessment,
+} = await import("../src/lib/portfolio/assessment-store.js");
 const { PORTFOLIO_ASSESSMENT_STALE_MS, sweepInterruptedPortfolioAssessments } =
   await import("../src/lib/portfolio/interrupted-assessments.js");
 
@@ -78,6 +83,8 @@ const USERS: Record<string, string[]> = {
   "rl-1625": [WS_A],
   // #1623's impact runs: their own start budget, so the rate-limit tests are unchanged.
   "imp-1623": [WS_A, WS_B],
+  // #1668 — the stalled run, on its own start budget too.
+  "stall-1668": [WS_A, WS_B],
 };
 type Who = keyof typeof USERS;
 
@@ -517,6 +524,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(p1.coverage).toBe("covers");
       });
 
+      it("lists an assessment under a product it reaches downstream, counting only its scope (#1668)", async () => {
+        const id = await start("imp-1623", {
+          statement: RESET_STATEMENT,
+          scope: "product",
+          productIds: [P2],
+          hostProductId: P2,
+        });
+        const v = await settled(id, "imp-1623");
+        // Accounts is reached outside the one-product scope.
+        expect(v.products.map((p) => [p.productId, p.coverage, p.impactKind])).toEqual([
+          [P1, "not-checked", "downstream-consumer"],
+          [P2, expect.any(String), "direct-change"],
+        ]);
+        const listed = await get("imp-1623", `?productId=${P1}`);
+        expect(listed.body.data.find((r: { id: string }) => r.id === id)).toEqual(
+          expect.objectContaining({ productCount: 1 }),
+        );
+      });
+
       it("400 for a product scope hosting on another product", async () => {
         const res = await post("imp-1623", {
           statement: CRYPTO_STATEMENT,
@@ -767,6 +793,118 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         await touchPortfolioAssessment(liveRunning);
         expect(await sweepInterruptedPortfolioAssessments()).toBe(0);
         expect(await status(liveRunning)).toBe("running");
+        await db.portfolioAssessment.update({
+          where: { id: liveRunning },
+          data: { status: "completed" },
+        });
+      });
+
+      it("failed is final: no status write and no completion reopens it (#1668)", async () => {
+        const id = await createPortfolioAssessment({
+          statement: "Final",
+          scope: "product",
+          productIds: [P1],
+          status: "failed",
+          createdById: "sam",
+        });
+        expect(await setPortfolioAssessmentStatus(id, "running")).toBe(false);
+        expect(await setPortfolioAssessmentStatus(id, "failed")).toBe(false);
+        const written = await completePortfolioAssessment(id, {
+          statement: "Final",
+          scope: "product",
+          productIds: [P1],
+          status: "completed",
+          portfolioVerdict: "covers",
+          createdById: "sam",
+          products: [{ productId: P1, coverage: "covers" }],
+        });
+        expect(written).toBe(false);
+        const row = await db.portfolioAssessment.findUniqueOrThrow({
+          where: { id },
+          include: { products: true },
+        });
+        // The batch rolled back whole: no verdict, and no child row either.
+        expect(row.status).toBe("failed");
+        expect(row.portfolioVerdict).toBeNull();
+        expect(row.products).toEqual([]);
+        // A run still live completes as before.
+        await db.portfolioAssessment.update({ where: { id }, data: { status: "running" } });
+        expect(
+          await completePortfolioAssessment(id, {
+            statement: "Final",
+            scope: "product",
+            productIds: [P1],
+            status: "completed",
+            createdById: "sam",
+            products: [{ productId: P1, coverage: "covers" }],
+          }),
+        ).toBe(true);
+        expect(await setPortfolioAssessmentStatus(id, "failed")).toBe(false);
+        expect((await db.portfolioAssessment.findUniqueOrThrow({ where: { id } })).status).toBe(
+          "completed",
+        );
+      });
+
+      it("a run the sweep failed while it stalled stays failed when it finishes (#1668)", async () => {
+        const completed = vi.spyOn(jobEvents, "completed");
+        const failed = vi.spyOn(jobEvents, "failed");
+        // The report call stalls until released, as a run whose heartbeats stopped would.
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => (release = resolve));
+        let reportStarted!: () => void;
+        const started = new Promise<void>((resolve) => (reportStarted = resolve));
+        const scripted = scriptedProvider();
+        const stalling = {
+          ...scripted,
+          async chat(messages: Parameters<typeof scripted.chat>[0], opts?: unknown) {
+            const prompt = String(messages.find((m) => m.role === "user")?.content ?? "");
+            if (prompt.includes("<<<ASSESSMENT>>>")) {
+              reportStarted();
+              await gate;
+            }
+            return scripted.chat(messages, opts as never);
+          },
+        };
+        const stalled = express();
+        stalled.use(express.json());
+        stalled.use(
+          "/api/portfolio-assessments",
+          portfolioAssessmentsRouter({
+            gap: {
+              provider: scripted,
+              search: federated.searchAcrossProjects.bind(federated),
+              limits: { runCostCapUsd: 100, productCostCapUsd: 100, concurrency: 2 },
+              costOf: () => 0.01,
+            },
+            report: { provider: stalling as never },
+          }),
+        );
+        stalled.use(errorHandler);
+        const res = await request(stalled)
+          .post("/api/portfolio-assessments")
+          .set("Authorization", bearer("stall-1668"))
+          .send({ statement: RESET_STATEMENT, scope: "all-accessible" });
+        expect(res.status).toBe(202);
+        const id = res.body.data.id as string;
+        await started;
+        // Seen from five minutes on, the stalled row is stale: the sweep fails it, and says so.
+        await sweepInterruptedPortfolioAssessments(
+          Date.now() + PORTFOLIO_ASSESSMENT_STALE_MS + 1_000,
+        );
+        expect(failed.mock.calls.filter((c) => c[1] === id)).toHaveLength(1);
+        release();
+        // Give the finished run every chance to write its result.
+        for (let i = 0; i < 40; i++) {
+          const row = await db.portfolioAssessment.findUniqueOrThrow({
+            where: { id },
+            include: { products: true },
+          });
+          expect(row.status).toBe("failed");
+          expect(row.products).toEqual([]);
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        expect(completed.mock.calls.filter((c) => c[1] === id)).toEqual([]);
+        expect(failed.mock.calls.filter((c) => c[1] === id)).toHaveLength(1);
       });
     });
 

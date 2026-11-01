@@ -8,10 +8,12 @@
  *
  *   base     intrusive = high, functional = high, model = medium, contract = low
  *            (an edge written before #1618 has no strength: medium, flagged)
- *   +1 step  the provider's contract changed in a breaking way (an item removed,
- *            a field or parameter removed or retyped, a required parameter
- *            added) — not on an intrusive edge: a shared-table write is already
- *            at the top of the scale, so it is not counted twice
+ *   +1 step  the provider's own contract changed in a breaking way in its latest
+ *            recorded version (an item removed, a field or parameter removed or
+ *            retyped, a required parameter added) — a past change of the
+ *            provider's, not the change this requirement proposes. Not on an
+ *            intrusive edge: it already reaches into the provider's data, so
+ *            the coupling is not counted twice (#1668)
  *   -1 step  the edge's confidence is below 0.5
  *   capped   at critical and at low
  *
@@ -39,7 +41,13 @@ export const UNCLASSIFIED_BASE_SEVERITY: ChangeSeverity = "medium";
 export const LOW_CONFIDENCE_THRESHOLD = 0.5;
 
 export type SeverityModifier =
-  { kind: "breaking-contract"; step: 1 } | { kind: "low-confidence"; step: -1; confidence: number };
+  | {
+      kind: "breaking-contract";
+      step: 1;
+      /** #1668 — what "breaking" was read from: a past change, not this requirement's. */
+      basis: "latest-contract-version";
+    }
+  | { kind: "low-confidence"; step: -1; confidence: number };
 
 /** One hop's severity and how it was reached. */
 export interface HopSeverity {
@@ -51,7 +59,7 @@ export interface HopSeverity {
 
 export interface HopSeverityInput {
   strength: ProductCouplingStrength | null;
-  /** Whether the provider's contract changed in a breaking way on this hop. */
+  /** Whether the provider's own contract changed in a breaking way in its latest version. */
   breakingContract: boolean;
   confidence: number;
 }
@@ -79,7 +87,7 @@ export function deriveHopSeverity(input: HopSeverityInput): HopSeverity {
     input.strength === null ? UNCLASSIFIED_BASE_SEVERITY : STRENGTH_BASE_SEVERITY[input.strength];
   const modifiers: SeverityModifier[] = [];
   if (input.breakingContract && input.strength !== "intrusive") {
-    modifiers.push({ kind: "breaking-contract", step: 1 });
+    modifiers.push({ kind: "breaking-contract", step: 1, basis: "latest-contract-version" });
   }
   if (input.confidence < LOW_CONFIDENCE_THRESHOLD) {
     modifiers.push({ kind: "low-confidence", step: -1, confidence: input.confidence });

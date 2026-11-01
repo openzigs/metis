@@ -279,6 +279,26 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await expectBothSurvive(id);
     });
 
+    const dialogState = async (analysisId: string) => {
+      const row = await db.clarificationDialogState.findUniqueOrThrow({ where: { analysisId } });
+      return JSON.parse(row.state) as {
+        currentRound: number;
+        completed: boolean;
+        answeredAmbiguities?: string[];
+        rounds: Array<{ answers: unknown[]; questions: Array<{ answer?: string }> }>;
+      };
+    };
+    /** The dialog state as seeded: round 1 open, nothing answered. */
+    const expectRoundStillOpen = async (analysisId: string) => {
+      const s = await dialogState(analysisId);
+      expect(s.currentRound).toBe(1);
+      expect(s.completed).toBe(false);
+      expect(s.answeredAmbiguities ?? []).toEqual([]);
+      expect(s.rounds).toHaveLength(1);
+      expect(s.rounds[0].answers).toEqual([]);
+      expect(s.rounds[0].questions[0].answer).toBeUndefined();
+    };
+
     const fresh = { ...R1, description: "Run 2's REQ-1: a different requirement." };
     /** A new extraction run replaces the list while the clarify call is out. */
     const replaceListMeanwhile = (id: string) => {
@@ -309,6 +329,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res.status).toBe(409);
       expect(res.body.error.code).toBe("REQUIREMENTS_REPLACED");
       expect((await reviewedList(id)).requirements).toEqual([fresh]);
+      // #1668 — the round is not consumed, so "answer again" holds: same round, open.
+      await expectRoundStillOpen(id);
+      const again = await request(app())
+        .post(`${base(id)}/clarify`)
+        .set("Authorization", `Bearer ${token()}`)
+        .send({ answers: [{ questionId: "q-1", answer: "Only EU invoices" }] });
+      expect(again.status).toBe(200);
+      expect((await dialogState(id)).rounds[0].answers).toEqual([
+        { questionId: "q-1", answer: "Only EU invoices" },
+      ]);
     });
 
     it("the CSV round-trip refuses the same way (#1657)", async () => {
@@ -323,6 +353,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         .attach("file", Buffer.from(csv), "answers.csv");
       expect(res.status).toBe(409);
       expect((await reviewedList(id)).requirements).toEqual([fresh]);
+      await expectRoundStillOpen(id);
     });
 
     it("a requirements list sent in the body is guarded against a replacing run too (#1657)", async () => {

@@ -32,7 +32,7 @@ import { prisma } from "../prisma.js";
 import { buildProductAccessWhere, productRepoReadAccess } from "../products/product-access.js";
 import { canAccessProjectDiscussions } from "../discussions/access.js";
 import { getPortfolioAssessment } from "./assessment-store.js";
-import { impactOverview } from "./report-overview.js";
+import { impactOverview, impactSentence } from "./report-overview.js";
 import {
   portfolioSummary,
   toProductRecord,
@@ -174,7 +174,9 @@ function impactReferences(stored: StoredProduct): { repos: string[]; products: s
 /**
  * #1623 — a product's impact as the reader may see it. A path through a repo or
  * a product the reader cannot read now is withheld whole (its edges, severity
- * and hops would describe what they cannot see); the impact kind stays.
+ * and hops would describe what they cannot see); the impact kind stays. So
+ * does nothing that restates the path (#1668): an out-of-scope row's summary
+ * is its impact sentence, rebuilt here from the withheld fields.
  */
 function readableImpact(
   stored: StoredProduct,
@@ -185,11 +187,11 @@ function readableImpact(
   if (refs.repos.every(keepRepo) && refs.products.every(readableProduct)) return stored;
   const detail: Record<string, unknown> = { ...stored.technicalDetail };
   delete detail.impact;
+  const withheld = { impactKind: stored.impactKind, via: null, edgeIds: [], severity: null };
   return {
     ...stored,
-    via: null,
-    edgeIds: [],
-    severity: null,
+    ...withheld,
+    ...(detail.outOfScope === true ? { baSummary: impactSentence(withheld) } : {}),
     technicalDetail: { ...detail, impactWithheld: true },
   };
 }
@@ -349,13 +351,21 @@ export async function viewPortfolioAssessment(
       continue;
     }
     changed = true;
-    const impact = (stored.technicalDetail as { impact?: unknown }).impact;
+    const { impact, impactWithheld } = stored.technicalDetail as {
+      impact?: unknown;
+      impactWithheld?: unknown;
+    };
     if (view) {
       const record = toProductRecord(view.result, view.criteria);
       products.push({
         ...stored,
         ...record,
-        technicalDetail: { ...record.technicalDetail, ...(impact ? { impact } : {}) },
+        technicalDetail: {
+          ...record.technicalDetail,
+          ...(impact ? { impact } : {}),
+          // #1668 — so a withheld path still reads withheld, not as no impact detail.
+          ...(impactWithheld === true ? { impactWithheld: true } : {}),
+        },
       });
       result(view.result);
     } else {
@@ -402,6 +412,9 @@ export async function viewPortfolioAssessment(
     report,
     // #1657 — the stored total includes the calls on what this reader cannot
     // see, which tells them it was assessed: recomputed from what they see.
+    // #1668 — from the products' repo calls only, so the run-wide calls that
+    // belong to no product (the criteria decomposition, the BA report) drop
+    // out too: the total is below the run's spend by more than the hidden repos.
     costUsd: changed ? results.reduce((sum, p) => sum + p.costUsd, 0) : a.costUsd,
     productNames: Object.fromEntries(
       a.products.flatMap((p) => {
@@ -420,7 +433,9 @@ export function toListItem(v: PortfolioAssessmentView): PortfolioAssessmentListI
     scope: v.scope,
     status: v.status,
     verdict: v.verdict,
-    productCount: v.products.length || v.productIds.length,
+    // #1668 — the products it was scoped to: a product the impact walk reached
+    // outside the scope (#1623) has a row of its own, but is not counted.
+    productCount: v.productIds.length,
     createdById: v.createdById,
     createdAt: v.createdAt,
     updatedAt: v.updatedAt,

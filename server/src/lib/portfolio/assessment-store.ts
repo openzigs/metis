@@ -112,42 +112,69 @@ export async function createPortfolioAssessment(raw: PortfolioAssessmentInput): 
   return id;
 }
 
+/** The statuses of a run that has not ended (#1668). */
+const LIVE_STATUSES = ["pending", "running"] as const;
+
 /**
  * #1625 — fill in an assessment created `pending`: its result fields and every
  * child row, in one batch transaction. Child rows already there (a retried
  * completion) are replaced, never doubled. The source, scope and creator it
  * was started with do not change.
+ *
+ * #1668 — only a run still `pending` or `running` completes: `failed` is
+ * final. A stalled run the sweep failed meanwhile (its starter and any poller
+ * were told so) is not flipped back. The parent update matches on the status
+ * too and comes first, so when it matches nothing Prisma rejects it (`P2025`)
+ * and the whole batch, child rows included, rolls back. Returns whether it
+ * was written.
  */
 export async function completePortfolioAssessment(
   id: string,
   raw: PortfolioAssessmentInput,
-): Promise<void> {
+): Promise<boolean> {
   const input = portfolioAssessmentInputSchema.parse(raw);
-  await prisma.$transaction([
-    prisma.portfolioAssessmentProduct.deleteMany({ where: { assessmentId: id } }),
-    prisma.portfolioAssessmentRepo.deleteMany({ where: { assessmentId: id } }),
-    prisma.portfolioAssessment.update({
-      where: { id },
-      data: {
-        statement: input.statement,
-        productIds: JSON.stringify(input.productIds),
-        status: input.status,
-        portfolioVerdict: input.portfolioVerdict,
-        summary: input.summary,
-        report: JSON.stringify(input.report ?? {}),
-        costUsd: input.costUsd,
-      },
-    }),
-    ...childRows(id, input),
-  ]);
+  try {
+    await prisma.$transaction([
+      prisma.portfolioAssessment.update({
+        where: { id, status: { in: [...LIVE_STATUSES] } },
+        data: {
+          statement: input.statement,
+          productIds: JSON.stringify(input.productIds),
+          status: input.status,
+          portfolioVerdict: input.portfolioVerdict,
+          summary: input.summary,
+          report: JSON.stringify(input.report ?? {}),
+          costUsd: input.costUsd,
+        },
+      }),
+      prisma.portfolioAssessmentProduct.deleteMany({ where: { assessmentId: id } }),
+      prisma.portfolioAssessmentRepo.deleteMany({ where: { assessmentId: id } }),
+      ...childRows(id, input),
+    ]);
+    return true;
+  } catch (err) {
+    // Prisma's "record to update not found": the run is no longer live.
+    if ((err as { code?: unknown } | null)?.code === "P2025") return false;
+    throw err;
+  }
 }
 
-/** #1625 — move an assessment to `running` or `failed`. */
+/**
+ * #1625 — move an assessment to `running` (from `pending`) or `failed` (from
+ * `pending` or `running`). #1668 — conditional, so neither can reopen a run
+ * that ended: a swept `failed` row stays failed, a `completed` one completed.
+ * Returns whether the row moved.
+ */
 export async function setPortfolioAssessmentStatus(
   id: string,
   status: "running" | "failed",
-): Promise<void> {
-  await prisma.portfolioAssessment.updateMany({ where: { id }, data: { status } });
+): Promise<boolean> {
+  const from = status === "running" ? ["pending"] : [...LIVE_STATUSES];
+  const { count } = await prisma.portfolioAssessment.updateMany({
+    where: { id, status: { in: from } },
+    data: { status },
+  });
+  return count > 0;
 }
 
 /**
@@ -167,15 +194,22 @@ export async function touchPortfolioAssessment(id: string): Promise<void> {
  * changed since `staleBefore`. A run executes only in the process that started
  * it, and a live one beats every `PORTFOLIO_ASSESSMENT_HEARTBEAT_MS`, so such a
  * row has no process left: it is failed, never resumed (resuming would spend
- * model calls nobody is waiting for). One conditional update, so a row that
- * beats meanwhile is not taken. Returns how many were failed.
+ * model calls nobody is waiting for). Each row is failed by a conditional
+ * update, so a row that beats meanwhile is not taken. #1668 — returns the ids
+ * of the rows it failed, so the sweep can tell their `job:{id}` subscribers.
  */
-export async function failInterruptedPortfolioAssessments(staleBefore: Date): Promise<number> {
-  const { count } = await prisma.portfolioAssessment.updateMany({
-    where: { status: { in: ["pending", "running"] }, updatedAt: { lt: staleBefore } },
-    data: { status: "failed" },
-  });
-  return count;
+export async function failInterruptedPortfolioAssessments(staleBefore: Date): Promise<string[]> {
+  const stale = { status: { in: [...LIVE_STATUSES] }, updatedAt: { lt: staleBefore } };
+  const rows = await prisma.portfolioAssessment.findMany({ where: stale, select: { id: true } });
+  const failed: string[] = [];
+  for (const { id } of rows) {
+    const { count } = await prisma.portfolioAssessment.updateMany({
+      where: { id, ...stale },
+      data: { status: "failed" },
+    });
+    if (count > 0) failed.push(id);
+  }
+  return failed;
 }
 
 /**

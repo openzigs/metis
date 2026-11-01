@@ -65,4 +65,11 @@ Phase 3b: the reviews of #1665 (#1657), #1666 (#1623) and #1667 (#1624), 2026-11
   persists the dialog round (`writeDialogState`) before the route persists requirements.
   So a guard after it, such as the 409 REQUIREMENTS_REPLACED, fires once the round is
   already consumed, and its "answer again" may be impossible. Check where a new status is
-  thrown relative to the writes before it.
+  thrown relative to the writes before it. Fixed in #1668: `submitAnswers` takes a
+  `beforeCommit` hook that runs before `writeDialogState`.
+- **A conditional write inside a batch transaction (#1668).** Interactive transactions
+  collide on SQLite under concurrency, so the store uses batch `$transaction([...])`. To
+  make a batch conditional, put a Prisma `update` whose `where` names the status as well
+  as the id first. When it matches nothing it throws `P2025`, and the whole batch rolls
+  back, child rows included. `updateMany` returns a count instead, so it can't abort a
+  batch.

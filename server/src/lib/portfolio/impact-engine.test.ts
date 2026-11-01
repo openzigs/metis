@@ -38,6 +38,32 @@ describe("edgeFlows", () => {
     expect(flows("sideways")).toEqual(both);
   });
 
+  it("a write between two writers of a table carries impact both ways (#1668)", () => {
+    const evidence = (...patterns: string[]) =>
+      JSON.stringify(patterns.map((pattern, i) => ({ filePath: `f${i}.sql`, pattern })));
+    const writes = (raw: string | null) =>
+      edgeFlows({ sourceRepoId: "s", targetRepoId: "t", direction: "writes", evidence: raw });
+    expect(writes(evidence("sql_table_write", "sql_table_write"))).toEqual([
+      { provider: "s", consumer: "t" },
+      { provider: "t", consumer: "s" },
+    ]);
+    // A writer and a reader: only the writer's change reaches the reader.
+    expect(writes(evidence("sql_table_write", "sql_table_read"))).toEqual([
+      { provider: "s", consumer: "t" },
+    ]);
+    expect(writes(null)).toEqual([{ provider: "s", consumer: "t" }]);
+    expect(writes("not json")).toEqual([{ provider: "s", consumer: "t" }]);
+    // `provides` stays one way whatever its evidence says.
+    expect(
+      edgeFlows({
+        sourceRepoId: "s",
+        targetRepoId: "t",
+        direction: "provides",
+        evidence: evidence("sql_table_write", "sql_table_write"),
+      }),
+    ).toEqual([{ provider: "s", consumer: "t" }]);
+  });
+
   it("an edge to a resource alone carries nothing by itself", () => {
     expect(flows("writes", null)).toEqual([]);
   });
@@ -112,6 +138,8 @@ describe("withImpact", () => {
   };
   const impact: PortfolioImpactResult = {
     maxDepth: 2,
+    // p9: the walk reached it and stopped there.
+    stoppedAtRestricted: 1,
     products: [
       impactOf({ productId: "p1", impactKind: "direct-change", hiddenEdgeCount: 2 }),
       impactOf({
@@ -156,6 +184,7 @@ describe("withImpact", () => {
             severity: null,
             severityRule: "weakest-hop",
             hiddenEdgeCount: 2,
+            stoppedAtRestricted: 1,
             hops: [],
           },
         },
@@ -164,6 +193,9 @@ describe("withImpact", () => {
     expect(row("p2")).toEqual(
       expect.objectContaining({ via: "api", severity: "low", edgeIds: ["e1"] }),
     );
+    // #1668 — a walk that stopped nowhere records nothing of it.
+    const clean = withImpact(input, { ...impact, stoppedAtRestricted: 0 }).products!;
+    expect(clean[0].technicalDetail!.impact).not.toHaveProperty("stoppedAtRestricted");
   });
 
   it("a product restricted to the run gets its impact kind and nothing else", () => {

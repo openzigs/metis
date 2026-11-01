@@ -11,9 +11,11 @@
  * start it again.
  */
 import { createChildLogger } from "../logger.js";
+import { genericFailureMessage, jobEvents } from "../socket/job-events.js";
 import { failInterruptedPortfolioAssessments } from "./assessment-store.js";
 
 const log = createChildLogger("portfolio-assessment-sweep");
+const KIND = "portfolio-assessment" as const;
 
 /** How often a running assessment refreshes its row. */
 export const PORTFOLIO_ASSESSMENT_HEARTBEAT_MS = 30_000;
@@ -25,15 +27,24 @@ export const PORTFOLIO_ASSESSMENT_STALE_MS = 5 * 60_000;
 /** How often the sweep runs after its startup pass. */
 export const PORTFOLIO_ASSESSMENT_SWEEP_INTERVAL_MS = 60_000;
 
-/** One sweep: fail the interrupted assessments. Returns how many. */
+/**
+ * One sweep: fail the interrupted assessments, and (#1668) emit a `failed` job
+ * event for each, as a run that fails in-process does, so a `job:{id}`
+ * subscriber (#1626) hears it ended. Returns how many.
+ */
 export async function sweepInterruptedPortfolioAssessments(
   now: number = Date.now(),
 ): Promise<number> {
   const failed = await failInterruptedPortfolioAssessments(
     new Date(now - PORTFOLIO_ASSESSMENT_STALE_MS),
   );
-  if (failed > 0) log.warn("Failed interrupted portfolio assessments", { count: failed });
-  return failed;
+  for (const id of failed) {
+    jobEvents.failed(KIND, id, null, genericFailureMessage(KIND));
+  }
+  if (failed.length > 0) {
+    log.warn("Failed interrupted portfolio assessments", { count: failed.length });
+  }
+  return failed.length;
 }
 
 /** Sweep now, then every `intervalMs`. Returns a stop function. */

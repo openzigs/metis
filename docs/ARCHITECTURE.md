@@ -1397,21 +1397,31 @@ caller can read (404 otherwise); its title, body and acceptance criteria become 
 statement and criteria, and it is recorded as the source. A run executes in the process
 that started it and refreshes its row every 30 seconds; a sweep (at boot, then every
 minute: `lib/portfolio/interrupted-assessments.ts`) fails a `pending` or `running` row
-unchanged for five minutes, so a restart never leaves one running for ever (#1657). Starting takes `analysis.run`, reading `analysis.read`. Each
-route has a pre-auth limiter and a per-user one (`portfolio-assessments-rate-limit.ts`:
-10 starts, 300 reads per 15 minutes); CSRF is the app-wide `csrfProtection` (#913).
+unchanged for five minutes, so a restart never leaves one running for ever (#1657), and
+emits a `failed` job event for each row it fails (#1668). `failed` is final: every status
+write and the completion match on the status as well as the id, so a stalled run the
+sweep failed is not flipped back to `completed` when it finishes (#1668). Starting takes
+`analysis.run`, reading `analysis.read`. Each route has a pre-auth limiter and a per-user
+one (`portfolio-assessments-rate-limit.ts`: 10 starts, 300 reads per 15 minutes); CSRF is
+the app-wide `csrfProtection` (#913).
 
 Reads never trust what was stored (`viewPortfolioAssessment`,
 `server/src/lib/portfolio/assessment-view.ts`). An assessment is readable by an admin, or by
 a reader who can read its source project and who started it or can read one of the
 products its run could read; anyone else gets 404, and the `job:{id}` room takes the same
 rule. A product stored `restricted` (its starter could not read it) never counts, and never
-lists the assessment under `?productId=` (#1657). The list reads further pages until it
-holds 25 readable rows or has looked at 100. For that
-reader, every product they cannot read now is `restricted` with nothing in it, every repo
-they cannot read now (or whose connection was deleted) is dropped with its citations and
-its product's coverage recomputed with it counted hidden, and when they see less than the
-run did, the verdict, summary and `costUsd` are recomputed from what they see (#1657).
+lists the assessment under `?productId=` (#1657). Any other row does, including a product
+the impact walk reached outside the scope (#1623): a product's list holds the assessments
+that change it or reach it downstream, each still behind the read rule above (#1668). A
+list row's `productCount` is the scope (`productIds`), not the rows reached outside it.
+The list reads further pages until it holds 25 readable rows or has looked at 100,
+building at most 5 views at a time. For that reader, every product they cannot read now
+is `restricted` with nothing in it, every repo they cannot read now (or whose connection
+was deleted) is dropped with its citations and its product's coverage recomputed with it
+counted hidden, and when they see less than the run did, the verdict, summary and
+`costUsd` are recomputed from what they see (#1657). The recomputed `costUsd` sums the
+products' repo calls only, so the run-wide calls that belong to no product (the criteria
+decomposition, the BA report) drop out of it too (#1668).
 
 **Cross-product impact (#1623)** (`server/src/lib/portfolio/impact-engine.ts`). After the
 gap analysis, the run walks the typed product edges (#1618) from the products whose code
@@ -1423,22 +1433,35 @@ requirement needs no change. Cross-product coupling is a repo on several product
 
 - **Direction.** Read from the edge's source side: `consumes` / `depends-on`, the source
   is downstream of the target; `provides` / `writes`, the target is downstream; `reads` or
-  unclassified, both ways. Two repo → resource edges through one resource are paired: a
-  repo that writes or provides it reaches every other repo using it.
+  unclassified, both ways. A `writes` edge whose evidence has both ends writing the table
+  (`sql_table_write` twice: `detectSharedTables` records one edge between two writers,
+  from the lower id) carries impact both ways too (#1668). Two repo → resource edges
+  through one resource are paired: a repo that writes or provides it reaches every other
+  repo using it, never itself.
 - **Depth and cycles.** From the direct-change products' readable repos, then from each
-  consumer repo, up to 2 hops (`maxDepth`, at most 4). A direct-change product is never
-  downstream, each product is listed once with its most severe path, and a repo is walked
-  again only when a more severe path reaches it.
+  consumer repo, up to 2 product boundaries (`maxDepth`, at most 4). An edge between two
+  repos of one product moves the change inside it at no depth, and is on the path as a
+  hop of its own (#1668), so a product made of an API repo and a UI repo passes impact
+  on. A direct-change product is never downstream, each product is listed once with its
+  most severe path, and a repo is walked again only when a more severe path reaches it.
 - **Access.** Only edges on products the caller can read, between repos they can read,
-  are walked. An edge to a repo they cannot read is counted (`hiddenEdgeCount`) on the
-  product it leaves. A consumer product they cannot read is `restricted`: its id and
-  `downstream-consumer`, nothing else, and the walk never goes through it.
+  are walked. An edge to a repo they cannot read is counted (`hiddenEdgeCount`, once) on
+  the product it leaves. A contract an edge names is cited only when the caller can read
+  its repo. A consumer product they cannot read is `restricted`: its id and
+  `downstream-consumer`, nothing else, and the walk never goes through it. The walk
+  records how many it stopped at (`stoppedAtRestricted`, stored in every readable row's
+  `technicalDetail.impact`), the summary says impact past them was not followed, and the
+  export reads a product nothing reached as "Not reached", not "Not affected", in that
+  case (#1668; a fuller reading of FR-3 for such a product is the owner's to confirm).
 - **Severity** (`impact-severity.ts`, `CHANGE_SEVERITIES`). Base from the strength
   (`intrusive`/`functional` high, `model` medium, `contract` low, unclassified medium);
-  +1 when the provider's latest `ProductContractDoc` diff breaks (`isBreakingDiff`: an
+  +1 when the provider's own latest `ProductContractDoc` diff breaks (`isBreakingDiff`: an
   item removed, a field or parameter removed or retyped, a required parameter added),
-  first hop only and never on an intrusive edge; -1 when the edge's confidence is under
-  0.5; capped at both ends. A path is as severe as its weakest hop.
+  from a direct-change repo only, never on an intrusive edge, and never from a contract
+  of another repo (#1668). It reads a past change of the provider's, not the one this
+  requirement proposes, and the stored modifier says so (`basis:
+  "latest-contract-version"`). -1 when the edge's confidence is under 0.5; capped at both
+  ends. A path is as severe as its weakest hop.
 - **Evidence** per hop (`technicalDetail.impact.hops`): the edges, both repos, the
   consumer's call sites, the contract items changed, the shared resource, and for a
   `database` hop the tables and columns both projects use (`crossProjectImpact`, #309).
@@ -1448,8 +1471,9 @@ product reached outside the scope gets its own `downstream-consumer` row (`not-c
 with `technicalDetail.outOfScope`, or `restricted`); the schema admits a row outside
 `productIds` only for that, and such a row never enters the portfolio verdict or the
 read rule. At read time a path through a repo or product the reader cannot read now is
-withheld whole (`impactWithheld`); the impact kind stays. The walk is read-only: no
-writes, no DDL, no connector call.
+withheld whole (`impactWithheld`, kept on a row whose coverage is recomputed); the impact
+kind stays, and an out-of-scope row's summary is rebuilt without the path's kind and
+severity (#1668). The walk is read-only: no writes, no DDL, no connector call.
 
 **BA report and export (#1624)** (`server/src/lib/portfolio/assessment-report.ts`,
 `assessment-markdown.ts`). After the impact walk, one model call through the provider
