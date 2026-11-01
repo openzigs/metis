@@ -1,0 +1,203 @@
+/**
+ * #1623 — the impact engine's pure parts: edge semantics, the direct-change
+ * set and how an impact is merged into an assessment record. The walk itself,
+ * over a real database, is in `tests/portfolio-impact-1623.sqlite.test.ts`.
+ */
+import { describe, expect, it } from "vitest";
+import type { PortfolioAssessmentInput } from "@metis/shared";
+import {
+  directChangeProductIds,
+  edgeFlows,
+  impactSentence,
+  withImpact,
+  type PortfolioImpactResult,
+  type ProductImpact,
+} from "./impact-engine.js";
+
+describe("edgeFlows", () => {
+  const flows = (direction: string | null, targetRepoId: string | null = "t") =>
+    edgeFlows({ sourceRepoId: "s", targetRepoId, direction });
+
+  it("a consumer or dependant source is downstream of its target", () => {
+    expect(flows("consumes")).toEqual([{ provider: "t", consumer: "s" }]);
+    expect(flows("depends-on")).toEqual([{ provider: "t", consumer: "s" }]);
+  });
+
+  it("a providing or writing source has its target downstream", () => {
+    expect(flows("provides")).toEqual([{ provider: "s", consumer: "t" }]);
+    expect(flows("writes")).toEqual([{ provider: "s", consumer: "t" }]);
+  });
+
+  it("two readers, or an unclassified edge, carry impact both ways", () => {
+    const both = [
+      { provider: "s", consumer: "t" },
+      { provider: "t", consumer: "s" },
+    ];
+    expect(flows("reads")).toEqual(both);
+    expect(flows(null)).toEqual(both);
+    expect(flows("sideways")).toEqual(both);
+  });
+
+  it("an edge to a resource alone carries nothing by itself", () => {
+    expect(flows("writes", null)).toEqual([]);
+  });
+});
+
+describe("directChangeProductIds", () => {
+  const gap = {
+    products: [
+      { productId: "p2", coverage: "partial" },
+      { productId: "p1", coverage: "covers" },
+      { productId: "p3", coverage: "not-covered" },
+      { productId: "p4", coverage: "partial" },
+    ],
+  } as Parameters<typeof directChangeProductIds>[0];
+
+  it("the partly-covering products change; one that covers it already does not", () => {
+    expect(directChangeProductIds(gap)).toEqual(["p2", "p4"]);
+  });
+
+  it("the host changes too, once, whether or not it was in scope", () => {
+    expect(directChangeProductIds(gap, "p3")).toEqual(["p2", "p3", "p4"]);
+    expect(directChangeProductIds(gap, "p2")).toEqual(["p2", "p4"]);
+    expect(directChangeProductIds({ products: [] }, "p9")).toEqual(["p9"]);
+  });
+});
+
+const impactOf = (over: Partial<ProductImpact> & { productId: string }): ProductImpact => ({
+  name: "N",
+  restricted: false,
+  impactKind: "none",
+  via: null,
+  severity: null,
+  edgeIds: [],
+  hops: [],
+  hiddenEdgeCount: 0,
+  ...over,
+});
+
+describe("impactSentence", () => {
+  it("says how a product is reached", () => {
+    expect(impactSentence(impactOf({ productId: "p", impactKind: "direct-change" }))).toBe(
+      "Must change to deliver this requirement.",
+    );
+    expect(impactSentence(impactOf({ productId: "p" }))).toBe("Not affected.");
+    expect(
+      impactSentence(
+        impactOf({
+          productId: "p",
+          impactKind: "downstream-consumer",
+          via: "api",
+          severity: "low",
+        }),
+      ),
+    ).toBe("Downstream consumer via api (low).");
+    expect(impactSentence(impactOf({ productId: "p", impactKind: "downstream-consumer" }))).toBe(
+      "Downstream consumer.",
+    );
+  });
+});
+
+describe("withImpact", () => {
+  const input: PortfolioAssessmentInput = {
+    statement: "S",
+    scope: "all-accessible",
+    productIds: ["p1", "p2", "p3"],
+    createdById: "u",
+    products: [
+      { productId: "p1", coverage: "partial", technicalDetail: { reason: null } },
+      { productId: "p2", coverage: "not-covered", technicalDetail: { reason: null } },
+      { productId: "p3", coverage: "restricted" },
+    ],
+  };
+  const impact: PortfolioImpactResult = {
+    maxDepth: 2,
+    products: [
+      impactOf({ productId: "p1", impactKind: "direct-change", hiddenEdgeCount: 2 }),
+      impactOf({
+        productId: "p2",
+        impactKind: "downstream-consumer",
+        via: "api",
+        severity: "low",
+        edgeIds: ["e1"],
+      }),
+      // Restricted to the run, though it came back with something: nothing of it is stored.
+      impactOf({
+        productId: "p3",
+        restricted: false,
+        impactKind: "downstream-consumer",
+        via: "event",
+        severity: "high",
+        edgeIds: ["e2"],
+      }),
+      impactOf({
+        productId: "p8",
+        impactKind: "downstream-consumer",
+        via: "database",
+        severity: "high",
+        edgeIds: ["e3"],
+      }),
+      impactOf({ productId: "p9", restricted: true, impactKind: "downstream-consumer" }),
+      impactOf({ productId: "p10" }),
+    ],
+  };
+  const rows = () => withImpact(input, impact).products!;
+  const row = (id: string) => rows().find((p) => p.productId === id);
+
+  it("adds each scoped product's impact, keeping its gap detail", () => {
+    expect(row("p1")).toEqual(
+      expect.objectContaining({
+        coverage: "partial",
+        impactKind: "direct-change",
+        technicalDetail: {
+          reason: null,
+          impact: {
+            maxDepth: 2,
+            severity: null,
+            severityRule: "weakest-hop",
+            hiddenEdgeCount: 2,
+            hops: [],
+          },
+        },
+      }),
+    );
+    expect(row("p2")).toEqual(
+      expect.objectContaining({ via: "api", severity: "low", edgeIds: ["e1"] }),
+    );
+  });
+
+  it("a product restricted to the run gets its impact kind and nothing else", () => {
+    expect(row("p3")).toEqual({
+      productId: "p3",
+      coverage: "restricted",
+      impactKind: "downstream-consumer",
+      via: null,
+      edgeIds: [],
+      severity: null,
+    });
+  });
+
+  it("a downstream product outside the scope gets its own row; one not reached does not", () => {
+    expect(row("p8")).toEqual(
+      expect.objectContaining({
+        coverage: "not-checked",
+        impactKind: "downstream-consumer",
+        baSummary: "Downstream consumer via database (high).",
+        technicalDetail: expect.objectContaining({ outOfScope: true }),
+      }),
+    );
+    expect(row("p9")).toEqual({
+      productId: "p9",
+      coverage: "restricted",
+      impactKind: "downstream-consumer",
+      via: null,
+      edgeIds: [],
+      severity: null,
+      baSummary: "",
+      technicalDetail: {},
+    });
+    expect(row("p10")).toBeUndefined();
+    // The scope itself is unchanged: the new rows never enter the portfolio verdict.
+    expect(withImpact(input, impact).productIds).toEqual(["p1", "p2", "p3"]);
+  });
+});

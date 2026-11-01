@@ -243,3 +243,66 @@ export function renderContractDiff(diff: ContractDiff | null): string {
 
   return lines.join("\n");
 }
+
+/**
+ * `key=[a, b]` lists of a signature, by key. Scanned by hand rather than with a
+ * regex: a `\w+=\[[^\]]*\]` match retried at every `=[` of a list that never
+ * closes is quadratic (#1647). Each character is visited a bounded number of times.
+ */
+function signatureLists(signature: string): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  let from = 0;
+  for (;;) {
+    const open = signature.indexOf("=[", from);
+    if (open === -1) break;
+    const close = signature.indexOf("]", open + 2);
+    // No `]` after this `=[`: no later list can close either.
+    if (close === -1) break;
+    let start = open;
+    while (start > from && /\w/.test(signature[start - 1])) start -= 1;
+    out.set(
+      signature.slice(start, open),
+      signature
+        .slice(open + 2, close)
+        .split(", ")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    );
+    from = close + 1;
+  }
+  return out;
+}
+
+/** The `kind=` of a GraphQL signature (its first segment), if any. */
+function signatureKind(signature: string): string | null {
+  if (!signature.startsWith("kind=")) return null;
+  const end = signature.indexOf("|");
+  return signature.slice(5, end === -1 ? undefined : end);
+}
+
+/**
+ * #1623 — whether a changed item breaks a consumer written against `before`:
+ * an entry of any list (a field, a parameter, a response, a method) is gone or
+ * retyped, a required OpenAPI parameter was added, or a GraphQL kind changed.
+ * Only new optional entries, or a new summary, leave a consumer working.
+ */
+export function isBreakingChange(item: Pick<ChangedItem, "before" | "after">): boolean {
+  if (signatureKind(item.before) !== signatureKind(item.after)) return true;
+  const before = signatureLists(item.before);
+  const after = signatureLists(item.after);
+  for (const [key, entries] of before) {
+    const now = new Set(after.get(key) ?? []);
+    if (entries.some((e) => !now.has(e))) return true;
+  }
+  const params = new Set(before.get("params") ?? []);
+  return (after.get("params") ?? []).some((p) => !params.has(p) && p.includes(":req:"));
+}
+
+/**
+ * #1623 — whether a contract diff breaks its consumers: an item was removed (a
+ * rename reads as a removal and an addition), or a changed item breaks
+ * ({@link isBreakingChange}). A diff of only additions is not breaking.
+ */
+export function isBreakingDiff(diff: Pick<ContractDiff, "removed" | "changed">): boolean {
+  return diff.removed.length > 0 || diff.changed.some(isBreakingChange);
+}
