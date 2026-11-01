@@ -1004,15 +1004,18 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           );
         }
         const answers = body.answers;
-        const result = await runInAnalysisUsageScope(usageScope, () =>
-          dialog.submitAnswers(analysisId, answers, requirements),
-        );
         // Epic #201 (#211) — close the feedback loop: persist the refined
         // requirements so they reach `Analysis.metadata` and flow downstream
         // into synthesis (#212). Issue #1602 — merged onto the list as it is
         // now, not written from the copy read before the model call, so a
-        // requirement synthesis offered meanwhile (#1569) survives.
-        await persistClarifiedRound(analysisId, requirements, result);
+        // requirement synthesis offered meanwhile (#1569) survives. #1668 —
+        // before the round is written to the dialog state, so a 409 for a
+        // replaced list leaves the round open to answer again.
+        const result = await runInAnalysisUsageScope(usageScope, () =>
+          dialog.submitAnswers(analysisId, answers, requirements, undefined, (round) =>
+            persistClarifiedRound(analysisId, requirements, round),
+          ),
+        );
         // Issue #1116 — and into the ARTIFACT path. `structuredRequirements` is
         // only what the approval view renders; the drafts (and the GitHub issues
         // they become) are built from the `Requirement` rows, which replay the
@@ -1397,11 +1400,13 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           retriever: getKnowledgeService(),
           projectId,
         });
-        const result = await runInAnalysisUsageScope({ projectId, sessionId: analysisId }, () =>
-          dialog.submitAnswers(analysisId, applied, requirements),
+        // Issue #1602 — merged onto the list as it is now, as the JSON submit is,
+        // and (#1668) before the round is written to the dialog state.
+        await runInAnalysisUsageScope({ projectId, sessionId: analysisId }, () =>
+          dialog.submitAnswers(analysisId, applied, requirements, undefined, (round) =>
+            persistClarifiedRound(analysisId, requirements, round),
+          ),
         );
-        // Issue #1602 — merged onto the list as it is now, as the JSON submit is.
-        await persistClarifiedRound(analysisId, requirements, result);
         // Issue #1116 — the CSV round-trip is the same submit path, so it must
         // reach the artifact the same way.
         await applyClarificationsToRequirements(analysisId);

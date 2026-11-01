@@ -18,6 +18,16 @@
  *   repo) is also on Ledger (P11, ws-a). Ana (ws-a) cannot read Partner or
  *   `partner-core`; Mia (both) can. A ws-b repo attached to Billing before
  *   #1257 (`legacy-sync`) carries an edge Ana cannot read.
+ *
+ * #1668, each graph apart from the rest:
+ * - Inside a product: Fulfilment (P13) changes; Warehouse (P14) has an API
+ *   repo that calls it and a UI repo that calls that API (an edge inside P14);
+ *   Alerts (P15) calls the Warehouse UI repo.
+ * - Two writers of one table: Writer A (P16) and Writer B (P17), one `writes`
+ *   edge between them from the lower id, as `detectSharedTables` records it.
+ * - A repo walked twice: Dedup D (P18) changes; Dedup X (P19) is reached first
+ *   through a loose edge, then through Dedup Y (P20) by a stronger path, so its
+ *   repo is expanded twice. An edge from a ws-b repo touches it.
  */
 import type { PrismaClient } from "@prisma/client";
 
@@ -39,6 +49,14 @@ export const P = {
   billing: "p10-billing-1623",
   ledger: "p11-ledger-1623",
   idle: "p12-idle-1623",
+  fulfil: "p13-fulfil-1668",
+  warehouse: "p14-warehouse-1668",
+  alerts: "p15-alerts-1668",
+  writerA: "p16-writer-a-1668",
+  writerB: "p17-writer-b-1668",
+  dedupD: "p18-dedup-d-1668",
+  dedupX: "p19-dedup-x-1668",
+  dedupY: "p20-dedup-y-1668",
 } as const;
 
 export const R = {
@@ -55,6 +73,16 @@ export const R = {
   legacy: "rc-legacy-sync-1623",
   ledger: "rc-ledger-1623",
   idle: "rc-idle-1623",
+  fulfil: "rc-fulfil-1668",
+  whApi: "rc-wh-api-1668",
+  whUi: "rc-wh-ui-1668",
+  alerts: "rc-alerts-1668",
+  writerA: "rc-writer-a-1668",
+  writerB: "rc-writer-b-1668",
+  dedupD: "rc-dedup-d-1668",
+  dedupX: "rc-dedup-x-1668",
+  dedupY: "rc-dedup-y-1668",
+  dedupHidden: "rc-dedup-hidden-1668",
 } as const;
 
 export const CONTRACT_V1 = "cdoc-orders-v1-1623";
@@ -114,6 +142,14 @@ const PRODUCTS: Array<{ id: string; name: string; workspaceId: string; repos: st
   { id: P.billing, name: "Billing", workspaceId: WS_A, repos: [R.billing, R.gateway, R.legacy] },
   { id: P.ledger, name: "Ledger", workspaceId: WS_A, repos: [R.ledger, R.partnerCore] },
   { id: P.idle, name: "Idle", workspaceId: WS_A, repos: [R.idle] },
+  { id: P.fulfil, name: "Fulfilment", workspaceId: WS_A, repos: [R.fulfil] },
+  { id: P.warehouse, name: "Warehouse", workspaceId: WS_A, repos: [R.whApi, R.whUi] },
+  { id: P.alerts, name: "Alerts", workspaceId: WS_A, repos: [R.alerts] },
+  { id: P.writerA, name: "Writer A", workspaceId: WS_A, repos: [R.writerA] },
+  { id: P.writerB, name: "Writer B", workspaceId: WS_A, repos: [R.writerB] },
+  { id: P.dedupD, name: "Dedup D", workspaceId: WS_A, repos: [R.dedupD] },
+  { id: P.dedupX, name: "Dedup X", workspaceId: WS_A, repos: [R.dedupX] },
+  { id: P.dedupY, name: "Dedup Y", workspaceId: WS_A, repos: [R.dedupY] },
 ];
 
 const REPOS: Array<{ id: string; projectId: string; name: string }> = [
@@ -130,6 +166,16 @@ const REPOS: Array<{ id: string; projectId: string; name: string }> = [
   { id: R.legacy, projectId: PROJ_B, name: "legacy-sync" },
   { id: R.ledger, projectId: PROJ_A, name: "ledger" },
   { id: R.idle, projectId: PROJ_A, name: "idle" },
+  { id: R.fulfil, projectId: PROJ_A, name: "fulfil" },
+  { id: R.whApi, projectId: PROJ_A, name: "wh-api" },
+  { id: R.whUi, projectId: PROJ_A, name: "wh-ui" },
+  { id: R.alerts, projectId: PROJ_A, name: "alerts" },
+  { id: R.writerA, projectId: PROJ_A, name: "writer-a" },
+  { id: R.writerB, projectId: PROJ_A, name: "writer-b" },
+  { id: R.dedupD, projectId: PROJ_A, name: "dedup-d" },
+  { id: R.dedupX, projectId: PROJ_A, name: "dedup-x" },
+  { id: R.dedupY, projectId: PROJ_A, name: "dedup-y" },
+  { id: R.dedupHidden, projectId: PROJ_B, name: "dedup-hidden" },
 ];
 
 interface EdgeSeed {
@@ -246,6 +292,86 @@ export const EDGES: EdgeSeed[] = [
     targetRepoId: R.gateway,
     ...API,
     confidence: 0.9,
+  },
+  // #1668 — inside a product: Warehouse's UI calls its own API, which calls Fulfilment.
+  {
+    id: "e-whapi-fulfil-1668",
+    productId: P.warehouse,
+    sourceRepoId: R.whApi,
+    targetRepoId: R.fulfil,
+    ...API,
+  },
+  {
+    id: "e-whui-whapi-1668",
+    productId: P.warehouse,
+    sourceRepoId: R.whUi,
+    targetRepoId: R.whApi,
+    ...API,
+  },
+  {
+    id: "e-alerts-whui-1668",
+    productId: P.alerts,
+    sourceRepoId: R.alerts,
+    targetRepoId: R.whUi,
+    ...API,
+  },
+  // #1668 — two writers of `stock`: one edge, from the lower id, as detection records it.
+  {
+    id: "e-writers-1668",
+    productId: P.writerB,
+    sourceRepoId: R.writerA,
+    targetRepoId: R.writerB,
+    integrationKind: "database",
+    strength: "intrusive",
+    direction: "writes",
+    confidence: 0.8,
+    sourceFile: "sql/a.sql",
+    targetFile: "sql/b.sql",
+    evidence: [
+      {
+        filePath: "sql/a.sql",
+        lineNumber: 1,
+        pattern: "sql_table_write",
+        matchType: "shared_table",
+      },
+      {
+        filePath: "sql/b.sql",
+        lineNumber: 2,
+        pattern: "sql_table_write",
+        matchType: "shared_table",
+      },
+    ],
+  },
+  // #1668 — Dedup X is reached by a loose edge, then by a stronger path through Dedup Y.
+  {
+    id: "e-dedup-x-d-1668",
+    productId: P.dedupX,
+    sourceRepoId: R.dedupX,
+    targetRepoId: R.dedupD,
+    ...API,
+  },
+  {
+    id: "e-dedup-y-d-1668",
+    productId: P.dedupY,
+    sourceRepoId: R.dedupY,
+    targetRepoId: R.dedupD,
+    ...API,
+    strength: "functional",
+  },
+  {
+    id: "e-dedup-x-y-1668",
+    productId: P.dedupX,
+    sourceRepoId: R.dedupX,
+    targetRepoId: R.dedupY,
+    ...API,
+    strength: "functional",
+  },
+  {
+    id: "e-dedup-hidden-x-1668",
+    productId: P.dedupX,
+    sourceRepoId: R.dedupHidden,
+    targetRepoId: R.dedupX,
+    ...API,
   },
 ];
 

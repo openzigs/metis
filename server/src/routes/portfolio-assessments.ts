@@ -55,6 +55,7 @@ import { PORTFOLIO_ASSESSMENT_HEARTBEAT_MS } from "../lib/portfolio/interrupted-
 import {
   evaluatePortfolioGap,
   loadReadableSourceRequirement,
+  mapWithConcurrency,
   portfolioGapInputSchema,
   toAssessmentInput,
   type PortfolioGapDeps,
@@ -87,6 +88,8 @@ const KIND = "portfolio-assessment" as const;
 export const PORTFOLIO_ASSESSMENT_LIST_LIMIT = 25;
 /** #1657 — rows one list request may look at to fill its page. */
 export const PORTFOLIO_ASSESSMENT_LIST_SCAN = 100;
+/** #1668 — views one list request builds at once. */
+export const PORTFOLIO_ASSESSMENT_LIST_CONCURRENCY = 5;
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -153,7 +156,10 @@ async function readablePage(
       take: PORTFOLIO_ASSESSMENT_LIST_LIMIT,
       before,
     });
-    const views = await Promise.all(rows.map((r) => viewPortfolioAssessment(access, r.id)));
+    // #1668 — each view is a few queries; 25 at once took most of a Postgres pool.
+    const views = await mapWithConcurrency(rows, PORTFOLIO_ASSESSMENT_LIST_CONCURRENCY, (r) =>
+      viewPortfolioAssessment(access, r.id),
+    );
     for (const view of views) {
       if (view && items.length < PORTFOLIO_ASSESSMENT_LIST_LIMIT) items.push(toListItem(view));
     }
@@ -185,7 +191,8 @@ async function runAssessment(
   }, heartbeatMs);
   heartbeat.unref?.();
   try {
-    await setPortfolioAssessmentStatus(id, "running");
+    // #1668 — only from `pending`: a row that ended already is not run.
+    if (!(await setPortfolioAssessmentStatus(id, "running"))) return;
     jobEvents.started(KIND, id, null, "Portfolio assessment started");
     const result = await evaluatePortfolioGap(user, input, {
       ...deps.gap,
@@ -213,7 +220,7 @@ async function runAssessment(
       costOf: deps.report?.costOf ?? deps.gap?.costOf,
       signal: deps.gap?.signal,
     });
-    await completePortfolioAssessment(
+    const written = await completePortfolioAssessment(
       id,
       withReport(
         withImpact(
@@ -227,19 +234,26 @@ async function runAssessment(
         report,
       ),
     );
+    if (!written) {
+      // #1668 — the sweep failed it while it stalled, and said so: failed is final.
+      log.warn("Portfolio assessment finished after it was failed; result not stored", { id });
+      return;
+    }
     jobEvents.completed(KIND, id, null, "Portfolio assessment completed");
   } catch (err) {
     log.error("Portfolio assessment failed", {
       id,
       error: err instanceof Error ? err.message : String(err),
     });
-    await setPortfolioAssessmentStatus(id, "failed").catch((e: unknown) =>
+    const moved = await setPortfolioAssessmentStatus(id, "failed").catch((e: unknown) => {
       log.error("Could not record a failed portfolio assessment", {
         id,
         error: e instanceof Error ? e.message : String(e),
-      }),
-    );
-    jobEvents.failed(KIND, id, null, genericFailureMessage(KIND));
+      });
+      return true;
+    });
+    // #1668 — a row the sweep failed already had its failed event.
+    if (moved) jobEvents.failed(KIND, id, null, genericFailureMessage(KIND));
   } finally {
     clearInterval(heartbeat);
   }

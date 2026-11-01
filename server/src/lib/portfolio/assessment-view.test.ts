@@ -361,11 +361,29 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
         edgeIds: [],
         severity: null,
         technicalDetail: { outOfScope: true, impactWithheld: true },
+        // #1668 — its summary restated the withheld path's kind and severity.
+        baSummary: "Downstream consumer.",
       }),
     );
     expect(JSON.stringify(v)).not.toContain("rc-three");
+    expect(JSON.stringify(v)).not.toContain("via database");
+    expect(renderPortfolioAssessmentMarkdown(v)).not.toContain("(high)");
     // p2's path names only repos the reader can read: untouched.
     expect(v.products.find((p) => p.productId === "p2")!.severity).toBe("low");
+  });
+
+  it("a scoped row's withheld path keeps its coverage summary, which names no path (#1668)", async () => {
+    const a = withImpactRows();
+    a.products[1].technicalDetail = {
+      ...a.products[1].technicalDetail,
+      impact: impact([hop("rc-api", "rc-three", "p2")]),
+    };
+    store.getPortfolioAssessment.mockResolvedValue(a);
+    readableProjects.delete("proj-three");
+    const p2 = (await view())!.products.find((p) => p.productId === "p2")!;
+    expect(p2.technicalDetail).toEqual(expect.objectContaining({ impactWithheld: true }));
+    expect(p2.severity).toBeNull();
+    expect(p2.baSummary).toBe("Does not cover it | at all.");
   });
 
   it("a path through a product the reader cannot read is withheld", async () => {
@@ -414,8 +432,31 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
     expect(v.verdict).toBe("gap-confirmed");
     // #1624 — the recomputed summary carries the impact overview; p3 is counted, not named.
     expect(v.summary).toBe(
-      "Nothing in the portfolio covers this.\n\nMust change: One. Downstream: Two (api, low). 1 downstream product is restricted for this run.",
+      "Nothing in the portfolio covers this.\n\nMust change: One. Downstream: Two (api, low). 1 downstream product is restricted for this run, so impact past it was not followed.",
     );
+  });
+
+  it("a list row counts the products in scope, not the rows reached outside it (#1668)", async () => {
+    const v = (await view())!;
+    expect(v.products).toHaveLength(3);
+    expect(toListItem(v).productCount).toBe(2);
+  });
+
+  it("a recomputed product whose path is withheld still says so (#1668)", async () => {
+    // rc-web (p1's) is hidden now, so p1 is recomputed; its path names rc-three, hidden too.
+    readableProjects.delete("proj-web");
+    readableProjects.delete("proj-three");
+    const a = withImpactRows();
+    a.products[0].technicalDetail = {
+      ...a.products[0].technicalDetail,
+      impact: impact([hop("rc-api", "rc-three", "p3")]),
+    };
+    store.getPortfolioAssessment.mockResolvedValue(a);
+    const p1 = (await view())!.products[0];
+    expect(p1.technicalDetail).toEqual(
+      expect.objectContaining({ inaccessibleRepoCount: 1, impactWithheld: true }),
+    );
+    expect(p1.technicalDetail).not.toHaveProperty("impact");
   });
 
   it("a recomputed product keeps its impact detail", async () => {

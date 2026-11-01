@@ -310,12 +310,21 @@ export class ClarificationDialog {
   /**
    * Submit answers for the current round and process them.
    * Returns updated requirements and dialog state.
+   *
+   * #1668 — `beforeCommit` runs on the result before the round is written to
+   * the dialog state. When it throws, nothing is written, so the round stays
+   * open and can be answered again: the caller persists the requirements there,
+   * and refuses (409 REQUIREMENTS_REPLACED) without consuming the round.
    */
   async submitAnswers(
     analysisId: string,
     answers: ClarificationAnswer[],
     requirements: StructuredRequirements,
     signal?: AbortSignal,
+    beforeCommit?: (result: {
+      state: ClarificationState;
+      updatedRequirements: StructuredRequirements;
+    }) => Promise<void>,
   ): Promise<{ state: ClarificationState; updatedRequirements: StructuredRequirements }> {
     requirements = withAmbiguityDefaults(requirements);
     const state = await readDialogState(analysisId);
@@ -381,6 +390,7 @@ export class ClarificationDialog {
       state.completed = true;
     }
 
+    await beforeCommit?.({ state, updatedRequirements });
     await writeDialogState(analysisId, state);
 
     return { state, updatedRequirements };

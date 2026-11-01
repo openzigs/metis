@@ -24,6 +24,7 @@ import {
 import {
   ADDITIVE_DIFF,
   BREAKING_DIFF,
+  CONTRACT_V1,
   CONTRACT_V2,
   ORDERS_TABLE,
   P,
@@ -140,7 +141,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           severity: "medium",
           strength: "contract",
           base: "low",
-          modifiers: [{ kind: "breaking-contract", step: 1 }],
+          modifiers: [{ kind: "breaking-contract", step: 1, basis: "latest-contract-version" }],
         });
 
         const reporting = of(impact, P.reporting);
@@ -359,6 +360,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
         // Not walked through: Ledger is only reachable via Partner's own edges.
         expect(of(impact, P.ledger).impactKind).toBe("none");
+        // #1668 — and the walk says it stopped there, so `none` is not stated as certain.
+        expect(impact.stoppedAtRestricted).toBe(1);
         // The edge from a ws-b repo Ana cannot read is not walked, only counted.
         expect(of(impact, P.billing).hiddenEdgeCount).toBe(1);
         const text = JSON.stringify(impact);
@@ -379,6 +382,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         );
         expect(of(impact, P.ledger).impactKind).toBe("downstream-consumer");
         expect(of(impact, P.billing).hiddenEdgeCount).toBe(0);
+        expect(impact.stoppedAtRestricted).toBe(0);
       });
 
       it("persisted and read back, the restricted product carries nothing but its id and impact kind", async () => {
@@ -422,10 +426,168 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(stored.products.find((p) => p.productId === P.billing)!.technicalDetail).toEqual(
           expect.objectContaining({ impact: expect.objectContaining({ hiddenEdgeCount: 1 }) }),
         );
+        // #1668 — Ledger's `none` carries where the walk stopped.
+        expect(stored.products.find((p) => p.productId === P.ledger)!.technicalDetail).toEqual(
+          expect.objectContaining({
+            impact: expect.objectContaining({ stoppedAtRestricted: 1 }),
+          }),
+        );
         // The verdict is still the gap scope's: the restricted product reached outside it is not counted.
         const view = (await viewPortfolioAssessment(await resolveReaderAccess(ANA), id))!;
         expect(view.verdict).toBe("partial");
         expect(JSON.stringify(view)).not.toContain("partner-core");
+      });
+    });
+
+    describe("#1668 — traversal follow-ups", () => {
+      it("impact moves inside a downstream product at no depth: Fulfilment -> Warehouse API -> Warehouse UI -> Alerts", async () => {
+        const impact = await evaluatePortfolioImpact(MIA, {
+          directChangeProductIds: [P.fulfil],
+          listedProductIds: [P.fulfil, P.warehouse, P.alerts],
+        });
+        expect(impact.maxDepth).toBe(2);
+        // Warehouse is listed once, by the hop that crosses into it.
+        expect(of(impact, P.warehouse)).toEqual(
+          expect.objectContaining({
+            impactKind: "downstream-consumer",
+            edgeIds: ["e-whapi-fulfil-1668"],
+          }),
+        );
+        const alerts = of(impact, P.alerts);
+        expect(alerts).toEqual(
+          expect.objectContaining({
+            impactKind: "downstream-consumer",
+            via: "api",
+            severity: "low",
+            edgeIds: ["e-whapi-fulfil-1668", "e-whui-whapi-1668", "e-alerts-whui-1668"],
+          }),
+        );
+        // The hop inside Warehouse is on the path, as evidence.
+        expect(alerts.hops.map((h) => [h.fromProductId, h.toProductId])).toEqual([
+          [P.fulfil, P.warehouse],
+          [P.warehouse, P.warehouse],
+          [P.warehouse, P.alerts],
+        ]);
+        expect(alerts.hops[1].consumer.repoConnectionId).toBe(R.whUi);
+        // Two product boundaries: one hop of depth stops at Warehouse.
+        const shallow = await evaluatePortfolioImpact(MIA, {
+          directChangeProductIds: [P.fulfil],
+          listedProductIds: [P.alerts],
+          maxDepth: 1,
+        });
+        expect(of(shallow, P.alerts).impactKind).toBe("none");
+      });
+
+      it("a write between two writers of a table reaches each from the other, whatever their id order", async () => {
+        const from = (direct: string, other: string) =>
+          evaluatePortfolioImpact(MIA, {
+            directChangeProductIds: [direct],
+            listedProductIds: [direct, other],
+          }).then((impact) => of(impact, other));
+        // The edge runs from the lower id (Writer A): the higher one changing reaches it too.
+        expect(await from(P.writerB, P.writerA)).toEqual(
+          expect.objectContaining({
+            impactKind: "downstream-consumer",
+            via: "database",
+            severity: "high",
+            edgeIds: ["e-writers-1668"],
+          }),
+        );
+        expect((await from(P.writerA, P.writerB)).impactKind).toBe("downstream-consumer");
+      });
+
+      it("a hidden edge on a repo walked twice is counted once", async () => {
+        const impact = await evaluatePortfolioImpact(ANA, {
+          directChangeProductIds: [P.dedupD],
+          listedProductIds: [P.dedupX],
+          maxDepth: 3,
+        });
+        const x = of(impact, P.dedupX);
+        // Re-expanded by the stronger path through Dedup Y: functional/high, not contract/low.
+        expect(x.severity).toBe("high");
+        expect(x.edgeIds).toEqual(["e-dedup-y-d-1668", "e-dedup-x-y-1668"]);
+        expect(x.hiddenEdgeCount).toBe(1);
+        expect(JSON.stringify(impact)).not.toContain(R.dedupHidden);
+      });
+
+      it("a repo's two edges to one resource never pair it with itself", async () => {
+        // Orders' repo both writes and reads the `orders` table, through two edges.
+        await db.productEdge.createMany({
+          data: ["writes", "reads"].map((direction) => ({
+            id: `e-orders-self-${direction}-1668`,
+            productId: P.reporting,
+            sourceRepoId: R.ordersApi,
+            targetRepoId: null,
+            resourceId: ORDERS_TABLE,
+            edgeType: direction === "writes" ? "produces" : "consumes",
+            confidence: 1,
+            integrationKind: "database",
+            strength: direction === "writes" ? "intrusive" : "model",
+            direction,
+            origin: "declared",
+          })),
+        });
+        try {
+          const impact = await ordersImpact();
+          // Paired with itself, Orders' repo would reach Storefront again, by a shared table.
+          expect(of(impact, P.storefront)).toEqual(
+            expect.objectContaining({ via: "api", edgeIds: ["e-storefront-orders-1623"] }),
+          );
+          for (const p of impact.products) {
+            for (const h of p.hops) {
+              expect(h.provider.repoConnectionId).not.toBe(h.consumer.repoConnectionId);
+            }
+          }
+        } finally {
+          await db.productEdge.deleteMany({
+            where: { id: { in: ["e-orders-self-writes-1668", "e-orders-self-reads-1668"] } },
+          });
+        }
+      });
+
+      describe("an edge naming a contract on a repo that is not an end of it", () => {
+        const LEGACY_CONTRACT = "cdoc-legacy-1668";
+        beforeAll(async () => {
+          await db.productContractDoc.create({
+            data: {
+              id: LEGACY_CONTRACT,
+              productId: P.storefront,
+              repoId: R.legacy,
+              version: 1,
+              contentHash: "h-legacy-1668",
+              title: "Contract",
+              diff: BREAKING_DIFF,
+            },
+          });
+          await db.productEdge.update({
+            where: { id: "e-storefront-orders-1623" },
+            data: { contractDocId: LEGACY_CONTRACT },
+          });
+        });
+        afterAll(async () => {
+          await db.productEdge.update({
+            where: { id: "e-storefront-orders-1623" },
+            data: { contractDocId: CONTRACT_V1 },
+          });
+          await db.productContractDoc.delete({ where: { id: LEGACY_CONTRACT } });
+        });
+
+        it("is cited for a reader of its repo, and never raises the severity: it is not the provider's", async () => {
+          const [hop] = of(await ordersImpact(MIA), P.storefront).hops;
+          expect(hop.contract).toEqual(
+            expect.objectContaining({ contractDocId: LEGACY_CONTRACT, repoConnectionId: R.legacy }),
+          );
+          // Breaking, but Legacy's: the api/contract hop stays low.
+          expect(hop.severity).toEqual(
+            expect.objectContaining({ severity: "low", base: "low", modifiers: [] }),
+          );
+        });
+
+        it("is withheld from a reader who cannot read its repo", async () => {
+          const impact = await ordersImpact(ANA);
+          expect(of(impact, P.storefront).hops[0].contract).toBeNull();
+          expect(JSON.stringify(impact)).not.toContain(LEGACY_CONTRACT);
+        });
       });
     });
 

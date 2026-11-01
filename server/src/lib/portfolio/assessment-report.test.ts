@@ -116,7 +116,7 @@ describe("generatePortfolioReport — the model path", () => {
     expect(out.summary).toBe(
       [
         "Partly covered by Orders (acme/orders-api).",
-        "Must change: Orders. Downstream: Storefront (api, medium). 1 downstream product is restricted for this run.",
+        "Must change: Orders. Downstream: Storefront (api, medium). 1 downstream product is restricted for this run, so impact past it was not followed.",
         "The requirement is only partly delivered today. Orders must change, and Storefront will feel it.",
       ].join("\n\n"),
     );
@@ -269,7 +269,7 @@ describe("generatePortfolioReport — no silent fallback", () => {
     );
     // The template: the verdict and overview, no prose; the criteria as FRs; template paragraphs.
     expect(out.summary).toBe(
-      "Partly covered by Orders (acme/orders-api).\n\nMust change: Orders. Downstream: Storefront (api, medium). 1 downstream product is restricted for this run.",
+      "Partly covered by Orders (acme/orders-api).\n\nMust change: Orders. Downstream: Storefront (api, medium). 1 downstream product is restricted for this run, so impact past it was not followed.",
     );
     expect(out.report.requirements.map((r) => [r.text, r.kind])).toEqual([
       ["A refund posts a ledger entry", "functional"],
@@ -376,7 +376,7 @@ describe("templateParagraph and impactOverview", () => {
   it("the overview names readable products and counts restricted ones", () => {
     const rows = CTX.products.map((p) => ({ ...p, coverage: p.coverage }));
     expect(impactOverview(rows, (id) => (id === "p9" ? null : nameOf(id)))).toBe(
-      "Must change: Orders. Downstream: Storefront (api, medium). 1 downstream product is restricted for this run.",
+      "Must change: Orders. Downstream: Storefront (api, medium). 1 downstream product is restricted for this run, so impact past it was not followed.",
     );
     expect(impactOverview([], () => null)).toBe("");
     expect(
@@ -406,7 +406,9 @@ describe("templateParagraph and impactOverview", () => {
         ],
         (id) => (id === "c" ? "C" : null),
       ),
-    ).toBe("Downstream: C. 2 downstream products are restricted for this run.");
+    ).toBe(
+      "Downstream: C. 2 downstream products are restricted for this run, so impact past them was not followed.",
+    );
   });
 });
 
@@ -428,6 +430,7 @@ describe("reportContext and withReport", () => {
       } as never,
       {
         maxDepth: 2,
+        stoppedAtRestricted: 1,
         products: [
           {
             productId: "p1",

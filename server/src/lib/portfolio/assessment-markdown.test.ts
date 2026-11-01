@@ -95,7 +95,7 @@ function fixture(): PortfolioAssessment {
     portfolioVerdict: "partial",
     summary: [
       "Partly covered by Orders (acme/orders-api).",
-      "Must change: Orders. Downstream: Reporting (database, medium); Storefront (api, medium). 1 downstream product is restricted for this run.",
+      "Must change: Orders. Downstream: Reporting (database, medium); Storefront (api, medium). 1 downstream product is restricted for this run, so impact past it was not followed.",
       "Refunds are only partly delivered today. Orders must change, and Reporting is hit hardest.",
     ].join("\n\n"),
     report: {
@@ -285,7 +285,9 @@ function fixture(): PortfolioAssessment {
                   severity: "medium",
                   strength: "contract",
                   base: "low",
-                  modifiers: [{ kind: "breaking-contract", step: 1 }],
+                  modifiers: [
+                    { kind: "breaking-contract", step: 1, basis: "latest-contract-version" },
+                  ],
                 },
               }),
             ],
@@ -422,6 +424,50 @@ describe("renderPortfolioAssessmentMarkdown (#1624)", () => {
     );
     a.report = { ...a.report!, degradedReason: "something-new" };
     expect(await exported()).toContain("_Degraded: the model could not write this summary,");
+  });
+
+  it("a product nothing reached reads not reached, not unaffected, when the walk stopped at a restricted one (#1668)", async () => {
+    const a = fixture();
+    a.products.push({
+      productId: "p-ledger",
+      coverage: "not-covered",
+      impactKind: "none",
+      via: null,
+      edgeIds: [],
+      severity: null,
+      baSummary: "Does not cover it.",
+      technicalDetail: {
+        ...gapDetail({
+          id: "rc-ledger",
+          label: "acme/ledger",
+          verdict: "gap-confirmed",
+          criteria: ["gap-confirmed", "gap-confirmed"],
+        }),
+        impact: {
+          maxDepth: 2,
+          severity: null,
+          severityRule: "weakest-hop",
+          hiddenEdgeCount: 0,
+          stoppedAtRestricted: 1,
+          hops: [],
+        },
+      },
+    });
+    store.getPortfolioAssessment.mockResolvedValue(a);
+    db.product.findMany.mockResolvedValue([
+      { id: "p-orders", name: "Orders" },
+      { id: "p-ledger", name: "Ledger" },
+    ]);
+    const md = await exported();
+    const row = md.split("\n").find((l) => l.startsWith("| Ledger |"));
+    expect(row).toContain("| Not reached (impact past 1 restricted product was not followed) |");
+    // Without the stop, `none` is stated plainly.
+    const clean = a.products.at(-1)!.technicalDetail as { impact: Record<string, unknown> };
+    clean.impact.stoppedAtRestricted = 2;
+    expect(await exported()).toContain("impact past 2 restricted products was not followed");
+    delete clean.impact.stoppedAtRestricted;
+    const plain = (await exported()).split("\n").find((l) => l.includes("Does not cover it. |"));
+    expect(plain).toContain("| Not affected |");
   });
 
   it("an assessment with no report has no requirement sections", async () => {
