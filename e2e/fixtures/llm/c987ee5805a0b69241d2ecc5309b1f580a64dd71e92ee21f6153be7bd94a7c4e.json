@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "key": "c987ee5805a0b69241d2ecc5309b1f580a64dd71e92ee21f6153be7bd94a7c4e",
+  "request": {
+    "promptPreview": "<<<REQUIREMENT>>>\nCustomers can pay an invoice by instant bank transfer.\n<<<END REQUIREMENT>>>\n\n<<<CRITERIA>>>\n[1] Pay an invoice by instant bank transfer\n<<<END CRITERIA>>>\n\n<<<REPOSITORY>>>\npayments",
+    "messageCount": 2,
+    "options": {
+      "maxTokens": 2000
+    }
+  },
+  "response": {
+    "content": "{\"criteria\": [{\"index\": 1, \"verdict\": \"gap-confirmed\", \"excerpts\": [1], \"reason\": \"Excerpt 1 is where it would live, and it is not there.\"}]}",
+    "usage": {
+      "promptTokens": 232,
+      "completionTokens": 20,
+      "totalTokens": 252,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0
+    },
+    "model": "offline-stub",
+    "provider": "offline-stub",
+    "offline": true,
+    "finishReason": "stop"
+  },
+  "recordedAt": "2026-11-01T18:59:57.278Z"
+}
