@@ -66,6 +66,12 @@ import {
   withImpact,
   type PortfolioImpactDeps,
 } from "../lib/portfolio/impact-engine.js";
+import {
+  generatePortfolioReport,
+  reportContext,
+  withReport,
+  type PortfolioReportDeps,
+} from "../lib/portfolio/assessment-report.js";
 import { assertProductAccessible } from "../lib/products/product-access.js";
 import {
   renderPortfolioAssessmentMarkdown,
@@ -98,6 +104,8 @@ export interface PortfolioAssessmentsRouterDeps {
   impact?: PortfolioImpactDeps;
   /** How often a running assessment refreshes its row (#1657); tests shorten it. */
   heartbeatMs?: number;
+  /** Report collaborators (#1624); the model defaults to the gap engine's. */
+  report?: Omit<PortfolioReportDeps, "signal">;
 }
 
 /** The engine's input for a start request, or 404 for a requirement the caller cannot read. */
@@ -199,15 +207,24 @@ async function runAssessment(
       },
       deps.impact,
     );
+    // #1624 — the BA summary, impact paragraphs and restated requirements.
+    const report = await generatePortfolioReport(reportContext(result, impact), {
+      provider: deps.report?.provider ?? deps.gap?.provider,
+      costOf: deps.report?.costOf ?? deps.gap?.costOf,
+      signal: deps.gap?.signal,
+    });
     await completePortfolioAssessment(
       id,
-      withImpact(
-        toAssessmentInput(result, {
-          createdById: user.userId,
-          sourceRequirementId: input.sourceRequirementId,
-          sourceProjectId: input.sourceProjectId,
-        }),
-        impact,
+      withReport(
+        withImpact(
+          toAssessmentInput(result, {
+            createdById: user.userId,
+            sourceRequirementId: input.sourceRequirementId,
+            sourceProjectId: input.sourceProjectId,
+          }),
+          impact,
+        ),
+        report,
       ),
     );
     jobEvents.completed(KIND, id, null, "Portfolio assessment completed");

@@ -72,6 +72,7 @@ function assessment(overrides: Partial<PortfolioAssessment> = {}): PortfolioAsse
     status: "completed",
     portfolioVerdict: "covers",
     summary: "Implemented by One (acme/one-api).",
+    report: null,
     costUsd: 0.02,
     createdById: "starter",
     createdAt: "2026-10-31T00:00:00.000Z",
@@ -411,7 +412,10 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
     const v = (await view())!;
     expect(v.products.find((p) => p.productId === "p3")!.coverage).toBe("restricted");
     expect(v.verdict).toBe("gap-confirmed");
-    expect(v.summary).toBe("Nothing in the portfolio covers this.");
+    // #1624 — the recomputed summary carries the impact overview; p3 is counted, not named.
+    expect(v.summary).toBe(
+      "Nothing in the portfolio covers this.\n\nMust change: One. Downstream: Two (api, low). 1 downstream product is restricted for this run.",
+    );
   });
 
   it("a recomputed product keeps its impact detail", async () => {
@@ -434,6 +438,110 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
   it("reading only a product reached downstream is not enough to read the assessment", async () => {
     db.product.findMany.mockResolvedValue([{ id: "p3", name: "Three" }]);
     expect(await view()).toBeNull();
+  });
+});
+
+describe("viewPortfolioAssessment — the BA report (#1624)", () => {
+  const report = () => ({
+    source: "model" as const,
+    degraded: false,
+    degradedReason: null,
+    requirementsSource: "model" as const,
+    requirements: [
+      {
+        text: "Reset by email",
+        kind: "functional" as const,
+        nfrCategory: null,
+        mentions: [] as string[],
+      },
+    ],
+    products: [
+      {
+        productId: "p1",
+        source: "model" as const,
+        functional: "One changes.",
+        business: "",
+        stakeholder: "",
+        mentions: ["p1"],
+      },
+      {
+        productId: "p2",
+        source: "model" as const,
+        functional: "Two follows One.",
+        business: "",
+        stakeholder: "",
+        mentions: ["p1", "p2"],
+      },
+    ],
+    strippedSentences: 0,
+    withheld: false,
+  });
+  const withReport = (over: Partial<PortfolioAssessment> = {}) =>
+    assessment({ report: report(), summary: "Model prose about One and Two.", ...over });
+
+  it("a reader who sees what the run saw gets the report and summary as stored", async () => {
+    store.getPortfolioAssessment.mockResolvedValue(withReport());
+    const v = (await view())!;
+    expect(v.report).toEqual(report());
+    expect(v.summary).toBe("Model prose about One and Two.");
+  });
+
+  it("a reader who sees less gets the deterministic summary, no paragraphs, and the requirements", async () => {
+    store.getPortfolioAssessment.mockResolvedValue(withReport());
+    readableProjects.delete("proj-api");
+    const v = (await view())!;
+    expect(v.summary).toBe("Could not verify across the portfolio: of 2 products, 1 not checked.");
+    expect(v.report).toEqual({ ...report(), products: [], withheld: true });
+  });
+
+  it("an impact path withheld from the reader withholds the prose too", async () => {
+    const a = withReport();
+    a.products[1] = {
+      ...a.products[1],
+      impactKind: "downstream-consumer",
+      technicalDetail: {
+        ...a.products[1].technicalDetail,
+        impact: { hops: [{ provider: { repoConnectionId: "rc-hidden" } }] },
+      },
+    };
+    store.getPortfolioAssessment.mockResolvedValue(a);
+    const v = (await view())!;
+    expect(v.report!.withheld).toBe(true);
+    expect(v.report!.products).toEqual([]);
+    expect(v.summary).not.toContain("Model prose");
+  });
+
+  it("a model requirement naming a product the reader cannot read is dropped", async () => {
+    const a = withReport();
+    a.report!.requirements.push({
+      text: "Nine emails a reset link",
+      kind: "functional",
+      nfrCategory: null,
+      mentions: ["p9"],
+    });
+    store.getPortfolioAssessment.mockResolvedValue(a);
+    expect((await view())!.report!.requirements.map((r) => r.text)).toEqual(["Reset by email"]);
+  });
+
+  it("a paragraph naming a product the reader cannot read is dropped (defence in depth)", async () => {
+    const a = withReport();
+    a.report!.products[1].mentions = ["p2", "p9"];
+    store.getPortfolioAssessment.mockResolvedValue(a);
+    const v = (await view())!;
+    expect(v.report!.products.map((p) => p.productId)).toEqual(["p1"]);
+    expect(v.report!.withheld).toBe(false);
+  });
+
+  it("a template report a reader sees less of is withheld only when it had paragraphs", async () => {
+    const template = { ...report(), source: "template" as const, degraded: true, products: [] };
+    store.getPortfolioAssessment.mockResolvedValue(withReport({ report: template }));
+    readableProjects.delete("proj-api");
+    expect((await view())!.report!.withheld).toBe(false);
+  });
+
+  it("no report reads as none", async () => {
+    store.getPortfolioAssessment.mockResolvedValue(assessment({ report: null }));
+    expect((await view())!.report).toBeNull();
   });
 });
 

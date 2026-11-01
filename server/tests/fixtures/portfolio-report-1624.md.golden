@@ -1,0 +1,158 @@
+# Portfolio assessment
+
+## Requirement
+
+Refunds post to the ledger within 2 seconds | &lt;b&gt;fast&lt;/b&gt;
+
+**Status:** completed
+**Verdict:** Partly covered
+
+## Summary
+
+Partly covered by Orders (acme/orders-api).
+
+Must change: Orders. Downstream: Reporting (database, medium); Storefront (api, medium). 1 downstream product is restricted for this run.
+
+Refunds are only partly delivered today. Orders must change, and Reporting is hit hardest.
+
+### Affected products
+
+#### Orders: Must change
+
+- **Functional impact:** Orders posts a ledger entry for every refund.
+- **Business impact:** Refunds settle the same day.
+- **Stakeholder impact:** Finance reconciles refunds without manual work.
+
+#### Reporting: Downstream consumer (via database, medium)
+
+- **Functional impact:** Reporting reads the new ledger rows | twice.
+- **Business impact:** Not assessed.
+- **Stakeholder impact:** Analysts see refunds in the daily report.
+
+#### Storefront: Downstream consumer (via api, medium)
+
+- **Functional impact:** Storefront depends on Orders through its API; the impact is medium.
+- **Business impact:** Not assessed.
+- **Stakeholder impact:** Not assessed.
+
+## Functional requirements
+
+1. A refund posts a ledger entry
+2. Storefront shows the refund status
+
+## Non-functional requirements
+
+- **performance:** Posting takes at most 2 seconds
+
+## Products
+
+| Product | Coverage | Summary | Impact | Severity |
+| --- | --- | --- | --- | --- |
+| Orders | Covers part of it | Covers part of it: Orders (acme/orders-api). Not found: It posts within 2 seconds. | Must change |  |
+| p-partner | Restricted |  |  |  |
+| Reporting | Does not cover it | Does not cover it. | Downstream consumer via database | medium |
+| Storefront | Does not cover it | Does not cover it. | Downstream consumer via api | medium |
+| Notifications | Not checked | Downstream consumer via event (low). | Downstream consumer via event | low |
+
+## Technical deep dive
+
+### Orders
+
+**Coverage:** Covers part of it · **Impact:** Must change
+
+**Repos**
+
+- `acme/orders-api`: could-not-verify
+
+**Files**
+
+- `src/refunds/post.ts:1` (acme/orders-api)
+
+_1 edge out of this product touches a repo you cannot read, so it was not followed._
+
+### p-partner
+
+Restricted: you cannot read this product, so nothing about it is shown.
+
+### Reporting
+
+**Coverage:** Does not cover it · **Impact:** Downstream consumer (via database, medium)
+
+**Repos**
+
+- `acme/reporting`: gap-confirmed
+
+**Files**
+
+- `sql/daily-report.sql:7` (acme/reporting): call site
+
+**Tables and columns**
+
+- `orders` (table, used)
+- `fin.ledger` (column, used)
+
+**Edge path**
+
+1. Orders → Reporting: database, intrusive, confidence 0.3 (`e-orders-reporting`)
+
+**Severity derivation**
+
+- Hop 1: intrusive coupling starts at high; -1 for low confidence (0.3): medium.
+- Path: medium (a path is as severe as its weakest hop).
+
+### Storefront
+
+**Coverage:** Does not cover it · **Impact:** Downstream consumer (via api, medium)
+
+**Repos**
+
+- `acme/storefront`: gap-confirmed
+
+**Files**
+
+- `src/checkout/order-client.ts:42` (acme/storefront): call site
+
+**Contract items** (version 2)
+
+- `graphql type Order`: changed, breaking
+- `openapi endpoint GET /refunds`: added
+
+**Edge path**
+
+1. Orders → Storefront: api, contract, confidence 0.9 (`e-storefront-orders`)
+
+**Severity derivation**
+
+- Hop 1: contract coupling starts at low; +1 for a breaking contract change: medium.
+- Path: medium (a path is as severe as its weakest hop).
+
+### Notifications
+
+**Coverage:** Not checked · **Impact:** Downstream consumer (via event, low)
+
+**Repos**
+
+- `acme/notifier`: consumer
+
+**Files**
+
+- `src/listen.ts` (acme/notifier): call site
+
+**Topics**
+
+- `refund.posted`
+
+**Edge path**
+
+1. Orders → Notifications: event, contract, confidence 0.9 (`e-orders-topic`)
+
+**Severity derivation**
+
+- Hop 1: contract coupling starts at low: low.
+- Path: low (a path is as severe as its weakest hop).
+
+## Evidence
+
+### Orders: acme/orders-api (could-not-verify)
+
+- `src/refunds/post.ts`

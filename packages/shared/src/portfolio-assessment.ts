@@ -6,7 +6,8 @@
  * #1623 (impact propagation and severity); the routes are #1625.
  */
 import { z } from "zod";
-import { REQUIREMENT_VERDICTS } from "./constants.js";
+import { REQUIREMENT_KINDS, REQUIREMENT_VERDICTS } from "./constants.js";
+import { NFR_CATEGORIES } from "./elicitation.js";
 
 /** Which products an assessment looked at: one product, or every one the caller can read. */
 export const PORTFOLIO_ASSESSMENT_SCOPES = ["product", "all-accessible"] as const;
@@ -72,6 +73,59 @@ export const PORTFOLIO_ASSESSMENT_LIMITS = {
   repos: 20_000,
 } as const;
 
+// ─── #1624 — the business-analyst report ────────────────────────────────────
+
+/** Where a report's prose came from: the model, or the deterministic template. */
+export const PORTFOLIO_REPORT_SOURCES = ["model", "template"] as const;
+export type PortfolioReportSource = (typeof PORTFOLIO_REPORT_SOURCES)[number];
+
+/** One requirement the statement is restated as, functional or not (#1612 `kind`). */
+export const portfolioReportRequirementSchema = z
+  .object({
+    text: z.string().trim().min(1).max(1_000),
+    kind: z.enum(REQUIREMENT_KINDS),
+    nfrCategory: z.enum(NFR_CATEGORIES).nullable().default(null),
+    /** The products the text names: a reader who cannot read one is not shown it. */
+    mentions: z.array(z.string().min(1).max(64)).max(200).default([]),
+  })
+  .strict();
+
+/** One affected product's paragraph: functional, business and stakeholder impact. */
+export const portfolioReportProductSchema = z
+  .object({
+    productId: z.string().min(1).max(64),
+    /** `template` when the model gave no usable paragraph for this product. */
+    source: z.enum(PORTFOLIO_REPORT_SOURCES).default("model"),
+    functional: z.string().max(2_000).default(""),
+    business: z.string().max(2_000).default(""),
+    stakeholder: z.string().max(2_000).default(""),
+    /** The products the paragraph names: a reader who cannot read one is not shown it. */
+    mentions: z.array(z.string().min(1).max(64)).max(200).default([]),
+  })
+  .strict();
+
+export const portfolioReportSchema = z
+  .object({
+    source: z.enum(PORTFOLIO_REPORT_SOURCES),
+    /** The model was unavailable or its answer unusable: the template stands in. */
+    degraded: z.boolean(),
+    degradedReason: z.string().max(200).nullable().default(null),
+    /** `template` when the requirements are the assessment's criteria, not the model's restatement. */
+    requirementsSource: z.enum(PORTFOLIO_REPORT_SOURCES).default("template"),
+    requirements: z.array(portfolioReportRequirementSchema).max(100).default([]),
+    products: z
+      .array(portfolioReportProductSchema)
+      .max(PORTFOLIO_ASSESSMENT_LIMITS.products)
+      .default([]),
+    /** Sentences the entity post-check removed from the model's prose. */
+    strippedSentences: z.number().int().min(0).default(0),
+    /** Read time (#1625): the reader sees less than the run did, so the model's prose is withheld. */
+    withheld: z.boolean().default(false),
+  })
+  .strict();
+export type PortfolioReport = z.output<typeof portfolioReportSchema>;
+export type PortfolioReportInput = z.input<typeof portfolioReportSchema>;
+
 /** A whole assessment as the engine writes it. */
 export const portfolioAssessmentInputSchema = z
   .object({
@@ -83,6 +137,8 @@ export const portfolioAssessmentInputSchema = z
     status: z.enum(PORTFOLIO_ASSESSMENT_STATUSES).default("pending"),
     portfolioVerdict: z.enum(PORTFOLIO_COVERAGES).nullable().default(null),
     summary: z.string().max(20_000).default(""),
+    /** #1624 — the BA report; null until one is written. */
+    report: portfolioReportSchema.nullable().default(null),
     costUsd: z.number().min(0).default(0),
     createdById: z.string().min(1).max(64),
     products: z
@@ -143,6 +199,8 @@ export interface PortfolioAssessment {
   status: PortfolioAssessmentStatus;
   portfolioVerdict: PortfolioCoverage | null;
   summary: string;
+  /** #1624 — the BA report, or null for a run without one. */
+  report: PortfolioReport | null;
   costUsd: number;
   createdById: string;
   createdAt: string;

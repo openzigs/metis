@@ -30,6 +30,7 @@ describe("portfolio assessment schemas", () => {
       status: "pending",
       portfolioVerdict: null,
       summary: "",
+      report: null,
       costUsd: 0,
       createdById: "u",
       products: [],

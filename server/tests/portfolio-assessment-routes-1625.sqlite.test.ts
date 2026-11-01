@@ -339,9 +339,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         // P1 still covers it for Ana.
         expect(v.verdict).toBe("implemented");
         // #1657 — the cost is of what she sees: P1's two calls and P2's one,
-        // not the decomposition or P3's call (0.01 each; Mia sees all five).
+        // not the decomposition, P3's call or the #1624 report call (0.01 each;
+        // Mia sees all six).
         expect(v.costUsd).toBeCloseTo(0.03, 10);
-        expect((await settled(miaRun, "mia")).costUsd).toBeCloseTo(0.05, 10);
+        expect((await settled(miaRun, "mia")).costUsd).toBeCloseTo(0.06, 10);
       });
 
       it("a repo whose connection was deleted is dropped, with its citations (#1657)", async () => {
@@ -535,6 +536,128 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
         expect(res.status).toBe(404);
         expect(await db.portfolioAssessment.count()).toBe(before);
+      });
+
+      describe("#1624 — the BA report", () => {
+        /** The scripted model, except the report call, which invents a repo and a product. */
+        const lyingReport = () => {
+          const scripted = scriptedProvider();
+          return {
+            ...scripted,
+            async chat(messages: Parameters<typeof scripted.chat>[0], opts?: unknown) {
+              const prompt = String(messages.find((m) => m.role === "user")?.content ?? "");
+              if (!prompt.includes("<<<ASSESSMENT>>>"))
+                return scripted.chat(messages, opts as never);
+              return {
+                content: JSON.stringify({
+                  summary:
+                    "Support must change. The acme/refund-gateway repo must be redeployed. Accounts follows.",
+                  products: [
+                    {
+                      ref: "P2",
+                      functional: "Support sends the reset email.",
+                      business: "The Ledger product loses revenue.",
+                      stakeholder: "Agents stop resetting by hand.",
+                    },
+                  ],
+                  requirements: [
+                    { text: "A reset link is emailed", kind: "functional", category: null },
+                    { text: "Billing emails a reset link", kind: "functional", category: null },
+                    {
+                      text: "The email arrives within a minute",
+                      kind: "non-functional",
+                      category: "performance",
+                    },
+                  ],
+                }),
+                usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+                model: "scripted-1622",
+                provider: "openai" as const,
+              };
+            },
+          };
+        };
+        const reportApp = () => {
+          const a = express();
+          a.use(express.json());
+          a.use(
+            "/api/portfolio-assessments",
+            portfolioAssessmentsRouter({
+              gap: {
+                get provider() {
+                  return lyingReport() as never;
+                },
+                search: federated.searchAcrossProjects.bind(federated),
+                limits: { runCostCapUsd: 100, productCostCapUsd: 100, concurrency: 2 },
+                costOf: () => 0.01,
+              },
+            }),
+          );
+          a.use(notFoundHandler);
+          a.use(errorHandler);
+          return a;
+        };
+        let id: string;
+
+        beforeAll(async () => {
+          const res = await request(reportApp())
+            .post("/api/portfolio-assessments")
+            .set("Authorization", bearer("imp-1623"))
+            .send({ statement: RESET_STATEMENT, scope: "all-accessible", hostProductId: P3 });
+          expect(res.status).toBe(202);
+          id = res.body.data.id as string;
+          await settled(id, "imp-1623");
+        });
+
+        it("the hallucinated repo and product never reach the persisted summary or report", async () => {
+          const row = await db.portfolioAssessment.findUnique({ where: { id } });
+          expect(row!.status).toBe("completed");
+          for (const invented of ["refund-gateway", "Ledger"]) {
+            expect(row!.summary).not.toContain(invented);
+            expect(row!.report).not.toContain(invented);
+          }
+          expect(row!.summary).toContain("Support must change. Accounts follows.");
+          const report = JSON.parse(row!.report);
+          expect(report).toEqual(
+            expect.objectContaining({ source: "model", degraded: false, strippedSentences: 2 }),
+          );
+          expect(report.requirements.map((r: { kind: string }) => r.kind)).toEqual([
+            "functional",
+            "functional",
+            "non-functional",
+          ]);
+        });
+
+        it("exports the BA summary first and the deep dive per affected product", async () => {
+          const res = await get("imp-1623", `/${id}/export?format=md`);
+          expect(res.status).toBe(200);
+          expect(res.text.indexOf("## Summary")).toBeLessThan(res.text.indexOf("## Products"));
+          expect(res.text).toContain("#### Support: Must change");
+          expect(res.text).toContain("- **Stakeholder impact:** Agents stop resetting by hand.");
+          expect(res.text).toContain(
+            "## Non-functional requirements\n\n- **performance:** The email arrives within a minute",
+          );
+          expect(res.text).toContain("## Technical deep dive");
+          expect(res.text).toContain("1. Support → Accounts: api, contract, confidence 0.9");
+        });
+
+        it("a reader without one of its products sees it restricted, and no model prose", async () => {
+          const res = await get("ana", `/${id}/export?format=md`);
+          expect(res.status).toBe(200);
+          expect(res.text).toContain(`| ${P3} | Restricted |  |  |  |`);
+          expect(res.text).toContain(
+            `### ${P3}\n\nRestricted: you cannot read this product, so nothing about it is shown.`,
+          );
+          expect(res.text).not.toContain("Billing");
+          // The detail route hides the model requirement that names it too.
+          const detail = await get("ana", `/${id}`);
+          expect(detail.status).toBe(200);
+          expect(JSON.stringify(detail.body)).not.toContain("Billing");
+          expect(res.text).not.toContain("Agents stop resetting by hand.");
+          expect(res.text).toContain("the written summary and the impact paragraphs are not shown");
+          // The requirements restate the statement the reader can read: they stay.
+          expect(res.text).toContain("1. A reset link is emailed");
+        });
       });
     });
 

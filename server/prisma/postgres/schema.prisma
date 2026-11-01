@@ -1603,6 +1603,9 @@ model PortfolioAssessment {
   portfolioVerdict    String?
   /// The business-analyst summary.
   summary             String   @default("")
+  /// #1624 — JSON object: the BA report (prose source, degraded flag, the
+  /// requirement restated as FRs / NFRs, one paragraph per affected product).
+  report              String   @default("{}")
   costUsd             Float    @default(0)
   createdById         String
   createdAt           DateTime @default(now())
