@@ -46,6 +46,7 @@ import {
 } from "../middleware/criteria-proposal-rate-limit.js";
 import { dismissAllCriteriaProposals } from "../lib/analysis/analysis-service.js";
 import { requirementsWithoutCodeEvidence } from "../lib/analysis/code-evidence.js";
+import { inSynthesisOrder } from "../lib/analysis/synthesis-finding-order.js";
 import { createChildLogger } from "../lib/logger.js";
 import {
   withheldReplacementPreAuthRateLimiter,
@@ -335,8 +336,9 @@ async function requirementsWithoutCodeEvidenceFor(
     return requirementsWithoutCodeEvidence({
       structured: structured.requirements,
       synthesized: synthesis.requirements,
-      // As promotion reads them, so the evidence indexes resolve to the same findings.
-      findings: await readFlattenedFindings(analysisId),
+      // As synthesis numbered them, and promotion reads them (#1603), so the
+      // evidence indexes resolve to the findings synthesis cited.
+      findings: inSynthesisOrder(await readFlattenedFindings(analysisId)),
       rejectedIds,
     });
   } catch (err) {
