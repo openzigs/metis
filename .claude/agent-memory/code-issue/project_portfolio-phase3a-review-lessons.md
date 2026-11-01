@@ -1,6 +1,6 @@
 ---
 name: portfolio-phase3a-review-lessons
-description: Durable findings from the #1622/#1625/#1647/#1603 reviews and the 2026-11-01 CI break - regex shapes the linear-time suite misses, zod refine after max, engine limits that shrink input, mocked access filters, raw-SQL timestamps.
+description: Durable findings from the #1608 phase-3 reviews (#1622-#1625, #1647, #1657) and the 2026-11-01 CI break - walk skip guards, redaction of model fields, regex shapes the linear-time suite misses, zod refine after max, engine limits that shrink input, mocked access filters, raw-SQL timestamps.
 metadata:
   type: project
 ---
@@ -47,3 +47,22 @@ From the reviews of PRs #1650, #1651, #1653-#1655 and the #1656 CI fix, 2026-11-
   sibling batch's PR changes the same schema, run the base's tests on the merged result
   before merging: CI on the stacked branch never saw the sibling. Here #1647's one-product
   rule and its import-time `Prisma` read broke #1650 and #1653 only after the merge.
+
+Phase 3b: the reviews of #1665 (#1657), #1666 (#1623) and #1667 (#1624), 2026-11-01. Follow-ups: #1668.
+
+- **Skip guards in graph walks (#1623).** A `continue` that comes before the queue write
+  (`next.set`) stops the traversal as well as the listing. #1666 shipped a walk that never
+  moved within a downstream product, and deleting the guard left all 48 tests green.
+  Mutate every skip in a walk loop yourself; don't rely on the author's mutation list.
+  Check direction against `relationship-detector.ts`: `detectSharedTables` emits ONE
+  `writes` edge between two writers, from the lower id.
+- **Read-time redaction covers every model-written field (#1624).** Paragraphs carry
+  `mentions` and are dropped, but restated requirements and `baSummary` sentences carry
+  nothing and pass through unfiltered. The generation-time allow-list includes every
+  product the run could read, so a passing post-check doesn't prove a field is safe.
+  Use fixture models whose output names a product.
+- **Error status after a side effect (#1657).** `ClarificationDialog.submitAnswers`
+  persists the dialog round (`writeDialogState`) before the route persists requirements.
+  So a guard after it, such as the 409 REQUIREMENTS_REPLACED, fires once the round is
+  already consumed, and its "answer again" may be impossible. Check where a new status is
+  thrown relative to the writes before it.
