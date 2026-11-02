@@ -30,7 +30,9 @@ export const SPEC_KIT_PROXY_TIMEOUT_MAX_MS = 60 * 60_000;
 export const SPEC_KIT_PROXY_MAX_CONNECTIONS = 16;
 
 /**
- * True for `POST <base>/projects/:id/spec-kit/commands/:cmd`.
+ * True for `POST <base>/projects/:id/spec-kit/commands/:cmd`, and (#1617) for
+ * `POST <base>/projects/:id/spec-kit/features/from-requirements`, which holds
+ * its request open for a `/speckit.specify` model call the same way.
  *
  * `pathBelowBase` is the RESOLVED upstream path below the base
  * (`pathBelowUpstreamBase`), not the catch-all's raw segments: Next decodes
@@ -47,9 +49,8 @@ export function isSpecKitCommandRequest(method: string, pathBelowBase: string): 
     path[1] !== "" &&
     !isDotSegment(path[1]!) &&
     path[2] === "spec-kit" &&
-    path[3] === "commands" &&
-    path[4] !== "" &&
-    !isDotSegment(path[4]!)
+    ((path[3] === "commands" && path[4] !== "" && !isDotSegment(path[4]!)) ||
+      (path[3] === "features" && path[4] === "from-requirements"))
   );
 }
 

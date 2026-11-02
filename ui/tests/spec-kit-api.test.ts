@@ -19,6 +19,15 @@ beforeEach(() => {
 afterEach(() => vi.clearAllMocks());
 
 describe("specKitApi", () => {
+  it("startFeatureFromRequirements POSTs the ids to /features/from-requirements (#1617)", async () => {
+    mockFetch.mockResolvedValue({});
+    await specKitApi.startFeatureFromRequirements("p 1", ["r1", "r2"]);
+    expect(mockFetch).toHaveBeenCalledWith("/projects/p%201/spec-kit/features/from-requirements", {
+      method: "POST",
+      body: { requirementIds: ["r1", "r2"] },
+    });
+  });
+
   it("getEnabled hits /enabled", async () => {
     mockFetch.mockResolvedValue({ enabled: true });
     await specKitApi.getEnabled("p1");

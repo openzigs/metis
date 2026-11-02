@@ -2240,3 +2240,60 @@ describe("SpecKitPage — #789", () => {
     });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #1617 — "Start Spec Kit feature" opens `?feature=<slug>`: the page lands on
+// that feature, and its spec.md (as #1616 writes it) shows every requirement
+// title the user selected.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("SpecKitPage — landing on a feature started from requirements (#1617)", () => {
+  const SLUG = "004-login-1-more";
+  const TITLES = ["Login with SSO", "Logout everywhere"];
+  const SPEC = [
+    "# Spec",
+    "Sign-in and sign-out.",
+    "",
+    "## Acceptance criteria",
+    "- **AC-1**: a user can sign in with SSO",
+    "",
+    "## Source requirements",
+    "",
+    "This feature was started from 2 approved requirements, reproduced in full.",
+    "",
+    `### ${TITLES[0]}`,
+    "",
+    "> Users sign in through the company IdP.",
+    "",
+    `### ${TITLES[1]}`,
+    "",
+    "> Signing out ends every session.",
+  ].join("\n");
+
+  it("opens the new feature's spec.md, listing each selected requirement title", async () => {
+    nav.search = `feature=${SLUG}`;
+    const feature = {
+      id: "f9",
+      slug: SLUG,
+      title: "Login with SSO (+1 more)",
+      status: "draft",
+      branchName: null,
+      updatedAt: new Date().toISOString(),
+    };
+    m.listFeatures!.mockResolvedValue({ features: [feature] });
+    m.listFeatureArtifacts!.mockResolvedValue({
+      feature,
+      artifacts: [
+        { id: "fa1", key: "spec.md", content: SPEC, version: 1, updatedAt: feature.updatedAt },
+      ],
+    });
+    render(<SpecKitPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+    await waitFor(() =>
+      expect(screen.getByTestId("spec-kit-viewer-title")).toHaveTextContent(
+        `specs/${SLUG}/spec.md`,
+      ),
+    );
+    const content = await screen.findByTestId("spec-kit-content");
+    for (const title of TITLES) expect(content).toHaveTextContent(title);
+    expect(m.listFeatureArtifacts).toHaveBeenCalledWith("p1", SLUG);
+  });
+});

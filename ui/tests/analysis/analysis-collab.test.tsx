@@ -627,3 +627,21 @@ describe("AnalysisPage requirement write controls (#1566)", () => {
     );
   });
 });
+
+describe("AnalysisPage — Start Spec Kit feature on the requirements list (#1617)", () => {
+  it("feeds the ticked requirement to the action, which a draft one keeps disabled with the reason", async () => {
+    renderPage(WRITER);
+    await waitForRequirement();
+    const action = () => screen.getByTestId("start-spec-kit-feature-button");
+    const hint = () => action().closest("[data-hover-hint]")?.getAttribute("title");
+    expect(action()).toBeDisabled();
+    expect(hint()).toMatch(/Select one or more approved requirements/);
+
+    fireEvent.click(screen.getByTestId("req-speckit-select-req-1"));
+    expect(screen.getByTestId("start-spec-kit-feature-count")).toHaveTextContent("1 selected");
+    expect(action()).toBeDisabled();
+    expect(hint()).toBe(
+      'Only approved requirements can start a Spec Kit feature. Not approved: "Login screen".',
+    );
+  });
+});

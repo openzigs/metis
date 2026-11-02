@@ -33,6 +33,22 @@ describe("isSpecKitCommandRequest", () => {
     expect(isSpecKitCommandRequest("post", "projects/p1/spec-kit/commands/x")).toBe(true);
   });
 
+  it("matches POST /projects/:id/spec-kit/features/from-requirements (#1617)", () => {
+    expect(
+      isSpecKitCommandRequest(
+        "POST",
+        resolved("projects", "p1", "spec-kit", "features", "from-requirements"),
+      ),
+    ).toBe(true);
+    expect(isSpecKitCommandRequest("GET", "projects/p1/spec-kit/features/from-requirements")).toBe(
+      false,
+    );
+    expect(isSpecKitCommandRequest("POST", "projects/p1/spec-kit/features/001-x")).toBe(false);
+    expect(
+      isSpecKitCommandRequest("POST", "projects/p1/spec-kit/features/from-requirements/x"),
+    ).toBe(false);
+  });
+
   it.each([
     ["another method", "GET", "projects/p1/spec-kit/commands/speckit.plan"],
     ["the artifact list", "GET", "projects/p1/spec-kit/files"],
