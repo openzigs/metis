@@ -13,10 +13,55 @@ import {
   portfolioAssessmentProductInputSchema,
   portfolioAssessmentRepoInputSchema,
   portfolioModifierText,
+  portfolioNamedInProse,
+  portfolioRestrictedNote,
+  portfolioRestrictedRule,
   portfolioResourceGroup,
   portfolioResourceLists,
 } from "./portfolio-assessment.js";
 import { PRODUCT_RESOURCE_KINDS } from "./product-docs.js";
+
+describe("#1689 — product names in prose", () => {
+  it("joins the last name with 'and', and caps the list at three, then 'N more'", () => {
+    expect(portfolioNamedInProse(["A"])).toBe("A");
+    expect(portfolioNamedInProse(["A", "B"])).toBe("A and B");
+    expect(portfolioNamedInProse(["A", "B", "C"])).toBe("A, B and C");
+    expect(portfolioNamedInProse(["A", "B", "C", "D"])).toBe("A, B, C and 1 more");
+    expect(portfolioNamedInProse(["A", "B", "C", "D", "E"])).toBe("A, B, C and 2 more");
+  });
+
+  it("counts a nameless product instead of naming it", () => {
+    expect(portfolioNamedInProse([null, "Two"])).toBe("Two and 1 more");
+    expect(portfolioNamedInProse([null, null, "A", "B", "C"])).toBe("A, B, C and 2 more");
+    expect(portfolioNamedInProse([null])).toBe("a product");
+    expect(portfolioNamedInProse([null], { sentenceStart: true })).toBe("A product");
+    expect(portfolioNamedInProse([null, null, null])).toBe("3 products");
+    expect(portfolioNamedInProse([null, null], { sentenceStart: true })).toBe("2 products");
+  });
+});
+
+describe("#1689 — the rule a run relabelled restricted products by", () => {
+  const detail = (restrictedRule: unknown) => ({ impact: { restrictedRule } });
+
+  it("reads the two known rules, and anything else as none recorded", () => {
+    expect(portfolioRestrictedRule(detail("walk"))).toBe("walk");
+    expect(portfolioRestrictedRule(detail("adjacent"))).toBe("adjacent");
+    expect(portfolioRestrictedRule(detail("other"))).toBeNull();
+    expect(portfolioRestrictedRule({ impact: {} })).toBeNull();
+    expect(portfolioRestrictedRule({})).toBeNull();
+    expect(portfolioRestrictedRule(null)).toBeNull();
+  });
+
+  it("says why each one is not known, and only the current rule claims a path", () => {
+    expect(portfolioRestrictedNote("walk")).toMatch(/^The change may reach it through/);
+    expect(portfolioRestrictedNote("adjacent")).toContain("older rule");
+    expect(portfolioRestrictedNote("adjacent")).toContain("connected to it");
+    expect(portfolioRestrictedNote(null)).toContain("before METIS looked for a connection");
+    for (const rule of ["adjacent", null] as const) {
+      expect(portfolioRestrictedNote(rule)).not.toContain("may reach it through");
+    }
+  });
+});
 
 describe("#1673 — the wording the page and the export share", () => {
   it("accepts a restricted impact kind on a product row", () => {

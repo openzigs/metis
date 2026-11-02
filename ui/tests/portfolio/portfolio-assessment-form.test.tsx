@@ -100,6 +100,25 @@ describe("PortfolioAssessmentForm", () => {
     expect(screen.queryByRole("option", { name: "Selected product" })).toBeNull();
   });
 
+  it("#1689 — keeps the name of a product it arrived with once a search drops it", () => {
+    const onProductQueryChange = vi.fn();
+    // The first page holds it, so the page never reads its name on its own.
+    const { rerender } = setup({ initialProductId: "p-crm", onProductQueryChange });
+    expect(screen.getByLabelText("Product")).toHaveValue("p-crm");
+    rerender(
+      <PortfolioAssessmentForm
+        products={[products[0]]}
+        initialProductId="p-crm"
+        onProductQueryChange={onProductQueryChange}
+        pending={false}
+        onSubmit={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText("Product")).toHaveValue("p-crm");
+    expect(screen.getByRole("option", { name: "CRM" })).toHaveValue("p-crm");
+    expect(screen.queryByRole("option", { name: "Selected product" })).toBeNull();
+  });
+
   it("names a product it arrived with by the name it was given (#1680)", () => {
     setup({ initialProductId: "p-elsewhere", initialProductName: "Treasury" });
     expect(screen.getByRole("option", { name: "Treasury" })).toHaveValue("p-elsewhere");

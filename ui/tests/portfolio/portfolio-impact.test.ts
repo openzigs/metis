@@ -24,8 +24,8 @@ describe("impactGroups", () => {
     const v = impactView();
     const { affected, notAffected } = impactGroups(v);
     expect(notAffected).toEqual([
-      { productId: "p-crm", name: "CRM" },
-      { productId: "p-hr", name: "HR" },
+      { productId: "p-crm", name: "CRM", olderRule: false },
+      { productId: "p-hr", name: "HR", olderRule: false },
     ]);
     expect(affected.length + notAffected.length).toBe(v.products.length);
   });

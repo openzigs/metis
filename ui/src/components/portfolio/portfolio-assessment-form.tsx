@@ -73,7 +73,11 @@ export function PortfolioAssessmentForm({
   );
   const [productId, setProductId] = useState(initialProductId ?? "");
   // The chosen product's name, kept while a search narrows the list past it.
+  // #1689 — read from the list whenever it holds the product, so one the page
+  // arrived with keeps its name too, not only one picked here.
   const [chosenName, setChosenName] = useState<string | null>(null);
+  const listedName = products.find((p) => p.id === productId)?.name;
+  if (listedName !== undefined && listedName !== chosenName) setChosenName(listedName);
   const options =
     productId && !products.some((p) => p.id === productId)
       ? [
@@ -197,7 +201,7 @@ export function PortfolioAssessmentForm({
               }
               onChange={(e) => {
                 setProductId(e.target.value);
-                setChosenName(products.find((p) => p.id === e.target.value)?.name ?? null);
+                setChosenName(null);
               }}
             >
               <option value="">{productsLoading ? "Loading products…" : "Choose a product"}</option>

@@ -31,11 +31,10 @@
  *   and the fact it is downstream, nothing else, and the walk never expands
  *   through it (the `workspace-rollup.ts` pattern). How many it stopped at is
  *   returned (`stoppedAtRestricted`), and a readable product nothing readable
- *   reaches is `restricted`, not `none`, when the change may flow to it from
- *   one the walk stopped at (a shared repo, an edge, or a resource both use),
- *   directly or through another product so relabelled: it may be reached
- *   through it, so it is never stated unaffected (#1668, #1673, #1680, #1685).
- *   Any other product stays `none`.
+ *   reaches is `restricted`, not `none`, when the same walk able to read every
+ *   product and repo reaches it: it may be reached through what the caller
+ *   cannot read, so it is never stated unaffected (#1668, #1673, #1689). Any
+ *   other product stays `none`.
  * - **Cycle-safe and bounded.** A direct-change product is never downstream; a
  *   product is listed once, with its most severe path; a repo is expanded again
  *   only when reached by a more severe path, and never past `maxDepth`.
@@ -371,7 +370,7 @@ class ImpactWalk {
 
   constructor(
     user: AuthPayload,
-    private readonly readableProducts: ReadonlyMap<string, string>,
+    private readonly readableProducts: { has(productId: string): boolean },
     private readonly canReadRepo: (repo: { repoConnection: { projectId: string } }) => boolean,
     private readonly deps: Required<PortfolioImpactDeps>,
   ) {
@@ -645,139 +644,25 @@ function emptyImpact(productId: string, name: string | null, restricted: boolean
   };
 }
 
-/** Push `value` onto the list `map` holds for `key`, creating it on first use. */
-function pushTo<K, V>(map: Map<K, V[]>, key: K, value: V): void {
-  const list = map.get(key);
-  if (list) list.push(value);
-  else map.set(key, [value]);
-}
-
 /**
- * #1680 — which of `candidates` the change may reach from one of `stopped`: a
- * repo they share, an edge whose flow (`edgeFlows`) leaves a stopped repo for
- * one of theirs, or two edges one product records at one resource that a
- * stopped repo provides (#1685: a product that only provides to the stopped one
- * cannot receive the change). #1685 — closed transitively: a candidate it
- * marks may be reached, so every repo of it is followed on in turn, until
- * nothing new is marked. Only that an edge exists is read, whatever product
- * records it: the caller learns nothing of it but the label on a product they
- * can read.
+ * Walk the product graph from the readable repos of the `direct` products to
+ * `maxDepth`, recording on `entry` every product reached. Returns the
+ * restricted products the walk stopped at (`entry(id).restricted`). Without
+ * `withSharedObjects` no hop carries its shared tables and columns: the
+ * reachability-only walk (`reachedReadingEverything`) needs none.
  */
-async function nextToProducts(stopped: string[], candidates: string[]): Promise<Set<string>> {
-  const stoppedSet = new Set(stopped);
-  const rows = await prisma.productRepo.findMany({
-    where: { productId: { in: [...stopped, ...candidates] }, repoConnection: { deletedAt: null } },
-    select: { productId: true, repoConnectionId: true },
-  });
-  const stoppedRepos = new Set<string>();
-  const candidatesOf = new Map<string, string[]>();
-  const reposOf = new Map<string, string[]>();
-  for (const r of rows) {
-    if (stoppedSet.has(r.productId)) {
-      stoppedRepos.add(r.repoConnectionId);
-      continue;
-    }
-    pushTo(candidatesOf, r.repoConnectionId, r.productId);
-    pushTo(reposOf, r.productId, r.repoConnectionId);
-  }
-  const near = new Set<string>();
-  if (stoppedRepos.size === 0 || candidatesOf.size === 0) return near;
-  // Every repo the change may be followed from is a stopped one or a candidate's.
-  const repoIds = [...new Set([...stoppedRepos, ...candidatesOf.keys()])];
-  const [between, atResource] = await Promise.all([
-    prisma.productEdge.findMany({
-      where: { sourceRepoId: { in: repoIds }, targetRepoId: { in: repoIds } },
-      select: { sourceRepoId: true, targetRepoId: true, direction: true, evidence: true },
-    }),
-    prisma.productEdge.findMany({
-      where: { targetRepoId: null, resourceId: { not: null }, sourceRepoId: { in: repoIds } },
-      select: { productId: true, resourceId: true, sourceRepoId: true, direction: true },
-    }),
-  ]);
-  /** Repo -> the repos a change in it flows to. */
-  const flowsTo = new Map<string, string[]>();
-  for (const e of between) {
-    for (const flow of edgeFlows(e)) pushTo(flowsTo, flow.provider, flow.consumer);
-  }
-  const meeting = new Map<string, typeof atResource>();
-  for (const e of atResource) pushTo(meeting, `${e.productId}\u0000${e.resourceId}`, e);
-  for (const edges of meeting.values()) {
-    for (const a of edges) {
-      if (!providesResource(a.direction)) continue;
-      for (const b of edges) {
-        if (b.sourceRepoId !== a.sourceRepoId) pushTo(flowsTo, a.sourceRepoId, b.sourceRepoId);
-      }
-    }
-  }
-  const reached = new Set(stoppedRepos);
-  const queue = [...stoppedRepos];
-  const reach = (repoId: string) => {
-    if (reached.has(repoId)) return;
-    reached.add(repoId);
-    queue.push(repoId);
-  };
-  for (let repoId = queue.pop(); repoId !== undefined; repoId = queue.pop()) {
-    // A repo the change may be in puts every candidate holding it in reach, and
-    // the change may then be in any repo of that candidate.
-    for (const productId of candidatesOf.get(repoId) ?? []) {
-      if (near.has(productId)) continue;
-      near.add(productId);
-      for (const id of reposOf.get(productId) ?? []) reach(id);
-    }
-    for (const id of flowsTo.get(repoId) ?? []) reach(id);
-  }
-  return near;
-}
-
-/**
- * Walk the product graph from the direct-change products and classify every
- * product reached, and every product listed, by how the change reaches it.
- */
-export async function evaluatePortfolioImpact(
-  user: AuthPayload,
-  input: PortfolioImpactInput,
-  deps: PortfolioImpactDeps = {},
-): Promise<PortfolioImpactResult> {
-  const maxDepth = Math.min(
-    MAX_IMPACT_DEPTH,
-    Math.max(1, Math.floor(input.maxDepth ?? DEFAULT_IMPACT_DEPTH)),
-  );
-  const [productRows, canReadRepo] = await Promise.all([
-    prisma.product.findMany({
-      where: await buildProductAccessWhere(user),
-      select: { id: true, name: true },
-    }),
-    productRepoReadAccess(user),
-  ]);
-  const readableProducts = new Map(productRows.map((p) => [p.id, p.name]));
-  const walk = new ImpactWalk(user, readableProducts, canReadRepo, {
-    sharedObjects:
-      deps.sharedObjects ?? ((actor, projectId) => crossProjectImpact(actor, projectId)),
-  });
-
-  const out = new Map<string, ProductImpact>();
-  const entry = (productId: string): ProductImpact => {
-    let hit = out.get(productId);
-    if (!hit) {
-      const readable = readableProducts.has(productId);
-      hit = emptyImpact(productId, readableProducts.get(productId) ?? null, !readable);
-      out.set(productId, hit);
-    }
-    return hit;
-  };
-  for (const id of input.listedProductIds ?? []) entry(id);
-
-  // A product the caller cannot read is not walked from: it stays as listed.
-  const direct = [...new Set(input.directChangeProductIds)]
-    .filter((id) => readableProducts.has(id))
-    .sort();
+async function walkFrom(
+  walk: ImpactWalk,
+  direct: readonly string[],
+  maxDepth: number,
+  entry: (productId: string) => ProductImpact,
+  withSharedObjects: boolean,
+): Promise<Set<string>> {
   const directSet = new Set(direct);
-  for (const id of direct) entry(id).impactKind = "direct-change";
-
   let frontier = new Map<string, RepoState>();
   if (direct.length > 0) {
     const rows = await prisma.productRepo.findMany({
-      where: { productId: { in: direct }, repoConnection: { deletedAt: null } },
+      where: { productId: { in: [...direct] }, repoConnection: { deletedAt: null } },
       select: { productId: true, repoConnectionId: true },
     });
     await walk.loadRepos(rows.map((r) => r.repoConnectionId));
@@ -864,7 +749,7 @@ export async function evaluatePortfolioImpact(
         const providerRepo = walk.repo(c.provider)!;
         const consumerRepo = walk.repo(c.consumer)!;
         const sharedObjects =
-          integrationKind === "database"
+          withSharedObjects && integrationKind === "database"
             ? await walk.sharedObjects(providerRepo.projectId, consumerRepo.projectId, resource)
             : [];
         const hopTo = (toProductId: string): ImpactHop => ({
@@ -929,20 +814,95 @@ export async function evaluatePortfolioImpact(
     for (const [id, state] of next) expanded.set(id, state.severity);
     frontier = next;
   }
+  return stoppedAt;
+}
+
+/**
+ * #1689 — the products a walk that can read every product and repo reaches
+ * from `direct`, to the same `maxDepth`: the walk the reader's would be had
+ * nothing been hidden from them, so it reaches exactly what theirs would past
+ * every stop, and nothing it would not. Only the set of product ids leaves
+ * this function: nothing it reads is shown to the caller.
+ */
+async function reachedReadingEverything(
+  user: AuthPayload,
+  direct: readonly string[],
+  maxDepth: number,
+  deps: Required<PortfolioImpactDeps>,
+): Promise<Set<string>> {
+  // Every edge's product exists (a foreign key), so every product is "readable".
+  const walk = new ImpactWalk(user, { has: () => true }, () => true, deps);
+  const out = new Map<string, ProductImpact>();
+  const entry = (productId: string): ProductImpact => {
+    let hit = out.get(productId);
+    if (!hit) {
+      hit = emptyImpact(productId, null, false);
+      out.set(productId, hit);
+    }
+    return hit;
+  };
+  await walkFrom(walk, direct, maxDepth, entry, false);
+  return new Set(
+    [...out.values()].filter((p) => p.impactKind === "downstream-consumer").map((p) => p.productId),
+  );
+}
+
+/**
+ * Walk the product graph from the direct-change products and classify every
+ * product reached, and every product listed, by how the change reaches it.
+ */
+export async function evaluatePortfolioImpact(
+  user: AuthPayload,
+  input: PortfolioImpactInput,
+  deps: PortfolioImpactDeps = {},
+): Promise<PortfolioImpactResult> {
+  const maxDepth = Math.min(
+    MAX_IMPACT_DEPTH,
+    Math.max(1, Math.floor(input.maxDepth ?? DEFAULT_IMPACT_DEPTH)),
+  );
+  const [productRows, canReadRepo] = await Promise.all([
+    prisma.product.findMany({
+      where: await buildProductAccessWhere(user),
+      select: { id: true, name: true },
+    }),
+    productRepoReadAccess(user),
+  ]);
+  const readableProducts = new Map(productRows.map((p) => [p.id, p.name]));
+  const walkDeps: Required<PortfolioImpactDeps> = {
+    sharedObjects:
+      deps.sharedObjects ?? ((actor, projectId) => crossProjectImpact(actor, projectId)),
+  };
+  const walk = new ImpactWalk(user, readableProducts, canReadRepo, walkDeps);
+
+  const out = new Map<string, ProductImpact>();
+  const entry = (productId: string): ProductImpact => {
+    let hit = out.get(productId);
+    if (!hit) {
+      const readable = readableProducts.has(productId);
+      hit = emptyImpact(productId, readableProducts.get(productId) ?? null, !readable);
+      out.set(productId, hit);
+    }
+    return hit;
+  };
+  for (const id of input.listedProductIds ?? []) entry(id);
+
+  // A product the caller cannot read is not walked from: it stays as listed.
+  const direct = [...new Set(input.directChangeProductIds)]
+    .filter((id) => readableProducts.has(id))
+    .sort();
+  for (const id of direct) entry(id).impactKind = "direct-change";
+
+  const stoppedAt = await walkFrom(walk, direct, maxDepth, entry, true);
 
   // #1673 (owner decision on #1668 AC3) — past a restricted product the walk
   // was not followed, so a readable product it did not reach may be reached
-  // through one: it reads `restricted`, never "not affected". #1680 — only a
-  // product the change may flow to from one the walk stopped at (#1685: in the
-  // edge's direction, and on through each product so relabelled); every other
-  // one stays `none`.
+  // through one: it reads `restricted`, never "not affected". #1689 — exactly
+  // the products a walk that can read everything reaches (same start, same
+  // `maxDepth`); every other one stays `none`.
   const unreached = [...out.values()].filter((p) => !p.restricted && p.impactKind === "none");
   if (stoppedAt.size > 0 && unreached.length > 0) {
-    const near = await nextToProducts(
-      [...stoppedAt],
-      unreached.map((p) => p.productId),
-    );
-    for (const p of unreached) if (near.has(p.productId)) p.impactKind = "restricted";
+    const reached = await reachedReadingEverything(user, direct, maxDepth, walkDeps);
+    for (const p of unreached) if (reached.has(p.productId)) p.impactKind = "restricted";
   }
 
   return {
@@ -965,10 +925,11 @@ export function impactDetail(
     // The path's severity is its weakest hop; each hop records its own derivation.
     severityRule: "weakest-hop",
     hiddenEdgeCount: p.hiddenEdgeCount,
-    // #1668 — the walk stopped at this many restricted products. #1680 — and only a
-    // product next to one of them was relabelled, so a `none` here is the walk's.
+    // #1668 — the walk stopped at this many restricted products. #1689 — and only a
+    // product a walk able to read everything reaches was relabelled, so a `none`
+    // here is the walk's. `adjacent` is the older rule (#1680, #1685).
     ...(impact.stoppedAtRestricted > 0
-      ? { stoppedAtRestricted: impact.stoppedAtRestricted, restrictedRule: "adjacent" }
+      ? { stoppedAtRestricted: impact.stoppedAtRestricted, restrictedRule: "walk" }
       : {}),
     hops: p.hops,
   };

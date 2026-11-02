@@ -449,7 +449,7 @@ describe("renderPortfolioAssessmentMarkdown (#1624)", () => {
           severityRule: "weakest-hop",
           hiddenEdgeCount: 0,
           stoppedAtRestricted: 1,
-          restrictedRule: "adjacent",
+          restrictedRule: "walk",
           hops: [],
         },
       },
@@ -467,9 +467,21 @@ describe("renderPortfolioAssessmentMarkdown (#1624)", () => {
     const dive = md.slice(md.indexOf("### Ledger"));
     expect(dive).toContain("**Impact:** Restricted");
     expect(dive).toContain(
-      "_The change may reach it through a product that the person who ran the check cannot read, so the check could not follow it there, and whether the change reaches this one is not known._",
+      "_The change may reach it through a repository or product that the person who ran the check cannot read, so the check could not follow it there, and whether the change reaches this one is not known._",
     );
     expect(dive).not.toContain("**Edge path**");
+    const ledgerImpact = (a.products.at(-1)!.technicalDetail as { impact: Record<string, unknown> })
+      .impact;
+
+    // #1689 — stored under the older connection rule (#1680, #1685): it claims a
+    // connection, not a path, and asks for a re-run.
+    ledgerImpact.restrictedRule = "adjacent";
+    const adjacent = await exported();
+    const adjacentDive = adjacent.slice(adjacent.indexOf("### Ledger"));
+    expect(adjacentDive).toContain(
+      "_The check stopped at a product the person who ran it cannot read, and this one is connected to it, so whether the change reaches this one is not known. The check ran under an older rule for such connections: run it again for a more exact answer._",
+    );
+    expect(adjacent).not.toContain("may reach it through");
 
     // #1685 — stored before #1680 (no rule): the run relabelled it whatever its
     // connection, so the note claims none.
@@ -493,6 +505,21 @@ describe("renderPortfolioAssessmentMarkdown (#1624)", () => {
       .stoppedAtRestricted;
     const plain = (await exported()).split("\n").find((l) => l.startsWith("| Ledger |"));
     expect(plain).toContain("| Not affected |");
+
+    // #1689 — a `none` stored under the older rule stays not affected, with a hint
+    // to run the check again; one stored under the current rule gets none.
+    const olderHint =
+      "_This check ran under an older rule for products it could not follow, so a product listed as not affected may still be reached through one that the person who ran it cannot read. Run the check again to find out._";
+    Object.assign(ledgerImpact, { stoppedAtRestricted: 1, restrictedRule: "adjacent" });
+    const older = await exported();
+    expect(older.split("\n").find((l) => l.startsWith("| Ledger |"))).toContain("| Not affected |");
+    expect(older).toContain(olderHint);
+    ledgerImpact.restrictedRule = "walk";
+    const current = await exported();
+    expect(current.split("\n").find((l) => l.startsWith("| Ledger |"))).toContain(
+      "| Not affected |",
+    );
+    expect(current).not.toContain(olderHint);
   });
 
   it("an assessment with no report has no requirement sections", async () => {

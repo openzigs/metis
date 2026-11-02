@@ -138,16 +138,56 @@ describe("PortfolioImpactView", () => {
       impactKind: "restricted",
       technicalDetail: {
         ...v.products[1].technicalDetail,
-        impact: { stoppedAtRestricted: 1, restrictedRule: "adjacent", hops: [] },
+        impact: { stoppedAtRestricted: 1, restrictedRule: "walk", hops: [] },
       },
     };
     renderView(v);
     const crm = card("CRM");
     expect(within(crm).getByTestId("portfolio-impact-kind")).toHaveTextContent("Restricted");
     expect(within(crm).getByTestId("portfolio-impact-unknown")).toHaveTextContent(
-      "The change may reach it through a product that the person who ran the check cannot read, so the check could not follow it there, and whether the change reaches this one is not known.",
+      "The change may reach it through a repository or product that the person who ran the check cannot read, so the check could not follow it there, and whether the change reaches this one is not known.",
     );
     expect(within(crm).queryByRole("button", { name: "Why this severity?" })).toBeNull();
+  });
+
+  it("#1689 — a row stored under the older connection rule claims a connection, not a path", () => {
+    const v = impactView();
+    v.products[1] = {
+      ...v.products[1],
+      impactKind: "restricted",
+      technicalDetail: {
+        ...v.products[1].technicalDetail,
+        impact: { stoppedAtRestricted: 1, restrictedRule: "adjacent", hops: [] },
+      },
+    };
+    renderView(v);
+    const note = within(card("CRM")).getByTestId("portfolio-impact-unknown");
+    expect(note).toHaveTextContent(
+      "The check stopped at a product the person who ran it cannot read, and this one is connected to it, so whether the change reaches this one is not known. The check ran under an older rule for such connections: run it again for a more exact answer.",
+    );
+    expect(note).not.toHaveTextContent("may reach it through");
+  });
+
+  it("#1689 — under the older rule, the not-affected group says it may have missed one", () => {
+    const olderRule =
+      "This check ran under an older rule for products it could not follow, so a product listed as not affected may still be reached through one that the person who ran it cannot read. Run the check again to find out.";
+    const v = impactView();
+    const crm = v.products.findIndex((p) => p.impactKind === "none");
+    v.products[crm] = {
+      ...v.products[crm],
+      technicalDetail: {
+        ...v.products[crm].technicalDetail,
+        impact: { stoppedAtRestricted: 1, restrictedRule: "adjacent", hops: [] },
+      },
+    };
+    const { unmount } = renderView(v);
+    expect(screen.getByTestId("portfolio-not-affected-older-rule")).toHaveTextContent(olderRule);
+    unmount();
+    // Under the current rule, a `none` is the walk's answer: no hint.
+    (v.products[crm].technicalDetail as { impact: Record<string, unknown> }).impact.restrictedRule =
+      "walk";
+    renderView(v);
+    expect(screen.queryByTestId("portfolio-not-affected-older-rule")).toBeNull();
   });
 
   it("#1685 — a row stored before #1680 does not claim a connection it never looked for", () => {
@@ -194,7 +234,12 @@ describe("PortfolioImpactView", () => {
 
   it("names a restricted product not affected without its name", async () => {
     const user = userEvent.setup();
-    render(<PortfolioImpactView affected={[]} notAffected={[{ productId: "p-x", name: null }]} />);
+    render(
+      <PortfolioImpactView
+        affected={[]}
+        notAffected={[{ productId: "p-x", name: null, olderRule: false }]}
+      />,
+    );
     expect(screen.getByTestId("portfolio-impact-none")).toHaveTextContent(
       "No product needs to change",
     );

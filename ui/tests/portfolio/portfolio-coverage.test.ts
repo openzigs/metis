@@ -164,7 +164,7 @@ describe("coverageHeadline", () => {
     expect(coverageHeadline(v)).toEqual({
       tone: "gap",
       text: "Nothing in your portfolio covers this",
-      note: "Empty, Spare have no repositories, so there was nothing in them to check.",
+      note: "Empty and Spare have no repositories, so there was nothing in them to check.",
     });
     v.productIds = ["p", "e1"];
     v.products = v.products.slice(0, 2);
@@ -187,9 +187,19 @@ describe("coverageHeadline", () => {
     expect(coverageHeadline(v)?.note).toBe(
       "A, B, C and 2 more have no repositories, so there was nothing in them to check.",
     );
+    // #1689 — three or fewer: the last joined by "and".
     v.products = v.products.slice(0, 4);
     expect(coverageHeadline(v)?.note).toBe(
-      "A, B, C have no repositories, so there was nothing in them to check.",
+      "A, B and C have no repositories, so there was nothing in them to check.",
+    );
+    // A nameless product is counted, never named "a product" in a list.
+    v.productNames = { p: "Payments", e1: "A" };
+    expect(coverageHeadline(v)?.note).toBe(
+      "A and 2 more have no repositories, so there was nothing in them to check.",
+    );
+    v.productNames = { p: "Payments" };
+    expect(coverageHeadline(v)?.note).toBe(
+      "3 products have no repositories, so there was nothing in them to check.",
     );
   });
 

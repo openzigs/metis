@@ -14,7 +14,10 @@
 import { z } from "zod";
 import {
   PORTFOLIO_DEGRADED_REASON,
+  PORTFOLIO_NOT_AFFECTED_OLDER_RULE,
   portfolioModifierText,
+  portfolioRestrictedNote,
+  portfolioRestrictedRule,
   portfolioResourceLists,
   type CodeCitation,
   type PortfolioAssessmentView,
@@ -218,14 +221,8 @@ function deepDive(
   } else if (p.impactKind === "restricted") {
     // #1680 — the run's starter could not read it, which says nothing of this reader.
     // #1685 — a row stored before #1680 was relabelled whatever its connection.
-    const rule = (p.technicalDetail as { impact?: { restrictedRule?: unknown } }).impact
-      ?.restrictedRule;
-    out.push(
-      rule === "adjacent"
-        ? "_The change may reach it through a product that the person who ran the check cannot read, so the check could not follow it there, and whether the change reaches this one is not known._"
-        : "_The check stopped at a product the person who ran it cannot read, so whether the change reaches this one is not known. The check ran before METIS looked for a connection to that product: run it again to find out whether there is one._",
-      "",
-    );
+    // #1689 — one stored under the older `adjacent` rule claims a connection only.
+    out.push(`_${portfolioRestrictedNote(portfolioRestrictedRule(p.technicalDetail))}_`, "");
   }
   return out;
 }
@@ -319,6 +316,14 @@ export function renderPortfolioAssessmentMarkdown(v: PortfolioAssessmentView): s
         : `| ${cell(name(p.productId))} | ${COVERAGE_LABEL[p.coverage]} | ${cell(p.baSummary)} | ${impactCell(p)} | ${p.severity ? cell(p.severity) : ""} |`,
     ),
   );
+  // #1689 — a check stored under the older rule may have missed a product it reaches.
+  if (
+    v.products.some(
+      (p) => p.impactKind === "none" && portfolioRestrictedRule(p.technicalDetail) === "adjacent",
+    )
+  ) {
+    lines.push("", `_${PORTFOLIO_NOT_AFFECTED_OLDER_RULE}_`);
+  }
 
   const labels = new Map<string, string>();
   for (const p of v.products) {

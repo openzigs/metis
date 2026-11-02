@@ -189,7 +189,8 @@ describe("withImpact", () => {
             severityRule: "weakest-hop",
             hiddenEdgeCount: 2,
             stoppedAtRestricted: 1,
-            restrictedRule: "adjacent",
+            // #1689 — the rule this run relabelled by; `adjacent` is the older one.
+            restrictedRule: "walk",
             hops: [],
           },
         },

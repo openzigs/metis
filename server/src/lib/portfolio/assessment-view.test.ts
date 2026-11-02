@@ -436,27 +436,30 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
     expect((await view())!.products.find((p) => p.productId === "p2")!.impactKind).toBe("none");
   });
 
-  it("a none a run stored under the adjacent rule is read as stored (#1680)", async () => {
-    const a = withImpactRows();
-    a.products[1] = {
-      ...a.products[1],
-      impactKind: "none",
-      via: null,
-      edgeIds: [],
-      severity: null,
-      technicalDetail: {
-        ...a.products[1].technicalDetail,
-        impact: {
-          ...impact([]),
-          severity: null,
-          stoppedAtRestricted: 1,
-          restrictedRule: "adjacent",
+  it.each(["adjacent", "walk"])(
+    "a none a run stored under the %s rule is read as stored (#1680, #1689)",
+    async (restrictedRule) => {
+      const a = withImpactRows();
+      a.products[1] = {
+        ...a.products[1],
+        impactKind: "none",
+        via: null,
+        edgeIds: [],
+        severity: null,
+        technicalDetail: {
+          ...a.products[1].technicalDetail,
+          impact: {
+            ...impact([]),
+            severity: null,
+            stoppedAtRestricted: 1,
+            restrictedRule,
+          },
         },
-      },
-    };
-    store.getPortfolioAssessment.mockResolvedValue(a);
-    expect((await view())!.products.find((p) => p.productId === "p2")!.impactKind).toBe("none");
-  });
+      };
+      store.getPortfolioAssessment.mockResolvedValue(a);
+      expect((await view())!.products.find((p) => p.productId === "p2")!.impactKind).toBe("none");
+    },
+  );
 
   it("a product the reader cannot read is restricted, keeping only its impact kind", async () => {
     db.product.findMany.mockResolvedValue([
