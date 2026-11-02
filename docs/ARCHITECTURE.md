@@ -1533,12 +1533,18 @@ requirement needs no change. Cross-product coupling is a repo on several product
   product the walk would not reach, nor misses one it would, whatever the path goes
   through (an unlisted product, an unreadable one behind the stop, a hidden edge). Only
   the set of product ids leaves it. It runs only when the reader's walk left something
-  out (`leftOut`: a stop, a hidden edge, an edge recorded on a product the starter cannot
-  read, or a repo of a direct-change product they cannot read): with nothing left out the
+  out (`leftOut`: a stop, a hidden edge to a live repo, an edge recorded on a product the
+  starter cannot read, or a repo of a direct-change product they cannot read; an edge to a
+  deleted repo is not one, since neither walk follows it, #1695): with nothing left out the
   two walks take the same steps, so a caller who reads everything pays for one walk. It
   reuses the reader's walk's repo, attachment and resource caches (never its contracts),
-  loads no contract and no shared tables (they set severity, never reach), and stops once
-  every unreached product is found. Every other unreached product stays `none` (#1680:
+  loads no shared tables and no contract past a first hop, and stops once every unreached
+  product is found. A first hop's contract is loaded (#1695): it can raise that hop's
+  severity, and severity changes reach, because a repo keeps its most severe state, and
+  that state's product decides which moves from it are free; without it the comparison
+  reached a product one boundary early, past the walk. Each run logs how many products it
+  looked for and found (`Restricted relabel: comparison walk`), to measure how often it
+  walks on to `maxDepth`. Every other unreached product stays `none` (#1680:
   relabelling all of them on any stop emptied "Not affected"). The one fact a reader
   learns of each readable product (`restricted` or `none`) therefore depends on the graph
   across workspaces up to `maxDepth`, hidden edges included: the same one-bit disclosure
@@ -1549,6 +1555,9 @@ requirement needs no change. Cross-product coupling is a repo on several product
   walk or fall short of it) stays readable: its `restricted` note claims a connection,
   not a path, and its "Not affected" group says a product there may still be reached,
   both asking for a re-run (`portfolioRestrictedNote`, `PORTFOLIO_NOT_AFFECTED_OLDER_RULE`).
+  So does the group of a stored impact with no rule (`portfolioImpactUnderOlderRule`,
+  #1695): a run before #1692 that stopped nowhere relabelled nothing, even past a hidden
+  edge.
   A row an earlier run stored `none` with a stop and no rule is relabelled at read time,
   and a `restricted` row with no rule gets a note that claims no connection (#1685).
   **Rollback:** code from before #1689 recognises only `adjacent` as a rule, so it reads

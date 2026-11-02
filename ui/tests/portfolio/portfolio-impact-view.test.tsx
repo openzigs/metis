@@ -183,6 +183,15 @@ describe("PortfolioImpactView", () => {
     const { unmount } = renderView(v);
     expect(screen.getByTestId("portfolio-not-affected-older-rule")).toHaveTextContent(olderRule);
     unmount();
+    // #1695 — no rule: a run before #1692 that stopped nowhere. It missed paths
+    // through what its starter could not read, so it says so too.
+    delete (v.products[crm].technicalDetail as { impact: Record<string, unknown> }).impact
+      .restrictedRule;
+    delete (v.products[crm].technicalDetail as { impact: Record<string, unknown> }).impact
+      .stoppedAtRestricted;
+    const noRule = renderView(v);
+    expect(screen.getByTestId("portfolio-not-affected-older-rule")).toHaveTextContent(olderRule);
+    noRule.unmount();
     // Under the current rule, a `none` is the walk's answer: no hint.
     (v.products[crm].technicalDetail as { impact: Record<string, unknown> }).impact.restrictedRule =
       "walk";

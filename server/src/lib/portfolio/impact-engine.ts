@@ -678,10 +678,12 @@ function emptyImpact(productId: string, name: string | null, restricted: boolean
 
 interface WalkOptions {
   /**
-   * Whether hops carry the provider's contract and the shared tables and
-   * columns. Neither changes what the walk reaches, only how severely and with
-   * what evidence: the reachability-only walk (`reachedReadingEverything`)
-   * loads neither (#1692).
+   * Whether hops carry the shared tables and columns, and the contract of a hop
+   * past the first. Neither changes the severity, so the reachability-only walk
+   * (`reachedReadingEverything`) loads neither (#1692). A first hop's contract
+   * is always loaded (#1695): it can raise that hop's severity, and severity can
+   * change reach, since the more severe state of a repo decides which product
+   * it is walked as, and so which moves from it are free.
    */
   withEvidence: boolean;
   /** Stop as soon as this holds, checked before each step (#1692). */
@@ -694,9 +696,10 @@ interface WalkOutcome {
   /**
    * #1692 — whether the walk left anything out that a walk able to read
    * everything would follow: a restricted product it stopped at, a repo of a
-   * direct-change product it cannot read, or an edge it cannot walk (to a repo
-   * it cannot read, or recorded on a product it cannot read). When nothing was,
-   * that walk takes exactly the same steps, and reaches nothing more.
+   * direct-change product it cannot read, or an edge it cannot walk (to a live
+   * repo it cannot read, or recorded on a product it cannot read). When nothing
+   * was, that walk takes exactly the same steps, and reaches nothing more. An
+   * edge to a deleted repo is no such edge: neither walk follows it (#1695).
    */
   leftOut: boolean;
 }
@@ -771,7 +774,8 @@ async function walkFrom(
           continue;
         }
         // Not walked; counted once on the product it leaves, if it leaves the frontier.
-        leftOut = true;
+        // #1695 — a walk able to read everything still cannot follow it to a deleted repo.
+        if (ends.every((id) => walk.repo(id) !== null)) leftOut = true;
         const from = ends.find((id) => level.has(id));
         if (from && !hiddenCounted.has(e.id)) {
           hiddenCounted.add(e.id);
@@ -786,7 +790,10 @@ async function walkFrom(
 
       for (const c of candidates) {
         const from = level.get(c.provider)!;
-        const contract = withEvidence ? await walk.contract(c.consumerEdge) : null;
+        // `from.hops.length === 0`: the hop leaves a direct-change product's repo
+        // (see `breakingContract` below), the one hop a contract can raise (#1695).
+        const contract =
+          withEvidence || from.hops.length === 0 ? await walk.contract(c.consumerEdge) : null;
         const hopSeverity = deriveHopSeverity({
           strength: c.strength,
           // Only from a direct-change product's repo is the provider's contract
@@ -884,8 +891,9 @@ async function walkFrom(
  * had nothing been hidden from them, so it reaches exactly what theirs would
  * past everything left out, and nothing it would not. Only the set of product
  * ids leaves this function: nothing it reads is shown to the caller. #1692 — it
- * reuses what the reader's walk loaded of the graph, loads no contract, and
- * stops once it has reached every product in `wanted`.
+ * reuses what the reader's walk loaded of the graph, loads no shared tables and
+ * no contract past a first hop (#1695), and stops once it has reached every
+ * product in `wanted`.
  */
 async function reachedReadingEverything(
   readerWalk: ImpactWalk,
@@ -908,7 +916,16 @@ async function reachedReadingEverything(
     withEvidence: false,
     done: () => wanted.every(reached),
   });
-  return new Set(wanted.filter(reached));
+  const found = wanted.filter(reached);
+  // #1695 — counts only, to measure how often the early stop fails to trigger
+  // (`allReached: false` means the walk went on to `maxDepth`).
+  log.info("Restricted relabel: comparison walk", {
+    maxDepth,
+    wanted: wanted.length,
+    reached: found.length,
+    allReached: found.length === wanted.length,
+  });
+  return new Set(found);
 }
 
 /**

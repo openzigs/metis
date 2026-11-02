@@ -15,6 +15,7 @@ import {
   portfolioModifierText,
   portfolioNamedInProse,
   portfolioRestrictedNote,
+  portfolioImpactUnderOlderRule,
   portfolioRestrictedRule,
   portfolioResourceGroup,
   portfolioResourceLists,
@@ -50,6 +51,24 @@ describe("#1689 — the rule a run relabelled restricted products by", () => {
     expect(portfolioRestrictedRule({ impact: {} })).toBeNull();
     expect(portfolioRestrictedRule({})).toBeNull();
     expect(portfolioRestrictedRule(null)).toBeNull();
+  });
+
+  it("#1695 — a stored impact with no rule, or the adjacent one, ran under an older rule", () => {
+    const stored = { maxDepth: 2, severity: null, hops: [] };
+    expect(portfolioImpactUnderOlderRule({ impact: stored })).toBe(true);
+    expect(
+      portfolioImpactUnderOlderRule({ impact: { ...stored, restrictedRule: "adjacent" } }),
+    ).toBe(true);
+    expect(portfolioImpactUnderOlderRule({ impact: { ...stored, restrictedRule: "other" } })).toBe(
+      true,
+    );
+    expect(portfolioImpactUnderOlderRule({ impact: { ...stored, restrictedRule: "walk" } })).toBe(
+      false,
+    );
+    // No stored impact: nothing to say about a rule.
+    for (const detail of [{}, { impact: null }, { impact: [] }, { impact: "x" }, null, undefined]) {
+      expect(portfolioImpactUnderOlderRule(detail)).toBe(false);
+    }
   });
 
   it("says why each one is not known, and only the current rule claims a path", () => {

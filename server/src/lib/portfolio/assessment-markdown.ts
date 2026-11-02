@@ -15,6 +15,7 @@ import { z } from "zod";
 import {
   PORTFOLIO_DEGRADED_REASON,
   PORTFOLIO_NOT_AFFECTED_OLDER_RULE,
+  portfolioImpactUnderOlderRule,
   portfolioModifierText,
   portfolioRestrictedNote,
   portfolioRestrictedRule,
@@ -316,10 +317,10 @@ export function renderPortfolioAssessmentMarkdown(v: PortfolioAssessmentView): s
         : `| ${cell(name(p.productId))} | ${COVERAGE_LABEL[p.coverage]} | ${cell(p.baSummary)} | ${impactCell(p)} | ${p.severity ? cell(p.severity) : ""} |`,
     ),
   );
-  // #1689 — a check stored under the older rule may have missed a product it reaches.
+  // #1689 — a check stored under an older rule may have missed a product it reaches.
   if (
     v.products.some(
-      (p) => p.impactKind === "none" && portfolioRestrictedRule(p.technicalDetail) === "adjacent",
+      (p) => p.impactKind === "none" && portfolioImpactUnderOlderRule(p.technicalDetail),
     )
   ) {
     lines.push("", `_${PORTFOLIO_NOT_AFFECTED_OLDER_RULE}_`);

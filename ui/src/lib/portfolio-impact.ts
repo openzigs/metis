@@ -9,6 +9,7 @@
  */
 import {
   CHANGE_SEVERITIES,
+  portfolioImpactUnderOlderRule,
   portfolioModifierText,
   portfolioResourceLists,
   portfolioRestrictedRule,
@@ -203,7 +204,10 @@ export interface NotAffectedProduct {
   name: string | null;
   /**
    * #1689 — its run stored the older `adjacent` rule, which could miss a
-   * product the change reaches through one the starter cannot read.
+   * product the change reaches through one the starter cannot read. #1695 —
+   * or stored an impact with no rule: a run before #1692 that stopped at no
+   * restricted product, and so never looked past a repo, or an edge, its
+   * starter could not read.
    */
   olderRule: boolean;
 }
@@ -287,7 +291,7 @@ export function impactGroups(view: PortfolioAssessmentView): {
       notAffected.push({
         productId: p.productId,
         name,
-        olderRule: portfolioRestrictedRule(p.technicalDetail) === "adjacent",
+        olderRule: portfolioImpactUnderOlderRule(p.technicalDetail),
       });
       continue;
     }

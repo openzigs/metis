@@ -9,5 +9,5 @@ section: Fixed
   no such product, so the same path could read either way depending on an unrelated
   product.
 - Working out which products to mark **Restricted** costs less: it is skipped when the
-  person who ran the check can read everything it touched, and otherwise stops as soon as
-  it has its answer.
+  person who ran the check can read everything it touched, and otherwise stops early once
+  it has found every product it was looking for.
