@@ -236,6 +236,19 @@ describe("portfolio entry page", () => {
     expect(productsApi.get).toHaveBeenCalledWith("p-far");
   });
 
+  it("#1685 — does not read a product it arrived with that the first page already holds", async () => {
+    vi.mocked(useSearchParams).mockReturnValue(
+      new URLSearchParams({ productId: "p-billing" }) as never,
+    );
+    api.list.mockResolvedValue([]);
+    render(<PortfolioPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByRole("option", { name: "Billing" })).toHaveValue("p-billing");
+    await waitFor(() => expect(productsApi.list).toHaveBeenCalled());
+    // Give a read that should not happen the chance to start.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(productsApi.get).not.toHaveBeenCalled();
+  });
+
   it("encodes the product id it arrived with before reading it", async () => {
     vi.mocked(useSearchParams).mockReturnValue(
       new URLSearchParams({ productId: "../workspaces" }) as never,

@@ -186,6 +186,12 @@ export interface AffectedProduct {
   hiddenEdgeCount: number;
   /** The server withheld the path: it runs through something the reader cannot read. */
   impactWithheld: boolean;
+  /**
+   * #1685 — a `restricted` row a run before #1680 stored, or the view relabelled
+   * from its `none`: every product the walk did not reach was relabelled then,
+   * connected to the stopped product or not, so its note claims no connection.
+   */
+  restrictedBeforeRule: boolean;
   deepDive: DeepDive;
 }
 
@@ -302,6 +308,10 @@ export function impactGroups(view: PortfolioAssessmentView): {
       hiddenEdgeCount: impact?.hiddenEdgeCount ?? 0,
       impactWithheld:
         !restricted && (p.technicalDetail as { impactWithheld?: unknown }).impactWithheld === true,
+      restrictedBeforeRule:
+        p.impactKind === "restricted" &&
+        (p.technicalDetail as { impact?: { restrictedRule?: unknown } }).impact?.restrictedRule !==
+          "adjacent",
       deepDive: restricted
         ? { repos: [], files: [], contract: null, resources: [] }
         : deepDiveFor(view, p, impact),

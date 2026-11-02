@@ -1863,8 +1863,9 @@ The page opens with the answer in one sentence:
 - **Covered by** *product (repository)*: at least one product covers the whole requirement.
 - **Partly covered by** *product (repository)*: no product covers all of it, and at least one
   covers part of it.
-- **Nothing in your portfolio covers this**: every product in scope was checked, and none of
-  them has it.
+- **Nothing in your portfolio covers this**: every product in scope that has repositories
+  was checked, and none of them has it. A product with no repositories had nothing to
+  check, so it is named underneath instead (the first three, then how many more).
 - **We could not tell whether anything in your portfolio covers this**: at least one product
   could not be checked, so METIS will not claim a gap.
 - **This check failed before it reached an answer.**
@@ -1891,7 +1892,8 @@ exception is a product with no repositories attached. It still reads **Not check
 stop a gap from being confirmed: when every other product does not cover the requirement,
 the answer is "Nothing in your portfolio covers this", with a line underneath naming the
 products that had no repositories (#1677). A check of only such products still reads
-"We could not tell".
+"We could not tell". A check run before products with no repositories were left out keeps its stored
+answer, "We could not tell", until it is run again.
 
 #### Impact on your products
 
@@ -1911,7 +1913,7 @@ reaches.
 |---|---|
 | **Must change** | It partly covers the requirement, so the rest must be built there. |
 | **Downstream consumer** | It uses something a changing product provides, *via* an API, an event, a shared database, a shared library or shared identity. It shows a severity badge. A downstream product you cannot read is listed as *A product you cannot read*, with no name, *via* or severity. |
-| **Restricted** | A product you can read, but whose impact cannot be shown in full. Either the change reaches it along a path that runs through a repository or product you cannot read, so the path is withheld (*"Its impact path goes through a repository or product you cannot read"*). Or it is connected to a product the check could not follow the change through, because the person who ran the check cannot read that product, so whether the change reaches it at all is not known (*"It is connected to a product the check could not follow the change through…"*). Only a product connected to that one, by a shared repository, an edge or a resource both use, reads this way: every other product the change does not reach stays **Not affected**. It is never listed as not affected. |
+| **Restricted** | A product you can read, but whose impact cannot be shown in full. Either the change reaches it along a path that runs through a repository or product you cannot read, so the path is withheld (*"Its impact path goes through a repository or product you cannot read"*). Or the change may reach it through a product that the person who ran the check cannot read, so the check could not follow the change there, and whether it reaches this product at all is not known (*"The change may reach it through a product that the person who ran the check cannot read…"*). That is so when the change can flow to it from that product, through a shared repository, an edge or a resource both use, directly or through another product that reads **Restricted** this way. A product the change cannot flow to, such as one that only provides something to that product, stays **Not affected**. A check run before this rule relabelled every product the change did not reach, connected or not; such a product's note says the check stopped at a product it could not read, and running the check again shows whether it is connected. |
 | **Not affected** | Nothing reaches it. These products are listed in the collapsed **Not affected** group. |
 
 Each product's **Technical deep dive** lists its repositories and files, the contract items

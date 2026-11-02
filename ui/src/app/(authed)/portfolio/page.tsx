@@ -71,11 +71,13 @@ function PortfolioEntry({
     placeholderData: keepPreviousData,
   });
   // #1680 — the product arrived with may be past the first page: read its name.
+  // #1685 — only once the page is in and does not hold it.
+  const listed = (productsQuery.data?.items ?? []).some((p) => p.id === initialProductId);
   const initialProduct = useQuery({
     queryKey: ["portfolio", "product", initialProductId],
     // The id is from the URL: encoded, so it can only name a product.
     queryFn: () => productsApi.get(encodeURIComponent(initialProductId as string)),
-    enabled: initialProductId !== null,
+    enabled: initialProductId !== null && !productsQuery.isPending && !listed,
     retry: false,
   });
   const recent = usePortfolioAssessments(initialProductId ?? undefined);

@@ -140,6 +140,16 @@ function named(rows: CoverageRow[]): string {
     .join(", ");
 }
 
+/** #1685 — how many products a headline note names before "and N more". */
+const NAMED_IN_NOTE = 3;
+
+/** `named`, over the first few rows only, then how many more. */
+function namedFew(rows: CoverageRow[]): string {
+  const rest = rows.length - NAMED_IN_NOTE;
+  const shown = named(rows.slice(0, NAMED_IN_NOTE));
+  return rest > 0 ? `${shown} and ${rest} more` : shown;
+}
+
 /** The tone of the headline, so it is not conveyed by colour alone. */
 export type HeadlineTone = "covered" | "partial" | "gap" | "unknown";
 
@@ -196,7 +206,7 @@ export function coverageHeadline(view: PortfolioAssessmentView): CoverageHeadlin
         text: "Nothing in your portfolio covers this",
         ...(empty.length > 0
           ? {
-              note: `${named(empty)} ${empty.length === 1 ? "has" : "have"} no repositories, so there was nothing in ${empty.length === 1 ? "it" : "them"} to check.`,
+              note: `${namedFew(empty)} ${empty.length === 1 ? "has" : "have"} no repositories, so there was nothing in ${empty.length === 1 ? "it" : "them"} to check.`,
             }
           : {}),
       };

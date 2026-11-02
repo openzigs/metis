@@ -133,14 +133,39 @@ describe("PortfolioImpactView", () => {
 
   it("#1673 — says a product the walk could not rule out is restricted, not affected or not", () => {
     const v = impactView();
-    v.products[1] = { ...v.products[1], impactKind: "restricted" };
+    v.products[1] = {
+      ...v.products[1],
+      impactKind: "restricted",
+      technicalDetail: {
+        ...v.products[1].technicalDetail,
+        impact: { stoppedAtRestricted: 1, restrictedRule: "adjacent", hops: [] },
+      },
+    };
     renderView(v);
     const crm = card("CRM");
     expect(within(crm).getByTestId("portfolio-impact-kind")).toHaveTextContent("Restricted");
     expect(within(crm).getByTestId("portfolio-impact-unknown")).toHaveTextContent(
-      "It is connected to a product the check could not follow the change through, because the person who ran the check cannot read it, so whether the change reaches this one is not known.",
+      "The change may reach it through a product that the person who ran the check cannot read, so the check could not follow it there, and whether the change reaches this one is not known.",
     );
     expect(within(crm).queryByRole("button", { name: "Why this severity?" })).toBeNull();
+  });
+
+  it("#1685 — a row stored before #1680 does not claim a connection it never looked for", () => {
+    const v = impactView();
+    v.products[1] = {
+      ...v.products[1],
+      impactKind: "restricted",
+      technicalDetail: {
+        ...v.products[1].technicalDetail,
+        impact: { stoppedAtRestricted: 1, hops: [] },
+      },
+    };
+    renderView(v);
+    const note = within(card("CRM")).getByTestId("portfolio-impact-unknown");
+    expect(note).toHaveTextContent(
+      "The check stopped at a product the person who ran it cannot read, so whether the change reaches this one is not known. The check ran before METIS looked for a connection to that product: run it again to find out whether there is one.",
+    );
+    expect(note).not.toHaveTextContent("may reach it through");
   });
 
   it("says when a path was withheld", () => {

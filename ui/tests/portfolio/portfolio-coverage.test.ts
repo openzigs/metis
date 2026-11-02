@@ -173,6 +173,26 @@ describe("coverageHeadline", () => {
     );
   });
 
+  it("#1685 — names the first three products with no repositories, then how many more", () => {
+    const ids = ["e1", "e2", "e3", "e4", "e5"];
+    const v = view({
+      verdict: "gap-confirmed",
+      productIds: ["p", ...ids],
+      productNames: { p: "Payments", e1: "A", e2: "B", e3: "C", e4: "D", e5: "E" },
+      products: [
+        product("p", "not-covered"),
+        ...ids.map((id) => product(id, "not-checked", repoDetail([], "no-repos"))),
+      ],
+    });
+    expect(coverageHeadline(v)?.note).toBe(
+      "A, B, C and 2 more have no repositories, so there was nothing in them to check.",
+    );
+    v.products = v.products.slice(0, 4);
+    expect(coverageHeadline(v)?.note).toBe(
+      "A, B, C have no repositories, so there was nothing in them to check.",
+    );
+  });
+
   it("does not claim a gap it could not verify", () => {
     expect(coverageHeadline(view({ verdict: "could-not-verify" }))?.tone).toBe("unknown");
   });
