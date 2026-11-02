@@ -179,7 +179,9 @@ function impactReferences(stored: StoredProduct): { repos: string[]; products: s
 function stoppedAtRestricted(stored: StoredProduct): number {
   // #1680 — a run that relabelled only some products records its rule
   // (#1689: `walk`, or the older `adjacent`); its `none` is the walk's answer
-  // and is not relabelled again.
+  // and is not relabelled again. Code from before #1689 knows only `adjacent`:
+  // reverted past it, a stopped run's `walk` rows would all read `restricted`
+  // (docs/ARCHITECTURE.md, "Rollback").
   if (portfolioRestrictedRule(stored.technicalDetail) !== null) return 0;
   const n = (stored.technicalDetail as { impact?: { stoppedAtRestricted?: unknown } }).impact
     ?.stoppedAtRestricted;

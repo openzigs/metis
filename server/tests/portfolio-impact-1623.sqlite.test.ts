@@ -588,6 +588,44 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             }
           });
 
+          it("a move inside Ledger costs no depth, exactly at the depth limit", async () => {
+            // Billing -> partner-core (1) -> ledger (2, Partner to Ledger) -> ledger-2
+            // (3, inside Ledger: free) -> Idle (3). Only the free move gets there at 3.
+            await db.repoConnection.create({
+              data: {
+                id: "rc-ledger-2-1692",
+                projectId: "proj-a-1623",
+                label: "ledger-2",
+                ownerOrOrg: "acme",
+                repoName: "ledger-2",
+              },
+            });
+            await db.productRepo.create({
+              data: { productId: P.ledger, repoConnectionId: "rc-ledger-2-1692" },
+            });
+            const inLedger = (id: string, sourceRepoId: string, targetRepoId: string) => ({
+              ...edgeData(id, sourceRepoId, targetRepoId),
+              productId: P.ledger,
+              direction: "provides",
+            });
+            try {
+              await withEdges(
+                [
+                  coreToLedger,
+                  inLedger("e-ledger-ledger2-1692", R.ledger, "rc-ledger-2-1692"),
+                  inLedger("e-ledger2-idle-1692", "rc-ledger-2-1692", R.idle),
+                ],
+                async () => {
+                  expect(await idle(3)).toEqual(reached);
+                  expect(await idle(2)).toEqual(unreached);
+                },
+              );
+            } finally {
+              await db.productRepo.deleteMany({ where: { repoConnectionId: "rc-ledger-2-1692" } });
+              await db.repoConnection.delete({ where: { id: "rc-ledger-2-1692" } });
+            }
+          });
+
           it("no further than the run's depth: two boundaries leave it none", async () => {
             // Billing -> partner-core (1) -> ledger (2, Partner to Ledger) -> Idle (3).
             await withEdges([coreToLedger, ledgerToIdle], async () => {
@@ -664,39 +702,215 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           }
         });
 
-        it("a run that stopped at no restricted product relabels nothing", async () => {
-          // Dedup D's ws-b repo (Ana cannot read it) feeds Idle. Mia's walk reaches
-          // Idle through it; Ana's stops at no product, so Idle stays none and the
-          // edge is not hers to see (#1258).
-          await db.productRepo.create({
-            data: { productId: P.dedupD, repoConnectionId: R.dedupHidden },
-          });
-          try {
-            await withEdges(
-              [
-                {
-                  ...edgeData("e-idle-dhidden-1689", R.idle, R.dedupHidden),
-                  productId: P.idle,
-                },
-              ],
-              async () => {
-                const run = (who: AuthPayload) =>
-                  evaluatePortfolioImpact(who, {
-                    directChangeProductIds: [P.dedupD],
-                    listedProductIds: [P.idle],
-                    maxDepth: 4,
-                  });
-                const ana = await run(ANA);
-                expect(ana.stoppedAtRestricted).toBe(0);
-                expect(of(ana, P.idle).impactKind).toBe("none");
-                expect(of(await run(MIA), P.idle).impactKind).toBe("downstream-consumer");
-              },
-            );
-          } finally {
-            await db.productRepo.deleteMany({
-              where: { productId: P.dedupD, repoConnectionId: R.dedupHidden },
+        describe("#1692 — whatever the walk could not read counts, stop or no stop", () => {
+          const toIdle = (who: AuthPayload, direct: string[]) =>
+            evaluatePortfolioImpact(who, {
+              directChangeProductIds: direct,
+              listedProductIds: [P.idle],
+              maxDepth: 4,
             });
-          }
+          /** Attach the ws-b repo `dedup-hidden` (Ana cannot read it) to `productId`. */
+          const withHiddenRepoOn = async (productId: string, body: () => Promise<void>) => {
+            await db.productRepo.create({
+              data: { productId, repoConnectionId: R.dedupHidden },
+            });
+            try {
+              await body();
+            } finally {
+              await db.productRepo.deleteMany({
+                where: { productId, repoConnectionId: R.dedupHidden },
+              });
+            }
+          };
+          const idleConsumesHidden = {
+            ...edgeData("e-idle-dhidden-1692", R.idle, R.dedupHidden),
+            productId: P.idle,
+          };
+
+          it("a path through a repo of a readable product the reader cannot read reads restricted, whatever else the run stopped at", async () => {
+            // Dedup X -> dedup-hidden (a repo of Alerts, readable; the edge is a
+            // hidden edge to Ana) -> Idle. With Billing too, Ana's walk also stops
+            // at Partner, which has nothing to do with this path: the same answer.
+            await withHiddenRepoOn(P.alerts, () =>
+              withEdges([idleConsumesHidden], async () => {
+                const alone = await toIdle(ANA, [P.dedupX]);
+                expect(alone.stoppedAtRestricted).toBe(0);
+                expect(of(alone, P.dedupX).hiddenEdgeCount).toBe(1);
+                const stopped = await toIdle(ANA, [P.dedupX, P.billing]);
+                expect(stopped.stoppedAtRestricted).toBe(1);
+                expect({
+                  alone: of(alone, P.idle).impactKind,
+                  stopped: of(stopped, P.idle).impactKind,
+                }).toEqual({ alone: "restricted", stopped: "restricted" });
+                for (const direct of [[P.dedupX], [P.dedupX, P.billing]]) {
+                  expect(of(await toIdle(MIA, direct), P.idle).impactKind).toBe(
+                    "downstream-consumer",
+                  );
+                }
+                expect(JSON.stringify(alone)).not.toContain(R.dedupHidden);
+              }),
+            );
+          });
+
+          it("a path from a repo of a direct-change product the reader cannot read reads restricted", async () => {
+            // Alerts' ws-b repo feeds Idle. Ana's walk never starts there, hides no
+            // edge and stops at no product (#1258: the edge is not hers to see).
+            await withHiddenRepoOn(P.alerts, () =>
+              withEdges([idleConsumesHidden], async () => {
+                const ana = await toIdle(ANA, [P.alerts]);
+                expect(ana.stoppedAtRestricted).toBe(0);
+                expect(of(ana, P.alerts).hiddenEdgeCount).toBe(0);
+                expect(of(ana, P.idle).impactKind).toBe("restricted");
+                expect(JSON.stringify(ana)).not.toContain(R.dedupHidden);
+                expect(of(await toIdle(MIA, [P.alerts]), P.idle).impactKind).toBe(
+                  "downstream-consumer",
+                );
+              }),
+            );
+          });
+
+          it("a path along an edge recorded on a product the reader cannot read reads restricted", async () => {
+            // Idle consumes Alerts, recorded on Partner (ws-b). Both repos are Ana's,
+            // so it is no hidden edge, and Ana's walk stops at no product.
+            await withEdges([edgeData("e-idle-alerts-1692", R.idle, R.alerts)], async () => {
+              const ana = await toIdle(ANA, [P.alerts]);
+              expect(ana.stoppedAtRestricted).toBe(0);
+              expect(of(ana, P.alerts).hiddenEdgeCount).toBe(0);
+              expect(of(ana, P.idle).impactKind).toBe("restricted");
+              expect(of(await toIdle(MIA, [P.alerts]), P.idle).impactKind).toBe(
+                "downstream-consumer",
+              );
+            });
+          });
+
+          it("nothing else is relabelled: an unreached product with no such path stays none", async () => {
+            // Ana's walk from Dedup D hides the edge to dedup-hidden, but nothing
+            // past it reaches Idle.
+            const ana = await toIdle(ANA, [P.dedupD]);
+            expect(of(ana, P.dedupX).hiddenEdgeCount).toBe(1);
+            expect(of(ana, P.idle).impactKind).toBe("none");
+          });
+        });
+
+        describe("#1692 — the comparison walk does only the work it needs", () => {
+          type Query = { call: string; where: Record<string, { in?: string[] } | undefined> };
+          /** Every query `body` makes, in order, with its `where`. */
+          const queriesOf = async (body: () => Promise<unknown>): Promise<Query[]> => {
+            const calls: Query[] = [];
+            state.db = new Proxy(db, {
+              get(target, prop, receiver) {
+                const value = Reflect.get(target, prop, receiver) as unknown;
+                if (typeof prop !== "string" || value === null || typeof value !== "object") {
+                  return value;
+                }
+                return new Proxy(value as object, {
+                  get(model, method) {
+                    const fn = Reflect.get(model, method) as unknown;
+                    if (typeof fn !== "function") return fn;
+                    return (...args: unknown[]) => {
+                      const where = (args[0] as { where?: Query["where"] } | undefined)?.where;
+                      calls.push({ call: `${prop}.${String(method)}`, where: where ?? {} });
+                      return (fn as (...a: unknown[]) => unknown).apply(model, args);
+                    };
+                  },
+                });
+              },
+            });
+            try {
+              await body();
+            } finally {
+              state.db = db;
+            }
+            return calls;
+          };
+          /** Where each walk starts: the repos of its direct-change products. */
+          const walkStarts = (calls: Query[]) =>
+            calls.flatMap((q, i) =>
+              q.call === "productRepo.findMany" && q.where.productId?.in ? [i] : [],
+            );
+          /** The queries of the comparison walk, the second one to start. */
+          const comparison = (calls: Query[]) => {
+            const starts = walkStarts(calls);
+            expect(starts).toHaveLength(2);
+            return { before: calls.slice(0, starts[1]), during: calls.slice(starts[1]) };
+          };
+          const ordersAndBilling = () =>
+            evaluatePortfolioImpact(ANA, {
+              directChangeProductIds: [P.orders, P.billing],
+              listedProductIds: [P.idle],
+            });
+
+          it("is not run when the reader's walk left nothing out", async () => {
+            // Mia reads every product and repo the walk from Dedup D touches.
+            const calls = await queriesOf(async () => {
+              const mia = await evaluatePortfolioImpact(MIA, {
+                directChangeProductIds: [P.dedupD],
+                listedProductIds: [P.idle],
+              });
+              expect(of(mia, P.idle).impactKind).toBe("none");
+            });
+            expect(walkStarts(calls)).toHaveLength(1);
+          });
+
+          it("loads no contract: a contract changes severity, never reach", async () => {
+            const { before, during } = comparison(await queriesOf(ordersAndBilling));
+            // Orders' edge to Storefront names a contract: the reader's walk loads it.
+            expect(before.some((q) => q.call === "productContractDoc.findFirst")).toBe(true);
+            expect(during.filter((q) => q.call.startsWith("productContractDoc."))).toEqual([]);
+          });
+
+          it("reuses the repos, attachments and resources the reader's walk loaded", async () => {
+            const { before, during } = comparison(await queriesOf(ordersAndBilling));
+            const ids = (qs: Query[]) =>
+              qs.flatMap((q) => {
+                if (q.call === "repoConnection.findMany" || q.call === "productResource.findMany") {
+                  return (q.where.id?.in ?? []).map((id) => `${q.call}:${id}`);
+                }
+                if (q.call === "productRepo.findMany") {
+                  return (q.where.repoConnectionId?.in ?? []).map((id) => `${q.call}:${id}`);
+                }
+                return [];
+              });
+            const loaded = new Set(ids(before));
+            expect(loaded.size).toBeGreaterThan(0);
+            expect(ids(during).filter((id) => loaded.has(id))).toEqual([]);
+          });
+
+          it("stops once it has reached every product the reader's walk did not", async () => {
+            // Dedup D's ws-b repo feeds Idle: the comparison reaches it at its first
+            // step, and walks no further (Dedup X and Y lie beyond).
+            await db.productRepo.create({
+              data: { productId: P.dedupD, repoConnectionId: R.dedupHidden },
+            });
+            try {
+              await withEdges(
+                [
+                  {
+                    ...edgeData("e-idle-dhidden-stop-1692", R.idle, R.dedupHidden),
+                    productId: P.idle,
+                  },
+                ],
+                async () => {
+                  const { during } = comparison(
+                    await queriesOf(async () => {
+                      const ana = await evaluatePortfolioImpact(ANA, {
+                        directChangeProductIds: [P.dedupD],
+                        listedProductIds: [P.idle],
+                        maxDepth: 4,
+                      });
+                      expect(of(ana, P.idle).impactKind).toBe("restricted");
+                    }),
+                  );
+                  // One step: the edges from Dedup D's two repos, by source and by target.
+                  expect(during.filter((q) => q.call === "productEdge.findMany")).toHaveLength(2);
+                },
+              );
+            } finally {
+              await db.productRepo.deleteMany({
+                where: { productId: P.dedupD, repoConnectionId: R.dedupHidden },
+              });
+            }
+          });
         });
 
         it("a listed product the caller cannot read is never relabelled", async () => {

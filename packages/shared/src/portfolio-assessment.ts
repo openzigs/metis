@@ -345,8 +345,8 @@ export function portfolioNamedInProse(
 
 /**
  * #1689 — the rule a run relabelled readable products `restricted` by, as it
- * stored it (`technicalDetail.impact.restrictedRule`, only when its walk
- * stopped at a restricted product):
+ * stored it (`technicalDetail.impact.restrictedRule`: from #1689 when its walk
+ * stopped at a restricted product, from #1692 on every readable row):
  *
  * - `walk` — one the run's walk did not reach, but the same walk able to read
  *   every product and repo does.
