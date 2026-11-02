@@ -133,3 +133,11 @@ The #1689 review, 2026-11-02.
   left enough slack that a mutation making a move inside one product cost a step of depth
   stayed green across all 34 tests. Any check of depth needs a case that sits exactly at
   the limit, so that one extra step turns it red.
+
+The #1692 review, 2026-11-02.
+
+- **Severity is not neutral to reach (#1692).** `offer()` keeps the more severe state, and
+  that state's `productId` decides which moves inside one product are free. A walk that
+  skips evidence (contracts) can therefore reach different products. Before claiming it
+  reaches the same ones, test a breaking contract plus a repo in more than one product,
+  exactly at `maxDepth`.
