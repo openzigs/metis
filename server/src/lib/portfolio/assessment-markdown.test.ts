@@ -449,6 +449,7 @@ describe("renderPortfolioAssessmentMarkdown (#1624)", () => {
           severityRule: "weakest-hop",
           hiddenEdgeCount: 0,
           stoppedAtRestricted: 1,
+          restrictedRule: "adjacent",
           hops: [],
         },
       },
@@ -466,16 +467,27 @@ describe("renderPortfolioAssessmentMarkdown (#1624)", () => {
     const dive = md.slice(md.indexOf("### Ledger"));
     expect(dive).toContain("**Impact:** Restricted");
     expect(dive).toContain(
-      "_It is connected to a product the check could not follow the change through, because the person who ran the check cannot read it, so whether the change reaches this one is not known._",
+      "_The change may reach it through a product that the person who ran the check cannot read, so the check could not follow it there, and whether the change reaches this one is not known._",
     );
     expect(dive).not.toContain("**Edge path**");
 
-    // An earlier run stored it `none` with the stop: it reads the same (the view relabels it).
+    // #1685 — stored before #1680 (no rule): the run relabelled it whatever its
+    // connection, so the note claims none.
     const legacy = a.products.at(-1)!;
+    const stoppedNote =
+      "_The check stopped at a product the person who ran it cannot read, so whether the change reaches this one is not known. The check ran before METIS looked for a connection to that product: run it again to find out whether there is one._";
+    delete (legacy.technicalDetail as { impact: Record<string, unknown> }).impact.restrictedRule;
+    const old = await exported();
+    expect(old.slice(old.indexOf("### Ledger"))).toContain(stoppedNote);
+    expect(old).not.toContain("may reach it through");
+
+    // An earlier run stored it `none` with the stop: it reads the same (the view relabels it).
     legacy.impactKind = "none";
-    expect((await exported()).split("\n").find((l) => l.startsWith("| Ledger |"))).toContain(
+    const relabelled = await exported();
+    expect(relabelled.split("\n").find((l) => l.startsWith("| Ledger |"))).toContain(
       "| Restricted |",
     );
+    expect(relabelled.slice(relabelled.indexOf("### Ledger"))).toContain(stoppedNote);
     // Without the stop, `none` is stated plainly.
     delete (legacy.technicalDetail as { impact: Record<string, unknown> }).impact
       .stoppedAtRestricted;

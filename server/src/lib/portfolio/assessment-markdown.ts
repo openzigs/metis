@@ -216,9 +216,14 @@ function deepDive(
       "",
     );
   } else if (p.impactKind === "restricted") {
+    // #1680 — the run's starter could not read it, which says nothing of this reader.
+    // #1685 — a row stored before #1680 was relabelled whatever its connection.
+    const rule = (p.technicalDetail as { impact?: { restrictedRule?: unknown } }).impact
+      ?.restrictedRule;
     out.push(
-      // #1680 — the run's starter could not read it, which says nothing of this reader.
-      "_It is connected to a product the check could not follow the change through, because the person who ran the check cannot read it, so whether the change reaches this one is not known._",
+      rule === "adjacent"
+        ? "_The change may reach it through a product that the person who ran the check cannot read, so the check could not follow it there, and whether the change reaches this one is not known._"
+        : "_The check stopped at a product the person who ran it cannot read, so whether the change reaches this one is not known. The check ran before METIS looked for a connection to that product: run it again to find out whether there is one._",
       "",
     );
   }

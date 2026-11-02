@@ -1521,15 +1521,21 @@ requirement needs no change. Cross-product coupling is a repo on several product
   `downstream-consumer`, nothing else, and the walk never goes through it. The walk
   records how many it stopped at (`stoppedAtRestricted`, stored in every readable row's
   `technicalDetail.impact`). A readable product nothing readable reached has the impact
-  kind `restricted`, not `none`, when it is next to a product the walk stopped at: it
-  shares a repo with one, an edge joins a repo of each, or two resource edges of one
-  product meet at a resource from a repo of each (`nextToProducts`). It may be reached
-  through that product, so it is never stated unaffected (#1668; the owner's AC3 decision,
-  #1673). Only the edge's existence is read, whatever product records it. Every other
-  unreached product stays `none` (#1680: relabelling all of them on any stop emptied
-  "Not affected"). The view, the page and the export all read it "Restricted". A run
-  records the rule (`restrictedRule: "adjacent"`); a row an earlier run stored `none` with
-  a stop and no rule is relabelled at read time.
+  kind `restricted`, not `none`, when the change may flow to it from a product the walk
+  stopped at: it shares a repo with one, an edge whose flow (`edgeFlows`) leaves a repo of
+  one reaches a repo of it, or two resource edges of one product meet at a resource that
+  a repo of one provides (`providesResource`) and a repo of it uses (`nextToProducts`).
+  The rule is closed transitively (#1685): every repo of a product so relabelled is
+  followed on in turn, until nothing new is marked, so a product reachable only through
+  a relabelled one reads `restricted` too. It may be reached through that product, so it
+  is never stated unaffected (#1668; the owner's AC3 decision, #1673). Only the edge's
+  existence is read, whatever product records it. Every other unreached product stays
+  `none` (#1680: relabelling all of them on any stop emptied "Not affected"); so does one
+  that only provides to the stopped product (#1685). The view, the page and the export
+  all read it "Restricted". A run records the rule (`restrictedRule: "adjacent"`, the
+  value kept from #1680 for the transitive rule too); a row an earlier run stored `none`
+  with a stop and no rule is relabelled at read time, and a `restricted` row with no rule
+  gets a note that claims no connection (#1685).
 - **Severity** (`impact-severity.ts`, `CHANGE_SEVERITIES`). Base from the strength
   (`intrusive`/`functional` high, `model` medium, `contract` low, unclassified medium);
   +1 when the provider's own latest `ProductContractDoc` diff breaks (`isBreakingDiff`: an

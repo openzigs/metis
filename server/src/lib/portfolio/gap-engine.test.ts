@@ -42,6 +42,7 @@ const {
   evaluatePortfolioGap,
   mapWithConcurrency,
   portfolioGapInputSchema,
+  portfolioSummary,
   querySearchedFor,
   readPortfolioGapLimits,
   runPortfolioGapAnalysis,
@@ -539,5 +540,40 @@ describe("evaluatePortfolioGap", () => {
     );
     // The scripted model "m" is not in the price table: unpriced reads as 0.
     expect(result.costUsd).toBe(0);
+  });
+});
+
+describe("#1685 — naming the products with no repos under a confirmed gap", () => {
+  const empty = (productId: string, name: string | null) => ({
+    productId,
+    name,
+    coverage: "not-checked" as const,
+    reason: "no-repos" as const,
+    repos: [],
+    criteriaCoveredBy: [],
+    inaccessibleRepoCount: 0,
+    costUsd: 0,
+  });
+
+  it("names the first three, then says how many more", () => {
+    const names = ["A", "B", "C", "D", "E"];
+    const products = names.map((n) => empty(`p-${n}`, n));
+    expect(portfolioSummary("gap-confirmed", products)).toBe(
+      "Nothing in the portfolio covers this. A, B, C and 2 more have no repositories to check.",
+    );
+    expect(portfolioSummary("gap-confirmed", products.slice(0, 4))).toBe(
+      "Nothing in the portfolio covers this. A, B, C and 1 more have no repositories to check.",
+    );
+    expect(portfolioSummary("gap-confirmed", products.slice(0, 3))).toBe(
+      "Nothing in the portfolio covers this. A, B, C have no repositories to check.",
+    );
+  });
+
+  it("never puts a raw product id into the prose", () => {
+    const text = portfolioSummary("gap-confirmed", [empty("p-raw-id", null), empty("p2", "Two")]);
+    expect(text).toBe(
+      "Nothing in the portfolio covers this. a product, Two have no repositories to check.",
+    );
+    expect(text).not.toContain("p-raw-id");
   });
 });

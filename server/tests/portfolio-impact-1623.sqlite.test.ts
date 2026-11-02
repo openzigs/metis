@@ -407,7 +407,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           expect(of(impact, P.idle).impactKind).toBe("none");
         });
 
-        it("an edge between its repo and the stopped product's makes it restricted", async () => {
+        it("an edge from the stopped product's repo to its own makes it restricted", async () => {
+          // Idle consumes partner-core: a change in Partner can reach it.
           await db.productEdge.create({
             data: edgeData("e-idle-core-1680", R.idle, R.partnerCore),
           });
@@ -416,9 +417,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           } finally {
             await db.productEdge.delete({ where: { id: "e-idle-core-1680" } });
           }
-          // The other end of the edge counts the same way.
+          // Recorded from the other end, the same flow counts the same way.
           await db.productEdge.create({
-            data: edgeData("e-core-idle-1680", R.partnerCore, R.idle),
+            data: {
+              ...edgeData("e-core-idle-1680", R.partnerCore, R.idle),
+              direction: "provides",
+            },
           });
           try {
             expect(of(await withIdle(), P.idle).impactKind).toBe("restricted");
@@ -427,13 +431,26 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           }
         });
 
-        it("two edges meeting at a resource from each make it restricted", async () => {
+        it("#1685 — a product that only provides to the stopped product stays none", async () => {
+          // Partner's partner-core consumes Idle: nothing flows from Partner to Idle.
+          await db.productEdge.create({
+            data: edgeData("e-core-idle-1685", R.partnerCore, R.idle),
+          });
+          try {
+            expect(of(await withIdle(), P.idle).impactKind).toBe("none");
+          } finally {
+            await db.productEdge.delete({ where: { id: "e-core-idle-1685" } });
+          }
+        });
+
+        it("two edges meeting at a resource the stopped product provides make it restricted", async () => {
           await db.productResource.create({
             data: { id: "res-drop-1680", productId: P.partner, kind: "bucket", name: "drop" },
           });
           await db.productEdge.create({
             data: {
               ...edgeData("e-core-drop-1680", R.partnerCore, null),
+              direction: "writes",
               resourceId: "res-drop-1680",
             },
           });
@@ -442,6 +459,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           });
           try {
             expect(of(await withIdle(), P.idle).impactKind).toBe("restricted");
+            // #1685 — a stopped repo that only reads the resource passes nothing on.
+            await db.productEdge.update({
+              where: { id: "e-core-drop-1680" },
+              data: { direction: "reads" },
+            });
+            expect(of(await withIdle(), P.idle).impactKind).toBe("none");
             // Only the edge from the stopped product's repo: the idle one alone meets nothing.
             await db.productEdge.delete({ where: { id: "e-core-drop-1680" } });
             expect(of(await withIdle(), P.idle).impactKind).toBe("none");
@@ -451,6 +474,102 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             });
             await db.productResource.delete({ where: { id: "res-drop-1680" } });
           }
+        });
+
+        it("#1685 — edges recorded by two products never meet at a resource", async () => {
+          await db.productResource.create({
+            data: { id: "res-two-1685", productId: P.partner, kind: "bucket", name: "two" },
+          });
+          await db.productEdge.create({
+            data: {
+              ...edgeData("e-core-two-1685", R.partnerCore, null),
+              direction: "writes",
+              resourceId: "res-two-1685",
+            },
+          });
+          // Same resource id, but recorded on Idle: not one product's resource meeting.
+          await db.productEdge.create({
+            data: {
+              ...edgeData("e-idle-two-1685", R.idle, null),
+              productId: P.idle,
+              resourceId: "res-two-1685",
+            },
+          });
+          try {
+            expect(of(await withIdle(), P.idle).impactKind).toBe("none");
+          } finally {
+            await db.productEdge.deleteMany({
+              where: { id: { in: ["e-core-two-1685", "e-idle-two-1685"] } },
+            });
+            await db.productResource.delete({ where: { id: "res-two-1685" } });
+          }
+        });
+
+        describe("#1685 — closed transitively: a product reachable through a relabelled one", () => {
+          // Ledger shares partner-core with Partner, so it reads restricted; Idle is
+          // next to Ledger only.
+          it("an edge from the relabelled product to it makes it restricted", async () => {
+            await db.productEdge.create({
+              data: {
+                ...edgeData("e-ledger-idle-1685", R.ledger, R.idle),
+                productId: P.ledger,
+                direction: "provides",
+              },
+            });
+            try {
+              const impact = await withIdle();
+              expect(of(impact, P.ledger).impactKind).toBe("restricted");
+              expect(of(impact, P.idle).impactKind).toBe("restricted");
+            } finally {
+              await db.productEdge.delete({ where: { id: "e-ledger-idle-1685" } });
+            }
+          });
+
+          it("against the flow it stays none", async () => {
+            // Idle provides to Ledger: a change reaching Ledger does not reach Idle.
+            await db.productEdge.create({
+              data: {
+                ...edgeData("e-idle-ledger-1685", R.idle, R.ledger),
+                productId: P.ledger,
+                direction: "provides",
+              },
+            });
+            try {
+              expect(of(await withIdle(), P.idle).impactKind).toBe("none");
+            } finally {
+              await db.productEdge.delete({ where: { id: "e-idle-ledger-1685" } });
+            }
+          });
+
+          it("a resource the relabelled product writes and it uses makes it restricted", async () => {
+            await db.productResource.create({
+              data: { id: "res-ledger-1685", productId: P.ledger, kind: "table", name: "ledger" },
+            });
+            await db.productEdge.createMany({
+              data: [
+                {
+                  ...edgeData("e-ledger-res-1685", R.ledger, null),
+                  productId: P.ledger,
+                  direction: "writes",
+                  resourceId: "res-ledger-1685",
+                },
+                {
+                  ...edgeData("e-idle-res-1685", R.idle, null),
+                  productId: P.ledger,
+                  direction: "reads",
+                  resourceId: "res-ledger-1685",
+                },
+              ],
+            });
+            try {
+              expect(of(await withIdle(), P.idle).impactKind).toBe("restricted");
+            } finally {
+              await db.productEdge.deleteMany({
+                where: { id: { in: ["e-ledger-res-1685", "e-idle-res-1685"] } },
+              });
+              await db.productResource.delete({ where: { id: "res-ledger-1685" } });
+            }
+          });
         });
 
         it("a listed product the caller cannot read is never relabelled", async () => {

@@ -197,12 +197,13 @@ function AffectedCard({ product }: { product: AffectedProduct }) {
           Its impact path goes through a repository or product you cannot read, so it is not shown.
         </p>
       ) : product.impactKind === "restricted" ? (
-        // #1673 — the walk stopped at a product next to this one: not "not affected".
+        // #1673 — the walk stopped at a product the change may flow on from: not "not affected".
         // #1680 — the run's starter could not read it, which says nothing of this reader.
+        // #1685 — a row stored before #1680 was relabelled whatever its connection.
         <p className="text-xs text-muted-foreground" data-testid="portfolio-impact-unknown">
-          It is connected to a product the check could not follow the change through, because the
-          person who ran the check cannot read it, so whether the change reaches this one is not
-          known.
+          {product.restrictedBeforeRule
+            ? "The check stopped at a product the person who ran it cannot read, so whether the change reaches this one is not known. The check ran before METIS looked for a connection to that product: run it again to find out whether there is one."
+            : "The change may reach it through a product that the person who ran the check cannot read, so the check could not follow it there, and whether the change reaches this one is not known."}
         </p>
       ) : null}
       {product.restricted ? null : (
