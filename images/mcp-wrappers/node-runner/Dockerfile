@@ -7,7 +7,7 @@
 #   args:    ['/srv/mcp-server.js']  # path inside the image / mount
 #
 # Prefer `npx-runner` if you want to fetch from npm at start time.
-FROM node:22-alpine3.23
+FROM node:25-alpine3.23
 
 RUN npm install -g npm@latest \
  && npm cache clean --force
