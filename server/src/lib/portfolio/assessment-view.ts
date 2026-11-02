@@ -22,6 +22,7 @@ import { z } from "zod";
 import {
   FINDING_VERDICTS,
   REQUIREMENT_VERDICTS,
+  portfolioRestrictedRule,
   type AuthPayload,
   type CodeCitation,
   type PortfolioAssessment,
@@ -176,15 +177,12 @@ function impactReferences(stored: StoredProduct): { repos: string[]; products: s
  * run stored it on a readable row (`technicalDetail.impact.stoppedAtRestricted`).
  */
 function stoppedAtRestricted(stored: StoredProduct): number {
-  const impact = (
-    stored.technicalDetail as {
-      impact?: { stoppedAtRestricted?: unknown; restrictedRule?: unknown };
-    }
-  ).impact;
-  // #1680 — a run that relabelled only the products next to a restricted one
-  // says so; its `none` is the walk's answer and is not relabelled again.
-  if (impact?.restrictedRule === "adjacent") return 0;
-  const n = impact?.stoppedAtRestricted;
+  // #1680 — a run that relabelled only some products records its rule
+  // (#1689: `walk`, or the older `adjacent`); its `none` is the walk's answer
+  // and is not relabelled again.
+  if (portfolioRestrictedRule(stored.technicalDetail) !== null) return 0;
+  const n = (stored.technicalDetail as { impact?: { stoppedAtRestricted?: unknown } }).impact
+    ?.stoppedAtRestricted;
   return typeof n === "number" && n > 0 ? n : 0;
 }
 
@@ -198,8 +196,9 @@ function stoppedAtRestricted(stored: StoredProduct): number {
  *
  * #1673 — a row an earlier run stored `none` after its walk stopped at a
  * restricted product reads `restricted` too. #1680 — a run now relabels only
- * the products next to the one it stopped at, and marks its rows so
- * (`restrictedRule: "adjacent"`); those are read as stored.
+ * some products, and marks its rows with the rule it used (#1689: `walk`, the
+ * products a walk able to read everything reaches; `adjacent`, the older
+ * connection rule); those are read as stored.
  */
 function readableImpact(
   stored: StoredProduct,

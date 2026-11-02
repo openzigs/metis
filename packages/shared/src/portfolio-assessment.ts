@@ -318,6 +318,74 @@ export const PORTFOLIO_DEGRADED_REASON: Readonly<Record<string, string>> = {
 };
 
 /**
+ * #1689 — how many products a list in prose names before "and N more" (#1685:
+ * the page's headline note and the server's BA summary both cap at this).
+ */
+export const PORTFOLIO_NAMED_IN_PROSE = 3;
+
+/**
+ * Product names as prose: "A", "A and B", "A, B and C", then "A, B, C and 2
+ * more". A product with no name (null) is never named, nor stood in for by its
+ * id: it is counted in "N more", and a list with no name at all reads "a
+ * product" or "N products" ("A product" at the start of a sentence).
+ */
+export function portfolioNamedInProse(
+  names: readonly (string | null)[],
+  { sentenceStart = false }: { sentenceStart?: boolean } = {},
+): string {
+  const shown = names.filter((n): n is string => n !== null).slice(0, PORTFOLIO_NAMED_IN_PROSE);
+  const rest = names.length - shown.length;
+  if (shown.length === 0) {
+    if (rest !== 1) return `${rest} products`;
+    return sentenceStart ? "A product" : "a product";
+  }
+  const parts = rest > 0 ? [...shown, `${rest} more`] : shown;
+  return parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+}
+
+/**
+ * #1689 — the rule a run relabelled readable products `restricted` by, as it
+ * stored it (`technicalDetail.impact.restrictedRule`, only when its walk
+ * stopped at a restricted product):
+ *
+ * - `walk` — one the run's walk did not reach, but the same walk able to read
+ *   every product and repo does.
+ * - `adjacent` — an older rule (#1680, #1685): one connected to a product the
+ *   walk stopped at. It could mark a product the walk never reaches, and miss
+ *   one it does, so a check stored under it is worth running again.
+ *
+ * Null: no rule, as a run before #1680 stored it (it relabelled every product
+ * it did not reach), or an unknown value.
+ */
+export const PORTFOLIO_RESTRICTED_RULES = ["walk", "adjacent"] as const;
+export type PortfolioRestrictedRule = (typeof PORTFOLIO_RESTRICTED_RULES)[number];
+
+export function portfolioRestrictedRule(technicalDetail: unknown): PortfolioRestrictedRule | null {
+  const rule = (technicalDetail as { impact?: { restrictedRule?: unknown } } | null | undefined)
+    ?.impact?.restrictedRule;
+  return PORTFOLIO_RESTRICTED_RULES.find((r) => r === rule) ?? null;
+}
+
+/** Why a `restricted` impact is not known, by the rule its run relabelled it under. */
+export function portfolioRestrictedNote(rule: PortfolioRestrictedRule | null): string {
+  switch (rule) {
+    case "walk":
+      return "The change may reach it through a repository or product that the person who ran the check cannot read, so the check could not follow it there, and whether the change reaches this one is not known.";
+    case "adjacent":
+      return "The check stopped at a product the person who ran it cannot read, and this one is connected to it, so whether the change reaches this one is not known. The check ran under an older rule for such connections: run it again for a more exact answer.";
+    default:
+      return "The check stopped at a product the person who ran it cannot read, so whether the change reaches this one is not known. The check ran before METIS looked for a connection to that product: run it again to find out whether there is one.";
+  }
+}
+
+/**
+ * #1689 — said of the "Not affected" products of a check stored under the
+ * older `adjacent` rule, which could miss a product the change reaches.
+ */
+export const PORTFOLIO_NOT_AFFECTED_OLDER_RULE =
+  "This check ran under an older rule for products it could not follow, so a product listed as not affected may still be reached through one that the person who ran it cannot read. Run the check again to find out.";
+
+/**
  * One stored severity modifier of an impact hop (#1623 `HopSeverity`), in
  * words. The breaking contract is read from the provider's latest contract
  * version, not from this requirement (#1668). An unknown kind is returned as

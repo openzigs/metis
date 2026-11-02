@@ -564,16 +564,47 @@ describe("#1685 — naming the products with no repos under a confirmed gap", ()
     expect(portfolioSummary("gap-confirmed", products.slice(0, 4))).toBe(
       "Nothing in the portfolio covers this. A, B, C and 1 more have no repositories to check.",
     );
+    // #1689 — three or fewer: the last joined by "and".
     expect(portfolioSummary("gap-confirmed", products.slice(0, 3))).toBe(
-      "Nothing in the portfolio covers this. A, B, C have no repositories to check.",
+      "Nothing in the portfolio covers this. A, B and C have no repositories to check.",
     );
   });
 
   it("never puts a raw product id into the prose", () => {
     const text = portfolioSummary("gap-confirmed", [empty("p-raw-id", null), empty("p2", "Two")]);
+    // #1689 — a nameless product is counted, never named "a product" in a list.
     expect(text).toBe(
-      "Nothing in the portfolio covers this. a product, Two have no repositories to check.",
+      "Nothing in the portfolio covers this. Two and 1 more have no repositories to check.",
     );
     expect(text).not.toContain("p-raw-id");
+    expect(portfolioSummary("gap-confirmed", [empty("p1", null), empty("p2", null)])).toBe(
+      "Nothing in the portfolio covers this. 2 products have no repositories to check.",
+    );
+    expect(portfolioSummary("gap-confirmed", [empty("p1", null)])).toBe(
+      "Nothing in the portfolio covers this. A product has no repositories to check.",
+    );
+  });
+
+  it("#1689 — a covering product with no name is 'a product', never its id", () => {
+    const covering = {
+      ...empty("p-raw-id", null),
+      coverage: "covers" as const,
+      reason: null,
+      repos: [
+        {
+          productId: "p-raw-id",
+          repoConnectionId: "rc",
+          label: "acme/pay",
+          verdict: "implemented" as const,
+          criteria: ["implemented" as const],
+          citations: [],
+          reason: null,
+          costUsd: 0,
+        },
+      ],
+    };
+    expect(portfolioSummary("implemented", [covering])).toBe(
+      "Implemented by a product (acme/pay).",
+    );
   });
 });

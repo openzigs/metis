@@ -11,8 +11,10 @@ import {
   CHANGE_SEVERITIES,
   portfolioModifierText,
   portfolioResourceLists,
+  portfolioRestrictedRule,
   type CodeCitation,
   type PortfolioAssessmentView,
+  type PortfolioRestrictedRule,
   type PortfolioResourceList,
 } from "@metis/shared";
 import { storedRepos } from "@/lib/portfolio-coverage";
@@ -187,17 +189,23 @@ export interface AffectedProduct {
   /** The server withheld the path: it runs through something the reader cannot read. */
   impactWithheld: boolean;
   /**
-   * #1685 — a `restricted` row a run before #1680 stored, or the view relabelled
-   * from its `none`: every product the walk did not reach was relabelled then,
-   * connected to the stopped product or not, so its note claims no connection.
+   * #1689 — the rule its run relabelled it `restricted` by, which its note
+   * follows (`portfolioRestrictedNote`). Null (#1685): a row a run before #1680
+   * stored, or the view relabelled from its `none`, so its note claims no
+   * connection.
    */
-  restrictedBeforeRule: boolean;
+  restrictedRule: PortfolioRestrictedRule | null;
   deepDive: DeepDive;
 }
 
 export interface NotAffectedProduct {
   productId: string;
   name: string | null;
+  /**
+   * #1689 — its run stored the older `adjacent` rule, which could miss a
+   * product the change reaches through one the starter cannot read.
+   */
+  olderRule: boolean;
 }
 
 function paragraphFor(view: PortfolioAssessmentView, p: Product): string {
@@ -276,7 +284,11 @@ export function impactGroups(view: PortfolioAssessmentView): {
     const restricted = p.coverage === "restricted";
     const name = restricted ? null : nameOf(p.productId);
     if (p.impactKind === "none") {
-      notAffected.push({ productId: p.productId, name });
+      notAffected.push({
+        productId: p.productId,
+        name,
+        olderRule: portfolioRestrictedRule(p.technicalDetail) === "adjacent",
+      });
       continue;
     }
     const impact = restricted ? null : storedImpact(p);
@@ -308,10 +320,7 @@ export function impactGroups(view: PortfolioAssessmentView): {
       hiddenEdgeCount: impact?.hiddenEdgeCount ?? 0,
       impactWithheld:
         !restricted && (p.technicalDetail as { impactWithheld?: unknown }).impactWithheld === true,
-      restrictedBeforeRule:
-        p.impactKind === "restricted" &&
-        (p.technicalDetail as { impact?: { restrictedRule?: unknown } }).impact?.restrictedRule !==
-          "adjacent",
+      restrictedRule: portfolioRestrictedRule(p.technicalDetail),
       deepDive: restricted
         ? { repos: [], files: [], contract: null, resources: [] }
         : deepDiveFor(view, p, impact),

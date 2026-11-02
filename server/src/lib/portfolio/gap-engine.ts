@@ -42,6 +42,7 @@
 import { z } from "zod";
 import {
   PORTFOLIO_ASSESSMENT_SCOPES,
+  portfolioNamedInProse,
   type AuthPayload,
   type CodeCitation,
   type FindingVerdict,
@@ -627,17 +628,8 @@ export async function mapWithConcurrency<T, R>(
 function describeProduct(p: PortfolioProductResult): string {
   // The repos holding the grounded evidence: each met at least one criterion.
   const repos = p.repos.filter((r) => r.criteria.includes("implemented"));
-  return `${p.name ?? p.productId} (${repos.map((r) => r.label).join(", ")})`;
-}
-
-/** #1685 — how many products a list in prose names before "and N more". */
-const NAMED_IN_PROSE = 3;
-
-/** `names`, the first few of them, then how many more. */
-function namedFew(names: readonly string[]): string {
-  const rest = names.length - NAMED_IN_PROSE;
-  const shown = names.slice(0, NAMED_IN_PROSE).join(", ");
-  return rest > 0 ? `${shown} and ${rest} more` : shown;
+  // #1689 — never a raw id in analyst prose.
+  return `${p.name ?? "a product"} (${repos.map((r) => r.label).join(", ")})`;
 }
 
 /** The BA summary of a portfolio verdict over its products. */
@@ -665,8 +657,11 @@ export function portfolioSummary(
         "Nothing in the portfolio covers this.",
         ...(empty.length > 0
           ? [
-              // #1685 — never a raw id in analyst prose.
-              `${namedFew(empty.map((p) => p.name ?? "a product"))} ${empty.length === 1 ? "has" : "have"} no repositories to check.`,
+              // #1685 — never a raw id in analyst prose; #1689 — nor "a product" twice.
+              `${portfolioNamedInProse(
+                empty.map((p) => p.name),
+                { sentenceStart: true },
+              )} ${empty.length === 1 ? "has" : "have"} no repositories to check.`,
             ]
           : []),
       ].join(" ");
