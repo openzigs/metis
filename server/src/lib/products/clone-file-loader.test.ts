@@ -119,4 +119,14 @@ describe("createCloneFileLoader", () => {
     });
     expect((await load(repo("rc")))?.map((f) => f.path)).toEqual(["a.ts"]);
   });
+
+  it("passes its byte limit on", async () => {
+    write("bytes/a.ts", "aaaa");
+    write("bytes/b.ts", "bbbb");
+    const load = createCloneFileLoader({
+      resolveRoot: async () => path.join(tmp, "bytes"),
+      maxBytes: 5,
+    });
+    expect((await load(repo("rc")))?.map((f) => f.path)).toEqual(["a.ts"]);
+  });
 });

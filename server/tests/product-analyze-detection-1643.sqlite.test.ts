@@ -84,9 +84,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       a.use(errorHandler);
       return a;
     };
-    const analyze = () =>
+    const analyze = (id: string = productId) =>
       request(app())
-        .post(`/api/products/${productId}/analyze`)
+        .post(`/api/products/${id}/analyze`)
         .set("Authorization", `Bearer ${issueTokens(bob).accessToken}`);
     const snapshot = async () => ({
       edges: await db.productEdge.findMany({ where: { productId }, orderBy: { id: "asc" } }),
@@ -218,6 +218,47 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const res = await analyze();
       expect(res.status).toBe(200);
       expect(await snapshot()).toEqual(before);
+    });
+
+    it("links an API edge to the contract version of its first run, and a second run changes nothing", async () => {
+      const ids: Record<string, string> = {};
+      const apiProduct = (
+        await db.product.create({
+          data: { name: "api", slug: "api-1643", createdById: "bob", workspaceId: WS },
+        })
+      ).id;
+      for (const key of ["client", "server"]) {
+        ids[key] = (
+          await db.repoConnection.create({
+            data: { projectId: PA, label: key, repoName: `${key}-api-1643`, ownerOrOrg: "org" },
+          })
+        ).id;
+        await db.productRepo.create({
+          data: { productId: apiProduct, repoConnectionId: ids[key] },
+        });
+        const dir = path.join(tmp, "clones", ids[key]);
+        mkdirSync(path.join(dir, ".git"), { recursive: true });
+        writeFileSync(path.join(dir, ".git", "HEAD"), "ref: refs/heads/main\n");
+      }
+      writeFileSync(
+        path.join(tmp, "clones", ids.client, "openapi.yaml"),
+        "servers:\n  - url: https://server-api-1643.example.test\n",
+      );
+      const edgeRows = () => db.productEdge.findMany({ where: { productId: apiProduct } });
+
+      expect((await analyze(apiProduct)).status).toBe(200);
+      const first = await edgeRows();
+      expect(first).toHaveLength(1);
+      expect(first[0]).toMatchObject({ integrationKind: "api", targetRepoId: ids.server });
+      const contract = await db.productContractDoc.findFirst({
+        where: { productId: apiProduct, repoId: ids.server },
+        orderBy: { version: "desc" },
+      });
+      expect(contract).not.toBeNull();
+      expect(first[0].contractDocId).toBe(contract!.id);
+
+      expect((await analyze(apiProduct)).status).toBe(200);
+      expect(await edgeRows()).toEqual(first);
     });
   },
 );

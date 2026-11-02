@@ -549,6 +549,39 @@ export function productsRouter(): Router {
       });
 
       try {
+        // Map repos/edges to generator input types
+        const repoInfos: ProductRepoInfo[] = readable.map((r) => ({
+          repoConnectionId: r.repoConnectionId,
+          repoName: r.repoConnection?.repoName ?? r.repoConnectionId,
+          ownerOrOrg: r.repoConnection?.ownerOrOrg ?? "",
+          role: r.role,
+          defaultBranch: r.repoConnection?.defaultBranch ?? "main",
+        }));
+
+        // Generate + version API contract docs (one per repo). Each run records
+        // a new ProductContractDoc version (deduped by contentHash) and computes
+        // the semantic diff vs the previous version (Issue #90 / epic #86).
+        // #1643 — before detection, which links an API edge to its target's latest
+        // contract version: recorded after, a first run stores the edge unlinked
+        // and the second run changes it.
+        const contractStore = createPrismaContractDocStore(prisma.productContractDoc);
+        const apiContractResults = await Promise.all(
+          repoInfos.map((repo) =>
+            recordContractDocVersion(
+              {
+                productId,
+                productName: product.name,
+                repoName: repo.repoName,
+                repoConnectionId: repo.repoConnectionId,
+                ownerOrOrg: repo.ownerOrOrg,
+                specs: [], // Full crawl specs would come from an async crawl step
+              },
+              contractStore,
+            ),
+          ),
+        );
+        const apiContractDocs = apiContractResults.map((r) => r.doc);
+
         // #1643 — detect the edges between the readable repos from each one's
         // clone first, so what it finds feeds the documents below. A repo with
         // no clone is not crawled and keeps its stored edges.
@@ -567,14 +600,7 @@ export function productsRouter(): Router {
             readableRepoIds.has(e.targetRepoId),
         );
 
-        // Map repos/edges to generator input types
-        const repoInfos: ProductRepoInfo[] = readable.map((r) => ({
-          repoConnectionId: r.repoConnectionId,
-          repoName: r.repoConnection?.repoName ?? r.repoConnectionId,
-          ownerOrOrg: r.repoConnection?.ownerOrOrg ?? "",
-          role: r.role,
-          defaultBranch: r.repoConnection?.defaultBranch ?? "main",
-        }));
+        // Map edges to generator input types
         const edgeInfos: ProductEdgeInfo[] = readableEdges.map((e) => ({
           sourceRepoId: e.sourceRepoId,
           targetRepoId: e.targetRepoId,
@@ -638,27 +664,6 @@ export function productsRouter(): Router {
           repos: repoInfos,
           edges: edgeInfos,
         });
-
-        // Generate + version API contract docs (one per repo). Each run records
-        // a new ProductContractDoc version (deduped by contentHash) and computes
-        // the semantic diff vs the previous version (Issue #90 / epic #86).
-        const contractStore = createPrismaContractDocStore(prisma.productContractDoc);
-        const apiContractResults = await Promise.all(
-          repoInfos.map((repo) =>
-            recordContractDocVersion(
-              {
-                productId,
-                productName: product.name,
-                repoName: repo.repoName,
-                repoConnectionId: repo.repoConnectionId,
-                ownerOrOrg: repo.ownerOrOrg,
-                specs: [], // Full crawl specs would come from an async crawl step
-              },
-              contractStore,
-            ),
-          ),
-        );
-        const apiContractDocs = apiContractResults.map((r) => r.doc);
 
         // Upsert documents into ProductDocument table
         const now = new Date();
