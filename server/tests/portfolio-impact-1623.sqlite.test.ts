@@ -24,6 +24,7 @@ import {
 import {
   ADDITIVE_DIFF,
   BREAKING_DIFF,
+  CONTRACT_REPORTING,
   CONTRACT_V1,
   CONTRACT_V2,
   ORDERS_TABLE,
@@ -852,11 +853,55 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             expect(walkStarts(calls)).toHaveLength(1);
           });
 
-          it("loads no contract: a contract changes severity, never reach", async () => {
+          it("loads a contract only for a first hop, the one hop it can raise the severity of", async () => {
             const { before, during } = comparison(await queriesOf(ordersAndBilling));
-            // Orders' edge to Storefront names a contract: the reader's walk loads it.
-            expect(before.some((q) => q.call === "productContractDoc.findFirst")).toBe(true);
-            expect(during.filter((q) => q.call.startsWith("productContractDoc."))).toEqual([]);
+            const contractIds = (qs: Query[]) =>
+              qs.flatMap((q) =>
+                q.call === "productContractDoc.findFirst" && typeof q.where.id === "string"
+                  ? [q.where.id as string]
+                  : [],
+              );
+            // Reporting's edge to Notifications names a contract two hops out: the
+            // reader's walk cites it, and the comparison walk never loads it.
+            expect(contractIds(before)).toContain(CONTRACT_REPORTING);
+            // Orders' edge to Storefront leaves a direct-change repo (#1695).
+            expect(new Set(contractIds(during))).toEqual(new Set([CONTRACT_V1]));
+          });
+
+          it("an edge to a deleted repo leaves nothing out: the comparison could not follow it either", async () => {
+            await db.repoConnection.create({
+              data: {
+                id: "rc-gone-1695",
+                projectId: "proj-a-1623",
+                label: "gone",
+                ownerOrOrg: "acme",
+                repoName: "gone",
+                deletedAt: new Date("2026-11-01T00:00:00.000Z"),
+              },
+            });
+            try {
+              await withEdges(
+                [
+                  {
+                    ...edgeData("e-fulfil-gone-1695", R.fulfil, "rc-gone-1695"),
+                    productId: P.fulfil,
+                    direction: "provides",
+                  },
+                ],
+                async () => {
+                  const calls = await queriesOf(async () => {
+                    const ana = await evaluatePortfolioImpact(ANA, {
+                      directChangeProductIds: [P.fulfil],
+                      listedProductIds: [P.idle],
+                    });
+                    expect(of(ana, P.idle).impactKind).toBe("none");
+                  });
+                  expect(walkStarts(calls)).toHaveLength(1);
+                },
+              );
+            } finally {
+              await db.repoConnection.delete({ where: { id: "rc-gone-1695" } });
+            }
           });
 
           it("reuses the repos, attachments and resources the reader's walk loaded", async () => {
@@ -910,6 +955,142 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
                 where: { productId: P.dedupD, repoConnectionId: R.dedupHidden },
               });
             }
+          });
+        });
+
+        describe("#1695 — a severity the comparison walk gets wrong changes what it reaches", () => {
+          /**
+           * Severity is not neutral to reach: `offer()` keeps a repo's more severe
+           * state, and that state's product decides which moves are free.
+           *
+           *   Source (changes) ─ s ─(model, breaking contract)──▶ r   (in X and Y)
+           *                       └─(functional)──▶ q (Y) ─(functional)──▶ r
+           *   r ─▶ t (Y) ─▶ u (Target)
+           *
+           * With the contract, s -> r is high: r is walked as X, so r -> t crosses
+           * into Y and Target is three boundaries out. Without it, s -> r is medium,
+           * q -> r (high) walks r again as Y, and r -> t -> u reaches Target at two.
+           * Source also holds a ws-b repo, so Ana's walk leaves something out and the
+           * comparison runs.
+           */
+          const S = {
+            source: "p-sev-s-1695",
+            x: "p-sev-x-1695",
+            y: "p-sev-y-1695",
+            target: "p-sev-t-1695",
+          };
+          const SR = {
+            s: "rc-sev-s-1695",
+            r: "rc-sev-r-1695",
+            q: "rc-sev-q-1695",
+            t: "rc-sev-t-1695",
+            u: "rc-sev-u-1695",
+            hidden: "rc-sev-hidden-1695",
+          };
+          const CONTRACT = "cdoc-sev-s-1695";
+
+          beforeAll(async () => {
+            for (const [id, projectId] of [
+              [SR.s, "proj-a-1623"],
+              [SR.r, "proj-a-1623"],
+              [SR.q, "proj-a-1623"],
+              [SR.t, "proj-a-1623"],
+              [SR.u, "proj-a-1623"],
+              [SR.hidden, "proj-b-1623"],
+            ]) {
+              await db.repoConnection.create({
+                data: { id, projectId, label: id, ownerOrOrg: "acme", repoName: id },
+              });
+            }
+            for (const [id, repos] of [
+              [S.source, [SR.s, SR.hidden]],
+              [S.x, [SR.r]],
+              [S.y, [SR.r, SR.q, SR.t]],
+              [S.target, [SR.u]],
+            ] as const) {
+              await db.product.create({
+                data: { id, name: id, slug: id, workspaceId: "ws-a-1623", createdById: "mia" },
+              });
+              for (const repoConnectionId of repos) {
+                await db.productRepo.create({ data: { productId: id, repoConnectionId } });
+              }
+            }
+            await db.productContractDoc.create({
+              data: {
+                id: CONTRACT,
+                productId: S.x,
+                repoId: SR.s,
+                version: 1,
+                contentHash: `h${CONTRACT}`,
+                title: "Contract",
+                diff: BREAKING_DIFF,
+              },
+            });
+            const provides = (
+              id: string,
+              productId: string,
+              sourceRepoId: string,
+              targetRepoId: string,
+              strength: string,
+            ) => ({
+              ...edgeData(id, sourceRepoId, targetRepoId),
+              productId,
+              direction: "provides",
+              strength,
+            });
+            await db.productEdge.createMany({
+              data: [
+                {
+                  ...provides("e-sev-1-s-r-1695", S.x, SR.s, SR.r, "model"),
+                  contractDocId: CONTRACT,
+                },
+                provides("e-sev-2-s-q-1695", S.y, SR.s, SR.q, "functional"),
+                provides("e-sev-3-q-r-1695", S.y, SR.q, SR.r, "functional"),
+                provides("e-sev-4-r-t-1695", S.y, SR.r, SR.t, "functional"),
+                provides("e-sev-5-t-u-1695", S.target, SR.t, SR.u, "functional"),
+              ],
+            });
+          });
+
+          afterAll(async () => {
+            await db.productEdge.deleteMany({ where: { id: { startsWith: "e-sev-" } } });
+            await db.productContractDoc.deleteMany({ where: { id: CONTRACT } });
+            await db.productRepo.deleteMany({ where: { productId: { in: Object.values(S) } } });
+            await db.product.deleteMany({ where: { id: { in: Object.values(S) } } });
+            await db.repoConnection.deleteMany({ where: { id: { in: Object.values(SR) } } });
+          });
+
+          const target = async (maxDepth: number) => {
+            const run = (who: AuthPayload) =>
+              evaluatePortfolioImpact(who, {
+                directChangeProductIds: [S.source],
+                listedProductIds: [S.target],
+                maxDepth,
+              });
+            return {
+              ana: of(await run(ANA), S.target).impactKind,
+              mia: of(await run(MIA), S.target).impactKind,
+            };
+          };
+
+          it("the breaking contract makes the path one boundary longer in Mia's walk", async () => {
+            const mia = await evaluatePortfolioImpact(MIA, {
+              directChangeProductIds: [S.source],
+              listedProductIds: [S.target],
+              maxDepth: 3,
+            });
+            const hop = of(mia, S.x).hops[0];
+            expect(hop.contract?.breaking).toBe(true);
+            expect(hop.severity.severity).toBe("high");
+            expect(of(mia, S.target).hops.map((h) => h.toProductId)).toEqual([S.x, S.y, S.target]);
+          });
+
+          it("exactly at the depth limit, Ana's relabel agrees with Mia's walk", async () => {
+            expect(await target(2)).toEqual({ ana: "none", mia: "none" });
+            expect(await target(3)).toEqual({
+              ana: "downstream-consumer",
+              mia: "downstream-consumer",
+            });
           });
         });
 

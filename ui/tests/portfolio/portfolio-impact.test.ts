@@ -30,6 +30,26 @@ describe("impactGroups", () => {
     expect(affected.length + notAffected.length).toBe(v.products.length);
   });
 
+  it("#1695 — a not-affected row whose run stored no rule ran under an older one", () => {
+    const v = impactView();
+    const crm = v.products.findIndex((p) => p.productId === "p-crm");
+    const olderRule = (impact: Record<string, unknown> | undefined) => {
+      v.products[crm] = {
+        ...v.products[crm],
+        technicalDetail: impact ? { impact } : {},
+      };
+      return impactGroups(v).notAffected.find((p) => p.productId === "p-crm")!.olderRule;
+    };
+    const stored = { maxDepth: 2, severity: null, hiddenEdgeCount: 0, hops: [] };
+    // Before #1692 a run that stopped nowhere stored no rule, and missed paths
+    // through a repo, or along an edge, that its starter could not read.
+    expect(olderRule(stored)).toBe(true);
+    expect(olderRule({ ...stored, restrictedRule: "adjacent" })).toBe(true);
+    expect(olderRule({ ...stored, restrictedRule: "walk" })).toBe(false);
+    // No stored impact at all: nothing to say about a rule.
+    expect(olderRule(undefined)).toBe(false);
+  });
+
   it("uses the report's paragraph, else the stored one-line summary", () => {
     const { affected } = impactGroups(impactView());
     const byId = new Map(affected.map((p) => [p.productId, p]));

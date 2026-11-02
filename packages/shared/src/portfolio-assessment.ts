@@ -354,8 +354,10 @@ export function portfolioNamedInProse(
  *   walk stopped at. It could mark a product the walk never reaches, and miss
  *   one it does, so a check stored under it is worth running again.
  *
- * Null: no rule, as a run before #1680 stored it (it relabelled every product
- * it did not reach), or an unknown value.
+ * Null: no rule, or an unknown value. A run before #1680 stored none (it
+ * relabelled every product it did not reach when it stopped at a restricted
+ * product), and so did a run from #1680 to #1691 that stopped at none (it
+ * relabelled nothing, even past a repo or an edge its starter could not read).
  */
 export const PORTFOLIO_RESTRICTED_RULES = ["walk", "adjacent"] as const;
 export type PortfolioRestrictedRule = (typeof PORTFOLIO_RESTRICTED_RULES)[number];
@@ -364,6 +366,18 @@ export function portfolioRestrictedRule(technicalDetail: unknown): PortfolioRest
   const rule = (technicalDetail as { impact?: { restrictedRule?: unknown } } | null | undefined)
     ?.impact?.restrictedRule;
   return PORTFOLIO_RESTRICTED_RULES.find((r) => r === rule) ?? null;
+}
+
+/**
+ * #1695 — whether a stored impact (`technicalDetail.impact`) was relabelled
+ * under a rule older than the current `walk`, so that a product it lists as not
+ * affected may still be reached (`PORTFOLIO_NOT_AFFECTED_OLDER_RULE`): `adjacent`,
+ * or no rule at all. A row with no stored impact says nothing about a rule.
+ */
+export function portfolioImpactUnderOlderRule(technicalDetail: unknown): boolean {
+  const impact = (technicalDetail as { impact?: unknown } | null | undefined)?.impact;
+  if (typeof impact !== "object" || impact === null || Array.isArray(impact)) return false;
+  return portfolioRestrictedRule(technicalDetail) !== "walk";
 }
 
 /** Why a `restricted` impact is not known, by the rule its run relabelled it under. */
@@ -379,8 +393,9 @@ export function portfolioRestrictedNote(rule: PortfolioRestrictedRule | null): s
 }
 
 /**
- * #1689 — said of the "Not affected" products of a check stored under the
- * older `adjacent` rule, which could miss a product the change reaches.
+ * #1689 — said of the "Not affected" products of a check stored under an
+ * older rule (`portfolioImpactUnderOlderRule`), which could miss a product the
+ * change reaches.
  */
 export const PORTFOLIO_NOT_AFFECTED_OLDER_RULE =
   "This check ran under an older rule for products it could not follow, so a product listed as not affected may still be reached through one that the person who ran it cannot read. Run the check again to find out.";
