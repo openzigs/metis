@@ -319,13 +319,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
 
         const again = await detect(product.table);
-        expect(again).toMatchObject({ created: 0, deleted: 0, updated: 1 });
+        // #1643 — the edge found again as stored is not rewritten at all.
+        expect(again).toMatchObject({ created: 0, deleted: 0, updated: 0 });
 
         const after = await db.productEdge.findMany({
           where: { productId: product.table },
           orderBy: { id: "asc" },
         });
-        expect(after.map((e) => e.id)).toEqual(before.map((e) => e.id));
+        expect(after).toEqual(before);
         expect(await db.productEdge.findUnique({ where: { id: declare.body.data.id } })).toEqual(
           declaredBefore,
         );

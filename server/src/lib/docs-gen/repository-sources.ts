@@ -43,8 +43,12 @@ export async function resolveSourcePath(
   return canonicalFile;
 }
 
-/** Keep the historical same-connector locations; never substitute a different repository. */
-async function resolveConnectorRoot(connectorId: string): Promise<string | null> {
+/**
+ * Keep the historical same-connector locations; never substitute a different repository.
+ * #1643 — exported for the product edge detector's clone loader. Null when the
+ * connector has no checkout (no `.git/HEAD`) at any of its locations.
+ */
+export async function resolveConnectorRoot(connectorId: string): Promise<string | null> {
   // Connector IDs are database identities, not filesystem paths.
   if (!/^[A-Za-z0-9_-]+$/.test(connectorId)) return null;
   const candidates = new Set([

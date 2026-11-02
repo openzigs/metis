@@ -219,7 +219,11 @@ export async function syncDetectedProductEdges(
       kept.add(key);
       // An overridden edge keeps the person's classification; only what
       // detection found (evidence, confidence, files, contract) is refreshed.
-      const update = prior.origin === "overridden" ? facts : data;
+      const update: Record<string, unknown> = prior.origin === "overridden" ? facts : data;
+      // #1643 — an edge found again as it is stored is not written: a re-run
+      // over unchanged input leaves the row, `updatedAt` included, as it was.
+      const priorFields = prior as unknown as Record<string, unknown>;
+      if (Object.keys(update).every((k) => update[k] === priorFields[k])) continue;
       writes.push(prisma.productEdge.update({ where: { id: prior.id }, data: update }));
       result.updated++;
     } else {

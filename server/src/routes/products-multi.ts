@@ -58,6 +58,8 @@ import {
   createPrismaContractDocStore,
 } from "../lib/products/contract-doc-versioning.js";
 import { summarizeDiff as summarizeContractDiff } from "../lib/products/contract-diff.js";
+import { runProductEdgeDetection } from "../lib/products/edge-detection.js";
+import { createCloneFileLoader } from "../lib/products/clone-file-loader.js";
 import type { ProductRepoInfo, ProductEdgeInfo } from "../lib/products/unified-doc-generator.js";
 import type { ProductEdgeEvidence } from "@metis/shared";
 
@@ -489,7 +491,7 @@ export function productsRouter(): Router {
       const productId = param(req.params.id);
       await assertProductAccessible(req.user!, productId);
 
-      // Verify product exists and load repos + edges
+      // Verify product exists and load its repos (the edges are read after detection)
       const product = await prisma.product.findUnique({
         where: { id: productId },
         include: {
@@ -508,7 +510,6 @@ export function productsRouter(): Router {
               },
             },
           },
-          edges: true,
         },
       });
       if (!product) {
@@ -536,14 +537,6 @@ export function productsRouter(): Router {
         });
       }
       const readableRepoIds = new Set(readable.map((r) => r.repoConnectionId));
-      // #1618 — the generated documents are repo-to-repo, so an edge through a
-      // resource with no target repo is not drawn in them.
-      const readableEdges = product.edges.filter(
-        (e): e is typeof e & { targetRepoId: string } =>
-          e.targetRepoId !== null &&
-          readableRepoIds.has(e.sourceRepoId) &&
-          readableRepoIds.has(e.targetRepoId),
-      );
 
       // Create an analysis record
       const analysis = await prisma.productAnalysis.create({
@@ -556,6 +549,24 @@ export function productsRouter(): Router {
       });
 
       try {
+        // #1643 — detect the edges between the readable repos from each one's
+        // clone first, so what it finds feeds the documents below. A repo with
+        // no clone is not crawled and keeps its stored edges.
+        await runProductEdgeDetection({
+          user: req.user!,
+          productId,
+          loadRepoFiles: createCloneFileLoader(),
+        });
+        const storedEdges = await prisma.productEdge.findMany({ where: { productId } });
+        // #1618 — the generated documents are repo-to-repo, so an edge through a
+        // resource with no target repo is not drawn in them.
+        const readableEdges = storedEdges.filter(
+          (e): e is typeof e & { targetRepoId: string } =>
+            e.targetRepoId !== null &&
+            readableRepoIds.has(e.sourceRepoId) &&
+            readableRepoIds.has(e.targetRepoId),
+        );
+
         // Map repos/edges to generator input types
         const repoInfos: ProductRepoInfo[] = readable.map((r) => ({
           repoConnectionId: r.repoConnectionId,
@@ -602,7 +613,7 @@ export function productsRouter(): Router {
         });
         const skippedNeighbours = (repoId: string) =>
           new Set(
-            product.edges.flatMap((e) =>
+            storedEdges.flatMap((e) =>
               e.sourceRepoId === repoId && e.targetRepoId !== null && skippedIds.has(e.targetRepoId)
                 ? [e.targetRepoId]
                 : e.targetRepoId === repoId && skippedIds.has(e.sourceRepoId)

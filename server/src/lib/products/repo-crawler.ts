@@ -94,11 +94,11 @@ const SKIP_DIRS = new Set([
   "fixtures",
 ]);
 
-/** Maximum files to scan per repo. */
-const MAX_FILES = 500;
+/** Maximum files to scan per repo. #1643 — exported: the clone loader reads no more. */
+export const MAX_FILES = 500;
 
-/** Maximum total content bytes per repo. */
-const MAX_BYTES = 50 * 1024 * 1024; // 50MB
+/** Maximum total content bytes per repo. #1643 — exported: the clone loader reads no more. */
+export const MAX_BYTES = 50 * 1024 * 1024; // 50MB
 
 /** Route handler patterns for common frameworks. */
 const ROUTE_PATTERNS: Array<{
