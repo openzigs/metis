@@ -118,3 +118,11 @@ The #1677 and #1680 reviews, 2026-11-01. Follow-ups: #1685.
   `retries: 1`, `describe.serial` re-runs `beforeAll`. Fixed fixture names such as
   "Payments" then get seeded twice, and exact rowheader locators hit strict-mode
   violations. Track created ids and delete them in `afterAll` and before a reseed.
+
+The #1685 review, 2026-11-02. Follow-ups: #1689.
+
+- **Test a reader-side relabel against the full-visibility walk (#1685).** The
+  restricted relabel (`nextToProducts`) was tested only as the restricted reader (ANA).
+  It reached past the walk (every repo of a marked product, no `maxDepth`) and fell short
+  of it (paths through unlisted or unreadable products), and every test still passed.
+  Pair each relabel assertion with what MIA's walk (same fixture, `maxDepth` 4) reports.
