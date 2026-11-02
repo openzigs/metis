@@ -126,3 +126,10 @@ The #1685 review, 2026-11-02. Follow-ups: #1689.
   It reached past the walk (every repo of a marked product, no `maxDepth`) and fell short
   of it (paths through unlisted or unreadable products), and every test still passed.
   Pair each relabel assertion with what MIA's walk (same fixture, `maxDepth` 4) reports.
+
+The #1689 review, 2026-11-02.
+
+- **Test depth rules exactly at the limit (#1689).** In the relabel fixture, `maxDepth` 4
+  left enough slack that a mutation making a move inside one product cost a step of depth
+  stayed green across all 34 tests. Any check of depth needs a case that sits exactly at
+  the limit, so that one extra step turns it red.
