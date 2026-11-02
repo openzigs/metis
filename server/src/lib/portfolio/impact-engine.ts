@@ -328,7 +328,17 @@ function callSitesOf(edge: EdgeRow, consumerIsSource: boolean): ImpactHop["callS
 interface RepoInfo {
   projectId: string;
   label: string;
-  readable: boolean;
+}
+
+/**
+ * #1692 — what a walk loads that does not depend on who reads it: a repo's
+ * project and label, the products a repo is attached to, a resource. A second
+ * walk over the same graph (`readingEverything`) shares it.
+ */
+interface GraphCache {
+  repos: Map<string, RepoInfo | null>;
+  productsOfRepo: Map<string, string[]>;
+  resources: Map<string, { kind: string; name: string } | null>;
 }
 
 function repoLabel(rc: { label: string; ownerOrOrg: string | null; repoName: string | null }) {
@@ -361,20 +371,38 @@ function sortById<T extends { id: string }>(rows: T[]): T[] {
 }
 
 class ImpactWalk {
-  private readonly repos = new Map<string, RepoInfo | null>();
-  private readonly productsOfRepo = new Map<string, string[]>();
+  private readonly repos: GraphCache["repos"];
+  private readonly productsOfRepo: GraphCache["productsOfRepo"];
+  private readonly resources: GraphCache["resources"];
+  // Contracts and shared tables depend on what the caller can read: never shared.
   private readonly contracts = new Map<string, ImpactContractEvidence | null>();
   private readonly shared = new Map<string, CrossProjectImpactResult | null>();
-  private readonly resources = new Map<string, { kind: string; name: string } | null>();
   private readonly actor: SchedulerActor;
 
   constructor(
-    user: AuthPayload,
+    private readonly user: AuthPayload,
     private readonly readableProducts: { has(productId: string): boolean },
     private readonly canReadRepo: (repo: { repoConnection: { projectId: string } }) => boolean,
     private readonly deps: Required<PortfolioImpactDeps>,
+    private readonly graph: GraphCache = {
+      repos: new Map(),
+      productsOfRepo: new Map(),
+      resources: new Map(),
+    },
   ) {
     this.actor = { id: user.userId, role: user.role };
+    this.repos = graph.repos;
+    this.productsOfRepo = graph.productsOfRepo;
+    this.resources = graph.resources;
+  }
+
+  /**
+   * #1689 — the same graph as a caller able to read every product and repo
+   * walks it. Every edge's product exists (a foreign key), so every product is
+   * "readable". #1692 — it reuses what this walk loaded of the graph.
+   */
+  readingEverything(): ImpactWalk {
+    return new ImpactWalk(this.user, { has: () => true }, () => true, this.deps, this.graph);
   }
 
   /** Load (once) the live connections of `ids`; a deleted or unknown one is null. */
@@ -388,11 +416,7 @@ class ImpactWalk {
     });
     for (const id of missing) this.repos.set(id, null);
     for (const r of rows) {
-      this.repos.set(r.id, {
-        projectId: r.projectId,
-        label: repoLabel(r),
-        readable: this.canReadRepo({ repoConnection: { projectId: r.projectId } }),
-      });
+      this.repos.set(r.id, { projectId: r.projectId, label: repoLabel(r) });
     }
   }
 
@@ -401,7 +425,8 @@ class ImpactWalk {
   }
 
   readableRepo(id: string): boolean {
-    return this.repo(id)?.readable === true;
+    const repo = this.repo(id);
+    return repo !== null && this.canReadRepo({ repoConnection: { projectId: repo.projectId } });
   }
 
   ref(id: string): ImpactRepoRef {
@@ -425,8 +450,11 @@ class ImpactWalk {
     return this.productsOfRepo.get(repoId) ?? [];
   }
 
-  /** Edges on readable products touching `repoIds` from either end, and resource partners. */
-  async edgesTouching(repoIds: string[]): Promise<EdgeRow[]> {
+  /**
+   * Edges on readable products touching `repoIds` from either end, and resource
+   * partners, with how many edges on products the caller cannot read were left out.
+   */
+  async edgesTouching(repoIds: string[]): Promise<{ edges: EdgeRow[]; withheld: number }> {
     const [bySource, byTarget] = await Promise.all([
       prisma.productEdge.findMany({
         where: { sourceRepoId: { in: repoIds } },
@@ -438,8 +466,10 @@ class ImpactWalk {
       }),
     ]);
     const seen = new Map<string, EdgeRow>();
+    const withheld = new Set<string>();
     for (const e of [...bySource, ...byTarget]) {
       if (this.readableProducts.has(e.productId)) seen.set(e.id, e);
+      else withheld.add(e.id);
     }
     const resourceIds = [
       ...new Set(
@@ -451,11 +481,13 @@ class ImpactWalk {
         where: { resourceId: { in: resourceIds }, targetRepoId: null },
         select: EDGE_SELECT,
       });
+      // A partner pairs only with an edge of its own product (`candidatesFrom`), so
+      // one on a product the caller cannot read never pairs with what they walk.
       for (const e of partners) {
         if (this.readableProducts.has(e.productId)) seen.set(e.id, e);
       }
     }
-    return sortById([...seen.values()]);
+    return { edges: sortById([...seen.values()]), withheld: withheld.size };
   }
 
   async loadResources(ids: Iterable<string>): Promise<void> {
@@ -644,21 +676,44 @@ function emptyImpact(productId: string, name: string | null, restricted: boolean
   };
 }
 
+interface WalkOptions {
+  /**
+   * Whether hops carry the provider's contract and the shared tables and
+   * columns. Neither changes what the walk reaches, only how severely and with
+   * what evidence: the reachability-only walk (`reachedReadingEverything`)
+   * loads neither (#1692).
+   */
+  withEvidence: boolean;
+  /** Stop as soon as this holds, checked before each step (#1692). */
+  done?: () => boolean;
+}
+
+interface WalkOutcome {
+  /** The restricted products the walk stopped at (`entry(id).restricted`). */
+  stoppedAt: Set<string>;
+  /**
+   * #1692 — whether the walk left anything out that a walk able to read
+   * everything would follow: a restricted product it stopped at, a repo of a
+   * direct-change product it cannot read, or an edge it cannot walk (to a repo
+   * it cannot read, or recorded on a product it cannot read). When nothing was,
+   * that walk takes exactly the same steps, and reaches nothing more.
+   */
+  leftOut: boolean;
+}
+
 /**
  * Walk the product graph from the readable repos of the `direct` products to
- * `maxDepth`, recording on `entry` every product reached. Returns the
- * restricted products the walk stopped at (`entry(id).restricted`). Without
- * `withSharedObjects` no hop carries its shared tables and columns: the
- * reachability-only walk (`reachedReadingEverything`) needs none.
+ * `maxDepth`, recording on `entry` every product reached.
  */
 async function walkFrom(
   walk: ImpactWalk,
   direct: readonly string[],
   maxDepth: number,
   entry: (productId: string) => ProductImpact,
-  withSharedObjects: boolean,
-): Promise<Set<string>> {
+  { withEvidence, done = () => false }: WalkOptions,
+): Promise<WalkOutcome> {
   const directSet = new Set(direct);
+  let leftOut = false;
   let frontier = new Map<string, RepoState>();
   if (direct.length > 0) {
     const rows = await prisma.productRepo.findMany({
@@ -671,7 +726,11 @@ async function walkFrom(
         ? a.repoConnectionId.localeCompare(b.repoConnectionId)
         : a.productId.localeCompare(b.productId),
     )) {
-      if (!walk.readableRepo(r.repoConnectionId) || frontier.has(r.repoConnectionId)) continue;
+      if (!walk.readableRepo(r.repoConnectionId)) {
+        leftOut = true;
+        continue;
+      }
+      if (frontier.has(r.repoConnectionId)) continue;
       frontier.set(r.repoConnectionId, { productId: r.productId, severity: null, hops: [] });
     }
   }
@@ -692,14 +751,15 @@ async function walkFrom(
     }
   };
 
-  for (let depth = 1; depth <= maxDepth && frontier.size > 0; depth += 1) {
+  for (let depth = 1; depth <= maxDepth && frontier.size > 0 && !done(); depth += 1) {
     const next = new Map<string, RepoState>();
     // #1668 — an edge between two repos of one product moves the change inside
     // it and crosses no product boundary, so it costs no depth: the repos it
     // reaches are walked from at this depth too, until none is left.
-    for (let level = frontier; level.size > 0;) {
+    for (let level = frontier; level.size > 0 && !done();) {
       const within = new Map<string, RepoState>();
-      const edges = await walk.edgesTouching([...level.keys()]);
+      const { edges, withheld } = await walk.edgesTouching([...level.keys()]);
+      if (withheld > 0) leftOut = true;
       await walk.loadRepos(
         edges.flatMap((e) => [e.sourceRepoId, e.targetRepoId ?? e.sourceRepoId]),
       );
@@ -711,6 +771,7 @@ async function walkFrom(
           continue;
         }
         // Not walked; counted once on the product it leaves, if it leaves the frontier.
+        leftOut = true;
         const from = ends.find((id) => level.has(id));
         if (from && !hiddenCounted.has(e.id)) {
           hiddenCounted.add(e.id);
@@ -725,7 +786,7 @@ async function walkFrom(
 
       for (const c of candidates) {
         const from = level.get(c.provider)!;
-        const contract = await walk.contract(c.consumerEdge);
+        const contract = withEvidence ? await walk.contract(c.consumerEdge) : null;
         const hopSeverity = deriveHopSeverity({
           strength: c.strength,
           // Only from a direct-change product's repo is the provider's contract
@@ -749,7 +810,7 @@ async function walkFrom(
         const providerRepo = walk.repo(c.provider)!;
         const consumerRepo = walk.repo(c.consumer)!;
         const sharedObjects =
-          withSharedObjects && integrationKind === "database"
+          withEvidence && integrationKind === "database"
             ? await walk.sharedObjects(providerRepo.projectId, consumerRepo.projectId, resource)
             : [];
         const hopTo = (toProductId: string): ImpactHop => ({
@@ -814,24 +875,25 @@ async function walkFrom(
     for (const [id, state] of next) expanded.set(id, state.severity);
     frontier = next;
   }
-  return stoppedAt;
+  return { stoppedAt, leftOut: leftOut || stoppedAt.size > 0 };
 }
 
 /**
- * #1689 — the products a walk that can read every product and repo reaches
- * from `direct`, to the same `maxDepth`: the walk the reader's would be had
- * nothing been hidden from them, so it reaches exactly what theirs would past
- * every stop, and nothing it would not. Only the set of product ids leaves
- * this function: nothing it reads is shown to the caller.
+ * #1689 — which of `wanted` a walk that can read every product and repo
+ * reaches from `direct`, to the same `maxDepth`: the walk the reader's would be
+ * had nothing been hidden from them, so it reaches exactly what theirs would
+ * past everything left out, and nothing it would not. Only the set of product
+ * ids leaves this function: nothing it reads is shown to the caller. #1692 — it
+ * reuses what the reader's walk loaded of the graph, loads no contract, and
+ * stops once it has reached every product in `wanted`.
  */
 async function reachedReadingEverything(
-  user: AuthPayload,
+  readerWalk: ImpactWalk,
   direct: readonly string[],
   maxDepth: number,
-  deps: Required<PortfolioImpactDeps>,
+  wanted: readonly string[],
 ): Promise<Set<string>> {
-  // Every edge's product exists (a foreign key), so every product is "readable".
-  const walk = new ImpactWalk(user, { has: () => true }, () => true, deps);
+  const walk = readerWalk.readingEverything();
   const out = new Map<string, ProductImpact>();
   const entry = (productId: string): ProductImpact => {
     let hit = out.get(productId);
@@ -841,10 +903,12 @@ async function reachedReadingEverything(
     }
     return hit;
   };
-  await walkFrom(walk, direct, maxDepth, entry, false);
-  return new Set(
-    [...out.values()].filter((p) => p.impactKind === "downstream-consumer").map((p) => p.productId),
-  );
+  const reached = (id: string) => out.get(id)?.impactKind === "downstream-consumer";
+  await walkFrom(walk, direct, maxDepth, entry, {
+    withEvidence: false,
+    done: () => wanted.every(reached),
+  });
+  return new Set(wanted.filter(reached));
 }
 
 /**
@@ -892,16 +956,25 @@ export async function evaluatePortfolioImpact(
     .sort();
   for (const id of direct) entry(id).impactKind = "direct-change";
 
-  const stoppedAt = await walkFrom(walk, direct, maxDepth, entry, true);
+  const { stoppedAt, leftOut } = await walkFrom(walk, direct, maxDepth, entry, {
+    withEvidence: true,
+  });
 
   // #1673 (owner decision on #1668 AC3) — past a restricted product the walk
   // was not followed, so a readable product it did not reach may be reached
   // through one: it reads `restricted`, never "not affected". #1689 — exactly
   // the products a walk that can read everything reaches (same start, same
-  // `maxDepth`); every other one stays `none`.
+  // `maxDepth`); every other one stays `none`. #1692 — a repo or an edge the
+  // walk could not read counts as a restricted product does, so a path reads
+  // the same whether or not the walk also stopped somewhere else.
   const unreached = [...out.values()].filter((p) => !p.restricted && p.impactKind === "none");
-  if (stoppedAt.size > 0 && unreached.length > 0) {
-    const reached = await reachedReadingEverything(user, direct, maxDepth, walkDeps);
+  if (leftOut && unreached.length > 0) {
+    const reached = await reachedReadingEverything(
+      walk,
+      direct,
+      maxDepth,
+      unreached.map((p) => p.productId),
+    );
     for (const p of unreached) if (reached.has(p.productId)) p.impactKind = "restricted";
   }
 
@@ -925,12 +998,12 @@ export function impactDetail(
     // The path's severity is its weakest hop; each hop records its own derivation.
     severityRule: "weakest-hop",
     hiddenEdgeCount: p.hiddenEdgeCount,
-    // #1668 — the walk stopped at this many restricted products. #1689 — and only a
-    // product a walk able to read everything reaches was relabelled, so a `none`
-    // here is the walk's. `adjacent` is the older rule (#1680, #1685).
-    ...(impact.stoppedAtRestricted > 0
-      ? { stoppedAtRestricted: impact.stoppedAtRestricted, restrictedRule: "walk" }
-      : {}),
+    // #1668 — the walk stopped at this many restricted products.
+    ...(impact.stoppedAtRestricted > 0 ? { stoppedAtRestricted: impact.stoppedAtRestricted } : {}),
+    // #1689 — only a product a walk able to read everything reaches was
+    // relabelled, so a `none` here is the walk's. #1692 — on every row: a run
+    // that stopped nowhere relabels too. `adjacent` is the older rule (#1680, #1685).
+    restrictedRule: "walk",
     hops: p.hops,
   };
 }

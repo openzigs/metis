@@ -1520,26 +1520,42 @@ requirement needs no change. Cross-product coupling is a repo on several product
   its repo. A consumer product they cannot read is `restricted`: its id and
   `downstream-consumer`, nothing else, and the walk never goes through it. The walk
   records how many it stopped at (`stoppedAtRestricted`, stored in every readable row's
-  `technicalDetail.impact`). When it stopped at one, a readable product nothing readable
-  reached has the impact kind `restricted`, not `none`, exactly when the same walk, able
-  to read every product and repo, reaches it from the same direct-change products to the
-  same `maxDepth` (`reachedReadingEverything`, #1689). It may be reached through what the
-  run's starter cannot read, so it is never stated unaffected (#1668; the owner's AC3
-  decision, #1673). That walk shares the reader's code (`walkFrom`): its edge directions,
+  `technicalDetail.impact`). A readable product nothing readable reached has the impact
+  kind `restricted`, not `none`, exactly when the same walk, able to read every product
+  and repo, reaches it from the same direct-change products to the same `maxDepth`
+  (`reachedReadingEverything`, #1689). It may be reached through what the run's starter
+  cannot read, so it is never stated unaffected (#1668; the owner's AC3 decision, #1673).
+  #1692 decided that a hidden edge counts as a restricted product does: a path through a
+  repo the starter cannot read, of a readable product, reads `restricted` whether or not
+  the run also stopped somewhere unrelated (before, it read `none` unless some stop ran
+  the comparison). That walk shares the reader's code (`walkFrom`): its edge directions,
   free moves inside a product, resource meetings and depth, so the relabel never marks a
   product the walk would not reach, nor misses one it would, whatever the path goes
-  through (an unlisted product, an unreadable one behind the stop). Only the set of
-  product ids leaves it, and it collects no shared tables. Every other unreached product
-  stays `none` (#1680: relabelling all of them on any stop emptied "Not affected"), and a
-  run that stopped nowhere relabels nothing: a path only through repos the starter cannot
-  read stays a `hiddenEdgeCount`. The view, the page and the export all read it
-  "Restricted". A run records the rule (`restrictedRule: "walk"`). The older value
+  through (an unlisted product, an unreadable one behind the stop, a hidden edge). Only
+  the set of product ids leaves it. It runs only when the reader's walk left something
+  out (`leftOut`: a stop, a hidden edge, an edge recorded on a product the starter cannot
+  read, or a repo of a direct-change product they cannot read): with nothing left out the
+  two walks take the same steps, so a caller who reads everything pays for one walk. It
+  reuses the reader's walk's repo, attachment and resource caches (never its contracts),
+  loads no contract and no shared tables (they set severity, never reach), and stops once
+  every unreached product is found. Every other unreached product stays `none` (#1680:
+  relabelling all of them on any stop emptied "Not affected"). The one fact a reader
+  learns of each readable product (`restricted` or `none`) therefore depends on the graph
+  across workspaces up to `maxDepth`, hidden edges included: the same one-bit disclosure
+  the owner accepted in #1673, over more paths, and part of the #1527 visibility
+  question. The view, the page and the export all read it "Restricted". A run records the
+  rule (`restrictedRule: "walk"`, on every readable row since #1692). The older value
   `adjacent` (#1680, #1685: a connection to a stopped product, which could reach past the
   walk or fall short of it) stays readable: its `restricted` note claims a connection,
   not a path, and its "Not affected" group says a product there may still be reached,
   both asking for a re-run (`portfolioRestrictedNote`, `PORTFOLIO_NOT_AFFECTED_OLDER_RULE`).
   A row an earlier run stored `none` with a stop and no rule is relabelled at read time,
   and a `restricted` row with no rule gets a note that claims no connection (#1685).
+  **Rollback:** code from before #1689 recognises only `adjacent` as a rule, so it reads
+  a `walk` row as having none. Reverted past #1689, every `none` row of a run that
+  stopped would read `restricted` at read time, the over-relabel #1680 fixed (rows of a
+  run that stopped nowhere carry no `stoppedAtRestricted` and are unaffected). A revert
+  that far needs the view to treat any recorded rule as stored, or those checks re-run.
 - **Severity** (`impact-severity.ts`, `CHANGE_SEVERITIES`). Base from the strength
   (`intrusive`/`functional` high, `model` medium, `contract` low, unclassified medium);
   +1 when the provider's own latest `ProductContractDoc` diff breaks (`isBreakingDiff`: an

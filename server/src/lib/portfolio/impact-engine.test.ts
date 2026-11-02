@@ -199,10 +199,11 @@ describe("withImpact", () => {
     expect(row("p2")).toEqual(
       expect.objectContaining({ via: "api", severity: "low", edgeIds: ["e1"] }),
     );
-    // #1668 — a walk that stopped nowhere records nothing of it.
+    // #1668 — a walk that stopped nowhere records no stop. #1692 — but it records
+    // its rule: such a run relabels too, when it could not read a repo or an edge.
     const clean = withImpact(input, { ...impact, stoppedAtRestricted: 0 }).products!;
     expect(clean[0].technicalDetail!.impact).not.toHaveProperty("stoppedAtRestricted");
-    expect(clean[0].technicalDetail!.impact).not.toHaveProperty("restrictedRule");
+    expect(clean[0].technicalDetail!.impact).toHaveProperty("restrictedRule", "walk");
   });
 
   it("a product restricted to the run gets its impact kind and nothing else", () => {
