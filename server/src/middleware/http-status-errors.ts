@@ -92,6 +92,7 @@ export const HTTP_STATUS_ERROR_CLASSES: Readonly<Record<string, StatusProvenance
   SlackOAuthError: "own",
   SpecKitArtifactError: "own",
   SpecKitFeatureLifecycleError: "own",
+  SpecKitRequirementSeedError: "own", // #1616 — 404/413/422, fixed client-safe messages
   StakeholderError: "own",
   TeamsInstallationError: "own",
   TeamsLinkError: "own",

@@ -139,6 +139,14 @@ const ROUTES: Call[] = [
   },
   { name: "GET /features", method: "get", path: "/features", memberStatus: 200 },
   {
+    name: "POST /features/from-requirements",
+    method: "post",
+    path: "/features/from-requirements",
+    body: { requirementIds: ["r960"] },
+    memberBody: { requirementIds: 42 },
+    memberStatus: 400,
+  },
+  {
     name: "GET /features/:slug/artifacts",
     method: "get",
     path: `/features/${SLUG}/artifacts`,

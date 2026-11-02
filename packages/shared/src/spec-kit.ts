@@ -133,6 +133,31 @@ export const specKitCommandRequestSchema = z.object({
 });
 export type SpecKitCommandRequest = z.infer<typeof specKitCommandRequestSchema>;
 
+/**
+ * #1616 — most requirement ids one `POST /spec-kit/features/from-requirements`
+ * accepts. A request-size bound only: every requirement it names reaches the
+ * prompt and the written `spec.md` whole (no #1115-style character cap).
+ */
+export const SPEC_KIT_FROM_REQUIREMENTS_MAX_IDS = 100;
+
+/** #1616 — a named requirement is not `approved` (422, `details.requirementIds`). */
+export const SPEC_KIT_REQUIREMENTS_NOT_APPROVED_CODE = "SPECKIT_REQUIREMENTS_NOT_APPROVED";
+/** #1616 — a named requirement is not in this project (404, `details.requirementIds`). */
+export const SPEC_KIT_REQUIREMENTS_NOT_FOUND_CODE = "SPECKIT_REQUIREMENTS_NOT_FOUND";
+
+/**
+ * #1616 — start a Spec Kit feature from requirements the project approved.
+ * `projectId` is optional (the path names the project); when sent it must match.
+ */
+export const specKitFromRequirementsRequestSchema = z.object({
+  projectId: z.string().min(1).max(128).optional(),
+  requirementIds: z
+    .array(z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, "Not a requirement id"))
+    .min(1)
+    .max(SPEC_KIT_FROM_REQUIREMENTS_MAX_IDS),
+});
+export type SpecKitFromRequirementsRequest = z.infer<typeof specKitFromRequirementsRequestSchema>;
+
 export const specKitCommandResponseSchema = z.object({
   command: z.enum(SPEC_KIT_COMMANDS),
   artifactName: z.enum(SPEC_KIT_ARTIFACT_NAMES).nullable(),
