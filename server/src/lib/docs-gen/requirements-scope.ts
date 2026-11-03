@@ -517,7 +517,7 @@ export function renderRequirementEntry(
 }
 
 /** A requirement's recorded code links as list items, or the line saying there are none. */
-export function codeLinkLines(r: ScopedRequirement): string[] {
+function codeLinkLines(r: ScopedRequirement): string[] {
   if (!r.codeMappings.length && !r.implementations.length) {
     return ["_No code links recorded for this requirement._"];
   }

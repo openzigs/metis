@@ -123,11 +123,11 @@ export function RequirementHistoryTab({
     void load();
   }, [load, version]);
 
-  function toggleSelect(version: number): void {
+  function toggleSelect(v: number): void {
     setSelected((prev) => {
-      if (prev.includes(version)) return prev.filter((v) => v !== version);
+      if (prev.includes(v)) return prev.filter((s) => s !== v);
       // Keep at most two; drop the oldest selection when a third is chosen.
-      const next = [...prev, version];
+      const next = [...prev, v];
       return next.length > 2 ? next.slice(next.length - 2) : next;
     });
   }
