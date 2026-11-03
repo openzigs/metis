@@ -1097,7 +1097,8 @@ export interface PersistRequirementsInput {
    * Written only when the replacement is allowed; a withheld one keeps the
    * current set, and its stored proposal carries the synthesis rows only (the
    * next run elicits again); applying it later keeps the elicited NFR rows the
-   * current set already holds (#1648). Omitted or empty: the set is written
+   * current set already holds (#1648), except an unreviewed one a proposed row
+   * restates in other words (#1709). Omitted or empty: the set is written
    * exactly as before #1613.
    */
   elicited?: {

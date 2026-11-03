@@ -19,6 +19,7 @@ import { readSourceRequirements, serializeSourceCandidateIds } from "./source-it
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import {
   CHECKPOINT_APPROVED_IDS_KEY,
+  evidenceLabels,
   getStructuredRequirements,
   lockRequirementSet,
   persistAnalysisEnhancement,
@@ -420,6 +421,7 @@ async function appendNewlyApproved(input: {
 }): Promise<number | "superseded"> {
   // #1603 — the same numbering synthesis used, as on the first promotion.
   const flat = inSynthesisOrder(await readFlattenedFindings(input.analysisId));
+  const findingIdsByIndex = flat.map((f) => f.findingId);
   let superseded = false;
 
   const requirementIds = await prisma.$transaction(async (tx) => {
@@ -475,9 +477,6 @@ async function appendNewlyApproved(input: {
     const ids: string[] = [];
     for (let k = 0; k < added.length; k++) {
       const r = added[k]!;
-      const evidenceIds = r.evidenceFindingIndexes
-        .map((i) => flat[i]?.findingId)
-        .filter((id): id is string => Boolean(id));
       const row = await tx.requirement.create({
         data: {
           analysisId: input.analysisId,
@@ -486,9 +485,8 @@ async function appendNewlyApproved(input: {
           title: r.title.slice(0, 255),
           body: r.body,
           priority: r.priority,
-          labels: JSON.stringify(
-            Array.from(new Set([...r.labels, ...evidenceIds.map((id) => `finding:${id}`)])),
-          ),
+          // #1709 — the one copy of the label mapping (#1648).
+          labels: JSON.stringify(evidenceLabels(r, findingIdsByIndex)),
           acceptanceCriteria: JSON.stringify(r.acceptanceCriteria ?? []),
           storyPoints: r.storyPoints ?? null,
           coverage: coverages[k] ?? null,

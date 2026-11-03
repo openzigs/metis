@@ -32,7 +32,6 @@ import {
   type AnalysisSpecialistAgentKey,
   MAX_IMPORTED_REQUIREMENTS_PER_ANALYSIS,
   hasPermission,
-  type RoleKey,
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
@@ -475,7 +474,7 @@ async function loadLockedAnalysisRequirement(req: Request) {
  * shows its connector id. Same name rule as the UI's `repoNamesById`.
  */
 async function exportRepoNames(req: Request, projectId: string): Promise<Record<string, string>> {
-  if (!req.user || !hasPermission(req.user.role as RoleKey, "connector.read")) return {};
+  if (!req.user || !hasPermission(req.user.role, "connector.read")) return {};
   const rows = await prisma.repoConnection.findMany({
     where: { projectId },
     select: { id: true, label: true, repoName: true },

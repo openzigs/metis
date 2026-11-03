@@ -159,7 +159,9 @@ const persistAnalysisEnhancement = vi.fn(async () => undefined);
 const lockRequirementSet = vi.fn(async (_tx: unknown, _analysisId: string) => undefined);
 /** Persisted findings the promotion re-derives coverage + verdicts from. */
 const findings: Array<Record<string, unknown>> = [];
-vi.mock("./analysis-service.js", () => ({
+vi.mock("./analysis-service.js", async (importOriginal) => ({
+  // #1709 — the real label mapping, which the append path now shares.
+  evidenceLabels: (await importOriginal<typeof import("./analysis-service.js")>()).evidenceLabels,
   persistRequirements: (...a: unknown[]) => persistRequirements(...a),
   persistAnalysisEnhancement: (...a: unknown[]) => persistAnalysisEnhancement(...(a as [])),
   readFlattenedFindings: vi.fn(async () => findings),

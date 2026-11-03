@@ -88,10 +88,42 @@ const GENERIC_WORDS = new Set<string>([
 ]);
 
 /** The words of an NFR's title that name its subject: not numbers, signs or generic words. */
-function subjectWords(nfr: Nfr, metric: readonly string[]): string[] {
+function subjectWords(nfr: Pick<Nfr, "title">, metric: readonly string[]): string[] {
   return tokens(nfr.title).filter(
     (t) => /^\p{L}{2,}$/u.test(t) && !GENERIC_WORDS.has(t) && !metric.includes(t),
   );
+}
+
+/** #1709 — abbreviations a subject is often written with, read as the word they stand for. */
+const SUBJECT_ABBREVIATIONS: Readonly<Record<string, string>> = {
+  db: "database",
+  dbs: "database",
+};
+
+/**
+ * #1709 — the endings by which two forms of one subject word differ: a plural
+ * (`APIs`, `databases`) or a verb and its noun or participle (`encrypt`,
+ * `encryption`, `encrypted`, `encrypting`).
+ */
+const SUBJECT_WORD_ENDINGS = new Set(["s", "es", "ion", "ions", "ed", "ing"]);
+
+/**
+ * #1709 — whether two subject words name the same thing: equal once an
+ * abbreviation is expanded, or one is the other plus one of
+ * {@link SUBJECT_WORD_ENDINGS}, its stem at least three letters (five for -ion). Deliberately
+ * light: a missed variant only leaves an extra draft for the BA to reject,
+ * where a wider rule would drop an NFR the set does not state.
+ */
+export function sameSubjectWord(a: string, b: string): boolean {
+  const x = SUBJECT_ABBREVIATIONS[a] ?? a;
+  const y = SUBJECT_ABBREVIATIONS[b] ?? b;
+  if (x === y) return true;
+  const [short, long] = x.length <= y.length ? [x, y] : [y, x];
+  const ending = long.slice(short.length);
+  // An -ion on a short stem joins unrelated words (`port`/`portion`,
+  // `opt`/`option`), and a false match drops an NFR, so it needs five letters.
+  const minStem = ending.startsWith("ion") ? 5 : 3;
+  return short.length >= minStem && long.startsWith(short) && SUBJECT_WORD_ENDINGS.has(ending);
 }
 
 /** A requirement an elicited NFR is compared with: a synthesis row or an earlier NFR. */
@@ -111,12 +143,16 @@ export interface ComparableRequirement {
  *     one word of the NFR's subject ("p95 < 300ms" for "Fast API" in
  *     "Responsive API … p95 < 300 ms …"). A shared target alone is not
  *     enough: "99.9%" for the API and "99.9%" for the database are two NFRs
- *     (#1648).
+ *     (#1648). A plural, an `-ion` / `-ed` / `-ing` form or `DB` names the
+ *     same subject word ({@link sameSubjectWord}, #1709); a synonym does not.
  *
  * A requirement with no category (functional, or unclassified) is compared on
  * its title only.
  */
-export function statesSameNfr(nfr: Nfr, existing: ComparableRequirement): boolean {
+export function statesSameNfr(
+  nfr: Pick<Nfr, "title" | "category" | "metric">,
+  existing: ComparableRequirement,
+): boolean {
   const title = tokens(nfr.title).join(" ");
   if (title.length > 0 && title === tokens(existing.title).join(" ")) return true;
   if (requirementKindColumns(existing).nfrCategory !== nfr.category) return false;
@@ -124,7 +160,27 @@ export function statesSameNfr(nfr: Nfr, existing: ComparableRequirement): boolea
   const text = tokens(`${existing.title} ${existing.body}`);
   if (!containsSequence(text, metric)) return false;
   const subject = subjectWords(nfr, metric);
-  return subject.length === 0 || subject.some((w) => text.includes(w));
+  return subject.length === 0 || subject.some((w) => text.some((t) => sameSubjectWord(w, t)));
+}
+
+const TARGET_PREFIX = "\n\nTarget: ";
+
+/**
+ * #1709 — the NFR an elicited row states, read back from what the row stores:
+ * its title, its category and the target its body ends with (as
+ * {@link elicitedNfrRequirements} writes it). Null when the row has no NFR
+ * category, so nothing can be compared beyond its title.
+ */
+export function nfrStatedByRow(row: {
+  title: string;
+  body: string;
+  nfrCategory: string | null;
+}): Pick<Nfr, "title" | "category" | "metric"> | null {
+  const category = NFR_CATEGORIES.find((c) => c === row.nfrCategory);
+  if (!category) return null;
+  const at = row.body.lastIndexOf(TARGET_PREFIX);
+  const metric = at >= 0 ? row.body.slice(at + TARGET_PREFIX.length).trim() : "";
+  return { title: row.title, category, metric };
 }
 
 /** An elicited NFR that was not written, and why (#1648: nothing is dropped silently). */
@@ -136,7 +192,7 @@ export interface DroppedNfr {
 }
 
 function body(nfr: Nfr): string {
-  return nfr.metric ? `${nfr.description}\n\nTarget: ${nfr.metric}` : nfr.description;
+  return nfr.metric ? `${nfr.description}${TARGET_PREFIX}${nfr.metric}` : nfr.description;
 }
 
 /**

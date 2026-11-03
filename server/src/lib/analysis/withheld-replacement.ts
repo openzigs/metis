@@ -20,6 +20,7 @@
 import {
   parseAcceptanceCriteria,
   type SynthesisDegradation,
+  type WithheldKeepReason,
   type WithheldReplacementDiff,
   type WithheldReplacementEntry,
   type WithheldReplacementFieldChange,
@@ -27,6 +28,7 @@ import {
 } from "@metis/shared";
 import { createHash } from "node:crypto";
 import { normalizeCriterion } from "./approved-criteria-carry-over.js";
+import { nfrStatedByRow, statesSameNfr } from "./elicited-nfr-requirements.js";
 import { requirementKindColumns } from "./requirement-kind.js";
 import type { AmbiguousPromotionMatch, SharedPromotionMatch } from "./approved-requirement-set.js";
 
@@ -215,18 +217,37 @@ export interface CurrentRequirementRow {
   promotedStructuredRunId: string | null;
   /**
    * Issue #1648 — an elicited NFR draft (#1613). A withheld proposal carries
-   * the synthesis rows only, so it says nothing about these: one it leaves out
-   * is kept, not deleted, whether or not it carries review work.
+   * the synthesis rows only, so it names none of these by title. One it leaves
+   * out is kept, unless a row of the proposal restates it in other words
+   * (#1709, see {@link keepReasonWhenLeftOut}).
    */
   elicitedNfr?: boolean;
 }
 
 /**
- * Whether applying a proposal that leaves `c` out keeps it: it carries review
- * work, or it is an elicited NFR the proposal could not have restated (#1648).
+ * Why applying a proposal that leaves `c` out keeps it, or null when applying
+ * deletes it. Kept: it carries review work, or it is an elicited NFR none of
+ * `written` restates (#1648). #1709 — `written` are the proposed rows applying
+ * writes, and one that states the same NFR (`statesSameNfr`, #1613: the same
+ * category and target for the same subject) makes the unreviewed draft a
+ * duplicate, so it is deleted as a re-run would not write it.
  */
-function keptWhenLeftOut(c: CurrentRequirementRow): boolean {
-  return c.reviewed || c.elicitedNfr === true;
+function keepReasonWhenLeftOut(
+  c: CurrentRequirementRow,
+  written: readonly WithheldProposalRow[],
+): WithheldKeepReason | null {
+  if (c.reviewed) return "reviewed";
+  if (c.elicitedNfr !== true) return null;
+  const nfr = nfrStatedByRow(c);
+  return nfr && written.some((p) => statesSameNfr(nfr, p)) ? null : "elicited-nfr";
+}
+
+/** The proposed rows applying writes: all but restatements of a deleted requirement. */
+function writtenRows(
+  proposed: readonly WithheldProposalRow[],
+  matches: ReadonlyMap<number, CurrentRequirementRow>,
+): WithheldProposalRow[] {
+  return proposed.filter((_, i) => matches.get(i)?.deleted !== true);
 }
 
 /** A title as two runs are compared on: case, punctuation and spacing ignored. */
@@ -340,7 +361,7 @@ export type WithheldApplyStep =
     }
   /** A reviewed requirement the proposal restates: updated through version history. */
   | { kind: "update"; current: CurrentRequirementRow; proposed: WithheldProposalRow }
-  /** An unreviewed requirement the proposal leaves out: deleted. */
+  /** An unreviewed requirement the proposal leaves out (or restates in other words, #1709): deleted. */
   | { kind: "delete"; current: CurrentRequirementRow }
   /** A reviewed requirement, or an elicited NFR (#1648), the proposal leaves out: kept. */
   | { kind: "keep"; current: CurrentRequirementRow };
@@ -349,7 +370,8 @@ export type WithheldApplyStep =
  * What applying `proposal` to `current` does. Rows with no review work are
  * replaced by their restatement or deleted, as a re-run would; reviewed rows
  * are updated in place or kept; an elicited NFR it leaves out is kept
- * (#1648); deleted rows stay deleted and their restatement is not inserted.
+ * (#1648) unless a written row restates it in other words (#1709); deleted
+ * rows stay deleted and their restatement is not inserted.
  */
 export function planWithheldApply(
   current: readonly CurrentRequirementRow[],
@@ -358,9 +380,14 @@ export function planWithheldApply(
   const matches = matchWithheldProposal(current, proposed);
   const steps: WithheldApplyStep[] = [];
   const matchedIds = new Set([...matches.values()].map((c) => c.id));
+  const written = writtenRows(proposed, matches);
   for (const c of current) {
     if (c.deleted || matchedIds.has(c.id)) continue;
-    steps.push(keptWhenLeftOut(c) ? { kind: "keep", current: c } : { kind: "delete", current: c });
+    steps.push(
+      keepReasonWhenLeftOut(c, written)
+        ? { kind: "keep", current: c }
+        : { kind: "delete", current: c },
+    );
   }
   proposed.forEach((p, i) => {
     const c = matches.get(i);
@@ -461,9 +488,11 @@ export function diffWithheldReplacement(
     if (changes.length === 0) diff.unchangedCount++;
     else diff.changed.push(entry(c, c.reviewed ? "update" : "replace", changes));
   });
+  const written = writtenRows(proposed, matches);
   for (const c of current) {
     if (c.deleted || matchedIds.has(c.id)) continue;
-    diff.removed.push(entry(c, keptWhenLeftOut(c) ? "keep" : "delete"));
+    const keepReason = keepReasonWhenLeftOut(c, written);
+    diff.removed.push(keepReason ? { ...entry(c, "keep"), keepReason } : entry(c, "delete"));
   }
   return diff;
 }

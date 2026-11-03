@@ -14,6 +14,8 @@ import {
   MAX_ELICITED_NFRS_PER_RUN,
   capElicitedNfrVerdict,
   elicitedNfrRequirements,
+  nfrStatedByRow,
+  sameSubjectWord,
   readElicitedNfrsAwaitingPromotion,
   statesSameNfr,
 } from "./elicited-nfr-requirements.js";
@@ -259,6 +261,96 @@ describe("statesSameNfr", () => {
         perf("Listing", "p95 < 300 ms"),
       ),
     ).toBe(true);
+  });
+
+  it("names the same subject through a plural, an -ion form or DB (#1709)", () => {
+    expect(
+      statesSameNfr(
+        nfr({ category: "availability", title: "API uptime", metric: "99.9%" }),
+        availability("Service level", "All public APIs are up 99.9% of the month."),
+      ),
+    ).toBe(true);
+    expect(
+      statesSameNfr(
+        nfr({ category: "security", title: "Encrypt stored tokens", metric: "AES-256" }),
+        {
+          title: "Key storage",
+          body: "AES-256 encryption.",
+          kind: "non-functional",
+          nfrCategory: "security",
+        },
+      ),
+    ).toBe(true);
+    expect(
+      statesSameNfr(
+        nfr({ category: "availability", title: "DB uptime", metric: "99.9%" }),
+        availability("Storage", "The database is up 99.9% of the time."),
+      ),
+    ).toBe(true);
+    // Still not another subject that merely shares a stem's first letters.
+    expect(
+      statesSameNfr(
+        nfr({ category: "availability", title: "API uptime", metric: "99.9%" }),
+        availability("Storage", "The apiary is up 99.9% of the time."),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("sameSubjectWord (#1709)", () => {
+  it("matches a word with its plural, -ion, -ed and -ing forms, and an abbreviation", () => {
+    for (const [a, b] of [
+      ["api", "apis"],
+      ["database", "databases"],
+      ["encrypt", "encryption"],
+      ["encrypted", "encrypt"],
+      ["encrypting", "encrypt"],
+      ["db", "database"],
+      ["dbs", "databases"],
+      ["token", "token"],
+    ]) {
+      expect(sameSubjectWord(a!, b!), `${a} ~ ${b}`).toBe(true);
+    }
+  });
+
+  it("does not match other endings, other words, a stem under three letters, or -ion under five", () => {
+    for (const [a, b] of [
+      ["api", "apiary"],
+      ["token", "tokenizer"],
+      ["database", "data"],
+      ["ui", "uis"],
+      ["cache", "session"],
+      // An -ion on a stem under five letters is another word.
+      ["port", "portion"],
+      ["opt", "option"],
+      ["mill", "million"],
+      ["stat", "station"],
+    ]) {
+      expect(sameSubjectWord(a!, b!), `${a} !~ ${b}`).toBe(false);
+    }
+  });
+});
+
+describe("nfrStatedByRow (#1709)", () => {
+  it("reads the title, category and target back from an elicited row", () => {
+    const [written] = elicitedNfrRequirements({
+      nfrs: [nfr({ category: "security", title: "Encrypt tokens", metric: "AES-256" })],
+      findingIdsByIndex: [],
+      existing: [],
+    }).requirements;
+    expect(nfrStatedByRow({ ...written!, nfrCategory: written!.nfrCategory ?? null })).toEqual({
+      title: "Encrypt tokens",
+      category: "security",
+      metric: "AES-256",
+    });
+  });
+
+  it("reads no target from a body without one, and no NFR from a row without a category", () => {
+    expect(
+      nfrStatedByRow({ title: "Encrypt tokens", body: "Encrypted.", nfrCategory: "security" }),
+    ).toEqual({ title: "Encrypt tokens", category: "security", metric: "" });
+    expect(nfrStatedByRow({ title: "T", body: "B", nfrCategory: null })).toBeNull();
+    expect(nfrStatedByRow({ title: "T", body: "B", nfrCategory: "not-a-category" })).toBeNull();
   });
 });
 

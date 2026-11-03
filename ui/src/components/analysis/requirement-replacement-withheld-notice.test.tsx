@@ -81,7 +81,14 @@ const DIFF: WithheldReplacementDiff = {
   ],
   removed: [
     { title: "Old import", outcome: "delete", reviewed: false, reviewStatus: null, changes: [] },
-    { title: "Dark mode", outcome: "keep", reviewed: true, reviewStatus: null, changes: [] },
+    {
+      title: "Dark mode",
+      outcome: "keep",
+      reviewed: true,
+      reviewStatus: null,
+      keepReason: "reviewed",
+      changes: [],
+    },
   ],
   skipped: [
     { title: "Telemetry", outcome: "skip", reviewed: true, reviewStatus: null, changes: [] },
@@ -246,7 +253,7 @@ describe("RequirementReplacementWithheldNotice", () => {
     );
     await waitFor(() =>
       expect(toast.success).toHaveBeenCalledWith(
-        "Applied the new requirements: 1 added, 2 changed, 1 removed, 1 reviewed kept",
+        "Applied the new requirements: 1 added, 2 changed, 1 removed, 1 kept",
       ),
     );
     expect(invalidate).toHaveBeenCalledWith({ queryKey: KEY });
@@ -449,6 +456,7 @@ describe("summarizeWithheldReplacement (#780)", () => {
       outcome: "keep" as const,
       reviewed: false,
       reviewStatus: null,
+      keepReason: "elicited-nfr" as const,
       changes: [],
     };
     expect(summarizeWithheldReplacement({ ...DIFF, removed: [nfr, nfr], unchangedCount: 0 })).toBe(
@@ -464,6 +472,31 @@ describe("summarizeWithheldReplacement (#780)", () => {
       "Applying would add 1 requirement, change 2, remove 0. 1 reviewed requirement the new result leaves out is kept. 1 elicited non-functional requirement the new result does not cover is kept.",
     );
   });
+
+  it("counts each kept row by the reason the server gives, never by its review state (#1709)", () => {
+    // The two disagree here on purpose: the reason decides, `reviewed` does not.
+    const keptFor = (keepReason: "reviewed" | "elicited-nfr", reviewed: boolean) => ({
+      title: keepReason,
+      outcome: "keep" as const,
+      reviewed,
+      reviewStatus: null,
+      keepReason,
+      changes: [],
+    });
+    expect(
+      summarizeWithheldReplacement({
+        ...DIFF,
+        removed: [
+          keptFor("reviewed", false),
+          keptFor("reviewed", false),
+          keptFor("elicited-nfr", true),
+        ],
+        unchangedCount: 0,
+      }),
+    ).toBe(
+      "Applying would add 1 requirement, change 2, remove 0. 2 reviewed requirements the new result leaves out are kept. 1 elicited non-functional requirement the new result does not cover is kept.",
+    );
+  });
 });
 
 describe("RequirementReplacementWithheldNotice — kept elicited NFR (#1648)", () => {
@@ -476,6 +509,7 @@ describe("RequirementReplacementWithheldNotice — kept elicited NFR (#1648)", (
           outcome: "keep",
           reviewed: false,
           reviewStatus: null,
+          keepReason: "elicited-nfr",
           changes: [],
         },
       ],
@@ -487,5 +521,27 @@ describe("RequirementReplacementWithheldNotice — kept elicited NFR (#1648)", (
       /Encrypt tokens.*Kept: an elicited non-functional requirement/,
     );
     expect(removed).not.toHaveTextContent(/review work/);
+  });
+
+  it("labels each kept row by the reason the server gives (#1709)", async () => {
+    const kept = (title: string, keepReason: "reviewed" | "elicited-nfr", reviewed: boolean) => ({
+      title,
+      outcome: "keep" as const,
+      reviewed,
+      reviewStatus: null,
+      keepReason,
+      changes: [],
+    });
+    api.getWithheldReplacement.mockResolvedValue({
+      ...DIFF,
+      // Each reason disagrees with `reviewed`: the reason decides.
+      removed: [kept("Encrypt tokens", "elicited-nfr", true), kept("Dark mode", "reviewed", false)],
+    });
+    renderActionable();
+    fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+    const removed = await screen.findByRole("region", { name: "Not in the new result" });
+    const [nfrRow, reviewedRow] = within(removed).getAllByRole("listitem");
+    expect(nfrRow).toHaveTextContent(/Kept: an elicited non-functional requirement/);
+    expect(reviewedRow).toHaveTextContent(/Kept, because it has review work/);
   });
 });
