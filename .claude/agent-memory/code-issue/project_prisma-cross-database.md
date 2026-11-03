@@ -42,8 +42,8 @@ Older entries, folded here (retired from the index 2026-10-16; files unchanged):
 - [[new-prisma-model-three-postgres-artefacts]] — dated migration, regenerated Postgres
   schema, and a `CREATE TABLE` in the baseline; run `tests/schema-parity.test.ts` (#1059).
 - `server/tests/generated-doc-outbox.test.ts` builds `scheduled_jobs` by hand: a new
-  ScheduledJob column goes there too. `pnpm db:gen-postgres:check` fails from `server/`;
-  run `bash scripts/gen-postgres-schema.sh` from the repo root and check `git diff` (#1235).
+  ScheduledJob column goes there too. `pnpm --filter @metis/server db:gen-postgres:check`
+  regenerates and diffs the Postgres schema from any directory (#1235, fixed in #1710).
 
 ## Date guards in front of SQLite `julianday(?)` (#1281)
 
