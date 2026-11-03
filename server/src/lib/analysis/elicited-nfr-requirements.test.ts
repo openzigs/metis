@@ -10,9 +10,11 @@ import { describe, expect, it } from "vitest";
 import type { Nfr } from "@metis/shared";
 import {
   ELICITED_NFR_LABEL,
+  ELICITED_NFRS_AWAITING_PROMOTION_KEY,
   MAX_ELICITED_NFRS_PER_RUN,
   capElicitedNfrVerdict,
   elicitedNfrRequirements,
+  readElicitedNfrsAwaitingPromotion,
   statesSameNfr,
 } from "./elicited-nfr-requirements.js";
 import { computeCoverageForRequirements } from "./requirement-coverage.js";
@@ -267,5 +269,26 @@ describe("capElicitedNfrVerdict", () => {
     expect(capElicitedNfrVerdict("gap-confirmed")).toBe("could-not-verify");
     expect(capElicitedNfrVerdict("could-not-verify")).toBe("could-not-verify");
     expect(capElicitedNfrVerdict(null)).toBeNull();
+  });
+});
+
+describe("readElicitedNfrsAwaitingPromotion (#1705)", () => {
+  it("reads the NFRs a gate-blocked run stored for promotion", () => {
+    const stored = [nfr(), nfr({ id: "n2", title: "Encrypt tokens", category: "security" })];
+    expect(
+      readElicitedNfrsAwaitingPromotion({ [ELICITED_NFRS_AWAITING_PROMOTION_KEY]: stored }),
+    ).toEqual(stored);
+  });
+
+  it("reads nothing when no NFRs are waiting, or the stored value is not a list of NFRs", () => {
+    expect(readElicitedNfrsAwaitingPromotion({})).toEqual([]);
+    expect(
+      readElicitedNfrsAwaitingPromotion({ [ELICITED_NFRS_AWAITING_PROMOTION_KEY]: "nfrs" }),
+    ).toEqual([]);
+    expect(
+      readElicitedNfrsAwaitingPromotion({
+        [ELICITED_NFRS_AWAITING_PROMOTION_KEY]: [{ title: "No category" }],
+      }),
+    ).toEqual([]);
   });
 });

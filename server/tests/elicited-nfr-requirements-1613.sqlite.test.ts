@@ -47,7 +47,8 @@ vi.mock("../src/lib/audit/audit-service.js", async (importOriginal) => ({
 const { AnalysisOrchestrator } = await import("../src/lib/analysis/orchestrator.js");
 const { promoteApprovedRequirements } = await import("../src/lib/analysis/promote-requirements.js");
 const { CHECKPOINT_APPROVED_IDS_KEY } = await import("../src/lib/analysis/analysis-service.js");
-const { ELICITED_NFR_LABEL } = await import("../src/lib/analysis/elicited-nfr-requirements.js");
+const { ELICITED_NFR_LABEL, ELICITED_NFRS_AWAITING_PROMOTION_KEY, MAX_ELICITED_NFRS_PER_RUN } =
+  await import("../src/lib/analysis/elicited-nfr-requirements.js");
 const { buildRerankMessages } = await import("../src/lib/traceability/requirement-code-mapping.js");
 const { initAnalysisRouter } = await import("../src/routes/analysis.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
@@ -134,7 +135,17 @@ const NFRS = [
   },
 ];
 
-type Elicitation = "nfrs" | "empty" | "unreadable";
+type Elicitation = "nfrs" | "empty" | "unreadable" | "many";
+
+/** #1705 — more NFRs than one run may add (`MAX_ELICITED_NFRS_PER_RUN`). */
+const MANY_NFRS = Array.from({ length: 25 }, (_, i) => ({
+  category: "security",
+  title: `Rotate signing key ${i + 1}`,
+  description: `Signing key ${i + 1} is rotated every quarter.`,
+  metric: "",
+  priority: "should-have",
+  evidenceIds: [],
+}));
 
 function scriptedProvider(elicitation: Elicitation, synthesis: unknown = SYNTHESIS): AIProvider {
   const reply = (system: string, user: string): string => {
@@ -142,6 +153,8 @@ function scriptedProvider(elicitation: Elicitation, synthesis: unknown = SYNTHES
     if (system.includes("NON-FUNCTIONAL REQUIREMENTS (NFRs)")) {
       if (elicitation === "unreadable") return "no NFRs here";
       if (elicitation === "empty") return JSON.stringify({ nfrs: [], acceptanceCriteria: [] });
+      if (elicitation === "many")
+        return JSON.stringify({ nfrs: MANY_NFRS, acceptanceCriteria: [] });
       // Every section the model was sent: "cite" stands for all of them.
       const sent = [...user.matchAll(/\(id=([^)]+)\)/g)].map((m) => m[1]!);
       return JSON.stringify({
@@ -455,6 +468,140 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         (await db.analysis.findUniqueOrThrow({ where: { id } })).metadata ?? "{}",
       ) as Record<string, unknown>;
       expect(meta[CHECKPOINT_APPROVED_IDS_KEY]).toEqual(approved.map((r) => r.id));
+    });
+
+    // #1705 — a run whose promotion the approval gate blocked returned before
+    // the cross-doc pass, so promoting its approved set later added no
+    // elicited NFRs. The pass now runs on that run too, and its NFRs wait on
+    // the analysis until the approved set is promoted.
+    const gateBlockedAnalysis = async (structuredTitles: string[]) => {
+      const structured = structuredTitles.map((title, i) => ({
+        id: `REQ-${i + 1}`,
+        title,
+        description: `${title}.`,
+        type: i === 0 ? "functional" : "non-functional",
+        stakeholders: [],
+        priority: "must-have",
+        ambiguities: [],
+        evidenceNeeds: [],
+        rawSource: "",
+      }));
+      const id = await newAnalysis({
+        structuredRequirements: {
+          requirements: structured,
+          totalAmbiguities: 0,
+          totalEvidenceNeeds: 0,
+        },
+        structuredRunId: "run-1705",
+      });
+      for (const r of structured) {
+        await db.approvalRequest.create({
+          data: { analysisId: id, type: "requirement", itemId: r.id, status: "pending" },
+        });
+      }
+      const synthesis = {
+        summary: "Reviewed requirements.",
+        requirements: structured.map((r) =>
+          item(r.title, {
+            structuredIds: [r.id],
+            ...(r.type === "non-functional" ? { kind: "non-functional" } : {}),
+          }),
+        ),
+      };
+      return { id, synthesis };
+    };
+    const approveAll = (analysisId: string) =>
+      db.approvalRequest.updateMany({
+        where: { analysisId },
+        data: { status: "approved", reviewedAt: new Date() },
+      });
+    const metadataOf = async (analysisId: string) =>
+      JSON.parse(
+        (await db.analysis.findUniqueOrThrow({ where: { id: analysisId } })).metadata ?? "{}",
+      ) as Record<string, unknown>;
+
+    it("adds the elicited NFRs as drafts when a gate-blocked run's approved set is promoted (#1705)", async () => {
+      const { id, synthesis } = await gateBlockedAnalysis(["List feeds", "p95 latency < 300 ms"]);
+      // A code finding judged `implemented`, which the tokens NFR cites.
+      await db.agentResult.create({
+        data: {
+          analysisId: id,
+          agentKey: "code",
+          status: "completed",
+          findings: {
+            create: {
+              category: "functional",
+              severity: "info",
+              title: "Token storage module exists",
+              body: "src/tokens.ts stores API tokens.",
+              evidence: JSON.stringify({ verdict: "implemented", citations: [], tags: [] }),
+            },
+          },
+        },
+      });
+      const codeFinding = await db.finding.findFirstOrThrow({
+        where: { agentResult: { analysisId: id, agentKey: "code" } },
+      });
+
+      // The gate holds the set back: nothing is written yet.
+      expect(await run(id, "nfrs", synthesis)).toEqual([]);
+      expect((await metadataOf(id)).promotionStatus).toBe("blocked");
+
+      await approveAll(id);
+      expect(await promoteApprovedRequirements(id, { asApproved: true })).toMatchObject({
+        status: "promoted",
+      });
+
+      const rows = await readBack(id);
+      const approved = rows.filter((r) => r.reviewStatus === "approved");
+      expect(approved.map((r) => r.title)).toEqual(["List feeds", "p95 latency < 300 ms"]);
+      // The NFR the approved set already states is not written twice.
+      const nfrRows = elicitedRows(rows);
+      expect(nfrRows.map((r) => r.title)).toEqual([
+        "Encrypt API tokens at rest",
+        "99.9% monthly uptime",
+      ]);
+      // Never approved by the promotion (#1613), and never its decision.
+      expect(nfrRows.every((r) => r.reviewStatus === "draft")).toBe(true);
+      const meta = await metadataOf(id);
+      expect(meta[CHECKPOINT_APPROVED_IDS_KEY]).toEqual(approved.map((r) => r.id));
+      // Consumed: a later promotion of this analysis does not add them again.
+      expect(meta[ELICITED_NFRS_AWAITING_PROMOTION_KEY]).toBeUndefined();
+
+      const tokens = nfrRows.find((r) => r.title === "Encrypt API tokens at rest")!;
+      expect(tokens).toMatchObject({ kind: "non-functional", nfrCategory: "security" });
+      expect(tokens.evidenceFindingIds).toContain(codeFinding.id);
+      // The verdict cap of the allowed path (#1648).
+      expect(tokens.verdict).toBe("could-not-verify");
+      const uptime = nfrRows.find((r) => r.title === "99.9% monthly uptime")!;
+      expect(uptime).toMatchObject({
+        nfrCategory: "availability",
+        evidenceFindingIds: [],
+        coverage: "no_evidence",
+      });
+    });
+
+    it("caps the elicited NFRs a gate-blocked run adds at promotion (#1705)", async () => {
+      const { id, synthesis } = await gateBlockedAnalysis(["List feeds"]);
+      await run(id, "many", synthesis);
+      await approveAll(id);
+      await promoteApprovedRequirements(id, { asApproved: true });
+
+      const nfrRows = elicitedRows(await readBack(id));
+      expect(nfrRows).toHaveLength(MAX_ELICITED_NFRS_PER_RUN);
+      expect(nfrRows[0]!.title).toBe("Rotate signing key 1");
+    });
+
+    it("a gate-blocked run that elicits nothing promotes the approved set exactly as before (#1705)", async () => {
+      const { id, synthesis } = await gateBlockedAnalysis(["List feeds"]);
+      // An earlier blocked run's NFRs are superseded by the newer run's none.
+      await run(id, "nfrs", synthesis);
+      expect((await metadataOf(id))[ELICITED_NFRS_AWAITING_PROMOTION_KEY]).toHaveLength(3);
+      await run(id, "empty", synthesis);
+      expect((await metadataOf(id))[ELICITED_NFRS_AWAITING_PROMOTION_KEY]).toBeUndefined();
+      await approveAll(id);
+      await promoteApprovedRequirements(id, { asApproved: true });
+      expect((await readBack(id)).map((r) => r.title)).toEqual(["List feeds"]);
     });
   },
 );

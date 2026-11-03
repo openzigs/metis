@@ -54,6 +54,11 @@ import { computeCoverageForRequirements } from "./requirement-coverage.js";
 import { inSynthesisOrder } from "./synthesis-finding-order.js";
 import { computeVerdictsForRequirements, type VerdictFindingInput } from "./requirement-verdict.js";
 import { requirementKindColumns } from "./requirement-kind.js";
+import {
+  capElicitedNfrVerdict,
+  elicitedNfrRequirements,
+  readElicitedNfrsAwaitingPromotion,
+} from "./elicited-nfr-requirements.js";
 
 const log = createChildLogger("promote-requirements");
 
@@ -243,11 +248,24 @@ export async function promoteApprovedRequirements(
     agentKey: f.agentKey,
     verdict: f.verdict ?? null,
   }));
+  const codeAnalysisRan = flat.some((f) => f.agentKey === "code");
   const verdicts = computeVerdictsForRequirements(
     toPromote.requirements,
     verdictFindings,
-    flat.some((f) => f.agentKey === "code"),
+    codeAnalysisRan,
   );
+  // #1705 — the NFRs the gate-blocked run elicited, written beside the set by
+  // the rules of the allowed path (#1613, #1648): the ones the promoted set
+  // already states dropped, at most the per-run cap, the verdict capped, and
+  // never approved by this promotion.
+  const { requirements: elicited, dropped: droppedNfrs } = elicitedNfrRequirements({
+    nfrs: readElicitedNfrsAwaitingPromotion(parseMetadataObject(analysis.metadata)),
+    findingIdsByIndex,
+    existing: toPromote.requirements,
+  });
+  if (droppedNfrs.length > 0) {
+    log.info("Elicited NFRs not written as requirements", { analysisId, dropped: droppedNfrs });
+  }
 
   let withheld = false;
   const requirementIds = await persistRequirements({
@@ -268,9 +286,26 @@ export async function promoteApprovedRequirements(
     ...(plan ? { promotedFrom: { runId: structuredRunId, pairings: plan.pairings } } : {}),
     // #780 — kept with a withheld replacement for when it is applied.
     promotionMatches: { ambiguous, shared },
+    ...(elicited.length > 0
+      ? {
+          elicited: {
+            requirements: elicited,
+            coverages: computeCoverageForRequirements(
+              elicited,
+              flat.map((f) => ({ citations: f.citations })),
+            ),
+            verdicts: computeVerdictsForRequirements(
+              elicited,
+              verdictFindings,
+              codeAnalysisRan,
+            ).map(capElicitedNfrVerdict),
+          },
+        }
+      : {}),
   });
   // #769 — the replacement was refused to protect review work on the existing
-  // set; nothing was written, so nothing is recorded as promoted.
+  // set; nothing was written, so nothing is recorded as promoted. #1705 — the
+  // waiting NFRs stay, for the promotion that is allowed.
   if (withheld) return { status: "unavailable", reason: WITHHELD_REASON };
 
   // Issue #1116 — the rows only exist NOW, so this is the first moment the
@@ -301,6 +336,8 @@ export async function promoteApprovedRequirements(
       rejectedCount: ticketStatus.rejectedCount,
     },
     promotionStatus: "allowed",
+    // #1705 — written with the set above; never written twice.
+    elicitedNfrsAwaitingPromotion: null,
     ...(reviewed ? { promotedStructuredIds, promotedStructuredRunId: structuredRunId } : {}),
     // #1204 — written on every replacement, so an earlier set's record is cleared.
     // #1203 — and which rows share criteria, on the same replacement.

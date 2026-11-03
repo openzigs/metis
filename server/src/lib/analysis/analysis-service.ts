@@ -12,6 +12,7 @@
 import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import { CHECKPOINT_SIGN_OFF_KEY } from "./checkpoint-sign-off.js";
 import { mergeHiddenRequirementLabels, parseRequirementLabels } from "./requirement-labels.js";
+import { ELICITED_NFRS_AWAITING_PROMOTION_KEY } from "./elicited-nfr-requirements.js";
 import {
   analysisFailedAgents,
   readDroppedCitations,
@@ -50,6 +51,7 @@ import {
   summarizeSupportPanels,
   type FindingVerdict,
   type FindingVerificationStatus,
+  type Nfr,
   type NfrCategory,
   type RequirementCoverage,
   type RequirementKind,
@@ -377,6 +379,12 @@ export interface AnalysisEnhancementPatch {
    * edit of the same list keeps it.
    */
   structuredRunId?: string;
+  /**
+   * Issue #1705 — the NFRs a gate-blocked run elicited, kept until its approved
+   * set is promoted (`ELICITED_NFRS_AWAITING_PROMOTION_KEY`). An empty list or
+   * `null` clears it.
+   */
+  elicitedNfrsAwaitingPromotion?: Nfr[] | null;
 }
 
 export function parseMetadata(raw: string | null): Record<string, unknown> {
@@ -473,6 +481,11 @@ function applyEnhancementPatch(
   }
   if (patch.promotionMatching !== undefined) next.promotionMatching = patch.promotionMatching;
   if (patch.structuredRunId !== undefined) next.structuredRunId = patch.structuredRunId;
+  if (patch.elicitedNfrsAwaitingPromotion !== undefined) {
+    if (patch.elicitedNfrsAwaitingPromotion?.length) {
+      next[ELICITED_NFRS_AWAITING_PROMOTION_KEY] = patch.elicitedNfrsAwaitingPromotion;
+    } else delete next[ELICITED_NFRS_AWAITING_PROMOTION_KEY];
+  }
   return next;
 }
 
