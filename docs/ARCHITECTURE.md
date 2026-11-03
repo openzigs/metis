@@ -1515,8 +1515,8 @@ requirement needs no change. Cross-product coupling is a repo on several product
   on. A direct-change product is never downstream, each product is listed once with its
   most severe path, and a repo is walked again only when a more severe path reaches it.
 - **Access.** Only edges on products the caller can read, between repos they can read,
-  are walked. An edge to a repo they cannot read is counted (`hiddenEdgeCount`, once) on
-  the product it leaves. A contract an edge names is cited only when the caller can read
+  are walked. An edge to a live repo they cannot read is counted (`hiddenEdgeCount`, once)
+  on the product it leaves; an edge to a deleted repo is neither walked nor counted (#1698). A contract an edge names is cited only when the caller can read
   its repo. A consumer product they cannot read is `restricted`: its id and
   `downstream-consumer`, nothing else, and the walk never goes through it. The walk
   records how many it stopped at (`stoppedAtRestricted`, stored in every readable row's
@@ -1537,7 +1537,9 @@ requirement needs no change. Cross-product coupling is a repo on several product
   starter cannot read, or a repo of a direct-change product they cannot read; an edge to a
   deleted repo is not one, since neither walk follows it, #1695): with nothing left out the
   two walks take the same steps, so a caller who reads everything pays for one walk. It
-  reuses the reader's walk's repo, attachment and resource caches (never its contracts),
+  reuses the reader's walk's repo, attachment and resource caches, and every contract that
+  walk resolved (#1698: one it resolved is of a repo it can read, or of none, so it reads
+  the same to a walk that reads everything; one it could not resolve is loaded again),
   loads no shared tables and no contract past a first hop, and stops once every unreached
   product is found. A first hop's contract is loaded (#1695): it can raise that hop's
   severity, and severity changes reach, because a repo keeps its most severe state, and
@@ -1547,9 +1549,11 @@ requirement needs no change. Cross-product coupling is a repo on several product
   walks on to `maxDepth`. Every other unreached product stays `none` (#1680:
   relabelling all of them on any stop emptied "Not affected"). The one fact a reader
   learns of each readable product (`restricted` or `none`) therefore depends on the graph
-  across workspaces up to `maxDepth`, hidden edges included: the same one-bit disclosure
-  the owner accepted in #1673, over more paths, and part of the #1527 visibility
-  question. The view, the page and the export all read it "Restricted". A run records the
+  across workspaces up to `maxDepth`, hidden edges included, and on whether the first-hop
+  contract of a direct-change repo the reader cannot read is breaking (it raises that
+  hop's severity, which can change what the comparison reaches, #1695, #1698): the same
+  one-bit disclosure the owner accepted in #1673, over more paths, and part of the #1527
+  visibility question. The view, the page and the export all read it "Restricted". A run records the
   rule (`restrictedRule: "walk"`, on every readable row since #1692). The older value
   `adjacent` (#1680, #1685: a connection to a stopped product, which could reach past the
   walk or fall short of it) stays readable: its `restricted` note claims a connection,

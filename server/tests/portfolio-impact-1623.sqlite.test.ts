@@ -44,6 +44,18 @@ vi.mock("../src/lib/prisma.js", async (importOriginal) => {
   };
 });
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
+// #1698 — the impact engine's log, so a test can read the comparison walk's line.
+const impactLog = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn() }));
+vi.mock("../src/lib/logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/logger.js")>();
+  return {
+    ...actual,
+    createChildLogger: (name: string) =>
+      name === "portfolio-impact"
+        ? { ...impactLog, error: vi.fn(), debug: vi.fn() }
+        : actual.createChildLogger(name),
+  };
+});
 // The connectors that write to connected systems: none may be called.
 const connectorWrites = vi.hoisted(() => ({
   createDbConnector: vi.fn(),
@@ -853,22 +865,83 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             expect(walkStarts(calls)).toHaveLength(1);
           });
 
+          const contractIds = (qs: Query[]) =>
+            qs.flatMap((q) =>
+              q.call === "productContractDoc.findFirst" && typeof q.where.id === "string"
+                ? [q.where.id as string]
+                : [],
+            );
+
           it("loads a contract only for a first hop, the one hop it can raise the severity of", async () => {
-            const { before, during } = comparison(await queriesOf(ordersAndBilling));
-            const contractIds = (qs: Query[]) =>
-              qs.flatMap((q) =>
-                q.call === "productContractDoc.findFirst" && typeof q.where.id === "string"
-                  ? [q.where.id as string]
-                  : [],
+            // Orders also holds the ws-b repo `dedup-hidden`, whose edge to Storefront
+            // names a contract of that repo: Ana's walk never starts there.
+            const HIDDEN_CONTRACT = "cdoc-dhidden-1698";
+            await db.productRepo.create({
+              data: { productId: P.orders, repoConnectionId: R.dedupHidden },
+            });
+            await db.productContractDoc.create({
+              data: {
+                id: HIDDEN_CONTRACT,
+                productId: P.storefront,
+                repoId: R.dedupHidden,
+                version: 1,
+                contentHash: `h${HIDDEN_CONTRACT}`,
+                title: "Contract",
+                diff: BREAKING_DIFF,
+              },
+            });
+            try {
+              await withEdges(
+                [
+                  {
+                    ...edgeData("e-dhidden-storefront-1698", R.dedupHidden, R.storefront),
+                    productId: P.storefront,
+                    direction: "provides",
+                    contractDocId: HIDDEN_CONTRACT,
+                  },
+                ],
+                async () => {
+                  const { before, during } = comparison(await queriesOf(ordersAndBilling));
+                  // Reporting's edge to Notifications names a contract two hops out:
+                  // the reader's walk cites it, and the comparison walk never loads it.
+                  expect(contractIds(before)).toContain(CONTRACT_REPORTING);
+                  // Orders' edge to Storefront leaves a direct-change repo (#1695), and
+                  // the reader's walk resolved its contract: not loaded again (#1698).
+                  expect(contractIds(before)).toContain(CONTRACT_V1);
+                  // Only the first-hop contract the reader could not read is loaded.
+                  expect(contractIds(during)).toEqual([HIDDEN_CONTRACT]);
+                },
               );
-            // Reporting's edge to Notifications names a contract two hops out: the
-            // reader's walk cites it, and the comparison walk never loads it.
-            expect(contractIds(before)).toContain(CONTRACT_REPORTING);
-            // Orders' edge to Storefront leaves a direct-change repo (#1695).
-            expect(new Set(contractIds(during))).toEqual(new Set([CONTRACT_V1]));
+            } finally {
+              await db.productContractDoc.delete({ where: { id: HIDDEN_CONTRACT } });
+              await db.productRepo.deleteMany({
+                where: { productId: P.orders, repoConnectionId: R.dedupHidden },
+              });
+            }
           });
 
-          it("an edge to a deleted repo leaves nothing out: the comparison could not follow it either", async () => {
+          it("reuses a first-hop contract the reader's walk resolved (#1698)", async () => {
+            const { during } = comparison(await queriesOf(ordersAndBilling));
+            expect(contractIds(during)).toEqual([]);
+          });
+
+          it("logs how many unreached products it looked for and found (#1698)", async () => {
+            impactLog.info.mockClear();
+            const ana = await ordersAndBilling();
+            expect(of(ana, P.idle).impactKind).toBe("none");
+            const lines = impactLog.info.mock.calls.filter(
+              ([message]) => message === "Restricted relabel: comparison walk",
+            );
+            // Idle is not reached: the walk went on to `maxDepth`.
+            expect(lines).toEqual([
+              [
+                "Restricted relabel: comparison walk",
+                { maxDepth: 2, wanted: 1, reached: 0, allReached: false },
+              ],
+            ]);
+          });
+
+          it("an edge to a deleted repo leaves nothing out, and is not counted hidden", async () => {
             await db.repoConnection.create({
               data: {
                 id: "rc-gone-1695",
@@ -895,6 +968,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
                       listedProductIds: [P.idle],
                     });
                     expect(of(ana, P.idle).impactKind).toBe("none");
+                    // #1698 — nor does the view say it touches a repository Ana cannot read.
+                    expect(of(ana, P.fulfil).hiddenEdgeCount).toBe(0);
                   });
                   expect(walkStarts(calls)).toHaveLength(1);
                 },
@@ -948,6 +1023,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
                   );
                   // One step: the edges from Dedup D's two repos, by source and by target.
                   expect(during.filter((q) => q.call === "productEdge.findMany")).toHaveLength(2);
+                  expect(impactLog.info).toHaveBeenCalledWith(
+                    "Restricted relabel: comparison walk",
+                    { maxDepth: 4, wanted: 1, reached: 1, allReached: true },
+                  );
                 },
               );
             } finally {

@@ -509,7 +509,7 @@ describe("renderPortfolioAssessmentMarkdown (#1624)", () => {
     // #1689 — a `none` stored under an older rule stays not affected, with a hint
     // to run the check again; one stored under the current rule gets none.
     const olderHint =
-      "_This check ran under an older rule for products it could not follow, so a product listed as not affected may still be reached through one that the person who ran it cannot read. Run the check again to find out._";
+      "_This check ran under an older rule for products it could not follow, so a product listed as not affected may still be reached through a repository or product that the person who ran it cannot read. Run the check again to find out._";
     // #1695 — no rule and no stop: a run before #1692 that stopped nowhere, and so
     // never looked past a repo or an edge its starter could not read.
     expect(plainMd).toContain(olderHint);

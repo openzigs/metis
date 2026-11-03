@@ -170,7 +170,7 @@ describe("PortfolioImpactView", () => {
 
   it("#1689 — under the older rule, the not-affected group says it may have missed one", () => {
     const olderRule =
-      "This check ran under an older rule for products it could not follow, so a product listed as not affected may still be reached through one that the person who ran it cannot read. Run the check again to find out.";
+      "This check ran under an older rule for products it could not follow, so a product listed as not affected may still be reached through a repository or product that the person who ran it cannot read. Run the check again to find out.";
     const v = impactView();
     const crm = v.products.findIndex((p) => p.impactKind === "none");
     v.products[crm] = {
