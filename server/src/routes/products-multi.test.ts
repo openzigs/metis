@@ -66,7 +66,7 @@ const mockPrisma = {
   productContractDoc: { findFirst: vi.fn(), create: vi.fn() },
   repoConnection: { findMany: vi.fn() },
   // #1618 — GET /:id also reads the product's edges and resources.
-  productEdge: { findMany: vi.fn(async () => []) },
+  productEdge: { findMany: vi.fn(async (): Promise<unknown[]> => []) },
   productResource: { findMany: vi.fn(async () => []) },
 };
 vi.mock("../lib/prisma.js", () => ({ prisma: mockPrisma }));
@@ -104,6 +104,13 @@ const mockRecordContractDocVersion = vi.fn(async (..._args: unknown[]) => ({
 vi.mock("../lib/products/contract-doc-versioning.js", () => ({
   recordContractDocVersion: (...args: unknown[]) => mockRecordContractDocVersion(...args),
   createPrismaContractDocStore: vi.fn(() => ({ findLatest: vi.fn(), create: vi.fn() })),
+}));
+
+// #1643 — /analyze runs edge detection first; its storage is covered by
+// tests/product-analyze-detection-1643.sqlite.test.ts, so it is a double here.
+const mockRunProductEdgeDetection = vi.fn(async (..._args: unknown[]) => ({}));
+vi.mock("../lib/products/edge-detection.js", () => ({
+  runProductEdgeDetection: (...args: unknown[]) => mockRunProductEdgeDetection(...args),
 }));
 
 // Import after mocks
@@ -327,6 +334,59 @@ describe("products-multi routes", () => {
       expect(res.status).toBe(200);
       expect(res.body.data.status).toBe("completed");
       expect(res.body.data.documentsGenerated).toBeGreaterThan(0);
+    });
+
+    it("runs edge detection first and reports the edges stored after it", async () => {
+      mockPrisma.product.findUnique.mockResolvedValue({
+        id: "p1",
+        name: "My Product",
+        description: null,
+        repos: [
+          { repoConnectionId: "rc1", role: "backend-api", repoConnection: { repoName: "a" } },
+          { repoConnectionId: "rc2", role: "frontend", repoConnection: { repoName: "b" } },
+        ],
+      });
+      mockPrisma.productAnalysis.create.mockResolvedValue({ id: "a1" });
+      mockPrisma.productEdge.findMany.mockResolvedValueOnce([
+        {
+          sourceRepoId: "rc2",
+          targetRepoId: "rc1",
+          edgeType: "calls",
+          confidence: 0.9,
+          evidence: "[]",
+          sourceFile: null,
+          targetFile: null,
+        },
+      ]);
+
+      const res = await request(app).post("/products/p1/analyze");
+      expect(res.status).toBe(200);
+      expect(res.body.data.edgesDetected).toBe(1);
+      expect(mockRunProductEdgeDetection).toHaveBeenCalledWith(
+        expect.objectContaining({ productId: "p1", loadRepoFiles: expect.any(Function) }),
+      );
+      expect(mockRunProductEdgeDetection.mock.invocationCallOrder[0]).toBeLessThan(
+        mockPrisma.productEdge.findMany.mock.invocationCallOrder[0],
+      );
+    });
+
+    it("marks the analysis failed when detection throws", async () => {
+      mockPrisma.product.findUnique.mockResolvedValue({
+        id: "p1",
+        name: "My Product",
+        repos: [],
+      });
+      mockPrisma.productAnalysis.create.mockResolvedValue({ id: "a1" });
+      mockRunProductEdgeDetection.mockRejectedValueOnce(new Error("crawl failed"));
+
+      const res = await request(app).post("/products/p1/analyze");
+      expect(res.status).toBe(500);
+      expect(mockPrisma.productAnalysis.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ status: "failed", error: "crawl failed" }),
+        }),
+      );
+      expect(mockPrisma.productDocument.create).not.toHaveBeenCalled();
     });
 
     it("returns 404 for unknown product", async () => {

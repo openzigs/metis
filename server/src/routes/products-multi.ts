@@ -58,6 +58,8 @@ import {
   createPrismaContractDocStore,
 } from "../lib/products/contract-doc-versioning.js";
 import { summarizeDiff as summarizeContractDiff } from "../lib/products/contract-diff.js";
+import { runProductEdgeDetection } from "../lib/products/edge-detection.js";
+import { createCloneFileLoader } from "../lib/products/clone-file-loader.js";
 import type { ProductRepoInfo, ProductEdgeInfo } from "../lib/products/unified-doc-generator.js";
 import type { ProductEdgeEvidence } from "@metis/shared";
 
@@ -489,7 +491,7 @@ export function productsRouter(): Router {
       const productId = param(req.params.id);
       await assertProductAccessible(req.user!, productId);
 
-      // Verify product exists and load repos + edges
+      // Verify product exists and load its repos (the edges are read after detection)
       const product = await prisma.product.findUnique({
         where: { id: productId },
         include: {
@@ -508,7 +510,6 @@ export function productsRouter(): Router {
               },
             },
           },
-          edges: true,
         },
       });
       if (!product) {
@@ -536,14 +537,6 @@ export function productsRouter(): Router {
         });
       }
       const readableRepoIds = new Set(readable.map((r) => r.repoConnectionId));
-      // #1618 — the generated documents are repo-to-repo, so an edge through a
-      // resource with no target repo is not drawn in them.
-      const readableEdges = product.edges.filter(
-        (e): e is typeof e & { targetRepoId: string } =>
-          e.targetRepoId !== null &&
-          readableRepoIds.has(e.sourceRepoId) &&
-          readableRepoIds.has(e.targetRepoId),
-      );
 
       // Create an analysis record
       const analysis = await prisma.productAnalysis.create({
@@ -564,6 +557,50 @@ export function productsRouter(): Router {
           role: r.role,
           defaultBranch: r.repoConnection?.defaultBranch ?? "main",
         }));
+
+        // Generate + version API contract docs (one per repo). Each run records
+        // a new ProductContractDoc version (deduped by contentHash) and computes
+        // the semantic diff vs the previous version (Issue #90 / epic #86).
+        // #1643 — before detection, which links an API edge to its target's latest
+        // contract version: recorded after, a first run stores the edge unlinked
+        // and the second run changes it.
+        const contractStore = createPrismaContractDocStore(prisma.productContractDoc);
+        const apiContractResults = await Promise.all(
+          repoInfos.map((repo) =>
+            recordContractDocVersion(
+              {
+                productId,
+                productName: product.name,
+                repoName: repo.repoName,
+                repoConnectionId: repo.repoConnectionId,
+                ownerOrOrg: repo.ownerOrOrg,
+                specs: [], // Full crawl specs would come from an async crawl step
+              },
+              contractStore,
+            ),
+          ),
+        );
+        const apiContractDocs = apiContractResults.map((r) => r.doc);
+
+        // #1643 — detect the edges between the readable repos from each one's
+        // clone first, so what it finds feeds the documents below. A repo with
+        // no clone is not crawled and keeps its stored edges.
+        await runProductEdgeDetection({
+          user: req.user!,
+          productId,
+          loadRepoFiles: createCloneFileLoader(),
+        });
+        const storedEdges = await prisma.productEdge.findMany({ where: { productId } });
+        // #1618 — the generated documents are repo-to-repo, so an edge through a
+        // resource with no target repo is not drawn in them.
+        const readableEdges = storedEdges.filter(
+          (e): e is typeof e & { targetRepoId: string } =>
+            e.targetRepoId !== null &&
+            readableRepoIds.has(e.sourceRepoId) &&
+            readableRepoIds.has(e.targetRepoId),
+        );
+
+        // Map edges to generator input types
         const edgeInfos: ProductEdgeInfo[] = readableEdges.map((e) => ({
           sourceRepoId: e.sourceRepoId,
           targetRepoId: e.targetRepoId,
@@ -602,7 +639,7 @@ export function productsRouter(): Router {
         });
         const skippedNeighbours = (repoId: string) =>
           new Set(
-            product.edges.flatMap((e) =>
+            storedEdges.flatMap((e) =>
               e.sourceRepoId === repoId && e.targetRepoId !== null && skippedIds.has(e.targetRepoId)
                 ? [e.targetRepoId]
                 : e.targetRepoId === repoId && skippedIds.has(e.sourceRepoId)
@@ -627,27 +664,6 @@ export function productsRouter(): Router {
           repos: repoInfos,
           edges: edgeInfos,
         });
-
-        // Generate + version API contract docs (one per repo). Each run records
-        // a new ProductContractDoc version (deduped by contentHash) and computes
-        // the semantic diff vs the previous version (Issue #90 / epic #86).
-        const contractStore = createPrismaContractDocStore(prisma.productContractDoc);
-        const apiContractResults = await Promise.all(
-          repoInfos.map((repo) =>
-            recordContractDocVersion(
-              {
-                productId,
-                productName: product.name,
-                repoName: repo.repoName,
-                repoConnectionId: repo.repoConnectionId,
-                ownerOrOrg: repo.ownerOrOrg,
-                specs: [], // Full crawl specs would come from an async crawl step
-              },
-              contractStore,
-            ),
-          ),
-        );
-        const apiContractDocs = apiContractResults.map((r) => r.doc);
 
         // Upsert documents into ProductDocument table
         const now = new Date();
