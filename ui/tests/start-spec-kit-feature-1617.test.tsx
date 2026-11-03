@@ -12,6 +12,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
 import { makeWrapper } from "./test-utils";
 
 const routerPush = vi.hoisted(() => vi.fn());
@@ -42,6 +43,7 @@ vi.mock("sonner", () => ({
 }));
 
 import { ApiError } from "@/lib/api-client";
+import { queryKeys } from "@/lib/query-keys";
 import {
   StartSpecKitFeatureAction,
   refusedRequirementIds,
@@ -53,12 +55,26 @@ const APPROVED_A: SpecKitSeedCandidate = { id: "req-a", title: "Login", reviewSt
 const APPROVED_B: SpecKitSeedCandidate = { id: "req-b", title: "Logout", reviewStatus: "approved" };
 const DRAFT: SpecKitSeedCandidate = { id: "req-d", title: "Signup", reviewStatus: "draft" };
 
-function renderAction(selected: SpecKitSeedCandidate[], writeHint?: string) {
+function renderAction(
+  selected: SpecKitSeedCandidate[],
+  writeHint?: string,
+  queryClient?: QueryClient,
+) {
   return render(
     <StartSpecKitFeatureAction projectId="p1" selected={selected} writeHint={writeHint} />,
-    { wrapper: makeWrapper({ withAuth: false }) },
+    { wrapper: makeWrapper({ withAuth: false, ...(queryClient ? { queryClient } : {}) }) },
   );
 }
+
+const STARTED = {
+  feature: { id: "f9", slug: "004-login", title: "Login" },
+  artifact: { key: "spec.md" },
+  message: "Generated spec.md (v1) for 004-login",
+  requirementIds: ["req-a"],
+  jobId: "j1",
+};
+/** The start token the n-th call sent (0-based). */
+const tokenOf = (n: number): string => startFeature.mock.calls[n]![2] as string;
 
 const button = () => screen.getByTestId("start-spec-kit-feature-button");
 /** The tooltip lives on the HoverHint wrapper, since a disabled button gets no hover. */
@@ -109,7 +125,7 @@ describe("StartSpecKitFeatureAction (#1617)", () => {
     await waitFor(() =>
       expect(routerPush).toHaveBeenCalledWith("/projects/p1/spec-kit?feature=004-login-1-more"),
     );
-    expect(startFeature).toHaveBeenCalledWith("p1", ["req-a", "req-b"]);
+    expect(startFeature).toHaveBeenCalledWith("p1", ["req-a", "req-b"], expect.any(String));
     expect(toastSuccess).toHaveBeenCalledWith("Generated spec.md (v1) for 004-login-1-more");
   });
 
@@ -153,6 +169,114 @@ describe("StartSpecKitFeatureAction (#1617)", () => {
     expect(alert).toHaveTextContent("Spec Kit is off for this project");
     expect(alert).not.toHaveTextContent("PUT /enabled");
     expect(screen.queryByTestId("start-spec-kit-refused-ids")).not.toBeInTheDocument();
+  });
+});
+
+describe("StartSpecKitFeatureAction — retry-safe start (#1702)", () => {
+  it("sends a start token the server accepts (16–128 of A-Z a-z 0-9 _ -)", async () => {
+    startFeature.mockResolvedValue(STARTED);
+    renderAction([APPROVED_A]);
+    fireEvent.click(button());
+    await waitFor(() => expect(startFeature).toHaveBeenCalledTimes(1));
+    expect(tokenOf(0)).toMatch(/^[A-Za-z0-9_-]{16,128}$/);
+  });
+
+  it("after a lost response, the retry of the same selection sends the SAME token", async () => {
+    startFeature.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    startFeature.mockResolvedValueOnce(STARTED);
+    renderAction([APPROVED_A]);
+    fireEvent.click(button());
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The response was lost, so the feature may already have been created",
+    );
+    fireEvent.click(button());
+    await waitFor(() =>
+      expect(routerPush).toHaveBeenCalledWith("/projects/p1/spec-kit?feature=004-login"),
+    );
+    expect(startFeature).toHaveBeenCalledTimes(2);
+    expect(tokenOf(1)).toBe(tokenOf(0));
+  });
+
+  it("a proxy's 5xx without the server's envelope is a lost response too", async () => {
+    startFeature.mockRejectedValueOnce(new ApiError(504, "Gateway Timeout"));
+    startFeature.mockResolvedValueOnce(STARTED);
+    renderAction([APPROVED_A]);
+    fireEvent.click(button());
+    await screen.findByRole("alert");
+    fireEvent.click(button());
+    await waitFor(() => expect(startFeature).toHaveBeenCalledTimes(2));
+    expect(tokenOf(1)).toBe(tokenOf(0));
+  });
+
+  it("an answer from the server ends the start: the next one gets a new token", async () => {
+    startFeature.mockRejectedValueOnce(new ApiError(503, "no provider", "AI_UNAVAILABLE"));
+    startFeature.mockResolvedValueOnce(STARTED);
+    startFeature.mockResolvedValueOnce(STARTED);
+    renderAction([APPROVED_A]);
+    fireEvent.click(button());
+    await screen.findByRole("alert");
+    fireEvent.click(button());
+    await waitFor(() => expect(startFeature).toHaveBeenCalledTimes(2));
+    expect(tokenOf(1)).not.toBe(tokenOf(0));
+    // After a success too.
+    await waitFor(() => expect(button()).toBeEnabled());
+    fireEvent.click(button());
+    await waitFor(() => expect(startFeature).toHaveBeenCalledTimes(3));
+    expect(tokenOf(2)).not.toBe(tokenOf(1));
+  });
+
+  it("a different selection after a lost response is a new start, with a new token", async () => {
+    startFeature.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    startFeature.mockResolvedValueOnce(STARTED);
+    const view = renderAction([APPROVED_A]);
+    fireEvent.click(button());
+    await screen.findByRole("alert");
+    view.rerender(<StartSpecKitFeatureAction projectId="p1" selected={[APPROVED_A, APPROVED_B]} />);
+    fireEvent.click(button());
+    await waitFor(() => expect(startFeature).toHaveBeenCalledTimes(2));
+    expect(startFeature.mock.calls[1]![1]).toEqual(["req-a", "req-b"]);
+    expect(tokenOf(1)).not.toBe(tokenOf(0));
+  });
+
+  it("clears the previous failure as soon as a new start begins", async () => {
+    startFeature.mockRejectedValueOnce(new ApiError(409, "PUT /enabled", "SPEC_KIT_DISABLED"));
+    startFeature.mockImplementationOnce(() => new Promise(() => {}));
+    renderAction([APPROVED_A]);
+    fireEvent.click(button());
+    await screen.findByRole("alert");
+    fireEvent.click(button());
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(button()).toHaveTextContent("Starting Spec Kit feature…");
+  });
+
+  it("does not move a user who left the page while the feature was being made", async () => {
+    let finish!: (v: typeof STARTED) => void;
+    startFeature.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const view = renderAction([APPROVED_A]);
+    fireEvent.click(button());
+    await waitFor(() => expect(startFeature).toHaveBeenCalledTimes(1));
+    view.unmount();
+    finish(STARTED);
+    await waitFor(() => expect(toastSuccess).toHaveBeenCalled());
+    expect(routerPush).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the project's Spec Kit feature list on success", async () => {
+    startFeature.mockResolvedValue(STARTED);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+    renderAction([APPROVED_A], undefined, qc);
+    fireEvent.click(button());
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: queryKeys.projects.specKitFeaturesAll("p1"),
+      }),
+    );
   });
 });
 

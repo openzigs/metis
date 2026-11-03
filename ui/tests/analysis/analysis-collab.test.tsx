@@ -9,7 +9,7 @@
  *   - AC2: a 409 from the optimistic-lock save opens the MergeConflictModal
  *     seeded with the server diff (instead of a generic error toast).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { makeWrapper, TEST_USER } from "../test-utils";
 import { ROLE_PERMISSIONS } from "@metis/shared";
@@ -223,6 +223,11 @@ vi.mock("@/components/analysis/analysis-run-summary", () => ({
 import AnalysisPage from "@/app/(authed)/projects/[id]/analysis/page";
 import { ApiError } from "@/lib/api-client";
 import { commentApi, requirementUpdateApi } from "@/lib/collaboration-api";
+import { analysisApi } from "@/lib/analysis-api";
+
+const analysisMock = analysisApi as unknown as {
+  listForProject: ReturnType<typeof vi.fn>;
+};
 
 const commentMock = commentApi as unknown as {
   listForRequirement: ReturnType<typeof vi.fn>;
@@ -643,5 +648,59 @@ describe("AnalysisPage — Start Spec Kit feature on the requirements list (#161
     expect(hint()).toBe(
       'Only approved requirements can start a Spec Kit feature. Not approved: "Login screen".',
     );
+  });
+
+  // #1702 — a ticked requirement a filter hides is no longer sent.
+  it("drops a tick the coverage filter hides, so it is not sent", async () => {
+    renderPage(WRITER);
+    await waitForRequirement();
+    const count = () => screen.getByTestId("start-spec-kit-feature-count");
+    fireEvent.click(screen.getByTestId("req-speckit-select-req-1"));
+    expect(count()).toHaveTextContent("1 selected");
+    // req-1 has no coverage, so "No evidence" hides it.
+    fireEvent.click(screen.getByTestId("coverage-filter-no_evidence"));
+    expect(count()).toHaveTextContent("Tick approved requirements");
+    // Shown again, it is no longer ticked.
+    fireEvent.click(screen.getByTestId("coverage-filter-all"));
+    expect(screen.getByTestId("req-speckit-select-req-1")).not.toBeChecked();
+  });
+
+  it("keeps a tick the new filter still shows", async () => {
+    renderPage(WRITER);
+    await waitForRequirement();
+    fireEvent.click(screen.getByTestId("req-speckit-select-req-1"));
+    fireEvent.click(screen.getByTestId("coverage-filter-no_evidence"));
+    fireEvent.click(screen.getByTestId("coverage-filter-all"));
+    fireEvent.click(screen.getByTestId("req-speckit-select-req-1"));
+    // Re-selecting "All" hides nothing.
+    fireEvent.click(screen.getByTestId("coverage-filter-all"));
+    expect(screen.getByTestId("start-spec-kit-feature-count")).toHaveTextContent("1 selected");
+  });
+
+  it("keeps the ticks per run: another run starts empty, and the first run's come back", async () => {
+    const oneRun = analysisMock.listForProject.getMockImplementation();
+    onTestFinished(() => {
+      nav.search = new URLSearchParams("tab=requirements");
+      if (oneRun) analysisMock.listForProject.mockImplementation(oneRun);
+    });
+    analysisMock.listForProject.mockResolvedValue({
+      items: [
+        { id: "an-1", status: "completed", startedAt: new Date().toISOString(), totalTokens: 10 },
+        { id: "an-2", status: "completed", startedAt: new Date().toISOString(), totalTokens: 10 },
+      ],
+    });
+    const view = render(<AnalysisPage />, { wrapper: makeWrapper({ initialUser: WRITER }) });
+    await waitForRequirement();
+    const count = () => screen.getByTestId("start-spec-kit-feature-count");
+    fireEvent.click(screen.getByTestId("req-speckit-select-req-1"));
+    expect(count()).toHaveTextContent("1 selected");
+
+    nav.search = new URLSearchParams("tab=requirements&analysisId=an-2");
+    view.rerender(<AnalysisPage />);
+    await waitFor(() => expect(count()).toHaveTextContent("Tick approved requirements"));
+
+    nav.search = new URLSearchParams("tab=requirements&analysisId=an-1");
+    view.rerender(<AnalysisPage />);
+    await waitFor(() => expect(count()).toHaveTextContent("1 selected"));
   });
 });

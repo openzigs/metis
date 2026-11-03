@@ -27,6 +27,7 @@ import {
   SPEC_KIT_NOT_A_JOB_CODE,
   SPEC_KIT_START_TOKEN_HEADER,
   isSpecKitArtifactName,
+  isSpecKitJobActive,
   isSpecKitJobCommand,
   type SpecKitCommand,
   type SpecKitJobDto,
@@ -654,9 +655,11 @@ async function startCommandJob(
 /**
  * The id of the job the request's start token names for THIS caller in THIS
  * project, or `undefined` when the request carries none. 400 for a token that
- * is not 16 to 128 characters of `A-Z a-z 0-9 _ -`.
+ * is not 16 to 128 characters of `A-Z a-z 0-9 _ -`. `namespace` keeps a route's
+ * tokens apart from the command routes' (#1702): the same token sent to both
+ * names two different jobs.
  */
-function startTokenJobId(req: Request, projectId: string): string | undefined {
+function startTokenJobId(req: Request, projectId: string, namespace?: string): string | undefined {
   const token = req.header(SPEC_KIT_START_TOKEN_HEADER);
   if (token === undefined) return undefined;
   if (!SPEC_KIT_JOB_START_TOKEN_RE.test(token)) {
@@ -666,7 +669,27 @@ function startTokenJobId(req: Request, projectId: string): string | undefined {
       "X-SpecKit-Start-Token must be 16 to 128 characters of A-Z, a-z, 0-9, _ or -",
     );
   }
-  return specKitJobIdForStart(projectId, actorId(req), token);
+  return specKitJobIdForStart(projectId, actorId(req), namespace ? `${namespace}:${token}` : token);
+}
+
+/** #1702 — how often a repeated start re-reads the job it is waiting on. */
+const SPEC_KIT_REPEAT_START_POLL_MS = 1_000;
+
+/**
+ * #1702 — `job` once it is terminal: re-read every
+ * {@link SPEC_KIT_REPEAT_START_POLL_MS} while it runs. A job whose process died
+ * is failed by the read itself, and one past its time limit by the sweeper, so
+ * this always ends. Used when a start repeats one that is still running.
+ */
+async function settledSpecKitJob(projectId: string, job: SpecKitJobDto): Promise<SpecKitJobDto> {
+  let current = job;
+  while (isSpecKitJobActive(current.status)) {
+    await new Promise((resolve) => setTimeout(resolve, SPEC_KIT_REPEAT_START_POLL_MS));
+    const next = await getSpecKitJob(projectId, current.id);
+    if (!next) throw jobNotFound();
+    current = next;
+  }
+  return current;
 }
 
 /** The job a repeated start names, provided it is a start of the same command. */
@@ -1060,6 +1083,14 @@ export function specKitRouter(): Router {
   // `/speckit.specify` creates one (same job, same per-feature lock, the
   // feature removed again if the run saves nothing), and this request waits
   // for it like `POST /commands/:cmd`.
+  //
+  // #1702 — `X-SpecKit-Start-Token` makes the start retry-safe. The request is
+  // held for the whole model run, so its response can be lost to a network
+  // blip or a proxy timeout while the feature is made anyway. A repeat with
+  // the same token, from the same user in the same project, is answered with
+  // the job the first one started (waiting for it while it runs): no second
+  // feature, no second model call. The repeat is answered before the
+  // requirements are read again, so a later change to them cannot refuse it.
   r.post(
     "/features/from-requirements",
     specKitJobPreAuthRateLimiter,
@@ -1078,9 +1109,25 @@ export function specKitRouter(): Router {
           "projectId does not match the project in the path",
         );
       }
+      const jobId = startTokenJobId(req, projectId, "from-requirements");
+      const answer = async (job: SpecKitJobDto): Promise<void> => {
+        const settled = await settledSpecKitJob(projectId, job);
+        res.status(201).json(
+          ok({
+            ...(jobResultOrThrow(settled) as Record<string, unknown>),
+            requirementIds: [...new Set(parsed.data.requirementIds)],
+            jobId: settled.id,
+          }),
+        );
+      };
       try {
         await ensureEnabled(projectId);
         const actor = actorId(req);
+        const already = jobId ? await getSpecKitJob(projectId, jobId) : null;
+        if (already) {
+          await answer(already);
+          return;
+        }
         const requirements = await loadApprovedRequirements(projectId, parsed.data.requirementIds);
         const seed = buildRequirementsSeed(requirements);
         const resolveProvider = memoizeProviderResolver(() => resolveProjectProvider(projectId));
@@ -1093,34 +1140,40 @@ export function specKitRouter(): Router {
             actorId: actor,
             deps: { provider: await resolveProvider() },
           });
-        const started = await startCommandJob({
-          projectId,
-          canonical: "speckit.specify",
-          label: "/speckit.specify",
-          featureSlug: null,
-          actor,
-          run: run(),
-          newFeature: {
-            preflight: async () => {
-              await resolveProvider();
-              await assertSpecifyWithinBudget(projectId, actor);
+        const started = await startCommandJob(
+          {
+            projectId,
+            canonical: "speckit.specify",
+            label: "/speckit.specify",
+            featureSlug: null,
+            actor,
+            run: run(),
+            newFeature: {
+              preflight: async () => {
+                await resolveProvider();
+                await assertSpecifyWithinBudget(projectId, actor);
+              },
+              reserve: async () => {
+                const feature = await createFeature({
+                  projectId,
+                  title: seed.title,
+                  actorId: actor,
+                });
+                return { id: feature.id, slug: feature.slug };
+              },
+              run: (slug) => run(slug)(),
             },
-            reserve: async () => {
-              const feature = await createFeature({ projectId, title: seed.title, actorId: actor });
-              return { id: feature.id, slug: feature.slug };
-            },
-            run: (slug) => run(slug)(),
           },
-        });
-        const job = await started.done;
-        res.status(201).json(
-          ok({
-            ...(jobResultOrThrow(job) as Record<string, unknown>),
-            requirementIds: requirements.map((r) => r.id),
-            jobId: job.id,
-          }),
+          jobId,
         );
+        await answer(await started.done);
       } catch (err) {
+        // Two starts with one token that arrived together: the primary key
+        // let one through, and this one answers with its job.
+        if (err instanceof SpecKitJobAlreadyStartedError) {
+          await answer(err.job);
+          return;
+        }
         rethrow(err);
       }
     },

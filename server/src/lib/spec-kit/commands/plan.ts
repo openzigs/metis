@@ -38,6 +38,7 @@ import {
   findParameterRenames,
   type SymbolFileLookup,
 } from "../plan-checks.js";
+import { fenceSourceRequirementsInSpec } from "../requirements-seed.js";
 export { PLAN_SYSTEM_PROMPT } from "./prompts.js";
 
 const SYSTEM_PROMPT = PLAN_SYSTEM_PROMPT;
@@ -128,7 +129,7 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
     "",
     "Existing spec.md:",
     "```md",
-    spec.content,
+    fenceSourceRequirementsInSpec(spec.content),
     "```",
     "",
     ...(previousPlan ? [previousPlanSection(previousPlan), ""] : []),

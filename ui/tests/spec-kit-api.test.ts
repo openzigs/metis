@@ -28,6 +28,16 @@ describe("specKitApi", () => {
     });
   });
 
+  it("startFeatureFromRequirements names the start with X-SpecKit-Start-Token (#1702)", async () => {
+    mockFetch.mockResolvedValue({});
+    await specKitApi.startFeatureFromRequirements("p1", ["r1"], "token-0123456789abcdef");
+    expect(mockFetch).toHaveBeenCalledWith("/projects/p1/spec-kit/features/from-requirements", {
+      method: "POST",
+      body: { requirementIds: ["r1"] },
+      headers: { "X-SpecKit-Start-Token": "token-0123456789abcdef" },
+    });
+  });
+
   it("getEnabled hits /enabled", async () => {
     mockFetch.mockResolvedValue({ enabled: true });
     await specKitApi.getEnabled("p1");

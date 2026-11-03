@@ -78,6 +78,7 @@ import {
   findParameterRenames,
   type SymbolFileLookup,
 } from "../plan-checks.js";
+import { fenceSourceRequirementsInSpec } from "../requirements-seed.js";
 
 const log = createChildLogger("spec-kit-plan");
 
@@ -254,7 +255,7 @@ export async function runPlanExpanded(input: PlanInput): Promise<PlanResult> {
     "",
     "spec.md:",
     "```md",
-    spec.content,
+    fenceSourceRequirementsInSpec(spec.content),
     "```",
   ].join("\n");
 
