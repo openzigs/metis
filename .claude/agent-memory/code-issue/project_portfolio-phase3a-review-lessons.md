@@ -174,3 +174,21 @@ The #1648 and #1636 reviews, 2026-11-02. Follow-ups: #1709, #1710.
 - **`pnpm --filter <pkg> <script>` runs in the package directory (#1710).** A shared
   `scripts/*.sh` that resolves paths from the repo root fails there. Resolve from
   `$(dirname "$0")`.
+
+The #1687, #1698, #1702, #1703, #1705, #1709 and #1710 reviews, 2026-11-03. Follow-ups: #1719, #1720, #1721.
+
+- **Fencing a section by its heading: pick the one you wrote (#1702).** The server appends
+  `## Source requirements` last, after the model's text. `findIndex` fenced a model-written
+  heading of the same name instead, and the verbatim text below went unfenced. Fence every
+  match, or the last one.
+- **After a rebase onto a new migration, run `prisma generate` before trusting failures.**
+  A worktree's stale client failed 9 #1687 edge tests on an unrelated PR. They passed once
+  the client was regenerated.
+- **A fuzzy match that deletes needs a stricter rule than one that keeps (#1709).** An -ion
+  ending on a 3-4 letter stem joins `port`/`portion` and `opt`/`option`. Ask which direction
+  a false match fails in before choosing its width.
+- **State one path parks can be stranded by another path that never reads it (#1705).** A
+  key that blocked promotion fills was left behind by the withheld-apply write, after which
+  only the append path runs. Check every writer of the "promoted" marker.
+- **Check, then write by id, is a race (#1687).** Make the write conditional on the state
+  you checked (`updateMany where origin`).
