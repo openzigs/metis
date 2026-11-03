@@ -327,6 +327,23 @@ describe("generatePortfolioReport — no silent fallback", () => {
     expect(await degradedWith({ provider: failing })).toBe("model-error");
   });
 
+  it("#1726 — a reasoning model's reply fits the cap, and one cut off is retried once", async () => {
+    const reasoning = provider(GOOD);
+    vi.mocked(reasoning.chat).mockResolvedValueOnce({
+      content: "",
+      finishReason: "max_tokens",
+      usage: { promptTokens: 1, completionTokens: 21_000, totalTokens: 21_001 },
+      model: "m",
+      provider: "openai",
+    } as ChatResponse);
+    const out = await generatePortfolioReport(CTX, { provider: reasoning, costOf });
+    expect(out.report.source).toBe("model");
+    // Was 3,000: a reasoning model spent it all before writing a word.
+    expect(vi.mocked(reasoning.chat).mock.calls.map((c) => c[1]?.maxTokens)).toEqual([
+      21_000, 42_000,
+    ]);
+  });
+
   it("an answer that is not JSON, or not the shape asked for", async () => {
     expect(await degradedWith({ provider: provider(null, { raw: "sorry, no" }) })).toBe(
       "model-unparseable",

@@ -42,6 +42,7 @@
 import { z } from "zod";
 import {
   PORTFOLIO_ASSESSMENT_SCOPES,
+  portfolioModelErrorText,
   portfolioNamedInProse,
   type AuthPayload,
   type CodeCitation,
@@ -58,7 +59,6 @@ import { AppError } from "../../middleware/error-handler.js";
 import type { AIProvider, ChatResponse } from "../ai/types.js";
 import { buildProvider } from "../ai/providers/factory.js";
 import { loadAIConfig } from "../ai/config.js";
-import { callJsonLlm } from "../ai/json-llm-client.js";
 import { estimateUsageCostUsd } from "../ai/token-tracker.js";
 import { getConfigService } from "../config/config-service.js";
 import {
@@ -76,6 +76,7 @@ import { gateFindingVerdict, rollUpCriterionVerdicts } from "../analysis/require
 import { MIN_SHARED_TERMS, extractTerms } from "../analysis/retrieval-health.js";
 import { canAccessProjectDiscussions } from "../discussions/access.js";
 import { createPortfolioAssessment } from "./assessment-store.js";
+import { callJsonLlmRetryingCutOff, resolvePortfolioMaxOutputTokens } from "./output-cap.js";
 import {
   hadNothingToCheck,
   rollUpPortfolio,
@@ -102,8 +103,6 @@ const log = createChildLogger("portfolio-gap");
 export const MAX_SCOPE_PRODUCTS = 1;
 /** Characters of the federated search query. */
 const MAX_QUERY_CHARS = 4_000;
-/** Output tokens one model call may spend. */
-const MAX_OUTPUT_TOKENS = 2_000;
 /** The prefix of a repository source document's filename: `connector:repo:<id>:src/<path>`. */
 const REPO_DOC_PREFIX = "connector:repo:";
 
@@ -256,6 +255,13 @@ class Budget {
   }
 }
 
+/** #1726 — whether a cut-off reply may be retried: the budget allows a call, which is counted. */
+function retryAllowed(budget: Budget, productId: string | null): boolean {
+  if (!budget.allows(productId)) return false;
+  budget.startCall();
+  return true;
+}
+
 function defaultCostOf(response: ChatResponse): number {
   return estimateUsageCostUsd(response.model, response.usage, response.provider) ?? 0;
 }
@@ -401,6 +407,13 @@ interface RunContext {
   /** Per criterion, whether the query sent searched for it (#1657). */
   searched: boolean[];
   signal?: AbortSignal;
+  /** #1726 — the OUTPUT cap of each model call (`resolvePortfolioMaxOutputTokens`). */
+  maxTokens: number;
+  /**
+   * #1726 — each repo's model verdict, by connection id: a repo in several
+   * products is assessed once per run, and every product holding it reuses it.
+   */
+  repoVerdicts: Map<string, Promise<PortfolioRepoResult>>;
 }
 
 function notVerified(
@@ -427,7 +440,7 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
 }
 
 async function decompose(
-  ctx: Omit<RunContext, "criteria" | "query" | "searched">,
+  ctx: Omit<RunContext, "criteria" | "query" | "searched" | "repoVerdicts">,
   given: string[],
 ): Promise<string[]> {
   // Every supplied criterion is judged (the schema bounds the count): dropping the tail would let
@@ -436,13 +449,17 @@ async function decompose(
   if (!ctx.budget.allows(null)) return [ctx.statement];
   try {
     ctx.budget.startCall();
-    const { parsed } = await callJsonLlm(ctx.provider, {
-      systemPrompt: DECOMPOSE_SYSTEM_PROMPT,
-      userPrompt: buildDecomposePrompt(ctx.statement, ctx.limits.maxCriteria),
-      maxTokens: MAX_OUTPUT_TOKENS,
-      signal: ctx.signal,
-      onUsage: (r) => ctx.budget.charge(null, ctx.costOf(r)),
-    });
+    const { parsed } = await callJsonLlmRetryingCutOff(
+      ctx.provider,
+      {
+        systemPrompt: DECOMPOSE_SYSTEM_PROMPT,
+        userPrompt: buildDecomposePrompt(ctx.statement, ctx.limits.maxCriteria),
+        maxTokens: ctx.maxTokens,
+        signal: ctx.signal,
+        onUsage: (r) => ctx.budget.charge(null, ctx.costOf(r)),
+      },
+      () => retryAllowed(ctx.budget, null),
+    );
     return parseDecomposition(parsed, ctx.limits.maxCriteria) ?? [ctx.statement];
   } catch (err) {
     throwIfAborted(ctx.signal);
@@ -463,22 +480,26 @@ async function evaluateRepo(
   let claims: ReturnType<typeof parseRepoVerdict> = null;
   try {
     ctx.budget.startCall();
-    const { parsed } = await callJsonLlm(ctx.provider, {
-      systemPrompt: REPO_VERDICT_SYSTEM_PROMPT,
-      userPrompt: buildRepoVerdictPrompt({
-        statement: ctx.statement,
-        criteria: ctx.criteria,
-        repoLabel: repo.label,
-        hits: hits.map((h) => ({ path: h.path!, text: h.text })),
-      }),
-      maxTokens: MAX_OUTPUT_TOKENS,
-      signal: ctx.signal,
-      onUsage: (r) => {
-        const usd = ctx.costOf(r);
-        cost += usd;
-        ctx.budget.charge(productId, usd);
+    const { parsed } = await callJsonLlmRetryingCutOff(
+      ctx.provider,
+      {
+        systemPrompt: REPO_VERDICT_SYSTEM_PROMPT,
+        userPrompt: buildRepoVerdictPrompt({
+          statement: ctx.statement,
+          criteria: ctx.criteria,
+          repoLabel: repo.label,
+          hits: hits.map((h) => ({ path: h.path!, text: h.text })),
+        }),
+        maxTokens: ctx.maxTokens,
+        signal: ctx.signal,
+        onUsage: (r) => {
+          const usd = ctx.costOf(r);
+          cost += usd;
+          ctx.budget.charge(productId, usd);
+        },
       },
-    });
+      () => retryAllowed(ctx.budget, productId),
+    );
     claims = parseRepoVerdict(parsed, ctx.criteria.length, hits.length);
   } catch (err) {
     throwIfAborted(ctx.signal);
@@ -575,10 +596,17 @@ async function evaluateProduct(
         repos.push(notVerified(product.id, repo, n, "retrieval-failed"));
       } else if (hits.length === 0) {
         repos.push(notVerified(product.id, repo, n, "no-evidence-retrieved"));
+      } else if (ctx.repoVerdicts.has(repo.repoConnectionId)) {
+        // #1726 — assessed already for another product in this run: reused, and
+        // its cost is not counted twice.
+        const assessed = await ctx.repoVerdicts.get(repo.repoConnectionId)!;
+        repos.push({ ...assessed, productId: product.id, costUsd: 0 });
       } else if (!ctx.budget.allows(product.id)) {
         repos.push(notVerified(product.id, repo, n, "budget"));
       } else {
-        repos.push(await evaluateRepo(ctx, product.id, repo, hits));
+        const verdict = evaluateRepo(ctx, product.id, repo, hits);
+        ctx.repoVerdicts.set(repo.repoConnectionId, verdict);
+        repos.push(await verdict);
       }
     }
   }
@@ -632,8 +660,33 @@ function describeProduct(p: PortfolioProductResult): string {
   return `${p.name ?? "a product"} (${repos.map((r) => r.label).join(", ")})`;
 }
 
-/** The BA summary of a portfolio verdict over its products. */
+/** #1726 — the labels of the repos whose model call failed, each once. */
+function failedRepoLabels(products: readonly Pick<PortfolioProductResult, "repos">[]): string[] {
+  return [
+    ...new Set(
+      products.flatMap((p) =>
+        p.repos.filter((r) => r.reason === "model-error").map((r) => r.label),
+      ),
+    ),
+  ];
+}
+
+/**
+ * The BA summary of a portfolio verdict over its products. #1726 — a repo whose
+ * model call failed is named, with what to do: the answer leaves it out.
+ */
 export function portfolioSummary(
+  verdict: RequirementVerdict,
+  products: readonly PortfolioProductResult[],
+): string {
+  const failed = failedRepoLabels(products);
+  const answer = verdictSummary(verdict, products);
+  return failed.length > 0
+    ? `${answer} ${portfolioModelErrorText(failed, { leftOut: true })}`
+    : answer;
+}
+
+function verdictSummary(
   verdict: RequirementVerdict,
   products: readonly PortfolioProductResult[],
 ): string {
@@ -703,8 +756,18 @@ export function productSummary(p: PortfolioProductResult, criteria: readonly str
     }
     case "not-covered":
       return "Does not cover it.";
-    case "not-checked":
-      return `Not checked (${p.reason ?? "could-not-verify"}).`;
+    case "not-checked": {
+      // #1726 — a failed model call says so, and a gap another repo confirmed is kept.
+      const failed = failedRepoLabels([p]);
+      if (failed.length === 0) return `Not checked (${p.reason ?? "could-not-verify"}).`;
+      const gaps = p.repos.filter((r) => r.verdict === "gap-confirmed").map((r) => r.label);
+      return [
+        `Not checked. ${portfolioModelErrorText(failed)}`,
+        ...(gaps.length > 0
+          ? [`${portfolioNamedInProse(gaps)} ${gaps.length === 1 ? "does" : "do"} not cover it.`]
+          : []),
+      ].join(" ");
+    }
     default:
       return "";
   }
@@ -743,10 +806,12 @@ async function evaluateParsed(
   deps: PortfolioGapDeps,
 ): Promise<PortfolioGapResult> {
   const limits = { ...readPortfolioGapLimits(), ...deps.limits };
+  const provider = deps.provider ?? buildProvider({ config: loadAIConfig() });
   const base = {
     user,
     statement: input.statement,
-    provider: deps.provider ?? buildProvider({ config: loadAIConfig() }),
+    provider,
+    maxTokens: resolvePortfolioMaxOutputTokens(provider),
     search:
       deps.search ??
       ((opts: FederatedSearchOptions) => getFederatedSearchService().searchAcrossProjects(opts)),
@@ -769,6 +834,7 @@ async function evaluateParsed(
     criteria,
     query,
     searched: criteria.map((c) => querySearchedFor(query, c)),
+    repoVerdicts: new Map(),
   };
   const repos = await loadRepos(
     user,

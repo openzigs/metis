@@ -49,6 +49,7 @@ describe("coverageRows", () => {
       coverage: "restricted",
       reason: null,
       coveringRepos: [],
+      failedRepos: [],
       citations: [],
     });
   });
@@ -116,7 +117,15 @@ describe("storedRepos", () => {
           ],
         },
       }),
-    ).toEqual([{ repoConnectionId: "r", label: "acme/r", verdict: "", criteria: ["implemented"] }]);
+    ).toEqual([
+      {
+        repoConnectionId: "r",
+        label: "acme/r",
+        verdict: "",
+        criteria: ["implemented"],
+        reason: null,
+      },
+    ]);
   });
 });
 
@@ -227,5 +236,69 @@ describe("coverageHeadline", () => {
       tone: "unknown",
       text: "This check failed before it reached an answer",
     });
+  });
+});
+
+describe("#1726 — a repo whose model call failed", () => {
+  /** Commerce holds orders (no gap) and billing (failed); Orders covers it. */
+  function withFailure(verdict: "implemented" | "could-not-verify" = "could-not-verify") {
+    return view({
+      productIds: ["p-commerce", "p-orders"],
+      verdict,
+      productNames: { "p-commerce": "Commerce", "p-orders": "Orders" },
+      products: [
+        product(
+          "p-commerce",
+          "not-checked",
+          repoDetail(
+            [
+              { id: "r-orders", label: "acme/orders", verdict: "gap-confirmed" },
+              {
+                id: "r-billing",
+                label: "acme/billing",
+                verdict: "could-not-verify",
+                reason: "model-error",
+              },
+            ],
+            "could-not-verify",
+          ),
+        ),
+        product(
+          "p-orders",
+          verdict === "implemented" ? "covers" : "not-covered",
+          repoDetail([
+            {
+              id: "r-orders",
+              label: "acme/orders",
+              verdict: verdict === "implemented" ? "implemented" : "gap-confirmed",
+            },
+          ]),
+        ),
+      ],
+    });
+  }
+
+  it("says the check failed and how to retry, not that the evidence could not be verified, keeping the confirmed gap", () => {
+    const [commerce] = coverageRows(withFailure());
+    expect(commerce.reason).toBe(
+      "the check failed (model error) on acme/billing; re-run to retry. acme/orders does not cover it",
+    );
+    expect(commerce.reason).not.toContain("could not be verified");
+    expect(commerce.failedRepos).toEqual(["acme/billing"]);
+  });
+
+  it("a headline that leaves the repo out says so", () => {
+    expect(coverageHeadline(withFailure())).toEqual({
+      tone: "unknown",
+      text: "We could not tell whether anything in your portfolio covers this",
+      note: "The check failed (model error) on acme/billing, so this answer leaves it out; re-run to retry.",
+    });
+    expect(coverageHeadline(withFailure("implemented"))?.note).toBe(
+      "The check failed (model error) on acme/billing, so this answer leaves it out; re-run to retry.",
+    );
+  });
+
+  it("a headline with nothing left out has no note", () => {
+    expect(coverageHeadline(fiveStates())?.note).toBeUndefined();
   });
 });

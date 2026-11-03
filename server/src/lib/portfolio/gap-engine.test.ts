@@ -608,3 +608,188 @@ describe("#1685 — naming the products with no repos under a confirmed gap", ()
     );
   });
 });
+
+describe("#1726 — a reasoning model, a cut-off reply, a failed repo, a shared repo", () => {
+  const ANSWER = JSON.stringify({
+    criteria: [{ index: 1, verdict: "gap-confirmed" }],
+  });
+  const search = async () => found([hit("rc-p1", "a.ts", "a"), hit("rc-p2", "b.ts", "b")]);
+
+  /**
+   * A model that reasons for `reasoning` tokens before it writes anything, from
+   * the same `max_tokens`: under that cap it returns nothing, cut off.
+   */
+  function reasoningProvider(reasoning: number, answer = ANSWER) {
+    const caps: number[] = [];
+    const p = {
+      key: "openai",
+      model: "m",
+      offline: false,
+      chat: vi.fn(async (_m: unknown, opts: { maxTokens?: number }) => {
+        const cap = opts.maxTokens ?? 0;
+        caps.push(cap);
+        return cap > reasoning
+          ? reply(answer)
+          : { ...reply(""), finishReason: "max_tokens" as const };
+      }),
+    } as unknown as AIProvider;
+    return { p, caps };
+  }
+
+  it("a reasoning-length reply fits the cap: 6,000 tokens of reasoning, then the verdict", async () => {
+    const { p, caps } = reasoningProvider(6_000);
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement: "s", criteria: ["c1"], ...ALL },
+      { provider: p, search, limits },
+    );
+    // The old 2,000 cap returned nothing here, every time.
+    expect(caps.every((c) => c >= 21_000)).toBe(true);
+    expect(result.products.map((r) => r.repos[0].reason)).toEqual([null, null]);
+    expect(result.products.map((r) => r.coverage)).toEqual(["not-covered", "not-covered"]);
+  });
+
+  it("an empty max_tokens reply is retried once with a larger cap before it is a failure", async () => {
+    // Past the default cap, inside twice it.
+    const { p, caps } = reasoningProvider(30_000);
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement: "s", criteria: ["c1"], ...ALL },
+      { provider: p, search, limits },
+    );
+    // Two repos, two products at once: each call, then its one retry at twice the cap.
+    expect([...caps].sort((a, b) => a - b)).toEqual([21_000, 21_000, 42_000, 42_000]);
+    expect(result.products.map((r) => r.repos[0].reason)).toEqual([null, null]);
+  });
+
+  it("a reply cut off twice is a model error, and the retry is a counted call", async () => {
+    const { p, caps } = reasoningProvider(100_000);
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement: "s", criteria: ["c1"], ...ALL },
+      { provider: p, search, limits },
+    );
+    // Two repos, two products at once: each call, then its one retry at twice the cap.
+    expect([...caps].sort((a, b) => a - b)).toEqual([21_000, 21_000, 42_000, 42_000]);
+    expect(result.products.map((r) => r.repos[0].reason)).toEqual(["model-error", "model-error"]);
+    // One call left: the first repo's call, and no retry, so the second is not judged.
+    const capped = reasoningProvider(100_000);
+    const one = await evaluatePortfolioGap(
+      USER,
+      { statement: "s", criteria: ["c1"], ...ALL },
+      { provider: capped.p, search, limits: { ...limits, maxModelCalls: 1 }, costOf: () => 0 },
+    );
+    expect(capped.caps).toEqual([21_000]);
+    expect(one.products.map((r) => r.repos[0].reason)).toEqual(["model-error", "budget"]);
+    // Three calls: both repos' calls and one retry; the retry counted leaves none for a fourth.
+    const three = reasoningProvider(100_000);
+    await evaluatePortfolioGap(
+      USER,
+      { statement: "s", criteria: ["c1"], ...ALL },
+      { provider: three.p, search, limits: { ...limits, maxModelCalls: 3 }, costOf: () => 0 },
+    );
+    expect(three.caps).toHaveLength(3);
+  });
+
+  it("a reply that is not JSON for another reason is not retried", async () => {
+    const p = provider(() => "I cannot help with that.");
+    await evaluatePortfolioGap(
+      USER,
+      { statement: "s", criteria: ["c1"], ...ALL },
+      { provider: p, search, limits },
+    );
+    expect(p.chat).toHaveBeenCalledTimes(2);
+  });
+
+  it("a repo in two products is assessed once, and both products read its verdict", async () => {
+    db.productRepo.findMany.mockImplementation(async ({ where }) =>
+      (where.productId.in as string[]).map((productId) => ({
+        productId,
+        repoConnectionId: "rc-shared",
+        repoConnection: {
+          projectId: "proj",
+          label: "acme/shared",
+          ownerOrOrg: null,
+          repoName: null,
+        },
+      })),
+    );
+    const p = provider(() =>
+      JSON.stringify({ criteria: [{ index: 1, verdict: "implemented", excerpts: [1] }] }),
+    );
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement: "s", criteria: ["c1"], ...ALL },
+      {
+        provider: p,
+        search: async () => found([hit("rc-shared", "a.ts", "a")]),
+        limits,
+        costOf: () => 0.01,
+      },
+    );
+    expect(p.chat).toHaveBeenCalledTimes(1);
+    const [one, two] = result.products;
+    expect(one.repos[0]).toEqual(
+      expect.objectContaining({ productId: "p1", verdict: "implemented", costUsd: 0.01 }),
+    );
+    expect(two.repos[0]).toEqual(
+      expect.objectContaining({ productId: "p2", verdict: "implemented", costUsd: 0 }),
+    );
+    expect(result.costUsd).toBeCloseTo(0.01);
+  });
+
+  it("one repo's failure keeps the gap another repo confirmed, and the summaries name the failure", async () => {
+    db.productRepo.findMany.mockImplementation(async () => [
+      {
+        productId: "p1",
+        repoConnectionId: "rc-orders",
+        repoConnection: {
+          projectId: "proj",
+          label: "acme/orders",
+          ownerOrOrg: null,
+          repoName: null,
+        },
+      },
+      {
+        productId: "p1",
+        repoConnectionId: "rc-billing",
+        repoConnection: {
+          projectId: "proj",
+          label: "acme/billing",
+          ownerOrOrg: null,
+          repoName: null,
+        },
+      },
+    ]);
+    db.product.findMany.mockResolvedValue([{ id: "p1", name: "Commerce" }]);
+    const p = provider((prompt) => {
+      if (prompt.includes("acme/billing")) throw new Error("provider 500");
+      return ANSWER;
+    });
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement: "s", criteria: ["c1"], ...ALL },
+      {
+        provider: p,
+        search: async () => found([hit("rc-orders", "a.ts", "a"), hit("rc-billing", "b.ts", "b")]),
+        limits,
+      },
+    );
+    const [commerce] = result.products;
+    // An unchecked repo may still cover it: not "not covered" (NFR-2) ...
+    expect(commerce.coverage).toBe("not-checked");
+    // ... but the gap orders confirmed is kept, and said.
+    expect(commerce.repos.find((r) => r.label === "acme/orders")?.verdict).toBe("gap-confirmed");
+    const record = toAssessmentInput(result, {
+      createdById: "u",
+      sourceRequirementId: null,
+      sourceProjectId: null,
+    }).products![0];
+    expect(record.baSummary).toBe(
+      "Not checked. The check failed (model error) on acme/billing; re-run to retry. acme/orders does not cover it.",
+    );
+    expect(result.summary).toContain(
+      "The check failed (model error) on acme/billing, so this answer leaves it out; re-run to retry.",
+    );
+  });
+});

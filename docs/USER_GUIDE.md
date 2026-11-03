@@ -1882,7 +1882,7 @@ states. Each state is shown with an icon and words, never by colour alone:
 | **Covers it** | Code in its repositories meets every criterion. **Show citations** lists them as `repository · file:line`. |
 | **Partly covers it** | Code meets some criteria, but not all. |
 | **Does not cover it** | Every repository was searched for every criterion, and the code shows where it would be and that it is not there. |
-| **Not checked** | METIS could not tell, and the reason is shown underneath: *it has no repositories attached*, *you cannot read its repositories*, *the evidence could not be verified* (no code was found, the search failed, the model's answer could not be used, or the check's budget ran out), or the check had not reached it or failed first. |
+| **Not checked** | METIS could not tell, and the reason is shown underneath: *it has no repositories attached*, *you cannot read its repositories*, *the check failed (model error) on* a repository, *re-run to retry* (the model call for that repository failed; the repositories it did check and found nothing in are still named), *the evidence could not be verified* (no code was found, the search failed, or the check's budget ran out), or the check had not reached it or failed first. |
 | **Restricted** | You cannot read this product. See *Restricted and Not checked* below. |
 
 A gap is never reported unless it was checked: one **Not checked** or **Restricted**
@@ -1970,7 +1970,10 @@ A path through several products is as severe as its weakest coupling.
   **Downstream consumer**, named *A product you cannot read*, with no *via* and no severity.
 
 **Not checked** means you can read the product, but METIS could not tell whether it covers
-the requirement. The reason is shown under the state. A product whose repositories you
+the requirement. The reason is shown under the state. When the model call for a repository
+failed, the answer at the top says that it leaves that repository out, and that running the
+check again retries it. A repository that belongs to several products is checked once, so
+every product holding it gets the same answer for it. A product whose repositories you
 cannot all read is never shown as **Does not cover it**: the repositories you cannot read
 were not checked for you.
 

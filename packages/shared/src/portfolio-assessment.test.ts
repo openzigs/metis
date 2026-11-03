@@ -13,6 +13,7 @@ import {
   portfolioAssessmentProductInputSchema,
   portfolioAssessmentRepoInputSchema,
   portfolioModifierText,
+  portfolioModelErrorText,
   portfolioNamedInProse,
   portfolioRestrictedNote,
   portfolioImpactUnderOlderRule,
@@ -380,5 +381,16 @@ describe("createPortfolioAssessmentSchema (#1625)", () => {
       false,
     );
     expect(ok({ statement: "s", scope: "all-accessible", hostProductId: "" })).toBe(false);
+  });
+});
+
+describe("#1726 — portfolioModelErrorText", () => {
+  it("names the repos whose model call failed, says what to do, and when the answer leaves them out", () => {
+    expect(portfolioModelErrorText(["acme/billing"])).toBe(
+      "The check failed (model error) on acme/billing; re-run to retry.",
+    );
+    expect(portfolioModelErrorText(["acme/a", "acme/b"], { leftOut: true })).toBe(
+      "The check failed (model error) on acme/a and acme/b, so this answer leaves them out; re-run to retry.",
+    );
   });
 });

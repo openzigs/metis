@@ -612,6 +612,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Model calls one portfolio gap analysis may make in all (#1657). The cost caps price each call from the price table and an unpriced model costs 0, so without this cap they never bind. Once reached, no new call starts and the repos not yet evaluated read could-not-verify (budget), never not-covered. Default 250.",
     sensitive: false,
   },
+  // ── #1726 — the OUTPUT cap of a portfolio model call ───────────────────
+  PORTFOLIO_MAX_OUTPUT_TOKENS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().positive(),
+    description:
+      "OUTPUT cap (max_tokens) for each portfolio model call: the criteria split, each repo verdict and the BA report (#1726). Default 21000, as ANALYSIS_SYNTHESIS_MAX_OUTPUT_TOKENS, plus the reasoning allowance (DOCS_GEN_REASONING_ALLOWANCE_TOKENS) for a model that reasons by default when left unset. It was 2000 (repo verdict) and 3000 (report): a reasoning model spent all of it reasoning and returned nothing, which read as could-not-verify. A reply the cap cuts off is retried once at twice the cap. Clamped to the model's known output ceiling and, on the anthropic provider, to the SDK's non-streaming bound of 21333. A cap, not a spend: a short reply is billed for what it used.",
+    sensitive: false,
+  },
   // ── P0 #769 — agentic code-agent depth knobs ───────────────────────────
   ANALYSIS_AGENTIC_MAX_TURNS: {
     tier: "tunable",

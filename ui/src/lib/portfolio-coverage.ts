@@ -8,6 +8,7 @@
  * plain words, one row per product in scope, and repo-stamped citations.
  */
 import {
+  portfolioModelErrorText,
   portfolioNamedInProse,
   type CodeCitation,
   type PortfolioAssessmentView,
@@ -39,6 +40,8 @@ interface StoredRepo {
   label: string;
   verdict: string;
   criteria: string[];
+  /** Why it was not verified (`model-error`, …), or null. */
+  reason: string | null;
 }
 
 /** The repos the gap engine stored for a product (`technicalDetail.repos`). */
@@ -47,7 +50,7 @@ export function storedRepos(product: Pick<Product, "technicalDetail">): StoredRe
   if (!Array.isArray(repos)) return [];
   return repos.flatMap((r) => {
     if (typeof r !== "object" || r === null) return [];
-    const { repoConnectionId, label, verdict, criteria } = r as Record<string, unknown>;
+    const { repoConnectionId, label, verdict, criteria, reason } = r as Record<string, unknown>;
     if (typeof repoConnectionId !== "string" || typeof label !== "string") return [];
     return [
       {
@@ -57,9 +60,15 @@ export function storedRepos(product: Pick<Product, "technicalDetail">): StoredRe
         criteria: Array.isArray(criteria)
           ? criteria.filter((c): c is string => typeof c === "string")
           : [],
+        reason: typeof reason === "string" ? reason : null,
       },
     ];
   });
+}
+
+/** #1726 — the labels of a product's repos whose model call failed. */
+function failedRepos(repos: readonly StoredRepo[]): string[] {
+  return repos.filter((r) => r.reason === "model-error").map((r) => r.label);
 }
 
 /** One citation, stamped with the repo it is in. */
@@ -78,11 +87,26 @@ export interface CoverageRow {
   reason: string | null;
   /** The repos whose evidence covers it, for the headline. */
   coveringRepos: string[];
+  /** #1726 — the repos whose model call failed, so the answer leaves them out. */
+  failedRepos: string[];
   citations: RepoCitation[];
 }
 
 function reasonFor(product: Product | undefined, status: PortfolioAssessmentView["status"]) {
   if (!product) return NOT_CHECKED_REASON[status === "failed" ? "failed" : "pending"];
+  // #1726 — a failed model call is not "the evidence could not be verified": it
+  // says so and what to do, and keeps the gap another repo confirmed.
+  const repos = storedRepos(product);
+  const failed = failedRepos(repos);
+  if (failed.length > 0) {
+    const gaps = repos.filter((r) => r.verdict === "gap-confirmed").map((r) => r.label);
+    return [
+      `the check failed (model error) on ${portfolioNamedInProse(failed)}; re-run to retry`,
+      ...(gaps.length > 0
+        ? [`${portfolioNamedInProse(gaps)} ${gaps.length === 1 ? "does" : "do"} not cover it`]
+        : []),
+    ].join(". ");
+  }
   const stored = (product.technicalDetail as { reason?: unknown }).reason;
   return (typeof stored === "string" && NOT_CHECKED_REASON[stored]) || "it was not checked";
 }
@@ -115,7 +139,15 @@ export function coverageRows(view: PortfolioAssessmentView): CoverageRow[] {
     const product = byId.get(productId);
     const coverage: PortfolioCoverage = product?.coverage ?? "not-checked";
     if (coverage === "restricted") {
-      return { productId, name: null, coverage, reason: null, coveringRepos: [], citations: [] };
+      return {
+        productId,
+        name: null,
+        coverage,
+        reason: null,
+        coveringRepos: [],
+        failedRepos: [],
+        citations: [],
+      };
     }
     const repos = product ? storedRepos(product) : [];
     const labels = new Map(repos.map((r) => [r.repoConnectionId, r.label]));
@@ -131,6 +163,7 @@ export function coverageRows(view: PortfolioAssessmentView): CoverageRow[] {
       coverage,
       reason: coverage === "not-checked" ? reasonFor(product, view.status) : null,
       coveringRepos: covering,
+      failedRepos: failedRepos(repos),
       citations: product ? citationsFor(view, productId, labels) : [],
     };
   });
@@ -178,6 +211,16 @@ function nothingToCheck(view: PortfolioAssessmentView, rows: CoverageRow[]): Cov
  * (the page shows progress instead).
  */
 export function coverageHeadline(view: PortfolioAssessmentView): CoverageHeadline | null {
+  const headline = verdictHeadline(view);
+  if (!headline || view.status !== "completed") return headline;
+  // #1726 — a repo whose model call failed is left out of the answer: say so.
+  const failed = [...new Set(coverageRows(view).flatMap((r) => r.failedRepos))];
+  if (failed.length === 0) return headline;
+  const said = portfolioModelErrorText(failed, { leftOut: true });
+  return { ...headline, note: headline.note ? `${headline.note} ${said}` : said };
+}
+
+function verdictHeadline(view: PortfolioAssessmentView): CoverageHeadline | null {
   if (view.status === "failed") {
     return { tone: "unknown", text: "This check failed before it reached an answer" };
   }
