@@ -41,6 +41,7 @@ import { LINEAGE_EXTRACTOR_VERSION } from "../../../src/lib/code-graph/ingest.js
  */
 const HISTORY: Readonly<Record<number, string>> = {
   3: "227073b790b1d2a98529e6988d32929449b9b8656de6b254bec9eec28099be28",
+  4: "b7bd4afd7845baf4485787dbc7ba0a8a5978b9ac506eed3f557e21d527ea8382",
 };
 
 const SIDECAR_DIR = path.resolve(

@@ -657,3 +657,87 @@ def test_sql_builtins_are_not_reported_as_routines(dialect):
     # User routines survive, including a schema-qualified one that shares a
     # builtin's name; builtins (bare or pg_catalog-qualified) do not.
     assert _routine_names(result) == {"calc_total", "app.to_tsvector"}
+
+
+# --- #1577: Command statements whose payload is a plain string ---------------
+#
+# sqlglot's fallback parser (`_parse_as_command`) builds `Command(this=<keyword>,
+# expression=<str>)` — a bare Python string, not a Literal — for statements it
+# cannot model (Postgres `DROP EXTENSION`, multi-action `ALTER TABLE ... ALTER
+# COLUMN`). Calling `.sql()` on that string raised AttributeError and the whole
+# request 500ed. The fixtures are the four Miniflux v2.3.3 migrations
+# (internal/database/migrations.go) that failed during walkthrough run 10.
+
+MINIFLUX_COMMAND_FIXTURES = [
+    "DROP EXTENSION IF EXISTS hstore;",
+    """ALTER TABLE users RENAME double_tap TO gesture_nav;
+       ALTER TABLE users
+           ALTER COLUMN gesture_nav SET DATA TYPE text using case when gesture_nav = true then 'tap'
+               when gesture_nav = false then 'none' end,
+           ALTER COLUMN gesture_nav SET default 'tap';""",
+    """ALTER TABLE user_sessions
+           ALTER COLUMN ip SET DEFAULT '127.0.0.1'::inet,
+           ALTER COLUMN ip SET NOT NULL,
+           ALTER COLUMN created_at SET DEFAULT now(),
+           ALTER COLUMN created_at SET NOT NULL,
+           ALTER COLUMN user_agent SET DEFAULT '',
+           ALTER COLUMN user_agent SET NOT NULL""",
+    """UPDATE webauthn_credentials SET name = '' WHERE name IS NULL;
+       ALTER TABLE webauthn_credentials
+           ALTER COLUMN name SET DEFAULT '',
+           ALTER COLUMN name SET NOT NULL,
+           ADD COLUMN backup_eligible boolean,
+           ADD COLUMN backup_state boolean NOT NULL DEFAULT false;""",
+]
+
+_FAILED_PREFIX = "statement could not be analysed"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    MINIFLUX_COMMAND_FIXTURES,
+    ids=["drop-extension", "alter-column-type", "alter-column-defaults", "update-then-alter"],
+)
+def test_command_with_string_payload_is_uncertain_not_an_error(sql):
+    result = extract_usage(sql, dialect="postgres")
+    # The fallback Command is reported as an ordinary dynamic reference carrying
+    # its own text — not as a statement the extractor failed on.
+    dynamic = [u["detail"] for u in result["uncertain"] if u["reason"] == REASON_DYNAMIC]
+    assert dynamic
+    assert not [d for d in dynamic if d.startswith(_FAILED_PREFIX)]
+    assert result["routines"] == []
+
+
+def test_command_with_string_payload_keeps_the_batch_s_other_statements():
+    result = extract_usage(MINIFLUX_COMMAND_FIXTURES[3], dialect="postgres")
+    assert _table_access(result) == {"webauthn_credentials": "write"}
+    assert ("name", "write") in {(c["column"], c["access"]) for c in result["columns"]}
+
+
+@pytest.mark.parametrize(
+    ("sql", "routine"),
+    [("CALL app.sync_feeds(1)", "app.sync_feeds"), ("EXECUTE refresh_counts", "refresh_counts")],
+)
+def test_routine_command_still_resolves_its_target(sql, routine):
+    result = extract_usage(sql, dialect="postgres")
+    assert _routine_names(result) == {routine}
+
+
+def test_one_failing_statement_is_reported_without_losing_the_others(monkeypatch):
+    import app.extractor as extractor
+
+    real = extractor._collect_tables
+
+    def explode_on_feeds(statement, exclude):
+        if any(t.name == "feeds" for t in statement.find_all(extractor.exp.Table)):
+            raise AttributeError("boom")
+        return real(statement, exclude)
+
+    monkeypatch.setattr(extractor, "_collect_tables", explode_on_feeds)
+    result = extract_usage("SELECT id FROM feeds; UPDATE entries SET status = 'read'", dialect="postgres")
+    assert _table_access(result) == {"entries": "write"}
+    failed = [u for u in result["uncertain"] if u["detail"].startswith(_FAILED_PREFIX)]
+    assert len(failed) == 1
+    assert failed[0]["reason"] == REASON_DYNAMIC
+    assert "AttributeError" in failed[0]["detail"]
+    assert "feeds" in failed[0]["detail"]
