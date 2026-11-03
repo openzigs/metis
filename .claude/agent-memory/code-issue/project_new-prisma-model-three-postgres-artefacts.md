@@ -11,7 +11,7 @@ A new Prisma model needs three Postgres artefacts: the dated idempotent migratio
 
 **How to apply:**
 
-- Add the model to `server/prisma/schema.prisma` (the single source of truth), then `bash scripts/gen-postgres-schema.sh` from the ROOT — `pnpm --filter @metis/server db:gen-postgres` resolves its paths from the wrong directory and fails.
+- Add the model to `server/prisma/schema.prisma` (the single source of truth), then `pnpm --filter @metis/server db:gen-postgres` (or `bash scripts/gen-postgres-schema.sh`; either works from any directory since #1710).
 - Write the SQLite migration and its Postgres twin under the same dated name; the Postgres one idempotent (`IF NOT EXISTS`).
 - Append the same `CREATE TABLE` and indexes to the Postgres baseline.
 - Run `tests/schema-parity.test.ts` by name before pushing: it is the only thing that fails on a missing baseline entry.
