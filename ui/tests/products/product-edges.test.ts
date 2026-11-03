@@ -174,6 +174,12 @@ describe("productsApi edge requests (#1628)", () => {
     ],
     ["deleteEdge", () => productsApi.deleteEdge("p1", "e1"), "/api/products/p1/edges/e1", "DELETE"],
     [
+      "revertEdge",
+      () => productsApi.revertEdge("p/1", "e/1"),
+      "/api/products/p%2F1/edges/e%2F1/revert",
+      "POST",
+    ],
+    [
       "declareResource",
       () => productsApi.declareResource("p1", { kind: "bucket", name: "drops" }),
       "/api/products/p1/resources",

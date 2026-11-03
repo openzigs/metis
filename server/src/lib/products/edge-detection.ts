@@ -232,8 +232,18 @@ export async function syncDetectedProductEdges(
     if (prior) {
       kept.add(key);
       // An overridden edge keeps the person's classification; only what
-      // detection found (evidence, confidence, files, contract) is refreshed.
-      const update: Record<string, unknown> = prior.origin === "overridden" ? facts : data;
+      // detection found (evidence, confidence, files, contract) is refreshed,
+      // and so is its kept copy of detection's classification, which a revert
+      // restores (#1687).
+      const update: Record<string, unknown> =
+        prior.origin === "overridden"
+          ? {
+              ...facts,
+              detectedIntegrationKind: classification.integrationKind,
+              detectedStrength: classification.strength,
+              detectedDirection: classification.direction,
+            }
+          : data;
       // #1643 — an edge found again as it is stored is not written: a re-run
       // over unchanged input leaves the row, `updatedAt` included, as it was.
       if (

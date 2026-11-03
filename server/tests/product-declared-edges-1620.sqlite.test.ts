@@ -240,6 +240,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const id = await newEdge({ origin: "declared", declaredById: "alice" });
         await refused("delete", `/api/products/${p}/edges/${id}`);
       });
+      it("POST /edges/:edgeId/revert (#1687)", async () => {
+        const id = await newEdge({
+          origin: "overridden",
+          strength: "model",
+          detectedStrength: "contract",
+          declaredById: "alice",
+        });
+        await refused("post", `/api/products/${p}/edges/${id}/revert`);
+      });
       it("POST /resources", async () => {
         await refused("post", `/api/products/${p}/resources`, {
           kind: "identity-provider",
@@ -583,6 +592,136 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           strength: "model",
         });
         expect(admin.status).toBe(200);
+      });
+    });
+
+    // ── Reverting an override (#1687) ────────────────────────────────────────
+
+    describe("reverting an overridden edge (#1687)", () => {
+      const revert = (id: string, who: Who = "alice", productId = p) =>
+        call("post", `/api/products/${productId}/edges/${id}/revert`, who);
+
+      it("restores detection's classification, kept when the edge was first overridden", async () => {
+        const id = await newEdge({
+          origin: "detected",
+          integrationKind: "api",
+          strength: "contract",
+          direction: "consumes",
+        });
+        // Two overrides: the second must not replace what detection said with
+        // the person's first pick.
+        for (const body of [{ strength: "intrusive" }, { direction: "writes" }]) {
+          const res = await call("patch", `/api/products/${p}/edges/${id}`, "alice", body);
+          expect(res.status).toBe(200);
+        }
+        expect(await db.productEdge.findUnique({ where: { id } })).toMatchObject({
+          origin: "overridden",
+          strength: "intrusive",
+          direction: "writes",
+          detectedIntegrationKind: "api",
+          detectedStrength: "contract",
+          detectedDirection: "consumes",
+        });
+        vi.mocked(audit).mockClear();
+        const res = await revert(id);
+        expect(res.status).toBe(200);
+        const restored = {
+          id,
+          origin: "detected",
+          integrationKind: "api",
+          strength: "contract",
+          direction: "consumes",
+          declaredById: null,
+        };
+        expect(res.body.data).toMatchObject(restored);
+        // Read back through the GET the product page uses.
+        expect((await graph()).edges.find((e) => e.id === id)).toMatchObject(restored);
+        // The kept copy is spent: a detected edge carries none.
+        expect(await db.productEdge.findUnique({ where: { id } })).toMatchObject({
+          detectedIntegrationKind: null,
+          detectedStrength: null,
+          detectedDirection: null,
+        });
+        expect(vi.mocked(audit).mock.calls.map((c) => c[0])).toEqual([
+          {
+            actor: { id: "alice" },
+            action: "product.edge.revert",
+            target: { type: "product", id: p },
+            metadata: { edgeId: id, origin: "detected" },
+          },
+        ]);
+        // Detected again, so overriding it once more keeps a fresh copy.
+        await call("patch", `/api/products/${p}/edges/${id}`, "alice", { strength: "model" });
+        expect(await db.productEdge.findUnique({ where: { id } })).toMatchObject({
+          origin: "overridden",
+          strength: "model",
+          detectedStrength: "contract",
+        });
+      });
+
+      it("reverts an edge overridden before #1687 (no kept copy) as unclassified", async () => {
+        const id = await newEdge({
+          origin: "overridden",
+          integrationKind: "database",
+          strength: "functional",
+          direction: "reads",
+          declaredById: "alice",
+        });
+        const res = await revert(id);
+        expect(res.status).toBe(200);
+        expect((await graph()).edges.find((e) => e.id === id)).toMatchObject({
+          origin: "detected",
+          integrationKind: null,
+          strength: null,
+          direction: null,
+        });
+      });
+
+      it("refuses a declared or a detected edge, and changes nothing", async () => {
+        for (const origin of ["declared", "detected"]) {
+          const id = await newEdge({ origin, strength: "model", declaredById: "alice" });
+          const before = await db.productEdge.findUnique({ where: { id } });
+          vi.mocked(audit).mockClear();
+          const res = await revert(id);
+          expect(res.status).toBe(409);
+          expect(res.body.error.code).toBe("EDGE_NOT_OVERRIDDEN");
+          expect(await db.productEdge.findUnique({ where: { id } })).toEqual(before);
+          expect(vi.mocked(audit)).not.toHaveBeenCalled();
+        }
+      });
+
+      it("answers another product's edge, a missing one and one touching a hidden repo alike", async () => {
+        const overridden = {
+          origin: "overridden",
+          strength: "model",
+          detectedStrength: "contract",
+        };
+        const inQ = (
+          await db.productEdge.create({
+            data: {
+              productId: q,
+              sourceRepoId: rc.a1,
+              targetRepoId: rc.a2,
+              edgeType: "calls",
+              confidence: 1,
+              ...overridden,
+            },
+          })
+        ).id;
+        const toHidden = await newEdge({ ...overridden, targetRepoId: rc.b });
+        for (const id of [inQ, "edge-missing-1687", toHidden]) {
+          const res = await revert(id);
+          expect(res.status).toBe(404);
+          expect(res.body.error.code).toBe("EDGE_NOT_FOUND");
+        }
+        expect(
+          await db.productEdge.count({
+            where: { id: { in: [inQ, toHidden] }, origin: "overridden" },
+          }),
+        ).toBe(2);
+        // Through its own product, and by an admin who reads every repo, each reverts.
+        expect((await revert(inQ, "alice", q)).status).toBe(200);
+        expect((await revert(toHidden, "ada")).status).toBe(200);
       });
     });
 

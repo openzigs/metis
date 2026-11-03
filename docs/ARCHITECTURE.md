@@ -4744,7 +4744,13 @@ overridden (`DETECTED_EDGE_OVERRIDABLE_FIELDS`), which makes it **`overridden`**
 detection still owns it, so its ends stay locked, it still cannot be deleted, re-detection
 refreshes its evidence but keeps the person's classification, and a run that no longer
 finds it deletes it. Moving its ends is a 409, and deleting it is a 409 that says to
-override its strength instead. A detected resource keeps its kind and name, though its
+override its strength instead. **Reverting an override (#1687):** the first override
+keeps detection's classification in `detectedIntegrationKind` / `detectedStrength` /
+`detectedDirection`, each detection run that finds the edge again refreshes that copy, and
+`POST /api/products/:id/edges/:edgeId/revert` (`project.update`, audited
+`product.edge.revert`) writes it back, makes the edge `detected` again and clears the copy
+and `declaredById`. Only an `overridden` edge reverts (409 `EDGE_NOT_OVERRIDDEN`); one
+overridden before #1687 has no copy and reverts unclassified until the next run. A detected resource keeps its kind and name, though its
 locator may be set (making it `overridden` too); it cannot be deleted. Deleting a declared
 resource deletes the repo-less edges through it in the same transaction, while the rest
 lose only the `resourceId`; when some of those edges touch a repo the caller cannot read,
@@ -4767,7 +4773,8 @@ confidence, filtered by kind. It reads the product through the page's own
 `GET /api/products/:id` query and re-reads it after every write, so what it shows is
 the server's. A `declared` edge can be edited (source locked: the PATCH carries no
 `sourceRepoId`) or deleted; an edge detection owns (`detected` or `overridden`) offers
-only a strength override, a PATCH of `strength` alone. Shared resources are listed (the
+only a strength override, a PATCH of `strength` alone; an `overridden` one also offers
+**Revert to detected** (#1687), behind a confirmation. Shared resources are listed (the
 locator as text) and can be declared, so an edge can go through one. The controls render
 only for a user holding `project.update`; anyone else sees the list read-only with a
 "Restricted" note, and the server refuses the writes regardless.

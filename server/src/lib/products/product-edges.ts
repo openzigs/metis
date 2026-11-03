@@ -410,8 +410,58 @@ export async function updateProductEdge(
     where: { id: edge.id },
     data: {
       ...input,
+      // #1687 — the first override keeps detection's classification, so a
+      // revert can restore it; a later one leaves that copy as it is.
+      ...(edge.origin === "detected" ? detectedClassificationOf(edge) : {}),
       origin: detectionOwned ? "overridden" : "declared",
       declaredById: actor.id,
+    },
+  });
+  return toProductEdgeView(row);
+}
+
+/** An edge's classification, as the copy an override keeps of it (#1687). */
+function detectedClassificationOf(edge: ProductEdgeRow) {
+  return {
+    detectedIntegrationKind: edge.integrationKind,
+    detectedStrength: edge.strength,
+    detectedDirection: edge.direction,
+  };
+}
+
+/**
+ * #1687 — return an `overridden` edge to `detected`: detection's
+ * classification, kept when it was first overridden and refreshed by each run
+ * that found it since, replaces the person's, and the kept copy and the
+ * declarer are cleared. An edge overridden before #1687 has no kept copy, so it
+ * reverts unclassified and the next detection run classifies it. Only an
+ * overridden edge reverts (`EDGE_NOT_OVERRIDDEN` otherwise); one the caller
+ * cannot see is not found, as for every other edge write.
+ */
+export async function revertProductEdge(
+  productId: string,
+  edgeId: string,
+  readableRepoIds: ReadonlySet<string>,
+): Promise<ProductEdge> {
+  const edge = await readableEdgeOr404(productId, edgeId, readableRepoIds);
+  if (edge.origin !== "overridden") {
+    throw new ProductError(
+      409,
+      "EDGE_NOT_OVERRIDDEN",
+      "Only an overridden edge can be returned to detected: this one carries no person's override.",
+    );
+  }
+  const row = await prisma.productEdge.update({
+    where: { id: edge.id },
+    data: {
+      integrationKind: edge.detectedIntegrationKind,
+      strength: edge.detectedStrength,
+      direction: edge.detectedDirection,
+      detectedIntegrationKind: null,
+      detectedStrength: null,
+      detectedDirection: null,
+      origin: "detected",
+      declaredById: null,
     },
   });
   return toProductEdgeView(row);

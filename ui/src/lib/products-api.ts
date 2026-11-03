@@ -228,6 +228,13 @@ export const productsApi = {
       { method: "PATCH", body: input },
     ),
 
+  // #1687 — return an overridden edge to detection's classification.
+  revertEdge: async (productId: string, edgeId: string) =>
+    apiFetch<ProductEdge>(
+      `/products/${encodeURIComponent(productId)}/edges/${encodeURIComponent(edgeId)}/revert`,
+      { method: "POST" },
+    ),
+
   deleteEdge: async (productId: string, edgeId: string) =>
     apiFetch<void>(
       `/products/${encodeURIComponent(productId)}/edges/${encodeURIComponent(edgeId)}`,
