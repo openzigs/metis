@@ -5,7 +5,9 @@
  * Issue #1554: mounted on the security-sensitive actions only — state-changing
  * admin routes (including SSO configuration), revealing and rotating vault
  * secrets, and changing a user's role or workspace role. Read-only pages,
- * analysis, chat, review and publishing are not gated.
+ * analysis, chat, review and publishing are not gated. Issue #1564: "admin
+ * routes" follows the permission, not the URL — every state-changing route that
+ * requires `admin.write` or the `admin` role is gated wherever it is mounted.
  */
 import type { RequestHandler } from "express";
 import type { AuthPayload } from "@metis/shared";

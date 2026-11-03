@@ -128,6 +128,8 @@ export function authRouter(): Router {
       role: userRow.role,
       permissions,
       workspaces,
+      // #1564 — a password sign-in (mock, LDAP: `ensureUserRow` refuses any other).
+      authMode: provider.name,
     });
 
     res.cookie("accessToken", tokens.accessToken, {

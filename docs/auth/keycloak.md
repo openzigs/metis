@@ -122,7 +122,9 @@ If SCIM extension is not available:
 ## MFA Integration
 
 Keycloak MFA status is detected via:
-- **OIDC**: `amr` claim includes MFA methods (e.g., `otp`)
+- **OIDC**: the `amr` claim includes `mfa`, or methods from two different factors
+  (e.g. `pwd` and `otp`). A lone `otp`, `sms`, `hwk` or `swk` is one factor and
+  does not count (#1564).
 - **SAML**: `AuthnContextClassRef` set to appropriate MFA class
 
 Configure in Keycloak:

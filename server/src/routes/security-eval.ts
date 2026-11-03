@@ -14,6 +14,7 @@ import { z } from "zod";
 import { type ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { requireMfa } from "../lib/auth/require-mfa.js";
 import { AppError } from "../middleware/error-handler.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { prisma } from "../lib/prisma.js";
@@ -40,6 +41,8 @@ export function securityEvalRouter(deps: SecurityEvalRouterDeps = {}): Router {
     "/run",
     requireAuth,
     requirePermission("admin.write"),
+    // #1564 — an admin-settings change needs an MFA sign-in.
+    requireMfa,
     async (req: Request, res: Response) => {
       const parsed = runSchema.safeParse(req.body ?? {});
       if (!parsed.success) {

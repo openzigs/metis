@@ -274,6 +274,7 @@ export function ssoRouter(): Router {
       permissions,
       workspaces: await readWorkspaceIds(userRow.id),
       mfaPassed: result.user.mfaPassed,
+      authMode: "saml",
     });
 
     setBrowserSession(res, tokens);
@@ -396,6 +397,7 @@ export function ssoRouter(): Router {
       permissions,
       workspaces: await readWorkspaceIds(userRow.id),
       mfaPassed: result.user.mfaPassed,
+      authMode: "oidc",
     });
 
     setBrowserSession(res, tokens);

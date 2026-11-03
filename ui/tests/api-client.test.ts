@@ -53,12 +53,14 @@ describe("#1554 — an action that needs an MFA sign-in", () => {
     expect(onFailure).not.toHaveBeenCalled();
   });
 
-  it("says the fix is MFA at sign-in, set by the Entra administrator in Conditional Access", () => {
+  it("says the fix is MFA at sign-in, set by the identity provider administrator, naming no IdP", () => {
     expect(MFA_REQUIRED_MESSAGE).toMatch(/needs a sign-in with multi-factor authentication/);
     expect(MFA_REQUIRED_MESSAGE).toMatch(/sign in again with MFA/);
     expect(MFA_REQUIRED_MESSAGE).toMatch(
-      /Microsoft Entra administrator to require MFA for the METIS app in Conditional Access/,
+      /ask your identity provider administrator to require MFA for the METIS app/,
     );
+    // #1564 — the same message for every IdP.
+    expect(MFA_REQUIRED_MESSAGE).not.toMatch(/Entra|Conditional Access|Okta|Google/);
   });
 
   it("apiErrorMessage maps only MFA_REQUIRED, else the server message, else the fallback", () => {

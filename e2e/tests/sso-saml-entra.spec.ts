@@ -190,7 +190,7 @@ test.describe.serial("SAML sign-in against an Entra-profile IdP (#1553)", () => 
       "This action needs a sign-in with multi-factor authentication (MFA).",
     );
     await expect(vault.revealError).toContainText(
-      "ask your Microsoft Entra administrator to require MFA for the METIS app in Conditional Access",
+      "ask your identity provider administrator to require MFA for the METIS app",
     );
     await expect(vault.copyButton).toHaveCount(0);
     // One request, refused: no retry and no refresh loop.

@@ -6,6 +6,7 @@ import { z } from "zod";
 import { patchSchemaOf, type ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { requireMfa } from "../lib/auth/require-mfa.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
@@ -348,6 +349,8 @@ export function projectTriggersRouter(): Router {
     "/",
     requireAuth,
     requirePermission("admin.write"),
+    // #1564 — an admin-settings change needs an MFA sign-in.
+    requireMfa,
     async (req: Request, res: Response) => {
       const parsed = upsertSchema.safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
@@ -373,6 +376,8 @@ export function projectTriggersRouter(): Router {
     "/:id",
     requireAuth,
     requirePermission("admin.write"),
+    // #1564 — an admin-settings change needs an MFA sign-in.
+    requireMfa,
     async (req: Request, res: Response) => {
       const parsed = patchSchema.safeParse(req.body);
       if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
@@ -410,6 +415,8 @@ export function projectTriggersRouter(): Router {
     "/:id",
     requireAuth,
     requirePermission("admin.write"),
+    // #1564 — an admin-settings change needs an MFA sign-in.
+    requireMfa,
     async (req: Request, res: Response) => {
       await prisma.trigger.delete({ where: await triggerInPathProject(req) });
       res.json(ok({ ok: true }));

@@ -28,6 +28,7 @@ import {
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { requireMfa } from "../lib/auth/require-mfa.js";
 import { AppError } from "../middleware/error-handler.js";
 import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
@@ -708,6 +709,8 @@ export function projectsRouter(): Router {
     "/:id/budget",
     requireAuth,
     requirePermission("admin.write"),
+    // #1564 — an admin-settings change needs an MFA sign-in.
+    requireMfa,
     async (req: Request, res: Response) => {
       const parsed = updateBudgetSchema.safeParse(req.body ?? {});
       if (!parsed.success) {

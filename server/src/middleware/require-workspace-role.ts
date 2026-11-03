@@ -7,6 +7,7 @@
 import type { RequestHandler } from "express";
 import { prisma } from "../lib/prisma.js";
 import { AppError } from "./error-handler.js";
+import { tagAuthorization } from "./authorization-tag.js";
 
 export type WorkspaceRole = "owner" | "admin" | "member";
 
@@ -24,7 +25,7 @@ const ROLE_HIERARCHY: Record<WorkspaceRole, number> = {
  * System admins (role === "admin") bypass workspace role checks.
  */
 export function requireWorkspaceRole(minRole: WorkspaceRole): RequestHandler {
-  return async (req, _res, next) => {
+  const handler: RequestHandler = async (req, _res, next) => {
     try {
       if (!req.user) {
         throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
@@ -67,4 +68,5 @@ export function requireWorkspaceRole(minRole: WorkspaceRole): RequestHandler {
       next(err);
     }
   };
+  return tagAuthorization(handler, { kind: "workspaceRole", value: minRole });
 }

@@ -44,6 +44,7 @@ import {
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
+import { requireMfa } from "../lib/auth/require-mfa.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
 import {
   connectorMetadataRateLimiter,
@@ -503,33 +504,39 @@ export function connectorsRouter(): Router {
   // Reading arbitrary server files is privileged, so this is gated on
   // `admin.write` (only the `admin` role) on TOP of the LOCAL_SOURCE_ROOTS
   // allowlist + realpath containment enforced in the service layer.
-  r.post("/repos/local", requireAuth, requirePermission("admin.write"), async (req, res) => {
-    const parsed = createRepoConnectorSchema.safeParse({
-      ...(req.body ?? {}),
-      provider: REPO_PROVIDER_LOCAL,
-    });
-    if (!parsed.success) {
-      throw new AppError(400, "VALIDATION_ERROR", "invalid payload", {
-        issues: parsed.error.flatten(),
+  r.post(
+    "/repos/local",
+    requireAuth,
+    requirePermission("admin.write"),
+    requireMfa,
+    async (req, res) => {
+      const parsed = createRepoConnectorSchema.safeParse({
+        ...(req.body ?? {}),
+        provider: REPO_PROVIDER_LOCAL,
       });
-    }
-    try {
-      const projectId = projectIdOf(req);
-      const a = actor(req);
-      const { autoIngest, ...connectorData } = parsed.data;
-      const created = await createRepoConnector(projectId, connectorData, a);
-      const existingRepos = await listRepoConnectors(projectId);
-      const shouldAutoIngest = autoIngest === true || existingRepos.length === 1;
-      if (shouldAutoIngest) {
-        void triggerDeepIngest(projectId, created.id, a).catch(() => {
-          /* logged internally */
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "invalid payload", {
+          issues: parsed.error.flatten(),
         });
       }
-      res.status(201).json(ok({ ...created, autoIngestTriggered: shouldAutoIngest }));
-    } catch (err) {
-      rethrow(err);
-    }
-  });
+      try {
+        const projectId = projectIdOf(req);
+        const a = actor(req);
+        const { autoIngest, ...connectorData } = parsed.data;
+        const created = await createRepoConnector(projectId, connectorData, a);
+        const existingRepos = await listRepoConnectors(projectId);
+        const shouldAutoIngest = autoIngest === true || existingRepos.length === 1;
+        if (shouldAutoIngest) {
+          void triggerDeepIngest(projectId, created.id, a).catch(() => {
+            /* logged internally */
+          });
+        }
+        res.status(201).json(ok({ ...created, autoIngestTriggered: shouldAutoIngest }));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
 
   // ── Issue #288: folder upload (.zip) connector (project WRITE) ───────────
   // multer enforces single-file + the archive size cap; we additionally check

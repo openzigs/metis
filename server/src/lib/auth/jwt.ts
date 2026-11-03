@@ -221,6 +221,12 @@ export interface IssueTokensInput {
    * the presented token's value forward, so the session keeps it.
    */
   mfaPassed?: boolean;
+  /**
+   * #1564 — how this session signed in (`mock`, `ldap`, `saml`, `oidc`). A
+   * refresh carries it forward, so a token without `mfaPassed` is classified by
+   * its own sign-in, never by the account's `users.authSource`.
+   */
+  authMode?: string;
 }
 
 /**
@@ -245,6 +251,8 @@ export interface RefreshPayload {
   sid?: string;
   /** #1552 — see {@link IssueTokensInput.mfaPassed}. */
   mfaPassed?: boolean;
+  /** #1564 — see {@link IssueTokensInput.authMode}. */
+  authMode?: string;
   tokenId: string;
   type: "refresh";
   iat?: number;
@@ -284,6 +292,7 @@ export function issueTokens(input: IssueTokensInput): TokenPair {
       permissions: input.permissions,
       ...(input.workspaces?.length ? { workspaces: input.workspaces } : {}),
       ...(typeof input.mfaPassed === "boolean" ? { mfaPassed: input.mfaPassed } : {}),
+      ...(input.authMode ? { authMode: input.authMode } : {}),
       sid,
     } satisfies Omit<AuthPayload, "iat" | "exp">,
     secret,
@@ -297,6 +306,7 @@ export function issueTokens(input: IssueTokensInput): TokenPair {
       permissions: input.permissions,
       ...(input.workspaces?.length ? { workspaces: input.workspaces } : {}),
       ...(typeof input.mfaPassed === "boolean" ? { mfaPassed: input.mfaPassed } : {}),
+      ...(input.authMode ? { authMode: input.authMode } : {}),
       sid,
       tokenId,
       type: "refresh",
@@ -508,6 +518,8 @@ export async function refreshAccessToken(
     // #1552 — the MFA result of the sign-in survives rotation, or a refreshed
     // session would lose the `false` that `requireMfa` refuses.
     ...(typeof mfaPassed === "boolean" ? { mfaPassed } : {}),
+    // #1564 — and so does how it signed in.
+    ...(typeof decoded.authMode === "string" ? { authMode: decoded.authMode } : {}),
   });
 }
 
@@ -530,12 +542,20 @@ async function readAuthSource(userId: string): Promise<string | null> {
  * without one began before #1552 and never proved MFA: it must sign in again
  * to perform an MFA-gated action. Password sessions (mock, LDAP) make no claim
  * and keep none. A failed read rejects, before the token is claimed.
+ *
+ * #1564 — a session that records how it signed in (`authMode`) is classified by
+ * that, not by the account: an LDAP password session of an account whose
+ * `authSource` is `saml` makes no MFA claim. Only a token from before #1564,
+ * which has no `authMode`, falls back to the account's provider kind.
  */
 async function carriedMfaPassed(
   decoded: RefreshPayload,
   resolveAuthSource: (userId: string) => Promise<string | null>,
 ): Promise<boolean | undefined> {
   if (typeof decoded.mfaPassed === "boolean") return decoded.mfaPassed;
+  if (typeof decoded.authMode === "string") {
+    return SSO_AUTH_SOURCES.has(decoded.authMode) ? false : undefined;
+  }
   const source = await resolveAuthSource(decoded.userId);
   return source !== null && SSO_AUTH_SOURCES.has(source) ? false : undefined;
 }
