@@ -491,6 +491,72 @@ describe("DocumentationPage — version history", () => {
     expect(within(check).queryByText(/Nothing was changed/)).not.toBeInTheDocument();
   });
 
+  it("says what the readings against the source found (#1578)", async () => {
+    setup(
+      docDetail({
+        versions: [
+          { id: "v2", version: 2, diffSummary: "Latest", createdAt: "2026-06-02T00:00:00.000Z" },
+        ],
+      }),
+      {
+        ...PROVENANCE_SUMMARY,
+        consistency: {
+          statements: 40,
+          compared: 3,
+          findingCount: 3,
+          findings: [
+            {
+              kind: "byte-length",
+              name: "32 hex characters",
+              sections: 1,
+              forms: 2,
+              statements: [{ section: "Data & Domain Model", value: "32 hex characters" }],
+              source: {
+                value: "GenerateRandomStringHex(32) returns 64 hex characters (32 bytes)",
+                location: "internal/storage/api_key.go:41",
+              },
+            },
+            {
+              kind: "column-default",
+              name: "feeds.crawler",
+              sections: 1,
+              forms: 2,
+              statements: [{ section: "Data & Domain Model", value: "crawler: true" }],
+              source: { value: "false", location: "the live schema" },
+            },
+            {
+              kind: "uncited",
+              name: "Key Business Rules",
+              sections: 1,
+              forms: 7,
+              statements: [
+                { section: "Key Business Rules", value: "Passwords need at least 6 characters." },
+              ],
+            },
+          ],
+        },
+      },
+    );
+    await openDoc();
+    fireEvent.click(screen.getByTestId("version-provenance-toggle-v2"));
+    const panel = await screen.findByTestId("version-provenance-v2");
+    const check = await within(panel).findByTestId("version-consistency-v2");
+    expect(
+      within(check).getByText(
+        "32 hex characters is the byte count of a hex-encoded value, not its length (GenerateRandomStringHex(32) returns 64 hex characters (32 bytes) at internal/storage/api_key.go:41)",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(check).getByText(
+        "The default of feeds.crawler is not the database's (the live schema declares false)",
+      ),
+    ).toBeInTheDocument();
+    // Counted in full, though only the first statements are recorded.
+    expect(
+      within(check).getByText("7 values in Key Business Rules with no cited source"),
+    ).toBeInTheDocument();
+  });
+
   it("shows no plan and no consistency check for a document that was not planned (#1070)", async () => {
     setup(
       docDetail({

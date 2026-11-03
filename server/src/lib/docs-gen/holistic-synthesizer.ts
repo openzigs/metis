@@ -31,7 +31,7 @@ import {
   scrubSectionFenceLookalikes,
   scrubWriterFenceLookalikes,
 } from "../ai/tool-runtime/fence-scrub.js";
-import type { ExtractedFormula } from "../code-graph/formula-extractor.js";
+import { describeEncodedLength, type ExtractedFormula } from "../code-graph/formula-extractor.js";
 import { renderMinedRules } from "../code-graph/java-rule-miner.js";
 import {
   renderMinedSasRules,
@@ -241,6 +241,7 @@ import {
 import {
   isTypedInventory,
   NO_SCHEMA_INVENTORY,
+  renderColumnDefaultsBlock,
   renderSchemaCoverage,
   renderSchemaPromptBlock,
   type SchemaInventory,
@@ -413,6 +414,7 @@ import {
   type FactSheet,
 } from "./canonical-facts.js";
 import { checkFactConsistency, factInconsistentWarning } from "./fact-consistency.js";
+import type { EncodedLengthFact } from "./source-claim-checks.js";
 import { BATCH_HOLD_VERSION, holdBatchReply } from "./batch-hold.js";
 import { resolveLengthOverrun } from "./length-calibration.js";
 import {
@@ -3213,7 +3215,7 @@ ${data(input.code)}
 ${
   formulas.length > 0
     ? `Pre-extracted formulas/constants/conditionals (deterministic regex pass — these are STARTING POINTS, find more in the source above):\n${formulas
-        .map((f) => `- ${f.kind}: ${data(f.expression.slice(0, 200))}`)
+        .map((f) => `- ${f.kind}: ${data(f.expression.slice(0, 200))}${encodedLengthNote(f)}`)
         .join("\n")}`
     : ""
 }
@@ -6144,12 +6146,20 @@ async function synthesizeFinalDocumentInRun(
   // of the same sections still reports the same thing.
   let consistencyResult: ConsistencyRecord | undefined;
   if (planning) {
+    // #1578 — also against the hex-encoding calls the extractor read, the
+    // database's column defaults, and (main part) the citations: a main
+    // section but the approved requirements, which no model wrote.
     const consistency = checkFactConsistency(
       fittedSections.sections.map((markdown, i) => ({
         label: manifestSections[sectionOwners[i]].sectionLabel,
         markdown,
+        ...(checkedForCode(i) ? { main: true } : {}),
       })),
       planning.sheet,
+      {
+        encodedLengths: encodedLengthFacts(facts),
+        ...(sectionContext?.schemaInventory ? { schema: sectionContext.schemaInventory } : {}),
+      },
     );
     const inconsistent = factInconsistentWarning(consistency);
     log.info("Fact consistency check", {
@@ -6261,6 +6271,33 @@ function distinctFormulaList(
   return out;
 }
 
+/**
+ * #1578 — what a hex-encoding call returns, after its expression in a formulas
+ * list: ` (32 bytes, hex-encoded as 64 characters)`. Empty for every other
+ * formula, so a list without one is unchanged.
+ */
+function encodedLengthNote(formula: Pick<ExtractedFormula, "encodedLength">): string {
+  return formula.encodedLength ? ` (${describeEncodedLength(formula.encodedLength)})` : "";
+}
+
+/** #1578 — every hex-encoding call the extractor read in `facts`, for the consistency check. */
+export function encodedLengthFacts(facts: readonly ModuleFacts[]): EncodedLengthFact[] {
+  return facts.flatMap((m) =>
+    m.formulas.flatMap((f) =>
+      f.encodedLength
+        ? [
+            {
+              bytes: f.encodedLength.bytes,
+              characters: f.encodedLength.characters,
+              expression: f.expression,
+              source: `${f.filePath}:${f.startLine}`,
+            },
+          ]
+        : [],
+    ),
+  );
+}
+
 /** Render formulas as the prompt's source-formulas block (every one given; no cap here). */
 function renderFormulaList(
   formulas: ReadonlyArray<ExtractedFormula & { repository?: RepositoryIdentity }>,
@@ -6269,7 +6306,7 @@ function renderFormulaList(
     ? formulas
         .map(
           (f) =>
-            `- ${f.repository ? `[${f.repository.repoConnectorId ?? f.repository.codeGraphId}] ` : ""}${f.kind}: ${f.expression.slice(0, 250)}`,
+            `- ${f.repository ? `[${f.repository.repoConnectorId ?? f.repository.codeGraphId}] ` : ""}${f.kind}: ${f.expression.slice(0, 250)}${encodedLengthNote(f)}`,
         )
         .join("\n")
     : "(none extracted)";
@@ -8599,6 +8636,26 @@ ${body}`,
 }
 
 /**
+ * #1578 — the business-requirements data dictionary (`data-model`) given the
+ * column defaults the database declares (`renderColumnDefaultsBlock`), so its
+ * Default column is read from the schema rather than written from prose facts.
+ * The groups unchanged when no read column has a default: a document of a
+ * project without a live database read keeps its prompts, and its reuse.
+ */
+function withColumnDefaults(
+  groups: SectionGroup[],
+  inventory: SchemaInventory | undefined,
+): SectionGroup[] {
+  const block = inventory ? renderColumnDefaultsBlock(inventory) : "";
+  if (!block) return groups;
+  return groups.map((group) =>
+    group.id === "data-model"
+      ? { ...group, instructions: `${group.instructions}\n\n${block}` }
+      : group,
+  );
+}
+
+/**
  * #1175 — the reader layout of a business-requirements document: a MAIN
  * document for a business reader (Executive Summary, Scope and Domain; Core
  * Business Capabilities; Key Business Rules; Requirements Reconstructed from
@@ -8708,7 +8765,7 @@ export function sectionGroupsFor(
 ): SectionGroup[] {
   switch (docType) {
     case "business-requirements": {
-      const catalogue: SectionGroup[] = [
+      const catalogueGroups: SectionGroup[] = [
         {
           id: "overview",
           factSlices: SECTION_FACT_SLICES["overview"],
@@ -8884,6 +8941,8 @@ What external systems, databases, message queues, or services this system depend
 Alphabetical list of domain terms, abbreviations, and acronyms with concise definitions. Aim for 15-30 entries. Use a two-column table: | Term | Definition |`,
         },
       ];
+      // #1578 — the data dictionary's Default column from the database, when one was read.
+      const catalogue = withColumnDefaults(catalogueGroups, context.schemaInventory);
       if (context.brdLayout !== "reader") return catalogue;
       const approved = context.approvedRequirements ?? [];
       return readerBrdGroups(catalogue).map((group) =>

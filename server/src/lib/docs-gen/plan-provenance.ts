@@ -13,7 +13,11 @@
  * Pure: no I/O and no model calls.
  */
 import type { DocumentPlan } from "./document-plan.js";
-import { MAX_LISTED_STATEMENTS, type ConsistencyReport } from "./fact-consistency.js";
+import {
+  MAX_LISTED_STATEMENTS,
+  type ConsistencyFindingKind,
+  type ConsistencyReport,
+} from "./fact-consistency.js";
 
 /** Most dropped topics recorded per section; the rest are counted. */
 export const MAX_RECORDED_DROPPED_TOPICS = 200;
@@ -44,7 +48,7 @@ export interface TopicPlanRecord {
 }
 
 export interface ConsistencyFindingRecord {
-  kind: "conflict" | "restated" | "endpoint" | "count" | "size";
+  kind: ConsistencyFindingKind;
   name: string;
   /** For a prose finding, what it is about as written ("API token (characters)"). */
   label?: string;

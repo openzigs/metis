@@ -1743,8 +1743,12 @@ export async function generateDocumentAsync(
         // repository- or path-scoped document: a connector belongs to the
         // project and records no repository or path, so there is nothing to
         // narrow it by (the repository-SQL tier is narrowed, by code graph).
+        //
+        // #1578 — a business-requirements document reads it too: its data
+        // dictionary is given the column defaults the database declares, and
+        // its consistency check reads the stated defaults against them.
         let schemaInventory: SchemaInventory | undefined;
-        if (docType === "architecture") {
+        if (docType === "architecture" || docType === "business-requirements") {
           const { loadSchemaInventory } =
             await import("../lib/docs-gen/schema-inventory-loader.js");
           schemaInventory = await loadSchemaInventory({

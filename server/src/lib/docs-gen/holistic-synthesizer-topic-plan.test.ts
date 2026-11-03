@@ -28,6 +28,7 @@ import type { PersistedMinedRule } from "./fact-slices.js";
 import type { FaithfulnessResult } from "./grounding/citation-validator.js";
 import { deriveDocStatus } from "./grounding/degraded-warnings.js";
 import type { GroundingContext } from "./grounding/grounding-context.js";
+import type { SchemaInventory } from "./schema-inventory.js";
 import {
   docsGenTuning,
   documentTypeIsPlanned,
@@ -41,6 +42,7 @@ import {
   type ModuleFacts,
   type Phase2ProviderBundle,
   type Phase2Router,
+  type SectionGroupContext,
 } from "./holistic-synthesizer.js";
 
 // ── Fixture ───────────────────────────────────────────────────────────────
@@ -254,6 +256,7 @@ async function run(
     grounding?: GroundingContext;
     previous?: Result;
     beforeStep?: GenerationStepHook;
+    sectionContext?: SectionGroupContext;
   } = {},
 ): Promise<Result> {
   return synthesizeFinalDocument(
@@ -274,6 +277,7 @@ async function run(
         : {}),
       ...(extra.beforeStep ? { beforeStep: extra.beforeStep } : {}),
     },
+    extra.sectionContext,
   );
 }
 
@@ -1533,6 +1537,101 @@ describe("the consistency check in a planned document", () => {
     const second = await run(facts(), again, { previous: result });
     expect(again.calls).toEqual([]);
     expect(second.warnings).toEqual(result.warnings);
+  });
+
+  // #1578 (run 10) — "API key tokens are 32 hex characters" for
+  // `GenerateRandomStringHex(32)`, which returns 64.
+  it("notes a hex length given as the byte count of the call the extractor read", async () => {
+    const all = facts();
+    all[2] = {
+      ...all[2],
+      formulas: [
+        {
+          kind: "constant",
+          expression: "GenerateRandomStringHex(32)",
+          description: "32 bytes, hex-encoded as 64 characters",
+          name: null,
+          resolvedValue: "64",
+          filePath: "src/m02/api_key.go",
+          startLine: 41,
+          endLine: 41,
+          symbolContext: null,
+          encodedLength: { encoding: "hex", bytes: 32, characters: 64 },
+        },
+      ],
+    };
+    const provider = fakeModel({
+      inject: (call) =>
+        call.group === label("overview") ? "API key tokens are 32 hex characters. " : "",
+    });
+    const result = await run(all, provider);
+    // The prompts that list the extracted formulas say what the call returns.
+    const formulas = callsFor(provider, label("formulas"));
+    expect(formulas.length).toBeGreaterThan(0);
+    expect(
+      formulas.some((c) =>
+        c.user.includes("GenerateRandomStringHex(32) (32 bytes, hex-encoded as 64 characters)"),
+      ),
+    ).toBe(true);
+    const notes = result.warnings.filter((w) => w.kind === "fact-inconsistent");
+    expect(notes).toHaveLength(1);
+    expect(notes[0].message).toContain(
+      "Consistency check: 1 value stated differently from the source.",
+    );
+    expect(notes[0].message).toContain(
+      "The length given as `32 hex characters` is the byte count of a hex-encoded value, not its length (`32 hex characters` in Overview & Domain). The source: `GenerateRandomStringHex(32) returns 64 hex characters (32 bytes)` at src/m02/api_key.go:41.",
+    );
+    expect(result.consistency?.findings).toEqual([
+      expect.objectContaining({ kind: "byte-length", name: "32 hex characters" }),
+    ]);
+    expect(deriveDocStatus(result.warnings)).toBe("ready");
+  });
+
+  // #1578 (run 10) — wrong column defaults in the data dictionary.
+  it("gives the data dictionary the database's column defaults and notes a default that is not one", async () => {
+    const inventory: SchemaInventory = {
+      source: "live-schema",
+      label: 'the live schema of "pg" (public)',
+      reads: [{ connector: "pg", how: "live", schemas: ["public"] }],
+      tables: [
+        {
+          schema: "public",
+          name: "feeds",
+          read: 0,
+          foreignKeys: [],
+          columns: [
+            {
+              name: "crawler",
+              dataType: "boolean",
+              nullable: true,
+              isPrimaryKey: false,
+              isForeignKey: false,
+              defaultValue: "false",
+            },
+          ],
+        },
+      ],
+    };
+    const dataModel = label("data-model");
+    const provider = fakeModel({
+      inject: (call) =>
+        call.group === dataModel
+          ? "\n\n#### FEED\n\n| Field | Type | Default |\n|---|---|---|\n| `crawler` | bool | `true` |\n\n"
+          : "",
+    });
+    const result = await run(facts(), provider, { sectionContext: { schemaInventory: inventory } });
+    for (const call of callsFor(provider, dataModel)) {
+      expect(call.system + call.user).toContain("feeds.crawler = false");
+    }
+    // Only the data dictionary is given them.
+    for (const call of callsFor(provider, RULES)) {
+      expect(call.system + call.user).not.toContain("COLUMN DEFAULTS");
+    }
+    const notes = result.warnings.filter((w) => w.kind === "fact-inconsistent");
+    expect(notes).toHaveLength(1);
+    expect(notes[0].message).toContain(
+      'The default of `feeds.crawler` is not the database\'s (`crawler: true` in Data & Domain Model). the live schema of "pg" (public) declares `false`.',
+    );
   });
 });
 

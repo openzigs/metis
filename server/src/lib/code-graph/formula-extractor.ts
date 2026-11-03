@@ -32,6 +32,21 @@ export interface ExtractedFormula {
   endLine: number;
   /** Containing symbol qualified name (if linkable) */
   symbolContext: string | null;
+  /**
+   * #1578 — present on a call that hex-encodes a number of random bytes
+   * ({@link extractEncodedLengths}): the length of what it returns.
+   */
+  encodedLength?: EncodedLength;
+}
+
+/**
+ * #1578 — what a hex-encoding helper returns: `bytes` random bytes, written as
+ * `characters` hexadecimal characters (two per byte).
+ */
+export interface EncodedLength {
+  encoding: "hex";
+  bytes: number;
+  characters: number;
 }
 
 // Arithmetic operators to detect formulas
@@ -85,8 +100,73 @@ export function extractFormulas(
       // Fallback: basic pattern matching for any language
       extractGenericFormulas(lines, filePath, formulas);
   }
+  extractEncodedLengths(lines, filePath, formulas);
 
   return formulas;
+}
+
+// ============================================================================
+// Hex-encoded lengths — Issue #1578
+//
+// `GenerateRandomStringHex(32)` returns 64 characters: 32 random bytes, two
+// hex digits each. Walkthrough runs 7 and 10 (#1066, #1578) wrote the argument
+// as the string's length ("API tokens are 32 hex characters"). A call whose
+// byte count is a literal is recorded with the length it returns, so every
+// prompt that lists the extracted formulas states both numbers.
+//
+// Read: a helper whose name ends in `Hex` / `_hex` and names a random value
+// (random, token, secret, nonce, salt): Go `crypto.GenerateRandomStringHex(n)`,
+// Python `secrets.token_hex(n)`; Node `randomBytes(n).toString("hex")`; and
+// Python `os.urandom(n).hex()` / `secrets.token_bytes(n).hex()`. Not read: a
+// byte count held in a variable or constant, and `toHex(32)` (no random value
+// is named, and it converts a number). Each pattern starts at a word boundary
+// and every repetition is bounded, so a line is read in linear time.
+// ============================================================================
+
+const HEX_HELPER_CALL = /(?<![\w$])([A-Za-z_]\w{0,80}?(?:Hex|_hex))\s*\(\s*(\d{1,4})\s*\)/g;
+const RANDOM_VALUE_NAME = /random|token|secret|nonce|salt/i;
+const NODE_RANDOM_BYTES_HEX =
+  /(?<![\w$])randomBytes\s*\(\s*(\d{1,4})\s*\)\s*\.toString\s*\(\s*["'`]hex["'`]\s*\)/g;
+const PYTHON_BYTES_HEX =
+  /(?<![\w$])(?:urandom|token_bytes)\s*\(\s*(\d{1,4})\s*\)\s*\.hex\s*\(\s*\)/g;
+const COMMENT_LINE = /^\s*(?:\/\/|#|\*|\/\*|--)/;
+
+/** The length an {@link EncodedLength} describes, in words: "32 bytes, hex-encoded as 64 characters". */
+export function describeEncodedLength(length: EncodedLength): string {
+  return `${length.bytes} bytes, hex-encoded as ${length.characters} characters`;
+}
+
+function extractEncodedLengths(lines: string[], filePath: string, out: ExtractedFormula[]): void {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!/hex/i.test(line) || COMMENT_LINE.test(line)) continue;
+    const found: Array<{ expression: string; bytes: number }> = [];
+    for (const m of line.matchAll(HEX_HELPER_CALL)) {
+      if (RANDOM_VALUE_NAME.test(m[1])) found.push({ expression: m[0], bytes: Number(m[2]) });
+    }
+    for (const m of line.matchAll(NODE_RANDOM_BYTES_HEX)) {
+      found.push({ expression: m[0], bytes: Number(m[1]) });
+    }
+    for (const m of line.matchAll(PYTHON_BYTES_HEX)) {
+      found.push({ expression: m[0], bytes: Number(m[1]) });
+    }
+    for (const { expression, bytes } of found) {
+      if (bytes <= 0) continue;
+      const encodedLength: EncodedLength = { encoding: "hex", bytes, characters: bytes * 2 };
+      out.push({
+        kind: "constant",
+        expression,
+        description: describeEncodedLength(encodedLength),
+        name: null,
+        resolvedValue: String(encodedLength.characters),
+        filePath,
+        startLine: i + 1,
+        endLine: i + 1,
+        symbolContext: null,
+        encodedLength,
+      });
+    }
+  }
 }
 
 // ============================================================================

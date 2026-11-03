@@ -646,3 +646,71 @@ export function renderSchemaReference(
   }
   return out.join("\n").trimEnd();
 }
+
+/** #1578 — characters of column defaults the BRD's data dictionary prompt may carry. */
+export const COLUMN_DEFAULTS_PROMPT_MAX_CHARS = 8_000;
+/** Longest default value written into that block. */
+const DEFAULT_VALUE_MAX = 80;
+
+/**
+ * Database text in the column-defaults block: {@link promptSchemaText}, and a
+ * run of three or more `=` spaced out, so no default reads as the block's
+ * own `=== … ===` lines (a quoted default can hold any text).
+ */
+function defaultsText(value: string): string {
+  return promptSchemaText(value).replace(/={3,}/g, (run) => run.split("").join(" "));
+}
+
+/**
+ * #1578 — the column defaults the database declares, for the data dictionary
+ * of a business-requirements document. Run 10 wrote that dictionary's Default
+ * column from prose facts and got defaults wrong; the database has them. One
+ * line per column that has a default, `table.column = default`, until
+ * `maxChars`; the rest are counted. Empty when no column of the inventory has a
+ * default (only a live read carries them: a stored schema graph and
+ * repository SQL do not), so a prompt without one is unchanged.
+ *
+ * A name or a default is database text: it is put on one line and cannot read
+ * as the block's fence ({@link promptSchemaText}).
+ */
+export function renderColumnDefaultsBlock(
+  inventory: SchemaInventory,
+  maxChars = COLUMN_DEFAULTS_PROMPT_MAX_CHARS,
+): string {
+  if (!isTypedInventory(inventory)) return "";
+  const qualify = schemaNamesOf(inventory.tables).length > 1;
+  const lines: string[] = [];
+  let used = 0;
+  let more = 0;
+  for (const table of inventory.tables) {
+    for (const col of table.columns) {
+      if (col.defaultValue == null || col.defaultValue.trim() === "") continue;
+      const value = defaultsText(col.defaultValue);
+      const clipped =
+        value.length > DEFAULT_VALUE_MAX ? `${value.slice(0, DEFAULT_VALUE_MAX - 1)}…` : value;
+      const line = `${defaultsText(promptName(table, qualify))}.${defaultsText(col.name)} = ${clipped}`;
+      if (more === 0 && used + line.length + 1 <= maxChars) {
+        lines.push(line);
+        used += line.length + 1;
+      } else {
+        more += 1;
+      }
+    }
+  }
+  if (lines.length === 0) return "";
+  return [
+    `=== COLUMN DEFAULTS — declared by the database (${inventory.label}). Format: table.column = default ===`,
+    "- In a data dictionary's Default column, give a column listed here the default listed here, as the database declares it.",
+    // Said only of a complete list: past the cap, an unlisted column can have one.
+    ...(more === 0
+      ? [
+          "- Any other column of a table named here has no default in the database: write `—`, or the rule that sets its value only where the facts state one.",
+        ]
+      : []),
+    ...lines,
+    ...(more > 0
+      ? [`(${more} more column default${more === 1 ? " is" : "s are"} not listed.)`]
+      : []),
+    "=== END COLUMN DEFAULTS ===",
+  ].join("\n");
+}
