@@ -24,11 +24,110 @@ export interface ProductEdgeInfo {
   targetFile?: string | null;
 }
 
+/**
+ * #1732 — a repo at the far end of a cross-product edge (#1724): another
+ * product's, so it is named, never described. A readable one is labelled
+ * `owner/name (Product)`; one the caller cannot read carries the restricted
+ * relabel, and its evidence is withheld.
+ */
+export interface ExternalRepoInfo {
+  repoConnectionId: string;
+  label: string;
+  restricted: boolean;
+}
+
+/**
+ * #1732 — what a document calls a repo the person who generated it could not
+ * read. A document is shared, so it does not say "you".
+ */
+export const RESTRICTED_REPO_LABEL = "A restricted repository";
+
 export interface UnifiedDocInput {
   productName: string;
   productDescription: string;
   repos: ProductRepoInfo[];
+  /** Edges between the product's repos, and (#1732) to the `externalRepos`. */
   edges: ProductEdgeInfo[];
+  /** #1732 — the far ends of the product's cross-product edges. */
+  externalRepos?: ExternalRepoInfo[];
+}
+
+/** #1732 — how a document names, draws and attributes the repos its edges touch. */
+export interface RepoNaming {
+  /** The short name: the repo name, or an external repo's label. */
+  name(repoConnectionId: string): string;
+  /** The full name: `owner/name`, or an external repo's label. */
+  full(repoConnectionId: string): string;
+  /** A Mermaid node id. An external repo's is positional, so no id is disclosed. */
+  nodeId(repoConnectionId: string): string;
+  /** Whether it is a repo the caller cannot read. */
+  restricted(repoConnectionId: string): boolean;
+}
+
+/** Make text safe for a Markdown table cell (and a Mermaid label): no `|`, quote or line break. */
+export function docCell(text: string | null | undefined): string {
+  // Stored evidence is JSON written by older code and by hand: a field may be missing.
+  return String(text ?? "")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\|/g, "\\|")
+    .replace(/"/g, "'");
+}
+
+export function repoNaming(
+  repos: readonly ProductRepoInfo[],
+  externalRepos: readonly ExternalRepoInfo[] = [],
+): RepoNaming {
+  const own = new Map(repos.map((r) => [r.repoConnectionId, r]));
+  const external = new Map(externalRepos.map((r, i) => [r.repoConnectionId, { ...r, i }]));
+  return {
+    name: (id) => own.get(id)?.repoName ?? external.get(id)?.label ?? "unknown",
+    full: (id) => {
+      const repo = own.get(id);
+      if (repo) return `${repo.ownerOrOrg}/${repo.repoName}`;
+      return external.get(id)?.label ?? "unknown";
+    },
+    nodeId: (id) => {
+      const ext = external.get(id);
+      return ext ? `__ext${ext.i}` : sanitizeMermaidId(id);
+    },
+    restricted: (id) => external.get(id)?.restricted === true,
+  };
+}
+
+/**
+ * #1732 (#1727) — the repo an evidence entry's file is in: the one it records,
+ * or, for evidence detected before it recorded one, the end whose file it is.
+ * A topic's or a table's evidence names both ends, the source's first.
+ */
+export function evidenceRepoId(
+  edge: Pick<
+    ProductEdgeInfo,
+    "sourceRepoId" | "targetRepoId" | "evidence" | "sourceFile" | "targetFile"
+  >,
+  index: number,
+): string {
+  const ev = edge.evidence[index];
+  if (ev.repoConnectionId) return ev.repoConnectionId;
+  const bothEnds =
+    edge.evidence.length === 2 &&
+    (ev.matchType === "event_topic" || ev.matchType === "shared_table");
+  if (bothEnds) return index === 0 ? edge.sourceRepoId : edge.targetRepoId;
+  return ev.filePath === edge.targetFile && ev.filePath !== edge.sourceFile
+    ? edge.targetRepoId
+    : edge.sourceRepoId;
+}
+
+/**
+ * #1732 — an edge's evidence, each entry with its repo. An edge to a repo the
+ * caller cannot read shows none: its own side's evidence can name the far repo
+ * ("Spec references billing").
+ */
+export function visibleEvidence(
+  edge: ProductEdgeInfo,
+  naming: RepoNaming,
+): Array<ProductEdgeEvidence & { repoConnectionId: string }> {
+  if (naming.restricted(edge.sourceRepoId) || naming.restricted(edge.targetRepoId)) return [];
+  return edge.evidence.map((ev, i) => ({ ...ev, repoConnectionId: evidenceRepoId(edge, i) }));
 }
 
 export interface GeneratedDoc {
@@ -48,11 +147,8 @@ export interface GeneratedDoc {
  */
 export function generateUnifiedArchitectureDoc(input: UnifiedDocInput): GeneratedDoc {
   const { productName, productDescription, repos, edges } = input;
-
-  const repoMap = new Map<string, ProductRepoInfo>();
-  for (const repo of repos) {
-    repoMap.set(repo.repoConnectionId, repo);
-  }
+  const externalRepos = input.externalRepos ?? [];
+  const naming = repoNaming(repos, externalRepos);
 
   const sections: string[] = [];
 
@@ -69,27 +165,38 @@ export function generateUnifiedArchitectureDoc(input: UnifiedDocInput): Generate
 
   // Service Map (Mermaid)
   sections.push("## Service Map\n");
-  sections.push(generateServiceMapDiagram(repos, edges, repoMap));
+  sections.push(generateServiceMapDiagram(repos, edges, externalRepos, naming));
   sections.push("");
+  // #1732 — say which nodes are another product's.
+  const externalIds = new Set(externalRepos.map((r) => r.repoConnectionId));
+  const crossEdges = edges.filter(
+    (e) => externalIds.has(e.sourceRepoId) || externalIds.has(e.targetRepoId),
+  ).length;
+  if (crossEdges > 0) {
+    sections.push(
+      `_${crossEdges === 1 ? "1 link reaches" : `${crossEdges} links reach`} a repository of another product, drawn dashed and named \`owner/name (Product)\`._`,
+    );
+    sections.push("");
+  }
 
   // API Contracts
   sections.push("## API Contracts\n");
-  sections.push(generateApiContractsSection(edges, repoMap));
+  sections.push(generateApiContractsSection(edges, naming));
   sections.push("");
 
   // Data Flow
   sections.push("## Data Flow\n");
-  sections.push(generateDataFlowDiagram(repos, edges, repoMap));
+  sections.push(generateDataFlowDiagram(edges, naming));
   sections.push("");
 
   // Cross-Cutting Concerns
   sections.push("## Cross-Cutting Concerns\n");
-  sections.push(generateCrossCuttingSection(repos, repoMap));
+  sections.push(generateCrossCuttingSection(repos));
   sections.push("");
 
   // Provenance
   sections.push("## Provenance\n");
-  const provenance = generateProvenance(edges, repoMap);
+  const provenance = generateProvenance(edges, naming);
   sections.push(provenance.markdown);
   sections.push("");
 
@@ -110,34 +217,41 @@ export function generateUnifiedArchitectureDoc(input: UnifiedDocInput): Generate
 function generateServiceMapDiagram(
   repos: ProductRepoInfo[],
   edges: ProductEdgeInfo[],
-  _repoMap: Map<string, ProductRepoInfo>,
+  externalRepos: ExternalRepoInfo[],
+  naming: RepoNaming,
 ): string {
   const lines: string[] = ["```mermaid", "graph TB"];
 
   // Add nodes
   for (const repo of repos) {
     const label = repo.role ? `${repo.repoName}\\n[${repo.role}]` : repo.repoName;
-    const id = sanitizeMermaidId(repo.repoConnectionId);
-    lines.push(`    ${id}["${label}"]`);
+    lines.push(`    ${naming.nodeId(repo.repoConnectionId)}["${docCell(label)}"]`);
+  }
+  // #1732 — another product's repos, the far ends of cross-product edges.
+  for (const ext of externalRepos) {
+    lines.push(`    ${naming.nodeId(ext.repoConnectionId)}["${docCell(ext.label)}"]`);
   }
 
   // Add edges
   for (const edge of edges) {
-    const sourceId = sanitizeMermaidId(edge.sourceRepoId);
-    const targetId = sanitizeMermaidId(edge.targetRepoId);
     const label = `${edge.edgeType} (${(edge.confidence * 100).toFixed(0)}%)`;
-    lines.push(`    ${sourceId} -->|"${label}"| ${targetId}`);
+    lines.push(
+      `    ${naming.nodeId(edge.sourceRepoId)} -->|"${label}"| ${naming.nodeId(edge.targetRepoId)}`,
+    );
+  }
+
+  if (externalRepos.length > 0) {
+    lines.push("    classDef external stroke-dasharray: 5 5");
+    lines.push(
+      `    class ${externalRepos.map((r) => naming.nodeId(r.repoConnectionId)).join(",")} external`,
+    );
   }
 
   lines.push("```");
   return lines.join("\n");
 }
 
-function generateDataFlowDiagram(
-  _repos: ProductRepoInfo[],
-  edges: ProductEdgeInfo[],
-  repoMap: Map<string, ProductRepoInfo>,
-): string {
+function generateDataFlowDiagram(edges: ProductEdgeInfo[], naming: RepoNaming): string {
   // Only include call/produces/consumes edges for data flow
   const dataEdges = edges.filter((e) => ["calls", "produces", "consumes"].includes(e.edgeType));
 
@@ -154,16 +268,13 @@ function generateDataFlowDiagram(
     participants.add(edge.targetRepoId);
   }
   for (const pid of participants) {
-    const repo = repoMap.get(pid);
-    if (repo) {
-      lines.push(`    participant ${sanitizeMermaidId(pid)} as ${repo.repoName}`);
-    }
+    lines.push(`    participant ${naming.nodeId(pid)} as ${docCell(naming.name(pid))}`);
   }
 
   // Add interactions
   for (const edge of dataEdges) {
-    const src = sanitizeMermaidId(edge.sourceRepoId);
-    const tgt = sanitizeMermaidId(edge.targetRepoId);
+    const src = naming.nodeId(edge.sourceRepoId);
+    const tgt = naming.nodeId(edge.targetRepoId);
     const arrow = edge.edgeType === "calls" ? "->>" : "-->>";
     lines.push(`    ${src}${arrow}${tgt}: ${edge.edgeType}`);
   }
@@ -172,10 +283,7 @@ function generateDataFlowDiagram(
   return lines.join("\n");
 }
 
-function generateApiContractsSection(
-  edges: ProductEdgeInfo[],
-  repoMap: Map<string, ProductRepoInfo>,
-): string {
+function generateApiContractsSection(edges: ProductEdgeInfo[], naming: RepoNaming): string {
   const callEdges = edges.filter((e) => e.edgeType === "calls");
 
   if (callEdges.length === 0) {
@@ -188,21 +296,18 @@ function generateApiContractsSection(
   ];
 
   for (const edge of callEdges) {
-    const source = repoMap.get(edge.sourceRepoId);
-    const target = repoMap.get(edge.targetRepoId);
-    const evidenceSummary = edge.evidence.map((e) => e.snippet || e.pattern).join("; ");
+    const evidenceSummary = visibleEvidence(edge, naming)
+      .map((e) => e.snippet || e.pattern)
+      .join("; ");
     lines.push(
-      `| ${source?.repoName ?? "unknown"} | ${target?.repoName ?? "unknown"} | ${(edge.confidence * 100).toFixed(0)}% | ${evidenceSummary} |`,
+      `| ${docCell(naming.name(edge.sourceRepoId))} | ${docCell(naming.name(edge.targetRepoId))} | ${(edge.confidence * 100).toFixed(0)}% | ${docCell(evidenceSummary)} |`,
     );
   }
 
   return lines.join("\n");
 }
 
-function generateCrossCuttingSection(
-  repos: ProductRepoInfo[],
-  _repoMap: Map<string, ProductRepoInfo>,
-): string {
+function generateCrossCuttingSection(repos: ProductRepoInfo[]): string {
   const lines: string[] = ["| Service | Role | Repository |", "|---------|------|------------|"];
 
   for (const repo of repos) {
@@ -214,22 +319,26 @@ function generateCrossCuttingSection(
   return lines.join("\n");
 }
 
-function generateProvenance(
+/**
+ * Every evidence file, credited to the repo it is in (#1732, #1727: it was
+ * credited to the edge's source, so a topic's publisher file read as the
+ * subscriber's). Evidence from a repo the caller cannot read is left out.
+ */
+export function generateProvenance(
   edges: ProductEdgeInfo[],
-  repoMap: Map<string, ProductRepoInfo>,
+  naming: RepoNaming,
 ): { markdown: string; items: Array<{ repo: string; file?: string; commitSha?: string }> } {
   const items: Array<{ repo: string; file?: string; commitSha?: string }> = [];
   const lines: string[] = ["| Repo | File | Evidence |", "|------|------|----------|"];
 
   const seen = new Set<string>();
   for (const edge of edges) {
-    for (const ev of edge.evidence) {
-      const sourceRepo = repoMap.get(edge.sourceRepoId);
-      const key = `${sourceRepo?.repoName}:${ev.filePath}`;
+    for (const ev of visibleEvidence(edge, naming)) {
+      const key = `${ev.repoConnectionId}:${ev.filePath}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const repoName = sourceRepo ? `${sourceRepo.ownerOrOrg}/${sourceRepo.repoName}` : "unknown";
-      lines.push(`| ${repoName} | ${ev.filePath} | ${ev.pattern} |`);
+      const repoName = naming.full(ev.repoConnectionId);
+      lines.push(`| ${docCell(repoName)} | ${docCell(ev.filePath)} | ${docCell(ev.pattern)} |`);
       items.push({ repo: repoName, file: ev.filePath });
     }
   }

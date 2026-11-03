@@ -138,6 +138,12 @@ export interface ProductEdgeEvidence {
   pattern: string;
   snippet?: string;
   matchType: string;
+  /**
+   * #1732 (#1727) — the repo the file is in. An edge's evidence can come from
+   * both ends (a topic's publisher and subscriber, a table's two users), so the
+   * edge's source is not always it. Absent on evidence detected before #1732.
+   */
+  repoConnectionId?: string;
 }
 
 export const productEdgeEvidenceSchema = z.object({
@@ -146,6 +152,7 @@ export const productEdgeEvidenceSchema = z.object({
   pattern: z.string(),
   snippet: z.string().optional(),
   matchType: z.string(),
+  repoConnectionId: z.string().optional(),
 });
 
 export const productEdgeSchema = z.object({

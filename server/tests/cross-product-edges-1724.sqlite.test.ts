@@ -183,6 +183,26 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         },
       };
     };
+    /** #1732 — the product's generated documents, as `who` may read them. */
+    const documents = async (productId: string, who: Who = "bob") => {
+      const res = await request(app())
+        .get(`/api/products/${productId}/documents`)
+        .set("Authorization", bearer(who));
+      expect(res.status).toBe(200);
+      return res.body.data as Array<{
+        docType: string;
+        repoId: string | null;
+        content: string;
+        metadata: string;
+      }>;
+    };
+    const unifiedDoc = async (productId: string, who: Who = "bob") => {
+      const doc = (await documents(productId, who)).find(
+        (d) => d.docType === "unified-architecture",
+      );
+      expect(doc, "the unified architecture document").toBeDefined();
+      return doc!;
+    };
     const send = (method: "post" | "patch" | "delete", url: string, who: Who, body?: object) =>
       request(app())[method](url).set("Authorization", bearer(who)).send(body);
     /** The key detection matches an edge by, with the resource's kind and name. */
@@ -370,6 +390,38 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             expect.objectContaining({ label: `openzigs/${k}` }),
           ),
         ]);
+      });
+
+      it("#1732 — the generated documents draw them, naming each far repo `owner/name (Product)`", async () => {
+        const doc = await unifiedDoc(P.billing);
+        expect(doc.content).not.toContain("No API contract edges detected.");
+        expect(doc.content).not.toContain("No data flow edges detected.");
+        expect(doc.content).toContain('["openzigs/orders (Orders)"]');
+        expect(doc.content).toContain('["openzigs/notify (Notify)"]');
+        expect(doc.content).toMatch(/\| billing \| openzigs\/orders \(Orders\) \| \d+% \|/);
+        expect(doc.content).toContain("participant __ext0 as openzigs/orders (Orders)");
+        expect(doc.content).toContain("7 links reach a repository of another product");
+        // A reader who cannot open a far repo is not shown a document naming it (#1258).
+        expect(JSON.parse(doc.metadata).repoConnectionIds).toEqual(
+          expect.arrayContaining([R.billing, R.orders, R.notify]),
+        );
+        const perService = (await documents(P.billing)).find((d) => d.docType === "per-service")!;
+        expect(perService.content).toContain("openzigs/orders (Orders)");
+        expect(JSON.parse(perService.metadata).repoConnectionIds).toEqual(
+          expect.arrayContaining([R.billing, R.orders, R.notify]),
+        );
+      });
+
+      it("#1732 (#1727) — the provenance credits each evidence file to the repo it is in", async () => {
+        const { content } = await unifiedDoc(P.billing);
+        const provenance = content.slice(content.indexOf("## Provenance"));
+        // `order.created`: Billing subscribes, Orders publishes from its own file.
+        expect(provenance).toContain("| openzigs/orders (Orders) | src/events/publisher.ts |");
+        expect(provenance).not.toContain("| openzigs/billing | src/events/publisher.ts |");
+        // The `orders` table: written by Orders, read by Billing's repository code.
+        expect(provenance).toContain("| openzigs/billing | src/db/billing-repo.ts |");
+        expect(provenance).not.toContain("| openzigs/orders (Orders) | src/db/billing-repo.ts |");
+        expect(provenance).toContain("| openzigs/orders (Orders) | src/db/orders-repo.ts |");
       });
 
       it("is idempotent: a second run changes no row", async () => {
@@ -720,6 +772,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const res = await analyze(P.billing);
         expect(res.status).toBe(200);
         expect(res.body.data.crossProductEdges).toBe(7);
+      });
+
+      it("#1732 — the documents draw it under the restricted relabel, with nothing of it", async () => {
+        expect((await analyze(P.billing)).status).toBe(200);
+        const doc = await unifiedDoc(P.billing);
+        expect(doc.content).toContain('["A restricted repository"]');
+        expect(doc.content).not.toContain(R.ledger);
+        expect(doc.content).not.toMatch(/ledger/i);
+        // Not a source of the document: naming nothing of it, it hides nothing from anyone.
+        expect(JSON.parse(doc.metadata).repoConnectionIds).not.toContain(R.ledger);
       });
     });
 

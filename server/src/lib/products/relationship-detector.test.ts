@@ -81,6 +81,7 @@ describe("relationship-detector", () => {
         direction: "consumes",
       });
       expect(edge!.resource).toBeUndefined();
+      expect(edge!.evidence[0].repoConnectionId).toBe("r1");
     });
   });
 
@@ -341,6 +342,11 @@ describe("relationship-detector", () => {
         "topic_client_call",
         "asyncapi_channel",
       ]);
+      // #1732 (#1727) — each side's file is credited to that side's repo.
+      expect(edges[0].evidence.map((e) => [e.filePath, e.repoConnectionId])).toEqual([
+        ["src/c.ts", "sub"],
+        ["asyncapi.yaml", "pub"],
+      ]);
     });
 
     it("is less confident with no AsyncAPI document on either side", () => {
@@ -403,6 +409,11 @@ describe("relationship-detector", () => {
         direction: "writes",
         resource: { kind: "table", name: "orders" },
       });
+      // #1732 (#1727) — each user's file is credited to that user's repo.
+      expect(edges[0].evidence.map((e) => [e.filePath, e.repoConnectionId])).toEqual([
+        ["w.sql", "writer"],
+        ["r.py", "reader"],
+      ]);
     });
 
     it("is model coupling when both only read it", () => {
@@ -464,6 +475,16 @@ describe("relationship-detector", () => {
       expect(reversed).toEqual(forward);
       // Between two readers the edge runs from the lower id.
       expect(forward).toContain("r-a>r-b:consumes");
+      // #1732 (#1727) — every evidence entry names the repo its file is in: the
+      // edge's source for one-sided evidence, each end for a table's two users.
+      for (const edge of detectRelationships(repos)) {
+        const owners = edge.evidence.map((e) => e.repoConnectionId);
+        expect(owners).toEqual(
+          edge.evidence.length === 2 ? [edge.sourceRepoId, edge.targetRepoId] : [edge.sourceRepoId],
+        );
+        for (const e of edge.evidence)
+          expect(e.filePath.startsWith(e.repoConnectionId!)).toBe(e.matchType !== "type_sharing");
+      }
     });
 
     it("draws one edge per table, and none for a table one repo alone touches", () => {

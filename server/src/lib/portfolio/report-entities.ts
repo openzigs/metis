@@ -162,9 +162,17 @@ export interface CheckedProse {
 export class EntityIndex {
   private readonly allowed = new Set<string>();
   private readonly productNames: Array<[string, string]>;
+  /** #1732 — each lowercased product name and the ids that carry it, longest first. */
+  private readonly namesLongestFirst: Array<[string, string[]]>;
 
   constructor(list: EntityAllowList) {
     this.productNames = [...list.products].map(([id, name]) => [id, name.toLowerCase()]);
+    const byName = new Map<string, string[]>();
+    for (const [id, name] of this.productNames) {
+      // An empty name names nothing (and would never advance the scan below).
+      if (name) byName.set(name, [...(byName.get(name) ?? []), id]);
+    }
+    this.namesLongestFirst = [...byName].sort(([a], [b]) => b.length - a.length);
     for (const [, name] of this.productNames) this.allowed.add(name);
     for (const text of list.texts ?? []) {
       for (const s of sentences(text)) {
@@ -181,18 +189,28 @@ export class EntityIndex {
     return this.allowed.has(candidate.toLowerCase());
   }
 
-  /** The products a sentence names, as whole words. */
+  /**
+   * The products a sentence names, as whole words. #1732 — the longest name
+   * claims its span first, so "Orders" is not found again inside "Orders v3":
+   * a reader who may read "Orders v3" but not another workspace's "Orders"
+   * would otherwise lose a paragraph that never named it. Products that share
+   * one name are all named by it.
+   */
   mentionsIn(sentence: string): string[] {
     const lower = sentence.toLowerCase();
     const word = (c: string | undefined) => c !== undefined && /[a-z0-9]/.test(c);
-    return this.productNames
-      .filter(([, name]) => {
-        for (let at = lower.indexOf(name); at !== -1; at = lower.indexOf(name, at + 1)) {
-          if (!word(lower[at - 1]) && !word(lower[at + name.length])) return true;
-        }
-        return false;
-      })
-      .map(([id]) => id);
+    const claimed = new Uint8Array(lower.length);
+    const named = new Set<string>();
+    for (const [name, ids] of this.namesLongestFirst) {
+      for (let at = lower.indexOf(name); at !== -1; at = lower.indexOf(name, at + 1)) {
+        const end = at + name.length;
+        if (word(lower[at - 1]) || word(lower[end])) continue;
+        if (claimed.subarray(at, end).some((c) => c === 1)) continue;
+        claimed.fill(1, at, end);
+        for (const id of ids) named.add(id);
+      }
+    }
+    return this.productNames.filter(([id]) => named.has(id)).map(([id]) => id);
   }
 }
 

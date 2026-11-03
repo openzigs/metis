@@ -21,6 +21,7 @@ vi.mock("../discussions/access.js", () => discussions);
 const store = vi.hoisted(() => ({ getPortfolioAssessment: vi.fn() }));
 vi.mock("./assessment-store.js", () => store);
 
+const { EntityIndex } = await import("./report-entities.js");
 const {
   renderPortfolioAssessmentMarkdown,
   resolveReaderAccess,
@@ -684,6 +685,28 @@ describe("viewPortfolioAssessment — the BA report (#1624)", () => {
     });
     store.getPortfolioAssessment.mockResolvedValue(a);
     expect((await view())!.report!.requirements.map((r) => r.text)).toEqual(["Reset by email"]);
+  });
+
+  it("#1732 — a reader of 'Orders v3' only still sees an entry about it, though 'Orders' is in its name", async () => {
+    // The mentions the report records, by the same index the report builds (#1624).
+    const index = new EntityIndex({
+      products: new Map([
+        ["p1", "Orders"],
+        ["p2", "Orders v3"],
+      ]),
+    });
+    const a = withReport();
+    a.report!.requirements.push({
+      text: "Orders v3 posts the refund.",
+      kind: "functional",
+      nfrCategory: null,
+      mentions: index.mentionsIn("Orders v3 posts the refund."),
+    });
+    store.getPortfolioAssessment.mockResolvedValue(a);
+    // The reader reads p2 ("Orders v3") and not p1 ("Orders").
+    db.product.findMany.mockResolvedValue([{ id: "p2", name: "Orders v3" }]);
+    const v = (await view())!;
+    expect(v.report!.requirements.map((r) => r.text)).toContain("Orders v3 posts the refund.");
   });
 
   it("a paragraph naming a product the reader cannot read is dropped (defence in depth)", async () => {
