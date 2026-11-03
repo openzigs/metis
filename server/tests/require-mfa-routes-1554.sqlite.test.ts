@@ -16,11 +16,11 @@
  * the `admin` role) as well as on the `/api/admin` prefix — or when the gate
  * runs before the route's authorization.
  */
-import express, { Router as expressRouter } from "express";
+import { Router as expressRouter } from "express";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import request from "supertest";
-import type { Application } from "express";
+import type { Application, Request, Response } from "express";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import {
@@ -50,7 +50,6 @@ const { issueTokens, verifyAccessToken } = await import("../src/lib/auth/jwt.js"
 const { requireMfa } = await import("../src/lib/auth/require-mfa.js");
 const { getPermissionsForRole } = await import("@metis/shared");
 const { requireAuth, refreshAuthenticatedUser } = await import("../src/middleware/auth.js");
-const { errorHandler } = await import("../src/middleware/error-handler.js");
 
 type Method = "get" | "post" | "put" | "patch" | "delete";
 
@@ -390,23 +389,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     // #1564 item 3 — `refreshAuthenticatedUser` replaces `req.user` with the live
     // identity; a gate mounted behind it must still see the session's verdict.
+    // The chain is driven directly, not mounted on a throwaway app (an unthrottled
+    // test route is a CodeQL js/missing-rate-limiting alert).
     it.each([
-      [false, 403],
-      [true, 200],
-      [undefined, 200],
+      [false, "MFA_REQUIRED"],
+      [true, undefined],
+      [undefined, undefined],
     ] as const)(
-      "behind refreshAuthenticatedUser, a session with mfaPassed %s gets %i",
-      async (mfaPassed, status) => {
-        const gatedApp = express();
-        gatedApp.post("/gated", requireAuth, refreshAuthenticatedUser, requireMfa, (_req, res) => {
-          res.json({ success: true });
-        });
-        gatedApp.use(errorHandler);
-        const res = await request(gatedApp)
-          .post("/gated")
-          .set("Authorization", `Bearer ${session(mfaPassed)}`);
-        expect(res.status).toBe(status);
-        if (status === 403) expect(res.body.error.code).toBe("MFA_REQUIRED");
+      "behind refreshAuthenticatedUser, a session with mfaPassed %s is refused with %s",
+      async (mfaPassed, refusal) => {
+        const req = {
+          headers: { authorization: `Bearer ${session(mfaPassed)}` },
+        } as unknown as Request;
+        let error: unknown;
+        for (const mw of [requireAuth, refreshAuthenticatedUser, requireMfa]) {
+          error = await new Promise<unknown>((resolve) => {
+            void mw(req, {} as Response, resolve);
+          });
+          if (error) break;
+        }
+        expect((error as { code?: string } | undefined)?.code).toBe(refusal);
+        // The gate ran on the live identity (which has no `sid`), not on the token.
+        expect(req.user?.userId).toBe("u-admin-1554");
+        expect(req.user?.sid).toBeUndefined();
       },
     );
 
