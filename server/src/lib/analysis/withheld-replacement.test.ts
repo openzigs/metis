@@ -46,6 +46,8 @@ const current = (
   body: `${title} body`,
   priority: "medium",
   acceptanceCriteria: "[]",
+  kind: null,
+  nfrCategory: null,
   reviewStatus: null,
   reviewed: false,
   deleted: false,
@@ -204,6 +206,53 @@ describe("fieldChanges (#780)", () => {
         proposed("T", { acceptanceCriteria: JSON.stringify(["two", "One (b.go:9)"]) }),
       ),
     ).toEqual([]);
+  });
+});
+
+// #1636 — applying writes the proposal's kind, so the comparison must show a
+// reclassification; it showed `changed: false` and an empty diff.
+describe("fieldChanges — kind (#1636)", () => {
+  it("shows a proposal that only reclassifies the requirement", () => {
+    expect(
+      fieldChanges(
+        current("x", "T", { kind: "functional" }),
+        proposed("T", { kind: "non-functional", nfrCategory: "performance" }),
+      ),
+    ).toEqual([
+      { field: "kind", before: "functional", after: "non-functional" },
+      { field: "nfrCategory", before: "", after: "performance" },
+    ]);
+    expect(
+      fieldChanges(
+        current("x", "T", { kind: "non-functional", nfrCategory: "security" }),
+        proposed("T", { kind: "non-functional", nfrCategory: "performance" }),
+      ),
+    ).toEqual([{ field: "nfrCategory", before: "security", after: "performance" }]);
+  });
+
+  it("an unchanged kind is no change", () => {
+    expect(
+      fieldChanges(
+        current("x", "T", { kind: "non-functional", nfrCategory: "security" }),
+        proposed("T", { kind: "non-functional", nfrCategory: "security" }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("a proposal with no kind leaves the current kind in place", () => {
+    for (const kind of [undefined, null]) {
+      expect(
+        fieldChanges(current("x", "T", { kind: "functional" }), proposed("T", { kind })),
+      ).toEqual([]);
+    }
+  });
+
+  it("an unreviewed row whose proposal only reclassifies is planned as changed", () => {
+    const [step] = planWithheldApply(
+      [current("x", "T", { kind: "functional" })],
+      [proposed("T", { kind: "non-functional" })],
+    );
+    expect(step).toMatchObject({ kind: "replace", changed: true });
   });
 });
 

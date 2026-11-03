@@ -32,6 +32,7 @@ import {
   fieldChanges,
   fingerprintWithheldPlan,
   planWithheldApply,
+  proposesKind,
   readWithheldProposal,
   readWithheldRecord,
   type CurrentRequirementRow,
@@ -103,6 +104,8 @@ async function readCurrentRows(
       body: true,
       priority: true,
       acceptanceCriteria: true,
+      kind: true,
+      nfrCategory: true,
       reviewStatus: true,
       deletedAt: true,
       promotedStructuredId: true,
@@ -124,6 +127,8 @@ async function readCurrentRows(
     body: r.body,
     priority: r.priority,
     acceptanceCriteria: r.acceptanceCriteria,
+    kind: r.kind,
+    nfrCategory: r.nfrCategory,
     reviewStatus: r.reviewStatus,
     reviewed: reviewedIds.has(r.id),
     deleted: r.deletedAt !== null,
@@ -255,10 +260,16 @@ export async function applyWithheldReplacement(input: {
             step.kind === "replace" &&
             parseAcceptanceCriteria(step.proposed.acceptanceCriteria).length === 0 &&
             step.current.acceptanceCriteria !== null;
+          // #1636 — and one that gave no kind keeps the current kind, as the
+          // comparison (which then shows no kind change) says.
+          const keepKind = step.kind === "replace" && !proposesKind(step.proposed);
           const row = await tx.requirement.create({
             data: {
               ...step.proposed,
               ...(keepCriteria ? { acceptanceCriteria: step.current.acceptanceCriteria! } : {}),
+              ...(keepKind
+                ? { kind: step.current.kind, nfrCategory: step.current.nfrCategory }
+                : {}),
               analysisId: input.analysisId,
               projectId: input.projectId,
               ...(pair.proposal.reviewStatus ? { reviewStatus: pair.proposal.reviewStatus } : {}),
@@ -353,10 +364,10 @@ async function updateReviewed(
   proposed: WithheldProposalRow,
   actorId: string,
 ): Promise<boolean> {
-  const patch: Record<string, string> = {};
+  const patch: Record<string, string | null> = {};
   for (const c of fieldChanges(current, proposed)) {
     if (c.field === "description") patch.body = proposed.body;
-    else patch[c.field] = proposed[c.field];
+    else patch[c.field] = proposed[c.field] ?? null;
   }
   if (Object.keys(patch).length === 0) return false;
   const written = await updateRequirementWithHistoryInTransaction(

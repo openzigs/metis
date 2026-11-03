@@ -1714,7 +1714,7 @@ describe("executeImpactAnalysis — #1609 records an outcome for every project",
       extractor: ONE_CHANGE,
       mapRequirement,
       dataSourceFor: () => mockDataSource(GRAPH),
-      projectAccessible: async (projectId) => projectId !== "proj-3",
+      projectAccess: async (projectId) => (projectId === "proj-3" ? "restricted" : "accessible"),
     });
 
     expect(analyses.get("ia-o")?.status).toBe("completed");
@@ -1728,6 +1728,27 @@ describe("executeImpactAnalysis — #1609 records an outcome for every project",
     expect(mapRequirement.mock.calls.map((c) => c[1])).toEqual(["proj-1", "proj-2"]);
     // Zero-hit and skipped projects still write no item.
     expect(items.map((i) => i.projectId)).toEqual(["proj-1"]);
+  });
+
+  // #1636 — a project soft-deleted before the run executed gets its own reason
+  // rather than reading `restricted`, and is not searched either.
+  it("#1636 records a deleted project as not-checked/deleted and never searches it", async () => {
+    const { prisma, analyses } = serviceePrismaMock();
+    analyses.set("ia-d", { id: "ia-d", sourceText: "text", documentId: null });
+    const mapRequirement = vi.fn(async (_req: unknown, _projectId: string) => [HIT]);
+    await executeImpactAnalysis("ia-d", ["proj-1", "proj-2"], {
+      prisma: prisma as never,
+      extractor: ONE_CHANGE,
+      mapRequirement,
+      dataSourceFor: () => mockDataSource(GRAPH),
+      projectAccess: async (projectId) => (projectId === "proj-2" ? "deleted" : "accessible"),
+    });
+
+    expect(analyses.get("ia-d")?.status).toBe("completed");
+    expect(finalProjectsWrite(prisma)).toEqual({
+      updateMany: [write("proj-1", "affected"), write("proj-2", "not-checked", "deleted")],
+    });
+    expect(mapRequirement.mock.calls.map((c) => c[1])).toEqual(["proj-1"]);
   });
 
   it("marks the project a failed run was working on as error, keeps the settled ones, and leaves unreached ones unrecorded", async () => {
@@ -1758,7 +1779,7 @@ describe("executeImpactAnalysis — #1609 records an outcome for every project",
       extractor: ONE_CHANGE,
       mapRequirement,
       dataSourceFor: () => mockDataSource(GRAPH),
-      projectAccessible: async () => {
+      projectAccess: async () => {
         throw new Error("access store down");
       },
     });

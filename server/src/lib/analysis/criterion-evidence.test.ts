@@ -9,6 +9,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { SynthesisFieldRepair, SynthesizedRequirement } from "@metis/shared";
+import { synthesizedRequirementSchema } from "@metis/shared";
 import { repairSynthesizedRequirement } from "./synthesis-reply-repair.js";
 import { buildApprovedRequirementSet } from "./approved-requirement-set.js";
 import type { StructuredRequirement } from "./types/requirements.js";
@@ -191,5 +192,75 @@ describe("#1610 — the approval checkpoint carries criterionEvidence with the c
       },
     });
     expect(out.requirements[0]).not.toHaveProperty("criterionEvidence");
+  });
+});
+
+// #1636 — the join used to flat-map every part's list unmerged and uncapped, so
+// one criterion could appear once per part and the list could pass the schema's
+// `max(20)`, which `.catch(undefined)` would turn into no evidence at all.
+describe("#1636 — joining items merges and caps their per-criterion evidence", () => {
+  const joined = (parts: SynthesizedRequirement[]) =>
+    buildApprovedRequirementSet({
+      structured: [structured("REQ-1", "Never oversell")],
+      approvedIds: new Set(["REQ-1"]),
+      synthesis: { summary: "s", requirements: parts },
+    }).requirements[0]!;
+
+  it("lists a criterion two items share once, with both items' findings", () => {
+    const row = joined([
+      synth("Validate stock", {
+        evidenceFindingIndexes: [0],
+        acceptanceCriteria: [A],
+        criterionEvidence: [{ criterion: A, evidenceFindingIndexes: [0] }],
+        structuredIds: ["REQ-1"],
+      }),
+      synth("Constrain stock", {
+        evidenceFindingIndexes: [1],
+        acceptanceCriteria: [A],
+        criterionEvidence: [{ criterion: ` ${A} `, evidenceFindingIndexes: [1, 0] }],
+        structuredIds: ["REQ-1"],
+      }),
+    ]);
+    expect(row.acceptanceCriteria).toEqual([A]);
+    expect(row.criterionEvidence).toEqual([{ criterion: A, evidenceFindingIndexes: [0, 1] }]);
+  });
+
+  it("stays inside the schema's 20 criteria, and keeps only criteria the join kept", () => {
+    const part = (offset: number): SynthesizedRequirement => {
+      const criteria = Array.from({ length: 15 }, (_, i) => `Criterion ${offset + i}`);
+      return synth(`Part ${offset}`, {
+        evidenceFindingIndexes: [offset],
+        acceptanceCriteria: criteria,
+        criterionEvidence: criteria.map((criterion) => ({
+          criterion,
+          evidenceFindingIndexes: [offset],
+        })),
+        structuredIds: ["REQ-1"],
+      });
+    };
+    const row = joined([part(0), part(100)]);
+    expect(row.acceptanceCriteria).toHaveLength(20);
+    expect(row.criterionEvidence).toHaveLength(20);
+    expect(row.criterionEvidence!.map((e) => e.criterion)).toEqual(row.acceptanceCriteria);
+    // Re-validating the joined row keeps the evidence rather than dropping it.
+    expect(synthesizedRequirementSchema.parse(row).criterionEvidence).toHaveLength(20);
+  });
+
+  it("drops a finding the joined requirement no longer cites", () => {
+    const row = joined([
+      synth("Validate stock", {
+        evidenceFindingIndexes: [0],
+        acceptanceCriteria: [A],
+        // 9 is not one of this item's findings, so the join must not keep it.
+        criterionEvidence: [{ criterion: A, evidenceFindingIndexes: [0, 9] }],
+        structuredIds: ["REQ-1"],
+      }),
+      synth("Constrain stock", {
+        evidenceFindingIndexes: [1],
+        acceptanceCriteria: [B],
+        structuredIds: ["REQ-1"],
+      }),
+    ]);
+    expect(row.criterionEvidence).toEqual([{ criterion: A, evidenceFindingIndexes: [0] }]);
   });
 });

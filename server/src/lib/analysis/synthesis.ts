@@ -40,6 +40,7 @@ import { buildSynthesisPrompt } from "./prompts.js";
 import { cleanSourceIds, type SynthesisSourceItem } from "./source-items.js";
 import { salvageSynthesisPrefix } from "./synthesis-salvage.js";
 import { repairSynthesizedRequirement, repairSynthesisReply } from "./synthesis-reply-repair.js";
+import { mergeCriterionEvidence } from "./criterion-evidence.js";
 
 const log = createChildLogger("analysis-synthesis");
 
@@ -538,37 +539,6 @@ const normalizeTitle = (title: string): string => title.trim().toLowerCase().rep
 const union = <T>(a: readonly T[], b: readonly T[], cap: number): T[] =>
   Array.from(new Set([...a, ...b])).slice(0, cap);
 
-type CriterionEvidence = NonNullable<SynthesizedRequirement["criterionEvidence"]>;
-
-/**
- * Issue #1610 — unite two `criterionEvidence` lists by criterion text, keeping
- * only indexes in `allowed` (the requirement's own evidence) and, when given,
- * only the criteria the requirement still has. `undefined` when nothing is left.
- */
-function mergeCriterionEvidence(
-  a: CriterionEvidence,
-  b: CriterionEvidence,
-  allowed: ReadonlySet<number>,
-  criteria?: readonly string[],
-): CriterionEvidence | undefined {
-  const keep = criteria ? new Set(criteria.map((c) => c.trim())) : null;
-  const byCriterion = new Map<string, number[]>();
-  for (const e of [...a, ...b]) {
-    const key = e.criterion.trim();
-    if (keep && !keep.has(key)) continue;
-    const list = byCriterion.get(key) ?? [];
-    for (const i of e.evidenceFindingIndexes) {
-      if (allowed.has(i) && !list.includes(i)) list.push(i);
-    }
-    byCriterion.set(key, list);
-  }
-  const out = [...byCriterion].map(([criterion, ix]) => ({
-    criterion,
-    evidenceFindingIndexes: ix.slice(0, MAX_EVIDENCE),
-  }));
-  return out.length > 0 ? out.slice(0, MAX_CRITERIA) : undefined;
-}
-
 export async function runSynthesis(
   provider: AIProvider,
   input: SynthesisInput,
@@ -664,7 +634,7 @@ export async function runSynthesis(
       const evidenceFindingIndexes = r.evidenceFindingIndexes.filter(isValidIndex);
       // #1610 — a criterion may only cite this requirement's own, real findings.
       const criterionEvidence = claimedCriterionEvidence
-        ? mergeCriterionEvidence(claimedCriterionEvidence, [], new Set(evidenceFindingIndexes))
+        ? mergeCriterionEvidence([claimedCriterionEvidence], new Set(evidenceFindingIndexes))
         : undefined;
       const clean: SynthesizedRequirement = {
         ...fields,
@@ -711,8 +681,7 @@ export async function runSynthesis(
         // links, for the criteria it kept and the findings it still cites.
         if (prior.criterionEvidence !== undefined || clean.criterionEvidence !== undefined) {
           const merged = mergeCriterionEvidence(
-            prior.criterionEvidence ?? [],
-            clean.criterionEvidence ?? [],
+            [prior.criterionEvidence ?? [], clean.criterionEvidence ?? []],
             new Set(prior.evidenceFindingIndexes),
             prior.acceptanceCriteria,
           );

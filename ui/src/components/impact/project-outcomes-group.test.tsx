@@ -8,6 +8,7 @@ import type { ImpactProjectOutcome } from "@metis/shared";
 import {
   ImpactProjectOutcomesGroup,
   impactOutcomeLabel,
+  noProjectChecked,
   quietProjectIds,
 } from "./project-outcomes-group";
 
@@ -27,6 +28,9 @@ describe("impactOutcomeLabel", () => {
     );
     expect(impactOutcomeLabel(outcome("x", "not-checked", "restricted"))).toBe(
       "Not checked: no access",
+    );
+    expect(impactOutcomeLabel(outcome("x", "not-checked", "deleted"))).toBe(
+      "Not checked: project deleted",
     );
     expect(impactOutcomeLabel(outcome("x", "not-checked", "no-index"))).toBe(
       "Not checked: no code index",
@@ -57,7 +61,36 @@ describe("quietProjectIds", () => {
   });
 });
 
+describe("noProjectChecked (#1636)", () => {
+  it("is true only when outcomes were recorded and none was searched", () => {
+    expect(
+      noProjectChecked([outcome("p-a", "not-checked", "no-index"), outcome("p-b", "error")]),
+    ).toBe(true);
+    expect(
+      noProjectChecked([
+        outcome("p-a", "not-checked", "no-index"),
+        outcome("p-b", "checked-none-affected"),
+      ]),
+    ).toBe(false);
+    expect(noProjectChecked([outcome("p-a", "affected")])).toBe(false);
+    // A run from before outcomes were recorded says nothing either way.
+    expect(noProjectChecked([])).toBe(false);
+    expect(noProjectChecked(undefined)).toBe(false);
+  });
+});
+
 describe("ImpactProjectOutcomesGroup", () => {
+  it("#1636 opens on first render when asked", () => {
+    render(
+      <ImpactProjectOutcomesGroup
+        outcomes={[outcome("p-c", "not-checked", "no-index")]}
+        projectName={projectName}
+        defaultOpen
+      />,
+    );
+    expect(screen.getByTestId("impact-project-outcomes")).toHaveAttribute("open");
+  });
+
   it("lists zero-hit and unchecked projects in one collapsed group, without the affected ones", () => {
     render(
       <ImpactProjectOutcomesGroup
@@ -89,7 +122,12 @@ describe("ImpactProjectOutcomesGroup", () => {
       />,
     );
     const row = screen.getByTestId("impact-project-outcome");
-    expect(row).toHaveTextContent("A project you cannot access — Not checked: no access");
+    // #1636 — the reader can open every project of a run they can see, so the
+    // label names whose access failed: the run's starter's.
+    expect(row).toHaveTextContent(
+      "A project the run's starter could not access — Not checked: no access",
+    );
+    expect(row).not.toHaveTextContent("you cannot");
     expect(row).not.toHaveTextContent("Secret Project");
     expect(screen.getByTestId("impact-project-outcomes").outerHTML).not.toContain("p-secret");
   });

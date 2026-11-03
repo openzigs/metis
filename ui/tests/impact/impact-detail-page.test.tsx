@@ -301,7 +301,9 @@ describe("ImpactAnalysisDetailPage", () => {
       render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
       const group = screen.getByTestId("impact-project-outcomes");
       await waitFor(() => expect(group).toHaveTextContent("Beta — Checked: nothing affected"));
-      expect(group).toHaveTextContent("A project you cannot access — Not checked: no access");
+      expect(group).toHaveTextContent(
+        "A project the run's starter could not access — Not checked: no access",
+      );
     });
 
     it("gives the quiet projects no per-project section, so a restricted project shows no content", async () => {
@@ -333,10 +335,40 @@ describe("ImpactAnalysisDetailPage", () => {
         }),
       );
       render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
-      expect(screen.getByTestId("impact-detail-empty")).toBeInTheDocument();
+      // One project was searched, so "no impact" is a finding here.
+      expect(screen.getByTestId("impact-detail-empty")).toHaveTextContent(
+        "No code impact detected for the supplied requirement change.",
+      );
       const group = screen.getByTestId("impact-project-outcomes");
+      expect(group).not.toHaveAttribute("open");
       await waitFor(() => expect(group).toHaveTextContent("Alpha — Checked: nothing affected"));
       expect(group).toHaveTextContent("Beta — Not checked: no code index");
+    });
+
+    // #1636 — with every project unchecked the empty report said "No code
+    // impact detected" over a collapsed explanation: "nobody looked" read as
+    // "safe", the confusion #1615 exists to remove.
+    it("says nothing was checked, and opens the reasons, when no project was searched", async () => {
+      mockUse.mockReturnValue(
+        state({
+          data: {
+            ...multi,
+            items: [],
+            totalImpactedSymbols: 0,
+            projectOutcomes: [
+              { projectId: "project-001", outcome: "not-checked", reason: "no-index" },
+              { projectId: "project-002", outcome: "error", reason: null },
+            ],
+          },
+        }),
+      );
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      const empty = screen.getByTestId("impact-detail-empty");
+      expect(empty).toHaveTextContent("No project was checked");
+      expect(empty).not.toHaveTextContent("No code impact detected");
+      const group = screen.getByTestId("impact-project-outcomes");
+      expect(group).toHaveAttribute("open");
+      await waitFor(() => expect(group).toHaveTextContent("Alpha — Not checked: no code index"));
     });
 
     it("lists no outcomes while the run is still going", () => {

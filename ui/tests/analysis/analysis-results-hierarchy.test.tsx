@@ -460,7 +460,7 @@ describe("requirement kind filter (#1615)", () => {
       within(list)
         .getAllByTestId("requirement-kind")
         .map((el) => el.textContent),
-    ).toEqual(["Functional", "Non-functional · performance"]);
+    ).toEqual(["Functional", "Non-functional · Performance"]);
 
     await user.click(screen.getByTestId("kind-filter-non-functional"));
     expect(within(list).getByText("Pages load in two seconds")).toBeInTheDocument();
@@ -475,6 +475,17 @@ describe("requirement kind filter (#1615)", () => {
     expect(within(list).getByText("Export to CSV")).toBeInTheDocument();
     expect(within(list).getByText("Pages load in two seconds")).toBeInTheDocument();
     expect(within(list).getByText("Legacy row")).toBeInTheDocument();
+  });
+
+  // #1636 — on a run where nothing is classified (pre-#1612, or a degraded
+  // synthesis) Functional and Non-functional would always give an empty list.
+  it("hides the kind filter when no requirement has a kind", async () => {
+    apiMock.get.mockResolvedValue(SNAPSHOT);
+    nav.search = new URLSearchParams("tab=requirements");
+    renderPage();
+    await screen.findByText("Login screen");
+    expect(screen.getByTestId("coverage-filter")).toBeInTheDocument();
+    expect(screen.queryByTestId("kind-filter")).not.toBeInTheDocument();
   });
 });
 

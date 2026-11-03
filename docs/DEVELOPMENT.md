@@ -169,6 +169,20 @@ pnpm --filter @metis/server db:migrate:postgres -- --name <change_description>
 A CI parity guard ([`server/tests/schema-parity.test.ts`](../server/tests/schema-parity.test.ts))
 fails the build if the two schemas diverge.
 
+**Reverse scripts.** Prisma Migrate has no down migrations. A migration whose reversal is
+not obvious gets a hand-applied reverse script per dialect, named after the migration it
+undoes: `server/prisma/rollbacks/<migration_name>.sql` (SQLite) and
+`server/prisma/postgres/rollbacks/<migration_name>.sql` (Postgres). Each script:
+
+- opens with a header that names the migration, gives the command that applies it
+  (`sqlite3 <db file> < …` or `psql … -f …`), and says what data the reversal loses;
+- runs in one transaction (`BEGIN`/`COMMIT` in the SQLite script; `psql -1` for the
+  Postgres one, whose DDL is idempotent like the forward migration) that undoes the DDL
+  **and** deletes the migration's row from `_prisma_migrations`, so a later
+  `prisma migrate deploy` applies it again;
+- has a test that applies the migration, the reverse script and the migration again over
+  seeded rows (for example `server/tests/requirement-kind-migration-1612.sqlite.test.ts`).
+
 ### 4.4 Commit + PR
 ```bash
 git add <only-the-files-you-touched>   # NEVER `git add -A` in this repo

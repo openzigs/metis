@@ -6,7 +6,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { matchesKindFilter, RequirementKindBadge, RequirementKindFilter } from "./RequirementKind";
+import {
+  anyRequirementKind,
+  matchesKindFilter,
+  RequirementKindBadge,
+  RequirementKindFilter,
+} from "./RequirementKind";
 
 describe("matchesKindFilter", () => {
   it("keeps everything with no filter, and only the matching kind with one", () => {
@@ -26,6 +31,14 @@ describe("matchesKindFilter", () => {
   });
 });
 
+describe("anyRequirementKind (#1636)", () => {
+  it("is true only when some requirement is classified", () => {
+    expect(anyRequirementKind([{ kind: null }, { kind: "functional" }])).toBe(true);
+    expect(anyRequirementKind([{ kind: null }, {}])).toBe(false);
+    expect(anyRequirementKind([])).toBe(false);
+  });
+});
+
 describe("RequirementKindBadge", () => {
   it("names a functional requirement", () => {
     render(<RequirementKindBadge kind="functional" nfrCategory={null} />);
@@ -35,8 +48,21 @@ describe("RequirementKindBadge", () => {
   it("names a non-functional requirement with its category", () => {
     render(<RequirementKindBadge kind="non-functional" nfrCategory="security" />);
     const badge = screen.getByTestId("requirement-kind");
-    expect(badge).toHaveTextContent("Non-functional · security");
+    // #1636 — the category reads as a label, not its lowercase enum value.
+    expect(badge).toHaveTextContent("Non-functional · Security");
     expect(badge).toHaveAttribute("data-kind", "non-functional");
+  });
+
+  it("shows a category outside the known list as it came", () => {
+    render(
+      <RequirementKindBadge
+        kind="non-functional"
+        nfrCategory={"portability" as unknown as "security"}
+      />,
+    );
+    expect(screen.getByTestId("requirement-kind")).toHaveTextContent(
+      "Non-functional · portability",
+    );
   });
 
   it("renders nothing for an unclassified requirement", () => {

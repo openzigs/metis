@@ -36,6 +36,7 @@ import {
   triggerImpactAnalysis,
   ImpactAnalysisError,
   type ImpactServiceDeps,
+  type ProjectExecutionAccess,
 } from "../lib/impact-analysis/impact-analysis-engine.js";
 import {
   impactLlmSeedingEnabled,
@@ -415,18 +416,32 @@ export function impactRunDeps(actorId: string, projectIds: readonly string[]): I
 /**
  * #1609 — the engine's execution-time access check for a run started by
  * `actor`. The run executes after the route has answered 202, so the starter's
- * access is read again when the run reaches its projects; a project they can no
- * longer open is recorded `not-checked` / `restricted` and never searched. One
- * read of the project-access rule serves every project of the run.
+ * access is read again, ONCE, when the run reaches its first project; that one
+ * read of the project-access rule answers every project of the run. A project
+ * they could not open then is recorded `not-checked` / `restricted` and never
+ * searched. #1636 — a project soft-deleted by then is recorded `deleted`
+ * instead, for every starter: the access rule hides a deleted project from
+ * admins too, so without this it read `restricted` even for an admin.
  */
 export function executionAccessCheck(
   actor: SchedulerActor,
   projectIds: readonly string[],
-): (projectId: string) => Promise<boolean> {
-  let accessible: Promise<Set<string>> | null = null;
+): (projectId: string) => Promise<ProjectExecutionAccess> {
+  let read: Promise<{ accessible: Set<string>; deleted: Set<string> }> | null = null;
   return async (projectId) => {
-    accessible ??= listMemberAccessibleProjectIds(actor, projectIds).then((ids) => new Set(ids));
-    return (await accessible).has(projectId);
+    read ??= Promise.all([
+      listMemberAccessibleProjectIds(actor, projectIds),
+      prisma.project.findMany({
+        where: { id: { in: [...projectIds] }, deletedAt: { not: null } },
+        select: { id: true },
+      }),
+    ]).then(([accessible, deleted]) => ({
+      accessible: new Set(accessible),
+      deleted: new Set(deleted.map((p) => p.id)),
+    }));
+    const { accessible, deleted } = await read;
+    if (deleted.has(projectId)) return "deleted";
+    return accessible.has(projectId) ? "accessible" : "restricted";
   };
 }
 
@@ -860,7 +875,7 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
         },
         {
           ...impactRunDeps(actor.id, projectIds),
-          projectAccessible: executionAccessCheck(actor, projectIds),
+          projectAccess: executionAccessCheck(actor, projectIds),
         },
       );
 
@@ -970,7 +985,7 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
         },
         {
           ...impactRunDeps(actor.id, projectIds),
-          projectAccessible: executionAccessCheck(actor, projectIds),
+          projectAccess: executionAccessCheck(actor, projectIds),
         },
       );
 

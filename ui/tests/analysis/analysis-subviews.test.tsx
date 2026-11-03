@@ -371,6 +371,24 @@ function manyFindings() {
   };
 }
 
+/**
+ * #1636 — {@link manyFindings} with every requirement classified (even ones
+ * functional, odd ones non-functional), so the kind filter shows, and so
+ * "Not classified" hides every requirement.
+ */
+function classified(id = "an-1") {
+  const snapshot = manyFindings();
+  return {
+    ...snapshot,
+    id,
+    requirements: snapshot.requirements.map((r, i) => ({
+      ...r,
+      kind: i % 2 === 0 ? "functional" : "non-functional",
+      nfrCategory: null,
+    })),
+  };
+}
+
 function renderPage() {
   render(<AnalysisPage />, { wrapper: makeWrapper({ initialUser: TEST_USER }) });
 }
@@ -917,6 +935,21 @@ describe("findings: filters and paging with 100+ findings", () => {
 });
 
 describe("requirements are paged", () => {
+  // #1636 — a kind filter returns the list to page 1, as the coverage filter does.
+  it("returns to page 1 when the kind filter changes", async () => {
+    apiMock.get.mockResolvedValue(classified());
+    nav.search = new URLSearchParams("tab=requirements");
+    renderPage();
+    await screen.findByText("Requirement 0");
+    await userEvent.click(
+      within(screen.getByTestId("requirements-pager")).getByRole("button", { name: "Next" }),
+    );
+    expect(screen.getByTestId("requirements-pager")).toHaveTextContent("Page 2 of 3");
+    await userEvent.click(screen.getByTestId("kind-filter-functional"));
+    expect(screen.getByTestId("requirements-pager")).toHaveTextContent("Page 1 of 2");
+    expect(screen.getByText("Requirement 0")).toBeInTheDocument();
+  });
+
   it("shows five at a time", async () => {
     apiMock.get.mockResolvedValue(manyFindings());
     nav.search = new URLSearchParams("tab=requirements");
@@ -1231,6 +1264,37 @@ describe("the run resyncs from the URL while mounted", () => {
     expect(screen.getByTestId("coverage-filter-all")).toHaveAttribute("aria-pressed", "true");
   });
 
+  // #1636 — the kind filter is per run too; deleting its reset left every
+  // test green before these.
+  it("drops run A's kind filter on a run switch from the URL", async () => {
+    apiMock.get.mockImplementation(async (id: string) => classified(id));
+    nav.search = new URLSearchParams("analysisId=an-a&tab=requirements");
+    const navigate = renderNavigable();
+    await screen.findByText("Requirement 0");
+    // Every fixture requirement is classified, so "Not classified" hides them all.
+    await userEvent.click(screen.getByTestId("kind-filter-unclassified"));
+    expect(screen.queryByText("Requirement 0")).not.toBeInTheDocument();
+
+    navigate("analysisId=an-b&tab=requirements");
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith("an-b"));
+    expect(await screen.findByText("Requirement 0")).toBeInTheDocument();
+    expect(screen.getByTestId("kind-filter-all")).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("drops run A's kind filter when another run is picked", async () => {
+    apiMock.get.mockImplementation(async (id: string) => classified(id));
+    nav.search = new URLSearchParams("analysisId=an-a&tab=requirements");
+    renderNavigable();
+    await screen.findByText("Requirement 0");
+    await userEvent.click(screen.getByTestId("kind-filter-unclassified"));
+    expect(screen.queryByText("Requirement 0")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /an-b/ }));
+    await waitFor(() => expect(apiMock.get).toHaveBeenCalledWith("an-b"));
+    expect(await screen.findByText("Requirement 0")).toBeInTheDocument();
+    expect(screen.getByTestId("kind-filter-all")).toHaveAttribute("aria-pressed", "true");
+  });
+
   it("keeps the shown run for an id that is not in this project's list", async () => {
     nav.search = new URLSearchParams("analysisId=an-a&tab=findings");
     const navigate = renderNavigable();
@@ -1283,6 +1347,26 @@ describe("the requirement deep link", () => {
     expect(card).toContainElement(title);
     expect(card).toHaveAttribute("data-deep-linked", "true");
     await waitFor(() => expect(scrolled).toEqual([card]));
+  });
+
+  // #1636 — a link to a requirement the active kind filter hides must clear
+  // the filter, or the link silently fails to scroll to it.
+  it("clears a kind filter that would hide the linked requirement", async () => {
+    apiMock.get.mockResolvedValue(classified());
+    nav.search = new URLSearchParams("analysisId=an-1&tab=requirements");
+    const { rerender } = render(<AnalysisPage />, {
+      wrapper: makeWrapper({ initialUser: TEST_USER }),
+    });
+    await screen.findByText("Requirement 0");
+    await userEvent.click(screen.getByTestId("kind-filter-non-functional"));
+    expect(screen.queryByText("Requirement 4")).not.toBeInTheDocument();
+
+    // Requirement 4 is functional: hidden by the filter until the link clears it.
+    nav.search = new URLSearchParams("analysisId=an-1&tab=requirements&requirementId=req-4");
+    rerender(<AnalysisPage />);
+    expect(await screen.findByText("Requirement 4")).toBeInTheDocument();
+    expect(screen.getByTestId("kind-filter-all")).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(scrolled).toEqual([document.getElementById("requirement-req-4")]));
   });
 
   it("opens the Requirements tab for a link with no ?tab=", async () => {

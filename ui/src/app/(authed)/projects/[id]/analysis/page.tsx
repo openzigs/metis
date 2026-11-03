@@ -93,6 +93,7 @@ import {
   matchesKindFilter,
   RequirementKindBadge,
   RequirementKindFilter,
+  anyRequirementKind,
   type RequirementKindFilterValue,
 } from "@/components/analysis/RequirementKind";
 // Epic #1107 (#1110) — the support panel's confidence treatment. Ranking,
@@ -1150,14 +1151,19 @@ export default function AnalysisPage(): React.ReactElement {
                         </Button>
                       ))}
                     </div>
-                    {/* #1615 — filter the list by functional / non-functional kind. */}
-                    <RequirementKindFilter
-                      value={kindFilter}
-                      onChange={(next) => {
-                        setKindFilter(next);
-                        setRequirementsPage(0);
-                      }}
-                    />
+                    {/* #1615 — filter the list by functional / non-functional kind.
+                        #1636 — only when some requirement has a kind (a run from
+                        before #1612, or a degraded synthesis, has none) or a
+                        filter is on, so an active filter can always be cleared. */}
+                    {kindFilter !== null || anyRequirementKind(detail.data.requirements) ? (
+                      <RequirementKindFilter
+                        value={kindFilter}
+                        onChange={(next) => {
+                          setKindFilter(next);
+                          setRequirementsPage(0);
+                        }}
+                      />
+                    ) : null}
                     <div className="space-y-2">
                       {/* Issue #1117 (findings B + C) — when synthesis degraded,
                       every requirement below is typed "feature" and has no

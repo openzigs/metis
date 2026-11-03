@@ -31,6 +31,8 @@ import {
   findingIssueDraftSchema,
   type AnalysisSpecialistAgentKey,
   MAX_IMPORTED_REQUIREMENTS_PER_ANALYSIS,
+  hasPermission,
+  type RoleKey,
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
@@ -462,6 +464,23 @@ async function loadLockedAnalysisRequirement(req: Request) {
   // preserved by the write, so they are never a conflict and never offered
   // as the "server" value in the merge modal.
   return { ...row, labels: visibleRequirementLabels(row.labels) };
+}
+
+/**
+ * #1636 — the project's repo connector id → repo name for the analysis report
+ * export, so a code citation stamped with its repo (#1611) names it (the page
+ * shows the same name, read from the connector list). Read only for a caller
+ * who may list the project's connectors (`connector.read`), as the page's read
+ * of that list is gated; anyone else gets no names, and a stamped citation then
+ * shows its connector id. Same name rule as the UI's `repoNamesById`.
+ */
+async function exportRepoNames(req: Request, projectId: string): Promise<Record<string, string>> {
+  if (!req.user || !hasPermission(req.user.role as RoleKey, "connector.read")) return {};
+  const rows = await prisma.repoConnection.findMany({
+    where: { projectId },
+    select: { id: true, label: true, repoName: true },
+  });
+  return Object.fromEntries(rows.map((r) => [r.id, r.repoName?.trim() || r.label || r.id]));
 }
 
 export function initAnalysisRouter(opts: InitOptions = {}): {
@@ -1265,7 +1284,13 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         "Content-Disposition",
         `attachment; filename="analysis-report-${analysisId}.md"`,
       );
-      res.send(serializeAnalysisReportMarkdown({ gapReport, matrix }));
+      res.send(
+        serializeAnalysisReportMarkdown({
+          gapReport,
+          matrix,
+          repoNames: await exportRepoNames(req, projectId),
+        }),
+      );
     },
   );
 

@@ -1083,9 +1083,12 @@ export interface RequirementReplacementWithheld {
   proposalStored?: boolean;
 }
 
-/** Issue #780 — a requirement field the withheld-replacement comparison shows. */
+/**
+ * Issue #780 — a requirement field the withheld-replacement comparison shows.
+ * #1636 — `kind` / `nfrCategory` (#1612) too: applying a proposal writes them.
+ */
 export type WithheldReplacementField =
-  "title" | "description" | "priority" | "type" | "acceptanceCriteria";
+  "title" | "description" | "priority" | "type" | "acceptanceCriteria" | "kind" | "nfrCategory";
 
 /** Issue #780 — one field that differs between the current and proposed requirement. */
 export interface WithheldReplacementFieldChange {

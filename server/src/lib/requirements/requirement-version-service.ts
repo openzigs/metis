@@ -319,10 +319,14 @@ export function originalVersionOf(
 
 /**
  * #1612 — the Prisma `select` for exactly the tracked columns, DERIVED from
- * {@link TRACKED_FIELDS}. Every reader that does `pickTracked(row)` and replays
- * version diffs (this service, the history route, baseline snapshots) must use
- * it: a hand-listed select that misses a newly tracked field reads it as null
- * and so reconstructs every past version with the wrong value.
+ * {@link TRACKED_FIELDS}. A reader that does `pickTracked(row)`, replays version
+ * diffs and hands on the WHOLE replayed snapshot (this service, the history
+ * route, baseline snapshots) must use it: a hand-listed select that misses a
+ * newly tracked field reads it as null and so reconstructs every past version
+ * with the wrong value. A reader that takes only named fields out of the replay
+ * needs just those selected — the docs-gen review pins (`atReviewPins` in
+ * `docs-gen/requirements-scope.ts`) read the four text fields and the criteria
+ * they select, so a newly tracked field cannot reach their output (#1636).
  */
 export const TRACKED_SELECT = Object.fromEntries(
   TRACKED_FIELDS.map((field) => [field, true as const]),

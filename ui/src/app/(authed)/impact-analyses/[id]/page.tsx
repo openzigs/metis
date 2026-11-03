@@ -32,6 +32,7 @@ import { RequirementImpactMatrix } from "@/components/impact/requirement-impact-
 import { ImpactDriftSection } from "@/components/impact/impact-drift-section";
 import {
   ImpactProjectOutcomesGroup,
+  noProjectChecked,
   quietProjectIds,
 } from "@/components/impact/project-outcomes-group";
 import {
@@ -309,7 +310,10 @@ function ImpactAnalysisDetailView({
         </p>
       ) : data.items.length === 0 ? (
         <Card className="p-4 text-sm text-muted-foreground" data-testid="impact-detail-empty">
-          No code impact detected for the supplied requirement change.
+          {/* #1636 — "no impact" only when some project was actually searched. */}
+          {noProjectChecked(data.projectOutcomes)
+            ? "No project was checked, so this run says nothing about impact. The reasons are listed below."
+            : "No code impact detected for the supplied requirement change."}
         </Card>
       ) : (
         <ImpactSymbolRepoContext.Provider value={symbolRepos}>
@@ -348,7 +352,11 @@ function ImpactAnalysisDetailView({
           one collapsed group with the reason, so "checked, nothing affected"
           never reads like "never checked". */}
       {!isRunning ? (
-        <ImpactProjectOutcomesGroup outcomes={data.projectOutcomes} projectName={projectName} />
+        <ImpactProjectOutcomesGroup
+          outcomes={data.projectOutcomes}
+          projectName={projectName}
+          defaultOpen={noProjectChecked(data.projectOutcomes)}
+        />
       ) : null}
     </div>
   );

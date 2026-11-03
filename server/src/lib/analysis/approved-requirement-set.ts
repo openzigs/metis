@@ -31,6 +31,7 @@ import {
   type OneToOneCandidate,
 } from "./one-to-one-match.js";
 import { synthesisItemKey, type PairedItems, type PromotionPairing } from "./promotion-pairing.js";
+import { mergeCriterionEvidence } from "./criterion-evidence.js";
 import type { StructuredRequirement } from "./types/requirements.js";
 
 const PRIORITY_BY_STRUCTURED: Record<string, SynthesizedRequirement["priority"]> = {
@@ -248,16 +249,23 @@ function joinItems(parts: readonly SynthesizedRequirement[]): SynthesizedRequire
     ? unite((p) => p.sourceIds)
     : undefined;
   const storyPoints = parts.find((p) => p.storyPoints !== undefined)?.storyPoints;
-  // #1610 — every part's per-criterion evidence, keyed by criterion text; the
-  // verdict roll-up reads only the criteria and findings the join kept.
+  const evidenceFindingIndexes = unite((p) => p.evidenceFindingIndexes).slice(0, MAX_EVIDENCE);
+  const acceptanceCriteria = unite((p) => p.acceptanceCriteria).slice(0, MAX_CRITERIA);
+  // #1610 — every part's per-criterion evidence, keyed by criterion text.
+  // #1636 — merged per criterion and capped like synthesis's own merge, for the
+  // criteria and findings the join kept, so the result stays inside the schema.
   const criterionEvidence = parts.some((p) => p.criterionEvidence !== undefined)
-    ? parts.flatMap((p) => p.criterionEvidence ?? [])
+    ? mergeCriterionEvidence(
+        parts.map((p) => p.criterionEvidence ?? []),
+        new Set(evidenceFindingIndexes),
+        acceptanceCriteria,
+      )
     : undefined;
   return {
     ...first,
     labels: unite((p) => p.labels).slice(0, MAX_LABELS),
-    evidenceFindingIndexes: unite((p) => p.evidenceFindingIndexes).slice(0, MAX_EVIDENCE),
-    acceptanceCriteria: unite((p) => p.acceptanceCriteria).slice(0, MAX_CRITERIA),
+    evidenceFindingIndexes,
+    acceptanceCriteria,
     ...(storyPoints !== undefined ? { storyPoints } : {}),
     ...(sourceIds !== undefined ? { sourceIds } : {}),
     ...(criterionEvidence !== undefined ? { criterionEvidence } : {}),

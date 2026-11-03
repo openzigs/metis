@@ -71,7 +71,11 @@ const DIFF: WithheldReplacementDiff = {
       outcome: "replace",
       reviewed: false,
       reviewStatus: null,
-      changes: [{ field: "priority", before: "low", after: "high" }],
+      changes: [
+        { field: "priority", before: "low", after: "high" },
+        // #1636 — a reclassification; an unclassified side is sent as "".
+        { field: "kind", before: "", after: "non-functional" },
+      ],
     },
   ],
   removed: [
@@ -199,6 +203,7 @@ describe("RequirementReplacementWithheldNotice", () => {
     expect(changed).toHaveTextContent("Acceptance criteria");
     expect(changed).toHaveTextContent("None");
     expect(changed).toHaveTextContent(/Login\s*Not reviewed/);
+    expect(changed).toHaveTextContent(/Kind\s*Current\s*None\s*New\s*non-functional/);
     expect(changed).toHaveTextContent("Replaced with the new version.");
 
     const removed = within(panel).getByRole("region", { name: "Not in the new result" });

@@ -104,6 +104,9 @@ const FIELD_LABEL: Record<WithheldReplacementField, string> = {
   priority: "Priority",
   type: "Type",
   acceptanceCriteria: "Acceptance criteria",
+  // #1636 — a proposal that reclassifies the requirement (#1612).
+  kind: "Kind",
+  nfrCategory: "Non-functional category",
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -335,6 +338,8 @@ function Value({ value }: { value: string | string[] }): React.ReactElement {
       </ul>
     );
   }
+  // #1636 — an unclassified kind or category is sent as "".
+  if (value === "") return <span className="italic text-muted-foreground">None</span>;
   return <span className="whitespace-pre-wrap">{value}</span>;
 }
 
