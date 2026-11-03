@@ -14,12 +14,15 @@
  * #1680 — both writes that cannot be taken back ask first. Deleting a declared
  * edge needs a confirmation: detection cannot find it again, and the impact
  * walk silently stops counting it. A detected edge's strength is chosen, then
- * applied: overriding marks it `overridden` for good, so one stray pick must
- * not do it, and the pick stays shown while the request is in flight.
+ * applied: overriding marks it `overridden`, so one stray pick must not do it,
+ * and the pick stays shown while the request is in flight.
+ *
+ * #1687 — an overridden edge can be reverted to `detected` (detection's own
+ * classification back), again only after a confirmation.
  */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pencil, Plus, Trash2 } from "lucide-react";
+import { Pencil, Plus, Trash2, Undo2 } from "lucide-react";
 import { PRODUCT_RESOURCE_KINDS, type ProductResourceKind } from "@metis/shared";
 import { ApiError } from "@/lib/api-client";
 import { productsApi, type ProductEdge, type ProductWithRepos } from "@/lib/products-api";
@@ -81,6 +84,15 @@ export function ProductEdgesPanel({ productId, canEdit }: { productId: string; c
       return refetch();
     },
     onError: (err) => setRowError(errorText(err, "Failed to delete the edge.")),
+  });
+
+  const revertEdge = useMutation({
+    mutationFn: (edgeId: string) => productsApi.revertEdge(productId, edgeId),
+    onSuccess: () => {
+      setRowError(null);
+      return refetch();
+    },
+    onError: (err) => setRowError(errorText(err, "Failed to revert the edge.")),
   });
 
   if (!product.data) return null;
@@ -196,6 +208,25 @@ export function ProductEdgesPanel({ productId, canEdit }: { productId: string; c
                     <td className="px-3 py-2">{confidenceLabel(edge.confidence)}</td>
                     {canEdit && (
                       <td className="px-3 py-2 text-right whitespace-nowrap">
+                        {edge.origin === "overridden" && (
+                          <ConfirmDialog
+                            title="Revert this edge to detected?"
+                            description={`The ${name} gets detection's own classification back, and the override is discarded. If that classification is not on record, the edge shows as unclassified until detection next runs.`}
+                            confirmLabel="Revert to detected"
+                            confirmVariant="default"
+                            onConfirm={() => revertEdge.mutate(edge.id)}
+                            trigger={
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                aria-label={`Revert ${name} to detected`}
+                                disabled={revertEdge.isPending}
+                              >
+                                <Undo2 className="h-4 w-4" aria-hidden />
+                              </Button>
+                            }
+                          />
+                        )}
                         {isDeclaredEdge(edge) && (
                           <>
                             <Button

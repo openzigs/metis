@@ -560,6 +560,52 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect((await graphOf(t.productId)).edges).toEqual([]);
       });
 
+      it("refreshes detection's kept classification of an overridden edge, which a revert restores (#1687)", async () => {
+        const t = await twoRepoProduct(
+          "revert",
+          [sql("w.sql", "insert into payments (id) values (1);")],
+          [sql("r.sql", "select id from payments;")],
+        );
+        await detect(t.productId);
+        const [edge] = (await graphOf(t.productId)).edges;
+        expect(edge).toMatchObject({ strength: "intrusive", origin: "detected" });
+        await request(app())
+          .patch(`/api/products/${t.productId}/edges/${edge.id}`)
+          .set("Authorization", bearer("bob"))
+          .send({ strength: "functional" })
+          .expect(200);
+        // A kept copy that no longer matches what detection finds (detection
+        // changed its mind since the override) is refreshed by the next run.
+        await db.productEdge.update({
+          where: { id: edge.id },
+          data: { detectedStrength: "contract" },
+        });
+        expect(await detect(t.productId)).toMatchObject({ created: 0, updated: 1, deleted: 0 });
+        expect(await db.productEdge.findUnique({ where: { id: edge.id } })).toMatchObject({
+          origin: "overridden",
+          strength: "functional",
+          detectedIntegrationKind: "database",
+          detectedStrength: "intrusive",
+        });
+        // Found again unchanged: nothing is written.
+        expect(await detect(t.productId)).toMatchObject({ created: 0, updated: 0, deleted: 0 });
+        const revert = await request(app())
+          .post(`/api/products/${t.productId}/edges/${edge.id}/revert`)
+          .set("Authorization", bearer("bob"));
+        expect(revert.status).toBe(200);
+        expect((await graphOf(t.productId)).edges).toEqual([
+          expect.objectContaining({
+            id: edge.id,
+            origin: "detected",
+            integrationKind: "database",
+            strength: "intrusive",
+            direction: edge.direction,
+          }),
+        ]);
+        // Reverted to what detection finds, so the next run has nothing to change.
+        expect(await detect(t.productId)).toMatchObject({ created: 0, updated: 0, deleted: 0 });
+      });
+
       it("keeps an edge it did not find when either end was read only in part (#1643)", async () => {
         const t = await twoRepoProduct(
           "partial",

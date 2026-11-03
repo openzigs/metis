@@ -4479,6 +4479,13 @@ model ProductEdge {
   /// #1618 — the user who declared the edge. Not a foreign key, like
   /// `ProductAnalysis.triggeredBy`, so the record outlives the account.
   declaredById    String?
+  /// #1687 — detection's own classification of an `overridden` edge, kept so a
+  /// revert can restore it. Written when a detected edge is first overridden
+  /// and refreshed by each detection run that finds it again; NULL on every
+  /// other edge (and on one overridden before #1687, which reverts unclassified).
+  detectedIntegrationKind String?
+  detectedStrength        String?
+  detectedDirection       String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 

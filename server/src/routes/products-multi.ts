@@ -46,6 +46,7 @@ import {
   deleteProductEdge,
   deleteProductResource,
   listReadableProductGraph,
+  revertProductEdge,
   updateProductEdge,
   updateProductResource,
 } from "../lib/products/product-edges.js";
@@ -264,6 +265,27 @@ export function productsRouter(): Router {
         auditProductGraphWrite(req, productId, "product.edge.update", {
           edgeId: edge.id,
           fields: Object.keys(input),
+          origin: edge.origin,
+        });
+        res.json({ data: edge });
+      } catch (err) {
+        if (!sendProductError(err, res)) throw err;
+      }
+    },
+  );
+
+  // POST /api/products/:id/edges/:edgeId/revert — Return an overridden edge to detected (#1687)
+  r.post(
+    "/:id/edges/:edgeId/revert",
+    requirePermission("project.update"),
+    async (req: Request, res: Response) => {
+      try {
+        const productId = param(req.params.id);
+        await assertProductAccessible(req.user!, productId);
+        const readable = await readableRepoIdsOf(req.user!, productId);
+        const edge = await revertProductEdge(productId, param(req.params.edgeId), readable);
+        auditProductGraphWrite(req, productId, "product.edge.revert", {
+          edgeId: edge.id,
           origin: edge.origin,
         });
         res.json({ data: edge });

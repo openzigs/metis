@@ -106,7 +106,11 @@ describe("the edge list", () => {
 
 describe("without edit rights", () => {
   it("renders the list read-only: no control of any kind", async () => {
-    serve(product());
+    serve(
+      product({
+        edges: [detectedEdge, declaredEdge, edge({ id: "edge-over1", origin: "overridden" })],
+      }),
+    );
     renderPanel(false);
     await screen.findByRole("table");
     expect(screen.getByRole("note")).toHaveTextContent(/^Restricted:/);
@@ -135,14 +139,67 @@ describe("with edit rights", () => {
     expect(within(declared).queryByRole("combobox")).not.toBeInTheDocument();
   });
 
-  it("treats an overridden edge as detected: no delete", async () => {
+  it("treats an overridden edge as detected: no delete, but a revert (#1687)", async () => {
     serve(product({ edges: [edge({ origin: "overridden", strength: "intrusive" })] }));
     renderPanel(true);
     await screen.findByRole("table");
     const [row] = rows();
     expect(row).toHaveTextContent("Detected (overridden)");
-    expect(within(row).queryByRole("button")).not.toBeInTheDocument();
+    expect(
+      within(row)
+        .getAllByRole("button")
+        .map((b) => b.getAttribute("aria-label")),
+    ).toEqual(["Revert edge from acme/checkout to acme/ledger to detected"]);
     expect(within(row).getByRole("combobox")).toHaveValue("intrusive");
+  });
+
+  it("reverts an overridden edge after asking, then shows the edge the GET returns (#1687)", async () => {
+    const overridden = edge({ origin: "overridden", strength: "intrusive" });
+    serve(product({ edges: [overridden] }), product({ edges: [detectedEdge] }));
+    const revert = vi.spyOn(productsApi, "revertEdge").mockResolvedValue(detectedEdge);
+    renderPanel(true);
+    await screen.findByRole("table");
+    await userEvent.click(within(rows()[0]).getByRole("button", { name: /^Revert edge/ }));
+    // It asks first: the person's classification is discarded.
+    expect(revert).not.toHaveBeenCalled();
+    const confirm = await screen.findByRole("alertdialog");
+    expect(confirm).toHaveTextContent("detection's own classification");
+    await userEvent.click(within(confirm).getByRole("button", { name: "Revert to detected" }));
+    expect(revert).toHaveBeenCalledWith(PRODUCT_ID, overridden.id);
+    await waitFor(() => expect(rows()[0]).not.toHaveTextContent("overridden"));
+    expect(rows()[0]).toHaveTextContent("Detected");
+    expect(within(rows()[0]).getByRole("combobox")).toHaveValue("contract");
+    expect(within(rows()[0]).queryByRole("button")).not.toBeInTheDocument();
+    expect(getMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the override when the revert is cancelled, and shows a refused one (#1687)", async () => {
+    serve(product({ edges: [edge({ origin: "overridden", strength: "intrusive" })] }));
+    const revert = vi
+      .spyOn(productsApi, "revertEdge")
+      .mockRejectedValue(
+        new ApiError(409, "Only an overridden edge can be returned", "EDGE_NOT_OVERRIDDEN"),
+      );
+    renderPanel(true);
+    await screen.findByRole("table");
+    const open = () =>
+      userEvent.click(within(rows()[0]).getByRole("button", { name: /^Revert edge/ }));
+    await open();
+    await userEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Cancel" }),
+    );
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(revert).not.toHaveBeenCalled();
+    await open();
+    await userEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Revert to detected",
+      }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Only an overridden edge can be returned",
+    );
+    expect(rows()[0]).toHaveTextContent("Detected (overridden)");
   });
 
   it("overrides a detected edge's strength with a PATCH of the strength alone, then re-reads", async () => {
@@ -158,7 +215,7 @@ describe("with edit rights", () => {
     expect(update).toHaveBeenCalledWith(PRODUCT_ID, detectedEdge.id, { strength: "intrusive" });
     await waitFor(() => expect(rows()[0]).toHaveTextContent("Detected (overridden)"));
     expect(getMock).toHaveBeenCalledTimes(2);
-    expect(within(rows()[0]).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(rows()[0]).queryByRole("button", { name: /^Delete/ })).not.toBeInTheDocument();
   });
 
   it("cancels a strength pick without sending it (#1680)", async () => {
