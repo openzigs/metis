@@ -466,7 +466,10 @@ export function stripNulBytes(s: string): string {
  * re-ingest. History: unversioned = #721; 2 = #760 (bind parameters dropped,
  * WHERE columns read not written, edges from the enclosing function); 3 = #859
  * (writes attributed to the modified table only, SQL builtins skipped — shipped
- * by #873 without a bump, applied by #935).
+ * by #873 without a bump, applied by #935); 4 = #1577 (a statement sqlglot falls
+ * back to a `Command` for — `DROP EXTENSION`, a multi-action `ALTER TABLE` — no
+ * longer fails the whole request, so the other statements in that file now yield
+ * edges).
  *
  * Two sets of extractors feed it, and only one is guarded:
  * - The sidecar: `tests/lib/code-graph/lineage-extractor-version.test.ts` pins a
@@ -476,7 +479,7 @@ export function stripNulBytes(s: string): string {
  *   sql-lineage-resolver, plsql-package-lineage) need the same bump when they
  *   change the edges an unchanged file produces. That test does NOT guard them.
  */
-export const LINEAGE_EXTRACTOR_VERSION = 3;
+export const LINEAGE_EXTRACTOR_VERSION = 4;
 
 /**
  * #1071 — version of what the PARSERS write for an unchanged file: a symbol's
