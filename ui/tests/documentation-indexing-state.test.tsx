@@ -193,5 +193,45 @@ describe("DocumentationPage — indexing state", () => {
     const summary = await screen.findByTestId("doc-indexing-summary");
     expect(summary).toHaveTextContent("Publishing was cancelled.");
     expect(summary).not.toHaveTextContent("Queued for indexing.");
+    expect(screen.queryByTestId("doc-quarantine-link")).not.toBeInTheDocument();
+  });
+
+  // #1582 (run 10) — "quarantined (awaiting approval)" with no visible way to
+  // approve: the approval is in the project's quarantine queue.
+  it("links a quarantined document to the quarantine queue", async () => {
+    const doc = {
+      id: "doc_1",
+      title: "Business Requirements",
+      scope: "full",
+      status: "ready",
+      indexing: {
+        state: "quarantined",
+        status: "ready",
+        chunkCount: 12,
+        errorMessage: null,
+        processedAt: null,
+      },
+      autoUpdate: false,
+      generatedAt: "2026-06-01T00:00:00.000Z",
+      createdAt: "2026-06-01T00:00:00.000Z",
+    };
+    mockApiFetch.mockImplementation(async (path: string) => {
+      if (typeof path === "string" && path.endsWith("/docs/doc_1")) {
+        return { ...doc, content: "# BRD", versions: [] };
+      }
+      if (typeof path === "string" && path.endsWith("/docs")) return [doc];
+      return [];
+    });
+
+    renderPage();
+
+    fireEvent.click(await screen.findByTestId("doc-card-doc_1"));
+
+    expect(await screen.findByTestId("doc-indexing-summary")).toHaveTextContent(
+      "Awaiting approval before indexing.",
+    );
+    const link = screen.getByTestId("doc-quarantine-link");
+    expect(link).toHaveTextContent("Review in quarantine");
+    expect(link).toHaveAttribute("href", "/projects/proj_test/settings#quarantine");
   });
 });

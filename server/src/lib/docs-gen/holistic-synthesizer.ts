@@ -6428,6 +6428,18 @@ export function detectMissingSections(
 const LEAKED_ID_PREFIXES = ["facts", "rag"] as const;
 
 /**
+ * #1582 — citation forms the model invents in place of the ids it was given:
+ * `[source: internal/config/validators.go]`, `[fact:internal/systemd]` (#706
+ * run 10's architecture document showed both, raw). They name no admitted
+ * source, so no footnote can be made of them, and they are removed like a
+ * leaked id — only when closed: an unclosed `[source:` is ordinary text, not a
+ * cut-off id. A `[source: …](url)` is a Markdown link the model wrote, and is
+ * left alone. Its text may hold no `[`: with the closing bracket required, a
+ * class that held the opener would rescan the line from every unclosed one.
+ */
+const INVENTED_CITATION_PREFIXES = ["fact", "source"] as const;
+
+/**
  * ` [facts:…]` / ` [rag:…]` — no nested `]`, so it cannot span a link label.
  *
  * The closing bracket is OPTIONAL because the model truncates: three markers in
@@ -6437,7 +6449,7 @@ const LEAKED_ID_PREFIXES = ["facts", "rag"] as const;
  * case to end-of-line keeps it from swallowing the rest of the document.
  */
 const LEAKED_ID_RE = new RegExp(
-  ` ?\\[\\s*(?:${LEAKED_ID_PREFIXES.join("|")}):[^\\]\\n]*(?:\\]|$)`,
+  ` ?\\[\\s*(?:(?:${LEAKED_ID_PREFIXES.join("|")}):[^\\]\\n]*(?:\\]|$)|(?:${INVENTED_CITATION_PREFIXES.join("|")}):[^\\][\\n]*\\](?!\\())`,
   "g",
 );
 
@@ -8669,13 +8681,17 @@ function withColumnDefaults(
 function readerBrdGroups(catalogue: readonly SectionGroup[]): SectionGroup[] {
   const byId = new Map(catalogue.map((group) => [group.id, group]));
   const take = (id: string): SectionGroup => byId.get(id)!;
+  // #1582 — the summary names "the requirements" without saying where they
+  // come from. It used to say "reconstructed from the code", and run 10's
+  // summary said so above the approved requirements it lists. One wording for
+  // both keeps an approval from rewriting this section (#1271).
   const overview: SectionGroup = {
     ...take("overview"),
     label: "Executive Summary, Scope & Domain",
     instructions: `Produce three sections. This is the opening of a business requirements document for stakeholders who do not know the code: write in business language, and leave out function names, file paths, SQL and HTTP detail.
 
 ## Executive Summary
-One or two short paragraphs a sponsor can read on its own and stop: what business problem the system solves, who uses it, the key business outcomes it delivers, and what this document asks the reader to agree to (the scope and the business rules that follow, and the requirements reconstructed from the code).
+One or two short paragraphs a sponsor can read on its own and stop: what business problem the system solves, who uses it, the key business outcomes it delivers, and what this document asks the reader to agree to (the scope, the business rules and the requirements that follow). Do not say how the requirements were produced: the requirements section says that itself.
 
 ## Scope
 - **In scope**: a bulleted list of the business capabilities and processes this document covers.

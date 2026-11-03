@@ -10,6 +10,7 @@
  * is that it removes ids WITHOUT damaging the surrounding document.
  */
 import { describe, it, expect } from "vitest";
+import { expectLinearTime } from "../../../tests/helpers/linear-time.js";
 import { stripLeakedSourceIds } from "./holistic-synthesizer.js";
 
 describe("stripLeakedSourceIds (#1360)", () => {
@@ -123,5 +124,45 @@ describe("stripLeakedSourceIds (#1360)", () => {
   it("leaves a document with no markers byte-identical", () => {
     const md = "# Title\n\nNothing to strip here.\n";
     expect(stripLeakedSourceIds(md)).toBe(md);
+  });
+
+  // #1582 — run 10's architecture document showed citations the model made
+  // up in place of the ids it was given, raw.
+  describe("invented citation forms (#1582)", () => {
+    it("removes `[source: path]` and `[fact:path]`, and the space before each", () => {
+      expect(
+        stripLeakedSourceIds(
+          'non-integer input always yields `"value must be an integer"` [source: internal/config/validators.go].',
+        ),
+      ).toBe('non-integer input always yields `"value must be an integer"`.');
+      expect(
+        stripLeakedSourceIds(
+          "including `WATCHDOG_USEC` conversion to a Go duration [fact:internal/systemd][^src-1].",
+        ),
+      ).toBe("including `WATCHDOG_USEC` conversion to a Go duration[^src-1].");
+    });
+
+    it("leaves a Markdown link labelled `source:` and an unclosed `[source:` alone", () => {
+      const link = "See [source: the upstream repository](https://example.invalid/repo).";
+      expect(stripLeakedSourceIds(link)).toBe(link);
+      const open = "A note [source: kept as written\nNext line.";
+      expect(stripLeakedSourceIds(open)).toBe(open);
+      const words = "The [sources] and the [facts] are listed.";
+      expect(stripLeakedSourceIds(words)).toBe(words);
+    });
+
+    it("does not touch one in fenced code", () => {
+      const md = "```\nlog [source: x]\n```";
+      expect(stripLeakedSourceIds(md)).toBe(md);
+    });
+
+    it("reads a line of repeated unclosed or linked openers in linear time", () => {
+      for (const unit of ["[source:", "[source:a](", "[fact: x "]) {
+        expectLinearTime(`stripLeakedSourceIds: ${unit}`, (size) => {
+          const text = unit.repeat(Math.ceil(size / unit.length));
+          return () => stripLeakedSourceIds(text);
+        });
+      }
+    });
   });
 });
