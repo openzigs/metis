@@ -181,6 +181,12 @@ export default defineConfig({
             // #1539 — and the app-wide `/api` budget (600 / minute per user):
             // parallel workers all sign in as the one admin.
             API_RATE_LIMIT_MAX: process.env.API_RATE_LIMIT_MAX ?? "100000",
+            // #1725 — and the per-user `/api/products` limiter (120 / 15 min,
+            // server/src/middleware/products-rate-limit.ts): the product and
+            // portfolio specs create, list and delete products as the one admin,
+            // and one more delete put shard 2 over it (a 429 left
+            // product-management.spec.ts's product list loading).
+            PRODUCTS_RATE_LIMIT_MAX: process.env.PRODUCTS_RATE_LIMIT_MAX ?? "100000",
             // #221 — never close an idle keep-alive socket from the server side.
             // Each APIRequestContext pools its sockets in a keep-alive
             // http.Agent (one per context since playwright-core 1.63; one shared
