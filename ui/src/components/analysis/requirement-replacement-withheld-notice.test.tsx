@@ -432,4 +432,50 @@ describe("summarizeWithheldReplacement (#780)", () => {
       "Applying would add 1 requirement, change 2, remove 0.",
     );
   });
+
+  it("names kept elicited NFRs apart from kept reviewed requirements (#1648)", () => {
+    const nfr = {
+      title: "Encrypt tokens",
+      outcome: "keep" as const,
+      reviewed: false,
+      reviewStatus: null,
+      changes: [],
+    };
+    expect(summarizeWithheldReplacement({ ...DIFF, removed: [nfr, nfr], unchangedCount: 0 })).toBe(
+      "Applying would add 1 requirement, change 2, remove 0. 2 elicited non-functional requirements the new result does not cover are kept.",
+    );
+    expect(
+      summarizeWithheldReplacement({
+        ...DIFF,
+        removed: [DIFF.removed[1]!, nfr],
+        unchangedCount: 0,
+      }),
+    ).toBe(
+      "Applying would add 1 requirement, change 2, remove 0. 1 reviewed requirement the new result leaves out is kept. 1 elicited non-functional requirement the new result does not cover is kept.",
+    );
+  });
+});
+
+describe("RequirementReplacementWithheldNotice — kept elicited NFR (#1648)", () => {
+  it("says an unreviewed kept row is an elicited NFR, not review work", async () => {
+    api.getWithheldReplacement.mockResolvedValue({
+      ...DIFF,
+      removed: [
+        {
+          title: "Encrypt tokens",
+          outcome: "keep",
+          reviewed: false,
+          reviewStatus: null,
+          changes: [],
+        },
+      ],
+    });
+    renderActionable();
+    fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+    const removed = await screen.findByRole("region", { name: "Not in the new result" });
+    expect(removed).toHaveTextContent(
+      /Encrypt tokens.*Kept: an elicited non-functional requirement/,
+    );
+    expect(removed).not.toHaveTextContent(/review work/);
+  });
 });

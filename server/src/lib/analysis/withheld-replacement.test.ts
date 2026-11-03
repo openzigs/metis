@@ -256,6 +256,24 @@ describe("planWithheldApply / diffWithheldReplacement (#780)", () => {
     expect(diff.unchangedCount).toBe(1);
     expect(diff.fingerprint).toBe(fingerprintWithheldPlan(planWithheldApply(rows, next)));
   });
+
+  it("keeps an unreviewed elicited NFR the proposal leaves out, and replaces one it restates (#1648)", () => {
+    const withNfrs = [
+      current("nfr", "Encrypt tokens", { elicitedNfr: true }),
+      current("nfr-restated", "Fast API", { elicitedNfr: true }),
+      current("gone", "Gone"),
+    ];
+    const proposal = [proposed("Fast API")];
+    const steps = planWithheldApply(withNfrs, proposal).map(
+      (s) => `${s.kind}:${"current" in s ? s.current.id : s.proposed.title}`,
+    );
+    expect(steps.sort()).toEqual(["delete:gone", "keep:nfr", "replace:nfr-restated"]);
+    const diff = diffWithheldReplacement(WITHHELD, withNfrs, proposal);
+    expect(diff.removed.map((e) => [e.title, e.outcome, e.reviewed])).toEqual([
+      ["Encrypt tokens", "keep", false],
+      ["Gone", "delete", false],
+    ]);
+  });
 });
 
 describe("fingerprintWithheldPlan (#780)", () => {

@@ -44,6 +44,7 @@ const { persistRequirements, getAnalysisSnapshot } =
   await import("../src/lib/analysis/analysis-service.js");
 const { APPLIED_WITHHELD_REPLACEMENT_REASON, WITHHELD_PROPOSAL_KEY } =
   await import("../src/lib/analysis/withheld-replacement.js");
+const { ELICITED_NFR_LABEL } = await import("../src/lib/analysis/elicited-nfr-requirements.js");
 const { initAnalysisRouter } = await import("../src/routes/analysis.js");
 const { updateRequirementWithHistory } =
   await import("../src/lib/requirements/requirement-version-service.js");
@@ -351,6 +352,60 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // Answered: nothing left to review or apply.
       expect((await getDiff()).status).toBe(404);
       expect((await apply(at)).body.error.code).toBe("NO_PROPOSAL");
+    });
+
+    it("apply keeps the elicited NFR drafts the withheld proposal could not restate (#1648)", async () => {
+      // A set with one reviewed row and one elicited NFR draft (#1613).
+      await persistRequirements({
+        analysisId: ANALYSIS,
+        projectId: PROJECT,
+        synthesis: synthesis([{ title: "Approved" }, { title: "Plain" }]),
+        findingIdsByIndex: [],
+        degraded: null,
+        elicited: {
+          requirements: [
+            {
+              ...synthesis([{ title: "Encrypt tokens at rest" }]).requirements[0]!,
+              labels: [ELICITED_NFR_LABEL],
+              kind: "non-functional",
+              nfrCategory: "security",
+            },
+          ],
+          coverages: ["no_evidence"],
+          verdicts: [null],
+        },
+      });
+      const nfr = (await byTitle("Encrypt tokens at rest"))!;
+      expect(nfr.reviewStatus).toBeNull();
+      await db.requirement.update({
+        where: { id: (await byTitle("Approved"))!.id },
+        data: { reviewStatus: "approved" },
+      });
+      // The re-run is withheld; its proposal carries synthesis rows only.
+      let at = "";
+      await persistRequirements({
+        analysisId: ANALYSIS,
+        projectId: PROJECT,
+        synthesis: synthesis([{ title: "Approved" }, { title: "New" }]),
+        findingIdsByIndex: [],
+        degraded: null,
+        onWithheld: (w) => {
+          at = w.at;
+        },
+      });
+
+      const diff = (await getDiff()).body.data as WithheldReplacementDiff;
+      expect(diff.removed.map((e) => [e.title, e.outcome, e.reviewed])).toEqual([
+        ["Plain", "delete", false],
+        ["Encrypt tokens at rest", "keep", false],
+      ]);
+      const res = await apply(at);
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ added: 1, deleted: 1, kept: 1 });
+      // The draft NFR is still there, unchanged and unreviewed.
+      const after = await db.requirement.findUniqueOrThrow({ where: { id: nfr.id } });
+      expect(after).toMatchObject({ reviewStatus: null, kind: "non-functional", deletedAt: null });
+      expect(await byTitle("Plain")).toBeNull();
     });
 
     it("apply: a re-synthesis that gave no criteria leaves a reviewed requirement's criteria alone", async () => {

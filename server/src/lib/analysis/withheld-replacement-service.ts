@@ -45,6 +45,8 @@ import {
 import { noteProjectRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
 import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-links-from-findings.js";
 import { applyClarificationsToRequirements } from "./clarification-enrichment.js";
+import { ELICITED_NFR_LABEL } from "./elicited-nfr-requirements.js";
+import { parseRequirementLabels } from "./requirement-labels.js";
 import {
   ambiguousPromotionRecords,
   promotionMatchingRecord,
@@ -105,6 +107,7 @@ async function readCurrentRows(
       deletedAt: true,
       promotedStructuredId: true,
       promotedStructuredRunId: true,
+      labels: true,
     },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
   });
@@ -126,6 +129,7 @@ async function readCurrentRows(
     deleted: r.deletedAt !== null,
     promotedStructuredId: r.promotedStructuredId,
     promotedStructuredRunId: r.promotedStructuredRunId,
+    elicitedNfr: parseRequirementLabels(r.labels).includes(ELICITED_NFR_LABEL),
   }));
 }
 
@@ -171,7 +175,8 @@ export interface ApplyWithheldReplacementOutcome extends WithheldReplacementAppl
 
 /**
  * Apply the withheld re-synthesis `at` names. See `planWithheldApply` for what
- * happens to each requirement; nothing with review work is deleted.
+ * happens to each requirement; nothing with review work is deleted, nor is an
+ * elicited NFR draft the proposal leaves out (#1648).
  */
 export async function applyWithheldReplacement(input: {
   analysisId: string;

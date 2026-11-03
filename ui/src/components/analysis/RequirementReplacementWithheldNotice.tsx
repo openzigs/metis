@@ -296,7 +296,10 @@ function WithheldReplacementActions({
 /** One plain-language summary sentence of what applying does. */
 export function summarizeWithheldReplacement(diff: WithheldReplacementDiff): string {
   const deleted = diff.removed.filter((e) => e.outcome === "delete").length;
-  const kept = diff.removed.length - deleted;
+  const keptEntries = diff.removed.filter((e) => e.outcome === "keep");
+  const kept = keptEntries.filter((e) => e.reviewed).length;
+  // #1648 — an unreviewed row kept is an elicited NFR the new result cannot restate.
+  const keptElicited = keptEntries.length - kept;
   const parts = [
     `add ${plural(diff.added.length, "requirement", "requirements")}`,
     `change ${diff.changed.length}`,
@@ -307,6 +310,13 @@ export function summarizeWithheldReplacement(diff: WithheldReplacementDiff): str
     text += ` ${plural(kept, "reviewed requirement", "reviewed requirements")} the new result leaves out ${
       kept === 1 ? "is" : "are"
     } kept.`;
+  }
+  if (keptElicited > 0) {
+    text += ` ${plural(
+      keptElicited,
+      "elicited non-functional requirement",
+      "elicited non-functional requirements",
+    )} the new result does not cover ${keptElicited === 1 ? "is" : "are"} kept.`;
   }
   if (diff.unchangedCount > 0) {
     text += ` ${diff.unchangedCount} ${diff.unchangedCount === 1 ? "is" : "are"} unchanged.`;
@@ -425,7 +435,9 @@ export function WithheldReplacementComparison({
                 <span className="font-medium">{e.title}</span> <ReviewBadge entry={e} />
                 <span className="text-muted-foreground">
                   {e.outcome === "keep"
-                    ? "Kept, because it has review work."
+                    ? e.reviewed
+                      ? "Kept, because it has review work."
+                      : "Kept: an elicited non-functional requirement, which the new result does not cover."
                     : "Will be removed (no review work)."}
                 </span>
               </li>

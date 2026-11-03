@@ -410,6 +410,7 @@ vi.mock("../src/lib/prisma.js", () => ({
 
 import {
   createAnalysis,
+  evidenceLabels,
   finalizeAnalysisDelta,
   getAnalysisSnapshot,
   getStructuredRequirements,
@@ -760,6 +761,20 @@ describe("persistRequirements", () => {
     const stored = requirements.get(ids[0])!;
     const labels = JSON.parse(stored.labels) as string[];
     expect(labels).toContain(`finding:${ar.findingIds[0]}`);
+  });
+});
+
+describe("evidenceLabels (#1648)", () => {
+  it("adds one finding: label per evidence index that names a finding, each once", () => {
+    expect(
+      evidenceLabels({ labels: ["x", "y"], evidenceFindingIndexes: [1, 0, 1, 7] }, ["f-a", "f-b"]),
+    ).toEqual(["x", "y", "finding:f-b", "finding:f-a"]);
+  });
+
+  it("keeps the requirement's own labels, de-duplicated, when nothing is cited", () => {
+    expect(evidenceLabels({ labels: ["x", "x"], evidenceFindingIndexes: [] }, ["f-a"])).toEqual([
+      "x",
+    ]);
   });
 });
 

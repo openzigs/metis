@@ -1104,6 +1104,8 @@ export interface WithheldReplacementFieldChange {
  *   keeping its status, links, comments and other review work.
  * - `delete`: a requirement with no review work that the new result leaves out.
  * - `keep`: a reviewed requirement the new result leaves out; never deleted.
+ *   Also an elicited NFR draft (#1613) it leaves out, with `reviewed: false`:
+ *   the new result carries synthesis rows only, so it cannot restate one (#1648).
  * - `skip`: the new result restates a requirement someone deleted; not restored.
  */
 export type WithheldReplacementOutcome = "add" | "replace" | "update" | "delete" | "keep" | "skip";

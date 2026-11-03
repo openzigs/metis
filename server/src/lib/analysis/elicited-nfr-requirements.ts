@@ -14,7 +14,11 @@
  *     nothing has no evidence indexes, so the existing roll-ups give it
  *     `no_evidence` and never `implemented` (NFR-2: no fabrication).
  *   - One the synthesis already states is dropped, never written twice (see
- *     {@link statesSameNfr}).
+ *     {@link statesSameNfr}), and one run adds at most
+ *     {@link MAX_ELICITED_NFRS_PER_RUN}. Every drop is returned for the caller
+ *     to log (#1648).
+ *   - Its verdict never claims more than `could-not-verify`
+ *     ({@link capElicitedNfrVerdict}, #1648).
  *
  * The body is the model's text as-is. It is data: every prompt that later
  * quotes a requirement body fences it there (#1114, #1351), so nothing is
@@ -22,15 +26,26 @@
  *
  * Pure.
  */
-import type {
-  ElicitationPriority,
-  Nfr,
-  RequirementPriority,
-  SynthesizedRequirement,
+import {
+  NFR_CATEGORIES,
+  type ElicitationPriority,
+  type Nfr,
+  type RequirementPriority,
+  type RequirementVerdict,
+  type SynthesizedRequirement,
 } from "@metis/shared";
+import { requirementKindColumns } from "./requirement-kind.js";
 
 /** The label that tells a reviewer a requirement came from NFR elicitation. */
 export const ELICITED_NFR_LABEL = "elicited-nfr";
+
+/**
+ * Issue #1648 — the most elicited NFRs one run adds as draft rows. The schema's
+ * `max(200)` is a parse bound, not a review budget: a BA reviews every row, so
+ * a run past this keeps the first ones in elicitation order and reports the
+ * rest as dropped.
+ */
+export const MAX_ELICITED_NFRS_PER_RUN = 20;
 
 const PRIORITY: Record<ElicitationPriority, RequirementPriority> = {
   "must-have": "high",
@@ -38,21 +53,84 @@ const PRIORITY: Record<ElicitationPriority, RequirementPriority> = {
   "nice-to-have": "low",
 };
 
-/** Lower-case letters, digits and comparison/percent signs only. */
-function normalize(text: string): string {
-  return text.toLowerCase().replace(/[^\p{L}\p{N}%<>=]+/gu, "");
+/**
+ * Lower-case tokens: a number with its decimal point (`1.5`, `99.9`), a run of
+ * letters, or a run of comparison / percent signs. Everything else separates.
+ * A number is one token, so `200` never matches inside `1200` and `1.5s` never
+ * reads as `15s` (#1648).
+ */
+function tokens(text: string): string[] {
+  return text.toLowerCase().match(/\p{N}+(?:\.\p{N}+)?|\p{L}+|[%<>=]+/gu) ?? [];
+}
+
+/** Whether `needle` occurs in `haystack` as a contiguous token sequence. */
+function containsSequence(haystack: readonly string[], needle: readonly string[]): boolean {
+  if (needle.length === 0) return false;
+  for (let i = 0; i + needle.length <= haystack.length; i++) {
+    if (needle.every((t, j) => haystack[i + j] === t)) return true;
+  }
+  return false;
 }
 
 /**
- * True when `existing` already states `nfr`: the same title once case, spacing
- * and punctuation are ignored, or the NFR's measurable target written into the
- * existing requirement's title or body ("p95 < 300ms" in "… p95 < 300 ms …").
+ * Words that say what KIND of quality an NFR is about, or join a phrase,
+ * rather than what it is about: they cannot tell "API uptime 99.9%" from
+ * "database uptime 99.9%".
  */
-export function statesSameNfr(nfr: Nfr, existing: { title: string; body: string }): boolean {
-  const title = normalize(nfr.title);
-  if (title.length > 0 && title === normalize(existing.title)) return true;
-  const metric = normalize(nfr.metric);
-  return metric.length > 0 && normalize(`${existing.title} ${existing.body}`).includes(metric);
+const GENERIC_WORDS = new Set<string>([
+  ...NFR_CATEGORIES,
+  ...["a", "an", "the", "of", "for", "and", "or", "to", "in", "on", "at", "by", "with", "per"],
+  ...["under", "all", "every", "must", "should", "shall", "be", "is", "are"],
+  ...["uptime", "latency", "response", "responses", "time", "times", "throughput"],
+  ...["fast", "quick", "speed", "rate", "target", "requirement", "system"],
+]);
+
+/** The words of an NFR's title that name its subject: not numbers, signs or generic words. */
+function subjectWords(nfr: Nfr, metric: readonly string[]): string[] {
+  return tokens(nfr.title).filter(
+    (t) => /^\p{L}{2,}$/u.test(t) && !GENERIC_WORDS.has(t) && !metric.includes(t),
+  );
+}
+
+/** A requirement an elicited NFR is compared with: a synthesis row or an earlier NFR. */
+export interface ComparableRequirement {
+  title: string;
+  body: string;
+  kind?: unknown;
+  nfrCategory?: unknown;
+}
+
+/**
+ * True when `existing` already states `nfr`:
+ *
+ *   - the same title once case, spacing and punctuation are ignored; or
+ *   - a requirement of the SAME NFR category whose title or body carries the
+ *     NFR's measurable target as a whole token sequence, and names at least
+ *     one word of the NFR's subject ("p95 < 300ms" for "Fast API" in
+ *     "Responsive API … p95 < 300 ms …"). A shared target alone is not
+ *     enough: "99.9%" for the API and "99.9%" for the database are two NFRs
+ *     (#1648).
+ *
+ * A requirement with no category (functional, or unclassified) is compared on
+ * its title only.
+ */
+export function statesSameNfr(nfr: Nfr, existing: ComparableRequirement): boolean {
+  const title = tokens(nfr.title).join(" ");
+  if (title.length > 0 && title === tokens(existing.title).join(" ")) return true;
+  if (requirementKindColumns(existing).nfrCategory !== nfr.category) return false;
+  const metric = tokens(nfr.metric);
+  const text = tokens(`${existing.title} ${existing.body}`);
+  if (!containsSequence(text, metric)) return false;
+  const subject = subjectWords(nfr, metric);
+  return subject.length === 0 || subject.some((w) => text.includes(w));
+}
+
+/** An elicited NFR that was not written, and why (#1648: nothing is dropped silently). */
+export interface DroppedNfr {
+  title: string;
+  reason: "duplicate" | "over-cap";
+  /** For `duplicate`: the title of the requirement that already states it. */
+  duplicateOf?: string;
 }
 
 function body(nfr: Nfr): string {
@@ -61,20 +139,30 @@ function body(nfr: Nfr): string {
 
 /**
  * The elicited NFRs to write as requirements, in elicitation order, with any
- * the synthesis set (or an earlier NFR in the list) already states removed.
- * `findingIdsByIndex` is the synthesis's index → finding id map; an evidence id
- * that names no finding in it is not evidence and is dropped.
+ * the synthesis set (or an earlier NFR in the list) already states removed and
+ * at most {@link MAX_ELICITED_NFRS_PER_RUN} kept. `findingIdsByIndex` is the
+ * synthesis's index → finding id map; an evidence id that names no finding in
+ * it is not evidence and is dropped. `dropped` lists every NFR not written.
  */
 export function elicitedNfrRequirements(input: {
   nfrs: Nfr[];
   findingIdsByIndex: string[];
-  existing: Array<{ title: string; body: string }>;
-}): SynthesizedRequirement[] {
+  existing: ComparableRequirement[];
+}): { requirements: SynthesizedRequirement[]; dropped: DroppedNfr[] } {
   const indexOf = new Map(input.findingIdsByIndex.map((id, i) => [id, i]));
   const kept: SynthesizedRequirement[] = [];
-  const seen = [...input.existing];
+  const dropped: DroppedNfr[] = [];
+  const seen: ComparableRequirement[] = [...input.existing];
   for (const nfr of input.nfrs) {
-    if (seen.some((e) => statesSameNfr(nfr, e))) continue;
+    const same = seen.find((e) => statesSameNfr(nfr, e));
+    if (same) {
+      dropped.push({ title: nfr.title, reason: "duplicate", duplicateOf: same.title });
+      continue;
+    }
+    if (kept.length >= MAX_ELICITED_NFRS_PER_RUN) {
+      dropped.push({ title: nfr.title, reason: "over-cap" });
+      continue;
+    }
     const requirement: SynthesizedRequirement = {
       type: "feature",
       title: nfr.title,
@@ -95,5 +183,18 @@ export function elicitedNfrRequirements(input: {
     kept.push(requirement);
     seen.push(requirement);
   }
-  return kept;
+  return { requirements: kept, dropped };
+}
+
+/**
+ * Issue #1648 — the verdict an elicited NFR may carry. The findings it cites
+ * are the ones the elicitor read the NFR from; their code verdicts answer those
+ * findings' own claims, not this NFR. So a confident verdict (`implemented`,
+ * `partial`, `gap-confirmed`) rolled up from them is capped to
+ * `could-not-verify`. Null (no code analysis ran) stays null.
+ */
+export function capElicitedNfrVerdict(
+  verdict: RequirementVerdict | null,
+): RequirementVerdict | null {
+  return verdict === null ? null : "could-not-verify";
 }
