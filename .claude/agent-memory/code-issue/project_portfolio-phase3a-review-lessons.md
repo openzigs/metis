@@ -141,3 +141,20 @@ The #1692 review, 2026-11-02.
   skips evidence (contracts) can therefore reach different products. Before claiming it
   reaches the same ones, test a breaking contract plus a repo in more than one product,
   exactly at `maxDepth`.
+
+The #1643, #1616 and #1617 reviews, 2026-11-02. Follow-ups: #1702, #1703.
+
+- **Edge writes and contract docs: check the order (#1643).** Edges link to the latest
+  `ProductContractDoc`, so detecting before `recordContractDocVersion` stores an API edge
+  with `contractDocId` null and then links it on the second run. An idempotency test needs
+  an API (openapi) pair to catch this; table and event fixtures can't.
+- **A capped read must never feed stale-edge deletion (#1643).** A loader that stops at N
+  files in sorted order can miss the file that held an edge, and the sync then deletes it,
+  an overridden one included. Report the read as `partial` and keep that repo's edges.
+- **Check what reads an artifact, not only what writes it (#1616).** Spec Kit's later
+  commands embed `spec.md` in a plain md block with no untrusted-data fence. Source text
+  written into `spec.md` verbatim skips the fence it had at `/speckit.specify`.
+- **TanStack v5 `onSuccess` in `useMutation` options runs after unmount (#1617).** A
+  consumer of a synchronous model route that calls `router.push` there navigates after
+  the user has left. With no start token, a retry after a lost response duplicates the
+  creation.
