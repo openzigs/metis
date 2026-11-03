@@ -49,12 +49,13 @@ export const MFA_REQUIRED_CODE = "MFA_REQUIRED";
 /**
  * #1554 — what the UI says for {@link MFA_REQUIRED_CODE}: the action needs an
  * MFA sign-in, and when the sign-in never asked for a second factor the fix is
- * the Entra administrator's, not a retry.
+ * the identity provider administrator's, not a retry. (#1564) It names no IdP:
+ * the UI does not know which one the deployment uses.
  */
 export const MFA_REQUIRED_MESSAGE =
   "This action needs a sign-in with multi-factor authentication (MFA). Sign out and sign in " +
-  "again with MFA. If you were not asked for a second factor, ask your Microsoft Entra " +
-  "administrator to require MFA for the METIS app in Conditional Access.";
+  "again with MFA. If you were not asked for a second factor, ask your identity provider " +
+  "administrator to require MFA for the METIS app.";
 
 /** The message to show for an API error envelope, or `fallback` when it has none. */
 export function apiErrorMessage(

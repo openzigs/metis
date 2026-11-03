@@ -295,6 +295,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           ["oidc.noamr", undefined],
           ["oidc.pwd", ["pwd"]],
           ["oidc.x509", ["x509"]],
+          // #1564 — one factor, however second-factor-like, is not MFA.
+          ["oidc.otp", ["otp"]],
+          ["oidc.hwk", ["hwk"]],
         ] as const) {
           const token = await signIn(sub, amr ? [...amr] : undefined);
           expect(verifyAccessToken(token).mfaPassed).toBe(false);
@@ -309,9 +312,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           ["oidc.whfb", ["hwk", "mfa", "ngcmfa"]],
           ["oidc.cba", ["hwk", "mfa", "rsa"]],
           ["oidc.phone", ["swk", "rsa", "mfa"]],
+          // #1564 — two factors without the `mfa` value (RFC 8176 §2).
+          ["oidc.pwdotp", ["pwd", "otp"]],
         ] as const) {
           const token = await signIn(sub, [...amr]);
           expect(verifyAccessToken(token).mfaPassed).toBe(true);
+          // #1564 — the session records how it signed in.
+          expect(verifyAccessToken(token).authMode).toBe("oidc");
           expect((await gated(token)).body.error?.code).not.toBe("MFA_REQUIRED");
         }
       } finally {

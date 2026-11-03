@@ -320,6 +320,8 @@ export function workspacesRouter(): Router {
     "/:id/members/:memberId",
     requireAuth,
     requireWorkspaceRole("admin"),
+    // #1564 — removing a member revokes their workspace role, so it is a role change.
+    requireMfa,
     async (req: Req, res: Response) => {
       const member = await prisma.workspaceMember.findUnique({
         where: { id: req.params.memberId },

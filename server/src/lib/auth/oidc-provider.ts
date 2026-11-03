@@ -13,8 +13,45 @@ import type { SSOAuthResult, OIDCConfig } from "./sso-types.js";
 
 const log = createChildLogger("oidc-provider");
 
-/** AMR values that indicate multi-factor authentication. */
-const MFA_AMR_VALUES = ["mfa", "otp", "hwk", "swk", "sms", "pop", "fpt", "iris", "vbm"];
+/**
+ * #1564 — `amr` values (RFC 8176) that say outright that the sign-in used more
+ * than one factor. `ngcmfa` is Entra's "equivalent to mfa".
+ */
+const MFA_AMR_VALUES: ReadonlySet<string> = new Set(["mfa", "ngcmfa"]);
+
+/** RFC 8176 method values by factor: something you know, have, or are. */
+const AMR_FACTOR: ReadonlyMap<string, "knowledge" | "possession" | "inherence"> = new Map([
+  ["pwd", "knowledge"],
+  ["pin", "knowledge"],
+  ["kba", "knowledge"],
+  ["otp", "possession"],
+  ["sms", "possession"],
+  ["tel", "possession"],
+  ["hwk", "possession"],
+  ["swk", "possession"],
+  ["sc", "possession"],
+  ["pop", "possession"],
+  ["fpt", "inherence"],
+  ["iris", "inherence"],
+  ["vbm", "inherence"],
+  ["face", "inherence"],
+  ["retina", "inherence"],
+]);
+
+/**
+ * Whether an ID token's `amr` claim proves MFA: an explicit `mfa` (or Entra's
+ * `ngcmfa`), or methods from at least two different factors, such as `pwd` with
+ * `otp`. A lone second-factor-looking method (`otp`, `sms`, `hwk`, `swk`, …) is
+ * one factor — an e-mailed one-time code or a passkey alone is not MFA — so it
+ * no longer counts (#1564). No claim, or a malformed one, is not MFA.
+ */
+export function amrProvesMfa(amr: unknown): boolean {
+  if (!Array.isArray(amr)) return false;
+  const values = amr.map(String);
+  if (values.some((v) => MFA_AMR_VALUES.has(v))) return true;
+  const factors = new Set(values.map((v) => AMR_FACTOR.get(v)).filter(Boolean));
+  return factors.size >= 2;
+}
 
 /** Cache of discovered OIDC configurations. */
 const discoveryCache = new Map<string, openidClient.Configuration>();
@@ -152,10 +189,7 @@ export async function exchangeCodeForTokens(
         : [];
 
     // Check AMR claim for MFA (#754)
-    const amr = claims.amr;
-    const mfaPassed = Array.isArray(amr)
-      ? amr.some((v) => MFA_AMR_VALUES.includes(String(v)))
-      : false;
+    const mfaPassed = amrProvesMfa(claims.amr);
 
     return {
       success: true,

@@ -152,15 +152,16 @@ used MFA and requires it for **security-sensitive actions only** (#1554):
 
 | Action | Routes |
 |--------|--------|
-| **Admin and SSO settings**: every state-changing admin route | `PUT`/`DELETE /api/admin/config/:key`; `PUT /api/admin/auth/providers/saml`, `PUT /api/admin/auth/providers/oidc`, `DELETE /api/admin/auth/providers/:id`; `POST /api/admin/auth/scim/rotate-token`; `PUT /api/admin/auth/ldap`, `POST /api/admin/auth/ldap/test`; `PUT /api/admin/token-budgets/:userId`; `POST`/`DELETE /api/admin/embeddings/projects/:projectId/reindex` |
+| **Admin and SSO settings**: every state-changing admin route, and (#1564) every state-changing route that requires `admin.write` or the `admin` role wherever it is mounted | `PUT`/`DELETE /api/admin/config/:key`; `PUT /api/admin/auth/providers/saml`, `PUT /api/admin/auth/providers/oidc`, `DELETE /api/admin/auth/providers/:id`; `POST /api/admin/auth/scim/rotate-token`; `PUT /api/admin/auth/ldap`, `POST /api/admin/auth/ldap/test`; `PUT /api/admin/token-budgets/:userId`; `POST`/`DELETE /api/admin/embeddings/projects/:projectId/reindex`; `PATCH /api/projects/:id/budget`; `POST /api/projects/:projectId/triggers`, `PATCH`/`DELETE /api/projects/:projectId/triggers/:id`; `POST /api/projects/:projectId/connectors/repos/local`; `POST /api/eval/leaderboard/run`; `POST /api/security-eval/run` |
 | **Vault**: revealing and rotating a secret | `GET /api/vault/:id/reveal`, `POST /api/vault/:id/rotate` |
-| **User roles**: any change to a user's role or workspace role | `POST /api/admin/auth/role-reconciliation/confirm`; `PATCH /api/workspaces/:id/members/:memberId`; `POST /api/workspaces/:id/transfer`; `POST /api/workspaces/:id/invites` (an invite grants a workspace role) |
+| **User roles**: any change to a user's role or workspace role | `POST /api/admin/auth/role-reconciliation/confirm`; `PATCH /api/workspaces/:id/members/:memberId`; `DELETE /api/workspaces/:id/members/:memberId` (removing a member revokes their role, #1564); `POST /api/workspaces/:id/transfer`; `POST /api/workspaces/:id/invites` (an invite grants a workspace role) |
 
 Read-only pages (including the admin pages and role inspection), analysis, chat,
-review and publishing are **not** gated. An SSO session whose sign-in did not use
+review and publishing are **not** gated, and neither are creating or deleting a
+vault secret (neither reveals a value). An SSO session whose sign-in did not use
 MFA gets `403 MFA_REQUIRED` on the actions above, and the UI says the action needs
-a sign-in with MFA and that the fix is for the Entra administrator to require MFA
-for the METIS app in Conditional Access. Signing out and in again with MFA clears it.
+a sign-in with MFA and that the fix is for the identity provider administrator to
+require MFA for the METIS app. Signing out and in again with MFA clears it.
 
 **Recommended:** in Entra, create a Conditional Access policy that targets the METIS
 enterprise application (or app registration) and grants access only with
@@ -171,7 +172,9 @@ phishing-resistant MFA). Every SSO session then passes the gate.
 make no MFA claim and are never asked for MFA. That includes a **local
 break-glass admin account**: it bypasses MFA by design, so it still works when
 Entra is unreachable. Protect it accordingly (a long random password, kept
-offline, its use audited).
+offline, its use audited). The session records how it signed in (#1564), so a
+password sign-in stays a password session through every refresh, even for an
+account that also signs in through SSO.
 
 **Sessions from before this change:** an SSO session started before METIS recorded
 the MFA result (#1552) carries none. Its next refresh records "no MFA", so it must
@@ -182,8 +185,9 @@ lifetime, an hour) it is treated like a password session.
 
 METIS records whether a sign-in used MFA (`mfaPassed` on the session):
 
-- **OIDC**: the `amr` claim in the ID token includes `mfa` (or another MFA method
-  value). Entra omits `amr` from a v2.0 ID token unless the app asks for it: add the
+- **OIDC**: the `amr` claim in the ID token includes `mfa` (or Entra's `ngcmfa`),
+  or methods from two different factors such as `pwd` and `otp` (#1564: a lone
+  `otp`, `sms`, `hwk` or `swk` is one factor and does not count). Entra omits `amr` from a v2.0 ID token unless the app asks for it: add the
   optional claim **`amr`** to the ID token under **Token configuration** of the app
   registration. **An Entra OIDC sign-in without an `amr` claim counts as not MFA**,
   so its user is refused the gated actions. With the claim, Entra sends `mfa` for

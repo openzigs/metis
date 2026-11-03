@@ -59,7 +59,10 @@ export const refreshAuthenticatedUser: RequestHandler = async (req, _res, next) 
     if (!live) {
       throw new AppError(401, "TOKEN_INVALID", "Access token is malformed or invalid");
     }
-    req.user = live;
+    // #1564 — the live identity has no sign-in facts: carry the MFA verdict of
+    // the session across, or an MFA gate behind this middleware would fail open.
+    req.user =
+      typeof req.user.mfaPassed === "boolean" ? { ...live, mfaPassed: req.user.mfaPassed } : live;
     next();
   } catch (err) {
     next(err);
