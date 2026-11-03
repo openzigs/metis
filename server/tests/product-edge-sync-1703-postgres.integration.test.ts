@@ -128,10 +128,19 @@ describe.runIf(enabled)("#1703 unchanged product edges are not rewritten on real
         .sort(),
     );
 
-    // An overridden edge is compared on detection's facts alone.
+    // An overridden edge is compared on detection's facts alone. It is
+    // overridden as updateProductEdge does it, keeping detection's
+    // classification (#1687); one without that copy is filled on the next run.
+    const target = await db.productEdge.findUniqueOrThrow({ where: { id: first[0].id } });
     await db.productEdge.update({
-      where: { id: first[0].id },
-      data: { origin: "overridden", strength: "intrusive" },
+      where: { id: target.id },
+      data: {
+        origin: "overridden",
+        strength: "intrusive",
+        detectedIntegrationKind: target.integrationKind,
+        detectedStrength: target.strength,
+        detectedDirection: target.direction,
+      },
     });
     const before = await stored();
 
