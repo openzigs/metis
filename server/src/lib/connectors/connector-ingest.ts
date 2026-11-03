@@ -20,6 +20,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { audit } from "../audit/audit-service.js";
+import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import { getConfigService, type ConfigService } from "../config/config-service.js";
 import { isTestSourcePath } from "../docs-gen/module-grouping.js";
 import { createChildLogger } from "../logger.js";
@@ -262,6 +263,8 @@ interface UnitContext {
   /** Also the `source` stamped on every document this unit writes (#474). */
   kind: "repo" | "db";
   actorId: string;
+  /** #1521 — the user a NEW document is attributed to; see {@link documentUploaderId}. */
+  uploaderId: () => Promise<string>;
   storage: ReturnType<typeof getDocumentStorage>;
   knowledge: ReturnType<typeof getKnowledgeService>;
 }
@@ -272,14 +275,50 @@ function unitContext(
   kind: "repo" | "db",
   actorId: string,
 ): UnitContext {
+  let uploader: Promise<string> | undefined;
   return {
     projectId,
     connectorId,
     kind,
     actorId,
+    // Resolved once, on the first new document, so a run that only updates
+    // existing documents never queries for it.
+    uploaderId: () => (uploader ??= documentUploaderId(projectId, connectorId, kind, actorId)),
     storage: getDocumentStorage(),
     knowledge: getKnowledgeService(),
   };
+}
+
+/**
+ * #1521 — `Document.uploadedById` is a required foreign key to `users`, and the
+ * scheduled refresh runs as {@link SYSTEM_ACTOR_ID}, which no user has: writing
+ * it failed every new document's insert (swallowed into `failures`). A user-run
+ * ingest is attributed to that user. A system run is attributed to the
+ * connector's creator, else the project's creator — `Project.createdById` is a
+ * required foreign key, so it always names a real user. The audit rows still
+ * name the system (`audit()` stores it as `actorType: "system"`, #1518).
+ */
+async function documentUploaderId(
+  projectId: string,
+  connectorId: string,
+  kind: "repo" | "db",
+  actorId: string,
+): Promise<string> {
+  if (actorId !== SYSTEM_ACTOR_ID) return actorId;
+  const where = { id: connectorId, projectId };
+  const connector =
+    kind === "repo"
+      ? await prisma.repoConnection.findFirst({ where, select: { createdById: true } })
+      : await prisma.databaseConnection.findFirst({ where, select: { createdById: true } });
+  if (connector?.createdById) return connector.createdById;
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { createdById: true },
+  });
+  if (!project) {
+    throw new ConnectorError(404, "PROJECT_NOT_FOUND", `project ${projectId} not found`);
+  }
+  return project.createdById;
 }
 
 interface UnitOutcome {
@@ -334,7 +373,7 @@ async function ingestUnit(ctx: UnitContext, unit: IngestionUnit): Promise<UnitOu
           storagePath: blob.storagePath,
           checksum: blob.checksum,
           status: "pending",
-          uploadedById: ctx.actorId,
+          uploadedById: await ctx.uploaderId(),
           autoApproveTrusted: true,
         },
       });

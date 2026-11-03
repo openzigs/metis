@@ -13,6 +13,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
+import { creatorConnect } from "./skill-service.js";
 import { bumpVersion, parseAgentSource, slugifyKey, type AgentFrontmatter } from "./frontmatter.js";
 import { getToolRegistry, type ToolRegistry } from "../ai/tool-registry.js";
 import { knownToolNames, unknownToolRefs } from "../agent-runtime/tool-refs.js";
@@ -287,14 +288,14 @@ export class AgentService {
         : null,
       contentSha256: parsed.contentSha256,
       source: input.origin ?? "inline",
-      ...(actor.id ? { createdBy: { connect: { id: actor.id } } } : {}),
+      ...creatorConnect(actor),
       versions: {
         create: {
           version: parsed.frontmatter.version ?? "0.1.0",
           manifest: manifestJson,
           systemPrompt: parsed.body,
           contentSha256: parsed.contentSha256,
-          ...(actor.id ? { createdBy: { connect: { id: actor.id } } } : {}),
+          ...creatorConnect(actor),
         },
       },
       ...(skillIds.length > 0
@@ -396,7 +397,7 @@ export class AgentService {
                     manifest: manifestJson,
                     systemPrompt: parsed.body,
                     contentSha256: parsed.contentSha256,
-                    ...(actor.id ? { createdBy: { connect: { id: actor.id } } } : {}),
+                    ...creatorConnect(actor),
                   },
                 },
               }
