@@ -1921,9 +1921,19 @@ that changed, and the shared resources the coupling goes through, grouped as dat
 tables and columns, topics, identity providers and buckets. It also draws the path of
 products the change travels along.
 
-If nothing covers the requirement yet, you can name the product that should host it when
-you start the check through the API (`hostProductId` on `POST /api/portfolio-assessments`).
-That product then reads **Must change**, and its downstream products are listed.
+If nothing covers the requirement yet, no product's code changes until one is chosen to
+build it, so there is nothing to work the impact out from. Choose that product under
+**Which product will build this? (optional)** when you start the check (the API takes
+`hostProductId` on `POST /api/portfolio-assessments`). In **One product** scope, only that
+product can be chosen. The check then names it (**Product that will build it**, and
+**Built by** above the impact, with a **Chosen to build this** badge on its card). It reads
+**Must change**, and so does every product that holds one of its repositories, such as an
+umbrella product that includes it: that repository's code is that product's code too. The
+products downstream of it are listed, with their path and severity.
+
+A check that nothing covers, run without choosing a product, says that impact needs a host
+product instead of *"No product needs to change"*, and links back to the form with the
+requirement filled in and the picker in view.
 
 #### How severity is worked out
 

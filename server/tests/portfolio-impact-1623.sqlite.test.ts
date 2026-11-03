@@ -1273,6 +1273,83 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
+    describe("#1725 — a product holding the host's repo changes directly", () => {
+      const LISTED = [P.orders, P.storefront, P.reporting, P.notifications, P.idle];
+
+      it("Storefront and Reporting hold the Orders repo: both must change, and the walk still reaches Notifications through Reporting's repo", async () => {
+        const impact = await evaluatePortfolioImpact(MIA, {
+          directChangeProductIds: [P.orders],
+          listedProductIds: LISTED,
+          hostProductId: P.orders,
+        });
+        expect(kinds(impact)).toEqual({
+          [P.orders]: "direct-change",
+          [P.storefront]: "direct-change",
+          [P.reporting]: "direct-change",
+          [P.notifications]: "downstream-consumer",
+          [P.idle]: "none",
+        });
+        for (const id of [P.storefront, P.reporting]) {
+          expect(of(impact, id)).toEqual(
+            expect.objectContaining({ severity: null, edgeIds: [], hops: [] }),
+          );
+        }
+        // The same two hops as without a host: Reporting's own repo is walked on from
+        // once the change reaches it, though Reporting is no longer downstream.
+        const n = of(impact, P.notifications);
+        expect(n.edgeIds).toEqual(["e-orders-reporting-1623", "e-notifier-reporting-1623"]);
+        expect(n.hops.map((h) => [h.fromProductId, h.toProductId])).toEqual([
+          [P.orders, P.reporting],
+          [P.reporting, P.notifications],
+        ]);
+        expect(n.severity).toBe("low");
+      });
+
+      it("only the host's repos are walked from: one hop does not reach Notifications through Reporting's other repos", async () => {
+        const impact = await evaluatePortfolioImpact(MIA, {
+          directChangeProductIds: [P.orders],
+          listedProductIds: LISTED,
+          hostProductId: P.orders,
+          maxDepth: 1,
+        });
+        // Reporting holds the notifier repo too; walking from it would reach
+        // Notifications at no cost. It does not change, so it is not walked from.
+        expect(of(impact, P.notifications).impactKind).toBe("none");
+      });
+
+      it("without a host, a product holding a partial product's repo is still downstream", async () => {
+        const impact = await ordersImpact();
+        expect(of(impact, P.storefront).impactKind).toBe("downstream-consumer");
+        expect(of(impact, P.reporting).impactKind).toBe("downstream-consumer");
+      });
+
+      it("across workspaces: a product holding the host's repo changes only for a reader who can read it", async () => {
+        const hosted = (who: AuthPayload) =>
+          evaluatePortfolioImpact(who, {
+            directChangeProductIds: [P.billing],
+            listedProductIds: [P.billing, P.ledger],
+            hostProductId: P.billing,
+          });
+        const mia = await hosted(MIA);
+        // Partner holds Billing's gateway repo; Ledger consumes the gateway through Partner's core.
+        expect(of(mia, P.partner).impactKind).toBe("direct-change");
+        expect(of(mia, P.ledger).impactKind).toBe("downstream-consumer");
+        const ana = await hosted(ANA);
+        expect(of(ana, P.partner)).toEqual(
+          expect.objectContaining({ restricted: true, impactKind: "downstream-consumer" }),
+        );
+      });
+
+      it("a host the caller cannot read adds no product", async () => {
+        const impact = await evaluatePortfolioImpact(ANA, {
+          directChangeProductIds: [P.partner],
+          listedProductIds: [P.billing],
+          hostProductId: P.partner,
+        });
+        expect(of(impact, P.billing).impactKind).not.toBe("direct-change");
+      });
+    });
+
     describe("#1668 — traversal follow-ups", () => {
       it("impact moves inside a downstream product at no depth: Fulfilment -> Warehouse API -> Warehouse UI -> Alerts", async () => {
         const impact = await evaluatePortfolioImpact(MIA, {

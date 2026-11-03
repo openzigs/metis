@@ -103,6 +103,7 @@ export async function createPortfolioAssessment(raw: PortfolioAssessmentInput): 
         portfolioVerdict: input.portfolioVerdict,
         summary: input.summary,
         report: JSON.stringify(input.report ?? {}),
+        hostProductId: input.hostProductId,
         costUsd: input.costUsd,
         createdById: input.createdById,
       },
@@ -301,6 +302,7 @@ export async function getPortfolioAssessment(id: string): Promise<PortfolioAsses
     summary: row.summary,
     // `{}` (no report yet, or a row from before #1624) and anything unreadable read as none.
     report: portfolioReportSchema.safeParse(parseJson<unknown>(row.report, null)).data ?? null,
+    hostProductId: row.hostProductId,
     costUsd: row.costUsd,
     createdById: row.createdById,
     createdAt: row.createdAt.toISOString(),

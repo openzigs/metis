@@ -543,6 +543,25 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         // Impact does not move the gap verdict.
         expect(v.verdict).toBe("implemented");
         expect(p1.coverage).toBe("covers");
+        // #1725 — the host is stored and read back, named for a reader who can read it ...
+        expect(v.hostProductId).toBe(P3);
+        expect(v.productNames[P3]).toEqual(expect.any(String));
+        expect((await db.portfolioAssessment.findUnique({ where: { id } }))?.hostProductId).toBe(
+          P3,
+        );
+        const md = await get("imp-1623", `/${id}/export?format=md`);
+        expect(md.text).toContain(`**Built by:** ${v.productNames[P3]}`);
+        // ... and withheld from one who cannot read it (Ana reads only ws-a).
+        const ana = await get("ana", `/${id}`);
+        expect(ana.status).toBe(200);
+        expect(ana.body.data.hostProductId).toBeNull();
+        expect(ana.body.data.productNames).not.toHaveProperty(P3);
+        expect((await get("ana", `/${id}/export?format=md`)).text).not.toContain("Built by");
+      });
+
+      it("#1725 — a run with no host reads back with none", async () => {
+        const id = await start("imp-1623", { statement: RESET_STATEMENT, scope: "all-accessible" });
+        expect((await settled(id, "imp-1623")).hostProductId).toBeNull();
       });
 
       it("lists an assessment under a product it reaches downstream, counting only its scope (#1668)", async () => {

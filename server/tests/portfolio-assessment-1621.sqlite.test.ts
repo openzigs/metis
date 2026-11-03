@@ -108,6 +108,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           ],
           products: [{ productId: "prod-a", functional: "Billing adds a PDF export." }],
         },
+        // #1725 — the product chosen to build it.
+        hostProductId: "prod-a",
         costUsd: 0.42,
         createdById: USER,
         products: [
@@ -180,6 +182,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           strippedSentences: 0,
           withheld: false,
         },
+        hostProductId: "prod-a",
         costUsd: 0.42,
         createdById: USER,
         createdAt: expect.any(String),

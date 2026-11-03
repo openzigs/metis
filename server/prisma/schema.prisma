@@ -1604,6 +1604,9 @@ model PortfolioAssessment {
   /// #1624 — JSON object: the BA report (prose source, degraded flag, the
   /// requirement restated as FRs / NFRs, one paragraph per affected product).
   report              String   @default("{}")
+  /// #1725 — the product the starter chose to build the requirement (a scalar
+  /// soft-link, no FK, like `productIds`); null when none was chosen.
+  hostProductId       String?
   costUsd             Float    @default(0)
   createdById         String
   createdAt           DateTime @default(now())

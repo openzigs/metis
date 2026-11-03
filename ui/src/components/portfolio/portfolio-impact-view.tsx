@@ -4,10 +4,16 @@
  * how severely, with the stored severity derivation and a technical deep dive
  * one click away. Products it does not reach are listed in a collapsed group,
  * never left out.
+ *
+ * #1725 — the product chosen to build the requirement is named, and its card
+ * says so. When the impact is empty only because nothing covers the
+ * requirement and no product was chosen to build it, the section says impact
+ * needs one and links to the picker, instead of "No product needs to change".
  */
 "use client";
 
 import { useId, useState, type ReactNode } from "react";
+import Link from "next/link";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { PORTFOLIO_NOT_AFFECTED_OLDER_RULE, portfolioRestrictedNote } from "@metis/shared";
 import { Badge } from "@/components/ui/badge";
@@ -174,7 +180,7 @@ function DeepDive({ product }: { product: AffectedProduct }) {
   );
 }
 
-function AffectedCard({ product }: { product: AffectedProduct }) {
+function AffectedCard({ product, host }: { product: AffectedProduct; host: boolean }) {
   const via = viaLabel(product.via);
   return (
     <li
@@ -189,6 +195,11 @@ function AffectedCard({ product }: { product: AffectedProduct }) {
         <Badge variant="outline" data-testid="portfolio-impact-kind">
           {IMPACT_LABEL[product.impactKind]}
         </Badge>
+        {host ? (
+          <Badge variant="secondary" data-testid="portfolio-impact-host-badge">
+            Chosen to build this
+          </Badge>
+        ) : null}
         {via ? <span className="text-xs text-muted-foreground">via {via}</span> : null}
         {product.severity ? <SeverityBadge severity={product.severity} /> : null}
       </div>
@@ -221,9 +232,17 @@ function AffectedCard({ product }: { product: AffectedProduct }) {
 export function PortfolioImpactView({
   affected,
   notAffected,
+  hostProductId = null,
+  hostName = null,
+  hostHref = null,
 }: {
   affected: AffectedProduct[];
   notAffected: NotAffectedProduct[];
+  /** #1725 — the product chosen to build the requirement, when the reader can read it. */
+  hostProductId?: string | null;
+  hostName?: string | null;
+  /** #1725 — set when the impact needs a host: where to choose one. */
+  hostHref?: string | null;
 }) {
   const [showNotAffected, setShowNotAffected] = useState(false);
   const notAffectedId = useId();
@@ -236,12 +255,26 @@ export function PortfolioImpactView({
       <h2 id="portfolio-impact-heading" className="text-base font-semibold">
         Impact on your products
       </h2>
+      {hostProductId ? (
+        <p className="text-sm" data-testid="portfolio-impact-host">
+          Built by: <strong>{hostName ?? "the product you chose"}</strong>
+        </p>
+      ) : null}
       {affected.length > 0 ? (
         <ul className="space-y-3">
           {affected.map((p) => (
-            <AffectedCard key={p.productId} product={p} />
+            <AffectedCard key={p.productId} product={p} host={p.productId === hostProductId} />
           ))}
         </ul>
+      ) : hostHref ? (
+        <p className="text-sm text-muted-foreground" data-testid="portfolio-impact-needs-host">
+          Nothing covers this requirement yet, so no product changes until one is chosen to build
+          it. Impact needs a host product:{" "}
+          <Link href={hostHref} className="font-medium text-foreground underline">
+            choose the product that will build it
+          </Link>{" "}
+          and check again.
+        </p>
       ) : (
         <p className="text-sm text-muted-foreground" data-testid="portfolio-impact-none">
           No product needs to change for this requirement.

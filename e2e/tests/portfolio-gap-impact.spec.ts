@@ -10,6 +10,10 @@
  *      through the shared database at severity high, and the export downloads.
  *   4. A second user, outside B's workspace, opens that check: B is restricted,
  *      with nothing about it shown.
+ *   5. (#1725) A requirement nothing covers, with no host: impact needs one, and
+ *      the page links back to the picker with the statement filled in. Hosted on
+ *      a product holding A's database repo, it shows A must change (it holds
+ *      that repo) and B downstream through the shared database at high.
  *
  * The portfolio is `fixtures/portfolio.ts`: two products in two workspaces,
  * three repos (uploaded as `.zip` archives built from that file, and indexed
@@ -150,6 +154,8 @@ async function uploadAndIndex(s: Session, projectId: string, repo: PortfolioRepo
 interface Seeded {
   payments: string;
   reporting: string;
+  /** #1725 — Payments' database repo, which Journey 5's host product holds too. */
+  dbRepo: string;
 }
 
 /**
@@ -173,6 +179,30 @@ async function removeSeededProducts(): Promise<void> {
   } finally {
     await admin.api.dispose();
   }
+}
+
+/** Create a product holding `repoIds`, removed again by `afterAll`. */
+async function createProduct(
+  s: Session,
+  name: string,
+  repoIds: string[],
+  stamp: string,
+): Promise<string> {
+  const { id } = await created<{ id: string }>(
+    await s.api.post("/api/products", {
+      data: { name, slug: `${name.toLowerCase()}-${stamp}`, description: "E2E #1629" },
+    }),
+    `product ${name}`,
+  );
+  createdProductIds.push(id);
+  // The first repo attached homes the product in that repo's workspace (#1527).
+  for (const repoConnectionId of repoIds) {
+    await created(
+      await s.api.post(`/api/products/${id}/repos`, { data: { repoConnectionId } }),
+      `attach a repo to ${name}`,
+    );
+  }
+  return id;
 }
 
 /** Build the synthetic portfolio of `fixtures/portfolio.ts` through the API. */
@@ -233,23 +263,8 @@ async function seedPortfolio(): Promise<Seeded> {
       ),
     };
 
-    const product = async (name: string, repoIds: string[]) => {
-      const { id } = await created<{ id: string }>(
-        await analyst.api.post("/api/products", {
-          data: { name, slug: `${name.toLowerCase()}-${stamp}`, description: "E2E #1629" },
-        }),
-        `product ${name}`,
-      );
-      createdProductIds.push(id);
-      // The first repo attached homes the product in that repo's workspace (#1527).
-      for (const repoConnectionId of repoIds) {
-        await created(
-          await analyst.api.post(`/api/products/${id}/repos`, { data: { repoConnectionId } }),
-          `attach a repo to ${name}`,
-        );
-      }
-      return id;
-    };
+    const product = (name: string, repoIds: string[]) =>
+      createProduct(analyst, name, repoIds, stamp);
     const payments = await product(PORTFOLIO.products.payments, [
       repos.api,
       repos.db,
@@ -293,7 +308,7 @@ async function seedPortfolio(): Promise<Seeded> {
 
     // An unbound product: no repos, so nothing in it to check (#1677).
     await product(UNCONFIGURED, []);
-    return { payments, reporting };
+    return { payments, reporting, dbRepo: repos.db };
   } finally {
     await Promise.all([analyst.api.dispose(), outsider.api.dispose()]);
   }
@@ -308,10 +323,11 @@ async function signInPage(page: Page, user: { username: string; password: string
 test.describe.serial("Portfolio gap and impact analysis (#1629)", () => {
   test.setTimeout(240_000);
   let partialCheckId: string;
+  let seeded: Seeded;
 
   test.beforeAll(async () => {
     test.setTimeout(480_000);
-    await seedPortfolio();
+    seeded = await seedPortfolio();
   });
 
   test.afterAll(async () => {
@@ -349,6 +365,9 @@ test.describe.serial("Portfolio gap and impact analysis (#1629)", () => {
     const products = check.matrix.getByRole("row").filter({ has: page.getByRole("rowheader") });
     const empty = await products.filter({ hasText: "it has no repositories attached" }).count();
     await expect(products).toHaveCount(2 + empty);
+    // #1725 — nothing covers it and no host was chosen: impact needs one, not "no change".
+    await expect(check.impact).toContainText("Impact needs a host product");
+    await expect(check.impact).not.toContainText("No product needs to change");
   });
 
   test("Journey 3 — Reporting is downstream through the shared database at high, and the export downloads", async ({
@@ -402,5 +421,44 @@ test.describe.serial("Portfolio gap and impact analysis (#1629)", () => {
     await expect(main).not.toContainText(PORTFOLIO.products.reporting);
     await expect(main).not.toContainText(PORTFOLIO.workspaces.b);
     await expect(main).not.toContainText(REPORTING_SERVICE.label);
+  });
+
+  test("Journey 5 — a requirement nothing covers needs a host; hosted, it shows the downstream path (#1725)", async ({
+    page,
+  }) => {
+    // Added here, not in the seed: Journey 2 counts the products with repos.
+    const host = `Ledger-${Date.now()}`;
+    const analyst = await signIn(ANALYST.username, ANALYST.password);
+    try {
+      await createProduct(analyst, host, [seeded.dbRepo], `${Date.now()}`);
+    } finally {
+      await analyst.api.dispose();
+    }
+
+    await signInPage(page, ANALYST);
+    const entry = new PortfolioEntryPage(page);
+    await entry.goto();
+    await entry.checkAcrossPortfolio(STATEMENTS.uncovered);
+    const check = new PortfolioCheckPage(page);
+    await check.waitForAnswer("Nothing in your portfolio covers this");
+    await expect(check.impact).toContainText("Impact needs a host product");
+
+    // The link opens the form with the statement filled in, at the host picker.
+    await check.impact.getByRole("link", { name: "choose the product that will build it" }).click();
+    await expect(entry.heading).toBeVisible();
+    await expect(entry.statement).toHaveValue(STATEMENTS.uncovered);
+    await entry.checkAcrossPortfolio("", host);
+
+    await check.waitForAnswer("Nothing in your portfolio covers this");
+    await expect(page.getByText(`Product that will build it: ${host}`)).toBeVisible();
+    const ledger = check.impactCard(host);
+    await expect(ledger).toContainText("Must change");
+    await expect(ledger).toContainText("Chosen to build this");
+    // Payments holds the host's database repo, so it changes too: not a consumer of it.
+    await expect(check.impactCard("Payments")).toContainText("Must change");
+    const reporting = check.impactCard("Reporting");
+    await expect(reporting).toContainText("Downstream consumer");
+    await expect(reporting).toContainText("via a shared database");
+    await expect(reporting).toContainText("Severity: high");
   });
 });

@@ -185,6 +185,7 @@ describe("portfolio assessment schemas", () => {
       portfolioVerdict: null,
       summary: "",
       report: null,
+      hostProductId: null,
       costUsd: 0,
       createdById: "u",
       products: [],
@@ -272,11 +273,11 @@ describe("portfolio assessment schemas", () => {
           ],
         }),
       ).toEqual([]);
-      expect(
-        issues({
-          products: [{ productId: "p9", coverage: "not-checked", impactKind: "direct-change" }],
-        }),
-      ).toEqual(["products.0.productId"]);
+      for (const impactKind of ["none", "restricted"]) {
+        expect(
+          issues({ products: [{ productId: "p9", coverage: "not-checked", impactKind }] }),
+        ).toEqual(["products.0.productId"]);
+      }
       // It has no repo verdicts: those stay under the products assessed.
       expect(
         issues({
@@ -286,6 +287,22 @@ describe("portfolio assessment schemas", () => {
           repos: [{ productId: "p9", repoConnectionId: "r", verdict: "implemented" }],
         }),
       ).toEqual(["repos.0.productId"]);
+    });
+
+    it("#1725 — accepts a direct change outside the scope (a product holding the host's repo)", () => {
+      expect(
+        issues({
+          products: [{ productId: "p9", coverage: "not-checked", impactKind: "direct-change" }],
+        }),
+      ).toEqual([]);
+    });
+
+    it("#1725 — carries the host product, null when none was chosen", () => {
+      const parse = (input: object) =>
+        portfolioAssessmentInputSchema.parse({ ...base, ...input }).hostProductId;
+      expect(parse({})).toBeNull();
+      expect(parse({ hostProductId: "p1" })).toBe("p1");
+      expect(issues({ hostProductId: "" })).toEqual(["hostProductId"]);
     });
 
     it("refuses a product-scoped assessment of more than one product", () => {

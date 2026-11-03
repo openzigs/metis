@@ -14,6 +14,12 @@
  *
  * #1680 — a product arrived with (`?productId=`) that is not on the first page
  * is named by `initialProductName`, which the page reads on its own.
+ *
+ * #1725 — an optional "Which product will build this?" picker sends
+ * `hostProductId`. Where nothing covers the requirement yet, the impact walk
+ * starts from that product; without one there is nothing to walk from. It
+ * offers the products the analyst can read (the same list), and a `product`
+ * scope may only host on its own product, as the schema says.
  */
 "use client";
 
@@ -42,6 +48,7 @@ export function PortfolioAssessmentForm({
   productsLoading = false,
   initialProductId,
   initialProductName,
+  initialStatement = "",
   requirement,
   onClearRequirement,
   productQuery = "",
@@ -61,13 +68,15 @@ export function PortfolioAssessmentForm({
   initialProductId?: string | null;
   /** #1680 — the name of `initialProductId`, for when the list does not hold it. */
   initialProductName?: string | null;
+  /** #1725 — a statement to start from (a check re-run to choose a host). */
+  initialStatement?: string;
   requirement?: PortfolioFormRequirement | null;
   onClearRequirement?: () => void;
   pending: boolean;
   error?: string | null;
   onSubmit: (input: CreatePortfolioAssessmentInput) => void;
 }) {
-  const [statement, setStatement] = useState("");
+  const [statement, setStatement] = useState(initialStatement.slice(0, STATEMENT_MAX));
   const [scope, setScope] = useState<PortfolioAssessmentScope>(
     initialProductId ? "product" : "all-accessible",
   );
@@ -92,6 +101,20 @@ export function PortfolioAssessmentForm({
         ]
       : products;
 
+  // #1725 — the host picked, and its name, kept while a search narrows the list past it.
+  const [hostId, setHostId] = useState("");
+  const [hostName, setHostName] = useState<string | null>(null);
+  const listedHostName = products.find((p) => p.id === hostId)?.name;
+  if (listedHostName !== undefined && listedHostName !== hostName) setHostName(listedHostName);
+  // A `product` scope hosts only on its own product (`createPortfolioAssessmentSchema`).
+  const hostOptions =
+    scope === "product"
+      ? options.filter((p) => p.id === productId)
+      : hostId && !options.some((p) => p.id === hostId)
+        ? [{ id: hostId, name: hostName ?? "Selected product" }, ...options]
+        : options;
+  const host = hostOptions.some((p) => p.id === hostId) ? hostId : "";
+
   const hasSource = requirement ? true : statement.trim().length > 0;
   const hasScope = scope === "all-accessible" || productId !== "";
   const canSubmit = hasSource && hasScope && !pending;
@@ -102,10 +125,11 @@ export function PortfolioAssessmentForm({
     const source = requirement
       ? { requirementId: requirement.id }
       : { statement: statement.trim() };
+    const hosted = host ? { hostProductId: host } : {};
     onSubmit(
       scope === "product"
-        ? { ...source, scope, productIds: [productId] }
-        : { ...source, scope: "all-accessible" },
+        ? { ...source, scope, productIds: [productId], ...hosted }
+        : { ...source, scope: "all-accessible", ...hosted },
     );
   }
 
@@ -220,6 +244,46 @@ export function PortfolioAssessmentForm({
           </div>
         ) : null}
       </fieldset>
+
+      <div className="space-y-1">
+        {scope === "all-accessible" && onProductQueryChange ? (
+          <div className="space-y-1 pb-1">
+            <Label htmlFor="portfolio-host-search">Find a product to build it</Label>
+            <Input
+              id="portfolio-host-search"
+              type="search"
+              className="max-w-sm"
+              value={productQuery}
+              placeholder="Type part of a product's name"
+              onChange={(e) => onProductQueryChange(e.target.value)}
+            />
+          </div>
+        ) : null}
+        <Label htmlFor="portfolio-host">Which product will build this? (optional)</Label>
+        <select
+          id="portfolio-host"
+          className="h-9 w-full max-w-sm rounded-md border border-input bg-background px-2 text-sm"
+          value={host}
+          disabled={productsLoading}
+          aria-describedby="portfolio-host-hint"
+          onChange={(e) => {
+            setHostId(e.target.value);
+            setHostName(null);
+          }}
+          data-testid="portfolio-host-select"
+        >
+          <option value="">Not decided yet</option>
+          {hostOptions.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+        <p id="portfolio-host-hint" className="text-xs text-muted-foreground">
+          If no product does this yet, choose the one that will build it to see which other products
+          the change reaches.
+        </p>
+      </div>
 
       {error ? (
         <p role="alert" className="text-sm text-destructive" data-testid="portfolio-form-error">
