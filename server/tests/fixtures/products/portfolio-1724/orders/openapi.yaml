@@ -1,0 +1,69 @@
+openapi: 3.0.3
+info:
+  title: Orders API
+  version: 1.0.0
+servers:
+  - url: https://metis-fixture-orders.internal
+paths:
+  /orders/{id}:
+    get:
+      summary: Get one order with its customer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The order
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Order" }
+  /orders:
+    post:
+      summary: Place an order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NewOrder" }
+      responses:
+        "201": { description: Created }
+  /customers/{id}:
+    get:
+      summary: Get one customer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The customer
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Customer" }
+components:
+  schemas:
+    Customer:
+      type: object
+      required: [id, name, email]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string, format: email }
+    Order:
+      type: object
+      required: [id, customerId, totalCents, currency]
+      properties:
+        id: { type: string }
+        customerId: { type: string }
+        totalCents: { type: integer }
+        currency: { type: string }
+    NewOrder:
+      type: object
+      required: [customerId, totalCents, currency]
+      properties:
+        customerId: { type: string }
+        totalCents: { type: integer }
+        currency: { type: string }

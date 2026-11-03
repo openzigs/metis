@@ -1982,15 +1982,18 @@ once the check has finished, failed checks included, so you can report a failure
 
 #### Declaring an edge
 
-Impact follows the edges recorded on products. METIS does not detect these couplings
-automatically yet, so declare them through the API. You need edit rights on the product
-(`project.update`) and read access to both repositories.
+Impact follows the edges recorded on products. **Generate Documentation** on a product
+detects the couplings it can find in the code (Section 15.6); declare the rest, from the
+product page or through the API. You need edit rights on the product (`project.update`)
+and read access to both repositories.
 
-An edge is recorded on one product, between two of its repositories, and it reaches every
-other product either repository is attached to. To couple two products, attach the shared
-repository, or the other product's repository, to the product the edge is recorded on.
+An edge is recorded on one product and starts at one of its repositories. It ends at
+another of its repositories, or at a repository of another product in the same workspace
+[#1724], and it reaches every product the far repository is attached to. You don't need
+to put every repository into one umbrella product to link them.
 `GET /api/products/<productId>` lists the product's repositories with their
-`repoConnectionId`.
+`repoConnectionId`, and the other products' repositories you can link to under
+`linkedRepos`.
 
 ```bash
 # Optional: the shared resource the coupling goes through.
@@ -2019,7 +2022,7 @@ curl -X POST "$METIS_URL/api/products/$PRODUCT_ID/edges" \
 | `direction` | Read from the source repository's side. `consumes` and `depends-on`: the source depends on the target. `provides` and `writes`: the target depends on the source. `reads`: both directions. |
 | `edgeType` | `calls`, `imports`, `produces`, `consumes`, `extends`, `implements`. |
 | `contractDocId` | Optional: the provider's contract document the edge crosses (from the product's contracts). Only an edge that names one gets the one-step-up for a breaking contract change (see *How severity is worked out*). |
-| `targetRepoId`, `resourceId` | Give one or both. An edge from a repository to a resource alone is paired with the product's other edges through that resource: a repository that writes or provides it reaches every other repository using it. |
+| `targetRepoId`, `resourceId` | Give one or both. `targetRepoId` may be a repository of another product in the same workspace. An edge from a repository to a resource alone is paired with the other edges through that resource: a repository that writes or provides it reaches every other repository using it. Two products in the same workspace that each declare a resource of the same kind and name (a topic one provides and the other consumes, say) share it, so their edges through it link the two products [#1724]. |
 | `kind` (resource) | `database`, `table`, `topic`, `identity-provider`, `bucket`. A resource's `locator` may say where it lives, but never hold a credential. |
 
 Change an edge's classification with `PATCH /api/products/<productId>/edges/<edgeId>`,
@@ -3297,16 +3300,30 @@ its documents. [#1261]
 
 ### 15.6 A product's integration edges
 
-A product page's **Integration edges** section lists the couplings between the product's
+A product page's **Integration edges** section lists the couplings of the product's
 repositories that you can see: for each, where it goes from and to, its kind (API, event,
 database, shared library, identity), coupling strength, direction, whether detection found
 it or a person declared it, and its confidence. **Filter by kind** narrows the list. The
 portfolio impact check (Section 12.11) follows these edges. [#1628]
 
+**Where detection runs [#1724].** **Generate Documentation** detects the edges between the
+product's repositories, and also between its repositories and the repositories of the
+other products in the same workspace that you can access. So Orders, Billing and Notify
+can be three products of one repository each, and the edges between them are still
+found. An edge to another product's repository is shown with that product's name, for
+example *acme/billing (Billing)*, and is recorded on the product you ran it on: running it
+on either product finds the edge, and the impact check counts it once. The documents
+themselves still describe only the product's own repositories. A run reads at most 50
+other products' repositories; the response's `crossProductReposSkipped` says how many it
+left out. Repositories you cannot access, and products in other workspaces, are never
+read, and an edge to such a repository is not shown to you.
+
 With edit rights on the product (`project.update`) you can also change them:
 
 - **Declare edge** records a coupling detection cannot see, such as a shared identity
-  provider, a nightly file drop or a rule duplicated by hand. **Declare resource** records
+  provider, a nightly file drop or a rule duplicated by hand. **To repository** also lists,
+  under *Other products in this workspace*, the repositories of other products you can
+  access [#1724]. **Declare resource** records
   the shared resource it goes through. A declared edge can be edited, or deleted after you
   confirm: detection cannot find it again, so once it is deleted the impact check no longer
   follows it.

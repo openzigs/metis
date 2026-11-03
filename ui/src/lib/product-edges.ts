@@ -138,12 +138,20 @@ export function updateEdgeBody(draft: EdgeDraft): UpdateProductEdgeInput {
   };
 }
 
-/** `owner/name` for a repo the product shows; the bare id when it has no connection row. */
-export function repoLabel(product: Pick<ProductWithRepos, "repos">, repoConnectionId: string) {
+/**
+ * `owner/name` for a repo the product shows; for another product's repo
+ * (#1724), `owner/name (Product)`; the bare id when neither names it.
+ */
+export function repoLabel(
+  product: Pick<ProductWithRepos, "repos" | "linkedRepos">,
+  repoConnectionId: string,
+) {
   const repo = product.repos?.find((r) => r.repoConnectionId === repoConnectionId);
-  return repo?.repoConnection
-    ? `${repo.repoConnection.ownerOrOrg}/${repo.repoConnection.repoName}`
-    : repoConnectionId;
+  if (repo?.repoConnection) {
+    return `${repo.repoConnection.ownerOrOrg}/${repo.repoConnection.repoName}`;
+  }
+  const linked = product.linkedRepos?.find((r) => r.repoConnectionId === repoConnectionId);
+  return linked ? `${linked.label} (${linked.productName})` : repoConnectionId;
 }
 
 /** A resource's name and kind, as the "to" side of an edge through it. */
@@ -154,7 +162,7 @@ export function resourceLabel(resources: ProductResource[], resourceId: string):
 
 /** What the edge's far end is: a repo, a resource, or a repo through a resource. */
 export function edgeTargetLabel(
-  product: Pick<ProductWithRepos, "repos">,
+  product: Pick<ProductWithRepos, "repos" | "linkedRepos">,
   resources: ProductResource[],
   edge: Pick<ProductEdge, "targetRepoId" | "resourceId">,
 ): string {

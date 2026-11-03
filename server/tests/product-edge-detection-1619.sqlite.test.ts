@@ -275,7 +275,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
 
       it("reads only the repos the caller can read, and leaves an edge touching another alone", async () => {
-        expect(loaded.sort()).toEqual([rc.orders, rc.billing, rc.shipping].sort());
+        // #1724 — the product's own readable repos, then the repos of the other
+        // products homed in WS1 (every product here), which Bob can read too.
+        const own = [rc.orders, rc.billing, rc.shipping];
+        expect(loaded.slice(0, 3).sort()).toEqual(own.sort());
+        expect(loaded.slice(3).sort()).toEqual(
+          ["writer", "reader", "client", "server-repo", "g1", "g2"].map((k) => rc[k]).sort(),
+        );
         expect(loaded).not.toContain(rc.foreign);
         expect(await db.productEdge.count({ where: { id: { in: foreignEdges } } })).toBe(2);
       });
@@ -472,7 +478,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
         files.set(rc.billing, null);
         const partial = await detect(product.event);
-        expect(partial.scannedRepoIds.sort()).toEqual([rc.orders, rc.shipping].sort());
+        const eventRepos = new Set([rc.orders, rc.billing, rc.shipping, rc.foreign]);
+        expect(partial.scannedRepoIds.filter((id) => eventRepos.has(id)).sort()).toEqual(
+          [rc.orders, rc.shipping].sort(),
+        );
         expect(partial.deleted).toBe(0);
         expect(
           await db.productEdge.count({ where: { productId: product.event, origin: "detected" } }),

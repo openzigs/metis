@@ -20,10 +20,12 @@ import { productsApi } from "@/lib/products-api";
 import {
   REPO_A,
   REPO_B,
+  REPO_FAR,
   declaredEdge,
   detectedEdge,
   edge,
   idp,
+  linkedRepo,
   product,
 } from "./product-edges-fixtures";
 
@@ -118,6 +120,18 @@ describe("labels", () => {
   it("names a repo owner/name, or by id when it has no connection row", () => {
     expect(repoLabel(p, REPO_A)).toBe("acme/checkout");
     expect(repoLabel(p, "rc-unknown01")).toBe("rc-unknown01");
+  });
+
+  it("names another product's repo with its product (#1724)", () => {
+    const withLinked = product({ linkedRepos: [linkedRepo] });
+    expect(repoLabel(withLinked, REPO_FAR)).toBe("acme/billing (Billing)");
+    expect(edgeTargetLabel(withLinked, [], { targetRepoId: REPO_FAR, resourceId: null })).toBe(
+      "acme/billing (Billing)",
+    );
+    // A repo the product carries is named as its own, even if listed as linked too.
+    expect(
+      repoLabel(product({ linkedRepos: [{ ...linkedRepo, repoConnectionId: REPO_A }] }), REPO_A),
+    ).toBe("acme/checkout");
   });
 
   it("names the far end: a repo, a resource, or both", () => {

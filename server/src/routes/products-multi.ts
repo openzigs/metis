@@ -60,6 +60,7 @@ import {
 } from "../lib/products/contract-doc-versioning.js";
 import { summarizeDiff as summarizeContractDiff } from "../lib/products/contract-diff.js";
 import { runProductEdgeDetection } from "../lib/products/edge-detection.js";
+import { listReadableSiblingRepos } from "../lib/products/workspace-siblings.js";
 import { createCloneFileLoader } from "../lib/products/clone-file-loader.js";
 import type { ProductRepoInfo, ProductEdgeInfo } from "../lib/products/unified-doc-generator.js";
 import type { ProductEdgeEvidence } from "@metis/shared";
@@ -75,12 +76,18 @@ function param(value: string | string[] | undefined): string {
 
 /**
  * #1620 — the product's live repos the caller can read (#1258), the set an edge
- * or resource write is judged against. A missing product is the service's 404.
+ * or resource write is judged against, and (#1724) the readable repos of the
+ * other products in its workspace, which a cross-product edge may end at. A
+ * missing product is the service's 404.
  */
 async function readableRepoIdsOf(user: AuthPayload, productId: string): Promise<Set<string>> {
   const product = await getProduct(productId);
   const canRead = await productRepoReadAccess(user);
-  return new Set(product.repos.filter(canRead).map((r) => r.repoConnectionId));
+  const siblings = await listReadableSiblingRepos(user, productId, canRead);
+  return new Set([
+    ...product.repos.filter(canRead).map((r) => r.repoConnectionId),
+    ...siblings.map((r) => r.repoConnectionId),
+  ]);
 }
 
 /**
@@ -187,12 +194,24 @@ export function productsRouter(): Router {
       // caller who cannot open its project.
       const canRead = await productRepoReadAccess(req.user!);
       const visible = withReadableProductRepos(product, canRead);
-      // #1618 — the typed edges and shared resources, limited to the repos shown.
+      // #1618 — the typed edges and shared resources, limited to the repos shown
+      // and (#1724) the readable repos of the other products in its workspace,
+      // which a cross-product edge may end at; those are named in `linkedRepos`.
+      const siblings = await listReadableSiblingRepos(req.user!, product.id, canRead);
       const graph = await listReadableProductGraph(
         product.id,
-        new Set(visible.repos.map((r) => r.repoConnectionId)),
+        new Set([
+          ...visible.repos.map((r) => r.repoConnectionId),
+          ...siblings.map((r) => r.repoConnectionId),
+        ]),
       );
-      res.json({ data: { ...visible, ...graph } });
+      const linkedRepos = siblings.map((r) => ({
+        repoConnectionId: r.repoConnectionId,
+        label: r.label,
+        productId: r.productId,
+        productName: r.productName,
+      }));
+      res.json({ data: { ...visible, ...graph, linkedRepos } });
     } catch (err) {
       if (isProductError(err)) {
         res.status(err.status).json({ error: { code: err.code, message: err.message } });
@@ -607,12 +626,23 @@ export function productsRouter(): Router {
         // #1643 — detect the edges between the readable repos from each one's
         // clone first, so what it finds feeds the documents below. A repo with
         // no clone is not crawled and keeps its stored edges.
-        await runProductEdgeDetection({
+        const detection = await runProductEdgeDetection({
           user: req.user!,
           productId,
           loadRepoFiles: createCloneFileLoader(),
         });
         const storedEdges = await prisma.productEdge.findMany({ where: { productId } });
+        // #1724 — edges from this product's repos to readable repos of other
+        // products in its workspace. They are not drawn in this product's
+        // documents (those describe its own repos) but are counted, and the
+        // impact walk follows them.
+        const siblingRepoIds = new Set(detection?.siblingRepoIds ?? []);
+        const crossProductEdges = storedEdges.filter(
+          (e) =>
+            e.targetRepoId !== null &&
+            readableRepoIds.has(e.sourceRepoId) !== readableRepoIds.has(e.targetRepoId) &&
+            (siblingRepoIds.has(e.sourceRepoId) || siblingRepoIds.has(e.targetRepoId)),
+        ).length;
         // #1618 — the generated documents are repo-to-repo, so an edge through a
         // resource with no target repo is not drawn in them.
         const readableEdges = storedEdges.filter(
@@ -775,6 +805,8 @@ export function productsRouter(): Router {
             status: "completed",
             documentsGenerated: docsToCreate.length,
             edgesDetected: edgeInfos.length,
+            crossProductEdges,
+            crossProductReposSkipped: detection?.crossProductReposSkipped ?? 0,
             inaccessibleRepoCount: hidden.length,
             contractDocs: apiContractResults.map((r, i) => ({
               repoId: repoInfos[i]?.repoConnectionId ?? null,
