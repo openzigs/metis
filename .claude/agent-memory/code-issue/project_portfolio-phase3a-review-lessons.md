@@ -158,3 +158,19 @@ The #1643, #1616 and #1617 reviews, 2026-11-02. Follow-ups: #1702, #1703.
   consumer of a synchronous model route that calls `router.push` there navigates after
   the user has left. With no start token, a retry after a lost response duplicates the
   creation.
+
+The #1648 and #1636 reviews, 2026-11-02. Follow-ups: #1709, #1710.
+
+- **A keep rule built on "the proposal could not restate it" holds only for a restatement
+  by title (#1648).** The withheld plan matches rows by title. An elicited NFR that a
+  synthesis row restates in other words is kept as well, so a duplicate draft is left beside
+  it. If a dedupe exists (`statesSameNfr`), the plan needs it too.
+- **Put the reason on the wire; don't let the UI re-derive it (#1648).** The comparison reads
+  "kept and not reviewed" as "elicited NFR" because the entry has no `keepReason`. A third
+  keep rule would be mislabelled silently.
+- **A new display-label map must reach every surface that renders the field (#1636).**
+  `NFR_CATEGORY_LABEL` fixed the card badge, but the withheld-comparison panel still showed
+  `non-functional` and `performance`. Grep each place that renders the field.
+- **`pnpm --filter <pkg> <script>` runs in the package directory (#1710).** A shared
+  `scripts/*.sh` that resolves paths from the repo root fails there. Resolve from
+  `$(dirname "$0")`.
