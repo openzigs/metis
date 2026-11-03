@@ -1372,6 +1372,7 @@ The rules that hold across the run, each detailed in the paragraphs below:
   | `PORTFOLIO_GAP_PRODUCT_COST_CAP_CENTS` | 50 | one product's model spend |
   | `PORTFOLIO_GAP_MAX_MODEL_CALLS` | 250 | the run's model calls, counted as each starts |
   | `PORTFOLIO_GAP_CONCURRENCY` | 4 | products checked at once, one call at a time per product |
+  | `PORTFOLIO_MAX_OUTPUT_TOKENS` | 21000 | the OUTPUT cap of each model call (criteria split, repo verdict, BA report; #1726) |
   | `PORTFOLIO_ASSESSMENT_START_RATE_LIMIT_MAX` | 10 | starts per user per 15 minutes |
   | `PORTFOLIO_ASSESSMENT_RATE_LIMIT_MAX` | 300 | reads per user per 15 minutes |
 
@@ -1450,6 +1451,29 @@ stops new calls; the spend can pass it by the calls already in flight. Cost is p
 the provider's usage; an unpriced model counts 0, which is why the call cap exists: it is
 counted as each call starts, so it is never passed. Once one product fails the run, no new
 product is started.
+
+#1726 — every portfolio model call (the criteria split, each repo verdict, the BA report)
+takes its OUTPUT cap from `resolvePortfolioMaxOutputTokens`
+(`server/src/lib/portfolio/output-cap.ts`). It mirrors the synthesis call's cap (#1223,
+#751):
+- a default of 21,000, with the docs-gen reasoning allowance added for a model that reasons
+  by default;
+- `PORTFOLIO_MAX_OUTPUT_TOKENS` overrides it, used as given;
+- the result is clamped to the model's known ceiling and, on the anthropic provider, to the
+  SDK's non-streaming bound of 21,333.
+
+The cap was 2,000 (repo verdict) and 3,000 (report). A reasoning model spent all of it
+reasoning and returned nothing, which read as `could-not-verify`. A reply the cap cuts off
+(a `max_tokens` / `length` finish with no usable JSON) is retried once at twice the cap,
+held at the same clamps (`callJsonLlmRetryingCutOff`). In the gap engine that retry is a
+counted call, refused when the budget is spent.
+
+A repo in several products is judged once per run: the first product to reach it with
+evidence makes the call, and every other product holding it reuses that verdict at no
+cost (`RunContext.repoVerdicts`). A repo whose call failed is still `could-not-verify`
+(NFR-2: it may cover the requirement). But the product's summary names it ("The check
+failed (model error) on …; re-run to retry") and keeps the gap its other repos confirmed.
+The portfolio summary, and the page's headline note, say the answer leaves it out.
 
 **Portfolio assessment API (#1625)** (`server/src/routes/portfolio-assessments.ts`):
 

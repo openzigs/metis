@@ -356,6 +356,21 @@ export function portfolioNamedInProse(
 }
 
 /**
+ * #1726 — repos whose model call failed (`model-error`), in the words the page
+ * and the server's summaries share: what failed and what to do. With
+ * `leftOut`, says the answer it follows leaves them out.
+ */
+export function portfolioModelErrorText(
+  repoLabels: readonly string[],
+  { leftOut = false }: { leftOut?: boolean } = {},
+): string {
+  const them = repoLabels.length === 1 ? "it" : "them";
+  return `The check failed (model error) on ${portfolioNamedInProse(repoLabels)}${
+    leftOut ? `, so this answer leaves ${them} out` : ""
+  }; re-run to retry.`;
+}
+
+/**
  * #1689 — the rule a run relabelled readable products `restricted` by, as it
  * stored it (`technicalDetail.impact.restrictedRule`: from #1689 when its walk
  * stopped at a restricted product, from #1692 on every readable row):

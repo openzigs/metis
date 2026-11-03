@@ -27,7 +27,14 @@ export function product(
 }
 
 export function repoDetail(
-  repos: Array<{ id: string; label: string; verdict: string; criteria?: string[] }>,
+  repos: Array<{
+    id: string;
+    label: string;
+    verdict: string;
+    criteria?: string[];
+    /** #1726 — why the repo was not verified (`model-error`, …). */
+    reason?: string | null;
+  }>,
   reason: string | null = null,
 ): Record<string, unknown> {
   return {
@@ -38,7 +45,7 @@ export function repoDetail(
       label: r.label,
       verdict: r.verdict,
       criteria: r.criteria ?? [],
-      reason: null,
+      reason: r.reason ?? null,
       costUsd: 0,
     })),
     inaccessibleRepoCount: 0,

@@ -34,7 +34,7 @@ import {
 import type { AIProvider, ChatResponse } from "../ai/types.js";
 import { buildProvider } from "../ai/providers/factory.js";
 import { loadAIConfig } from "../ai/config.js";
-import { JsonLlmParseError, callJsonLlm } from "../ai/json-llm-client.js";
+import { JsonLlmParseError } from "../ai/json-llm-client.js";
 import { estimateUsageCostUsd } from "../ai/token-tracker.js";
 import { createChildLogger } from "../logger.js";
 import { fenced } from "./gap-prompts.js";
@@ -42,10 +42,10 @@ import type { PortfolioGapResult } from "./gap-engine.js";
 import type { PortfolioImpactResult } from "./impact-engine.js";
 import { EntityIndex, checkProse, sanitizeProse } from "./report-entities.js";
 import { impactOverview } from "./report-overview.js";
+import { callJsonLlmRetryingCutOff, resolvePortfolioMaxOutputTokens } from "./output-cap.js";
 
 const log = createChildLogger("portfolio-report");
 
-const MAX_OUTPUT_TOKENS = 3_000;
 const SUMMARY_CHARS = 2_000;
 const PARAGRAPH_CHARS = 1_200;
 const REQUIREMENT_CHARS = 500;
@@ -333,10 +333,11 @@ export async function generatePortfolioReport(
     degradedReason = "model-offline";
   } else {
     try {
-      const { parsed } = await callJsonLlm(provider, {
+      // #1726 — a cap a reasoning model's reply fits in; a cut-off reply is retried once.
+      const { parsed } = await callJsonLlmRetryingCutOff(provider, {
         systemPrompt: REPORT_SYSTEM_PROMPT,
         userPrompt: buildReportPrompt(ctx, refs),
-        maxTokens: MAX_OUTPUT_TOKENS,
+        maxTokens: resolvePortfolioMaxOutputTokens(provider),
         signal: deps.signal,
         onUsage: (r) => {
           const usd = (deps.costOf ?? defaultCostOf)(r);

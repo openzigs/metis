@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "key": "c28893308390ff4aa71464318c1a3a1450538d5159bb0dd81e792d7581483dc9",
+  "key": "93d342b036736b185d45c5f04dd00bca31a38f7843e2edcd069ffde3020eed84",
   "request": {
     "promptPreview": "<<<REQUIREMENT>>>\nCustomers can pay an invoice by instant bank transfer and get a receipt by email.\n<<<END REQUIREMENT>>>\n\n<<<CRITERIA>>>\n[1] Pay an invoice by instant bank transfer\n[2] Email a receip",
     "messageCount": 2,
     "options": {
-      "maxTokens": 2000
+      "maxTokens": 21000
     }
   },
   "response": {
@@ -22,5 +22,5 @@
     "offline": true,
     "finishReason": "stop"
   },
-  "recordedAt": "2026-11-01T18:59:59.320Z"
+  "recordedAt": "2026-11-03T21:03:49.971Z"
 }

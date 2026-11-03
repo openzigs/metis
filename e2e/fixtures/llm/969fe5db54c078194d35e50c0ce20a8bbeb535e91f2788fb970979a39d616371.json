@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "key": "aa207a0d889477e41e2db1a6c86644539989f115dc27a5cabb92779885c65b50",
+  "key": "969fe5db54c078194d35e50c0ce20a8bbeb535e91f2788fb970979a39d616371",
   "request": {
     "promptPreview": "<<<REQUIREMENT>>>\nCustomers can pay an invoice by instant bank transfer and get a receipt by email.\n<<<END REQUIREMENT>>>\n\nSplit it into 1 to 8 acceptance criteria. Keep each one short and testable,\na",
     "messageCount": 2,
     "options": {
-      "maxTokens": 2000
+      "maxTokens": 21000
     }
   },
   "response": {
@@ -22,5 +22,5 @@
     "offline": true,
     "finishReason": "stop"
   },
-  "recordedAt": "2026-11-01T18:59:59.313Z"
+  "recordedAt": "2026-11-03T21:03:49.963Z"
 }
