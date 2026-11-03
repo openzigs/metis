@@ -1,7 +1,7 @@
 # METIS end-to-end walkthrough — test plan
 
 This is the test plan for the end-to-end walkthrough tracked in
-[#706](https://github.com/openzigs/metis/issues/706): phases 1–20, Spec Kit S1–S24, pass bars, the
+[#706](https://github.com/openzigs/metis/issues/706): phases 1–20, Spec Kit S1–S25, pass bars, the
 Business Analyst questions, the developer issues, the persona journeys and the conditional wave G build proof. It moved here from #706's body in #948 so that
 changes to it are reviewed, show up in PRs and are checked by CI. **Results still go on #706**, as
 one comment per run built from [`RESULTS_TEMPLATE.md`](RESULTS_TEMPLATE.md).
@@ -689,6 +689,7 @@ Feature for this run: **"Mark all entries as read older than N days"** (Miniflux
 | S22 | *(Optional)* **Archive and restore** | UI: **Archive**, tick **Show archived**, **Restore** (`POST …/features/:slug/archive`, then `…/restore`) | Hidden from `GET …/features`, shown with `?includeArchived=1`, then back | — |
 | S23 | *(Optional)* **Install** | *API only:* `POST …/spec-kit/install` | **501 `SPECKIT_ATTACHED_WORKSPACE_NOT_IMPLEMENTED`**. This is expected; do not file it | — |
 | S24 | *(Optional; needs a **real** S21 publish and a public webhook tunnel)* **Issue sync**. Since J1.8 publishes 2 issues, the whole sandbox cap, S24 can run only when the operator gives S21 one of the 2 slots for that run (and J1.8 publishes 1); otherwise record it 🚫 with that reason (run 10) | Close a sandbox issue made by S21 (`routes/webhooks-github.ts` → `syncIssueEvent`, #433), then reopen it. Expose only the webhook receivers through a tunnel: a proxy that forwards `POST /api/webhooks/github/pr|issues` (and `/c/<connector id>` under each) and nothing else, never the whole server. If the sandbox connector has its own webhook secret (#1475), set the issue hook's Payload URL to the card's **Issue events payload URL path** (`/api/webhooks/github/issues/c/<connector id>`) with that secret: since #1483 a project with its own secret gets no shared-secret issue deliveries | A **bullet** task is ticked on close and unticked on reopen, with no marker. A **table-form** row is never ticked: close writes `<!-- closed via #N -->` and reopen replaces it with `<!-- open -->` (`toggleCheckbox`, `server/src/lib/spec-kit/issue-sync.ts`) | — |
+| S25 | *(Optional)* **Feature from approved requirements** (#1616) | *API only* until the requirements-list action (#1617) lands: `POST /api/projects/:id/spec-kit/features/from-requirements` with `{requirementIds}` naming two **approved** requirements of the run's analysis; then once adding a **draft** one | **201** with a new feature; its `spec.md` (read it in the feature tree) ends with **Source requirements** listing each requirement's title, body and criteria whole. With the draft id: **422 `SPECKIT_REQUIREMENTS_NOT_APPROVED`** naming it, and no feature is created | The generated spec's acceptance criteria cover both requirements |
 
 ## Persona scenarios
 

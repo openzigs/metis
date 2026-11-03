@@ -56,6 +56,13 @@ export interface SpecifyFeatureInput {
   siblingLookup?: SiblingSymbolLookup;
   /** #944 — injectable caller lookup. Defaults to the production wiring. */
   callerLookup?: CallerLookup;
+  /**
+   * #1616 — seed the spec from approved requirements (`buildRequirementsSeed`)
+   * instead of an operator brief: `prompt` is ignored, the model is given the
+   * fenced requirements, and `appendix` (every requirement verbatim) is
+   * appended to the written `spec.md`.
+   */
+  seed?: { title: string; brief: string; ragQuery: string; appendix: string };
 }
 
 export interface SpecifyFeatureResult {
@@ -91,8 +98,9 @@ export function specifyFeatureTitle(prompt: string): string {
 }
 
 export async function runSpecifyFeature(input: SpecifyFeatureInput): Promise<SpecifyFeatureResult> {
-  const title = specifyFeatureTitle(input.prompt);
-  const trimmed = input.prompt.trim();
+  const seed = input.seed;
+  const title = seed ? seed.title : specifyFeatureTitle(input.prompt);
+  const trimmed = seed ? seed.brief : input.prompt.trim();
 
   const project = await loadProjectContext(input.projectId);
   const slug = input.featureSlugOverride;
@@ -122,7 +130,7 @@ export async function runSpecifyFeature(input: SpecifyFeatureInput): Promise<Spe
     "",
     `Feature: ${feature.slug} — ${feature.title}`,
     "",
-    "Brief from operator:",
+    ...(seed ? [] : ["Brief from operator:"]),
     trimmed,
   ]
     .filter(Boolean)
@@ -131,7 +139,7 @@ export async function runSpecifyFeature(input: SpecifyFeatureInput): Promise<Spe
   // #786 — ground the spec exactly as `/specify` does (#374 / #20): retrieve on
   // the brief alone and pin the top requirements documents whole. Empty or
   // failed retrieval ⇒ "" (ungrounded); never throws.
-  const rag = await buildSpecKitRagContext(input.projectId, trimmed, {
+  const rag = await buildSpecKitRagContext(input.projectId, seed ? seed.ragQuery : trimmed, {
     knowledgeService: input.knowledgeService,
     // #944 — a spec must see the capability that already ships, and who calls
     // it: grounded on documents alone, a walkthrough spec never mentioned the
@@ -158,7 +166,7 @@ export async function runSpecifyFeature(input: SpecifyFeatureInput): Promise<Spe
   const artifact = await writeFeatureArtifact({
     featureId: feature.id,
     key: "spec.md",
-    content: run.content,
+    content: seed ? `${run.content.trimEnd()}\n\n${seed.appendix}\n` : run.content,
     actorId: input.actorId ?? null,
   });
 

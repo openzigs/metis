@@ -34,6 +34,7 @@ import {
   type SpecKitNamespacedCommand,
   normalizeSpecKitCommand,
   specKitCommandRequestSchema,
+  specKitFromRequirementsRequestSchema,
   specKitWriteRequestSchema,
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
@@ -123,6 +124,11 @@ import {
   specKitJobUserWriteRateLimiter,
 } from "../middleware/spec-kit-job-rate-limit.js";
 import { SPECKIT_FEATURE_SLUG_RE } from "../lib/spec-kit/features.js";
+import {
+  SpecKitRequirementSeedError,
+  buildRequirementsSeed,
+  loadApprovedRequirements,
+} from "../lib/spec-kit/requirements-seed.js";
 import {
   SPEC_KIT_JOB_CANCELLED_MESSAGE,
   SPEC_KIT_JOB_INTERNAL_ERROR,
@@ -322,6 +328,15 @@ function rethrow(err: unknown): never {
   }
   if (err instanceof SpecKitFeatureLifecycleError) {
     throw new AppError(err.status, err.code, err.message);
+  }
+  // #1616 — the refused requirement ids travel in `details`, for the UI to name.
+  if (err instanceof SpecKitRequirementSeedError) {
+    throw new AppError(
+      err.status,
+      err.code,
+      err.message,
+      err.requirementIds.length > 0 ? { requirementIds: err.requirementIds } : undefined,
+    );
   }
   if (err instanceof GateUnmetError) {
     throw new AppError(err.status, err.code, err.message, { required: err.required });
@@ -1033,6 +1048,78 @@ export function specKitRouter(): Router {
           req.query.includeArchived === "1" || req.query.includeArchived === "true";
         const features = await listFeatures(projectId, { includeArchived });
         res.json(ok({ features }));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
+
+  // #1616 — start a feature from requirements this project approved. The
+  // requirements are checked (in this project, approved) before anything is
+  // created; the feature is then created and specified exactly as
+  // `/speckit.specify` creates one (same job, same per-feature lock, the
+  // feature removed again if the run saves nothing), and this request waits
+  // for it like `POST /commands/:cmd`.
+  r.post(
+    "/features/from-requirements",
+    specKitJobPreAuthRateLimiter,
+    requireAuth,
+    specKitJobUserWriteRateLimiter,
+    requireProjectAccess(),
+    requirePermission("project.update"),
+    async (req, res) => {
+      const parsed = specKitFromRequirementsRequestSchema.safeParse(req.body ?? {});
+      if (!parsed.success) throw new AppError(400, "BAD_REQUEST", parsed.error.message);
+      const projectId = projectIdFrom(req);
+      if (parsed.data.projectId !== undefined && parsed.data.projectId !== projectId) {
+        throw new AppError(
+          400,
+          "PROJECT_MISMATCH",
+          "projectId does not match the project in the path",
+        );
+      }
+      try {
+        await ensureEnabled(projectId);
+        const actor = actorId(req);
+        const requirements = await loadApprovedRequirements(projectId, parsed.data.requirementIds);
+        const seed = buildRequirementsSeed(requirements);
+        const resolveProvider = memoizeProviderResolver(() => resolveProjectProvider(projectId));
+        const run = (featureSlug?: string) => async (): Promise<unknown> =>
+          runSpecifyFeature({
+            projectId,
+            prompt: seed.title,
+            seed,
+            ...(featureSlug ? { featureSlugOverride: featureSlug } : {}),
+            actorId: actor,
+            deps: { provider: await resolveProvider() },
+          });
+        const started = await startCommandJob({
+          projectId,
+          canonical: "speckit.specify",
+          label: "/speckit.specify",
+          featureSlug: null,
+          actor,
+          run: run(),
+          newFeature: {
+            preflight: async () => {
+              await resolveProvider();
+              await assertSpecifyWithinBudget(projectId, actor);
+            },
+            reserve: async () => {
+              const feature = await createFeature({ projectId, title: seed.title, actorId: actor });
+              return { id: feature.id, slug: feature.slug };
+            },
+            run: (slug) => run(slug)(),
+          },
+        });
+        const job = await started.done;
+        res.status(201).json(
+          ok({
+            ...(jobResultOrThrow(job) as Record<string, unknown>),
+            requirementIds: requirements.map((r) => r.id),
+            jobId: job.id,
+          }),
+        );
       } catch (err) {
         rethrow(err);
       }
