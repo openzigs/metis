@@ -17,18 +17,24 @@
 # `JSON.parse`, matching the existing route-handler conventions and the
 # `JSON-as-String` model the SQLite migrations have always required).
 #
-# Idempotent. Run `pnpm db:gen-postgres` after editing `schema.prisma`.
+# Idempotent. Run `pnpm db:gen-postgres` after editing `schema.prisma`. Works
+# from any working directory: paths resolve from this script's location, so
+# `pnpm --filter @metis/server db:gen-postgres` (cwd = server/) works too (#1710).
 # CI parity guard: `git diff --exit-code server/prisma/postgres/schema.prisma`
 # after running this script.
 # ==============================================================================
 
 set -e
 
+# Resolve paths from the repo root (this script's parent directory), not from
+# the caller's working directory (#1710).
+cd "$(dirname "$0")/.."
+
 SRC="server/prisma/schema.prisma"
 DST="server/prisma/postgres/schema.prisma"
 
 if [ ! -f "${SRC}" ]; then
-  echo "[gen-postgres] ${SRC} not found — run from repo root" >&2
+  echo "[gen-postgres] ${SRC} not found under $(pwd)" >&2
   exit 1
 fi
 
