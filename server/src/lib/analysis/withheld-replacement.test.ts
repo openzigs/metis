@@ -323,6 +323,73 @@ describe("planWithheldApply / diffWithheldReplacement (#780)", () => {
       ["Gone", "delete", false],
     ]);
   });
+
+  // #1709 — the elicited NFR draft, as `elicitedNfrRequirements` writes it.
+  const tokensNfr = (extra: Partial<CurrentRequirementRow> = {}) =>
+    current("nfr", "Encrypt API tokens at rest", {
+      elicitedNfr: true,
+      kind: "non-functional",
+      nfrCategory: "security",
+      body: "API tokens are encrypted at rest.\n\nTarget: AES-256",
+      ...extra,
+    });
+  // A synthesis row saying the same thing in other words.
+  const reworded = proposed("Token storage", {
+    kind: "non-functional",
+    nfrCategory: "security",
+    body: "Stored API tokens use AES-256 encryption.",
+  });
+
+  it("deletes an unreviewed elicited NFR a proposed row restates in other words (#1709)", () => {
+    const rows = [tokensNfr()];
+    expect(planWithheldApply(rows, [reworded]).map((s) => s.kind)).toEqual(["delete", "insert"]);
+    expect(diffWithheldReplacement(WITHHELD, rows, [reworded]).removed).toEqual([
+      {
+        title: "Encrypt API tokens at rest",
+        outcome: "delete",
+        reviewed: false,
+        reviewStatus: null,
+        changes: [],
+      },
+    ]);
+  });
+
+  it("keeps an elicited NFR the proposal does not restate, and says why (#1709)", () => {
+    const otherTarget = proposed("Token storage", {
+      kind: "non-functional",
+      nfrCategory: "security",
+      body: "Stored API tokens use RSA-2048 encryption.",
+    });
+    const rows = [tokensNfr(), current("approved", "Approved", { reviewed: true })];
+    expect(planWithheldApply(rows, [otherTarget]).map((s) => s.kind)).toEqual([
+      "keep",
+      "keep",
+      "insert",
+    ]);
+    const removed = diffWithheldReplacement(WITHHELD, rows, [otherTarget]).removed;
+    expect(removed.map((e) => [e.title, e.outcome, e.keepReason])).toEqual([
+      ["Encrypt API tokens at rest", "keep", "elicited-nfr"],
+      ["Approved", "keep", "reviewed"],
+    ]);
+  });
+
+  it("keeps a reviewed elicited NFR the proposal restates, as review work (#1709)", () => {
+    const rows = [tokensNfr({ reviewed: true, reviewStatus: "approved" })];
+    expect(planWithheldApply(rows, [reworded]).map((s) => s.kind)).toEqual(["keep", "insert"]);
+    expect(diffWithheldReplacement(WITHHELD, rows, [reworded]).removed[0]!.keepReason).toBe(
+      "reviewed",
+    );
+  });
+
+  it("keeps an elicited NFR whose only restatement is a deleted requirement's, which applying does not write (#1709)", () => {
+    const rows = [tokensNfr(), current("del", "Token storage", { deleted: true })];
+    expect(planWithheldApply(rows, [reworded]).map((s) => s.kind)).toEqual(["keep"]);
+  });
+
+  it("keeps an elicited NFR with no category, which nothing but its title can restate (#1709)", () => {
+    const rows = [tokensNfr({ nfrCategory: null })];
+    expect(planWithheldApply(rows, [reworded]).map((s) => s.kind)).toEqual(["keep", "insert"]);
+  });
 });
 
 describe("fingerprintWithheldPlan (#780)", () => {

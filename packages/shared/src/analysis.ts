@@ -1106,12 +1106,21 @@ export interface WithheldReplacementFieldChange {
  * - `update`: a reviewed requirement is changed through version history,
  *   keeping its status, links, comments and other review work.
  * - `delete`: a requirement with no review work that the new result leaves out.
+ *   Also an elicited NFR draft (#1613) that a row of the new result restates
+ *   in other words (#1709), so applying leaves one copy, not two.
  * - `keep`: a reviewed requirement the new result leaves out; never deleted.
- *   Also an elicited NFR draft (#1613) it leaves out, with `reviewed: false`:
- *   the new result carries synthesis rows only, so it cannot restate one (#1648).
+ *   Also an elicited NFR draft it leaves out and does not restate, with
+ *   `reviewed: false` (#1648). `keepReason` says which.
  * - `skip`: the new result restates a requirement someone deleted; not restored.
  */
 export type WithheldReplacementOutcome = "add" | "replace" | "update" | "delete" | "keep" | "skip";
+
+/**
+ * #1709 — why applying keeps a requirement the new result leaves out:
+ * `reviewed`, it carries review work; `elicited-nfr`, it is an elicited NFR
+ * draft the new result does not restate. A reviewed elicited NFR is `reviewed`.
+ */
+export type WithheldKeepReason = "reviewed" | "elicited-nfr";
 
 export interface WithheldReplacementEntry {
   /** The requirement's title (the current one where there is one). */
@@ -1121,6 +1130,8 @@ export interface WithheldReplacementEntry {
   reviewed: boolean;
   /** The current requirement's review status, when it has one. */
   reviewStatus: string | null;
+  /** #1709 — for `keep` only: why it is kept. */
+  keepReason?: WithheldKeepReason;
   /** Fields that differ; empty for add / delete / keep / skip. */
   changes: WithheldReplacementFieldChange[];
   /** For `add`: what the new requirement would hold. */

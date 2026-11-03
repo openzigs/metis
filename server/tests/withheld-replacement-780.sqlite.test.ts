@@ -413,6 +413,64 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await byTitle("Plain")).toBeNull();
     });
 
+    it("apply removes an elicited NFR draft the proposal restates in other words, so one copy is left (#1709)", async () => {
+      await persistRequirements({
+        analysisId: ANALYSIS,
+        projectId: PROJECT,
+        synthesis: synthesis([{ title: "Approved" }]),
+        findingIdsByIndex: [],
+        degraded: null,
+        elicited: {
+          requirements: [
+            {
+              ...synthesis([{ title: "Encrypt API tokens at rest" }]).requirements[0]!,
+              body: "API tokens are encrypted at rest.\n\nTarget: AES-256",
+              labels: [ELICITED_NFR_LABEL],
+              kind: "non-functional",
+              nfrCategory: "security",
+            },
+          ],
+          coverages: ["no_evidence"],
+          verdicts: [null],
+        },
+      });
+      await db.requirement.update({
+        where: { id: (await byTitle("Approved"))!.id },
+        data: { reviewStatus: "approved" },
+      });
+      // The withheld re-run states the same NFR under another title.
+      let at = "";
+      await persistRequirements({
+        analysisId: ANALYSIS,
+        projectId: PROJECT,
+        synthesis: synthesis([
+          { title: "Approved" },
+          {
+            title: "Token storage",
+            body: "Stored API tokens use AES-256 encryption.",
+            kind: "non-functional",
+            nfrCategory: "security",
+          },
+        ]),
+        findingIdsByIndex: [],
+        degraded: null,
+        onWithheld: (w) => {
+          at = w.at;
+        },
+      });
+
+      const diff = (await getDiff()).body.data as WithheldReplacementDiff;
+      expect(diff.added.map((e) => e.title)).toEqual(["Token storage"]);
+      expect(diff.removed.map((e) => [e.title, e.outcome, e.keepReason])).toEqual([
+        ["Encrypt API tokens at rest", "delete", undefined],
+      ]);
+      const res = await apply(at);
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ added: 1, deleted: 1, kept: 0 });
+      expect(await byTitle("Encrypt API tokens at rest")).toBeNull();
+      expect(await byTitle("Token storage")).toMatchObject({ nfrCategory: "security" });
+    });
+
     it("apply: a re-synthesis that gave no criteria leaves a reviewed requirement's criteria alone", async () => {
       await persist([{ title: "Approved", criteria: ["Keep me."] }]);
       const row = (await byTitle("Approved"))!;

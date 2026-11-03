@@ -188,7 +188,8 @@ function WithheldReplacementActions({
       analysisApi.applyWithheldReplacement(projectId, analysisId, withheld.at, fingerprint),
     successMessage: (r) =>
       `Applied the new requirements: ${r.added} added, ${r.updated + r.replaced} changed, ` +
-      `${r.deleted} removed${r.kept > 0 ? `, ${r.kept} reviewed kept` : ""}`,
+      // #1709 — `kept` counts elicited NFR drafts too, which are not reviewed.
+      `${r.deleted} removed${r.kept > 0 ? `, ${r.kept} kept` : ""}`,
     onSuccess: () => {
       setConfirming(false);
       setRefused(null);
@@ -312,9 +313,9 @@ function WithheldReplacementActions({
 export function summarizeWithheldReplacement(diff: WithheldReplacementDiff): string {
   const deleted = diff.removed.filter((e) => e.outcome === "delete").length;
   const keptEntries = diff.removed.filter((e) => e.outcome === "keep");
-  const kept = keptEntries.filter((e) => e.reviewed).length;
-  // #1648 — an unreviewed row kept is an elicited NFR the new result cannot restate.
-  const keptElicited = keptEntries.length - kept;
+  // #1709 — the server says why each is kept; nothing is inferred from `reviewed`.
+  const kept = keptEntries.filter((e) => e.keepReason === "reviewed").length;
+  const keptElicited = keptEntries.filter((e) => e.keepReason === "elicited-nfr").length;
   const parts = [
     `add ${plural(diff.added.length, "requirement", "requirements")}`,
     `change ${diff.changed.length}`,
@@ -452,9 +453,9 @@ export function WithheldReplacementComparison({
                 <span className="font-medium">{e.title}</span> <ReviewBadge entry={e} />
                 <span className="text-muted-foreground">
                   {e.outcome === "keep"
-                    ? e.reviewed
-                      ? "Kept, because it has review work."
-                      : "Kept: an elicited non-functional requirement, which the new result does not cover."
+                    ? e.keepReason === "elicited-nfr"
+                      ? "Kept: an elicited non-functional requirement, which the new result does not cover."
+                      : "Kept, because it has review work."
                     : "Will be removed (no review work)."}
                 </span>
               </li>
