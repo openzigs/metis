@@ -257,6 +257,8 @@ describe("#1104 B — promoting the requirements the approval gate withheld", ()
     expect(persistAnalysisEnhancement).toHaveBeenCalledWith(ANALYSIS_ID, {
       promotionBlocked: { blocked: false, pendingCount: 0, rejectedCount: 0 },
       promotionStatus: "allowed",
+      // #1705 — the NFRs a gate-blocked run elicited are written once, then cleared.
+      elicitedNfrsAwaitingPromotion: null,
       // #1204 — written even when empty, so an earlier set's record is cleared.
       promotionMatching: {
         ambiguousCount: 0,
@@ -668,6 +670,7 @@ describe("#723 — a rejected requirement is dropped, and can be reopened after 
     expect(persistAnalysisEnhancement).toHaveBeenCalledWith(ANALYSIS_ID, {
       promotionBlocked: { blocked: false, pendingCount: 0, rejectedCount: 1 },
       promotionStatus: "allowed",
+      elicitedNfrsAwaitingPromotion: null,
       promotedStructuredIds: ["REQ-1", "REQ-3"],
       promotedStructuredRunId: null,
       promotionMatching: {

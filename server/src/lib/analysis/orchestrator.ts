@@ -4714,6 +4714,24 @@ export class AnalysisOrchestrator {
       // not relabel the kept, healthy set). Only the gate-blocked branch below
       // writes it here, because no set is persisted on that branch.
 
+      // Epic #203 (#221) — cross-document conflict / contradiction /
+      // completeness detection over the ingested-doc-derived findings. Runs
+      // post-synthesis, BEFORE persistRequirements, and surfaces findings as
+      // first-class analysis output. Best-effort: a detection failure (or an
+      // offline provider that can't emit parseable JSON) never fails the
+      // analysis — it just yields an empty cross-doc finding set.
+      // #1613 — and the NFRs it elicited, persisted below as draft requirements.
+      // #1705 — before the gate, so a gate-blocked run elicits them too (the
+      // same model calls an allowed run makes, inside this run's budget); they
+      // wait on the analysis until `promoteApprovedRequirements` writes them.
+      const elicitedNfrs = await this.runCrossDocDetectionAndPersist({
+        analysisId: input.analysisId,
+        flatFindings: flat,
+        model: input.model,
+        signal: input.signal,
+        accumulator: input.accumulator,
+      });
+
       // Epic #202 (#216) — gate artifact promotion on resolved approvals.
       // Synthesis still runs (so the agent result is captured), but promotion
       // of the generated requirements into durable `Requirement` rows is
@@ -4799,6 +4817,9 @@ export class AnalysisOrchestrator {
           // #258 — record the coarse outcome in the SAME metadata patch as the
           // marker (one DB write, not two).
           promotionStatus: "blocked",
+          // #1705 — this run's NFRs, for promotion to write. An empty list
+          // clears an earlier blocked run's, which this run supersedes.
+          elicitedNfrsAwaitingPromotion: elicitedNfrs,
           ...(result.degraded && persistedRequirementCount === 0
             ? { synthesisDegraded: result.degraded }
             : {}),
@@ -4829,21 +4850,6 @@ export class AnalysisOrchestrator {
           },
         };
       }
-
-      // Epic #203 (#221) — cross-document conflict / contradiction /
-      // completeness detection over the ingested-doc-derived findings. Runs
-      // post-synthesis, BEFORE persistRequirements, and surfaces findings as
-      // first-class analysis output. Best-effort: a detection failure (or an
-      // offline provider that can't emit parseable JSON) never fails the
-      // analysis — it just yields an empty cross-doc finding set.
-      // #1613 — and the NFRs it elicited, persisted below as draft requirements.
-      const elicitedNfrs = await this.runCrossDocDetectionAndPersist({
-        analysisId: input.analysisId,
-        flatFindings: flat,
-        model: input.model,
-        signal: input.signal,
-        accumulator: input.accumulator,
-      });
 
       // Epic #726 (#736) — deterministic per-requirement coverage classification
       // from the linked-finding citation shapes (code vs docs vs none). Pure +
@@ -4995,6 +5001,9 @@ export class AnalysisOrchestrator {
           rejectedCount: ticketStatus.rejectedCount,
         },
         promotionStatus: "allowed",
+        // #1705 — this run elicited for itself; an earlier blocked run's NFRs
+        // describe a set this run has replaced (or, withheld, never will).
+        elicitedNfrsAwaitingPromotion: null,
         // #723 — which reviewed requirements are now rows, so one reopened and
         // approved later is appended rather than ignored. Only on a real
         // replacement: a withheld one (#769) persisted nothing, and recording

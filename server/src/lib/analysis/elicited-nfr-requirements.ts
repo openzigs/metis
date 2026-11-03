@@ -26,8 +26,10 @@
  *
  * Pure.
  */
+import { z } from "zod";
 import {
   NFR_CATEGORIES,
+  nfrSchema,
   type ElicitationPriority,
   type Nfr,
   type RequirementPriority,
@@ -184,6 +186,27 @@ export function elicitedNfrRequirements(input: {
     seen.push(requirement);
   }
   return { requirements: kept, dropped };
+}
+
+/**
+ * Issue #1705 — the metadata key holding the NFRs a gate-blocked run elicited,
+ * until its approved set is promoted. The orchestrator returns from synthesis
+ * before writing any requirement when the approval gate blocks promotion, so
+ * the NFRs wait here for `promoteApprovedRequirements`, which writes them with
+ * the approved set and clears the key. Absent when nothing is waiting.
+ */
+export const ELICITED_NFRS_AWAITING_PROMOTION_KEY = "elicitedNfrsAwaitingPromotion";
+
+const awaitingNfrsSchema = z.array(nfrSchema);
+
+/**
+ * The NFRs waiting on an analysis for promotion (#1705). A value that is not a
+ * list of NFRs (hand-edited, or from a different version) reads as none: the
+ * cost is a draft nobody sees, never a malformed row.
+ */
+export function readElicitedNfrsAwaitingPromotion(metadata: Record<string, unknown>): Nfr[] {
+  const parsed = awaitingNfrsSchema.safeParse(metadata[ELICITED_NFRS_AWAITING_PROMOTION_KEY]);
+  return parsed.success ? parsed.data : [];
 }
 
 /**
