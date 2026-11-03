@@ -142,10 +142,12 @@ export interface AnalysisCodeCitation {
 
 /**
  * #1615 — a React key for a code citation. The same `file:line` can be cited
- * from two of a project's repos, so the repo is part of its identity.
+ * from two of a project's repos, so the repo is part of its identity. #1636 —
+ * so is the symbol, as in the server's gap-report dedupe key: two symbols at
+ * one locator in one repo both survive it and must not share a key.
  */
 export function codeCitationKey(c: AnalysisCodeCitation): string {
-  return `${c.repoConnectionId ?? ""}:${formatCodeCitationLocator(c)}`;
+  return `${c.repoConnectionId ?? ""}:${formatCodeCitationLocator(c)}:${c.symbolId ?? ""}`;
 }
 
 export type AnalysisCitation = AnalysisDocumentCitation | AnalysisCodeCitation;

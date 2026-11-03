@@ -397,6 +397,14 @@ describe("createDefaultSymbolLineLookup", () => {
     expect(map.get("s-b")).toMatchObject({ repoConnectionId: "rc-B" });
   });
 
+  it("#1636 skips the graph relation for a caller that renders only the span", async () => {
+    findMany.mockResolvedValue([{ id: "s1", filePath: "src/A.ts", startLine: 1, endLine: 2 }]);
+    const map = await createDefaultSymbolLineLookup({ withRepo: false }).resolve(["s1"], "p1");
+    const select = (findMany.mock.calls.at(-1)![0] as { select: Record<string, unknown> }).select;
+    expect(select).toEqual({ id: true, filePath: true, startLine: true, endLine: true });
+    expect(map.get("s1")).toMatchObject({ filePath: "src/A.ts", repoConnectionId: null });
+  });
+
   it("short-circuits on an empty id list without querying", async () => {
     const lookup = createDefaultSymbolLineLookup();
     const map = await lookup.resolve([], "p1");

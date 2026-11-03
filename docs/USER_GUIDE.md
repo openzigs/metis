@@ -1515,7 +1515,7 @@ A requirement you edited, linked, commented on or reviewed yourself is never rep
 
 **Reviewing a withheld re-synthesis (#780).** When a Regenerate's new requirements are held back to protect your review work, or because the new result was degraded, the notice above the requirements list now gives you a way forward. METIS keeps the new result until you answer it:
 
-- **Review changes** compares the new result with your current requirements, by title. **New requirements** shows what would be added, with its priority, description and acceptance criteria. **Changed requirements** shows each changed field, with the current and new text side by side, and says whether the requirement has review work (for example **Approved**). **Not in the new result** lists requirements the new result leaves out: one without review work would be removed, and one with review work is kept. **Not restored** lists requirements someone deleted that the new result mentions again. Applying will not bring them back.
+- **Review changes** compares the new result with your current requirements, by title. **New requirements** shows what would be added, with its priority, description and acceptance criteria. **Changed requirements** shows each changed field, with the current and new text side by side, and says whether the requirement has review work (for example **Approved**). A new **Kind** or non-functional category counts as a change; a new result that does not say a requirement's kind leaves the current kind as it is. **Not in the new result** lists requirements the new result leaves out: one without review work would be removed, and one with review work is kept. **Not restored** lists requirements someone deleted that the new result mentions again. Applying will not bring them back.
 - **Apply changes** asks you to confirm first and names every reviewed requirement that would get new wording. Applying never deletes review work. A reviewed requirement keeps its status, links, comments, data mappings and baseline pins, and its new wording is saved as a new version under your name, so **Restore** in **History** brings the old wording back. Requirements without review work are replaced, as a normal Regenerate would. If the new result gives a requirement no acceptance criteria, its current criteria stay.
 - **Dismiss changes** appears once the comparison is open. It asks you to confirm, then keeps your current requirements exactly as they are and discards the new result. A discarded result cannot be brought back; run the Regenerate again to get a new one.
 
@@ -1554,7 +1554,7 @@ If there's no earlier run to compare against, the panel shows an explicit **"No 
 
 Once a run completes you can take the analyst-facing artifacts out of METIS as markdown or as ready-to-paste GitHub issue drafts. Nothing is pushed to GitHub for you — these are **drafts** you review and create yourself.
 
-- **Export report (Markdown).** The **Export report (Markdown)** button on the Gap report panel downloads a single `analysis-report-<id>.md` document that stitches together the whole picture: a coverage summary, one gap section per requirement (current-implementation `filePath:startLine-endLine` citations, the gap findings, effort, coverage and verification), and the full traceability matrix table. It's assembled from the completed analysis with no extra AI step, so it's fast and reproducible — drop it straight into a PR description, a wiki page, or an audit record. (For the matrix on its own as CSV or markdown, use the **Export CSV / Export Markdown** buttons on the Traceability matrix panel described above.)
+- **Export report (Markdown).** The **Export report (Markdown)** button on the Gap report panel downloads a single `analysis-report-<id>.md` document that stitches together the whole picture: a coverage summary, one gap section per requirement (current-implementation `filePath:startLine-endLine` citations, each followed by the repository it is in when the project has several and METIS could tell which, the gap findings, effort, coverage and verification), and the full traceability matrix table. It's assembled from the completed analysis with no extra AI step, so it's fast and reproducible — drop it straight into a PR description, a wiki page, or an audit record. (For the matrix on its own as CSV or markdown, use the **Export CSV / Export Markdown** buttons on the Traceability matrix panel described above.)
 - **Issue drafts from a finding.** Inside the **Deep Dive → Issue** dialog (see above), two extra actions let you export the draft you're looking at without publishing it: **Export markdown** downloads a paste-ready `issue-draft-<id>.md` with the **acceptance criteria as a task-list checklist** plus the problem statement, affected files, related requirements, and suggested labels; **Copy issue draft** copies the same markdown body to your clipboard so you can paste it into GitHub's "new issue" form or `gh issue create`. Both use the draft **as you've edited it** in the dialog, and both are serialized on the server so the output is consistently formatted and safe — any HTML in the model's text is neutralized and can never break the checklist or inject markup.
 
 ### 11.4 Viewing Analysis History
@@ -1591,7 +1591,7 @@ Each requirement has these properties:
 | **Description** | Detailed explanation of the requirement | Full paragraph with context and rationale |
 | **Type** | The shape of the work item. Security, performance and similar qualities are not types: they are the category of a non-functional **Kind** (below) | `feature`, `bug`, `chore`, `epic`, `task` |
 | **Priority** | Urgency level | `critical`, `high`, `medium`, `low` |
-| **Kind** | Functional (what the system does) or non-functional (how well it does it), separate from Type. A non-functional requirement also names its category. Blank when the analysis could not tell; METIS never guesses it. Shown on each requirement card; the **Kind** filter above the list narrows it to functional, non-functional or not-classified requirements. Set through `PATCH /api/analyses/:id/requirements/:reqId` (`kind`, `nfrCategory`); a set kind survives a re-run | `functional`, `non-functional` + `performance` |
+| **Kind** | Functional (what the system does) or non-functional (how well it does it), separate from Type. A non-functional requirement also names its category. Blank when the analysis could not tell; METIS never guesses it. Shown on each requirement card; the **Kind** filter above the list narrows it to functional, non-functional or not-classified requirements. The filter is hidden on a run where no requirement has a kind, and it goes back to **All** when you pick another run or open a link to a requirement. Set through `PATCH /api/analyses/:id/requirements/:reqId` (`kind`, `nfrCategory`); a set kind survives a re-run | `functional`, `non-functional` + `performance` |
 | **Status** | Where it is in the workflow | `generated`, `reviewing`, `approved`, `published` |
 | **Source** | What document/code/database it came from | "API Security Policy v3.2, Section 4.1" |
 | **Tags** | Keywords for categorization | `security`, `authentication`, `api` |
@@ -2366,10 +2366,16 @@ dependencies).
 6. Projects with nothing to show are listed together below the report, in a
    collapsed **Not affected or not checked** group, each with what happened:
    **Checked: nothing affected** (METIS searched it and nothing matched),
-   **Not checked: no access** (you could not open the project when the run
-   reached it; it is shown without its name), **Not checked: no code index**
-   (the project has no indexed code to search), or **Error: the check failed**.
-   A run from before these outcomes were recorded shows every project as before.
+   **Not checked: no access** (shown as *A project the run's starter could not
+   access*: whoever started the run could not open the project when the run
+   began searching; it is shown without its name), **Not checked: project
+   deleted** (the project was deleted before the run searched it), **Not
+   checked: no code index** (the project has no indexed code to search), or
+   **Error: the check failed**. When no project was searched at all, the report
+   says *No project was checked* instead of *No code impact detected*, and the
+   group opens by itself: an empty report then means nobody looked, not that
+   nothing is affected. A run from before these outcomes were recorded shows
+   every project as before.
 
 Only projects you have access to appear in the picker, and you can only open a
 report whose projects are all visible to you.

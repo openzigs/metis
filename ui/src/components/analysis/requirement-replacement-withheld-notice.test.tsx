@@ -71,7 +71,12 @@ const DIFF: WithheldReplacementDiff = {
       outcome: "replace",
       reviewed: false,
       reviewStatus: null,
-      changes: [{ field: "priority", before: "low", after: "high" }],
+      changes: [
+        { field: "priority", before: "low", after: "high" },
+        // #1636 — a reclassification; an unclassified side is sent as "".
+        { field: "kind", before: "", after: "non-functional" },
+        { field: "nfrCategory", before: "", after: "performance" },
+      ],
     },
   ],
   removed: [
@@ -199,6 +204,11 @@ describe("RequirementReplacementWithheldNotice", () => {
     expect(changed).toHaveTextContent("Acceptance criteria");
     expect(changed).toHaveTextContent("None");
     expect(changed).toHaveTextContent(/Login\s*Not reviewed/);
+    expect(changed).toHaveTextContent(/Kind\s*Current\s*None\s*New\s*Non-functional/);
+    // #1636 — labelled as the card's badge names it, not the raw enum value.
+    expect(changed).toHaveTextContent(
+      /Non-functional category\s*Current\s*None\s*New\s*Performance/,
+    );
     expect(changed).toHaveTextContent("Replaced with the new version.");
 
     const removed = within(panel).getByRole("region", { name: "Not in the new result" });

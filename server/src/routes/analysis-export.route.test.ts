@@ -36,10 +36,15 @@ vi.mock("../middleware/analysis-deepdive-rate-limit.js", () => ({
 }));
 
 const analysisFindFirst = vi.fn();
+const repoConnectionFindMany = vi.fn(async () => [
+  { id: "rc-A", label: "Web", repoName: "acme/web-app" },
+  { id: "rc-B", label: "Billing", repoName: null },
+]);
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
     analysis: { findFirst: analysisFindFirst },
     project: { findUnique: vi.fn(async () => ({ workspaceId: null })) },
+    repoConnection: { findMany: repoConnectionFindMany },
   },
 }));
 
@@ -148,6 +153,34 @@ describe("GET /api/projects/:projectId/analyses/:id/export", () => {
     );
     expect(res.text).toBe("REPORT_MD");
     expect(serializeAnalysisReportMarkdown).toHaveBeenCalledOnce();
+  });
+
+  // #1636 — a citation's repo is named in the export, as on the page.
+  it("hands the serializer the project's repo names for a caller who may list connectors", async () => {
+    currentUser = { userId: "user-1", role: "coordinator" };
+    analysisFindFirst.mockResolvedValueOnce({ id: "a-1", projectId: "p-1" });
+    getGapReport.mockResolvedValueOnce({ requirements: [] });
+    getTraceabilityMatrix.mockResolvedValueOnce({ rows: [] });
+    expect((await request(app).get("/api/projects/p-1/analyses/a-1/export")).status).toBe(200);
+    expect(repoConnectionFindMany).toHaveBeenCalledWith({
+      where: { projectId: "p-1" },
+      select: { id: true, label: true, repoName: true },
+    });
+    expect(serializeAnalysisReportMarkdown).toHaveBeenCalledWith(
+      expect.objectContaining({ repoNames: { "rc-A": "acme/web-app", "rc-B": "Billing" } }),
+    );
+  });
+
+  it("reads no repo names for a caller without connector.read", async () => {
+    currentUser = { userId: "user-1", role: "member" };
+    analysisFindFirst.mockResolvedValueOnce({ id: "a-1", projectId: "p-1" });
+    getGapReport.mockResolvedValueOnce({ requirements: [] });
+    getTraceabilityMatrix.mockResolvedValueOnce({ rows: [] });
+    expect((await request(app).get("/api/projects/p-1/analyses/a-1/export")).status).toBe(200);
+    expect(repoConnectionFindMany).not.toHaveBeenCalled();
+    expect(serializeAnalysisReportMarkdown).toHaveBeenCalledWith(
+      expect.objectContaining({ repoNames: {} }),
+    );
   });
 
   it("404s when the gap report or matrix is unavailable", async () => {

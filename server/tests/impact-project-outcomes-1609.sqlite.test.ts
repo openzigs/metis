@@ -217,7 +217,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         extractor: ONE_CHANGE,
         mapRequirement,
         includeSchemaImpact: false,
-        projectAccessible: executionAccessCheck({ id: "alice", role: "coordinator" }, [PA, PB, PC]),
+        projectAccess: executionAccessCheck({ id: "alice", role: "coordinator" }, [PA, PB, PC]),
       });
 
       const res = await getRun(id, "alice");
@@ -251,7 +251,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         extractor: ONE_CHANGE,
         mapRequirement,
         includeSchemaImpact: false,
-        projectAccessible: executionAccessCheck({ id: "alice", role: "coordinator" }, [PA, PR]),
+        projectAccess: executionAccessCheck({ id: "alice", role: "coordinator" }, [PA, PR]),
       });
 
       // R was never searched.
@@ -276,6 +276,42 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const body = JSON.stringify(res.body);
       expect(body).not.toContain(R_NAME);
       expect(body).not.toContain(R_SYMBOL);
+    });
+
+    // #1636 — the access rule hides a soft-deleted project from admins too, so
+    // an admin's run read `restricted` for it. It now reads `deleted`.
+    it("#1636 records a project soft-deleted before the run as not-checked/deleted, even for an admin", async () => {
+      mapRequirement.mockClear();
+      const PD = "proj-d-1636";
+      await db.project.create({
+        data: {
+          id: PD,
+          name: PD,
+          slug: PD,
+          createdById: "alice",
+          workspaceId: WS2,
+          status: "active",
+        },
+      });
+      await db.codeGraph.create({ data: { id: `g-${PD}`, projectId: PD } });
+      await addSymbol(PD, "src/gone.ts", "gone");
+      const id = await createRun([PA, PD]);
+      await db.project.update({ where: { id: PD }, data: { deletedAt: new Date() } });
+
+      await executeImpactAnalysis(id, [PA, PD], {
+        extractor: ONE_CHANGE,
+        mapRequirement,
+        includeSchemaImpact: false,
+        projectAccess: executionAccessCheck({ id: "ada", role: "admin" }, [PA, PD]),
+      });
+
+      expect(mapRequirement.mock.calls.map((c) => c[1])).toEqual([PA]);
+      const res = await getRun(id, "ada");
+      expect(res.status).toBe(200);
+      expect(res.body.data.projectOutcomes).toEqual([
+        { projectId: PA, outcome: "affected", reason: null },
+        { projectId: PD, outcome: "not-checked", reason: "deleted" },
+      ]);
     });
   },
 );

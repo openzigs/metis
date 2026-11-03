@@ -6,7 +6,7 @@
  * the multi-project authorization rules (every project must be accessible),
  * and status-code mapping.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
 
@@ -73,8 +73,14 @@ const projectNameRows = [
   { id: "project-001", name: "Alpha" },
   { id: "project-002", name: "Beta" },
 ];
+// #1636 — the execution-time access check reads the run's soft-deleted projects.
+let deletedProjectIds: string[] = [];
 const projectFindMany = vi.fn(
-  async (args: { select?: { name?: boolean } }): Promise<Array<Record<string, unknown>>> => {
+  async (args: {
+    select?: { name?: boolean };
+    where?: { deletedAt?: unknown };
+  }): Promise<Array<Record<string, unknown>>> => {
+    if (args?.where?.deletedAt) return deletedProjectIds.map((id) => ({ id }));
     if (args?.select?.name) return projectNameRows;
     return jiraConfiguredIds.map((id) => ({ id }));
   },
@@ -162,12 +168,12 @@ describe("impact-analyses router", () => {
         .send({ text: "Change something.", projectIds: ["project-001", "project-002"] });
       expect(res.status).toBe(202);
       const deps = (triggerImpactAnalysis.mock.calls[0] as unknown[])[1] as {
-        projectAccessible?: (projectId: string) => Promise<boolean>;
+        projectAccess?: (projectId: string) => Promise<string>;
       };
       // Access is read again when the run executes: by then it has changed.
       accessibleIds = ["project-001"];
-      expect(await deps.projectAccessible?.("project-001")).toBe(true);
-      expect(await deps.projectAccessible?.("project-002")).toBe(false);
+      expect(await deps.projectAccess?.("project-001")).toBe("accessible");
+      expect(await deps.projectAccess?.("project-002")).toBe("restricted");
     });
 
     it("triggers an analysis and returns 202 with project ids", async () => {
@@ -654,6 +660,10 @@ describe("defaultLiveIndexIntrospectorFor (#958)", () => {
 });
 
 describe("executionAccessCheck (#1609)", () => {
+  afterEach(() => {
+    deletedProjectIds = [];
+  });
+
   it("reads the access rule once per run, bounded to the run's projects, and answers per project", async () => {
     const { listMemberAccessibleProjectIds } = await import("../lib/scheduler/project-access.js");
     const list = vi.mocked(listMemberAccessibleProjectIds);
@@ -662,9 +672,28 @@ describe("executionAccessCheck (#1609)", () => {
     const actor = { id: "user-1", role: "coordinator" as const };
     const check = executionAccessCheck(actor, ["p-1", "p-2"]);
     expect(list).not.toHaveBeenCalled();
-    expect(await check("p-1")).toBe(true);
-    expect(await check("p-2")).toBe(false);
+    expect(await check("p-1")).toBe("accessible");
+    expect(await check("p-2")).toBe("restricted");
     expect(list).toHaveBeenCalledTimes(1);
     expect(list).toHaveBeenCalledWith(actor, ["p-1", "p-2"]);
+  });
+
+  // #1636 — the access rule hides a soft-deleted project from admins too, so it
+  // read `restricted` even for an admin. It gets its own reason.
+  it("#1636 answers `deleted` for a soft-deleted project, even for an admin", async () => {
+    const { listMemberAccessibleProjectIds } = await import("../lib/scheduler/project-access.js");
+    const list = vi.mocked(listMemberAccessibleProjectIds);
+    list.mockResolvedValueOnce(["p-1"]);
+    deletedProjectIds = ["p-2"];
+    projectFindMany.mockClear();
+    const check = executionAccessCheck({ id: "admin-1", role: "admin" as const }, ["p-1", "p-2"]);
+    expect(await check("p-2")).toBe("deleted");
+    expect(await check("p-1")).toBe("accessible");
+    // The deleted read is bounded to the run's own projects, and made once.
+    expect(projectFindMany).toHaveBeenCalledTimes(1);
+    expect(projectFindMany).toHaveBeenCalledWith({
+      where: { id: { in: ["p-1", "p-2"] }, deletedAt: { not: null } },
+      select: { id: true },
+    });
   });
 });

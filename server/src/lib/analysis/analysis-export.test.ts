@@ -316,6 +316,39 @@ describe("serializeAnalysisReportMarkdown", () => {
     expect(md).toContain("_No gap findings were linked");
   });
 
+  // #1636 — the gap report dedupes per repo (#1615), so the same path cited
+  // from two repos is two entries; the export printed them as two identical
+  // lines. Each now names its repo; an unstamped citation names none.
+  it("names each cited location's repo, so two repos' same path read apart", () => {
+    const md = serializeAnalysisReportMarkdown({
+      gapReport: gapReport([
+        gapReq({
+          currentImplementation: {
+            hasEvidence: true,
+            citations: [
+              codeCitation({ repoConnectionId: "rc-A" }),
+              codeCitation({ repoConnectionId: "rc-B" }),
+              codeCitation({ repoConnectionId: "rc-gone" }),
+              codeCitation(),
+            ],
+            citedFindingCount: 2,
+          },
+        }),
+      ]),
+      matrix: matrix(),
+      repoNames: { "rc-A": "web-app", "rc-B": "<b>billing`*svc*`</b>" },
+    });
+    const lines = md.split("\n").filter((l) => l.includes("`server/src/routes/auth.ts:10-20`"));
+    expect(lines).toEqual([
+      "- `server/src/routes/auth.ts:10-20` (repo: `web-app`)",
+      // A repo name is inert: HTML-escaped, its backticks stripped, in a code span.
+      "- `server/src/routes/auth.ts:10-20` (repo: `&lt;b&gt;billing*svc*&lt;/b&gt;`)",
+      // A connector the names do not cover still reads apart, by its id.
+      "- `server/src/routes/auth.ts:10-20` (repo: `rc-gone`)",
+      "- `server/src/routes/auth.ts:10-20`",
+    ]);
+  });
+
   it("handles an empty gap report without throwing", () => {
     const md = serializeAnalysisReportMarkdown({
       gapReport: gapReport([]),
@@ -373,7 +406,7 @@ describe("#1610 — a partial verdict is exported as partly built", () => {
       matrix: matrix(),
     });
     expect(md).toContain(
-      "**Verdict:** Partially implemented (code evidence cited for some acceptance criteria; a gap confirmed for others)",
+      "**Verdict:** Partly implemented (code evidence cited for some acceptance criteria; a gap confirmed for others)",
     );
   });
 });

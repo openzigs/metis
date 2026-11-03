@@ -81,7 +81,8 @@ export interface SearchSymbolsDeps {
  */
 export function createSearchSymbolsTool(deps?: Partial<SearchSymbolsDeps>): AgentTool {
   const searcher = deps?.searcher ?? createDefaultCodeSearcher();
-  const lineLookup = deps?.lineLookup ?? createDefaultSymbolLineLookup();
+  // #1636 — the tool renders `path:start-end` only, so it skips the repo read.
+  const lineLookup = deps?.lineLookup ?? createDefaultSymbolLineLookup({ withRepo: false });
 
   async function execute(args: unknown, context: ToolContext): Promise<ToolResult> {
     const validated = validateArgs(args);

@@ -31,6 +31,7 @@ import {
   impactSymbolRole,
   groupImpactTables,
   groupRepresentative,
+  type CodeCitation,
   type DdlRiskClass,
   type GroupedImpactTable,
   type FindingIssueDraft,
@@ -198,7 +199,8 @@ function coverageLabel(coverage: RequirementCoverage | null): string {
 const VERDICT_LABEL: Record<RequirementVerdict, string> = {
   implemented: "Implemented (code evidence cited)",
   partial:
-    "Partially implemented (code evidence cited for some acceptance criteria; a gap confirmed for others)",
+    // #1636 — the badge and the user guide say "Partly implemented".
+    "Partly implemented (code evidence cited for some acceptance criteria; a gap confirmed for others)",
   "gap-confirmed": "Gap confirmed (code was searched and does not satisfy this)",
   "could-not-verify": "Could not verify — NOT a confirmed gap (retrieval did not back a verdict)",
 };
@@ -366,8 +368,27 @@ function databaseChangesSection(changes: GapReportDatabaseChange[]): string {
   return parts.join("\n\n");
 }
 
+/**
+ * #1636 — one cited location of "Current implementation". The same path in two
+ * of a project's repos is two files (#1611), so a citation stamped with its repo
+ * names it; with no known name the line carries the repo connector id, so two
+ * repos' lines never read the same. An unstamped citation (repo ambiguous, or a
+ * row from before #1611) carries no repo.
+ */
+function citationLine(c: CodeCitation, repoNames: Readonly<Record<string, string>>): string {
+  const locator = codeSpan(formatCodeCitationLocator(c));
+  if (!c.repoConnectionId) return `- ${locator}`;
+  const repo = Object.hasOwn(repoNames, c.repoConnectionId)
+    ? repoNames[c.repoConnectionId]!
+    : c.repoConnectionId;
+  return `- ${locator} (repo: ${codeSpan(repo)})`;
+}
+
 /** Render one requirement's gap section: metadata → current impl → gap findings. */
-function gapRequirementSection(req: GapReportRequirement): string {
+function gapRequirementSection(
+  req: GapReportRequirement,
+  repoNames: Readonly<Record<string, string>>,
+): string {
   const parts: string[] = [`## ${mdInline(req.title)}`];
 
   parts.push(mdBlock(req.body));
@@ -386,9 +407,7 @@ function gapRequirementSection(req: GapReportRequirement): string {
   parts.push("### Current implementation");
   if (req.currentImplementation.hasEvidence) {
     parts.push(
-      req.currentImplementation.citations
-        .map((c) => `- ${codeSpan(formatCodeCitationLocator(c))}`)
-        .join("\n"),
+      req.currentImplementation.citations.map((c) => citationLine(c, repoNames)).join("\n"),
     );
   } else {
     parts.push("_No source evidence was linked — review this requirement manually._");
@@ -493,6 +512,11 @@ function coverageSummary(report: GapReport): string {
 export interface AnalysisReportInput {
   gapReport: GapReport;
   matrix: TraceabilityMatrix;
+  /**
+   * #1636 — the project's repo connector id → repo name, so a code citation
+   * names the repo it is in. Absent ⇒ a stamped citation shows its connector id.
+   */
+  repoNames?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -508,10 +532,11 @@ export interface AnalysisReportInput {
  */
 export function serializeAnalysisReportMarkdown(input: AnalysisReportInput): string {
   const { gapReport, matrix } = input;
+  const repoNames = input.repoNames ?? {};
 
   const gapBody =
     gapReport.requirements.length > 0
-      ? gapReport.requirements.map(gapRequirementSection).join("\n\n")
+      ? gapReport.requirements.map((req) => gapRequirementSection(req, repoNames)).join("\n\n")
       : "_No requirements to report on._";
 
   // #773 — when the run's retrieval failed the evidence threshold, say so at the

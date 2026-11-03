@@ -61,7 +61,11 @@ const findDocument = vi.hoisted(() =>
   })),
 );
 vi.mock("../lib/prisma.js", () => ({
-  prisma: { document: { findUnique: findDocument } },
+  prisma: {
+    document: { findUnique: findDocument },
+    // #1636 — the execution-time access check reads soft-deleted projects.
+    project: { findMany: vi.fn(async () => []) },
+  },
 }));
 
 const getImpactAnalysisDetail = vi.fn();
@@ -191,11 +195,11 @@ describe("POST /:id/rerun (#965)", () => {
     );
     expect((await request(app).post("/impact-analyses/orig-1/rerun").send({})).status).toBe(202);
     const deps = (triggerImpactAnalysis.mock.calls[0] as unknown[])[1] as {
-      projectAccessible?: (projectId: string) => Promise<boolean>;
+      projectAccess?: (projectId: string) => Promise<string>;
     };
     // Access is read again when the re-run executes: by then it is gone.
     accessibleIds = [];
-    expect(await deps.projectAccessible?.("project-001")).toBe(false);
+    expect(await deps.projectAccess?.("project-001")).toBe("restricted");
   });
 
   it("reuses a documentId source verbatim when the original had no text", async () => {

@@ -18,6 +18,27 @@ export const REQUIREMENT_KIND_LABEL: Record<RequirementKind, string> = {
   "non-functional": "Non-functional",
 };
 
+/** #1636 — an NFR category as a reader sees it, not its lowercase enum value. */
+export const NFR_CATEGORY_LABEL: Record<NfrCategory, string> = {
+  performance: "Performance",
+  security: "Security",
+  scalability: "Scalability",
+  availability: "Availability",
+  reliability: "Reliability",
+  usability: "Usability",
+  maintainability: "Maintainability",
+  compliance: "Compliance",
+  observability: "Observability",
+  other: "Other",
+};
+
+/** True when any requirement in the list is classified, so the kind filter has something to do. */
+export function anyRequirementKind(
+  reqs: ReadonlyArray<{ kind?: RequirementKind | null }>,
+): boolean {
+  return reqs.some((r) => r.kind != null);
+}
+
 const FILTER_OPTIONS: ReadonlyArray<[RequirementKindFilterValue, string]> = [
   [null, "All"],
   ["functional", "Functional"],
@@ -44,7 +65,11 @@ export function RequirementKindBadge({
 }): React.ReactElement | null {
   if (!kind || !Object.hasOwn(REQUIREMENT_KIND_LABEL, kind)) return null;
   const label = REQUIREMENT_KIND_LABEL[kind];
-  const text = kind === "non-functional" && nfrCategory ? `${label} · ${nfrCategory}` : label;
+  const category =
+    nfrCategory && Object.hasOwn(NFR_CATEGORY_LABEL, nfrCategory)
+      ? NFR_CATEGORY_LABEL[nfrCategory]
+      : nfrCategory;
+  const text = kind === "non-functional" && category ? `${label} · ${category}` : label;
   return (
     <span
       className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-[11px] font-medium text-muted-foreground"

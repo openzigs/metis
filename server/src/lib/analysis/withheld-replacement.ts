@@ -203,6 +203,9 @@ export interface CurrentRequirementRow {
   body: string;
   priority: string;
   acceptanceCriteria: string | null;
+  /** #1612 — the requirement's kind and NFR category; null when unclassified. */
+  kind: string | null;
+  nfrCategory: string | null;
   reviewStatus: string | null;
   /** Carries review work (#769's definition). */
   reviewed: boolean;
@@ -279,11 +282,20 @@ function sameCriteria(a: readonly string[], b: readonly string[]): boolean {
   return na.length === nb.length && na.every((x, i) => x === nb[i]);
 }
 
+/**
+ * #1636 — whether a proposal says what kind its requirement is. One that does
+ * not (stored before #1612, or the model did not classify it) leaves the
+ * current kind in place, as no criteria leave the current criteria (#1389).
+ */
+export function proposesKind(proposed: WithheldProposalRow): boolean {
+  return proposed.kind != null;
+}
+
 /** The fields a proposed row changes on the current requirement it restates. */
 export function fieldChanges(
   current: Pick<
     CurrentRequirementRow,
-    "title" | "body" | "priority" | "type" | "acceptanceCriteria"
+    "title" | "body" | "priority" | "type" | "acceptanceCriteria" | "kind" | "nfrCategory"
   >,
   proposed: WithheldProposalRow,
 ): WithheldReplacementFieldChange[] {
@@ -305,6 +317,12 @@ export function fieldChanges(
   // (#1389's incident shape), so it is not a change to apply.
   if (after.length > 0 && !sameCriteria(before, after)) {
     changes.push({ field: "acceptanceCriteria", before, after });
+  }
+  // #1636 — applying writes the proposal's kind, so a proposal that only
+  // reclassifies is a change. No category reads as "" on either side.
+  if (proposesKind(proposed)) {
+    text("kind", current.kind ?? "", proposed.kind ?? "");
+    text("nfrCategory", current.nfrCategory ?? "", proposed.nfrCategory ?? "");
   }
   return changes;
 }

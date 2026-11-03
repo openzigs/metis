@@ -51,8 +51,12 @@ function project(row: Record<string, unknown>, select: Record<string, boolean>) 
 
 const mockPrisma = {
   requirement: {
-    findUnique: vi.fn(async (args: { select: Record<string, boolean> }) =>
-      project(STORED, args.select),
+    // Honours the project scope in `where`, as the database would (#1118).
+    findUnique: vi.fn(
+      async (args: { where: { projectId?: string }; select: Record<string, boolean> }) =>
+        args.where.projectId && args.where.projectId !== STORED.projectId
+          ? null
+          : project(STORED, args.select),
     ),
     findMany: vi.fn(async (args: { select: Record<string, boolean> }) => [
       project(STORED, args.select),
@@ -103,11 +107,25 @@ vi.mock("../src/middleware/require-permission.js", () => ({
 const { requirementHistoryRouter } = await import("../src/routes/requirement-history.js");
 const { getBaselineContents, compareBaselines } =
   await import("../src/lib/reviews/baseline-service.js");
+const { errorHandler } = await import("../src/middleware/error-handler.js");
+
+/**
+ * The project `requireRequirementAccess` resolved for the caller (#1118), which
+ * the route narrows its read to. `null` ⇒ no scope resolved (an admin).
+ */
+let resolvedProjectId: string | null = null;
 
 function app() {
   const a = express();
   a.use(express.json());
+  a.use((req, _res, next) => {
+    if (resolvedProjectId) {
+      (req as unknown as { requirementProjectId: string }).requirementProjectId = resolvedProjectId;
+    }
+    next();
+  });
   a.use("/requirements", requirementHistoryRouter());
+  a.use(errorHandler);
   return a;
 }
 
@@ -115,14 +133,27 @@ describe("#1612 — tracked kind survives the history and baseline read paths", 
   beforeEach(() => {
     vi.clearAllMocks();
     caller = { userId: "user-1", role: "admin", workspaces: [] };
+    resolvedProjectId = null;
   });
 
-  it("a non-admin reader sees the same reconstructed kind on the timeline", async () => {
+  // #1636 — this replaces a "non-admin reader" case that ran exactly the
+  // admin request below (permissions are stubbed here). A non-admin's read is
+  // narrowed to the project their access resolved to: inside it they see the
+  // real kind, and a requirement of another project is not found.
+  it("a non-admin reader sees the real kind in their project, and 404s outside it", async () => {
     caller = { userId: "user-2", role: "reader", workspaces: ["ws-1"] };
+    resolvedProjectId = "proj-1";
     const res = await request(app()).get("/requirements/req-1/history");
     expect(res.status).toBe(200);
     const v2 = res.body.data.versions.find((v: { version: number }) => v.version === 2);
     expect(v2.snapshot.kind).toBe("non-functional");
+
+    resolvedProjectId = "proj-other";
+    const outside = await request(app()).get("/requirements/req-1/history");
+    expect(outside.status).toBe(404);
+    expect(mockPrisma.requirement.findUnique).toHaveBeenLastCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ projectId: "proj-other" }) }),
+    );
   });
 
   it("GET /history reports the kind each version really had", async () => {

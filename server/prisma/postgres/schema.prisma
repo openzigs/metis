@@ -2270,7 +2270,8 @@ model ImpactAnalysisProject {
   /// records it (pending/running runs, and runs finished before #1609).
   outcome       String?
   /// Issue #1609 — why a `not-checked` project was skipped:
-  /// restricted | no-index | timeout | budget. NULL for every other outcome.
+  /// restricted | deleted (#1636) | no-index | timeout | budget. NULL for every
+  /// other outcome.
   outcomeReason String?
 
   analysis ImpactAnalysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)

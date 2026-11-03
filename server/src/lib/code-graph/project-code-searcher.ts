@@ -402,7 +402,8 @@ export function createDefaultCodeSearcher(deps: CodeSearcherDeps = {}): FusedCod
 }
 
 /** Build the default production {@link SymbolLineLookup} (reads `CodeSymbol`). */
-export function createDefaultSymbolLineLookup(): SymbolLineLookup {
+export function createDefaultSymbolLineLookup(opts: { withRepo?: boolean } = {}): SymbolLineLookup {
+  const withRepo = opts.withRepo ?? true;
   return {
     async resolve(symbolIds, projectId) {
       const map = new Map<
@@ -410,15 +411,23 @@ export function createDefaultSymbolLineLookup(): SymbolLineLookup {
         { filePath: string; startLine: number; endLine: number; repoConnectionId: string | null }
       >();
       if (symbolIds.length === 0) return map;
-      const rows = await prisma.codeSymbol.findMany({
+      const rows: Array<{
+        id: string;
+        filePath: string;
+        startLine: number;
+        endLine: number;
+        graph?: { repoConnectionId: string | null } | null;
+      }> = await prisma.codeSymbol.findMany({
         where: { id: { in: symbolIds }, projectId },
-        // #1611 — the symbol's repo is its code graph's; a citation is stamped from it.
+        // #1611 — the symbol's repo is its code graph's; a citation is stamped
+        // from it. #1636 — a caller that renders only the span (the
+        // `search_code_symbols` tool) opts out of the relation read.
         select: {
           id: true,
           filePath: true,
           startLine: true,
           endLine: true,
-          graph: { select: { repoConnectionId: true } },
+          ...(withRepo ? { graph: { select: { repoConnectionId: true } } } : {}),
         },
       });
       for (const r of rows) {

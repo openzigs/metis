@@ -1168,13 +1168,23 @@ export interface ImpactServiceDeps {
    */
   llmDegradationNotice?: () => string | null;
   /**
-   * #1609 — whether the run's starter may still open `projectId` when the run
-   * reaches it. The run executes after the route answered, so access can change
-   * in between. A project this returns false for is recorded `not-checked` /
-   * `restricted` and is never searched. Absent ⇒ every project is searched.
+   * #1609 — whether the run's starter may still open `projectId` once the run
+   * is executing. The run executes after the route answered, so access can
+   * change in between. Anything but `accessible` is recorded `not-checked` with
+   * that reason and the project is never searched: `restricted` when the
+   * starter cannot open it, `deleted` (#1636) when it was soft-deleted. The
+   * production check (`executionAccessCheck`) reads access ONCE, when the run
+   * reaches its first project, and answers every project from that read.
+   * Absent ⇒ every project is searched.
    */
-  projectAccessible?: (projectId: string) => Promise<boolean>;
+  projectAccess?: (projectId: string) => Promise<ProjectExecutionAccess>;
 }
+
+/**
+ * #1636 — the answer of {@link ImpactServiceDeps.projectAccess}: searchable, or
+ * the `not-checked` reason to record instead.
+ */
+export type ProjectExecutionAccess = "accessible" | "restricted" | "deleted";
 
 /** #1609 — one project's outcome, as the engine records it on the run. */
 interface ProjectOutcomeRecord {
@@ -1449,11 +1459,12 @@ async function runImpactAnalysis(
         `Project ${pIdx + 1}/${projectIds.length}`,
       );
       currentProjectId = projectId;
-      // #1609 — re-check access when the run reaches the project. A project the
-      // starter can no longer open is recorded and skipped: nothing is searched,
-      // so no symbol of it can reach the result.
-      if (deps.projectAccessible && !(await deps.projectAccessible(projectId))) {
-        outcomes.set(projectId, { outcome: "not-checked", reason: "restricted" });
+      // #1609 — the starter's access as of execution. A project they can no
+      // longer open (or one deleted since the trigger, #1636) is recorded and
+      // skipped: nothing is searched, so no symbol of it can reach the result.
+      const access = deps.projectAccess ? await deps.projectAccess(projectId) : "accessible";
+      if (access !== "accessible") {
+        outcomes.set(projectId, { outcome: "not-checked", reason: access });
         continue;
       }
       // Pre-load the entire code graph for this project into memory once.

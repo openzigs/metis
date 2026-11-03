@@ -711,12 +711,21 @@ export type ImpactProjectOutcomeKind = (typeof IMPACT_PROJECT_OUTCOMES)[number];
 
 /**
  * #1609 — why a project was `not-checked`:
- *   - `restricted` — the run's starter could not access the project when it ran.
+ *   - `restricted` — the run's starter could not access the project when the run
+ *                    began searching (access is read once, at the first project).
+ *   - `deleted`    — the project was deleted (soft-deleted) before the run began
+ *                    searching; it reads this way for every viewer, admins included.
  *   - `no-index`   — the project has no indexed code symbols to search.
  *   - `timeout` / `budget` — reserved for a run that stops early on a deadline or
  *     a cost cap. The engine does not stop early yet, so it never writes them.
  */
-export const IMPACT_NOT_CHECKED_REASONS = ["restricted", "no-index", "timeout", "budget"] as const;
+export const IMPACT_NOT_CHECKED_REASONS = [
+  "restricted",
+  "deleted",
+  "no-index",
+  "timeout",
+  "budget",
+] as const;
 export type ImpactNotCheckedReason = (typeof IMPACT_NOT_CHECKED_REASONS)[number];
 
 /**

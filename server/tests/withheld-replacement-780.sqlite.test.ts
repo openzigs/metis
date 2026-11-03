@@ -75,6 +75,9 @@ interface Item {
   body?: string;
   criteria?: string[];
   priority?: "low" | "medium" | "high";
+  /** #1636 — the requirement's kind (#1612); absent ⇒ unclassified. */
+  kind?: "functional" | "non-functional";
+  nfrCategory?: "performance" | "security";
 }
 
 function synthesis(items: Item[]): SynthesisOutput {
@@ -88,6 +91,8 @@ function synthesis(items: Item[]): SynthesisOutput {
       labels: [],
       evidenceFindingIndexes: [],
       acceptanceCriteria: i.criteria ?? [],
+      ...(i.kind ? { kind: i.kind } : {}),
+      ...(i.nfrCategory ? { nfrCategory: i.nfrCategory } : {}),
     })),
   };
 }
@@ -645,6 +650,78 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const row = (await byTitle("Unreviewed"))!;
       expect(row.body).toBe("New body");
       expect(JSON.parse(row.acceptanceCriteria)).toEqual(["Keep me."]);
+    });
+
+    // #1636 — a proposal that only reclassifies showed no change, yet applying
+    // it wrote the new kind. The comparison now shows it, and a reviewed row
+    // takes it through version history like any other field.
+    it("apply: a proposal that only reclassifies shows the kind change and writes it", async () => {
+      await persist([
+        { title: "Reviewed", kind: "functional" },
+        { title: "Unreviewed", kind: "functional" },
+      ]);
+      const reviewed = (await byTitle("Reviewed"))!;
+      await db.requirement.update({
+        where: { id: reviewed.id },
+        data: { reviewStatus: "approved" },
+      });
+      let at = "";
+      await persistRequirements({
+        analysisId: ANALYSIS,
+        projectId: PROJECT,
+        synthesis: synthesis([
+          { title: "Reviewed", kind: "non-functional", nfrCategory: "security" },
+          { title: "Unreviewed", kind: "non-functional", nfrCategory: "performance" },
+        ]),
+        findingIdsByIndex: [],
+        onWithheld: (w) => {
+          at = w.at;
+        },
+      });
+      const diff = (await getDiff()).body.data as WithheldReplacementDiff;
+      expect(diff.unchangedCount).toBe(0);
+      expect(diff.changed.map((e) => [e.title, e.changes.map((c) => c.field)])).toEqual([
+        ["Reviewed", ["kind", "nfrCategory"]],
+        ["Unreviewed", ["kind", "nfrCategory"]],
+      ]);
+      expect((await apply(at)).body.data).toMatchObject({ updated: 1, replaced: 1 });
+      const after = await db.requirement.findUniqueOrThrow({ where: { id: reviewed.id } });
+      expect([after.kind, after.nfrCategory]).toEqual(["non-functional", "security"]);
+      expect(await db.requirementVersion.count({ where: { requirementId: reviewed.id } })).toBe(1);
+      const replaced = (await byTitle("Unreviewed"))!;
+      expect([replaced.kind, replaced.nfrCategory]).toEqual(["non-functional", "performance"]);
+    });
+
+    it("apply: a proposal that gave no kind leaves the current kind on both paths", async () => {
+      await persist([
+        { title: "Reviewed", kind: "non-functional", nfrCategory: "security" },
+        { title: "Unreviewed", body: "Old body", kind: "functional" },
+      ]);
+      const reviewed = (await byTitle("Reviewed"))!;
+      await db.requirement.update({
+        where: { id: reviewed.id },
+        data: { reviewStatus: "approved" },
+      });
+      let at = "";
+      await persistRequirements({
+        analysisId: ANALYSIS,
+        projectId: PROJECT,
+        synthesis: synthesis([{ title: "Reviewed" }, { title: "Unreviewed", body: "New body" }]),
+        findingIdsByIndex: [],
+        onWithheld: (w) => {
+          at = w.at;
+        },
+      });
+      const diff = (await getDiff()).body.data as WithheldReplacementDiff;
+      expect(diff.changed.map((e) => [e.title, e.changes.map((c) => c.field)])).toEqual([
+        ["Unreviewed", ["description"]],
+      ]);
+      expect((await apply(at)).body.data).toMatchObject({ updated: 0, replaced: 1 });
+      const after = await db.requirement.findUniqueOrThrow({ where: { id: reviewed.id } });
+      expect([after.kind, after.nfrCategory]).toEqual(["non-functional", "security"]);
+      const replaced = (await byTitle("Unreviewed"))!;
+      expect(replaced.body).toBe("New body");
+      expect(replaced.kind).toBe("functional");
     });
 
     it("apply: a proposal of unknown health leaves the degradation marker alone", async () => {
