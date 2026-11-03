@@ -130,6 +130,48 @@ describe("checkProse", () => {
     expect(checkProse("ORDERS changes.", index).mentions).toEqual(["p1"]);
   });
 
+  it("#1732 — a name inside a longer one is not a mention: the longest name claims its span", () => {
+    const orders = new EntityIndex({
+      products: new Map([
+        ["p-orders", "Orders"],
+        ["p-v3", "Orders v3"],
+        ["p-eu", "Orders EU"],
+      ]),
+    });
+    expect(orders.mentionsIn("Orders v3 must change.")).toEqual(["p-v3"]);
+    expect(orders.mentionsIn("orders eu reads it.")).toEqual(["p-eu"]);
+    // Both named, each in its own span.
+    expect(orders.mentionsIn("Orders EU follows Orders.")).toEqual(["p-orders", "p-eu"]);
+    expect(orders.mentionsIn("Orders v3 and Orders v3 again.")).toEqual(["p-v3"]);
+    expect(orders.mentionsIn("Orders changes.")).toEqual(["p-orders"]);
+    expect(checkProse("Orders v3 must change.", orders).mentions).toEqual(["p-v3"]);
+  });
+
+  it("#1736 review — a name that only overlaps a longer one's span is still a mention", () => {
+    const billing = new EntityIndex({
+      products: new Map([
+        ["p-acme", "Acme Billing"],
+        ["p-core", "Billing Core"],
+      ]),
+    });
+    // Neither name lies inside the other, so both are named, and an entry
+    // mentioning a product the reader cannot open stays withheld.
+    expect(billing.mentionsIn("Acme Billing Core migrates.")).toEqual(["p-acme", "p-core"]);
+    expect(billing.mentionsIn("Billing Core migrates.")).toEqual(["p-core"]);
+  });
+
+  it("#1732 — products that share one name are all named by it; an empty name names nothing", () => {
+    const twins = new EntityIndex({
+      products: new Map([
+        ["p-a", "Orders"],
+        ["p-b", "Orders"],
+        ["p-empty", ""],
+      ]),
+    });
+    expect(twins.mentionsIn("Orders changes.")).toEqual(["p-a", "p-b"]);
+    expect(twins.mentionsIn("Nothing here.")).toEqual([]);
+  });
+
   it("stays linear on hostile prose", () => {
     const hostile = `${"a.b-c/".repeat(20_000)} ${"Word ".repeat(20_000)}product. ${"x. ".repeat(20_000)}`;
     const start = performance.now();

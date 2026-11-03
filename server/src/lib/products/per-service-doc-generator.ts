@@ -4,13 +4,23 @@
  * Generates per-repo documentation that includes cross-reference sections
  * showing how each service connects to its siblings within the same product.
  */
-import type { ProductRepoInfo, ProductEdgeInfo, GeneratedDoc } from "./unified-doc-generator.js";
+import {
+  docCell,
+  repoNaming,
+  visibleEvidence,
+  type ExternalRepoInfo,
+  type GeneratedDoc,
+  type ProductEdgeInfo,
+  type ProductRepoInfo,
+} from "./unified-doc-generator.js";
 
 export interface PerServiceDocInput {
   productName: string;
   repo: ProductRepoInfo;
   allRepos: ProductRepoInfo[];
   edges: ProductEdgeInfo[];
+  /** #1732 — the far ends of cross-product edges, named by their label. */
+  externalRepos?: ExternalRepoInfo[];
 }
 
 /**
@@ -18,11 +28,13 @@ export interface PerServiceDocInput {
  */
 export function generatePerServiceDoc(input: PerServiceDocInput): GeneratedDoc {
   const { productName, repo, allRepos, edges } = input;
-
-  const repoMap = new Map<string, ProductRepoInfo>();
-  for (const r of allRepos) {
-    repoMap.set(r.repoConnectionId, r);
-  }
+  const naming = repoNaming(allRepos, input.externalRepos);
+  const summary = (edge: ProductEdgeInfo) =>
+    docCell(
+      visibleEvidence(edge, naming)
+        .map((e) => e.snippet || e.pattern)
+        .join("; "),
+    );
 
   // Find edges where this repo is source or target
   const outgoingEdges = edges.filter((e) => e.sourceRepoId === repo.repoConnectionId);
@@ -50,11 +62,8 @@ export function generatePerServiceDoc(input: PerServiceDocInput): GeneratedDoc {
   sections.push("### Services This Calls\n");
   if (outgoingEdges.length > 0) {
     for (const edge of outgoingEdges) {
-      const target = repoMap.get(edge.targetRepoId);
-      if (!target) continue;
-      const evidenceSummary = edge.evidence.map((e) => e.snippet || e.pattern).join("; ");
       sections.push(
-        `- **${target.repoName}** — ${edge.edgeType} (confidence: ${(edge.confidence * 100).toFixed(0)}%) — ${evidenceSummary}`,
+        `- **${docCell(naming.name(edge.targetRepoId))}** — ${edge.edgeType} (confidence: ${(edge.confidence * 100).toFixed(0)}%) — ${summary(edge)}`,
       );
     }
   } else {
@@ -66,11 +75,8 @@ export function generatePerServiceDoc(input: PerServiceDocInput): GeneratedDoc {
   sections.push("### Services That Call This\n");
   if (incomingEdges.length > 0) {
     for (const edge of incomingEdges) {
-      const source = repoMap.get(edge.sourceRepoId);
-      if (!source) continue;
-      const evidenceSummary = edge.evidence.map((e) => e.snippet || e.pattern).join("; ");
       sections.push(
-        `- **${source.repoName}** — ${edge.edgeType} (confidence: ${(edge.confidence * 100).toFixed(0)}%) — ${evidenceSummary}`,
+        `- **${docCell(naming.name(edge.sourceRepoId))}** — ${edge.edgeType} (confidence: ${(edge.confidence * 100).toFixed(0)}%) — ${summary(edge)}`,
       );
     }
   } else {
@@ -84,18 +90,16 @@ export function generatePerServiceDoc(input: PerServiceDocInput): GeneratedDoc {
   if (allRelated.length > 0) {
     sections.push("| Related Service | Relationship | Direction | Confidence | Evidence |");
     sections.push("|----------------|-------------|-----------|-----------|----------|");
+    const firstFile = (edge: ProductEdgeInfo) =>
+      docCell(visibleEvidence(edge, naming)[0]?.filePath ?? "");
     for (const edge of outgoingEdges) {
-      const target = repoMap.get(edge.targetRepoId);
-      const evidenceSummary = edge.evidence[0]?.filePath ?? "";
       sections.push(
-        `| ${target?.repoName ?? "unknown"} | ${edge.edgeType} | outgoing | ${(edge.confidence * 100).toFixed(0)}% | ${evidenceSummary} |`,
+        `| ${docCell(naming.name(edge.targetRepoId))} | ${edge.edgeType} | outgoing | ${(edge.confidence * 100).toFixed(0)}% | ${firstFile(edge)} |`,
       );
     }
     for (const edge of incomingEdges) {
-      const source = repoMap.get(edge.sourceRepoId);
-      const evidenceSummary = edge.evidence[0]?.filePath ?? "";
       sections.push(
-        `| ${source?.repoName ?? "unknown"} | ${edge.edgeType} | incoming | ${(edge.confidence * 100).toFixed(0)}% | ${evidenceSummary} |`,
+        `| ${docCell(naming.name(edge.sourceRepoId))} | ${edge.edgeType} | incoming | ${(edge.confidence * 100).toFixed(0)}% | ${firstFile(edge)} |`,
       );
     }
   } else {
@@ -104,9 +108,10 @@ export function generatePerServiceDoc(input: PerServiceDocInput): GeneratedDoc {
   sections.push("");
 
   const content = sections.join("\n");
+  // #1732 (#1727) — each file credited to the repo it is in, not to this one.
   const provenance = allRelated.flatMap((e) =>
-    e.evidence.map((ev) => ({
-      repo: `${repo.ownerOrOrg}/${repo.repoName}`,
+    visibleEvidence(e, naming).map((ev) => ({
+      repo: naming.full(ev.repoConnectionId),
       file: ev.filePath,
     })),
   );
@@ -130,6 +135,7 @@ export function generateAllPerServiceDocs(input: {
   productName: string;
   repos: ProductRepoInfo[];
   edges: ProductEdgeInfo[];
+  externalRepos?: ExternalRepoInfo[];
 }): GeneratedDoc[] {
   return input.repos.map((repo) =>
     generatePerServiceDoc({
@@ -137,6 +143,7 @@ export function generateAllPerServiceDocs(input: {
       repo,
       allRepos: input.repos,
       edges: input.edges,
+      externalRepos: input.externalRepos,
     }),
   );
 }

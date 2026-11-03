@@ -4844,7 +4844,22 @@ stays the product's own, except on a detected edge, which keeps detection's orie
 repos plus those siblings, and `GET /api/products/:id` shows edges to them and names
 them in `linkedRepos` (id, `owner/name`, product id and name). A repo the caller cannot
 read is in neither, so an edge to it stays hidden and a write naming it is 404
-`REPO_NOT_ASSOCIATED`. `/analyze` reports `crossProductEdges` beside `edgesDetected`. Reverse scripts:
+`REPO_NOT_ASSOCIATED`. `/analyze` reports `crossProductEdges` beside `edgesDetected`.
+#1732 — `/analyze` also draws them in the generated documents. An edge between one of
+the product's readable repos and a repo that is not the product's is passed to the
+generators with `externalRepos`:
+- a readable sibling is labelled `owner/name (Product)`, and the document lists it in
+  `metadata.repoConnectionIds`, so `filterReadableProductDocuments` hides the document
+  from a reader who cannot open it (#1258);
+- a live repo the caller cannot read gets the restricted relabel (`RESTRICTED_REPO_LABEL`),
+  no id (Mermaid ids of far repos are positional, `__ext<n>`), and none of its edge's
+  evidence, since the near side's snippet can name it;
+- a deleted far repo is not drawn.
+
+Evidence carries `repoConnectionId` from detection (#1727: a topic's or a table's two
+files were both credited to the edge's source). For evidence stored before that,
+`evidenceRepoId` infers the repo: the two-sided `event_topic` / `shared_table` entries by
+position, and otherwise from the edge's `targetFile`. Reverse scripts:
 `server/prisma/rollbacks/` and `server/prisma/postgres/rollbacks/`.
 
 **Detected edges (#1619).** `relationship-detector.ts` classifies each heuristic: an

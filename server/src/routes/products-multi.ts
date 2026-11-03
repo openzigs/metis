@@ -52,7 +52,11 @@ import {
 } from "../lib/products/product-edges.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { prisma } from "../lib/prisma.js";
-import { generateUnifiedArchitectureDoc } from "../lib/products/unified-doc-generator.js";
+import {
+  RESTRICTED_REPO_LABEL,
+  generateUnifiedArchitectureDoc,
+  type ExternalRepoInfo,
+} from "../lib/products/unified-doc-generator.js";
 import { generateAllPerServiceDocs } from "../lib/products/per-service-doc-generator.js";
 import {
   recordContractDocVersion,
@@ -633,9 +637,8 @@ export function productsRouter(): Router {
         });
         const storedEdges = await prisma.productEdge.findMany({ where: { productId } });
         // #1724 — edges from this product's repos to readable repos of other
-        // products in its workspace. They are not drawn in this product's
-        // documents (those describe its own repos) but are counted, and the
-        // impact walk follows them.
+        // products in its workspace, counted here; the impact walk follows them,
+        // and (#1732) the documents draw them, naming the far repo.
         const siblingRepoIds = new Set(detection?.siblingRepoIds ?? []);
         const crossProductEdges = storedEdges.filter(
           (e) =>
@@ -653,7 +656,7 @@ export function productsRouter(): Router {
         );
 
         // Map edges to generator input types
-        const edgeInfos: ProductEdgeInfo[] = readableEdges.map((e) => ({
+        const toEdgeInfo = (e: (typeof readableEdges)[number]): ProductEdgeInfo => ({
           sourceRepoId: e.sourceRepoId,
           targetRepoId: e.targetRepoId,
           edgeType: e.edgeType,
@@ -663,21 +666,86 @@ export function productsRouter(): Router {
             : e.evidence) as ProductEdgeEvidence[],
           sourceFile: e.sourceFile,
           targetFile: e.targetFile,
-        }));
+        });
+        const edgeInfos: ProductEdgeInfo[] = readableEdges.map(toEdgeInfo);
+
+        // #1732 — edges between one of this product's readable repos and a repo
+        // of another product (#1724). A far repo the caller can read is named
+        // `owner/name (Product)`, and the document lists it as a source, so a
+        // reader who cannot open it is not shown the document (#1258). One they
+        // cannot read carries the restricted relabel and none of its evidence.
+        // A far repo deleted since is not drawn; nor is an edge to one of this
+        // product's own repos the caller cannot read (the document says it is
+        // partial instead, #1261).
+        const ownRepoIds = new Set(product.repos.map((r) => r.repoConnectionId));
+        const farEnd = (e: { sourceRepoId: string; targetRepoId: string | null }) =>
+          readableRepoIds.has(e.sourceRepoId) ? e.targetRepoId : e.sourceRepoId;
+        const crossEdges = storedEdges.filter(
+          (e): e is typeof e & { targetRepoId: string } =>
+            e.targetRepoId !== null &&
+            readableRepoIds.has(e.sourceRepoId) !== readableRepoIds.has(e.targetRepoId) &&
+            !ownRepoIds.has(farEnd(e)!),
+        );
+        const farIds = [...new Set(crossEdges.map((e) => farEnd(e)!))].sort();
+        const siblings =
+          farIds.length > 0
+            ? new Map(
+                (await listReadableSiblingRepos(req.user!, productId, canRead)).map((r) => [
+                  r.repoConnectionId,
+                  r,
+                ]),
+              )
+            : new Map<string, never>();
+        const unread = farIds.filter((id) => !siblings.has(id));
+        const liveUnread = new Set(
+          unread.length > 0
+            ? (
+                await prisma.repoConnection.findMany({
+                  where: { id: { in: unread }, deletedAt: null },
+                  select: { id: true },
+                })
+              ).map((r) => r.id)
+            : [],
+        );
+        const externalRepos: ExternalRepoInfo[] = farIds.flatMap((id): ExternalRepoInfo[] => {
+          const sibling = siblings.get(id);
+          if (sibling) {
+            return [
+              {
+                repoConnectionId: id,
+                label: `${sibling.label} (${sibling.productName})`,
+                restricted: false,
+              },
+            ];
+          }
+          return liveUnread.has(id)
+            ? [{ repoConnectionId: id, label: RESTRICTED_REPO_LABEL, restricted: true }]
+            : [];
+        });
+        const drawnFar = new Set(externalRepos.map((r) => r.repoConnectionId));
+        const namedFar = new Set(
+          externalRepos.filter((r) => !r.restricted).map((r) => r.repoConnectionId),
+        );
+        const crossEdgeInfos = crossEdges.filter((e) => drawnFar.has(farEnd(e)!)).map(toEdgeInfo);
+        const docEdges = [...edgeInfos, ...crossEdgeInfos];
 
         // #1258 — what each document is built from, recorded in its metadata so
         // the documents read can drop one built from a repo the reader cannot
         // open. A per-service doc names its edge neighbours too.
-        const sourcesOf = (repoId: string) => [
-          repoId,
-          ...edgeInfos.flatMap((e) =>
-            e.sourceRepoId === repoId
-              ? [e.targetRepoId]
-              : e.targetRepoId === repoId
-                ? [e.sourceRepoId]
-                : [],
-          ),
-        ];
+        // #1732 — a named far repo is a source too; a restricted one is not named.
+        const sourcesOf = (repoId: string) =>
+          [
+            ...new Set([
+              repoId,
+              ...docEdges.flatMap((e) =>
+                e.sourceRepoId === repoId
+                  ? [e.targetRepoId]
+                  : e.targetRepoId === repoId
+                    ? [e.sourceRepoId]
+                    : [],
+              ),
+            ]),
+          ].filter((id) => readableRepoIds.has(id) || namedFar.has(id));
 
         // #1261 — mark, don't refuse. A document this run writes without a repo
         // it would otherwise have covered is shared with every reader, so it says
@@ -707,14 +775,16 @@ export function productsRouter(): Router {
           productName: product.name,
           productDescription: product.description ?? "",
           repos: repoInfos,
-          edges: edgeInfos,
+          edges: docEdges,
+          externalRepos,
         });
 
         // Generate per-service docs
         const perServiceDocs = generateAllPerServiceDocs({
           productName: product.name,
           repos: repoInfos,
-          edges: edgeInfos,
+          edges: docEdges,
+          externalRepos,
         });
 
         // Upsert documents into ProductDocument table
@@ -740,7 +810,8 @@ export function productsRouter(): Router {
             repoId: null,
             metadata: JSON.stringify({
               ...unifiedDoc.metadata,
-              repoConnectionIds: repoInfos.map((r) => r.repoConnectionId),
+              // #1732 — and the far repos it names.
+              repoConnectionIds: [...repoInfos.map((r) => r.repoConnectionId), ...namedFar],
               ...coverage(skippedIds.size),
             }),
             generatedAt: now,

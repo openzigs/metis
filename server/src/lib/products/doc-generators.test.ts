@@ -2,7 +2,14 @@
  * Doc generator tests (Epic #544 / Issues #551, #552, #553).
  */
 import { describe, expect, it } from "vitest";
-import { generateUnifiedArchitectureDoc, type UnifiedDocInput } from "./unified-doc-generator.js";
+import {
+  RESTRICTED_REPO_LABEL,
+  docCell,
+  evidenceRepoId,
+  generateUnifiedArchitectureDoc,
+  type ProductEdgeInfo,
+  type UnifiedDocInput,
+} from "./unified-doc-generator.js";
 import { generatePerServiceDoc, generateAllPerServiceDocs } from "./per-service-doc-generator.js";
 import {
   generateApiContractDoc,
@@ -83,6 +90,155 @@ describe("unified-doc-generator", () => {
     const doc = generateUnifiedArchitectureDoc(input);
     expect(doc.content).toContain("No API contract edges detected");
     expect(doc.content).toContain("No data flow edges detected");
+  });
+});
+
+describe("#1732 — cross-product edges and evidence attribution", () => {
+  const repos: UnifiedDocInput["repos"] = [
+    {
+      repoConnectionId: "r-billing",
+      repoName: "billing",
+      ownerOrOrg: "acme",
+      defaultBranch: "main",
+    },
+  ];
+  /** Billing subscribes to Orders' `order.created`; each side's file is in its own repo. */
+  const topic = (withRepo: boolean): ProductEdgeInfo => ({
+    sourceRepoId: "r-billing",
+    targetRepoId: "r-orders",
+    edgeType: "consumes",
+    confidence: 0.75,
+    evidence: [
+      {
+        filePath: "src/consumers/order-created.ts",
+        pattern: "topic_client_call",
+        snippet: "Subscribes to topic 'order.created'",
+        matchType: "event_topic",
+        ...(withRepo ? { repoConnectionId: "r-billing" } : {}),
+      },
+      {
+        filePath: "src/events/publisher.ts",
+        pattern: "topic_client_call",
+        snippet: "Publishes to topic 'order.created'",
+        matchType: "event_topic",
+        ...(withRepo ? { repoConnectionId: "r-orders" } : {}),
+      },
+    ],
+    sourceFile: "src/consumers/order-created.ts",
+    targetFile: "src/events/publisher.ts",
+  });
+  const calls: ProductEdgeInfo = {
+    sourceRepoId: "r-billing",
+    targetRepoId: "r-orders",
+    edgeType: "calls",
+    confidence: 0.95,
+    evidence: [
+      {
+        filePath: "openapi.yaml",
+        pattern: "openapi_spec_reference",
+        snippet: "Spec references orders",
+        matchType: "spec_reference",
+      },
+    ],
+    sourceFile: "openapi.yaml",
+  };
+  const doc = (restricted: boolean, withRepo = true) =>
+    generateUnifiedArchitectureDoc({
+      productName: "Billing",
+      productDescription: "",
+      repos,
+      edges: [topic(withRepo), calls],
+      externalRepos: [
+        {
+          repoConnectionId: "r-orders",
+          label: restricted ? RESTRICTED_REPO_LABEL : "acme/orders (Orders)",
+          restricted,
+        },
+      ],
+    });
+
+  it("draws the far repo by its label, dashed, in the service map, API contracts and data flow", () => {
+    const { content } = doc(false);
+    expect(content).toContain('__ext0["acme/orders (Orders)"]');
+    expect(content).toContain("class __ext0 external");
+    expect(content).toContain("| billing | acme/orders (Orders) | 95% | Spec references orders |");
+    expect(content).toContain("participant __ext0 as acme/orders (Orders)");
+    expect(content).toContain("2 links reach a repository of another product");
+    // The far repo's id is never a node id.
+    expect(content).not.toContain("r_orders");
+  });
+
+  it("credits each evidence file to the repo it is in, recorded or (before #1732) inferred", () => {
+    for (const withRepo of [true, false]) {
+      const { content, metadata } = doc(false, withRepo);
+      expect(content).toContain("| acme/orders (Orders) | src/events/publisher.ts |");
+      expect(content).toContain("| acme/billing | src/consumers/order-created.ts |");
+      expect(content).not.toContain("| acme/billing | src/events/publisher.ts |");
+      expect(metadata.provenance).toContainEqual({
+        repo: "acme/orders (Orders)",
+        file: "src/events/publisher.ts",
+      });
+    }
+  });
+
+  it("a far repo the generator could not read is relabelled, and none of its edges' evidence is shown", () => {
+    const { content, metadata } = doc(true);
+    expect(content).toContain(`__ext0["${RESTRICTED_REPO_LABEL}"]`);
+    expect(content).not.toMatch(/orders/i);
+    expect(content).toContain(`| billing | ${RESTRICTED_REPO_LABEL} | 95% |  |`);
+    expect(metadata.provenance).toEqual([]);
+  });
+
+  it("evidenceRepoId: a recorded repo wins; a single entry is the end whose file it is", () => {
+    const one = (filePath: string): ProductEdgeInfo => ({
+      ...calls,
+      evidence: [{ filePath, pattern: "p", matchType: "url_pattern" }],
+      sourceFile: "a.ts",
+      targetFile: "b.ts",
+    });
+    expect(evidenceRepoId(one("a.ts"), 0)).toBe("r-billing");
+    expect(evidenceRepoId(one("b.ts"), 0)).toBe("r-orders");
+    expect(evidenceRepoId(one("c.ts"), 0)).toBe("r-billing");
+    expect(evidenceRepoId(topic(false), 1)).toBe("r-orders");
+    expect(evidenceRepoId(topic(true), 0)).toBe("r-billing");
+  });
+
+  it("evidence stored without a pattern or snippet still renders (no throw)", () => {
+    const bare = { ...calls, evidence: [{ filePath: "x.ts" } as ProductEdgeInfo["evidence"][0]] };
+    const { content } = generateUnifiedArchitectureDoc({
+      productName: "Billing",
+      productDescription: "",
+      repos,
+      edges: [bare],
+      externalRepos: [
+        { repoConnectionId: "r-orders", label: "acme/orders (Orders)", restricted: false },
+      ],
+    });
+    expect(content).toContain("| acme/billing | x.ts |  |");
+    expect(docCell(undefined)).toBe("");
+  });
+
+  it("docCell keeps a name inside its table cell and its Mermaid label", () => {
+    expect(docCell('a | b "c"\nd')).toBe("a \\| b 'c' d");
+    // A backslash is escaped first, so a name ending in one cannot unescape the pipe after it.
+    expect(docCell("a\\|b")).toBe("a\\\\\\|b");
+  });
+
+  it("a per-service doc names the far repo and credits each file to its own repo", () => {
+    const [billing] = generateAllPerServiceDocs({
+      productName: "Billing",
+      repos,
+      edges: [topic(true)],
+      externalRepos: [
+        { repoConnectionId: "r-orders", label: "acme/orders (Orders)", restricted: false },
+      ],
+    });
+    expect(billing.content).toContain("- **acme/orders (Orders)** — consumes");
+    expect(billing.content).toContain("| acme/orders (Orders) | consumes | outgoing | 75% |");
+    expect(billing.metadata.provenance).toEqual([
+      { repo: "acme/billing", file: "src/consumers/order-created.ts" },
+      { repo: "acme/orders (Orders)", file: "src/events/publisher.ts" },
+    ]);
   });
 });
 

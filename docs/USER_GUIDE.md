@@ -3325,8 +3325,14 @@ other products in the same workspace that you can access. So Orders, Billing and
 can be three products of one repository each, and the edges between them are still
 found. An edge to another product's repository is shown with that product's name, for
 example *acme/billing (Billing)*, and is recorded on the product you ran it on: running it
-on either product finds the edge, and the impact check counts it once. The documents
-themselves still describe only the product's own repositories. A run reads at most 50
+on either product finds the edge, and the impact check counts it once. The generated
+documents draw these edges too [#1732]: the Service Map (with the other product's
+repository dashed), the API Contracts table and the Data Flow diagram name the far
+repository as *acme/billing (Billing)*. A document that names another product's
+repository is shown only to people who can access that repository. An edge to a
+repository the person generating the documents cannot access is drawn to *A restricted
+repository*, with none of its evidence. The **Provenance** table credits each evidence
+file to the repository it is in. A run reads at most 50
 other products' repositories; the response's `crossProductReposSkipped` says how many it
 left out. Repositories you cannot access, and products in other workspaces, are never
 read, and an edge to such a repository is not shown to you.

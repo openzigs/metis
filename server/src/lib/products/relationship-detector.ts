@@ -130,12 +130,19 @@ function detectEventTopics(repos: RepoCrawlData[]): DetectedEdge[] {
           targetRepoId: publisherId,
           edgeType: "consumes",
           confidence: documented ? 0.9 : 0.75,
-          evidence: [sub, pub].map((ref) => ({
+          evidence: (
+            [
+              [sub, subscriberId],
+              [pub, publisherId],
+            ] as const
+          ).map(([ref, repoConnectionId]) => ({
             filePath: ref.filePath,
             ...(ref.lineNumber !== undefined && { lineNumber: ref.lineNumber }),
             pattern: ref.source === "asyncapi" ? "asyncapi_channel" : "topic_client_call",
             snippet: `${ref.role === "publish" ? "Publishes to" : "Subscribes to"} topic '${topic}'`,
             matchType: "event_topic",
+            // #1732 (#1727) — each side's file is in that side's repo.
+            repoConnectionId,
           })),
           sourceFile: sub.filePath,
           targetFile: pub.filePath,
@@ -186,12 +193,14 @@ function detectSharedTables(repos: RepoCrawlData[]): DetectedEdge[] {
           targetRepoId: target[0],
           edgeType: writes ? "produces" : "consumes",
           confidence: 0.8,
-          evidence: [source[1], target[1]].map((ref) => ({
+          evidence: [source, target].map(([repoConnectionId, ref]) => ({
             filePath: ref.filePath,
             ...(ref.lineNumber !== undefined && { lineNumber: ref.lineNumber }),
             pattern: ref.access === "write" ? "sql_table_write" : "sql_table_read",
             snippet: `${ref.access === "write" ? "Writes" : "Reads"} table '${table}'`,
             matchType: "shared_table",
+            // #1732 (#1727) — each user's file is in that user's repo.
+            repoConnectionId,
           })),
           sourceFile: source[1].filePath,
           targetFile: target[1].filePath,
@@ -246,6 +255,7 @@ function detectApiSpecReferences(repos: RepoCrawlData[]): DetectedEdge[] {
                 pattern: "openapi_spec_reference",
                 snippet: `Spec references ${targetRepo.repoName}`,
                 matchType: "spec_reference",
+                repoConnectionId: sourceId,
               },
             ],
             sourceFile: spec.filePath,
@@ -307,6 +317,7 @@ function detectSharedTypes(repos: RepoCrawlData[]): DetectedEdge[] {
             pattern: "shared_type_name",
             snippet: `Both export type '${typeName}'`,
             matchType: "type_sharing",
+            repoConnectionId: target.repoId,
           },
         ],
         sourceFile: target.type.filePath,
@@ -362,6 +373,7 @@ function detectRouteConsumers(repos: RepoCrawlData[]): DetectedEdge[] {
                   pattern: "route_path_reference",
                   snippet: `References route ${route.method} ${route.path}`,
                   matchType: "url_pattern",
+                  repoConnectionId: otherRepo.repoConnectionId,
                 },
               ],
               sourceFile: spec.filePath,
@@ -428,6 +440,7 @@ function detectProtobufPackages(repos: RepoCrawlData[]): DetectedEdge[] {
               pattern: "protobuf_package",
               snippet: `Shared protobuf package '${pkgName}'`,
               matchType: "proto_package",
+              repoConnectionId: occurrences[i].repoId,
             },
           ],
           sourceFile: occurrences[i].filePath,
@@ -499,6 +512,7 @@ function detectGraphQLReferences(repos: RepoCrawlData[]): DetectedEdge[] {
               pattern: "graphql_type_extension",
               snippet: `Extends GraphQL type '${typeName}'`,
               matchType: "graphql_extension",
+              repoConnectionId: ext.repoId,
             },
           ],
           sourceFile: ext.filePath,
