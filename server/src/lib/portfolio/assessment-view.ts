@@ -344,7 +344,16 @@ export async function viewPortfolioAssessment(
         (
           await prisma.product.findMany({
             // No `orderBy`/`take`: Prisma splits a long `IN` list itself (#1346).
-            where: { id: { in: a.products.map((p) => p.productId) } },
+            where: {
+              id: {
+                in: [
+                  ...new Set([
+                    ...a.products.map((p) => p.productId),
+                    ...(a.hostProductId ? [a.hostProductId] : []),
+                  ]),
+                ],
+              },
+            },
             select: { id: true, name: true },
           })
         ).map((p) => [p.id, p.name]),
@@ -434,8 +443,12 @@ export async function viewPortfolioAssessment(
         ),
     withheld: seesLess && (a.report.products.length > 0 || a.report.source === "model"),
   };
+  // #1725 — the host is named only to a reader who can read it now.
+  const hostProductId =
+    a.hostProductId !== null && readableProduct(a.hostProductId) ? a.hostProductId : null;
   return {
     ...a,
+    hostProductId,
     products,
     repos: a.repos.filter((r) => readableProduct(r.productId) && keepRepo(r.repoConnectionId)),
     verdict,
@@ -454,10 +467,12 @@ export async function viewPortfolioAssessment(
     // out too: the total is below the run's spend by more than the hidden repos.
     costUsd: changed ? results.reduce((sum, p) => sum + p.costUsd, 0) : a.costUsd,
     productNames: Object.fromEntries(
-      a.products.flatMap((p) => {
-        const n = readableProduct(p.productId) ? names.get(p.productId) : undefined;
-        return n === undefined ? [] : [[p.productId, n]];
-      }),
+      [...a.products.map((p) => p.productId), ...(hostProductId ? [hostProductId] : [])].flatMap(
+        (pid) => {
+          const n = readableProduct(pid) ? names.get(pid) : undefined;
+          return n === undefined ? [] : [[pid, n]];
+        },
+      ),
     ),
   };
 }

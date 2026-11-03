@@ -333,3 +333,40 @@ export function impactGroups(view: PortfolioAssessmentView): {
   affected.sort((a, b) => rank(a) - rank(b) || (a.name ?? "~").localeCompare(b.name ?? "~"));
   return { affected, notAffected };
 }
+
+/**
+ * #1725 — whether a finished check's impact is empty only because no product
+ * was chosen to build the requirement: no host, no product must change or is
+ * reached, and no product in scope covers it already. The impact walk starts
+ * from the products that change; with nothing covering the requirement and no
+ * host, there is none, and "No product needs to change" would be wrong.
+ */
+export function impactNeedsHost(view: PortfolioAssessmentView): boolean {
+  if (view.status !== "completed" || view.hostProductId !== null) return false;
+  const scoped = new Set(view.productIds);
+  return (
+    view.products.every((p) => p.impactKind === "none") &&
+    !view.products.some((p) => scoped.has(p.productId) && p.coverage === "covers")
+  );
+}
+
+/** #1725 — a statement longer than this is not carried in the link (URL length). */
+export const HOST_LINK_STATEMENT_MAX = 2_000;
+
+/**
+ * #1725 — the entry page with this check's requirement and scope filled in, at
+ * the host picker. A requirement it started from is carried by id (its title
+ * is the statement's first line); a typed statement is carried when it fits.
+ */
+export function hostPickerHref(view: PortfolioAssessmentView): string {
+  const params = new URLSearchParams();
+  if (view.sourceRequirementId) {
+    params.set("requirementId", view.sourceRequirementId);
+    params.set("title", view.statement.split("\n", 1)[0].slice(0, 200));
+  } else if (view.statement.length <= HOST_LINK_STATEMENT_MAX) {
+    params.set("statement", view.statement);
+  }
+  if (view.scope === "product" && view.productIds[0]) params.set("productId", view.productIds[0]);
+  const query = params.toString();
+  return `/portfolio${query ? `?${query}` : ""}#portfolio-host`;
+}

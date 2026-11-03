@@ -3,7 +3,8 @@
  * whose code must change, walk the typed product edges (#1618/#1619/#1620) to
  * the products downstream of them, and say how each is reached and how badly.
  *
- *   direct-change products     (`partial` coverage, and the product chosen to host a gap)
+ *   direct-change products     (`partial` coverage, and the product chosen to host a gap,
+ *                              with every product holding one of its repos, #1725)
  *     -> their readable repos   (the frontier)
  *     -> edges out of them      (readable products' edges between readable repos)
  *     -> consumer repos          (the other end, by the edge's direction)
@@ -178,6 +179,12 @@ export interface PortfolioImpactInput {
   directChangeProductIds: readonly string[];
   /** Products the result lists whether or not anything reaches them. */
   listedProductIds?: readonly string[];
+  /**
+   * #1725 — the product chosen to build the requirement. Every readable product
+   * holding one of its readable repos changes directly too: that repo's code is
+   * that product's code (an umbrella product is not a consumer of its own repo).
+   */
+  hostProductId?: string | null;
   /**
    * Product boundaries crossed from a direct-change product, at most
    * (1..MAX_IMPACT_DEPTH). A hop between two repos of one product costs none.
@@ -456,6 +463,22 @@ class ImpactWalk {
 
   ref(id: string): ImpactRepoRef {
     return { repoConnectionId: id, label: this.repo(id)?.label ?? id };
+  }
+
+  /**
+   * #1725 — every product (readable or not) holding a live repo of `productId`
+   * that the caller can read, `productId` included when it holds one.
+   */
+  async productsSharingRepos(productId: string): Promise<string[]> {
+    const rows = await prisma.productRepo.findMany({
+      where: { productId, repoConnection: { deletedAt: null } },
+      select: { repoConnectionId: true },
+    });
+    const repoIds = rows.map((r) => r.repoConnectionId);
+    await this.loadRepos(repoIds);
+    const readable = repoIds.filter((id) => this.readableRepo(id));
+    await this.loadProductsOf(readable);
+    return [...new Set(readable.flatMap((id) => this.productsOf(id)))];
   }
 
   /** Every product each repo is attached to (readable or not). */
@@ -833,6 +856,12 @@ interface WalkOptions {
   withEvidence: boolean;
   /** Stop as soon as this holds, checked before each step (#1692). */
   done?: () => boolean;
+  /**
+   * #1725 — products that change directly but are not walked from (they hold
+   * the host's repo): never listed downstream, like the `direct` ones, but a
+   * repo of theirs the change reaches is walked on from.
+   */
+  alsoDirect?: readonly string[];
 }
 
 interface WalkOutcome {
@@ -858,9 +887,10 @@ async function walkFrom(
   direct: readonly string[],
   maxDepth: number,
   entry: (productId: string) => ProductImpact,
-  { withEvidence, done = () => false }: WalkOptions,
+  { withEvidence, done = () => false, alsoDirect = [] }: WalkOptions,
 ): Promise<WalkOutcome> {
-  const directSet = new Set(direct);
+  const alsoDirectSet = new Set(alsoDirect);
+  const directSet = new Set([...direct, ...alsoDirect]);
   let leftOut = false;
   let frontier = new Map<string, RepoState>();
   if (direct.length > 0) {
@@ -986,9 +1016,16 @@ async function walkFrom(
           sharedObjects,
           severity: hopSeverity,
         });
+        /** Whether the walk goes on from the consumer repo as some product. */
+        let walkedOn = false;
+        /** #1725 — a product holding the host's repo that the consumer repo is in. */
+        let heldBy: string | null = null;
         for (const productId of walk.productsOf(c.consumer)) {
           // Every readable repo of a direct-change product is walked from already.
-          if (directSet.has(productId)) continue;
+          if (directSet.has(productId)) {
+            if (alsoDirectSet.has(productId)) heldBy ??= productId;
+            continue;
+          }
           if (productId === from.productId) {
             // #1668 — inside the product the change came from: not listed again,
             // but the walk goes on from this repo.
@@ -997,6 +1034,7 @@ async function walkFrom(
               severity,
               hops: [...from.hops, hopTo(productId)],
             });
+            walkedOn = true;
             continue;
           }
           const target = entry(productId);
@@ -1022,6 +1060,18 @@ async function walkFrom(
           }
           // Walk on from the consumer repo only when this path is more severe than any before.
           offer(next, c.consumer, { productId, severity, hops });
+          walkedOn = true;
+        }
+        // #1725 — a product holding the host's repo is listed as a direct change,
+        // but only the host's repos are walked from: its other repos change only
+        // when the change reaches them. A repo it reaches that no other product
+        // carries on is walked on from as that product, so nothing past it is lost.
+        if (!walkedOn && heldBy !== null) {
+          offer(heldBy === from.productId ? within : next, c.consumer, {
+            productId: heldBy,
+            severity,
+            hops: [...from.hops, hopTo(heldBy)],
+          });
         }
       }
       for (const [id, state] of within) expanded.set(id, state.severity);
@@ -1048,6 +1098,7 @@ async function reachedReadingEverything(
   direct: readonly string[],
   maxDepth: number,
   wanted: readonly string[],
+  alsoDirect: readonly string[] = [],
 ): Promise<Set<string>> {
   const walk = readerWalk.readingEverything();
   const out = new Map<string, ProductImpact>();
@@ -1062,6 +1113,7 @@ async function reachedReadingEverything(
   const reached = (id: string) => out.get(id)?.impactKind === "downstream-consumer";
   await walkFrom(walk, direct, maxDepth, entry, {
     withEvidence: false,
+    alsoDirect,
     done: () => wanted.every(reached),
   });
   const found = wanted.filter(reached);
@@ -1119,10 +1171,21 @@ export async function evaluatePortfolioImpact(
   const direct = [...new Set(input.directChangeProductIds)]
     .filter((id) => readableProducts.has(id))
     .sort();
-  for (const id of direct) entry(id).impactKind = "direct-change";
+  // #1725 — a readable product holding the host's repo changes directly too. The
+  // walk still starts from the host's repos only: the rest of such a product's
+  // repos do not change, so nothing downstream of them is reached through them.
+  const host = input.hostProductId;
+  const sharing =
+    host && readableProducts.has(host)
+      ? (await walk.productsSharingRepos(host))
+          .filter((id) => readableProducts.has(id) && !direct.includes(id))
+          .sort()
+      : [];
+  for (const id of [...direct, ...sharing]) entry(id).impactKind = "direct-change";
 
   const { stoppedAt, leftOut } = await walkFrom(walk, direct, maxDepth, entry, {
     withEvidence: true,
+    alsoDirect: sharing,
   });
 
   // #1673 (owner decision on #1668 AC3) — past a restricted product the walk
@@ -1139,6 +1202,7 @@ export async function evaluatePortfolioImpact(
       direct,
       maxDepth,
       unreached.map((p) => p.productId),
+      sharing,
     );
     for (const p of unreached) if (reached.has(p.productId)) p.impactKind = "restricted";
   }
@@ -1208,7 +1272,9 @@ export function withImpact(
   });
   const listed = new Set(products.map((r) => r.productId));
   for (const p of impact.products) {
-    if (listed.has(p.productId) || p.impactKind !== "downstream-consumer") continue;
+    // #1725 — a direct change outside the scope is a product holding the host's repo.
+    const reached = p.impactKind === "downstream-consumer" || p.impactKind === "direct-change";
+    if (listed.has(p.productId) || !reached) continue;
     products.push({
       productId: p.productId,
       coverage: p.restricted ? "restricted" : "not-checked",

@@ -232,7 +232,9 @@ describe("portfolio entry page", () => {
     api.list.mockResolvedValue([]);
     vi.mocked(productsApi.get).mockResolvedValue({ id: "p-far", name: "Treasury" } as never);
     render(<PortfolioPage />, { wrapper: makeWrapper() });
-    expect(await screen.findByRole("option", { name: "Treasury" })).toHaveValue("p-far");
+    expect(
+      await within(screen.getByLabelText("Product")).findByRole("option", { name: "Treasury" }),
+    ).toHaveValue("p-far");
     expect(productsApi.get).toHaveBeenCalledWith("p-far");
   });
 
@@ -242,7 +244,9 @@ describe("portfolio entry page", () => {
     );
     api.list.mockResolvedValue([]);
     render(<PortfolioPage />, { wrapper: makeWrapper() });
-    expect(await screen.findByRole("option", { name: "Billing" })).toHaveValue("p-billing");
+    expect(
+      await within(screen.getByLabelText("Product")).findByRole("option", { name: "Billing" }),
+    ).toHaveValue("p-billing");
     await waitFor(() => expect(productsApi.list).toHaveBeenCalled());
     // Give a read that should not happen the chance to start.
     await new Promise((r) => setTimeout(r, 50));

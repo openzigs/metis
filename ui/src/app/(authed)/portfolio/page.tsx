@@ -14,6 +14,8 @@
  * read, a page at a time, rather than showing only the first page.
  * #1680 — the product it arrived with is read by id, so it is named even when
  * it is not on the first page of the list.
+ * #1725 — `?statement=` starts the form with a statement typed already: a
+ * check whose impact needed a host product links back here to choose one.
  */
 "use client";
 
@@ -52,6 +54,7 @@ function PortfolioEntry({
   const router = useRouter();
   const initialProductId = searchParams?.get("productId") ?? null;
   const requirementId = searchParams?.get("requirementId") ?? null;
+  const initialStatement = searchParams?.get("statement") ?? "";
   const [requirement, setRequirement] = useState(() =>
     requirementId
       ? {
@@ -104,6 +107,7 @@ function PortfolioEntry({
         productTotal={productsQuery.data?.total}
         initialProductId={initialProductId}
         initialProductName={initialProduct.data?.name ?? null}
+        initialStatement={initialStatement}
         requirement={requirement}
         onClearRequirement={() => setRequirement(null)}
         pending={create.isPending}

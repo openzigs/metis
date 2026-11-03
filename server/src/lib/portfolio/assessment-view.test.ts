@@ -73,6 +73,7 @@ function assessment(overrides: Partial<PortfolioAssessment> = {}): PortfolioAsse
     portfolioVerdict: "covers",
     summary: "Implemented by One (acme/one-api).",
     report: null,
+    hostProductId: null,
     costUsd: 0.02,
     createdById: "starter",
     createdAt: "2026-10-31T00:00:00.000Z",
@@ -212,6 +213,36 @@ describe("viewPortfolioAssessment", () => {
     );
     expect(access.buildProductAccessWhere).not.toHaveBeenCalled();
     expect(v.productNames).toEqual({ p1: "One", p2: "Two" });
+  });
+
+  it("#1725 — the host is named to a reader who can read it, even before any product row exists", async () => {
+    db.product.findMany.mockResolvedValue([
+      { id: "p1", name: "One" },
+      { id: "p2", name: "Two" },
+      { id: "p3", name: "Three" },
+    ]);
+    store.getPortfolioAssessment.mockResolvedValue(
+      assessment({ hostProductId: "p3", createdById: "reader", status: "pending", products: [] }),
+    );
+    const v = (await view())!;
+    expect(v.hostProductId).toBe("p3");
+    expect(v.productNames).toEqual({ p3: "Three" });
+  });
+
+  it("#1725 — a host the reader cannot read now is withheld, name and id", async () => {
+    store.getPortfolioAssessment.mockResolvedValue(assessment({ hostProductId: "p9" }));
+    const v = (await view())!;
+    expect(v.hostProductId).toBeNull();
+    expect(v.productNames).not.toHaveProperty("p9");
+  });
+
+  it("#1725 — an admin's view names the host, read with the assessment's own products", async () => {
+    store.getPortfolioAssessment.mockResolvedValue(assessment({ hostProductId: "p2" }));
+    const v = (await view(ADMIN))!;
+    expect(v.hostProductId).toBe("p2");
+    expect(db.product.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: { in: ["p1", "p2"] } } }),
+    );
   });
 
   it("the cost is recomputed from what the reader sees when they see less (#1657)", async () => {

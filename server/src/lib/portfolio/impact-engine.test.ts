@@ -171,6 +171,8 @@ describe("withImpact", () => {
       }),
       impactOf({ productId: "p9", restricted: true, impactKind: "downstream-consumer" }),
       impactOf({ productId: "p10" }),
+      // #1725 — holds the host's repo, outside the scope.
+      impactOf({ productId: "p11", impactKind: "direct-change" }),
     ],
   };
   const rows = () => withImpact(input, impact).products!;
@@ -237,6 +239,15 @@ describe("withImpact", () => {
       technicalDetail: {},
     });
     expect(row("p10")).toBeUndefined();
+    // #1725 — a product holding the host's repo, outside the scope, changes directly.
+    expect(row("p11")).toEqual(
+      expect.objectContaining({
+        coverage: "not-checked",
+        impactKind: "direct-change",
+        baSummary: "Must change to deliver this requirement.",
+        technicalDetail: expect.objectContaining({ outOfScope: true }),
+      }),
+    );
     // The scope itself is unchanged: the new rows never enter the portfolio verdict.
     expect(withImpact(input, impact).productIds).toEqual(["p1", "p2", "p3"]);
   });

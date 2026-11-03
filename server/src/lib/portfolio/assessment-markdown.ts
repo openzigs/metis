@@ -241,6 +241,8 @@ export function renderPortfolioAssessmentMarkdown(v: PortfolioAssessmentView): s
     "",
     `**Status:** ${mdInline(v.status)}`,
     `**Verdict:** ${v.verdict ? VERDICT_LABEL[v.verdict] : "Not yet assessed"}`,
+    // #1725 — the product chosen to build it; the view nulls one the reader cannot read.
+    ...(v.hostProductId ? [`**Built by:** ${mdInline(name(v.hostProductId))}`] : []),
     "",
     "## Summary",
     "",

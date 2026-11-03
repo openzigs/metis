@@ -72,6 +72,7 @@ export function view(over: Partial<PortfolioAssessmentView> = {}): PortfolioAsse
     portfolioVerdict: null,
     summary: "",
     report: null,
+    hostProductId: null,
     costUsd: 0,
     createdById: "u1",
     createdAt: "2026-11-01T10:00:00.000Z",

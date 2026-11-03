@@ -152,6 +152,8 @@ export const portfolioAssessmentInputSchema = z
     summary: z.string().max(20_000).default(""),
     /** #1624 — the BA report; null until one is written. */
     report: portfolioReportSchema.nullable().default(null),
+    /** #1725 — the product chosen to build the requirement; null when none was. */
+    hostProductId: z.string().min(1).max(64).nullable().default(null),
     costUsd: z.number().min(0).default(0),
     createdById: z.string().min(1).max(64),
     products: z
@@ -168,8 +170,9 @@ export const portfolioAssessmentInputSchema = z
   // and every product row and repo verdict is under a product the assessment
   // says it assessed. (A duplicate row is left to the tables' unique keys,
   // which refuse the whole write.) #1623 — the one exception is a product the
-  // impact walk reached outside the scope: its row is a `downstream-consumer`,
-  // it has no repo verdicts, and it never enters the portfolio verdict.
+  // impact walk reached outside the scope: its row is a `downstream-consumer`
+  // (#1725: or a `direct-change`, a product holding the host's repo), it has no
+  // repo verdicts, and it never enters the portfolio verdict.
   .superRefine((a, ctx) => {
     if (a.scope === "product" && a.productIds.length > 1) {
       ctx.addIssue({
@@ -180,7 +183,11 @@ export const portfolioAssessmentInputSchema = z
     }
     const assessed = new Set(a.productIds);
     a.products.forEach((p, i) => {
-      if (!assessed.has(p.productId) && p.impactKind !== "downstream-consumer") {
+      if (
+        !assessed.has(p.productId) &&
+        p.impactKind !== "downstream-consumer" &&
+        p.impactKind !== "direct-change"
+      ) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["products", i, "productId"],
@@ -214,6 +221,11 @@ export interface PortfolioAssessment {
   summary: string;
   /** #1624 — the BA report, or null for a run without one. */
   report: PortfolioReport | null;
+  /**
+   * #1725 — the product chosen to build the requirement, or null when none was
+   * (or, in a reader's view, when the reader cannot read it).
+   */
+  hostProductId: string | null;
   costUsd: number;
   createdById: string;
   createdAt: string;

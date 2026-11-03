@@ -211,6 +211,7 @@ async function runAssessment(
       {
         directChangeProductIds: directChangeProductIds(result, hostProductId),
         listedProductIds: result.productIds,
+        hostProductId,
       },
       deps.impact,
     );
@@ -284,6 +285,8 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
           sourceProjectId: input.sourceProjectId,
           scope: input.scope,
           productIds: input.productIds,
+          // #1725 — stored so the page can say which product will build it.
+          hostProductId,
           status: "pending",
           createdById: user.userId,
         });

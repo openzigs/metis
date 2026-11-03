@@ -1457,7 +1457,7 @@ product is started.
 |---|---|
 | `POST /api/portfolio-assessments` `{ statement? (1..8000) \| requirementId?, scope, productIds?, hostProductId? }` | `202 { id }`; the run continues in the background (`pending` → `running` → `completed` \| `failed`) with `job:{id}` lifecycle events |
 | `GET /api/portfolio-assessments?productId=` | the newest 25 assessments naming that product (empty when the caller cannot read it), or else the caller's own |
-| `GET /api/portfolio-assessments/:id` | `PortfolioAssessmentView`: the assessment, `verdict` and `productNames` |
+| `GET /api/portfolio-assessments/:id` | `PortfolioAssessmentView`: the assessment, `verdict`, `productNames` and `hostProductId` (#1725; null when none was chosen or the reader cannot read it) |
 | `GET /api/portfolio-assessments/:id/export?format=md` | the same view as a Markdown attachment |
 
 Exactly one of `statement` and `requirementId`, a `product` scope names exactly one product
@@ -1497,7 +1497,14 @@ decomposition, the BA report) drop out of it too (#1668).
 gap analysis, the run walks the typed product edges (#1618) from the products whose code
 must change: every `partial` product, and the `hostProductId` the start request may name
 for a requirement nothing covers (a `product` scope may host only on its own product; an
-`all-accessible` host the caller cannot read is 404). A product that already covers the
+`all-accessible` host the caller cannot read is 404). #1725 — the host is stored
+(`portfolio_assessments.hostProductId`, nullable, no foreign key) and returned by `GET`
+only to a reader who can read it now, and every readable product holding one of the
+host's readable repos is a direct change too (an umbrella product is not a consumer of its
+own repo). The walk still starts from the host's repos only: such a product's other repos
+do not change, so a repo of it that the change reaches, and no other product carries on,
+is walked on from as that product. Such a product outside the scope gets its own
+`not-checked`, `direct-change` row, like a downstream one. A product that already covers the
 requirement needs no change. An edge on one product reaches every other product either
 end is on (`ProductRepo`): a repo on several products, or (#1724) a cross-product edge,
 whose far end is a repo of another product in the same workspace. An edge recorded on two

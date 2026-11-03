@@ -20,7 +20,7 @@ import { portfolioApi } from "@/lib/portfolio-api";
 import { triggerDownload } from "@/lib/plugins-api";
 import { isFinalReadError, isTerminalStatus, usePortfolioAssessment } from "@/lib/portfolio-hooks";
 import { coverageHeadline, coverageRows } from "@/lib/portfolio-coverage";
-import { impactGroups } from "@/lib/portfolio-impact";
+import { hostPickerHref, impactGroups, impactNeedsHost } from "@/lib/portfolio-impact";
 import { PortfolioCoverageHeadline } from "@/components/portfolio/portfolio-coverage-headline";
 import { PortfolioCoverageMatrix } from "@/components/portfolio/portfolio-coverage-matrix";
 import { PortfolioAssessmentProgress } from "@/components/portfolio/portfolio-assessment-progress";
@@ -111,6 +111,15 @@ export default function PortfolioAssessmentPage() {
         <p className="whitespace-pre-wrap text-sm" data-testid="portfolio-detail-statement">
           {view.statement}
         </p>
+        {view.hostProductId ? (
+          // #1725 — the product chosen to build it, named only to a reader who can read it.
+          <p className="text-sm text-muted-foreground" data-testid="portfolio-detail-host">
+            Product that will build it:{" "}
+            <span className="font-medium text-foreground">
+              {view.productNames[view.hostProductId] ?? "the product chosen"}
+            </span>
+          </p>
+        ) : null}
       </section>
 
       {query.isError ? (
@@ -148,7 +157,13 @@ export default function PortfolioAssessmentPage() {
       </section>
 
       {impact ? (
-        <PortfolioImpactView affected={impact.affected} notAffected={impact.notAffected} />
+        <PortfolioImpactView
+          affected={impact.affected}
+          notAffected={impact.notAffected}
+          hostProductId={view.hostProductId}
+          hostName={view.hostProductId ? (view.productNames[view.hostProductId] ?? null) : null}
+          hostHref={impactNeedsHost(view) ? hostPickerHref(view) : null}
+        />
       ) : null}
     </div>
   );

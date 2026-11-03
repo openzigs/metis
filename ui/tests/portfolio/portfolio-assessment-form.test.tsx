@@ -4,7 +4,7 @@
  * one product or none. Keyboard operable; axe passes.
  */
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createPortfolioAssessmentSchema } from "@metis/shared";
 import { PortfolioAssessmentForm } from "@/components/portfolio/portfolio-assessment-form";
@@ -82,7 +82,9 @@ describe("PortfolioAssessmentForm", () => {
       />,
     );
     expect(screen.getByLabelText("Product")).toHaveValue("p-crm");
-    expect(screen.getByRole("option", { name: "CRM" })).toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText("Product")).getByRole("option", { name: "CRM" }),
+    ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Check coverage" }));
     expect(onSubmit.mock.calls[0][0]).toEqual({
       statement: "Pay by transfer",
@@ -95,9 +97,13 @@ describe("PortfolioAssessmentForm", () => {
     const user = userEvent.setup();
     setup({ initialProductId: "p-elsewhere" });
     expect(screen.getByLabelText("Product")).toHaveValue("p-elsewhere");
-    expect(screen.getByRole("option", { name: "Selected product" })).toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText("Product")).getByRole("option", { name: "Selected product" }),
+    ).toBeInTheDocument();
     await user.selectOptions(screen.getByLabelText("Product"), "p-billing");
-    expect(screen.queryByRole("option", { name: "Selected product" })).toBeNull();
+    expect(
+      within(screen.getByLabelText("Product")).queryByRole("option", { name: "Selected product" }),
+    ).toBeNull();
   });
 
   it("#1689 — keeps the name of a product it arrived with once a search drops it", () => {
@@ -115,14 +121,22 @@ describe("PortfolioAssessmentForm", () => {
       />,
     );
     expect(screen.getByLabelText("Product")).toHaveValue("p-crm");
-    expect(screen.getByRole("option", { name: "CRM" })).toHaveValue("p-crm");
-    expect(screen.queryByRole("option", { name: "Selected product" })).toBeNull();
+    expect(
+      within(screen.getByLabelText("Product")).getByRole("option", { name: "CRM" }),
+    ).toHaveValue("p-crm");
+    expect(
+      within(screen.getByLabelText("Product")).queryByRole("option", { name: "Selected product" }),
+    ).toBeNull();
   });
 
   it("names a product it arrived with by the name it was given (#1680)", () => {
     setup({ initialProductId: "p-elsewhere", initialProductName: "Treasury" });
-    expect(screen.getByRole("option", { name: "Treasury" })).toHaveValue("p-elsewhere");
-    expect(screen.queryByRole("option", { name: "Selected product" })).toBeNull();
+    expect(
+      within(screen.getByLabelText("Product")).getByRole("option", { name: "Treasury" }),
+    ).toHaveValue("p-elsewhere");
+    expect(
+      within(screen.getByLabelText("Product")).queryByRole("option", { name: "Selected product" }),
+    ).toBeNull();
   });
 
   it("starts on the product it arrived from", async () => {
@@ -165,7 +179,9 @@ describe("PortfolioAssessmentForm", () => {
     setup({ productsLoading: true });
     await user.click(screen.getByRole("radio", { name: "One product" }));
     expect(screen.getByLabelText("Product")).toBeDisabled();
-    expect(screen.getByRole("option", { name: "Loading products…" })).toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText("Product")).getByRole("option", { name: "Loading products…" }),
+    ).toBeInTheDocument();
   });
 
   it("is keyboard operable from the statement to the submit button", async () => {
@@ -181,6 +197,9 @@ describe("PortfolioAssessmentForm", () => {
     await user.tab();
     expect(screen.getByLabelText("Product")).toHaveFocus();
     await user.selectOptions(screen.getByLabelText("Product"), "p-billing");
+    await user.tab();
+    // #1725 — the optional host picker comes next.
+    expect(screen.getByLabelText("Which product will build this? (optional)")).toHaveFocus();
     await user.tab();
     expect(screen.getByRole("button", { name: "Check coverage" })).toHaveFocus();
     await user.keyboard("{Enter}");

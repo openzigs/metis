@@ -29,10 +29,26 @@ export class PortfolioEntryPage {
     await expect(this.heading).toBeVisible();
   }
 
-  /** Check `statement` across every product the user can access; returns the check's id. */
-  async checkAcrossPortfolio(statement: string): Promise<string> {
-    await this.statement.fill(statement);
+  /**
+   * #1725 — choose the product that will build the requirement, searching for it
+   * by name first (the list holds one page of the analyst's products).
+   */
+  async chooseHost(name: string): Promise<void> {
+    await this.page.getByLabel("Find a product to build it").fill(name);
+    const host = this.page.getByLabel("Which product will build this? (optional)");
+    await expect(host.getByRole("option", { name, exact: true })).toBeAttached();
+    await host.selectOption({ label: name });
+  }
+
+  /**
+   * Check `statement` across every product the user can access; returns the check's id.
+   * #1725 — `host` names the product that will build it. An empty `statement`
+   * keeps the one the page arrived with.
+   */
+  async checkAcrossPortfolio(statement: string, host?: string): Promise<string> {
+    if (statement) await this.statement.fill(statement);
     await expect(this.allProducts).toBeChecked();
+    if (host) await this.chooseHost(host);
     await Promise.all([
       this.page.waitForURL(/\/portfolio\/[^/]+$/, { timeout: 30_000 }),
       this.submit.click(),

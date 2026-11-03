@@ -152,6 +152,7 @@ function fixture(): PortfolioAssessment {
       strippedSentences: 1,
       withheld: false,
     },
+    hostProductId: null,
     costUsd: 0.05,
     createdById: "reader",
     createdAt: "2026-11-01T00:00:00.000Z",
