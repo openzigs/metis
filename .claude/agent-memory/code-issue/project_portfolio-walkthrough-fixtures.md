@@ -1,0 +1,21 @@
+---
+name: portfolio-walkthrough-fixtures
+description: How to test portfolio gap/impact for real - the openzigs/metis-fixture-{orders,billing,notify} repos, their 7 ground-truth edges, and setup traps found in the 2026-11-03 two-wave ui-vision walkthrough.
+metadata:
+  type: project
+---
+
+**Fixtures** (public, built for this): `openzigs/metis-fixture-orders` (Orders API, writes `orders`/`customers`, publishes `order.created`), `-billing` (spec names orders, reads both tables, subscribes, writes `invoices`, publishes `invoice.issued`), `-notify` (subscribes, reads `invoices`). TypeScript only; nothing under `test/`/`fixtures/` dirs, which the crawler skips.
+
+**Ground truth:** all three in ONE product → exactly 7 detected edges: API (spec ref), 2 topics, 3 tables, plus a shared type that points the wrong way (#1727). Check offline first: `readCloneRepoFiles` → `crawlFiles` → `detectRelationships` via `tsx` on a dir with `.git/HEAD`.
+
+**What only works today:**
+- Detection, declared edges and shared resources are all product-scoped (#1724). One repo per product gives no cross-product impact at all. Use an umbrella product holding every repo.
+- The UI sends no `hostProductId` (#1725). A requirement nothing covers shows "No product needs to change". POST `/api/portfolio-assessments` with `{statement, scope:"all-accessible", hostProductId}` to see the walk.
+
+**Setup traps:**
+- Create-project uses the active workspace and cannot move later (#1728). Switch the breadcrumb first.
+- Only the primary connector auto-syncs; Sync the others before analysing (#1727).
+- Product analyse is the "Generate Documentation" button. Reload before reading edges (#1727).
+- `/api/products` is rate-limited to 120 / 15 min.
+- With a reasoning model, repo verdicts hit the 2,000-token cap and fail as `model-error` (#1726).
