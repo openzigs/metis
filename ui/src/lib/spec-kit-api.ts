@@ -275,6 +275,26 @@ export const specKitApi = {
   }> {
     return apiFetch(`${featuresBase(projectId)}/${encodeURIComponent(slug)}/artifacts`);
   },
+  /**
+   * #1617 — start a feature from approved requirements (#1616). The server
+   * creates the feature and its `spec.md`, whose Source requirements section
+   * lists each one; 422 / 404 name refused ids in `details.requirementIds`.
+   */
+  startFeatureFromRequirements(
+    projectId: string,
+    requirementIds: readonly string[],
+  ): Promise<{
+    feature: SpecKitFeature;
+    artifact: SpecKitFeatureArtifact;
+    message: string;
+    requirementIds: string[];
+    jobId: string;
+  }> {
+    return apiFetch(`${featuresBase(projectId)}/from-requirements`, {
+      method: "POST",
+      body: { requirementIds },
+    });
+  },
   featureStatus(projectId: string, slug: string): Promise<SpecKitFeatureStatus> {
     return apiFetch(`${featuresBase(projectId)}/${encodeURIComponent(slug)}/status`);
   },

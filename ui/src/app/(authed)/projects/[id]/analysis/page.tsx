@@ -128,6 +128,7 @@ import { RequirementHistoryTab } from "@/components/requirements/RequirementHist
 import { SourceDivergenceNotice } from "@/components/requirements/SourceDivergenceNotice";
 import { CriteriaProposalNotice } from "@/components/requirements/CriteriaProposalNotice";
 import { CriteriaProposalsSummary } from "@/components/requirements/CriteriaProposalsSummary";
+import { StartSpecKitFeatureAction } from "@/components/requirements/start-spec-kit-feature";
 import { findingsApi } from "@/lib/findings-api";
 // Epic #34 — collaboration on requirements (comments, assignees/SLA, optimistic-lock merge).
 import { useAuth } from "@/lib/auth-context";
@@ -296,6 +297,11 @@ export default function AnalysisPage(): React.ReactElement {
   );
   const [findingsPage, setFindingsPage] = useState(0);
   const [requirementsPage, setRequirementsPage] = useState(0);
+  // #1617 — requirements ticked for "Start Spec Kit feature", per run.
+  const [specKitPick, setSpecKitPick] = useState<{
+    analysisId: string | null;
+    ids: ReadonlySet<string>;
+  }>({ analysisId: null, ids: new Set() });
   // Issue #476 — resync from the URL on a soft navigation (a second shared link,
   // Back/Forward), as `tab` does. Keyed on the filter params' values, not the
   // params object, and applied only when they differ from what is shown: the
@@ -708,6 +714,18 @@ export default function AnalysisPage(): React.ReactElement {
     ),
     requirementsPage,
     REQUIREMENTS_PAGE_SIZE,
+  );
+  // #1617 — the ticks belong to the run they were made on; another run starts empty.
+  const specKitPicked: ReadonlySet<string> =
+    specKitPick.analysisId === selectedAnalysisId ? specKitPick.ids : new Set<string>();
+  const toggleSpecKitPick = (reqId: string, on: boolean): void => {
+    const next = new Set(specKitPicked);
+    if (on) next.add(reqId);
+    else next.delete(reqId);
+    setSpecKitPick({ analysisId: selectedAnalysisId, ids: next });
+  };
+  const specKitSelection = (detail.data?.requirements ?? []).filter((req) =>
+    specKitPicked.has(req.id),
   );
   const tabCounts = detail.data ? analysisTabCounts(detail.data, approvals.data?.ticketStatus) : {};
   const traceabilityPending = detail.data ? traceabilityPendingMessage(detail.data.status) : null;
@@ -1185,6 +1203,15 @@ export default function AnalysisPage(): React.ReactElement {
                           ticketStatus={approvals.data?.ticketStatus}
                         />
                       ) : null}
+                      {/* #1617 — start a Spec Kit feature from the ticked,
+                        approved requirements. */}
+                      {detail.data.requirements.length > 0 ? (
+                        <StartSpecKitFeatureAction
+                          projectId={projectId}
+                          selected={specKitSelection}
+                          writeHint={requirementWriteHint}
+                        />
+                      ) : null}
                       {requirementsView.items.map((req) => (
                         <div
                           key={req.id}
@@ -1197,6 +1224,14 @@ export default function AnalysisPage(): React.ReactElement {
                           <div className="flex items-start justify-between gap-2">
                             <div>
                               <div className="flex items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  className="h-4 w-4"
+                                  aria-label={`Select ${req.title} for a Spec Kit feature`}
+                                  data-testid={`req-speckit-select-${req.id}`}
+                                  checked={specKitPicked.has(req.id)}
+                                  onChange={(e) => toggleSpecKitPick(req.id, e.target.checked)}
+                                />
                                 <div className="text-sm font-medium">{req.title}</div>
                                 {/* Epic #726 (#736) — coverage classification badge. */}
                                 <CoverageBadge coverage={req.coverage} />
