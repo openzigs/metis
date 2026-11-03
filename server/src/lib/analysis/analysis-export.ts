@@ -368,7 +368,6 @@ function databaseChangesSection(changes: GapReportDatabaseChange[]): string {
   return parts.join("\n\n");
 }
 
-/** Render one requirement's gap section: metadata → current impl → gap findings. */
 /**
  * #1636 — one cited location of "Current implementation". The same path in two
  * of a project's repos is two files (#1611), so a citation stamped with its repo
@@ -385,6 +384,7 @@ function citationLine(c: CodeCitation, repoNames: Readonly<Record<string, string
   return `- ${locator} (repo: ${codeSpan(repo)})`;
 }
 
+/** Render one requirement's gap section: metadata → current impl → gap findings. */
 function gapRequirementSection(
   req: GapReportRequirement,
   repoNames: Readonly<Record<string, string>>,

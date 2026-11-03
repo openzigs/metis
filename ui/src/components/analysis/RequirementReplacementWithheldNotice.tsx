@@ -21,6 +21,7 @@
  */
 import * as React from "react";
 import { useQuery, useQueryClient, type QueryKey } from "@tanstack/react-query";
+import { NFR_CATEGORY_LABEL, REQUIREMENT_KIND_LABEL } from "./RequirementKind";
 import {
   describeRequirementReplacementWithheld,
   type RequirementReplacementWithheld,
@@ -108,6 +109,17 @@ const FIELD_LABEL: Record<WithheldReplacementField, string> = {
   kind: "Kind",
   nfrCategory: "Non-functional category",
 };
+
+/** #1636 — a kind or NFR category as the card's badge names it, not its enum value. */
+function displayValue(
+  field: WithheldReplacementField,
+  value: string | string[],
+): string | string[] {
+  if (typeof value !== "string") return value;
+  const labels: Readonly<Record<string, string>> | null =
+    field === "kind" ? REQUIREMENT_KIND_LABEL : field === "nfrCategory" ? NFR_CATEGORY_LABEL : null;
+  return labels && Object.hasOwn(labels, value) ? labels[value]! : value;
+}
 
 const STATUS_LABEL: Record<string, string> = {
   approved: "Approved",
@@ -414,13 +426,13 @@ export function WithheldReplacementComparison({
                         <span className="block text-[10px] uppercase text-muted-foreground">
                           Current
                         </span>
-                        <Value value={c.before} />
+                        <Value value={displayValue(c.field, c.before)} />
                       </dd>
                       <dd className="rounded bg-success-muted p-1">
                         <span className="block text-[10px] uppercase text-muted-foreground">
                           New
                         </span>
-                        <Value value={c.after} />
+                        <Value value={displayValue(c.field, c.after)} />
                       </dd>
                     </div>
                   ))}
