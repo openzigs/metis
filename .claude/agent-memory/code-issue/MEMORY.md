@@ -124,3 +124,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Approved re-derived on re-save](project_approved-status-rederived-on-resave.md) — gate re-save paths, not routes only; stacked PR closes (#1588)
 - [Run 10 fix review lessons](project_run10-fix-review-lessons.md) — plain-text views; metadata writers; AbortError mocks; throttle (#1593-#1601)
 - [Portfolio epic lessons](project_portfolio-phase3a-review-lessons.md) — regex; caps; mocked filters; walk skips; redaction (#1608)
+- [Portfolio walkthrough fixtures](project_portfolio-walkthrough-fixtures.md) — 3 fixture repos, 7 edges; umbrella product; host via API (#1724-#1728)
