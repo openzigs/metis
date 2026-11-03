@@ -16,12 +16,16 @@
  *   directories the crawl skips are not walked. A file that does not fit what is
  *   left of the byte budget is not read, and a binary one (a NUL byte) is read
  *   against the budget but not handed on.
+ * - **A cut-short read says so.** When a limit leaves any file unread, the
+ *   result is `partial`, and detection then deletes no stored edge touching the
+ *   repo: on a repo with more files than the limit, the one that held an edge
+ *   may sort after it (review of #1700).
  */
 import { constants, type Dirent } from "node:fs";
 import { open, readdir } from "node:fs/promises";
 import path from "node:path";
 import { resolveConnectorRoot, resolveSourcePath } from "../docs-gen/repository-sources.js";
-import type { DetectionRepo, RepoFileLoader } from "./edge-detection.js";
+import type { DetectionRepo, RepoFileLoader, RepoFiles } from "./edge-detection.js";
 import { MAX_BYTES, MAX_FILES, shouldSkipPath, type FileEntry } from "./repo-crawler.js";
 
 export interface CloneFileLoaderOptions {
@@ -37,7 +41,7 @@ export function createCloneFileLoader(options: CloneFileLoaderOptions = {}): Rep
   return async (repo: DetectionRepo) => {
     const root = await resolveRoot(repo.repoConnectionId);
     if (!root) return null;
-    return readCloneFiles(root, {
+    return readCloneRepoFiles(root, {
       maxFiles: options.maxFiles ?? MAX_FILES,
       maxBytes: options.maxBytes ?? MAX_BYTES,
     });
@@ -52,8 +56,17 @@ export async function readCloneFiles(
   root: string,
   limits: { maxFiles: number; maxBytes: number },
 ): Promise<FileEntry[]> {
+  return (await readCloneRepoFiles(root, limits)).files;
+}
+
+/** `readCloneFiles`, plus whether a limit left any file unread. */
+export async function readCloneRepoFiles(
+  root: string,
+  limits: { maxFiles: number; maxBytes: number },
+): Promise<RepoFiles> {
   const files: FileEntry[] = [];
   let bytesRead = 0;
+  let partial = false;
 
   /** The file, or null when it is not to be handed on. */
   const readContained = async (relPath: string): Promise<FileEntry | null> => {
@@ -67,10 +80,18 @@ export async function readCloneFiles(
     if (!handle) return null;
     try {
       const stat = await handle.stat();
-      if (!stat.isFile() || stat.size > limits.maxBytes - bytesRead) return null;
+      if (!stat.isFile()) return null;
+      if (stat.size > limits.maxBytes - bytesRead) {
+        partial = true;
+        return null;
+      }
       const buffer = await handle.readFile();
       bytesRead += buffer.length;
-      if (bytesRead > limits.maxBytes || buffer.includes(0)) return null;
+      if (bytesRead > limits.maxBytes) {
+        partial = true;
+        return null;
+      }
+      if (buffer.includes(0)) return null;
       return { path: relPath, content: buffer.toString("utf-8"), size: buffer.length };
     } finally {
       await handle.close();
@@ -79,31 +100,36 @@ export async function readCloneFiles(
 
   const full = () => files.length >= limits.maxFiles || bytesRead >= limits.maxBytes;
 
-  /** Walk `rel`; true once a limit is reached. */
-  const walk = async (rel: string): Promise<boolean> => {
+  /**
+   * Walk `rel`. Once a limit is reached, the next entry any level of the walk
+   * comes to is one left unread, so the read is marked partial there.
+   */
+  const walk = async (rel: string): Promise<void> => {
     let entries: Dirent[];
     try {
       entries = await readdir(rel ? path.join(root, rel) : root, { withFileTypes: true });
     } catch {
-      return false;
+      return;
     }
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const entry of entries) {
-      if (full()) return true;
       const relPath = rel ? `${rel}/${entry.name}` : entry.name;
       if (shouldSkipPath(relPath)) continue;
+      if (full()) {
+        partial = true;
+        return;
+      }
       // A Dirent describes the entry itself: a symlink is neither a directory
       // nor a file here, so no link is walked or read.
       if (entry.isDirectory()) {
-        if (await walk(relPath)) return true;
+        await walk(relPath);
       } else if (entry.isFile()) {
         const file = await readContained(relPath);
         if (file) files.push(file);
       }
     }
-    return full();
   };
 
   await walk("");
-  return files;
+  return { files, partial };
 }

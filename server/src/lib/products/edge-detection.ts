@@ -40,8 +40,21 @@ export interface DetectionRepo {
   defaultBranch: string;
 }
 
-/** Files of one repo, or null when they cannot be read (the repo is then not crawled). */
-export type RepoFileLoader = (repo: DetectionRepo) => Promise<FileEntry[] | null>;
+/**
+ * One repo's files, with `partial` set when a read limit stopped the read before
+ * every file was seen (#1643): an edge to or from that repo that this run did
+ * not find may simply sit in a file it never read, so it is not deleted.
+ */
+export interface RepoFiles {
+  files: FileEntry[];
+  partial: boolean;
+}
+
+/**
+ * Files of one repo (a bare list is read in full), or null when they cannot be
+ * read (the repo is then not crawled).
+ */
+export type RepoFileLoader = (repo: DetectionRepo) => Promise<FileEntry[] | RepoFiles | null>;
 
 export interface EdgeSyncResult {
   created: number;
@@ -121,6 +134,7 @@ export async function syncDetectedProductEdges(
   productId: string,
   scopeRepoIds: string[],
   detected: DetectedEdge[],
+  opts: { partialRepoIds?: string[] } = {},
 ): Promise<EdgeSyncResult> {
   const scope = new Set(scopeRepoIds);
   const inScope = (source: string, target: string | null) =>
@@ -249,7 +263,15 @@ export async function syncDetectedProductEdges(
       result.created++;
     }
   }
-  const stale = [...stored.entries()].filter(([key]) => !kept.has(key)).map(([, e]) => e.id);
+  // #1643 — an edge touching a repo that was read only in part is kept even if
+  // not found: what would have found it may be in a file past the read limit,
+  // and an overridden edge carries a person's classification.
+  const partial = new Set(opts.partialRepoIds ?? []);
+  const unreadEnd = (e: (typeof existing)[number]) =>
+    partial.has(e.sourceRepoId) || (e.targetRepoId !== null && partial.has(e.targetRepoId));
+  const stale = [...stored.entries()]
+    .filter(([key, e]) => !kept.has(key) && !unreadEnd(e))
+    .map(([, e]) => e.id);
   if (stale.length > 0) {
     writes.push(
       prisma.productEdge.deleteMany({
@@ -304,6 +326,7 @@ export async function runProductEdgeDetection(opts: {
   }
   const canRead = await productRepoReadAccess(opts.user);
   const crawled: RepoCrawlData[] = [];
+  const partialRepoIds: string[] = [];
   for (const repo of product.repos.filter(canRead)) {
     const info: DetectionRepo = {
       repoConnectionId: repo.repoConnectionId,
@@ -311,8 +334,10 @@ export async function runProductEdgeDetection(opts: {
       ownerOrOrg: repo.repoConnection.ownerOrOrg ?? "",
       defaultBranch: repo.repoConnection.defaultBranch ?? "main",
     };
-    const files = await opts.loadRepoFiles(info);
-    if (!files) continue;
+    const loaded = await opts.loadRepoFiles(info);
+    if (!loaded) continue;
+    const { files, partial } = Array.isArray(loaded) ? { files: loaded, partial: false } : loaded;
+    if (partial) partialRepoIds.push(info.repoConnectionId);
     crawled.push({
       repoConnectionId: info.repoConnectionId,
       repoName: info.repoName,
@@ -327,6 +352,7 @@ export async function runProductEdgeDetection(opts: {
     opts.productId,
     scannedRepoIds,
     detectRelationships(crawled),
+    { partialRepoIds },
   );
   return { ...synced, scannedRepoIds };
 }

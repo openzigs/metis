@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { createCloneFileLoader, readCloneFiles } from "./clone-file-loader.js";
+import { createCloneFileLoader, readCloneFiles, readCloneRepoFiles } from "./clone-file-loader.js";
 
 const repo = (repoConnectionId: string) => ({
   repoConnectionId,
@@ -15,6 +15,9 @@ const repo = (repoConnectionId: string) => ({
   defaultBranch: "main",
 });
 const LIMITS = { maxFiles: 500, maxBytes: 1024 * 1024 };
+type Loaded = Awaited<ReturnType<ReturnType<typeof createCloneFileLoader>>>;
+const paths = (loaded: Loaded) =>
+  (Array.isArray(loaded) ? loaded : loaded?.files)?.map((f) => f.path);
 
 let tmp: string;
 const write = (rel: string, content: string | Buffer) => {
@@ -87,6 +90,44 @@ describe("readCloneFiles", () => {
   });
 });
 
+describe("readCloneRepoFiles", () => {
+  it("is complete when every file was read", async () => {
+    write("whole/a.ts", "a");
+    write("whole/sub/b.ts", "b");
+    expect(await readCloneRepoFiles(path.join(tmp, "whole"), LIMITS)).toMatchObject({
+      partial: false,
+    });
+    // Exactly at the file limit, with nothing left over, is still complete.
+    expect(
+      await readCloneRepoFiles(path.join(tmp, "whole"), { ...LIMITS, maxFiles: 2 }),
+    ).toMatchObject({ partial: false });
+  });
+
+  it("is partial when the file limit leaves a later file unread, at any depth", async () => {
+    write("deep/a/one.ts", "1");
+    write("deep/b.ts", "2");
+    const read = await readCloneRepoFiles(path.join(tmp, "deep"), { ...LIMITS, maxFiles: 1 });
+    expect(read.files.map((f) => f.path)).toEqual(["a/one.ts"]);
+    expect(read.partial).toBe(true);
+  });
+
+  it("is partial when a file does not fit the byte budget", async () => {
+    write("big/a.ts", "12345");
+    write("big/b.ts", "1234567890");
+    expect(
+      await readCloneRepoFiles(path.join(tmp, "big"), { ...LIMITS, maxBytes: 9 }),
+    ).toMatchObject({ partial: true });
+  });
+
+  it("is not partial for a binary file it read and dropped", async () => {
+    write("binonly/logo.png", Buffer.from([0x89, 0x00]));
+    write("binonly/a.ts", "a");
+    expect(await readCloneRepoFiles(path.join(tmp, "binonly"), LIMITS)).toMatchObject({
+      partial: false,
+    });
+  });
+});
+
 describe("createCloneFileLoader", () => {
   const originalCloneDir = process.env.REPO_CLONE_DIR;
   afterEach(() => {
@@ -104,7 +145,7 @@ describe("createCloneFileLoader", () => {
     write("clones/rc1/.git/HEAD", "ref: refs/heads/main\n");
     write("clones/rc1/db/x.sql", "select 1;");
     const load = createCloneFileLoader();
-    expect((await load(repo("rc1")))?.map((f) => f.path)).toEqual(["db/x.sql"]);
+    expect(paths(await load(repo("rc1")))).toEqual(["db/x.sql"]);
     // A directory with no checkout in it is not a clone.
     write("clones/rc2/db/x.sql", "select 1;");
     expect(await load(repo("rc2"))).toBeNull();
@@ -117,7 +158,7 @@ describe("createCloneFileLoader", () => {
       resolveRoot: async () => path.join(tmp, "lim"),
       maxFiles: 1,
     });
-    expect((await load(repo("rc")))?.map((f) => f.path)).toEqual(["a.ts"]);
+    expect(paths(await load(repo("rc")))).toEqual(["a.ts"]);
   });
 
   it("passes its byte limit on", async () => {
@@ -127,6 +168,6 @@ describe("createCloneFileLoader", () => {
       resolveRoot: async () => path.join(tmp, "bytes"),
       maxBytes: 5,
     });
-    expect((await load(repo("rc")))?.map((f) => f.path)).toEqual(["a.ts"]);
+    expect(paths(await load(repo("rc")))).toEqual(["a.ts"]);
   });
 });

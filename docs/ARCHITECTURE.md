@@ -4825,7 +4825,11 @@ fetched. A repo with no checkout yields `null`, so it is not crawled and keeps i
 edges. The walk goes by each entry's own type, so no symlink is walked or read, and each
 file is re-resolved inside the root (`resolveSourcePath`) and opened `O_NOFOLLOW`; it skips
 the crawl's `SKIP_DIRS`, reads in sorted order no more than the crawl's `MAX_FILES` /
-`MAX_BYTES`, and drops binary files. The contract docs still run with `specs: []`.
+`MAX_BYTES`, and drops binary files. When a limit leaves any file unread the loader
+returns `{ files, partial: true }`, and the sync deletes no stored edge with an end in that
+repo (`partialRepoIds`): on a repo with more files than the limit, the file that held an
+edge may sort past it, and an overridden edge carries a person's classification. New and
+changed edges are still written. The contract docs still run with `specs: []`.
 
 **Concurrent job edits (#1245).** `PATCH /api/scheduler/:id` (and pause / resume,
 which go through the same `updateJob`) writes every field from the server's read of

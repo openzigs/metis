@@ -55,6 +55,7 @@ const { runProductEdgeDetection, syncDetectedProductEdges } =
   await import("../src/lib/products/edge-detection.js");
 type FileEntry = import("../src/lib/products/repo-crawler.js").FileEntry;
 type DetectionRepo = import("../src/lib/products/edge-detection.js").DetectionRepo;
+type RepoFiles = import("../src/lib/products/edge-detection.js").RepoFiles;
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "products");
 
@@ -109,7 +110,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     const rc: Record<string, string> = {};
     const product: Record<string, string> = {};
     /** repoConnectionId -> the files the loader hands back (null: cannot be read). */
-    const files = new Map<string, FileEntry[] | null>();
+    const files = new Map<string, FileEntry[] | RepoFiles | null>();
     const loaded: string[] = [];
 
     const userPayload = (who: Who): AuthPayload => ({
@@ -556,6 +557,35 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         files.set(t.y, []);
         const gone = await detect(t.productId);
         expect(gone.deleted).toBe(1);
+        expect((await graphOf(t.productId)).edges).toEqual([]);
+      });
+
+      it("keeps an edge it did not find when either end was read only in part (#1643)", async () => {
+        const t = await twoRepoProduct(
+          "partial",
+          [sql("w.sql", "insert into ledgers (id) values (1);")],
+          [sql("r.sql", "select id from ledgers;")],
+        );
+        await detect(t.productId);
+        const [edge] = (await graphOf(t.productId)).edges;
+        await request(app())
+          .patch(`/api/products/${t.productId}/edges/${edge.id}`)
+          .set("Authorization", bearer("bob"))
+          .send({ strength: "functional" })
+          .expect(200);
+        // The reader's SQL now sits past a read limit: not found, not deleted.
+        files.set(t.y, { files: [], partial: true });
+        expect(await detect(t.productId)).toMatchObject({ deleted: 0 });
+        // Likewise when it is the writer, the edge's source, that was cut short.
+        files.set(t.y, []);
+        files.set(t.x, { files: [], partial: true });
+        expect(await detect(t.productId)).toMatchObject({ deleted: 0 });
+        expect((await graphOf(t.productId)).edges).toEqual([
+          expect.objectContaining({ id: edge.id, strength: "functional", origin: "overridden" }),
+        ]);
+        // Both read in full and still not found: now it goes.
+        files.set(t.x, { files: [], partial: false });
+        expect(await detect(t.productId)).toMatchObject({ deleted: 1 });
         expect((await graphOf(t.productId)).edges).toEqual([]);
       });
 
