@@ -592,15 +592,16 @@ async function evaluateProduct(
     for (const repo of targets.repos) {
       throwIfAborted(ctx.signal);
       const hits = hitsByRepo.get(repo.repoConnectionId) ?? [];
-      if (!searched || !searched.has(repo.projectId)) {
+      if (ctx.repoVerdicts.has(repo.repoConnectionId)) {
+        // #1726 — assessed already for another product in this run: reused (checked before this
+        // product's own search result, so the same repo does not read "no evidence" here and a
+        // verdict there), and its cost is not counted twice.
+        const assessed = await ctx.repoVerdicts.get(repo.repoConnectionId)!;
+        repos.push({ ...assessed, productId: product.id, costUsd: 0 });
+      } else if (!searched || !searched.has(repo.projectId)) {
         repos.push(notVerified(product.id, repo, n, "retrieval-failed"));
       } else if (hits.length === 0) {
         repos.push(notVerified(product.id, repo, n, "no-evidence-retrieved"));
-      } else if (ctx.repoVerdicts.has(repo.repoConnectionId)) {
-        // #1726 — assessed already for another product in this run: reused, and
-        // its cost is not counted twice.
-        const assessed = await ctx.repoVerdicts.get(repo.repoConnectionId)!;
-        repos.push({ ...assessed, productId: product.id, costUsd: 0 });
       } else if (!ctx.budget.allows(product.id)) {
         repos.push(notVerified(product.id, repo, n, "budget"));
       } else {

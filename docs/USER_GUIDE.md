@@ -1973,7 +1973,7 @@ A path through several products is as severe as its weakest coupling.
 the requirement. The reason is shown under the state. When the model call for a repository
 failed, the answer at the top says that it leaves that repository out, and that running the
 check again retries it. A repository that belongs to several products is checked once, so
-every product holding it gets the same answer for it. A product whose repositories you
+every product whose own search found it gets the same answer for it. A product whose repositories you
 cannot all read is never shown as **Does not cover it**: the repositories you cannot read
 were not checked for you.
 

@@ -103,8 +103,14 @@ export function isCutOffReply(err: unknown): err is JsonLlmParseError {
  * `callJsonLlm` at `maxTokens`; a reply the cap cut off before any usable JSON
  * (an empty `max_tokens` reply is the usual one: the model reasoned until the
  * cap) is retried once at {@link retryMaxOutputTokens} before the failure is
- * returned. `mayRetry` is asked first, and may refuse (a spent budget); it
- * counts the retry when it allows it. Any other failure is thrown as it was.
+ * returned. A retry is only worth a call when its cap is LARGER: where the
+ * clamps leave the cap unchanged (an Anthropic-transport provider already sits
+ * at the SDK's 21,333 non-streaming bound, so DeepSeek through the Anthropic-
+ * compatible endpoint does), the same call would be charged for nothing, so the
+ * failure is returned instead. Streaming past the bound is a decision recorded
+ * in docs/decisions/0008-clamp-non-streaming-output-caps.md, not taken here.
+ * `mayRetry` is asked next, and may refuse (a spent budget); it counts the
+ * retry when it allows it. Any other failure is thrown as it was.
  */
 export async function callJsonLlmRetryingCutOff<T>(
   provider: AIProvider,
@@ -114,8 +120,9 @@ export async function callJsonLlmRetryingCutOff<T>(
   try {
     return await callJsonLlm<T>(provider, input);
   } catch (err) {
-    if (!isCutOffReply(err) || input.signal?.aborted || !mayRetry()) throw err;
+    if (!isCutOffReply(err) || input.signal?.aborted) throw err;
     const maxTokens = retryMaxOutputTokens(input.maxTokens, provider);
+    if (maxTokens <= input.maxTokens || !mayRetry()) throw err;
     log.warn("Portfolio model reply cut off by its output cap; retrying once", {
       model: provider.model,
       finishReason: err.response.finishReason,

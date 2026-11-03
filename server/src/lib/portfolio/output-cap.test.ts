@@ -117,6 +117,19 @@ describe("callJsonLlmRetryingCutOff", () => {
     ]);
   });
 
+  it("does not retry when the clamps leave the cap unchanged: the same call would be charged for nothing", async () => {
+    // DeepSeek through the Anthropic-compatible endpoint is provider key "anthropic":
+    // the first call already sits at the SDK's non-streaming bound.
+    const atBound = scripted(response("", "max_tokens"), response('{"ok":true}'));
+    const provider = { ...atBound.provider, key: "anthropic", model: "deepseek-flash" };
+    const mayRetry = vi.fn(() => true);
+    await expect(
+      callJsonLlmRetryingCutOff(provider as AIProvider, { ...input, maxTokens: 21_333 }, mayRetry),
+    ).rejects.toBeInstanceOf(JsonLlmParseError);
+    expect(atBound.chat).toHaveBeenCalledTimes(1);
+    expect(mayRetry).not.toHaveBeenCalled();
+  });
+
   it("a reply cut off mid-JSON (finishReason length) is retried too", async () => {
     const { provider, chat } = scripted(response('{"ok":', "length"), response('{"ok":true}'));
     await callJsonLlmRetryingCutOff(provider, input);

@@ -738,6 +738,38 @@ describe("#1726 — a reasoning model, a cut-off reply, a failed repo, a shared 
     expect(result.costUsd).toBeCloseTo(0.01);
   });
 
+  it("a shared repo reads the same in a product whose own search returned nothing for it", async () => {
+    db.productRepo.findMany.mockImplementation(async ({ where }) =>
+      (where.productId.in as string[]).map((productId) => ({
+        productId,
+        repoConnectionId: "rc-shared",
+        repoConnection: {
+          projectId: "proj",
+          label: "acme/shared",
+          ownerOrOrg: null,
+          repoName: null,
+        },
+      })),
+    );
+    const p = provider(() =>
+      JSON.stringify({ criteria: [{ index: 1, verdict: "implemented", excerpts: [1] }] }),
+    );
+    let searches = 0;
+    const result = await evaluatePortfolioGap(
+      USER,
+      { statement: "s", criteria: ["c1"], ...ALL },
+      {
+        provider: p,
+        // The first product's search finds the repo; the second product's finds nothing.
+        search: async () => found(searches++ === 0 ? [hit("rc-shared", "a.ts", "a")] : []),
+        limits: { ...limits, concurrency: 1 },
+      },
+    );
+    expect(p.chat).toHaveBeenCalledTimes(1);
+    expect(result.products.map((r) => r.repos[0].verdict)).toEqual(["implemented", "implemented"]);
+    expect(result.products.map((r) => r.repos[0].reason)).toEqual([null, null]);
+  });
+
   it("one repo's failure keeps the gap another repo confirmed, and the summaries name the failure", async () => {
     db.productRepo.findMany.mockImplementation(async () => [
       {
