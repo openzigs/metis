@@ -20,6 +20,11 @@
  * product boundary was crossed (#1668). An edge to a resource
  * alone (no target repo) is paired with the other edges through the same
  * resource: a repo that writes or provides it reaches every other repo using it.
+ * #1724 — two products homed in one workspace that each record a resource of the
+ * same kind and name (a topic one provides and the other consumes) share it, so
+ * their edges through it pair across the product boundary. An edge stored on
+ * two products (detection records a cross-product edge on each product
+ * analysed) is walked once.
  *
  * Invariants:
  *
@@ -213,6 +218,7 @@ type EdgeRow = Pick<
   ProductEdgeRow,
   | "id"
   | "productId"
+  | "edgeType"
   | "sourceRepoId"
   | "targetRepoId"
   | "resourceId"
@@ -230,6 +236,7 @@ type EdgeRow = Pick<
 const EDGE_SELECT = {
   id: true,
   productId: true,
+  edgeType: true,
   sourceRepoId: true,
   targetRepoId: true,
   resourceId: true,
@@ -339,6 +346,10 @@ interface GraphCache {
   repos: Map<string, RepoInfo | null>;
   productsOfRepo: Map<string, string[]>;
   resources: Map<string, { kind: string; name: string } | null>;
+  /** #1724 — the product each resource belongs to. */
+  resourceProduct: Map<string, string>;
+  /** #1724 — each product's home workspace (`Product.workspaceId`), null for none. */
+  workspaceOf: Map<string, string | null>;
 }
 
 function repoLabel(rc: { label: string; ownerOrOrg: string | null; repoName: string | null }) {
@@ -374,6 +385,8 @@ class ImpactWalk {
   private readonly repos: GraphCache["repos"];
   private readonly productsOfRepo: GraphCache["productsOfRepo"];
   private readonly resources: GraphCache["resources"];
+  private readonly resourceProduct: GraphCache["resourceProduct"];
+  private readonly workspaceOf: GraphCache["workspaceOf"];
   // Contracts and shared tables depend on what the caller can read: never shared,
   // but a walk that reads everything reuses the contracts this one resolved (#1698).
   private readonly contracts = new Map<string, ImpactContractEvidence | null>();
@@ -389,12 +402,16 @@ class ImpactWalk {
       repos: new Map(),
       productsOfRepo: new Map(),
       resources: new Map(),
+      resourceProduct: new Map(),
+      workspaceOf: new Map(),
     },
   ) {
     this.actor = { id: user.userId, role: user.role };
     this.repos = graph.repos;
     this.productsOfRepo = graph.productsOfRepo;
     this.resources = graph.resources;
+    this.resourceProduct = graph.resourceProduct;
+    this.workspaceOf = graph.workspaceOf;
   }
 
   /**
@@ -461,6 +478,10 @@ class ImpactWalk {
   /**
    * Edges on readable products touching `repoIds` from either end, and resource
    * partners, with how many edges on products the caller cannot read were left out.
+   * A partner is an edge to a resource alone through the same resource, or
+   * (#1724) through a resource of the same kind and name on another product
+   * homed in the same workspace. #1724 — an edge recorded on two products (a
+   * cross-product edge, found by analysing either) is walked once.
    */
   async edgesTouching(repoIds: string[]): Promise<{ edges: EdgeRow[]; withheld: number }> {
     const [bySource, byTarget] = await Promise.all([
@@ -479,6 +500,9 @@ class ImpactWalk {
       if (this.readableProducts.has(e.productId)) seen.set(e.id, e);
       else withheld.add(e.id);
     }
+    await this.loadResources(
+      [...seen.values()].flatMap((e) => (e.resourceId ? [e.resourceId] : [])),
+    );
     const resourceIds = [
       ...new Set(
         [...seen.values()].filter((e) => e.resourceId && !e.targetRepoId).map((e) => e.resourceId!),
@@ -486,16 +510,113 @@ class ImpactWalk {
     ];
     if (resourceIds.length > 0) {
       const partners = await prisma.productEdge.findMany({
-        where: { resourceId: { in: resourceIds }, targetRepoId: null },
+        where: {
+          resourceId: { in: [...resourceIds, ...(await this.twinResources(resourceIds))] },
+          targetRepoId: null,
+        },
         select: EDGE_SELECT,
       });
-      // A partner pairs only with an edge of its own product (`candidatesFrom`), so
-      // one on a product the caller cannot read never pairs with what they walk.
+      // A partner pairs only with an edge it meets (`meetKey`). One on a product
+      // the caller cannot read is never walked; #1724 — it is counted as left out,
+      // since a resource it shares may reach what the caller cannot see.
       for (const e of partners) {
         if (this.readableProducts.has(e.productId)) seen.set(e.id, e);
+        else withheld.add(e.id);
       }
     }
-    return { edges: sortById([...seen.values()]), withheld: withheld.size };
+    const edges = [...seen.values()];
+    await this.loadWorkspaces(edges.map((e) => e.productId));
+    return { edges: this.oncePerCoupling(edges), withheld: withheld.size };
+  }
+
+  /**
+   * #1724 — an edge recorded on two products (detection stores a cross-product
+   * edge on whichever product it analyses) is one coupling: keep one per ends,
+   * type and resource, preferring a person's classification, then one that
+   * links a contract, then the lowest id. The rest are not walked.
+   */
+  private oncePerCoupling(edges: EdgeRow[]): EdgeRow[] {
+    const rank = (e: EdgeRow) => (e.origin === "detected" ? 2 : 0) + (e.contractDocId ? 0 : 1);
+    const kept = new Map<string, EdgeRow>();
+    for (const e of sortById(edges)) {
+      const key = [e.sourceRepoId, e.targetRepoId ?? "", e.edgeType, this.meetKey(e) ?? ""].join(
+        "\u0000",
+      );
+      const prior = kept.get(key);
+      if (!prior || rank(e) < rank(prior)) kept.set(key, e);
+    }
+    return sortById([...kept.values()]);
+  }
+
+  /**
+   * #1724 — where an edge through a resource meets other edges: the resource's
+   * kind and name in its product's home workspace, so two products of one
+   * workspace that each record the same topic or table meet there. A resource of
+   * a product with no home, or one not of the edge's own product, meets only
+   * edges of that product through that very resource (the rule before #1724).
+   */
+  meetKey(e: Pick<EdgeRow, "productId" | "resourceId">): string | null {
+    if (!e.resourceId) return null;
+    const resource = this.resource(e.resourceId);
+    const workspace = this.workspaceOf.get(e.productId) ?? null;
+    if (resource && workspace && this.resourceProduct.get(e.resourceId) === e.productId) {
+      return `workspace:${workspace}\u0000${resource.kind}\u0000${resource.name}`;
+    }
+    return `product:${e.productId}\u0000${e.resourceId}`;
+  }
+
+  /**
+   * #1724 — the resources of the same kind and name as `resourceIds` on the
+   * other products homed in the same workspace as each one's product.
+   */
+  private async twinResources(resourceIds: string[]): Promise<string[]> {
+    await this.loadWorkspaces(resourceIds.flatMap((id) => this.resourceProduct.get(id) ?? []));
+    const wanted = new Set<string>();
+    for (const id of resourceIds) {
+      const resource = this.resource(id);
+      const workspace = this.workspaceOf.get(this.resourceProduct.get(id) ?? "") ?? null;
+      if (resource && workspace) wanted.add(twinKey(workspace, resource.kind, resource.name));
+    }
+    if (wanted.size === 0) return [];
+    const parts = [...wanted].map((k) => k.split("\u0000"));
+    // `IN` lists, not an `OR` of triples: Prisma splits a long `IN` itself (#1346).
+    const rows = await prisma.productResource.findMany({
+      where: {
+        id: { notIn: resourceIds },
+        kind: { in: [...new Set(parts.map((p) => p[1]))] },
+        name: { in: [...new Set(parts.map((p) => p[2]))] },
+        product: { workspaceId: { in: [...new Set(parts.map((p) => p[0]))] } },
+      },
+      select: {
+        id: true,
+        productId: true,
+        kind: true,
+        name: true,
+        product: { select: { workspaceId: true } },
+      },
+    });
+    const twins: string[] = [];
+    for (const r of rows) {
+      if (!r.product.workspaceId) continue;
+      if (!wanted.has(twinKey(r.product.workspaceId, r.kind, r.name))) continue;
+      this.resources.set(r.id, { kind: r.kind, name: r.name });
+      this.resourceProduct.set(r.id, r.productId);
+      this.workspaceOf.set(r.productId, r.product.workspaceId);
+      twins.push(r.id);
+    }
+    return twins;
+  }
+
+  /** Load (once) the home workspace of each product. */
+  private async loadWorkspaces(productIds: Iterable<string>): Promise<void> {
+    const missing = [...new Set(productIds)].filter((id) => !this.workspaceOf.has(id));
+    if (missing.length === 0) return;
+    const rows = await prisma.product.findMany({
+      where: { id: { in: missing } },
+      select: { id: true, workspaceId: true },
+    });
+    for (const id of missing) this.workspaceOf.set(id, null);
+    for (const p of rows) this.workspaceOf.set(p.id, p.workspaceId);
   }
 
   async loadResources(ids: Iterable<string>): Promise<void> {
@@ -503,10 +624,13 @@ class ImpactWalk {
     if (missing.length === 0) return;
     const rows = await prisma.productResource.findMany({
       where: { id: { in: missing } },
-      select: { id: true, kind: true, name: true },
+      select: { id: true, kind: true, name: true, productId: true },
     });
     for (const id of missing) this.resources.set(id, null);
-    for (const r of rows) this.resources.set(r.id, { kind: r.kind, name: r.name });
+    for (const r of rows) {
+      this.resources.set(r.id, { kind: r.kind, name: r.name });
+      this.resourceProduct.set(r.id, r.productId);
+    }
   }
 
   resource(id: string | null): { kind: string; name: string } | null {
@@ -627,8 +751,19 @@ function contractEvidence(
   };
 }
 
-/** The provider -> consumer hops the edges carry from repos in `frontier`. */
-function candidatesFrom(edges: EdgeRow[], frontier: ReadonlyMap<string, RepoState>): Candidate[] {
+function twinKey(workspaceId: string, kind: string, name: string): string {
+  return `${workspaceId}\u0000${kind}\u0000${name}`;
+}
+
+/**
+ * The provider -> consumer hops the edges carry from repos in `frontier`.
+ * `meetKey` says where an edge through a resource meets the others (#1724).
+ */
+function candidatesFrom(
+  edges: EdgeRow[],
+  frontier: ReadonlyMap<string, RepoState>,
+  meetKey: (e: EdgeRow) => string | null,
+): Candidate[] {
   const out: Candidate[] = [];
   const strength = (e: EdgeRow) => oneOf(PRODUCT_COUPLING_STRENGTHS, e.strength);
   for (const e of edges) {
@@ -646,12 +781,14 @@ function candidatesFrom(edges: EdgeRow[], frontier: ReadonlyMap<string, RepoStat
       });
     }
   }
-  // Two edges meeting at a resource of one product: a provider of it reaches every other user.
+  // Two edges meeting at a resource: a provider of it reaches every other user.
+  // #1724 — the resource of one product, or one of the same kind and name on
+  // two products homed in one workspace (`meetKey`).
   const atResource = edges.filter((e) => e.resourceId && e.targetRepoId === null);
   for (const a of atResource) {
     if (!frontier.has(a.sourceRepoId) || !providesResource(a.direction)) continue;
     for (const b of atResource) {
-      if (b.id === a.id || b.resourceId !== a.resourceId || b.productId !== a.productId) continue;
+      if (b.id === a.id || meetKey(b) !== meetKey(a)) continue;
       if (b.sourceRepoId === a.sourceRepoId) continue;
       out.push({
         edges: [a, b],
@@ -793,7 +930,7 @@ async function walkFrom(
           entry(level.get(from)!.productId).hiddenEdgeCount += 1;
         }
       }
-      const candidates = candidatesFrom(readable, level);
+      const candidates = candidatesFrom(readable, level, (e) => walk.meetKey(e));
       await Promise.all([
         walk.loadProductsOf(candidates.map((c) => c.consumer)),
         walk.loadResources(candidates.flatMap((c) => (c.resourceId ? [c.resourceId] : []))),

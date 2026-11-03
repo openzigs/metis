@@ -43,6 +43,18 @@ export interface ProductRepo {
   };
 }
 
+/**
+ * #1724 — a readable repo of another product homed in the same workspace: the
+ * far end a cross-product edge of this product may have.
+ */
+export interface LinkedRepo {
+  repoConnectionId: string;
+  /** `owner/name`. */
+  label: string;
+  productId: string;
+  productName: string;
+}
+
 export interface ProductWithRepos extends Product {
   repos?: ProductRepo[];
   /**
@@ -54,6 +66,8 @@ export interface ProductWithRepos extends Product {
   edges?: ProductEdge[];
   /** #1618 — the resources the product's shown repos share. */
   resources?: ProductResource[];
+  /** #1724 — the other products' repos an edge of this product may end at. */
+  linkedRepos?: LinkedRepo[];
 }
 
 export interface CreateProductInput {
@@ -161,6 +175,10 @@ export interface AnalyzeResult {
   status: string;
   documentsGenerated: number;
   edgesDetected: number;
+  /** #1724 — edges to readable repos of other products in the workspace. */
+  crossProductEdges?: number;
+  /** #1724 — other products' repos past the per-run limit, not crawled. */
+  crossProductReposSkipped?: number;
 }
 
 export interface RepoConnectionOption {

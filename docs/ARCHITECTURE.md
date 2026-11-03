@@ -1498,8 +1498,12 @@ gap analysis, the run walks the typed product edges (#1618) from the products wh
 must change: every `partial` product, and the `hostProductId` the start request may name
 for a requirement nothing covers (a `product` scope may host only on its own product; an
 `all-accessible` host the caller cannot read is 404). A product that already covers the
-requirement needs no change. Cross-product coupling is a repo on several products
-(`ProductRepo`), so an edge on one product reaches every other product either end is on.
+requirement needs no change. An edge on one product reaches every other product either
+end is on (`ProductRepo`): a repo on several products, or (#1724) a cross-product edge,
+whose far end is a repo of another product in the same workspace. An edge recorded on two
+products (detection stores a cross-product edge on each product it analyses) is walked
+once per ends, type and resource (`oncePerCoupling`), keeping a person's classification
+over detection's, then the copy that links a contract.
 
 - **Direction.** Read from the edge's source side: `consumes` / `depends-on`, the source
   is downstream of the target; `provides` / `writes`, the target is downstream; `reads` or
@@ -1507,7 +1511,10 @@ requirement needs no change. Cross-product coupling is a repo on several product
   (`sql_table_write` twice: `detectSharedTables` records one edge between two writers,
   from the lower id) carries impact both ways too (#1668). Two repo → resource edges
   through one resource are paired: a repo that writes or provides it reaches every other
-  repo using it, never itself.
+  repo using it, never itself. #1724 — so are two such edges through resources of the same
+  kind and name on two products homed in one workspace (`meetKey`): each product declares
+  its side of a shared topic or table. A partner edge on a product the caller cannot read
+  is not walked, but counts as left out, so the restricted relabel runs.
 - **Depth and cycles.** From the direct-change products' readable repos, then from each
   consumer repo, up to 2 product boundaries (`maxDepth`, at most 4). An edge between two
   repos of one product moves the change inside it at no depth, and is on the path as a
@@ -4798,7 +4805,15 @@ of another product (same 404 as a missing id). Edges written before #1618 read a
 repo is left out, and so is a resource that only such edges go through.
 `POST /api/products/:id/edges` (`project.update`) declares a fully typed edge
 (`origin: declared`, `declaredById`); a repo the caller cannot read is answered as not
-attached. `/analyze` draws only repo-to-repo edges. Reverse scripts:
+attached. `/analyze` draws only repo-to-repo edges between the product's own repos.
+**#1724 — cross-product edges.** An edge's target repo may also be a readable repo of
+another product homed in the same workspace (`listReadableSiblingRepos`); its source
+stays the product's own, except on a detected edge, which keeps detection's orientation
+(`siblingSource`). The edge and resource routes judge against the product's readable
+repos plus those siblings, and `GET /api/products/:id` shows edges to them and names
+them in `linkedRepos` (id, `owner/name`, product id and name). A repo the caller cannot
+read is in neither, so an edge to it stays hidden and a write naming it is 404
+`REPO_NOT_ASSOCIATED`. `/analyze` reports `crossProductEdges` beside `edgesDetected`. Reverse scripts:
 `server/prisma/rollbacks/` and `server/prisma/postgres/rollbacks/`.
 
 **Detected edges (#1619).** `relationship-detector.ts` classifies each heuristic: an
@@ -4823,8 +4838,15 @@ and of a CTE the statement defines names no table; a code graph's `?dynamic:` pl
 table is no shared table. A known gap: MySQL's `#` comment is not blanked in `.sql` files.
 `detectRelationships` sorts the repos by id first, so the input order never decides an
 edge's direction. `runProductEdgeDetection` (`edge-detection.ts`) crawls only the
-product's live repos the caller can read (`productRepoReadAccess`) and
-`syncDetectedProductEdges` stores the result idempotently: a detected edge is matched by
+product's live repos the caller can read (`productRepoReadAccess`) and **(#1724) the
+readable repos of the other products homed in the same workspace**
+(`listReadableSiblingRepos`, `workspace-siblings.ts`: a sibling product has the same
+`Product.workspaceId`, and a sibling repo's project is in that workspace or in none; at
+most `MAX_CROSS_PRODUCT_REPOS` = 50, the rest counted as `crossProductReposSkipped`). It
+keeps every detected edge with at least one end in the product and stores it on that
+product, so a cross-product edge is found by analysing either end's product; an edge
+between two other products' repos is never stored on it. `syncDetectedProductEdges`
+stores the result idempotently: a detected edge is matched by
 its ends, type and resource (`detectedEdgeKey`) and updated in place, one no longer found
 is deleted, a declared edge is never updated or deleted and its key is not written as a
 detected copy, and an edge with an end outside the run's repos is left alone. New detected

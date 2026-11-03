@@ -5,8 +5,10 @@
  * (a table, a topic, an identity provider), or to both, and says what crosses
  * the boundary, how tightly, in which direction, and whether detection found it
  * or a person declared it. Everything an edge references is partitioned by
- * product: its repos must be attached to the product, and its resource and
- * contract must belong to it. A reference outside the product is answered
+ * product: its source repo must be attached to the product, and its resource and
+ * contract must belong to it. Its target repo must be attached as well, or
+ * (#1724) be a readable repo of another product in the same home workspace: a
+ * cross-product edge, stored on the product it starts from. A reference outside the product is answered
  * exactly like a missing one, so the refusal is no existence oracle for another
  * product's rows.
  */
@@ -33,6 +35,7 @@ import type {
 import { prisma } from "../prisma.js";
 import { isUniqueViolation } from "../db/prisma-errors.js";
 import { ProductError, repoNotAssociated, type ProductActor } from "./product-service.js";
+import { siblingRepoConnectionWhere } from "./workspace-siblings.js";
 
 /** What an edge points at, checked against its product before it is written. */
 export interface ProductEdgeReferences {
@@ -55,11 +58,46 @@ export function contractDocNotFound(contractDocId: string): ProductError {
 }
 
 /**
+ * #1724 — whether `repoId` may be the far end of a cross-product edge of
+ * `productId`: the caller can read it (`readableRepoIds`, which the route builds
+ * from the product's own repos and its readable siblings) and it is attached to
+ * another product homed in the same workspace. Without a readable set, or for a
+ * product with no home workspace, no repo outside the product qualifies.
+ */
+async function isReadableSiblingRepo(
+  productId: string,
+  repoId: string,
+  readableRepoIds: ReadonlySet<string> | undefined,
+): Promise<boolean> {
+  if (!readableRepoIds?.has(repoId)) return false;
+  const product = await prisma.product.findUnique({
+    where: { id: productId },
+    select: { workspaceId: true },
+  });
+  if (!product?.workspaceId) return false;
+  const sibling = await prisma.productRepo.findFirst({
+    where: {
+      repoConnectionId: repoId,
+      productId: { not: productId },
+      product: { workspaceId: product.workspaceId },
+      repoConnection: siblingRepoConnectionWhere(product.workspaceId),
+    },
+    select: { productId: true },
+  });
+  return sibling !== null;
+}
+
+/**
  * Refuse an edge that does not fit its product: an edge needs a target repo or
- * a resource (not neither) and may not point back at its own source; each repo
- * must be attached to the product; the resource and the contract document must
- * be the product's own. Every lookup filters on `productId` as well as the id,
+ * a resource (not neither) and may not point back at its own source; the source
+ * repo must be attached to the product, and the target repo too, or (#1724) be
+ * a readable repo of another product in the same home workspace; the resource
+ * and the contract document must be the product's own. Every lookup filters on `productId` as well as the id,
  * so product P2 cannot reference a resource of product P1 by guessing its id.
+ *
+ * `siblingSource` (#1724) is for an edge detection stored: detection keeps an
+ * edge's orientation, so a cross-product edge it found may start at the other
+ * product's repo and end at this one's. A person declares from this product.
  *
  * With `readableRepoIds` (#1647) the resource and the contract must also be
  * ones the caller may see: a resource only hidden edges go through, or the
@@ -71,6 +109,7 @@ export async function assertEdgeReferencesInProduct(
   productId: string,
   refs: ProductEdgeReferences,
   readableRepoIds?: ReadonlySet<string>,
+  opts: { siblingSource?: boolean } = {},
 ): Promise<void> {
   if (!refs.targetRepoId && !refs.resourceId) {
     throw new ProductError(
@@ -91,8 +130,23 @@ export async function assertEdgeReferencesInProduct(
       })
     ).map((r) => r.repoConnectionId),
   );
-  for (const id of repoIds) {
-    if (!attached.has(id)) throw repoNotAssociated(productId, id);
+  if (
+    !attached.has(refs.sourceRepoId) &&
+    !(
+      opts.siblingSource &&
+      refs.targetRepoId &&
+      attached.has(refs.targetRepoId) &&
+      (await isReadableSiblingRepo(productId, refs.sourceRepoId, readableRepoIds))
+    )
+  ) {
+    throw repoNotAssociated(productId, refs.sourceRepoId);
+  }
+  if (
+    refs.targetRepoId &&
+    !attached.has(refs.targetRepoId) &&
+    !(await isReadableSiblingRepo(productId, refs.targetRepoId, readableRepoIds))
+  ) {
+    throw repoNotAssociated(productId, refs.targetRepoId);
   }
   if (refs.resourceId) {
     if (readableRepoIds) {
@@ -256,7 +310,8 @@ export function toProductResourceView(row: ProductResourceRow): ProductResource 
 
 /**
  * A product's edges and resources as a caller may see them. `readableRepoIds`
- * are the product's attached, live repos the caller can open (#1258): an edge is
+ * are the product's attached, live repos the caller can open (#1258), and the
+ * readable repos of the other products in its workspace (#1724): an edge is
  * shown only when its source and (if any) its target are among them, and a
  * resource only when it has no edge at all or at least one shown edge goes
  * through it, so a resource known only from a hidden repo's code stays hidden.
@@ -388,7 +443,9 @@ export async function updateProductEdge(
   if (next.targetRepoId && !readableRepoIds.has(next.targetRepoId)) {
     throw repoNotAssociated(productId, next.targetRepoId);
   }
-  await assertEdgeReferencesInProduct(productId, next, readableRepoIds);
+  await assertEdgeReferencesInProduct(productId, next, readableRepoIds, {
+    siblingSource: detectionOwned,
+  });
   const edgeType = input.edgeType ?? edge.edgeType;
   const rekeyed =
     next.targetRepoId !== edge.targetRepoId ||

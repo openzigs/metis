@@ -16,6 +16,12 @@
  * - **Scoped to the repos crawled.** An edge with an end outside this run (a
  *   repo the caller cannot read, or one with no files to crawl) is left as it
  *   is, so a member's run never erases what an admin's run found.
+ * - **Across products in one workspace (#1724).** The run also crawls the
+ *   readable repos of the other products homed in the product's workspace
+ *   (`listReadableSiblingRepos`, at most `MAX_CROSS_PRODUCT_REPOS`) and keeps
+ *   every edge with at least one end in this product. A cross-product edge is
+ *   stored on the product analysed, so analysing either product finds it; an
+ *   edge between two other products' repos is theirs to find, never stored here.
  */
 import { randomUUID } from "node:crypto";
 import type { AuthPayload } from "@metis/shared";
@@ -23,6 +29,7 @@ import { prisma } from "../prisma.js";
 import { DYNAMIC_PLACEHOLDER_PREFIX } from "../code-graph/schema-graph.js";
 import { ProductError, LIVE_PRODUCT_REPOS } from "./product-service.js";
 import { productRepoReadAccess } from "./product-access.js";
+import { listReadableSiblingRepos } from "./workspace-siblings.js";
 import { crawlFiles, type CrawlTableRef, type FileEntry } from "./repo-crawler.js";
 import {
   detectRelationships,
@@ -70,7 +77,21 @@ export interface EdgeSyncResult {
 export interface DetectionResult extends EdgeSyncResult {
   /** The repos this run crawled: the scope it wrote in. */
   scannedRepoIds: string[];
+  /**
+   * #1724 — every readable repo of another product in the same workspace: the
+   * far ends a cross-product edge of this product may have, crawled or not.
+   */
+  siblingRepoIds: string[];
+  /** #1724 — sibling repos past `MAX_CROSS_PRODUCT_REPOS`, not crawled this run. */
+  crossProductReposSkipped: number;
 }
+
+/**
+ * #1724 — at most this many other products' repos are crawled per run. The rest
+ * are counted (`crossProductReposSkipped`); an edge to one is kept as stored,
+ * since a repo outside the run's scope is never written in.
+ */
+export const MAX_CROSS_PRODUCT_REPOS = 50;
 
 /** The origins of an edge or resource detection owns and may refresh or drop (#1647). */
 const DETECTION_OWNED_ORIGINS = ["detected", "overridden"];
@@ -305,8 +326,9 @@ export async function syncDetectedProductEdges(
 }
 
 /**
- * Crawl the product's repos the caller can read, detect the edges between them,
- * and store them. The caller has already checked access to the product itself
+ * Crawl the product's repos the caller can read, and the readable repos of the
+ * other products in its workspace (#1724), detect the edges between them that
+ * have an end in this product, and store them on it. The caller has already checked access to the product itself
  * (`assertProductAccessible`). `loadRepoFiles` supplies each repo's files; a
  * repo it returns null for is not crawled and its stored edges are left alone.
  */
@@ -335,15 +357,17 @@ export async function runProductEdgeDetection(opts: {
     throw new ProductError(404, "PRODUCT_NOT_FOUND", `Product ${opts.productId} not found`);
   }
   const canRead = await productRepoReadAccess(opts.user);
+  const own: DetectionRepo[] = product.repos.filter(canRead).map((repo) => ({
+    repoConnectionId: repo.repoConnectionId,
+    repoName: repo.repoConnection.repoName ?? repo.repoConnectionId,
+    ownerOrOrg: repo.repoConnection.ownerOrOrg ?? "",
+    defaultBranch: repo.repoConnection.defaultBranch ?? "main",
+  }));
+  const siblings = await listReadableSiblingRepos(opts.user, opts.productId, canRead);
+  const partners = own.length > 0 ? siblings.slice(0, MAX_CROSS_PRODUCT_REPOS) : [];
   const crawled: RepoCrawlData[] = [];
   const partialRepoIds: string[] = [];
-  for (const repo of product.repos.filter(canRead)) {
-    const info: DetectionRepo = {
-      repoConnectionId: repo.repoConnectionId,
-      repoName: repo.repoConnection.repoName ?? repo.repoConnectionId,
-      ownerOrOrg: repo.repoConnection.ownerOrOrg ?? "",
-      defaultBranch: repo.repoConnection.defaultBranch ?? "main",
-    };
+  for (const info of [...own, ...partners]) {
     const loaded = await opts.loadRepoFiles(info);
     if (!loaded) continue;
     const { files, partial } = Array.isArray(loaded) ? { files: loaded, partial: false } : loaded;
@@ -358,11 +382,19 @@ export async function runProductEdgeDetection(opts: {
   const scannedRepoIds = crawled.map((r) => r.repoConnectionId);
   const graphTables = await loadCodeGraphTables(scannedRepoIds);
   for (const repo of crawled) repo.codeGraphTables = graphTables.get(repo.repoConnectionId) ?? [];
-  const synced = await syncDetectedProductEdges(
-    opts.productId,
-    scannedRepoIds,
-    detectRelationships(crawled),
-    { partialRepoIds },
+  // #1724 — an edge needs an end in this product: one between two other
+  // products' repos is found, and stored, when one of those is analysed.
+  const ownIds = new Set(own.map((r) => r.repoConnectionId));
+  const detected = detectRelationships(crawled).filter(
+    (e) => ownIds.has(e.sourceRepoId) || ownIds.has(e.targetRepoId),
   );
-  return { ...synced, scannedRepoIds };
+  const synced = await syncDetectedProductEdges(opts.productId, scannedRepoIds, detected, {
+    partialRepoIds,
+  });
+  return {
+    ...synced,
+    scannedRepoIds,
+    siblingRepoIds: siblings.map((r) => r.repoConnectionId),
+    crossProductReposSkipped: own.length > 0 ? siblings.length - partners.length : 0,
+  };
 }

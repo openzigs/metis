@@ -1,0 +1,41 @@
+openapi: 3.0.3
+info:
+  title: Billing API
+  version: 1.0.0
+  description: >
+    Billing builds an invoice for each order. It depends on the Orders API
+    (https://metis-fixture-orders.internal), calling GET /orders/{id} and
+    GET /customers/{id} to price and address each invoice.
+servers:
+  - url: https://metis-fixture-billing.internal
+x-upstream-calls:
+  - service: metis-fixture-orders
+    operations:
+      - GET /orders/{id}
+      - GET /customers/{id}
+paths:
+  /invoices/{id}:
+    get:
+      summary: Get one invoice
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The invoice
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Invoice" }
+components:
+  schemas:
+    Invoice:
+      type: object
+      required: [id, orderId, customerEmail, amountCents, currency]
+      properties:
+        id: { type: string }
+        orderId: { type: string }
+        customerEmail: { type: string, format: email }
+        amountCents: { type: integer }
+        currency: { type: string }

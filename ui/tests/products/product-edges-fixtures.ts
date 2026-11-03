@@ -7,6 +7,14 @@ import type { ProductEdge, ProductResource, ProductWithRepos } from "@/lib/produ
 export const PRODUCT_ID = "prod-0000000001";
 export const REPO_A = "rc-a000000001";
 export const REPO_B = "rc-b000000001";
+/** #1724 — a repo of another product in the workspace. */
+export const REPO_FAR = "rc-f000000001";
+export const linkedRepo = {
+  repoConnectionId: REPO_FAR,
+  label: "acme/billing",
+  productId: "prod-0000000002",
+  productName: "Billing",
+};
 
 export function repo(id: string, name: string) {
   return {

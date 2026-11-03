@@ -395,6 +395,8 @@ function EdgeEditorDialog({
       {repoLabel(product, r.repoConnectionId)}
     </option>
   ));
+  // #1724 — an edge may end at a repo of another product in the workspace.
+  const linkedRepos = product.linkedRepos ?? [];
 
   const enumField = <K extends "edgeType" | "integrationKind" | "strength" | "direction">(
     key: K,
@@ -462,6 +464,15 @@ function EdgeEditorDialog({
             >
               <option value="">None (through a shared resource)</option>
               {repoOptions}
+              {linkedRepos.length > 0 && (
+                <optgroup label="Other products in this workspace">
+                  {linkedRepos.map((r) => (
+                    <option key={r.repoConnectionId} value={r.repoConnectionId}>
+                      {repoLabel(product, r.repoConnectionId)}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </div>
           <div className="space-y-1">

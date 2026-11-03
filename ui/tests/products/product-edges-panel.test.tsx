@@ -14,10 +14,12 @@ import {
   PRODUCT_ID,
   REPO_A,
   REPO_B,
+  REPO_FAR,
   declaredEdge,
   detectedEdge,
   edge,
   idp,
+  linkedRepo,
   product,
 } from "./product-edges-fixtures";
 
@@ -293,6 +295,51 @@ describe("with edit rights", () => {
     expect(rows()).toHaveLength(1);
     expect(rows()[0]).toHaveTextContent("event");
     expect(rows()[0]).toHaveTextContent("Declared");
+  });
+
+  it("declares an edge to another product's repo in the workspace, named with its product (#1724)", async () => {
+    const created = edge({
+      id: "edge-cross0001",
+      targetRepoId: REPO_FAR,
+      origin: "declared",
+      confidence: 1,
+      declaredById: "u-1",
+    });
+    serve(
+      product({ edges: [], linkedRepos: [linkedRepo] }),
+      product({ edges: [created], linkedRepos: [linkedRepo] }),
+    );
+    const declare = vi.spyOn(productsApi, "declareEdge").mockResolvedValue(created);
+    renderPanel(true);
+    await screen.findByText("No integration edges yet.");
+    await userEvent.click(screen.getByRole("button", { name: /Declare edge/ }));
+    const dialog = await screen.findByRole("dialog");
+    // Only the target may be another product's: the edge starts in this product.
+    const source = within(dialog).getByLabelText("From repository");
+    expect(within(source).queryByRole("option", { name: /Billing/ })).not.toBeInTheDocument();
+    const target = within(dialog).getByLabelText("To repository");
+    const group = within(target).getByRole("group", { name: "Other products in this workspace" });
+    expect(
+      within(group).getByRole("option", { name: "acme/billing (Billing)" }),
+    ).toBeInTheDocument();
+    await userEvent.selectOptions(target, REPO_FAR);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Save edge" }));
+
+    expect(declare).toHaveBeenCalledWith(
+      PRODUCT_ID,
+      expect.objectContaining({ sourceRepoId: REPO_A, targetRepoId: REPO_FAR }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(rows()[0]).toHaveTextContent("acme/billing (Billing)");
+  });
+
+  it("offers no other products' repos when the workspace has none", async () => {
+    serve(product({ edges: [] }));
+    renderPanel(true);
+    await screen.findByText("No integration edges yet.");
+    await userEvent.click(screen.getByRole("button", { name: /Declare edge/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).queryByRole("group")).not.toBeInTheDocument();
   });
 
   it("refuses an edge with neither target nor resource before any request", async () => {
