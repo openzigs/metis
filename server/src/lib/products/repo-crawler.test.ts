@@ -2,7 +2,7 @@
  * Repo crawler unit tests (Epic #544 / Issue #550).
  */
 import { describe, expect, it } from "vitest";
-import { crawlFiles, shouldSkipPath, type FileEntry } from "./repo-crawler.js";
+import { crawlFiles, isCrawlRelevant, shouldSkipPath, type FileEntry } from "./repo-crawler.js";
 
 describe("repo-crawler", () => {
   describe("shouldSkipPath", () => {
@@ -295,5 +295,47 @@ describe("repo-crawler — #1619 event topics and tables", () => {
     );
     expect(result.topics?.map((t) => `${t.role}:${t.topic}`)).toEqual(["subscribe:orders.created"]);
     expect(result.tables?.map((t) => `${t.access}:${t.table}`)).toEqual(["write:orders"]);
+  });
+});
+
+describe("isCrawlRelevant (#1703)", () => {
+  it.each([
+    "openapi.yaml",
+    "docs/api/swagger.json",
+    "events/asyncapi.yml",
+    "schema/orders.graphql",
+    "proto/orders.proto",
+    "src/app.ts",
+    "service/main.go",
+    "db/report.sql",
+    "worker/consumer.py",
+    // On a route or type path, a file the crawler's patterns may match.
+    "src/types/orders.h",
+    "api/Handler",
+  ])("reads %s: the crawler can draw a signal from it", (p) => {
+    expect(isCrawlRelevant(p)).toBe(true);
+  });
+
+  it.each([
+    "README.md",
+    "docs/api/guide.md",
+    "src/routes/README.MD",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "deploy/k8s/service.yaml",
+    "src/types/fixtures.json",
+    "public/api/logo.svg",
+    "assets/banner.png",
+    "CHANGELOG.txt",
+    "web/styles.css",
+    "Cargo.lock",
+  ])("skips %s: a doc, data, lock or asset file, not code or a spec", (p) => {
+    expect(isCrawlRelevant(p)).toBe(false);
+  });
+
+  it("reads every spec format the crawl recognises, whatever its extension", () => {
+    for (const p of ["a/openapi.json", "swagger.yml", "x.gql", "schema.gql", "asyncapi.json"]) {
+      expect(isCrawlRelevant(p)).toBe(true);
+    }
   });
 });

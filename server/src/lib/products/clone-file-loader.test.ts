@@ -79,10 +79,35 @@ describe("readCloneFiles", () => {
   });
 
   it("hands on no binary file", async () => {
-    write("bin/logo.png", Buffer.from([0x89, 0x50, 0x00, 0x47]));
+    write("bin/dump.sql", Buffer.from([0x89, 0x50, 0x00, 0x47]));
     write("bin/a.ts", "a");
     const files = await readCloneFiles(path.join(tmp, "bin"), LIMITS);
     expect(files.map((f) => f.path)).toEqual(["a.ts"]);
+  });
+
+  it("reads only files the crawl can use, and counts only those toward the file limit (#1703)", async () => {
+    // Sorted first, docs and lockfiles used to fill the cap before any source.
+    write("docs-first/CHANGELOG.md", "# changes");
+    write("docs-first/README.md", "# readme");
+    write("docs-first/assets/logo.svg", "<svg/>");
+    write("docs-first/package-lock.json", "{}");
+    write("docs-first/openapi.yaml", "openapi: 3.0.0\n");
+    write("docs-first/src/a.ts", "a");
+    write("docs-first/src/b.sql", "select 1;");
+    const read = await readCloneRepoFiles(path.join(tmp, "docs-first"), { ...LIMITS, maxFiles: 3 });
+    expect(read.files.map((f) => f.path)).toEqual(["openapi.yaml", "src/a.ts", "src/b.sql"]);
+    // Every file the crawl could use was read, so the read is complete.
+    expect(read.partial).toBe(false);
+  });
+
+  it("charges the byte budget only for files the crawl can use (#1703)", async () => {
+    write("docs-bytes/README.md", "x".repeat(100));
+    write("docs-bytes/src/a.ts", "12345");
+    const read = await readCloneRepoFiles(path.join(tmp, "docs-bytes"), { ...LIMITS, maxBytes: 9 });
+    expect(read).toEqual({
+      files: [{ path: "src/a.ts", content: "12345", size: 5 }],
+      partial: false,
+    });
   });
 
   it("returns nothing for a root that does not exist", async () => {
@@ -119,8 +144,31 @@ describe("readCloneRepoFiles", () => {
     ).toMatchObject({ partial: true });
   });
 
+  it("stops the walk once less than a thousandth of the byte budget is left (#1703)", async () => {
+    // 9,995 of 10,000 bytes spent: 5 left, under the floor of 10. b.ts (3 bytes)
+    // would still fit, but nothing more is opened or listed.
+    write("floor/a.ts", "x".repeat(9_995));
+    write("floor/b.ts", "123");
+    write("floor/c/d.ts", "1");
+    const read = await readCloneRepoFiles(path.join(tmp, "floor"), {
+      ...LIMITS,
+      maxBytes: 10_000,
+    });
+    expect(read.files.map((f) => f.path)).toEqual(["a.ts"]);
+    expect(read.partial).toBe(true);
+    // At the floor exactly, the walk goes on.
+    write("at-floor/a.ts", "x".repeat(9_990));
+    write("at-floor/b.ts", "123");
+    const atFloor = await readCloneRepoFiles(path.join(tmp, "at-floor"), {
+      ...LIMITS,
+      maxBytes: 10_000,
+    });
+    expect(atFloor).toMatchObject({ partial: false });
+    expect(atFloor.files.map((f) => f.path)).toEqual(["a.ts", "b.ts"]);
+  });
+
   it("is not partial for a binary file it read and dropped", async () => {
-    write("binonly/logo.png", Buffer.from([0x89, 0x00]));
+    write("binonly/dump.sql", Buffer.from([0x89, 0x00]));
     write("binonly/a.ts", "a");
     expect(await readCloneRepoFiles(path.join(tmp, "binonly"), LIMITS)).toMatchObject({
       partial: false,

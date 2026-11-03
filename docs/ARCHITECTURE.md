@@ -4830,7 +4830,13 @@ fetched. A repo with no checkout yields `null`, so it is not crawled and keeps i
 edges. The walk goes by each entry's own type, so no symlink is walked or read, and each
 file is re-resolved inside the root (`resolveSourcePath`) and opened `O_NOFOLLOW`; it skips
 the crawl's `SKIP_DIRS`, reads in sorted order no more than the crawl's `MAX_FILES` /
-`MAX_BYTES`, and drops binary files. When a limit leaves any file unread the loader
+`MAX_BYTES`, and drops binary files. **#1703:** only files the crawl can use
+(`isCrawlRelevant` in `repo-crawler.ts`: an API spec, a source file, or another non-doc
+file on a route or type path) are read or counted, so docs, lockfiles, data and assets
+no longer fill `MAX_FILES` before the source is reached; and once less than a thousandth
+of `MAX_BYTES` is left the walk stops instead of opening and listing the rest of the
+tree. The equality check on the Float `confidence` is proven on Postgres by
+`product-edge-sync-1703-postgres.integration.test.ts`. When a limit leaves any file unread the loader
 returns `{ files, partial: true }`, and the sync deletes no stored edge with an end in that
 repo (`partialRepoIds`): on a repo with more files than the limit, the file that held an
 edge may sort past it, and an overridden edge carries a person's classification. New and
