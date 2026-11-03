@@ -194,7 +194,7 @@ import {
   isEmptyElicitation,
   runElicitation,
 } from "./elicitation-pipeline.js";
-import { elicitedNfrRequirements } from "./elicited-nfr-requirements.js";
+import { capElicitedNfrVerdict, elicitedNfrRequirements } from "./elicited-nfr-requirements.js";
 import { runAgentLoop, buildCachedSystemPrompt, resolveAnalysisNativeTools } from "./agent-loop.js";
 import {
   buildEvidenceDigest,
@@ -4901,11 +4901,18 @@ export class AnalysisOrchestrator {
       // draft non-functional requirement, its coverage and verdict rolled up
       // by the same rules from the findings it cites. None elicited: the set
       // is written exactly as before.
-      const elicited = elicitedNfrRequirements({
+      const { requirements: elicited, dropped: droppedNfrs } = elicitedNfrRequirements({
         nfrs: elicitedNfrs,
         findingIdsByIndex,
         existing: toPersist.requirements,
       });
+      // #1648 — an elicited NFR is never dropped without a record of it.
+      if (droppedNfrs.length > 0) {
+        log.info("Elicited NFRs not written as requirements", {
+          analysisId: input.analysisId,
+          dropped: droppedNfrs,
+        });
+      }
 
       // Issue #723 — reported explicitly: an empty id list cannot tell a
       // withheld replacement from an approved set that is genuinely empty.
@@ -4922,11 +4929,13 @@ export class AnalysisOrchestrator {
               elicited: {
                 requirements: elicited,
                 coverages: computeCoverageForRequirements(elicited, findings),
+                // #1648 — capped: the cited findings' verdicts answer their
+                // own claims, not this NFR.
                 verdicts: computeVerdictsForRequirements(
                   elicited,
                   verdictFindings,
                   codeAnalysisRan,
-                ),
+                ).map(capElicitedNfrVerdict),
               },
             }
           : {}),

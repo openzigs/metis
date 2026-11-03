@@ -1083,8 +1083,9 @@ export interface PersistRequirementsInput {
    * decision. `coverages` / `verdicts` are index-aligned with `requirements`.
    * Written only when the replacement is allowed; a withheld one keeps the
    * current set, and its stored proposal carries the synthesis rows only (the
-   * next run elicits again). Omitted or empty: the set is written exactly as
-   * before #1613.
+   * next run elicits again); applying it later keeps the elicited NFR rows the
+   * current set already holds (#1648). Omitted or empty: the set is written
+   * exactly as before #1613.
    */
   elicited?: {
     requirements: SynthesizedRequirement[];
@@ -1240,6 +1241,22 @@ export async function lockRequirementSet(
 const REPLACE_REQUIREMENTS_TIMEOUT_MS = 60_000;
 
 /**
+ * A requirement's labels as a row stores them: its own, then one `finding:<id>`
+ * per finding its evidence indexes name in `findingIdsByIndex`, each once. An
+ * index naming no finding is not evidence and adds nothing (#1648: one copy
+ * for the synthesis insert, the elicited insert and the withheld proposal).
+ */
+export function evidenceLabels(
+  r: Pick<SynthesizedRequirement, "labels" | "evidenceFindingIndexes">,
+  findingIdsByIndex: readonly string[],
+): string[] {
+  const evidenceIds = r.evidenceFindingIndexes
+    .map((i) => findingIdsByIndex[i])
+    .filter((id): id is string => Boolean(id));
+  return [...new Set([...r.labels, ...evidenceIds.map((id) => `finding:${id}`)])];
+}
+
+/**
  * Persist a synthesized requirement set, replacing the analysis's previous one
  * (#57) unless that would destroy review work or swap a healthy set for a
  * degraded one (#769).
@@ -1385,10 +1402,7 @@ async function replaceRequirementSet(
     // of their own (below), so accepting the proposal leaves a version holding
     // them for Restore to return to.
     const anchored = plan.proposed !== null && plan.criteria.length > 0;
-    const evidenceIds = r.evidenceFindingIndexes
-      .map((i) => input.findingIdsByIndex[i])
-      .filter((id): id is string => Boolean(id));
-    const labels = Array.from(new Set([...r.labels, ...evidenceIds.map((id) => `finding:${id}`)]));
+    const labels = evidenceLabels(r, input.findingIdsByIndex);
     const row = await tx.requirement.create({
       data: {
         analysisId: input.analysisId,
@@ -1472,9 +1486,6 @@ async function writeElicitedRequirements(
   if (!elicited) return [];
   const ids: string[] = [];
   for (const [idx, r] of elicited.requirements.entries()) {
-    const evidenceIds = r.evidenceFindingIndexes
-      .map((i) => input.findingIdsByIndex[i])
-      .filter((id): id is string => Boolean(id));
     const row = await tx.requirement.create({
       data: {
         analysisId: input.analysisId,
@@ -1483,9 +1494,7 @@ async function writeElicitedRequirements(
         title: r.title.slice(0, 255),
         body: r.body,
         priority: r.priority,
-        labels: JSON.stringify([
-          ...new Set([...r.labels, ...evidenceIds.map((id) => `finding:${id}`)]),
-        ]),
+        labels: JSON.stringify(evidenceLabels(r, input.findingIdsByIndex)),
         acceptanceCriteria: JSON.stringify(r.acceptanceCriteria ?? []),
         coverage: elicited.coverages[idx] ?? null,
         verdict: elicited.verdicts[idx] ?? null,
@@ -1509,17 +1518,12 @@ function withheldProposalRows(
 ): WithheldProposalRow[] {
   const runSources = readSourceRequirements(metadata);
   return input.synthesis.requirements.map((r, idx) => {
-    const evidenceIds = r.evidenceFindingIndexes
-      .map((i) => input.findingIdsByIndex[i])
-      .filter((id): id is string => Boolean(id));
     return {
       type: r.type,
       title: r.title.slice(0, 255),
       body: r.body,
       priority: r.priority,
-      labels: JSON.stringify(
-        Array.from(new Set([...r.labels, ...evidenceIds.map((id) => `finding:${id}`)])),
-      ),
+      labels: JSON.stringify(evidenceLabels(r, input.findingIdsByIndex)),
       acceptanceCriteria: JSON.stringify(r.acceptanceCriteria ?? []),
       storyPoints: r.storyPoints ?? null,
       coverage: input.coverages?.[idx] ?? null,

@@ -142,11 +142,12 @@ function scriptedProvider(elicitation: Elicitation, synthesis: unknown = SYNTHES
     if (system.includes("NON-FUNCTIONAL REQUIREMENTS (NFRs)")) {
       if (elicitation === "unreadable") return "no NFRs here";
       if (elicitation === "empty") return JSON.stringify({ nfrs: [], acceptanceCriteria: [] });
-      const sent = /\(id=([^)]+)\)/.exec(user)?.[1] ?? "none";
+      // Every section the model was sent: "cite" stands for all of them.
+      const sent = [...user.matchAll(/\(id=([^)]+)\)/g)].map((m) => m[1]!);
       return JSON.stringify({
         nfrs: NFRS.map((n) => ({
           ...n,
-          evidenceIds: n.evidenceIds.map((id) => (id === "cite" ? sent : id)),
+          evidenceIds: n.evidenceIds.flatMap((id) => (id === "cite" ? sent : [id])),
         })),
         acceptanceCriteria: [],
       });
@@ -324,6 +325,39 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       expect(uptime!.verdict).not.toBe("implemented");
       expect(uptime!.verdict).not.toBe("partial");
+    });
+
+    it("an elicited NFR citing a finding the code agent judged implemented is capped to could-not-verify (#1648)", async () => {
+      const id = await newAnalysis();
+      // A code finding, judged `implemented`, for a claim of its own.
+      await db.agentResult.create({
+        data: {
+          analysisId: id,
+          agentKey: "code",
+          status: "completed",
+          findings: {
+            create: {
+              category: "functional",
+              severity: "info",
+              title: "Token storage module exists",
+              body: "src/tokens.ts stores API tokens.",
+              evidence: JSON.stringify({ verdict: "implemented", citations: [], tags: [] }),
+            },
+          },
+        },
+      });
+      const codeFinding = await db.finding.findFirstOrThrow({
+        where: { agentResult: { analysisId: id, agentKey: "code" } },
+      });
+      // The synthesis rows cite every finding, so they roll up to `implemented`.
+      const rows = await run(id, "nfrs", {
+        summary: "s",
+        requirements: [item("List feeds", { evidenceFindingIndexes: [0, 1] })],
+      });
+      expect(rows.find((r) => r.title === "List feeds")!.verdict).toBe("implemented");
+      const tokens = rows.find((r) => r.title === "Encrypt API tokens at rest")!;
+      expect(tokens.evidenceFindingIds).toContain(codeFinding.id);
+      expect(tokens.verdict).toBe("could-not-verify");
     });
 
     it("does not duplicate an NFR the synthesis already produced", async () => {

@@ -210,6 +210,20 @@ export interface CurrentRequirementRow {
   deleted: boolean;
   promotedStructuredId: string | null;
   promotedStructuredRunId: string | null;
+  /**
+   * Issue #1648 — an elicited NFR draft (#1613). A withheld proposal carries
+   * the synthesis rows only, so it says nothing about these: one it leaves out
+   * is kept, not deleted, whether or not it carries review work.
+   */
+  elicitedNfr?: boolean;
+}
+
+/**
+ * Whether applying a proposal that leaves `c` out keeps it: it carries review
+ * work, or it is an elicited NFR the proposal could not have restated (#1648).
+ */
+function keptWhenLeftOut(c: CurrentRequirementRow): boolean {
+  return c.reviewed || c.elicitedNfr === true;
 }
 
 /** A title as two runs are compared on: case, punctuation and spacing ignored. */
@@ -310,14 +324,14 @@ export type WithheldApplyStep =
   | { kind: "update"; current: CurrentRequirementRow; proposed: WithheldProposalRow }
   /** An unreviewed requirement the proposal leaves out: deleted. */
   | { kind: "delete"; current: CurrentRequirementRow }
-  /** A reviewed requirement the proposal leaves out: kept. */
+  /** A reviewed requirement, or an elicited NFR (#1648), the proposal leaves out: kept. */
   | { kind: "keep"; current: CurrentRequirementRow };
 
 /**
  * What applying `proposal` to `current` does. Rows with no review work are
  * replaced by their restatement or deleted, as a re-run would; reviewed rows
- * are updated in place or kept; deleted rows stay deleted and their
- * restatement is not inserted.
+ * are updated in place or kept; an elicited NFR it leaves out is kept
+ * (#1648); deleted rows stay deleted and their restatement is not inserted.
  */
 export function planWithheldApply(
   current: readonly CurrentRequirementRow[],
@@ -328,7 +342,7 @@ export function planWithheldApply(
   const matchedIds = new Set([...matches.values()].map((c) => c.id));
   for (const c of current) {
     if (c.deleted || matchedIds.has(c.id)) continue;
-    steps.push(c.reviewed ? { kind: "keep", current: c } : { kind: "delete", current: c });
+    steps.push(keptWhenLeftOut(c) ? { kind: "keep", current: c } : { kind: "delete", current: c });
   }
   proposed.forEach((p, i) => {
     const c = matches.get(i);
@@ -431,7 +445,7 @@ export function diffWithheldReplacement(
   });
   for (const c of current) {
     if (c.deleted || matchedIds.has(c.id)) continue;
-    diff.removed.push(entry(c, c.reviewed ? "keep" : "delete"));
+    diff.removed.push(entry(c, keptWhenLeftOut(c) ? "keep" : "delete"));
   }
   return diff;
 }
