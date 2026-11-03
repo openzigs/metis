@@ -122,3 +122,14 @@ def test_unparseable_returns_200_with_uncertain(client):
     )
     assert res.status_code == 200
     assert res.json()["uncertain"]
+
+
+def test_command_with_string_payload_returns_200(client):
+    # #1577: sqlglot's fallback Command carries a str payload; this used to 500.
+    res = client.post(
+        "/extract_usage",
+        json={"sql": "DROP EXTENSION IF EXISTS hstore;", "dialect": "postgres"},
+        headers=_auth(),
+    )
+    assert res.status_code == 200
+    assert res.json()["uncertain"]

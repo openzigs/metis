@@ -70,6 +70,12 @@ miner, etc.) and calls this service to resolve it.
 - An unqualified column in a multi-table statement is attached only when it is a
   write target (it belongs to the statement's target table); otherwise it is
   reported in `uncertain` (`unqualified column: <name>`) rather than guessed.
+- **One statement never fails the batch** (#1577). A statement the parser cannot
+  model (Postgres `DROP EXTENSION`, a multi-action `ALTER TABLE`) is reported in
+  `uncertain` as `dynamic-reference` with its text. A statement the extractor
+  itself fails on is reported as `dynamic-reference` with `statement could not be
+  analysed (<error type>): <sql>`, and the other statements in the request are
+  still extracted. The response is 200 either way.
 
 `GET /healthz` → `{ status, service, version, tokenConfigured }` (no auth).
 

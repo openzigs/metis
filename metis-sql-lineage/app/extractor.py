@@ -593,12 +593,17 @@ def _collect_routine_refs(
 
     # CALL <proc> — Command node whose payload holds the invocation text. The
     # payload is a string Literal, so read its raw value (``.sql()`` would re-quote
-    # it). A payload that is just a parameter (`CALL @x`) yields no name → dynamic.
+    # it). sqlglot's fallback parser (`_parse_as_command`) instead stores a bare
+    # Python ``str`` (`DROP EXTENSION ...`, a multi-action `ALTER TABLE`), which has
+    # no ``.sql()`` (#1577). A payload that is just a parameter (`CALL @x`) yields
+    # no name → dynamic.
     if isinstance(statement, exp.Command):
         keyword = statement.this.strip().upper() if isinstance(statement.this, str) else ""
         payload_node = statement.expression
         payload = ""
-        if isinstance(payload_node, exp.Literal):
+        if isinstance(payload_node, str):
+            payload = payload_node
+        elif isinstance(payload_node, exp.Literal):
             payload = str(payload_node.this)
         elif payload_node is not None:
             payload = payload_node.sql()
@@ -635,6 +640,69 @@ def _empty_result() -> dict:
 
 def _uncertain(reason: str, detail: str) -> dict:
     return {"reason": reason, "detail": detail[:280]}
+
+
+def _statement_text(statement: exp.Expression, dialect: str) -> str:
+    """The statement's SQL for an uncertain entry's detail, or its node type when
+    even rendering it fails (the statement already failed analysis once)."""
+    try:
+        return statement.sql(dialect=dialect or None)
+    except Exception:  # a detail string must never raise
+        return type(statement).__name__
+
+
+def _analyse_statement(statement: exp.Expression, schema: dict | None, dialect: str) -> dict:
+    """Tables, routine invocations, uncertain entries and lineage edges for ONE
+    parsed statement. ``extract_usage`` merges these across the batch."""
+    usage: dict = {"tables": {}, "routines": {}, "uncertain": [], "lineage_edges": []}
+    is_routine = _is_routine_definition(statement)
+
+    # `CALL proc(...)`, `EXEC[UTE] proc`, and other unsupported / dynamic-exec
+    # constructs surface as a Command node (sqlglot fell back) or an Execute
+    # node. A named routine invocation (`CALL update_inventory(...)`) IS a
+    # statically-resolvable `executes` reference and is captured here; a
+    # genuinely dynamic exec (`EXEC @sql`) resolves to NO routine name and is
+    # recorded as uncertain (never dropped) so it is not silently lost.
+    if isinstance(statement, (exp.Command, exp.Execute)):
+        usage["routines"] = _collect_routine_refs(statement, set())
+        if not usage["routines"]:
+            reason = REASON_ROUTINE_BODY if is_routine else REASON_DYNAMIC
+            usage["uncertain"].append(_uncertain(reason, statement.sql(dialect=dialect or None)))
+        return usage
+
+    qualified = _try_qualify(statement, schema, dialect)
+    exclude = _routine_target_names(statement)
+    tables = _collect_tables(qualified, exclude)
+    unqualified_cols = _attach_columns(qualified, tables)
+    usage["tables"] = tables
+
+    # Routine invocations referenced by this statement (#316): `SELECT fn(...)`
+    # in app code → a code→routine `executes` edge; a routine BODY calling
+    # another routine → a routine→routine `calls` edge. The CREATE target's
+    # own name is excluded so a body never reports a self-call.
+    usage["routines"] = _collect_routine_refs(qualified, exclude)
+
+    if is_routine:
+        # Procedure / function bodies are analysed best-effort. If we recovered
+        # nothing, flag the body as unanalyzed (never droppable). If we DID
+        # recover refs, still record the routine-body caveat so a reviewer
+        # knows the call graph may be incomplete (dynamic SQL inside the body).
+        if not tables:
+            usage["uncertain"].append(
+                _uncertain(REASON_ROUTINE_BODY, statement.sql(dialect=dialect or None))
+            )
+        else:
+            usage["uncertain"].append(
+                _uncertain(REASON_ROUTINE_BODY, "routine body parsed best-effort; calls may be incomplete")
+            )
+
+    # An unqualified column on a multi-table statement could not be tied to a
+    # table — surface it as uncertain rather than guessing.
+    for col in unqualified_cols:
+        usage["uncertain"].append(_uncertain(REASON_DYNAMIC, f"unqualified column: {col}"))
+
+    usage["lineage_edges"] = _lineage_edges(qualified, schema, dialect)
+    return usage
 
 
 def extract_usage(sql: str, dialect: str | None = None, schema: dict | None = None) -> dict:
@@ -681,57 +749,27 @@ def extract_usage(sql: str, dialect: str | None = None, schema: dict | None = No
     for statement in statements:
         if statement is None:
             continue
-        is_routine = _is_routine_definition(statement)
-
-        # `CALL proc(...)`, `EXEC[UTE] proc`, and other unsupported / dynamic-exec
-        # constructs surface as a Command node (sqlglot fell back) or an Execute
-        # node. A named routine invocation (`CALL update_inventory(...)`) IS a
-        # statically-resolvable `executes` reference and is captured here; a
-        # genuinely dynamic exec (`EXEC @sql`) resolves to NO routine name and is
-        # recorded as uncertain (never dropped) so it is not silently lost.
-        if isinstance(statement, (exp.Command, exp.Execute)):
-            cmd_refs = _collect_routine_refs(statement, set())
-            for qn, ref in cmd_refs.items():
-                routine_acc.setdefault(qn, ref)
-            if not cmd_refs:
-                reason = REASON_ROUTINE_BODY if is_routine else REASON_DYNAMIC
-                result["uncertain"].append(
-                    _uncertain(reason, statement.sql(dialect=resolved_dialect or None))
+        # One statement sqlglot hands us in a shape we did not anticipate must not
+        # cost the rest of the batch (#1577): the server sends a whole file's SQL in
+        # one request, and an exception here used to 500 every statement in it.
+        # The failed statement is recorded as uncertain — never silently dropped.
+        try:
+            usage = _analyse_statement(statement, schema, resolved_dialect)
+        except Exception as err:  # per-statement isolation is the point
+            result["uncertain"].append(
+                _uncertain(
+                    REASON_DYNAMIC,
+                    f"statement could not be analysed ({type(err).__name__}): "
+                    f"{_statement_text(statement, resolved_dialect)}",
                 )
+            )
             continue
 
-        qualified = _try_qualify(statement, schema, resolved_dialect)
-        exclude = _routine_target_names(statement)
-        tables = _collect_tables(qualified, exclude)
-        unqualified_cols = _attach_columns(qualified, tables)
-
-        # Routine invocations referenced by this statement (#316): `SELECT fn(...)`
-        # in app code → a code→routine `executes` edge; a routine BODY calling
-        # another routine → a routine→routine `calls` edge. The CREATE target's
-        # own name is excluded so a body never reports a self-call.
-        for qn, ref in _collect_routine_refs(qualified, exclude).items():
+        for qn, ref in usage["routines"].items():
             routine_acc.setdefault(qn, ref)
+        result["uncertain"].extend(usage["uncertain"])
 
-        if is_routine:
-            # Procedure / function bodies are analysed best-effort. If we recovered
-            # nothing, flag the body as unanalyzed (never droppable). If we DID
-            # recover refs, still record the routine-body caveat so a reviewer
-            # knows the call graph may be incomplete (dynamic SQL inside the body).
-            if not tables:
-                result["uncertain"].append(
-                    _uncertain(REASON_ROUTINE_BODY, statement.sql(dialect=resolved_dialect or None))
-                )
-            else:
-                result["uncertain"].append(
-                    _uncertain(REASON_ROUTINE_BODY, "routine body parsed best-effort; calls may be incomplete")
-                )
-
-        # An unqualified column on a multi-table statement could not be tied to a
-        # table — surface it as uncertain rather than guessing.
-        for col in unqualified_cols:
-            result["uncertain"].append(_uncertain(REASON_DYNAMIC, f"unqualified column: {col}"))
-
-        for qn, info in tables.items():
+        for qn, info in usage["tables"].items():
             existing = table_acc.get(qn)
             if existing is None:
                 table_acc[qn] = {
@@ -746,7 +784,7 @@ def extract_usage(sql: str, dialect: str | None = None, schema: dict | None = No
                 for col, accesses in info["columns"].items():
                     existing["columns"].setdefault(col, set()).update(accesses)
 
-        result["lineage_edges"].extend(_lineage_edges(qualified, schema, resolved_dialect))
+        result["lineage_edges"].extend(usage["lineage_edges"])
 
     # Materialize the accumulated tables/columns deterministically.
     for qn in sorted(table_acc):
