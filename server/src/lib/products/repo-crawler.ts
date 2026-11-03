@@ -9,6 +9,7 @@
 import {
   extractTableRefs,
   extractTopicRefs,
+  isSignalSource,
   parseAsyncApiChannels,
   type CrawlTableRef,
   type CrawlTopicRef,
@@ -205,6 +206,96 @@ const ROUTE_PATHS = [
   "src/handlers",
   "handlers",
 ];
+
+/**
+ * #1703 — extensions of docs, data, lock and asset files. None of them is a
+ * spec (`SPEC_PATTERNS` is checked first, so `openapi.yaml` and `asyncapi.json`
+ * are kept) or a source file the signal scans read; on a route or type path the
+ * crawl's code patterns would only match a snippet quoted in one (a route in a
+ * README), which is not the repo's own code.
+ */
+const NON_SOURCE_EXTENSIONS = new Set([
+  // docs and text
+  "md",
+  "mdx",
+  "markdown",
+  "rst",
+  "adoc",
+  "txt",
+  "log",
+  "html",
+  "htm",
+  "css",
+  "scss",
+  "sass",
+  "less",
+  // data and config
+  "json",
+  "jsonc",
+  "yaml",
+  "yml",
+  "toml",
+  "ini",
+  "csv",
+  "tsv",
+  "xml",
+  "lock",
+  "map",
+  "snap",
+  "ipynb",
+  // images, fonts, media, archives and binaries
+  "svg",
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "ico",
+  "bmp",
+  "pdf",
+  "woff",
+  "woff2",
+  "ttf",
+  "otf",
+  "eot",
+  "mp3",
+  "mp4",
+  "wav",
+  "webm",
+  "zip",
+  "gz",
+  "tgz",
+  "tar",
+  "jar",
+  "war",
+  "wasm",
+  "class",
+  "pyc",
+  "exe",
+  "dll",
+  "so",
+  "dylib",
+]);
+
+function extensionOf(filePath: string): string {
+  const name = filePath.slice(filePath.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  return dot === -1 ? "" : name.slice(dot + 1).toLowerCase();
+}
+
+/**
+ * #1703 — whether the crawl can use a file: an API spec, a source file its
+ * signal scans read, or another non-doc file on a route or type path. The clone
+ * loader reads, and counts toward `MAX_FILES`, only these, so a repo's docs and
+ * lockfiles no longer use up the file limit before its source is reached.
+ */
+export function isCrawlRelevant(filePath: string): boolean {
+  if (SPEC_PATTERNS.some(({ pattern }) => pattern.test(filePath))) return true;
+  if (NON_SOURCE_EXTENSIONS.has(extensionOf(filePath))) return false;
+  if (isSignalSource(filePath)) return true;
+  const lower = filePath.toLowerCase();
+  return [...ROUTE_PATHS, ...TYPE_PATHS].some((p) => lower.includes(p.toLowerCase()));
+}
 
 export interface FileEntry {
   path: string;

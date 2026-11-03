@@ -16,6 +16,10 @@
  *   directories the crawl skips are not walked. A file that does not fit what is
  *   left of the byte budget is not read, and a binary one (a NUL byte) is read
  *   against the budget but not handed on.
+ * - **Only what the crawl can use (#1703).** A doc, data, lock or asset file
+ *   (`isCrawlRelevant`) is skipped before it is opened, so it counts toward
+ *   neither limit; and once less than a thousandth of the byte budget is left,
+ *   the walk stops rather than open and list the rest of the tree.
  * - **A cut-short read says so.** When a limit leaves any file unread, the
  *   result is `partial`, and detection then deletes no stored edge touching the
  *   repo: on a repo with more files than the limit, the one that held an edge
@@ -26,7 +30,13 @@ import { open, readdir } from "node:fs/promises";
 import path from "node:path";
 import { resolveConnectorRoot, resolveSourcePath } from "../docs-gen/repository-sources.js";
 import type { DetectionRepo, RepoFileLoader, RepoFiles } from "./edge-detection.js";
-import { MAX_BYTES, MAX_FILES, shouldSkipPath, type FileEntry } from "./repo-crawler.js";
+import {
+  MAX_BYTES,
+  MAX_FILES,
+  isCrawlRelevant,
+  shouldSkipPath,
+  type FileEntry,
+} from "./repo-crawler.js";
 
 export interface CloneFileLoaderOptions {
   /** Where a connector's clone is; null when it has none. Defaults to `resolveConnectorRoot`. */
@@ -98,7 +108,11 @@ export async function readCloneRepoFiles(
     }
   };
 
-  const full = () => files.length >= limits.maxFiles || bytesRead >= limits.maxBytes;
+  // #1703 — once less than a thousandth of the byte budget is left, the walk
+  // stops: what is left can hold almost nothing, and opening and listing the
+  // rest of a large tree for it is what made the read slow.
+  const byteFloor = Math.ceil(limits.maxBytes / 1000);
+  const full = () => files.length >= limits.maxFiles || limits.maxBytes - bytesRead < byteFloor;
 
   /**
    * Walk `rel`. Once a limit is reached, the next entry any level of the walk
@@ -115,6 +129,8 @@ export async function readCloneRepoFiles(
     for (const entry of entries) {
       const relPath = rel ? `${rel}/${entry.name}` : entry.name;
       if (shouldSkipPath(relPath)) continue;
+      // #1703 — a file the crawl cannot use is neither read nor counted.
+      if (entry.isFile() && !isCrawlRelevant(relPath)) continue;
       if (full()) {
         partial = true;
         return;

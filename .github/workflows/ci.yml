@@ -1284,6 +1284,13 @@ jobs:
         working-directory: server
         run: pnpm test:integration review-two-open-1016-postgres
 
+      # Issue #1703 — product edge detection skips the write for an edge found
+      # again unchanged, comparing its Float `confidence` with `===`. Prove
+      # Postgres hands each double back exactly, so a re-run writes nothing.
+      - name: Prove an unchanged product edge is not rewritten on real Postgres
+        working-directory: server
+        run: pnpm test:integration product-edge-sync-1703-postgres
+
       - name: Remove the Postgres container
         if: always()
         run: docker rm -f "metis-ci-postgres-${GITHUB_JOB}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null 2>&1 || true

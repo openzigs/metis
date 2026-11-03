@@ -81,6 +81,9 @@ export const POSTGRES_PATTERNS = Object.freeze([
   "server/src/lib/connectors/repo/repo-service.ts",
   "server/src/lib/mcp/secret-binding.ts",
   "server/src/lib/mcp/status-rooms.ts",
+  // #1703 — product-edge-sync-1703-postgres runs the real edge sync.
+  "server/src/lib/products/edge-detection.ts",
+  "server/src/lib/products/relationship-detector.ts",
   "server/src/lib/publishing/cross-project-guard.ts",
   "server/src/lib/rag/embedder.ts",
   "server/src/lib/rag/knowledge-service.ts",
