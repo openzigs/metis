@@ -1024,7 +1024,41 @@ describe("#1276 — what a sub-issue body and labels carry onto GitHub", () => {
     expect(body!.split("\n")[0]).toBe(PARENT_LINE);
   });
 
-  it("leaves the body of a sub-issue whose epic is in the same batch as it was", async () => {
+  it("names an epic created in the same batch by number and link (#1576)", async () => {
+    seedDraft({
+      id: "epic_1",
+      title: "[Epic] Apollo — 2 requirements",
+      draftType: "epic",
+      labels: '["epic"]',
+    });
+    seedDraft({
+      id: "feat_1",
+      title: "[Feature] Login",
+      parentDraftId: "epic_1",
+      body: FEATURE_BODY,
+      labels: JSON.stringify(["feature", "unverified"]),
+    });
+    seedBatch({});
+    const calls = await publish();
+    const epicRow = [...issues.values()].find((r) => r.draftId === "epic_1")!;
+    expect(epicRow.status).toBe("created");
+    // The epic is created before its sub-issue, so the sub-issue's body names it.
+    const body = created(calls, "[Feature] Login")!.body;
+    expect(body.split("\n")[0]).toBe(
+      `${PARENT_LINE} ([#${epicRow.issueNumber}](${epicRow.htmlUrl}))`,
+    );
+    // The rest of the published body is unchanged: the `unverified` sentence still replaces the label.
+    expect(body).toContain("METIS could not confirm the code references behind this item");
+    // The stored draft is not rewritten, and the row's body hash covers what was sent.
+    expect(drafts.get("feat_1")!.body).toBe(FEATURE_BODY);
+    const row = [...issues.values()].find((r) => r.draftId === "feat_1")!;
+    expect(row.bodyHash).toBe(computeBodyHash(stripMarker(body).trimEnd()));
+    // …and it is still attached as a sub-issue of the epic created in this run.
+    const attach = calls.find((c) => c.method === "POST" && /\/sub_issues$/.test(c.url ?? ""));
+    expect(attach?.url).toContain(`/issues/${epicRow.issueNumber}/sub_issues`);
+  });
+
+  it("re-publishing after the epic was created in the same batch dedup-skips the sub-issue", async () => {
     seedDraft({
       id: "epic_1",
       title: "[Epic] Apollo — 2 requirements",
@@ -1038,10 +1072,73 @@ describe("#1276 — what a sub-issue body and labels carry onto GitHub", () => {
       body: FEATURE_BODY,
     });
     seedBatch({});
-    const calls = await publish();
+    await publish();
+    // Regenerated, unchanged: a second batch selects both drafts again.
+    drafts.get("feat_1")!.status = "approved";
+    drafts.get("epic_1")!.status = "approved";
+    seedBatch({ id: "batch_2" });
+    const calls: OctokitRequestArgs[] = [];
+    const base = makeFakeOctokit();
+    __setPublishOctokitFactory(async () =>
+      fakeOctokit({
+        request: async (args) => {
+          calls.push(args);
+          return base.request(args);
+        },
+      }),
+    );
+    await runBatch({
+      batchId: "batch_2",
+      dryRun: false,
+      secretRef: "${vault:gh}",
+      sleep: noopSleep,
+    });
+    // The body the first run sent is the body the second run computes: no write.
+    const writes = calls.filter(
+      (c) => (c.method === "PATCH" || c.method === "POST") && /\/issues(\/\d+)?$/.test(c.url ?? ""),
+    );
+    expect(writes).toEqual([]);
+    expect(batches.get("batch_2")!.dedupSkipped).toBe(2);
+  });
+
+  it("leaves the parent line plain when the same-batch epic fails to publish", async () => {
+    seedDraft({
+      id: "epic_1",
+      title: "[Epic] Apollo — 2 requirements",
+      draftType: "epic",
+      labels: '["epic"]',
+    });
+    seedDraft({
+      id: "feat_1",
+      title: "[Feature] Login",
+      parentDraftId: "epic_1",
+      body: FEATURE_BODY,
+    });
+    seedDraft({ id: "feat_2", title: "[Feature] Logout" });
+    seedDraft({ id: "feat_3", title: "[Feature] Reset" });
+    seedBatch({
+      metadata: JSON.stringify({
+        draftIds: ["epic_1", "feat_1", "feat_2", "feat_3"],
+        additionalLabels: [],
+      }),
+    });
+    const calls: OctokitRequestArgs[] = [];
+    const base = makeFakeOctokit({ failOnCreate: 1 });
+    __setPublishOctokitFactory(async () =>
+      fakeOctokit({
+        request: async (args) => {
+          calls.push(args);
+          return base.request(args);
+        },
+      }),
+    );
+    await runBatch({
+      batchId: "batch_1",
+      dryRun: false,
+      secretRef: "${vault:gh}",
+      sleep: noopSleep,
+    });
     expect(created(calls, "[Feature] Login")!.body.split("\n")[0]).toBe(PARENT_LINE);
-    // …and it is still attached as a sub-issue of the epic created in this run.
-    expect(calls.some((c) => c.method === "POST" && /\/sub_issues$/.test(c.url ?? ""))).toBe(true);
   });
 
   it("never sends or upserts `unverified`, and says it in one sentence instead", async () => {

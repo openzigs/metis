@@ -5,10 +5,10 @@
  *
  *  1. **The parent epic's number and link.** A sub-issue body opens with
  *     `> Parent epic: **<title>**` (`draft-generator.ts`), written before any
- *     issue number exists. When the epic is published in the same batch the
- *     sub-issue is attached to it through the sub-issues API and the body is
- *     left as it is. When the epic was published by an EARLIER batch, nothing
- *     else names it, so the line gets the epic's `#N` and link.
+ *     issue number exists. The published line gets the epic's `#N` and link
+ *     whenever the epic has an issue by the time the sub-issue is written: one
+ *     an EARLIER batch published, or one created earlier in the same run
+ *     (epics go first, #1576), which is also attached through the sub-issues API.
  *  2. **One sentence in place of the `unverified` label.** The label stays on
  *     the draft and the requirement inside METIS, and is never sent
  *     (`publishableLabels`); the issue says in plain words what it meant.

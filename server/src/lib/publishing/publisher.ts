@@ -544,6 +544,9 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
   let failedCount = 0;
   let dedupSkipped = 0;
   const epicIssueNumbers = new Map<string, number>();
+  // #1576 — epics this run created. Epics are published first, so a sub-issue
+  // of one is written after its number is known and names it like any other.
+  const createdEpics = new Map<string, ParentEpicIssue>();
   // #1091 — every issue this run actually created on GitHub, tracked in
   // memory so a rollback closes them even if persisting the PublishedIssue
   // row is what failed. The DB is not a reliable record of remote side
@@ -556,7 +559,10 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
     const existing = existingByHash.get(hash);
     // #1064 — the project, analysis and requirement ids ride a hidden source
     // marker beside the publish marker, not the visible body.
-    const body = bodies.get(draft.id) ?? draft.body;
+    const createdEpic = draft.parentDraftId ? createdEpics.get(draft.parentDraftId) : undefined;
+    const body = createdEpic
+      ? publishedDraftBody({ body: draft.body, labels: parseLabels(draft.labels) }, createdEpic)
+      : (bodies.get(draft.id) ?? draft.body);
     const stampedBody = injectMarker(
       body,
       { batchId: batch.id, draftId: draft.id, hash },
@@ -739,7 +745,10 @@ export async function runBatch(input: RunBatchInput): Promise<{ status: string }
           });
         }
       }
-      if (draft.draftType === "epic") epicIssueNumbers.set(draft.id, issueNumber);
+      if (draft.draftType === "epic") {
+        epicIssueNumbers.set(draft.id, issueNumber);
+        if (action === "created") createdEpics.set(draft.id, { issueNumber, htmlUrl });
+      }
 
       await prisma.publishedIssue.upsert({
         where: {
@@ -1416,8 +1425,10 @@ async function loadExistingByHash(
  *    (`existingByHash` holds its title's hash) — that issue;
  *  - an epic not in this batch — the issue an earlier batch published it as
  *    (`loadEarlierEpicIssues`; one query, only when some epic is outside).
- * An epic this run creates has no number yet: its sub-issues keep the plain
- * parent line and are attached to it through the sub-issues API, as before.
+ * An epic this run creates has no number yet, so its sub-issues get the plain
+ * line here — the preview and dry-run show that. The live run creates epics
+ * first and names a created epic in its sub-issues' bodies as it goes (#1576),
+ * so on GitHub the line carries the number whichever way the epic was published.
  */
 async function publishedBodies(
   projectId: string,
