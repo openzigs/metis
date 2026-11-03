@@ -27,6 +27,7 @@ import {
   parseConsistencyReport,
 } from "../../analysis/cross-doc-validator.js";
 import { stampPlanSource } from "../plan-provenance.js";
+import { fenceSourceRequirementsInSpec } from "../requirements-seed.js";
 
 /**
  * Issue #218 — the spec-kit `/analyze` system prompt is now the shared
@@ -95,7 +96,7 @@ export async function runAnalyze(input: AnalyzeInput): Promise<AnalyzeResult> {
   const userPrompt = [
     "spec.md:",
     "```md",
-    spec.content,
+    fenceSourceRequirementsInSpec(spec.content),
     "```",
     "",
     "plan.md:",

@@ -21,6 +21,7 @@ import {
   type ScopedArtifact,
 } from "../artifact-scope.js";
 import { runSpecKitAgent, loadProjectContext, type RunDeps } from "./runner.js";
+import { fenceSourceRequirementsInSpec } from "../requirements-seed.js";
 
 const SYSTEM_PROMPT = [
   "You are a Business Analyst running the Spec Kit /clarify loop.",
@@ -90,7 +91,7 @@ export async function runClarify(input: ClarifyInput): Promise<ClarifyResult> {
     scope.get("tasks.md"),
   ]);
   const context = [
-    spec ? `spec.md:\n\`\`\`md\n${spec.content}\n\`\`\`` : "",
+    spec ? `spec.md:\n\`\`\`md\n${fenceSourceRequirementsInSpec(spec.content)}\n\`\`\`` : "",
     plan ? `plan.md:\n\`\`\`md\n${plan.content}\n\`\`\`` : "",
     tasks ? `tasks.md:\n\`\`\`md\n${tasks.content}\n\`\`\`` : "",
     prev ? `Previous Q&A:\n\`\`\`md\n${prev}\n\`\`\`` : "",

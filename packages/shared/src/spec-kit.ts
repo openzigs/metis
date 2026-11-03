@@ -144,6 +144,11 @@ export const SPEC_KIT_FROM_REQUIREMENTS_MAX_IDS = 100;
 export const SPEC_KIT_REQUIREMENTS_NOT_APPROVED_CODE = "SPECKIT_REQUIREMENTS_NOT_APPROVED";
 /** #1616 — a named requirement is not in this project (404, `details.requirementIds`). */
 export const SPEC_KIT_REQUIREMENTS_NOT_FOUND_CODE = "SPECKIT_REQUIREMENTS_NOT_FOUND";
+/**
+ * #1616 — the named requirements hold more text than one `spec.md` can carry
+ * beside the model's spec (413). Refused whole, before any model call (#1702).
+ */
+export const SPEC_KIT_REQUIREMENTS_TOO_LARGE_CODE = "SPECKIT_REQUIREMENTS_TOO_LARGE";
 
 /**
  * #1616 — start a Spec Kit feature from requirements the project approved.

@@ -128,7 +128,12 @@ export async function runSpecifyFeature(input: SpecifyFeatureInput): Promise<Spe
     `Project: ${project.name}`,
     project.description ? `Description: ${project.description}` : "",
     "",
-    `Feature: ${feature.slug} — ${feature.title}`,
+    // #1702 — a seeded title is the first requirement's title: untrusted text,
+    // so it is named here only by reference and reaches the model inside that
+    // requirement's fence (the brief below). The slug is `NNN-kebab`, safe.
+    seed
+      ? `Feature: ${feature.slug} — titled after requirement 1 below`
+      : `Feature: ${feature.slug} — ${feature.title}`,
     "",
     ...(seed ? [] : ["Brief from operator:"]),
     trimmed,

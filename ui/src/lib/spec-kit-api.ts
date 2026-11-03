@@ -279,10 +279,13 @@ export const specKitApi = {
    * #1617 — start a feature from approved requirements (#1616). The server
    * creates the feature and its `spec.md`, whose Source requirements section
    * lists each one; 422 / 404 name refused ids in `details.requirementIds`.
+   * #1702 — `startToken` (`X-SpecKit-Start-Token`) names this start: sent again
+   * with the same token, it is answered with the feature the first send made.
    */
   startFeatureFromRequirements(
     projectId: string,
     requirementIds: readonly string[],
+    startToken?: string,
   ): Promise<{
     feature: SpecKitFeature;
     artifact: SpecKitFeatureArtifact;
@@ -293,6 +296,7 @@ export const specKitApi = {
     return apiFetch(`${featuresBase(projectId)}/from-requirements`, {
       method: "POST",
       body: { requirementIds },
+      ...(startToken ? { headers: { [SPEC_KIT_START_TOKEN_HEADER]: startToken } } : {}),
     });
   },
   featureStatus(projectId: string, slug: string): Promise<SpecKitFeatureStatus> {

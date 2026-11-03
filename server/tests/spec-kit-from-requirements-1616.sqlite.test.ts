@@ -29,7 +29,13 @@ const state = vi.hoisted(() => {
   process.env.SPECKIT_JOB_LIMIT_MAX = "100000";
   process.env.SPECKIT_JOB_USER_WRITE_LIMIT_MAX = "100000";
   process.env.AI_OFFLINE = "1";
-  return { db: null as unknown, prompts: [] as string[], systems: [] as string[] };
+  return {
+    db: null as unknown,
+    prompts: [] as string[],
+    systems: [] as string[],
+    /** #1702 — while set, the model call waits for it (a run still in flight). */
+    gate: null as Promise<void> | null,
+  };
 });
 vi.mock("../src/lib/prisma.js", async () => {
   const { Prisma } = await import("@prisma/client");
@@ -55,6 +61,7 @@ vi.mock("../src/lib/ai/project-provider.js", () => ({
     ) {
       state.prompts.push(messages.map((m) => m.content).join("\n"));
       state.systems.push(opts.systemMessage);
+      if (state.gate) await state.gate;
       return {
         content: "# Spec\nA feature.\n\n## Acceptance criteria\n- **AC-1**: it works",
         provider: "offline-stub",
@@ -108,6 +115,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       request(app())
         .post(`/api/projects/${projectId}/spec-kit/features/from-requirements`)
         .set("Authorization", `Bearer ${token}`)
+        .send(body);
+    /** #1702 — a start carrying `X-SpecKit-Start-Token`. */
+    const startWith = (startToken: string, body: Record<string, unknown>, token = memberToken) =>
+      request(app())
+        .post(`/api/projects/${PROJ}/spec-kit/features/from-requirements`)
+        .set("Authorization", `Bearer ${token}`)
+        .set("X-SpecKit-Start-Token", startToken)
         .send(body);
     const readSpec = (slug: string) =>
       request(app())
@@ -209,6 +223,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     beforeEach(() => {
       state.prompts.length = 0;
       state.systems.length = 0;
+      state.gate = null;
     });
 
     it("seeds spec.md with all 20 approved 1,000-char requirements — none truncated (#1115)", async () => {
@@ -225,7 +240,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(content).toContain("## Acceptance criteria\n- **AC-1**: it works");
       expect(content).toContain("## Source requirements");
       for (let i = 0; i < 20; i++) {
-        expect(content).toContain(`### Approved requirement ${i}\n`);
+        expect(content).toContain(`### Source requirement ${i + 1}: Approved requirement ${i}\n`);
         expect(content).toContain(`> ${body1000(i)}\n`);
         expect(content).toContain(`> - CRIT-${i}-one holds`);
         expect(content).toContain(`> - CRIT-${i}-two holds`);
@@ -345,6 +360,88 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res.body.error.code).toBe("SPECKIT_REQUIREMENTS_TOO_LARGE");
       expect(await featureCount()).toBe(before);
       expect(state.prompts).toHaveLength(0);
+    });
+
+    it("#1702 — a duplicate id is sent once: one requirement in spec.md, one in the prompt", async () => {
+      const res = await start({ requirementIds: [approved[2], approved[2], approved[3]] });
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(res.body.data.requirementIds).toEqual([approved[2], approved[3]]);
+      const content = (await readSpec(res.body.data.feature.slug)).body.data.artifact
+        .content as string;
+      expect(content.match(new RegExp(`Requirement id: \`${approved[2]}\``, "g"))).toHaveLength(1);
+      expect(content).toContain("from 2 approved requirements");
+      expect(state.prompts[0]!.match(/<<<REQUIREMENT \(untrusted data/g)).toHaveLength(2);
+    });
+
+    it("#1702 — the feature title (a requirement title) is not in the prompt outside its fence", async () => {
+      const titled = await requirement({
+        id: "r1702-title",
+        title: "Zebra Marker Title 1702",
+      });
+      const res = await start({ requirementIds: [titled] });
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      const prompt = state.prompts[0]!;
+      const outside = prompt.slice(0, prompt.indexOf("<<<REQUIREMENT"));
+      expect(outside).not.toContain("Zebra Marker Title 1702");
+      expect(prompt).toContain("Zebra Marker Title 1702");
+      expect(outside).toContain(`Feature: ${res.body.data.feature.slug as string}`);
+    });
+
+    it("#1702 — a repeated start token answers with the first start's feature: no second feature, no second run", async () => {
+      const token = "tok-1702-repeat-aaaaaaaa";
+      const before = await featureCount();
+      const first = await startWith(token, { requirementIds: [approved[4]] });
+      expect(first.status, JSON.stringify(first.body)).toBe(201);
+      // The response was "lost"; the client sends the same start again.
+      const again = await startWith(token, { requirementIds: [approved[4]] });
+      expect(again.status, JSON.stringify(again.body)).toBe(201);
+      expect(again.body.data.feature.slug).toBe(first.body.data.feature.slug);
+      expect(again.body.data.jobId).toBe(first.body.data.jobId);
+      expect(await featureCount()).toBe(before + 1);
+      expect(state.prompts).toHaveLength(1);
+      // A new token is a new start.
+      const fresh = await startWith("tok-1702-other-bbbbbbbbb", { requirementIds: [approved[4]] });
+      expect(fresh.status).toBe(201);
+      expect(fresh.body.data.feature.slug).not.toBe(first.body.data.feature.slug);
+      expect(await featureCount()).toBe(before + 2);
+    });
+
+    it("#1702 — a repeat sent while the first run is still going waits for it and answers with its feature", async () => {
+      const token = "tok-1702-inflight-cccccc";
+      let release!: () => void;
+      state.gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const before = await featureCount();
+      const first = startWith(token, { requirementIds: [approved[5]] }).then((r) => r);
+      await vi.waitFor(() => expect(state.prompts).toHaveLength(1));
+      const again = startWith(token, { requirementIds: [approved[5]] }).then((r) => r);
+      // Give the repeat time to find the running job and start waiting on it.
+      await new Promise((r) => setTimeout(r, 300));
+      release();
+      const [a, b] = await Promise.all([first, again]);
+      expect(a.status, JSON.stringify(a.body)).toBe(201);
+      expect(b.status, JSON.stringify(b.body)).toBe(201);
+      expect(b.body.data.feature.slug).toBe(a.body.data.feature.slug);
+      expect(await featureCount()).toBe(before + 1);
+      expect(state.prompts).toHaveLength(1);
+    });
+
+    it("#1702 — a repeat is answered before the requirements are read again", async () => {
+      const token = "tok-1702-revoked-dddddd";
+      const id = await requirement({ id: "r1702-revoked" });
+      const first = await startWith(token, { requirementIds: [id] });
+      expect(first.status, JSON.stringify(first.body)).toBe(201);
+      await db.requirement.update({ where: { id }, data: { reviewStatus: "draft" } });
+      const again = await startWith(token, { requirementIds: [id] });
+      expect(again.status, JSON.stringify(again.body)).toBe(201);
+      expect(again.body.data.feature.slug).toBe(first.body.data.feature.slug);
+    });
+
+    it("#1702 — a malformed start token is refused with 400 before anything starts", async () => {
+      const res = await startWith("short", { requirementIds: [approved[6]] });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("SPECKIT_INVALID_START_TOKEN");
     });
   },
 );

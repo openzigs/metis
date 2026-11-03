@@ -29,6 +29,7 @@ import { loadProjectContext, runSpecKitAgent, type RunDeps } from "./runner.js";
 import type { AIProvider } from "../../ai/types.js";
 import { AIProviderError, AIProviderRetiredError } from "../../ai/errors.js";
 import { stampPlanSource } from "../plan-provenance.js";
+import { fenceSourceRequirementsInSpec } from "../requirements-seed.js";
 
 export const DEFAULT_CHECKLIST_DOMAINS = [
   "security",
@@ -154,7 +155,7 @@ export async function runChecklist(input: ChecklistInput): Promise<ChecklistResu
         "",
         "spec.md:",
         "```md",
-        spec?.content ?? "(missing — the plan gate was forced)",
+        spec ? fenceSourceRequirementsInSpec(spec.content) : "(missing — the plan gate was forced)",
         "```",
         "",
         "plan.md:",

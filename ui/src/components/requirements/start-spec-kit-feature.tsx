@@ -9,10 +9,18 @@
  * the action is disabled, with the reason on hover, while the selection holds
  * any other. The server checks again; when it refuses ids (422 not approved,
  * 404 not in this project) the ids it named are listed.
+ *
+ * #1702 — the request is held for the whole model run, so its response can be
+ * lost while the feature is made anyway. Each start carries a start token
+ * (`X-SpecKit-Start-Token`); after a lost response the same selection is sent
+ * again with the SAME token, and the server answers with the feature the first
+ * send made instead of making a second. Any answer from the server, or a
+ * different selection, starts afresh with a new token. The page moves to the
+ * new feature only while this action is still on screen.
  */
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   SPEC_KIT_FROM_REQUIREMENTS_MAX_IDS,
@@ -22,6 +30,8 @@ import {
 import { ApiError } from "@/lib/api-client";
 import { specKitApi } from "@/lib/spec-kit-api";
 import { describeSpecKitError } from "@/lib/spec-kit-display";
+import { isLostResponse, newSpecKitStartToken } from "@/lib/spec-kit-jobs";
+import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
 import { HoverHint } from "@/components/spec-kit/hover-hint";
 
@@ -68,7 +78,12 @@ export function refusedRequirementIds(err: unknown): string[] | null {
   return Array.isArray(ids) ? ids.filter((x): x is string => typeof x === "string") : null;
 }
 
+/** #1702 — shown when the response was lost: the feature may exist already. */
+const START_SPEC_KIT_RESPONSE_LOST =
+  "The response was lost, so the feature may already have been created. Start again with the same selection: it opens that feature rather than creating a second one.";
+
 function describeFailure(err: unknown): string {
+  if (isLostResponse(err)) return START_SPEC_KIT_RESPONSE_LOST;
   if (err instanceof ApiError && err.code === "SPEC_KIT_DISABLED") {
     return "Spec Kit is off for this project. Turn it on from the Spec Kit page, then try again.";
   }
@@ -91,26 +106,46 @@ interface Props {
 
 export function StartSpecKitFeatureAction({ projectId, selected, writeHint }: Props) {
   const router = useRouter();
+  const qc = useQueryClient();
   const [failure, setFailure] = useState<{ text: string; ids: string[] | null } | null>(null);
+  /** This start's token and the selection it sends; kept only after a lost response. */
+  const pendingStart = useRef<{ ids: string; token: string } | null>(null);
   const start = useMutation({
-    mutationFn: () =>
-      specKitApi.startFeatureFromRequirements(
-        projectId,
-        selected.map((r) => r.id),
-      ),
+    mutationFn: ({ ids, token }: { ids: string[]; token: string }) =>
+      specKitApi.startFeatureFromRequirements(projectId, ids, token),
     onMutate: () => setFailure(null),
     onSuccess: (data) => {
+      pendingStart.current = null;
       toast.success(data.message);
-      router.push(
-        `/projects/${encodeURIComponent(projectId)}/spec-kit?feature=${encodeURIComponent(data.feature.slug)}`,
-      );
+      void qc.invalidateQueries({ queryKey: queryKeys.projects.specKitFeaturesAll(projectId) });
     },
     onError: (err) => {
+      // Only a lost response keeps its token: the server never answered, so the
+      // feature may exist, and a retry must name the same start.
+      if (!isLostResponse(err)) pendingStart.current = null;
       const text = describeFailure(err);
       setFailure({ text, ids: refusedRequirementIds(err) });
       toast.error(text);
     },
   });
+  const run = (): void => {
+    const ids = selected.map((r) => r.id);
+    const key = ids.join(",");
+    if (pendingStart.current?.ids !== key) {
+      pendingStart.current = { ids: key, token: newSpecKitStartToken() };
+    }
+    // Per call, not in the options: TanStack runs a call's own `onSuccess` only
+    // while this component is mounted, so a user who left mid-run stays put.
+    start.mutate(
+      { ids, token: pendingStart.current.token },
+      {
+        onSuccess: (data) =>
+          router.push(
+            `/projects/${encodeURIComponent(projectId)}/spec-kit?feature=${encodeURIComponent(data.feature.slug)}`,
+          ),
+      },
+    );
+  };
   const blocker = startSpecKitFeatureBlocker(selected, writeHint);
   const titleOf = new Map(selected.map((r) => [r.id, r.title]));
 
@@ -122,7 +157,7 @@ export function StartSpecKitFeatureAction({ projectId, selected, writeHint }: Pr
             size="sm"
             variant="outline"
             disabled={blocker !== undefined || start.isPending}
-            onClick={() => start.mutate()}
+            onClick={run}
             data-testid="start-spec-kit-feature-button"
           >
             {start.isPending ? "Starting Spec Kit feature…" : "Start Spec Kit feature"}

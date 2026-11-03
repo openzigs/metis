@@ -13,6 +13,7 @@ import {
 import { runSpecKitAgent, loadProjectContext, truncationWarning, type RunDeps } from "./runner.js";
 import { findTestsAfterImplementation } from "../grounding.js";
 import { stampPlanSource } from "../plan-provenance.js";
+import { fenceSourceRequirementsInSpec } from "../requirements-seed.js";
 
 /**
  * Exported for the structural-contract tests (#376) — see specify.ts.
@@ -98,7 +99,7 @@ export async function runTasks(input: TasksInput): Promise<TasksResult> {
     "",
     "spec.md:",
     "```md",
-    spec.content,
+    fenceSourceRequirementsInSpec(spec.content),
     "```",
     "",
     "plan.md:",

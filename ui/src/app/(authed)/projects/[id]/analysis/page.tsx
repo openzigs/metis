@@ -706,12 +706,17 @@ export default function AnalysisPage(): React.ReactElement {
     (req) => req.criteriaProposal,
   ).length;
   const showProposals = reviewingProposals && proposalCount > 0;
+  type ListedRequirement = NonNullable<typeof detail.data>["requirements"][number];
+  /** The requirements list's filters, as one predicate. */
+  const requirementFilter =
+    (coverage: RequirementCoverage | null, kind: RequirementKindFilterValue, proposals: boolean) =>
+    (req: ListedRequirement): boolean =>
+      (coverage === null || (req.coverage ?? null) === coverage) &&
+      matchesKindFilter(req, kind) &&
+      (!proposals || Boolean(req.criteriaProposal));
   const requirementsView = paginate(
     (detail.data?.requirements ?? []).filter(
-      (req) =>
-        (coverageFilter === null || (req.coverage ?? null) === coverageFilter) &&
-        matchesKindFilter(req, kindFilter) &&
-        (!showProposals || req.criteriaProposal),
+      requirementFilter(coverageFilter, kindFilter, showProposals),
     ),
     requirementsPage,
     REQUIREMENTS_PAGE_SIZE,
@@ -724,6 +729,16 @@ export default function AnalysisPage(): React.ReactElement {
     if (on) next.add(reqId);
     else next.delete(reqId);
     setSpecKitPick({ analysisId: selectedAnalysisId, ids: next });
+  };
+  // #1702 — a filter change drops the ticks it hides, so the action never sends
+  // a requirement the list no longer shows.
+  const keepVisibleSpecKitPicks = (visible: (req: ListedRequirement) => boolean): void => {
+    if (specKitPicked.size === 0) return;
+    const shown = new Set((detail.data?.requirements ?? []).filter(visible).map((req) => req.id));
+    setSpecKitPick({
+      analysisId: selectedAnalysisId,
+      ids: new Set([...specKitPicked].filter((id) => shown.has(id))),
+    });
   };
   const specKitSelection = (detail.data?.requirements ?? []).filter((req) =>
     specKitPicked.has(req.id),
@@ -1145,6 +1160,9 @@ export default function AnalysisPage(): React.ReactElement {
                           onClick={() => {
                             setCoverageFilter(value);
                             setRequirementsPage(0);
+                            keepVisibleSpecKitPicks(
+                              requirementFilter(value, kindFilter, showProposals),
+                            );
                           }}
                         >
                           {label}
@@ -1161,6 +1179,9 @@ export default function AnalysisPage(): React.ReactElement {
                         onChange={(next) => {
                           setKindFilter(next);
                           setRequirementsPage(0);
+                          keepVisibleSpecKitPicks(
+                            requirementFilter(coverageFilter, next, showProposals),
+                          );
                         }}
                       />
                     ) : null}
@@ -1195,6 +1216,9 @@ export default function AnalysisPage(): React.ReactElement {
                         onReviewChange={(v) => {
                           setReviewingProposals(v);
                           setRequirementsPage(0);
+                          keepVisibleSpecKitPicks(
+                            requirementFilter(coverageFilter, kindFilter, v && proposalCount > 0),
+                          );
                         }}
                         invalidateKeys={
                           selectedAnalysisId ? [queryKeys.analyses.detail(selectedAnalysisId)] : []
