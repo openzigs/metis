@@ -1,19 +1,19 @@
 {
   "version": 1,
-  "key": "d702b2e843b5c8ba55b7c665b2a3240135c48be83aea8c59f44bac44705df662",
+  "key": "5ec06c6eca04a9657fd61b73e770766dc2a3e7f95d943f29a269cc98f1e3109d",
   "request": {
     "promptPreview": "<<<REQUIREMENT>>>\nCustomers can pay an invoice by instant bank transfer and get a receipt by email.\n<<<END REQUIREMENT>>>\n\n<<<CRITERIA>>>\n[1] Pay an invoice by instant bank transfer\n[2] Email a receip",
     "messageCount": 2,
     "options": {
-      "maxTokens": 2000
+      "maxTokens": 21000
     }
   },
   "response": {
     "content": "{\"criteria\": [{\"index\": 1, \"verdict\": \"gap-confirmed\", \"excerpts\": [1], \"reason\": \"Excerpt 1 is where it would live, and it is not there.\"}, {\"index\": 2, \"verdict\": \"gap-confirmed\", \"excerpts\": [1], \"reason\": \"Excerpt 1 is where it would live, and it is not there.\"}]}",
     "usage": {
-      "promptTokens": 260,
+      "promptTokens": 247,
       "completionTokens": 39,
-      "totalTokens": 299,
+      "totalTokens": 286,
       "cacheReadTokens": 0,
       "cacheWriteTokens": 0
     },
@@ -22,5 +22,5 @@
     "offline": true,
     "finishReason": "stop"
   },
-  "recordedAt": "2026-11-01T18:59:59.320Z"
+  "recordedAt": "2026-11-03T21:03:49.972Z"
 }

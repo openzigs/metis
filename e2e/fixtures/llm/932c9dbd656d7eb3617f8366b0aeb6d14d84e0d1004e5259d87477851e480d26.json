@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "key": "c987ee5805a0b69241d2ecc5309b1f580a64dd71e92ee21f6153be7bd94a7c4e",
+  "key": "932c9dbd656d7eb3617f8366b0aeb6d14d84e0d1004e5259d87477851e480d26",
   "request": {
-    "promptPreview": "<<<REQUIREMENT>>>\nCustomers can pay an invoice by instant bank transfer.\n<<<END REQUIREMENT>>>\n\n<<<CRITERIA>>>\n[1] Pay an invoice by instant bank transfer\n<<<END CRITERIA>>>\n\n<<<REPOSITORY>>>\npayments",
+    "promptPreview": "<<<REQUIREMENT>>>\nCustomers can split one invoice across several payment cards.\n<<<END REQUIREMENT>>>\n\n<<<CRITERIA>>>\n[1] Split one invoice across several payment cards\n<<<END CRITERIA>>>\n\n<<<REPOSITO",
     "messageCount": 2,
     "options": {
-      "maxTokens": 2000
+      "maxTokens": 21000
     }
   },
   "response": {
@@ -22,5 +22,5 @@
     "offline": true,
     "finishReason": "stop"
   },
-  "recordedAt": "2026-11-01T18:59:57.278Z"
+  "recordedAt": "2026-11-03T21:03:48.941Z"
 }
