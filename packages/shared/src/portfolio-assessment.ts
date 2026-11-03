@@ -398,7 +398,7 @@ export function portfolioRestrictedNote(rule: PortfolioRestrictedRule | null): s
  * change reaches.
  */
 export const PORTFOLIO_NOT_AFFECTED_OLDER_RULE =
-  "This check ran under an older rule for products it could not follow, so a product listed as not affected may still be reached through one that the person who ran it cannot read. Run the check again to find out.";
+  "This check ran under an older rule for products it could not follow, so a product listed as not affected may still be reached through a repository or product that the person who ran it cannot read. Run the check again to find out.";
 
 /**
  * One stored severity modifier of an impact hop (#1623 `HopSeverity`), in

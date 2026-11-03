@@ -374,7 +374,8 @@ class ImpactWalk {
   private readonly repos: GraphCache["repos"];
   private readonly productsOfRepo: GraphCache["productsOfRepo"];
   private readonly resources: GraphCache["resources"];
-  // Contracts and shared tables depend on what the caller can read: never shared.
+  // Contracts and shared tables depend on what the caller can read: never shared,
+  // but a walk that reads everything reuses the contracts this one resolved (#1698).
   private readonly contracts = new Map<string, ImpactContractEvidence | null>();
   private readonly shared = new Map<string, CrossProjectImpactResult | null>();
   private readonly actor: SchedulerActor;
@@ -402,7 +403,14 @@ class ImpactWalk {
    * "readable". #1692 — it reuses what this walk loaded of the graph.
    */
   readingEverything(): ImpactWalk {
-    return new ImpactWalk(this.user, { has: () => true }, () => true, this.deps, this.graph);
+    const walk = new ImpactWalk(this.user, { has: () => true }, () => true, this.deps, this.graph);
+    // #1698 — a contract this walk resolved is one whose repo it can read (or that
+    // has none), so a walk that reads everything resolves it the same: reuse it. A
+    // null may be one it could not read, so that one is loaded again.
+    for (const [id, evidence] of this.contracts) {
+      if (evidence !== null) walk.contracts.set(id, evidence);
+    }
+    return walk;
   }
 
   /** Load (once) the live connections of `ids`; a deleted or unknown one is null. */
@@ -773,9 +781,12 @@ async function walkFrom(
           readable.push(e);
           continue;
         }
+        // #1695 — a walk able to read everything still cannot follow it to a deleted
+        // repo, so it leaves nothing out; #1698 — nor is it a link to a repo the caller
+        // cannot read, so it is not counted either.
+        if (!ends.every((id) => walk.repo(id) !== null)) continue;
+        leftOut = true;
         // Not walked; counted once on the product it leaves, if it leaves the frontier.
-        // #1695 — a walk able to read everything still cannot follow it to a deleted repo.
-        if (ends.every((id) => walk.repo(id) !== null)) leftOut = true;
         const from = ends.find((id) => level.has(id));
         if (from && !hiddenCounted.has(e.id)) {
           hiddenCounted.add(e.id);
