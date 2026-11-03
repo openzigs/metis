@@ -205,7 +205,11 @@ export class EntityIndex {
       for (let at = lower.indexOf(name); at !== -1; at = lower.indexOf(name, at + 1)) {
         const end = at + name.length;
         if (word(lower[at - 1]) || word(lower[end])) continue;
-        if (claimed.subarray(at, end).some((c) => c === 1)) continue;
+        // Only a name wholly inside a longer one's span is not a mention. One
+        // that merely overlaps it ("Acme Billing" / "Billing Core" in "Acme
+        // Billing Core") still is: the mention list gates who sees the entry,
+        // so dropping it would show a name to a reader who cannot open it.
+        if (claimed.subarray(at, end).every((c) => c === 1)) continue;
         claimed.fill(1, at, end);
         for (const id of ids) named.add(id);
       }

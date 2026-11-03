@@ -147,6 +147,19 @@ describe("checkProse", () => {
     expect(checkProse("Orders v3 must change.", orders).mentions).toEqual(["p-v3"]);
   });
 
+  it("#1736 review — a name that only overlaps a longer one's span is still a mention", () => {
+    const billing = new EntityIndex({
+      products: new Map([
+        ["p-acme", "Acme Billing"],
+        ["p-core", "Billing Core"],
+      ]),
+    });
+    // Neither name lies inside the other, so both are named, and an entry
+    // mentioning a product the reader cannot open stays withheld.
+    expect(billing.mentionsIn("Acme Billing Core migrates.")).toEqual(["p-acme", "p-core"]);
+    expect(billing.mentionsIn("Billing Core migrates.")).toEqual(["p-core"]);
+  });
+
   it("#1732 — products that share one name are all named by it; an empty name names nothing", () => {
     const twins = new EntityIndex({
       products: new Map([
