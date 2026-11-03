@@ -68,6 +68,7 @@ export interface RepoNaming {
 export function docCell(text: string | null | undefined): string {
   // Stored evidence is JSON written by older code and by hand: a field may be missing.
   return String(text ?? "")
+    .replace(/\\/g, "\\\\")
     .replace(/[\r\n]+/g, " ")
     .replace(/\|/g, "\\|")
     .replace(/"/g, "'");
@@ -224,8 +225,10 @@ function generateServiceMapDiagram(
 
   // Add nodes
   for (const repo of repos) {
-    const label = repo.role ? `${repo.repoName}\\n[${repo.role}]` : repo.repoName;
-    lines.push(`    ${naming.nodeId(repo.repoConnectionId)}["${docCell(label)}"]`);
+    // Each part escaped on its own: the `\\n` between them is Mermaid's line break.
+    const name = docCell(repo.repoName);
+    const label = repo.role ? `${name}\\n[${docCell(repo.role)}]` : name;
+    lines.push(`    ${naming.nodeId(repo.repoConnectionId)}["${label}"]`);
   }
   // #1732 — another product's repos, the far ends of cross-product edges.
   for (const ext of externalRepos) {

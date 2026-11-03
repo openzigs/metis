@@ -220,6 +220,8 @@ describe("#1732 — cross-product edges and evidence attribution", () => {
 
   it("docCell keeps a name inside its table cell and its Mermaid label", () => {
     expect(docCell('a | b "c"\nd')).toBe("a \\| b 'c' d");
+    // A backslash is escaped first, so a name ending in one cannot unescape the pipe after it.
+    expect(docCell("a\\|b")).toBe("a\\\\\\|b");
   });
 
   it("a per-service doc names the far repo and credits each file to its own repo", () => {
