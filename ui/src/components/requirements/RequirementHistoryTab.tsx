@@ -55,6 +55,12 @@ const FIELD_ORDER = [
 
 export interface RequirementHistoryTabProps {
   requirementId: string;
+  /**
+   * #1580 — the requirement's current version as the parent renders it. When a
+   * write elsewhere on the page (Accept on a criteria suggestion, Edit) bumps
+   * it, the open timeline reloads; it used to read "current v1" until a reload.
+   */
+  version?: number;
   /** Notified after a successful restore so the parent can refetch. */
   onRestored?: () => void;
 }
@@ -74,6 +80,7 @@ function formatDate(iso: string): string {
 
 export function RequirementHistoryTab({
   requirementId,
+  version,
   onRestored,
 }: RequirementHistoryTabProps): React.ReactElement {
   const { user } = useAuth();
@@ -111,9 +118,10 @@ export function RequirementHistoryTab({
     }
   }, [requirementId, page, pageSize]);
 
+  // #1580 — `version` is a dependency only so that a bump reloads the timeline.
   React.useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, version]);
 
   function toggleSelect(version: number): void {
     setSelected((prev) => {
@@ -217,8 +225,9 @@ export function RequirementHistoryTab({
                       <span className="text-sm font-medium">Version {entry.version}</span>
                       <span className="ml-2 text-xs text-muted-foreground">
                         {formatDate(entry.createdAt)}
-                        {/* #1389 — a null actor is a write METIS made itself. */}
-                        {` · ${entry.actorId ?? "System"}`}
+                        {/* #1389 — a null actor is a write METIS made itself.
+                          #1580 — named, not shown as a raw user id. */}
+                        {` · ${entry.actorName ?? entry.actorId ?? "System"}`}
                       </span>
                       {entry.reason ? (
                         <span className="ml-2 text-xs italic text-muted-foreground">

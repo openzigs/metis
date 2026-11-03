@@ -152,6 +152,52 @@ describe("buildTraceabilityMatrix", () => {
     expect(matrix.rows[0]!.codeLocations).toHaveLength(1);
   });
 
+  it("#1580 — leaves a cited or mapped test file out of the code locations", () => {
+    const deterministic = new Map<string, TraceabilityCodeLocation[]>([
+      [
+        "req-1",
+        [
+          {
+            filePath: "internal/reader/icon/finder_test.go",
+            startLine: 1,
+            endLine: 9,
+            source: "deterministic-mapping",
+          },
+        ],
+      ],
+    ]);
+    const matrix = buildTraceabilityMatrix({
+      analysisId: "an-1",
+      projectId: "proj-1",
+      requirements: [
+        {
+          id: "req-1",
+          title: "Force IPv4 or IPv6 per feed",
+          coverage: "grounded_in_code",
+          verdict: null,
+          evidenceFindingIds: ["f-1"],
+        },
+      ],
+      findingsById: findingsMap([
+        {
+          id: "f-1",
+          title: "Dialer picks the address family",
+          severity: "medium",
+          citations: [
+            codeCitation("internal/reader/fetcher/request_builder.go", 40, 60),
+            codeCitation("internal/reader/icon/finder_test.go", 12, 30),
+          ],
+        },
+      ]),
+      deterministicByRequirement: deterministic,
+    });
+    expect(matrix.rows[0]!.codeLocations.map((l) => l.filePath)).toEqual([
+      "internal/reader/fetcher/request_builder.go",
+    ]);
+    // The finding itself is still listed.
+    expect(matrix.rows[0]!.findings.map((f) => f.id)).toEqual(["f-1"]);
+  });
+
   it("folds in deterministic-mapping locations with distinct provenance", () => {
     const deterministic = new Map<string, TraceabilityCodeLocation[]>([
       [

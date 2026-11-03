@@ -24,6 +24,7 @@ vi.mock("../prisma.js", () => ({
 }));
 
 import {
+  CODE_LINKS_APPENDIX_HEADING,
   countScopedRequirements,
   headingWithCount,
   loadScopedRequirements,
@@ -341,6 +342,39 @@ describe("renderRequirementsDocument", () => {
     expect(md).toContain("_No code links recorded for this requirement._");
   });
 
+  it("#1580 — keeps file paths out of the requirements and lists them in an appendix", () => {
+    const md = renderRequirementsDocument("Invoices BRD", { analysisId: "run-7" }, [
+      req({
+        codeMappings: [
+          {
+            filePath: "src/export.ts",
+            startLine: 10,
+            endLine: 40,
+            confidence: 0.82,
+            source: "semantic",
+          },
+        ],
+      }),
+      req({ id: "req-2", title: "Audit log" }),
+    ]);
+    const appendixAt = md.indexOf(`\n${CODE_LINKS_APPENDIX_HEADING}\n`);
+    expect(appendixAt).toBeGreaterThan(md.indexOf("### R2. Audit log"));
+    const main = md.slice(0, appendixAt);
+    const appendix = md.slice(appendixAt);
+    // The part a business reader signs off names no file.
+    expect(main).not.toContain("src/export.ts");
+    expect(main).not.toContain("#### Code links");
+    // The appendix keeps every requirement's links, under its number and title.
+    expect(appendix).toContain(
+      "**R1. Export invoices**\n\n- `src/export.ts:10-40` — semantic mapping, confidence 82%",
+    );
+    expect(appendix).toContain(
+      "**R2. Audit log**\n\n_No code links recorded for this requirement._",
+    );
+    // It is the last section, so it adds no requirement heading to the Contents.
+    expect(appendix.match(/^#{1,3} /gm)).toEqual(["## "]);
+  });
+
   it("says when no criteria were derived and names every selector used", () => {
     const md = renderRequirementsDocument(
       "T",
@@ -510,7 +544,12 @@ describe("requirement bodies carrying METIS markers — #1170", () => {
     ]);
     // The document's outline is its own: one H2 per part, one H3 per requirement.
     // (The third match is the fenced line, which is code and stays as written.)
-    expect(md.match(/^## .*/gm)).toEqual(["## Summary", "## Requirements", "## kept in code"]);
+    expect(md.match(/^## .*/gm)).toEqual([
+      "## Summary",
+      "## Requirements",
+      "## kept in code",
+      CODE_LINKS_APPENDIX_HEADING,
+    ]);
     expect(md).toContain("#### Top\n");
     expect(md).toContain("#### Clarifications\n");
     expect(md).toContain("```md\n## kept in code\n```");

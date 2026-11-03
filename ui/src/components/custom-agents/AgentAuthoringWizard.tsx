@@ -113,7 +113,10 @@ export function AgentAuthoringWizard({ workspaceId }: Props) {
     queryFn: () => projectsApi.list({ workspaceId, limit: 100 }),
     enabled: Boolean(workspaceId),
   });
-  const projects = projectsQuery.data?.items ?? [];
+  // #1580 — only this workspace's projects. The list endpoint also returns
+  // projects with no workspace (and, for a non-admin, every workspace they
+  // belong to), so the wizard offered projects from outside this one.
+  const projects = (projectsQuery.data?.items ?? []).filter((p) => p.workspaceId === workspaceId);
   // #135 — the configured provider's models, from the server-side catalog.
   const modelsQuery = useQuery({
     queryKey: ["ai-model-catalog", "provider"],

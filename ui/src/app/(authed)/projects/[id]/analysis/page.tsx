@@ -1436,7 +1436,7 @@ export default function AnalysisPage(): React.ReactElement {
                           </div>
                           {historyReqId === req.id ? (
                             <div className="mt-3 border-t border-border pt-3">
-                              <RequirementHistoryTab requirementId={req.id} />
+                              <RequirementHistoryTab requirementId={req.id} version={req.version} />
                             </div>
                           ) : null}
                         </div>

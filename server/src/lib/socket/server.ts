@@ -1123,7 +1123,12 @@ function attachHandlers(socket: MetisSocket, threadPresence: ThreadPresence): vo
     const replay = (): void => {
       if (!socket.rooms.has(jobRoom(jobId))) return;
       const last = getLastJobLifecycle(jobId);
-      if (last && last.projectId === scope?.projectId) socket.emit("job:lifecycle", last);
+      // #1580 — say how old the replayed event is (server clock both sides), so
+      // a client can tell "just finished" from "finished hours ago" and not
+      // toast a stale completion when a deep link reopens an old run.
+      if (last && last.projectId === scope?.projectId) {
+        socket.emit("job:lifecycle", { ...last, replayAgeMs: Math.max(0, Date.now() - last.ts) });
+      }
       for (const section of getLastDocSections(jobId)) {
         if (section.projectId === scope?.projectId) socket.emit("job:doc-section", section);
       }

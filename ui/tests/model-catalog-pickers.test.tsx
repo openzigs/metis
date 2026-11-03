@@ -36,6 +36,7 @@ vi.mock("@/lib/projects-api", async () => {
             name: "Alpha",
             slug: "alpha",
             status: "active",
+            workspaceId: "ws-1",
             createdById: "u-1",
             createdAt: "",
             updatedAt: "",

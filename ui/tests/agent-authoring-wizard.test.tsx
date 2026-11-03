@@ -7,7 +7,7 @@
  * invoke call is mocked and resolves immediately).
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { AgentAuthoringWizard } from "@/components/custom-agents/AgentAuthoringWizard";
 import { makeWrapper } from "./test-utils";
 
@@ -102,6 +102,7 @@ const PROJECTS = [
     name: "Alpha",
     slug: "alpha",
     status: "active",
+    workspaceId: "ws-1",
     createdById: "u-1",
     createdAt: "",
     updatedAt: "",
@@ -111,10 +112,17 @@ const PROJECTS = [
     name: "Beta",
     slug: "beta",
     status: "active",
+    workspaceId: "ws-1",
     createdById: "u-1",
     createdAt: "",
     updatedAt: "",
   },
+];
+
+/** #1580 — what the list endpoint also returns: no workspace, or another one. */
+const OUTSIDE_PROJECTS = [
+  { ...PROJECTS[0]!, id: "proj-legacy", name: "Legacy (no workspace)", workspaceId: null },
+  { ...PROJECTS[0]!, id: "proj-other", name: "Other workspace", workspaceId: "ws-2" },
 ];
 
 beforeEach(() => {
@@ -146,6 +154,22 @@ describe("<AgentAuthoringWizard /> (#84)", () => {
     renderWizard();
     expect(screen.getByTestId("agent-wizard-root")).toBeInTheDocument();
     expect(screen.getByTestId("wizard-step-name")).toBeInTheDocument();
+  });
+
+  it("#1580 — offers only the projects of this workspace", async () => {
+    listProjects.mockResolvedValue({
+      items: [...OUTSIDE_PROJECTS, ...PROJECTS],
+      total: 4,
+      limit: 100,
+      offset: 0,
+    });
+    renderWizard("ws-1");
+    await flush();
+    expect(listProjects).toHaveBeenCalledWith({ workspaceId: "ws-1", limit: 100 });
+    const options = within(screen.getByTestId("wizard-project-select"))
+      .getAllByRole("option")
+      .map((o) => o.textContent);
+    expect(options).toEqual(["Select a project…", "Alpha", "Beta"]);
   });
 
   it("blocks advancing from the name step until name + project are set", async () => {

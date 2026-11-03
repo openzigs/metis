@@ -63,9 +63,15 @@ export interface DatabaseResourceManagerProps {
   workspaceId?: string | null;
 }
 
-/** react-query cache key for the per-project identity resolution. */
+/**
+ * react-query cache key for the per-project identity resolution. #1580 — nested
+ * under {@link dbConnectorListKey}, so every invalidation of the connector list
+ * (add, remove, test, ingest, wizard provisioning) refetches the identities as
+ * well: the panel read "No database connectors in this project yet" after one
+ * was added, until a reload.
+ */
 export function dbIdentityKey(projectId: string) {
-  return ["connectors", "db-identities", projectId] as const;
+  return [...dbConnectorListKey(projectId), "identities"] as const;
 }
 
 /** react-query cache key for the per-project DB connector list (shared with the connections page). */
