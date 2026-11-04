@@ -22,3 +22,5 @@ metadata:
 - The Add Repo picker lists every workspace's connectors by label. Give the copies distinct labels.
 - A module reached by `GET /api/products/:id` must not import from `product-service`. `products-multi.authz.test.ts` mocks that module with an explicit export list.
 - With a reasoning model, repo verdicts hit the 2,000-token cap and fail as `model-error` (#1726).
+
+**Wave 4 (2026-11-04, Claude Sonnet 5.5):** no repo-check model errors. Each 7-product assessment cost about $0.08. A full-project BRD of the three fixtures cost $2.26 and took about 17 minutes, with no estimate shown. A BA-only analysis ($0.12) gives only doc-gap requirements with no code grounding (#1749). Spec Kit mode is per project and is now on for "Commerce services v3". Portfolio spend is not in the usage ledger, so read each assessment's `costUsd`.
