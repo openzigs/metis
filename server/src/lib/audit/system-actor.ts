@@ -5,7 +5,10 @@
  * auto-discover. No `User` row has this id, so nothing may persist it into a
  * foreign key to `users`: the audit log writes it as `actorId: null` with
  * `actorType: "system"` (`buildAuditLogData`), and (#1528) `createAnalysis`
- * writes it as `startedById: null`.
+ * writes it as `startedById: null`. (#1521) A connector document a system run
+ * creates is attributed to the connector's creator, else the project's creator
+ * (`connector-ingest.ts`), and a system-written skill or agent records no
+ * creator (`creatorConnect` in `library/skill-service.ts`).
  *
  * #1528 — its own module, with no imports, so a call site can name it without
  * loading the audit service (which many suites replace with a mock that has no

@@ -14,6 +14,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
+import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
 import { bumpVersion, parseSkillSource, slugifyKey, type SkillFrontmatter } from "./frontmatter.js";
 import { assertNoSecrets, DefinitionSecretError } from "../agent-runtime/secret-scan.js";
 import {
@@ -37,6 +38,19 @@ export class SkillServiceError extends Error {
 export interface ActorRef {
   id: string;
   role?: string;
+}
+
+/**
+ * #1521 — the nested `createdBy` connect for a write by `actor`, or nothing.
+ * Library auto-discover at boot runs as {@link SYSTEM_ACTOR_ID}, which no user
+ * has, so connecting to it failed every discovered skill and agent. The
+ * `createdById` columns of `Skill`, `Agent` and their versions are nullable
+ * (`ON DELETE SET NULL`): a system write records no creator.
+ */
+export function creatorConnect(actor: ActorRef): { createdBy?: { connect: { id: string } } } {
+  return actor.id && actor.id !== SYSTEM_ACTOR_ID
+    ? { createdBy: { connect: { id: actor.id } } }
+    : {};
 }
 
 export interface SkillUpsertInput {
@@ -240,14 +254,14 @@ export class SkillService {
       manifest: manifestJson,
       contentSha256: parsed.contentSha256,
       source: input.origin ?? "inline",
-      ...(actor.id ? { createdBy: { connect: { id: actor.id } } } : {}),
+      ...creatorConnect(actor),
       versions: {
         create: {
           version: parsed.frontmatter.version ?? "0.1.0",
           manifest: manifestJson,
           instructions: parsed.body,
           contentSha256: parsed.contentSha256,
-          ...(actor.id ? { createdBy: { connect: { id: actor.id } } } : {}),
+          ...creatorConnect(actor),
         },
       },
     };
@@ -322,7 +336,7 @@ export class SkillService {
             manifest: manifestJson,
             instructions: parsed.body,
             contentSha256: parsed.contentSha256,
-            ...(actor.id ? { createdBy: { connect: { id: actor.id } } } : {}),
+            ...creatorConnect(actor),
           },
         },
       },
