@@ -2993,13 +2993,13 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   **Held-out baseline (#1753).** `pnpm eval:localization` runs the same seeding
   (`resolveChangeSeeds` over the hybrid search, no model) on requirements the cut
   sizes were never tuned on, written in analyst language rather than as developer
-  issues: 25 Miniflux PRs merged after `v2.3.3`, and 15 requirements over the three
+  issues: 24 Miniflux PRs merged after `v2.3.3` (owner-reviewed), and 15 requirements over the three
   fixture repositories. Per-requirement means with 95% bootstrap intervals, from the
   committed `eval-data/corpus/localization-*/baseline-A0.md`:
 
   | A0, per-requirement mean | Recall@5 | Recall@10 | Edit precision | MRR |
   |---|---|---|---|---|
-  | Miniflux held-out, 25 | 0.50 [0.36, 0.65] | 0.65 [0.50, 0.79] | 0.17 [0.12, 0.23] | 0.55 [0.40, 0.71] |
+  | Miniflux held-out, 24 | 0.52 [0.38, 0.66] | 0.60 [0.46, 0.74] | 0.17 [0.12, 0.22] | 0.55 [0.40, 0.70] |
   | Fixture portfolio, 15 | 0.54 [0.39, 0.68] | 1.00 (ten files in all) | 0.21 [0.17, 0.26] | 0.54 [0.37, 0.72] |
   | Run-7 six, same harness (**in-sample**) | 0.62 [0.29, 0.90] | 0.71 [0.39, 0.94] | 0.29 [0.17, 0.39] | 0.57 [0.30, 0.83] |
 

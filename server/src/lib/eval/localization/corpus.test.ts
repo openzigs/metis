@@ -244,7 +244,7 @@ describe("loading", () => {
     const miniflux = await loadLocalizationCorpus("localization-01-miniflux-heldout");
     const fixture = await loadLocalizationCorpus("localization-02-fixture-portfolio");
     const inSample = await loadLocalizationCorpus("localization-00-miniflux-run7-insample");
-    expect(miniflux.manifest.items.length).toBe(25);
+    expect(miniflux.manifest.items.length).toBe(24);
     expect(fixture.manifest.items.length).toBe(15);
     expect(inSample.manifest.purpose).toBe("in-sample");
     // #4497, #4513 and #4519 fixed run-7 issues; #4453 is a walkthrough reference set.

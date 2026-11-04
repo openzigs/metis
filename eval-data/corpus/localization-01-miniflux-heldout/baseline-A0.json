@@ -3,7 +3,7 @@
   "corpus": {
     "id": "localization-01-miniflux-heldout",
     "purpose": "held-out",
-    "items": 25,
+    "items": 24,
     "repos": [
       {
         "name": "miniflux",
@@ -47,7 +47,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 5,
             "costUsd": 0,
-            "seconds": 0.06577520799999996
+            "seconds": 0.10395824999999605
           },
           {
             "recallAt5": 1,
@@ -58,7 +58,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 5,
             "costUsd": 0,
-            "seconds": 0.02371025000000009
+            "seconds": 0.020512457999997423
           },
           {
             "recallAt5": 1,
@@ -69,42 +69,42 @@
             "verdictCorrect": null,
             "editCandidateCount": 5,
             "costUsd": 0,
-            "seconds": 0.02636937499999999
+            "seconds": 0.019099291999998966
           }
         ],
         "MF-4495": [
           {
             "recallAt5": 1,
             "recallAt10": 1,
-            "editPrecision": 0.125,
-            "reciprocalRank": 1,
+            "editPrecision": 0.16666666666666666,
+            "reciprocalRank": 0.3333333333333333,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 8,
+            "editCandidateCount": 6,
             "costUsd": 0,
-            "seconds": 0.022714666999999963
+            "seconds": 0.05476075000000128
           },
           {
             "recallAt5": 1,
             "recallAt10": 1,
-            "editPrecision": 0.125,
-            "reciprocalRank": 1,
+            "editPrecision": 0.16666666666666666,
+            "reciprocalRank": 0.3333333333333333,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 8,
+            "editCandidateCount": 6,
             "costUsd": 0,
-            "seconds": 0.046708208000000015
+            "seconds": 0.017136249999995926
           },
           {
             "recallAt5": 1,
             "recallAt10": 1,
-            "editPrecision": 0.125,
-            "reciprocalRank": 1,
+            "editPrecision": 0.16666666666666666,
+            "reciprocalRank": 0.3333333333333333,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 8,
+            "editCandidateCount": 6,
             "costUsd": 0,
-            "seconds": 0.023028708999999935
+            "seconds": 0.017219666999997572
           }
         ],
         "MF-4500": [
@@ -115,9 +115,9 @@
             "reciprocalRank": 0.02631578947368421,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 6,
+            "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.025597958000000063
+            "seconds": 0.07128870800000732
           },
           {
             "recallAt5": 0,
@@ -126,9 +126,9 @@
             "reciprocalRank": 0.02631578947368421,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 6,
+            "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.028060541999999942
+            "seconds": 0.020584499999997206
           },
           {
             "recallAt5": 0,
@@ -137,9 +137,9 @@
             "reciprocalRank": 0.02631578947368421,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 6,
+            "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.027488125000000082
+            "seconds": 0.020788834000006317
           }
         ],
         "MF-4510": [
@@ -152,7 +152,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 6,
             "costUsd": 0,
-            "seconds": 0.026102916999999934
+            "seconds": 0.0640122080000001
           },
           {
             "recallAt5": 0.5,
@@ -163,7 +163,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 6,
             "costUsd": 0,
-            "seconds": 0.023959292000000004
+            "seconds": 0.019036499999987428
           },
           {
             "recallAt5": 0.5,
@@ -174,7 +174,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 6,
             "costUsd": 0,
-            "seconds": 0.04093804200000022
+            "seconds": 0.01911095899999782
           }
         ],
         "MF-4516": [
@@ -187,7 +187,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.024745666000000027
+            "seconds": 0.06170929199999955
           },
           {
             "recallAt5": 0.6,
@@ -198,7 +198,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.024326500000000122
+            "seconds": 0.01849833299999591
           },
           {
             "recallAt5": 0.6,
@@ -209,7 +209,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.038094041000000065
+            "seconds": 0.01905808399998932
           }
         ],
         "MF-4520": [
@@ -222,7 +222,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.024653749999999947
+            "seconds": 0.06521575000000303
           },
           {
             "recallAt5": 1,
@@ -233,7 +233,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.0242181250000001
+            "seconds": 0.018722833000007086
           },
           {
             "recallAt5": 1,
@@ -244,7 +244,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.06823754099999997
+            "seconds": 0.018485874999998486
           }
         ],
         "MF-4525": [
@@ -257,7 +257,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 6,
             "costUsd": 0,
-            "seconds": 0.025296541999999932
+            "seconds": 0.0644141660000023
           },
           {
             "recallAt5": 0.5,
@@ -268,7 +268,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 6,
             "costUsd": 0,
-            "seconds": 0.025243375000000016
+            "seconds": 0.021640499999994064
           },
           {
             "recallAt5": 0.5,
@@ -279,7 +279,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 6,
             "costUsd": 0,
-            "seconds": 0.029398832999999968
+            "seconds": 0.02035112500000105
           }
         ],
         "MF-4526": [
@@ -292,7 +292,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.024713583000000084
+            "seconds": 0.06295341599998937
           },
           {
             "recallAt5": 0.3333333333333333,
@@ -303,7 +303,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.024230041999999914
+            "seconds": 0.019309166999999433
           },
           {
             "recallAt5": 0.3333333333333333,
@@ -314,7 +314,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.026934208000000126
+            "seconds": 0.019197707999992417
           }
         ],
         "MF-4554": [
@@ -327,7 +327,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.022878959000000008
+            "seconds": 0.062248374999995575
           },
           {
             "recallAt5": 0,
@@ -338,7 +338,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.023602499999999964
+            "seconds": 0.019149749999996857
           },
           {
             "recallAt5": 0,
@@ -349,7 +349,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.028835833999999977
+            "seconds": 0.018599207999999635
           }
         ],
         "MF-4556": [
@@ -362,7 +362,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 6,
             "costUsd": 0,
-            "seconds": 0.027158667000000036
+            "seconds": 0.07674608399999852
           },
           {
             "recallAt5": 1,
@@ -373,7 +373,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 6,
             "costUsd": 0,
-            "seconds": 0.024178499999999985
+            "seconds": 0.018856749999991734
           },
           {
             "recallAt5": 1,
@@ -384,7 +384,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 6,
             "costUsd": 0,
-            "seconds": 0.030199415999999927
+            "seconds": 0.01862575000000652
           }
         ],
         "MF-4557": [
@@ -397,7 +397,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.02781154099999992
+            "seconds": 0.07365487500000745
           },
           {
             "recallAt5": 0,
@@ -408,7 +408,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.025068416999999954
+            "seconds": 0.019472999999998138
           },
           {
             "recallAt5": 0,
@@ -419,42 +419,42 @@
             "verdictCorrect": null,
             "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.026524833999999827
+            "seconds": 0.019173749999987194
           }
         ],
         "MF-4563": [
           {
             "recallAt5": 0.5,
             "recallAt10": 0.5,
-            "editPrecision": 0.1111111111111111,
+            "editPrecision": 0.125,
             "reciprocalRank": 0.5,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 9,
+            "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.03249558400000001
+            "seconds": 0.06816666699999768
           },
           {
             "recallAt5": 0.5,
             "recallAt10": 0.5,
-            "editPrecision": 0.1111111111111111,
+            "editPrecision": 0.125,
             "reciprocalRank": 0.5,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 9,
+            "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.02449233400000003
+            "seconds": 0.017983082999999168
           },
           {
             "recallAt5": 0.5,
             "recallAt10": 0.5,
-            "editPrecision": 0.1111111111111111,
+            "editPrecision": 0.125,
             "reciprocalRank": 0.5,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 9,
+            "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.024325374999999896
+            "seconds": 0.01860616700000537
           }
         ],
         "MF-4566": [
@@ -467,7 +467,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 6,
             "costUsd": 0,
-            "seconds": 0.026964292
+            "seconds": 0.0553398329999909
           },
           {
             "recallAt5": 0,
@@ -478,7 +478,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 6,
             "costUsd": 0,
-            "seconds": 0.022652291999999987
+            "seconds": 0.017447541999994428
           },
           {
             "recallAt5": 0,
@@ -489,147 +489,112 @@
             "verdictCorrect": null,
             "editCandidateCount": 6,
             "costUsd": 0,
-            "seconds": 0.023792125000000396
+            "seconds": 0.017751417000006767
           }
         ],
         "MF-4567": [
           {
             "recallAt5": 0.5,
-            "recallAt10": 1,
-            "editPrecision": 0.25,
-            "reciprocalRank": 0.2,
+            "recallAt10": 0.5,
+            "editPrecision": 0.1111111111111111,
+            "reciprocalRank": 0.3333333333333333,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 8,
+            "editCandidateCount": 9,
             "costUsd": 0,
-            "seconds": 0.025385958000000073
+            "seconds": 0.05484608300001128
           },
           {
             "recallAt5": 0.5,
-            "recallAt10": 1,
-            "editPrecision": 0.25,
-            "reciprocalRank": 0.2,
+            "recallAt10": 0.5,
+            "editPrecision": 0.1111111111111111,
+            "reciprocalRank": 0.3333333333333333,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 8,
+            "editCandidateCount": 9,
             "costUsd": 0,
-            "seconds": 0.022642291000000113
+            "seconds": 0.01751333299999533
           },
           {
             "recallAt5": 0.5,
-            "recallAt10": 1,
-            "editPrecision": 0.25,
-            "reciprocalRank": 0.2,
+            "recallAt10": 0.5,
+            "editPrecision": 0.1111111111111111,
+            "reciprocalRank": 0.3333333333333333,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 8,
+            "editCandidateCount": 9,
             "costUsd": 0,
-            "seconds": 0.02447745900000018
-          }
-        ],
-        "MF-4571": [
-          {
-            "recallAt5": 0,
-            "recallAt10": 1,
-            "editPrecision": 0,
-            "reciprocalRank": 0.1111111111111111,
-            "graphResolution": null,
-            "verdictCorrect": null,
-            "editCandidateCount": 7,
-            "costUsd": 0,
-            "seconds": 0.02631737499999997
-          },
-          {
-            "recallAt5": 0,
-            "recallAt10": 1,
-            "editPrecision": 0,
-            "reciprocalRank": 0.1111111111111111,
-            "graphResolution": null,
-            "verdictCorrect": null,
-            "editCandidateCount": 7,
-            "costUsd": 0,
-            "seconds": 0.02312783300000001
-          },
-          {
-            "recallAt5": 0,
-            "recallAt10": 1,
-            "editPrecision": 0,
-            "reciprocalRank": 0.1111111111111111,
-            "graphResolution": null,
-            "verdictCorrect": null,
-            "editCandidateCount": 7,
-            "costUsd": 0,
-            "seconds": 0.0253659590000002
+            "seconds": 0.01759795800001302
           }
         ],
         "MF-4572": [
           {
             "recallAt5": 0.4,
-            "recallAt10": 1,
-            "editPrecision": 0.5,
+            "recallAt10": 0.8,
+            "editPrecision": 0.2857142857142857,
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 8,
+            "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.03847437500000001
+            "seconds": 0.06301875000000291
           },
           {
             "recallAt5": 0.4,
-            "recallAt10": 1,
-            "editPrecision": 0.5,
+            "recallAt10": 0.8,
+            "editPrecision": 0.2857142857142857,
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 8,
+            "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.022454165999999987
+            "seconds": 0.01930241699999897
           },
           {
             "recallAt5": 0.4,
-            "recallAt10": 1,
-            "editPrecision": 0.5,
+            "recallAt10": 0.8,
+            "editPrecision": 0.2857142857142857,
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 8,
+            "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.03227320800000007
+            "seconds": 0.022259040999997523
           }
         ],
         "MF-4575": [
           {
             "recallAt5": 1,
             "recallAt10": 1,
-            "editPrecision": 0.125,
+            "editPrecision": 0.1,
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 8,
+            "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.027288708000000043
+            "seconds": 0.05425262499999371
           },
           {
             "recallAt5": 1,
             "recallAt10": 1,
-            "editPrecision": 0.125,
+            "editPrecision": 0.1,
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 8,
+            "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.02558379200000013
+            "seconds": 0.016919957999998587
           },
           {
             "recallAt5": 1,
             "recallAt10": 1,
-            "editPrecision": 0.125,
+            "editPrecision": 0.1,
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 8,
+            "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.029296582999999828
+            "seconds": 0.017996041999998852
           }
         ],
         "MF-4579": [
@@ -642,7 +607,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.0238895839999999
+            "seconds": 0.05619854099999066
           },
           {
             "recallAt5": 1,
@@ -653,7 +618,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.02895612499999993
+            "seconds": 0.017229916999989655
           },
           {
             "recallAt5": 1,
@@ -664,7 +629,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.032986167000000025
+            "seconds": 0.017374292000007698
           }
         ],
         "MF-4592": [
@@ -677,7 +642,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.025817958999999974
+            "seconds": 0.06240137500000128
           },
           {
             "recallAt5": 0.16666666666666666,
@@ -688,7 +653,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.024458249999999907
+            "seconds": 0.018814540999999737
           },
           {
             "recallAt5": 0.16666666666666666,
@@ -699,7 +664,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.07308516700000019
+            "seconds": 0.018853540999989492
           }
         ],
         "MF-4594": [
@@ -712,7 +677,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.024154957999999966
+            "seconds": 0.061581833000003826
           },
           {
             "recallAt5": 0.25,
@@ -723,7 +688,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.02513020799999981
+            "seconds": 0.019313583000010112
           },
           {
             "recallAt5": 0.25,
@@ -734,7 +699,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 7,
             "costUsd": 0,
-            "seconds": 0.0431752919999999
+            "seconds": 0.018761957999988227
           }
         ],
         "MF-4599": [
@@ -742,69 +707,69 @@
             "recallAt5": 0.5,
             "recallAt10": 1,
             "editPrecision": 0.125,
-            "reciprocalRank": 0.25,
+            "reciprocalRank": 0.2,
             "graphResolution": null,
             "verdictCorrect": null,
             "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.024369083000000045
+            "seconds": 0.05856720800000767
           },
           {
             "recallAt5": 0.5,
             "recallAt10": 1,
             "editPrecision": 0.125,
-            "reciprocalRank": 0.25,
+            "reciprocalRank": 0.2,
             "graphResolution": null,
             "verdictCorrect": null,
             "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.024557000000000016
+            "seconds": 0.01953941599999962
           },
           {
             "recallAt5": 0.5,
             "recallAt10": 1,
             "editPrecision": 0.125,
-            "reciprocalRank": 0.25,
+            "reciprocalRank": 0.2,
             "graphResolution": null,
             "verdictCorrect": null,
             "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.03211145799999986
+            "seconds": 0.019097083000000566
           }
         ],
         "MF-4605": [
           {
             "recallAt5": 0.3333333333333333,
             "recallAt10": 0.3333333333333333,
-            "editPrecision": 0.1111111111111111,
-            "reciprocalRank": 0.2,
+            "editPrecision": 0.125,
+            "reciprocalRank": 0.25,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 9,
+            "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.023310333999999898
+            "seconds": 0.05754387500000303
           },
           {
             "recallAt5": 0.3333333333333333,
             "recallAt10": 0.3333333333333333,
-            "editPrecision": 0.1111111111111111,
-            "reciprocalRank": 0.2,
+            "editPrecision": 0.125,
+            "reciprocalRank": 0.25,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 9,
+            "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.024435500000000047
+            "seconds": 0.01794000000000233
           },
           {
             "recallAt5": 0.3333333333333333,
             "recallAt10": 0.3333333333333333,
-            "editPrecision": 0.1111111111111111,
-            "reciprocalRank": 0.2,
+            "editPrecision": 0.125,
+            "reciprocalRank": 0.25,
             "graphResolution": null,
             "verdictCorrect": null,
-            "editCandidateCount": 9,
+            "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.03347787500000004
+            "seconds": 0.018165500000002794
           }
         ],
         "MF-4606": [
@@ -817,7 +782,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.024253333999999994
+            "seconds": 0.05787266700000328
           },
           {
             "recallAt5": 0.5,
@@ -828,7 +793,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.02507116700000006
+            "seconds": 0.01867041700000118
           },
           {
             "recallAt5": 0.5,
@@ -839,7 +804,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 8,
             "costUsd": 0,
-            "seconds": 0.027530833000000258
+            "seconds": 0.01873391699999047
           }
         ],
         "MF-4608": [
@@ -852,7 +817,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 5,
             "costUsd": 0,
-            "seconds": 0.02299916600000006
+            "seconds": 0.06270375000000059
           },
           {
             "recallAt5": 1,
@@ -863,7 +828,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 5,
             "costUsd": 0,
-            "seconds": 0.030783500000000005
+            "seconds": 0.019548582999996143
           },
           {
             "recallAt5": 1,
@@ -874,7 +839,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 5,
             "costUsd": 0,
-            "seconds": 0.027786916999999904
+            "seconds": 0.01898337499999616
           }
         ],
         "MF-4610": [
@@ -887,7 +852,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 9,
             "costUsd": 0,
-            "seconds": 0.021291167000000086
+            "seconds": 0.0586560829999944
           },
           {
             "recallAt5": 0.5,
@@ -898,7 +863,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 9,
             "costUsd": 0,
-            "seconds": 0.024273707999999942
+            "seconds": 0.018369375000009312
           },
           {
             "recallAt5": 0.5,
@@ -909,7 +874,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 9,
             "costUsd": 0,
-            "seconds": 0.025184707999999775
+            "seconds": 0.017643166999987442
           }
         ]
       },
@@ -927,22 +892,22 @@
           "verdictAccuracy": null,
           "editCandidateCount": 5,
           "costUsd": 0,
-          "seconds": 0.03861827766666668
+          "seconds": 0.04785666666666414
         },
         {
           "id": "MF-4495",
           "runs": 3,
           "recallAt5": 1,
           "recallAt10": 1,
-          "editPrecision": 0.125,
-          "reciprocalRank": 1,
+          "editPrecision": 0.16666666666666666,
+          "reciprocalRank": 0.3333333333333333,
           "graphResolution": null,
           "hitAt5": 1,
           "hitAt10": 1,
           "verdictAccuracy": null,
-          "editCandidateCount": 8,
+          "editCandidateCount": 6,
           "costUsd": 0,
-          "seconds": 0.03081719466666664
+          "seconds": 0.02970555566666493
         },
         {
           "id": "MF-4500",
@@ -955,9 +920,9 @@
           "hitAt5": 0,
           "hitAt10": 0,
           "verdictAccuracy": null,
-          "editCandidateCount": 6,
+          "editCandidateCount": 7,
           "costUsd": 0,
-          "seconds": 0.027048875000000028
+          "seconds": 0.03755401400000361
         },
         {
           "id": "MF-4510",
@@ -972,7 +937,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 6,
           "costUsd": 0,
-          "seconds": 0.030333417000000057
+          "seconds": 0.03405322233332845
         },
         {
           "id": "MF-4516",
@@ -987,7 +952,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 8,
           "costUsd": 0,
-          "seconds": 0.029055402333333407
+          "seconds": 0.03308856966666159
         },
         {
           "id": "MF-4520",
@@ -1002,7 +967,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 8,
           "costUsd": 0,
-          "seconds": 0.03903647200000001
+          "seconds": 0.034141486000002864
         },
         {
           "id": "MF-4525",
@@ -1017,7 +982,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 6,
           "costUsd": 0,
-          "seconds": 0.026646249999999972
+          "seconds": 0.03546859699999914
         },
         {
           "id": "MF-4526",
@@ -1032,7 +997,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 7,
           "costUsd": 0,
-          "seconds": 0.025292611000000038
+          "seconds": 0.03382009699999374
         },
         {
           "id": "MF-4554",
@@ -1047,7 +1012,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 7,
           "costUsd": 0,
-          "seconds": 0.02510576433333332
+          "seconds": 0.03333244433333069
         },
         {
           "id": "MF-4556",
@@ -1062,7 +1027,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 6,
           "costUsd": 0,
-          "seconds": 0.02717886099999998
+          "seconds": 0.03807619466666559
         },
         {
           "id": "MF-4557",
@@ -1077,22 +1042,22 @@
           "verdictAccuracy": null,
           "editCandidateCount": 8,
           "costUsd": 0,
-          "seconds": 0.026468263999999898
+          "seconds": 0.03743387499999759
         },
         {
           "id": "MF-4563",
           "runs": 3,
           "recallAt5": 0.5,
           "recallAt10": 0.5,
-          "editPrecision": 0.1111111111111111,
+          "editPrecision": 0.125,
           "reciprocalRank": 0.5,
           "graphResolution": null,
           "hitAt5": 1,
           "hitAt10": 1,
           "verdictAccuracy": null,
-          "editCandidateCount": 9,
+          "editCandidateCount": 8,
           "costUsd": 0,
-          "seconds": 0.02710443099999998
+          "seconds": 0.034918639000000744
         },
         {
           "id": "MF-4566",
@@ -1107,67 +1072,52 @@
           "verdictAccuracy": null,
           "editCandidateCount": 6,
           "costUsd": 0,
-          "seconds": 0.024469569666666798
+          "seconds": 0.0301795973333307
         },
         {
           "id": "MF-4567",
           "runs": 3,
           "recallAt5": 0.5,
-          "recallAt10": 1,
-          "editPrecision": 0.25,
-          "reciprocalRank": 0.20000000000000004,
+          "recallAt10": 0.5,
+          "editPrecision": 0.1111111111111111,
+          "reciprocalRank": 0.3333333333333333,
           "graphResolution": null,
           "hitAt5": 1,
           "hitAt10": 1,
           "verdictAccuracy": null,
-          "editCandidateCount": 8,
+          "editCandidateCount": 9,
           "costUsd": 0,
-          "seconds": 0.024168569333333455
-        },
-        {
-          "id": "MF-4571",
-          "runs": 3,
-          "recallAt5": 0,
-          "recallAt10": 1,
-          "editPrecision": 0,
-          "reciprocalRank": 0.1111111111111111,
-          "graphResolution": null,
-          "hitAt5": 0,
-          "hitAt10": 1,
-          "verdictAccuracy": null,
-          "editCandidateCount": 7,
-          "costUsd": 0,
-          "seconds": 0.024937055666666725
+          "seconds": 0.029985791333339878
         },
         {
           "id": "MF-4572",
           "runs": 3,
           "recallAt5": 0.4000000000000001,
-          "recallAt10": 1,
-          "editPrecision": 0.5,
+          "recallAt10": 0.8000000000000002,
+          "editPrecision": 0.2857142857142857,
           "reciprocalRank": 1,
           "graphResolution": null,
           "hitAt5": 1,
           "hitAt10": 1,
           "verdictAccuracy": null,
-          "editCandidateCount": 8,
+          "editCandidateCount": 7,
           "costUsd": 0,
-          "seconds": 0.03106724966666669
+          "seconds": 0.03486006933333314
         },
         {
           "id": "MF-4575",
           "runs": 3,
           "recallAt5": 1,
           "recallAt10": 1,
-          "editPrecision": 0.125,
+          "editPrecision": 0.10000000000000002,
           "reciprocalRank": 1,
           "graphResolution": null,
           "hitAt5": 1,
           "hitAt10": 1,
           "verdictAccuracy": null,
-          "editCandidateCount": 8,
+          "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.027389694333333336
+          "seconds": 0.02972287499999705
         },
         {
           "id": "MF-4579",
@@ -1182,7 +1132,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 7,
           "costUsd": 0,
-          "seconds": 0.02861062533333329
+          "seconds": 0.030267583333329337
         },
         {
           "id": "MF-4592",
@@ -1197,7 +1147,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 7,
           "costUsd": 0,
-          "seconds": 0.041120458666666686
+          "seconds": 0.0333564856666635
         },
         {
           "id": "MF-4594",
@@ -1212,13 +1162,28 @@
           "verdictAccuracy": null,
           "editCandidateCount": 7,
           "costUsd": 0,
-          "seconds": 0.03082015266666656
+          "seconds": 0.033219124666667384
         },
         {
           "id": "MF-4599",
           "runs": 3,
           "recallAt5": 0.5,
           "recallAt10": 1,
+          "editPrecision": 0.125,
+          "reciprocalRank": 0.20000000000000004,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 8,
+          "costUsd": 0,
+          "seconds": 0.03240123566666928
+        },
+        {
+          "id": "MF-4605",
+          "runs": 3,
+          "recallAt5": 0.3333333333333333,
+          "recallAt10": 0.3333333333333333,
           "editPrecision": 0.125,
           "reciprocalRank": 0.25,
           "graphResolution": null,
@@ -1227,22 +1192,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 8,
           "costUsd": 0,
-          "seconds": 0.02701251366666664
-        },
-        {
-          "id": "MF-4605",
-          "runs": 3,
-          "recallAt5": 0.3333333333333333,
-          "recallAt10": 0.3333333333333333,
-          "editPrecision": 0.1111111111111111,
-          "reciprocalRank": 0.20000000000000004,
-          "graphResolution": null,
-          "hitAt5": 1,
-          "hitAt10": 1,
-          "verdictAccuracy": null,
-          "editCandidateCount": 9,
-          "costUsd": 0,
-          "seconds": 0.02707456966666666
+          "seconds": 0.031216458333336052
         },
         {
           "id": "MF-4606",
@@ -1257,7 +1207,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 8,
           "costUsd": 0,
-          "seconds": 0.02561844466666677
+          "seconds": 0.03175900033333164
         },
         {
           "id": "MF-4608",
@@ -1272,7 +1222,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 5,
           "costUsd": 0,
-          "seconds": 0.027189860999999992
+          "seconds": 0.03374523599999763
         },
         {
           "id": "MF-4610",
@@ -1287,28 +1237,28 @@
           "verdictAccuracy": null,
           "editCandidateCount": 9,
           "costUsd": 0,
-          "seconds": 0.02358319433333327
+          "seconds": 0.031556208333330386
         }
       ],
       "aggregate": {
-        "items": 25,
-        "recallAt5": 0.5033333333333333,
-        "recallAt10": 0.6486666666666667,
-        "editPrecision": 0.17219047619047617,
-        "mrr": 0.5516523532286136,
+        "items": 24,
+        "recallAt5": 0.5243055555555555,
+        "recallAt10": 0.6048611111111112,
+        "editPrecision": 0.16650132275132276,
+        "mrr": 0.5477860160946205,
         "graphResolution": null,
         "verdictAccuracy": null,
         "itemsWithNoEditCandidate": 0,
-        "meanEditCandidates": 7.24,
+        "meanEditCandidates": 7.208333333333333,
         "costUsdPerRequirement": 0,
-        "secondsPerRequirement": 0.028630711146666675,
+        "secondsPerRequirement": 0.03382162611110997,
         "totalCostUsd": 0
       },
       "intervals": {
-        "recallAt5": [0.3626499999999999, 0.6466666666666666],
-        "recallAt10": [0.5033333333333334, 0.7853333333333332],
-        "editPrecision": [0.12323531746031748, 0.22797499999999993],
-        "reciprocalRank": [0.40103296054601917, 0.706197201336675]
+        "recallAt5": [0.3840277777777778, 0.6646180555555551],
+        "recallAt10": [0.4611111111111112, 0.7416666666666667],
+        "editPrecision": [0.12298197751322752, 0.2155758101851852],
+        "reciprocalRank": [0.39674153692013053, 0.698611111111111]
       },
       "tableGuard": {
         "measured": false,
@@ -1317,6 +1267,6 @@
     }
   ],
   "comparisons": [],
-  "detectableGap": "At 25 items and a hit rate near 0.5 the standard error is about 10.0 points per arm, so a gap needs roughly 20 to 28 points to be significant. A smaller difference is reported as \"no measurable difference\", not as a win.",
-  "generatedAt": "2026-11-04T11:26:19.746Z"
+  "detectableGap": "At 24 items and a hit rate near 0.5 the standard error is about 10.2 points per arm, so a gap needs roughly 20 to 28 points to be significant. A smaller difference is reported as \"no measurable difference\", not as a win.",
+  "generatedAt": "2026-11-04T15:23:56.226Z"
 }
