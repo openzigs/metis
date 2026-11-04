@@ -112,6 +112,9 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.products.documents(id) });
       qc.invalidateQueries({ queryKey: queryKeys.products.analyses(id) });
+      // #1727 — analysis also detects the integration edges and resources, which
+      // the product query carries; the edges panel read stale until a reload.
+      qc.invalidateQueries({ queryKey: queryKeys.products.detail(id) });
     },
   });
 
@@ -128,6 +131,11 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
   }
 
   const p = product.data;
+  // #1727 — a repo already in the product is not offered again.
+  const attachedRepoIds = new Set((p.repos ?? []).map((r) => r.repoConnectionId));
+  const repoOptions = (repoConnections.data ?? []).filter((c) => !attachedRepoIds.has(c.id));
+  const selectedRepo = repoOptions.find((c) => c.id === repoConnectionId);
+  const reposWithoutClone = analyze.data?.reposWithoutClone ?? [];
 
   // Group documents by type
   const docs = documents.data ?? [];
@@ -201,10 +209,14 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
                     {repoConnections.isLoading && (
                       <p className="p-2 text-sm text-muted-foreground">Loading\u2026</p>
                     )}
-                    {repoConnections.data && repoConnections.data.length === 0 && (
-                      <p className="p-2 text-sm text-muted-foreground">No connections found.</p>
+                    {repoConnections.data && repoOptions.length === 0 && (
+                      <p className="p-2 text-sm text-muted-foreground">
+                        {repoConnections.data.length > 0
+                          ? "Every matching connection is already in this product."
+                          : "No connections found."}
+                      </p>
                     )}
-                    {repoConnections.data?.map((conn: RepoConnectionOption) => (
+                    {repoOptions.map((conn: RepoConnectionOption) => (
                       <button
                         type="button"
                         key={conn.id}
@@ -220,12 +232,23 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
                           {conn.ownerOrOrg}/{conn.repoName}
                         </span>
                         <span className="text-muted-foreground ml-2">({conn.label})</span>
+                        {conn.projectName && (
+                          <span className="block text-xs text-muted-foreground">
+                            {conn.workspaceName
+                              ? `${conn.workspaceName} / ${conn.projectName}`
+                              : conn.projectName}
+                          </span>
+                        )}
                       </button>
                     ))}
                   </div>
-                  {repoConnectionId && (
+                  {selectedRepo && (
                     <p className="text-xs text-muted-foreground">
-                      Selected: <code>{repoConnectionId}</code>
+                      Selected:{" "}
+                      <code>
+                        {selectedRepo.ownerOrOrg}/{selectedRepo.repoName}
+                      </code>
+                      {selectedRepo.projectName && ` in ${selectedRepo.projectName}`}
                     </p>
                   )}
                 </div>
@@ -320,9 +343,28 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
           </div>
         </div>
 
+        {/* #1727 — the button also runs edge detection; say so. */}
+        <p className="text-sm text-muted-foreground">
+          Generating documentation also detects the integration edges between these repositories.
+        </p>
+
         {analyze.isSuccess && (
           <div className="rounded-md border border-success/40 bg-success-muted p-3">
             <p className="text-sm text-success">Documentation generated successfully.</p>
+          </div>
+        )}
+
+        {reposWithoutClone.length > 0 && (
+          <div
+            role="status"
+            className="rounded-md border border-warning/40 bg-warning-muted p-3"
+            data-testid="repos-without-clone"
+          >
+            <p className="text-sm">
+              Not analysed, with no clone yet: {reposWithoutClone.map((r) => r.name).join(", ")}.
+              Sync {reposWithoutClone.length === 1 ? "it" : "them"} on the project&apos;s
+              Connections page, then generate again.
+            </p>
           </div>
         )}
 

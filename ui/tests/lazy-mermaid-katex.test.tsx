@@ -77,7 +77,12 @@ describe("they load on demand (#272)", () => {
     render(<MarkdownPreviewer content={"```mermaid\ngraph TD; A-->B\n```"} showToc={false} />);
     await waitFor(() => expect(screen.getByTestId("diagram")).toBeInTheDocument());
     expect(mermaidApi.initialize).toHaveBeenCalledWith(
-      expect.objectContaining({ securityLevel: "strict", htmlLabels: false }),
+      expect.objectContaining({
+        securityLevel: "strict",
+        htmlLabels: false,
+        // #1727 — wide enough that a repo name is not cut mid-word.
+        flowchart: expect.objectContaining({ wrappingWidth: 400 }),
+      }),
     );
     // Still one evaluation: the loader shares a single import.
     expect(loaded.mermaid).toBe(1);

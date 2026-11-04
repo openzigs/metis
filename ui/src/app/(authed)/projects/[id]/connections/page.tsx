@@ -369,6 +369,9 @@ export default function ConnectionsPage() {
         apiBaseUrl: repoApiBase.trim() || undefined,
         defaultBranch: repoRef.trim() || undefined,
         secretRef: repoSecretRef.trim() || undefined,
+        // #1727 — every repository syncs on creation, not only the first: a
+        // connector left `pending` has no clone, and product analysis skips it.
+        autoIngest: true,
       }),
     onSuccess: () => {
       setRepoLabel("");

@@ -189,6 +189,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(detected[0].resourceId).toBe(resources[0]?.id);
       // The detected edge and the stored legacy one, both between readable repos.
       expect(res.body.data.edgesDetected).toBe(2);
+      // #1727 — the repo with no clone is named, not skipped silently.
+      expect(res.body.data.reposWithoutClone).toEqual([
+        { repoConnectionId: rc.legacy, name: "org/legacy-1643" },
+      ]);
       const analysis = await db.productAnalysis.findUnique({
         where: { id: res.body.data.analysisId },
       });

@@ -3337,6 +3337,20 @@ other products' repositories; the response's `crossProductReposSkipped` says how
 left out. Repositories you cannot access, and products in other workspaces, are never
 read, and an edge to such a repository is not shown to you.
 
+**After a run [#1727].** The **Integration edges** section updates as soon as the run
+finishes, without a reload. Detection reads each repository's clone, so a repository that
+has never been synced cannot be analysed: the page names it (*Not analysed, with no clone
+yet: …*) instead of skipping it silently. Sync it on its project's **Connections** page and
+run **Generate Documentation** again. A repository added on the **Connections** page now
+starts syncing when it is created, not only a project's first one. When two repositories
+export a type of the same name from a types folder, the edge points at the repository
+named for it: *billing* depends on *orders* for `Order`. The Data Flow diagram draws calls
+and messages only; a note under it counts the `imports` links it leaves out.
+
+The **Add Repo** picker leaves out the repositories already in the product, and gives each
+row its project (and workspace), so copies of one repository in several projects can be
+told apart.
+
 With edit rights on the product (`project.update`) you can also change them:
 
 - **Declare edge** records a coupling detection cannot see, such as a shared identity

@@ -164,6 +164,15 @@ export function productsRouter(): Router {
           { repoName: { contains: search } },
           { ownerOrOrg: { contains: search } },
         ];
+        // #1727 — picking a row fills the field with `owner/name`, which no
+        // single column holds: match it as the two parts.
+        const slash = search.indexOf("/");
+        if (slash >= 0) {
+          (where.OR as unknown[]).push({
+            ownerOrOrg: { contains: search.slice(0, slash) },
+            repoName: { contains: search.slice(slash + 1) },
+          });
+        }
       }
       // Issue #677 — restrict to the caller's accessible projects (admin: all).
       const projectFilter = await repoConnectionProjectFilter(req.user!);
@@ -183,9 +192,18 @@ export function productsRouter(): Router {
           defaultBranch: true,
           status: true,
           projectId: true,
+          // #1727 — the picker lists every readable project's connectors; the
+          // project and workspace tell same-named repos apart.
+          project: { select: { name: true, workspace: { select: { name: true } } } },
         },
       });
-      res.json({ data: connections });
+      res.json({
+        data: connections.map(({ project, ...conn }) => ({
+          ...conn,
+          projectName: project?.name ?? null,
+          workspaceName: project?.workspace?.name ?? null,
+        })),
+      });
     },
   );
 
@@ -878,6 +896,19 @@ export function productsRouter(): Router {
             edgesDetected: edgeInfos.length,
             crossProductEdges,
             crossProductReposSkipped: detection?.crossProductReposSkipped ?? 0,
+            // #1727 — repos with no clone (a connector never synced) are not
+            // crawled; say which, rather than skip them silently.
+            reposWithoutClone: (detection?.uncrawledRepoIds ?? []).map((repoId) => {
+              const repo = repoInfos.find((r) => r.repoConnectionId === repoId);
+              return {
+                repoConnectionId: repoId,
+                name: !repo
+                  ? repoId
+                  : repo.ownerOrOrg
+                    ? `${repo.ownerOrOrg}/${repo.repoName}`
+                    : repo.repoName,
+              };
+            }),
             inaccessibleRepoCount: hidden.length,
             contractDocs: apiContractResults.map((r, i) => ({
               repoId: repoInfos[i]?.repoConnectionId ?? null,

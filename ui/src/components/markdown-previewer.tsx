@@ -596,7 +596,9 @@ function previewerMermaidConfig(isDark: boolean): MermaidConfig {
     // empties foreignObject HTML — leaving blank flowchart nodes. SVG text
     // survives sanitization, so labels render correctly.
     htmlLabels: false,
-    flowchart: { htmlLabels: false },
+    // #1727 — a node label wraps at this width, and a word wider than it is cut
+    // mid-word ("metis-fixture-or / ders"); mermaid's default is 200.
+    flowchart: { htmlLabels: false, wrappingWidth: 400 },
     // Raise parser limit — large ER diagrams (50 tables) can exceed the 50k default.
     maxTextSize: 500000,
     themeVariables,

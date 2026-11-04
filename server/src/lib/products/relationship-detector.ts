@@ -270,6 +270,24 @@ function detectApiSpecReferences(repos: RepoCrawlData[]): DetectedEdge[] {
   return edges;
 }
 
+/** Repo-name words that mark a library of shared types. */
+const SHARED_REPO_WORDS = new Set(["shared", "common", "types"]);
+
+/**
+ * #1727 — does a repo's name say it owns `typeName`: one of its words is the
+ * type's name (or that name's plural), or marks a shared library?
+ */
+function repoOwnsType(repoName: string, typeName: string): boolean {
+  const type = typeName.toLowerCase();
+  return repoName
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .some(
+      (word) =>
+        SHARED_REPO_WORDS.has(word) || word === type || word === `${type}s` || word === `${type}es`,
+    );
+}
+
 /**
  * Detect shared type names across repos.
  * Confidence: 0.80 (same-named types exported in multiple repos)
@@ -278,13 +296,16 @@ function detectSharedTypes(repos: RepoCrawlData[]): DetectedEdge[] {
   const edges: DetectedEdge[] = [];
 
   // Build a map of exported type names -> repos that export them
-  const typeExports = new Map<string, Array<{ repoId: string; type: CrawlTypeDecl }>>();
+  const typeExports = new Map<
+    string,
+    Array<{ repoId: string; repoName: string; type: CrawlTypeDecl }>
+  >();
 
   for (const repo of repos) {
     for (const typeDecl of repo.crawlResult.types) {
       if (!typeDecl.exported) continue;
       const existing = typeExports.get(typeDecl.name) ?? [];
-      existing.push({ repoId: repo.repoConnectionId, type: typeDecl });
+      existing.push({ repoId: repo.repoConnectionId, repoName: repo.repoName, type: typeDecl });
       typeExports.set(typeDecl.name, existing);
     }
   }
@@ -293,13 +314,20 @@ function detectSharedTypes(repos: RepoCrawlData[]): DetectedEdge[] {
   for (const [typeName, occurrences] of typeExports) {
     if (occurrences.length < 2) continue;
 
-    // The repo with a "shared-lib" or "types" path is likely the source
+    // The repo with a "shared-lib" or "types" path is likely the source.
+    // #1727 — when both paths qualify (or neither does), the repo whose name
+    // names the type, or marks a shared library, owns it: `orders` and
+    // `billing` both exporting `Order` from `src/types/` made billing the
+    // provider by id order alone.
     const sorted = [...occurrences].sort((a, b) => {
       const aIsShared =
         a.type.filePath.includes("shared") || a.type.filePath.includes("types") ? -1 : 0;
       const bIsShared =
         b.type.filePath.includes("shared") || b.type.filePath.includes("types") ? -1 : 0;
-      return aIsShared - bIsShared;
+      if (aIsShared !== bIsShared) return aIsShared - bIsShared;
+      return (
+        Number(repoOwnsType(b.repoName, typeName)) - Number(repoOwnsType(a.repoName, typeName))
+      );
     });
 
     const source = sorted[0];

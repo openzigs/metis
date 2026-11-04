@@ -438,6 +438,45 @@ describe("products-multi routes", () => {
       expect(res.body.data).toHaveLength(1);
     });
 
+    // #1727 — rows the picker can tell apart, and a picked `owner/name` that
+    // still finds its row.
+    it("names each connection's project and workspace", async () => {
+      mockPrisma.repoConnection.findMany.mockResolvedValue([
+        {
+          id: "rc1",
+          label: "primary",
+          ownerOrOrg: "miniflux",
+          repoName: "v2",
+          projectId: "p1",
+          project: { name: "Feeds", workspace: { name: "Analytics" } },
+        },
+        {
+          id: "rc2",
+          label: "primary",
+          ownerOrOrg: "miniflux",
+          repoName: "v2",
+          projectId: "p2",
+          project: { name: "Loose", workspace: null },
+        },
+      ]);
+      const res = await request(app).get("/products/repo-connections");
+      expect(res.body.data).toEqual([
+        expect.objectContaining({ id: "rc1", projectName: "Feeds", workspaceName: "Analytics" }),
+        expect.objectContaining({ id: "rc2", projectName: "Loose", workspaceName: null }),
+      ]);
+      expect(res.body.data[0]).not.toHaveProperty("project");
+    });
+
+    it("matches an owner/name search on the two columns", async () => {
+      mockPrisma.repoConnection.findMany.mockResolvedValue([]);
+      await request(app).get("/products/repo-connections?search=openzigs/metis-fixture");
+      const where = mockPrisma.repoConnection.findMany.mock.calls.at(-1)![0].where;
+      expect(where.OR).toContainEqual({
+        ownerOrOrg: { contains: "openzigs" },
+        repoName: { contains: "metis-fixture" },
+      });
+    });
+
     it("supports search query", async () => {
       mockPrisma.repoConnection.findMany.mockResolvedValue([]);
       const res = await request(app).get("/products/repo-connections?search=my-repo");

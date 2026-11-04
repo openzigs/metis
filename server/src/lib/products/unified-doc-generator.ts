@@ -256,10 +256,11 @@ function generateServiceMapDiagram(
 
 function generateDataFlowDiagram(edges: ProductEdgeInfo[], naming: RepoNaming): string {
   // Only include call/produces/consumes edges for data flow
-  const dataEdges = edges.filter((e) => ["calls", "produces", "consumes"].includes(e.edgeType));
+  const dataEdges = edges.filter((e) => DATA_FLOW_EDGE_TYPES.has(e.edgeType));
+  const leftOut = dataFlowLeftOutNote(edges);
 
   if (dataEdges.length === 0) {
-    return "_No data flow edges detected._\n";
+    return `_No data flow edges detected._\n${leftOut ? `\n${leftOut}\n` : ""}`;
   }
 
   const lines: string[] = ["```mermaid", "sequenceDiagram"];
@@ -283,7 +284,29 @@ function generateDataFlowDiagram(edges: ProductEdgeInfo[], naming: RepoNaming): 
   }
 
   lines.push("```");
+  if (leftOut) lines.push("", leftOut);
   return lines.join("\n");
+}
+
+/** The edge types the Data Flow diagram draws: a call or a message. */
+const DATA_FLOW_EDGE_TYPES = new Set(["calls", "produces", "consumes"]);
+
+/**
+ * #1727 — say which links the Data Flow diagram leaves out (a shared type is an
+ * `imports` link, not a flow), so a reader does not take them for missing.
+ */
+function dataFlowLeftOutNote(edges: ProductEdgeInfo[]): string | null {
+  const counts = new Map<string, number>();
+  for (const edge of edges) {
+    if (DATA_FLOW_EDGE_TYPES.has(edge.edgeType)) continue;
+    counts.set(edge.edgeType, (counts.get(edge.edgeType) ?? 0) + 1);
+  }
+  if (counts.size === 0) return null;
+  const parts = [...counts]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([type, n]) => `${n} \`${type}\``);
+  const total = [...counts.values()].reduce((a, b) => a + b, 0);
+  return `_Not drawn here: ${parts.join(", ")} ${total === 1 ? "link" : "links"}, which share code or types rather than pass data. The Service Map shows ${total === 1 ? "it" : "them"}._`;
 }
 
 function generateApiContractsSection(edges: ProductEdgeInfo[], naming: RepoNaming): string {
