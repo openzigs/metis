@@ -742,6 +742,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Impact analysis: one LLM call per changed requirement and project that looks at the hybrid candidate pool (about 30 files) and may PROMOTE a pool file to the files to edit, at a line checked against the code graph, or mark a deterministic candidate doubtful (#1756). OFF by default. Additive only, the #931 rule: every deterministic edit candidate stays, with its score; a promotion carries the file's own hybrid score, never a model score; an unverified line is dropped and counted in the run summary. Metered as impact.edit-verify under the 60-second impact deadline. The default flips only on a held-out gain measured by `pnpm eval:localization --arms A0,A4` (#1753).",
     sensitive: false,
   },
+  // ── Epic #1751 / Issue #1776 — rank edit candidates once per request ────
+  IMPACT_REQUEST_EDIT_RANKING: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "Impact analysis: rank the files to edit ONCE per request, across every extracted change and every project, against the request's single best file (#1776), instead of once per change per project. OFF by default. The existing cut is kept (at most 5 files, each scoring at least half the best); a file that falls out, including a project's best file when it is far below the request's best, moves to Related and still seeds the blast radius, so the callers reached do not change. No model. Off: each change names up to 5 files in each project, as before. Measured as arm A11 of `pnpm eval:localization --arms A0,A11` (#1753): Recall@5 fell 0.52 to 0.46 on the held-out Miniflux set, so it stays off until a held-out gain is shown.",
+    sensitive: false,
+  },
   ANALYSIS_AFFECTED_CODE_MAX_CANDIDATES: {
     tier: "tunable",
     valueType: "int",

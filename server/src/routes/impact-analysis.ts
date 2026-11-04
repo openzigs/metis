@@ -33,6 +33,7 @@ import {
   type SchedulerActor,
 } from "../lib/scheduler/project-access.js";
 import {
+  impactRequestEditRankingEnabled,
   impactStoredLinkSeedsEnabled,
   prismaFileSymbolLoader,
 } from "../lib/impact-analysis/change-seeds.js";
@@ -443,8 +444,11 @@ export function impactRunDeps(actorId: string, projectIds: readonly string[]): I
   const storedLinkSeeds = impactStoredLinkSeedsEnabled();
   // #1756 — likewise off by default.
   const editCandidateVerifier = editCandidateVerifierDep(runtime);
+  // #1776 — likewise off by default.
+  const requestEditRanking = impactRequestEditRankingEnabled();
   return {
     ...(storedLinkSeeds ? { storedLinkSeeds } : {}),
+    ...(requestEditRanking ? { requestEditRanking } : {}),
     ...(editCandidateVerifier ? { editCandidateVerifier } : {}),
     ...(mapRequirement ? { mapRequirement } : {}),
     ...(tableRelevanceFilter ? { tableRelevanceFilter } : {}),

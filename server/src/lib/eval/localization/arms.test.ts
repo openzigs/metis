@@ -10,6 +10,7 @@ import {
   createA0Arm,
   createA2Arm,
   createA4Arm,
+  createA11Arm,
   mergeSeedings,
   parseArmIds,
   requirementText,
@@ -67,7 +68,7 @@ describe("arm selection", () => {
     expect(() => buildArms(["A0", "A4"], deps)).toThrow(/A4 calls a model: it needs a live/);
     expect(() => buildArms(["ZZ"], deps)).toThrow(/unknown arm "ZZ"/);
     expect(buildArms(["A0"], deps).map((a) => a.id)).toEqual(["A0"]);
-    expect(Object.keys(ARM_FACTORIES)).toEqual(["A0", "A2", "A4"]);
+    expect(Object.keys(ARM_FACTORIES)).toEqual(["A0", "A2", "A4", "A11"]);
   });
 
   it("gives the arms the requirement as an analyst would paste it", () => {
@@ -284,5 +285,29 @@ describe("A2 on the committed fixture-portfolio corpus (#1754)", () => {
     expect(a2!.aggregate.recallAt5).toBe(a0!.aggregate.recallAt5);
     expect(a2!.aggregate.editPrecision).toBe(a0!.aggregate.editPrecision);
     expect(a0!.aggregate.meanEditCandidates).toBe(10);
+  });
+});
+
+describe("A11 on the committed fixture-portfolio corpus (#1776)", () => {
+  it("names at most five edit files per requirement where A0 names ten, and moves the rest down", async () => {
+    const corpus = await loadLocalizationCorpus("localization-02-fixture-portfolio");
+    const recorded = await loadRecordedVectors(
+      path.join(corpus.dir, "vectors.gte-modernbert-base.json"),
+    );
+    const cache = new EmbedCache(recorded, null, "pnpm eval:localization --embed");
+    const search = await buildCorpusSearch(corpus.symbols, cache);
+    const report = await runLocalizationEval(corpus, {
+      arms: [createA0Arm({ search }), createA11Arm({ search })],
+      runs: 1,
+      meter: new LedgerCostMeter(),
+    });
+    assertNoMissingVectors(cache);
+    const [a0, a11] = report.arms;
+    expect(a0!.aggregate.meanEditCandidates).toBe(10);
+    expect(a11!.aggregate.meanEditCandidates).toBe(changeSeeds.MAX_EDIT_FILES);
+    // The demoted files stay in the ranking: every file is still ranked.
+    expect(a11!.aggregate.recallAt10).toBe(1);
+    expect(a11!.configuration.stage).toMatch(/rankEditCandidatesPerRequest/);
+    expect(report.spentUsd).toBe(0);
   });
 });
