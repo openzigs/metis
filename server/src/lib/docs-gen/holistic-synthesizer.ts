@@ -6428,6 +6428,18 @@ export function detectMissingSections(
 const LEAKED_ID_PREFIXES = ["facts", "rag"] as const;
 
 /**
+ * #1582 — citation forms the model invents in place of the ids it was given:
+ * `[source: internal/config/validators.go]`, `[fact:internal/systemd]` (#706
+ * run 10's architecture document showed both, raw). They name no admitted
+ * source, so no footnote can be made of them, and they are removed like a
+ * leaked id — only when closed: an unclosed `[source:` is ordinary text, not a
+ * cut-off id. A `[source: …](url)` is a Markdown link the model wrote, and is
+ * left alone. Its text may hold no `[`: with the closing bracket required, a
+ * class that held the opener would rescan the line from every unclosed one.
+ */
+const INVENTED_CITATION_PREFIXES = ["fact", "source"] as const;
+
+/**
  * ` [facts:…]` / ` [rag:…]` — no nested `]`, so it cannot span a link label.
  *
  * The closing bracket is OPTIONAL because the model truncates: three markers in
@@ -6436,8 +6448,14 @@ const LEAKED_ID_PREFIXES = ["facts", "rag"] as const;
  * rendered verbatim in prose and in Markdown export. Anchoring the unterminated
  * case to end-of-line keeps it from swallowing the rest of the document.
  */
-const LEAKED_ID_RE = new RegExp(
+/** Only the ids the model was given (` [facts:…]` / ` [rag:…]`), as below. */
+const LEAKED_REAL_ID_RE = new RegExp(
   ` ?\\[\\s*(?:${LEAKED_ID_PREFIXES.join("|")}):[^\\]\\n]*(?:\\]|$)`,
+  "g",
+);
+
+const LEAKED_ID_RE = new RegExp(
+  ` ?\\[\\s*(?:(?:${LEAKED_ID_PREFIXES.join("|")}):[^\\]\\n]*(?:\\]|$)|(?:${INVENTED_CITATION_PREFIXES.join("|")}):[^\\][\\n]*\\](?!\\())`,
   "g",
 );
 
@@ -6450,9 +6468,60 @@ export function stripLeakedSourceIds(markdown: string): string {
         inFence = !inFence;
         return line;
       }
-      return inFence ? line : line.replace(LEAKED_ID_RE, "");
+      if (inFence) return line;
+      // Inside an inline code span only the real leaked ids go: the invented
+      // forms are ordinary words there (#1741 review).
+      return splitInlineCode(
+        line,
+        (text) => text.replace(LEAKED_ID_RE, ""),
+        (code) => code.replace(LEAKED_REAL_ID_RE, ""),
+      );
     })
     .join("\n");
+}
+
+/**
+ * `line` with `plainEdit` applied outside inline code spans and `codeEdit`
+ * inside them. A span is a run of N backticks closed by the next run of exactly
+ * N (CommonMark); an unclosed run is ordinary text. `source:` and `fact:` are
+ * ordinary words, so a code span such as `` `type Edge = [source: string]` ``
+ * must keep them (#1741 review).
+ */
+function splitInlineCode(
+  line: string,
+  plainEdit: (text: string) => string,
+  codeEdit: (code: string) => string,
+): string {
+  const edit = plainEdit;
+  if (!line.includes("`")) return edit(line);
+  let out = "";
+  let plain = "";
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] !== "`") {
+      plain += line[i++];
+      continue;
+    }
+    let n = 0;
+    while (line[i + n] === "`") n++;
+    const fence = "`".repeat(n);
+    let close = -1;
+    for (let j = line.indexOf(fence, i + n); j !== -1; j = line.indexOf(fence, j + 1)) {
+      if (line[j - 1] !== "`" && line[j + n] !== "`") {
+        close = j;
+        break;
+      }
+    }
+    if (close === -1) {
+      plain += fence;
+      i += n;
+      continue;
+    }
+    out += edit(plain) + fence + codeEdit(line.slice(i + n, close)) + fence;
+    plain = "";
+    i = close + n;
+  }
+  return out + edit(plain);
 }
 
 /** True when `text` still carries at least one leaked grounding marker. */
@@ -8669,13 +8738,17 @@ function withColumnDefaults(
 function readerBrdGroups(catalogue: readonly SectionGroup[]): SectionGroup[] {
   const byId = new Map(catalogue.map((group) => [group.id, group]));
   const take = (id: string): SectionGroup => byId.get(id)!;
+  // #1582 — the summary names "the requirements" without saying where they
+  // come from. It used to say "reconstructed from the code", and run 10's
+  // summary said so above the approved requirements it lists. One wording for
+  // both keeps an approval from rewriting this section (#1271).
   const overview: SectionGroup = {
     ...take("overview"),
     label: "Executive Summary, Scope & Domain",
     instructions: `Produce three sections. This is the opening of a business requirements document for stakeholders who do not know the code: write in business language, and leave out function names, file paths, SQL and HTTP detail.
 
 ## Executive Summary
-One or two short paragraphs a sponsor can read on its own and stop: what business problem the system solves, who uses it, the key business outcomes it delivers, and what this document asks the reader to agree to (the scope and the business rules that follow, and the requirements reconstructed from the code).
+One or two short paragraphs a sponsor can read on its own and stop: what business problem the system solves, who uses it, the key business outcomes it delivers, and what this document asks the reader to agree to (the scope, the business rules and the requirements that follow). Do not say how the requirements were produced: the requirements section says that itself.
 
 ## Scope
 - **In scope**: a bulleted list of the business capabilities and processes this document covers.

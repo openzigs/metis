@@ -214,6 +214,23 @@ describe("the reader layout's requirements section", () => {
     expect(without.find((g) => g.id === "requirements")!.label).toBe(RECONSTRUCTED);
   });
 
+  // #1582 (run 10) — the summary said "reconstructed" above the approved list.
+  it("asks the executive summary for the requirements without saying how they were produced", () => {
+    for (const approvedRequirements of [[], [req(1)]]) {
+      const overview = sectionGroupsFor("business-requirements", {
+        brdLayout: "reader",
+        approvedRequirements,
+      }).find((g) => g.id === "overview")!;
+      const summary = overview.instructions.slice(
+        overview.instructions.indexOf("## Executive Summary"),
+        overview.instructions.indexOf("## Scope"),
+      );
+      expect(summary).toContain("(the scope, the business rules and the requirements that follow)");
+      expect(summary).toContain("Do not say how the requirements were produced");
+      expect(summary).not.toMatch(/reconstructed/i);
+    }
+  });
+
   it("keeps #1223's business-language rules and criteria sentence on the reconstructed fallback", () => {
     const reconstructed = sectionGroupsFor("business-requirements", { brdLayout: "reader" }).find(
       (g) => g.id === "requirements",

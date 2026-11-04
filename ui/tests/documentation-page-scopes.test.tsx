@@ -332,6 +332,51 @@ describe("DocumentationPage — GenerateForm scope selection", () => {
     });
   });
 
+  // #1582 (run 10) — "Database Schema" typed over itself fires no React
+  // `onChange`, so picking the database then replaced the title.
+  it("keeps a title typed over with the same text when a database is picked", async () => {
+    mockApiFetch.mockImplementation(async (path: string) => {
+      if (typeof path === "string" && path.includes("/connectors/dbs")) return sampleDbs;
+      return sampleDocs;
+    });
+
+    renderPage();
+    fireEvent.click(await screen.findByTestId("generate-docs-btn"));
+    fireEvent.change(await screen.findByTestId("doc-scope-select"), {
+      target: { value: "database" },
+    });
+    const title = screen.getByTestId("doc-title-input") as HTMLInputElement;
+    expect(title.value).toBe("Database Schema");
+    fireEvent.input(title, { target: { value: "Database Schema" } });
+    await waitFor(() => {
+      const select = screen.getByTestId("db-connector-select") as HTMLSelectElement;
+      expect(Array.from(select.options).map((o) => o.value)).toContain("db_1");
+    });
+    fireEvent.change(screen.getByTestId("db-connector-select"), { target: { value: "db_1" } });
+    expect(title.value).toBe("Database Schema");
+  });
+
+  it("#1582 — names a repository without a URL with no dangling dash", async () => {
+    mockApiFetch.mockImplementation(async (path: string) => {
+      if (typeof path === "string" && path.includes("/connectors/repos")) {
+        return [{ ...sampleRepos[0], label: "miniflux v2 at v2.3.3", repoUrl: "" }, sampleRepos[1]];
+      }
+      return sampleDocs;
+    });
+
+    renderPage();
+    fireEvent.click(await screen.findByTestId("generate-docs-btn"));
+    fireEvent.change(await screen.findByTestId("doc-scope-select"), {
+      target: { value: "repository" },
+    });
+    await waitFor(() => {
+      const select = screen.getByTestId("repo-connector-select") as HTMLSelectElement;
+      expect(Array.from(select.options).map((o) => o.textContent)).toEqual(
+        expect.arrayContaining(["miniflux v2 at v2.3.3", "EPV — https://github.com/org/epv.git"]),
+      );
+    });
+  });
+
   it("disables submit when repository scope is selected but no repo is chosen", async () => {
     mockApiFetch.mockImplementation(async (path: string) => {
       if (typeof path === "string" && path.includes("/connectors/repos")) return sampleRepos;

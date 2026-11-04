@@ -11,6 +11,7 @@
  */
 import { useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -35,6 +36,7 @@ import { VersionArtifacts } from "@/components/documentation/version-artifacts";
 import { RequirementsScopePicker } from "@/components/documentation/requirements-scope-picker";
 import type { DocSectionProgressEvent, SchemaGraph } from "@metis/shared";
 import { PageHeader } from "@/components/ui/page-header";
+import { quarantineHref } from "@/lib/project-pipeline";
 
 /**
  * #272 — the schema graph (@xyflow/react, its dagre layout and stylesheet) is
@@ -519,15 +521,21 @@ export default function DocumentationPage(): React.ReactElement {
                 {docDetail.data.title}
               </button>
             )}
-            <Button variant="outline" onClick={() => handleExport(selectedDoc, "pdf")}>
-              Export PDF
-            </Button>
-            <Button variant="outline" onClick={() => handleExport(selectedDoc, "docx")}>
-              Export Word
-            </Button>
-            <Button variant="outline" onClick={() => handleExport(selectedDoc, "markdown")}>
-              Export Markdown
-            </Button>
+            {/* #1582 — the export route serves a ready or degraded document
+                only; a cancelled, failed or generating one got a 404 page. */}
+            {isExportable(docDetail.data.status) && (
+              <>
+                <Button variant="outline" onClick={() => handleExport(selectedDoc, "pdf")}>
+                  Export PDF
+                </Button>
+                <Button variant="outline" onClick={() => handleExport(selectedDoc, "docx")}>
+                  Export Word
+                </Button>
+                <Button variant="outline" onClick={() => handleExport(selectedDoc, "markdown")}>
+                  Export Markdown
+                </Button>
+              </>
+            )}
             <Button variant="destructive" onClick={() => deleteMutation.mutate(selectedDoc)}>
               Delete
             </Button>
@@ -541,6 +549,17 @@ export default function DocumentationPage(): React.ReactElement {
             <span data-testid="doc-indexing-summary">
               {formatIndexingSummary(docDetail.data.indexing)}
             </span>
+            {/* #1582 — the approval happens in the project's quarantine queue,
+                which nothing on this page pointed to. */}
+            {docDetail.data.indexing?.state === "quarantined" && (
+              <Link
+                href={quarantineHref(projectId)}
+                className="underline"
+                data-testid="doc-quarantine-link"
+              >
+                Review in quarantine
+              </Link>
+            )}
           </div>
 
           {docDetail.data.status === "generating" && (
@@ -1044,7 +1063,8 @@ function GenerateForm({
             </option>
             {repoConnectorsQuery.data?.map((repo) => (
               <option key={repo.id} value={repo.id}>
-                {repo.label} — {repo.repoUrl}
+                {/* #1582 — a repository with no URL read "miniflux v2 at v2.3.3 —". */}
+                {repo.repoUrl ? `${repo.label} — ${repo.repoUrl}` : repo.label}
               </option>
             ))}
           </select>
@@ -1239,6 +1259,10 @@ function GenerateForm({
             setTitle(e.target.value);
             setTitleEdited(true);
           }}
+          // #1582 — `onInput` too: React skips `onChange` when a title is
+          // typed over with the same text ("Database Schema"), so it was not
+          // marked as the user's, and picking a database replaced it.
+          onInput={() => setTitleEdited(true)}
           className="w-full px-3 py-2 border rounded-md bg-background"
           data-testid="doc-title-input"
         />
@@ -1429,6 +1453,15 @@ function IndexingBadge({ state }: { state?: string | null }): React.ReactElement
       {normalized}
     </span>
   );
+}
+
+/**
+ * #1582 — whether the export route serves a document in this status: it reads
+ * `ready` and `degraded` documents only (`GET …/docs/:docId/export`).
+ * Exported for unit testing.
+ */
+export function isExportable(status: string | null | undefined): boolean {
+  return status === "ready" || status === "degraded";
 }
 
 function formatIndexingSummary(indexing?: GeneratedDoc["indexing"]): string {

@@ -40,7 +40,7 @@ vi.mock("@/lib/api-client", () => ({
 }));
 
 import { apiFetch } from "@/lib/api-client";
-import DocumentationPage from "@/app/(authed)/projects/[id]/documentation/page";
+import DocumentationPage, { isExportable } from "@/app/(authed)/projects/[id]/documentation/page";
 
 const mockApiFetch = vi.mocked(apiFetch);
 
@@ -133,5 +133,30 @@ describe("DocumentationPage — Markdown export", () => {
       expect(openSpy).toHaveBeenCalledTimes(1);
     });
     expect(openSpy.mock.calls[0][0] as string).toContain("format=markdown");
+  });
+
+  // #1582 (run 10) — the export route serves ready and degraded documents
+  // only; a cancelled one offered Export, which opened a 404.
+  it.each(["cancelled", "failed", "generating"])(
+    "offers no export for a %s document",
+    async (status) => {
+      mockEndpoints(status);
+      renderPage();
+      fireEvent.click(await screen.findByTestId("doc-card-doc_1"));
+      // The detail view is open: its Delete button is there.
+      await screen.findByRole("button", { name: "Delete" });
+      for (const name of ["Export PDF", "Export Word", "Export Markdown"]) {
+        expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+      }
+    },
+  );
+});
+
+describe("isExportable", () => {
+  it("is true for the statuses the export route serves, and false otherwise", () => {
+    expect(["ready", "degraded"].map(isExportable)).toEqual([true, true]);
+    expect(
+      ["cancelled", "failed", "generating", "pending", null, undefined].map(isExportable),
+    ).toEqual([false, false, false, false, false, false]);
   });
 });

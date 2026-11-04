@@ -138,7 +138,9 @@ describe("DocumentationPage — cancel (#855)", () => {
   it("cancels from the detail view", async () => {
     setup({ ...base, status: "generating" });
     fireEvent.click(await screen.findByTestId(`doc-card-${DOC_ID}`));
-    await screen.findByText("Export PDF");
+    // The detail view (#1582: a generating document offers no export).
+    await screen.findByRole("button", { name: "Delete" });
+    expect(screen.queryByText("Export PDF")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Cancel generation" }));
     await waitFor(() => expect(cancelCalls()).toHaveLength(1));
   });
