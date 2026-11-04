@@ -56,7 +56,11 @@ import {
   type SeedPoolFile,
   type StoredLinkDeps,
 } from "./change-seeds.js";
-import { applyEditVerification, type EditVerification } from "./edit-candidate-verifier.js";
+import {
+  applyEditVerification,
+  MAX_PROMOTIONS,
+  type EditVerification,
+} from "./edit-candidate-verifier.js";
 import { requestGateText, shapeAwareChangeExtractor } from "./change-request.js";
 import { resolveStructuralTwins, type CalleeNameSource } from "./structural-twins.js";
 import {
@@ -1460,15 +1464,16 @@ export function editVerifierNotice(t: {
   doubtful: number;
   dropped: number;
 }): string {
-  const files = (n: number) => `${n} file${n === 1 ? "" : "s"}`;
-  const parts = [
-    `The AI edit check added ${files(t.promoted)} to the files to edit, each at a line checked against the code`,
-    `and marked ${files(t.doubtful)} as doubtful (still listed)`,
-  ];
-  const head = `${parts.join(", ")}.`;
+  const files = (n: number) => (n === 0 ? "no files" : `${n} file${n === 1 ? "" : "s"}`);
+  const added =
+    t.promoted === 0
+      ? "The AI edit check added no files to the files to edit"
+      : `The AI edit check added ${files(t.promoted)} to the files to edit, each at a line checked against the code`;
+  const head = `${added}, and marked ${files(t.doubtful)} as doubtful (still listed).`;
+  // #1781 — a drop is not always a bad line: the index, the entry or the limit can be the reason.
   return t.dropped === 0
     ? head
-    : `${head} ${t.dropped} suggestion${t.dropped === 1 ? " was" : "s were"} dropped: the line it named was not in that file's code.`;
+    : `${head} ${t.dropped} suggestion${t.dropped === 1 ? " was" : "s were"} dropped because ${t.dropped === 1 ? "it" : "they"} could not be checked: a line outside every function or type of that file, a file not in the list, an unreadable entry, or more than ${MAX_PROMOTIONS} suggestions.`;
 }
 
 /** Resolve the change source text from the row (inline text or document chunks). */

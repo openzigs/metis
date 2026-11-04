@@ -203,7 +203,7 @@ describe("the engine with the edit-candidate check (#1756)", () => {
       verdict: { kind: "doubtful" },
     });
     expect(String(on.analyses.get("ia")?.summary)).toContain(
-      "The AI edit check added 0 files to the files to edit, each at a line checked against the code, and marked 1 file as doubtful (still listed).",
+      "The AI edit check added no files to the files to edit, and marked 1 file as doubtful (still listed).",
     );
   });
 
@@ -237,7 +237,7 @@ describe("the engine with the edit-candidate check (#1756)", () => {
       verdict: { kind: "promoted", verified: true, reason: "It renders the page." },
     });
     expect(String(on.analyses.get("ia")?.summary)).toContain(
-      "1 suggestion was dropped: the line it named was not in that file's code.",
+      "1 suggestion was dropped because it could not be checked: a line outside every function or type of that file, a file not in the list, an unreadable entry, or more than 5 suggestions.",
     );
   });
 
@@ -258,10 +258,18 @@ describe("the engine with the edit-candidate check (#1756)", () => {
 describe("editVerifierNotice", () => {
   it("names the dropped suggestions only when there are some", () => {
     expect(editVerifierNotice({ promoted: 2, doubtful: 0, dropped: 0 })).toBe(
-      "The AI edit check added 2 files to the files to edit, each at a line checked against the code, and marked 0 files as doubtful (still listed).",
+      "The AI edit check added 2 files to the files to edit, each at a line checked against the code, and marked no files as doubtful (still listed).",
     );
     expect(editVerifierNotice({ promoted: 1, doubtful: 1, dropped: 3 })).toMatch(
-      /marked 1 file as doubtful \(still listed\)\. 3 suggestions were dropped/,
+      /marked 1 file as doubtful \(still listed\)\. 3 suggestions were dropped because they could not be checked/,
+    );
+  });
+
+  it("does not say every drop was a bad line, nor claim checked additions when there are none (#1781)", () => {
+    expect(editVerifierNotice({ promoted: 0, doubtful: 2, dropped: 1 })).toBe(
+      "The AI edit check added no files to the files to edit, and marked 2 files as doubtful (still listed). " +
+        "1 suggestion was dropped because it could not be checked: a line outside every function or type of that file, " +
+        "a file not in the list, an unreadable entry, or more than 5 suggestions.",
     );
   });
 });

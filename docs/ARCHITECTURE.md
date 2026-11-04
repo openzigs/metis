@@ -2951,9 +2951,12 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   (`verifyEditCandidates`, stage `edit-verify`, metered as `impact.edit-verify`
   under the 60-second impact deadline) may promote pool files at a named line
   and mark deterministic candidates doubtful. The line is checked against the
-  project's code graph (`graphLineCheck`: the innermost symbol of that file
-  holding it); a promotion that fails, names no pool file or passes
-  `MAX_PROMOTIONS = 5` is dropped and counted. `applyEditVerification` folds the
+  project's code graph (`graphLineCheck`: the innermost NAMED symbol of that
+  file holding it, never the `module` symbol every parser emits from line 1 to
+  EOF, which would pass any line, #1781); a promotion that fails, names no pool
+  file, is malformed (the line must be a JSON integer) or passes
+  `MAX_PROMOTIONS = 5` is dropped and counted. A stored-link candidate (#1754)
+  is marked `[EDIT]` in the pool too, so it is never "promoted". `applyEditVerification` folds the
   answer in additively (the #931 rule, docs/IMPACT_ANALYSIS_LLM_STAGES.md):
   promotions are appended after the deterministic candidates on the file's own
   hybrid score; verdicts, reasons, lines and base scores go to
@@ -2971,6 +2974,17 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   promotions are appended after A0's candidates (Miniflux averages 7.2 edit files
   per requirement), so the bar for a default flip (a significant Recall@5 gain)
   is not met, and the stage stays off; table precision was not measured for A4.
+  **Re-measured after the #1781 line-check fix** (2026-11-04), so the gain no
+  longer rests on module-span promotions. On `claude-sonnet-5-5` with two runs per set,
+  Miniflux (24): Recall@10 0.60 → 0.72 (Δ +0.113, [0.04, 0.19]) and edit
+  precision 0.17 → 0.20 (Δ +0.036, [0.01, 0.07]), both significant; Recall@5
+  and MRR unchanged. $0.0279 and 7.4 s per requirement. Pooled over 39 items, Recall@10 +0.070
+  [0.03, 0.12] and edit precision +0.022 [0.00, 0.04]. On `deepseek-flash`
+  (one run): Miniflux Recall@10 +0.155 [0.06, 0.27] and edit precision +0.044
+  [0.01, 0.08], at $0.0125 but 52 s per requirement (its replies run to
+  thousands of output tokens). The fixture set does not move on either model. Recall@5 still does
+  not rise on either model, so the stage stays off. A4's table precision needs the
+  impact-recall guard to run the split seeding, which it does not (#1786).
 - **Stored requirement links (#1754)** — `POST /api/impact-analyses` accepts
   `requirementIds` (deduplicated, at most 50). The route refuses a requirement
   whose project the caller cannot read with the project check's own error (a

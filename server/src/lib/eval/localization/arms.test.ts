@@ -199,6 +199,8 @@ describe("A4 — A0 plus the LLM edit-candidate check (#1756)", () => {
       model: "claude-sonnet-5-5",
       llm: true,
       poolFiles: 30,
+      // #1781 — the report must not read A4's graph resolution as a finding.
+      graphResolution: "1.00 by construction (pool indices only)",
     });
   });
 });

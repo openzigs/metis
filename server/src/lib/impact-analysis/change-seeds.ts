@@ -379,7 +379,17 @@ export async function resolveChangeSeeds(
 ): Promise<ChangeSeeds> {
   const hybrid = await resolveHybridSeeds(change, projectId, deps);
   if (!deps.storedLinks || !change.requirementId) return hybrid;
-  return unionStoredLinks(hybrid, change.requirementId, projectId, deps.storedLinks);
+  const seeds = await unionStoredLinks(hybrid, change.requirementId, projectId, deps.storedLinks);
+  if (!seeds.filePool) return seeds;
+  // #1781 — the pool marks every edit candidate [EDIT], stored-link ones too: an
+  // unmarked one could be "promoted" (counted, nothing added) and never doubted.
+  const editFiles = new Set(seeds.editCandidates.map((m) => m.filePath));
+  return {
+    ...seeds,
+    filePool: seeds.filePool.map((f) =>
+      !f.editCandidate && editFiles.has(f.filePath) ? { ...f, editCandidate: true } : f,
+    ),
+  };
 }
 
 /** The default channel: the fused hybrid search, split into edit candidates and the rest. */
