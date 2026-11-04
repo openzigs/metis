@@ -19,7 +19,9 @@ import {
   MIN_FILE_SHARE,
   SEED_POOL_PER_QUERY,
   VERIFY_POOL_FILES,
+  rankEditCandidatesPerRequest,
   resolveChangeSeeds,
+  type RequestSeeding,
   type SeedSymbolRow,
   type StoredLinkDeps,
   type StoredLinkRow,
@@ -360,11 +362,61 @@ export function createA4Arm(deps: ArmDeps): LocalizationArm {
   };
 }
 
+/**
+ * A11 — A0 with the edit candidates ranked ONCE per requirement (#1776): every
+ * change is seeded in every repository exactly as A0 does, then production's
+ * `rankEditCandidatesPerRequest` keeps the requirement's best files (the same
+ * cut: {@link MAX_EDIT_FILES} files within {@link MIN_FILE_SHARE} of the single
+ * best) and moves the rest to related. Ranked files are merged exactly as A0's
+ * ({@link mergeSeedings}), so the paired comparison differs only in WHICH files
+ * are edit candidates, not in how seedings are interleaved.
+ */
+export function createA11Arm(deps: ArmDeps): LocalizationArm {
+  const { search } = deps;
+  const a0 = createA0Arm(deps);
+  return {
+    id: "A11",
+    label: "A11 — A0 with edit candidates ranked once per requirement, no model",
+    configuration: {
+      ...a0.configuration,
+      stage:
+        "resolveChangeSeeds + rankEditCandidatesPerRequest (IMPACT_REQUEST_EDIT_RANKING, #1776)",
+      editCut: `once per requirement over every change and repository: top ${MAX_EDIT_FILES}, share ≥ ${MIN_FILE_SHARE}`,
+    },
+    async localize(item, corpus) {
+      const changes = extractChangesByShape(requirementText(item));
+      const seedings: RequestSeeding[] = [];
+      for (const repo of corpus.manifest.repos) {
+        for (const change of changes) {
+          const seeds = await resolveChangeSeeds(change, repo.name, {
+            searcher: search.searcher,
+            loadSymbols: search.loadSymbols,
+            loadWriterIds: search.loadWriterIds,
+            editFileScores: true,
+          });
+          seedings.push({ projectId: repo.name, seeds });
+        }
+      }
+      const ranked = rankEditCandidatesPerRequest(seedings);
+      return mergeSeedings(
+        ranked.map((seeds, i) => {
+          const key = (m: { filePath: string }) => fileKey(seedings[i]!.projectId, m.filePath);
+          return {
+            edit: uniqueInOrder(seeds.editCandidates.map(key)),
+            other: uniqueInOrder([...seeds.related, ...seeds.schemaSeeds].map(key)),
+          };
+        }),
+      );
+    },
+  };
+}
+
 /** Arms by id. Later issues of epic #1751 add theirs here. */
 export const ARM_FACTORIES: Record<string, (deps: ArmDeps) => LocalizationArm> = {
   A0: createA0Arm,
   A2: createA2Arm,
   A4: createA4Arm,
+  A11: createA11Arm,
 };
 
 /** The arms issues #1754–#1761 will add; named so a request for one fails with its issue. */

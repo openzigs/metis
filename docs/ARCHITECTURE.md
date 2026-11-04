@@ -2971,6 +2971,29 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   promotions are appended after A0's candidates (Miniflux averages 7.2 edit files
   per requirement), so the bar for a default flip (a significant Recall@5 gain)
   is not met, and the stage stays off; table precision was not measured for A4.
+- **Per-request edit ranking (#1776)** — behind `IMPACT_REQUEST_EDIT_RANKING`
+  (key registry, tunable, **off**), the engine seeds every change in every
+  accessible project first (`seedRequestOnce`; a project the starter cannot open
+  is never searched), then `rankEditCandidatesPerRequest` (`change-seeds.ts`)
+  re-applies the edit-file cut ONCE over the whole request: at most
+  `MAX_EDIT_FILES` files, each within `MIN_FILE_SHARE` of the request's single
+  best file (a file several changes found counts once, at its best score). A
+  dropped file's symbols head `related` and stay seeds of the blast radius
+  (`ChangeSeeds.radiusSeeds`), so the callers reached do not change; a file a
+  stored link names is never dropped. Flag off, each change is ranked on its own
+  in each project, as before. Measured as arm A11 (`pnpm eval:localization
+  --arms A0,A11`, no model, deterministic, so one run per set, 2026-11-04): on
+  Miniflux (24) edit files per requirement fall 7.17 → 5.00 and edit precision
+  moves 0.17 → 0.18 (Δ +0.017, not significant), but Recall@5 falls 0.52 → 0.46
+  (Δ −0.064, 95% CI [−0.13, −0.01], p 0.024, worse); on the fixture set (15)
+  edit files fall 10 → 5 with no other change. Pooled over 39 items, Recall@5
+  −0.039 [−0.08, −0.01] (worse). Hence off. The cause is the score being
+  compared: `fileScore` sums fused RRF scores, which say where a hit RANKED in
+  its own search (rank 1 scores the same in every search, #1097), so every
+  project's best fixture file scores 0.057 to 0.062 and no project falls below
+  half the request's best; the cap then picks among near-ties. Comparing seedings
+  needs a score that means the same across searches; the impact-recall eval
+  drives `mapRequirement`, not this seeding, so it cannot see the flag.
 - **Stored requirement links (#1754)** — `POST /api/impact-analyses` accepts
   `requirementIds` (deduplicated, at most 50). The route refuses a requirement
   whose project the caller cannot read with the project check's own error (a
