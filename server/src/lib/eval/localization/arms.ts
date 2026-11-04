@@ -323,7 +323,10 @@ export function createA4Arm(deps: ArmDeps): LocalizationArm {
       stage: "resolveChangeSeeds + verifyEditCandidates (IMPACT_LLM_EDIT_VERIFY, #1756)",
       poolFiles: VERIFY_POOL_FILES,
       maxPromotions: MAX_PROMOTIONS,
-      lineCheck: "inside a symbol of the file (corpus symbol rows)",
+      lineCheck: "inside a named symbol of the file, never its module span (corpus symbol rows)",
+      // #1781 — the model names files only by pool index, and every pool file is a
+      // code-graph file: this arm's graph resolution cannot be below 1.00.
+      graphResolution: "1.00 by construction (pool indices only)",
       provider: provider.key,
       model: provider.model,
       llm: true,

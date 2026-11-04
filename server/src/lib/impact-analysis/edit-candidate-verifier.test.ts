@@ -77,6 +77,16 @@ const GRAPH: SeedSymbolRow[] = [
     startLine: 1,
     endLine: 12,
   },
+  // #1781 — every parser emits a module symbol from line 1 to EOF.
+  {
+    id: "receiptModule",
+    qualifiedName: "src/receipt.ts",
+    filePath: "src/receipt.ts",
+    kind: "module",
+    language: "ts",
+    startLine: 1,
+    endLine: 80,
+  },
 ];
 const loadFileSymbols = vi.fn(async (files: string[]) =>
   GRAPH.filter((r) => files.includes(r.filePath)),
@@ -168,7 +178,7 @@ describe("verifyEditCandidates", () => {
   it("drops and counts a malformed promotion, and still reads the rest of the answer", async () => {
     const v = await verify(
       provider(
-        '{"promote":[{"index":2,"reason":"no line"},{"index":3,"line":"five?"},{"index":3,"line":"5","reason":"tax"}],"doubtful":[{"reason":"no index"},{"index":0,"reason":"ok"}]}',
+        '{"promote":[{"index":2,"reason":"no line"},{"index":3,"line":"five?"},{"index":3,"line":5,"reason":"tax"}],"doubtful":[{"reason":"no index"},{"index":0,"reason":"ok"}]}',
       ),
     );
     expect(v.applied).toBe(true);
@@ -266,6 +276,9 @@ describe("graphLineCheck", () => {
     expect((await check("src/receipt.ts", 20))?.id).toBe("sendReceipt");
     expect(await check("src/receipt.ts", 31)).toBeNull();
     expect(await check("src/none.ts", 1)).toBeNull();
+    // #1781 — the module spans lines 1-80, but a line outside every named symbol does not check out.
+    expect(await check("src/receipt.ts", 1)).toBeNull();
+    expect(await check("src/receipt.ts", 60)).toBeNull();
     expect(loadFileSymbols).toHaveBeenCalledTimes(2);
     expect(loadFileSymbols).toHaveBeenCalledWith(["src/receipt.ts"], "p1");
   });
@@ -399,5 +412,36 @@ describe("impactLlmEditVerifyEnabled", () => {
     expect(impactLlmEditVerifyEnabled()).toBe(false);
     process.env.IMPACT_LLM_EDIT_VERIFY = "1";
     expect(impactLlmEditVerifyEnabled()).toBe(true);
+  });
+});
+
+describe("promotions the line check must refuse (#1781)", () => {
+  it("drops a promotion at a line only the file's module symbol holds", async () => {
+    const v = await verify(provider('{"promote":[{"index":2,"line":60,"reason":"r"}]}'));
+    expect(v.promoted).toEqual([]);
+    expect(v.droppedPromotions).toBe(1);
+  });
+
+  it.each([true, "", null, "12"])(
+    "drops a promotion whose line is %j, not an integer",
+    async (line) => {
+      const v = await verify(
+        provider(JSON.stringify({ promote: [{ index: 3, line, reason: "r" }] })),
+      );
+      expect(v.promoted).toEqual([]);
+      expect(v.droppedPromotions).toBe(1);
+    },
+  );
+
+  it("refuses a symbol of another file from a line check that returns one", async () => {
+    const elsewhere: LineCheck = async () => GRAPH.find((r) => r.id === "computeTax")!;
+    const v = await verifyEditCandidates({
+      requirementText: "Email a receipt.",
+      pool: POOL,
+      provider: provider('{"promote":[{"index":2,"line":9,"reason":"r"}]}'),
+      lineCheck: elsewhere,
+    });
+    expect(v.promoted).toEqual([]);
+    expect(v.droppedPromotions).toBe(1);
   });
 });

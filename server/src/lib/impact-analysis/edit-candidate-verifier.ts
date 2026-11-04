@@ -11,9 +11,11 @@
  *
  *   - PROMOTE a pool file that is not already an edit candidate, naming a line
  *     and a one-line reason. The line is checked WITHOUT a model: it must fall
- *     inside a symbol of that file in the code graph ({@link LineCheck}). A
- *     promotion whose line does not check out, or whose index names no pool
- *     file, is dropped and counted.
+ *     inside a NAMED symbol of that file in the code graph ({@link LineCheck});
+ *     the file's `module` symbol, which every parser emits from line 1 to EOF,
+ *     does not count (#1781). A promotion whose line does not check out, whose
+ *     index names no pool file, that is malformed, or that passes
+ *     {@link MAX_PROMOTIONS}, is dropped and counted.
  *   - mark a deterministic candidate DOUBTFUL, with a reason. A doubtful file is
  *     shown as doubtful, never removed.
  *
@@ -97,7 +99,10 @@ export interface EditVerification {
   namedFiles: string[];
 }
 
-/** The innermost symbol of `filePath` that holds `line`, or null. Never a model call. */
+/**
+ * The innermost NAMED symbol of `filePath` that holds `line`, or null. Never a
+ * model call. A symbol of another file is not an answer: the verifier refuses one.
+ */
 export type LineCheck = (filePath: string, line: number) => Promise<SeedSymbolRow | null>;
 
 export interface VerifyEditCandidatesInput {
@@ -131,7 +136,8 @@ const replySchema = z.object({
 });
 const promotionSchema = z.object({
   index: z.number().int(),
-  line: z.coerce.number().int(),
+  // #1781 — strict: `true`, `""` and `null` are not line numbers.
+  line: z.number().int(),
   reason: z.string().optional().default(""),
 });
 const doubtSchema = z.object({
@@ -264,6 +270,8 @@ export async function verifyEditCandidates(
       raw !== null && typeof raw === "object" && "index" in raw
         ? (raw as { index: unknown }).index
         : null;
+    // Pool files only, by index: the localization eval's graph resolution over
+    // these is 1.00 by construction (#1781), and arm A4 says so.
     const namedFiles = [
       ...new Set(
         [...reply.promote, ...reply.doubtful]
@@ -331,7 +339,11 @@ export async function verifyEditCandidates(
 
 /**
  * The line check over a file-symbol lookup (the code graph): the innermost
- * symbol of the file whose span holds the line.
+ * symbol of the file whose span holds the line. #1781 — never the file's
+ * `module` symbol: every parser emits one from line 1 to the end of the file
+ * (`parsers.ts`, `parsers-tree-sitter.ts`), so it would pass any line up to the
+ * file's length, and a line outside every named symbol would promote the module
+ * itself. Such a line does not check out.
  */
 export function graphLineCheck(
   loadFileSymbols: (filePaths: string[], projectId: string) => Promise<SeedSymbolRow[]>,
@@ -343,6 +355,7 @@ export function graphLineCheck(
     const holding = (await cache.get(filePath)!).filter(
       (r) =>
         r.filePath === filePath &&
+        r.kind !== "module" &&
         r.startLine !== null &&
         r.endLine !== null &&
         r.startLine <= line &&

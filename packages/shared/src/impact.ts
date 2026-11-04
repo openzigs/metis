@@ -610,7 +610,10 @@ export const impactSeedEvidenceSchema = z.object({
     .object({
       promoted: z.number().int().min(0),
       doubtful: z.number().int().min(0),
-      /** Promotions dropped: their line was not inside a symbol of the file, or the index named no pool file. */
+      /**
+       * Promotions dropped: a line outside every named symbol of the file, an
+       * index naming no pool file, a malformed entry, or one past the limit (#1781).
+       */
       droppedPromotions: z.number().int().min(0),
     })
     .optional(),

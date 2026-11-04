@@ -16,6 +16,7 @@ import {
   prismaStoredLinkDeps,
   resolveChangeSeeds,
   unionStoredLinks,
+  VERIFY_POOL_FILES,
   type ChangeSeeds,
   type SeedSearcher,
   type SeedSearchHit,
@@ -84,6 +85,30 @@ const GRAPH = [
 ];
 
 describe("resolveChangeSeeds with the stored-link channel (#1754)", () => {
+  it("marks a stored-link file [EDIT] in the verifier's pool, so it is never 'promoted' (#1781)", async () => {
+    const base = await resolveChangeSeeds(CHANGE_4478!, "p1", {
+      searcher: capturedSearcher,
+      loadSymbols: capturedLoader,
+      filePoolSize: VERIFY_POOL_FILES,
+    });
+    const linkedFile = base.related[0]!.filePath;
+    expect(base.filePool!.find((f) => f.filePath === linkedFile)?.editCandidate).toBe(false);
+    const seeds = await resolveChangeSeeds({ ...CHANGE_4478!, requirementId: "req-1" }, "p1", {
+      searcher: capturedSearcher,
+      loadSymbols: capturedLoader,
+      storedLinks: linkDeps(
+        [link(linkedFile, { codeSymbolId: base.related[0]!.codeSymbolId })],
+        GRAPH,
+      ),
+      filePoolSize: VERIFY_POOL_FILES,
+    });
+    expect(seeds.filePool!.find((f) => f.filePath === linkedFile)?.editCandidate).toBe(true);
+    // Every other pool entry is the hybrid one, unchanged.
+    expect(seeds.filePool!.filter((f) => f.filePath !== linkedFile)).toEqual(
+      base.filePool!.filter((f) => f.filePath !== linkedFile),
+    );
+  });
+
   const hybridOnly = () =>
     resolveChangeSeeds(CHANGE_4478!, "p1", {
       searcher: capturedSearcher,
