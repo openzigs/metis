@@ -183,3 +183,82 @@ reported**, with the reason, never as a score of zero.
 `docretrieval-01-metis-docs` ships in exactly that state today — the schema,
 loader, validator and metric are complete and tested; the 43 gold answers are a
 human deliverable that has not been written yet.
+
+## Localization corpora (#1753)
+
+File localization of **analyst-worded** requirements: which files of a code graph a
+requirement should lead to. Every arm of epic #1751 is measured on these, so the
+ground truth was fixed before any arm ran.
+
+| Corpus | Items | Purpose | Repositories |
+|---|---|---|---|
+| `localization-01-miniflux-heldout` | 25 | **held-out** | `miniflux/v2` at `v2.3.3` |
+| `localization-02-fixture-portfolio` | 15 | **held-out** (reused by #1766) | `openzigs/metis-fixture-{orders,billing,notify}` |
+| `localization-00-miniflux-run7-insample` | 6 | **in-sample only**: never used to claim a gain | `miniflux/v2` at `v2.3.3` |
+
+Each corpus holds a `manifest.json` (items, ground truth, provenance, who wrote the
+text), the code graph's symbol rows as `symbols.json.gz`, and `baseline-A0.{json,md}`.
+
+- **Miniflux held-out:** PRs merged after `v2.3.3`, each rewritten in analyst
+  language by a writer who had not seen the diff; ground truth is the PR's non-test,
+  non-documentation files that the `v2.3.3` graph holds. Who wrote the text, the
+  order of the steps, which PRs were left out and why:
+  [`ANNOTATION.md`](corpus/localization-01-miniflux-heldout/ANNOTATION.md).
+- **Fixture portfolio:** requirements written against three tiny public fixture
+  repositories, each with its expected repositories, files and portfolio verdict
+  (`implemented` / `partial` / `gap`). The three repositories hold **ten code files**
+  between them, so Recall@10 is 1.00 for any arm that ranks ten files: read
+  Recall@5, edit precision and MRR there.
+- **Run-7 in-sample:** the six developer requests of walkthrough run 7 and their 19
+  reference files (`docs/walkthroughs/TEST_PLAN.md`), less the two the graph does not
+  hold. The `change-seeds.ts` cut sizes were tuned on these six.
+
+**Licences.** The requirement text and labels written for METIS are CC0-1.0. The
+Miniflux corpora also quote each PR's or issue's own title and description, and
+their symbol rows carry the first lines of Miniflux functions (the text production
+embeds); both are Apache-2.0, from `miniflux/v2`, kept for provenance and
+reproducibility.
+
+### Running it
+
+```bash
+pnpm eval:localization                 # A0 on both held-out sets, 3 runs, $35 cap
+pnpm eval:localization --arms A0,A4    # an arm against A0, paired, on the same items
+pnpm eval:localization --in-sample     # also the run-7 six (a sanity check, not a claim)
+pnpm eval:localization --table-guard   # + table precision on impact-recall-01 (live provider)
+pnpm eval:localization --budget 25     # the dollar cap; the run stops before it is passed
+```
+
+Arms are chosen only by `--arms`; no `IMPACT_LLM_*` variable changes what is
+measured, and every report names each arm's configuration. Reports go to
+`eval-results/` (untracked); `--baseline` (A0 alone) rewrites the committed
+`baseline-A0.*`.
+
+A0 searches with production's hybrid ranking, so it needs a vector for every symbol
+and every query. The fixture set's vectors are committed. Miniflux's (about 5.6 MB)
+are not: record them once with the local model, which takes about six minutes.
+
+```bash
+EMBED_BACKEND=xenova EMBED_MODEL=Alibaba-NLP/gte-modernbert-base \
+TRANSFORMERS_CACHE=~/.cache/metis-transformers HF_HUB_OFFLINE=1 \
+pnpm eval:localization --embed --in-sample
+```
+
+Without `--embed` a missing vector fails the run instead of letting the search fall
+back to BM25 under the hybrid label.
+
+### Rebuilding a corpus
+
+```bash
+cd server
+DATABASE_URL=file:/abs/scratch.db pnpm exec prisma migrate deploy
+# the real code-graph ingest of each repository, at the manifest's pinned commit
+DATABASE_URL=file:/abs/scratch.db pnpm exec tsx scripts/build-localization-corpus.ts \
+  symbols --corpus localization-01-miniflux-heldout --root miniflux=/abs/miniflux-at-c4d54f87
+# each upstream-PR item's ground truth, from the merged PR's file list (gh api)
+pnpm exec tsx scripts/build-localization-corpus.ts ground-truth \
+  --corpus localization-01-miniflux-heldout
+```
+
+The symbol rows were built with SQL lineage off (no sidecar), so they carry no
+lineage writer: the read-path rule of #1135 (`writesData`) is inert on them.

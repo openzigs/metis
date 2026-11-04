@@ -189,6 +189,11 @@ eval-results/
 # refuses to re-include a path whose parent directory is excluded.
 eval-data/corpus/*/docs/
 
+# #1753 — the Miniflux localization corpus's recorded embeddings: 3,533 symbol
+# vectors in half precision, about 5.6 MB, regenerated from the committed
+# `symbols.json.gz` by `pnpm eval:localization --embed` and the local model. The fixture-portfolio corpus's recording (0.15 MB) stays tracked.
+eval-data/corpus/localization-01-miniflux-heldout/vectors.*
+
 # Local SAML test harness (#523) — the throwaway mock-IdP signing keypair is
 # generated per-developer by scripts/saml-harness/up.sh. NEVER commit private
 # keys (also trips the Semgrep secret-detection gate).

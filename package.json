@@ -35,6 +35,7 @@
     "eval:codegraph": "pnpm --filter @metis/server eval:codegraph",
     "eval:reqmap": "pnpm --filter @metis/server eval:reqmap",
     "eval:impact-recall": "pnpm --filter @metis/server eval:impact-recall",
+    "eval:localization": "pnpm --filter @metis/server eval:localization",
     "eval:verification": "pnpm --filter @metis/server eval:verification",
     "eval:harvest-feedback": "pnpm --filter @metis/server eval:harvest-feedback",
     "eval:embed-retrieval": "pnpm --filter @metis/server eval:embed-retrieval",

@@ -1,0 +1,184 @@
+{
+  "id": "localization-02-fixture-portfolio",
+  "description": "Held-out file-localization and portfolio-verdict set (#1753, reused by #1766): analyst requirements against the three public METIS fixture repositories (orders, billing, notify), each with the expected repositories, files and gap verdict.",
+  "purpose": "held-out",
+  "license": "CC0-1.0 (requirement text and labels written for METIS; the fixture repositories are METIS's own).",
+  "repos": [
+    {
+      "name": "orders",
+      "url": "https://github.com/openzigs/metis-fixture-orders",
+      "ref": "main",
+      "sha": "4d8bb2ba1dc3e0c06490cc6a24b3198ca616dd33"
+    },
+    {
+      "name": "billing",
+      "url": "https://github.com/openzigs/metis-fixture-billing",
+      "ref": "main",
+      "sha": "1f24ead4697401c10df2751d0eb7ee4cbfc91d0a"
+    },
+    {
+      "name": "notify",
+      "url": "https://github.com/openzigs/metis-fixture-notify",
+      "ref": "main",
+      "sha": "5d092497a0d74d7cfd25153181a114dfe4ce521c"
+    }
+  ],
+  "symbols": "symbols.json.gz",
+  "annotation": {
+    "rewrittenBy": "claude-opus-5-5 (an AI coding agent), dispatched on issue #1753",
+    "rewrittenAt": "2026-11-04",
+    "sawDiffsBeforeRewriting": true,
+    "procedure": "Authored, not rewritten: there is no upstream change to hide. The writer read the three repositories at the pinned commits, wrote each requirement as a business analyst would (no file, function or identifier names; the loader rejects code-shaped wording), then recorded the files a developer would edit and the portfolio verdict. Ground truth lists only existing files: a file the change would create is not a localization target.",
+    "reviewedBy": null
+  },
+  "items": [
+    {
+      "id": "FX-01",
+      "title": "Customers can change the email address we hold for them",
+      "text": "A customer who moves to a new email address should be able to update it with us, so that invoices and receipts go to the new address from then on. Today the address can only be set when the customer is first registered.",
+      "expectedFiles": ["orders:src/db/orders-repo.ts", "orders:src/routes/orders.ts"],
+      "expectedRepos": ["orders"],
+      "expectedVerdict": "partial",
+      "source": { "kind": "authored" }
+    },
+    {
+      "id": "FX-02",
+      "title": "Look up one order together with the customer who placed it",
+      "text": "Support staff need to open a single order by its reference and see the amount, the currency and the name and email of the customer who placed it, so they can answer a billing question without searching two systems.",
+      "expectedFiles": ["orders:src/db/orders-repo.ts", "orders:src/routes/orders.ts"],
+      "expectedRepos": ["orders"],
+      "expectedVerdict": "partial",
+      "source": { "kind": "authored" }
+    },
+    {
+      "id": "FX-03",
+      "title": "Tell the rest of the business when an order is placed",
+      "text": "As soon as an order is accepted, the other teams must be told about it, with the customer, the amount and the currency, so that it can be invoiced without anyone re-keying it.",
+      "expectedFiles": ["orders:src/events/publisher.ts", "orders:src/routes/orders.ts"],
+      "expectedRepos": ["orders"],
+      "expectedVerdict": "implemented",
+      "source": { "kind": "authored" }
+    },
+    {
+      "id": "FX-04",
+      "title": "Raise an invoice for every new order",
+      "text": "Every order a customer places should produce an invoice for the full order amount, in the order's currency, addressed to the customer's email address.",
+      "expectedFiles": ["billing:src/consumers/order-created.ts", "billing:src/db/billing-repo.ts"],
+      "expectedRepos": ["billing"],
+      "expectedVerdict": "implemented",
+      "source": { "kind": "authored" }
+    },
+    {
+      "id": "FX-05",
+      "title": "Email the customer a receipt for each invoice",
+      "text": "When an invoice is issued, the customer should receive a receipt by email stating the amount we received and the currency.",
+      "expectedFiles": ["notify:src/consumers/invoice-issued.ts", "notify:src/db/notify-repo.ts"],
+      "expectedRepos": ["notify"],
+      "expectedVerdict": "implemented",
+      "source": { "kind": "authored" }
+    },
+    {
+      "id": "FX-06",
+      "title": "Keep a phone number for each customer",
+      "text": "We want to text customers about their deliveries, so each customer record needs a mobile phone number, captured when the customer is registered and returned wherever customer details are shown.",
+      "expectedFiles": ["orders:src/db/orders-repo.ts", "orders:src/types/order.ts"],
+      "expectedRepos": ["orders"],
+      "expectedVerdict": "gap",
+      "excludedFiles": [{ "file": "orders:src/db/schema.sql", "reason": "not-in-code-graph" }],
+      "source": { "kind": "authored" }
+    },
+    {
+      "id": "FX-07",
+      "title": "Show the customer's name on every invoice",
+      "text": "Invoices currently identify the customer only by email address. Finance wants each invoice to carry the customer's full name as well, taken from the customer record at the time the invoice is raised.",
+      "expectedFiles": [
+        "billing:src/consumers/order-created.ts",
+        "billing:src/db/billing-repo.ts",
+        "billing:src/types/order.ts"
+      ],
+      "expectedRepos": ["billing"],
+      "expectedVerdict": "gap",
+      "excludedFiles": [{ "file": "billing:src/db/schema.sql", "reason": "not-in-code-graph" }],
+      "source": { "kind": "authored" }
+    },
+    {
+      "id": "FX-08",
+      "title": "Let customers view an invoice they were sent",
+      "text": "A customer who has lost the receipt email should be able to look up one of their invoices by its reference and see the order it belongs to, the amount and the currency.",
+      "expectedFiles": ["billing:src/db/billing-repo.ts", "billing:src/routes/invoices.ts"],
+      "expectedRepos": ["billing"],
+      "expectedVerdict": "partial",
+      "source": { "kind": "authored" }
+    },
+    {
+      "id": "FX-09",
+      "title": "Refund an order and issue a credit note",
+      "text": "When an order is refunded, the other teams must be told, finance must raise a credit note for the refunded amount against the original invoice, and the customer should be told by email that the money is on its way back.",
+      "expectedFiles": [
+        "billing:src/db/billing-repo.ts",
+        "billing:src/types/order.ts",
+        "orders:src/events/publisher.ts",
+        "orders:src/routes/orders.ts",
+        "orders:src/types/order.ts"
+      ],
+      "expectedRepos": ["billing", "orders"],
+      "expectedVerdict": "gap",
+      "source": { "kind": "authored" }
+    },
+    {
+      "id": "FX-10",
+      "title": "Show the currency symbol on receipts",
+      "text": "Receipt emails show the amount followed by a three-letter currency code. Customers find this confusing; the amount should be written the way people expect in that currency, with its symbol, for example a pound sign for sterling.",
+      "expectedFiles": ["notify:src/consumers/invoice-issued.ts"],
+      "expectedRepos": ["notify"],
+      "expectedVerdict": "partial",
+      "source": { "kind": "authored" }
+    },
+    {
+      "id": "FX-11",
+      "title": "Refuse orders with a zero or negative total",
+      "text": "Orders with a total of zero or less, or with no currency, should be turned away when they are placed, with a clear message, instead of being stored and invoiced.",
+      "expectedFiles": ["orders:src/routes/orders.ts"],
+      "expectedRepos": ["orders"],
+      "expectedVerdict": "gap",
+      "source": { "kind": "authored" }
+    },
+    {
+      "id": "FX-12",
+      "title": "Register a new customer",
+      "text": "Sales staff need to register a new customer, with a name and an email address, before that customer places a first order.",
+      "expectedFiles": ["orders:src/db/orders-repo.ts", "orders:src/routes/orders.ts"],
+      "expectedRepos": ["orders"],
+      "expectedVerdict": "partial",
+      "source": { "kind": "authored" }
+    },
+    {
+      "id": "FX-13",
+      "title": "Never invoice the same order twice",
+      "text": "If the announcement of a new order reaches finance a second time, for example after a retry, the customer must not be invoiced again for the same order.",
+      "expectedFiles": ["billing:src/consumers/order-created.ts", "billing:src/db/billing-repo.ts"],
+      "expectedRepos": ["billing"],
+      "expectedVerdict": "gap",
+      "excludedFiles": [{ "file": "billing:src/db/schema.sql", "reason": "not-in-code-graph" }],
+      "source": { "kind": "authored" }
+    },
+    {
+      "id": "FX-14",
+      "title": "Put the invoice number in the receipt subject line",
+      "text": "Customers who file their receipts want the invoice number in the subject of the receipt email, so they can find a particular receipt in their inbox.",
+      "expectedFiles": ["notify:src/consumers/invoice-issued.ts"],
+      "expectedRepos": ["notify"],
+      "expectedVerdict": "gap",
+      "source": { "kind": "authored" }
+    },
+    {
+      "id": "FX-15",
+      "title": "Record each order with its total and currency",
+      "text": "When a customer places an order, we must keep a record of it with the customer, the total amount and the currency, and confirm the order back to the customer.",
+      "expectedFiles": ["orders:src/db/orders-repo.ts", "orders:src/routes/orders.ts"],
+      "expectedRepos": ["orders"],
+      "expectedVerdict": "implemented",
+      "source": { "kind": "authored" }
+    }
+  ]
+}

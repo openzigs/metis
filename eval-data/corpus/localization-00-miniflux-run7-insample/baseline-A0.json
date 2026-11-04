@@ -1,0 +1,372 @@
+{
+  "kind": "localization-eval",
+  "corpus": {
+    "id": "localization-00-miniflux-run7-insample",
+    "purpose": "in-sample",
+    "items": 6,
+    "repos": [
+      {
+        "name": "miniflux",
+        "sha": "c4d54f87a81b30aa173fddf05d7ff83ae7da5796"
+      }
+    ]
+  },
+  "runsRequested": 3,
+  "budgetUsd": 35,
+  "spentUsd": 0,
+  "stopped": null,
+  "arms": [
+    {
+      "id": "A0",
+      "label": "A0 — shipped seeding (resolveChangeSeeds over HybridCodeSearch), no model",
+      "configuration": {
+        "stage": "resolveChangeSeeds (impact-analysis/change-seeds.ts)",
+        "extractor": "shapeAwareChangeExtractor",
+        "searcher": "HybridCodeSearch (BM25 + symbol vectors, RRF)",
+        "bm25Weight": 0.05,
+        "vectorWeight": 0.95,
+        "embeddingModel": "Alibaba-NLP/gte-modernbert-base",
+        "symbols": "d847ad3c5175",
+        "SEED_POOL_PER_QUERY": 120,
+        "EDIT_POOL": 60,
+        "MAX_EDIT_FILES": 5,
+        "MIN_FILE_SHARE": 0.5,
+        "FILE_HIT_DECAY": 0.5,
+        "MAX_SYMBOLS_PER_EDIT_FILE": 4,
+        "llm": false
+      },
+      "completedRuns": 3,
+      "perItemRuns": {
+        "R7-4478": [
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.4,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.18750366700000018
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.4,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.03375720799999999
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.4,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.06959254200000009
+          }
+        ],
+        "R7-4511": [
+          {
+            "recallAt5": 0.3333333333333333,
+            "recallAt10": 0.6666666666666666,
+            "editPrecision": 0.4,
+            "reciprocalRank": 0.3333333333333333,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.027524584000000005
+          },
+          {
+            "recallAt5": 0.3333333333333333,
+            "recallAt10": 0.6666666666666666,
+            "editPrecision": 0.4,
+            "reciprocalRank": 0.3333333333333333,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.027517999999999803
+          },
+          {
+            "recallAt5": 0.3333333333333333,
+            "recallAt10": 0.6666666666666666,
+            "editPrecision": 0.4,
+            "reciprocalRank": 0.3333333333333333,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.01796349999999984
+          }
+        ],
+        "R7-4336": [
+          {
+            "recallAt5": 0.4,
+            "recallAt10": 0.6,
+            "editPrecision": 0.4,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.02566445899999985
+          },
+          {
+            "recallAt5": 0.4,
+            "recallAt10": 0.6,
+            "editPrecision": 0.4,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.04898399999999992
+          },
+          {
+            "recallAt5": 0.4,
+            "recallAt10": 0.6,
+            "editPrecision": 0.4,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.06923291599999994
+          }
+        ],
+        "R7-4479": [
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.3333333333333333,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 3,
+            "costUsd": 0,
+            "seconds": 0.06432679200000006
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.3333333333333333,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 3,
+            "costUsd": 0,
+            "seconds": 0.016536166999999977
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.3333333333333333,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 3,
+            "costUsd": 0,
+            "seconds": 0.05559916599999997
+          }
+        ],
+        "R7-4386": [
+          {
+            "recallAt5": 0,
+            "recallAt10": 0,
+            "editPrecision": 0,
+            "reciprocalRank": 0.058823529411764705,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.07432429200000001
+          },
+          {
+            "recallAt5": 0,
+            "recallAt10": 0,
+            "editPrecision": 0,
+            "reciprocalRank": 0.058823529411764705,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.09566854199999988
+          },
+          {
+            "recallAt5": 0,
+            "recallAt10": 0,
+            "editPrecision": 0,
+            "reciprocalRank": 0.058823529411764705,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.05773070800000005
+          }
+        ],
+        "R7-4456": [
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.08082854100000009
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.014475957999999992
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.04592166600000019
+          }
+        ]
+      },
+      "items": [
+        {
+          "id": "R7-4478",
+          "runs": 3,
+          "recallAt5": 1,
+          "recallAt10": 1,
+          "editPrecision": 0.4000000000000001,
+          "reciprocalRank": 0.5,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 5,
+          "costUsd": 0,
+          "seconds": 0.09695113900000008
+        },
+        {
+          "id": "R7-4511",
+          "runs": 3,
+          "recallAt5": 0.3333333333333333,
+          "recallAt10": 0.6666666666666666,
+          "editPrecision": 0.4000000000000001,
+          "reciprocalRank": 0.3333333333333333,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 5,
+          "costUsd": 0,
+          "seconds": 0.02433536133333322
+        },
+        {
+          "id": "R7-4336",
+          "runs": 3,
+          "recallAt5": 0.4000000000000001,
+          "recallAt10": 0.6,
+          "editPrecision": 0.4000000000000001,
+          "reciprocalRank": 1,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 5,
+          "costUsd": 0,
+          "seconds": 0.047960458333333233
+        },
+        {
+          "id": "R7-4479",
+          "runs": 3,
+          "recallAt5": 1,
+          "recallAt10": 1,
+          "editPrecision": 0.3333333333333333,
+          "reciprocalRank": 0.5,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 3,
+          "costUsd": 0,
+          "seconds": 0.045487375000000003
+        },
+        {
+          "id": "R7-4386",
+          "runs": 3,
+          "recallAt5": 0,
+          "recallAt10": 0,
+          "editPrecision": 0,
+          "reciprocalRank": 0.0588235294117647,
+          "graphResolution": null,
+          "hitAt5": 0,
+          "hitAt10": 0,
+          "verdictAccuracy": null,
+          "editCandidateCount": 5,
+          "costUsd": 0,
+          "seconds": 0.07590784733333332
+        },
+        {
+          "id": "R7-4456",
+          "runs": 3,
+          "recallAt5": 1,
+          "recallAt10": 1,
+          "editPrecision": 0.20000000000000004,
+          "reciprocalRank": 1,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 5,
+          "costUsd": 0,
+          "seconds": 0.04707538833333342
+        }
+      ],
+      "aggregate": {
+        "items": 6,
+        "recallAt5": 0.6222222222222222,
+        "recallAt10": 0.7111111111111111,
+        "editPrecision": 0.2888888888888889,
+        "mrr": 0.5653594771241829,
+        "graphResolution": null,
+        "verdictAccuracy": null,
+        "itemsWithNoEditCandidate": 0,
+        "meanEditCandidates": 4.666666666666667,
+        "costUsdPerRequirement": 0,
+        "secondsPerRequirement": 0.05628626155555554,
+        "totalCostUsd": 0
+      },
+      "intervals": {
+        "recallAt5": [0.2888888888888889, 0.9],
+        "recallAt10": [0.38888888888888884, 0.9444444444444443],
+        "editPrecision": [0.16666666666666666, 0.388888888888889],
+        "reciprocalRank": [0.2973856209150327, 0.8333333333333334]
+      },
+      "tableGuard": {
+        "measured": false,
+        "reason": "not requested (pass --table-guard)"
+      }
+    }
+  ],
+  "comparisons": [],
+  "detectableGap": "At 6 items and a hit rate near 0.5 the standard error is about 20.4 points per arm, so a gap needs roughly 41 to 57 points to be significant. A smaller difference is reported as \"no measurable difference\", not as a win.",
+  "generatedAt": "2026-11-04T11:31:58.419Z"
+}

@@ -1,0 +1,830 @@
+{
+  "kind": "localization-eval",
+  "corpus": {
+    "id": "localization-02-fixture-portfolio",
+    "purpose": "held-out",
+    "items": 15,
+    "repos": [
+      {
+        "name": "orders",
+        "sha": "4d8bb2ba1dc3e0c06490cc6a24b3198ca616dd33"
+      },
+      {
+        "name": "billing",
+        "sha": "1f24ead4697401c10df2751d0eb7ee4cbfc91d0a"
+      },
+      {
+        "name": "notify",
+        "sha": "5d092497a0d74d7cfd25153181a114dfe4ce521c"
+      }
+    ]
+  },
+  "runsRequested": 3,
+  "budgetUsd": 35,
+  "spentUsd": 0,
+  "stopped": null,
+  "arms": [
+    {
+      "id": "A0",
+      "label": "A0 — shipped seeding (resolveChangeSeeds over HybridCodeSearch), no model",
+      "configuration": {
+        "stage": "resolveChangeSeeds (impact-analysis/change-seeds.ts)",
+        "extractor": "shapeAwareChangeExtractor",
+        "searcher": "HybridCodeSearch (BM25 + symbol vectors, RRF)",
+        "bm25Weight": 0.05,
+        "vectorWeight": 0.95,
+        "embeddingModel": "Alibaba-NLP/gte-modernbert-base",
+        "symbols": "105ac7e8ab9e",
+        "SEED_POOL_PER_QUERY": 120,
+        "EDIT_POOL": 60,
+        "MAX_EDIT_FILES": 5,
+        "MIN_FILE_SHARE": 0.5,
+        "FILE_HIT_DECAY": 0.5,
+        "MAX_SYMBOLS_PER_EDIT_FILE": 4,
+        "llm": false
+      },
+      "completedRuns": 3,
+      "perItemRuns": {
+        "FX-01": [
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0010732499999999163
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005450419999997394
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005212079999996604
+          }
+        ],
+        "FX-02": [
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005768339999999625
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005615419999999177
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005223340000002281
+          }
+        ],
+        "FX-03": [
+          {
+            "recallAt5": 0,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.14285714285714285,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005605000000000473
+          },
+          {
+            "recallAt5": 0,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.14285714285714285,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005671659999998155
+          },
+          {
+            "recallAt5": 0,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.14285714285714285,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0013342499999998835
+          }
+        ],
+        "FX-04": [
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.3333333333333333,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005450000000000728
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.3333333333333333,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0007966670000000704
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.3333333333333333,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005138339999998607
+          }
+        ],
+        "FX-05": [
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.2,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.000537333000000217
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.2,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0006290000000003602
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.2,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0004947919999999613
+          }
+        ],
+        "FX-06": [
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005339579999999841
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005612920000003214
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0004942089999999552
+          }
+        ],
+        "FX-07": [
+          {
+            "recallAt5": 0.6666666666666666,
+            "recallAt10": 1,
+            "editPrecision": 0.3,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.000547790999999961
+          },
+          {
+            "recallAt5": 0.6666666666666666,
+            "recallAt10": 1,
+            "editPrecision": 0.3,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005133340000002135
+          },
+          {
+            "recallAt5": 0.6666666666666666,
+            "recallAt10": 1,
+            "editPrecision": 0.3,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0004891250000000582
+          }
+        ],
+        "FX-08": [
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005395840000001044
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0006527089999999589
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0006660000000001673
+          }
+        ],
+        "FX-09": [
+          {
+            "recallAt5": 0.4,
+            "recallAt10": 1,
+            "editPrecision": 0.5,
+            "reciprocalRank": 0.25,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.000554834000000028
+          },
+          {
+            "recallAt5": 0.4,
+            "recallAt10": 1,
+            "editPrecision": 0.5,
+            "reciprocalRank": 0.25,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0008537079999996422
+          },
+          {
+            "recallAt5": 0.4,
+            "recallAt10": 1,
+            "editPrecision": 0.5,
+            "reciprocalRank": 0.25,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0009206659999999829
+          }
+        ],
+        "FX-10": [
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.1,
+            "reciprocalRank": 0.3333333333333333,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005194580000002134
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.1,
+            "reciprocalRank": 0.3333333333333333,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005381670000001577
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.1,
+            "reciprocalRank": 0.3333333333333333,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0004951670000000376
+          }
+        ],
+        "FX-11": [
+          {
+            "recallAt5": 0,
+            "recallAt10": 1,
+            "editPrecision": 0.1,
+            "reciprocalRank": 0.125,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005562499999996362
+          },
+          {
+            "recallAt5": 0,
+            "recallAt10": 1,
+            "editPrecision": 0.1,
+            "reciprocalRank": 0.125,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005186670000002778
+          },
+          {
+            "recallAt5": 0,
+            "recallAt10": 1,
+            "editPrecision": 0.1,
+            "reciprocalRank": 0.125,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005044170000001032
+          }
+        ],
+        "FX-12": [
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005422910000002048
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0004862499999999272
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0013410000000003493
+          }
+        ],
+        "FX-13": [
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0013844580000004498
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005076669999998558
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0006204170000000886
+          }
+        ],
+        "FX-14": [
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.1,
+            "reciprocalRank": 0.25,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005523330000000897
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.1,
+            "reciprocalRank": 0.25,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0006445000000003347
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.1,
+            "reciprocalRank": 0.25,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005160000000000764
+          }
+        ],
+        "FX-15": [
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0006064590000000863
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.000535207999999784
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 10,
+            "costUsd": 0,
+            "seconds": 0.0005100000000002183
+          }
+        ]
+      },
+      "items": [
+        {
+          "id": "FX-01",
+          "runs": 3,
+          "recallAt5": 0.5,
+          "recallAt10": 1,
+          "editPrecision": 0.20000000000000004,
+          "reciprocalRank": 1,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 10,
+          "costUsd": 0,
+          "seconds": 0.0007131666666664386
+        },
+        {
+          "id": "FX-02",
+          "runs": 3,
+          "recallAt5": 0.5,
+          "recallAt10": 1,
+          "editPrecision": 0.20000000000000004,
+          "reciprocalRank": 1,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 10,
+          "costUsd": 0,
+          "seconds": 0.0005535700000000361
+        },
+        {
+          "id": "FX-03",
+          "runs": 3,
+          "recallAt5": 0,
+          "recallAt10": 1,
+          "editPrecision": 0.20000000000000004,
+          "reciprocalRank": 0.14285714285714285,
+          "graphResolution": null,
+          "hitAt5": 0,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 10,
+          "costUsd": 0,
+          "seconds": 0.0008206386666665821
+        },
+        {
+          "id": "FX-04",
+          "runs": 3,
+          "recallAt5": 0.5,
+          "recallAt10": 1,
+          "editPrecision": 0.20000000000000004,
+          "reciprocalRank": 0.3333333333333333,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 10,
+          "costUsd": 0,
+          "seconds": 0.0006185003333333346
+        },
+        {
+          "id": "FX-05",
+          "runs": 3,
+          "recallAt5": 0.5,
+          "recallAt10": 1,
+          "editPrecision": 0.20000000000000004,
+          "reciprocalRank": 0.20000000000000004,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 10,
+          "costUsd": 0,
+          "seconds": 0.0005537083333335128
+        },
+        {
+          "id": "FX-06",
+          "runs": 3,
+          "recallAt5": 1,
+          "recallAt10": 1,
+          "editPrecision": 0.20000000000000004,
+          "reciprocalRank": 1,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 10,
+          "costUsd": 0,
+          "seconds": 0.0005298196666667535
+        },
+        {
+          "id": "FX-07",
+          "runs": 3,
+          "recallAt5": 0.6666666666666666,
+          "recallAt10": 1,
+          "editPrecision": 0.3,
+          "reciprocalRank": 0.5,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 10,
+          "costUsd": 0,
+          "seconds": 0.0005167500000000776
+        },
+        {
+          "id": "FX-08",
+          "runs": 3,
+          "recallAt5": 0.5,
+          "recallAt10": 1,
+          "editPrecision": 0.20000000000000004,
+          "reciprocalRank": 0.5,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 10,
+          "costUsd": 0,
+          "seconds": 0.0006194310000000769
+        },
+        {
+          "id": "FX-09",
+          "runs": 3,
+          "recallAt5": 0.4000000000000001,
+          "recallAt10": 1,
+          "editPrecision": 0.5,
+          "reciprocalRank": 0.25,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 10,
+          "costUsd": 0,
+          "seconds": 0.0007764026666665511
+        },
+        {
+          "id": "FX-10",
+          "runs": 3,
+          "recallAt5": 1,
+          "recallAt10": 1,
+          "editPrecision": 0.10000000000000002,
+          "reciprocalRank": 0.3333333333333333,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 10,
+          "costUsd": 0,
+          "seconds": 0.0005175973333334696
+        },
+        {
+          "id": "FX-11",
+          "runs": 3,
+          "recallAt5": 0,
+          "recallAt10": 1,
+          "editPrecision": 0.10000000000000002,
+          "reciprocalRank": 0.125,
+          "graphResolution": null,
+          "hitAt5": 0,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 10,
+          "costUsd": 0,
+          "seconds": 0.0005264446666666724
+        },
+        {
+          "id": "FX-12",
+          "runs": 3,
+          "recallAt5": 0.5,
+          "recallAt10": 1,
+          "editPrecision": 0.20000000000000004,
+          "reciprocalRank": 1,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 10,
+          "costUsd": 0,
+          "seconds": 0.0007898470000001606
+        },
+        {
+          "id": "FX-13",
+          "runs": 3,
+          "recallAt5": 0.5,
+          "recallAt10": 1,
+          "editPrecision": 0.20000000000000004,
+          "reciprocalRank": 0.5,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 10,
+          "costUsd": 0,
+          "seconds": 0.0008375140000001314
+        },
+        {
+          "id": "FX-14",
+          "runs": 3,
+          "recallAt5": 1,
+          "recallAt10": 1,
+          "editPrecision": 0.10000000000000002,
+          "reciprocalRank": 0.25,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 10,
+          "costUsd": 0,
+          "seconds": 0.0005709443333335003
+        },
+        {
+          "id": "FX-15",
+          "runs": 3,
+          "recallAt5": 0.5,
+          "recallAt10": 1,
+          "editPrecision": 0.20000000000000004,
+          "reciprocalRank": 1,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 10,
+          "costUsd": 0,
+          "seconds": 0.0005505556666666961
+        }
+      ],
+      "aggregate": {
+        "items": 15,
+        "recallAt5": 0.5377777777777778,
+        "recallAt10": 1,
+        "editPrecision": 0.20666666666666672,
+        "mrr": 0.5423015873015873,
+        "graphResolution": null,
+        "verdictAccuracy": null,
+        "itemsWithNoEditCandidate": 0,
+        "meanEditCandidates": 10,
+        "costUsdPerRequirement": 0,
+        "secondsPerRequirement": 0.000632992688888933,
+        "totalCostUsd": 0
+      },
+      "intervals": {
+        "recallAt5": [0.39333333333333337, 0.6822222222222223],
+        "recallAt10": [1, 1],
+        "editPrecision": [0.16666666666666669, 0.26],
+        "reciprocalRank": [0.37443452380952386, 0.7190575396825394]
+      },
+      "tableGuard": {
+        "measured": false,
+        "reason": "not requested (pass --table-guard)"
+      }
+    }
+  ],
+  "comparisons": [],
+  "detectableGap": "At 15 items and a hit rate near 0.5 the standard error is about 12.9 points per arm, so a gap needs roughly 26 to 36 points to be significant. A smaller difference is reported as \"no measurable difference\", not as a win.",
+  "generatedAt": "2026-11-04T11:26:19.812Z"
+}

@@ -1,0 +1,1217 @@
+{
+  "id": "localization-01-miniflux-heldout",
+  "description": "Held-out file-localization set (#1753): Miniflux PRs merged after v2.3.3, each rewritten in analyst language, scored against the PR's non-test files in the v2.3.3 code graph.",
+  "purpose": "held-out",
+  "license": "Requirement text: CC0-1.0 (written for METIS). Original PR text: quoted from miniflux/v2 (Apache-2.0) for provenance.",
+  "repos": [
+    {
+      "name": "miniflux",
+      "url": "https://github.com/miniflux/v2",
+      "ref": "2.3.3",
+      "sha": "c4d54f87a81b30aa173fddf05d7ff83ae7da5796"
+    }
+  ],
+  "symbols": "symbols.json.gz",
+  "annotation": {
+    "rewrittenBy": "claude-opus-5-5 (an AI coding agent), dispatched on issue #1753",
+    "rewrittenAt": "2026-11-04T11:01:06Z",
+    "sawDiffsBeforeRewriting": false,
+    "procedure": "See ANNOTATION.md. The PR titles and descriptions were fetched first and every rewrite was written and saved; only then were the PR file lists fetched. No diff was read at any point. Several PR descriptions name files or functions; the rewrites name none, and the loader rejects code-shaped wording.",
+    "reviewedBy": null
+  },
+  "allowedTerms": ["YouTube"],
+  "items": [
+    {
+      "id": "MF-4483",
+      "title": "Only treat genuine YouTube links as YouTube videos",
+      "text": "Articles whose link merely ends with the letters of the YouTube domain, such as a look-alike site, are currently treated as YouTube videos and get a video player embedded in them. Only links that really belong to YouTube or one of its subdomains should be turned into an embedded video.",
+      "expectedFiles": ["miniflux:internal/reader/rewrite/content_rewrite_functions.go"],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/reader/rewrite/content_rewrite_test.go",
+          "reason": "test"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4483,
+        "mergeSha": "a694ee71b299d5e5b9f89bbc5454e04022afb770",
+        "mergedAt": "2026-08-02T15:12:32Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix: enforce domain boundary in YouTube URL hostname check",
+          "body": "**Description:** `getYoutubVideoIDFromURL` (internal/reader/rewrite/content_rewrite_functions.go) checked `strings.HasSuffix(u.Hostname(), \"youtube.com\")` with no leading dot, so any hostname that merely *ends* in that string (e.g. `notyoutube.com`, `totally-legit-youtube.com`) passed the check exactly like `www.youtube.com`. Fixed by requiring an exact match on `youtube.com` or a suffix match on `.youtube.com`, mirroring the existing (correct) pattern in `referer_override.go` for the same class of hostname check (e.g. `strings.HasSuffix(hostname, \".cdninstagram.com\")`).\n\n**Motivation:** A feed entry whose URL hostname ends in `youtube.com` without actually being a YouTube subdomain gets misidentified as a YouTube video by the `add_youtube_video` / `add_youtube_video_using_invidious_player` content-rewrite rules, and rewritten into a YouTube/Invidious embed iframe using the attacker-controlled `?v=` query value as the video ID. A malicious or compromised feed could exploit this. (Severity is limited — the iframe `src` domain itself is still the trusted embed domain, so this isn't an open-redirect/XSS primitive, but it's a genuine content-misclassification bug.)\n\n**Testing:** Added `TestRewriteYoutubeLinkRejectsLookalikeDomain`, asserting a `notyoutube.com/watch?v=...` entry is left unmodified by `add_youtube_video`. Round-trip verified: the new test fails against the pre-fix code and passes against the fix. `go build ./...`, `go vet ./...`, `gofmt -l`, and `go test ./internal/reader/rewrite/...` all clean.\n\n**Breaking Changes:** None — this only narrows which hostnames are treated as YouTube; no legitimate `*.youtube.com`/`youtube.com` URL changes behavior.\n\n**Related Issues:** None found via search; opening fresh."
+        }
+      }
+    },
+    {
+      "id": "MF-4495",
+      "title": "Refuse embedded frames that are not ordinary web addresses",
+      "text": "Articles may contain embedded frames from approved video sites. A frame whose address uses a scripting or other non-web scheme can currently slip through because only the site name is checked. Embedded frames must only be kept when their address is a normal web address on an approved site.",
+      "expectedFiles": ["miniflux:internal/reader/sanitizer/sanitizer.go"],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/reader/sanitizer/sanitizer_test.go",
+          "reason": "test"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4495,
+        "mergeSha": "3b5a7ee47bb1605e49c59b49075b74fc6e501af3",
+        "mergedAt": "2026-08-08T18:05:38Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix(sanitizer): reject non-web schemes in iframe source URLs",
+          "body": "The iframe allowlist was checked against the URL host alone, which `url.Parse` populates regardless of scheme. A source such as:\n\n```\njavascript://youtube.com/%0Aalert(document.domain)\n```\n\ntherefore matched an allowlisted domain and was rendered as-is.\n\nParse the source URL and only accept `http`, `https`, and protocol-relative URLs before looking up the domain. Comparisons keep using the host with its port so that `INVIDIOUS_INSTANCE` values that include one still match.\n"
+        }
+      }
+    },
+    {
+      "id": "MF-4500",
+      "title": "Return readers to the page they asked for after signing in with a passkey",
+      "text": "When a reader opens a link while signed out, signs in with a passkey, and is then sent to the home page, they lose the page they were trying to reach. After a passkey sign-in they should land on the page they originally asked for, as long as it is a page of this site, otherwise on their usual home page.",
+      "expectedFiles": [
+        "miniflux:internal/ui/static/js/webauthn_handler.js",
+        "miniflux:internal/ui/webauthn.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4500,
+        "mergeSha": "106cdd09e1557222303f3ed1376e1dadf0638621",
+        "mergedAt": "2026-08-11T11:11:17Z",
+        "closingIssues": [4494],
+        "original": {
+          "title": "fix(webauthn): preserve redirect_url after passkey login",
+          "body": "The passkey login flow reloaded the login page once the assertion was validated. Since the user was authenticated at that point, the login handler redirected to the default home page and the `redirect_url` query parameter was dropped.\n\nThe client now forwards `redirect_url` to the login finish endpoint, which validates it as a relative path and returns the destination, falling back to the user's default home page.\n\nFixes: #4494\n"
+        }
+      }
+    },
+    {
+      "id": "MF-4510",
+      "title": "Grant administrator rights from the company identity provider",
+      "text": "Organisations that sign people in through their own single sign-on provider want to manage who is an administrator in that provider, not in Miniflux. An operator should be able to name a group in the sign-on provider whose members become administrators, and to request the extra information needed to read group membership. Administrator rights should be brought up to date every time a person signs in this way.",
+      "expectedFiles": [
+        "miniflux:internal/config/options.go",
+        "miniflux:internal/oauth2/oidc.go",
+        "miniflux:internal/oauth2/profile.go",
+        "miniflux:internal/ui/oauth2_callback.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:miniflux.1",
+          "reason": "not-in-code-graph"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4510,
+        "mergeSha": "05b24c91a92a97b997f214686b4cfd2d896887dd",
+        "mergedAt": "2026-10-20T17:00:53Z",
+        "closingIssues": [3874, 4509],
+        "original": {
+          "title": "feat(oauth2): admin role mapping",
+          "body": "## Description\r\n\r\nOptionally allows users to map the admin role from OAuth claims.\r\n\r\nThe following three config options are added:\r\n\r\n- `OAUTH2_ADDITIONAL_SCOPES`: Allows the user to request additional scopes from the IDP (e.g. `groups`)\r\n- `OAUTH2_GROUP_CLAIM`: The claim that contains user groups\r\n- `OAUTH2_ADMIN_GROUP`: The value of the group claim that identifies a user as an admin\r\n\r\nIf those options are set, on every OAuth2 login permissions are updated.\r\n\r\n⚠️ I only implemented the feature for the OIDC provider type, not for Google, as I don't think that this feature is really useful in combination with public OAuth2 providers. I'd be happy to hear your opinion on this case. Should I rename the options to something like `OAUTH2_OIDC_ADDITIONAL_SCOPES` or similar?\r\n\r\n## Motivation\r\n\r\nThis allows to fully handle user management externally in a single location (IDP) and removes the necessity to create a local admin in the first place.\r\n\r\n## Testing\r\n\r\nI built a Docker image with `make`, used it to set up a small instance with my personal OIDC provider configured, and tested the following:\r\n\r\n- when not providing any of the new configuration options, the application behaves the same as without the changes\r\n- when configuring the options correctly and signing in with a user that has the configured group, the user gains admin privileges\r\n- after removing the group from the user and signing in again, the user looses admin privileges\r\n- on misconfiguration (missing scope, claim, etc.) the user is treated like a regular user (without admin privileges)\r\n\r\n## Breaking Changes\r\n\r\nThere are no breaking changes.\r\n\r\n## Related Issues\r\n\r\nFixes #4509\r\n\r\n## Guidelines\r\n\r\nHave you followed these guidelines?\r\n\r\n- [x] I have tested my changes\r\n- [x] There are no breaking changes\r\n- [x] I have thoroughly tested my changes and verified there are no regressions\r\n- [x] My commit messages follow the [Conventional Commits specification](https://www.conventionalcommits.org/)\r\n- [x] I have read and understood the [contribution guidelines](https://github.com/miniflux/v2/blob/main/CONTRIBUTING.md)\r\n"
+        }
+      }
+    },
+    {
+      "id": "MF-4516",
+      "title": "Do not crash when a reader with no categories adds a feed",
+      "text": "A reader who has deleted all of their categories and then adds a feed, imports a subscription list, or subscribes from a Google Reader compatible app makes the server crash. The server should refuse the request with a clear error explaining that a category is needed.",
+      "expectedFiles": [
+        "miniflux:internal/api/feed_handlers.go",
+        "miniflux:internal/api/opml_handlers.go",
+        "miniflux:internal/googlereader/handler.go",
+        "miniflux:internal/reader/opml/handler.go",
+        "miniflux:internal/storage/category.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/api/api_integration_test.go",
+          "reason": "test"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4516,
+        "mergeSha": "a7f93d8b8ebb091193f2d8857bb9c5a3d6052d87",
+        "mergedAt": "2026-08-23T21:57:52Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix: avoid panic when creating a feed without any category",
+          "body": "Deleting the last category leaves the user with no category at all. Creating a feed with `category_id` omitted or set to zero then dereferenced the nil result of `FirstCategory` and panicked. The same pattern existed in the OPML import and Google Reader subscribe paths.\n\n`FirstCategory` now returns `ErrNoCategory` instead of `(nil, nil)` when the user has no category, and all three call sites translate this error into a bad request response instead of panicking.\n"
+        }
+      }
+    },
+    {
+      "id": "MF-4520",
+      "title": "Explain why saving an article to Karakeep failed",
+      "text": "When sending an article to the Karakeep bookmarking service fails, the reader only sees a vague message about an unexpected reply. The error should report the status the Karakeep server answered with, so that a wrong address, a login problem or a proxy in the way can be told apart.",
+      "expectedFiles": ["miniflux:internal/integration/karakeep/karakeep.go"],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/integration/karakeep/karakeep_test.go",
+          "reason": "test"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4520,
+        "mergeSha": "249b340ce2bdbdf90985b8c898930e0c08cc7468",
+        "mergedAt": "2026-10-11T11:53:52Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix(karakeep): report the HTTP status when saving an entry fails",
+          "body": "Related to [#4477 — Unable to send entries to Karakeep](https://github.com/miniflux/v2/issues/4477).\n\n## Problem\n\n`SaveURL` checked `Content-Type` before the HTTP status. HTML error pages from a proxy, redirect, or incorrect endpoint therefore surfaced only as an unexpected content type, hiding the status that explains the failure.\n\n## Fix\n\nRemove the one-off content-type gate and follow the integration package's existing status-first pattern. Non-201 responses now report their status; successful responses still have to decode as the expected JSON payload.\n\n## Deliberately not done\n\nThis improves the diagnostic but does not change private-network policy or deployment configuration. Installations targeting a private Karakeep address may still need `INTEGRATION_ALLOW_PRIVATE_NETWORKS=1`.\n\n## User impact\n\nFailed saves now expose the upstream HTTP status, making proxy, authentication, and endpoint problems actionable instead of reporting only `text/html`.\n\n## Verification\n\n- `go test ./internal/integration/...` — all integration packages passed.\n- `go vet ./...` — passed.\n- `go build ./...` — passed.\n- `git diff --check` and `gofmt -d` — clean.\n\n- [x] I have tested my changes\n- [x] There are no breaking changes\n- [x] I have thoroughly tested my changes and verified there are no regressions\n- [x] My commit messages follow the [Conventional Commits specification](https://www.conventionalcommits.org/)\n- [x] I have read and understood the [contribution guidelines](https://github.com/miniflux/v2/blob/main/CONTRIBUTING.md)"
+        }
+      }
+    },
+    {
+      "id": "MF-4525",
+      "title": "Refuse Google Reader app sign-ins when no app password is set",
+      "text": "The Google Reader compatible sign-in can currently be passed without any password if the reader enabled the integration and left the password empty. Sign-in must be refused when no password is stored, and the integration settings must require both a user name and a password before it can be switched on.",
+      "expectedFiles": [
+        "miniflux:internal/googlereader/middleware.go",
+        "miniflux:internal/storage/integration.go",
+        "miniflux:internal/ui/form/integration.go",
+        "miniflux:internal/ui/integration_update.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/googlereader/middleware_test.go",
+          "reason": "test"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ar_SA.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/de_DE.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/el_EL.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/en_US.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/es_ES.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/fi_FI.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/fr_FR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/gl_ES.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/hi_IN.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/id_ID.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/it_IT.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ja_JP.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ko_KR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/nan_Latn_pehoeji.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/nl_NL.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/pl_PL.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/pt_BR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ro_RO.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ru_RU.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/tr_TR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/uk_UA.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/zh_CN.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/zh_TW.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/ui/form/integration_test.go",
+          "reason": "test"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4525,
+        "mergeSha": "589659ffc541ae2496871ef038f9856e8e956927",
+        "mergedAt": "2026-09-12T01:26:08Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix(googlereader): reject auth tokens when no password is set",
+          "body": "An empty stored password makes the token computable from the username alone. Also require both fields when enabling the integration."
+        }
+      }
+    },
+    {
+      "id": "MF-4526",
+      "title": "Make 'disable local sign-in' apply everywhere",
+      "text": "When an operator turns off sign-in with a local password, the setting only hides the web sign-in form. The programming interface still accepts the account password, and passwords can still be changed from the interface and from the settings page. With local sign-in disabled, password sign-in and password changes must be refused everywhere, and interface clients must use an access key.",
+      "expectedFiles": [
+        "miniflux:internal/api/middleware.go",
+        "miniflux:internal/ui/form/settings.go",
+        "miniflux:internal/validator/user.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/api/api_test.go",
+          "reason": "test"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ar_SA.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/de_DE.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/el_EL.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/en_US.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/es_ES.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/fi_FI.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/fr_FR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/gl_ES.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/hi_IN.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/id_ID.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/it_IT.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ja_JP.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ko_KR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/nan_Latn_pehoeji.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/nl_NL.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/pl_PL.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/pt_BR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ro_RO.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ru_RU.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/tr_TR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/uk_UA.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/zh_CN.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/zh_TW.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/validator/user_test.go",
+          "reason": "test"
+        },
+        {
+          "file": "miniflux:miniflux.1",
+          "reason": "not-in-code-graph"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4526,
+        "mergeSha": "76889f08b12c2577b37e524e645afa5dd46ff050",
+        "mergedAt": "2026-09-12T02:28:21Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix(auth): enforce DISABLE_LOCAL_AUTH on the API and password changes",
+          "body": "The setting only blocked the web login form. The REST API still accepted the account password over Basic Authentication, and passwords could still be changed through the API and the settings page.\n\nReject Basic Authentication and password modifications when local auth is disabled. API clients must use an API key instead.\n"
+        }
+      }
+    },
+    {
+      "id": "MF-4554",
+      "title": "Send new-article alerts to a Gotify notification server",
+      "text": "Readers who run their own Gotify notification server want to be alerted on their phone when new articles arrive. Add Gotify as an integration in the reader's integration settings, with the server address, an access token and a message priority, and send a notification for new articles when it is switched on.",
+      "expectedFiles": [
+        "miniflux:internal/database/migrations.go",
+        "miniflux:internal/integration/integration.go",
+        "miniflux:internal/model/integration.go",
+        "miniflux:internal/storage/integration.go",
+        "miniflux:internal/ui/form/integration.go",
+        "miniflux:internal/ui/integration_show.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:README.md",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/integration/gotify/gotify.go",
+          "reason": "added-by-change"
+        },
+        {
+          "file": "miniflux:internal/integration/gotify/gotify_test.go",
+          "reason": "test"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ar_SA.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/de_DE.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/el_EL.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/en_US.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/es_ES.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/fi_FI.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/fr_FR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/gl_ES.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/hi_IN.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/id_ID.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/it_IT.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ja_JP.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ko_KR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/nan_Latn_pehoeji.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/nl_NL.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/pl_PL.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/pt_BR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ro_RO.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ru_RU.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/tr_TR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/uk_UA.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/zh_CN.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/zh_TW.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/template/templates/views/integrations.html",
+          "reason": "not-in-code-graph"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4554,
+        "mergeSha": "f66e87603b3bfc2083ee7ea429cf6467e8a5d978",
+        "mergedAt": "2026-10-19T19:15:22Z",
+        "closingIssues": [4553],
+        "original": {
+          "title": "feat(integration): add Gotify push notification support",
+          "body": "This change adds Gotify push notification integration for new feed entries, resolving #4553.\n\n### Summary of Changes\n- Implemented internal/integration/gotify client with SendMessage and SendMessages.\n- Added Payload schema model with Validate() to enforce Gotify requirements (non-empty message, non-negative priority).\n- Extended Integration model, storage layer, and database migration (gotify_enabled, gotify_url, gotify_token, gotify_priority).\n- Added Gotify integration settings section in integrations.html and wired form handling.\n- Added Gotify push dispatch in PushEntries when GotifyEnabled is active.\n- Added translation keys across all 23 locale dictionary files.\n- Added unit tests covering successful message delivery, payload schema validation, endpoint path normalization, edge cases, and server error handling.\n- Updated README integrations list.\n\nCloses #4553"
+        }
+      }
+    },
+    {
+      "id": "MF-4556",
+      "title": "Let interface clients force a full refresh of a feed",
+      "text": "In the web interface a reader can force a feed to be refreshed, which reprocesses articles already stored, for example after changing the feed's rewrite rules. Clients of the programming interface cannot ask for this and must wait for new articles. The feed refresh request should accept an optional choice to force the refresh, and the official client library should offer it.",
+      "expectedFiles": ["miniflux:client/client.go", "miniflux:internal/api/feed_handlers.go"],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:client/client_test.go",
+          "reason": "test"
+        },
+        {
+          "file": "miniflux:internal/api/api_integration_test.go",
+          "reason": "test"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4556,
+        "mergeSha": "c573f2e0c3a38c56753d5f9040e130ff8a918092",
+        "mergedAt": "2026-10-20T17:23:20Z",
+        "closingIssues": [],
+        "original": {
+          "title": "feat(api): add force parameter to the feed refresh endpoint",
+          "body": "The web UI can force a feed refresh ([`internal/ui/feed_refresh.go#L20`](https://github.com/miniflux/v2/blob/c317f84bc3779bc5d936b75408b631589983c81a/internal/ui/feed_refresh.go#L20)), which skips the HTTP cache check and reprocesses entries that are already stored. The API endpoint always passes `false` ([`internal/api/feed_handlers.go#L82`](https://github.com/miniflux/v2/blob/c317f84bc3779bc5d936b75408b631589983c81a/internal/api/feed_handlers.go#L82)), so an API client that changes a feed's rewrite or scraper rules has no way to apply them to existing entries; it has to wait for new ones.\n\nThis adds an optional `force` query parameter:\n\n    PUT /v1/feeds/{feedID}/refresh?force=true\n\nIt passes straight through to `RefreshFeed`, the same as the UI. Without the parameter, behavior is unchanged. The Go client gets `ForceRefreshFeed` / `ForceRefreshFeedContext`.\n\nMy use case is a script that edits cleanup rules through the API and then wants to see them applied to the entries currently in the feed.\n\n**Testing:** unit test for the client request, and the existing refresh integration test now also calls `ForceRefreshFeed`. Unit tests pass with `-race`, and the full `internal/api` integration suite passes locally against Postgres 11 (same steps as `make integration-test`).\n\n**Breaking changes:** none; the parameter is optional and defaults to the current behavior.\n\n**Docs:** the API reference on miniflux.app would need a line for the parameter. Happy to send that PR to the website repo if this looks right.\n\n- [x] I have tested my changes\n- [x] There are no breaking changes\n- [x] I have thoroughly tested my changes and verified there are no regressions\n- [x] My commit messages follow the Conventional Commits specification\n- [x] I have read and understood the contribution guidelines\n"
+        }
+      }
+    },
+    {
+      "id": "MF-4557",
+      "title": "Refuse rewrite and scraping rules that point at page elements which cannot be found",
+      "text": "Rules that remove parts of an article, or that pick the part of a web page to keep as the article content, are saved even when the description of the page element is invalid. Such a rule then silently does nothing. Invalid element descriptions should be refused when the rule is saved, with an explanation.",
+      "expectedFiles": [
+        "miniflux:internal/reader/rewrite/content_rewrite.go",
+        "miniflux:internal/ui/form/subscription.go",
+        "miniflux:internal/validator/feed.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:go.mod",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/api/api_integration_test.go",
+          "reason": "test"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ar_SA.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/de_DE.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/el_EL.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/en_US.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/es_ES.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/fi_FI.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/fr_FR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/gl_ES.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/hi_IN.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/id_ID.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/it_IT.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ja_JP.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ko_KR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/nan_Latn_pehoeji.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/nl_NL.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/pl_PL.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/pt_BR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ro_RO.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ru_RU.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/tr_TR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/uk_UA.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/zh_CN.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/zh_TW.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/reader/rewrite/content_rewrite_validation.go",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/reader/rewrite/content_rewrite_validation_test.go",
+          "reason": "test"
+        },
+        {
+          "file": "miniflux:internal/reader/scraper/scraper_test.go",
+          "reason": "test"
+        },
+        {
+          "file": "miniflux:internal/validator/rewrite.go",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/validator/scraper.go",
+          "reason": "added-by-change"
+        },
+        {
+          "file": "miniflux:internal/validator/scraper_test.go",
+          "reason": "test"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4557,
+        "mergeSha": "fb4f1b031e24bf99a1f7e3f6babc7ba6e13d80c0",
+        "mergedAt": "2026-10-20T17:32:29Z",
+        "closingIssues": [],
+        "original": {
+          "title": "feat(rewrite): reject invalid CSS selectors in rewrite and scraper rules",
+          "body": "Follow-up to #4453, which validates rewrite rules at save time. That covers rule names, arguments and regexes, but CSS selectors still aren't checked, and a bad one fails silently: goquery returns an empty selection when a selector doesn't compile ([`compileMatcher`](https://github.com/PuerkitoBio/goquery/blob/v1.13.0/type.go#L166-L172)).\n\n- `remove()` with an invalid selector saves fine and removes nothing ([`content_rewrite_functions.go#L396`](https://github.com/miniflux/v2/blob/c317f84bc3779bc5d936b75408b631589983c81a/internal/reader/rewrite/content_rewrite_functions.go#L396)). Same for `base64_decode()`.\n- Scraper rules with an invalid selector extract nothing ([`scraper.go#L87`](https://github.com/miniflux/v2/blob/c317f84bc3779bc5d936b75408b631589983c81a/internal/reader/scraper/scraper.go#L87)), so the entry quietly keeps the feed's own content.\n\nThe way I kept hitting this was `remove(\"div:has(> p)\")`: cascadia doesn't support relative selectors inside `:has()`, so the rule looked right and did nothing.\n\n**Changes**\n\n- `ruleSpec` gets a `selectorArg` flag (set on `remove` and `base64_decode`), and `validateParsedRules` compile-checks that argument with `cascadia.Compile`, the same call goquery makes, next to the existing regex check ([`content_rewrite_validation.go#L46`](https://github.com/miniflux/v2/blob/c317f84bc3779bc5d936b75408b631589983c81a/internal/reader/rewrite/content_rewrite_validation.go#L46)).\n- New `validator.IsValidScraperRules`, called on feed creation, feed modification and the subscription form.\n- Two new translation keys, `error.feed_rewrite_rule_invalid_selector` and `error.feed_invalid_scraper_rule`, in all locales. The non-English strings are my translations, modeled on the existing rewrite-rule messages, so corrections from native speakers are welcome.\n- `cascadia` moves from an indirect to a direct dependency in `go.mod`. It was already in the build through goquery, so there's no new dependency.\n\n**Testing:** unit tests for invalid and valid selectors in both rule types, plus tests that every predefined rewrite and scraper rule passes the new checks (they all do). Integration tests for creating and updating a feed with an invalid rewrite selector and invalid scraper rules. The full unit suite passes with `-race`, and the full `internal/api` integration suite passes locally against Postgres 11 (same steps as `make integration-test`).\n\n**Breaking changes:** none for stored data; rules are only checked when saved. As with #4453, a feed that already has an invalid selector will need it fixed the next time the feed is edited in the UI, since the edit form submits every field.\n\n- [x] I have tested my changes\n- [x] There are no breaking changes\n- [x] I have thoroughly tested my changes and verified there are no regressions\n- [x] My commit messages follow the Conventional Commits specification\n- [x] I have read and understood the contribution guidelines\n"
+        }
+      }
+    },
+    {
+      "id": "MF-4563",
+      "title": "Record the visitor's real address when the server sits behind a proxy",
+      "text": "Behind a reverse proxy or load balancer, the address recorded for failed sign-ins and for each signed-in session is the one the visitor claims, which they can fake. The recorded address should be the last one added by a proxy the operator does not trust, reading the forwarded addresses from the most recent hop backwards.",
+      "expectedFiles": [
+        "miniflux:internal/http/request/client_ip.go",
+        "miniflux:internal/http/server/middleware.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/http/request/client_ip_test.go",
+          "reason": "test"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4563,
+        "mergeSha": "97fa1d3774ccde65c233bc0a2551f78ce08f34db",
+        "mergedAt": "2026-10-20T18:42:07Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix(http): take the client IP from the right side of X-Forwarded-For",
+          "body": "`FindClientIP` uses the leftmost `X-Forwarded-For` entry ([`client_ip.go#L46`](https://github.com/miniflux/v2/blob/c317f84bc3779bc5d936b75408b631589983c81a/internal/http/request/client_ip.go#L46)). Proxies append the address they received the request from, so with nginx's `$proxy_add_x_forwarded_for`, Fly.io, and most load balancers, the leftmost entry is whatever the client sent. That's the `client_ip` that ends up in the logs (failed logins, API auth errors, etc) and in `web_sessions.ip`.\n\n**Changes**\n\n- Skip addresses in `TRUSTED_REVERSE_PROXY_NETWORKS` from the right and use the first one outside them, [as MDN describes](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/X-Forwarded-For#selecting_an_ip_address). If every hop is trusted, the leftmost is used.\n- Combine multiple `X-Forwarded-For` header lines, since `Header.Get` only returns the first.\n- `FindClientIP` now also takes the trusted networks so it can check each hop.\n\n**Testing:** updated the existing `FindClientIP` tests and added cases for a client-supplied leftmost address, multiple header lines, all-trusted hops and an invalid entry. Four of the tests fail with the old leftmost behavior. The full unit suite passes with `-race` and `golangci-lint` is clean. I'm also running it on my own instance behind Fly.io.\n\n**Breaking changes:** setups that chain proxies but only list the inner one in `TRUSTED_REVERSE_PROXY_NETWORKS` (e.g. Cloudflare in front of nginx, with only nginx trusted) will start seeing the outer proxy's address until they add its ranges. Probably worth a line in the release notes.\n\n- [x] I have tested my changes\n- [x] There are no breaking changes\n- [x] I have thoroughly tested my changes and verified there are no regressions\n- [x] My commit messages follow the Conventional Commits specification\n- [x] I have read and understood the contribution guidelines\n"
+        }
+      }
+    },
+    {
+      "id": "MF-4566",
+      "title": "Allow passkey-only sign-in with local passwords turned off",
+      "text": "An operator should be able to turn off local password sign-in while still letting people sign in with a passkey. Today that combination is not possible.",
+      "expectedFiles": [
+        "miniflux:internal/config/parser.go",
+        "miniflux:internal/ui/static/js/app.js"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/config/options_parsing_test.go",
+          "reason": "test"
+        },
+        {
+          "file": "miniflux:miniflux.1",
+          "reason": "not-in-code-graph"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4566,
+        "mergeSha": "5f5efd753a348885577d93decf7872db19667b5e",
+        "mergedAt": "2026-10-25T04:04:50Z",
+        "closingIssues": [],
+        "original": {
+          "title": "feat(auth): allow WebAuthn with disabled local authentication",
+          "body": "This change allows a WebAuthn-only setup:\n\n```\nWEBAUTHN=1\nDISABLE_LOCAL_AUTH=1\n```"
+        }
+      }
+    },
+    {
+      "id": "MF-4567",
+      "title": "Accept JSON feeds that begin with an invisible byte order mark",
+      "text": "Subscribing to some JSON feeds fails with a message that the feed format cannot be recognised, because the feed starts with an invisible byte order mark. Those feeds should be recognised and read normally, as feeds in the other formats already are.",
+      "expectedFiles": [
+        "miniflux:internal/reader/json/parser.go",
+        "miniflux:internal/reader/parser/format.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/reader/json/parser_test.go",
+          "reason": "test"
+        },
+        {
+          "file": "miniflux:internal/reader/parser/format_test.go",
+          "reason": "test"
+        },
+        {
+          "file": "miniflux:internal/reader/parser/parser_test.go",
+          "reason": "test"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4567,
+        "mergeSha": "927e0e867ed570111898f6e7016cc4892f631684",
+        "mergedAt": "2026-10-20T22:35:09Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix(json): accept JSON feeds that start with a UTF-8 byte order mark",
+          "body": "**Description**\n\n`DetectFeedFormat` decides whether a body is JSON by looking at the first non-whitespace byte. When a JSON feed starts with a UTF-8 byte order mark (`EF BB BF`), that byte is `0xEF`, so the feed is classified as unknown and subscribing fails with `parser: unable to detect feed format`. `json.Parse` has the same problem when called directly, because `encoding/json` rejects the BOM (`invalid character '﻿' looking for beginning of value`).\n\nThis change:\n\n- skips a leading UTF-8 BOM in `detectJSONFormat` (`internal/reader/parser/format.go`);\n- discards a leading UTF-8 BOM before decoding in `json.Parse` (`internal/reader/json/parser.go`).\n\nXML feeds with a BOM were already detected and parsed correctly; their code path is unchanged.\n\n**Motivation**\n\nRFC 8259 section 8.1 says senders must not add a BOM, but also that parsers \"MAY ignore the presence of a byte order mark rather than treating it as an error\". Without this change, such a feed cannot be added at all.\n\n**Testing**\n\nNew tests:\n\n- `TestDetectJSONWithUTF8BOM` (`internal/reader/parser/format_test.go`)\n- `TestParseJsonFeedWithUTF8BOM` (`internal/reader/parser/parser_test.go`, goes through `ParseFeed`)\n- `TestParseFeedWithUTF8BOM` (`internal/reader/json/parser_test.go`)\n\nAll three fail without the fix and pass with it. Also run: `go test -cover -race -count=1 ./...`, `go vet ./...`, `gofmt -l .` and `staticcheck` on the two changed packages. `golangci-lint` and the integration tests (PostgreSQL) were not run.\n\n**Breaking Changes**\n\nNone.\n\n**Related Issues**\n\nNone found.\n\nHave you followed these guidelines?\n\n- [ ] I have tested my changes\n- [ ] There are no breaking changes\n- [ ] I have thoroughly tested my changes and verified there are no regressions\n- [x] My commit messages follow the [Conventional Commits specification](https://www.conventionalcommits.org/)\n- [ ] I have read and understood the [contribution guidelines](https://github.com/miniflux/v2/blob/main/CONTRIBUTING.md)\n"
+        }
+      }
+    },
+    {
+      "id": "MF-4571",
+      "title": "Stop the server fetching from reserved network address ranges",
+      "text": "The protection that stops the server from fetching feeds and pages from internal network addresses should also cover the reserved and special-purpose address ranges, so that a feed cannot be used to reach them.",
+      "expectedFiles": ["miniflux:internal/urllib/url.go"],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/urllib/url_test.go",
+          "reason": "test"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4571,
+        "mergeSha": "238c5614e584ebc87894e7d9f10bc91373a0b2c2",
+        "mergedAt": "2026-10-19T20:54:31Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix(security): block reserved IP ranges in SSRF filter",
+          "body": ""
+        }
+      }
+    },
+    {
+      "id": "MF-4572",
+      "title": "Remember a signed-out reader's language and theme without keeping their session",
+      "text": "After signing out, the sign-in page keeps the reader's language and theme by keeping their old session alive. Signing out should end the session completely, and the language and theme should be remembered on the reader's browser instead, so they still apply on the sign-in page.",
+      "expectedFiles": [
+        "miniflux:internal/model/web_session.go",
+        "miniflux:internal/storage/web_session.go",
+        "miniflux:internal/ui/auth.go",
+        "miniflux:internal/ui/logout.go",
+        "miniflux:internal/ui/web_session_middleware.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/model/web_session_test.go",
+          "reason": "test"
+        },
+        {
+          "file": "miniflux:internal/ui/auth_test.go",
+          "reason": "test"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4572,
+        "mergeSha": "54e2cc7dad1faad13bc945bdaa5a92d93efd00bd",
+        "mergedAt": "2026-10-24T23:40:15Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix(ui): keep logged-out preferences in a cookie instead of the session",
+          "body": "Follow-up to #4562, based on [this comment](https://github.com/miniflux/v2/pull/4562#issuecomment-6274146334).\n\nLogging out clears the user from the web session but keeps the row, with the user's language and theme copied into it ([`logout.go#L20-L24`](https://github.com/miniflux/v2/blob/71cfdb8b/internal/ui/logout.go#L20-L24)) so the login page keeps using them. Those rows look the same as sessions that never signed in, so anonymous sessions can't be expired any sooner than signed-in ones.\n\n**Changes**\n\n- Logout deletes the session and stores the language and theme in a `MinifluxPreferences` cookie (`HttpOnly`, `SameSite=Lax`, `Secure` when `HTTPS` is set, same path as the session cookie, one year).\n- When the middleware creates a new session for a public route, it seeds the language and theme from that cookie. Values that aren't a known language or theme are ignored. Seeding doesn't mark the session dirty, so it's still a single INSERT.\n- `CleanOldWebSessions` also deletes anonymous sessions once they're older than 24 hours. After this change they only hold short-lived state (CSRF token, OAuth2 and WebAuthn flows, etc).\n\nI put the cookie helpers in `auth.go` next to `setSessionCookie` and shared the cookie path logic between them. I picked a one-year lifetime for the preferences cookie since it's only display settings, but happy to tie it to `CLEANUP_REMOVE_SESSIONS_DAYS` like the session cookie if you'd prefer.\n\n**Testing:** unit tests for the cookie helpers (attributes with and without a base path / `HTTPS`, and parsing valid, unknown and malformed values) and for seeding without marking the session dirty. The full unit suite passes with `-race`, `golangci-lint` is clean, and `make integration-test` passes against Postgres 11. By hand against a local instance: after logging in and setting the user to `de_DE` / `dark_serif`, logging out deletes the row, sets `MinifluxPreferences=de_DE.dark_serif`, and the login page renders with `lang=\"de-DE\"` and the dark stylesheet; the new anonymous row has the seeded values and nothing is logged. After backdating every row 25 hours, `-run-cleanup-tasks` removed the anonymous session and kept the signed-in one.\n\n**Breaking changes:** none I know of, with two small behavior changes:\n- Sessions that were logged out before upgrading get removed by the first cleanup, so those users see the default language and theme on the login page until they log in and out again.\n- A login page left open for more than a day (or across a logout in another tab) now has an expired CSRF token, so the first submit redirects back to the login page. It works after that.\n\n- [x] I have tested my changes\n- [x] There are no breaking changes\n- [x] I have thoroughly tested my changes and verified there are no regressions\n- [x] My commit messages follow the Conventional Commits specification\n- [x] I have read and understood the contribution guidelines\n"
+        }
+      }
+    },
+    {
+      "id": "MF-4575",
+      "title": "Read article dates written with lower-case letters",
+      "text": "Some feeds write article dates in the standard internet date format but with the separator and time zone letters in lower case, which the standard allows. Those dates are rejected today and the articles are shown with the time of the refresh instead. Such dates should be read correctly.",
+      "expectedFiles": ["miniflux:internal/reader/date/parser.go"],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/reader/date/parser_test.go",
+          "reason": "test"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4575,
+        "mergeSha": "12eb4d801a5254ef69bf706e0f87d689f422f69f",
+        "mergedAt": "2026-10-26T02:57:33Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix(date): parse RFC 3339 dates with a lower-case t or z",
+          "body": "**Description**\n\nRFC 3339 section 5.6 notes that the `T` separator and the `Z` time zone designator \"may alternatively be lower case\". RFC 4287 section 3.3 requires Atom date constructs to follow RFC 3339. `time.Parse` only accepts upper case, so `date.Parse` rejects values such as `2003-12-13t18:30:02z`. The Atom adapter then logs a debug message and sets the entry date to the time of the refresh.\n\nThis change adds a small `normalizeRFC3339Separators` helper to `internal/reader/date/parser.go`. When the input starts with a `YYYY-MM-DD` date followed by `t` or `T`, it upper-cases the separator and a trailing `z`. Other inputs are left untouched.\n\n**Motivation**\n\nFeeds that use the lower-case form are valid under RFC 3339, but their entries currently get the wrong date.\n\n**Testing**\n\nNew test: `TestParseAtomDateWithLowerCaseSeparators` (`internal/reader/date/parser_test.go`). It covers `t`/`z`, mixed case, fractional seconds, a numeric offset and surrounding whitespace, and checks the exact Unix timestamp for each. It fails without the fix and passes with it.\n\nOn current `main` (927e0e8), `go test -race -count=1 ./...`, `go vet ./...` and `gofmt -l .` are clean, and the existing `FuzzParse` ran for 15 seconds with no failures. `golangci-lint`, `staticcheck` and the integration tests (PostgreSQL) were not run.\n\n**Breaking Changes**\n\nNone. Inputs that parsed before are unchanged. The only difference is that affected entries now get the date from the feed instead of the refresh time.\n\n**Related Issues**\n\nNone found.\n\nHave you followed these guidelines?\n\n- [ ] I have tested my changes\n- [ ] There are no breaking changes\n- [ ] I have thoroughly tested my changes and verified there are no regressions\n- [x] My commit messages follow the [Conventional Commits specification](https://www.conventionalcommits.org/)\n- [ ] I have read and understood the [contribution guidelines](https://github.com/miniflux/v2/blob/main/CONTRIBUTING.md)\n"
+        }
+      }
+    },
+    {
+      "id": "MF-4579",
+      "title": "Return the oldest articles first to Fever compatible apps",
+      "text": "Reading apps that sync through the Fever compatible interface receive articles fifty at a time, but in some requests the fifty are picked in no particular order. An app that starts a sync from the beginning can skip older articles for good. The articles should always be returned in a fixed order of their identifiers.",
+      "expectedFiles": ["miniflux:internal/fever/handler.go"],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/fever/README.md",
+          "reason": "not-in-code-graph"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4579,
+        "mergeSha": "a4c0033162b3083b15392726f76df1edadb8eb8a",
+        "mergedAt": "2026-10-25T00:02:08Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix(fever): always order the items endpoint by entry id",
+          "body": "`handleItems` limits the result to 50 entries, but three of the four shapes reach `GetEntries()` without an `ORDER BY`, so PostgreSQL returns an arbitrary 50 rows:\n\n- `since_id=0`: a client that starts syncing with `since_id=0` gets an arbitrary 50 entries and then continues from the highest id it saw, so the oldest entries can be skipped permanently.\n- no parameters: no sort either, although the debug log says \"Fetching oldest items\".\n- `with_ids`: no sort, so a list longer than 50 returns an arbitrary subset.\n\n`max_id` already sorts in both of its cases (`0` and `> 0` are both `DESC`); negative or invalid values are clamped to `0` by `QueryInt64Param`, so the `else` covers them.\n\nThe sort is set in each branch instead of once before the switch: `WithSorting` appends to the sort expressions, so a default placed first would become the primary one and override the ascending order that `since_id` pagination needs.\n\n`internal/fever/README.md` described the missing `ORDER BY` as a compatibility quirk; those lines are updated.\n\n### Verification\n\nReal server, PostgreSQL 16, 60 entries inserted so the physical row order is scrambled (an unordered query cannot come out right by accident):\n\nbefore, `main`:\n\n```\nsince_id=0     -> 50 ids: [33, 5, 38, 10, 43, 15, 48, 20, ...] (max 60)\nno params      -> 50 ids: [33, 5, 38, 10, 43, 15, 48, 20, ...]\nwith_ids=1..60 -> 50 ids: [33, 5, 38, ...] (max 60)\n```\n\nafter:\n\n```\nsince_id=0     -> 50 ids: [1, 2, 3, 4, 5, 6, 7, 8, ...]  ascending\nno params      -> 50 ids: [1, 2, 3, 4, 5, 6, 7, 8, ...]  ascending\nwith_ids=1..60 -> 50 ids: [1, 2, 3, 4, 5, 6, 7, 8, ...]  ascending\nmax_id=0       -> 50 ids: [60, 59, 58, 57, 56, ...]       unchanged\n```\n\n`go build ./...`, `go vet ./...` and `go test ./...` are clean. `internal/fever` has no test file and the handler is bound to a live database, so there is no automated test for this; the run above is the evidence.\n\nRelated: #4559 records the same defect and deliberately leaves it out; this is that change.\n\nHave you followed these guidelines?\n\n- [x] I have tested my changes\n- [x] There are no breaking changes\n- [x] I have thoroughly tested my changes and verified there are no regressions\n- [x] My commit messages follow the [Conventional Commits specification](https://www.conventionalcommits.org/)\n- [x] I have read and understood the [contribution guidelines](https://github.com/miniflux/v2/blob/main/CONTRIBUTING.md)\n"
+        }
+      }
+    },
+    {
+      "id": "MF-4592",
+      "title": "Only send a feed's cookie to that feed's own website",
+      "text": "A reader can give a feed a cookie, for example to read a members-only feed. That cookie is currently sent to every site the server contacts on the feed's behalf, including article pages and icons on other sites, so anyone who can put a link in the feed can receive it. The cookie should only be sent to the feed's own website and its sister sites under the same domain.",
+      "expectedFiles": [
+        "miniflux:internal/api/subscription_handlers.go",
+        "miniflux:internal/reader/fetcher/request_builder.go",
+        "miniflux:internal/reader/handler/handler.go",
+        "miniflux:internal/reader/icon/checker.go",
+        "miniflux:internal/reader/processor/processor.go",
+        "miniflux:internal/ui/subscription_submit.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/reader/fetcher/request_builder_test.go",
+          "reason": "test"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4592,
+        "mergeSha": "0877d29e5cf7b5a5c19276f559b52d451c24e93e",
+        "mergedAt": "2026-10-29T03:12:54Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix(security): only send feed cookies to the feed's website",
+          "body": "The cookie configured for a feed was attached to every request made with its request builder, whatever the host: article pages scraped for their content, icons hosted on other domains, and well-known feed URLs probed on the canonical host during discovery. Anyone able to add a link to the feed, like on a link aggregator, could receive the cookie.\n\n- `WithCookie` now takes the URL the cookie belongs to, and the cookie is only sent to the same host or to hosts sharing its registrable domain, so a feed served from `rss.example.org` still gets the content of its `www.example.org` articles.\n- Hosts are converted to lowercase ASCII before the public suffix lookup, which otherwise treats `CO.UK` as registrable.\n"
+        }
+      }
+    },
+    {
+      "id": "MF-4594",
+      "title": "Sign out everywhere else when a password is changed",
+      "text": "Changing a password leaves every other signed-in browser signed in for up to a month, so someone who already got in with a leaked password keeps access. When a password is changed, the person's other sessions should be signed out. The browser that made the change stays signed in but gets a fresh session, and a password reset by an administrator signs out all of that person's sessions.",
+      "expectedFiles": [
+        "miniflux:internal/api/user_handlers.go",
+        "miniflux:internal/cli/reset_password.go",
+        "miniflux:internal/storage/web_session.go",
+        "miniflux:internal/ui/user_update.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/ui/authentication_update.go",
+          "reason": "not-in-code-graph"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4594,
+        "mergeSha": "229035a4df6e60107d1117eb50696b23e08cb4b8",
+        "mergedAt": "2026-10-29T04:08:12Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix(security): revoke other sessions when the password changes",
+          "body": "Changing a password left every existing web session signed in. Since sessions last 30 days from login by default, someone who had already signed in with a leaked password kept access after the owner changed it. Such a session can read the credentials saved for integrations, create API keys and register passkeys.\n\nRevoke the user's web sessions when their password changes:\n\n- On the authentication page, the current session stays signed in, but gets a new ID and secret so that a copied cookie stops working.\n- When an administrator changes a password on the user edit page, all of that user's sessions are revoked. Administrators editing their own account keep their current session.\n- Through the API and the `-reset-password` command, all of the user's sessions are revoked.\n\nAPI keys, passkeys and the Fever and Google Reader credentials are managed separately and are left untouched. Basic authentication on the API already checks the password on every request.\n"
+        }
+      }
+    },
+    {
+      "id": "MF-4599",
+      "title": "Stop administrators editing their own account from the user list",
+      "text": "The administrator's user management page lets an administrator change their own password without entering the current one, which bypasses the check on the personal account page. Administrators should not be able to open or submit the edit form for their own account; they change their own name and password on their personal account page. Changing another person's password signs that person out everywhere.",
+      "expectedFiles": ["miniflux:internal/ui/user_edit.go", "miniflux:internal/ui/user_update.go"],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4599,
+        "mergeSha": "752793f21b7fbb5cf4190653fb3fbb9f3d1c22bc",
+        "mergedAt": "2026-10-31T04:31:40Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix(ui): prevent administrators from editing their own account",
+          "body": "The user edit page let administrators change their own password without entering the current one, which bypassed the check on the authentication page. Since changing a password signs out the other sessions, someone with a stolen administrator session could also lock the owner out of their account.\n\nThe users list already hides the logged-in user, so reject showing or submitting the edit form for your own account. Usernames and passwords are changed on the authentication page instead. Changing another user's password now signs out all of that user's sessions.\n"
+        }
+      }
+    },
+    {
+      "id": "MF-4605",
+      "title": "Do not let shared article pages be stored by public caches",
+      "text": "Publicly shared article pages are marked as cacheable by anyone for three days, although each page includes details of the visitor's session. A proxy or content network could store one visitor's details and show them to everyone. Shared article pages should show no session details and must not be stored by public caches, and no page that sets a cookie should be publicly cacheable.",
+      "expectedFiles": [
+        "miniflux:internal/http/response/builder.go",
+        "miniflux:internal/ui/share.go",
+        "miniflux:internal/ui/view/view.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/http/response/builder_test.go",
+          "reason": "test"
+        },
+        {
+          "file": "miniflux:internal/ui/view/view_test.go",
+          "reason": "test"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4605,
+        "mergeSha": "b8da688674ec1e3383aafd384bc2675df16ebfb8",
+        "mergedAt": "2026-11-01T00:12:45Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix(ui): stop caching shared entry pages in public caches",
+          "body": "Shared entry pages were sent with `Cache-Control: public, immutable` for 72 hours, while the rendered HTML contained data from the visitor's web session, including the CSRF token. A reverse proxy or CDN could store one visitor's token and serve it to everyone else, and unshared entries stayed reachable from caches.\n\n## Changes\n\n- Shared entries are now rendered with a new public view that never includes the CSRF token or flash messages.\n- The response is no longer cacheable since it still depends on the visitor's theme and language.\n- As a safeguard, the response builder now downgrades any public `Cache-Control` header to `private, no-store` when the response also sets a cookie.\n"
+        }
+      }
+    },
+    {
+      "id": "MF-4606",
+      "title": "Apply the user name rules when a user is renamed",
+      "text": "The rules for what a user name may look like are only checked when an account is created. Renaming an account through the programming interface, the personal account page or the administrator's user page skips them. The same rules should be applied on every rename, and the error message for an invalid user name must be shown in every language instead of a raw message key.",
+      "expectedFiles": [
+        "miniflux:internal/ui/user_update.go",
+        "miniflux:internal/validator/user.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/locale/translations/ar_SA.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/de_DE.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/el_EL.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/en_US.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/es_ES.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/fi_FI.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/fr_FR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/gl_ES.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/hi_IN.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/id_ID.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/it_IT.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ja_JP.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ko_KR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/nan_Latn_pehoeji.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/nl_NL.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/pl_PL.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/pt_BR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ro_RO.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/ru_RU.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/tr_TR.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/uk_UA.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/zh_CN.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/locale/translations/zh_TW.json",
+          "reason": "not-in-code-graph"
+        },
+        {
+          "file": "miniflux:internal/validator/user_test.go",
+          "reason": "test"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4606,
+        "mergeSha": "400e6b6a91d20bd5ca34c4291f38ac698a8b434b",
+        "mergedAt": "2026-11-01T03:17:56Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix(validator): validate username format on modification",
+          "body": "Username format was only validated when creating a user. Renaming a user through any of the following paths skipped the check, allowing usernames that would be rejected at creation time:\n\n- the API\n- the authentication settings page\n- the admin user edit form\n\nThe admin user edit form now goes through `ValidateUserModification` instead of performing its own duplicate check.\n\nThe `error.invalid_username` translation key was also missing from all locales, so the raw key was displayed instead of a message.\n"
+        }
+      }
+    },
+    {
+      "id": "MF-4608",
+      "title": "Only mark older articles as read when a Fever app asks to catch up",
+      "text": "When a Fever compatible reading app marks everything as read, it says up to which moment. The server ignores that and also marks articles that arrived after the app last synced. Only articles from before that moment should be marked as read. Saving or unsaving an article from such an app should also set the requested state rather than flipping it, so a retried request does not undo itself.",
+      "expectedFiles": ["miniflux:internal/fever/handler.go"],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4608,
+        "mergeSha": "d57da7c75250c8fa5c9b5a546700fbba32b7b5b5",
+        "mergedAt": "2026-11-01T03:40:35Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix(fever): honor the before timestamp when marking all items as read",
+          "body": "### Honor the `before` timestamp when marking all items as read\n\nMarking group 0 as read ignored the `before` parameter and marked every unread entry as read, including entries that arrived after the client's last sync.\n\nOnly entries published before the given timestamp are now marked as read. Requests without a `before` timestamp keep marking all entries as read.\n\n### Set the starred state instead of toggling it\n\nThe `mark=item` handler toggled the starred flag for both `as=saved` and `as=unsaved`:\n\n- Saving an entry that was already starred unstarred it.\n- Unsaving an entry that was not starred starred it.\n\nThis happens when a client retries or resyncs.\n\nThe handler now sets the requested state and does nothing when the entry is already in that state. Entries are only sent to integrations when they become starred, not on every repeated save.\n"
+        }
+      }
+    },
+    {
+      "id": "MF-4610",
+      "title": "Match category names regardless of capital letters",
+      "text": "A reader with a category called 'News' who uses a Google Reader compatible app with the label 'news' cannot subscribe or move feeds into it, and importing a subscription list creates a second 'news' category. Category names should be matched without regard to capital letters, preferring an exact match and then the oldest category.",
+      "expectedFiles": [
+        "miniflux:internal/googlereader/stream.go",
+        "miniflux:internal/storage/category.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/googlereader/stream_test.go",
+          "reason": "test"
+        }
+      ],
+      "source": {
+        "kind": "upstream-pr",
+        "pr": 4610,
+        "mergeSha": "faecfa2fac61a91f4f69550bb1afd506c4b51749",
+        "mergedAt": "2026-11-01T03:55:09Z",
+        "closingIssues": [],
+        "original": {
+          "title": "fix(storage): look up categories by title case-insensitively",
+          "body": "### Look up categories by title case-insensitively\n\n`CategoryByTitle` matched titles exactly, while `CategoryTitleExists` and the category validators compare titles case-insensitively.\n\nWith a \"News\" category:\n\n- A Google Reader client using the \"news\" label passed the existence check but the lookup returned nothing, so subscribing or moving a feed failed with \"category not found\" and marking the label as read returned a 404.\n- The OPML import created a duplicate \"news\" category instead of reusing \"News\".\n\nThe lookup is now case-insensitive. When several categories differ only by case, an exact match is preferred, then the oldest category.\n\n### Avoid infinite recursion in `StreamType.String`\n\nThe default case of `StreamType.String` called itself, causing a stack overflow for any value outside the known stream types. It now returns the numeric value instead.\n"
+        }
+      }
+    }
+  ]
+}
