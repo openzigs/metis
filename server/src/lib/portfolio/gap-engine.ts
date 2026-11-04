@@ -6,7 +6,8 @@
  *   statement + scope
  *     -> products in scope        (`buildProductAccessWhere` / `assertProductAccessible`)
  *     -> readable repos           (`productRepoReadAccess`, #1258)
- *     -> federated retrieval      (`FederatedSearchService`, RRF; one call per product)
+ *     -> federated retrieval      (`FederatedSearchService`, RRF; one call per product,
+ *                                  or per project with a per-repo quota, #1763)
  *     -> per-repo verdict         (one model call per repo + the #773 verdict gate)
  *     -> product coverage         (`rollUpProductCoverage`)
  *     -> portfolio verdict        (`rollUpPortfolio`)
@@ -135,8 +136,19 @@ export interface PortfolioGapLimits {
   productCostCapUsd: number;
   /** Products evaluated at once (each runs one model call at a time). */
   concurrency: number;
-  /** Retrieved excerpts per product. */
+  /**
+   * Retrieved excerpts per product. One shared search's `k`; with
+   * {@link PortfolioGapLimits.perRepoSearch} on, the total split across its repos (#1763).
+   */
   hitsPerProduct: number;
+  /** #1763 — with {@link PortfolioGapLimits.perRepoSearch} on, excerpts one repo's verdict sees at most. */
+  hitsPerRepo: number;
+  /**
+   * #1763 — search each of a product's projects on its own and give every repo
+   * its share of the hits, so a repo never reads "no evidence" only because a
+   * sibling took them all. Off: one shared search per product.
+   */
+  perRepoSearch: boolean;
   /** Criteria a statement is split into, at most. */
   maxCriteria: number;
   /** Model calls the whole run may make (#1657). */
@@ -148,6 +160,8 @@ export const DEFAULT_PORTFOLIO_GAP_LIMITS: PortfolioGapLimits = {
   productCostCapUsd: 0.5,
   concurrency: 4,
   hitsPerProduct: 24,
+  hitsPerRepo: 12,
+  perRepoSearch: false,
   maxCriteria: 8,
   maxModelCalls: 250,
 };
@@ -163,6 +177,9 @@ export function readPortfolioGapLimits(): PortfolioGapLimits {
       cfg.getNumber("PORTFOLIO_GAP_PRODUCT_COST_CAP_CENTS", d.productCostCapUsd * 100) / 100,
     concurrency: Math.max(1, cfg.getNumber("PORTFOLIO_GAP_CONCURRENCY", d.concurrency)),
     maxModelCalls: Math.max(0, cfg.getNumber("PORTFOLIO_GAP_MAX_MODEL_CALLS", d.maxModelCalls)),
+    hitsPerProduct: Math.max(1, cfg.getNumber("PORTFOLIO_GAP_HITS_PER_PRODUCT", d.hitsPerProduct)),
+    hitsPerRepo: Math.max(1, cfg.getNumber("PORTFOLIO_GAP_HITS_PER_REPO", d.hitsPerRepo)),
+    perRepoSearch: cfg.getBool("PORTFOLIO_GAP_PER_REPO_SEARCH", d.perRepoSearch),
   };
 }
 
@@ -541,6 +558,120 @@ async function evaluateRepo(
   };
 }
 
+/** A product's retrieved excerpts, by repo, and the projects whose search succeeded. */
+interface Retrieval {
+  hitsByRepo: Map<string, FederatedHit[]>;
+  searched: Set<string>;
+}
+
+/** Each hit that is one of `repos`' evidence, filed under its repo, at most `quota` per repo. */
+function fileHits(
+  hits: readonly FederatedHit[],
+  repos: ReadonlyMap<string, RepoTarget>,
+  into: Map<string, FederatedHit[]>,
+  quota = Infinity,
+): void {
+  for (const hit of hits) {
+    const repo = hitRepo(hit, repos);
+    if (!repo) continue;
+    const list = into.get(repo.repoConnectionId) ?? [];
+    if (list.length >= quota) continue;
+    list.push(hit);
+    into.set(repo.repoConnectionId, list);
+  }
+}
+
+/** One search across all of a product's projects, split by repo afterwards. */
+async function retrieveShared(
+  ctx: RunContext,
+  productId: string,
+  repos: readonly RepoTarget[],
+): Promise<Retrieval> {
+  const hitsByRepo = new Map<string, FederatedHit[]>();
+  try {
+    const result = await ctx.search({
+      userId: ctx.user.userId,
+      projectIds: [...new Set(repos.map((r) => r.projectId))],
+      query: ctx.query,
+      k: ctx.limits.hitsPerProduct,
+    });
+    fileHits(result.hits, new Map(repos.map((r) => [r.repoConnectionId, r])), hitsByRepo);
+    return { hitsByRepo, searched: new Set(result.projectsSearched) };
+  } catch (err) {
+    throwIfAborted(ctx.signal);
+    log.warn("Product retrieval failed", {
+      productId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { hitsByRepo, searched: new Set() };
+  }
+}
+
+/** #1763 — project searches {@link retrievePerRepo} runs at once for one product. */
+const PER_REPO_SEARCH_CONCURRENCY = 4;
+/**
+ * #1763 — a project's search asks for this many candidates per excerpt it may
+ * keep: the repos in one project, and the project's own documents, share one
+ * ranked list, so a repo's share sits further down it than its quota.
+ */
+const PER_REPO_OVERFETCH = 2;
+
+/**
+ * #1763 — the excerpts each of `repoCount` repos may keep: an even split of
+ * `hitsPerProduct`, at most `hitsPerRepo`, and never less than one, so the
+ * product's total is at most the larger of `hitsPerProduct` and its repo count.
+ */
+export function perRepoHitQuota(
+  limits: Pick<PortfolioGapLimits, "hitsPerProduct" | "hitsPerRepo">,
+  repoCount: number,
+): number {
+  const share = Math.floor(limits.hitsPerProduct / Math.max(1, repoCount));
+  return Math.max(1, Math.min(limits.hitsPerRepo, share));
+}
+
+/**
+ * #1763 — one search per project the product's repos live in, each repo
+ * keeping at most its {@link perRepoHitQuota}: a repo whose sibling dominates a
+ * shared ranking still gets its own excerpts. A project whose search fails
+ * leaves only its own repos `retrieval-failed`.
+ */
+async function retrievePerRepo(
+  ctx: RunContext,
+  productId: string,
+  repos: readonly RepoTarget[],
+): Promise<Retrieval> {
+  const quota = perRepoHitQuota(ctx.limits, repos.length);
+  const repoById = new Map(repos.map((r) => [r.repoConnectionId, r]));
+  const heldBy = new Map<string, number>();
+  for (const r of repos) heldBy.set(r.projectId, (heldBy.get(r.projectId) ?? 0) + 1);
+  const hitsByRepo = new Map<string, FederatedHit[]>();
+  const searched = new Set<string>();
+  await mapWithConcurrency([...heldBy], PER_REPO_SEARCH_CONCURRENCY, async ([projectId, held]) => {
+    // An aborted run starts no further search; the product's repo loop rethrows the abort.
+    throwIfAborted(ctx.signal);
+    let result: FederatedSearchResult;
+    try {
+      result = await ctx.search({
+        userId: ctx.user.userId,
+        projectIds: [projectId],
+        query: ctx.query,
+        k: quota * held * PER_REPO_OVERFETCH,
+      });
+    } catch (err) {
+      log.warn("Project retrieval failed", {
+        productId,
+        projectId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+    if (!result.projectsSearched.includes(projectId)) return;
+    searched.add(projectId);
+    fileHits(result.hits, repoById, hitsByRepo, quota);
+  });
+  return { hitsByRepo, searched };
+}
+
 function restrictedProduct(productId: string, criteriaCount: number): PortfolioProductResult {
   return {
     productId,
@@ -564,31 +695,9 @@ async function evaluateProduct(
 
   const repos: PortfolioRepoResult[] = [];
   if (targets.repos.length > 0) {
-    const repoById = new Map(targets.repos.map((r) => [r.repoConnectionId, r]));
-    const hitsByRepo = new Map<string, FederatedHit[]>();
-    let searched: Set<string> | null = null;
-    try {
-      const result = await ctx.search({
-        userId: ctx.user.userId,
-        projectIds: [...new Set(targets.repos.map((r) => r.projectId))],
-        query: ctx.query,
-        k: ctx.limits.hitsPerProduct,
-      });
-      searched = new Set(result.projectsSearched);
-      for (const hit of result.hits) {
-        const repo = hitRepo(hit, repoById);
-        if (!repo) continue;
-        const list = hitsByRepo.get(repo.repoConnectionId) ?? [];
-        list.push(hit);
-        hitsByRepo.set(repo.repoConnectionId, list);
-      }
-    } catch (err) {
-      throwIfAborted(ctx.signal);
-      log.warn("Product retrieval failed", {
-        productId: product.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    const { hitsByRepo, searched } = ctx.limits.perRepoSearch
+      ? await retrievePerRepo(ctx, product.id, targets.repos)
+      : await retrieveShared(ctx, product.id, targets.repos);
     for (const repo of targets.repos) {
       throwIfAborted(ctx.signal);
       const hits = hitsByRepo.get(repo.repoConnectionId) ?? [];
@@ -598,7 +707,7 @@ async function evaluateProduct(
         // verdict there), and its cost is not counted twice.
         const assessed = await ctx.repoVerdicts.get(repo.repoConnectionId)!;
         repos.push({ ...assessed, productId: product.id, costUsd: 0 });
-      } else if (!searched || !searched.has(repo.projectId)) {
+      } else if (!searched.has(repo.projectId)) {
         repos.push(notVerified(product.id, repo, n, "retrieval-failed"));
       } else if (hits.length === 0) {
         repos.push(notVerified(product.id, repo, n, "no-evidence-retrieved"));
