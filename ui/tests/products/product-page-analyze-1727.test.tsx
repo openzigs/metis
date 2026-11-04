@@ -139,6 +139,18 @@ describe("Add Repo picker (#1727)", () => {
     );
   });
 
+  it("drops the pick when the search is edited, so Add cannot add a repo no longer shown", async () => {
+    const dialog = await openPicker([option({ id: "rc-1", projectName: "Feeds" })]);
+    const [row] = await within(dialog).findAllByRole("button", { name: /miniflux\/v2/ });
+    await userEvent.click(row!);
+    const add = within(dialog).getByRole("button", { name: "Add Repository" });
+    expect(add).toBeEnabled();
+
+    await userEvent.type(within(dialog).getByPlaceholderText(/Search repo connections/), "x");
+    expect(within(dialog).queryByText(/^Selected:/)).not.toBeInTheDocument();
+    expect(add).toBeDisabled();
+  });
+
   it("says when every match is already in the product", async () => {
     const dialog = await openPicker([option({ id: REPO_A })]);
     expect(

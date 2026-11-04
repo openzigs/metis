@@ -202,7 +202,13 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
                   <Input
                     id="repo-search"
                     value={repoSearch}
-                    onChange={(e) => setRepoSearch(e.target.value)}
+                    onChange={(e) => {
+                      // Editing the search drops the pick: the "Selected:" line
+                      // reads from the current results, so a pick kept across
+                      // searches could be added unseen (#1747 review).
+                      setRepoSearch(e.target.value);
+                      setRepoConnectionId("");
+                    }}
                     placeholder="Search repo connections\u2026"
                   />
                   <div className="max-h-48 overflow-y-auto rounded-md border">
