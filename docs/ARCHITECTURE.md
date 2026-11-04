@@ -2990,6 +2990,27 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   column only through the LLM proposer (#4511's `feeds`) gets its `data-model`
   edit candidates only when that stage runs.
 
+  **Held-out baseline (#1753).** `pnpm eval:localization` runs the same seeding
+  (`resolveChangeSeeds` over the hybrid search, no model) on requirements the cut
+  sizes were never tuned on, written in analyst language rather than as developer
+  issues: 25 Miniflux PRs merged after `v2.3.3`, and 15 requirements over the three
+  fixture repositories. Per-requirement means with 95% bootstrap intervals, from the
+  committed `eval-data/corpus/localization-*/baseline-A0.md`:
+
+  | A0, per-requirement mean | Recall@5 | Recall@10 | Edit precision | MRR |
+  |---|---|---|---|---|
+  | Miniflux held-out, 25 | 0.50 [0.36, 0.65] | 0.65 [0.50, 0.79] | 0.17 [0.12, 0.23] | 0.55 [0.40, 0.71] |
+  | Fixture portfolio, 15 | 0.54 [0.39, 0.68] | 1.00 (ten files in all) | 0.21 [0.17, 0.26] | 0.54 [0.37, 0.72] |
+  | Run-7 six, same harness (**in-sample**) | 0.62 [0.29, 0.90] | 0.71 [0.39, 0.94] | 0.29 [0.17, 0.39] | 0.57 [0.30, 0.83] |
+
+  The units differ from the table above (a mean per requirement, not micro-averaged
+  over reference files; a graph built without SQL-lineage writers), so compare arms
+  inside the harness, not across the two tables. On the held-out Miniflux set the
+  edit candidates average 7.2 files per requirement: a pasted requirement the
+  extractor splits into several changes is seeded once per change, and the five-file
+  cap applies to each. At 25 items a difference needs roughly 20 to 28 points to be
+  significant; the harness reports anything smaller as "no measurable difference".
+
   **The cut sizes are provisional.** `MAX_EDIT_FILES = 5`, `MIN_FILE_SHARE = 0.5`,
   `FILE_HIT_DECAY = 0.5`, `EDIT_POOL = 60`, `MAX_SYMBOLS_PER_EDIT_FILE = 4` and
   `SCHEMA_SEED_TOP = 10` (`change-seeds.ts`), and `MIN_CALLEES = 6` /

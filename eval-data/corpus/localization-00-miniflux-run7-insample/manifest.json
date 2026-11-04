@@ -1,0 +1,155 @@
+{
+  "id": "localization-00-miniflux-run7-insample",
+  "description": "IN-SAMPLE check only (#1753): the six Miniflux developer requests of walkthrough run 7, on which the change-seeds.ts cut sizes were tuned. Never used to claim a gain.",
+  "purpose": "in-sample",
+  "license": "Request text: quoted from miniflux/v2 issues (Apache-2.0) for provenance. Reference files: docs/walkthroughs/TEST_PLAN.md.",
+  "repos": [
+    {
+      "name": "miniflux",
+      "url": "https://github.com/miniflux/v2",
+      "ref": "2.3.3",
+      "sha": "c4d54f87a81b30aa173fddf05d7ff83ae7da5796"
+    }
+  ],
+  "symbols": "../localization-01-miniflux-heldout/symbols.json.gz",
+  "annotation": {
+    "rewrittenBy": "not rewritten: the upstream issue text, as the walkthrough pastes it",
+    "rewrittenAt": "n/a",
+    "sawDiffsBeforeRewriting": true,
+    "procedure": "The 19 reference files of the six run-7 requests (TEST_PLAN.md), less the two the code graph does not hold (an HTML template and a README), which are listed as excluded.",
+    "reviewedBy": null
+  },
+  "items": [
+    {
+      "id": "R7-4478",
+      "title": "[Feature]: Mark all as read older than X",
+      "text": "### Feature Summary\n\nMark all as read older than X\n\n### What problem does this feature solve?\n\nRight now you can either mark a page as read or mark everything as read. This gives people the option to just let things that are older than X days be marked as read. Common options would be 24 hours, 1 week, 1 month\n\n### Proposed Solution\n\nA dropdown on the mark as read for times. Times could be configured in settings.\n\n### Alternatives Considered\n\nI hear a tool called `miniflux-sanity` can do this but it'd be better in the UI\n\n### Additional Context\n\n_No response_\n\n### Checklist\n\n- [x] I have searched existing issues to ensure this feature hasn't been requested before.\n- [x] I understand that feature requests are not guaranteed to be implemented.\n- [x] I agree to follow the project's contribution guidelines.",
+      "expectedFiles": [
+        "miniflux:internal/storage/entry.go",
+        "miniflux:internal/ui/unread_mark_all_read.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/template/templates/views/unread_entries.html",
+          "reason": "not-in-code-graph"
+        }
+      ],
+      "source": {
+        "kind": "walkthrough-reference",
+        "issue": 4478,
+        "reference": "docs/walkthroughs/TEST_PLAN.md, \"Reference change sets\"",
+        "original": {
+          "title": "[Feature]: Mark all as read older than X",
+          "body": "### Feature Summary\n\nMark all as read older than X\n\n### What problem does this feature solve?\n\nRight now you can either mark a page as read or mark everything as read. This gives people the option to just let things that are older than X days be marked as read. Common options would be 24 hours, 1 week, 1 month\n\n### Proposed Solution\n\nA dropdown on the mark as read for times. Times could be configured in settings.\n\n### Alternatives Considered\n\nI hear a tool called `miniflux-sanity` can do this but it'd be better in the UI\n\n### Additional Context\n\n_No response_\n\n### Checklist\n\n- [x] I have searched existing issues to ensure this feature hasn't been requested before.\n- [x] I understand that feature requests are not guaranteed to be implemented.\n- [x] I agree to follow the project's contribution guidelines."
+        }
+      }
+    },
+    {
+      "id": "R7-4511",
+      "title": "[Feature]: Last Successful refresh in feed API",
+      "text": "### Feature Summary\n\nStore and return the last time a feed was successfully refreshed\n\n### What problem does this feature solve?\n\nAllow API users to prioritize feeds that were not successfully refreshed recently.\n\nI use the APIs to slowly refresh some feeds on the same domain so I don't overload that domain. Even with this careful approach, I occasionally hit rate limits on that domain. I use the Feed API https://miniflux.app/docs/api.html#endpoint-get-feed to start with the feed that was refreshed longest ago. But the Last Refreshed parameter only tells me when the last attempted refresh was, not when the last successful refresh was. It would be better to start with the feed that was successfully refreshed furthest in the past, but that would require an API parameter that stores the last successful refresh.\n\n### Proposed Solution\n\nAdd a Last Successful Refresh parameter to the Feed API.\n\n### Alternatives Considered\n\nScrape the page for failed refreshes.\n\n### Additional Context\n\n_No response_\n\n### Checklist\n\n- [x] I have searched existing issues to ensure this feature hasn't been requested before.\n- [x] I understand that feature requests are not guaranteed to be implemented.\n- [x] I agree to follow the project's contribution guidelines.",
+      "expectedFiles": [
+        "miniflux:client/model.go",
+        "miniflux:internal/database/migrations.go",
+        "miniflux:internal/model/feed.go",
+        "miniflux:internal/reader/handler/handler.go",
+        "miniflux:internal/storage/feed.go",
+        "miniflux:internal/storage/feed_query_builder.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [],
+      "source": {
+        "kind": "walkthrough-reference",
+        "issue": 4511,
+        "reference": "docs/walkthroughs/TEST_PLAN.md, \"Reference change sets\"",
+        "original": {
+          "title": "[Feature]: Last Successful refresh in feed API",
+          "body": "### Feature Summary\n\nStore and return the last time a feed was successfully refreshed\n\n### What problem does this feature solve?\n\nAllow API users to prioritize feeds that were not successfully refreshed recently.\n\nI use the APIs to slowly refresh some feeds on the same domain so I don't overload that domain. Even with this careful approach, I occasionally hit rate limits on that domain. I use the Feed API https://miniflux.app/docs/api.html#endpoint-get-feed to start with the feed that was refreshed longest ago. But the Last Refreshed parameter only tells me when the last attempted refresh was, not when the last successful refresh was. It would be better to start with the feed that was successfully refreshed furthest in the past, but that would require an API parameter that stores the last successful refresh.\n\n### Proposed Solution\n\nAdd a Last Successful Refresh parameter to the Feed API.\n\n### Alternatives Considered\n\nScrape the page for failed refreshes.\n\n### Additional Context\n\n_No response_\n\n### Checklist\n\n- [x] I have searched existing issues to ensure this feature hasn't been requested before.\n- [x] I understand that feature requests are not guaranteed to be implemented.\n- [x] I agree to follow the project's contribution guidelines."
+        }
+      }
+    },
+    {
+      "id": "R7-4336",
+      "title": "Feature Request: Track reading time — add read_at timestamp to entries",
+      "text": "## Problem\n\nMiniflux currently does not record when an entry was read. The `changed_at` field updates whenever an entry is modified (including status changes), but there is no dedicated field to know when exactly a user marked an entry as read.\n\nThis makes it impossible to:\n- Query \"articles read today/this week\"\n- Build reading statistics/history dashboards\n- Sort entries by reading time\n- Integrate with external tools (e.g., Grafana) for reading analytics\n\n## Proposed Solution\n\nAdd a `read_at` TIMESTAMP column to the `entries` table. When an entry transitions from `unread` → `read`, set `read_at = NOW()`. Expose it via the API and support filtering with `read_at_after` / `read_at_before` parameters.\n\n### API changes\n\n`GET /v1/entries?status=read&read_at_after=2026-05-15T00:00:00Z`\n\nEntry JSON response adds:\n```json\n{\n  \"id\": 123,\n  \"title\": \"...\",\n  \"status\": \"read\",\n  \"read_at\": \"2026-05-15T10:30:00Z\",\n  ...\n}\n```\n\n### Database migration\n\n```sql\nALTER TABLE entries ADD COLUMN read_at TIMESTAMPTZ;\nCREATE INDEX entries_read_at_idx ON entries(read_at);\n```\n\nUpdate the `mark_entry_as_read` query to also set `read_at`.\n\n## Why\n\nThis is a minimal change (one column, one index, one field in API response) that unlocks a wide range of use cases: personal reading analytics, external dashboard integration, and better reading history UX.\n\nExisting feature requests like #2706 (mark as seen) touch on related UX but dont address the timestamp tracking need.",
+      "expectedFiles": [
+        "miniflux:client/model.go",
+        "miniflux:internal/database/migrations.go",
+        "miniflux:internal/model/entry.go",
+        "miniflux:internal/storage/entry.go",
+        "miniflux:internal/storage/entry_query_builder.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [],
+      "source": {
+        "kind": "walkthrough-reference",
+        "issue": 4336,
+        "reference": "docs/walkthroughs/TEST_PLAN.md, \"Reference change sets\"",
+        "original": {
+          "title": "Feature Request: Track reading time — add read_at timestamp to entries",
+          "body": "## Problem\n\nMiniflux currently does not record when an entry was read. The `changed_at` field updates whenever an entry is modified (including status changes), but there is no dedicated field to know when exactly a user marked an entry as read.\n\nThis makes it impossible to:\n- Query \"articles read today/this week\"\n- Build reading statistics/history dashboards\n- Sort entries by reading time\n- Integrate with external tools (e.g., Grafana) for reading analytics\n\n## Proposed Solution\n\nAdd a `read_at` TIMESTAMP column to the `entries` table. When an entry transitions from `unread` → `read`, set `read_at = NOW()`. Expose it via the API and support filtering with `read_at_after` / `read_at_before` parameters.\n\n### API changes\n\n`GET /v1/entries?status=read&read_at_after=2026-05-15T00:00:00Z`\n\nEntry JSON response adds:\n```json\n{\n  \"id\": 123,\n  \"title\": \"...\",\n  \"status\": \"read\",\n  \"read_at\": \"2026-05-15T10:30:00Z\",\n  ...\n}\n```\n\n### Database migration\n\n```sql\nALTER TABLE entries ADD COLUMN read_at TIMESTAMPTZ;\nCREATE INDEX entries_read_at_idx ON entries(read_at);\n```\n\nUpdate the `mark_entry_as_read` query to also set `read_at`.\n\n## Why\n\nThis is a minimal change (one column, one index, one field in API response) that unlocks a wide range of use cases: personal reading analytics, external dashboard integration, and better reading history UX.\n\nExisting feature requests like #2706 (mark as seen) touch on related UX but dont address the timestamp tracking need."
+        }
+      }
+    },
+    {
+      "id": "R7-4479",
+      "title": "[Bug]: Reader API /stream/items/ids count is always 1000 on 2.3.3",
+      "text": "### Bug Summary\n\nReader API /stream/items/ids count is always 1000 on 2.3.3\n\n### Description\n\nFor the google reader api '/stream/items/ids', my rss reader used this api to fetch all unread article ids. \nHowever, after I updating to 2.3.3, it always return 1000 ids if n is omitted. The previous versions worked fine.\n\nAs per the google reader api doc: if n is omitted, the query is effectively unbounded. So I think it should return more than 1000 ids if I have more than 1000 unread articles.\n\nhttps://github.com/miniflux/v2/blob/main/internal/googlereader/README.md\n\n### Steps to Reproduce\n\ncall google reader api: /stream/items/ids, and parameter 'n' is omitted.\n\n### Expected Behavior\n\nget more than 1000 ids if I have more than 1000 unread articles.\n\n### Actual Behavior\n\nonly have 1000 ids.\n\n### Version\n\n2.3.3\n\n### Browser\n\n_No response_\n\n### Relevant Logs or Error Output\n\n```shell\n\n```\n\n### Additional Context\n\n_No response_\n\n### Checklist\n\n- [x] I have searched existing issues to ensure this bug hasn't been reported before.",
+      "expectedFiles": ["miniflux:internal/googlereader/handler.go"],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [
+        {
+          "file": "miniflux:internal/googlereader/README.md",
+          "reason": "not-in-code-graph"
+        }
+      ],
+      "source": {
+        "kind": "walkthrough-reference",
+        "issue": 4479,
+        "reference": "docs/walkthroughs/TEST_PLAN.md, \"Reference change sets\"",
+        "original": {
+          "title": "[Bug]: Reader API /stream/items/ids count is always 1000 on 2.3.3",
+          "body": "### Bug Summary\n\nReader API /stream/items/ids count is always 1000 on 2.3.3\n\n### Description\n\nFor the google reader api '/stream/items/ids', my rss reader used this api to fetch all unread article ids. \nHowever, after I updating to 2.3.3, it always return 1000 ids if n is omitted. The previous versions worked fine.\n\nAs per the google reader api doc: if n is omitted, the query is effectively unbounded. So I think it should return more than 1000 ids if I have more than 1000 unread articles.\n\nhttps://github.com/miniflux/v2/blob/main/internal/googlereader/README.md\n\n### Steps to Reproduce\n\ncall google reader api: /stream/items/ids, and parameter 'n' is omitted.\n\n### Expected Behavior\n\nget more than 1000 ids if I have more than 1000 unread articles.\n\n### Actual Behavior\n\nonly have 1000 ids.\n\n### Version\n\n2.3.3\n\n### Browser\n\n_No response_\n\n### Relevant Logs or Error Output\n\n```shell\n\n```\n\n### Additional Context\n\n_No response_\n\n### Checklist\n\n- [x] I have searched existing issues to ensure this bug hasn't been reported before."
+        }
+      }
+    },
+    {
+      "id": "R7-4386",
+      "title": "[Bug]: After \"Mark this page as read\" the feed shows 0 entries",
+      "text": "### Bug Summary\n\nIf I navigate to the last page of a multipage feed and mark the page as read, it show zero entries afterwards\n\n### Description\n\nOn a feed with multiple pages, while being on the last page and marking it as read, the feed gets blank and the name of the field is shown with (0) afterwards.\n\n### Steps to Reproduce\n\n1. Go to a feed with multiple pages (let's say 300 unread entries) having miniflux configured with 20 entries per page.\n2. Press Last to go to the last page, note the feed name on top followed by 300 between brackets.\n3. Press \"Mark this page as read\"\n4. Note that the feed shows no entries, there is no Prev button, the feed name is followed by 0 between brackets. *Exactly* like an empty feed.\n\n### Expected Behavior\n\nShould have moved to the previous page, as marking a page as read moves to the next. But if we mark as read the last page, it should move to the previous.\n\n\n### Actual Behavior\n\nIt shows \"No unread entries\", name of the feed is followed by (0) and there is no Previous navigation button, although there are obviously entries in the feed.\n\n### Version\n\n2.3.1\n\n### Browser\n\nChrome\n\n### Relevant Logs or Error Output\n\n```shell\n\n```\n\n### Additional Context\n\nI am conflicted, on one hand marking page as read should move to the next page, which it does. But I guess we can break the rule when we mark the last page as read and move not to the next (as there is no next) but to the previous.\nOr, if always move next is a design requirement, at least miniflux should not scare the user saying that there are zero unread entries in the feed. And let the Previous button there ;)\n\nThank you for Miniflux!\n\n### Checklist\n\n- [x] I have searched existing issues to ensure this bug hasn't been reported before.",
+      "expectedFiles": [
+        "miniflux:internal/ui/category_entries.go",
+        "miniflux:internal/ui/feed_entries.go"
+      ],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [],
+      "source": {
+        "kind": "walkthrough-reference",
+        "issue": 4386,
+        "reference": "docs/walkthroughs/TEST_PLAN.md, \"Reference change sets\"",
+        "original": {
+          "title": "[Bug]: After \"Mark this page as read\" the feed shows 0 entries",
+          "body": "### Bug Summary\n\nIf I navigate to the last page of a multipage feed and mark the page as read, it show zero entries afterwards\n\n### Description\n\nOn a feed with multiple pages, while being on the last page and marking it as read, the feed gets blank and the name of the field is shown with (0) afterwards.\n\n### Steps to Reproduce\n\n1. Go to a feed with multiple pages (let's say 300 unread entries) having miniflux configured with 20 entries per page.\n2. Press Last to go to the last page, note the feed name on top followed by 300 between brackets.\n3. Press \"Mark this page as read\"\n4. Note that the feed shows no entries, there is no Prev button, the feed name is followed by 0 between brackets. *Exactly* like an empty feed.\n\n### Expected Behavior\n\nShould have moved to the previous page, as marking a page as read moves to the next. But if we mark as read the last page, it should move to the previous.\n\n\n### Actual Behavior\n\nIt shows \"No unread entries\", name of the feed is followed by (0) and there is no Previous navigation button, although there are obviously entries in the feed.\n\n### Version\n\n2.3.1\n\n### Browser\n\nChrome\n\n### Relevant Logs or Error Output\n\n```shell\n\n```\n\n### Additional Context\n\nI am conflicted, on one hand marking page as read should move to the next page, which it does. But I guess we can break the rule when we mark the last page as read and move not to the next (as there is no next) but to the previous.\nOr, if always move next is a design requirement, at least miniflux should not scare the user saying that there are zero unread entries in the feed. And let the Previous button there ;)\n\nThank you for Miniflux!\n\n### Checklist\n\n- [x] I have searched existing issues to ensure this bug hasn't been reported before."
+        }
+      }
+    },
+    {
+      "id": "R7-4456",
+      "title": "[Bug]: Request gets blocked when using private address proxy",
+      "text": "### Bug Summary\n\nRequest blocked when proxy is in private range IPs\n\n### Description\n\nI set `HTTP_PROXY` and `HTTPS_PROXY` to `http://127.0.0.1:port` and this prevents fetching unless I set [FETCHER_ALLOW_PRIVATE_NETWORKS](https://miniflux.app/docs/configuration.html#fetcher-allow-private-networks)\n\n### Steps to Reproduce\n\n1. Set `HTTP_PROXY` and `HTTPS_PROXY` to `http://127.0.0.1:port`\n2. Refresh some feed\n\n### Expected Behavior\n\nI believe the actual private range check should only be applied to feed URLs/IPs\n\n### Actual Behavior\n\nBlocked\n\n### Version\n\n2.3.1\n\n### Browser\n\n_No response_\n\n### Relevant Logs or Error Output\n\n```shell\n\n```\n\n### Additional Context\n\n_No response_\n\n### Checklist\n\n- [x] I have searched existing issues to ensure this bug hasn't been reported before.",
+      "expectedFiles": ["miniflux:internal/reader/fetcher/request_builder.go"],
+      "expectedRepos": ["miniflux"],
+      "excludedFiles": [],
+      "source": {
+        "kind": "walkthrough-reference",
+        "issue": 4456,
+        "reference": "docs/walkthroughs/TEST_PLAN.md, \"Reference change sets\"",
+        "original": {
+          "title": "[Bug]: Request gets blocked when using private address proxy",
+          "body": "### Bug Summary\n\nRequest blocked when proxy is in private range IPs\n\n### Description\n\nI set `HTTP_PROXY` and `HTTPS_PROXY` to `http://127.0.0.1:port` and this prevents fetching unless I set [FETCHER_ALLOW_PRIVATE_NETWORKS](https://miniflux.app/docs/configuration.html#fetcher-allow-private-networks)\n\n### Steps to Reproduce\n\n1. Set `HTTP_PROXY` and `HTTPS_PROXY` to `http://127.0.0.1:port`\n2. Refresh some feed\n\n### Expected Behavior\n\nI believe the actual private range check should only be applied to feed URLs/IPs\n\n### Actual Behavior\n\nBlocked\n\n### Version\n\n2.3.1\n\n### Browser\n\n_No response_\n\n### Relevant Logs or Error Output\n\n```shell\n\n```\n\n### Additional Context\n\n_No response_\n\n### Checklist\n\n- [x] I have searched existing issues to ensure this bug hasn't been reported before."
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,1322 @@
+{
+  "kind": "localization-eval",
+  "corpus": {
+    "id": "localization-01-miniflux-heldout",
+    "purpose": "held-out",
+    "items": 25,
+    "repos": [
+      {
+        "name": "miniflux",
+        "sha": "c4d54f87a81b30aa173fddf05d7ff83ae7da5796"
+      }
+    ]
+  },
+  "runsRequested": 3,
+  "budgetUsd": 35,
+  "spentUsd": 0,
+  "stopped": null,
+  "arms": [
+    {
+      "id": "A0",
+      "label": "A0 — shipped seeding (resolveChangeSeeds over HybridCodeSearch), no model",
+      "configuration": {
+        "stage": "resolveChangeSeeds (impact-analysis/change-seeds.ts)",
+        "extractor": "shapeAwareChangeExtractor",
+        "searcher": "HybridCodeSearch (BM25 + symbol vectors, RRF)",
+        "bm25Weight": 0.05,
+        "vectorWeight": 0.95,
+        "embeddingModel": "Alibaba-NLP/gte-modernbert-base",
+        "symbols": "d847ad3c5175",
+        "SEED_POOL_PER_QUERY": 120,
+        "EDIT_POOL": 60,
+        "MAX_EDIT_FILES": 5,
+        "MIN_FILE_SHARE": 0.5,
+        "FILE_HIT_DECAY": 0.5,
+        "MAX_SYMBOLS_PER_EDIT_FILE": 4,
+        "llm": false
+      },
+      "completedRuns": 3,
+      "perItemRuns": {
+        "MF-4483": [
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.06577520799999996
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.02371025000000009
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.02636937499999999
+          }
+        ],
+        "MF-4495": [
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.125,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.022714666999999963
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.125,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.046708208000000015
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.125,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.023028708999999935
+          }
+        ],
+        "MF-4500": [
+          {
+            "recallAt5": 0,
+            "recallAt10": 0,
+            "editPrecision": 0,
+            "reciprocalRank": 0.02631578947368421,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 6,
+            "costUsd": 0,
+            "seconds": 0.025597958000000063
+          },
+          {
+            "recallAt5": 0,
+            "recallAt10": 0,
+            "editPrecision": 0,
+            "reciprocalRank": 0.02631578947368421,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 6,
+            "costUsd": 0,
+            "seconds": 0.028060541999999942
+          },
+          {
+            "recallAt5": 0,
+            "recallAt10": 0,
+            "editPrecision": 0,
+            "reciprocalRank": 0.02631578947368421,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 6,
+            "costUsd": 0,
+            "seconds": 0.027488125000000082
+          }
+        ],
+        "MF-4510": [
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 0.5,
+            "editPrecision": 0.3333333333333333,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 6,
+            "costUsd": 0,
+            "seconds": 0.026102916999999934
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 0.5,
+            "editPrecision": 0.3333333333333333,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 6,
+            "costUsd": 0,
+            "seconds": 0.023959292000000004
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 0.5,
+            "editPrecision": 0.3333333333333333,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 6,
+            "costUsd": 0,
+            "seconds": 0.04093804200000022
+          }
+        ],
+        "MF-4516": [
+          {
+            "recallAt5": 0.6,
+            "recallAt10": 0.8,
+            "editPrecision": 0.5,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.024745666000000027
+          },
+          {
+            "recallAt5": 0.6,
+            "recallAt10": 0.8,
+            "editPrecision": 0.5,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.024326500000000122
+          },
+          {
+            "recallAt5": 0.6,
+            "recallAt10": 0.8,
+            "editPrecision": 0.5,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.038094041000000065
+          }
+        ],
+        "MF-4520": [
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.125,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.024653749999999947
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.125,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.0242181250000001
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.125,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.06823754099999997
+          }
+        ],
+        "MF-4525": [
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 0.5,
+            "editPrecision": 0.3333333333333333,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 6,
+            "costUsd": 0,
+            "seconds": 0.025296541999999932
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 0.5,
+            "editPrecision": 0.3333333333333333,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 6,
+            "costUsd": 0,
+            "seconds": 0.025243375000000016
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 0.5,
+            "editPrecision": 0.3333333333333333,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 6,
+            "costUsd": 0,
+            "seconds": 0.029398832999999968
+          }
+        ],
+        "MF-4526": [
+          {
+            "recallAt5": 0.3333333333333333,
+            "recallAt10": 0.3333333333333333,
+            "editPrecision": 0.14285714285714285,
+            "reciprocalRank": 0.2,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 7,
+            "costUsd": 0,
+            "seconds": 0.024713583000000084
+          },
+          {
+            "recallAt5": 0.3333333333333333,
+            "recallAt10": 0.3333333333333333,
+            "editPrecision": 0.14285714285714285,
+            "reciprocalRank": 0.2,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 7,
+            "costUsd": 0,
+            "seconds": 0.024230041999999914
+          },
+          {
+            "recallAt5": 0.3333333333333333,
+            "recallAt10": 0.3333333333333333,
+            "editPrecision": 0.14285714285714285,
+            "reciprocalRank": 0.2,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 7,
+            "costUsd": 0,
+            "seconds": 0.026934208000000126
+          }
+        ],
+        "MF-4554": [
+          {
+            "recallAt5": 0,
+            "recallAt10": 0,
+            "editPrecision": 0,
+            "reciprocalRank": 0.018867924528301886,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 7,
+            "costUsd": 0,
+            "seconds": 0.022878959000000008
+          },
+          {
+            "recallAt5": 0,
+            "recallAt10": 0,
+            "editPrecision": 0,
+            "reciprocalRank": 0.018867924528301886,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 7,
+            "costUsd": 0,
+            "seconds": 0.023602499999999964
+          },
+          {
+            "recallAt5": 0,
+            "recallAt10": 0,
+            "editPrecision": 0,
+            "reciprocalRank": 0.018867924528301886,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 7,
+            "costUsd": 0,
+            "seconds": 0.028835833999999977
+          }
+        ],
+        "MF-4556": [
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.3333333333333333,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 6,
+            "costUsd": 0,
+            "seconds": 0.027158667000000036
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.3333333333333333,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 6,
+            "costUsd": 0,
+            "seconds": 0.024178499999999985
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.3333333333333333,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 6,
+            "costUsd": 0,
+            "seconds": 0.030199415999999927
+          }
+        ],
+        "MF-4557": [
+          {
+            "recallAt5": 0,
+            "recallAt10": 0.3333333333333333,
+            "editPrecision": 0.125,
+            "reciprocalRank": 0.14285714285714285,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.02781154099999992
+          },
+          {
+            "recallAt5": 0,
+            "recallAt10": 0.3333333333333333,
+            "editPrecision": 0.125,
+            "reciprocalRank": 0.14285714285714285,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.025068416999999954
+          },
+          {
+            "recallAt5": 0,
+            "recallAt10": 0.3333333333333333,
+            "editPrecision": 0.125,
+            "reciprocalRank": 0.14285714285714285,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.026524833999999827
+          }
+        ],
+        "MF-4563": [
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 0.5,
+            "editPrecision": 0.1111111111111111,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 9,
+            "costUsd": 0,
+            "seconds": 0.03249558400000001
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 0.5,
+            "editPrecision": 0.1111111111111111,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 9,
+            "costUsd": 0,
+            "seconds": 0.02449233400000003
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 0.5,
+            "editPrecision": 0.1111111111111111,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 9,
+            "costUsd": 0,
+            "seconds": 0.024325374999999896
+          }
+        ],
+        "MF-4566": [
+          {
+            "recallAt5": 0,
+            "recallAt10": 0,
+            "editPrecision": 0,
+            "reciprocalRank": 0.058823529411764705,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 6,
+            "costUsd": 0,
+            "seconds": 0.026964292
+          },
+          {
+            "recallAt5": 0,
+            "recallAt10": 0,
+            "editPrecision": 0,
+            "reciprocalRank": 0.058823529411764705,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 6,
+            "costUsd": 0,
+            "seconds": 0.022652291999999987
+          },
+          {
+            "recallAt5": 0,
+            "recallAt10": 0,
+            "editPrecision": 0,
+            "reciprocalRank": 0.058823529411764705,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 6,
+            "costUsd": 0,
+            "seconds": 0.023792125000000396
+          }
+        ],
+        "MF-4567": [
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.25,
+            "reciprocalRank": 0.2,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.025385958000000073
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.25,
+            "reciprocalRank": 0.2,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.022642291000000113
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.25,
+            "reciprocalRank": 0.2,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.02447745900000018
+          }
+        ],
+        "MF-4571": [
+          {
+            "recallAt5": 0,
+            "recallAt10": 1,
+            "editPrecision": 0,
+            "reciprocalRank": 0.1111111111111111,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 7,
+            "costUsd": 0,
+            "seconds": 0.02631737499999997
+          },
+          {
+            "recallAt5": 0,
+            "recallAt10": 1,
+            "editPrecision": 0,
+            "reciprocalRank": 0.1111111111111111,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 7,
+            "costUsd": 0,
+            "seconds": 0.02312783300000001
+          },
+          {
+            "recallAt5": 0,
+            "recallAt10": 1,
+            "editPrecision": 0,
+            "reciprocalRank": 0.1111111111111111,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 7,
+            "costUsd": 0,
+            "seconds": 0.0253659590000002
+          }
+        ],
+        "MF-4572": [
+          {
+            "recallAt5": 0.4,
+            "recallAt10": 1,
+            "editPrecision": 0.5,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.03847437500000001
+          },
+          {
+            "recallAt5": 0.4,
+            "recallAt10": 1,
+            "editPrecision": 0.5,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.022454165999999987
+          },
+          {
+            "recallAt5": 0.4,
+            "recallAt10": 1,
+            "editPrecision": 0.5,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.03227320800000007
+          }
+        ],
+        "MF-4575": [
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.125,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.027288708000000043
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.125,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.02558379200000013
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.125,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.029296582999999828
+          }
+        ],
+        "MF-4579": [
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.14285714285714285,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 7,
+            "costUsd": 0,
+            "seconds": 0.0238895839999999
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.14285714285714285,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 7,
+            "costUsd": 0,
+            "seconds": 0.02895612499999993
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.14285714285714285,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 7,
+            "costUsd": 0,
+            "seconds": 0.032986167000000025
+          }
+        ],
+        "MF-4592": [
+          {
+            "recallAt5": 0.16666666666666666,
+            "recallAt10": 0.16666666666666666,
+            "editPrecision": 0.14285714285714285,
+            "reciprocalRank": 0.25,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 7,
+            "costUsd": 0,
+            "seconds": 0.025817958999999974
+          },
+          {
+            "recallAt5": 0.16666666666666666,
+            "recallAt10": 0.16666666666666666,
+            "editPrecision": 0.14285714285714285,
+            "reciprocalRank": 0.25,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 7,
+            "costUsd": 0,
+            "seconds": 0.024458249999999907
+          },
+          {
+            "recallAt5": 0.16666666666666666,
+            "recallAt10": 0.16666666666666666,
+            "editPrecision": 0.14285714285714285,
+            "reciprocalRank": 0.25,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 7,
+            "costUsd": 0,
+            "seconds": 0.07308516700000019
+          }
+        ],
+        "MF-4594": [
+          {
+            "recallAt5": 0.25,
+            "recallAt10": 0.75,
+            "editPrecision": 0.14285714285714285,
+            "reciprocalRank": 0.3333333333333333,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 7,
+            "costUsd": 0,
+            "seconds": 0.024154957999999966
+          },
+          {
+            "recallAt5": 0.25,
+            "recallAt10": 0.75,
+            "editPrecision": 0.14285714285714285,
+            "reciprocalRank": 0.3333333333333333,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 7,
+            "costUsd": 0,
+            "seconds": 0.02513020799999981
+          },
+          {
+            "recallAt5": 0.25,
+            "recallAt10": 0.75,
+            "editPrecision": 0.14285714285714285,
+            "reciprocalRank": 0.3333333333333333,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 7,
+            "costUsd": 0,
+            "seconds": 0.0431752919999999
+          }
+        ],
+        "MF-4599": [
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.125,
+            "reciprocalRank": 0.25,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.024369083000000045
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.125,
+            "reciprocalRank": 0.25,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.024557000000000016
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 1,
+            "editPrecision": 0.125,
+            "reciprocalRank": 0.25,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.03211145799999986
+          }
+        ],
+        "MF-4605": [
+          {
+            "recallAt5": 0.3333333333333333,
+            "recallAt10": 0.3333333333333333,
+            "editPrecision": 0.1111111111111111,
+            "reciprocalRank": 0.2,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 9,
+            "costUsd": 0,
+            "seconds": 0.023310333999999898
+          },
+          {
+            "recallAt5": 0.3333333333333333,
+            "recallAt10": 0.3333333333333333,
+            "editPrecision": 0.1111111111111111,
+            "reciprocalRank": 0.2,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 9,
+            "costUsd": 0,
+            "seconds": 0.024435500000000047
+          },
+          {
+            "recallAt5": 0.3333333333333333,
+            "recallAt10": 0.3333333333333333,
+            "editPrecision": 0.1111111111111111,
+            "reciprocalRank": 0.2,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 9,
+            "costUsd": 0,
+            "seconds": 0.03347787500000004
+          }
+        ],
+        "MF-4606": [
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 0.5,
+            "editPrecision": 0.125,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.024253333999999994
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 0.5,
+            "editPrecision": 0.125,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.02507116700000006
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 0.5,
+            "editPrecision": 0.125,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 8,
+            "costUsd": 0,
+            "seconds": 0.027530833000000258
+          }
+        ],
+        "MF-4608": [
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.02299916600000006
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.030783500000000005
+          },
+          {
+            "recallAt5": 1,
+            "recallAt10": 1,
+            "editPrecision": 0.2,
+            "reciprocalRank": 0.5,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 5,
+            "costUsd": 0,
+            "seconds": 0.027786916999999904
+          }
+        ],
+        "MF-4610": [
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 0.5,
+            "editPrecision": 0.1111111111111111,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 9,
+            "costUsd": 0,
+            "seconds": 0.021291167000000086
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 0.5,
+            "editPrecision": 0.1111111111111111,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 9,
+            "costUsd": 0,
+            "seconds": 0.024273707999999942
+          },
+          {
+            "recallAt5": 0.5,
+            "recallAt10": 0.5,
+            "editPrecision": 0.1111111111111111,
+            "reciprocalRank": 1,
+            "graphResolution": null,
+            "verdictCorrect": null,
+            "editCandidateCount": 9,
+            "costUsd": 0,
+            "seconds": 0.025184707999999775
+          }
+        ]
+      },
+      "items": [
+        {
+          "id": "MF-4483",
+          "runs": 3,
+          "recallAt5": 1,
+          "recallAt10": 1,
+          "editPrecision": 0.20000000000000004,
+          "reciprocalRank": 0.5,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 5,
+          "costUsd": 0,
+          "seconds": 0.03861827766666668
+        },
+        {
+          "id": "MF-4495",
+          "runs": 3,
+          "recallAt5": 1,
+          "recallAt10": 1,
+          "editPrecision": 0.125,
+          "reciprocalRank": 1,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 8,
+          "costUsd": 0,
+          "seconds": 0.03081719466666664
+        },
+        {
+          "id": "MF-4500",
+          "runs": 3,
+          "recallAt5": 0,
+          "recallAt10": 0,
+          "editPrecision": 0,
+          "reciprocalRank": 0.02631578947368421,
+          "graphResolution": null,
+          "hitAt5": 0,
+          "hitAt10": 0,
+          "verdictAccuracy": null,
+          "editCandidateCount": 6,
+          "costUsd": 0,
+          "seconds": 0.027048875000000028
+        },
+        {
+          "id": "MF-4510",
+          "runs": 3,
+          "recallAt5": 0.5,
+          "recallAt10": 0.5,
+          "editPrecision": 0.3333333333333333,
+          "reciprocalRank": 1,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 6,
+          "costUsd": 0,
+          "seconds": 0.030333417000000057
+        },
+        {
+          "id": "MF-4516",
+          "runs": 3,
+          "recallAt5": 0.6,
+          "recallAt10": 0.8000000000000002,
+          "editPrecision": 0.5,
+          "reciprocalRank": 1,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 8,
+          "costUsd": 0,
+          "seconds": 0.029055402333333407
+        },
+        {
+          "id": "MF-4520",
+          "runs": 3,
+          "recallAt5": 1,
+          "recallAt10": 1,
+          "editPrecision": 0.125,
+          "reciprocalRank": 1,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 8,
+          "costUsd": 0,
+          "seconds": 0.03903647200000001
+        },
+        {
+          "id": "MF-4525",
+          "runs": 3,
+          "recallAt5": 0.5,
+          "recallAt10": 0.5,
+          "editPrecision": 0.3333333333333333,
+          "reciprocalRank": 1,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 6,
+          "costUsd": 0,
+          "seconds": 0.026646249999999972
+        },
+        {
+          "id": "MF-4526",
+          "runs": 3,
+          "recallAt5": 0.3333333333333333,
+          "recallAt10": 0.3333333333333333,
+          "editPrecision": 0.14285714285714285,
+          "reciprocalRank": 0.20000000000000004,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 7,
+          "costUsd": 0,
+          "seconds": 0.025292611000000038
+        },
+        {
+          "id": "MF-4554",
+          "runs": 3,
+          "recallAt5": 0,
+          "recallAt10": 0,
+          "editPrecision": 0,
+          "reciprocalRank": 0.018867924528301886,
+          "graphResolution": null,
+          "hitAt5": 0,
+          "hitAt10": 0,
+          "verdictAccuracy": null,
+          "editCandidateCount": 7,
+          "costUsd": 0,
+          "seconds": 0.02510576433333332
+        },
+        {
+          "id": "MF-4556",
+          "runs": 3,
+          "recallAt5": 1,
+          "recallAt10": 1,
+          "editPrecision": 0.3333333333333333,
+          "reciprocalRank": 1,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 6,
+          "costUsd": 0,
+          "seconds": 0.02717886099999998
+        },
+        {
+          "id": "MF-4557",
+          "runs": 3,
+          "recallAt5": 0,
+          "recallAt10": 0.3333333333333333,
+          "editPrecision": 0.125,
+          "reciprocalRank": 0.14285714285714285,
+          "graphResolution": null,
+          "hitAt5": 0,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 8,
+          "costUsd": 0,
+          "seconds": 0.026468263999999898
+        },
+        {
+          "id": "MF-4563",
+          "runs": 3,
+          "recallAt5": 0.5,
+          "recallAt10": 0.5,
+          "editPrecision": 0.1111111111111111,
+          "reciprocalRank": 0.5,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 9,
+          "costUsd": 0,
+          "seconds": 0.02710443099999998
+        },
+        {
+          "id": "MF-4566",
+          "runs": 3,
+          "recallAt5": 0,
+          "recallAt10": 0,
+          "editPrecision": 0,
+          "reciprocalRank": 0.0588235294117647,
+          "graphResolution": null,
+          "hitAt5": 0,
+          "hitAt10": 0,
+          "verdictAccuracy": null,
+          "editCandidateCount": 6,
+          "costUsd": 0,
+          "seconds": 0.024469569666666798
+        },
+        {
+          "id": "MF-4567",
+          "runs": 3,
+          "recallAt5": 0.5,
+          "recallAt10": 1,
+          "editPrecision": 0.25,
+          "reciprocalRank": 0.20000000000000004,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 8,
+          "costUsd": 0,
+          "seconds": 0.024168569333333455
+        },
+        {
+          "id": "MF-4571",
+          "runs": 3,
+          "recallAt5": 0,
+          "recallAt10": 1,
+          "editPrecision": 0,
+          "reciprocalRank": 0.1111111111111111,
+          "graphResolution": null,
+          "hitAt5": 0,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 7,
+          "costUsd": 0,
+          "seconds": 0.024937055666666725
+        },
+        {
+          "id": "MF-4572",
+          "runs": 3,
+          "recallAt5": 0.4000000000000001,
+          "recallAt10": 1,
+          "editPrecision": 0.5,
+          "reciprocalRank": 1,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 8,
+          "costUsd": 0,
+          "seconds": 0.03106724966666669
+        },
+        {
+          "id": "MF-4575",
+          "runs": 3,
+          "recallAt5": 1,
+          "recallAt10": 1,
+          "editPrecision": 0.125,
+          "reciprocalRank": 1,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 8,
+          "costUsd": 0,
+          "seconds": 0.027389694333333336
+        },
+        {
+          "id": "MF-4579",
+          "runs": 3,
+          "recallAt5": 1,
+          "recallAt10": 1,
+          "editPrecision": 0.14285714285714285,
+          "reciprocalRank": 1,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 7,
+          "costUsd": 0,
+          "seconds": 0.02861062533333329
+        },
+        {
+          "id": "MF-4592",
+          "runs": 3,
+          "recallAt5": 0.16666666666666666,
+          "recallAt10": 0.16666666666666666,
+          "editPrecision": 0.14285714285714285,
+          "reciprocalRank": 0.25,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 7,
+          "costUsd": 0,
+          "seconds": 0.041120458666666686
+        },
+        {
+          "id": "MF-4594",
+          "runs": 3,
+          "recallAt5": 0.25,
+          "recallAt10": 0.75,
+          "editPrecision": 0.14285714285714285,
+          "reciprocalRank": 0.3333333333333333,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 7,
+          "costUsd": 0,
+          "seconds": 0.03082015266666656
+        },
+        {
+          "id": "MF-4599",
+          "runs": 3,
+          "recallAt5": 0.5,
+          "recallAt10": 1,
+          "editPrecision": 0.125,
+          "reciprocalRank": 0.25,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 8,
+          "costUsd": 0,
+          "seconds": 0.02701251366666664
+        },
+        {
+          "id": "MF-4605",
+          "runs": 3,
+          "recallAt5": 0.3333333333333333,
+          "recallAt10": 0.3333333333333333,
+          "editPrecision": 0.1111111111111111,
+          "reciprocalRank": 0.20000000000000004,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 9,
+          "costUsd": 0,
+          "seconds": 0.02707456966666666
+        },
+        {
+          "id": "MF-4606",
+          "runs": 3,
+          "recallAt5": 0.5,
+          "recallAt10": 0.5,
+          "editPrecision": 0.125,
+          "reciprocalRank": 0.5,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 8,
+          "costUsd": 0,
+          "seconds": 0.02561844466666677
+        },
+        {
+          "id": "MF-4608",
+          "runs": 3,
+          "recallAt5": 1,
+          "recallAt10": 1,
+          "editPrecision": 0.20000000000000004,
+          "reciprocalRank": 0.5,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 5,
+          "costUsd": 0,
+          "seconds": 0.027189860999999992
+        },
+        {
+          "id": "MF-4610",
+          "runs": 3,
+          "recallAt5": 0.5,
+          "recallAt10": 0.5,
+          "editPrecision": 0.1111111111111111,
+          "reciprocalRank": 1,
+          "graphResolution": null,
+          "hitAt5": 1,
+          "hitAt10": 1,
+          "verdictAccuracy": null,
+          "editCandidateCount": 9,
+          "costUsd": 0,
+          "seconds": 0.02358319433333327
+        }
+      ],
+      "aggregate": {
+        "items": 25,
+        "recallAt5": 0.5033333333333333,
+        "recallAt10": 0.6486666666666667,
+        "editPrecision": 0.17219047619047617,
+        "mrr": 0.5516523532286136,
+        "graphResolution": null,
+        "verdictAccuracy": null,
+        "itemsWithNoEditCandidate": 0,
+        "meanEditCandidates": 7.24,
+        "costUsdPerRequirement": 0,
+        "secondsPerRequirement": 0.028630711146666675,
+        "totalCostUsd": 0
+      },
+      "intervals": {
+        "recallAt5": [0.3626499999999999, 0.6466666666666666],
+        "recallAt10": [0.5033333333333334, 0.7853333333333332],
+        "editPrecision": [0.12323531746031748, 0.22797499999999993],
+        "reciprocalRank": [0.40103296054601917, 0.706197201336675]
+      },
+      "tableGuard": {
+        "measured": false,
+        "reason": "not requested (pass --table-guard)"
+      }
+    }
+  ],
+  "comparisons": [],
+  "detectableGap": "At 25 items and a hit rate near 0.5 the standard error is about 10.0 points per arm, so a gap needs roughly 20 to 28 points to be significant. A smaller difference is reported as \"no measurable difference\", not as a win.",
+  "generatedAt": "2026-11-04T11:26:19.746Z"
+}
