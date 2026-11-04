@@ -23,6 +23,7 @@ vi.mock("../finops/index.js", async (importOriginal) => {
 
 import type { AIProvider, ChatChunk, ChatMessage } from "../ai/types.js";
 import { BRD_MAIN_SECTION_TARGETS } from "./brd-layout.js";
+import { deriveDocStatus } from "./grounding/degraded-warnings.js";
 import {
   buildGeneratedDocVersionManifest,
   parseGeneratedDocVersionManifest,
@@ -311,6 +312,45 @@ describe("the main-part code identifier check", () => {
     const provider = fakeModel({ inject: () => "The `feed_id` column. " });
     const result = await run(project(6), provider);
     expect(result.sections.every((s) => s.codeIdentifiers === undefined)).toBe(true);
+  });
+});
+
+// #1578 (run 10) — a main-part claim with no citation is flagged by the
+// consistency check; the appendix is not read for it.
+describe("the main part's uncited values", () => {
+  const VALUE = "Passwords need at least 6 characters. ";
+  const CITED = "Sessions end after 30 days [facts:src/m00:0]. ";
+
+  it("notes a main section's value that cites no source, and not the appendix's or a cited one", async () => {
+    const provider = fakeModel({
+      inject: (group) =>
+        // Two paragraphs: a citation counts for the whole statement it is in.
+        group === label("key-rules")
+          ? `${VALUE}\n\n${CITED}`
+          : group === label("rules")
+            ? VALUE
+            : "",
+    });
+    const result = await run(project(6), provider);
+    const notes = result.warnings.filter((w) => w.kind === "fact-inconsistent");
+    expect(notes).toHaveLength(1);
+    expect(notes[0].severity).toBe("info");
+    expect(notes[0].message).toContain(
+      "Consistency check: 1 value in the main part with no cited source.",
+    );
+    expect(notes[0].message).toContain(`in ${label("key-rules")} cites no source`);
+    expect(notes[0].message).not.toContain(label("rules"));
+    expect(result.consistency?.findings).toEqual([
+      expect.objectContaining({ kind: "uncited", name: label("key-rules"), forms: 1 }),
+    ]);
+    expect(deriveDocStatus(result.warnings)).toBe("ready");
+  });
+
+  it("is not read on the catalogue layout, which has no main part", async () => {
+    vi.stubEnv("DOCS_GEN_BRD_LAYOUT", "catalogue");
+    const provider = fakeModel({ inject: () => VALUE });
+    const result = await run(project(6), provider);
+    expect(result.consistency?.findings ?? []).toEqual([]);
   });
 });
 

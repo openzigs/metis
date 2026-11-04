@@ -551,8 +551,23 @@ describe("generateDocumentAsync — stored path scope", () => {
       expect(synthesizeHolisticDocument).not.toHaveBeenCalled();
     });
 
+    // #1578 — the BRD's data dictionary is given the database's column defaults.
+    it("is read for a business-requirements document and handed to synthesis", async () => {
+      mocked(prisma.generatedDocument.findFirst).mockResolvedValue(
+        scopedDoc(JSON.stringify({ docType: "business-requirements" })),
+      );
+      await generateDocumentAsync("doc-1", "proj-1");
+      expect(loadSchemaInventory).toHaveBeenCalledTimes(1);
+      expect(mocked(loadSchemaInventory).mock.calls[0][0]).toMatchObject({
+        projectId: "proj-1",
+        actorId: "user_admin",
+      });
+      expect(mocked(synthesizeHolisticDocument).mock.calls[0][1]).toBe("business-requirements");
+      expect(mocked(synthesizeHolisticDocument).mock.calls[0][3].schemaInventory).toBe(INVENTORY);
+    });
+
     it("is not read for any other document type", async () => {
-      for (const docType of ["business-requirements", "user-guide"]) {
+      for (const docType of ["user-guide"]) {
         mocked(prisma.generatedDocument.findFirst).mockResolvedValue(
           scopedDoc(JSON.stringify({ docType })),
         );

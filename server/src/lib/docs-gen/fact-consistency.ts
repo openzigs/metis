@@ -35,6 +35,11 @@
  * These have no source to compare with, so the note says only that two
  * sections disagree, and quotes both.
  *
+ * #1578 (run 10) — three more readings, against what METIS read from the
+ * source (`source-claim-checks.ts`): a hex length given as the byte count of
+ * the call that makes it, a data-dictionary default that is not the one the
+ * database declares, and a main-part statement of a value with no citation.
+ *
  * The check only REPORTS. It is a text heuristic over model output: it cannot
  * tell `1440` minutes from `24h`, and two spellings of one formula are two
  * forms to it. So it never edits, removes or rewrites anything — the markdown
@@ -54,6 +59,26 @@ import {
   type FactSheet,
 } from "./canonical-facts.js";
 import { GROUNDING_RUN_SECTION, type DocWarning } from "./grounding/degraded-warnings.js";
+import type { SchemaInventory } from "./schema-inventory.js";
+import {
+  columnDefaultFindings,
+  hexLengthFindings,
+  uncitedMainFindings,
+  type CheckedSection,
+  type EncodedLengthFact,
+} from "./source-claim-checks.js";
+
+/**
+ * #1578 — what METIS read from the source that the document is also checked
+ * against, besides the facts sheet. Each is optional: a reading without its
+ * source finds nothing.
+ */
+export interface SourceReadings {
+  /** The hex-encoding calls the formula extractor read. */
+  encodedLengths?: readonly EncodedLengthFact[];
+  /** The schema whose declared column defaults the data dictionary is read against. */
+  schema?: SchemaInventory;
+}
 
 /** How a value was written. */
 export type StatementKind = "assignment" | "default" | "expression";
@@ -362,9 +387,21 @@ export interface FindingStatement {
 /**
  * `conflict` — a sheet value stated differently. `restated` — a sheet formula,
  * several sections. `endpoint`, `count`, `size` — a prose statement two
- * sections make differently (no source to compare with).
+ * sections make differently (no source to compare with). #1578:
+ * `byte-length` — a hex length given as the byte count of the call that makes
+ * it; `column-default` — a data-dictionary default that is not the database's;
+ * `uncited` — main-part statements of a value that cite no source
+ * (`source-claim-checks.ts`).
  */
-export type ConsistencyFindingKind = "conflict" | "restated" | "endpoint" | "count" | "size";
+export type ConsistencyFindingKind =
+  | "conflict"
+  | "restated"
+  | "endpoint"
+  | "count"
+  | "size"
+  | "byte-length"
+  | "column-default"
+  | "uncited";
 
 export interface ConsistencyFinding {
   kind: ConsistencyFindingKind;
@@ -796,8 +833,9 @@ function proseFindings(statements: ReadonlyArray<ProseStatement & { section: str
  * matter): a statement the fit removed is not there to be quoted (#1119).
  */
 export function checkFactConsistency(
-  sections: ReadonlyArray<{ label: string; markdown: string }>,
+  sections: readonly CheckedSection[],
   sheet?: Pick<FactSheet, "facts">,
+  sources: SourceReadings = {},
 ): ConsistencyReport {
   const all: Array<StatedValue & { section: string }> = [];
   const prose: Array<ProseStatement & { section: string }> = [];
@@ -876,10 +914,21 @@ export function checkFactConsistency(
   const fromProse = proseFindings(prose);
   findings.push(...fromProse.findings);
   compared += fromProse.compared;
+  // #1578 (run 10) — hex lengths, column defaults and the main part's citations.
+  let read = all.length + prose.length;
+  for (const result of [
+    hexLengthFindings(sections, sources.encodedLengths ?? []),
+    columnDefaultFindings(sections, sources.schema),
+    uncitedMainFindings(sections),
+  ]) {
+    findings.push(...result.findings);
+    compared += result.compared;
+    read += result.statements;
+  }
   // By code unit, like the sheet: the note lists its findings in the same
   // order on every machine, which `localeCompare` does not promise.
   findings.sort((a, b) => compareCodeUnits(a.kind, b.kind) || compareCodeUnits(a.name, b.name));
-  return { findings, statements: all.length + prose.length, compared };
+  return { findings, statements: read, compared };
 }
 
 const quote = (s: string): string => `\`${s.replace(/`/g, "'").slice(0, 80)}\``;
@@ -890,6 +939,21 @@ function describeFinding(f: ConsistencyFinding): string {
   const where = `${listed.map((s) => `${quote(s.value)} in ${s.section}`).join("; ")}${
     more > 0 ? `; and ${more} more` : ""
   }`;
+  if (f.kind === "uncited") {
+    return `${f.statements.length} statement${f.statements.length === 1 ? "" : "s"} of a value in ${
+      f.name
+    } cite${f.statements.length === 1 ? "s" : ""} no source (${where}).`;
+  }
+  if (f.kind === "byte-length") {
+    return `the length given as ${quote(f.name)} is the byte count of a hex-encoded value, not its length (${where}).${
+      f.canonical ? ` The source: ${quote(f.canonical.value)} at ${f.canonical.source}.` : ""
+    }`;
+  }
+  if (f.kind === "column-default") {
+    return `the default of ${quote(f.name)} is not the database's (${where}).${
+      f.canonical ? ` ${f.canonical.source} declares ${quote(f.canonical.value)}.` : ""
+    }`;
+  }
   if (f.kind === "endpoint" || f.kind === "count" || f.kind === "size") {
     const what =
       f.kind === "endpoint"
@@ -914,9 +978,17 @@ function describeFinding(f: ConsistencyFinding): string {
 export function factInconsistentWarning(report: ConsistencyReport): DocWarning | null {
   const { findings } = report;
   if (findings.length === 0) return null;
-  const conflicts = findings.filter((f) => f.kind === "conflict").length;
+  // A value checked against a source and found different is a conflict,
+  // whatever the source (#1578: a hex length, a column default).
+  const conflicts = findings.filter(
+    (f) => f.kind === "conflict" || f.kind === "byte-length" || f.kind === "column-default",
+  ).length;
   const restated = findings.filter((f) => f.kind === "restated").length;
-  const disagree = findings.length - conflicts - restated;
+  const uncited = findings
+    .filter((f) => f.kind === "uncited")
+    .reduce((sum, f) => sum + f.statements.length, 0);
+  const uncitedSections = findings.filter((f) => f.kind === "uncited").length;
+  const disagree = findings.length - conflicts - restated - uncitedSections;
   const counts = [
     conflicts > 0
       ? `${conflicts} value${conflicts === 1 ? "" : "s"} stated differently from the source`
@@ -926,6 +998,9 @@ export function factInconsistentWarning(report: ConsistencyReport): DocWarning |
       : "",
     disagree > 0
       ? `${disagree} statement${disagree === 1 ? "" : "s"} made in more than one way`
+      : "",
+    uncited > 0
+      ? `${uncited} value${uncited === 1 ? "" : "s"} in the main part with no cited source`
       : "",
   ]
     .filter(Boolean)

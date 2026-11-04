@@ -199,7 +199,16 @@ const consistencySchema = z
       .array(
         z
           .object({
-            kind: z.enum(["conflict", "restated", "endpoint", "count", "size"]),
+            kind: z.enum([
+              "conflict",
+              "restated",
+              "endpoint",
+              "count",
+              "size",
+              "byte-length",
+              "column-default",
+              "uncited",
+            ]),
             name: recordedText,
             label: recordedText.optional(),
             sections: z.number().int().min(0),

@@ -548,6 +548,92 @@ describe("the fact-inconsistent note", () => {
     expect(factInconsistentWarning({ findings: [], statements: 12, compared: 0 })).toBeNull();
   });
 
+  // #1578 — the readings against the source join the same note.
+  it("counts a hex length and a column default as values stated differently, and the main part's uncited values apart", () => {
+    const report = checkFactConsistency(
+      [
+        {
+          label: "Key Business Rules",
+          main: true,
+          markdown: "1. Passwords need at least 6 characters.\n2. Sessions end after 30 days.",
+        },
+        {
+          label: "Data & Domain Model",
+          markdown: [
+            "API tokens are 32 hex characters.",
+            "",
+            "#### FEED",
+            "",
+            "| Field | Default |",
+            "|---|---|",
+            "| `crawler` | `true` |",
+          ].join("\n"),
+        },
+      ],
+      undefined,
+      {
+        encodedLengths: [
+          {
+            bytes: 32,
+            characters: 64,
+            expression: "GenerateRandomStringHex(32)",
+            source: "a.go:4",
+          },
+        ],
+        schema: {
+          source: "live-schema",
+          label: "the live schema",
+          reads: [],
+          tables: [
+            {
+              schema: "public",
+              name: "feeds",
+              foreignKeys: [],
+              columns: [
+                {
+                  name: "crawler",
+                  dataType: "boolean",
+                  nullable: true,
+                  isPrimaryKey: false,
+                  isForeignKey: false,
+                  defaultValue: "false",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    );
+    expect(report.findings.map((f) => f.kind)).toEqual([
+      "byte-length",
+      "column-default",
+      "uncited",
+    ]);
+    // Two hex lengths and one default compared; four statements read besides.
+    expect(report.compared).toBe(2);
+    expect(report.statements).toBe(4);
+    const warning = factInconsistentWarning(report)!;
+    expect(warning.severity).toBe("info");
+    expect(warning.message).toContain(
+      "Consistency check: 2 values stated differently from the source and 2 values in the main part with no cited source.",
+    );
+    expect(warning.message).toContain(
+      "The default of `feeds.crawler` is not the database's (`crawler: true` in Data & Domain Model). the live schema declares `false`.",
+    );
+    expect(warning.message).toContain(
+      "2 statements of a value in Key Business Rules cite no source (`1. Passwords need at least 6 characters.` in Key Business Rules; `2. Sessions end after 30 days.` in Key Business Rules).",
+    );
+  });
+
+  it("says one uncited value in the singular", () => {
+    const warning = factInconsistentWarning(
+      checkFactConsistency([{ label: "Overview", main: true, markdown: "Kept for 60 days." }]),
+    )!;
+    expect(warning.message).toContain(
+      "Consistency check: 1 value in the main part with no cited source. 1 statement of a value in Overview cites no source",
+    );
+  });
+
   it("counts both kinds, and says a single conflict in the singular", () => {
     const warning = factInconsistentWarning(
       checkFactConsistency(

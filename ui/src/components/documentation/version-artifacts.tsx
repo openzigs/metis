@@ -210,6 +210,18 @@ function consistencyFindingText(f: ConsistencyFinding): string {
       return `The number of ${what} is given ${f.forms} different ways`;
     case "size":
       return `The size of the ${what} is given ${f.forms} different ways`;
+    // #1578 — checked against what METIS read from the source.
+    case "byte-length":
+      return `${f.name} is the byte count of a hex-encoded value, not its length${
+        f.source ? ` (${f.source.value} at ${f.source.location})` : ""
+      }`;
+    case "column-default":
+      return `The default of ${f.name} is not the database's${
+        f.source ? ` (${f.source.location} declares ${f.source.value})` : ""
+      }`;
+    case "uncited":
+      // `forms` counts them all; only the first few statements are recorded.
+      return `${f.forms} value${f.forms === 1 ? "" : "s"} in ${f.name} with no cited source`;
     default:
       return what;
   }
