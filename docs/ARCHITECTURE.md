@@ -3010,6 +3010,12 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   extractor splits into several changes is seeded once per change, and the five-file
   cap applies to each. At 25 items a difference needs roughly 20 to 28 points to be
   significant; the harness reports anything smaller as "no measurable difference".
+  When both held-out sets run, it also writes a pooled report: each arm against A0
+  over all 40 held-out items, with the bootstrap stratified by corpus, where a gap
+  of roughly 16 to 22 points is significant (#1770). The fixture set's Recall@10 is
+  1.00 by construction (its graph holds ten files), and its report says so. One
+  dollar cap covers the whole invocation, table-precision guard included, and a
+  model call that reports no usage counts as unpriced and stops the run.
 
   **The cut sizes are provisional.** `MAX_EDIT_FILES = 5`, `MIN_FILE_SHARE = 0.5`,
   `FILE_HIT_DECAY = 0.5`, `EDIT_POOL = 60`, `MAX_SYMBOLS_PER_EDIT_FILE = 4` and

@@ -2,6 +2,8 @@
 
 Items: **15** · Repos: `orders@4d8bb2ba`, `billing@1f24ead4`, `notify@5d092497` · Runs requested: **3** · Budget: **$35** · Spent: **$0.0000**
 
+> **Note.** The code graph holds only 10 files, so an arm that ranks all of them scores Recall@10 = 1.00 by construction: Recall@10 and hit@10 carry no signal on this corpus. Read Recall@5, edit precision and MRR.
+
 ## Arms
 
 ### A0 — shipped seeding (resolveChangeSeeds over HybridCodeSearch), no model

@@ -8,7 +8,10 @@
  * the single pricing source `recordUsage` writes `token_usages` with — and
  * adds it to a {@link LedgerCostMeter}. A model METIS has no price for is
  * counted as UNPRICED, never as $0: with an unpriced call the cap cannot be
- * enforced, and the runner stops.
+ * enforced, and the runner stops. So is a call that reports NO usage (a gateway
+ * that omits it, or a stream that ends without a usage chunk): it was made, so
+ * it cost something, and metering it as $0 would let the cap enforce nothing
+ * (#1770).
  */
 import type { AIProvider, ChatChunk, TokenUsage } from "../../ai/types.js";
 import { resolveRate } from "../../finops/provider-rates.js";
@@ -27,10 +30,16 @@ export class LedgerCostMeter implements CostMeter {
   private unpriced = 0;
   private calls = 0;
 
-  /** Price one call's usage and add it. Returns its dollars, or null when unpriced. */
+  /**
+   * Price one call's usage and add it. Returns its dollars, or null when
+   * unpriced: no price for the model, or no usage reported for the call.
+   */
   record(provider: string, model: string, usage: TokenUsage | undefined): number | null {
-    if (!usage) return 0;
     this.calls++;
+    if (!usage) {
+      this.unpriced++;
+      return null;
+    }
     const cents = priceLedgerTokensExact(
       provider,
       resolveRate(provider, model),
@@ -81,10 +90,18 @@ export function meterProvider(provider: AIProvider, meter: LedgerCostMeter): AIP
         return async function* (
           ...args: Parameters<AIProvider["stream"]>
         ): AsyncGenerator<ChatChunk> {
-          for await (const chunk of target.stream(...args)) {
-            if (chunk.type === "usage")
-              meter.record(target.key, chunk.model ?? target.model, chunk.usage);
-            yield chunk;
+          let metered = false;
+          try {
+            for await (const chunk of target.stream(...args)) {
+              if (chunk.type === "usage") {
+                meter.record(target.key, chunk.model ?? target.model, chunk.usage);
+                metered = true;
+              }
+              yield chunk;
+            }
+          } finally {
+            // A stream that ended (or was abandoned) with no usage chunk still cost something.
+            if (!metered) meter.record(target.key, target.model, undefined);
           }
         };
       }

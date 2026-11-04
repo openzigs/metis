@@ -8,9 +8,11 @@
  *
  * The bootstrap is SEEDED, so a report reproduces byte for byte. And the size of
  * gap the sample can see is stated with every comparison
- * ({@link minimumDetectableGap}): at about 45 items a difference needs roughly
- * 15 to 20 points before it is distinguishable from noise, and anything smaller
- * is reported as "no measurable difference", never as a win.
+ * ({@link minimumDetectableGap}). One corpus is small: at 25 items a difference
+ * needs roughly 20 to 28 points, at 15 roughly 26 to 36. The held-out corpora
+ * are therefore also compared POOLED ({@link stratifiedPairedBootstrap}), where
+ * 40 items bring the bar down to roughly 16 to 22 points (#1770). Anything
+ * smaller is reported as "no measurable difference", never as a win.
  */
 
 /** Two-sided exact McNemar p-value for `b` and `c` discordant pairs. */
@@ -74,20 +76,47 @@ export function pairedBootstrap(
   arm: readonly number[],
   opts: BootstrapOptions = {},
 ): PairedDifference {
-  if (baseline.length !== arm.length) {
-    throw new Error(`paired bootstrap needs equal lengths (${baseline.length} vs ${arm.length})`);
-  }
-  const n = baseline.length;
-  const diffs = arm.map((v, i) => v - baseline[i]!);
-  const meanDifference = n === 0 ? 0 : diffs.reduce((a, b) => a + b, 0) / n;
+  return stratifiedPairedBootstrap([{ baseline, arm }], opts);
+}
+
+/** One stratum of a pooled comparison: the same items, in the same order, under both arms. */
+export interface PairedStratum {
+  baseline: readonly number[];
+  arm: readonly number[];
+}
+
+/**
+ * #1770 — paired bootstrap of `mean(arm − baseline)` over items POOLED from
+ * several strata (corpora), resampling WITHIN each stratum so every replicate
+ * keeps each corpus's share of the items. The mean weights every item equally.
+ * With one stratum it is exactly {@link pairedBootstrap}, draw for draw.
+ */
+export function stratifiedPairedBootstrap(
+  strata: readonly PairedStratum[],
+  opts: BootstrapOptions = {},
+): PairedDifference {
+  const diffs = strata.map((s, i) => {
+    if (s.baseline.length !== s.arm.length) {
+      throw new Error(
+        `paired bootstrap needs equal lengths (${s.baseline.length} vs ${s.arm.length}` +
+          `${strata.length > 1 ? ` in stratum ${i}` : ""})`,
+      );
+    }
+    return s.arm.map((v, j) => v - s.baseline[j]!);
+  });
+  const n = diffs.reduce((sum, d) => sum + d.length, 0);
   if (n === 0) return { meanDifference: 0, ci: [0, 0], p: 1, n };
+  const meanDifference = diffs.flat().reduce((a, b) => a + b, 0) / n;
   const iterations = opts.iterations ?? 10_000;
   const alpha = opts.alpha ?? 0.05;
   const rand = seededRandom(opts.seed ?? 1753);
   const means: number[] = [];
   for (let it = 0; it < iterations; it++) {
     let sum = 0;
-    for (let j = 0; j < n; j++) sum += diffs[Math.floor(rand() * n)]!;
+    for (const d of diffs) {
+      const m = d.length;
+      for (let j = 0; j < m; j++) sum += d[Math.floor(rand() * m)]!;
+    }
     means.push(sum / n);
   }
   means.sort((a, b) => a - b);
