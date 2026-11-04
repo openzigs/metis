@@ -4,8 +4,8 @@ import type { LocalizationCorpus, LocalizationItem } from "./corpus.js";
 import type { CostMeter } from "./cost.js";
 import {
   EvalBudget,
-  TABLE_GUARD_STOP,
   compareArms,
+  memoisedA0TableGuard,
   poolHeldOutReports,
   runLocalizationEval,
   toMarkdownReport,
@@ -309,8 +309,117 @@ describe("runLocalizationEval budget (#1770)", () => {
     expect(guardCalls).toBe(1);
     expect(report.arms[0]!.tableGuard.measured).toBe(true);
     expect(report.arms[1]!.tableGuard).toMatchObject({ measured: false });
-    expect(report.stopped).toMatchObject({ arm: "A4", item: TABLE_GUARD_STOP });
+    // The stop names its phase and the run A4 reached, not a sentinel item (#1779).
+    expect(report.stopped).toEqual({
+      phase: "table-guard",
+      reason: "budget: $0.5000 spent + up to $0.5000 next > $0.7",
+      arm: "A4",
+      run: 1,
+      item: null,
+    });
     expect(toMarkdownReport(report)).toContain("before arm A4's table-precision guard.");
+  });
+
+  it("names the requirement phase and the run reached on an item stop (#1779)", async () => {
+    const meter = new FakeMeter();
+    const report = await runLocalizationEval(corpus(2), {
+      arms: [paid("A0", meter, 0.4)],
+      runs: 3,
+      budgetUsd: 1,
+      meter,
+    });
+    expect(report.stopped).toEqual({
+      phase: "requirement",
+      reason: "budget: $0.8000 spent + up to $0.4000 next > $1",
+      arm: "A0",
+      run: 2,
+      item: "I-1",
+    });
+  });
+});
+
+describe("memoisedA0TableGuard (#1779)", () => {
+  /** The CLI's guard over a fake measurement that spends `usd` through the meter. */
+  function cliGuard(meter: FakeMeter, usd: number) {
+    let measured = 0;
+    const guard = memoisedA0TableGuard(async () => {
+      measured++;
+      meter.spent += usd;
+      return { measured: true, tablePrecision: 0.8, runs: 3, configuration: "prod" };
+    });
+    return { guard, measured: () => measured };
+  }
+
+  it("does not stop before a free guard: another arm's, or A0's memoised reading", async () => {
+    // The reviewer's reproduction: a $0.70 cap and a first guard at $0.50, two arms.
+    const meter = new FakeMeter();
+    const budget = new EvalBudget(0.7);
+    const { guard, measured } = cliGuard(meter, 0.5);
+    const opts = { arms: [arm("A0", () => 1), arm("A4", () => 1)], runs: 1, budget, meter };
+    const first = await runLocalizationEval(corpus(2), { ...opts, tableGuard: guard });
+    expect(first.stopped).toBeNull();
+    expect(first.arms[0]!.tableGuard).toMatchObject({ measured: true, tablePrecision: 0.8 });
+    expect(first.arms[1]!.tableGuard).toEqual({
+      measured: false,
+      reason: "arm A4 does not wire a table-precision run yet",
+    });
+    // A second corpus near the cap: A0's cached reading costs nothing and is kept.
+    const second = await runLocalizationEval(corpus(2), { ...opts, tableGuard: guard });
+    expect(second.stopped).toBeNull();
+    expect(second.arms[0]!.tableGuard).toMatchObject({ measured: true, tablePrecision: 0.8 });
+    expect(measured()).toBe(1);
+    expect(meter.spent).toBeCloseTo(0.5);
+  });
+
+  it("still holds A0's first, paid reading under the cap", async () => {
+    const meter = new FakeMeter();
+    const budget = new EvalBudget(0.7);
+    budget.observeGuard(0.5);
+    meter.spent = 0.3;
+    const { guard, measured } = cliGuard(meter, 0.5);
+    const report = await runLocalizationEval(corpus(1), {
+      arms: [arm("A0", () => 1)],
+      runs: 1,
+      budget,
+      meter,
+      tableGuard: guard,
+    });
+    expect(measured()).toBe(0);
+    expect(report.stopped).toMatchObject({ phase: "table-guard", arm: "A0" });
+    expect(report.arms[0]!.tableGuard).toMatchObject({ measured: false });
+  });
+
+  it("reads a free guard even after an item stop: it spends nothing", async () => {
+    const meter = new FakeMeter();
+    const budget = new EvalBudget(1);
+    const { guard } = cliGuard(meter, 0.1);
+    await runLocalizationEval(corpus(1), {
+      arms: [arm("A0", () => 1)],
+      runs: 1,
+      budget,
+      meter,
+      tableGuard: guard,
+    });
+    const report = await runLocalizationEval(corpus(3), {
+      arms: [
+        arm("A0", () => 1),
+        arm(
+          "A4",
+          () => 1,
+          () => (meter.spent += 0.4),
+        ),
+      ],
+      runs: 1,
+      budget,
+      meter,
+      tableGuard: guard,
+    });
+    expect(report.stopped).toMatchObject({ phase: "requirement", arm: "A4" });
+    expect(report.arms[0]!.tableGuard).toMatchObject({ measured: true });
+    expect(report.arms[1]!.tableGuard).toEqual({
+      measured: false,
+      reason: "arm A4 does not wire a table-precision run yet",
+    });
   });
 });
 
@@ -415,6 +524,7 @@ describe("poolHeldOutReports (#1770)", () => {
       "localization-02-fixture-portfolio",
     ]);
     expect(pooled.items).toBe(20);
+    expect(pooled.corpora.map((c) => c.stopped)).toEqual([null, null]);
     const [cmp] = pooled.comparisons;
     expect(cmp).toMatchObject({
       arm: "A4",
@@ -440,6 +550,45 @@ describe("poolHeldOutReports (#1770)", () => {
     expect(md).toContain("`localization-01-miniflux-heldout` (12 items, 1 scored run(s))");
     expect(md).toContain("| A4 | hit@10 (McNemar, b=0, c=10) | +10 items |");
     expect(md).not.toContain("run7-insample");
+  });
+
+  it("sizes the detectable gap on the paired items, and says which corpus stopped (#1779)", async () => {
+    const meter = new FakeMeter();
+    const budget = new EvalBudget(0.9);
+    const opts = {
+      arms: [
+        arm("A0", () => 1),
+        arm(
+          "A4",
+          () => 1,
+          () => (meter.spent += 0.4),
+        ),
+      ],
+      runs: 1,
+      budget,
+      meter,
+    };
+    const full = await runLocalizationEval(
+      corpus(10, "held-out", "localization-01-miniflux-heldout"),
+      { ...opts, arms: [arm("A0", () => 1), arm("A4", () => 1)] },
+    );
+    // A0 scores all 10 fixture items; A4 only 2 before the cap.
+    const partial = await runLocalizationEval(
+      corpus(10, "held-out", "localization-02-fixture-portfolio"),
+      opts,
+    );
+    expect(partial.stopped).not.toBeNull();
+    const pooled = poolHeldOutReports([full, partial]);
+    expect(pooled.items).toBe(20);
+    expect(pooled.comparisons[0]!.items).toBe(12);
+    expect(pooled.comparisons[0]!.detectableGap).toMatch(/^At 12 items/);
+    expect(pooled.detectableGap).toMatch(/^At 12 items/);
+    expect(pooled.corpora.map((c) => c.stopped)).toEqual([null, partial.stopped!.reason]);
+    const md = toPooledMarkdownReport(pooled);
+    expect(md).toContain(
+      `\`localization-02-fixture-portfolio\` (10 items, 1 scored run(s), run 1 incomplete, stopped early: ${partial.stopped!.reason})`,
+    );
+    expect(md).toContain("> A4 pairs 12 of A0's 20 items. At 12 items");
   });
 
   it("refuses fewer than two held-out reports and says when there is no arm to compare", async () => {

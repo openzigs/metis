@@ -10,7 +10,9 @@
  *
  * The cap is checked before each requirement against what has been spent plus
  * the most one requirement of THAT arm has cost so far, and before each
- * table-precision guard against the most a guard has cost. The look-ahead lives
+ * table-precision guard against the most a guard has cost — unless the guard
+ * says its next reading is free (a memoised reading, or an arm with no guard
+ * run), which no cap can refuse (#1779). The look-ahead lives
  * in an {@link EvalBudget} the caller shares across corpora, so the first item
  * of a second corpus is not run blind (#1770). Nothing starts once the spend has
  * reached the budget, so `--budget 0` runs nothing. An unpriced call stops the
@@ -105,6 +107,35 @@ export type TableGuardReading =
   | { measured: true; tablePrecision: number; runs: number; configuration: string }
   | { measured: false; reason: string };
 
+/**
+ * Measures the table-precision guard rail for an arm. A guard that can say when
+ * its next reading costs nothing exposes `isFree`; that reading skips the budget
+ * look-ahead and is taken even after a stop. A guard without it is always
+ * checked against the cap, so a guard that forgets to say is never run blind.
+ */
+export interface TableGuard {
+  (arm: LocalizationArm): Promise<TableGuardReading>;
+  isFree?: (arm: LocalizationArm) => boolean;
+}
+
+/**
+ * The CLI's guard: `measureA0` runs once, for A0, and its reading is memoised
+ * for every later corpus; any other arm has no guard run wired yet (#1756) and
+ * is answered at no cost. Only A0's first reading spends money (#1779).
+ */
+export function memoisedA0TableGuard(measureA0: () => Promise<TableGuardReading>): TableGuard {
+  let a0: TableGuardReading | null = null;
+  const guard: TableGuard = async (arm) => {
+    if (arm.id !== "A0") {
+      return { measured: false, reason: `arm ${arm.id} does not wire a table-precision run yet` };
+    }
+    a0 ??= await measureA0();
+    return a0;
+  };
+  guard.isFree = (arm) => arm.id !== "A0" || a0 !== null;
+  return guard;
+}
+
 export interface RunLocalizationOptions {
   arms: LocalizationArm[];
   runs?: number;
@@ -116,7 +147,7 @@ export interface RunLocalizationOptions {
   /** Milliseconds; a seam for tests. */
   now?: () => number;
   /** Measures the table-precision guard rail for an arm (the CLI wires impact-recall-01). */
-  tableGuard?: (arm: LocalizationArm) => Promise<TableGuardReading>;
+  tableGuard?: TableGuard;
 }
 
 export interface ArmResult {
@@ -181,9 +212,11 @@ export interface LocalizationReport {
   spentUsd: number;
   /**
    * Where the cap (or an unpriced call) stopped the run; null when it ran to the
-   * end. `item` is "table-precision guard" when it stopped before a guard.
+   * end. `phase` says whether it stopped before a requirement (`item` names it)
+   * or before an arm's table-precision guard (`item` is null). `run` is the run
+   * reached: the one the requirement belonged to, or the arm's last complete run.
    */
-  stopped: { reason: string; arm: string; run: number; item: string } | null;
+  stopped: LocalizationStop | null;
   arms: ArmResult[];
   comparisons: ArmComparison[];
   detectableGap: string;
@@ -191,8 +224,9 @@ export interface LocalizationReport {
   notes: string[];
 }
 
-/** The `item` a stop before a table-precision guard reports. */
-export const TABLE_GUARD_STOP = "table-precision guard";
+export type LocalizationStop =
+  | { phase: "requirement"; reason: string; arm: string; run: number; item: string }
+  | { phase: "table-guard"; reason: string; arm: string; run: number; item: null };
 
 /** Run every arm over the corpus, score it and compare it with A0. */
 export async function runLocalizationEval(
@@ -216,17 +250,26 @@ export async function runLocalizationEval(
   );
   let stopped: LocalizationReport["stopped"] = null;
 
-  /** The guard spends money too: it runs under the same cap, and never after a stop. */
+  /**
+   * The guard spends money too: it runs under the same cap, and never after a
+   * stop — unless it says this reading is free, which spends nothing to refuse.
+   */
   async function readTableGuard(arm: LocalizationArm): Promise<TableGuardReading> {
-    if (!opts.tableGuard) return { measured: false, reason: "not requested (pass --table-guard)" };
-    if (stopped) return { measured: false, reason: `skipped: the run stopped (${stopped.reason})` };
-    const blocked = budget.beforeGuard(meter);
-    if (blocked) {
-      stopped = { reason: blocked, arm: arm.id, run: runs, item: TABLE_GUARD_STOP };
-      return { measured: false, reason: `skipped: ${blocked}` };
+    const guard = opts.tableGuard;
+    if (!guard) return { measured: false, reason: "not requested (pass --table-guard)" };
+    if (!guard.isFree?.(arm)) {
+      if (stopped) {
+        return { measured: false, reason: `skipped: the run stopped (${stopped.reason})` };
+      }
+      const blocked = budget.beforeGuard(meter);
+      if (blocked) {
+        const run = perArm.get(arm.id)!.completedRuns;
+        stopped = { phase: "table-guard", reason: blocked, arm: arm.id, run, item: null };
+        return { measured: false, reason: `skipped: ${blocked}` };
+      }
     }
     const spent = meter.spentUsd();
-    const reading = await opts.tableGuard(arm);
+    const reading = await guard(arm);
     budget.observeGuard(meter.spentUsd() - spent);
     return reading;
   }
@@ -237,7 +280,7 @@ export async function runLocalizationEval(
       for (const item of corpus.manifest.items) {
         const blocked = budget.beforeItem(meter, arm.id);
         if (blocked) {
-          stopped = { reason: blocked, arm: arm.id, run, item: item.id };
+          stopped = { phase: "requirement", reason: blocked, arm: arm.id, run, item: item.id };
           break outer;
         }
         const spent = meter.spentUsd();
@@ -389,18 +432,32 @@ export function compareArms(baseline: ArmResult, arm: ArmResult): ArmComparison 
 export interface PooledComparison {
   arm: string;
   baseline: "A0";
+  /** The paired items this comparison rests on. */
   items: number;
   strata: Array<{ corpus: string; items: number }>;
   metrics: MetricComparison[];
   hits: HitComparison[];
+  /** The gap these paired items can resolve (#1779): fewer than A0 scored when a run stopped. */
+  detectableGap: string;
 }
 
 export interface PooledLocalizationReport {
   kind: "localization-eval-pooled";
-  corpora: Array<{ id: string; items: number; scoredRuns: number; partialFirstRun: boolean }>;
+  corpora: Array<{
+    id: string;
+    items: number;
+    scoredRuns: number;
+    partialFirstRun: boolean;
+    /** Why the corpus's run stopped early (the cap, or an unpriced call); null when it ran to the end. */
+    stopped: string | null;
+  }>;
   /** A0's scored items over every pooled corpus. */
   items: number;
   comparisons: PooledComparison[];
+  /**
+   * The gap the pooled comparison can resolve: on the fewest paired items any
+   * comparison rests on, or on A0's items when no arm was compared (#1779).
+   */
   detectableGap: string;
 }
 
@@ -438,9 +495,11 @@ export function poolHeldOutReports(
       strata: strata.map((s) => ({ corpus: s.corpus, items: s.pairs.length })),
       metrics: metricComparisons(strata.map((s) => s.pairs)),
       hits: hitComparisons(pooledPairs),
+      detectableGap: minimumDetectableGapStatement(pooledPairs.length),
     };
   });
   const items = heldOut.reduce((sum, r) => sum + r.arms[0]!.items.length, 0);
+  const pairedItems = Math.min(items, ...comparisons.map((c) => c.items));
   return {
     kind: "localization-eval-pooled",
     corpora: heldOut.map((r) => ({
@@ -448,10 +507,11 @@ export function poolHeldOutReports(
       items: r.arms[0]!.items.length,
       scoredRuns: r.scoredRuns,
       partialFirstRun: r.partialFirstRun,
+      stopped: r.stopped?.reason ?? null,
     })),
     items,
     comparisons,
-    detectableGap: minimumDetectableGapStatement(items),
+    detectableGap: minimumDetectableGapStatement(pairedItems),
   };
 }
 
@@ -501,7 +561,7 @@ export function toMarkdownReport(report: LocalizationReport): string {
   if (report.stopped) {
     const s = report.stopped;
     const where =
-      s.item === TABLE_GUARD_STOP
+      s.phase === "table-guard"
         ? `before arm ${s.arm}'s table-precision guard`
         : `before arm ${s.arm}, run ${s.run}, item ${s.item}`;
     lines.push(`> **Stopped early** (${s.reason}) ${where}.`, "");
@@ -597,7 +657,7 @@ export function toPooledMarkdownReport(report: PooledLocalizationReport): string
     `Corpora: ${report.corpora
       .map(
         (c) =>
-          `\`${c.id}\` (${c.items} items, ${c.scoredRuns} scored run(s)${c.partialFirstRun ? ", run 1 incomplete" : ""})`,
+          `\`${c.id}\` (${c.items} items, ${c.scoredRuns} scored run(s)${c.partialFirstRun ? ", run 1 incomplete" : ""}${c.stopped ? `, stopped early: ${c.stopped}` : ""})`,
       )
       .join(", ")} · Items pooled: **${report.items}**`,
     "",
@@ -613,6 +673,14 @@ export function toPooledMarkdownReport(report: PooledLocalizationReport): string
   if (report.comparisons.length === 0) {
     lines.push("No other arm was run: there is nothing to compare with A0.", "");
     return lines.join("\n");
+  }
+  for (const cmp of report.comparisons) {
+    if (cmp.items < report.items) {
+      lines.push(
+        `> ${cmp.arm} pairs ${cmp.items} of A0's ${report.items} items. ${cmp.detectableGap}`,
+        "",
+      );
+    }
   }
   lines.push("| Arm | Metric | Δ vs A0 | 95% CI | p | Reading |", "|---|---|---|---|---|---|");
   for (const cmp of report.comparisons) {
