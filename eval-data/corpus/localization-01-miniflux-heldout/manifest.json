@@ -17,7 +17,8 @@
     "rewrittenAt": "2026-11-04T11:01:06Z",
     "sawDiffsBeforeRewriting": false,
     "procedure": "See ANNOTATION.md. The PR titles and descriptions were fetched first and every rewrite was written and saved; only then were the PR file lists fetched. No diff was read at any point. Several PR descriptions name files or functions; the rewrites name none, and the loader rejects code-shaped wording.",
-    "reviewedBy": null
+    "reviewedBy": "mcronin (METIS owner), 2026-11-04",
+    "review": "The owner reviewed all 25 rewrites with an AI second opinion (the main Claude session; its per-item notes are in the pull request that made this change). Nine rewrites that borrowed developer vocabulary or described the fix were reworded in plain analyst language (MF-4495, 4563, 4567, 4572, 4575, 4579, 4599, 4605, 4608). MF-4571 was dropped as too thin to read as an analyst request. The owner did not read the diffs."
   },
   "allowedTerms": ["YouTube"],
   "items": [
@@ -47,8 +48,8 @@
     },
     {
       "id": "MF-4495",
-      "title": "Refuse embedded frames that are not ordinary web addresses",
-      "text": "Articles may contain embedded frames from approved video sites. A frame whose address uses a scripting or other non-web scheme can currently slip through because only the site name is checked. Embedded frames must only be kept when their address is a normal web address on an approved site.",
+      "title": "Only keep embedded videos that use safe links to approved sites",
+      "text": "Articles may contain embedded videos from approved sites. Today a video frame can get through with an unsafe link as long as it names an approved site. Embedded videos should only be kept when they use a safe web link to an approved site.",
       "expectedFiles": ["miniflux:internal/reader/sanitizer/sanitizer.go"],
       "expectedRepos": ["miniflux"],
       "excludedFiles": [
@@ -741,7 +742,7 @@
     {
       "id": "MF-4563",
       "title": "Record the visitor's real address when the server sits behind a proxy",
-      "text": "Behind a reverse proxy or load balancer, the address recorded for failed sign-ins and for each signed-in session is the one the visitor claims, which they can fake. The recorded address should be the last one added by a proxy the operator does not trust, reading the forwarded addresses from the most recent hop backwards.",
+      "text": "When the server runs behind a proxy or load balancer, the address recorded for failed sign-ins and for each signed-in session is one the visitor can fake. Sign-in records should show the visitor's real address.",
       "expectedFiles": [
         "miniflux:internal/http/request/client_ip.go",
         "miniflux:internal/http/server/middleware.go"
@@ -798,8 +799,8 @@
     },
     {
       "id": "MF-4567",
-      "title": "Accept JSON feeds that begin with an invisible byte order mark",
-      "text": "Subscribing to some JSON feeds fails with a message that the feed format cannot be recognised, because the feed starts with an invisible byte order mark. Those feeds should be recognised and read normally, as feeds in the other formats already are.",
+      "title": "Accept valid JSON feeds that are currently not recognised",
+      "text": "Subscribing to some JSON feeds fails with a message that the feed format cannot be recognised, although the feed is valid. Those feeds should be recognised and read normally, as feeds in the other formats already are.",
       "expectedFiles": [
         "miniflux:internal/reader/json/parser.go",
         "miniflux:internal/reader/parser/format.go"
@@ -832,33 +833,9 @@
       }
     },
     {
-      "id": "MF-4571",
-      "title": "Stop the server fetching from reserved network address ranges",
-      "text": "The protection that stops the server from fetching feeds and pages from internal network addresses should also cover the reserved and special-purpose address ranges, so that a feed cannot be used to reach them.",
-      "expectedFiles": ["miniflux:internal/urllib/url.go"],
-      "expectedRepos": ["miniflux"],
-      "excludedFiles": [
-        {
-          "file": "miniflux:internal/urllib/url_test.go",
-          "reason": "test"
-        }
-      ],
-      "source": {
-        "kind": "upstream-pr",
-        "pr": 4571,
-        "mergeSha": "238c5614e584ebc87894e7d9f10bc91373a0b2c2",
-        "mergedAt": "2026-10-19T20:54:31Z",
-        "closingIssues": [],
-        "original": {
-          "title": "fix(security): block reserved IP ranges in SSRF filter",
-          "body": ""
-        }
-      }
-    },
-    {
       "id": "MF-4572",
-      "title": "Remember a signed-out reader's language and theme without keeping their session",
-      "text": "After signing out, the sign-in page keeps the reader's language and theme by keeping their old session alive. Signing out should end the session completely, and the language and theme should be remembered on the reader's browser instead, so they still apply on the sign-in page.",
+      "title": "Keep a signed-out reader's language and theme without keeping their session",
+      "text": "After signing out, the reader's old session is kept alive so that the sign-in page can still show their language and theme. Signing out should end the session completely, while the sign-in page still uses the reader's language and theme.",
       "expectedFiles": [
         "miniflux:internal/model/web_session.go",
         "miniflux:internal/storage/web_session.go",
@@ -891,8 +868,8 @@
     },
     {
       "id": "MF-4575",
-      "title": "Read article dates written with lower-case letters",
-      "text": "Some feeds write article dates in the standard internet date format but with the separator and time zone letters in lower case, which the standard allows. Those dates are rejected today and the articles are shown with the time of the refresh instead. Such dates should be read correctly.",
+      "title": "Recognise valid article dates that are currently rejected",
+      "text": "Some feeds write article dates in a valid form that is not recognised today, so their articles are shown with the time of the refresh instead of when they were published. Those dates should be read correctly.",
       "expectedFiles": ["miniflux:internal/reader/date/parser.go"],
       "expectedRepos": ["miniflux"],
       "excludedFiles": [
@@ -916,7 +893,7 @@
     {
       "id": "MF-4579",
       "title": "Return the oldest articles first to Fever compatible apps",
-      "text": "Reading apps that sync through the Fever compatible interface receive articles fifty at a time, but in some requests the fifty are picked in no particular order. An app that starts a sync from the beginning can skip older articles for good. The articles should always be returned in a fixed order of their identifiers.",
+      "text": "Reading apps that sync through the Fever compatible interface receive articles fifty at a time, but sometimes in no particular order, so an app that starts a sync from the beginning can skip older articles for good. Fever apps should always receive articles oldest first.",
       "expectedFiles": ["miniflux:internal/fever/handler.go"],
       "expectedRepos": ["miniflux"],
       "excludedFiles": [
@@ -1000,7 +977,7 @@
     {
       "id": "MF-4599",
       "title": "Stop administrators editing their own account from the user list",
-      "text": "The administrator's user management page lets an administrator change their own password without entering the current one, which bypasses the check on the personal account page. Administrators should not be able to open or submit the edit form for their own account; they change their own name and password on their personal account page. Changing another person's password signs that person out everywhere.",
+      "text": "The administrator's user management page lets an administrator change their own password without entering the current one, which bypasses the check on the personal account page. Administrators should not be able to open or submit the edit form for their own account; they change their own name and password on their personal account page.",
       "expectedFiles": ["miniflux:internal/ui/user_edit.go", "miniflux:internal/ui/user_update.go"],
       "expectedRepos": ["miniflux"],
       "excludedFiles": [],
@@ -1019,7 +996,7 @@
     {
       "id": "MF-4605",
       "title": "Do not let shared article pages be stored by public caches",
-      "text": "Publicly shared article pages are marked as cacheable by anyone for three days, although each page includes details of the visitor's session. A proxy or content network could store one visitor's details and show them to everyone. Shared article pages should show no session details and must not be stored by public caches, and no page that sets a cookie should be publicly cacheable.",
+      "text": "Publicly shared article pages can be stored by proxies and content networks for days, although each page includes details of the visitor's own session, so one visitor's details could be shown to everyone. Shared article pages must never show one visitor's private details to another visitor.",
       "expectedFiles": [
         "miniflux:internal/http/response/builder.go",
         "miniflux:internal/ui/share.go",
@@ -1170,7 +1147,7 @@
     {
       "id": "MF-4608",
       "title": "Only mark older articles as read when a Fever app asks to catch up",
-      "text": "When a Fever compatible reading app marks everything as read, it says up to which moment. The server ignores that and also marks articles that arrived after the app last synced. Only articles from before that moment should be marked as read. Saving or unsaving an article from such an app should also set the requested state rather than flipping it, so a retried request does not undo itself.",
+      "text": "When a Fever compatible reading app marks everything as read, it says up to which moment. The server ignores that and also marks articles that arrived after the app last synced. Only articles from before that moment should be marked as read. Saving or unsaving an article from such an app should always end in the state the app asked for, even when the same request is sent twice.",
       "expectedFiles": ["miniflux:internal/fever/handler.go"],
       "expectedRepos": ["miniflux"],
       "excludedFiles": [],
