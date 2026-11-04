@@ -17,9 +17,11 @@
 import type { PrismaClient } from "@prisma/client";
 import {
   deriveMatchQualityDetailed,
+  impactSeedEvidenceSchema,
   type ImpactAffectedRelation,
   type ImpactNotCheckedReason,
   type ImpactProjectOutcomeKind,
+  type ImpactSeedEvidence,
   type MatchQuality,
   type MatchQualityReason,
 } from "@metis/shared";
@@ -45,10 +47,12 @@ import {
 import { assignImpactRoles, tablesGainingColumns } from "./impact-roles.js";
 import {
   prismaSeedSymbolLoader,
+  prismaStoredLinkDeps,
   prismaWriterIdLoader,
   resolveChangeSeeds,
   type ChangeSeeds,
   type RetrievalMode,
+  type StoredLinkDeps,
 } from "./change-seeds.js";
 import { requestGateText, shapeAwareChangeExtractor } from "./change-request.js";
 import { resolveStructuralTwins, type CalleeNameSource } from "./structural-twins.js";
@@ -91,6 +95,7 @@ import type {
 } from "./impact-summarizer.js";
 import type { LiveSchemaIndex } from "./live-schema-ingest.js";
 import {
+  detectChangeType,
   type ChangedRequirement,
   type ChangeExtractor,
   type ChangeType,
@@ -188,6 +193,12 @@ export interface ProjectImpactResult {
    * injected mapper or searcher). A `bm25-only` run is named in the run summary.
    */
   retrievalMode: RetrievalMode | null;
+  /**
+   * #1754 — how the change was seeded, when a channel beyond the hybrid one ran
+   * (the stored-link channel). Absent otherwise: with the flag off the result
+   * carries no new key.
+   */
+  seedEvidence?: ImpactSeedEvidence;
 }
 
 /** Why a column passed unchecked when the write paths could not be described. */
@@ -328,6 +339,7 @@ export async function computeProjectImpact(
   let related: RequirementCodeMatch[] = [];
   let schemaSeeds: RequirementCodeMatch[] = [];
   let retrievalMode: RetrievalMode | null = null;
+  let seedEvidence: ImpactSeedEvidence | undefined;
   // #791 — what the request ASKS (primary statement + sub-aspects), without its
   // context sections. Read by the `ALTER TABLE` fast path and by the gate: DDL
   // quoted under "Alternatives considered" is not a request for that column.
@@ -338,6 +350,7 @@ export async function computeProjectImpact(
     related = seeds.related;
     schemaSeeds = seeds.schemaSeeds;
     retrievalMode = seeds.retrievalMode ?? null;
+    seedEvidence = seeds.evidence;
     // Functions built like a retrieved one are review material too. Best-effort.
     try {
       const twins = await resolveStructuralTwins(deps.dataSourceFor(projectId), [
@@ -814,6 +827,7 @@ export async function computeProjectImpact(
     optionalColumnProposals,
     uncheckedColumnProposals,
     retrievalMode,
+    ...(seedEvidence ? { seedEvidence } : {}),
   };
 }
 
@@ -1088,10 +1102,19 @@ type ImpactPrisma = Pick<
   | "quarantineChunk"
   | "codeSymbol"
   | "codeEdge"
+  | "requirement"
+  | "requirementCodeMapping"
 >;
 
 export interface ImpactServiceDeps {
   prisma?: ImpactPrisma;
+  /**
+   * #1754 — seed a change about a tracked requirement from its stored code
+   * links too (`IMPACT_STORED_LINK_SEEDS`, read by the route). Applies to the
+   * default hybrid seeding only: an injected `mapRequirement` or `seedChange`
+   * is used as-is.
+   */
+  storedLinkSeeds?: boolean;
   extractor?: ChangeExtractor;
   mapRequirement?: MapRequirementFn;
   /**
@@ -1219,6 +1242,11 @@ export interface TriggerImpactAnalysisInput {
    * The referenced run is NEVER mutated (originals are immutable).
    */
   rerunOfId?: string | null;
+  /**
+   * #1754 — stored requirements to analyse, each as one change carrying its
+   * `requirementId`. The route has checked the caller may read every one.
+   */
+  requirementIds?: readonly string[] | null;
   includeSchemaImpact?: boolean;
   /** #922 — expand mapper/DAO sibling tables (reduced confidence). Default true when crossing runs. */
   expandDaoSiblings?: boolean;
@@ -1243,6 +1271,8 @@ export interface TriggerImpactAnalysisInput {
 export function defaultSeedChange(
   prisma: Pick<PrismaClient, "codeSymbol" | "codeEdge">,
   searcherDeps: CodeSearcherDeps = {},
+  /** #1754 — the stored-link channel; absent (the flag off) for hybrid seeding only. */
+  storedLinks?: StoredLinkDeps,
 ): SeedChangeFn {
   const sameClient = (prisma as unknown) === (defaultPrisma as unknown);
   const searcher = createDefaultCodeSearcher({
@@ -1256,7 +1286,12 @@ export function defaultSeedChange(
   // #1135 — on a read-path bug, table writers are not files to edit.
   const loadWriterIds = prismaWriterIdLoader(prisma);
   return (change, projectId) =>
-    resolveChangeSeeds(change, projectId, { searcher, loadSymbols, loadWriterIds });
+    resolveChangeSeeds(change, projectId, {
+      searcher,
+      loadSymbols,
+      loadWriterIds,
+      ...(storedLinks ? { storedLinks } : {}),
+    });
 }
 
 function resolvePrisma(deps: ImpactServiceDeps): ImpactPrisma {
@@ -1275,8 +1310,13 @@ export async function triggerImpactAnalysis(
   if (input.projectIds.length === 0) {
     throw new ImpactAnalysisError(400, "NO_PROJECTS", "At least one projectId is required");
   }
-  if (!input.documentId && !input.text) {
-    throw new ImpactAnalysisError(400, "NO_SOURCE", "Either documentId or text is required");
+  const requirementIds = [...new Set(input.requirementIds ?? [])];
+  if (!input.documentId && !input.text && requirementIds.length === 0) {
+    throw new ImpactAnalysisError(
+      400,
+      "NO_SOURCE",
+      "One of documentId, text or requirementIds is required",
+    );
   }
 
   const projectIds = [...new Set(input.projectIds)];
@@ -1289,6 +1329,8 @@ export async function triggerImpactAnalysis(
       startedById: input.actorId,
       // #965 — drift lineage: point back at the original run (null for originals).
       rerunOfId: input.rerunOfId ?? null,
+      // #1754 — the stored requirements asked about, read back by the run and a re-run.
+      ...(requirementIds.length > 0 ? { requirementIds: JSON.stringify(requirementIds) } : {}),
       // #70 — record the selection HERE, in the same write as the run. The
       // executor below is fire-and-forget and `ImpactItem` rows arrive much
       // later (or never), so a run whose projects were only passed to the
@@ -1307,6 +1349,63 @@ export async function triggerImpactAnalysis(
   });
 
   return { id: row.id, status: row.status };
+}
+
+/**
+ * #1754 — the stored requirement ids a run was asked about, from the row's JSON.
+ * Anything but an array of strings reads as none.
+ */
+export function parseRequirementIds(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * #1754 — one change per stored requirement, in the order asked, with its own
+ * title, body and `requirementId`. A requirement deleted since the run was
+ * started is skipped.
+ */
+export async function loadRequirementChanges(
+  prisma: Pick<PrismaClient, "requirement">,
+  requirementIds: readonly string[],
+): Promise<ChangedRequirement[]> {
+  if (requirementIds.length === 0) return [];
+  const rows = await prisma.requirement.findMany({
+    where: { id: { in: [...requirementIds] }, deletedAt: null },
+    select: { id: true, title: true, body: true },
+  });
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return requirementIds.flatMap((id) => {
+    const r = byId.get(id);
+    if (!r) return [];
+    return [
+      {
+        requirementId: r.id,
+        title: r.title,
+        body: r.body,
+        changeType: detectChangeType(`${r.title} ${r.body}`),
+        bodyDelta: r.body.length,
+      },
+    ];
+  });
+}
+
+/**
+ * #1754 — the sentence a run's summary gains when the stored-link channel ran:
+ * how many stored links seeded the run, and how many were dropped because their
+ * file has left the code graph.
+ */
+export function storedLinkNotice(used: number, stale: number): string {
+  const links = (n: number) => `${n} stored requirement link${n === 1 ? "" : "s"}`;
+  const head = `${links(used)} seeded the files to edit.`;
+  return stale === 0
+    ? head
+    : `${head} ${links(stale)} ${stale === 1 ? "was" : "were"} dropped: the linked file is no longer in the code graph.`;
 }
 
 /** Resolve the change source text from the row (inline text or document chunks). */
@@ -1394,7 +1493,14 @@ async function runImpactAnalysis(
   // #1036 — seed with the chat path's hybrid search unless the caller chose a
   // mapper of its own (the opt-in LLM seeding flags, and tests).
   const seedChange: SeedChangeFn | undefined =
-    deps.seedChange ?? (deps.mapRequirement ? undefined : defaultSeedChange(prisma));
+    deps.seedChange ??
+    (deps.mapRequirement
+      ? undefined
+      : defaultSeedChange(
+          prisma,
+          {},
+          deps.storedLinkSeeds ? prismaStoredLinkDeps(prisma) : undefined,
+        ));
   const schemaDataSourceFor =
     deps.includeSchemaImpact === false
       ? undefined
@@ -1436,11 +1542,21 @@ async function runImpactAnalysis(
 
   try {
     const text = await resolveSourceText(prisma, row);
-    const changes = await extractor.extract(text);
+    // #1754 — a run about stored requirements: one change per requirement, after
+    // any pasted text's or document's own changes.
+    const requirementIds = parseRequirementIds(row.requirementIds);
+    const changes = [
+      ...(requirementIds.length === 0 || text.trim().length > 0
+        ? await extractor.extract(text)
+        : []),
+      ...(await loadRequirementChanges(prisma, requirementIds)),
+    ];
 
     let totalImpactedSymbols = 0;
     // #1036 — projects whose code search ran on keywords only, for the summary.
     const bm25OnlyProjects = new Set<string>();
+    // #1754 — the stored-link channel's totals, for the summary.
+    const storedLinkTotals = { ran: false, used: 0, stale: 0 };
     // #932 — per-item roll-ups fed into the run-level BA overview (best-effort).
     const runItems: RunItemFact[] = [];
 
@@ -1543,6 +1659,13 @@ async function runImpactAnalysis(
         });
 
         if (result.retrievalMode === "bm25-only") bm25OnlyProjects.add(projectId);
+        // Counted before the zero-hit skip: a change whose every link went stale
+        // writes no item, and its stale links must still reach the summary.
+        if (result.seedEvidence) {
+          storedLinkTotals.ran = true;
+          storedLinkTotals.used += result.seedEvidence.storedLinks.used;
+          storedLinkTotals.stale += result.seedEvidence.storedLinks.stale;
+        }
 
         // Skip empty (no code hits) results to keep the report focused: a change
         // with no hits writes no item. #1609 — the project is still recorded,
@@ -1670,6 +1793,12 @@ async function runImpactAnalysis(
             // #932 — persisted BA narrative; NULL when the summarizer did not run
             // (flag off / offline / malformed / ungrounded) — deterministic passthrough.
             summary: itemSummary,
+            // #1754 — only when a channel beyond the hybrid one ran.
+            ...(result.seedEvidence
+              ? {
+                  seedEvidence: JSON.stringify(impactSeedEvidenceSchema.parse(result.seedEvidence)),
+                }
+              : {}),
           },
         });
 
@@ -1864,6 +1993,9 @@ async function runImpactAnalysis(
     // page and the export both show it.
     if (bm25OnlyProjects.size > 0) {
       summary = `${summary}\n\n${bm25OnlyNotice(bm25OnlyProjects.size, projectIds.length)}`;
+    }
+    if (storedLinkTotals.ran) {
+      summary = `${summary}\n\n${storedLinkNotice(storedLinkTotals.used, storedLinkTotals.stale)}`;
     }
     if (deps.llmDegradationNotice) {
       try {

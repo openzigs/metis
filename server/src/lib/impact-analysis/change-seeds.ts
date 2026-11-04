@@ -33,9 +33,19 @@
  * A known cost: {@link MAX_EDIT_FILES} caps edit-candidate recall on any change
  * that touches more files than it (#4511 edits six and is found at 17%).
  *
+ * #1754 — STORED LINKS. For a change about a tracked requirement, the
+ * requirement's stored code links (`RequirementCodeMapping`, written by the
+ * Analysis code agent, the hybrid mapper and people) are a second channel,
+ * behind `IMPACT_STORED_LINK_SEEDS` (off by default). They are UNIONED after
+ * the hybrid edit candidates, never in place of them: no hybrid seed is
+ * dropped, moved or re-scored (the #931 rule). Only a link whose file is in the
+ * project's current code graph is seeded; a stale one is dropped and counted.
+ *
  * Read-only, and never throws: a search fault yields no seeds.
  */
 import type { PrismaClient } from "@prisma/client";
+import type { ImpactSeedChannel, ImpactSeedEvidence } from "@metis/shared";
+import { getConfigService } from "../config/config-service.js";
 import { isDocumentationFilePath, isTestFilePath } from "../analysis/traceability-matrix.js";
 import { createChildLogger } from "../logger.js";
 import type { RequirementCodeMatch } from "../traceability/requirement-code-mapping.js";
@@ -89,6 +99,37 @@ export interface ChangeSeedDeps {
    * `persists-to`). Absent: no symbol is treated as a writer.
    */
   loadWriterIds?: (symbolIds: string[], projectId: string) => Promise<Set<string>>;
+  /**
+   * #1754 — the stored-link channel. Absent (the flag off): the seeds are
+   * exactly the hybrid ones, with no evidence attached.
+   */
+  storedLinks?: StoredLinkDeps;
+}
+
+/** #1754 — one stored requirement-to-code link (`RequirementCodeMapping`). */
+export interface StoredLinkRow {
+  codeSymbolId: string | null;
+  filePath: string;
+  startLine: number | null;
+  endLine: number | null;
+  confidence: number;
+  /** `manual` (a person confirmed it) or `semantic` (written by a mapper or the code agent). */
+  source: string;
+}
+
+export interface StoredLinkDeps {
+  /** A requirement's links IN ONE PROJECT: filtered on both columns. */
+  loadLinks: (requirementId: string, projectId: string) => Promise<StoredLinkRow[]>;
+  /** The project's code-graph symbols in the given files: none for a file the graph lost. */
+  loadFileSymbols: (filePaths: string[], projectId: string) => Promise<SeedSymbolRow[]>;
+}
+
+/** The env/runtime flag for the stored-link channel. Off by default (#1754). */
+export const STORED_LINK_SEEDS_FLAG = "IMPACT_STORED_LINK_SEEDS";
+
+/** #1754 — whether the stored-link channel runs. Off until a held-out gain is shown. */
+export function impactStoredLinkSeedsEnabled(): boolean {
+  return getConfigService().getBool(STORED_LINK_SEEDS_FLAG, false);
 }
 
 export interface ChangeSeeds {
@@ -110,6 +151,12 @@ export interface ChangeSeeds {
    * it, null when the searcher did not say. Absent on hand-built seeds.
    */
   retrievalMode?: RetrievalMode | null;
+  /**
+   * #1754 — how the change was seeded, set only when a channel beyond the
+   * hybrid one ran (the stored-link channel, for a change with a
+   * `requirementId`). Absent otherwise.
+   */
+  evidence?: ImpactSeedEvidence;
 }
 
 // PROVISIONAL — tuned in-sample on six Miniflux issues; revisit at run 8 (see
@@ -287,6 +334,18 @@ function toMatch(hit: FusedHit, confidence: number): RequirementCodeMatch {
  * project has no code graph, the search fails, or nothing matches.
  */
 export async function resolveChangeSeeds(
+  change: Pick<ChangedRequirement, "title" | "body" | "request"> &
+    Partial<Pick<ChangedRequirement, "requirementId">>,
+  projectId: string,
+  deps: ChangeSeedDeps,
+): Promise<ChangeSeeds> {
+  const hybrid = await resolveHybridSeeds(change, projectId, deps);
+  if (!deps.storedLinks || !change.requirementId) return hybrid;
+  return unionStoredLinks(hybrid, change.requirementId, projectId, deps.storedLinks);
+}
+
+/** The default channel: the fused hybrid search, split into edit candidates and the rest. */
+async function resolveHybridSeeds(
   change: Pick<ChangedRequirement, "title" | "body" | "request">,
   projectId: string,
   deps: ChangeSeedDeps,
@@ -388,6 +447,143 @@ export async function resolveChangeSeeds(
     .map((h) => toMatch(h, (h.score / top) * RELATED_CONFIDENCE_FACTOR));
 
   return { editCandidates, related, schemaSeeds, retrievalMode };
+}
+
+/** A manual link ranks ahead of a semantic one; then the surer, then by path. */
+function storedLinkOrder(a: StoredLinkRow, b: StoredLinkRow): number {
+  const manual = (l: StoredLinkRow) => (l.source === "manual" ? 0 : 1);
+  return (
+    manual(a) - manual(b) || b.confidence - a.confidence || a.filePath.localeCompare(b.filePath)
+  );
+}
+
+/** The symbols one link seeds: its own symbol, else the symbols on its lines, else the file's first few. */
+function linkSymbols(link: StoredLinkRow, inFile: readonly SeedSymbolRow[]): SeedSymbolRow[] {
+  const own = link.codeSymbolId ? inFile.find((r) => r.id === link.codeSymbolId) : undefined;
+  if (own) return [own];
+  const code = inFile.filter((r) => r.kind !== "module" && !isSchemaSymbol(r));
+  const candidates = code.length > 0 ? code : inFile;
+  if (link.startLine !== null && link.endLine !== null) {
+    const { startLine: from, endLine: to } = link;
+    const overlapping = candidates.filter(
+      (r) => r.startLine !== null && r.endLine !== null && r.startLine <= to && r.endLine >= from,
+    );
+    if (overlapping.length > 0) return overlapping.slice(0, MAX_SYMBOLS_PER_EDIT_FILE);
+  }
+  return [...candidates]
+    .sort((x, y) => (x.startLine ?? 0) - (y.startLine ?? 0))
+    .slice(0, MAX_SYMBOLS_PER_EDIT_FILE);
+}
+
+/**
+ * #1754 — add the requirement's stored links to the hybrid seeds. Each link
+ * whose file is in the code graph becomes edit-candidate symbols, AFTER every
+ * hybrid edit candidate (manual links first); a link to a file the graph no
+ * longer holds is dropped and counted. The hybrid seeds come back as they
+ * went in: the same objects, in the same order, with the same scores. Never
+ * throws: a lookup fault keeps the hybrid seeds and records nothing used.
+ */
+export async function unionStoredLinks(
+  hybrid: ChangeSeeds,
+  requirementId: string,
+  projectId: string,
+  deps: StoredLinkDeps,
+): Promise<ChangeSeeds> {
+  let links: StoredLinkRow[];
+  let fileRows: SeedSymbolRow[];
+  try {
+    links = await deps.loadLinks(requirementId, projectId);
+    fileRows =
+      links.length === 0
+        ? []
+        : await deps.loadFileSymbols([...new Set(links.map((l) => l.filePath))], projectId);
+  } catch (err) {
+    log.warn("stored-link lookup failed; hybrid seeds only", { projectId, error: String(err) });
+    links = [];
+    fileRows = [];
+  }
+  const byFile = new Map<string, SeedSymbolRow[]>();
+  for (const r of fileRows) byFile.set(r.filePath, [...(byFile.get(r.filePath) ?? []), r]);
+
+  const hybridFiles = new Set(hybrid.editCandidates.map((m) => m.filePath));
+  const taken = new Set(hybrid.editCandidates.map((m) => m.codeSymbolId));
+  const linkFiles = new Set<string>();
+  const added: RequirementCodeMatch[] = [];
+  let used = 0;
+  let stale = 0;
+  for (const link of [...links].sort(storedLinkOrder)) {
+    const inFile = byFile.get(link.filePath);
+    if (!inFile || inFile.length === 0) {
+      stale++;
+      continue;
+    }
+    used++;
+    linkFiles.add(link.filePath);
+    for (const row of linkSymbols(link, inFile)) {
+      if (taken.has(row.id)) continue;
+      taken.add(row.id);
+      added.push({
+        codeSymbolId: row.id,
+        filePath: row.filePath,
+        qualifiedName: row.qualifiedName,
+        startLine: row.startLine,
+        endLine: row.endLine,
+        confidence: Math.min(1, Math.max(0, link.confidence)),
+      });
+    }
+  }
+
+  const editFiles = [...new Set([...hybrid.editCandidates, ...added].map((m) => m.filePath))];
+  const channelsOf = (filePath: string): ImpactSeedChannel[] => [
+    ...(hybridFiles.has(filePath) ? (["hybrid"] as const) : []),
+    ...(linkFiles.has(filePath) ? (["stored-link"] as const) : []),
+  ];
+  return {
+    ...hybrid,
+    editCandidates: [...hybrid.editCandidates, ...added],
+    evidence: {
+      storedLinks: { used, stale },
+      editCandidates: editFiles.map((filePath) => ({ filePath, channels: channelsOf(filePath) })),
+    },
+  };
+}
+
+/**
+ * #1754 — the production stored-link lookups. Links are read for the
+ * requirement AND the project (a link is project-scoped, and an id alone would
+ * cross into another project's code); symbols for the project only.
+ */
+export function prismaStoredLinkDeps(
+  prisma: Pick<PrismaClient, "codeSymbol" | "requirementCodeMapping">,
+): StoredLinkDeps {
+  const CHUNK = 500;
+  return {
+    loadLinks: (requirementId, projectId) =>
+      prisma.requirementCodeMapping.findMany({
+        where: { requirementId, projectId },
+        select: {
+          codeSymbolId: true,
+          filePath: true,
+          startLine: true,
+          endLine: true,
+          confidence: true,
+          source: true,
+        },
+        orderBy: { id: "asc" },
+      }),
+    loadFileSymbols: async (filePaths, projectId) => {
+      const rows: SeedSymbolRow[] = [];
+      for (let i = 0; i < filePaths.length; i += CHUNK) {
+        rows.push(
+          ...(await prisma.codeSymbol.findMany({
+            where: { projectId, filePath: { in: filePaths.slice(i, i + CHUNK) } },
+            select: SEED_SYMBOL_SELECT,
+          })),
+        );
+      }
+      return rows;
+    },
+  };
 }
 
 const SEED_SYMBOL_SELECT = {

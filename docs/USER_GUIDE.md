@@ -2396,6 +2396,23 @@ dependencies).
 Only projects you have access to appear in the picker, and you can only open a
 report whose projects are all visible to you.
 
+**Starting from requirements METIS already tracks.** Through the API
+(`POST /api/impact-analyses` with `requirementIds`, up to 50), a run can be about
+requirements METIS already holds instead of pasted text. Each requirement is
+analysed as one change, with its own title and text, and you must be able to
+open the project of every requirement you name. The page has no picker for this
+yet.
+
+When your administrator turns on **`IMPACT_STORED_LINK_SEEDS`** (off by default),
+such a run also uses the code each requirement is already **linked to** (the
+links Analysis wrote, and the ones a person confirmed) when it chooses the files
+to edit. Linked files are added after the files the search found, the ones a
+person confirmed first; nothing the search found is removed or re-ranked. A link
+to a file that is no longer in the project's code is skipped. The run summary
+says how many links were used and how many were skipped. It stays off until it
+is shown to help: on the held-out measurement it did not yet (see
+`docs/ARCHITECTURE.md`, "Stored requirement links").
+
 When an impact analysis is published to Jira, the issue carries the umbrella **`metis`** label and the **`metis-impact-analysis`** source label, together with `severity:*` and `category:impact-analysis`. Issues published before this change are not relabelled.
 
 Permission required: `analysis.run` to trigger, `analysis.read` to view results.

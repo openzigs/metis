@@ -388,15 +388,32 @@ export type ImpactAffectedSymbol = z.infer<typeof impactAffectedSymbolSchema>;
 
 // ---- Request DTOs ----------------------------------------------------------
 
+/** #1754 — the most stored requirements one impact run may be asked about. */
+export const MAX_IMPACT_REQUIREMENT_IDS = 50;
+
 /**
- * Create an impact analysis. Exactly one of `documentId` or `text` must be
- * supplied as the change source. `projectIds` must contain at least one id;
- * the multi-project flow (two or more) is the headline capability.
+ * Create an impact analysis. At least one change source must be supplied:
+ * `documentId`, `text`, or `requirementIds` (#1754). `projectIds` must contain
+ * at least one id; the multi-project flow (two or more) is the headline
+ * capability.
  */
 export const createImpactAnalysisSchema = z
   .object({
     documentId: idSchema.optional(),
     text: z.string().trim().min(1).max(500_000).optional(),
+    /**
+     * #1754 — stored requirements this run is about. Each becomes one change
+     * with its own title, body and `requirementId`, so the run can read the
+     * requirement's stored code links (the `stored-link` seed channel, behind
+     * `IMPACT_STORED_LINK_SEEDS`). Deduplicated; at most
+     * {@link MAX_IMPACT_REQUIREMENT_IDS}. The caller must be able to read every one.
+     */
+    requirementIds: z
+      .array(idSchema)
+      .min(1, "requirementIds, when given, must name at least one requirement")
+      .max(MAX_IMPACT_REQUIREMENT_IDS)
+      .transform((ids) => [...new Set(ids)])
+      .optional(),
     projectIds: z.array(idSchema).min(1, "at least one projectId is required").max(50),
     /**
      * Epic #168 — when true, the engine also crosses code → mapper/entity →
@@ -412,8 +429,8 @@ export const createImpactAnalysisSchema = z
      */
     includeDependencies: z.boolean().optional().default(false),
   })
-  .refine((v) => Boolean(v.documentId) || Boolean(v.text), {
-    message: "either documentId or text is required",
+  .refine((v) => Boolean(v.documentId) || Boolean(v.text) || (v.requirementIds?.length ?? 0) > 0, {
+    message: "one of documentId, text or requirementIds is required",
     path: ["documentId"],
   });
 /**
@@ -545,6 +562,38 @@ export interface ImpactTableFeedbackView {
 }
 
 /** One (project, requirement-change) row with its affected symbols. */
+/**
+ * #1754 — the channels that can name an edit candidate. `hybrid` is the default
+ * seeding (BM25 fused with symbol embeddings); `stored-link` is a stored
+ * requirement-to-code link (`RequirementCodeMapping`).
+ */
+export const IMPACT_SEED_CHANNELS = ["hybrid", "stored-link"] as const;
+export type ImpactSeedChannel = (typeof IMPACT_SEED_CHANNELS)[number];
+
+/**
+ * #1754 — how one change was seeded into one project, recorded only when a
+ * seed channel beyond the default one ran (`IMPACT_STORED_LINK_SEEDS`). #1762
+ * shows it.
+ */
+export const impactSeedEvidenceSchema = z.object({
+  storedLinks: z.object({
+    /** Stored links whose file is in the code graph: seeded. */
+    used: z.number().int().min(0),
+    /** Stored links whose file is no longer in the code graph: dropped. */
+    stale: z.number().int().min(0),
+  }),
+  /** Every edit-candidate file, in edit order, with the channels that named it. */
+  editCandidates: z
+    .array(
+      z.object({
+        filePath: z.string().min(1).max(1024),
+        channels: z.array(z.enum(IMPACT_SEED_CHANNELS)).min(1),
+      }),
+    )
+    .max(500),
+});
+export type ImpactSeedEvidence = z.infer<typeof impactSeedEvidenceSchema>;
+
 export interface ImpactItemView {
   id: string;
   projectId: string;
@@ -579,6 +628,12 @@ export interface ImpactItemView {
    * the deterministic impact data is unchanged either way.
    */
   summary: string | null;
+  /**
+   * #1754 — how this change was seeded, when a channel beyond the default one
+   * ran (`IMPACT_STORED_LINK_SEEDS` on). Absent otherwise, so a run with every
+   * seeding flag off reads exactly as before.
+   */
+  seedEvidence?: ImpactSeedEvidence;
   /**
    * PRODUCTION-code affected symbols only. #962 (epic #960) — symbols whose file
    * is a test path (per the shared `isTestFilePath` heuristic) are SPLIT OUT into

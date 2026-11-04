@@ -61,7 +61,7 @@ function stripBullet(line: string): string {
 }
 
 /** Classify the change verb from the requirement text (#964). Default `added`. */
-function detectChangeType(text: string): ChangeType {
+export function detectChangeType(text: string): ChangeType {
   if (REMOVED_RE.test(text)) return "removed";
   if (MODIFIED_RE.test(text)) return "modified";
   return "added";

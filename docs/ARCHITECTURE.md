@@ -2943,6 +2943,33 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   `blastRadiusFiles`), the markdown export and the UI. No migration: `depth` has
   always meant "0 = direct, ≥1 = blast radius", and a run stored before #1036
   reads through the same rule. Relations added: `data-model` and `related`.
+- **Stored requirement links (#1754)** — `POST /api/impact-analyses` accepts
+  `requirementIds` (deduplicated, at most 50). The route refuses a requirement
+  whose project the caller cannot read with the project check's own error (a
+  member gets the same 403 for one that does not exist, so there is no existence
+  oracle), and the run row stores the ids (`impact_analyses.requirementIds`,
+  JSON) so a re-run reads them back. The engine reads each one as ONE change with
+  its title, body and `requirementId` (`loadRequirementChanges`). With
+  `IMPACT_STORED_LINK_SEEDS` on (key registry, tunable, **off** by default), the
+  default hybrid seeding gains a second channel, `stored-link`
+  (`unionStoredLinks` in `change-seeds.ts`): the requirement's
+  `RequirementCodeMapping` rows, read for the requirement AND the project, are
+  seeded only when their file is in the project's code graph (else dropped and
+  counted as stale), as edit-candidate symbols AFTER every hybrid one, manual
+  links first. No hybrid seed is dropped, moved or re-scored. The per-item
+  evidence (links used and stale, and the channels of each edit-candidate file)
+  is stored as JSON on `impact_items.seedEvidence` and returned as
+  `ImpactItemView.seedEvidence`; the run summary gains one sentence with the
+  totals. Flag off, nothing new is read or written. An injected mapper (the
+  `IMPACT_LLM_SEEDING` / `IMPACT_LLM_ENTITY_SEEDS` path) does not run the channel.
+  Measured as arm A2 (`pnpm eval:localization --arms A0,A2`) with the links the
+  traceability mapper writes on its own: on the Miniflux held-out set (25 items,
+  3 runs) it adds about three edit files per requirement (7.2 to 10.2), lowers
+  edit precision from 0.17 to 0.13 (Δ −0.038, 95% CI [−0.06, −0.02], significant)
+  and leaves Recall@5 and MRR unchanged; on the fixture set it cannot move,
+  because A0 already names all ten files. Hence off. Manual and agent-cited links
+  are not in the held-out corpora, so they are not measured yet; table precision
+  (impact-recall-01, a live model) was not measured for A2.
   **Read-path bugs (#1135).** For a bug report that asks to store nothing new
   (`isReadPathBug` in `change-seeds.ts`), table writers (lineage `writes` /
   `persists-to`) are kept out of the edit candidates and stay in `related`, and

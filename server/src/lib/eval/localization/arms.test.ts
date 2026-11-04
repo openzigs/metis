@@ -6,6 +6,7 @@ import {
   ARM_FACTORIES,
   buildArms,
   createA0Arm,
+  createA2Arm,
   mergeSeedings,
   parseArmIds,
   requirementText,
@@ -55,11 +56,74 @@ describe("arm selection", () => {
     );
     expect(() => buildArms(["ZZ"], deps)).toThrow(/unknown arm "ZZ"/);
     expect(buildArms(["A0"], deps).map((a) => a.id)).toEqual(["A0"]);
-    expect(Object.keys(ARM_FACTORIES)).toEqual(["A0"]);
+    expect(Object.keys(ARM_FACTORIES)).toEqual(["A0", "A2"]);
   });
 
   it("gives the arms the requirement as an analyst would paste it", () => {
     expect(requirementText({ title: "T", text: "Body." })).toBe("T\n\nBody.");
+  });
+});
+
+describe("A2 — A0 plus stored requirement links (#1754)", () => {
+  // Every query finds a.go strongly and b.go weakly: b.go is under half the best
+  // file, so the hybrid seeding lists it for review only. The mapper keeps it as
+  // a stored link (relative confidence 0.3), so A2 makes it an edit candidate.
+  const symbols = [
+    {
+      id: "r#a",
+      repo: "r",
+      name: "a",
+      qualifiedName: "a.go::a",
+      kind: "function",
+      language: "go",
+      filePath: "a.go",
+      startLine: 1,
+      endLine: 9,
+    },
+    {
+      id: "r#b",
+      repo: "r",
+      name: "b",
+      qualifiedName: "b.go::b",
+      kind: "function",
+      language: "go",
+      filePath: "b.go",
+      startLine: 1,
+      endLine: 9,
+    },
+  ];
+  const search: CorpusSearch = {
+    searcher: {
+      search: async () => [
+        { symbolId: "r#a", filePath: "a.go", name: "a", kind: "function", score: 1 },
+        { symbolId: "r#b", filePath: "b.go", name: "b", kind: "function", score: 0.3 },
+      ],
+    },
+    loadSymbols: async (ids) =>
+      symbols.filter((r) => ids.includes(r.id)).map((r) => ({ ...r, signature: null })),
+    loadWriterIds: async () => new Set<string>(),
+    embeddingModel: "toy",
+    symbolsDigest: "toy",
+  };
+  const corpus = {
+    manifest: { repos: [{ name: "r" }] },
+    symbols,
+  } as unknown as Parameters<ReturnType<typeof createA2Arm>["localize"]>[1];
+  const item = { id: "I-1", title: "Change the order total", text: "Body." } as never;
+
+  it("adds the stored links after A0's edit candidates, and keeps A0's ranking otherwise", async () => {
+    const a0 = await createA0Arm({ search }).localize(item, corpus);
+    const a2 = await createA2Arm({ search }).localize(item, corpus);
+    expect(a0.editCandidateFiles).toEqual(["r:a.go"]);
+    expect(a2.editCandidateFiles).toEqual(["r:a.go", "r:b.go"]);
+    expect(a2.rankedFiles).toEqual(a0.rankedFiles);
+  });
+
+  it("names its link source in its configuration", () => {
+    const arm = createA2Arm({ search });
+    expect(arm.id).toBe("A2");
+    expect(arm.configuration.links).toMatch(/mapRequirementToCode semantic links: top 10/);
+    expect(arm.configuration.llm).toBe(false);
   });
 });
 
@@ -100,5 +164,26 @@ describe("A0 on the committed fixture-portfolio corpus", () => {
     expect(a0!.items.map(rounded)).toEqual(b0!.items.map(rounded));
     expect(a0!.aggregate.recallAt10).toBe(1);
     expect(report.spentUsd).toBe(0);
+  });
+});
+
+describe("A2 on the committed fixture-portfolio corpus (#1754)", () => {
+  it("runs offline from the committed vectors, and cannot move: A0 already names every file", async () => {
+    const corpus = await loadLocalizationCorpus("localization-02-fixture-portfolio");
+    const recorded = await loadRecordedVectors(
+      path.join(corpus.dir, "vectors.gte-modernbert-base.json"),
+    );
+    const cache = new EmbedCache(recorded, null, "pnpm eval:localization --embed");
+    const search = await buildCorpusSearch(corpus.symbols, cache);
+    const report = await runLocalizationEval(corpus, {
+      arms: [createA0Arm({ search }), createA2Arm({ search })],
+      runs: 1,
+      meter: new LedgerCostMeter(),
+    });
+    assertNoMissingVectors(cache);
+    const [a0, a2] = report.arms;
+    expect(a2!.aggregate.recallAt5).toBe(a0!.aggregate.recallAt5);
+    expect(a2!.aggregate.editPrecision).toBe(a0!.aggregate.editPrecision);
+    expect(a0!.aggregate.meanEditCandidates).toBe(10);
   });
 });

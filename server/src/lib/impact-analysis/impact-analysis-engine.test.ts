@@ -832,7 +832,7 @@ describe("triggerImpactAnalysis / executeImpactAnalysis", () => {
     ).rejects.toThrow(/projectId/i);
     await expect(
       triggerImpactAnalysis({ projectIds: ["p"], actorId: "u" }, { prisma: prisma as never }),
-    ).rejects.toThrow(/documentId or text/i);
+    ).rejects.toThrow(/documentId, text or requirementIds/i);
   });
 
   it("persists per-project items + affected symbols and completes", async () => {

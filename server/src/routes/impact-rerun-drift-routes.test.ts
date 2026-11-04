@@ -65,6 +65,9 @@ vi.mock("../lib/prisma.js", () => ({
     document: { findUnique: findDocument },
     // #1636 — the execution-time access check reads soft-deleted projects.
     project: { findMany: vi.fn(async () => []) },
+    // #1754 — a re-run reads back the stored requirements the original was about.
+    impactAnalysis: { findUnique: vi.fn(async () => null) },
+    requirement: { findMany: vi.fn(async () => []) },
   },
 }));
 
@@ -87,6 +90,8 @@ vi.mock("../lib/impact-analysis/impact-analysis-engine.js", () => ({
     }
   },
   defaultLiveIndexIntrospectorFor: vi.fn(() => async () => null),
+  // #1754 — pure: no stored requirement ids on these runs.
+  parseRequirementIds: () => [],
 }));
 
 const { impactAnalysisRouter } = await import("./impact-analysis.js");
