@@ -192,3 +192,12 @@ The #1687, #1698, #1702, #1703, #1705, #1709 and #1710 reviews, 2026-11-03. Foll
   only the append path runs. Check every writer of the "promoted" marker.
 - **Check, then write by id, is a race (#1687).** Make the write conditional on the state
   you checked (`updateMany where origin`).
+
+The #1725-#1747 reviews, 2026-11-03/04. Follow-ups: #1742, #1745, #1746, #1748.
+
+- **A PR title "Resolve #N" closes #N on squash merge, even when the body says `Refs #N`** (#1743 closed #1580). Keep "Resolve/Fix/Close #N" out of the title of a partial PR.
+- **E2E replay fixtures are keyed on `maxTokens`.** Changing any model output cap means re-recording `e2e/fixtures/llm` (#1735).
+- **`e2e/playwright.config.ts` must raise `PRODUCTS_RATE_LIMIT_MAX`.** Product-heavy specs otherwise hit 429 (#1734).
+- **A name match that gates visibility must stay conservative (#1736).** Skip only a name that lies wholly inside a longer one's span. Dropping one that merely overlaps it reveals a restricted product's name.
+- **A strip regex for ordinary words (`source:`, `fact:`) must skip inline code spans, not only fences (#1741).**
+- **Repo source documents are keyed `connector:repo:<id>:src/<path>`.** The `src/` is a namespace marker, not part of the path (`connector-ingest.ts:~1007`).
