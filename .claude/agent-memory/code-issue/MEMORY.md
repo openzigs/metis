@@ -125,3 +125,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Run 10 fix review lessons](project_run10-fix-review-lessons.md) — plain-text views; metadata writers; AbortError mocks; throttle (#1593-#1601)
 - [Portfolio epic lessons](project_portfolio-phase3a-review-lessons.md) — regex; caps; mocked filters; walk skips; redaction (#1608)
 - [Portfolio walkthrough fixtures](project_portfolio-walkthrough-fixtures.md) — 3 repos, 7 edges; umbrella product; host via API (#1724-#1728)
+- [Localization eval lessons](project_localization-eval-and-gap-retrieval-lessons.md) — cap all spend; no usage=unpriced; crowd-out
