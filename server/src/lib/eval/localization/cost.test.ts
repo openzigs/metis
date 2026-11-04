@@ -38,8 +38,8 @@ describe("meterProvider", () => {
         return { content: "ok", model: "claude-sonnet-5-5", usage } as ChatResponse;
       },
       async *stream(): AsyncGenerator<ChatChunk> {
-        yield { type: "text", text: "a" } as ChatChunk;
-        yield { type: "usage", usage } as ChatChunk;
+        yield { type: "delta", content: "a" };
+        yield { type: "usage", usage };
       },
       async embed() {
         return { vectors: [], model: "e", dimension: 0 } as never;
