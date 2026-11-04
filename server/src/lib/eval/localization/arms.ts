@@ -18,12 +18,20 @@ import {
   MAX_SYMBOLS_PER_EDIT_FILE,
   MIN_FILE_SHARE,
   SEED_POOL_PER_QUERY,
+  VERIFY_POOL_FILES,
   resolveChangeSeeds,
   type SeedSymbolRow,
   type StoredLinkDeps,
   type StoredLinkRow,
 } from "../../impact-analysis/change-seeds.js";
-import { extractChangesByShape } from "../../impact-analysis/change-request.js";
+import { extractChangesByShape, requestGateText } from "../../impact-analysis/change-request.js";
+import {
+  applyEditVerification,
+  graphLineCheck,
+  MAX_PROMOTIONS,
+  verifyEditCandidates,
+} from "../../impact-analysis/edit-candidate-verifier.js";
+import type { AIProvider } from "../../ai/types.js";
 import { DEFAULT_WEIGHTS } from "../../code-graph/hybrid-search.js";
 import {
   DEFAULT_TOP_K,
@@ -55,7 +63,12 @@ export interface LocalizationArm {
 /** What an arm factory is given. A model-backed arm also receives its metered provider. */
 export interface ArmDeps {
   search: CorpusSearch;
+  /** The METERED provider (`meterProvider`), for an arm with a model in the loop. */
+  provider?: AIProvider;
 }
+
+/** The arms that call a model: the CLI builds a live, metered provider only for these. */
+export const MODEL_ARMS: ReadonlySet<string> = new Set(["A4"]);
 
 /** One seeding's files, in its own order. */
 export interface SeedingFiles {
@@ -284,16 +297,79 @@ export function createA2Arm(deps: ArmDeps): LocalizationArm {
   };
 }
 
+/**
+ * A4 — A0 plus the additive LLM edit-candidate check (#1756): production's
+ * `verifyEditCandidates` over the hybrid file pool, with the line check run
+ * against the corpus's symbol rows, folded in by `applyEditVerification`. Every
+ * A0 edit candidate stays; a verified promotion is appended after them. The
+ * files the model named are reported for graph resolution.
+ */
+export function createA4Arm(deps: ArmDeps): LocalizationArm {
+  const { search, provider } = deps;
+  if (!provider) {
+    throw new Error(
+      "arm A4 calls a model: it needs a live, metered provider (AI_PROVIDER and its key)",
+    );
+  }
+  const a0 = createA0Arm(deps);
+  const fileSymbols = new WeakMap<LocalizationCorpus, StoredLinkDeps["loadFileSymbols"]>();
+  return {
+    id: "A4",
+    label: `A4 — A0 plus the LLM edit-candidate check (${provider.key}/${provider.model})`,
+    configuration: {
+      ...a0.configuration,
+      stage: "resolveChangeSeeds + verifyEditCandidates (IMPACT_LLM_EDIT_VERIFY, #1756)",
+      poolFiles: VERIFY_POOL_FILES,
+      maxPromotions: MAX_PROMOTIONS,
+      lineCheck: "inside a symbol of the file (corpus symbol rows)",
+      provider: provider.key,
+      model: provider.model,
+      llm: true,
+    },
+    async localize(item, corpus) {
+      if (!fileSymbols.has(corpus)) fileSymbols.set(corpus, corpusFileSymbols(corpus));
+      const loadFileSymbols = fileSymbols.get(corpus)!;
+      const changes = extractChangesByShape(requirementText(item));
+      const seedings: SeedingFiles[] = [];
+      const named: string[] = [];
+      for (const repo of corpus.manifest.repos) {
+        for (const change of changes) {
+          const seeds = await resolveChangeSeeds(change, repo.name, {
+            searcher: search.searcher,
+            loadSymbols: search.loadSymbols,
+            loadWriterIds: search.loadWriterIds,
+            filePoolSize: VERIFY_POOL_FILES,
+          });
+          const verification = await verifyEditCandidates({
+            requirementText: requestGateText(change).ask,
+            pool: seeds.filePool ?? [],
+            provider,
+            lineCheck: graphLineCheck(loadFileSymbols, repo.name),
+          });
+          const verified = applyEditVerification(seeds, verification);
+          const key = (m: { filePath: string }) => fileKey(repo.name, m.filePath);
+          named.push(...verification.namedFiles.map((f) => fileKey(repo.name, f)));
+          seedings.push({
+            edit: uniqueInOrder(verified.editCandidates.map(key)),
+            other: uniqueInOrder([...verified.related, ...verified.schemaSeeds].map(key)),
+          });
+        }
+      }
+      return { ...mergeSeedings(seedings), llmNamedFiles: uniqueInOrder(named) };
+    },
+  };
+}
+
 /** Arms by id. Later issues of epic #1751 add theirs here. */
 export const ARM_FACTORIES: Record<string, (deps: ArmDeps) => LocalizationArm> = {
   A0: createA0Arm,
   A2: createA2Arm,
+  A4: createA4Arm,
 };
 
 /** The arms issues #1754–#1761 will add; named so a request for one fails with its issue. */
 export const PLANNED_ARMS: Record<string, string> = {
   A3: "#1755 analysis-agent citations",
-  A4: "#1756 rerank-and-verify",
   A5: "#1757 adaptive cap",
   A6: "#1758 summaries",
   A7: "#1759 agentic seeder",

@@ -44,7 +44,13 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildArms, parseArmIds, type LocalizationArm } from "../src/lib/eval/localization/arms.js";
+import {
+  buildArms,
+  MODEL_ARMS,
+  parseArmIds,
+  type LocalizationArm,
+} from "../src/lib/eval/localization/arms.js";
+import type { AIProvider } from "../src/lib/ai/types.js";
 import {
   flagValue,
   nonNegativeNumber,
@@ -173,6 +179,23 @@ async function tableGuardFor(
   };
 }
 
+/**
+ * The live provider a model-backed arm calls, METERED so every call is priced by
+ * the usage ledger and held under the cap. Refuses the offline stub: it answers
+ * nothing, and its "results" would be A0's under the arm's label.
+ */
+async function armProviderFor(meter: LedgerCostMeter): Promise<AIProvider> {
+  const { buildProvider, loadAIConfig } = await import("../src/lib/ai/index.js");
+  const provider = buildProvider({ config: loadAIConfig() });
+  if (provider.offline) {
+    throw new Error(
+      "a model-backed arm needs a live provider (AI_PROVIDER and its key); the offline stub would report A0 under the arm's label",
+    );
+  }
+  console.log(`model arms call ${provider.key}/${provider.model}`);
+  return meterProvider(provider, meter);
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const armIds = parseArmIds(argv);
@@ -183,6 +206,9 @@ async function main(): Promise<void> {
   const meter = new LedgerCostMeter();
   const budget = new EvalBudget(budgetUsd);
   const reports: LocalizationReport[] = [];
+  const provider = armIds.some((id) => MODEL_ARMS.has(id))
+    ? await armProviderFor(meter)
+    : undefined;
   const tableGuard = argv.includes("--table-guard") ? await tableGuardFor(meter) : undefined;
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
   const resultsDir = path.join(REPO_ROOT, "eval-results");
@@ -192,7 +218,7 @@ async function main(): Promise<void> {
     const corpus = await loadLocalizationCorpus(name);
     const { cache, file } = await embedCacheFor(corpus, argv.includes("--embed"));
     const search = await buildCorpusSearch(corpus.symbols, cache);
-    const arms = buildArms(armIds, { search });
+    const arms = buildArms(armIds, { search, ...(provider ? { provider } : {}) });
     const report = await runLocalizationEval(corpus, { arms, runs, budget, meter, tableGuard });
     reports.push(report);
     assertNoMissingVectors(cache);

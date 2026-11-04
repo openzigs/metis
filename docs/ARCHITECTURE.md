@@ -2943,6 +2943,34 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   `blastRadiusFiles`), the markdown export and the UI. No migration: `depth` has
   always meant "0 = direct, ≥1 = blast radius", and a run stored before #1036
   reads through the same rule. Relations added: `data-model` and `related`.
+- **Edit-candidate check (#1756)** — behind `IMPACT_LLM_EDIT_VERIFY` (key
+  registry, tunable, **off**), the default seeding also returns its FILE pool
+  (`ChangeSeeds.filePool`, `VERIFY_POOL_FILES = 30`: the deterministic edit files
+  first, then the rest of the production hits rolled up by `fileScore`, each with
+  its best symbols and base scores). One call per change and project
+  (`verifyEditCandidates`, stage `edit-verify`, metered as `impact.edit-verify`
+  under the 60-second impact deadline) may promote pool files at a named line
+  and mark deterministic candidates doubtful. The line is checked against the
+  project's code graph (`graphLineCheck`: the innermost symbol of that file
+  holding it); a promotion that fails, names no pool file or passes
+  `MAX_PROMOTIONS = 5` is dropped and counted. `applyEditVerification` folds the
+  answer in additively (the #931 rule, docs/IMPACT_ANALYSIS_LLM_STAGES.md):
+  promotions are appended after the deterministic candidates on the file's own
+  hybrid score; verdicts, reasons, lines and base scores go to
+  `ImpactSeedEvidence` (`impact_items.seedEvidence`, channel `edit-verifier`),
+  and the run summary states what was promoted, marked doubtful and dropped. An
+  unread answer is named on the run's degradation notice. Arm A4 of the
+  localization eval runs the same functions over the corpus. Measured on
+  `claude-sonnet-5-5` (one run per held-out set, 2026-11-04): on Miniflux (25)
+  Recall@10 rose 0.65 → 0.77 (Δ +0.117, 95% CI [0.04, 0.21]) and edit precision
+  0.17 → 0.21 (Δ +0.037, [0.01, 0.07]), both significant, with Recall@5 and MRR
+  unchanged; the fixture set cannot move (A0 already names all ten files).
+  Pooled over the 40 held-out items: Recall@10 +0.073 [0.02, 0.14], edit
+  precision +0.023 [0.01, 0.04]. Cost $0.0265 per requirement on Miniflux and
+  $0.0186 on the fixture set, about 7 s each. Recall@5 cannot rise while
+  promotions are appended after A0's candidates (Miniflux averages 7.2 edit files
+  per requirement), so the bar for a default flip (a significant Recall@5 gain)
+  is not met, and the stage stays off; table precision was not measured for A4.
 - **Stored requirement links (#1754)** — `POST /api/impact-analyses` accepts
   `requirementIds` (deduplicated, at most 50). The route refuses a requirement
   whose project the caller cannot read with the project check's own error (a

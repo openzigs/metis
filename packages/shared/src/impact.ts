@@ -565,29 +565,65 @@ export interface ImpactTableFeedbackView {
 /**
  * #1754 — the channels that can name an edit candidate. `hybrid` is the default
  * seeding (BM25 fused with symbol embeddings); `stored-link` is a stored
- * requirement-to-code link (`RequirementCodeMapping`).
+ * requirement-to-code link (`RequirementCodeMapping`); `edit-verifier` (#1756)
+ * is a file the LLM edit-candidate check promoted from the hybrid pool, at a
+ * line checked against the code graph.
  */
-export const IMPACT_SEED_CHANNELS = ["hybrid", "stored-link"] as const;
+export const IMPACT_SEED_CHANNELS = ["hybrid", "stored-link", "edit-verifier"] as const;
 export type ImpactSeedChannel = (typeof IMPACT_SEED_CHANNELS)[number];
 
 /**
- * #1754 — how one change was seeded into one project, recorded only when a
- * seed channel beyond the default one ran (`IMPACT_STORED_LINK_SEEDS`). #1762
- * shows it.
+ * #1756 — the LLM edit-candidate check's verdict on one file. `promoted`: the
+ * model named a line in it, and the line is inside a symbol of that file in the
+ * code graph (only a checked line is ever recorded: `verified` is always true).
+ * `doubtful`: the model doubts a deterministic candidate; it stays a candidate
+ * with its score, marked.
+ */
+export const impactEditVerdictSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("promoted"),
+    reason: z.string().max(300),
+    line: z.number().int().min(1),
+    verified: z.literal(true),
+  }),
+  z.object({ kind: z.literal("doubtful"), reason: z.string().max(300) }),
+]);
+export type ImpactEditVerdict = z.infer<typeof impactEditVerdictSchema>;
+
+/**
+ * #1754 / #1756 — how one change was seeded into one project, recorded only when
+ * a seed channel beyond the default one ran (`IMPACT_STORED_LINK_SEEDS`,
+ * `IMPACT_LLM_EDIT_VERIFY`). #1762 shows it.
  */
 export const impactSeedEvidenceSchema = z.object({
-  storedLinks: z.object({
-    /** Stored links whose file is in the code graph: seeded. */
-    used: z.number().int().min(0),
-    /** Stored links whose file is no longer in the code graph: dropped. */
-    stale: z.number().int().min(0),
-  }),
+  /** #1754 — present when the stored-link channel ran. */
+  storedLinks: z
+    .object({
+      /** Stored links whose file is in the code graph: seeded. */
+      used: z.number().int().min(0),
+      /** Stored links whose file is no longer in the code graph: dropped. */
+      stale: z.number().int().min(0),
+    })
+    .optional(),
+  /** #1756 — present when the LLM edit-candidate check answered. */
+  verifier: z
+    .object({
+      promoted: z.number().int().min(0),
+      doubtful: z.number().int().min(0),
+      /** Promotions dropped: their line was not inside a symbol of the file, or the index named no pool file. */
+      droppedPromotions: z.number().int().min(0),
+    })
+    .optional(),
   /** Every edit-candidate file, in edit order, with the channels that named it. */
   editCandidates: z
     .array(
       z.object({
         filePath: z.string().min(1).max(1024),
         channels: z.array(z.enum(IMPACT_SEED_CHANNELS)).min(1),
+        /** #1756 — the file's deterministic (hybrid) score, kept next to any verdict. */
+        baseScore: z.number().min(0).optional(),
+        /** #1756 — the edit-candidate check's verdict on this file. */
+        verdict: impactEditVerdictSchema.optional(),
       }),
     )
     .max(500),
@@ -629,9 +665,9 @@ export interface ImpactItemView {
    */
   summary: string | null;
   /**
-   * #1754 — how this change was seeded, when a channel beyond the default one
-   * ran (`IMPACT_STORED_LINK_SEEDS` on). Absent otherwise, so a run with every
-   * seeding flag off reads exactly as before.
+   * #1754 / #1756 — how this change was seeded, when a channel beyond the
+   * default one ran (`IMPACT_STORED_LINK_SEEDS` or `IMPACT_LLM_EDIT_VERIFY` on).
+   * Absent otherwise, so a run with every seeding flag off reads exactly as before.
    */
   seedEvidence?: ImpactSeedEvidence;
   /**

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import type { AIProvider } from "../../ai/types.js";
 import * as changeSeeds from "../../impact-analysis/change-seeds.js";
 import { loadRecordedVectors } from "../recorded-vectors.js";
 import {
@@ -8,6 +9,7 @@ import {
   buildArms,
   createA0Arm,
   createA2Arm,
+  createA4Arm,
   mergeSeedings,
   parseArmIds,
   requirementText,
@@ -58,12 +60,14 @@ describe("arm selection", () => {
 
   it("fails loudly for an arm that is not built yet, naming its issue", () => {
     const deps = { search: {} as CorpusSearch };
-    expect(() => buildArms(["A0", "A4"], deps)).toThrow(
-      /A4 \(#1756 rerank-and-verify\) is not built yet/,
+    expect(() => buildArms(["A0", "A5"], deps)).toThrow(
+      /A5 \(#1757 adaptive cap\) is not built yet/,
     );
+    // #1756 — a model-backed arm refuses to run without a provider.
+    expect(() => buildArms(["A0", "A4"], deps)).toThrow(/A4 calls a model: it needs a live/);
     expect(() => buildArms(["ZZ"], deps)).toThrow(/unknown arm "ZZ"/);
     expect(buildArms(["A0"], deps).map((a) => a.id)).toEqual(["A0"]);
-    expect(Object.keys(ARM_FACTORIES)).toEqual(["A0", "A2"]);
+    expect(Object.keys(ARM_FACTORIES)).toEqual(["A0", "A2", "A4"]);
   });
 
   it("gives the arms the requirement as an analyst would paste it", () => {
@@ -131,6 +135,71 @@ describe("A2 — A0 plus stored requirement links (#1754)", () => {
     expect(arm.id).toBe("A2");
     expect(arm.configuration.links).toMatch(/mapRequirementToCode semantic links: top 10/);
     expect(arm.configuration.llm).toBe(false);
+  });
+});
+
+describe("A4 — A0 plus the LLM edit-candidate check (#1756)", () => {
+  // a.go is the only edit file; b.go is in the pool under the edit cut.
+  const rows = ["a", "b"].map((n) => ({
+    id: `r#${n}`,
+    repo: "r",
+    name: n,
+    qualifiedName: `${n}.go::${n}`,
+    kind: "function",
+    language: "go",
+    filePath: `${n}.go`,
+    startLine: 1,
+    endLine: 9,
+  }));
+  const search: CorpusSearch = {
+    searcher: {
+      search: async () => [
+        { symbolId: "r#a", filePath: "a.go", name: "a", kind: "function", score: 1 },
+        { symbolId: "r#b", filePath: "b.go", name: "b", kind: "function", score: 0.3 },
+      ],
+    },
+    loadSymbols: async (ids) =>
+      rows.filter((r) => ids.includes(r.id)).map((r) => ({ ...r, signature: null })),
+    loadWriterIds: async () => new Set<string>(),
+    embeddingModel: "toy",
+    symbolsDigest: "toy",
+  };
+  const corpus = {
+    manifest: { repos: [{ name: "r" }] },
+    symbols: rows,
+  } as unknown as Parameters<ReturnType<typeof createA4Arm>["localize"]>[1];
+  const item = { id: "I-1", title: "Change the order total", text: "Body." } as never;
+  const saying = (content: string) =>
+    ({
+      key: "anthropic",
+      model: "claude-sonnet-5-5",
+      offline: false,
+      chat: vi.fn(async () => ({ content, model: "claude-sonnet-5-5" })),
+    }) as unknown as AIProvider;
+
+  it("appends a verified promotion after A0's edit candidates, and reports what the model named", async () => {
+    const a0 = await createA0Arm({ search }).localize(item, corpus);
+    const a4 = await createA4Arm({
+      search,
+      provider: saying('{"promote":[{"index":1,"line":4,"reason":"It sums the total."}]}'),
+    }).localize(item, corpus);
+    expect(a0.editCandidateFiles).toEqual(["r:a.go"]);
+    expect(a4.editCandidateFiles).toEqual(["r:a.go", "r:b.go"]);
+    expect(a4.llmNamedFiles).toEqual(["r:b.go"]);
+  });
+
+  it("is A0 when the model's answer cannot be read, and names its provider and model", async () => {
+    const a0 = await createA0Arm({ search }).localize(item, corpus);
+    const arm = createA4Arm({ search, provider: saying("no json") });
+    const a4 = await arm.localize(item, corpus);
+    expect({ ...a4, llmNamedFiles: undefined }).toEqual({ ...a0, llmNamedFiles: undefined });
+    expect(a4.llmNamedFiles).toEqual([]);
+    expect(arm.configuration).toMatchObject({
+      provider: "anthropic",
+      model: "claude-sonnet-5-5",
+      llm: true,
+      poolFiles: 30,
+    });
   });
 });
 

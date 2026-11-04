@@ -104,6 +104,42 @@ export interface ChangeSeedDeps {
    * exactly the hybrid ones, with no evidence attached.
    */
   storedLinks?: StoredLinkDeps;
+  /**
+   * #1756 — when set, also return the hybrid FILE pool (`filePool`): this many
+   * files at most, for the LLM edit-candidate check. Absent: no pool, and the
+   * seeds are exactly as before.
+   */
+  filePoolSize?: number;
+}
+
+/** #1756 — files of the hybrid pool shown to the edit-candidate check, by default. */
+export const VERIFY_POOL_FILES = 30;
+
+/** #1756 — one symbol of a pool file, with the score the hybrid search gave it. */
+export interface SeedPoolSymbol {
+  codeSymbolId: string;
+  qualifiedName: string;
+  kind: string;
+  startLine: number | null;
+  endLine: number | null;
+  signature: string | null;
+  /** The hit's score over the best hit's: the confidence an edit candidate would carry. */
+  confidence: number;
+}
+
+/**
+ * #1756 — one FILE of the hybrid candidate pool. `EDIT_POOL` counts symbols;
+ * the pool rolls the production hits up to files and ranks them by
+ * {@link fileScore}, the deterministic edit candidates first.
+ */
+export interface SeedPoolFile {
+  filePath: string;
+  /** The file's {@link fileScore}: its deterministic base score. */
+  score: number;
+  /** True for a file the deterministic ranking already made an edit candidate. */
+  editCandidate: boolean;
+  /** The file's best hits, named symbols before its module, at most {@link MAX_SYMBOLS_PER_EDIT_FILE}. */
+  symbols: SeedPoolSymbol[];
 }
 
 /** #1754 — one stored requirement-to-code link (`RequirementCodeMapping`). */
@@ -157,6 +193,8 @@ export interface ChangeSeeds {
    * `requirementId`). Absent otherwise.
    */
   evidence?: ImpactSeedEvidence;
+  /** #1756 — the hybrid file pool, when `filePoolSize` asked for it. */
+  filePool?: SeedPoolFile[];
 }
 
 // PROVISIONAL — tuned in-sample on six Miniflux issues; revisit at run 8 (see
@@ -446,7 +484,60 @@ async function resolveHybridSeeds(
     .slice(0, MAX_RELATED)
     .map((h) => toMatch(h, (h.score / top) * RELATED_CONFIDENCE_FACTOR));
 
-  return { editCandidates, related, schemaSeeds, retrievalMode };
+  if (!deps.filePoolSize) return { editCandidates, related, schemaSeeds, retrievalMode };
+  const poolHits = production.filter((h) => !writers.has(h.symbolId));
+  return {
+    editCandidates,
+    related,
+    schemaSeeds,
+    retrievalMode,
+    filePool: filePoolOf(poolHits, editFiles, deps.filePoolSize, top, boost),
+  };
+}
+
+/**
+ * #1756 — the production hits rolled up to files: the deterministic edit files
+ * first, in their order, then the rest by {@link fileScore}, `size` at most.
+ */
+function filePoolOf(
+  hits: readonly FusedHit[],
+  editFiles: ReadonlySet<string>,
+  size: number,
+  top: number,
+  boost: (h: FusedHit) => number,
+): SeedPoolFile[] {
+  const byFile = new Map<string, FusedHit[]>();
+  for (const h of hits) byFile.set(h.row.filePath, [...(byFile.get(h.row.filePath) ?? []), h]);
+  const scored = [...byFile.entries()].map(([filePath, inFile]) => ({
+    filePath,
+    inFile,
+    score: fileScore(inFile.map((h) => h.score * boost(h))),
+  }));
+  const order = (a: { filePath: string; score: number }, b: { filePath: string; score: number }) =>
+    b.score - a.score || a.filePath.localeCompare(b.filePath);
+  const edit = [...editFiles].flatMap((f) => scored.filter((x) => x.filePath === f));
+  const rest = scored.filter((x) => !editFiles.has(x.filePath)).sort(order);
+  return [...edit, ...rest]
+    .slice(0, Math.max(size, edit.length))
+    .map(({ filePath, inFile, score }) => {
+      const named = inFile.filter((h) => h.row.kind !== "module");
+      return {
+        filePath,
+        score,
+        editCandidate: editFiles.has(filePath),
+        symbols: (named.length > 0 ? named : inFile)
+          .slice(0, MAX_SYMBOLS_PER_EDIT_FILE)
+          .map((h) => ({
+            codeSymbolId: h.symbolId,
+            qualifiedName: h.row.qualifiedName,
+            kind: h.row.kind,
+            startLine: h.row.startLine,
+            endLine: h.row.endLine,
+            signature: h.row.signature ?? null,
+            confidence: Math.min(1, Math.max(0, h.score / top)),
+          })),
+      };
+    });
 }
 
 /** A manual link ranks ahead of a semantic one; then the surer, then by path. */
@@ -556,7 +647,6 @@ export async function unionStoredLinks(
 export function prismaStoredLinkDeps(
   prisma: Pick<PrismaClient, "codeSymbol" | "requirementCodeMapping">,
 ): StoredLinkDeps {
-  const CHUNK = 500;
   return {
     loadLinks: (requirementId, projectId) =>
       prisma.requirementCodeMapping.findMany({
@@ -571,18 +661,26 @@ export function prismaStoredLinkDeps(
         },
         orderBy: { id: "asc" },
       }),
-    loadFileSymbols: async (filePaths, projectId) => {
-      const rows: SeedSymbolRow[] = [];
-      for (let i = 0; i < filePaths.length; i += CHUNK) {
-        rows.push(
-          ...(await prisma.codeSymbol.findMany({
-            where: { projectId, filePath: { in: filePaths.slice(i, i + CHUNK) } },
-            select: SEED_SYMBOL_SELECT,
-          })),
-        );
-      }
-      return rows;
-    },
+    loadFileSymbols: prismaFileSymbolLoader(prisma),
+  };
+}
+
+/** The project's code-graph symbols in the given files: project-scoped, chunked. */
+export function prismaFileSymbolLoader(
+  prisma: Pick<PrismaClient, "codeSymbol">,
+): StoredLinkDeps["loadFileSymbols"] {
+  const CHUNK = 500;
+  return async (filePaths, projectId) => {
+    const rows: SeedSymbolRow[] = [];
+    for (let i = 0; i < filePaths.length; i += CHUNK) {
+      rows.push(
+        ...(await prisma.codeSymbol.findMany({
+          where: { projectId, filePath: { in: filePaths.slice(i, i + CHUNK) } },
+          select: SEED_SYMBOL_SELECT,
+        })),
+      );
+    }
+    return rows;
   };
 }
 

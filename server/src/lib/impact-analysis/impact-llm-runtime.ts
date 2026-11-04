@@ -66,6 +66,7 @@ const log = createChildLogger("impact-llm-runtime");
 export type ImpactLlmStage =
   | "seeding"
   | "entity-seeds"
+  | "edit-verify"
   | "table-filter"
   | "additive-ddl"
   | "table-judge"
@@ -77,6 +78,7 @@ export type ImpactLlmStage =
 export const IMPACT_LLM_STAGES: readonly ImpactLlmStage[] = [
   "seeding",
   "entity-seeds",
+  "edit-verify",
   "table-filter",
   "additive-ddl",
   "table-judge",
@@ -92,6 +94,7 @@ export const IMPACT_LLM_STAGES: readonly ImpactLlmStage[] = [
 export const IMPACT_LLM_AGENT_STEP: Record<ImpactLlmStage, string> = {
   seeding: "impact.seeding",
   "entity-seeds": "impact.entity-seeds",
+  "edit-verify": "impact.edit-verify",
   "table-filter": "impact.table-filter",
   "additive-ddl": "impact.additive-ddl",
   "table-judge": "impact.table-judge",
@@ -104,6 +107,7 @@ export const IMPACT_LLM_AGENT_STEP: Record<ImpactLlmStage, string> = {
 const STAGE_LABEL: Record<ImpactLlmStage, string> = {
   seeding: "requirement-to-code seeding",
   "entity-seeds": "entity seed recall",
+  "edit-verify": "edit-candidate check",
   "table-filter": "table relevance filtering",
   "additive-ddl": "additive-column proposals",
   "table-judge": "column-informed table recovery",

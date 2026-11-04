@@ -733,6 +733,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Impact analysis: seed a change about a tracked requirement (a run started with requirementIds) from that requirement's stored code links (RequirementCodeMapping) as well as the hybrid search (#1754). OFF by default. The links are unioned after the hybrid edit candidates, manual links first, and never drop or re-score a hybrid seed; a link whose file has left the code graph is dropped and counted in the run summary. Off: the seeding and the result are exactly as before. The default flips only on a held-out gain measured by `pnpm eval:localization --arms A0,A2` (#1753).",
     sensitive: false,
   },
+  // ── Epic #1751 / Issue #1756 — additive LLM edit-candidate check ───────
+  IMPACT_LLM_EDIT_VERIFY: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "Impact analysis: one LLM call per changed requirement and project that looks at the hybrid candidate pool (about 30 files) and may PROMOTE a pool file to the files to edit, at a line checked against the code graph, or mark a deterministic candidate doubtful (#1756). OFF by default. Additive only, the #931 rule: every deterministic edit candidate stays, with its score; a promotion carries the file's own hybrid score, never a model score; an unverified line is dropped and counted in the run summary. Metered as impact.edit-verify under the 60-second impact deadline. The default flips only on a held-out gain measured by `pnpm eval:localization --arms A0,A4` (#1753).",
+    sensitive: false,
+  },
   ANALYSIS_AFFECTED_CODE_MAX_CANDIDATES: {
     tier: "tunable",
     valueType: "int",
