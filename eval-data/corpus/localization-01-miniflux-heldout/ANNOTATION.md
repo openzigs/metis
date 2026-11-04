@@ -25,10 +25,12 @@ Two limits to state plainly:
   `server/src/lib/eval/localization/corpus.ts`). The one exception is the product
   name "YouTube", listed in `allowedTerms`. A paraphrase can still lean on the
   description's vocabulary in ways no regex sees.
-- **No person has reviewed the rewrites yet** (`annotation.reviewedBy: null`).
-  A reviewer who has not read the diffs should check that each one reads as an
-  analyst would write it and set `reviewedBy`; the reviewed text is what a claim
-  of improvement should rest on.
+- **Reviewed by the owner on 2026-11-04** (`annotation.reviewedBy`), who did not
+  read the diffs. The main Claude session gave a second opinion on each item. Nine
+  rewrites that borrowed developer vocabulary or described the fix were reworded
+  in plain analyst language: MF-4495, 4563, 4567, 4572, 4575, 4579, 4599, 4605 and
+  4608. MF-4571 was dropped as too thin to read as an analyst request. The A0
+  baseline was re-run on the reviewed text.
 
 ## Which PRs, and why
 
@@ -52,7 +54,7 @@ Two limits to state plainly:
   edits was created after `v2.3.3`). No item was dropped for any other reason, and
   none was dropped on an arm's result: A0 had not been run.
 
-That leaves 25 items.
+That left 25 items; the review dropped MF-4571, leaving 24.
 
 ## Ground truth
 
@@ -70,6 +72,6 @@ at `c4d54f87`). The rest are kept in `excludedFiles` with their reason:
 | `not-in-code-graph` | Templates, translations, the man page, `go.mod`, a README, and files an earlier PR created after `v2.3.3`. |
 
 The snapshot is `v2.3.3` for every item, the walkthrough's pinned base, which
-predates all 25 PRs: no item's own change is in the code it is searched against.
+predates all 24 PRs: no item's own change is in the code it is searched against.
 Some PRs build on an earlier post-`v2.3.3` PR, so their files can differ from what
 `v2.3.3` holds; those files are excluded, not guessed.
