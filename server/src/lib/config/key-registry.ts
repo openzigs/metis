@@ -612,6 +612,31 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Model calls one portfolio gap analysis may make in all (#1657). The cost caps price each call from the price table and an unpriced model costs 0, so without this cap they never bind. Once reached, no new call starts and the repos not yet evaluated read could-not-verify (budget), never not-covered. Default 250.",
     sensitive: false,
   },
+  // ── #1763 — each repo's own share of a portfolio gap search ───────────
+  PORTFOLIO_GAP_PER_REPO_SEARCH: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "Search each of a product's projects on its own in portfolio gap analysis, and give every repo its share of the excerpts (#1763), so a repo never reads could-not-verify (no-evidence-retrieved) only because a sibling repo took every hit of one shared search. Each repo keeps at most PORTFOLIO_GAP_HITS_PER_REPO excerpts, and the product's repos together at most PORTFOLIO_GAP_HITS_PER_PRODUCT (never less than one excerpt per repo). No extra model calls: the cost caps are unchanged. Default false (one shared search per product) until #1766 measures it.",
+    sensitive: false,
+  },
+  PORTFOLIO_GAP_HITS_PER_PRODUCT: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(1).max(1_000),
+    description:
+      "Retrieved code excerpts per product in portfolio gap analysis (#1763). With PORTFOLIO_GAP_PER_REPO_SEARCH off, the size of the product's one shared search; with it on, the total split evenly across the product's repos (each at most PORTFOLIO_GAP_HITS_PER_REPO, never less than one). Default 24.",
+    sensitive: false,
+  },
+  PORTFOLIO_GAP_HITS_PER_REPO: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().min(1).max(200),
+    description:
+      "With PORTFOLIO_GAP_PER_REPO_SEARCH on, the code excerpts one repo's portfolio gap verdict is shown at most (#1763). More excerpts make each repo's prompt larger, so each verdict call costs more under the same PORTFOLIO_GAP_PRODUCT_COST_CAP_CENTS. Default 12.",
+    sensitive: false,
+  },
   // ── #1726 — the OUTPUT cap of a portfolio model call ───────────────────
   PORTFOLIO_MAX_OUTPUT_TOKENS: {
     tier: "tunable",

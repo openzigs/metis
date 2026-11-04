@@ -1372,6 +1372,9 @@ The rules that hold across the run, each detailed in the paragraphs below:
   | `PORTFOLIO_GAP_PRODUCT_COST_CAP_CENTS` | 50 | one product's model spend |
   | `PORTFOLIO_GAP_MAX_MODEL_CALLS` | 250 | the run's model calls, counted as each starts |
   | `PORTFOLIO_GAP_CONCURRENCY` | 4 | products checked at once, one call at a time per product |
+  | `PORTFOLIO_GAP_PER_REPO_SEARCH` | false | one search per project with a per-repo share, instead of one per product (#1763) |
+  | `PORTFOLIO_GAP_HITS_PER_PRODUCT` | 24 | excerpts per product: the shared search's size, or the total split across its repos |
+  | `PORTFOLIO_GAP_HITS_PER_REPO` | 12 | excerpts one repo's verdict sees, with the per-repo search on |
   | `PORTFOLIO_MAX_OUTPUT_TOKENS` | 21000 | the OUTPUT cap of each model call (criteria split, repo verdict, BA report; #1726) |
   | `PORTFOLIO_ASSESSMENT_START_RATE_LIMIT_MAX` | 10 | starts per user per 15 minutes |
   | `PORTFOLIO_ASSESSMENT_RATE_LIMIT_MAX` | 300 | reads per user per 15 minutes |
@@ -1424,7 +1427,17 @@ product in scope and persists the result as a `PortfolioAssessment`:
 4. **Retrieval.** One `FederatedSearchService` call per product over its repos' projects
    (RRF, the #1052 accessible-projects gate). A hit counts for a repo only when it is a
    repository source chunk (`connector:repo:<id>:src/…`, with a `path`) of that repo, from
-   that repo's project.
+   that repo's project. The one search returns `PORTFOLIO_GAP_HITS_PER_PRODUCT` (24)
+   excerpts, so a repo whose sibling dominates the ranking can get none and read
+   `no-evidence-retrieved`. With `PORTFOLIO_GAP_PER_REPO_SEARCH` on (#1763, off by default
+   until #1766 measures it), the engine instead searches each of the product's projects on
+   its own (four at once), and each repo keeps at most its share (`perRepoHitQuota`): the
+   24 split evenly across the product's repos, at most `PORTFOLIO_GAP_HITS_PER_REPO` (12)
+   and never less than one. A project's search asks for twice its repos' shares, because
+   repos in one project and the project's documents share one ranked list. Repos in one
+   project can still crowd each other out past that: the search has no per-repo filter.
+   A failed project search leaves only that project's repos `retrieval-failed`. No model
+   call is added.
 5. **Repo verdict.** One model call per repo with the repo's own excerpts. Every untrusted
    value sits between `<<<LABEL>>>` fences and is scrubbed with
    `scrubRequirementFenceLookalikes` (#1114, #1351) and, for the `CODE`, `CRITERIA` and
