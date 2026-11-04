@@ -27,6 +27,7 @@ import {
   toProjectOutcomes,
   WRITE_PATH_BRIDGE_MAX_DEPTH,
   WRITE_PATH_SERVICE_CALL_MAX_DEPTH,
+  seedEvidenceOf,
 } from "./impact-analysis-read.js";
 import type { ImpactItemView } from "@metis/shared";
 
@@ -2399,5 +2400,25 @@ describe("#1609 toProjectOutcomes", () => {
         ],
       ),
     ).toEqual([{ projectId: "odd-reason", outcome: "not-checked", reason: null }]);
+  });
+});
+
+describe("#1754 seed evidence on the item view", () => {
+  const evidence = {
+    storedLinks: { used: 1, stale: 2 },
+    editCandidates: [{ filePath: "src/a.ts", channels: ["hybrid", "stored-link"] }],
+  };
+
+  it("reads stored evidence into the view", () => {
+    expect(seedEvidenceOf(JSON.stringify(evidence))).toEqual({ seedEvidence: evidence });
+  });
+
+  it("adds no key for a null column, unreadable JSON, or a shape it does not know", () => {
+    expect(seedEvidenceOf(null)).toEqual({});
+    expect(seedEvidenceOf(undefined)).toEqual({});
+    expect(seedEvidenceOf("{not json")).toEqual({});
+    expect(
+      seedEvidenceOf(JSON.stringify({ ...evidence, storedLinks: { used: "one", stale: 0 } })),
+    ).toEqual({});
   });
 });

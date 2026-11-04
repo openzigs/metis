@@ -19,9 +19,18 @@ import {
   MIN_FILE_SHARE,
   SEED_POOL_PER_QUERY,
   resolveChangeSeeds,
+  type SeedSymbolRow,
+  type StoredLinkDeps,
+  type StoredLinkRow,
 } from "../../impact-analysis/change-seeds.js";
 import { extractChangesByShape } from "../../impact-analysis/change-request.js";
 import { DEFAULT_WEIGHTS } from "../../code-graph/hybrid-search.js";
+import {
+  DEFAULT_TOP_K,
+  mapRequirementToCode,
+  RELATIVE_MIN_CONFIDENCE,
+  type CodeSymbolSearcher,
+} from "../../traceability/requirement-code-mapping.js";
 import { fileKey, type LocalizationCorpus, type LocalizationItem } from "./corpus.js";
 import type { CorpusSearch } from "./search.js";
 import type { GapVerdict } from "./corpus.js";
@@ -146,14 +155,143 @@ export function createA0Arm(deps: ArmDeps): LocalizationArm {
   };
 }
 
+/**
+ * #1754 — the mapper over the corpus search, as the traceability mapping job
+ * runs it: `mapRequirementToCode` with the hybrid searcher, hydrated from the
+ * corpus rows. The corpus searcher vouches for no absolute confidence, so the
+ * mapper normalizes to the best hit and keeps hits at or above
+ * {@link RELATIVE_MIN_CONFIDENCE}, the top {@link DEFAULT_TOP_K}.
+ */
+function corpusMapperSearcher(search: CorpusSearch): CodeSymbolSearcher {
+  return {
+    async search(query, projectId, opts) {
+      const hits = await search.searcher.search(query, projectId, { limit: opts?.limit });
+      const rows = new Map(
+        (
+          await search.loadSymbols(
+            hits.map((h) => h.symbolId),
+            projectId,
+          )
+        ).map((r) => [r.id, r]),
+      );
+      return hits.flatMap((h) => {
+        const r = rows.get(h.symbolId);
+        return r
+          ? [
+              {
+                symbolId: r.id,
+                filePath: r.filePath,
+                qualifiedName: r.qualifiedName,
+                name: h.name,
+                kind: r.kind,
+                startLine: r.startLine,
+                endLine: r.endLine,
+                score: h.score,
+              },
+            ]
+          : [];
+      });
+    },
+  };
+}
+
+/** The corpus's symbols of the given files in one repository: the graph-membership lookup. */
+function corpusFileSymbols(corpus: LocalizationCorpus): StoredLinkDeps["loadFileSymbols"] {
+  return async (filePaths, repo) => {
+    const wanted = new Set(filePaths);
+    return corpus.symbols
+      .filter((r) => r.repo === repo && wanted.has(r.filePath))
+      .map((r): SeedSymbolRow => ({
+        id: r.id,
+        qualifiedName: r.qualifiedName,
+        filePath: r.filePath,
+        kind: r.kind,
+        language: r.language,
+        startLine: r.startLine,
+        endLine: r.endLine,
+        signature: r.signature ?? null,
+      }));
+  };
+}
+
+/**
+ * A2 — A0 plus the stored-link channel (#1754): every change of the item
+ * carries a `requirementId`, and the requirement's stored links are unioned
+ * after the hybrid edit candidates by production's `resolveChangeSeeds`.
+ *
+ * WHICH links: the held-out items are not tracked requirements, so they have no
+ * stored links of their own. A2 gives each one the links METIS writes for every
+ * tracked requirement with no model and no person: the traceability mapper's
+ * `semantic` links ({@link corpusMapperSearcher}). That mapper searches the same
+ * index A0 does, so A2 measures the channel on AUTOMATIC links only. Links a
+ * person confirmed (`manual`) or the code agent cited (#1755's A3) are not in
+ * this corpus and are not measured here.
+ *
+ * The only difference from A0 is the links: the same extractor, the same
+ * changes, the same hybrid search. (A run started from `requirementIds` reads a
+ * requirement as one change; the union is the same code.)
+ */
+export function createA2Arm(deps: ArmDeps): LocalizationArm {
+  const { search } = deps;
+  const a0 = createA0Arm(deps);
+  const mapper = corpusMapperSearcher(search);
+  const fileSymbols = new WeakMap<LocalizationCorpus, StoredLinkDeps["loadFileSymbols"]>();
+  return {
+    id: "A2",
+    label: "A2 — A0 plus stored requirement links (mapper-written semantic links), no model",
+    configuration: {
+      ...a0.configuration,
+      stage: "resolveChangeSeeds + stored-link channel (IMPACT_STORED_LINK_SEEDS, #1754)",
+      links: `mapRequirementToCode semantic links: top ${DEFAULT_TOP_K}, relative confidence ≥ ${RELATIVE_MIN_CONFIDENCE}`,
+    },
+    async localize(item, corpus) {
+      if (!fileSymbols.has(corpus)) fileSymbols.set(corpus, corpusFileSymbols(corpus));
+      const loadFileSymbols = fileSymbols.get(corpus)!;
+      const changes = extractChangesByShape(requirementText(item));
+      const seedings: SeedingFiles[] = [];
+      for (const repo of corpus.manifest.repos) {
+        const links: StoredLinkRow[] = (
+          await mapRequirementToCode(
+            { id: item.id, title: item.title, body: item.text },
+            repo.name,
+            {},
+            { searcher: mapper },
+          )
+        ).map((m) => ({
+          codeSymbolId: m.codeSymbolId,
+          filePath: m.filePath,
+          startLine: m.startLine,
+          endLine: m.endLine,
+          confidence: m.confidence,
+          source: "semantic",
+        }));
+        for (const change of changes) {
+          const seeds = await resolveChangeSeeds({ ...change, requirementId: item.id }, repo.name, {
+            searcher: search.searcher,
+            loadSymbols: search.loadSymbols,
+            loadWriterIds: search.loadWriterIds,
+            storedLinks: { loadLinks: async () => links, loadFileSymbols },
+          });
+          const key = (m: { filePath: string }) => fileKey(repo.name, m.filePath);
+          seedings.push({
+            edit: uniqueInOrder(seeds.editCandidates.map(key)),
+            other: uniqueInOrder([...seeds.related, ...seeds.schemaSeeds].map(key)),
+          });
+        }
+      }
+      return mergeSeedings(seedings);
+    },
+  };
+}
+
 /** Arms by id. Later issues of epic #1751 add theirs here. */
 export const ARM_FACTORIES: Record<string, (deps: ArmDeps) => LocalizationArm> = {
   A0: createA0Arm,
+  A2: createA2Arm,
 };
 
 /** The arms issues #1754–#1761 will add; named so a request for one fails with its issue. */
 export const PLANNED_ARMS: Record<string, string> = {
-  A2: "#1754 stored links",
   A3: "#1755 analysis-agent citations",
   A4: "#1756 rerank-and-verify",
   A5: "#1757 adaptive cap",

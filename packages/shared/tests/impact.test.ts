@@ -6,6 +6,8 @@ import {
   impactAffectedSymbolSchema,
   impactAnalysisSchema,
   impactItemSchema,
+  impactSeedEvidenceSchema,
+  MAX_IMPACT_REQUIREMENT_IDS,
   REQUIREMENT_CODE_MAPPING_SOURCES,
   requirementCodeMappingSchema,
 } from "../src/impact.js";
@@ -72,6 +74,51 @@ describe("impact domain", () => {
 
     it("rejects an empty projectIds array", () => {
       expect(() => createImpactAnalysisSchema.parse({ text: "x", projectIds: [] })).toThrow();
+    });
+
+    it("#1754 accepts a run sourced from stored requirements, deduplicated", () => {
+      const other = "clzzzzzzzz0000abcd1234efgh";
+      const parsed = createImpactAnalysisSchema.parse({
+        requirementIds: [validId, other, validId],
+        projectIds: [validId],
+      });
+      expect(parsed.requirementIds).toEqual([validId, other]);
+      expect(parsed.text).toBeUndefined();
+    });
+
+    it("#1754 bounds requirementIds and refuses an empty list as the only source", () => {
+      const ids = Array.from(
+        { length: MAX_IMPACT_REQUIREMENT_IDS + 1 },
+        (_, i) => `clxxxxxxxx${String(i).padStart(4, "0")}abcd1234efgh`,
+      );
+      expect(() =>
+        createImpactAnalysisSchema.parse({ requirementIds: ids, projectIds: [validId] }),
+      ).toThrow();
+      expect(() =>
+        createImpactAnalysisSchema.parse({ requirementIds: [], projectIds: [validId] }),
+      ).toThrow();
+      expect(() =>
+        createImpactAnalysisSchema.parse({ requirementIds: ["short"], projectIds: [validId] }),
+      ).toThrow();
+    });
+  });
+
+  describe("impactSeedEvidenceSchema (#1754)", () => {
+    it("reads stored-link counts and per-file channels, and refuses an unknown channel", () => {
+      const ok = {
+        storedLinks: { used: 2, stale: 1 },
+        editCandidates: [{ filePath: "src/a.ts", channels: ["hybrid", "stored-link"] }],
+      };
+      expect(impactSeedEvidenceSchema.parse(ok)).toEqual(ok);
+      expect(() =>
+        impactSeedEvidenceSchema.parse({
+          ...ok,
+          editCandidates: [{ filePath: "src/a.ts", channels: ["llm"] }],
+        }),
+      ).toThrow();
+      expect(() =>
+        impactSeedEvidenceSchema.parse({ ...ok, storedLinks: { used: -1, stale: 0 } }),
+      ).toThrow();
     });
   });
 

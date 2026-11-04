@@ -724,6 +724,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Max tokens (≈4 chars/token) the deterministic affected-code block may occupy in the analysis code agent's context (#735). On overflow the ranked TAIL of candidates/symbols is truncated deterministically. Carved OUT of the agent's token budget, never additive. Default 1500.",
     sensitive: false,
   },
+  // ── Epic #1751 / Issue #1754 — impact seeding from stored requirement links ─
+  IMPACT_STORED_LINK_SEEDS: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "Impact analysis: seed a change about a tracked requirement (a run started with requirementIds) from that requirement's stored code links (RequirementCodeMapping) as well as the hybrid search (#1754). OFF by default. The links are unioned after the hybrid edit candidates, manual links first, and never drop or re-score a hybrid seed; a link whose file has left the code graph is dropped and counted in the run summary. Off: the seeding and the result are exactly as before. The default flips only on a held-out gain measured by `pnpm eval:localization --arms A0,A2` (#1753).",
+    sensitive: false,
+  },
   ANALYSIS_AFFECTED_CODE_MAX_CANDIDATES: {
     tier: "tunable",
     valueType: "int",

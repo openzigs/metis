@@ -2223,6 +2223,12 @@ model ImpactAnalysis {
   /// `ImpactAnalysisRerun`; SetNull so deleting an original orphans (not deletes)
   /// its re-runs.
   rerunOfId            String?
+  /// Issue #1754 — the stored requirements this run was asked about, as a JSON
+  /// array of ids (`requirementIds` on create). Each becomes one change carrying
+  /// its `requirementId`, so the run can read the requirement's stored code
+  /// links; a re-run reads it back. Null for a run sourced from text or a
+  /// document only. No foreign key: the run outlives a deleted requirement.
+  requirementIds       String?
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
 
@@ -2315,6 +2321,12 @@ model ImpactItem {
   /// ungrounded output) — the deterministic result is unchanged. Never contains
   /// fabricated facts (grounded ⊆ engine facts).
   summary             String?
+  /// Issue #1754 — JSON `ImpactSeedEvidence` (`@metis/shared`): how this change
+  /// was seeded into the project, written only when a channel beyond the default
+  /// hybrid seeding ran (`IMPACT_STORED_LINK_SEEDS`): stored links used and
+  /// dropped as stale, and the channels that named each edit candidate. Null
+  /// otherwise, so a run with the flag off writes exactly what it did before.
+  seedEvidence        String?
   createdAt           DateTime @default(now())
 
   impactAnalysis ImpactAnalysis @relation(fields: [impactAnalysisId], references: [id], onDelete: Cascade)

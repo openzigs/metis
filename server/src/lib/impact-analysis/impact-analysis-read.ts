@@ -20,6 +20,7 @@ import type {
   ImpactNotCheckedReason,
   ImpactProjectOutcome,
   ImpactProjectOutcomeKind,
+  ImpactSeedEvidence,
   ImpactTableConsumerView,
   ImpactTableFeedbackVerdict,
   ImpactTableFeedbackView,
@@ -38,6 +39,7 @@ import {
   IMPACT_NOT_CHECKED_REASONS,
   IMPACT_PROJECT_OUTCOMES,
   IMPACT_TABLE_FEEDBACK_VERDICTS,
+  impactSeedEvidenceSchema,
   SCHEMA_RECONCILIATIONS,
   SCHEMA_SOURCES,
   USAGE_OBJECT_KINDS,
@@ -257,6 +259,8 @@ interface RawItem {
   affectedSymbolCount: number;
   /** #932 — persisted BA-readable per-item narrative (null when not generated). */
   summary: string | null;
+  /** #1754 — JSON `ImpactSeedEvidence`; null unless a seed channel beyond the hybrid one ran. */
+  seedEvidence?: string | null;
   requirement: { title: string } | null;
   affectedSymbols: RawAffectedSymbol[];
   affectedTables: RawAffectedTable[];
@@ -267,6 +271,22 @@ interface RawItem {
   columnProposals?: RawColumnProposal[];
   /** #966 — accumulated BA relevance feedback on this item's affected tables. */
   feedback: RawFeedback[];
+}
+
+/**
+ * #1754 — the stored seed evidence, or nothing: a null column, or one a later
+ * version wrote in a shape this one does not read, adds no key to the view.
+ */
+export function seedEvidenceOf(raw: string | null | undefined): {
+  seedEvidence?: ImpactSeedEvidence;
+} {
+  if (!raw) return {};
+  try {
+    const parsed = impactSeedEvidenceSchema.safeParse(JSON.parse(raw));
+    return parsed.success ? { seedEvidence: parsed.data } : {};
+  } catch {
+    return {};
+  }
 }
 
 interface RawColumnProposal {
@@ -449,6 +469,7 @@ function toItemView(item: RawItem): ImpactItemView {
     affectedFileCount: item.affectedFileCount,
     affectedSymbolCount: item.affectedSymbolCount,
     summary: item.summary ?? null,
+    ...seedEvidenceOf(item.seedEvidence),
     // #962 — split the blast radius into PRODUCTION code vs the project's own
     // TEST files (per the shared `isTestFilePath` heuristic). Test files appear
     // in the radius as callers/importers of the changed code; grouping them out

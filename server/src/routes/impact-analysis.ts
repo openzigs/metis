@@ -32,7 +32,9 @@ import {
   listMemberAccessibleProjectIds,
   type SchedulerActor,
 } from "../lib/scheduler/project-access.js";
+import { impactStoredLinkSeedsEnabled } from "../lib/impact-analysis/change-seeds.js";
 import {
+  parseRequirementIds,
   triggerImpactAnalysis,
   ImpactAnalysisError,
   type ImpactServiceDeps,
@@ -401,7 +403,10 @@ export function impactRunDeps(actorId: string, projectIds: readonly string[]): I
   const tableRecoveryJudge = tableRecoveryJudgeDep(runtime);
   const impactSummarizer = impactSummarizerDep(runtime);
   const liveIndexIntrospectorFor = defaultLiveIndexIntrospectorFor(actorId);
+  // #1754 — off by default; the key is absent when off, so the deps are unchanged.
+  const storedLinkSeeds = impactStoredLinkSeedsEnabled();
   return {
+    ...(storedLinkSeeds ? { storedLinkSeeds } : {}),
     ...(mapRequirement ? { mapRequirement } : {}),
     ...(tableRelevanceFilter ? { tableRelevanceFilter } : {}),
     ...(additiveColumnProposer ? { additiveColumnProposer } : {}),
@@ -494,6 +499,50 @@ async function assertProjectsAccessible(
     throw new AppError(404, "PROJECT_NOT_FOUND", `Unknown project(s): ${missing.join(", ")}`);
   }
   throw new AppError(403, "FORBIDDEN", "You do not have access to one or more requested projects");
+}
+
+/**
+ * #1754 — assert `actor` may read every requirement a run is asked about: the
+ * run reads each one's title, body and stored code links, so access to the
+ * run's projects is not enough. A requirement is readable when its own project
+ * is, and an unreadable one is refused with the project check's own error
+ * ({@link assertProjectsAccessible}). For a member, a requirement that does not
+ * exist (or was deleted) gets that same 403, so the answer is no existence
+ * oracle; an admin, who can read every project, gets a 404 naming the ids.
+ *
+ * - `"new-source"` (POST /): every requirement must exist and not be deleted.
+ * - `"rerun"` (POST /:id/rerun): a requirement gone since is the engine's to
+ *   skip; only the ones that remain are checked.
+ */
+async function assertRequirementsReadable(
+  actor: SchedulerActor,
+  requirementIds: readonly string[],
+  mode: "new-source" | "rerun",
+): Promise<void> {
+  if (requirementIds.length === 0) return;
+  const rows = await prisma.requirement.findMany({
+    where: { id: { in: [...requirementIds] } },
+    select: { id: true, projectId: true, deletedAt: true },
+  });
+  if (mode === "new-source") {
+    const live = new Set(rows.filter((r) => !r.deletedAt).map((r) => r.id));
+    const missing = requirementIds.filter((id) => !live.has(id));
+    if (missing.length > 0) {
+      if (isAdminActor(actor)) {
+        throw new AppError(
+          404,
+          "REQUIREMENT_NOT_FOUND",
+          `Unknown requirement(s): ${missing.join(", ")}`,
+        );
+      }
+      throw new AppError(
+        403,
+        "FORBIDDEN",
+        "You do not have access to one or more requested projects",
+      );
+    }
+  }
+  await assertProjectsAccessible(actor, [...new Set(rows.map((r) => r.projectId))]);
 }
 
 /**
@@ -859,6 +908,8 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
       const projectIds = [...new Set(body.projectIds)];
       await assertProjectsAccessible(actor, projectIds);
       if (body.documentId) await assertDocumentReadable(actor, body.documentId, "new-source");
+      const requirementIds = body.requirementIds ?? [];
+      await assertRequirementsReadable(actor, requirementIds, "new-source");
 
       // The flag-gated LLM collaborators (#931 seeder, #936 table filter, #1001
       // additive-DDL proposer, #932 summarizer) + the #958 live-schema
@@ -869,6 +920,7 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
           projectIds,
           documentId: body.documentId ?? null,
           text: body.text ?? null,
+          ...(requirementIds.length > 0 ? { requirementIds } : {}),
           actorId: actor.id,
           includeSchemaImpact: body.includeSchemaImpact,
           includeDependencies: body.includeDependencies,
@@ -964,7 +1016,20 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
       // Belt-and-braces: re-assert access to every project (identical to POST /).
       await assertProjectsAccessible(actor, projectIds);
 
-      if (!original.documentId && !(original.sourceText && original.sourceText.trim().length > 0)) {
+      // #1754 — a run about stored requirements re-reads them (not on the detail view).
+      const requirementIds = parseRequirementIds(
+        (
+          await prisma.impactAnalysis.findUnique({
+            where: { id },
+            select: { requirementIds: true },
+          })
+        )?.requirementIds,
+      );
+      if (
+        !original.documentId &&
+        !(original.sourceText && original.sourceText.trim().length > 0) &&
+        requirementIds.length === 0
+      ) {
         throw new AppError(
           409,
           "RERUN_NO_SOURCE",
@@ -974,12 +1039,14 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
       if (original.documentId) {
         await assertDocumentReadable(actor, original.documentId, "rerun");
       }
+      await assertRequirementsReadable(actor, requirementIds, "rerun");
 
       const result = await triggerImpactAnalysis(
         {
           projectIds,
           documentId: original.documentId,
           text: original.sourceText,
+          ...(requirementIds.length > 0 ? { requirementIds } : {}),
           actorId: actor.id,
           rerunOfId: id,
         },
