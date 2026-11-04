@@ -175,8 +175,20 @@ describe("runLocalizationEval", () => {
 
   it("reads the table guard per arm and gates the drop against A0", async () => {
     const readings: Record<string, TableGuardReading> = {
-      A0: { measured: true, tablePrecision: 0.78, runs: 3, configuration: "prod" },
-      A4: { measured: true, tablePrecision: 0.74, runs: 3, configuration: "prod" },
+      A0: {
+        measured: true,
+        tablePrecision: 0.78,
+        runs: 3,
+        configuration: "prod",
+        seeding: "mapper",
+      },
+      A4: {
+        measured: true,
+        tablePrecision: 0.74,
+        runs: 3,
+        configuration: "prod",
+        seeding: "mapper",
+      },
     };
     const report = await runLocalizationEval(corpus(4), {
       arms: [arm("A0", () => 1), arm("A4", () => 1)],
@@ -185,7 +197,13 @@ describe("runLocalizationEval", () => {
       tableGuard: async (a) => readings[a.id]!,
     });
     expect(report.comparisons[0]!.tableGuardPassed).toBe(false);
-    readings.A4 = { measured: true, tablePrecision: 0.76, runs: 3, configuration: "prod" };
+    readings.A4 = {
+      measured: true,
+      tablePrecision: 0.76,
+      runs: 3,
+      configuration: "prod",
+      seeding: "mapper",
+    };
     const again = await runLocalizationEval(corpus(4), {
       arms: [arm("A0", () => 1), arm("A4", () => 1)],
       runs: 1,
@@ -280,7 +298,13 @@ describe("runLocalizationEval budget (#1770)", () => {
       meter,
       tableGuard: async () => {
         guardCalls++;
-        return { measured: true, tablePrecision: 0.8, runs: 3, configuration: "prod" };
+        return {
+          measured: true,
+          tablePrecision: 0.8,
+          runs: 3,
+          configuration: "prod",
+          seeding: "mapper",
+        };
       },
     });
     expect(report.stopped).toMatchObject({ item: "I-3" });
@@ -302,7 +326,13 @@ describe("runLocalizationEval budget (#1770)", () => {
       tableGuard: async () => {
         guardCalls++;
         meter.spent += 0.5;
-        return { measured: true, tablePrecision: 0.8, runs: 3, configuration: "prod" };
+        return {
+          measured: true,
+          tablePrecision: 0.8,
+          runs: 3,
+          configuration: "prod",
+          seeding: "mapper",
+        };
       },
     });
     // A0's guard cost $0.50; another would pass $0.70, so A4's is skipped and the run stops.
@@ -345,7 +375,13 @@ describe("memoisedA0TableGuard (#1779)", () => {
     const guard = memoisedA0TableGuard(async () => {
       measured++;
       meter.spent += usd;
-      return { measured: true, tablePrecision: 0.8, runs: 3, configuration: "prod" };
+      return {
+        measured: true,
+        tablePrecision: 0.8,
+        runs: 3,
+        configuration: "prod",
+        seeding: "mapper",
+      };
     });
     return { guard, measured: () => measured };
   }
@@ -669,5 +705,87 @@ describe("toMarkdownReport", () => {
     const md = toMarkdownReport(report);
     expect(md).toContain("No other arm was run: this report is A0's baseline.");
     expect(md).not.toContain("IN-SAMPLE");
+  });
+});
+
+describe("a table guard read on another seeding (#1786)", () => {
+  const mapper = { tablePrecision: 0.78, runs: 3, configuration: "prod", seeding: "mapper" };
+  const splitA0 = { tablePrecision: 0.5, runs: 3, configuration: "split", seeding: "split" };
+
+  it("gates the arm against A0 on the arm's own seeding, and says which seeding each reading used", async () => {
+    const readings: Record<string, TableGuardReading> = {
+      A0: { measured: true, ...mapper },
+      // 0.52 is far below A0's mapper reading, but above A0 on the split seeding.
+      A4: {
+        measured: true,
+        tablePrecision: 0.52,
+        runs: 3,
+        configuration: "split + check",
+        seeding: "split + edit-candidate check",
+        baseline: splitA0,
+      },
+    };
+    const run = () =>
+      runLocalizationEval(corpus(4), {
+        arms: [arm("A0", () => 1), arm("A4", () => 1)],
+        runs: 1,
+        meter: new FakeMeter(),
+        tableGuard: async (a) => readings[a.id]!,
+      });
+    const report = await run();
+    expect(report.comparisons[0]!.tableGuardPassed).toBe(true);
+    const md = toMarkdownReport(report);
+    expect(md).toContain("| 0.520 (3 runs; A0 on its seeding 0.500) |");
+    expect(md).toContain("- A0 table precision (seeding: mapper) measured on: prod");
+    expect(md).toContain(
+      "- A4 table precision (seeding: split + edit-candidate check) measured on: split + check",
+    );
+    expect(md).toContain(
+      "  - next to A0 on the same seeding (seeding: split): 0.500 (3 runs), measured on: split",
+    );
+    // More than 0.03 below A0 on the split seeding fails, whatever A0's mapper reading.
+    readings.A4 = { ...(readings.A4 as object), tablePrecision: 0.46 } as TableGuardReading;
+    expect((await run()).comparisons[0]!.tableGuardPassed).toBe(false);
+  });
+
+  it("is unread when neither the arm's baseline nor A0 was measured", async () => {
+    const report = await runLocalizationEval(corpus(2), {
+      arms: [arm("A0", () => 1), arm("A4", () => 1)],
+      runs: 1,
+      meter: new FakeMeter(),
+      tableGuard: async (a) =>
+        a.id === "A0"
+          ? { measured: false, reason: "no" }
+          : { measured: true, tablePrecision: 0.9, runs: 3, configuration: "c", seeding: "split" },
+    });
+    expect(report.comparisons[0]!.tableGuardPassed).toBeNull();
+  });
+});
+
+describe("memoisedA0TableGuard with another arm's measurement (#1786)", () => {
+  it("measures each wired arm once, free afterwards, and leaves an unwired arm unmeasured at no cost", async () => {
+    const calls: string[] = [];
+    const reading =
+      (id: string): (() => Promise<TableGuardReading>) =>
+      async () => {
+        calls.push(id);
+        return { measured: true, tablePrecision: 0.5, runs: 3, configuration: id, seeding: id };
+      };
+    const guard = memoisedA0TableGuard(reading("A0"), { A4: reading("A4") });
+    const named = (id: string) => arm(id, () => 1);
+    expect(guard.isFree?.(named("A4"))).toBe(false);
+    expect(guard.isFree?.(named("A2"))).toBe(true);
+    expect(await guard(named("A4"))).toMatchObject({ configuration: "A4" });
+    expect(await guard(named("A4"))).toMatchObject({ configuration: "A4" });
+    expect(guard.isFree?.(named("A4"))).toBe(true);
+    expect(guard.isFree?.(named("A0"))).toBe(false);
+    expect(await guard(named("A0"))).toMatchObject({ configuration: "A0" });
+    expect(await guard(named("A2"))).toEqual({
+      measured: false,
+      reason: "arm A2 does not wire a table-precision run yet",
+    });
+    // An inherited property name is not a wired arm.
+    expect(await guard(named("toString"))).toMatchObject({ measured: false });
+    expect(calls).toEqual(["A4", "A0"]);
   });
 });

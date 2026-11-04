@@ -2985,6 +2985,22 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   thousands of output tokens). The fixture set does not move on either model. Recall@5 still does
   not rise on either model, so the stage stays off. A4's table precision needs the
   impact-recall guard to run the split seeding, which it does not (#1786).
+  **A4's table precision, on the split seeding (#1786).** `pnpm eval:localization
+  --arms A0,A4 --table-guard` now reads A4 on `impact-recall-01-jpetstore` through
+  the split seeding (`RunImpactRecallOptions.splitSeeding`: `resolveChangeSeeds`
+  over the hybrid search from the corpus's recorded vectors, with the file pool,
+  as `defaultSeedChange`) plus the check, and next to it A0 on the split seeding
+  alone, on the same corpus, provider and run count (3 runs, live #936 filter);
+  A4 is gated against that reading, not against A0's mapper-path one, and the
+  report names the seeding of every reading (`TableGuardReading.seeding`). Measured
+  on `claude-sonnet-5-5`, 2026-11-04, twice (one guard per invocation): split A0
+  0.503 and 0.523, A4 0.539 and 0.526 (Δ +0.036 and +0.003), so the check costs no
+  table precision and the guard holds (≤ 0.03 drop). A0 on the mapper path read
+  0.689 and 0.697 in the same invocations: **the split seeding, production's
+  default since #1036, reads table precision about 0.17 to 0.19 below the mapper
+  path the impact-recall floors (0.65) are measured on** (#1793). The two invocations
+  cost $0.98 (fixture set + guard) and about $1.4 (Miniflux + guard; the run was
+  cut off before printing its total).
 - **Per-request edit ranking (#1776)** — behind `IMPACT_REQUEST_EDIT_RANKING`
   (key registry, tunable, **off**), the engine seeds every change in every
   accessible project first (`seedRequestOnce`; a project the starter cannot open

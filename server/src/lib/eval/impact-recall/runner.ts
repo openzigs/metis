@@ -19,7 +19,14 @@
 import {
   computeProjectImpact,
   type ComputeImpactDeps,
+  type EditCandidateVerifierFn,
 } from "../../impact-analysis/impact-analysis-engine.js";
+import {
+  resolveChangeSeeds,
+  VERIFY_POOL_FILES,
+  type SeedSearcher,
+  type SeedSymbolLoader,
+} from "../../impact-analysis/change-seeds.js";
 import type { ChangedRequirement } from "../../impact-analysis/extract-changes.js";
 import { mapRequirementToCode } from "../../traceability/requirement-code-mapping.js";
 import type { CodeSymbolSearcher } from "../../traceability/requirement-code-mapping.js";
@@ -47,9 +54,33 @@ import type { MatchQuality } from "@metis/shared";
  */
 export type SearcherKind = "bm25" | "llm" | "entity-union" | "hybrid";
 
+/**
+ * #1786 — the SPLIT seeding: production's `defaultSeedChange` path
+ * (`resolveChangeSeeds` over the hybrid search, with the file pool the #1756
+ * edit-candidate check reads), instead of the injected `mapRequirement`. The
+ * edit-candidate check runs ONLY on this path, so measuring it needs it.
+ */
+export interface SplitSeedingOptions {
+  /** The hybrid code search the seeding ranks with (built by the caller from recorded vectors). */
+  searcher: SeedSearcher;
+  /** Hydrates a hit with its qualified name and lines. */
+  loadSymbols: SeedSymbolLoader;
+  /** #1756 — the additive LLM edit-candidate check over the file pool. Absent: no check. */
+  editCandidateVerifier?: EditCandidateVerifierFn;
+}
+
+/** #1786 — which seeding produced a reading. */
+export type ImpactRecallSeeding = "mapper" | "split" | "split + edit-candidate check";
+
 export interface RunImpactRecallOptions {
   /** Directly inject a searcher (wins over `searcherKind`). Used by tests. */
   searcher?: CodeSymbolSearcher;
+  /**
+   * #1786 — seed with the split hybrid seeding instead of the mapper. When set,
+   * `searcher`/`searcherKind` are not consulted: the split seeding has its own
+   * search.
+   */
+  splitSeeding?: SplitSeedingOptions;
   /** `bm25` (default, deterministic) or `llm` (Phase 2 — requires `llmSearcherFactory`). */
   searcherKind?: SearcherKind;
   /** Factory for the future LLM searcher; only consulted when `searcherKind === "llm"`. */
@@ -366,6 +397,8 @@ export interface ThresholdCheck {
  */
 export interface ImpactRecallConfiguration {
   searcher: SearcherKind;
+  /** #1786 — how requirements were seeded into code: the mapper, or the split seeding. */
+  seeding: ImpactRecallSeeding;
   /** The #936 output relevance filter: `llm` (what production runs) or `off`. */
   tableFilter: "llm" | "off";
   /** True when this is exactly the configuration production ships. */
@@ -384,8 +417,27 @@ export const PRODUCTION_TABLE_FILTER = "llm" as const;
 
 /** Derive the configuration identity from the resolved run options. Pure. */
 export function describeConfiguration(opts: RunImpactRecallOptions): ImpactRecallConfiguration {
-  const searcher: SearcherKind = opts.searcher ? "bm25" : (opts.searcherKind ?? "bm25");
   const tableFilter = opts.tableRelevanceFilter ? "llm" : "off";
+  if (opts.splitSeeding) {
+    // #1786 — the split seeding is not the configuration these floors were
+    // measured on (the mapper path), so it is never gated as production.
+    const seeding: ImpactRecallSeeding = opts.splitSeeding.editCandidateVerifier
+      ? "split + edit-candidate check"
+      : "split";
+    return {
+      searcher: "hybrid",
+      seeding,
+      tableFilter,
+      isProductionConfiguration: false,
+      label:
+        `SPLIT SEEDING (resolveChangeSeeds over the hybrid search, as defaultSeedChange; ` +
+        `table filter=${tableFilter}` +
+        (opts.splitSeeding.editCandidateVerifier
+          ? "; + #1756 LLM edit-candidate check, IMPACT_LLM_EDIT_VERIFY=1)"
+          : ")"),
+    };
+  }
+  const searcher: SearcherKind = opts.searcher ? "bm25" : (opts.searcherKind ?? "bm25");
   const isProductionConfiguration =
     searcher === PRODUCTION_SEARCHER && tableFilter === PRODUCTION_TABLE_FILTER;
   const label = isProductionConfiguration
@@ -394,7 +446,7 @@ export function describeConfiguration(opts: RunImpactRecallOptions): ImpactRecal
       (tableFilter === "off"
         ? " — deterministic-only diagnostic; production runs the filter ON, so these numbers are NOT the shipped baseline"
         : "");
-  return { searcher, tableFilter, isProductionConfiguration, label };
+  return { searcher, seeding: "mapper", tableFilter, isProductionConfiguration, label };
 }
 
 export interface ImpactRecallResult {
@@ -465,7 +517,23 @@ export async function observeRequirement(
   searcher: CodeSymbolSearcher,
   opts: RunImpactRecallOptions,
 ): Promise<{ foundTables: string[]; foundCodeSymbols: string[]; matchQuality: MatchQuality }> {
+  const split = opts.splitSeeding;
   const impact = await computeProjectImpact(requirementToChange(requirement), fixture.projectId, {
+    // #1786 — the split seeding replaces the mapper for this change, with the
+    // file pool the edit-candidate check reads, exactly as defaultSeedChange.
+    ...(split
+      ? {
+          seedChange: (change, projectId) =>
+            resolveChangeSeeds(change, projectId, {
+              searcher: split.searcher,
+              loadSymbols: split.loadSymbols,
+              filePoolSize: VERIFY_POOL_FILES,
+            }),
+          ...(split.editCandidateVerifier
+            ? { editCandidateVerifier: split.editCandidateVerifier }
+            : {}),
+        }
+      : {}),
     mapRequirement: (req, projectId) =>
       mapRequirementToCode(
         req,
@@ -501,8 +569,10 @@ export async function runImpactRecallEval(
   fixture: ImpactRecallFixture,
   opts: RunImpactRecallOptions = {},
 ): Promise<ImpactRecallResult> {
-  const searcher = resolveSearcher(fixture, opts);
-  const searcherKind: SearcherKind = opts.searcher ? "bm25" : (opts.searcherKind ?? "bm25");
+  // #1786 — the split seeding searches with its own hybrid search; the mapper's
+  // searcher is then never called, so it is not resolved either.
+  const searcher = opts.splitSeeding ? fixture.searcher : resolveSearcher(fixture, opts);
+  const searcherKind: SearcherKind = describeConfiguration(opts).searcher;
 
   const scores: RequirementScore[] = [];
   const matchQualities: Record<string, MatchQuality> = {};
