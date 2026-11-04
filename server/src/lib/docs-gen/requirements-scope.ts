@@ -481,15 +481,14 @@ function pinNote(r: ScopedRequirement): string[] {
 export interface RequirementEntryOptions {
   /** #1218 — the stored requirement id, on the line under the heading. */
   showId?: boolean;
-  /** The recorded code links (default true). A business reader's main part leaves them out. */
-  codeLinks?: boolean;
 }
 
 /**
  * One requirement as BRD content, exactly as stored: its `### R<n>.` heading,
  * type, priority, review status and verdict, its body (markers removed,
- * headings nested), its acceptance criteria as written, and its code links.
- * Nothing is reworded. Returned as lines, without a leading blank line.
+ * headings nested) and its acceptance criteria as written. Nothing is
+ * reworded. Returned as lines, without a leading blank line. Its code links
+ * are not part of it (#1580): see {@link codeLinkLines}.
  */
 export function renderRequirementEntry(
   r: ScopedRequirement,
@@ -514,12 +513,15 @@ export function renderRequirementEntry(
   const criteria = parseAcceptanceCriteria(r.acceptanceCriteria);
   if (criteria.length) criteria.forEach((c) => out.push(`- ${cell(c)}`));
   else out.push("_No acceptance criteria were derived for this requirement._");
-  if (options.codeLinks === false) return out;
-  out.push("", "#### Code links", "");
+  return out;
+}
+
+/** A requirement's recorded code links as list items, or the line saying there are none. */
+function codeLinkLines(r: ScopedRequirement): string[] {
   if (!r.codeMappings.length && !r.implementations.length) {
-    out.push("_No code links recorded for this requirement._");
-    return out;
+    return ["_No code links recorded for this requirement._"];
   }
+  const out: string[] = [];
   for (const m of r.codeMappings) {
     out.push(
       `- ${codePath(m.filePath + lineRange(m.startLine, m.endLine))} — ${cell(
@@ -535,6 +537,28 @@ export function renderRequirementEntry(
       )}`,
     );
   }
+  return out;
+}
+
+/** The heading of the requirements BRD's code-links appendix (#1580). */
+export const CODE_LINKS_APPENDIX_HEADING = "## Appendix: code links";
+
+/**
+ * #1580 — the code links, gathered after the requirements. Inline under each
+ * requirement they put file paths in the part a business reader signs off (18
+ * in #706 run 10's five-requirement BRD, failing SO3); here they stay in the
+ * document for the developers, under each requirement's number and title.
+ */
+function codeLinksAppendix(requirements: readonly ScopedRequirement[]): string[] {
+  const out: string[] = [
+    "",
+    CODE_LINKS_APPENDIX_HEADING,
+    "",
+    "For the developers who build and test these requirements: where each one is recorded in the code. The requirements above do not depend on it.",
+  ];
+  requirements.forEach((r, i) => {
+    out.push("", `**R${i + 1}. ${cell(r.title)}**`, "", ...codeLinkLines(r));
+  });
   return out;
 }
 
@@ -568,6 +592,7 @@ export function renderRequirementsDocument(
   });
   out.push("", "## Requirements");
   requirements.forEach((r, i) => out.push("", ...renderRequirementEntry(r, i + 1)));
+  out.push(...codeLinksAppendix(requirements));
   return `${out.join("\n")}\n`;
 }
 

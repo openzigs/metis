@@ -81,8 +81,8 @@ export async function loadApprovedRequirements(
 
 /**
  * #1230 — what of each approved requirement the section depends on: exactly
- * the stored fields it renders (`renderRequirementEntry` with `showId` and
- * `codeLinks: false`), in order. Not the write bookkeeping (`version`,
+ * the stored fields it renders (`renderRequirementEntry` with `showId`, which
+ * renders no code links), in order. Not the write bookkeeping (`version`,
  * `updatedAt`), and not the code links (`codeMappings`, `implementations`),
  * which the section does not show: re-scoring a mapping or linking a PR
  * changes nothing a reader sees, so it neither makes the section `changed` for
@@ -194,7 +194,7 @@ export function renderApprovedRequirementsSection(
   const scoped = options.scoped === true;
   const head = `## ${APPROVED_REQUIREMENTS_HEADING}\n\n${leadIn(total, scoped)}`;
   const entries = requirements.map((r, i) =>
-    renderRequirementEntry(r, i + 1, { showId: true, codeLinks: false }).join("\n"),
+    renderRequirementEntry(r, i + 1, { showId: true }).join("\n"),
   );
   const assemble = (listed: number, pointer: boolean): string =>
     [

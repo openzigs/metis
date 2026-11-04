@@ -7,18 +7,23 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import type { GapReport, CodeCitation } from "@metis/shared";
 
-const { analysisFindFirst, requirementFindMany } = vi.hoisted(() => ({
+const { analysisFindFirst, analysisFindMany, requirementFindMany } = vi.hoisted(() => ({
   analysisFindFirst: vi.fn(),
+  analysisFindMany: vi.fn(),
   requirementFindMany: vi.fn(),
 }));
 vi.mock("../prisma.js", () => ({
   prisma: {
-    analysis: { findFirst: analysisFindFirst },
+    analysis: { findFirst: analysisFindFirst, findMany: analysisFindMany },
     requirement: { findMany: requirementFindMany },
   },
 }));
 
-import { getRequirementDiff } from "./requirement-diff-service.js";
+import {
+  getRequirementDiff,
+  isImportPseudoRun,
+  PREVIOUS_RUN_SCAN_LIMIT,
+} from "./requirement-diff-service.js";
 import type {
   RequirementDiffAnalysisMeta,
   RequirementDiffDeps,
@@ -190,14 +195,17 @@ describe("getRequirementDiff", () => {
 
   it("resolves through the default prisma-backed loaders when no deps are injected", async () => {
     // head lookup, previous-run lookup, then base lookup (explicit path not taken).
-    analysisFindFirst
-      .mockResolvedValueOnce({
-        id: "an-head",
-        status: "completed",
-        startedAt: new Date("2026-07-10T00:00:00Z"),
-      })
-      // findPreviousAnalysisId
-      .mockResolvedValueOnce({ id: "an-base" });
+    analysisFindFirst.mockResolvedValueOnce({
+      id: "an-head",
+      status: "completed",
+      startedAt: new Date("2026-07-10T00:00:00Z"),
+    });
+    // findPreviousAnalysisId — #1580: the newest earlier run is an import
+    // pseudo-run, so the one before it is the base.
+    analysisFindMany.mockResolvedValueOnce([
+      { id: "an-import", metadata: JSON.stringify({ kind: "import", source: "github" }) },
+      { id: "an-base", metadata: JSON.stringify({ personas: ["analyst"] }) },
+    ]);
     requirementFindMany.mockImplementation(async ({ where }: { where: { analysisId: string } }) => {
       if (where.analysisId === "an-head") {
         return [
@@ -236,7 +244,7 @@ describe("getRequirementDiff", () => {
     expect(diff!.summary.modified).toBe(1);
     expect(diff!.entries[0]!.current!.priority).toBe("medium");
     // Default findPrevious was invoked with a project-scoped, completed filter.
-    expect(analysisFindFirst).toHaveBeenNthCalledWith(2, {
+    expect(analysisFindMany).toHaveBeenCalledWith({
       where: {
         projectId: "proj-1",
         deletedAt: null,
@@ -244,8 +252,61 @@ describe("getRequirementDiff", () => {
         id: { not: "an-head" },
         startedAt: { lt: new Date("2026-07-10T00:00:00Z") },
       },
-      orderBy: { startedAt: "desc" },
-      select: { id: true },
+      orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+      take: PREVIOUS_RUN_SCAN_LIMIT,
+      select: { id: true, metadata: true },
     });
+  });
+
+  it("#1580 — gives an empty diff when every earlier run is an import pseudo-run", async () => {
+    analysisFindFirst.mockResolvedValueOnce({
+      id: "an-head",
+      status: "completed",
+      startedAt: new Date("2026-07-10T00:00:00Z"),
+    });
+    analysisFindMany.mockResolvedValueOnce([
+      { id: "an-import", metadata: JSON.stringify({ kind: "import", source: "github" }) },
+    ]);
+
+    const diff = await getRequirementDiff(
+      { projectId: "proj-1", headAnalysisId: "an-head" },
+      { loadGapReport: vi.fn().mockResolvedValue(null) },
+    );
+
+    expect(diff!.baseAnalysisId).toBeNull();
+    expect(diff!.entries).toEqual([]);
+    expect(requirementFindMany).not.toHaveBeenCalled();
+  });
+
+  it("#1580 — an explicit base may still name an import pseudo-run", async () => {
+    const deps: RequirementDiffDeps = {
+      loadAnalysisMeta: vi
+        .fn()
+        .mockResolvedValueOnce(meta("an-head", "2026-07-10T00:00:00Z"))
+        .mockResolvedValueOnce(meta("an-import", "2026-07-01T00:00:00Z")),
+      findPreviousAnalysisId: vi.fn(),
+      loadRequirements: vi.fn().mockResolvedValue([]),
+      loadGapReport: vi.fn().mockResolvedValue(null),
+    };
+    const diff = await getRequirementDiff(
+      { projectId: "proj-1", headAnalysisId: "an-head", baseAnalysisId: "an-import" },
+      deps,
+    );
+    expect(diff!.baseAnalysisId).toBe("an-import");
+    expect(deps.findPreviousAnalysisId).not.toHaveBeenCalled();
+  });
+});
+
+describe("isImportPseudoRun (#1580)", () => {
+  it.each([
+    [JSON.stringify({ kind: "import", source: "github", label: "x" }), true],
+    [JSON.stringify({ kind: "analysis" }), false],
+    [JSON.stringify({ sourceItems: [{ kind: "import" }] }), false],
+    ["not json", false],
+    ["null", false],
+    [null, false],
+    [undefined, false],
+  ])("%s → %s", (metadata, expected) => {
+    expect(isImportPseudoRun(metadata)).toBe(expected);
   });
 });

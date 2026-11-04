@@ -4,7 +4,7 @@
  * and function coverage toward the 80 % gate.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { makeWrapper } from "./test-utils";
 
@@ -45,6 +45,7 @@ vi.mock("@/lib/connectors-api", () => ({
     test: vi.fn(),
     ingest: vi.fn(),
     query: vi.fn(),
+    identities: vi.fn(),
   },
   suggestedConnectorsApi: {
     list: vi.fn(),
@@ -89,6 +90,7 @@ const dbRemove = dbConnectorsApi.remove as unknown as ReturnType<typeof vi.fn>;
 const dbTest = dbConnectorsApi.test as unknown as ReturnType<typeof vi.fn>;
 const dbIngest = dbConnectorsApi.ingest as unknown as ReturnType<typeof vi.fn>;
 const dbQuery = dbConnectorsApi.query as unknown as ReturnType<typeof vi.fn>;
+const dbIdentities = dbConnectorsApi.identities as unknown as ReturnType<typeof vi.fn>;
 const updateAllowScan = projectsApi.updateAllowCredentialScan as unknown as ReturnType<
   typeof vi.fn
 >;
@@ -116,6 +118,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   repoList.mockResolvedValue([]);
   dbList.mockResolvedValue([]);
+  dbIdentities.mockResolvedValue([]);
   suggestedList.mockResolvedValue({ count: 0, suggestions: [] });
   projectGet.mockResolvedValue({ id: "proj-1", allowCredentialScan: false });
 });
@@ -239,18 +242,53 @@ describe("ConnectionsPage — SQL query runner", () => {
     await waitFor(() => expect(screen.queryByLabelText(/Read-only SQL/i)).not.toBeInTheDocument());
   });
 
-  it("calls dbQuery and shows result", async () => {
-    dbQuery.mockResolvedValueOnce([{ id: 1 }]);
+  it("#1580 — calls dbQuery and shows the rows as a table, not raw JSON", async () => {
+    dbQuery.mockResolvedValueOnce({
+      columns: ["id", "title", "status"],
+      rows: [
+        { id: 1, title: "First entry", status: "unread" },
+        { id: 2, title: "Second entry", status: null },
+      ],
+      rowCount: 2,
+      truncated: false,
+      durationMs: 16,
+    });
     dbList.mockResolvedValue([makeDb({ id: "d1" })]);
     renderPage();
     await waitFor(() => expect(screen.getByText("Prod DB")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /^Query$/ }));
     await waitFor(() => expect(screen.getByLabelText(/Read-only SQL/i)).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /^Run$/ }));
-    await waitFor(() =>
-      // JSON.stringify renders with spaces: {\n  "id": 1\n}
-      expect(screen.queryAllByText(/"id"/i).length).toBeGreaterThan(0),
-    );
+    const table = await screen.findByRole("table");
+    expect(
+      within(table)
+        .getAllByRole("columnheader")
+        .map((h) => h.textContent),
+    ).toEqual(["id", "title", "status"]);
+    const rows = within(table).getAllByRole("row");
+    expect(
+      within(rows[1]!)
+        .getAllByRole("cell")
+        .map((c) => c.textContent),
+    ).toEqual(["1", "First entry", "unread"]);
+    expect(
+      within(rows[2]!)
+        .getAllByRole("cell")
+        .map((c) => c.textContent),
+    ).toEqual(["2", "Second entry", "NULL"]);
+    expect(screen.getByTestId("db-query-summary")).toHaveTextContent("2 rows in 16 ms");
+    expect(screen.queryByText(/"columns"/)).not.toBeInTheDocument();
+  });
+
+  it("#1580 — refreshes the identity panel when a connector is added", async () => {
+    dbCreate.mockResolvedValueOnce(makeDb({ id: "d-new" }));
+    renderPage();
+    await waitFor(() => expect(dbIdentities).toHaveBeenCalledTimes(1));
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText(/^Label$/i, { selector: "#db-label" }), "Miniflux");
+    await user.click(screen.getByRole("button", { name: /Add database connector/i }));
+    await waitFor(() => expect(dbCreate).toHaveBeenCalled());
+    await waitFor(() => expect(dbIdentities).toHaveBeenCalledTimes(2));
   });
 
   it("shows query error on failure", async () => {

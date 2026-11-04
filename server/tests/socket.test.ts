@@ -692,7 +692,13 @@ describe("Socket.IO server", () => {
       "Reindexed 4 of 4 chunks.",
     );
 
-    const replayed = new Promise<{ status: string; message?: string; jobId: string }>((resolve) => {
+    const replayed = new Promise<{
+      status: string;
+      message?: string;
+      jobId: string;
+      ts: number;
+      replayAgeMs?: number;
+    }>((resolve) => {
       socket.on("job:lifecycle", resolve);
     });
     socket.emit("subscribe:job", { jobId: "late-job" });
@@ -700,6 +706,45 @@ describe("Socket.IO server", () => {
     expect(event.jobId).toBe("late-job");
     expect(event.status).toBe("completed");
     expect(event.message).toBe("Reindexed 4 of 4 chunks.");
+    // #1580 — a replay says how old it is, so a client can skip a stale toast.
+    expect(typeof event.replayAgeMs).toBe("number");
+    expect(event.replayAgeMs).toBeGreaterThanOrEqual(0);
+    expect(event.replayAgeMs).toBeLessThan(60_000);
+
+    socket.close();
+  });
+
+  it("#1580 — a replay of an event from hours ago carries its age", async () => {
+    _resetJobLifecycleMemory();
+    const { accessToken } = issueTokens({
+      userId: "u1",
+      username: "alice",
+      role: "developer",
+      permissions: ["analysis.read"],
+    });
+    const socket = ioClient(`http://127.0.0.1:${port}`, {
+      auth: { token: accessToken },
+      transports: ["websocket"],
+      reconnection: false,
+      timeout: 1500,
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.on("auth:ok", () => resolve());
+      socket.on("connect_error", (err) => reject(err));
+    });
+
+    const threeHoursAgo = Date.now() - 3 * 60 * 60 * 1000;
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(threeHoursAgo);
+    createJobEventEmitter(io).completed("analysis", "old-run", "p1", "Analysis complete");
+    nowSpy.mockRestore();
+
+    const replayed = new Promise<{ jobId: string; replayAgeMs?: number }>((resolve) => {
+      socket.on("job:lifecycle", resolve);
+    });
+    socket.emit("subscribe:job", { jobId: "old-run" });
+    const event = await replayed;
+    expect(event.jobId).toBe("old-run");
+    expect(event.replayAgeMs).toBeGreaterThanOrEqual(3 * 60 * 60 * 1000);
 
     socket.close();
   });

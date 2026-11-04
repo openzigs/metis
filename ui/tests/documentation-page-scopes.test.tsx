@@ -31,6 +31,7 @@ vi.mock("@/lib/api-client", () => ({
 
 import { apiFetch } from "@/lib/api-client";
 import DocumentationPage from "@/app/(authed)/projects/[id]/documentation/page";
+import { formatRunTimestamp } from "@/lib/format-change-run-label";
 
 const mockApiFetch = vi.mocked(apiFetch);
 
@@ -572,6 +573,18 @@ describe("DocumentationPage — GenerateForm scope selection", () => {
       expect((screen.getByTestId("requirements-approved-only") as HTMLInputElement).checked).toBe(
         true,
       );
+    });
+
+    it("#1580 — names a run as the Analysis page does: its number and START time", async () => {
+      await chooseRequirementsScope();
+      const select = screen.getByTestId("analysis-run-select") as HTMLSelectElement;
+      const option = Array.from(select.options).find((o) => o.value === "run_done")!;
+      // Numbered over every run (the failed one is #2), as the Analysis page numbers them.
+      expect(option.textContent).toBe(
+        `Run #1 — ${formatRunTimestamp("2026-10-01T10:00:00Z")} · run_done`,
+      );
+      // Not the finish time, which no other page shows.
+      expect(option.textContent).not.toContain(formatRunTimestamp("2026-10-01T10:05:00Z"));
     });
 
     it("says the runs could not be loaded, not that there are none, when the query errors", async () => {

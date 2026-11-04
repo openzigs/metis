@@ -10,7 +10,7 @@
  *
  * Base resolution: an explicit `baseAnalysisId` wins; otherwise the project's most
  * recent completed run that started before the head run is used (the natural
- * "previous run" default). When no base can be resolved, the aggregator returns an
+ * "previous run" default), skipping import pseudo-runs (#1580). When no base can be resolved, the aggregator returns an
  * empty diff — the route surfaces that as an honest empty state, never a 404.
  *
  * Ownership: the ROUTE enforces that both head and (when supplied) base analyses
@@ -70,12 +70,39 @@ async function defaultLoadAnalysisMeta(
   return row ? { id: row.id, status: row.status, startedAt: row.startedAt } : null;
 }
 
+/**
+ * #1580 — how many earlier completed runs the default base resolution reads
+ * before giving up. Import pseudo-runs are skipped in code (their marker lives
+ * in the JSON `metadata` string), so the read is bounded rather than unbounded.
+ */
+export const PREVIOUS_RUN_SCAN_LIMIT = 50;
+
+/**
+ * #1580 — an import pseudo-run (`ImportService` stores `{ kind: "import" }` in
+ * its metadata) is a copy of the tracker's issues, not an analysis. As the
+ * automatic base it made every imported issue read as *Modified* (266 in #706
+ * run 10), so the default base skips it. An explicit `?base=` may still name one.
+ */
+export function isImportPseudoRun(metadata: string | null | undefined): boolean {
+  if (!metadata) return false;
+  try {
+    const parsed: unknown = JSON.parse(metadata);
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      (parsed as { kind?: unknown }).kind === "import"
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function defaultFindPreviousAnalysisId(
   projectId: string,
   headAnalysisId: string,
   before: Date,
 ): Promise<string | null> {
-  const row = await prisma.analysis.findFirst({
+  const rows = await prisma.analysis.findMany({
     where: {
       projectId,
       deletedAt: null,
@@ -83,10 +110,11 @@ async function defaultFindPreviousAnalysisId(
       id: { not: headAnalysisId },
       startedAt: { lt: before },
     },
-    orderBy: { startedAt: "desc" },
-    select: { id: true },
+    orderBy: [{ startedAt: "desc" }, { id: "desc" }],
+    take: PREVIOUS_RUN_SCAN_LIMIT,
+    select: { id: true, metadata: true },
   });
-  return row?.id ?? null;
+  return rows.find((row) => !isImportPseudoRun(row.metadata))?.id ?? null;
 }
 
 async function defaultLoadRequirements(

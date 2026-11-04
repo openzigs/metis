@@ -990,7 +990,9 @@ Database schema generation retains its own path. So does the `requirements` scop
 `scopeFilter` names an `analysisId`, `requirementIds` or a `reviewRequestId`
 (optionally `approvedOnly`), every read is filtered on `projectId`, and the document
 is rendered from the stored requirements and their code mappings and implementations
-without a model call. Its manifest records pipeline `requirements` and a
+without a model call. #1580 — the requirements carry no file paths: their code links
+close the document in `## Appendix: code links`, under each requirement's number and
+title, so the part a business reader signs off names no code. Its manifest records pipeline `requirements` and a
 `requirements` source fingerprint over the selected rows. Evidence/configuration changes
 are noticed on the next successful ingest, not by a separate watcher.
 

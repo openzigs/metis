@@ -42,6 +42,19 @@ export const GENERIC_FAILURE_TOAST = "The operation failed. Please try again.";
  */
 const toastedJobIds = new Set<string>();
 
+/**
+ * #1580 — how old a REPLAYED terminal event may be and still toast. The server
+ * replays a job's last event to a socket that joins its room late; the replay
+ * exists for a job that finished inside the trigger's round-trip (seconds), so
+ * anything older is a finished job being reopened, not one the user just ran.
+ */
+export const STALE_REPLAY_TOAST_MS = 60_000;
+
+/** A server replay (`replayAgeMs` set) of an event older than {@link STALE_REPLAY_TOAST_MS}. */
+export function isStaleReplay(event: Pick<JobLifecycleEvent, "replayAgeMs">): boolean {
+  return typeof event.replayAgeMs === "number" && event.replayAgeMs > STALE_REPLAY_TOAST_MS;
+}
+
 /** A lifecycle phase that ends the job (drives the terminal toast). */
 export function isTerminalJobStatus(status: JobLifecycleEvent["status"]): boolean {
   return status === "completed" || status === "failed";
@@ -85,6 +98,11 @@ export function fireTerminalToast(event: JobLifecycleEvent | null | undefined): 
   if (!isTerminalJobStatus(event.status)) return false;
   if (toastedJobIds.has(event.jobId)) return false;
   toastedJobIds.add(event.jobId);
+  // #1580 — a replay of an old terminal event is state, not news: a deep link
+  // into a run that finished hours ago toasted "Analysis complete — 13
+  // requirement(s) awaiting approval" long after the checkpoint was resolved.
+  // The job is still marked, so a later re-delivery stays quiet too.
+  if (isStaleReplay(event)) return false;
   const { kind, text } = terminalToastText(event);
   if (kind === "success") toast.success(text);
   else if (kind === "warning") toast.warning(text);

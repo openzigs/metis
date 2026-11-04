@@ -65,6 +65,8 @@ const mockPrisma = {
   requirementVersion: { findMany: vi.fn(async () => VERSIONS) },
   reviewRequestItem: { findMany: vi.fn(async () => []) },
   project: { findUnique: vi.fn(async () => ({ requireApprovedReview: false })) },
+  // #1580 — GET /history names each version's actor.
+  user: { findMany: vi.fn(async () => []) },
   baseline: {
     findUnique: vi.fn(async (args: { where: { id: string } }) => ({
       id: args.where.id,

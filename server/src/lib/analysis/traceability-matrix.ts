@@ -88,6 +88,9 @@ function addCodeLocation(
   codeByKey: Map<string, TraceabilityCodeLocation>,
   loc: TraceabilityCodeLocation,
 ): void {
+  // #1580 — a test file is not code the requirement touches: the Tests column
+  // lists tests (#815). A finding citing `finder_test.go` put it under Code.
+  if (isTestFilePath(loc.filePath)) return;
   const key = codeLocationKey(loc);
   const kept = codeByKey.get(key);
   if (!kept) {

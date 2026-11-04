@@ -104,6 +104,21 @@ async function loadVersionRows(requirementId: string): Promise<VersionRow[]> {
   })) as unknown as VersionRow[];
 }
 
+/**
+ * #1580 — the display name of each version's actor, so History reads "Admin"
+ * rather than a raw user id. One query for the page's distinct actors; an id
+ * with no user row (a deleted account) maps to nothing and the UI falls back.
+ */
+async function loadActorNames(entries: readonly HistoryEntry[]): Promise<Map<string, string>> {
+  const ids = [...new Set(entries.flatMap((e) => (e.actorId ? [e.actorId] : [])))];
+  if (ids.length === 0) return new Map();
+  const users = await prisma.user.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, displayName: true, username: true },
+  });
+  return new Map(users.map((u) => [u.id, u.displayName.trim() || u.username]));
+}
+
 export function requirementHistoryRouter(): Router {
   const r = Router({ mergeParams: true });
 
@@ -166,7 +181,12 @@ export function requirementHistoryRouter(): Router {
       const entries = buildHistoryEntries(pickTracked(reqRow), rows);
       const total = entries.length;
       const start = (page - 1) * pageSize;
-      const versions = entries.slice(start, start + pageSize);
+      const pageEntries = entries.slice(start, start + pageSize);
+      const actorNames = await loadActorNames(pageEntries);
+      const versions = pageEntries.map((entry) => ({
+        ...entry,
+        actorName: entry.actorId ? (actorNames.get(entry.actorId) ?? null) : null,
+      }));
 
       res.json({
         success: true,

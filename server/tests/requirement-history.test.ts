@@ -25,6 +25,12 @@ const mockPrisma = {
   },
   // #619 — approval gate off by default; gated-export cases flip this.
   project: { findUnique: vi.fn(async () => ({ requireApprovedReview: false })) },
+  // #1580 — History names each version's actor.
+  user: {
+    findMany: vi.fn(
+      async (): Promise<Array<{ id: string; displayName: string; username: string }>> => [],
+    ),
+  },
   $transaction: vi.fn(async (cb: (tx: unknown) => unknown) => cb(mockPrisma)),
 };
 
@@ -173,6 +179,54 @@ describe("requirement history router", () => {
       expect(second.body.data.versions[0].version).toBe(1);
       expect(second.body.data.versions[0].snapshot.title).toBe("Title v2");
       expect(second.body.data.versions[0].snapshot.body).toBe("Body C");
+    });
+
+    it("#1580 — names each version's actor, looking up only that page's actors", async () => {
+      mockPrisma.requirement.findUnique.mockResolvedValue(CURRENT);
+      mockPrisma.requirementVersion.findMany.mockResolvedValue([
+        ...VERSION_ROWS.slice(0, 2),
+        { ...VERSION_ROWS[2]!, actorId: null },
+      ]);
+      mockPrisma.user.findMany.mockResolvedValue([
+        { id: "user-9", displayName: "Priya Shah", username: "priya" },
+        { id: "user-8", displayName: "  ", username: "sam" },
+      ]);
+
+      const res = await request(app).get("/requirements/req-1/history?page=1&pageSize=3");
+
+      expect(res.status).toBe(200);
+      expect(mockPrisma.user.findMany).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.user.findMany).toHaveBeenCalledWith({
+        where: { id: { in: ["user-9", "user-8"] } },
+        select: { id: true, displayName: true, username: true },
+      });
+      const versions = res.body.data.versions as Array<{
+        actorId: string | null;
+        actorName: string | null;
+      }>;
+      expect(versions.map((v) => [v.actorId, v.actorName])).toEqual([
+        ["user-9", "Priya Shah"],
+        // A blank display name falls back to the username.
+        ["user-8", "sam"],
+        // A write METIS made itself has no actor to look up.
+        [null, null],
+      ]);
+    });
+
+    it("#1580 — leaves the name null for an actor with no user row, and skips the lookup when no version has an actor", async () => {
+      mockPrisma.requirement.findUnique.mockResolvedValue(CURRENT);
+      mockPrisma.requirementVersion.findMany.mockResolvedValue([VERSION_ROWS[0]!]);
+      mockPrisma.user.findMany.mockResolvedValue([]);
+      const res = await request(app).get("/requirements/req-1/history");
+      expect(res.status).toBe(200);
+      expect(res.body.data.versions[0].actorName).toBeNull();
+
+      mockPrisma.user.findMany.mockClear();
+      mockPrisma.requirementVersion.findMany.mockResolvedValue([
+        { ...VERSION_ROWS[0]!, actorId: null },
+      ]);
+      await request(app).get("/requirements/req-1/history");
+      expect(mockPrisma.user.findMany).not.toHaveBeenCalled();
     });
 
     // #1130 — a review pinned at a version with no row still needs the text.

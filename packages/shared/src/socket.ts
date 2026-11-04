@@ -183,6 +183,13 @@ export interface JobLifecycleEvent {
    */
   failureCount?: number;
   ts: number;
+  /**
+   * #1580 — set only when the server REPLAYS a job's last event to a socket that
+   * joined the job room after it was broadcast: how long ago (server clock, ms)
+   * the event happened. A client toasts a replayed terminal event only while it
+   * is fresh — a run that finished hours ago is state, not news.
+   */
+  replayAgeMs?: number;
 }
 
 /**

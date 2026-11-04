@@ -22,6 +22,8 @@ import {
   claimTerminalToast,
   terminalToastText,
   isTerminalJobStatus,
+  isStaleReplay,
+  STALE_REPLAY_TOAST_MS,
   GENERIC_SUCCESS_TOAST,
   GENERIC_FAILURE_TOAST,
   __resetTerminalToastsForTests,
@@ -184,5 +186,46 @@ describe("claimTerminalToast", () => {
     expect(claimTerminalToast("claimed-3")).toBe(false);
     expect(claimTerminalToast(null)).toBe(false);
     expect(claimTerminalToast(undefined)).toBe(false);
+  });
+});
+
+describe("stale replays (#1580)", () => {
+  it("does not toast a replayed completion from hours ago", () => {
+    const old = lifecycle({
+      kind: "analysis",
+      jobId: "run-old",
+      message: "Analysis complete — 13 requirement(s) awaiting approval before they are saved",
+      replayAgeMs: 3 * 60 * 60 * 1000,
+    });
+    expect(fireTerminalToast(old)).toBe(false);
+    expect(toast.success).not.toHaveBeenCalled();
+    // A later re-delivery of the same job stays quiet as well.
+    expect(fireTerminalToast({ ...old, replayAgeMs: undefined })).toBe(false);
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("does not toast a replayed failure from minutes ago either", () => {
+    expect(
+      fireTerminalToast(
+        lifecycle({ jobId: "run-failed", status: "failed", error: "x", replayAgeMs: 120_000 }),
+      ),
+    ).toBe(false);
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("still toasts a fresh replay: a job that finished inside the trigger's round-trip", () => {
+    expect(
+      fireTerminalToast(
+        lifecycle({ jobId: "run-fresh", message: "Reindexed 4 of 4 chunks.", replayAgeMs: 800 }),
+      ),
+    ).toBe(true);
+    expect(toast.success).toHaveBeenCalledWith("Reindexed 4 of 4 chunks.");
+  });
+
+  it("toasts a replay exactly at the limit, not one past it", () => {
+    expect(isStaleReplay({ replayAgeMs: STALE_REPLAY_TOAST_MS })).toBe(false);
+    expect(isStaleReplay({ replayAgeMs: STALE_REPLAY_TOAST_MS + 1 })).toBe(true);
+    // A live broadcast carries no age and is never stale.
+    expect(isStaleReplay({})).toBe(false);
   });
 });

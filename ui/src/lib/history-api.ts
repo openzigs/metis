@@ -20,6 +20,8 @@ export interface RequirementHistoryEntry {
   version: number;
   changedFields: ChangedFields;
   actorId: string | null;
+  /** #1580 — the actor's display name; null for a METIS write or an unknown user. */
+  actorName?: string | null;
   reason: string | null;
   createdAt: string;
   snapshot: RequirementVersionSnapshot;

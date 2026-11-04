@@ -17,6 +17,7 @@ import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api-client";
 import { analysisApi } from "@/lib/analysis-api";
+import { formatChangeRunLabels } from "@/lib/format-change-run-label";
 import { useAppMutation } from "@/lib/use-app-mutation";
 import {
   useProjectJobEvents,
@@ -933,6 +934,11 @@ function GenerateForm({
   });
   const completedAnalyses =
     analysesQuery.data?.items.filter((analysis) => analysis.status === "completed") ?? [];
+  // #1580 — the run is named as the Analysis page names it ("Run #N — <start>"),
+  // numbered over every run so the numbers match, and by its START time, as the
+  // BRD's introduction names it. It was labelled by its finish time, which no
+  // other page showed.
+  const runLabels = formatChangeRunLabels(analysesQuery.data?.items ?? []).byId;
 
   const handleDocTypeChange = (next: string): void => {
     setDocType(next);
@@ -1122,12 +1128,14 @@ function GenerateForm({
             <option value="">
               {analysesQuery.isLoading ? "Loading…" : "Select an analysis run…"}
             </option>
-            {completedAnalyses.map((analysis) => (
-              <option key={analysis.id} value={analysis.id}>
-                {new Date(analysis.completedAt ?? analysis.startedAt).toLocaleString()} (
-                {analysis.id.slice(-6)})
-              </option>
-            ))}
+            {completedAnalyses.map((analysis) => {
+              const label = runLabels.get(analysis.id);
+              return (
+                <option key={analysis.id} value={analysis.id}>
+                  {label ? `${label.primary} · ${label.shortId}` : analysis.id}
+                </option>
+              );
+            })}
           </select>
           {analysesQuery.isError && (
             <p className="text-xs text-destructive" role="alert" data-testid="analyses-load-error">

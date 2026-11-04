@@ -35,6 +35,8 @@ import { useDeepIngest } from "@/hooks/use-deep-ingest";
 import { DeepIngestOutcomeBanner } from "@/components/connectors/deep-ingest-outcome-banner";
 import { DbConnectorWizard } from "@/components/connectors/db-connector-wizard";
 import { DatabaseResourceManager } from "@/components/connectors/database-resource-manager";
+import { DbQueryResultTable } from "@/components/connectors/db-query-result-table";
+import type { DbQueryResult } from "@metis/shared";
 import { RepoWebhookSecret } from "@/components/connectors/repo-webhook-secret";
 import { RebuildCacheButton } from "@/components/projects/rebuild-cache-button";
 import { PageHeader } from "@/components/ui/page-header";
@@ -533,7 +535,7 @@ export default function ConnectionsPage() {
   // ── Ad-hoc query ───────────────────────────────────────────────────────
   const [queryDbId, setQueryDbId] = useState<string>("");
   const [sql, setSql] = useState<string>("SELECT 1");
-  const [queryResult, setQueryResult] = useState<unknown>(null);
+  const [queryResult, setQueryResult] = useState<DbQueryResult | null>(null);
   const [queryError, setQueryError] = useState<string | null>(null);
   const runQuery = useMutation({
     mutationFn: () => dbConnectorsApi.query(projectId, queryDbId, sql),
@@ -1360,11 +1362,7 @@ export default function ConnectionsPage() {
               </Button>
               {queryError ? <span className="text-sm text-destructive">{queryError}</span> : null}
             </div>
-            {queryResult ? (
-              <pre className="max-h-64 overflow-auto rounded bg-muted p-2 text-xs">
-                {JSON.stringify(queryResult, null, 2)}
-              </pre>
-            ) : null}
+            {queryResult ? <DbQueryResultTable result={queryResult} /> : null}
           </Card>
         ) : null}
       </section>

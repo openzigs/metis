@@ -116,6 +116,38 @@ describe("RequirementHistoryTab", () => {
     expect(screen.getByText(/current v2/)).toBeInTheDocument();
   });
 
+  it("#1580 — reloads when the requirement's version moves on (Accept elsewhere on the page)", async () => {
+    list.mockResolvedValueOnce(page([], 0, 1));
+    const { rerender } = render(<RequirementHistoryTab requirementId="req-1" version={1} />);
+    await waitFor(() => expect(screen.getByText(/current v1/)).toBeInTheDocument());
+    expect(list).toHaveBeenCalledTimes(1);
+
+    // The same version again (an unrelated re-render) does not refetch.
+    rerender(<RequirementHistoryTab requirementId="req-1" version={1} />);
+    expect(list).toHaveBeenCalledTimes(1);
+
+    list.mockResolvedValueOnce(page([entry(2)]));
+    rerender(<RequirementHistoryTab requirementId="req-1" version={2} />);
+    await waitFor(() => expect(screen.getByText(/current v2/)).toBeInTheDocument());
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it("#1580 — names the actor, falling back to the id and then to System", async () => {
+    list.mockResolvedValue(
+      page([
+        entry(3, { actorId: "cmvuabc123", actorName: "Priya Shah" }),
+        entry(2, { actorId: "cmvudef456", actorName: null }),
+        entry(1, { actorId: null }),
+      ]),
+    );
+    render(<RequirementHistoryTab requirementId="req-1" />);
+    const v3 = await screen.findByRole("button", { name: /Version 3/ });
+    expect(v3).toHaveTextContent("· Priya Shah");
+    expect(v3).not.toHaveTextContent("cmvuabc123");
+    expect(screen.getByRole("button", { name: /Version 2/ })).toHaveTextContent("· cmvudef456");
+    expect(screen.getByRole("button", { name: /Version 1/ })).toHaveTextContent("· System");
+  });
+
   it("shows an empty state when there is no history", async () => {
     list.mockResolvedValue(page([], 0, 0));
     render(<RequirementHistoryTab requirementId="req-1" />);
