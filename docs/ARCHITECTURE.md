@@ -3093,7 +3093,9 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   of roughly 16 to 22 points is significant (#1770). The fixture set's Recall@10 is
   1.00 by construction (its graph holds ten files), and its report says so. One
   dollar cap covers the whole invocation, table-precision guard included, and a
-  model call that reports no usage counts as unpriced and stops the run.
+  model call that reports no usage counts as unpriced and stops the run. A guard
+  reading that costs nothing (A0's memoised one, or an arm with no guard run) is
+  not held under the cap, so it cannot stop the run (#1779).
 
   **The cut sizes are provisional.** `MAX_EDIT_FILES = 5`, `MIN_FILE_SHARE = 0.5`,
   `FILE_HIT_DECAY = 0.5`, `EDIT_POOL = 60`, `MAX_SYMBOLS_PER_EDIT_FILE = 4` and

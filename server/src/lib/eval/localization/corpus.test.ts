@@ -288,6 +288,12 @@ describe("resolveSymbolsPath (#1770)", () => {
     );
   });
 
+  it("keeps a sibling whose name only starts with two dots (#1779)", () => {
+    expect(resolveSymbolsPath(dir, m("../..shared/symbols.json.gz"))).toBe(
+      path.join("/data", "corpus", "..shared", "symbols.json.gz"),
+    );
+  });
+
   it.each(["../../secrets.gz", "/etc/passwd", ".."])("refuses %j", (symbols) => {
     expect(() => resolveSymbolsPath(dir, m(symbols))).toThrow(/leaves the corpora root/);
   });

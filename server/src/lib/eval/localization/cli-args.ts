@@ -3,11 +3,17 @@
  * value that is not what the flag means is refused, never coerced into one.
  */
 
-/** The value after `--<name>`, or undefined when the flag is absent or bare. */
+/**
+ * The value after `--<name>`, or undefined when the flag is absent. A bare flag
+ * (`--runs` last, or followed by another flag) is refused rather than read as
+ * absent: it would silently fall back to the default (#1779).
+ */
 export function flagValue(argv: readonly string[], name: string): string | undefined {
   const i = argv.indexOf(`--${name}`);
-  const v = i >= 0 ? argv[i + 1] : undefined;
-  return v && !v.startsWith("--") ? v : undefined;
+  if (i < 0) return undefined;
+  const v = argv[i + 1];
+  if (v === undefined || v.startsWith("--")) throw new Error(`--${name} needs a value`);
+  return v;
 }
 
 /** A dollar amount: any finite number ≥ 0. */
