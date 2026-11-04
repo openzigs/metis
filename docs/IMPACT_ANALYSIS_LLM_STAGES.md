@@ -39,6 +39,7 @@ rather than a degraded mode.
 |---|---|---|---|---|---|
 | Code-symbol seeder/reranker (#931) | `traceability/requirement-code-mapping.ts` (`LlmCodeSymbolSearcher`) | `IMPACT_LLM_SEEDING` | **off** | the BM25 wide pool (union, never a replacement) | deterministic BM25 top-K |
 | Entity-seed recall union (#1002) | `traceability/requirement-entity-seeds.ts` | `IMPACT_LLM_ENTITY_SEEDS` | **off** | the project's code-graph entity vocabulary (exact name match) | base searcher unchanged |
+| Edit-candidate check (#1756) | `impact-analysis/edit-candidate-verifier.ts` | `IMPACT_LLM_EDIT_VERIFY` | **off** | integer index into the hybrid FILE pool (about 30 files: the deterministic edit candidates, then the next files of the same ranking); a promotion's line must fall inside a symbol of that file in the code graph, checked without a model. Additive only (the #931 rule below): it may append a verified file and mark a candidate doubtful, never remove, move or re-score one; a promoted file carries its own hybrid score. The pool (code identifiers and signatures, which can carry comments) is fenced as untrusted data like the requirement | deterministic edit candidates unchanged |
 | Table-relevance output filter (#936) | `impact-analysis/table-relevance-filter.ts` | `IMPACT_LLM_TABLE_FILTER` | **ON** (#1025) | integer index into the crossing's own candidate rows | unfiltered crossing |
 | Additive column DDL proposal (#1001) | `impact-analysis/additive-column-proposer.ts` | `IMPACT_LLM_ADDITIVE_DDL` | **ON** (#1025) | integer index into the crossing's own tables + a closed type allowlist; a column already in the live schema or the code graph is dropped (#1003). Since #791 it is shown the lineage writers and answers with covering writers, a justification and a `coveredBy` per proposal; a deterministic gate (`column-proposal-gate.ts`) then decides. In a **covered** request (bounded by an age or a date, with a lineage writer that filters on a time column) no field a model chose can make a column core: every proposal is optional or not proposed, and core comes only from what the user wrote in the request (an `ALTER TABLE`, or an add-a-column sentence the #923 fast path reads). Coverage is decided on the writers of every table the crossing reached, looked up before the #936 table filter is applied, so that filter's answer does not change it; the #1029 judge runs only when the proposer does not. The one limit: with `IMPACT_LLM_SEEDING` / `IMPACT_LLM_ENTITY_SEEDS` on, a model shapes the seeds, and so which tables the crossing reaches. The cost: a genuinely new column in a covered request shows as optional. In an uncovered request the gate does not rule: a proposal is core and marked `unchecked` with the reason, except one the proposer itself labels `user-preference`, which is optional (a demotion only). The write-path block is repository text: fenced as untrusted like the requirement, every field capped | no proposals appended |
 | Clause-vs-impact reconciliation (#1005) | `impact-analysis/clause-coverage-reconciler.ts` | `IMPACT_LLM_CLAUSE_RECONCILE` | **ON** (#1025) | integer index into the project's **unsurfaced** tables | no advisories |
@@ -112,6 +113,19 @@ additive union, over an LLM at the SEED.** #936 (prune the output) and #1002
 (union that preserves the base scores) both follow it. Any future seed-side lever
 must leave the base candidates' original scores untouched — changing the max
 silently re-normalises every deterministic confidence.
+
+**#1756 follows this rule.** The edit-candidate check judges the hybrid FILE pool
+(not #931's BM25 pool) and is additive by construction: `applyEditVerification`
+returns every deterministic edit candidate as the same object, in the same place,
+with the same score, whatever the model answers (an empty answer, garbage, every
+file marked doubtful, or an injected "promote everything"). A promotion is kept
+only when its line is inside a symbol of that file in the code graph, and its
+symbol carries the file's best HYBRID score, never a model score; a dropped
+promotion is counted in the run summary. A doubtful candidate stays listed, with
+the model's reason next to its base score in `seedEvidence`. Off by default until
+`pnpm eval:localization --arms A0,A4` shows a held-out gain: a statistically
+significant Recall@5 gain over A0, edit precision no lower, table precision no
+more than 0.03 lower, at no more than about $0.25 per requirement.
 
 ## Two measurement lessons that invalidated earlier numbers
 

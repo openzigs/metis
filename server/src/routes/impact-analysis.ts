@@ -32,7 +32,15 @@ import {
   listMemberAccessibleProjectIds,
   type SchedulerActor,
 } from "../lib/scheduler/project-access.js";
-import { impactStoredLinkSeedsEnabled } from "../lib/impact-analysis/change-seeds.js";
+import {
+  impactStoredLinkSeedsEnabled,
+  prismaFileSymbolLoader,
+} from "../lib/impact-analysis/change-seeds.js";
+import {
+  graphLineCheck,
+  impactLlmEditVerifyEnabled,
+  verifyEditCandidates,
+} from "../lib/impact-analysis/edit-candidate-verifier.js";
 import {
   parseRequirementIds,
   triggerImpactAnalysis,
@@ -209,6 +217,34 @@ function llmSeedingMapRequirement(
     unionOptions: { onUnreadable: () => runtime.markUnreadable("entity-seeds") },
   });
   return (req, projectId) => mapRequirementToCode(req, projectId, {}, { searcher });
+}
+
+/**
+ * #1756 — flag-gated wiring for the ADDITIVE LLM edit-candidate check. When
+ * `IMPACT_LLM_EDIT_VERIFY` is on AND a live provider builds, return a verifier
+ * that shows the model the hybrid file pool and keeps only promotions whose line
+ * is inside a symbol of that file in the project's code graph. Off / no provider
+ * ⇒ `undefined`: the seeding returns no pool and nothing changes. The verifier
+ * never throws; an unread answer is reported on the run's notice (#1081), and a
+ * timeout by the runtime's deadline (#1024).
+ */
+function editCandidateVerifierDep(
+  runtime: ImpactLlmRuntime,
+): ImpactServiceDeps["editCandidateVerifier"] | undefined {
+  if (!impactLlmEditVerifyEnabled()) return undefined;
+  const provider = instrumentStage(runtime, "edit-verify", buildImpactStageProvider());
+  if (!provider) return undefined;
+  const loadFileSymbols = prismaFileSymbolLoader(prisma);
+  return async ({ requirementText, pool, projectId }) => {
+    const result = await verifyEditCandidates({
+      requirementText,
+      pool,
+      provider,
+      lineCheck: graphLineCheck(loadFileSymbols, projectId),
+    });
+    if (result.unreadable) runtime.markUnreadable("edit-verify");
+    return result;
+  };
 }
 
 /**
@@ -405,8 +441,11 @@ export function impactRunDeps(actorId: string, projectIds: readonly string[]): I
   const liveIndexIntrospectorFor = defaultLiveIndexIntrospectorFor(actorId);
   // #1754 — off by default; the key is absent when off, so the deps are unchanged.
   const storedLinkSeeds = impactStoredLinkSeedsEnabled();
+  // #1756 — likewise off by default.
+  const editCandidateVerifier = editCandidateVerifierDep(runtime);
   return {
     ...(storedLinkSeeds ? { storedLinkSeeds } : {}),
+    ...(editCandidateVerifier ? { editCandidateVerifier } : {}),
     ...(mapRequirement ? { mapRequirement } : {}),
     ...(tableRelevanceFilter ? { tableRelevanceFilter } : {}),
     ...(additiveColumnProposer ? { additiveColumnProposer } : {}),

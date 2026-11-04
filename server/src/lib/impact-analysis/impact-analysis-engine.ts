@@ -50,10 +50,13 @@ import {
   prismaStoredLinkDeps,
   prismaWriterIdLoader,
   resolveChangeSeeds,
+  VERIFY_POOL_FILES,
   type ChangeSeeds,
   type RetrievalMode,
+  type SeedPoolFile,
   type StoredLinkDeps,
 } from "./change-seeds.js";
+import { applyEditVerification, type EditVerification } from "./edit-candidate-verifier.js";
 import { requestGateText, shapeAwareChangeExtractor } from "./change-request.js";
 import { resolveStructuralTwins, type CalleeNameSource } from "./structural-twins.js";
 import {
@@ -215,6 +218,13 @@ type MapRequirementFn = (
 /** #1036 — seed one change into a project. See {@link resolveChangeSeeds}. */
 export type SeedChangeFn = (change: ChangedRequirement, projectId: string) => Promise<ChangeSeeds>;
 
+/** #1756 — the edit-candidate check over one change's file pool in one project. */
+export type EditCandidateVerifierFn = (input: {
+  requirementText: string;
+  pool: readonly SeedPoolFile[];
+  projectId: string;
+}) => Promise<EditVerification>;
+
 export interface ComputeImpactDeps {
   mapRequirement: MapRequirementFn;
   /**
@@ -224,6 +234,13 @@ export interface ComputeImpactDeps {
    * contract, `change-seeds.ts`).
    */
   seedChange?: SeedChangeFn;
+  /**
+   * #1756 — the ADDITIVE LLM edit-candidate check (`IMPACT_LLM_EDIT_VERIFY`),
+   * run on a split seeding's file pool. It may append verified promotions and
+   * mark candidates doubtful; it never removes or re-scores a deterministic
+   * seed. Must never throw (its own contract); guarded here too.
+   */
+  editCandidateVerifier?: EditCandidateVerifierFn;
   dataSourceFor: (projectId: string) => CodeGraphDataSource;
   maxDepth?: number;
   /** When set (and `includeSchemaImpact` is true), cross the blast radius into the schema graph. */
@@ -345,7 +362,23 @@ export async function computeProjectImpact(
   // quoted under "Alternatives considered" is not a request for that column.
   const gateText = requestGateText(change);
   if (deps.seedChange) {
-    const seeds = await deps.seedChange(change, projectId);
+    let seeds = await deps.seedChange(change, projectId);
+    // #1756 — the additive LLM check, over the file pool the seeding returned.
+    if (deps.editCandidateVerifier && seeds.filePool && seeds.filePool.length > 0) {
+      try {
+        const verification = await deps.editCandidateVerifier({
+          requirementText: gateText.ask,
+          pool: seeds.filePool,
+          projectId,
+        });
+        seeds = applyEditVerification(seeds, verification);
+      } catch (err) {
+        log.warn("edit-candidate check failed; deterministic seeds kept", {
+          projectId,
+          error: String(err),
+        });
+      }
+    }
     matches = seeds.editCandidates;
     related = seeds.related;
     schemaSeeds = seeds.schemaSeeds;
@@ -1115,6 +1148,12 @@ export interface ImpactServiceDeps {
    * is used as-is.
    */
   storedLinkSeeds?: boolean;
+  /**
+   * #1756 — the LLM edit-candidate check (`IMPACT_LLM_EDIT_VERIFY`, wired by the
+   * route through the impact LLM runtime). When set, the default seeding also
+   * returns its file pool ({@link VERIFY_POOL_FILES} files).
+   */
+  editCandidateVerifier?: EditCandidateVerifierFn;
   extractor?: ChangeExtractor;
   mapRequirement?: MapRequirementFn;
   /**
@@ -1273,6 +1312,8 @@ export function defaultSeedChange(
   searcherDeps: CodeSearcherDeps = {},
   /** #1754 — the stored-link channel; absent (the flag off) for hybrid seeding only. */
   storedLinks?: StoredLinkDeps,
+  /** #1756 — return the hybrid file pool this size, for the edit-candidate check. */
+  filePoolSize?: number,
 ): SeedChangeFn {
   const sameClient = (prisma as unknown) === (defaultPrisma as unknown);
   const searcher = createDefaultCodeSearcher({
@@ -1291,6 +1332,7 @@ export function defaultSeedChange(
       loadSymbols,
       loadWriterIds,
       ...(storedLinks ? { storedLinks } : {}),
+      ...(filePoolSize ? { filePoolSize } : {}),
     });
 }
 
@@ -1408,6 +1450,27 @@ export function storedLinkNotice(used: number, stale: number): string {
     : `${head} ${links(stale)} ${stale === 1 ? "was" : "were"} dropped: the linked file is no longer in the code graph.`;
 }
 
+/**
+ * #1756 — the sentence a run's summary gains when the edit-candidate check
+ * answered: what it promoted (each at a line checked against the code graph),
+ * what it marked doubtful (still listed), and how many promotions it dropped.
+ */
+export function editVerifierNotice(t: {
+  promoted: number;
+  doubtful: number;
+  dropped: number;
+}): string {
+  const files = (n: number) => `${n} file${n === 1 ? "" : "s"}`;
+  const parts = [
+    `The AI edit check added ${files(t.promoted)} to the files to edit, each at a line checked against the code`,
+    `and marked ${files(t.doubtful)} as doubtful (still listed)`,
+  ];
+  const head = `${parts.join(", ")}.`;
+  return t.dropped === 0
+    ? head
+    : `${head} ${t.dropped} suggestion${t.dropped === 1 ? " was" : "s were"} dropped: the line it named was not in that file's code.`;
+}
+
 /** Resolve the change source text from the row (inline text or document chunks). */
 async function resolveSourceText(
   prisma: ImpactPrisma,
@@ -1500,6 +1563,7 @@ async function runImpactAnalysis(
           prisma,
           {},
           deps.storedLinkSeeds ? prismaStoredLinkDeps(prisma) : undefined,
+          deps.editCandidateVerifier ? VERIFY_POOL_FILES : undefined,
         ));
   const schemaDataSourceFor =
     deps.includeSchemaImpact === false
@@ -1557,6 +1621,8 @@ async function runImpactAnalysis(
     const bm25OnlyProjects = new Set<string>();
     // #1754 — the stored-link channel's totals, for the summary.
     const storedLinkTotals = { ran: false, used: 0, stale: 0 };
+    // #1756 — the edit-candidate check's totals, for the summary.
+    const verifierTotals = { ran: false, promoted: 0, doubtful: 0, dropped: 0 };
     // #932 — per-item roll-ups fed into the run-level BA overview (best-effort).
     const runItems: RunItemFact[] = [];
 
@@ -1656,15 +1722,24 @@ async function runImpactAnalysis(
           additiveColumnProposer: deps.additiveColumnProposer,
           clauseCoverageReconciler: deps.clauseCoverageReconciler,
           tableRecoveryJudge: deps.tableRecoveryJudge,
+          editCandidateVerifier: deps.editCandidateVerifier,
         });
 
         if (result.retrievalMode === "bm25-only") bm25OnlyProjects.add(projectId);
         // Counted before the zero-hit skip: a change whose every link went stale
         // writes no item, and its stale links must still reach the summary.
-        if (result.seedEvidence) {
+        const stored = result.seedEvidence?.storedLinks;
+        if (stored) {
           storedLinkTotals.ran = true;
-          storedLinkTotals.used += result.seedEvidence.storedLinks.used;
-          storedLinkTotals.stale += result.seedEvidence.storedLinks.stale;
+          storedLinkTotals.used += stored.used;
+          storedLinkTotals.stale += stored.stale;
+        }
+        const verified = result.seedEvidence?.verifier;
+        if (verified) {
+          verifierTotals.ran = true;
+          verifierTotals.promoted += verified.promoted;
+          verifierTotals.doubtful += verified.doubtful;
+          verifierTotals.dropped += verified.droppedPromotions;
         }
 
         // Skip empty (no code hits) results to keep the report focused: a change
@@ -1996,6 +2071,9 @@ async function runImpactAnalysis(
     }
     if (storedLinkTotals.ran) {
       summary = `${summary}\n\n${storedLinkNotice(storedLinkTotals.used, storedLinkTotals.stale)}`;
+    }
+    if (verifierTotals.ran) {
+      summary = `${summary}\n\n${editVerifierNotice(verifierTotals)}`;
     }
     if (deps.llmDegradationNotice) {
       try {
