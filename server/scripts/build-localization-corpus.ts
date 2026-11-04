@@ -30,7 +30,9 @@ import {
   classifyChangedFiles,
   decodeSymbolsFile,
   graphFilesOf,
+  parseSlurpedPages,
   resolveLocalizationCorpusDir,
+  resolveSymbolsPath,
   type ChangedFile,
   type LocalizationCorpusManifest,
   type LocalizationSymbolRow,
@@ -177,7 +179,7 @@ async function buildSymbols(corpus: string): Promise<void> {
     repos: manifest.repos,
     rows,
   };
-  const out = path.resolve(dir, manifest.symbols);
+  const out = resolveSymbolsPath(dir, manifest);
   await fs.writeFile(out, gzipSync(Buffer.from(JSON.stringify(file), "utf8"), { level: 9 }));
   console.log(`${rows.length} symbol rows → ${out}`);
 }
@@ -189,17 +191,17 @@ function prFiles(repoUrl: string, pr: number): ChangedFile[] {
   if (!/^[\w.-]+\/[\w.-]+$/.test(slug)) throw new Error(`not an owner/repo URL: ${repoUrl}`);
   const out = execFileSync(
     "gh",
-    ["api", `repos/${slug}/pulls/${pr}/files?per_page=100`, "--paginate"],
+    ["api", `repos/${slug}/pulls/${pr}/files?per_page=100`, "--paginate", "--slurp"],
     { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
   );
-  return JSON.parse(out.replace(/\]\s*\[/g, ",")) as ChangedFile[];
+  return parseSlurpedPages<ChangedFile>(out);
 }
 
 /** Step 2: fill each upstream-PR item's ground truth from its merged PR. */
 async function buildGroundTruth(corpus: string): Promise<void> {
   const dir = resolveLocalizationCorpusDir(corpus);
   const manifest = await readManifest(dir);
-  const symbols = decodeSymbolsFile(await fs.readFile(path.resolve(dir, manifest.symbols)));
+  const symbols = decodeSymbolsFile(await fs.readFile(resolveSymbolsPath(dir, manifest)));
   const graphFiles = graphFilesOf(symbols.rows);
   const repo = manifest.repos[0]!;
   for (const item of manifest.items) {

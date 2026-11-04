@@ -12,6 +12,14 @@
  *   pnpm eval:localization --md                  # print the Markdown report
  *   pnpm eval:localization --baseline            # A0 only: write baseline-A0.{json,md} into each corpus
  *
+ * When both held-out corpora run, a POOLED report compares each arm with A0
+ * over all 40 held-out items at once, stratified by corpus
+ * (`localization-pooled-<run>.{json,md}`): one corpus alone can only resolve a
+ * gap of 20 points or more (#1770). The in-sample set is never pooled.
+ *
+ * One dollar cap covers the whole invocation: every corpus and every
+ * table-precision guard is checked against the same spend and look-ahead.
+ *
  * Arms are chosen ONLY by `--arms`; no `IMPACT_LLM_*` variable changes what is
  * measured, and every report names each arm's configuration.
  *
@@ -38,8 +46,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildArms, parseArmIds, type LocalizationArm } from "../src/lib/eval/localization/arms.js";
 import {
+  flagValue,
+  nonNegativeNumber,
+  positiveInteger,
+} from "../src/lib/eval/localization/cli-args.js";
+import {
   LOCALIZATION_CORPORA,
   loadLocalizationCorpus,
+  resolveSymbolsPath,
   type LocalizationCorpus,
   type LocalizationCorpusName,
 } from "../src/lib/eval/localization/corpus.js";
@@ -47,8 +61,12 @@ import { LedgerCostMeter, meterProvider } from "../src/lib/eval/localization/cos
 import {
   DEFAULT_BUDGET_USD,
   DEFAULT_RUNS,
+  EvalBudget,
+  poolHeldOutReports,
   runLocalizationEval,
   toMarkdownReport,
+  toPooledMarkdownReport,
+  type LocalizationReport,
   type TableGuardReading,
 } from "../src/lib/eval/localization/runner.js";
 import {
@@ -61,19 +79,6 @@ import type { EmbedService } from "../src/lib/code-graph/symbol-embeddings.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
-
-function flagValue(argv: string[], name: string): string | undefined {
-  const i = argv.indexOf(`--${name}`);
-  const v = i >= 0 ? argv[i + 1] : undefined;
-  return v && !v.startsWith("--") ? v : undefined;
-}
-
-function positiveNumber(raw: string | undefined, fallback: number, name: string): number {
-  if (raw === undefined) return fallback;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) throw new Error(`--${name} must be a non-negative number`);
-  return n;
-}
 
 /** The corpora to run: one by name, else both held-out sets (+ the in-sample one on request). */
 function corporaFor(argv: string[]): LocalizationCorpusName[] {
@@ -95,7 +100,7 @@ function corporaFor(argv: string[]): LocalizationCorpusName[] {
 
 /** Where a corpus's vectors live: beside its symbol rows, so two corpora on one snapshot share them. */
 function vectorsFileFor(corpus: LocalizationCorpus, model: string): string {
-  const symbolsDir = path.dirname(path.resolve(corpus.dir, corpus.manifest.symbols));
+  const symbolsDir = path.dirname(resolveSymbolsPath(corpus.dir, corpus.manifest));
   return path.join(symbolsDir, `vectors.${model.split("/").pop()}.json`);
 }
 
@@ -171,11 +176,13 @@ async function tableGuardFor(
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const armIds = parseArmIds(argv);
-  const runs = Math.floor(positiveNumber(flagValue(argv, "runs"), DEFAULT_RUNS, "runs")) || 1;
-  const budgetUsd = positiveNumber(flagValue(argv, "budget"), DEFAULT_BUDGET_USD, "budget");
+  const runs = positiveInteger(flagValue(argv, "runs"), DEFAULT_RUNS, "runs");
+  const budgetUsd = nonNegativeNumber(flagValue(argv, "budget"), DEFAULT_BUDGET_USD, "budget");
   const writeBaseline = argv.includes("--baseline");
   if (writeBaseline && armIds.length > 1) throw new Error("--baseline writes A0's report only");
   const meter = new LedgerCostMeter();
+  const budget = new EvalBudget(budgetUsd);
+  const reports: LocalizationReport[] = [];
   const tableGuard = argv.includes("--table-guard") ? await tableGuardFor(meter) : undefined;
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
   const resultsDir = path.join(REPO_ROOT, "eval-results");
@@ -186,7 +193,8 @@ async function main(): Promise<void> {
     const { cache, file } = await embedCacheFor(corpus, argv.includes("--embed"));
     const search = await buildCorpusSearch(corpus.symbols, cache);
     const arms = buildArms(armIds, { search });
-    const report = await runLocalizationEval(corpus, { arms, runs, budgetUsd, meter, tableGuard });
+    const report = await runLocalizationEval(corpus, { arms, runs, budget, meter, tableGuard });
+    reports.push(report);
     assertNoMissingVectors(cache);
     if (cache.embeddedCount > 0) {
       await writeRecordedVectors(
@@ -220,6 +228,19 @@ async function main(): Promise<void> {
       `  → ${base}.{json,md}${report.stopped ? ` (STOPPED: ${report.stopped.reason})` : ""}`,
     );
     if (report.stopped) process.exitCode = 1;
+  }
+  if (reports.filter((r) => r.corpus.purpose === "held-out").length >= 2) {
+    const pooled = poolHeldOutReports(reports);
+    const base = path.join(resultsDir, `localization-pooled-${runId}`);
+    await writeFile(
+      `${base}.json`,
+      `${JSON.stringify({ ...pooled, generatedAt: new Date().toISOString() }, null, 2)}\n`,
+      "utf8",
+    );
+    const md = toPooledMarkdownReport(pooled);
+    await writeFile(`${base}.md`, md, "utf8");
+    if (argv.includes("--md")) console.log(md);
+    console.log(`[pooled] ${pooled.items} held-out items → ${base}.{json,md}`);
   }
   console.log(`total spent: $${meter.spentUsd().toFixed(4)} of $${budgetUsd}`);
 }

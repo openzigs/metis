@@ -20,6 +20,8 @@
     ]
   },
   "runsRequested": 3,
+  "scoredRuns": 3,
+  "partialFirstRun": false,
   "budgetUsd": 35,
   "spentUsd": 0,
   "stopped": null,
@@ -55,7 +57,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0010732499999999163
+            "seconds": 0.011537458000000014
           },
           {
             "recallAt5": 0.5,
@@ -66,7 +68,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005450419999997394
+            "seconds": 0.0006842079999999555
           },
           {
             "recallAt5": 0.5,
@@ -77,7 +79,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005212079999996604
+            "seconds": 0.0006193340000000375
           }
         ],
         "FX-02": [
@@ -90,7 +92,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005768339999999625
+            "seconds": 0.001339999999999975
           },
           {
             "recallAt5": 0.5,
@@ -101,7 +103,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005615419999999177
+            "seconds": 0.0006812919999999849
           },
           {
             "recallAt5": 0.5,
@@ -112,7 +114,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005223340000002281
+            "seconds": 0.0006277499999999918
           }
         ],
         "FX-03": [
@@ -125,7 +127,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005605000000000473
+            "seconds": 0.001004583000000025
           },
           {
             "recallAt5": 0,
@@ -136,7 +138,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005671659999998155
+            "seconds": 0.0007188339999999585
           },
           {
             "recallAt5": 0,
@@ -147,7 +149,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0013342499999998835
+            "seconds": 0.0006225000000000023
           }
         ],
         "FX-04": [
@@ -160,7 +162,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005450000000000728
+            "seconds": 0.0009242919999999799
           },
           {
             "recallAt5": 0.5,
@@ -171,7 +173,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0007966670000000704
+            "seconds": 0.0010082500000000323
           },
           {
             "recallAt5": 0.5,
@@ -182,7 +184,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005138339999998607
+            "seconds": 0.000613207999999986
           }
         ],
         "FX-05": [
@@ -195,7 +197,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.000537333000000217
+            "seconds": 0.0011135409999999978
           },
           {
             "recallAt5": 0.5,
@@ -206,7 +208,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006290000000003602
+            "seconds": 0.0007579999999999813
           },
           {
             "recallAt5": 0.5,
@@ -217,7 +219,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0004947919999999613
+            "seconds": 0.0006160830000000033
           }
         ],
         "FX-06": [
@@ -230,7 +232,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005339579999999841
+            "seconds": 0.0007724999999999796
           },
           {
             "recallAt5": 1,
@@ -241,7 +243,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005612920000003214
+            "seconds": 0.0006957500000000323
           },
           {
             "recallAt5": 1,
@@ -252,7 +254,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0004942089999999552
+            "seconds": 0.0006110420000000544
           }
         ],
         "FX-07": [
@@ -265,7 +267,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.000547790999999961
+            "seconds": 0.0006881669999999645
           },
           {
             "recallAt5": 0.6666666666666666,
@@ -276,7 +278,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005133340000002135
+            "seconds": 0.000699957999999981
           },
           {
             "recallAt5": 0.6666666666666666,
@@ -287,7 +289,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0004891250000000582
+            "seconds": 0.0006054169999999885
           }
         ],
         "FX-08": [
@@ -300,7 +302,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005395840000001044
+            "seconds": 0.0007170419999999922
           },
           {
             "recallAt5": 0.5,
@@ -311,7 +313,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006527089999999589
+            "seconds": 0.0006975419999999986
           },
           {
             "recallAt5": 0.5,
@@ -322,7 +324,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006660000000001673
+            "seconds": 0.0006992500000000064
           }
         ],
         "FX-09": [
@@ -335,7 +337,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.000554834000000028
+            "seconds": 0.0015938330000000178
           },
           {
             "recallAt5": 0.4,
@@ -346,7 +348,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0008537079999996422
+            "seconds": 0.0007222079999999664
           },
           {
             "recallAt5": 0.4,
@@ -357,7 +359,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0009206659999999829
+            "seconds": 0.0006887090000000172
           }
         ],
         "FX-10": [
@@ -370,7 +372,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005194580000002134
+            "seconds": 0.0007234169999999836
           },
           {
             "recallAt5": 1,
@@ -381,7 +383,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005381670000001577
+            "seconds": 0.0006709580000000415
           },
           {
             "recallAt5": 1,
@@ -392,7 +394,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0004951670000000376
+            "seconds": 0.0006538340000000176
           }
         ],
         "FX-11": [
@@ -405,7 +407,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005562499999996362
+            "seconds": 0.0007212079999999901
           },
           {
             "recallAt5": 0,
@@ -416,7 +418,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005186670000002778
+            "seconds": 0.0006916659999999979
           },
           {
             "recallAt5": 0,
@@ -427,7 +429,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005044170000001032
+            "seconds": 0.0006751659999999902
           }
         ],
         "FX-12": [
@@ -440,7 +442,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005422910000002048
+            "seconds": 0.0006460420000000227
           },
           {
             "recallAt5": 0.5,
@@ -451,7 +453,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0004862499999999272
+            "seconds": 0.0015492080000000215
           },
           {
             "recallAt5": 0.5,
@@ -462,7 +464,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0013410000000003493
+            "seconds": 0.0005795420000000035
           }
         ],
         "FX-13": [
@@ -475,7 +477,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0013844580000004498
+            "seconds": 0.0007204169999999976
           },
           {
             "recallAt5": 0.5,
@@ -486,7 +488,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005076669999998558
+            "seconds": 0.0006369159999999852
           },
           {
             "recallAt5": 0.5,
@@ -497,7 +499,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006204170000000886
+            "seconds": 0.0005923750000000041
           }
         ],
         "FX-14": [
@@ -510,7 +512,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005523330000000897
+            "seconds": 0.0006907920000000445
           },
           {
             "recallAt5": 1,
@@ -521,7 +523,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006445000000003347
+            "seconds": 0.0006303749999999581
           },
           {
             "recallAt5": 1,
@@ -532,7 +534,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005160000000000764
+            "seconds": 0.0005907920000000217
           }
         ],
         "FX-15": [
@@ -545,7 +547,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006064590000000863
+            "seconds": 0.0006687089999999785
           },
           {
             "recallAt5": 0.5,
@@ -556,7 +558,7 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.000535207999999784
+            "seconds": 0.0006231669999999667
           },
           {
             "recallAt5": 0.5,
@@ -567,10 +569,11 @@
             "verdictCorrect": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005100000000002183
+            "seconds": 0.0005826670000000149
           }
         ]
       },
+      "droppedRunScores": 0,
       "items": [
         {
           "id": "FX-01",
@@ -585,7 +588,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0007131666666664386
+          "seconds": 0.004280333333333336
         },
         {
           "id": "FX-02",
@@ -600,7 +603,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0005535700000000361
+          "seconds": 0.0008830139999999837
         },
         {
           "id": "FX-03",
@@ -615,7 +618,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0008206386666665821
+          "seconds": 0.0007819723333333286
         },
         {
           "id": "FX-04",
@@ -630,7 +633,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0006185003333333346
+          "seconds": 0.0008485833333333328
         },
         {
           "id": "FX-05",
@@ -645,7 +648,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0005537083333335128
+          "seconds": 0.0008292079999999942
         },
         {
           "id": "FX-06",
@@ -660,7 +663,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0005298196666667535
+          "seconds": 0.0006930973333333554
         },
         {
           "id": "FX-07",
@@ -675,7 +678,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0005167500000000776
+          "seconds": 0.000664513999999978
         },
         {
           "id": "FX-08",
@@ -690,7 +693,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0006194310000000769
+          "seconds": 0.0007046113333333324
         },
         {
           "id": "FX-09",
@@ -705,7 +708,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0007764026666665511
+          "seconds": 0.0010015833333333337
         },
         {
           "id": "FX-10",
@@ -720,7 +723,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0005175973333334696
+          "seconds": 0.0006827363333333476
         },
         {
           "id": "FX-11",
@@ -735,7 +738,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0005264446666666724
+          "seconds": 0.000696013333333326
         },
         {
           "id": "FX-12",
@@ -750,7 +753,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0007898470000001606
+          "seconds": 0.0009249306666666827
         },
         {
           "id": "FX-13",
@@ -765,7 +768,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0008375140000001314
+          "seconds": 0.0006499026666666622
         },
         {
           "id": "FX-14",
@@ -780,7 +783,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0005709443333335003
+          "seconds": 0.0006373196666666748
         },
         {
           "id": "FX-15",
@@ -795,7 +798,7 @@
           "verdictAccuracy": null,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0005505556666666961
+          "seconds": 0.0006248476666666534
         }
       ],
       "aggregate": {
@@ -809,7 +812,7 @@
         "itemsWithNoEditCandidate": 0,
         "meanEditCandidates": 10,
         "costUsdPerRequirement": 0,
-        "secondsPerRequirement": 0.000632992688888933,
+        "secondsPerRequirement": 0.0009935111555555546,
         "totalCostUsd": 0
       },
       "intervals": {
@@ -826,5 +829,8 @@
   ],
   "comparisons": [],
   "detectableGap": "At 15 items and a hit rate near 0.5 the standard error is about 12.9 points per arm, so a gap needs roughly 26 to 36 points to be significant. A smaller difference is reported as \"no measurable difference\", not as a win.",
-  "generatedAt": "2026-11-04T11:26:19.812Z"
+  "notes": [
+    "The code graph holds only 10 files, so an arm that ranks all of them scores Recall@10 = 1.00 by construction: Recall@10 and hit@10 carry no signal on this corpus. Read Recall@5, edit precision and MRR."
+  ],
+  "generatedAt": "2026-11-04T14:05:54.562Z"
 }

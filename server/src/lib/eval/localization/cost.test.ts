@@ -21,25 +21,33 @@ describe("LedgerCostMeter", () => {
     expect(meter.spentUsd()).toBe(0);
   });
 
-  it("ignores a call that reported no usage", () => {
+  it("counts a call that reported no usage as unpriced, never as $0 (#1770)", () => {
     const meter = new LedgerCostMeter();
-    expect(meter.record("anthropic", "claude-sonnet-5-5", undefined)).toBe(0);
-    expect(meter.callCount()).toBe(0);
+    expect(meter.record("anthropic", "claude-sonnet-5-5", undefined)).toBeNull();
+    expect(meter.callCount()).toBe(1);
+    expect(meter.unpricedCalls()).toBe(1);
+    expect(meter.spentUsd()).toBe(0);
   });
 });
 
 describe("meterProvider", () => {
-  function fakeProvider(): AIProvider {
+  function fakeProvider(opts: { usage?: boolean } = {}): AIProvider {
+    const withUsage = opts.usage ?? true;
     return {
       key: "anthropic",
       model: "claude-sonnet-5-5",
       offline: false,
       async chat() {
-        return { content: "ok", model: "claude-sonnet-5-5", usage } as ChatResponse;
+        return {
+          content: "ok",
+          model: "claude-sonnet-5-5",
+          usage: withUsage ? usage : undefined,
+        } as ChatResponse;
       },
       async *stream(): AsyncGenerator<ChatChunk> {
         yield { type: "delta", content: "a" };
-        yield { type: "usage", usage };
+        yield { type: "delta", content: "b" };
+        if (withUsage) yield { type: "usage", usage };
       },
       async embed() {
         return { vectors: [], model: "e", dimension: 0 } as never;
@@ -59,10 +67,35 @@ describe("meterProvider", () => {
     expect((await p.chat([])).content).toBe("ok");
     const chunks: ChatChunk[] = [];
     for await (const c of p.stream([])) chunks.push(c);
-    expect(chunks).toHaveLength(2);
+    expect(chunks).toHaveLength(3);
     expect(meter.callCount()).toBe(2);
+    expect(meter.unpricedCalls()).toBe(0);
     expect(meter.spentUsd()).toBeCloseTo(0.024, 10);
     expect(p.key).toBe("anthropic");
     expect(await p.models()).toEqual(["claude-sonnet-5-5"]);
+  });
+
+  it("meters a chat and a stream that report no usage as unpriced (#1770)", async () => {
+    const meter = new LedgerCostMeter();
+    const p = meterProvider(fakeProvider({ usage: false }), meter);
+    await p.chat([]);
+    expect(meter.unpricedCalls()).toBe(1);
+    const chunks: ChatChunk[] = [];
+    for await (const c of p.stream([])) chunks.push(c);
+    expect(chunks).toHaveLength(2);
+    expect(meter.callCount()).toBe(2);
+    expect(meter.unpricedCalls()).toBe(2);
+    expect(meter.spentUsd()).toBe(0);
+  });
+
+  it("meters a stream the caller abandons before its usage chunk as unpriced", async () => {
+    const meter = new LedgerCostMeter();
+    const p = meterProvider(fakeProvider(), meter);
+    for await (const c of p.stream([])) {
+      expect(c.type).toBe("delta");
+      break;
+    }
+    expect(meter.callCount()).toBe(1);
+    expect(meter.unpricedCalls()).toBe(1);
   });
 });
