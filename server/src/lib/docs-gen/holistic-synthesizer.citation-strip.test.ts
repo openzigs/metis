@@ -151,6 +151,18 @@ describe("stripLeakedSourceIds (#1360)", () => {
       expect(stripLeakedSourceIds(words)).toBe(words);
     });
 
+    it("does not touch one in inline code, but still strips a real leaked id there (#1741 review)", () => {
+      const code = "Edges are `type Edge = [source: string, target: string]` tuples.";
+      expect(stripLeakedSourceIds(code)).toBe(code);
+      const double = "Use ``a `[fact: x]` b`` here.";
+      expect(stripLeakedSourceIds(double)).toBe(double);
+      // Outside the span it still goes; a real leaked id goes even inside one.
+      expect(stripLeakedSourceIds("`x` holds it [source: a.go].")).toBe("`x` holds it.");
+      expect(stripLeakedSourceIds("`run [facts:mod:1]` nightly")).toBe("`run` nightly");
+      // An unclosed backtick is ordinary text.
+      expect(stripLeakedSourceIds("a ` b [source: c.go].")).toBe("a ` b.");
+    });
+
     it("does not touch one in fenced code", () => {
       const md = "```\nlog [source: x]\n```";
       expect(stripLeakedSourceIds(md)).toBe(md);

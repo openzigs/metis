@@ -6448,6 +6448,12 @@ const INVENTED_CITATION_PREFIXES = ["fact", "source"] as const;
  * rendered verbatim in prose and in Markdown export. Anchoring the unterminated
  * case to end-of-line keeps it from swallowing the rest of the document.
  */
+/** Only the ids the model was given (` [facts:…]` / ` [rag:…]`), as below. */
+const LEAKED_REAL_ID_RE = new RegExp(
+  ` ?\\[\\s*(?:${LEAKED_ID_PREFIXES.join("|")}):[^\\]\\n]*(?:\\]|$)`,
+  "g",
+);
+
 const LEAKED_ID_RE = new RegExp(
   ` ?\\[\\s*(?:(?:${LEAKED_ID_PREFIXES.join("|")}):[^\\]\\n]*(?:\\]|$)|(?:${INVENTED_CITATION_PREFIXES.join("|")}):[^\\][\\n]*\\](?!\\())`,
   "g",
@@ -6462,9 +6468,60 @@ export function stripLeakedSourceIds(markdown: string): string {
         inFence = !inFence;
         return line;
       }
-      return inFence ? line : line.replace(LEAKED_ID_RE, "");
+      if (inFence) return line;
+      // Inside an inline code span only the real leaked ids go: the invented
+      // forms are ordinary words there (#1741 review).
+      return splitInlineCode(
+        line,
+        (text) => text.replace(LEAKED_ID_RE, ""),
+        (code) => code.replace(LEAKED_REAL_ID_RE, ""),
+      );
     })
     .join("\n");
+}
+
+/**
+ * `line` with `plainEdit` applied outside inline code spans and `codeEdit`
+ * inside them. A span is a run of N backticks closed by the next run of exactly
+ * N (CommonMark); an unclosed run is ordinary text. `source:` and `fact:` are
+ * ordinary words, so a code span such as `` `type Edge = [source: string]` ``
+ * must keep them (#1741 review).
+ */
+function splitInlineCode(
+  line: string,
+  plainEdit: (text: string) => string,
+  codeEdit: (code: string) => string,
+): string {
+  const edit = plainEdit;
+  if (!line.includes("`")) return edit(line);
+  let out = "";
+  let plain = "";
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] !== "`") {
+      plain += line[i++];
+      continue;
+    }
+    let n = 0;
+    while (line[i + n] === "`") n++;
+    const fence = "`".repeat(n);
+    let close = -1;
+    for (let j = line.indexOf(fence, i + n); j !== -1; j = line.indexOf(fence, j + 1)) {
+      if (line[j - 1] !== "`" && line[j + n] !== "`") {
+        close = j;
+        break;
+      }
+    }
+    if (close === -1) {
+      plain += fence;
+      i += n;
+      continue;
+    }
+    out += edit(plain) + fence + codeEdit(line.slice(i + n, close)) + fence;
+    plain = "";
+    i = close + n;
+  }
+  return out + edit(plain);
 }
 
 /** True when `text` still carries at least one leaked grounding marker. */
