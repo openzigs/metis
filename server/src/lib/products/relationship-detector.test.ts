@@ -131,6 +131,46 @@ describe("relationship-detector", () => {
         strength: "model",
         direction: "depends-on",
       });
+      // #1727 — both paths qualify; the shared library is the provider.
+      expect(edge).toMatchObject({ sourceRepoId: "r1", targetRepoId: "r2" });
+    });
+
+    // #1727 — `orders` and `billing` both export `Order` from `src/types/`: the
+    // edge ran billing-provides-orders whenever billing's id sorted first.
+    const orderType = (repoConnectionId: string, repoName: string): RepoCrawlData => ({
+      repoConnectionId,
+      repoName,
+      ownerOrOrg: "openzigs",
+      crawlResult: makeCrawlResult({
+        types: [
+          { name: "Order", kind: "interface", filePath: "src/types/order.ts", exported: true },
+        ],
+      }),
+    });
+
+    it.each([
+      ["billing sorts first", "a", "b"],
+      ["orders sorts first", "b", "a"],
+    ])("points a tied shared type at the repo named for it (%s)", (_label, billingId, ordersId) => {
+      const edges = detectRelationships([
+        orderType(billingId, "metis-fixture-billing"),
+        orderType(ordersId, "metis-fixture-orders"),
+      ]).filter((e) => e.edgeType === "imports");
+      expect(edges).toHaveLength(1);
+      expect(edges[0]).toMatchObject({
+        sourceRepoId: billingId,
+        targetRepoId: ordersId,
+        direction: "depends-on",
+      });
+    });
+
+    it("lets a type path outrank a repo named for the type", () => {
+      const orders = orderType("a", "orders");
+      orders.crawlResult.types[0]!.filePath = "src/order.ts";
+      const edges = detectRelationships([orders, orderType("b", "billing")]).filter(
+        (e) => e.edgeType === "imports",
+      );
+      expect(edges[0]).toMatchObject({ sourceRepoId: "a", targetRepoId: "b" });
     });
 
     it("ignores non-exported types", () => {

@@ -78,6 +78,12 @@ export interface DetectionResult extends EdgeSyncResult {
   /** The repos this run crawled: the scope it wrote in. */
   scannedRepoIds: string[];
   /**
+   * #1727 — this product's readable repos the loader had no files for (no
+   * clone yet, as for a connector never synced): not crawled, so their edges
+   * are neither found nor refreshed.
+   */
+  uncrawledRepoIds: string[];
+  /**
    * #1724 — every readable repo of another product in the same workspace: the
    * far ends a cross-product edge of this product may have, crawled or not.
    */
@@ -367,9 +373,14 @@ export async function runProductEdgeDetection(opts: {
   const partners = own.length > 0 ? siblings.slice(0, MAX_CROSS_PRODUCT_REPOS) : [];
   const crawled: RepoCrawlData[] = [];
   const partialRepoIds: string[] = [];
+  const ownIds = new Set(own.map((r) => r.repoConnectionId));
+  const uncrawledRepoIds: string[] = [];
   for (const info of [...own, ...partners]) {
     const loaded = await opts.loadRepoFiles(info);
-    if (!loaded) continue;
+    if (!loaded) {
+      if (ownIds.has(info.repoConnectionId)) uncrawledRepoIds.push(info.repoConnectionId);
+      continue;
+    }
     const { files, partial } = Array.isArray(loaded) ? { files: loaded, partial: false } : loaded;
     if (partial) partialRepoIds.push(info.repoConnectionId);
     crawled.push({
@@ -384,7 +395,6 @@ export async function runProductEdgeDetection(opts: {
   for (const repo of crawled) repo.codeGraphTables = graphTables.get(repo.repoConnectionId) ?? [];
   // #1724 — an edge needs an end in this product: one between two other
   // products' repos is found, and stored, when one of those is analysed.
-  const ownIds = new Set(own.map((r) => r.repoConnectionId));
   const detected = detectRelationships(crawled).filter(
     (e) => ownIds.has(e.sourceRepoId) || ownIds.has(e.targetRepoId),
   );
@@ -394,6 +404,7 @@ export async function runProductEdgeDetection(opts: {
   return {
     ...synced,
     scannedRepoIds,
+    uncrawledRepoIds,
     siblingRepoIds: siblings.map((r) => r.repoConnectionId),
     crossProductReposSkipped: own.length > 0 ? siblings.length - partners.length : 0,
   };

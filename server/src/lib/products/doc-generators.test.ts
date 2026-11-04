@@ -85,6 +85,36 @@ describe("unified-doc-generator", () => {
     expect(doc.metadata.generatedAt).toBeDefined();
   });
 
+  // #1727 — the Data Flow diagram drew no `imports` edge and did not say so.
+  it("names the links the data flow diagram leaves out", () => {
+    const imports = (sourceRepoId: string, targetRepoId: string): ProductEdgeInfo => ({
+      sourceRepoId,
+      targetRepoId,
+      edgeType: "imports",
+      confidence: 0.8,
+      evidence: [],
+    });
+    const doc = generateUnifiedArchitectureDoc({
+      ...baseInput,
+      edges: [...baseInput.edges, imports("r2", "r1"), imports("r1", "r2")],
+    });
+    const dataFlow = doc.content.split("## Data Flow")[1]!.split("## Cross-Cutting")[0]!;
+    expect(dataFlow).toContain("sequenceDiagram");
+    expect(dataFlow).toContain("_Not drawn here: 2 `imports` links");
+    expect(dataFlow).toContain("The Service Map shows them._");
+
+    const onlyImports = generateUnifiedArchitectureDoc({
+      ...baseInput,
+      edges: [imports("r2", "r1")],
+    });
+    const flow = onlyImports.content.split("## Data Flow")[1]!.split("## Cross-Cutting")[0]!;
+    expect(flow).toContain("No data flow edges detected");
+    expect(flow).toContain("_Not drawn here: 1 `imports` link,");
+    expect(flow).toContain("The Service Map shows it._");
+
+    expect(generateUnifiedArchitectureDoc(baseInput).content).not.toContain("Not drawn here");
+  });
+
   it("handles empty edges gracefully", () => {
     const input = { ...baseInput, edges: [] };
     const doc = generateUnifiedArchitectureDoc(input);

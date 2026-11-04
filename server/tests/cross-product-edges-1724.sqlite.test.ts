@@ -429,6 +429,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const res = await analyze(P.billing);
         expect(res.status).toBe(200);
         expect(await db.productEdge.findMany({ orderBy: { id: "asc" } })).toEqual(before);
+        // #1727 — another product's repo with no clone (idle, far, …) is not this
+        // product's to sync, so it is not reported as one.
+        expect(res.body.data.reposWithoutClone).toEqual([]);
       });
 
       it("never pairs across a workspace boundary, even for an admin who reads every repo", async () => {

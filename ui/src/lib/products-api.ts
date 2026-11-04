@@ -179,6 +179,8 @@ export interface AnalyzeResult {
   crossProductEdges?: number;
   /** #1724 — other products' repos past the per-run limit, not crawled. */
   crossProductReposSkipped?: number;
+  /** #1727 — this product's repos with no clone yet (never synced), not crawled. */
+  reposWithoutClone?: Array<{ repoConnectionId: string; name: string }>;
 }
 
 export interface RepoConnectionOption {
@@ -190,6 +192,9 @@ export interface RepoConnectionOption {
   defaultBranch: string;
   status: string;
   projectId: string;
+  /** #1727 — tell same-named repos of different projects apart. */
+  projectName?: string | null;
+  workspaceName?: string | null;
 }
 
 export const productsApi = {

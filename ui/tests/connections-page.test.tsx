@@ -326,7 +326,13 @@ describe("ConnectionsPage — create repo form", () => {
     await waitFor(() =>
       expect(repoCreate).toHaveBeenCalledWith(
         "proj-1",
-        expect.objectContaining({ label: "New Repo", ownerOrOrg: "myorg", repoName: "myrepo" }),
+        // #1727 — every new repository syncs on creation, not only the first.
+        expect.objectContaining({
+          label: "New Repo",
+          ownerOrOrg: "myorg",
+          repoName: "myrepo",
+          autoIngest: true,
+        }),
       ),
     );
   });
