@@ -829,3 +829,11 @@ describe("#1024 — graceful degradation with no usable provider", () => {
     expect(row.summary).toMatch(/Impacted \d+ symbol\(s\)/);
   });
 });
+
+describe("#1776 — per-request edit ranking flag", () => {
+  it("is wired only when IMPACT_REQUEST_EDIT_RANKING is on", () => {
+    expect("requestEditRanking" in impactRunDeps("user-1", ["proj-1"])).toBe(false);
+    vi.stubEnv("IMPACT_REQUEST_EDIT_RANKING", "1");
+    expect(impactRunDeps("user-1", ["proj-1"]).requestEditRanking).toBe(true);
+  });
+});

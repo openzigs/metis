@@ -313,7 +313,7 @@ export function resolveSymbolsPath(
   const root = path.dirname(path.resolve(dir));
   const resolved = path.resolve(dir, manifest.symbols);
   const rel = path.relative(root, resolved);
-  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+  if (rel === "" || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
     throw new Error(
       `corpus ${manifest.id}: symbols path ${JSON.stringify(manifest.symbols)} leaves the corpora root`,
     );

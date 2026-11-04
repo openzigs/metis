@@ -44,12 +44,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  buildArms,
-  MODEL_ARMS,
-  parseArmIds,
-  type LocalizationArm,
-} from "../src/lib/eval/localization/arms.js";
+import { buildArms, MODEL_ARMS, parseArmIds } from "../src/lib/eval/localization/arms.js";
 import type { AIProvider } from "../src/lib/ai/types.js";
 import {
   flagValue,
@@ -68,12 +63,13 @@ import {
   DEFAULT_BUDGET_USD,
   DEFAULT_RUNS,
   EvalBudget,
+  memoisedA0TableGuard,
   poolHeldOutReports,
   runLocalizationEval,
   toMarkdownReport,
   toPooledMarkdownReport,
   type LocalizationReport,
-  type TableGuardReading,
+  type TableGuard,
 } from "../src/lib/eval/localization/runner.js";
 import {
   EmbedCache,
@@ -134,10 +130,10 @@ async function embedCacheFor(
 /**
  * The table-precision guard rail for A0: impact-recall-01 in the PRODUCTION
  * configuration (BM25 seeding + the #936 LLM table filter), 3 runs, metered.
+ * Measured once and memoised: every later reading, and every other arm's, is
+ * free, so the runner does not hold it under the cap (#1779).
  */
-async function tableGuardFor(
-  meter: LedgerCostMeter,
-): Promise<(arm: LocalizationArm) => Promise<TableGuardReading>> {
+async function tableGuardFor(meter: LedgerCostMeter): Promise<TableGuard> {
   const { buildProvider, loadAIConfig } = await import("../src/lib/ai/index.js");
   const provider = buildProvider({ config: loadAIConfig() });
   if (provider.offline) {
@@ -151,12 +147,7 @@ async function tableGuardFor(
     await import("../src/lib/impact-analysis/table-relevance-filter.js");
   const fixtureMod = await import("../src/lib/eval/impact-recall/fixture.js");
   const runnerMod = await import("../src/lib/eval/impact-recall/runner.js");
-  let a0: TableGuardReading | null = null;
-  return async (arm) => {
-    if (arm.id !== "A0") {
-      return { measured: false, reason: `arm ${arm.id} does not wire a table-precision run yet` };
-    }
-    if (a0) return a0;
+  return memoisedA0TableGuard(async () => {
     const fixture = await fixtureMod.loadImpactRecallFixture(
       fixtureMod.resolveCorpusDir("impact-recall-01-jpetstore"),
     );
@@ -169,14 +160,13 @@ async function tableGuardFor(
       },
       3,
     );
-    a0 = {
+    return {
       measured: true,
       tablePrecision: summary.meanAggregate.tables.macroPrecision,
       runs: summary.runCount,
       configuration: `impact-recall-01-jpetstore, ${summary.configuration.label}, ${provider.key}/${provider.model}`,
     };
-    return a0;
-  };
+  });
 }
 
 /**

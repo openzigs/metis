@@ -49,6 +49,7 @@ import {
   prismaSeedSymbolLoader,
   prismaStoredLinkDeps,
   prismaWriterIdLoader,
+  rankEditCandidatesPerRequest,
   resolveChangeSeeds,
   VERIFY_POOL_FILES,
   type ChangeSeeds,
@@ -359,6 +360,8 @@ export async function computeProjectImpact(
   let matches: RequirementCodeMatch[];
   let related: RequirementCodeMatch[] = [];
   let schemaSeeds: RequirementCodeMatch[] = [];
+  // #1776 — edit candidates the per-request ranking demoted: still radius seeds.
+  let radiusSeeds: RequirementCodeMatch[] = [];
   let retrievalMode: RetrievalMode | null = null;
   let seedEvidence: ImpactSeedEvidence | undefined;
   // #791 — what the request ASKS (primary statement + sub-aspects), without its
@@ -386,6 +389,7 @@ export async function computeProjectImpact(
     matches = seeds.editCandidates;
     related = seeds.related;
     schemaSeeds = seeds.schemaSeeds;
+    radiusSeeds = seeds.radiusSeeds ?? [];
     retrievalMode = seeds.retrievalMode ?? null;
     seedEvidence = seeds.evidence;
     // Functions built like a retrieved one are review material too. Best-effort.
@@ -435,8 +439,13 @@ export async function computeProjectImpact(
     confidence: m.confidence,
   }));
 
-  // Transitive blast radius from the resolved seed symbols.
-  const seedIds = matches.map((m) => m.codeSymbolId).filter((id): id is string => Boolean(id));
+  // Transitive blast radius from the resolved seed symbols. #1776 — a demoted
+  // edit candidate is still a seed here: the per-request ranking changes which
+  // files are named to edit, never which callers are reached.
+  const radiusFrom = [...matches, ...radiusSeeds];
+  const seedIds = [
+    ...new Set(radiusFrom.map((m) => m.codeSymbolId).filter((id): id is string => Boolean(id))),
+  ];
   const dataSeedIds = [
     ...seedIds,
     ...schemaSeeds.map((m) => m.codeSymbolId).filter((id): id is string => Boolean(id)),
@@ -457,7 +466,7 @@ export async function computeProjectImpact(
     // caller of a 0.5 candidate reads half what it did). Which callers are
     // reached does not change.
     const seedWeights = new Map<string, number>();
-    for (const m of matches) {
+    for (const m of radiusFrom) {
       if (!m.codeSymbolId) continue;
       const c = Number.isFinite(m.confidence) && m.confidence > 0 ? m.confidence : 0;
       seedWeights.set(m.codeSymbolId, Math.max(seedWeights.get(m.codeSymbolId) ?? 0, c));
@@ -1158,6 +1167,15 @@ export interface ImpactServiceDeps {
    * returns its file pool ({@link VERIFY_POOL_FILES} files).
    */
   editCandidateVerifier?: EditCandidateVerifierFn;
+  /**
+   * #1776 — rank edit candidates once per request, across every change and
+   * project (`IMPACT_REQUEST_EDIT_RANKING`, read by the route). Every change is
+   * seeded in every accessible project first; then
+   * {@link rankEditCandidatesPerRequest} keeps the request's best files and
+   * moves the rest to related, still seeding the blast radius. Absent: each
+   * change is ranked on its own in each project, as before.
+   */
+  requestEditRanking?: boolean;
   extractor?: ChangeExtractor;
   mapRequirement?: MapRequirementFn;
   /**
@@ -1318,6 +1336,8 @@ export function defaultSeedChange(
   storedLinks?: StoredLinkDeps,
   /** #1756 — return the hybrid file pool this size, for the edit-candidate check. */
   filePoolSize?: number,
+  /** #1776 — return each edit file's score, for the per-request ranking. */
+  editFileScores?: boolean,
 ): SeedChangeFn {
   const sameClient = (prisma as unknown) === (defaultPrisma as unknown);
   const searcher = createDefaultCodeSearcher({
@@ -1337,6 +1357,7 @@ export function defaultSeedChange(
       loadWriterIds,
       ...(storedLinks ? { storedLinks } : {}),
       ...(filePoolSize ? { filePoolSize } : {}),
+      ...(editFileScores ? { editFileScores } : {}),
     });
 }
 
@@ -1532,6 +1553,38 @@ function toSummaryTableFact(t: AffectedTableInput): SummaryTableFact {
 }
 
 /**
+ * #1776 — seed every change in every accessible project, rank the edit
+ * candidates once over the whole request ({@link rankEditCandidatesPerRequest}),
+ * and return a {@link SeedChangeFn} that answers from those seeds. A project the
+ * starter cannot open is never searched (#1609). Each project's searches run in
+ * its own attribution scope, as they do in the per-project loop (#1021).
+ */
+async function seedRequestOnce(
+  changes: readonly ChangedRequirement[],
+  projectIds: readonly string[],
+  seedChange: SeedChangeFn,
+  accessOf: (projectId: string) => Promise<ProjectExecutionAccess>,
+): Promise<SeedChangeFn> {
+  const seedings: Array<{ change: ChangedRequirement; projectId: string; seeds: ChangeSeeds }> = [];
+  for (const projectId of projectIds) {
+    enterImpactProjectScope(projectId);
+    if ((await accessOf(projectId)) !== "accessible") continue;
+    for (const change of changes) {
+      seedings.push({ change, projectId, seeds: await seedChange(change, projectId) });
+    }
+  }
+  const ranked = rankEditCandidatesPerRequest(seedings);
+  const byChange = new Map<ChangedRequirement, Map<string, ChangeSeeds>>();
+  seedings.forEach(({ change, projectId }, i) => {
+    const forChange = byChange.get(change) ?? new Map<string, ChangeSeeds>();
+    forChange.set(projectId, ranked[i]!);
+    byChange.set(change, forChange);
+  });
+  return async (change, projectId) =>
+    byChange.get(change)?.get(projectId) ?? seedChange(change, projectId);
+}
+
+/**
  * Execute an impact-analysis run: extract changes, map each to code in every
  * requested project, expand the blast radius, and persist per-project results.
  */
@@ -1560,7 +1613,7 @@ async function runImpactAnalysis(
     deps.mapRequirement ?? ((req, projectId) => mapRequirementToCode(req, projectId));
   // #1036 — seed with the chat path's hybrid search unless the caller chose a
   // mapper of its own (the opt-in LLM seeding flags, and tests).
-  const seedChange: SeedChangeFn | undefined =
+  let seedChange: SeedChangeFn | undefined =
     deps.seedChange ??
     (deps.mapRequirement
       ? undefined
@@ -1569,7 +1622,19 @@ async function runImpactAnalysis(
           {},
           deps.storedLinkSeeds ? prismaStoredLinkDeps(prisma) : undefined,
           deps.editCandidateVerifier ? VERIFY_POOL_FILES : undefined,
+          deps.requestEditRanking,
         ));
+  // #1609 — the starter's access, read once per project and reused.
+  const accessByProject = new Map<string, Promise<ProjectExecutionAccess>>();
+  const accessOf = (projectId: string): Promise<ProjectExecutionAccess> => {
+    if (!deps.projectAccess) return Promise.resolve("accessible");
+    let access = accessByProject.get(projectId);
+    if (!access) {
+      access = deps.projectAccess(projectId);
+      accessByProject.set(projectId, access);
+    }
+    return access;
+  };
   const schemaDataSourceFor =
     deps.includeSchemaImpact === false
       ? undefined
@@ -1621,6 +1686,12 @@ async function runImpactAnalysis(
       ...(await loadRequirementChanges(prisma, requirementIds)),
     ];
 
+    // #1776 — seed every change in every accessible project first, and rank the
+    // edit candidates once over all of them; the loop below reads these seeds.
+    if (deps.requestEditRanking && seedChange) {
+      seedChange = await seedRequestOnce(changes, projectIds, seedChange, accessOf);
+    }
+
     let totalImpactedSymbols = 0;
     // #1036 — projects whose code search ran on keywords only, for the summary.
     const bm25OnlyProjects = new Set<string>();
@@ -1649,7 +1720,7 @@ async function runImpactAnalysis(
       // #1609 — the starter's access as of execution. A project they can no
       // longer open (or one deleted since the trigger, #1636) is recorded and
       // skipped: nothing is searched, so no symbol of it can reach the result.
-      const access = deps.projectAccess ? await deps.projectAccess(projectId) : "accessible";
+      const access = await accessOf(projectId);
       if (access !== "accessible") {
         outcomes.set(projectId, { outcome: "not-checked", reason: access });
         continue;

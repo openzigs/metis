@@ -41,6 +41,15 @@
  * dropped, moved or re-scored (the #931 rule). Only a link whose file is in the
  * project's current code graph is seeded; a stale one is dropped and counted.
  *
+ * #1776 — PER-REQUEST RANKING. The cut above runs once per change per
+ * project, so every project names its own best file and a request the
+ * extractor splits gets {@link MAX_EDIT_FILES} files per change. Behind
+ * `IMPACT_REQUEST_EDIT_RANKING` (off by default),
+ * {@link rankEditCandidatesPerRequest} re-applies the same cut ONCE, over
+ * every change and project of the request, against its single best file. A
+ * file that falls out is moved to `related` and stays a seed of the blast
+ * radius (`radiusSeeds`), so recall of affected code does not drop.
+ *
  * Read-only, and never throws: a search fault yields no seeds.
  */
 import type { PrismaClient } from "@prisma/client";
@@ -110,6 +119,12 @@ export interface ChangeSeedDeps {
    * seeds are exactly as before.
    */
   filePoolSize?: number;
+  /**
+   * #1776 — when true, also return each hybrid edit file's score
+   * (`editFileScores`), for {@link rankEditCandidatesPerRequest}. Absent: the
+   * seeds are exactly as before.
+   */
+  editFileScores?: boolean;
 }
 
 /** #1756 — files of the hybrid pool shown to the edit-candidate check, by default. */
@@ -160,6 +175,14 @@ export interface StoredLinkDeps {
   loadFileSymbols: (filePaths: string[], projectId: string) => Promise<SeedSymbolRow[]>;
 }
 
+/** The env/runtime flag for per-request edit-candidate ranking. Off by default (#1776). */
+export const REQUEST_EDIT_RANKING_FLAG = "IMPACT_REQUEST_EDIT_RANKING";
+
+/** #1776 — whether edit candidates are ranked once per request. Off until a held-out gain is shown. */
+export function impactRequestEditRankingEnabled(): boolean {
+  return getConfigService().getBool(REQUEST_EDIT_RANKING_FLAG, false);
+}
+
 /** The env/runtime flag for the stored-link channel. Off by default (#1754). */
 export const STORED_LINK_SEEDS_FLAG = "IMPACT_STORED_LINK_SEEDS";
 
@@ -195,6 +218,23 @@ export interface ChangeSeeds {
   evidence?: ImpactSeedEvidence;
   /** #1756 — the hybrid file pool, when `filePoolSize` asked for it. */
   filePool?: SeedPoolFile[];
+  /**
+   * #1776 — the hybrid edit files with their {@link fileScore}, best first, when
+   * `editFileScores` asked for them. The per-request ranking reads these.
+   */
+  editFileScores?: EditFileScore[];
+  /**
+   * #1776 — edit candidates the per-request ranking moved to `related`. Not
+   * files to edit, but still seeds of the blast radius, so the callers the
+   * per-change seeding reached are still reached.
+   */
+  radiusSeeds?: RequirementCodeMatch[];
+}
+
+/** #1776 — one file's score in the edit-candidate ranking. */
+export interface EditFileScore {
+  filePath: string;
+  score: number;
 }
 
 // PROVISIONAL — tuned in-sample on six Miniflux issues; revisit at run 8 (see
@@ -339,17 +379,120 @@ export function fileScore(scores: readonly number[]): number {
 
 /** The files to edit: the best {@link MAX_EDIT_FILES}, each close enough to the best. */
 export function rankEditFiles(hits: ReadonlyArray<{ filePath: string; score: number }>): string[] {
+  return rankEditFileScores(hits).map((f) => f.filePath);
+}
+
+/** {@link rankEditFiles}, with each file's {@link fileScore}. */
+export function rankEditFileScores(
+  hits: ReadonlyArray<{ filePath: string; score: number }>,
+): EditFileScore[] {
   const byFile = new Map<string, number[]>();
   for (const h of hits) byFile.set(h.filePath, [...(byFile.get(h.filePath) ?? []), h.score]);
-  const ranked = [...byFile.entries()]
-    .map(([filePath, scores]) => ({ filePath, score: fileScore(scores) }))
-    .sort((a, b) => b.score - a.score || a.filePath.localeCompare(b.filePath));
+  return cutEditFiles(
+    [...byFile.entries()]
+      .map(([filePath, scores]) => ({ filePath, score: fileScore(scores) }))
+      .sort((a, b) => b.score - a.score || a.filePath.localeCompare(b.filePath)),
+  );
+}
+
+/** The edit-file cut over files ranked best first: the top {@link MAX_EDIT_FILES} within {@link MIN_FILE_SHARE} of the best. */
+function cutEditFiles<T extends { score: number }>(ranked: readonly T[]): T[] {
   const best = ranked[0]?.score ?? 0;
   if (best <= 0) return [];
-  return ranked
-    .filter((f) => f.score >= best * MIN_FILE_SHARE)
-    .slice(0, MAX_EDIT_FILES)
-    .map((f) => f.filePath);
+  return ranked.filter((f) => f.score >= best * MIN_FILE_SHARE).slice(0, MAX_EDIT_FILES);
+}
+
+/** #1776 — one seeding of a request: a change, seeded in one project. */
+export interface RequestSeeding {
+  projectId: string;
+  seeds: ChangeSeeds;
+}
+
+/** #1776 — an edit file the per-request ranking kept. */
+export interface RequestEditFile extends EditFileScore {
+  projectId: string;
+}
+
+const requestFileKey = (projectId: string, filePath: string) =>
+  JSON.stringify([projectId, filePath]);
+
+/**
+ * #1776 — the request's edit files: every seeding's hybrid edit files (a file
+ * found by several changes counts once, at its best score), cut ONCE against
+ * the request's best file by the same rule as {@link rankEditFiles}. Seeds
+ * without `editFileScores` contribute nothing.
+ */
+export function rankRequestEditFiles(seedings: readonly RequestSeeding[]): RequestEditFile[] {
+  const best = new Map<string, RequestEditFile>();
+  for (const { projectId, seeds } of seedings) {
+    for (const f of seeds.editFileScores ?? []) {
+      const key = requestFileKey(projectId, f.filePath);
+      const prev = best.get(key);
+      if (!prev || f.score > prev.score) best.set(key, { projectId, ...f });
+    }
+  }
+  return cutEditFiles(
+    [...best.values()].sort(
+      (a, b) =>
+        b.score - a.score ||
+        a.projectId.localeCompare(b.projectId) ||
+        a.filePath.localeCompare(b.filePath),
+    ),
+  );
+}
+
+/**
+ * #1776 — rank edit candidates once per request, across every change and
+ * project, instead of once per seeding. A hybrid edit file outside
+ * {@link rankRequestEditFiles} leaves `editCandidates`: its symbols head
+ * `related` (at the related scale) and become `radiusSeeds`, so the blast
+ * radius is walked from them as before. A file a stored link names stays (the
+ * #1754 channel never loses a candidate here), and so does any candidate
+ * without a hybrid score. Returns the seeds in the input order; a seeding that
+ * loses nothing comes back as the same object.
+ */
+export function rankEditCandidatesPerRequest(seedings: readonly RequestSeeding[]): ChangeSeeds[] {
+  const kept = new Set(
+    rankRequestEditFiles(seedings).map((f) => requestFileKey(f.projectId, f.filePath)),
+  );
+  return seedings.map(({ projectId, seeds }) => {
+    const linked = new Set(
+      (seeds.evidence?.editCandidates ?? [])
+        .filter((e) => e.channels.includes("stored-link"))
+        .map((e) => e.filePath),
+    );
+    const dropped = new Set(
+      (seeds.editFileScores ?? [])
+        .map((f) => f.filePath)
+        .filter((f) => !kept.has(requestFileKey(projectId, f)) && !linked.has(f)),
+    );
+    const demoted = seeds.editCandidates.filter((m) => dropped.has(m.filePath));
+    if (demoted.length === 0) return seeds;
+    return {
+      ...seeds,
+      editCandidates: seeds.editCandidates.filter((m) => !dropped.has(m.filePath)),
+      related: [
+        ...demoted.map((m) => ({ ...m, confidence: m.confidence * RELATED_CONFIDENCE_FACTOR })),
+        ...seeds.related,
+      ],
+      radiusSeeds: [...(seeds.radiusSeeds ?? []), ...demoted],
+      ...(seeds.filePool
+        ? {
+            filePool: seeds.filePool.map((f) =>
+              dropped.has(f.filePath) ? { ...f, editCandidate: false } : f,
+            ),
+          }
+        : {}),
+      ...(seeds.evidence
+        ? {
+            evidence: {
+              ...seeds.evidence,
+              editCandidates: seeds.evidence.editCandidates.filter((e) => !dropped.has(e.filePath)),
+            },
+          }
+        : {}),
+    };
+  });
 }
 
 interface FusedHit extends SeedSearchHit {
@@ -465,9 +608,10 @@ async function resolveHybridSeeds(
   const editable = production.filter((h) => !writers.has(h.symbolId)).slice(0, EDIT_POOL);
   const boost = (h: FusedHit) =>
     readPath && isHttpHandlerSignature(h.row.signature) ? READ_PATH_HANDLER_BOOST : 1;
-  const editFiles = new Set(
-    rankEditFiles(editable.map((h) => ({ filePath: h.row.filePath, score: h.score * boost(h) }))),
+  const editFileScores = rankEditFileScores(
+    editable.map((h) => ({ filePath: h.row.filePath, score: h.score * boost(h) })),
   );
+  const editFiles = new Set(editFileScores.map((f) => f.filePath));
 
   const top = ranked[0]!.score;
   const editCandidates: RequirementCodeMatch[] = [];
@@ -494,15 +638,16 @@ async function resolveHybridSeeds(
     .slice(0, MAX_RELATED)
     .map((h) => toMatch(h, (h.score / top) * RELATED_CONFIDENCE_FACTOR));
 
-  if (!deps.filePoolSize) return { editCandidates, related, schemaSeeds, retrievalMode };
-  const poolHits = production.filter((h) => !writers.has(h.symbolId));
-  return {
+  const seeds: ChangeSeeds = {
     editCandidates,
     related,
     schemaSeeds,
     retrievalMode,
-    filePool: filePoolOf(poolHits, editFiles, deps.filePoolSize, top, boost),
+    ...(deps.editFileScores ? { editFileScores } : {}),
   };
+  if (!deps.filePoolSize) return seeds;
+  const poolHits = production.filter((h) => !writers.has(h.symbolId));
+  return { ...seeds, filePool: filePoolOf(poolHits, editFiles, deps.filePoolSize, top, boost) };
 }
 
 /**
