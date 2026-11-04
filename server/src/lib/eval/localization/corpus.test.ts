@@ -12,8 +12,10 @@ import {
   graphFilesOf,
   loadLocalizationCorpus,
   normalizeFilePath,
+  parseSlurpedPages,
   repoOfFileKey,
   resolveLocalizationCorpusDir,
+  resolveSymbolsPath,
   validateCorpus,
   type LocalizationCorpusManifest,
   type LocalizationItem,
@@ -227,6 +229,16 @@ describe("loading", () => {
     );
   });
 
+  it("refuses a symbols path that leaves the corpora root (#1770)", async () => {
+    const d = await writeCorpus(
+      { ...manifest(), symbols: "../../etc/symbols.json.gz" },
+      { note: "", repos: [REPO], rows: [row("src/a.ts")] },
+    );
+    await expect(loadLocalizationCorpus("localization-02-fixture-portfolio", d)).rejects.toThrow(
+      /symbols path "..\/..\/etc\/symbols.json.gz" leaves the corpora root/,
+    );
+  });
+
   it("rejects an unknown corpus name", () => {
     expect(() => resolveLocalizationCorpusDir("nope")).toThrow(/unknown localization corpus/);
   });
@@ -244,7 +256,7 @@ describe("loading", () => {
     const miniflux = await loadLocalizationCorpus("localization-01-miniflux-heldout");
     const fixture = await loadLocalizationCorpus("localization-02-fixture-portfolio");
     const inSample = await loadLocalizationCorpus("localization-00-miniflux-run7-insample");
-    expect(miniflux.manifest.items.length).toBe(25);
+    expect(miniflux.manifest.items.length).toBe(24);
     expect(fixture.manifest.items.length).toBe(15);
     expect(inSample.manifest.purpose).toBe("in-sample");
     // #4497, #4513 and #4519 fixed run-7 issues; #4453 is a walkthrough reference set.
@@ -262,5 +274,42 @@ describe("loading", () => {
     const dirOf = resolveLocalizationCorpusDir("localization-02-fixture-portfolio");
     const file = decodeSymbolsFile(await readFile(path.join(dirOf, "symbols.json.gz")));
     expect(graphFilesOf(file.rows).size).toBe(10);
+  });
+});
+
+describe("resolveSymbolsPath (#1770)", () => {
+  const m = (symbols: string) => ({ id: "localization-02-fixture-portfolio" as const, symbols });
+  const dir = path.join("/data", "corpus", "localization-02-fixture-portfolio");
+
+  it("resolves inside the corpus, or a sibling corpus under the same root", () => {
+    expect(resolveSymbolsPath(dir, m("symbols.json.gz"))).toBe(path.join(dir, "symbols.json.gz"));
+    expect(resolveSymbolsPath(dir, m("../localization-01-miniflux-heldout/symbols.json.gz"))).toBe(
+      path.join("/data", "corpus", "localization-01-miniflux-heldout", "symbols.json.gz"),
+    );
+  });
+
+  it.each(["../../secrets.gz", "/etc/passwd", ".."])("refuses %j", (symbols) => {
+    expect(() => resolveSymbolsPath(dir, m(symbols))).toThrow(/leaves the corpora root/);
+  });
+
+  it("resolves the committed in-sample corpus's shared rows", () => {
+    const d = resolveLocalizationCorpusDir("localization-00-miniflux-run7-insample");
+    expect(resolveSymbolsPath(d, m("../localization-01-miniflux-heldout/symbols.json.gz"))).toMatch(
+      /localization-01-miniflux-heldout[\\/]symbols\.json\.gz$/,
+    );
+  });
+});
+
+describe("parseSlurpedPages (#1770)", () => {
+  it("flattens every page, including a page boundary inside a string the old regex split", () => {
+    const pages = [[{ filename: "a.go", patch: "x ][ y" }], [{ filename: "b.go" }], []];
+    expect(parseSlurpedPages<{ filename: string }>(JSON.stringify(pages))).toEqual([
+      { filename: "a.go", patch: "x ][ y" },
+      { filename: "b.go" },
+    ]);
+  });
+
+  it.each(['{"message":"Not Found"}', "[1, 2]", '[[{"a":1}], {"b":2}]'])("refuses %s", (json) => {
+    expect(() => parseSlurpedPages(json)).toThrow(/array of page arrays/);
   });
 });

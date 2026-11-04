@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as changeSeeds from "../../impact-analysis/change-seeds.js";
 import { loadRecordedVectors } from "../recorded-vectors.js";
 import {
   ARM_FACTORIES,
@@ -20,6 +21,12 @@ import {
   buildCorpusSearch,
   type CorpusSearch,
 } from "./search.js";
+
+// Pass-through by default; one test replaces a single seeding to pin what A0 ranks.
+vi.mock("../../impact-analysis/change-seeds.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../impact-analysis/change-seeds.js")>();
+  return { ...actual, resolveChangeSeeds: vi.fn(actual.resolveChangeSeeds) };
+});
 
 describe("mergeSeedings", () => {
   it("keeps a single seeding's order exactly", () => {
@@ -124,6 +131,29 @@ describe("A2 — A0 plus stored requirement links (#1754)", () => {
     expect(arm.id).toBe("A2");
     expect(arm.configuration.links).toMatch(/mapRequirementToCode semantic links: top 10/);
     expect(arm.configuration.llm).toBe(false);
+  });
+});
+
+describe("A0's ranking", () => {
+  it("ranks the edit candidates, then the related hits, then the schema seeds (#1770)", async () => {
+    const match = (filePath: string) =>
+      ({ filePath }) as changeSeeds.ChangeSeeds["related"][number];
+    vi.mocked(changeSeeds.resolveChangeSeeds).mockResolvedValueOnce({
+      editCandidates: [match("edit.go"), match("edit.go")],
+      related: [match("related.go")],
+      schemaSeeds: [match("schema.sql")],
+    });
+    const corpus = {
+      manifest: { repos: [{ name: "r" }] },
+    } as unknown as Parameters<ReturnType<typeof createA0Arm>["localize"]>[1];
+    const out = await createA0Arm({ search: {} as CorpusSearch }).localize(
+      { id: "I-1", title: "One change", text: "Body." } as never,
+      corpus,
+    );
+    expect(out).toEqual({
+      editCandidateFiles: ["r:edit.go"],
+      rankedFiles: ["r:edit.go", "r:related.go", "r:schema.sql"],
+    });
   });
 });
 

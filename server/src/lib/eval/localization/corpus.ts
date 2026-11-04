@@ -300,6 +300,39 @@ export function classifyChangedFiles(
   return { expectedFiles: [...expected].sort(), excludedFiles };
 }
 
+/**
+ * #1770 — the symbol rows' path. `manifest.symbols` is relative to the corpus
+ * directory and may point at a sibling corpus (the in-sample set shares the
+ * held-out set's rows), so it must stay inside the corpora root: the corpus
+ * directory's parent. The manifest is committed data; this is hardening.
+ */
+export function resolveSymbolsPath(
+  dir: string,
+  manifest: Pick<LocalizationCorpusManifest, "id" | "symbols">,
+): string {
+  const root = path.dirname(path.resolve(dir));
+  const resolved = path.resolve(dir, manifest.symbols);
+  const rel = path.relative(root, resolved);
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+    throw new Error(
+      `corpus ${manifest.id}: symbols path ${JSON.stringify(manifest.symbols)} leaves the corpora root`,
+    );
+  }
+  return resolved;
+}
+
+/**
+ * #1770 — the items of `gh api --paginate --slurp`: one JSON array holding
+ * every page's array. Anything else is refused rather than half-parsed.
+ */
+export function parseSlurpedPages<T>(json: string): T[] {
+  const pages = JSON.parse(json) as unknown;
+  if (!Array.isArray(pages) || !pages.every((p) => Array.isArray(p))) {
+    throw new Error("expected `gh api --paginate --slurp` output: an array of page arrays");
+  }
+  return (pages as T[][]).flat();
+}
+
 /** The `<repo>:<path>` of every file the symbol rows hold. */
 export function graphFilesOf(rows: readonly LocalizationSymbolRow[]): Set<string> {
   return new Set(rows.map((r) => fileKey(r.repo, r.filePath)));
@@ -320,7 +353,7 @@ export async function loadLocalizationCorpus(
   if (manifest.id !== name) {
     throw new Error(`corpus ${name}: manifest id is ${JSON.stringify(manifest.id)}`);
   }
-  const symbolsFile = decodeSymbolsFile(await fs.readFile(path.resolve(dir, manifest.symbols)));
+  const symbolsFile = decodeSymbolsFile(await fs.readFile(resolveSymbolsPath(dir, manifest)));
   const wanted = new Set(manifest.repos.map((r) => `${r.name}@${r.sha}`));
   const have = new Set(symbolsFile.repos.map((r) => `${r.name}@${r.sha}`));
   const missing = [...wanted].filter((r) => !have.has(r));

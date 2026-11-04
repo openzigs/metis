@@ -2,12 +2,19 @@
  * #1753 — run arms over a localization corpus, score them, and compare each
  * with A0 on the same items.
  *
- * Runs are RUN-MAJOR (every arm finishes run 1 before any starts run 2), so a
- * run the dollar cap stops leaves every arm with the same number of complete
- * runs. The cap is checked before each requirement against what has been spent
- * plus the most one requirement has cost so far, so the run stops BEFORE it
- * would exceed the budget, not after. An unpriced call stops it too: unknown
- * spend cannot be held under a cap.
+ * Runs are RUN-MAJOR (every arm finishes run 1 before any starts run 2). A cap
+ * that trips inside a later arm still leaves the earlier arms one run ahead, so
+ * every arm is SCORED on the runs all of them completed and the rest are
+ * dropped and counted; when even run 1 is incomplete, the partial run is scored
+ * and the report says that the arms cover different items (#1770).
+ *
+ * The cap is checked before each requirement against what has been spent plus
+ * the most one requirement of THAT arm has cost so far, and before each
+ * table-precision guard against the most a guard has cost. The look-ahead lives
+ * in an {@link EvalBudget} the caller shares across corpora, so the first item
+ * of a second corpus is not run blind (#1770). Nothing starts once the spend has
+ * reached the budget, so `--budget 0` runs nothing. An unpriced call stops the
+ * run too: unknown spend cannot be held under a cap.
  *
  * Pure orchestration over injected arms, meter and clock: no environment
  * reads, no network of its own.
@@ -29,10 +36,11 @@ import {
   bootstrapMeanCi,
   mcnemarExact,
   minimumDetectableGapStatement,
-  pairedBootstrap,
   readDifference,
+  stratifiedPairedBootstrap,
   type ComparisonVerdict,
   type PairedDifference,
+  type PairedStratum,
 } from "./stats.js";
 
 /** Default runs per arm: the arms with a model in the loop are not deterministic. */
@@ -42,6 +50,56 @@ export const DEFAULT_BUDGET_USD = 35;
 /** The table-precision guard rail: no arm may drop it more than this below A0. */
 export const TABLE_PRECISION_TOLERANCE = 0.03;
 
+/** Recall@10 carries no signal on a code graph this small: ranking every file finds them all. */
+export const RECALL_AT_10_TRIVIAL_GRAPH_FILES = 10;
+
+/**
+ * The dollar cap and its look-ahead, shared by every {@link runLocalizationEval}
+ * call of one invocation (the CLI runs one per corpus over one meter). It holds
+ * the most one requirement has cost per ARM, so a free arm (A0) gives no false
+ * all-clear for a model-backed one, and the most one table guard has cost.
+ */
+export class EvalBudget {
+  private readonly maxItemCostByArm = new Map<string, number>();
+  private maxGuardCost = 0;
+
+  constructor(readonly budgetUsd: number) {
+    if (!Number.isFinite(budgetUsd) || budgetUsd < 0) {
+      throw new Error(`the budget must be a non-negative number of dollars, not ${budgetUsd}`);
+    }
+  }
+
+  /** Why the next requirement of `armId` may not start, or null when it may. */
+  beforeItem(meter: CostMeter, armId: string): string | null {
+    return this.blocked(meter, this.maxItemCostByArm.get(armId) ?? 0);
+  }
+
+  /** Why the next table-precision guard may not start, or null when it may. */
+  beforeGuard(meter: CostMeter): string | null {
+    return this.blocked(meter, this.maxGuardCost);
+  }
+
+  observeItem(armId: string, costUsd: number): void {
+    this.maxItemCostByArm.set(armId, Math.max(this.maxItemCostByArm.get(armId) ?? 0, costUsd));
+  }
+
+  observeGuard(costUsd: number): void {
+    this.maxGuardCost = Math.max(this.maxGuardCost, costUsd);
+  }
+
+  private blocked(meter: CostMeter, nextUsd: number): string | null {
+    if (meter.unpricedCalls() > 0) return "an unpriced model call";
+    const spent = meter.spentUsd();
+    if (spent >= this.budgetUsd) {
+      return `budget: $${spent.toFixed(4)} spent of $${this.budgetUsd}`;
+    }
+    if (spent + nextUsd > this.budgetUsd) {
+      return `budget: $${spent.toFixed(4)} spent + up to $${nextUsd.toFixed(4)} next > $${this.budgetUsd}`;
+    }
+    return null;
+  }
+}
+
 /** The table-precision guard rail reading for one arm. */
 export type TableGuardReading =
   | { measured: true; tablePrecision: number; runs: number; configuration: string }
@@ -50,7 +108,10 @@ export type TableGuardReading =
 export interface RunLocalizationOptions {
   arms: LocalizationArm[];
   runs?: number;
+  /** A fresh cap for this call alone; pass `budget` instead to share one across calls. */
   budgetUsd?: number;
+  /** The cap and look-ahead shared across calls (the CLI's corpora). */
+  budget?: EvalBudget;
   meter: CostMeter;
   /** Milliseconds; a seam for tests. */
   now?: () => number;
@@ -64,8 +125,10 @@ export interface ArmResult {
   configuration: Record<string, string | number | boolean>;
   /** Complete runs (every item scored). */
   completedRuns: number;
-  /** Per item, every run's score. */
+  /** Per item, every run's score, including any the scoring dropped. */
   perItemRuns: Record<string, ItemRunScore[]>;
+  /** Run scores left out so every arm is scored on the same runs. */
+  droppedRunScores: number;
   items: ItemScore[];
   aggregate: ArmAggregate;
   /** 95% bootstrap interval of each paired metric's mean. */
@@ -107,22 +170,44 @@ export interface LocalizationReport {
     repos: Array<{ name: string; sha: string }>;
   };
   runsRequested: number;
+  /**
+   * The runs every arm is scored on: the runs ALL arms completed, or the
+   * partial first run when none was completed by every arm.
+   */
+  scoredRuns: number;
+  /** True when the scored run is a partial first run: the arms may cover different items. */
+  partialFirstRun: boolean;
   budgetUsd: number;
   spentUsd: number;
-  /** Where the cap (or an unpriced call) stopped the run; null when it ran to the end. */
+  /**
+   * Where the cap (or an unpriced call) stopped the run; null when it ran to the
+   * end. `item` is "table-precision guard" when it stopped before a guard.
+   */
   stopped: { reason: string; arm: string; run: number; item: string } | null;
   arms: ArmResult[];
   comparisons: ArmComparison[];
   detectableGap: string;
+  /** Caveats a reader must see next to the numbers (e.g. a metric with no signal). */
+  notes: string[];
 }
+
+/** The `item` a stop before a table-precision guard reports. */
+export const TABLE_GUARD_STOP = "table-precision guard";
 
 /** Run every arm over the corpus, score it and compare it with A0. */
 export async function runLocalizationEval(
   corpus: LocalizationCorpus,
   opts: RunLocalizationOptions,
 ): Promise<LocalizationReport> {
-  const runs = Math.max(1, Math.floor(opts.runs ?? DEFAULT_RUNS));
-  const budgetUsd = opts.budgetUsd ?? DEFAULT_BUDGET_USD;
+  const runs = opts.runs ?? DEFAULT_RUNS;
+  if (!Number.isInteger(runs) || runs < 1) {
+    throw new Error(`runs must be a positive integer, not ${runs}`);
+  }
+  if (opts.budget && opts.budgetUsd !== undefined) {
+    throw new Error("pass budgetUsd or a shared budget, not both");
+  }
+  const budget = opts.budget ?? new EvalBudget(opts.budgetUsd ?? DEFAULT_BUDGET_USD);
+  const { meter } = opts;
   const now = opts.now ?? (() => performance.now());
   if (opts.arms[0]?.id !== "A0") throw new Error("A0 must be the first arm: it is the baseline");
 
@@ -130,32 +215,38 @@ export async function runLocalizationEval(
     opts.arms.map((a) => [a.id, { completedRuns: 0, perItem: new Map<string, ItemRunScore[]>() }]),
   );
   let stopped: LocalizationReport["stopped"] = null;
-  let maxItemCost = 0;
+
+  /** The guard spends money too: it runs under the same cap, and never after a stop. */
+  async function readTableGuard(arm: LocalizationArm): Promise<TableGuardReading> {
+    if (!opts.tableGuard) return { measured: false, reason: "not requested (pass --table-guard)" };
+    if (stopped) return { measured: false, reason: `skipped: the run stopped (${stopped.reason})` };
+    const blocked = budget.beforeGuard(meter);
+    if (blocked) {
+      stopped = { reason: blocked, arm: arm.id, run: runs, item: TABLE_GUARD_STOP };
+      return { measured: false, reason: `skipped: ${blocked}` };
+    }
+    const spent = meter.spentUsd();
+    const reading = await opts.tableGuard(arm);
+    budget.observeGuard(meter.spentUsd() - spent);
+    return reading;
+  }
 
   outer: for (let run = 1; run <= runs; run++) {
     for (const arm of opts.arms) {
       const state = perArm.get(arm.id)!;
       for (const item of corpus.manifest.items) {
-        const spent = opts.meter.spentUsd();
-        if (opts.meter.unpricedCalls() > 0) {
-          stopped = { reason: "an unpriced model call", arm: arm.id, run, item: item.id };
+        const blocked = budget.beforeItem(meter, arm.id);
+        if (blocked) {
+          stopped = { reason: blocked, arm: arm.id, run, item: item.id };
           break outer;
         }
-        if (spent + maxItemCost > budgetUsd) {
-          stopped = {
-            reason: `budget: $${spent.toFixed(4)} spent + up to $${maxItemCost.toFixed(4)} next > $${budgetUsd}`,
-            arm: arm.id,
-            run,
-            item: item.id,
-          };
-          break outer;
-        }
+        const spent = meter.spentUsd();
         const t0 = now();
         const out = await arm.localize(item, corpus);
         const seconds = (now() - t0) / 1000;
-        const itemCost = opts.meter.spentUsd() - spent;
-        maxItemCost = Math.max(maxItemCost, itemCost);
-        const unpriced = opts.meter.unpricedCalls() > 0;
+        const itemCost = meter.spentUsd() - spent;
+        budget.observeItem(arm.id, itemCost);
+        const unpriced = meter.unpricedCalls() > 0;
         const score = scoreObservation(
           item.expectedFiles,
           { ...out, costUsd: unpriced ? null : itemCost, seconds },
@@ -168,12 +259,21 @@ export async function runLocalizationEval(
     }
   }
 
+  // Score every arm on the runs all of them completed; a partial first run when none did.
+  const commonRuns = Math.min(...[...perArm.values()].map((s) => s.completedRuns));
+  const scoredRuns = Math.max(1, commonRuns);
+
   const arms: ArmResult[] = [];
   for (const arm of opts.arms) {
     const state = perArm.get(arm.id)!;
-    const items = corpus.manifest.items
-      .filter((i) => (state.perItem.get(i.id)?.length ?? 0) > 0)
-      .map((i) => averageRuns(i.id, state.perItem.get(i.id)!));
+    let dropped = 0;
+    const items: ItemScore[] = [];
+    for (const i of corpus.manifest.items) {
+      const all = state.perItem.get(i.id) ?? [];
+      const kept = all.slice(0, scoredRuns);
+      dropped += all.length - kept.length;
+      if (kept.length > 0) items.push(averageRuns(i.id, kept));
+    }
     const intervals = Object.fromEntries(
       PAIRED_METRICS.map((m) => [m, bootstrapMeanCi(items.map((s) => s[m]))]),
     ) as Record<PairedMetric, [number, number]>;
@@ -183,12 +283,11 @@ export async function runLocalizationEval(
       configuration: arm.configuration,
       completedRuns: state.completedRuns,
       perItemRuns: Object.fromEntries(state.perItem),
+      droppedRunScores: dropped,
       items,
       aggregate: aggregateItems(items),
       intervals,
-      tableGuard: opts.tableGuard
-        ? await opts.tableGuard(arm)
-        : { measured: false, reason: "not requested (pass --table-guard)" },
+      tableGuard: await readTableGuard(arm),
     });
   }
 
@@ -203,27 +302,56 @@ export async function runLocalizationEval(
       repos: corpus.manifest.repos.map((r) => ({ name: r.name, sha: r.sha })),
     },
     runsRequested: runs,
-    budgetUsd,
-    spentUsd: opts.meter.spentUsd(),
+    scoredRuns,
+    partialFirstRun: commonRuns === 0,
+    budgetUsd: budget.budgetUsd,
+    spentUsd: meter.spentUsd(),
     stopped,
     arms,
     comparisons,
     detectableGap: minimumDetectableGapStatement(corpus.manifest.items.length),
+    notes: corpusNotes(corpus),
   };
 }
 
-/** Compare an arm with A0 over the items both scored, in corpus order. */
-export function compareArms(baseline: ArmResult, arm: ArmResult): ArmComparison {
+/** Caveats that follow from the corpus itself. */
+export function corpusNotes(corpus: LocalizationCorpus): string[] {
+  const notes: string[] = [];
+  const files = corpus.graphFiles.size;
+  if (files <= RECALL_AT_10_TRIVIAL_GRAPH_FILES) {
+    notes.push(
+      `The code graph holds only ${files} files, so an arm that ranks all of them scores ` +
+        `Recall@10 = 1.00 by construction: Recall@10 and hit@10 carry no signal on this corpus. ` +
+        `Read Recall@5, edit precision and MRR.`,
+    );
+  }
+  return notes;
+}
+
+/** The (A0, arm) score pairs of the items both scored, in the arm's order. */
+function pairsOf(baseline: ArmResult, arm: ArmResult): Array<readonly [ItemScore, ItemScore]> {
   const base = new Map(baseline.items.map((s) => [s.id, s]));
-  const pairs = arm.items.filter((s) => base.has(s.id)).map((s) => [base.get(s.id)!, s] as const);
-  const metrics = PAIRED_METRICS.map((metric): MetricComparison => {
-    const d = pairedBootstrap(
-      pairs.map(([b]) => b[metric]),
-      pairs.map(([, a]) => a[metric]),
+  return arm.items.filter((s) => base.has(s.id)).map((s) => [base.get(s.id)!, s] as const);
+}
+
+type ScorePair = readonly [ItemScore, ItemScore];
+
+/** Paired metric differences over one or more strata of pairs. */
+function metricComparisons(strata: ReadonlyArray<readonly ScorePair[]>): MetricComparison[] {
+  return PAIRED_METRICS.map((metric): MetricComparison => {
+    const d = stratifiedPairedBootstrap(
+      strata.map((pairs): PairedStratum => ({
+        baseline: pairs.map(([b]) => b[metric]),
+        arm: pairs.map(([, a]) => a[metric]),
+      })),
     );
     return { metric, ...d, verdict: readDifference(d) };
   });
-  const hits = ([5, 10] as const).map((k): HitComparison => {
+}
+
+/** Exact McNemar at k = 5 and 10 over pairs (pooled pairs are independent items too). */
+function hitComparisons(pairs: readonly ScorePair[]): HitComparison[] {
+  return ([5, 10] as const).map((k): HitComparison => {
     const field = k === 5 ? "hitAt5" : "hitAt10";
     // A requirement is a hit when it was hit on at least half of its runs.
     const b = pairs.filter(([x, y]) => x[field] >= 0.5 && y[field] < 0.5).length;
@@ -233,6 +361,13 @@ export function compareArms(baseline: ArmResult, arm: ArmResult): ArmComparison 
       p >= 0.05 ? "no measurable difference" : c > b ? "better" : "worse";
     return { k, b, c, p, verdict };
   });
+}
+
+/** Compare an arm with A0 over the items both scored, in corpus order. */
+export function compareArms(baseline: ArmResult, arm: ArmResult): ArmComparison {
+  const pairs = pairsOf(baseline, arm);
+  const metrics = metricComparisons([pairs]);
+  const hits = hitComparisons(pairs);
   const g0 = baseline.tableGuard;
   const g1 = arm.tableGuard;
   return {
@@ -248,12 +383,102 @@ export function compareArms(baseline: ArmResult, arm: ArmResult): ArmComparison 
   };
 }
 
+// ── Pooled comparison (#1770) ───────────────────────────────────────────────
+
+/** One arm against A0 over the held-out corpora pooled, stratified by corpus. */
+export interface PooledComparison {
+  arm: string;
+  baseline: "A0";
+  items: number;
+  strata: Array<{ corpus: string; items: number }>;
+  metrics: MetricComparison[];
+  hits: HitComparison[];
+}
+
+export interface PooledLocalizationReport {
+  kind: "localization-eval-pooled";
+  corpora: Array<{ id: string; items: number; scoredRuns: number; partialFirstRun: boolean }>;
+  /** A0's scored items over every pooled corpus. */
+  items: number;
+  comparisons: PooledComparison[];
+  detectableGap: string;
+}
+
+/**
+ * Pool the HELD-OUT reports: one corpus is too small to see the gaps epic #1751
+ * sized for, so each arm is also compared with A0 over every held-out item at
+ * once. The bootstrap resamples within each corpus (stratified) and McNemar
+ * counts the discordant items of all of them. An in-sample report is never
+ * pooled: it may not claim a gain.
+ */
+export function poolHeldOutReports(
+  reports: readonly LocalizationReport[],
+): PooledLocalizationReport {
+  const heldOut = reports.filter((r) => r.corpus.purpose === "held-out");
+  if (heldOut.length < 2) {
+    throw new Error(`pooling needs two or more held-out reports, got ${heldOut.length}`);
+  }
+  const armIds = heldOut[0]!.arms
+    .slice(1)
+    .map((a) => a.id)
+    .filter((id) => heldOut.every((r) => r.arms.some((a) => a.id === id)));
+  const comparisons = armIds.map((id): PooledComparison => {
+    const strata = heldOut.map((r) => ({
+      corpus: r.corpus.id,
+      pairs: pairsOf(
+        r.arms[0]!,
+        r.arms.find((a) => a.id === id)!,
+      ),
+    }));
+    const pooledPairs = strata.flatMap((s) => s.pairs);
+    return {
+      arm: id,
+      baseline: "A0",
+      items: pooledPairs.length,
+      strata: strata.map((s) => ({ corpus: s.corpus, items: s.pairs.length })),
+      metrics: metricComparisons(strata.map((s) => s.pairs)),
+      hits: hitComparisons(pooledPairs),
+    };
+  });
+  const items = heldOut.reduce((sum, r) => sum + r.arms[0]!.items.length, 0);
+  return {
+    kind: "localization-eval-pooled",
+    corpora: heldOut.map((r) => ({
+      id: r.corpus.id,
+      items: r.arms[0]!.items.length,
+      scoredRuns: r.scoredRuns,
+      partialFirstRun: r.partialFirstRun,
+    })),
+    items,
+    comparisons,
+    detectableGap: minimumDetectableGapStatement(items),
+  };
+}
+
 // ── Rendering ────────────────────────────────────────────────────────────────
 
 const f2 = (x: number) => x.toFixed(2);
 const f3 = (x: number) => x.toFixed(3);
 const ci = ([lo, hi]: [number, number]) => `[${f2(lo)}, ${f2(hi)}]`;
 const money = (x: number | null) => (x === null ? "unpriced" : `$${x.toFixed(4)}`);
+
+/** The paired-metric and McNemar rows of one comparison table. */
+function comparisonRows(cmp: {
+  arm: string;
+  metrics: readonly MetricComparison[];
+  hits: readonly HitComparison[];
+}): string[] {
+  return [
+    ...cmp.metrics.map(
+      (m) =>
+        `| ${cmp.arm} | ${m.metric} | ${m.meanDifference >= 0 ? "+" : ""}${f3(m.meanDifference)} | ${ci(m.ci)} | ${f3(m.p)} | ${m.verdict} |`,
+    ),
+    ...cmp.hits.map(
+      (h) =>
+        `| ${cmp.arm} | hit@${h.k} (McNemar, b=${h.b}, c=${h.c}) | ${h.c - h.b >= 0 ? "+" : ""}${h.c - h.b} items | — | ${f3(h.p)} | ${h.verdict} |`,
+    ),
+  ];
+}
 
 /** A human-readable report: configuration first, so no number travels without it. */
 export function toMarkdownReport(report: LocalizationReport): string {
@@ -275,11 +500,28 @@ export function toMarkdownReport(report: LocalizationReport): string {
   );
   if (report.stopped) {
     const s = report.stopped;
+    const where =
+      s.item === TABLE_GUARD_STOP
+        ? `before arm ${s.arm}'s table-precision guard`
+        : `before arm ${s.arm}, run ${s.run}, item ${s.item}`;
+    lines.push(`> **Stopped early** (${s.reason}) ${where}.`, "");
+  }
+  const dropped = report.arms.filter((a) => a.droppedRunScores > 0);
+  if (report.partialFirstRun && report.arms.length > 1) {
     lines.push(
-      `> **Stopped early** (${s.reason}) before arm ${s.arm}, run ${s.run}, item ${s.item}.`,
+      `> **Run 1 is incomplete.** The arms scored different items (${report.arms
+        .map((a) => `${a.id}: ${a.items.length}`)
+        .join(", ")}); each comparison pairs only the items both arms scored.`,
+      "",
+    );
+  } else if (dropped.length > 0) {
+    lines.push(
+      `> **Unequal runs.** Every arm is scored on the ${report.scoredRuns} run(s) all arms ` +
+        `completed; dropped: ${dropped.map((a) => `${a.id} ${a.droppedRunScores} item score(s)`).join(", ")}.`,
       "",
     );
   }
+  for (const note of report.notes) lines.push(`> **Note.** ${note}`, "");
   lines.push("## Arms", "");
   for (const a of report.arms) {
     lines.push(`### ${a.label}`, "");
@@ -319,16 +561,7 @@ export function toMarkdownReport(report: LocalizationReport): string {
   } else {
     lines.push("| Arm | Metric | Δ vs A0 | 95% CI | p | Reading |", "|---|---|---|---|---|---|");
     for (const cmp of report.comparisons) {
-      for (const m of cmp.metrics) {
-        lines.push(
-          `| ${cmp.arm} | ${m.metric} | ${m.meanDifference >= 0 ? "+" : ""}${f3(m.meanDifference)} | ${ci(m.ci)} | ${f3(m.p)} | ${m.verdict} |`,
-        );
-      }
-      for (const h of cmp.hits) {
-        lines.push(
-          `| ${cmp.arm} | hit@${h.k} (McNemar, b=${h.b}, c=${h.c}) | ${h.c - h.b >= 0 ? "+" : ""}${h.c - h.b} items | — | ${f3(h.p)} | ${h.verdict} |`,
-        );
-      }
+      lines.push(...comparisonRows(cmp));
       lines.push(
         `| ${cmp.arm} | table precision guard (≤ ${TABLE_PRECISION_TOLERANCE} drop) | — | — | — | ${
           cmp.tableGuardPassed === null ? "not measured" : cmp.tableGuardPassed ? "held" : "FAILED"
@@ -351,6 +584,39 @@ export function toMarkdownReport(report: LocalizationReport): string {
         : "—";
     });
     lines.push(`| ${id} | ${cells.join(" | ")} |`);
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+/** The pooled comparison as Markdown. */
+export function toPooledMarkdownReport(report: PooledLocalizationReport): string {
+  const lines: string[] = [];
+  lines.push("# Localization eval — held-out corpora pooled", "");
+  lines.push(
+    `Corpora: ${report.corpora
+      .map(
+        (c) =>
+          `\`${c.id}\` (${c.items} items, ${c.scoredRuns} scored run(s)${c.partialFirstRun ? ", run 1 incomplete" : ""})`,
+      )
+      .join(", ")} · Items pooled: **${report.items}**`,
+    "",
+  );
+  lines.push(
+    "Each arm is compared with A0 over every held-out item at once. The paired bootstrap " +
+      "resamples within each corpus, so every replicate keeps each corpus's share of the items; " +
+      "McNemar counts the discordant items of all corpora. Table precision is not pooled: read " +
+      "it in the per-corpus reports.",
+    "",
+  );
+  lines.push(`> ${report.detectableGap}`, "");
+  if (report.comparisons.length === 0) {
+    lines.push("No other arm was run: there is nothing to compare with A0.", "");
+    return lines.join("\n");
+  }
+  lines.push("| Arm | Metric | Δ vs A0 | 95% CI | p | Reading |", "|---|---|---|---|---|---|");
+  for (const cmp of report.comparisons) {
+    lines.push(...comparisonRows(cmp));
   }
   lines.push("");
   return lines.join("\n");

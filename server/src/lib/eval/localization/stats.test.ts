@@ -7,6 +7,7 @@ import {
   pairedBootstrap,
   readDifference,
   seededRandom,
+  stratifiedPairedBootstrap,
 } from "./stats.js";
 
 describe("mcnemarExact", () => {
@@ -80,6 +81,61 @@ describe("pairedBootstrap", () => {
     expect(readDifference({ meanDifference: 0.1, ci: [0, 0.2], p: 0.04, n: 30 })).toBe(
       "no measurable difference",
     );
+  });
+});
+
+describe("stratifiedPairedBootstrap (#1770)", () => {
+  it("is pairedBootstrap, draw for draw, with one stratum", () => {
+    const base = [0.1, 0.5, 0.2, 0.9, 0.4, 0, 1];
+    const arm = [0.3, 0.4, 0.6, 0.8, 0.9, 1, 1];
+    expect(stratifiedPairedBootstrap([{ baseline: base, arm }])).toEqual(
+      pairedBootstrap(base, arm),
+    );
+  });
+
+  it("weights every pooled item equally, not every stratum", () => {
+    const d = stratifiedPairedBootstrap([
+      { baseline: [0, 0], arm: [1, 1] },
+      { baseline: [0, 0, 0, 0, 0, 0], arm: [0, 0, 0, 0, 0, 0] },
+    ]);
+    expect(d.n).toBe(8);
+    expect(d.meanDifference).toBeCloseTo(0.25, 12);
+  });
+
+  it("resamples within each stratum, so each corpus keeps its share of every replicate", () => {
+    // Every item of stratum A gains 1, every item of B gains 0. Resampled within
+    // strata, every replicate mean is exactly 0.5; resampled across the pool it is not.
+    const d = stratifiedPairedBootstrap(
+      [
+        { baseline: Array(10).fill(0), arm: Array(10).fill(1) },
+        { baseline: Array(10).fill(0), arm: Array(10).fill(0) },
+      ],
+      { iterations: 500 },
+    );
+    expect(d.meanDifference).toBe(0.5);
+    expect(d.ci).toEqual([0.5, 0.5]);
+    expect(readDifference(d)).toBe("better");
+  });
+
+  it("skips an empty stratum and refuses an unpaired one, naming it", () => {
+    expect(stratifiedPairedBootstrap([{ baseline: [], arm: [] }])).toEqual({
+      meanDifference: 0,
+      ci: [0, 0],
+      p: 1,
+      n: 0,
+    });
+    expect(
+      stratifiedPairedBootstrap([
+        { baseline: [], arm: [] },
+        { baseline: [0], arm: [1] },
+      ]).meanDifference,
+    ).toBe(1);
+    expect(() =>
+      stratifiedPairedBootstrap([
+        { baseline: [1], arm: [1] },
+        { baseline: [1], arm: [1, 2] },
+      ]),
+    ).toThrow(/equal lengths \(1 vs 2 in stratum 1\)/);
   });
 });
 
