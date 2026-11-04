@@ -50,6 +50,12 @@
  * file that falls out is moved to `related` and stays a seed of the blast
  * radius (`radiusSeeds`), so recall of affected code does not drop.
  *
+ * #1784 — CROSS-SEARCH SCORE. A fused (RRF) score says where a hit ranked in
+ * its OWN search, so separate seedings' best files tie and the #1776 cut chose
+ * among near-ties. The engine ranks per request on {@link crossSearchScore}
+ * instead, which carries the vector cosine the hybrid search returns
+ * (`SeedSearchHit.vectorScore`), cut at {@link REQUEST_COSINE_MARGIN}.
+ *
  * Read-only, and never throws: a search fault yields no seeds.
  */
 import type { PrismaClient } from "@prisma/client";
@@ -74,6 +80,13 @@ export interface SeedSearchHit {
   name: string;
   kind: string;
   score: number;
+  /**
+   * #1784 — the vector channel's cosine for this hit, when that channel
+   * returned it (`HybridSearchResult.vectorScore`, #1097). Unlike `score`, a
+   * fused RRF score that says only where the hit ranked in its own search, a
+   * cosine compares across searches. Absent for a hit only BM25 found.
+   */
+  vectorScore?: number;
 }
 
 /** The search this module seeds with. `FusedCodeSearcher` satisfies it. */
@@ -235,6 +248,12 @@ export interface ChangeSeeds {
 export interface EditFileScore {
   filePath: string;
   score: number;
+  /**
+   * #1784 — the best vector cosine among the file's hits: a score that
+   * compares across searches, where `score` (summed RRF) does not. Absent when
+   * no hit of the file came from the vector channel.
+   */
+  cosine?: number;
 }
 
 // PROVISIONAL — tuned in-sample on six Miniflux issues; revisit at run 8 (see
@@ -382,17 +401,40 @@ export function rankEditFiles(hits: ReadonlyArray<{ filePath: string; score: num
   return rankEditFileScores(hits).map((f) => f.filePath);
 }
 
-/** {@link rankEditFiles}, with each file's {@link fileScore}. */
+/** {@link rankEditFiles}, with each file's {@link fileScore} and best cosine. */
 export function rankEditFileScores(
-  hits: ReadonlyArray<{ filePath: string; score: number }>,
+  hits: ReadonlyArray<{ filePath: string; score: number; vectorScore?: number }>,
 ): EditFileScore[] {
-  const byFile = new Map<string, number[]>();
-  for (const h of hits) byFile.set(h.filePath, [...(byFile.get(h.filePath) ?? []), h.score]);
+  const byFile = new Map<string, { scores: number[]; cosine?: number }>();
+  for (const h of hits) {
+    const file = byFile.get(h.filePath) ?? { scores: [] };
+    file.scores.push(h.score);
+    if (h.vectorScore !== undefined)
+      file.cosine = Math.max(file.cosine ?? -Infinity, h.vectorScore);
+    byFile.set(h.filePath, file);
+  }
   return cutEditFiles(
     [...byFile.entries()]
-      .map(([filePath, scores]) => ({ filePath, score: fileScore(scores) }))
+      .map(([filePath, { scores, cosine }]) => ({
+        filePath,
+        score: fileScore(scores),
+        ...(cosine !== undefined ? { cosine } : {}),
+      }))
       .sort((a, b) => b.score - a.score || a.filePath.localeCompare(b.filePath)),
   );
+}
+
+/**
+ * Two queries' hits on one symbol: the fused scores add (agreement lifts a
+ * hit), the cosine is the better of the two (#1784: a similarity, not a vote).
+ */
+function fuseHit(prev: SeedSearchHit, h: SeedSearchHit): SeedSearchHit {
+  const cosines = [prev.vectorScore, h.vectorScore].filter((c): c is number => c !== undefined);
+  return {
+    ...prev,
+    score: prev.score + h.score,
+    ...(cosines.length > 0 ? { vectorScore: Math.max(...cosines) } : {}),
+  };
 }
 
 /** The edit-file cut over files ranked best first: the top {@link MAX_EDIT_FILES} within {@link MIN_FILE_SHARE} of the best. */
@@ -413,37 +455,93 @@ export interface RequestEditFile extends EditFileScore {
   projectId: string;
 }
 
+/**
+ * #1784 — what the per-request ranking compares. `fused`: each file's summed
+ * RRF score, cut at {@link MIN_FILE_SHARE} of the best (#1776, arm A11; RRF
+ * scores do not compare across searches, so this lowered Recall@5). `cosine`:
+ * {@link crossSearchScore}, cut at {@link REQUEST_COSINE_MARGIN} below the best
+ * (arm A12).
+ */
+export type RequestRankingBasis = "fused" | "cosine";
+
+/**
+ * #1784 — how far below the request's best {@link crossSearchScore} an edit
+ * file may score and stay one. A share cut means nothing on a cosine band this
+ * narrow (about 0.50 to 0.76 for `gte-modernbert-base`), so the cut is an
+ * absolute margin. Sized on the in-sample run-7 set (6 issues) as the widest
+ * margin that reached its best edit precision; a model with a different cosine
+ * band needs it re-sized.
+ */
+export const REQUEST_COSINE_MARGIN = 0.05;
+
 const requestFileKey = (projectId: string, filePath: string) =>
   JSON.stringify([projectId, filePath]);
 
 /**
+ * #1784 — an edit file's score across searches: its fused score's share of
+ * its seeding's best file, times the seeding's best vector cosine. The share
+ * keeps the seeding's own order (agreement between hits still lifts a file);
+ * the cosine says how close the seeding's best answer is, which an RRF score
+ * cannot (rank 1 scores the same in every search). Undefined when no file of
+ * the seeding has a cosine (a keyword-only search): it cannot be compared.
+ */
+export function crossSearchScore(
+  file: EditFileScore,
+  seeding: readonly EditFileScore[],
+): number | undefined {
+  const cosines = seeding.flatMap((f) => (f.cosine === undefined ? [] : [f.cosine]));
+  const best = Math.max(0, ...seeding.map((f) => f.score));
+  if (cosines.length === 0 || best <= 0) return undefined;
+  return (file.score / best) * Math.max(...cosines);
+}
+
+/**
  * #1776 — the request's edit files: every seeding's hybrid edit files (a file
  * found by several changes counts once, at its best score), cut ONCE against
- * the request's best file by the same rule as {@link rankEditFiles}. Seeds
- * without `editFileScores` contribute nothing.
+ * the request's best file. Seeds without `editFileScores` contribute nothing.
+ *
+ * `fused` (the default, #1776) cuts on {@link fileScore} by the same rule as
+ * {@link rankEditFiles}. `cosine` (#1784) scores each file by
+ * {@link crossSearchScore} and keeps the best {@link MAX_EDIT_FILES} within
+ * {@link REQUEST_COSINE_MARGIN} of the best; a file of a seeding with no
+ * cosine cannot be compared, so it is kept, never ranked away.
  */
-export function rankRequestEditFiles(seedings: readonly RequestSeeding[]): RequestEditFile[] {
+export function rankRequestEditFiles(
+  seedings: readonly RequestSeeding[],
+  basis: RequestRankingBasis = "fused",
+): RequestEditFile[] {
   const best = new Map<string, RequestEditFile>();
+  const uncompared: RequestEditFile[] = [];
   for (const { projectId, seeds } of seedings) {
-    for (const f of seeds.editFileScores ?? []) {
+    const files = seeds.editFileScores ?? [];
+    for (const f of files) {
+      const score = basis === "fused" ? f.score : crossSearchScore(f, files);
+      if (score === undefined) {
+        uncompared.push({ projectId, ...f });
+        continue;
+      }
       const key = requestFileKey(projectId, f.filePath);
       const prev = best.get(key);
-      if (!prev || f.score > prev.score) best.set(key, { projectId, ...f });
+      if (!prev || score > prev.score) best.set(key, { projectId, ...f, score });
     }
   }
-  return cutEditFiles(
-    [...best.values()].sort(
-      (a, b) =>
-        b.score - a.score ||
-        a.projectId.localeCompare(b.projectId) ||
-        a.filePath.localeCompare(b.filePath),
-    ),
+  const ranked = [...best.values()].sort(
+    (a, b) =>
+      b.score - a.score ||
+      a.projectId.localeCompare(b.projectId) ||
+      a.filePath.localeCompare(b.filePath),
   );
+  if (basis === "fused") return cutEditFiles(ranked);
+  const top = ranked[0]?.score ?? 0;
+  return [
+    ...ranked.filter((f) => f.score >= top - REQUEST_COSINE_MARGIN).slice(0, MAX_EDIT_FILES),
+    ...uncompared,
+  ];
 }
 
 /**
  * #1776 — rank edit candidates once per request, across every change and
- * project, instead of once per seeding. A hybrid edit file outside
+ * project, instead of once per seeding, on `basis` ({@link RequestRankingBasis}). A hybrid edit file outside
  * {@link rankRequestEditFiles} leaves `editCandidates`: its symbols head
  * `related` (at the related scale) and become `radiusSeeds`, so the blast
  * radius is walked from them as before. A file a stored link names stays (the
@@ -451,9 +549,12 @@ export function rankRequestEditFiles(seedings: readonly RequestSeeding[]): Reque
  * without a hybrid score. Returns the seeds in the input order; a seeding that
  * loses nothing comes back as the same object.
  */
-export function rankEditCandidatesPerRequest(seedings: readonly RequestSeeding[]): ChangeSeeds[] {
+export function rankEditCandidatesPerRequest(
+  seedings: readonly RequestSeeding[],
+  basis: RequestRankingBasis = "fused",
+): ChangeSeeds[] {
   const kept = new Set(
-    rankRequestEditFiles(seedings).map((f) => requestFileKey(f.projectId, f.filePath)),
+    rankRequestEditFiles(seedings, basis).map((f) => requestFileKey(f.projectId, f.filePath)),
   );
   return seedings.map(({ projectId, seeds }) => {
     const linked = new Set(
@@ -556,7 +657,7 @@ async function resolveHybridSeeds(
       });
       for (const h of hits) {
         const prev = fused.get(h.symbolId);
-        fused.set(h.symbolId, prev ? { ...prev, score: prev.score + h.score } : { ...h });
+        fused.set(h.symbolId, prev ? fuseHit(prev, h) : { ...h });
       }
     }
   } catch (err) {
@@ -609,7 +710,11 @@ async function resolveHybridSeeds(
   const boost = (h: FusedHit) =>
     readPath && isHttpHandlerSignature(h.row.signature) ? READ_PATH_HANDLER_BOOST : 1;
   const editFileScores = rankEditFileScores(
-    editable.map((h) => ({ filePath: h.row.filePath, score: h.score * boost(h) })),
+    editable.map((h) => ({
+      filePath: h.row.filePath,
+      score: h.score * boost(h),
+      ...(h.vectorScore !== undefined ? { vectorScore: h.vectorScore } : {}),
+    })),
   );
   const editFiles = new Set(editFileScores.map((f) => f.filePath));
 

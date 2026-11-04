@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   aggregateItems,
+  editConfinedToRepo,
   averageRuns,
   graphResolutionRate,
   precisionOf,
@@ -83,10 +84,37 @@ describe("scoreObservation", () => {
       reciprocalRank: 0.5,
       graphResolution: 0.5,
       verdictCorrect: false,
+      editRepoConfined: null,
       editCandidateCount: 2,
       costUsd: 0.5,
       seconds: 2,
     });
+  });
+
+  it("scores repository confinement only for a one-repository answer (#1784)", () => {
+    const obs = (edit: string[]) => ({
+      rankedFiles: edit,
+      editCandidateFiles: edit,
+      costUsd: 0,
+      seconds: 0,
+    });
+    const score = (edit: string[], repos?: string[]) =>
+      scoreObservation(["a:x"], obs(edit), new Set(), undefined, repos).editRepoConfined;
+    expect(score(["a:x", "a:y"], ["a"])).toBe(true);
+    expect(score(["a:x", "b:y"], ["a"])).toBe(false);
+    expect(score(["a:x"], ["a", "b"])).toBeNull();
+    expect(score(["a:x"])).toBeNull();
+  });
+});
+
+describe("editConfinedToRepo (#1784)", () => {
+  it("is true only when there is an edit candidate and every one is in the repository", () => {
+    expect(editConfinedToRepo(["orders:a.ts", "orders:b.ts"], "orders")).toBe(true);
+    expect(editConfinedToRepo(["orders:a.ts", "billing:b.ts"], "orders")).toBe(false);
+    // A repository whose name prefixes another's is not the same repository.
+    expect(editConfinedToRepo(["orders-v2:a.ts"], "orders")).toBe(false);
+    // Naming nothing is not staying in the repository.
+    expect(editConfinedToRepo([], "orders")).toBe(false);
   });
 
   it("leaves the verdict unscored when either side has none", () => {
@@ -109,6 +137,7 @@ function run(over: Partial<ItemRunScore> = {}): ItemRunScore {
     reciprocalRank: 0,
     graphResolution: null,
     verdictCorrect: null,
+    editRepoConfined: null,
     editCandidateCount: 0,
     costUsd: 0,
     seconds: 1,
@@ -173,6 +202,16 @@ describe("aggregateItems", () => {
     expect(g.costUsdPerRequirement).toBeCloseTo(0.2);
     // Total spend counts every run: 0.1 + 2 × 0.3.
     expect(g.totalCostUsd).toBeCloseTo(0.7);
+  });
+
+  it("counts the one-repository items whose edit candidates stayed in it on half their runs (#1784)", () => {
+    const g = aggregateItems([
+      averageRuns("A", [run({ editRepoConfined: true }), run({ editRepoConfined: false })]),
+      averageRuns("B", [run({ editRepoConfined: false })]),
+      averageRuns("C", [run({ editRepoConfined: null })]),
+    ]);
+    expect(g.repoConfinement).toEqual({ confined: 1, of: 2 });
+    expect(aggregateItems([averageRuns("C", [run()])]).repoConfinement).toBeNull();
   });
 
   it("has no cost when a requirement was unpriced", () => {

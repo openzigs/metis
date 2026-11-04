@@ -33,6 +33,8 @@ Complete runs: 3
 |---|---|---|---|---|---|---|---|---|---|---|
 | A0 | 0.54 [0.39, 0.68] | 1.00 [1.00, 1.00] | 0.21 [0.17, 0.26] | 0.54 [0.37, 0.72] | n/a (no model-named files) | not measured | 0 | 10.00 | $0.0000 | 0.00 |
 
+Edit candidates only in the answer's repository (items with a one-repository answer): A0 0/14
+
 - A0 table precision: not requested (pass --table-guard)
 
 ## Paired comparison with A0

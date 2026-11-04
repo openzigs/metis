@@ -48,7 +48,10 @@ const FILES: Record<string, Record<string, string>> = {
   strong: { [SAVE.title]: "save.go", [SHOW.title]: "show.go" },
   weak: { [SAVE.title]: "weak-save.go", [SHOW.title]: "weak-show.go" },
 };
-const SCORES: Record<string, number> = { strong: 1, weak: 0.3 };
+// #1784 — the fused (RRF) scores tie, as rank 1 does in every search; the
+// vector cosine says the weak project's best answer is far further away.
+const SCORES: Record<string, number> = { strong: 0.06, weak: 0.06 };
+const COSINES: Record<string, number> = { strong: 0.76, weak: 0.55 };
 
 function graphFor(projectId: string) {
   const files = Object.values(FILES[projectId] ?? {});
@@ -83,7 +86,7 @@ const seedChange = vi.fn(async (c: ChangedRequirement, projectId: string): Promi
     ],
     related: [],
     schemaSeeds: [],
-    editFileScores: [{ filePath, score }],
+    editFileScores: [{ filePath, score, cosine: COSINES[projectId]! }],
   };
 });
 

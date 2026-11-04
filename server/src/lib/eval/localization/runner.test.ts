@@ -671,3 +671,43 @@ describe("toMarkdownReport", () => {
     expect(md).not.toContain("IN-SAMPLE");
   });
 });
+
+describe("repository confinement in the report (#1784)", () => {
+  it("counts the items whose edit candidates stayed in the answer's one repository, for a portfolio only", async () => {
+    const one = corpus(2);
+    const portfolio: LocalizationCorpus = {
+      ...one,
+      manifest: {
+        ...one.manifest,
+        repos: [...one.manifest.repos, { ...one.manifest.repos[0]!, name: "s" }],
+      },
+    };
+    // A0 names a file of another repository on item 1; A12 stays in "r" on both.
+    const named = (id: string, strays: boolean): LocalizationArm => ({
+      id,
+      label: id,
+      configuration: {},
+      async localize(item) {
+        const edit = [item.expectedFiles[0]!, ...(strays && item.id === "I-1" ? ["s:x.ts"] : [])];
+        return { rankedFiles: edit, editCandidateFiles: edit };
+      },
+    });
+    const opts = {
+      arms: [named("A0", true), named("A12", false)],
+      runs: 1,
+      meter: new FakeMeter(),
+    };
+    const report = await runLocalizationEval(portfolio, opts);
+    expect(report.arms.map((a) => a.aggregate.repoConfinement)).toEqual([
+      { confined: 1, of: 2 },
+      { confined: 2, of: 2 },
+    ]);
+    expect(toMarkdownReport(report)).toContain(
+      "Edit candidates only in the answer's repository (items with a one-repository answer): A0 1/2 · A12 2/2",
+    );
+    const single = await runLocalizationEval(one, opts);
+    expect(toMarkdownReport(single)).not.toContain(
+      "Edit candidates only in the answer's repository",
+    );
+  });
+});
