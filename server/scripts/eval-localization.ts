@@ -9,6 +9,7 @@
  *   pnpm eval:localization --runs 1 --budget 10  # fewer runs, a lower dollar cap
  *   pnpm eval:localization --table-guard         # + table precision on impact-recall-01 (live provider)
  *   pnpm eval:localization --arms A0,A4 --table-guard  # + A4 on the split seeding, next to A0 on it (#1786)
+ *   pnpm eval:localization --arms A0,A13,A13C,A13S     # #1798 re-order: A0 base, A12 base, shuffled pool
  *   pnpm eval:localization --embed               # embed missing vectors with the local model
  *   pnpm eval:localization --md                  # print the Markdown report
  *   pnpm eval:localization --baseline            # A0 only: write baseline-A0.{json,md} into each corpus
@@ -75,9 +76,11 @@ import {
 } from "../src/lib/eval/localization/runner.js";
 import {
   MAPPER_SEEDING,
+  fixtureEditCandidateReranker,
   fixtureEditCandidateVerifier,
   fixtureSearchRows,
   measureSplitSeedingGuard,
+  type SplitSeedingGuardDeps,
 } from "../src/lib/eval/localization/table-guard.js";
 import type {
   ImpactRecallRunSummary,
@@ -182,8 +185,14 @@ async function tableGuardFor(
     runnerMod.runImpactRecallEvalRepeated(fixture, opts, TABLE_GUARD_RUNS);
 
   const others: Record<string, () => Promise<TableGuardReading>> = {};
-  if (armIds.includes("A4") && armProvider) {
-    others.A4 = async () => {
+  // #1786 / #1798 — an arm whose stage runs on the split seeding is read there,
+  // next to A0 on the same seeding.
+  const splitGuard =
+    (
+      arm: string,
+      stage: Pick<SplitSeedingGuardDeps, "editCandidateVerifier" | "editCandidateReranker">,
+    ) =>
+    async (): Promise<TableGuardReading> => {
       const file = fixtureMod.recordedVectorsFile(fixtureMod.resolveCorpusDir(corpusName));
       let inner: EmbedService | null = null;
       if (embed) {
@@ -193,13 +202,13 @@ async function tableGuardFor(
       const cache = new EmbedCache(
         await loadRecordedVectors(file),
         inner,
-        "pnpm eval:localization --arms A0,A4 --table-guard --embed (with the local model)",
+        `pnpm eval:localization --arms A0,${arm} --table-guard --embed (with the local model)`,
       );
       const search = await buildCorpusSearch(fixtureSearchRows(fixture), cache);
       const reading = await measureSplitSeedingGuard({
         search,
         options,
-        editCandidateVerifier: fixtureEditCandidateVerifier(fixture, armProvider),
+        ...stage,
         runRepeated,
         describe,
       });
@@ -215,6 +224,17 @@ async function tableGuardFor(
       }
       return reading;
     };
+  if (armIds.includes("A4") && armProvider) {
+    others.A4 = splitGuard("A4", {
+      editCandidateVerifier: fixtureEditCandidateVerifier(fixture, armProvider),
+    });
+  }
+  // #1798 — A13's re-order (A0's base order; production has no shuffle and no
+  // A12 base on this path, so A13C and A13S are not read here).
+  if (armIds.includes("A13") && armProvider) {
+    others.A13 = splitGuard("A13", {
+      editCandidateReranker: fixtureEditCandidateReranker(fixture, armProvider),
+    });
   }
   return memoisedA0TableGuard(async () => {
     const summary = await runRepeated(options);

@@ -40,6 +40,7 @@ rather than a degraded mode.
 | Code-symbol seeder/reranker (#931) | `traceability/requirement-code-mapping.ts` (`LlmCodeSymbolSearcher`) | `IMPACT_LLM_SEEDING` | **off** | the BM25 wide pool (union, never a replacement) | deterministic BM25 top-K |
 | Entity-seed recall union (#1002) | `traceability/requirement-entity-seeds.ts` | `IMPACT_LLM_ENTITY_SEEDS` | **off** | the project's code-graph entity vocabulary (exact name match) | base searcher unchanged |
 | Edit-candidate check (#1756) | `impact-analysis/edit-candidate-verifier.ts` | `IMPACT_LLM_EDIT_VERIFY` | **off** | integer index into the hybrid FILE pool (about 30 files: the deterministic edit candidates, then the next files of the same ranking); a promotion's line must fall inside a named symbol of that file in the code graph (never the file's whole-file `module` symbol, #1781), checked without a model. Additive only (the #931 rule below): it may append a verified file and mark a candidate doubtful, never remove, move or re-score one; a promoted file carries its own hybrid score. The pool (code identifiers and signatures, which can carry comments) is fenced as untrusted data like the requirement | deterministic edit candidates unchanged |
+| Edit-candidate re-order (#1798) | `impact-analysis/edit-candidate-reranker.ts` | `IMPACT_LLM_EDIT_RERANK` | **off** | integer index into the same hybrid FILE pool, shown without `[EDIT]` marks; up to 10 picks, most likely first, each with a line that must fall inside a named symbol of that file in the code graph (never its `module` symbol), checked without a model; an unchecked pick is dropped and counted. The **bounded exception to the #931 rule** below: the model may move files into the head of the files to edit, never remove one and never score one. The order is a reciprocal-rank fusion (`k = 60`, model weight `RERANK_MODEL_WEIGHT`, provisional) of the deterministic order and the model's checked order; its top 5 plus every deterministic candidate are the files to edit. Fenced as untrusted data like the #1756 check | deterministic edit candidates and order unchanged |
 | Table-relevance output filter (#936) | `impact-analysis/table-relevance-filter.ts` | `IMPACT_LLM_TABLE_FILTER` | **ON** (#1025) | integer index into the crossing's own candidate rows | unfiltered crossing |
 | Additive column DDL proposal (#1001) | `impact-analysis/additive-column-proposer.ts` | `IMPACT_LLM_ADDITIVE_DDL` | **ON** (#1025) | integer index into the crossing's own tables + a closed type allowlist; a column already in the live schema or the code graph is dropped (#1003). Since #791 it is shown the lineage writers and answers with covering writers, a justification and a `coveredBy` per proposal; a deterministic gate (`column-proposal-gate.ts`) then decides. In a **covered** request (bounded by an age or a date, with a lineage writer that filters on a time column) no field a model chose can make a column core: every proposal is optional or not proposed, and core comes only from what the user wrote in the request (an `ALTER TABLE`, or an add-a-column sentence the #923 fast path reads). Coverage is decided on the writers of every table the crossing reached, looked up before the #936 table filter is applied, so that filter's answer does not change it; the #1029 judge runs only when the proposer does not. The one limit: with `IMPACT_LLM_SEEDING` / `IMPACT_LLM_ENTITY_SEEDS` on, a model shapes the seeds, and so which tables the crossing reaches. The cost: a genuinely new column in a covered request shows as optional. In an uncovered request the gate does not rule: a proposal is core and marked `unchecked` with the reason, except one the proposer itself labels `user-preference`, which is optional (a demotion only). The write-path block is repository text: fenced as untrusted like the requirement, every field capped | no proposals appended |
 | Clause-vs-impact reconciliation (#1005) | `impact-analysis/clause-coverage-reconciler.ts` | `IMPACT_LLM_CLAUSE_RECONCILE` | **ON** (#1025) | integer index into the project's **unsurfaced** tables | no advisories |
@@ -127,6 +128,33 @@ the model's reason next to its base score in `seedEvidence`. Off by default unti
 `pnpm eval:localization --arms A0,A4` shows a held-out gain: a statistically
 significant Recall@5 gain over A0, edit precision no lower, table precision no
 more than 0.03 lower, at no more than about $0.25 per requirement.
+
+**#1798 is a deliberate, bounded exception to this rule.** Nothing additive raised
+Recall@5 (an appended file lands after the deterministic picks), so the edit-candidate
+re-order lets one model call move files UP the list of files to edit. It keeps what the
+#931 lesson protects:
+
+- **The model writes no score or confidence.** It returns an ordered list of pool
+  indices, each with a cited line and a reason. A pick whose line is not inside a named
+  symbol of that file in the code graph is dropped and counted, never used.
+- **No deterministic candidate is dropped.** `applyEditRerank` returns every
+  deterministic edit candidate as the same object, with the same score. The files to edit
+  are the top 5 of the fused order plus every deterministic candidate, so the blast radius
+  still starts from every deterministic seed and cannot shrink. A file the model moved in
+  carries its symbol's own hybrid confidence (channel `edit-reranker` in `seedEvidence`).
+- **The order is a fusion, not a replacement.** Reciprocal-rank fusion of the
+  deterministic order and the model's checked order means a file both rank high stays
+  high. The model weight bounds how far down the pool a model-only pick can reach. At
+  weight 1 (`k = 60`), the model's first pick outranks a deterministic first file the
+  model left out, even when the search ranked that pick 30th. At about 0.3 or below it
+  cannot. `RERANK_MODEL_WEIGHT` is fixed on the in-sample set before either held-out set
+  is read.
+
+It ships **off**. The bar for turning it on: a significant Recall@5 gain over A0 on the
+pooled held-out set (`pnpm eval:localization --arms A0,A13,A13C`), table precision no
+more than 0.03 below A0 on the same (split) seeding (`--table-guard`), and no more than
+$0.05 per requirement on `claude-sonnet-5-5`. `A13S` shows the pool shuffled and reads
+whether Recall@5 depends on the order the model is shown.
 
 ## Two measurement lessons that invalidated earlier numbers
 

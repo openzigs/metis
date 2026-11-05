@@ -21,6 +21,7 @@ import {
 import { loadRecordedVectors } from "../recorded-vectors.js";
 import { EmbedCache, assertNoMissingVectors, buildCorpusSearch } from "./search.js";
 import {
+  fixtureEditCandidateReranker,
   fixtureEditCandidateVerifier,
   fixtureFileSymbols,
   fixtureSearchRows,
@@ -125,6 +126,61 @@ describe("measureSplitSeedingGuard (#1786)", () => {
       },
     });
   });
+
+  it("reads #1798's re-order on the split seeding the same way, and refuses no stage at all", async () => {
+    const seen: RunImpactRecallOptions[] = [];
+    const reranker = vi.fn();
+    const search = { searcher: { search: async () => [] }, loadSymbols: async () => [] };
+    const deps = {
+      search,
+      options: {},
+      runRepeated: async (opts: RunImpactRecallOptions) => {
+        seen.push(opts);
+        return opts.splitSeeding?.editCandidateReranker
+          ? summary("split + edit re-order", 0.49)
+          : summary("split", 0.5);
+      },
+      describe: (s: ImpactRecallRunSummary) => s.configuration.label,
+    };
+    const reading = await measureSplitSeedingGuard({ ...deps, editCandidateReranker: reranker });
+    expect(seen.map((o) => o.splitSeeding?.editCandidateReranker)).toEqual([undefined, reranker]);
+    expect(seen[1]!.splitSeeding?.editCandidateVerifier).toBeUndefined();
+    expect(reading).toMatchObject({
+      tablePrecision: 0.49,
+      seeding: "split + edit re-order",
+      baseline: { tablePrecision: 0.5, seeding: "split" },
+    });
+    await expect(measureSplitSeedingGuard(deps)).rejects.toThrow(/needs the arm's stage/);
+  });
+});
+
+describe("fixtureEditCandidateReranker (#1798)", () => {
+  const fx = buildSyntheticFixture();
+  const pool: SeedPoolFile[] = ["DataMapper.java", "DataMapper.xml"].map((filePath, i) => ({
+    filePath,
+    score: 1 - i * 0.5,
+    editCandidate: i === 0,
+    symbols: [],
+  }));
+  const saying = (content: string) =>
+    ({
+      key: "anthropic",
+      model: "claude-sonnet-5-5",
+      offline: false,
+      chat: vi.fn(async () => ({ content, model: "claude-sonnet-5-5" })),
+    }) as unknown as AIProvider;
+
+  it("keeps a pick at a line inside one of the fixture's symbols, and drops one outside", async () => {
+    const pick = (line: number) =>
+      fixtureEditCandidateReranker(
+        fx,
+        saying(`{"order":[{"index":1,"line":${line},"reason":"It reads the row."}]}`),
+      )({ requirementText: "Read alpha", pool, projectId: fx.projectId });
+    expect((await pick(2)).picks.map((p) => p.filePath)).toEqual(["DataMapper.xml"]);
+    const outside = await pick(7);
+    expect(outside.picks).toEqual([]);
+    expect(outside.droppedPicks).toBe(1);
+  });
 });
 
 /**
@@ -149,5 +205,28 @@ describe("the split seeding on impact-recall-01-jpetstore (#1786)", () => {
     expect(result.configuration).toMatchObject({ seeding: "split", searcher: "hybrid" });
     expect(result.scores).toHaveLength(fixture.requirements.length);
     expect(result.aggregate.tables.macroRecall).toBeGreaterThan(0);
+  });
+
+  it("runs the #1798 re-order on every change's pool, and labels the reading with it", async () => {
+    const dir = resolveCorpusDir("impact-recall-01-jpetstore");
+    const fixture = await loadImpactRecallFixture(dir);
+    const cache = new EmbedCache(await loadRecordedVectors(recordedVectorsFile(dir)), null, "x");
+    const search = await buildCorpusSearch(fixtureSearchRows(fixture), cache);
+    const reranker = vi.fn(async () => ({
+      applied: true,
+      picks: [],
+      droppedPicks: 0,
+      namedFiles: [],
+    }));
+    const result = await runImpactRecallEval(fixture, {
+      splitSeeding: {
+        searcher: search.searcher,
+        loadSymbols: search.loadSymbols,
+        editCandidateReranker: reranker,
+      },
+    });
+    expect(reranker).toHaveBeenCalled();
+    expect(result.configuration).toMatchObject({ seeding: "split + edit re-order" });
+    expect(result.configuration.label).toContain("#1798 LLM edit re-order");
   });
 });

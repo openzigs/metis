@@ -742,6 +742,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Impact analysis: one LLM call per changed requirement and project that looks at the hybrid candidate pool (about 30 files) and may PROMOTE a pool file to the files to edit, at a line checked against the code graph, or mark a deterministic candidate doubtful (#1756). OFF by default. Additive only, the #931 rule: every deterministic edit candidate stays, with its score; a promotion carries the file's own hybrid score, never a model score; an unverified line is dropped and counted in the run summary. Metered as impact.edit-verify under the 60-second impact deadline. The default flips only on a held-out gain measured by `pnpm eval:localization --arms A0,A4` (#1753).",
     sensitive: false,
   },
+  // ── Epic #1751 / Issue #1798 — LLM re-order of the edit candidates ──────
+  IMPACT_LLM_EDIT_RERANK: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      "Impact analysis: one LLM call per changed requirement and project that orders the hybrid candidate pool (about 30 files) by how likely the change edits each file, up to 10 picks, each at a line checked against the code graph (#1798). OFF by default. A bounded exception to the #931 rule: the model may re-order the head of the files to edit, never drop one. The final order fuses the deterministic order with the model's checked order (reciprocal-rank fusion); the top 5 of it plus every deterministic candidate are the files to edit; a pick's symbol carries the file's own hybrid score, never a model score; an unchecked pick is dropped and counted in the run summary, which also says how many files moved. Metered as impact.edit-rerank under the 60-second impact deadline. The default flips only on a significant held-out Recall@5 gain measured by `pnpm eval:localization --arms A0,A13` (#1753).",
+    sensitive: false,
+  },
   // ── Epic #1751 / Issue #1776 — rank edit candidates once per request ────
   IMPACT_REQUEST_EDIT_RANKING: {
     tier: "tunable",

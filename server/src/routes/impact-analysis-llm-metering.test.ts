@@ -732,6 +732,109 @@ describe("#1756 — the edit-candidate check is wired, metered and reported", ()
   });
 });
 
+describe("#1798 — the edit re-order is wired, metered and reported", () => {
+  const sym = (id: string, confidence: number) => ({
+    codeSymbolId: id,
+    qualifiedName: `pkg.${id}`,
+    kind: "function",
+    startLine: 1,
+    endLine: 9,
+    signature: null,
+    confidence,
+  });
+  const pool = [
+    { filePath: "A.ts", score: 1, editCandidate: true, symbols: [sym("A", 1)] },
+    { filePath: "B.ts", score: 0.4, editCandidate: false, symbols: [sym("B", 0.4)] },
+  ];
+  const { mapRequirement: _mapper, ...splitSeeding } = RUN_DEPS;
+  const seedChange = async () => ({
+    editCandidates: [
+      {
+        codeSymbolId: "A",
+        filePath: "A.ts",
+        qualifiedName: "pkg.A",
+        startLine: 1,
+        endLine: 5,
+        confidence: 1,
+      },
+    ],
+    related: [],
+    schemaSeeds: [],
+    filePool: pool,
+  });
+  const run = async (id: string) => {
+    const { prisma, analyses, affected } = servicePrismaMock();
+    analyses.set(id, { id, sourceText: "text", documentId: null });
+    await executeImpactAnalysis(id, ["proj-1"], {
+      ...splitSeeding,
+      seedChange,
+      ...impactRunDeps("user-1", ["proj-1"]),
+      prisma: prisma as never,
+    });
+    await flushTokenWrites();
+    return { row: analyses.get(id)!, affected };
+  };
+
+  it("is not wired with the flag off", () => {
+    expect("editCandidateReranker" in impactRunDeps("user-1", ["proj-1"])).toBe(false);
+  });
+
+  it("is not wired, and says so on the run, when the flag is on but no live provider builds", async () => {
+    vi.stubEnv("IMPACT_LLM_EDIT_RERANK", "1");
+    providerFactory = offlineProvider;
+    expect("editCandidateReranker" in impactRunDeps("user-1", ["proj-1"])).toBe(false);
+    const { row } = await run("ia-rerank-offline");
+    expect(row.status).toBe("completed");
+    expect(String(row.summary)).toContain("edit-candidate re-order");
+    expect(tokenRows).toHaveLength(0);
+  });
+
+  it("meters its call under impact.edit-rerank, checks the line in THIS project's graph, and says what moved", async () => {
+    vi.stubEnv("IMPACT_LLM_EDIT_RERANK", "1");
+    providerFactory = () =>
+      liveProvider(() =>
+        JSON.stringify({ order: [{ index: 1, line: 3, reason: "It writes the record." }] }),
+      );
+    codeSymbolRows.push({
+      id: "B",
+      qualifiedName: "pkg.B",
+      filePath: "B.ts",
+      kind: "function",
+      language: "ts",
+      startLine: 1,
+      endLine: 9,
+    });
+    const { row, affected } = await run("ia-rerank");
+    expect(row.status).toBe("completed");
+    expect(tokenRows.map((r) => r.agentStep)).toEqual(["impact.edit-rerank"]);
+    expect(tokenRows[0]!.projectId).toBe("proj-1");
+    expect(prismaMock.codeSymbol.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { projectId: "proj-1", filePath: { in: ["B.ts"] } } }),
+    );
+    // The deterministic candidate stays; the checked pick joins it as a file to edit.
+    const direct = affected.filter((s) => s.relation === "direct").map((s) => s.codeSymbolId);
+    expect(direct).toEqual(expect.arrayContaining(["A", "B"]));
+    expect(affected.find((s) => s.codeSymbolId === "B")).toMatchObject({
+      depth: 0,
+      confidence: 0.4,
+    });
+    expect(String(row.summary)).toContain(
+      "The AI re-order moved 1 file into the top of the files to edit",
+    );
+  });
+
+  it("names the re-order on the run's notice when its answer could not be read", async () => {
+    vi.stubEnv("IMPACT_LLM_EDIT_RERANK", "1");
+    providerFactory = () => liveProvider(() => "Sorry, no JSON today.");
+    const { row, affected } = await run("ia-rerank-unread");
+    expect(row.status).toBe("completed");
+    expect(String(row.summary)).toContain("edit-candidate re-order");
+    expect(affected.filter((s) => s.relation === "direct").map((s) => s.codeSymbolId)).toEqual([
+      "A",
+    ]);
+  });
+});
+
 describe("#1024 — graceful degradation with no usable provider", () => {
   async function runWith(id: string, factory: () => AIProvider) {
     providerFactory = factory;

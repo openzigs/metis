@@ -19,6 +19,7 @@
 import {
   computeProjectImpact,
   type ComputeImpactDeps,
+  type EditCandidateRerankerFn,
   type EditCandidateVerifierFn,
 } from "../../impact-analysis/impact-analysis-engine.js";
 import {
@@ -67,10 +68,13 @@ export interface SplitSeedingOptions {
   loadSymbols: SeedSymbolLoader;
   /** #1756 — the additive LLM edit-candidate check over the file pool. Absent: no check. */
   editCandidateVerifier?: EditCandidateVerifierFn;
+  /** #1798 — the LLM re-order of the edit candidates over the file pool. Absent: no re-order. */
+  editCandidateReranker?: EditCandidateRerankerFn;
 }
 
 /** #1786 — which seeding produced a reading. */
-export type ImpactRecallSeeding = "mapper" | "split" | "split + edit-candidate check";
+export type ImpactRecallSeeding =
+  "mapper" | "split" | "split + edit-candidate check" | "split + edit re-order";
 
 export interface RunImpactRecallOptions {
   /** Directly inject a searcher (wins over `searcherKind`). Used by tests. */
@@ -423,7 +427,9 @@ export function describeConfiguration(opts: RunImpactRecallOptions): ImpactRecal
     // measured on (the mapper path), so it is never gated as production.
     const seeding: ImpactRecallSeeding = opts.splitSeeding.editCandidateVerifier
       ? "split + edit-candidate check"
-      : "split";
+      : opts.splitSeeding.editCandidateReranker
+        ? "split + edit re-order"
+        : "split";
     return {
       searcher: "hybrid",
       seeding,
@@ -434,7 +440,9 @@ export function describeConfiguration(opts: RunImpactRecallOptions): ImpactRecal
         `table filter=${tableFilter}` +
         (opts.splitSeeding.editCandidateVerifier
           ? "; + #1756 LLM edit-candidate check, IMPACT_LLM_EDIT_VERIFY=1)"
-          : ")"),
+          : opts.splitSeeding.editCandidateReranker
+            ? "; + #1798 LLM edit re-order, IMPACT_LLM_EDIT_RERANK=1)"
+            : ")"),
     };
   }
   const searcher: SearcherKind = opts.searcher ? "bm25" : (opts.searcherKind ?? "bm25");
@@ -531,6 +539,9 @@ export async function observeRequirement(
             }),
           ...(split.editCandidateVerifier
             ? { editCandidateVerifier: split.editCandidateVerifier }
+            : {}),
+          ...(split.editCandidateReranker
+            ? { editCandidateReranker: split.editCandidateReranker }
             : {}),
         }
       : {}),
