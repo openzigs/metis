@@ -41,6 +41,7 @@ import {
   assertCommitSha,
   assertEvalDatabase,
   connectorIdFor,
+  EVAL_USER_EMAIL,
   materializeCorpus,
   materializeLayout,
   parseGithubRepoUrl,
@@ -53,7 +54,6 @@ import {
 
 const SERVER_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_EMBED_MODEL = "Alibaba-NLP/gte-modernbert-base";
-const EVAL_USER_EMAIL = "eval-materialize@corpus.invalid";
 
 function corpusArg(): LocalizationCorpusName {
   const [name] = process.argv.slice(2).filter((a) => a !== "--");

@@ -81,6 +81,8 @@ describe("arm selection", () => {
       "A3A",
       "A3N",
       "A4",
+      "A7",
+      "A7O",
       "A11",
       "A12",
       "A13",

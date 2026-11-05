@@ -18,8 +18,10 @@ import {
   resolveChangeSeeds,
   type SeedSymbolRow,
   type StoredLinkDeps,
+  type StoredLinkRow,
 } from "../../impact-analysis/change-seeds.js";
 import { extractChangesByShape } from "../../impact-analysis/change-request.js";
+import type { ChangedRequirement } from "../../impact-analysis/extract-changes.js";
 import type { AIProvider } from "../../ai/types.js";
 import { DEFAULT_WEIGHTS } from "../../code-graph/hybrid-search.js";
 import type { CitationTarget } from "../../traceability/seed-code-links-from-findings.js";
@@ -64,6 +66,37 @@ export interface AgentPassResult {
 }
 
 export type AgentPass = (request: AgentPassRequest) => Promise<AgentPassResult>;
+
+/** #1818 — one "Evaluate new requirements" run: an item's text against one repository. */
+export interface AnalysisPassRequest {
+  corpus: string;
+  repo: string;
+  /** The analyst's text, as the "Evaluate new requirements" box receives it. */
+  text: string;
+}
+
+export interface AnalysisPassResult {
+  analysisId: string;
+  /** The analysis row's terminal status. */
+  status: string;
+  /** The requirements it persisted, in creation order: what an analyst runs impact on. */
+  requirementIds: string[];
+}
+
+export type AnalysisPass = (request: AnalysisPassRequest) => Promise<AnalysisPassResult>;
+
+/** #1818 — what the A7 arms read from the materialized eval database. */
+export interface AnalysisArmIO {
+  /** The real analysis run (`AnalysisOrchestrator.start`), awaited to its end. */
+  pass: AnalysisPass;
+  /** Production's `loadRequirementChanges`: one change per stored requirement. */
+  loadRequirementChanges: (requirementIds: readonly string[]) => Promise<ChangedRequirement[]>;
+  /**
+   * Production's citation read (`prismaAgentCitationDeps`) for the project the
+   * corpus's repository is materialized as.
+   */
+  loadCitations: (requirementId: string, corpus: string, repo: string) => Promise<StoredLinkRow[]>;
+}
 
 /** What an arm returns for one requirement (cost and time are the runner's). */
 export interface ArmOutput {
@@ -116,6 +149,8 @@ export interface ArmDeps {
   rerankWeight?: number;
   /** #1755 — the analysis agent pass over the materialized corpus (the A3 arms). */
   agentPass?: AgentPass;
+  /** #1818 — "Evaluate new requirements" over the materialized corpus (the A7 arms). */
+  analysis?: AnalysisArmIO;
   /** #1755 — the run's meter, to price an agent pass a second arm reuses. */
   meter?: CostMeter;
   /** Milliseconds; a seam for tests. */

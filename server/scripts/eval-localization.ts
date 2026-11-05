@@ -13,6 +13,7 @@
  *   pnpm eval:localization --in-sample --arms A13 --rerank-weight 0.3  # tune the A13 model weight (#1798)
  *   pnpm eval:localization --merge <dir> --reference A12,A13   # + every arm paired with A12, then with A13 (#1806)
  *   pnpm eval:localization --arms A0,A3,A3A,A3N --shard 1/10   # #1755 analysis-agent citations (materialize first)
+ *   pnpm eval:localization --arms A0,A3A,A7,A7O --reference A3A --items 0:4   # #1818 the shipped IMPACT_AGENT_SEEDS order
  *   pnpm eval:localization --embed               # embed missing vectors with the local model
  *   pnpm eval:localization --md                  # print the Markdown report
  *   pnpm eval:localization --baseline            # A0 only: write baseline-A0.{json,md} into each corpus
@@ -127,8 +128,11 @@ import { loadRecordedVectors, writeRecordedVectors } from "../src/lib/eval/recor
 import type { EmbedService } from "../src/lib/code-graph/symbol-embeddings.js";
 import type { LocalizationArm } from "../src/lib/eval/localization/arms.js";
 import { AGENT_ARM_IDS, type AgentPass } from "../src/lib/eval/localization/agent-arms.js";
+import { ANALYSIS_ARM_IDS } from "../src/lib/eval/localization/analysis-arms.js";
+import type { AnalysisArmIO } from "../src/lib/eval/localization/arm-core.js";
 import {
   assertEvalDatabase,
+  EVAL_USER_EMAIL,
   materializeLayout,
   readMaterializedState,
   type MaterializedState,
@@ -310,12 +314,11 @@ async function armProviderFor(meter: LedgerCostMeter): Promise<AIProvider> {
  * corpora. Refuses a database other than the eval one (the env binding in
  * `eval-localization-env.ts` must have run) and a corpus not materialized.
  */
-async function agentPassFor(
-  provider: AIProvider,
+async function materializedStates(
   corpora: readonly LocalizationCorpusName[],
-): Promise<AgentPass> {
+): Promise<Map<string, MaterializedState>> {
   const layout = materializeLayout();
-  const { prisma, boundDatabaseUrl } = await import("../src/lib/prisma.js");
+  const { boundDatabaseUrl } = await import("../src/lib/prisma.js");
   assertEvalDatabase(boundDatabaseUrl, layout);
   const states = new Map<string, MaterializedState>();
   for (const corpus of corpora) {
@@ -324,6 +327,15 @@ async function agentPassFor(
       throw new Error(`${corpus} is not materialized: run pnpm eval:materialize ${corpus}`);
     states.set(corpus, state);
   }
+  return states;
+}
+
+async function agentPassFor(
+  provider: AIProvider,
+  corpora: readonly LocalizationCorpusName[],
+): Promise<AgentPass> {
+  const states = await materializedStates(corpora);
+  const { prisma } = await import("../src/lib/prisma.js");
   const { createMaterializedAgentPass } =
     await import("../src/lib/eval/localization/agent-pass.js");
   const { assembleAgenticCodeTools } = await import("../src/lib/analysis/orchestrator.js");
@@ -354,6 +366,72 @@ async function agentPassFor(
       assembleAgenticCodeTools({ knowledgeService: getKnowledgeService(), cloneDir }),
     extractRequirements: (text) => extractNewRequirementCandidates(text),
   });
+}
+
+/**
+ * #1818 — what the A7 arms read: "Evaluate new requirements" run by the real
+ * orchestrator on each materialized project (the code agent, the item text as
+ * `extraInstructions`), through the METERED provider, and the eval database's
+ * requirements and stored citations read by production's own functions.
+ */
+async function analysisIOFor(
+  provider: AIProvider,
+  corpora: readonly LocalizationCorpusName[],
+): Promise<AnalysisArmIO> {
+  const states = await materializedStates(corpora);
+  // The analysis monthly TOKEN cap (5M by default) counts every analysis in the
+  // eval database and would refuse a full run part-way; the eval's own DOLLAR
+  // cap holds the spend instead. An explicit setting is kept.
+  if (process.env.ANALYSIS_MONTHLY_TOKEN_CAP === undefined) {
+    process.env.ANALYSIS_MONTHLY_TOKEN_CAP = "0";
+    console.log(
+      "A7: analysis monthly token cap off for the eval database (the --budget cap holds)",
+    );
+  }
+  const { prisma } = await import("../src/lib/prisma.js");
+  const user = await prisma.user.findUnique({ where: { email: EVAL_USER_EMAIL } });
+  if (!user)
+    throw new Error(`no ${EVAL_USER_EMAIL} in the eval database: run pnpm eval:materialize`);
+  const { AnalysisOrchestrator } = await import("../src/lib/analysis/orchestrator.js");
+  const { createMaterializedAnalysisPass } =
+    await import("../src/lib/eval/localization/analysis-pass.js");
+  const { prismaAgentCitationDeps } = await import("../src/lib/impact-analysis/agent-seeder.js");
+  const { loadRequirementChanges } =
+    await import("../src/lib/impact-analysis/impact-analysis-engine.js");
+  const orchestrator = new AnalysisOrchestrator({ provider });
+  const citations = prismaAgentCitationDeps(prisma);
+  const projectIdOf = (corpus: string, repo: string): string => {
+    const found = states.get(corpus)?.repos.find((r) => r.name === repo);
+    if (!found) throw new Error(`${corpus}/${repo} is not materialized`);
+    return found.projectId;
+  };
+  return {
+    pass: createMaterializedAnalysisPass({
+      states,
+      start: ({ projectId, text }) =>
+        orchestrator.start({
+          projectId,
+          startedById: user.id,
+          agentKeys: ["code"],
+          extraInstructions: text,
+        }),
+      readState: (id) =>
+        prisma.analysis.findUnique({ where: { id }, select: { status: true, errorMessage: true } }),
+      isActive: (id) => orchestrator.isActive(id),
+      cancel: (id) => orchestrator.cancel(id, user.id),
+      requirementIds: async (analysisId) =>
+        (
+          await prisma.requirement.findMany({
+            where: { analysisId, deletedAt: null },
+            select: { id: true },
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          })
+        ).map((r) => r.id),
+    }),
+    loadRequirementChanges: (ids) => loadRequirementChanges(prisma, ids),
+    loadCitations: (requirementId, corpus, repo) =>
+      citations.loadCitations(requirementId, projectIdOf(corpus, repo)),
+  };
 }
 
 /** #1800 — the corpora a merge reports: those the directory holds, or the one named. */
@@ -393,6 +471,15 @@ async function main(): Promise<void> {
     "rerank-weight",
   );
   const writeBaseline = argv.includes("--baseline");
+  // #1818 — an A7 arm's impact run reads the requirements its analysis wrote,
+  // whose texts are new on every run: no recording can hold their query
+  // vectors, so they are embedded live and never written back.
+  const analysisRun = !mergeDir && armIds.some((id) => ANALYSIS_ARM_IDS.has(id));
+  if (analysisRun && !argv.includes("--embed")) {
+    throw new Error(
+      "an A7 arm searches with the texts of the requirements its analysis writes, new on every run: pass --embed (the local model) so they are embedded live",
+    );
+  }
   if (writeBaseline && armIds.length > 1) throw new Error("--baseline writes A0's report only");
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
   const resultsDir = path.join(REPO_ROOT, "eval-results");
@@ -419,6 +506,11 @@ async function main(): Promise<void> {
   const agentPass =
     !mergeDir && provider && armIds.some((id) => AGENT_ARM_IDS.has(id))
       ? await agentPassFor(provider, corpora)
+      : undefined;
+  // #1818 — the A7 arms run "Evaluate new requirements" on the materialized corpora.
+  const analysis =
+    !mergeDir && provider && armIds.some((id) => ANALYSIS_ARM_IDS.has(id))
+      ? await analysisIOFor(provider, corpora)
       : undefined;
   const tableGuard = argv.includes("--table-guard")
     ? await tableGuardFor(meter, reportedArmIds, provider, argv.includes("--embed"))
@@ -463,6 +555,7 @@ async function main(): Promise<void> {
           meter: capped,
           ...(provider ? { provider } : {}),
           ...(agentPass ? { agentPass } : {}),
+          ...(analysis ? { analysis } : {}),
         });
         checkpoint = await store.openForRun(corpus, runFingerprint(corpus, arms, runs));
         const ids = sliceItemIds(corpus.manifest.items, slice);
@@ -482,7 +575,11 @@ async function main(): Promise<void> {
       reports.push(report);
       if (cache) {
         assertNoMissingVectors(cache);
-        if (cache.embeddedCount > 0) {
+        if (cache.embeddedCount > 0 && analysisRun) {
+          console.log(
+            `embedded ${cache.embeddedCount} texts live; not recorded: an A7 run's requirement texts are new on every run`,
+          );
+        } else if (cache.embeddedCount > 0) {
           await writeRecordedVectors(
             vectorsFile,
             cache.toFiles(

@@ -7,8 +7,8 @@
  *
  * A0 is the shipped seeding and this issue's deliverable. Each later arm of
  * epic #1751 (A2 stored links #1754, A3 analysis-agent citations #1755, A4
- * rerank-and-verify #1756, A5 adaptive cap #1757, A6 summaries #1758, A7 agentic
- * seeder #1759, A8 BRD citations #1760, A9 LLM extractor #1761) adds a factory
+ * rerank-and-verify #1756, A5 adaptive cap #1757, A6 summaries #1758, A7 the
+ * shipped agentic seeder #1759/#1818, A8 BRD citations #1760, A9 LLM extractor #1761) adds a factory
  * to {@link ARM_FACTORIES} in its own PR; until then asking for it fails loudly.
  */
 import {
@@ -48,6 +48,7 @@ import { fileKey, type LocalizationCorpus, type LocalizationItem } from "./corpu
 import type { CorpusSearch } from "./search.js";
 import { seededRandom } from "./stats.js";
 import { createA3AArm, createA3Arm, createA3NArm } from "./agent-arms.js";
+import { createA7Arm, createA7OArm } from "./analysis-arms.js";
 import {
   corpusFileSymbols,
   createA0Arm,
@@ -80,6 +81,8 @@ export const MODEL_ARMS: ReadonlySet<string> = new Set([
   "A3A",
   "A3N",
   "A4",
+  "A7",
+  "A7O",
   "A13",
   "A13C",
   "A13S",
@@ -497,6 +500,8 @@ export const ARM_FACTORIES: Record<string, (deps: ArmDeps) => LocalizationArm> =
   A3A: createA3AArm,
   A3N: createA3NArm,
   A4: createA4Arm,
+  A7: createA7Arm,
+  A7O: createA7OArm,
   A11: createA11Arm,
   A12: createA12Arm,
   A13: createA13Arm,
@@ -508,7 +513,6 @@ export const ARM_FACTORIES: Record<string, (deps: ArmDeps) => LocalizationArm> =
 export const PLANNED_ARMS: Record<string, string> = {
   A5: "#1757 adaptive cap",
   A6: "#1758 summaries",
-  A7: "#1759 agentic seeder",
   A8: "#1760 BRD citations",
   A9: "#1761 LLM extractor",
 };
