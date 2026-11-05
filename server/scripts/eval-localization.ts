@@ -15,6 +15,20 @@
  *   pnpm eval:localization --md                  # print the Markdown report
  *   pnpm eval:localization --baseline            # A0 only: write baseline-A0.{json,md} into each corpus
  *
+ * Slices, resume and merge (#1800). Every run records each requirement's score
+ * as a partial file under `eval-results/localization-partials-<run>/` (printed),
+ * so a slow arm can be measured in steps of under ten minutes:
+ *
+ *   pnpm eval:localization --arms A0,A4 --shard 1/3                  # a slice; prints its partials directory
+ *   pnpm eval:localization --arms A0,A4 --shard 2/3 --resume <dir>   # the next slice, same directory
+ *   pnpm eval:localization --arms A0,A4 --items 0:10 --resume <dir>  # or by item range (0-based, end exclusive)
+ *   pnpm eval:localization --arms A0,A4 --resume <dir>               # resume a stopped run: only missing items run
+ *   pnpm eval:localization --merge <dir> [--table-guard]             # the report from the partial files; runs nothing
+ *
+ * The cap and the unpriced-call stop hold across slices (spend is read from the
+ * partial files), a changed configuration refuses to resume or merge, and every
+ * report lists the requirements still missing.
+ *
  * When both held-out corpora run, a POOLED report compares each arm with A0
  * over all 40 held-out items at once, stratified by corpus
  * (`localization-pooled-<run>.{json,md}`): one corpus alone can only resolve a
@@ -64,6 +78,16 @@ import {
 } from "../src/lib/eval/localization/corpus.js";
 import { LedgerCostMeter, meterProvider } from "../src/lib/eval/localization/cost.js";
 import {
+  PartialStore,
+  describeSlice,
+  parseItemSlice,
+  recordedArms,
+  runFingerprint,
+  seedBudget,
+  sliceItemIds,
+  withRecordedSpend,
+} from "../src/lib/eval/localization/partials.js";
+import {
   DEFAULT_BUDGET_USD,
   DEFAULT_RUNS,
   EvalBudget,
@@ -73,6 +97,7 @@ import {
   toMarkdownReport,
   toPooledMarkdownReport,
   type LocalizationReport,
+  type RunCheckpoint,
   type TableGuard,
   type TableGuardReading,
 } from "../src/lib/eval/localization/runner.js";
@@ -95,6 +120,7 @@ import {
 } from "../src/lib/eval/localization/search.js";
 import { loadRecordedVectors, writeRecordedVectors } from "../src/lib/eval/recorded-vectors.js";
 import type { EmbedService } from "../src/lib/code-graph/symbol-embeddings.js";
+import type { LocalizationArm } from "../src/lib/eval/localization/arms.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
@@ -267,8 +293,32 @@ async function armProviderFor(meter: LedgerCostMeter): Promise<AIProvider> {
   return meterProvider(provider, meter);
 }
 
+/** #1800 — the corpora a merge reports: those the directory holds, or the one named. */
+async function mergeCorporaFor(
+  argv: string[],
+  store: PartialStore,
+): Promise<LocalizationCorpusName[]> {
+  const held = await store.corpora();
+  const named = flagValue(argv, "corpus");
+  if (named && !held.includes(named)) {
+    throw new Error(`${store.dir} holds no partial results for ${named}`);
+  }
+  const wanted = LOCALIZATION_CORPORA.filter((c) => (named ? c === named : held.includes(c)));
+  if (wanted.length === 0) throw new Error(`${store.dir} holds no partial results`);
+  return wanted;
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
+  const mergeDir = flagValue(argv, "merge");
+  const resumeDir = flagValue(argv, "resume");
+  const slice = parseItemSlice(flagValue(argv, "items"), flagValue(argv, "shard"));
+  if (mergeDir && (resumeDir || slice)) {
+    throw new Error("--merge runs nothing: it takes no --resume, --items or --shard");
+  }
+  if (slice && argv.includes("--table-guard")) {
+    throw new Error("--table-guard reads every arm once: pass it to --merge, not to a slice");
+  }
   const armIds = parseArmIds(argv);
   const runs = positiveInteger(flagValue(argv, "runs"), DEFAULT_RUNS, "runs");
   const budgetUsd = nonNegativeNumber(flagValue(argv, "budget"), DEFAULT_BUDGET_USD, "budget");
@@ -279,59 +329,124 @@ async function main(): Promise<void> {
   );
   const writeBaseline = argv.includes("--baseline");
   if (writeBaseline && armIds.length > 1) throw new Error("--baseline writes A0's report only");
-  const meter = new LedgerCostMeter();
-  const budget = new EvalBudget(budgetUsd);
-  const reports: LocalizationReport[] = [];
-  const provider = armIds.some((id) => MODEL_ARMS.has(id))
-    ? await armProviderFor(meter)
-    : undefined;
-  const tableGuard = argv.includes("--table-guard")
-    ? await tableGuardFor(meter, armIds, provider, argv.includes("--embed"))
-    : undefined;
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
   const resultsDir = path.join(REPO_ROOT, "eval-results");
   await mkdir(resultsDir, { recursive: true });
+  const store = new PartialStore(
+    path.resolve(mergeDir ?? resumeDir ?? path.join(resultsDir, `localization-partials-${runId}`)),
+  );
+  // #1800 — the cap counts what every earlier slice in this directory spent.
+  const prior = await store.readRecordedSpend();
+  const meter = new LedgerCostMeter();
+  const capped = withRecordedSpend(meter, prior);
+  const budget = new EvalBudget(budgetUsd);
+  seedBudget(budget, prior);
+  const reports: LocalizationReport[] = [];
+  const corpora = mergeDir ? await mergeCorporaFor(argv, store) : corporaFor(argv);
+  // A merge reports the arms the slices recorded, and runs none: its provider
+  // is needed only for A4's table guard.
+  const reportedArmIds = mergeDir ? await store.recordedArmIds(corpora) : armIds;
+  const needsProvider =
+    reportedArmIds.some((id) => MODEL_ARMS.has(id)) &&
+    (!mergeDir || argv.includes("--table-guard"));
+  const provider = needsProvider ? await armProviderFor(meter) : undefined;
+  const tableGuard = argv.includes("--table-guard")
+    ? await tableGuardFor(meter, reportedArmIds, provider, argv.includes("--embed"))
+    : undefined;
+  console.log(
+    `partials: ${store.dir} (${mergeDir ? "merge" : describeSlice(slice)}; ` +
+      `$${prior.spentUsd.toFixed(4)} spent by earlier slices)`,
+  );
 
-  for (const name of corporaFor(argv)) {
-    const corpus = await loadLocalizationCorpus(name);
-    const { cache, file } = await embedCacheFor(corpus, argv.includes("--embed"));
-    const search = await buildCorpusSearch(corpus.symbols, cache);
-    const arms = buildArms(armIds, { search, rerankWeight, ...(provider ? { provider } : {}) });
-    const report = await runLocalizationEval(corpus, { arms, runs, budget, meter, tableGuard });
-    reports.push(report);
-    assertNoMissingVectors(cache);
-    if (cache.embeddedCount > 0) {
-      await writeRecordedVectors(
-        file,
-        cache.toFiles(
-          "Recorded by `pnpm eval:localization --embed` (#1753): the corpus symbols' embedding texts and the requirement queries, embedded by the local model.",
-        ),
-      );
-      console.log(`recorded ${cache.embeddedCount} new vectors → ${file}`);
-    }
-    const json = `${JSON.stringify({ ...report, generatedAt: new Date().toISOString() }, null, 2)}\n`;
-    const md = toMarkdownReport(report);
-    const base = path.join(resultsDir, `localization-${name}-${runId}`);
-    await writeFile(`${base}.json`, json, "utf8");
-    await writeFile(`${base}.md`, md, "utf8");
-    if (writeBaseline) {
-      if (report.stopped) throw new Error("the run stopped early; not writing a baseline");
-      await writeFile(path.join(corpus.dir, "baseline-A0.json"), json, "utf8");
-      await writeFile(path.join(corpus.dir, "baseline-A0.md"), md, "utf8");
-    }
-    if (argv.includes("--md")) console.log(md);
-    for (const a of report.arms) {
-      const g = a.aggregate;
+  try {
+    for (const name of corpora) {
+      const corpus = await loadLocalizationCorpus(name);
+      let arms: LocalizationArm[];
+      let corpusRuns = runs;
+      let checkpoint: RunCheckpoint;
+      let runItem: (item: { id: string }) => boolean;
+      let cache: EmbedCache | null = null;
+      let vectorsFile = "";
+      if (mergeDir) {
+        const opened = await store.openForMerge(corpus);
+        const recordedIds = opened.fingerprint.arms.map((a) => a.id);
+        if (argv.includes("--arms") && recordedIds.join(",") !== armIds.join(",")) {
+          throw new Error(
+            `--merge: ${name} recorded arms ${recordedIds.join(",")}, not ${armIds.join(",")}`,
+          );
+        }
+        if (argv.includes("--runs") && opened.fingerprint.runs !== runs) {
+          throw new Error(
+            `--merge: ${name} recorded ${opened.fingerprint.runs} run(s), not ${runs}`,
+          );
+        }
+        arms = recordedArms(opened.fingerprint);
+        corpusRuns = opened.fingerprint.runs;
+        checkpoint = opened.checkpoint;
+        runItem = () => false;
+      } else {
+        ({ cache, file: vectorsFile } = await embedCacheFor(corpus, argv.includes("--embed")));
+        const search = await buildCorpusSearch(corpus.symbols, cache);
+        arms = buildArms(armIds, { search, rerankWeight, ...(provider ? { provider } : {}) });
+        checkpoint = await store.openForRun(corpus, runFingerprint(corpus, arms, runs));
+        const ids = sliceItemIds(corpus.manifest.items, slice);
+        runItem = (item) => ids.has(item.id);
+      }
+      const report = await runLocalizationEval(corpus, {
+        arms,
+        runs: corpusRuns,
+        budget,
+        meter: capped,
+        tableGuard,
+        checkpoint,
+        runItem,
+      });
+      await store.recordOtherSpend(runId, meter);
+      reports.push(report);
+      if (cache) {
+        assertNoMissingVectors(cache);
+        if (cache.embeddedCount > 0) {
+          await writeRecordedVectors(
+            vectorsFile,
+            cache.toFiles(
+              "Recorded by `pnpm eval:localization --embed` (#1753): the corpus symbols' embedding texts and the requirement queries, embedded by the local model.",
+            ),
+          );
+          console.log(`recorded ${cache.embeddedCount} new vectors → ${vectorsFile}`);
+        }
+      }
+      const json = `${JSON.stringify({ ...report, generatedAt: new Date().toISOString() }, null, 2)}\n`;
+      const md = toMarkdownReport(report);
+      const base = path.join(resultsDir, `localization-${name}-${runId}`);
+      await writeFile(`${base}.json`, json, "utf8");
+      await writeFile(`${base}.md`, md, "utf8");
+      if (writeBaseline) {
+        if (report.stopped) throw new Error("the run stopped early; not writing a baseline");
+        if (report.missing.length > 0) {
+          throw new Error("requirements are missing a score; not writing a baseline");
+        }
+        await writeFile(path.join(corpus.dir, "baseline-A0.json"), json, "utf8");
+        await writeFile(path.join(corpus.dir, "baseline-A0.md"), md, "utf8");
+      }
+      if (argv.includes("--md")) console.log(md);
+      for (const a of report.arms) {
+        const g = a.aggregate;
+        console.log(
+          `[${name}] ${a.id}: R@5=${g.recallAt5.toFixed(2)} R@10=${g.recallAt10.toFixed(2)} ` +
+            `editP=${g.editPrecision.toFixed(2)} MRR=${g.mrr.toFixed(2)} items=${g.items} ` +
+            `runs=${a.completedRuns} $=${g.totalCostUsd === null ? "unpriced" : g.totalCostUsd.toFixed(4)}`,
+        );
+      }
+      const missing = report.missing.reduce((n, m) => n + m.items.length, 0);
       console.log(
-        `[${name}] ${a.id}: R@5=${g.recallAt5.toFixed(2)} R@10=${g.recallAt10.toFixed(2)} ` +
-          `editP=${g.editPrecision.toFixed(2)} MRR=${g.mrr.toFixed(2)} items=${g.items} ` +
-          `runs=${a.completedRuns} $=${g.totalCostUsd === null ? "unpriced" : g.totalCostUsd.toFixed(4)}`,
+        `  → ${base}.{json,md}${report.stopped ? ` (STOPPED: ${report.stopped.reason})` : ""}` +
+          `${missing > 0 ? ` (${missing} requirement score(s) missing)` : ""}`,
       );
+      if (report.stopped) process.exitCode = 1;
     }
-    console.log(
-      `  → ${base}.{json,md}${report.stopped ? ` (STOPPED: ${report.stopped.reason})` : ""}`,
-    );
-    if (report.stopped) process.exitCode = 1;
+  } finally {
+    // The table guard's spend lives in no requirement file: record it even on a failure.
+    await store.recordOtherSpend(runId, meter);
   }
   if (reports.filter((r) => r.corpus.purpose === "held-out").length >= 2) {
     const pooled = poolHeldOutReports(reports);
@@ -346,9 +461,14 @@ async function main(): Promise<void> {
     if (argv.includes("--md")) console.log(md);
     console.log(`[pooled] ${pooled.items} held-out items → ${base}.{json,md}`);
   }
-  console.log(`total spent: $${meter.spentUsd().toFixed(4)} of $${budgetUsd}`);
+  if (!mergeDir) {
+    console.log(`next slice or resume: --resume ${store.dir} · report: --merge ${store.dir}`);
+  }
+  console.log(
+    `total spent: $${capped.spentUsd().toFixed(4)} of $${budgetUsd} ` +
+      `($${meter.spentUsd().toFixed(4)} by this invocation)`,
+  );
 }
-
 main().catch((err) => {
   console.error("eval:localization failed:", err);
   process.exit(1);

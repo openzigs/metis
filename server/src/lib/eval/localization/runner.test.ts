@@ -620,10 +620,13 @@ describe("poolHeldOutReports (#1770)", () => {
     expect(pooled.comparisons[0]!.detectableGap).toMatch(/^At 12 items/);
     expect(pooled.detectableGap).toMatch(/^At 12 items/);
     expect(pooled.corpora.map((c) => c.stopped)).toEqual([null, partial.stopped!.reason]);
+    // #1800 — A4's 8 unscored requirements are counted next to the stop.
+    expect(pooled.corpora.map((c) => c.missingScores)).toEqual([0, 8]);
     const md = toPooledMarkdownReport(pooled);
     expect(md).toContain(
-      `\`localization-02-fixture-portfolio\` (10 items, 1 scored run(s), run 1 incomplete, stopped early: ${partial.stopped!.reason})`,
+      `\`localization-02-fixture-portfolio\` (10 items, 1 scored run(s), run 1 incomplete, stopped early: ${partial.stopped!.reason}, 8 requirement score(s) missing)`,
     );
+    expect(md).toContain("`localization-01-miniflux-heldout` (10 items, 1 scored run(s)),");
     expect(md).toContain("> A4 pairs 12 of A0's 20 items. At 12 items");
   });
 
