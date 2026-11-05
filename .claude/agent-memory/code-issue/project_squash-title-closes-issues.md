@@ -12,3 +12,5 @@ PR #378 deliberately said `Refs #282` because an acceptance criterion was unmet,
 **How to apply:** when a PR should only reference an issue, keep "Resolve/Close/Fix #N" out of its title, or pass `--subject` to `gh pr merge`; confirm with `gh issue view N --json state` after merging. Links: [[parallel-agents-share-scratch-and-browser]].
 
 **Converse (2026-09-30):** a "Resolve #N" squash title did not auto-close #439 (PR #461) or #430 (PR #462), and `closingIssuesReferences` read `[]` on every PR from #451 to #462. After every merge, check `gh issue view N --json state` and close the issue by hand if it is still open.
+
+**Recurred (2026-11-05, PR #1803 / #1798):** the review fix changed the body to "Refs #1798" but left the title "feat: Resolve #1798 …", and the squash closed #1798 with two criteria open. A reviewer's "change Closes to Refs" fix must also change the title; the merger should pass `--subject` without the keyword whenever `closingIssuesReferences` is `[]` but the title has one.
