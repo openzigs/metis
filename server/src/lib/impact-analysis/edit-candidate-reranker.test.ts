@@ -365,8 +365,14 @@ describe("applyEditRerank", () => {
       codeSymbolId: "src/f7.ts#fn",
       confidence: POOL[7]!.symbols[0]!.confidence,
     });
-    expect(out.related).toBe(s.related);
     expect(out.schemaSeeds).toBe(s.schemaSeeds);
+  });
+
+  it("removes a promoted file's hits from related, and keeps the rest (#1818)", () => {
+    const s = { ...seeds(), related: [match("src/f6.ts", "z", 0.3), match("src/f7.ts", "y", 0.2)] };
+    const out = applyEditRerank(s, picks(6));
+    expect(out.editCandidates.map((m) => m.filePath)).toContain("src/f6.ts");
+    expect(out.related).toEqual([match("src/f7.ts", "y", 0.2)]);
   });
 
   it("keeps a deterministic candidate the fusion ranks below the top five", () => {

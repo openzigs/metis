@@ -16,9 +16,18 @@
  * 60-second impact deadline — and puts their files at the HEAD of the edit
  * candidates:
  *
- *   - the first {@link MAX_AGENT_LEAD_FILES} distinct cited files, in citation
- *     order (the order the links were stored), lead; any further cited file
- *     follows the existing candidates, as the #1754 channel would add it;
+ *   - the citations are taken in an EXPLICIT order (#1818): the surer first
+ *     (the citing finding's confidence), then citation order, which the writer
+ *     stores deterministically: the requirement's evidence findings in their
+ *     order, then each finding's citations in theirs
+ *     (`seedRequirementCodeLinksFromFindings`);
+ *   - the first {@link MAX_AGENT_LEAD_FILES} distinct cited files lead; at most
+ *     {@link MAX_AGENT_TAIL_FILES} further cited files follow the existing
+ *     candidates, as the #1754 channel would add them; a cited file past that
+ *     cap is listed under `related` (review material, not a seed), so the
+ *     blast radius does not grow with the length of the agent's answer;
+ *   - a file that becomes a file to edit is removed from `related`, so it is
+ *     never listed under both;
  *   - every existing edit candidate stays one, as the SAME object with the SAME
  *     score (the #931 rule): a candidate the agent also cited moves up, the
  *     rest keep their relative order after the lead;
@@ -44,8 +53,10 @@ import { ANALYSIS_GROUNDING_SOURCE } from "../traceability/seed-code-links-from-
 import type { RequirementCodeMatch } from "../traceability/requirement-code-mapping.js";
 import {
   MAX_EDIT_FILES,
+  RELATED_CONFIDENCE_FACTOR,
   linkSymbols,
   prismaFileSymbolLoader,
+  relatedOutsideEditFiles,
   type ChangeSeeds,
   type StoredLinkDeps,
   type StoredLinkRow,
@@ -64,17 +75,43 @@ export function impactAgentSeedsEnabled(): boolean {
 /** Distinct cited files that lead the files to edit, at most: the edit-file cut. */
 export const MAX_AGENT_LEAD_FILES = MAX_EDIT_FILES;
 
+/**
+ * #1818 — further cited files added as files to edit after the existing
+ * candidates, at most. Each one is a depth-0 blast-radius seed, so an
+ * uncapped tail let a long answer widen the radius without limit. The same
+ * bound as the lead: no model channel adds more than {@link MAX_EDIT_FILES}
+ * files to edit (`MAX_PROMOTIONS`, the #1798 re-order's head).
+ */
+export const MAX_AGENT_TAIL_FILES = MAX_EDIT_FILES;
+
+/**
+ * #1818 — the order the citations are read in: the surer first, then the
+ * order they were stored in (a stable sort, so equal confidences keep it).
+ */
+export function citationOrder(links: readonly StoredLinkRow[]): StoredLinkRow[] {
+  return links
+    .map((link, i) => ({ link, i }))
+    .sort((a, b) => b.link.confidence - a.link.confidence || a.i - b.i)
+    .map(({ link }) => link);
+}
+
 export interface AgentCitationDeps {
   /**
    * The code agent's stored citations for a requirement IN ONE PROJECT
-   * (filtered on both columns), in the order they were stored.
+   * (filtered on both columns), in the order they were stored. The stage
+   * re-orders them by {@link citationOrder}.
    */
   loadCitations: (requirementId: string, projectId: string) => Promise<StoredLinkRow[]>;
   /** The project's code-graph symbols in the given files: none for a file the graph lost. */
   loadFileSymbols: StoredLinkDeps["loadFileSymbols"];
 }
 
-/** The production lookups: the agent's links only, project-scoped, in stored order. */
+/**
+ * The production lookups: the agent's links only, project-scoped, in stored
+ * order. `createdAt`, then the id: the writer creates the rows one at a time in
+ * citation order, and a Prisma `cuid()` id sorts in creation order within a
+ * process, so equal timestamps keep that order.
+ */
 export function prismaAgentCitationDeps(
   prisma: Pick<PrismaClient, "codeSymbol" | "requirementCodeMapping">,
 ): AgentCitationDeps {
@@ -111,7 +148,7 @@ export async function leadWithAgentCitations(
   let links: StoredLinkRow[];
   let fileRows: Awaited<ReturnType<AgentCitationDeps["loadFileSymbols"]>>;
   try {
-    links = await deps.loadCitations(requirementId, projectId);
+    links = citationOrder(await deps.loadCitations(requirementId, projectId));
     fileRows =
       links.length === 0
         ? []
@@ -172,9 +209,20 @@ export async function leadWithAgentCitations(
   const citedFiles = [...cited.keys()];
   const lead = citedFiles.slice(0, MAX_AGENT_LEAD_FILES);
   const leadSet = new Set(lead);
-  const tail = citedFiles.slice(MAX_AGENT_LEAD_FILES).filter((f) => !existingBy.has(f));
+  const further = citedFiles.slice(MAX_AGENT_LEAD_FILES).filter((f) => !existingBy.has(f));
+  const tail = further.slice(0, MAX_AGENT_TAIL_FILES);
   const rest = seeds.editCandidates.filter((m) => !leadSet.has(m.filePath));
   const editCandidates = [...lead.flatMap(matchesOf), ...rest, ...tail.flatMap(matchesOf)];
+  // #1818 — a file now to edit leaves `related`; a cited file past the tail
+  // cap joins it (at the related scale), for review, and seeds nothing.
+  const kept = relatedOutsideEditFiles(seeds.related, editCandidates);
+  const listed = new Set(kept.map((m) => m.filePath));
+  const overflow = further
+    .slice(MAX_AGENT_TAIL_FILES)
+    .filter((f) => !listed.has(f))
+    .flatMap(matchesOf)
+    .map((m) => ({ ...m, confidence: m.confidence * RELATED_CONFIDENCE_FACTOR }));
+  const related = [...kept, ...overflow];
 
   const prior = new Map((seeds.evidence?.editCandidates ?? []).map((e) => [e.filePath, e]));
   const citedSet = new Set(citedFiles);
@@ -182,6 +230,7 @@ export async function leadWithAgentCitations(
   return {
     ...seeds,
     editCandidates,
+    related,
     evidence: {
       ...withAgentCounts(seeds, { used, stale, led: lead.length }),
       editCandidates: editFiles.map((filePath) => {

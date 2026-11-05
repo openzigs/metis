@@ -940,3 +940,11 @@ describe("#1776 — per-request edit ranking flag", () => {
     expect(impactRunDeps("user-1", ["proj-1"]).requestEditRanking).toBe(true);
   });
 });
+
+describe("#1759 — the code agent's citations flag (#1818)", () => {
+  it("is wired only when IMPACT_AGENT_SEEDS is on", () => {
+    expect("agentSeeds" in impactRunDeps("user-1", ["proj-1"])).toBe(false);
+    vi.stubEnv("IMPACT_AGENT_SEEDS", "1");
+    expect(impactRunDeps("user-1", ["proj-1"]).agentSeeds).toBe(true);
+  });
+});

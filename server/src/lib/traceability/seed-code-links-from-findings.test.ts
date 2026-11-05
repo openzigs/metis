@@ -107,13 +107,17 @@ function makeFakePrisma(opts: {
         // seeder now applies (defense-in-depth project scoping). A finding with
         // no projectId set is treated as matching any scoped project.
         const scopedProjectId = where.agentResult?.analysis?.projectId;
-        return opts.findings.filter(
-          (f) =>
-            where.id.in.includes(f.id) &&
-            (scopedProjectId === undefined ||
-              f.projectId === undefined ||
-              f.projectId === scopedProjectId),
-        );
+        // Returned in REVERSE order: `findMany` with no `orderBy` guarantees
+        // none, so the seeder must order the findings itself (#1818).
+        return [...opts.findings]
+          .reverse()
+          .filter(
+            (f) =>
+              where.id.in.includes(f.id) &&
+              (scopedProjectId === undefined ||
+                f.projectId === undefined ||
+                f.projectId === scopedProjectId),
+          );
       },
     },
     codeSymbol: {
@@ -123,9 +127,16 @@ function makeFakePrisma(opts: {
         ),
     },
     requirementCodeMapping: {
-      findMany: async ({ where }: { where: { requirementId: string; projectId: string } }) =>
+      findMany: async ({
+        where,
+      }: {
+        where: { requirementId: string; projectId: string; source?: string };
+      }) =>
         mappings.filter(
-          (m) => m.requirementId === where.requirementId && m.projectId === where.projectId,
+          (m) =>
+            m.requirementId === where.requirementId &&
+            m.projectId === where.projectId &&
+            (where.source === undefined || m.source === where.source),
         ),
       create: async ({ data }: { data: MappingRow }) => {
         mappings.push(data);
@@ -483,7 +494,7 @@ describe("seedRequirementCodeLinksFromFindings — only code is a code link (#76
     expect(created).toEqual([]);
   });
 
-  it("dedupes two citations of one symbol and skips a symbol already linked", async () => {
+  it("dedupes two citations of one symbol and skips a symbol the agent already linked", async () => {
     const existing: MappingRow = {
       requirementId: "req-1",
       projectId,
@@ -492,7 +503,7 @@ describe("seedRequirementCodeLinksFromFindings — only code is a code link (#76
       startLine: 132,
       endLine: 140,
       confidence: 0.7,
-      source: "semantic",
+      source: ANALYSIS_GROUNDING_SOURCE,
     };
     const cite = (startLine: number) => ({
       filePath: "internal/config/options.go",
@@ -713,6 +724,57 @@ describe("seedRequirementCodeLinksFromFindings", () => {
     );
     expect(created).toHaveLength(1);
     expect(created[0]!.filePath).toBe("src/a.ts");
+  });
+
+  it("writes the agent's citation even when a manual or semantic link names the same code (#1818)", async () => {
+    const other = (source: string, filePath: string): MappingRow => ({
+      requirementId: "req-1",
+      projectId,
+      codeSymbolId: null,
+      filePath,
+      startLine: null,
+      endLine: null,
+      confidence: 1,
+      source,
+    });
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [{ id: "f1", evidence: evidence(["src/a.ts", "src/b.ts"]), confidence: 0.7 }],
+      mappings: [other("manual", "src/a.ts"), other("semantic", "src/b.ts")],
+    });
+    const summary = await seedRequirementCodeLinksFromFindings(
+      { analysisId: "an-1", projectId, requirementIds: ["req-1"] },
+      { prisma },
+    );
+    expect(created.map((c) => [c.filePath, c.source])).toEqual([
+      ["src/a.ts", ANALYSIS_GROUNDING_SOURCE],
+      ["src/b.ts", ANALYSIS_GROUNDING_SOURCE],
+    ]);
+    expect(summary).toEqual({ requirementsSeeded: 1, linksCreated: 2, linksSkipped: 0 });
+  });
+
+  it("writes the links in citation order: the labels' finding order, then each finding's citations (#1818)", async () => {
+    const { prisma, created } = makeFakePrisma({
+      // The labels list f2 before f1; the fake returns the findings reversed.
+      requirements: [{ id: "req-1", projectId, labels: labels(["f2", "f1", "f3"]) }],
+      findings: [
+        { id: "f1", evidence: evidence(["src/c.ts", "src/a.ts"]), confidence: 0.9 },
+        { id: "f2", evidence: evidence(["src/b.ts", "src/hi.ts"]), confidence: 0.5 },
+        // Re-cites src/b.ts more surely: the value updates, the place does not.
+        { id: "f3", evidence: evidence(["src/lo.ts", "src/b.ts"]), confidence: 0.8 },
+      ],
+    });
+    await seedRequirementCodeLinksFromFindings(
+      { analysisId: "an-1", projectId, requirementIds: ["req-1"] },
+      { prisma },
+    );
+    expect(created.map((c) => [c.filePath, c.confidence])).toEqual([
+      ["src/b.ts", 0.8],
+      ["src/hi.ts", 0.5],
+      ["src/c.ts", 0.9],
+      ["src/a.ts", 0.9],
+      ["src/lo.ts", 0.8],
+    ]);
   });
 
   it("skips requirements that do not exist in the project (cross-project safety)", async () => {

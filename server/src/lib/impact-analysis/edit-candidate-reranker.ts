@@ -42,6 +42,7 @@ import { extractFirstJson } from "../docs-gen/grounding/json-extract.js";
 import { createChildLogger } from "../logger.js";
 import {
   MAX_EDIT_FILES,
+  relatedOutsideEditFiles,
   type ChangeSeeds,
   type SeedPoolFile,
   type SeedSymbolRow,
@@ -390,6 +391,8 @@ export function applyEditRerank(
   return {
     ...seeds,
     editCandidates,
+    // #1818 — a promoted file is a file to edit, not also review material.
+    related: relatedOutsideEditFiles(seeds.related, editCandidates),
     evidence: {
       ...seeds.evidence,
       reranker: {

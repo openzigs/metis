@@ -13,6 +13,8 @@ import { impactSeedEvidenceSchema } from "@metis/shared";
 import {
   AGENT_SEEDS_FLAG,
   MAX_AGENT_LEAD_FILES,
+  MAX_AGENT_TAIL_FILES,
+  citationOrder,
   impactAgentSeedsEnabled,
   leadWithAgentCitations,
   prismaAgentCitationDeps,
@@ -20,6 +22,7 @@ import {
 } from "./agent-seeder.js";
 import { extractChangesByShape } from "./change-request.js";
 import {
+  RELATED_CONFIDENCE_FACTOR,
   resolveChangeSeeds,
   type ChangeSeeds,
   type SeedSearcher,
@@ -70,7 +73,7 @@ function cite(filePath: string, over: Partial<StoredLinkRow> = {}): StoredLinkRo
 }
 
 /** New files only the agent names, each in the graph. */
-const AGENT_FILES = Array.from({ length: 7 }, (_, i) => `internal/agent/f${i}.go`);
+const AGENT_FILES = Array.from({ length: 14 }, (_, i) => `internal/agent/f${i}.go`);
 const GRAPH = [
   ...CAPTURE.symbols,
   ...AGENT_FILES.flatMap((f, i) => [
@@ -102,8 +105,9 @@ const lead = (links: StoredLinkRow[], seeds: ChangeSeeds = HYBRID, graph?: SeedS
   leadWithAgentCitations(seeds, "req-1", "p1", citationDeps(links, graph));
 
 describe("leadWithAgentCitations (#1759)", () => {
-  it("the capture gives a real ranking to lead: several hybrid edit files", () => {
+  it("the capture gives a real ranking to lead: several hybrid edit files, and related hits", () => {
     expect(files(HYBRID).length).toBeGreaterThanOrEqual(3);
+    expect(HYBRID.related.length).toBeGreaterThan(0);
   });
 
   it("every hybrid seed survives with its original score, whatever the agent cites", async () => {
@@ -121,7 +125,8 @@ describe("leadWithAgentCitations (#1759)", () => {
         // The same object, so the same score, the same symbol and the same lines.
         expect(out.editCandidates).toContain(m);
       }
-      expect(out.related).toBe(HYBRID.related);
+      // None of these files is a related one: every related hit stays, as itself.
+      for (const m of HYBRID.related) expect(out.related).toContain(m);
       expect(out.schemaSeeds).toBe(HYBRID.schemaSeeds);
     }
   });
@@ -167,6 +172,43 @@ describe("leadWithAgentCitations (#1759)", () => {
     // A hybrid file cited past the lead keeps its place, and is marked as cited.
     const second = out.evidence!.editCandidates.find((e) => e.filePath === hybridFiles[1]);
     expect(second?.channels).toEqual(["hybrid", "code-agent"]);
+  });
+
+  it("reads the surer citations first, then in stored order (#1818)", async () => {
+    const out = await lead([
+      cite(AGENT_FILES[0]!, { confidence: 0.5 }),
+      cite(AGENT_FILES[1]!, { confidence: 0.9 }),
+      cite(AGENT_FILES[2]!, { confidence: 0.5 }),
+      cite(AGENT_FILES[3]!, { confidence: 0.9 }),
+    ]);
+    expect(files(out).slice(0, 4)).toEqual([
+      AGENT_FILES[1],
+      AGENT_FILES[3],
+      AGENT_FILES[0],
+      AGENT_FILES[2],
+    ]);
+  });
+
+  it("caps the tail; a cited file past it is listed under related and seeds nothing (#1818)", async () => {
+    const cited = AGENT_FILES.slice(0, MAX_AGENT_LEAD_FILES + MAX_AGENT_TAIL_FILES + 2);
+    const out = await lead(cited.map((f) => cite(f)));
+    const lead5 = cited.slice(0, MAX_AGENT_LEAD_FILES);
+    const tail = cited.slice(MAX_AGENT_LEAD_FILES, MAX_AGENT_LEAD_FILES + MAX_AGENT_TAIL_FILES);
+    const overflow = cited.slice(MAX_AGENT_LEAD_FILES + MAX_AGENT_TAIL_FILES);
+    expect(files(out)).toEqual([...lead5, ...files(HYBRID), ...tail]);
+    expect(out.editCandidates.some((m) => overflow.includes(m.filePath))).toBe(false);
+    const listed = out.related.filter((m) => overflow.includes(m.filePath));
+    expect([...new Set(listed.map((m) => m.filePath))]).toEqual(overflow);
+    expect(listed.every((m) => m.confidence === 0.5 * RELATED_CONFIDENCE_FACTOR)).toBe(true);
+    for (const m of HYBRID.related) expect(out.related).toContain(m);
+    expect(out.evidence?.agentCitations).toEqual({ used: cited.length, stale: 0, led: 5 });
+  });
+
+  it("removes a cited file's hits from related: never both to edit and related (#1818)", async () => {
+    const relatedFile = HYBRID.related.find((m) => !files(HYBRID).includes(m.filePath))!.filePath;
+    const out = await lead([cite(relatedFile)]);
+    expect(files(out)[0]).toBe(relatedFile);
+    expect(out.related).toEqual(HYBRID.related.filter((m) => m.filePath !== relatedFile));
   });
 
   it("drops and counts a citation whose file the graph no longer holds; every named file resolves", async () => {
@@ -254,6 +296,27 @@ describe("leadWithAgentCitations (#1759)", () => {
     expect(head).toMatchObject({ codeSymbolId: "A2-2", filePath: AGENT_FILES[2] });
     // A model-reported confidence is clamped to [0, 1].
     expect(head.confidence).toBe(1);
+  });
+});
+
+describe("citationOrder (#1818)", () => {
+  it("puts the surer first and keeps the stored order between equal confidences", () => {
+    const links = [
+      cite("a.go", { confidence: 0.5 }),
+      cite("b.go", { confidence: 0.8 }),
+      cite("c.go", { confidence: 0.5 }),
+      cite("d.go", { confidence: 0.8 }),
+      cite("e.go", { confidence: 0.2 }),
+    ];
+    expect(citationOrder(links).map((l) => l.filePath)).toEqual([
+      "b.go",
+      "d.go",
+      "a.go",
+      "c.go",
+      "e.go",
+    ]);
+    // It does not reorder the caller's array.
+    expect(links.map((l) => l.filePath)).toEqual(["a.go", "b.go", "c.go", "d.go", "e.go"]);
   });
 });
 

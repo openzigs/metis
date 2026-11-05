@@ -800,6 +800,21 @@ function filePoolOf(
     });
 }
 
+/**
+ * #1818 — `related` without the hits in files that are now files to edit. The
+ * seeding's own rule (an edit file's other hits add nothing to review that the
+ * file does not); a stage that makes a file an edit candidate after the
+ * seeding (the #1756 check, the #1798 re-order, the #1759 citations) applies
+ * it again, so a promoted file is never listed under both.
+ */
+export function relatedOutsideEditFiles(
+  related: readonly RequirementCodeMatch[],
+  editCandidates: readonly Pick<RequirementCodeMatch, "filePath">[],
+): RequirementCodeMatch[] {
+  const editFiles = new Set(editCandidates.map((m) => m.filePath));
+  return related.filter((m) => !editFiles.has(m.filePath));
+}
+
 /** A manual link ranks ahead of a semantic one; then the surer, then by path. */
 function storedLinkOrder(a: StoredLinkRow, b: StoredLinkRow): number {
   const manual = (l: StoredLinkRow) => (l.source === "manual" ? 0 : 1);

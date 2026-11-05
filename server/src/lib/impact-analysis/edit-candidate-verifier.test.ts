@@ -305,7 +305,8 @@ describe("applyEditVerification — additive only (the #931 rule)", () => {
   const survives = (out: ChangeSeeds) => {
     expect(out.editCandidates.slice(0, 2)).toEqual(seeds.editCandidates);
     expect(out.editCandidates[0]).toBe(seeds.editCandidates[0]);
-    expect(out.related).toBe(seeds.related);
+    // #1818 — a file the check did not promote keeps every related hit.
+    expect(out.related).toEqual(seeds.related);
   };
 
   it.each([
@@ -374,6 +375,19 @@ describe("applyEditVerification — additive only (the #931 rule)", () => {
       baseScore: 0.5,
       verdict: { kind: "promoted", reason: "Sends it.", line: 10, verified: true },
     });
+  });
+
+  it("removes a promoted file's hits from related, and keeps every other related hit (#1818)", async () => {
+    const withRelated: ChangeSeeds = {
+      ...seeds,
+      related: [det("sendReceipt", "src/receipt.ts", 0.27), det("r", "src/r.ts", 0.2)],
+    };
+    const out = applyEditVerification(
+      withRelated,
+      await verify(provider('{"promote":[{"index":2,"line":10,"reason":"Sends it."}]}')),
+    );
+    expect(out.editCandidates.map((m) => m.filePath)).toContain("src/receipt.ts");
+    expect(out.related).toEqual([det("r", "src/r.ts", 0.2)]);
   });
 
   it("keeps the stored-link evidence and channels it is given", () => {
