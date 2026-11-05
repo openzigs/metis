@@ -62,6 +62,7 @@ import {
   MAX_PROMOTIONS,
   type EditVerification,
 } from "./edit-candidate-verifier.js";
+import { applyEditRerank, MAX_RERANK_PICKS, type EditRerank } from "./edit-candidate-reranker.js";
 import { requestGateText, shapeAwareChangeExtractor } from "./change-request.js";
 import { resolveStructuralTwins, type CalleeNameSource } from "./structural-twins.js";
 import {
@@ -230,6 +231,13 @@ export type EditCandidateVerifierFn = (input: {
   projectId: string;
 }) => Promise<EditVerification>;
 
+/** #1798 — the LLM re-order over one change's file pool in one project. */
+export type EditCandidateRerankerFn = (input: {
+  requirementText: string;
+  pool: readonly SeedPoolFile[];
+  projectId: string;
+}) => Promise<EditRerank>;
+
 export interface ComputeImpactDeps {
   mapRequirement: MapRequirementFn;
   /**
@@ -246,6 +254,13 @@ export interface ComputeImpactDeps {
    * seed. Must never throw (its own contract); guarded here too.
    */
   editCandidateVerifier?: EditCandidateVerifierFn;
+  /**
+   * #1798 — the LLM RE-ORDER of the edit candidates (`IMPACT_LLM_EDIT_RERANK`),
+   * run on a split seeding's file pool after the #1756 check. It may move
+   * checked pool files into the head of the edit list; every deterministic
+   * candidate stays one. Must never throw (its own contract); guarded here too.
+   */
+  editCandidateReranker?: EditCandidateRerankerFn;
   dataSourceFor: (projectId: string) => CodeGraphDataSource;
   maxDepth?: number;
   /** When set (and `includeSchemaImpact` is true), cross the blast radius into the schema graph. */
@@ -381,6 +396,22 @@ export async function computeProjectImpact(
         seeds = applyEditVerification(seeds, verification);
       } catch (err) {
         log.warn("edit-candidate check failed; deterministic seeds kept", {
+          projectId,
+          error: String(err),
+        });
+      }
+    }
+    // #1798 — the bounded LLM re-order, over the same pool.
+    if (deps.editCandidateReranker && seeds.filePool && seeds.filePool.length > 0) {
+      try {
+        const rerank = await deps.editCandidateReranker({
+          requirementText: gateText.ask,
+          pool: seeds.filePool,
+          projectId,
+        });
+        seeds = applyEditRerank(seeds, rerank);
+      } catch (err) {
+        log.warn("edit re-order failed; deterministic seeds kept", {
           projectId,
           error: String(err),
         });
@@ -1168,6 +1199,12 @@ export interface ImpactServiceDeps {
    */
   editCandidateVerifier?: EditCandidateVerifierFn;
   /**
+   * #1798 — the LLM re-order of the edit candidates (`IMPACT_LLM_EDIT_RERANK`,
+   * wired by the route through the impact LLM runtime). When set, the default
+   * seeding also returns its file pool.
+   */
+  editCandidateReranker?: EditCandidateRerankerFn;
+  /**
    * #1776 — rank edit candidates once per request, across every change and
    * project (`IMPACT_REQUEST_EDIT_RANKING`, read by the route). Every change is
    * seeded in every accessible project first; then
@@ -1498,6 +1535,29 @@ export function editVerifierNotice(t: {
     : `${head} ${t.dropped} suggestion${t.dropped === 1 ? " was" : "s were"} dropped because ${t.dropped === 1 ? "it" : "they"} could not be checked: a line outside every function or type of that file, a file not in the list, an unreadable entry, or more than ${MAX_PROMOTIONS} suggestions.`;
 }
 
+/**
+ * #1798 — the sentence a run's summary gains when the edit re-order answered:
+ * how many files it ranked higher in the order of the files to edit (the list
+ * shown is still sorted by depth then confidence, so the notice says so), how many of
+ * those the search had not picked (each at a line checked against the code),
+ * and how many of its picks it dropped. Every file the search picked stays
+ * listed.
+ */
+export function editRerankNotice(t: { moved: number; promoted: number; dropped: number }): string {
+  const files = (n: number) => (n === 0 ? "no files" : `${n} file${n === 1 ? "" : "s"}`);
+  const head =
+    t.moved === 0
+      ? "The AI re-order changed no file's place in the order of the files to edit; every file the search picked is still listed."
+      : `The AI re-order ranked ${files(t.moved)} higher in the order of the files to edit` +
+        (t.promoted === 0
+          ? ""
+          : `, ${t.promoted} of them not picked by the search (each at a line checked against the code)`) +
+        "; the list shown keeps its own sort (depth, then confidence), and every file the search picked is still listed.";
+  return t.dropped === 0
+    ? head
+    : `${head} ${t.dropped} suggestion${t.dropped === 1 ? " was" : "s were"} dropped because ${t.dropped === 1 ? "it" : "they"} could not be checked: a line outside every function or type of that file, a file not in the list, an unreadable entry, or more than ${MAX_RERANK_PICKS} suggestions.`;
+}
+
 /** Resolve the change source text from the row (inline text or document chunks). */
 async function resolveSourceText(
   prisma: ImpactPrisma,
@@ -1625,7 +1685,7 @@ async function runImpactAnalysis(
           prisma,
           {},
           deps.storedLinkSeeds ? prismaStoredLinkDeps(prisma) : undefined,
-          deps.editCandidateVerifier ? VERIFY_POOL_FILES : undefined,
+          deps.editCandidateVerifier || deps.editCandidateReranker ? VERIFY_POOL_FILES : undefined,
           deps.requestEditRanking,
         ));
   // #1609 — the starter's access, read once per project and reused.
@@ -1703,6 +1763,8 @@ async function runImpactAnalysis(
     const storedLinkTotals = { ran: false, used: 0, stale: 0 };
     // #1756 — the edit-candidate check's totals, for the summary.
     const verifierTotals = { ran: false, promoted: 0, doubtful: 0, dropped: 0 };
+    // #1798 — the edit re-order's totals, for the summary.
+    const rerankTotals = { ran: false, moved: 0, promoted: 0, dropped: 0 };
     // #932 — per-item roll-ups fed into the run-level BA overview (best-effort).
     const runItems: RunItemFact[] = [];
 
@@ -1803,6 +1865,7 @@ async function runImpactAnalysis(
           clauseCoverageReconciler: deps.clauseCoverageReconciler,
           tableRecoveryJudge: deps.tableRecoveryJudge,
           editCandidateVerifier: deps.editCandidateVerifier,
+          editCandidateReranker: deps.editCandidateReranker,
         });
 
         if (result.retrievalMode === "bm25-only") bm25OnlyProjects.add(projectId);
@@ -1820,6 +1883,13 @@ async function runImpactAnalysis(
           verifierTotals.promoted += verified.promoted;
           verifierTotals.doubtful += verified.doubtful;
           verifierTotals.dropped += verified.droppedPromotions;
+        }
+        const reranked = result.seedEvidence?.reranker;
+        if (reranked) {
+          rerankTotals.ran = true;
+          rerankTotals.moved += reranked.moved;
+          rerankTotals.promoted += reranked.promoted;
+          rerankTotals.dropped += reranked.droppedPicks;
         }
 
         // Skip empty (no code hits) results to keep the report focused: a change
@@ -2154,6 +2224,9 @@ async function runImpactAnalysis(
     }
     if (verifierTotals.ran) {
       summary = `${summary}\n\n${editVerifierNotice(verifierTotals)}`;
+    }
+    if (rerankTotals.ran) {
+      summary = `${summary}\n\n${editRerankNotice(rerankTotals)}`;
     }
     if (deps.llmDegradationNotice) {
       try {

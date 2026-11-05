@@ -43,6 +43,10 @@ import {
   verifyEditCandidates,
 } from "../lib/impact-analysis/edit-candidate-verifier.js";
 import {
+  impactLlmEditRerankEnabled,
+  rerankEditCandidates,
+} from "../lib/impact-analysis/edit-candidate-reranker.js";
+import {
   parseRequirementIds,
   triggerImpactAnalysis,
   ImpactAnalysisError,
@@ -249,6 +253,34 @@ function editCandidateVerifierDep(
 }
 
 /**
+ * #1798 — flag-gated wiring for the LLM RE-ORDER of the edit candidates. When
+ * `IMPACT_LLM_EDIT_RERANK` is on AND a live provider builds, return a re-order
+ * that shows the model the hybrid file pool and keeps only picks whose line is
+ * inside a named symbol of that file in the project's code graph. Off / no
+ * provider ⇒ `undefined`: nothing changes. It never throws; an unread answer
+ * is reported on the run's notice (#1081), and a timeout by the runtime's
+ * deadline (#1024).
+ */
+function editCandidateRerankerDep(
+  runtime: ImpactLlmRuntime,
+): ImpactServiceDeps["editCandidateReranker"] | undefined {
+  if (!impactLlmEditRerankEnabled()) return undefined;
+  const provider = instrumentStage(runtime, "edit-rerank", buildImpactStageProvider());
+  if (!provider) return undefined;
+  const loadFileSymbols = prismaFileSymbolLoader(prisma);
+  return async ({ requirementText, pool, projectId }) => {
+    const result = await rerankEditCandidates({
+      requirementText,
+      pool,
+      provider,
+      lineCheck: graphLineCheck(loadFileSymbols, projectId),
+    });
+    if (result.unreadable) runtime.markUnreadable("edit-rerank");
+    return result;
+  };
+}
+
+/**
  * #936 — flag-gated wiring for the LLM table-relevance OUTPUT filter. When
  * `IMPACT_LLM_TABLE_FILTER` is on AND a live (non-offline) provider builds, return
  * a filter that prunes tangential (`unlikely`) crossed tables into the secondary
@@ -444,12 +476,15 @@ export function impactRunDeps(actorId: string, projectIds: readonly string[]): I
   const storedLinkSeeds = impactStoredLinkSeedsEnabled();
   // #1756 — likewise off by default.
   const editCandidateVerifier = editCandidateVerifierDep(runtime);
+  // #1798 — likewise off by default.
+  const editCandidateReranker = editCandidateRerankerDep(runtime);
   // #1776 — likewise off by default.
   const requestEditRanking = impactRequestEditRankingEnabled();
   return {
     ...(storedLinkSeeds ? { storedLinkSeeds } : {}),
     ...(requestEditRanking ? { requestEditRanking } : {}),
     ...(editCandidateVerifier ? { editCandidateVerifier } : {}),
+    ...(editCandidateReranker ? { editCandidateReranker } : {}),
     ...(mapRequirement ? { mapRequirement } : {}),
     ...(tableRelevanceFilter ? { tableRelevanceFilter } : {}),
     ...(additiveColumnProposer ? { additiveColumnProposer } : {}),

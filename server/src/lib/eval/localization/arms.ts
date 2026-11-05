@@ -35,6 +35,14 @@ import {
   MAX_PROMOTIONS,
   verifyEditCandidates,
 } from "../../impact-analysis/edit-candidate-verifier.js";
+import {
+  applyEditRerank,
+  MAX_RERANK_PICKS,
+  RERANK_MODEL_WEIGHT,
+  RERANK_RRF_K,
+  rerankEditCandidates,
+} from "../../impact-analysis/edit-candidate-reranker.js";
+import type { ChangedRequirement } from "../../impact-analysis/extract-changes.js";
 import type { AIProvider } from "../../ai/types.js";
 import { DEFAULT_WEIGHTS } from "../../code-graph/hybrid-search.js";
 import {
@@ -46,6 +54,7 @@ import {
 import { fileKey, type LocalizationCorpus, type LocalizationItem } from "./corpus.js";
 import type { CorpusSearch } from "./search.js";
 import type { GapVerdict } from "./corpus.js";
+import { seededRandom } from "./stats.js";
 
 /** What an arm returns for one requirement (cost and time are the runner's). */
 export interface ArmOutput {
@@ -69,10 +78,15 @@ export interface ArmDeps {
   search: CorpusSearch;
   /** The METERED provider (`meterProvider`), for an arm with a model in the loop. */
   provider?: AIProvider;
+  /**
+   * The model's weight in the A13 family's rank fusion (#1798). Default
+   * `RERANK_MODEL_WEIGHT`; the in-sample tuning run sets it (`--rerank-weight`).
+   */
+  rerankWeight?: number;
 }
 
 /** The arms that call a model: the CLI builds a live, metered provider only for these. */
-export const MODEL_ARMS: ReadonlySet<string> = new Set(["A4"]);
+export const MODEL_ARMS: ReadonlySet<string> = new Set(["A4", "A13", "A13C", "A13S"]);
 
 /** One seeding's files, in its own order. */
 export interface SeedingFiles {
@@ -450,6 +464,151 @@ async function localizePerRequest(
   );
 }
 
+/**
+ * #1798 — a seeded shuffle of `n` pool indices (Fisher-Yates over mulberry32),
+ * the same for the same `seedText`, so the position-bias reading is
+ * reproducible run to run.
+ */
+export function shuffledPresentation(n: number, seedText: string): number[] {
+  // FNV-1a over the text: a 32-bit seed.
+  let h = 0x811c9dc5;
+  for (const ch of seedText) {
+    h ^= ch.codePointAt(0)!;
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  const rand = seededRandom(h);
+  const order = Array.from({ length: n }, (_, i) => i);
+  for (let i = n - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [order[i], order[j]] = [order[j]!, order[i]!];
+  }
+  return order;
+}
+
+/** #1798 — what an A13 variant re-orders, and how its pool is shown. */
+interface RerankVariant {
+  id: string;
+  /** `A0`: each seeding's own edit cut. `A12`: the cosine cut once per request (#1784). */
+  base: "A0" | "A12";
+  /** Show the pool in a seeded shuffle instead of the deterministic order. */
+  shuffled: boolean;
+}
+
+/**
+ * A13 (#1798) — the LLM re-order of the edit candidates over the hybrid pool,
+ * production's `rerankEditCandidates` + `applyEditRerank`, one call per change
+ * and repository, the line check run against the corpus's symbol rows. The
+ * base order is A0's (`A13`), or A12's cosine ranking (`A13C`); `A13S` is A13
+ * with the pool shown in a seeded shuffle, to read whether Recall@5 depends on
+ * the order the model is shown. Every deterministic candidate of the base stays
+ * an edit candidate; the files the model named are reported for graph
+ * resolution.
+ */
+function createRerankArm(deps: ArmDeps, variant: RerankVariant): LocalizationArm {
+  const { search, provider } = deps;
+  const weight = deps.rerankWeight ?? RERANK_MODEL_WEIGHT;
+  if (!provider) {
+    throw new Error(
+      `arm ${variant.id} calls a model: it needs a live, metered provider (AI_PROVIDER and its key)`,
+    );
+  }
+  const a0 = createA0Arm(deps);
+  const cosine = variant.base === "A12";
+  const fileSymbols = new WeakMap<LocalizationCorpus, StoredLinkDeps["loadFileSymbols"]>();
+  return {
+    id: variant.id,
+    label:
+      `${variant.id} — ${variant.base} with the LLM re-order of the edit candidates` +
+      `${variant.shuffled ? ", pool shown shuffled" : ""} (${provider.key}/${provider.model})`,
+    configuration: {
+      ...a0.configuration,
+      stage:
+        `resolveChangeSeeds${cosine ? " + rankEditCandidatesPerRequest(cosine)" : ""}` +
+        " + rerankEditCandidates (IMPACT_LLM_EDIT_RERANK, #1798)",
+      baseOrder: cosine
+        ? "A12: edit candidates ranked once per requirement on the cosine score (#1784)"
+        : "A0: each seeding's own edit cut",
+      ...(cosine
+        ? {
+            editCut: `once per requirement over every change and repository: top ${MAX_EDIT_FILES}, (share of seeding best) × seeding best cosine ≥ best − ${REQUEST_COSINE_MARGIN}`,
+          }
+        : {}),
+      poolFiles: VERIFY_POOL_FILES,
+      maxPicks: MAX_RERANK_PICKS,
+      fusion: `reciprocal rank, k = ${RERANK_RRF_K}, model weight ${weight}; top ${MAX_EDIT_FILES} plus every deterministic candidate`,
+      presentation: variant.shuffled
+        ? "pool shuffled per change and repository (seeded by the item id)"
+        : "pool in the deterministic order",
+      lineCheck: "inside a named symbol of the file, never its module span (corpus symbol rows)",
+      graphResolution: "1.00 by construction (pool indices only)",
+      provider: provider.key,
+      model: provider.model,
+      llm: true,
+    },
+    async localize(item, corpus) {
+      if (!fileSymbols.has(corpus)) fileSymbols.set(corpus, corpusFileSymbols(corpus));
+      const loadFileSymbols = fileSymbols.get(corpus)!;
+      const changes = extractChangesByShape(requirementText(item));
+      const seedings: RequestSeeding[] = [];
+      const changeOf: ChangedRequirement[] = [];
+      for (const repo of corpus.manifest.repos) {
+        for (const change of changes) {
+          const seeds = await resolveChangeSeeds(change, repo.name, {
+            searcher: search.searcher,
+            loadSymbols: search.loadSymbols,
+            loadWriterIds: search.loadWriterIds,
+            filePoolSize: VERIFY_POOL_FILES,
+            ...(cosine ? { editFileScores: true } : {}),
+          });
+          seedings.push({ projectId: repo.name, seeds });
+          changeOf.push(change);
+        }
+      }
+      const based = cosine
+        ? rankEditCandidatesPerRequest(seedings, "cosine")
+        : seedings.map((s) => s.seeds);
+      const named: string[] = [];
+      const files: SeedingFiles[] = [];
+      for (const [i, seeds] of based.entries()) {
+        const repo = seedings[i]!.projectId;
+        const pool = seeds.filePool ?? [];
+        const rerank = await rerankEditCandidates({
+          requirementText: requestGateText(changeOf[i]!).ask,
+          pool,
+          provider,
+          lineCheck: graphLineCheck(loadFileSymbols, repo),
+          ...(variant.shuffled
+            ? { presentation: shuffledPresentation(pool.length, `${item.id}|${repo}|${i}`) }
+            : {}),
+        });
+        const reranked = applyEditRerank(seeds, rerank, weight);
+        const key = (m: { filePath: string }) => fileKey(repo, m.filePath);
+        named.push(...rerank.namedFiles.map((f) => fileKey(repo, f)));
+        files.push({
+          edit: uniqueInOrder(reranked.editCandidates.map(key)),
+          other: uniqueInOrder([...reranked.related, ...reranked.schemaSeeds].map(key)),
+        });
+      }
+      return { ...mergeSeedings(files), llmNamedFiles: uniqueInOrder(named) };
+    },
+  };
+}
+
+/** A13 — A0's order with the LLM re-order (#1798). */
+export function createA13Arm(deps: ArmDeps): LocalizationArm {
+  return createRerankArm(deps, { id: "A13", base: "A0", shuffled: false });
+}
+
+/** A13C — A12's cosine order with the LLM re-order (#1798). */
+export function createA13CArm(deps: ArmDeps): LocalizationArm {
+  return createRerankArm(deps, { id: "A13C", base: "A12", shuffled: false });
+}
+
+/** A13S — A13 with the pool shown in a seeded shuffle: the position-bias reading (#1798). */
+export function createA13SArm(deps: ArmDeps): LocalizationArm {
+  return createRerankArm(deps, { id: "A13S", base: "A0", shuffled: true });
+}
+
 /** Arms by id. Later issues of epic #1751 add theirs here. */
 export const ARM_FACTORIES: Record<string, (deps: ArmDeps) => LocalizationArm> = {
   A0: createA0Arm,
@@ -457,6 +616,9 @@ export const ARM_FACTORIES: Record<string, (deps: ArmDeps) => LocalizationArm> =
   A4: createA4Arm,
   A11: createA11Arm,
   A12: createA12Arm,
+  A13: createA13Arm,
+  A13C: createA13CArm,
+  A13S: createA13SArm,
 };
 
 /** The arms issues #1754–#1761 will add; named so a request for one fails with its issue. */

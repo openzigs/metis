@@ -67,6 +67,7 @@ export type ImpactLlmStage =
   | "seeding"
   | "entity-seeds"
   | "edit-verify"
+  | "edit-rerank"
   | "table-filter"
   | "additive-ddl"
   | "table-judge"
@@ -79,6 +80,7 @@ export const IMPACT_LLM_STAGES: readonly ImpactLlmStage[] = [
   "seeding",
   "entity-seeds",
   "edit-verify",
+  "edit-rerank",
   "table-filter",
   "additive-ddl",
   "table-judge",
@@ -95,6 +97,7 @@ export const IMPACT_LLM_AGENT_STEP: Record<ImpactLlmStage, string> = {
   seeding: "impact.seeding",
   "entity-seeds": "impact.entity-seeds",
   "edit-verify": "impact.edit-verify",
+  "edit-rerank": "impact.edit-rerank",
   "table-filter": "impact.table-filter",
   "additive-ddl": "impact.additive-ddl",
   "table-judge": "impact.table-judge",
@@ -108,6 +111,7 @@ const STAGE_LABEL: Record<ImpactLlmStage, string> = {
   seeding: "requirement-to-code seeding",
   "entity-seeds": "entity seed recall",
   "edit-verify": "edit-candidate check",
+  "edit-rerank": "edit-candidate re-order",
   "table-filter": "table relevance filtering",
   "additive-ddl": "additive-column proposals",
   "table-judge": "column-informed table recovery",

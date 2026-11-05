@@ -3056,6 +3056,32 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   0.01 now would be tuning on the held-out sets; it needs a fresh held-out
   reading or the #1757 adaptive cut. The margin is a cosine distance for
   `gte-modernbert-base`; another embedding model's band needs it re-sized.
+- **Edit-candidate re-order (#1798)** — behind `IMPACT_LLM_EDIT_RERANK` (key
+  registry, tunable, **off**). It is the bounded exception to the #931 rule
+  (docs/IMPACT_ANALYSIS_LLM_STAGES.md): one call per change and project
+  (`rerankEditCandidates`, stage `edit-rerank`, metered as `impact.edit-rerank`
+  under the 60-second impact deadline). The model sees the same file pool as the
+  #1756 check, without `[EDIT]` marks, and returns up to `MAX_RERANK_PICKS = 10`
+  pool indices, most likely first, each with a line and a reason. Each line is
+  checked by `graphLineCheck` (a named symbol of that file, never its `module`
+  span). An unchecked pick is dropped and counted.
+  `applyEditRerank` then fuses the deterministic order (the edit candidates,
+  then the rest of the pool) with the model's checked order by reciprocal rank
+  (`RERANK_RRF_K = 60`, `RERANK_MODEL_WEIGHT`, provisional: it is to be fixed
+  on the in-sample set). The top `MAX_EDIT_FILES` of the fused order, plus every
+  deterministic candidate as the same object, are the edit candidates, in fused
+  order. A pick that was not a candidate carries its checked symbol at the
+  file's own hybrid confidence (channel `edit-reranker`, `modelRank` and the
+  checked line in `seedEvidence`, counts in `seedEvidence.reranker`).
+  The engine runs it after the #1756 check, over the same pool, so a check
+  promotion counts as deterministic here. The run summary says how many files
+  ranked higher, how many the search had not picked, and how many picks
+  were dropped (`editRerankNotice`). The persisted list is still sorted by depth
+  then confidence, so the fused order is visible only in `seedEvidence` until #1762.
+  It is measured as arms A13 (A0's order), A13C (A12's cosine order) and A13S
+  (A13 with the pool shown in a seeded shuffle, the position-bias reading). The
+  table guard reads A13 on the split seeding (`SplitSeedingOptions.editCandidateReranker`).
+  It is not yet measured on a live model.
 - **Stored requirement links (#1754)** — `POST /api/impact-analyses` accepts
   `requirementIds` (deduplicated, at most 50). The route refuses a requirement
   whose project the caller cannot read with the project check's own error (a

@@ -567,9 +567,15 @@ export interface ImpactTableFeedbackView {
  * seeding (BM25 fused with symbol embeddings); `stored-link` is a stored
  * requirement-to-code link (`RequirementCodeMapping`); `edit-verifier` (#1756)
  * is a file the LLM edit-candidate check promoted from the hybrid pool, at a
- * line checked against the code graph.
+ * line checked against the code graph; `edit-reranker` (#1798) is a pool file
+ * the LLM re-order put into the files to edit, at a line checked the same way.
  */
-export const IMPACT_SEED_CHANNELS = ["hybrid", "stored-link", "edit-verifier"] as const;
+export const IMPACT_SEED_CHANNELS = [
+  "hybrid",
+  "stored-link",
+  "edit-verifier",
+  "edit-reranker",
+] as const;
 export type ImpactSeedChannel = (typeof IMPACT_SEED_CHANNELS)[number];
 
 /**
@@ -593,7 +599,7 @@ export type ImpactEditVerdict = z.infer<typeof impactEditVerdictSchema>;
 /**
  * #1754 / #1756 — how one change was seeded into one project, recorded only when
  * a seed channel beyond the default one ran (`IMPACT_STORED_LINK_SEEDS`,
- * `IMPACT_LLM_EDIT_VERIFY`). #1762 shows it.
+ * `IMPACT_LLM_EDIT_VERIFY`, `IMPACT_LLM_EDIT_RERANK`). #1762 shows it.
  */
 export const impactSeedEvidenceSchema = z.object({
   /** #1754 — present when the stored-link channel ran. */
@@ -617,6 +623,21 @@ export const impactSeedEvidenceSchema = z.object({
       droppedPromotions: z.number().int().min(0),
     })
     .optional(),
+  /**
+   * #1798 — present when the LLM re-order of the edit candidates answered.
+   * Every deterministic candidate stays a candidate; the order is a fusion of
+   * the deterministic order and the model's checked order.
+   */
+  reranker: z
+    .object({
+      /** Files in the top of the fused order that were not in the deterministic top. */
+      moved: z.number().int().min(0),
+      /** Pool files that were not deterministic candidates and are now. */
+      promoted: z.number().int().min(0),
+      /** Model picks dropped: a line outside every named symbol of the file, an index naming no pool file, a malformed entry, or one past the limit. */
+      droppedPicks: z.number().int().min(0),
+    })
+    .optional(),
   /** Every edit-candidate file, in edit order, with the channels that named it. */
   editCandidates: z
     .array(
@@ -627,6 +648,8 @@ export const impactSeedEvidenceSchema = z.object({
         baseScore: z.number().min(0).optional(),
         /** #1756 — the edit-candidate check's verdict on this file. */
         verdict: impactEditVerdictSchema.optional(),
+        /** #1798 — the file's 1-based place in the model's checked re-order. */
+        modelRank: z.number().int().min(1).optional(),
       }),
     )
     .max(500),

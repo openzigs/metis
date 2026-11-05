@@ -23,7 +23,11 @@ import {
   graphLineCheck,
   verifyEditCandidates,
 } from "../../impact-analysis/edit-candidate-verifier.js";
-import type { EditCandidateVerifierFn } from "../../impact-analysis/impact-analysis-engine.js";
+import { rerankEditCandidates } from "../../impact-analysis/edit-candidate-reranker.js";
+import type {
+  EditCandidateRerankerFn,
+  EditCandidateVerifierFn,
+} from "../../impact-analysis/impact-analysis-engine.js";
 import { embeddableSymbols, type ImpactRecallFixture } from "../impact-recall/fixture.js";
 import type {
   ImpactRecallRunSummary,
@@ -67,8 +71,10 @@ export interface SplitSeedingGuardDeps {
   search: Pick<CorpusSearch, "searcher" | "loadSymbols">;
   /** The production-configuration options (consumer resolver, live #936 table filter). */
   options: RunImpactRecallOptions;
-  /** The arm's stage on top of the split seeding: the edit-candidate check. */
-  editCandidateVerifier: EditCandidateVerifierFn;
+  /** The arm's stage on top of the split seeding: the edit-candidate check (A4)… */
+  editCandidateVerifier?: EditCandidateVerifierFn;
+  /** …or #1798's edit re-order (A13). One of the two. */
+  editCandidateReranker?: EditCandidateRerankerFn;
   /** `runImpactRecallEvalRepeated`, injected so this module stays free of the corpus I/O. */
   runRepeated: (options: RunImpactRecallOptions) => Promise<ImpactRecallRunSummary>;
   /** Appended to each reading's configuration: the corpus and the provider. */
@@ -95,6 +101,12 @@ function measurement(
 export async function measureSplitSeedingGuard(
   deps: SplitSeedingGuardDeps,
 ): Promise<TableGuardReading> {
+  const stage = deps.editCandidateVerifier
+    ? { editCandidateVerifier: deps.editCandidateVerifier }
+    : deps.editCandidateReranker
+      ? { editCandidateReranker: deps.editCandidateReranker }
+      : null;
+  if (!stage) throw new Error("a split-seeding guard needs the arm's stage: a check or a re-order");
   const split: SplitSeedingOptions = {
     searcher: deps.search.searcher,
     loadSymbols: deps.search.loadSymbols,
@@ -102,7 +114,7 @@ export async function measureSplitSeedingGuard(
   const baseline = await deps.runRepeated({ ...deps.options, splitSeeding: split });
   const checked = await deps.runRepeated({
     ...deps.options,
-    splitSeeding: { ...split, editCandidateVerifier: deps.editCandidateVerifier },
+    splitSeeding: { ...split, ...stage },
   });
   return {
     measured: true,
@@ -148,6 +160,24 @@ export function fixtureEditCandidateVerifier(
   const loadFileSymbols = fixtureFileSymbols(fixture);
   return ({ requirementText, pool, projectId }) =>
     verifyEditCandidates({
+      requirementText,
+      pool,
+      provider,
+      lineCheck: graphLineCheck(loadFileSymbols, projectId),
+    });
+}
+
+/**
+ * #1798 — the edit re-order as the route wires it (`editCandidateRerankerDep`):
+ * production's `rerankEditCandidates`, its line test against the fixture's graph.
+ */
+export function fixtureEditCandidateReranker(
+  fixture: ImpactRecallFixture,
+  provider: AIProvider,
+): EditCandidateRerankerFn {
+  const loadFileSymbols = fixtureFileSymbols(fixture);
+  return ({ requirementText, pool, projectId }) =>
+    rerankEditCandidates({
       requirementText,
       pool,
       provider,

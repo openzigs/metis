@@ -224,6 +224,7 @@ reproducibility.
 ```bash
 pnpm eval:localization                 # A0 on both held-out sets, 3 runs, $35 cap
 pnpm eval:localization --arms A0,A4    # an arm against A0, paired, on the same items
+pnpm eval:localization --arms A0,A13,A13C,A13S  # #1798 LLM re-order: A0 base, A12 base, shuffled pool
 pnpm eval:localization --in-sample     # also the run-7 six (a sanity check, not a claim)
 pnpm eval:localization --table-guard   # + table precision on impact-recall-01 (live provider)
 pnpm eval:localization --budget 25     # the dollar cap; the run stops before it is passed
