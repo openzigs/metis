@@ -2413,6 +2413,17 @@ says how many links were used and how many were skipped. It stays off until it
 is shown to help: on the held-out measurement it did not yet (see
 `docs/ARCHITECTURE.md`, "Stored requirement links").
 
+When your administrator turns on **`IMPACT_AGENT_SEEDS`** (off by default), such
+a run also puts the files that **Analysis's code agent cited** for the
+requirement, when you ran "Evaluate new requirements", at the **top** of the
+files to edit: at most five, in the order the agent cited them. Nothing the
+search found is removed, and no score changes; the search's files follow. A
+cited file that is no longer in the project's code is skipped. The run summary
+says how many citations were used, how many files they put at the top, and how
+many were skipped. It makes no extra AI call, so it costs nothing and adds no
+time: it reuses what the analysis already found. A pasted request has no
+citations and is unchanged.
+
 When an impact analysis is published to Jira, the issue carries the umbrella **`metis`** label and the **`metis-impact-analysis`** source label, together with `severity:*` and `category:impact-analysis`. Issues published before this change are not relabelled.
 
 Permission required: `analysis.run` to trigger, `analysis.read` to view results.

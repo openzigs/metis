@@ -63,6 +63,11 @@ import {
   type EditVerification,
 } from "./edit-candidate-verifier.js";
 import { applyEditRerank, MAX_RERANK_PICKS, type EditRerank } from "./edit-candidate-reranker.js";
+import {
+  leadWithAgentCitations,
+  prismaAgentCitationDeps,
+  type AgentCitationDeps,
+} from "./agent-seeder.js";
 import { requestGateText, shapeAwareChangeExtractor } from "./change-request.js";
 import { resolveStructuralTwins, type CalleeNameSource } from "./structural-twins.js";
 import {
@@ -261,6 +266,13 @@ export interface ComputeImpactDeps {
    * candidate stays one. Must never throw (its own contract); guarded here too.
    */
   editCandidateReranker?: EditCandidateRerankerFn;
+  /**
+   * #1759 — the code agent's stored citations (`IMPACT_AGENT_SEEDS`). For a
+   * change about a tracked requirement, run LAST on a split seeding (after the
+   * #1756 check and the #1798 re-order), so the cited files lead the files to
+   * edit; every other candidate stays one, with its score. Never throws.
+   */
+  agentSeeds?: AgentCitationDeps;
   dataSourceFor: (projectId: string) => CodeGraphDataSource;
   maxDepth?: number;
   /** When set (and `includeSchemaImpact` is true), cross the blast radius into the schema graph. */
@@ -416,6 +428,11 @@ export async function computeProjectImpact(
           error: String(err),
         });
       }
+    }
+    // #1759 — the code agent's citations lead the files to edit. Last, so no
+    // later stage re-orders them; a reused pass, so no model call here.
+    if (deps.agentSeeds && change.requirementId) {
+      seeds = await leadWithAgentCitations(seeds, change.requirementId, projectId, deps.agentSeeds);
     }
     matches = seeds.editCandidates;
     related = seeds.related;
@@ -1193,6 +1210,13 @@ export interface ImpactServiceDeps {
    */
   storedLinkSeeds?: boolean;
   /**
+   * #1759 — let the Analysis code agent's stored citations of a tracked
+   * requirement lead its files to edit (`IMPACT_AGENT_SEEDS`, read by the
+   * route). Applies to the split seeding only (the default, or an injected
+   * `seedChange`); an injected `mapRequirement` is used as-is.
+   */
+  agentSeeds?: boolean;
+  /**
    * #1756 — the LLM edit-candidate check (`IMPACT_LLM_EDIT_VERIFY`, wired by the
    * route through the impact LLM runtime). When set, the default seeding also
    * returns its file pool ({@link VERIFY_POOL_FILES} files).
@@ -1514,6 +1538,24 @@ export function storedLinkNotice(used: number, stale: number): string {
 }
 
 /**
+ * #1759 — the sentence a run's summary gains when the code agent's stored
+ * citations were read: how many seeded the run, how many files they put at the
+ * head of the files to edit, and how many were dropped because their file has
+ * left the code graph.
+ */
+export function agentCitationNotice(t: { used: number; stale: number; led: number }): string {
+  const citations = (n: number) => `${n} code-agent citation${n === 1 ? "" : "s"}`;
+  const files = (n: number) => `${n} file${n === 1 ? "" : "s"}`;
+  const head =
+    t.used === 0
+      ? `No code-agent citation from "Evaluate new requirements" seeded the files to edit.`
+      : `${citations(t.used)} from "Evaluate new requirements" put ${files(t.led)} at the top of the files to edit; every file the search picked is still listed.`;
+  return t.stale === 0
+    ? head
+    : `${head} ${citations(t.stale)} ${t.stale === 1 ? "was" : "were"} dropped: the cited file is no longer in the code graph.`;
+}
+
+/**
  * #1756 — the sentence a run's summary gains when the edit-candidate check
  * answered: what it promoted (each at a line checked against the code graph),
  * what it marked doubtful (still listed), and how many promotions it dropped.
@@ -1765,6 +1807,9 @@ async function runImpactAnalysis(
     const verifierTotals = { ran: false, promoted: 0, doubtful: 0, dropped: 0 };
     // #1798 — the edit re-order's totals, for the summary.
     const rerankTotals = { ran: false, moved: 0, promoted: 0, dropped: 0 };
+    // #1759 — the code agent's citations' totals, for the summary.
+    const agentTotals = { ran: false, used: 0, stale: 0, led: 0 };
+    const agentSeeds = deps.agentSeeds ? prismaAgentCitationDeps(prisma) : undefined;
     // #932 — per-item roll-ups fed into the run-level BA overview (best-effort).
     const runItems: RunItemFact[] = [];
 
@@ -1866,6 +1911,7 @@ async function runImpactAnalysis(
           tableRecoveryJudge: deps.tableRecoveryJudge,
           editCandidateVerifier: deps.editCandidateVerifier,
           editCandidateReranker: deps.editCandidateReranker,
+          ...(agentSeeds ? { agentSeeds } : {}),
         });
 
         if (result.retrievalMode === "bm25-only") bm25OnlyProjects.add(projectId);
@@ -1890,6 +1936,13 @@ async function runImpactAnalysis(
           rerankTotals.moved += reranked.moved;
           rerankTotals.promoted += reranked.promoted;
           rerankTotals.dropped += reranked.droppedPicks;
+        }
+        const agent = result.seedEvidence?.agentCitations;
+        if (agent) {
+          agentTotals.ran = true;
+          agentTotals.used += agent.used;
+          agentTotals.stale += agent.stale;
+          agentTotals.led += agent.led;
         }
 
         // Skip empty (no code hits) results to keep the report focused: a change
@@ -2227,6 +2280,9 @@ async function runImpactAnalysis(
     }
     if (rerankTotals.ran) {
       summary = `${summary}\n\n${editRerankNotice(rerankTotals)}`;
+    }
+    if (agentTotals.ran) {
+      summary = `${summary}\n\n${agentCitationNotice(agentTotals)}`;
     }
     if (deps.llmDegradationNotice) {
       try {

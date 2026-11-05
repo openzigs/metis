@@ -3128,6 +3128,28 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   because A0 already names all ten files. Hence off. Manual and agent-cited links
   are not in the held-out corpora, so they are not measured yet; table precision
   (impact-recall-01, a live model) was not measured for A2.
+- **The code agent's citations lead (#1759)** — with `IMPACT_AGENT_SEEDS` on (key
+  registry, tunable, **off** by default), a change about a tracked requirement
+  reads that requirement's `RequirementCodeMapping` rows with source
+  `analysis-grounding` (the citations the Analysis code agent made in "Evaluate
+  new requirements", already resolved to the code graph when they were stored),
+  for the requirement AND the project, in stored order (`agent-seeder.ts`,
+  `leadWithAgentCitations`). It runs LAST in `computeProjectImpact`, after the
+  #1756 check and the #1798 re-order, so neither can push the citations down: the
+  first `MAX_AGENT_LEAD_FILES` (5) distinct cited files whose file the graph still
+  holds go to the head of the edit candidates, further cited files follow them,
+  and every other candidate stays one as the same object with the same score. A
+  cited file the graph no longer holds is dropped and counted. The channel is
+  `code-agent` in `seedEvidence`, whose `agentCitations` records used, stale and
+  led; the run summary gains one sentence. It REUSES the pass instead of running
+  one, so the impact request makes no model call for it: #1755 measured a fresh
+  Sonnet pass at a median 52 s on a three-repository project, against the 60 s
+  impact deadline. The reason it leads instead of appending: the citations alone
+  (arm A3A) raised Recall@5 by +0.31 pooled on 29 held-out items on
+  `claude-sonnet-5-5` (p < 0.001), and appended after the hybrid picks (arm A3,
+  the #1754 channel) they moved Recall@5 by +0.000. A pasted request has no
+  stored citations, and an injected mapper (the `IMPACT_LLM_SEEDING` path) does
+  not run the stage. Flag off, nothing new is read or written.
   **Read-path bugs (#1135).** For a bug report that asks to store nothing new
   (`isReadPathBug` in `change-seeds.ts`), table writers (lineage `writes` /
   `persists-to`) are kept out of the edit candidates and stay in `related`, and

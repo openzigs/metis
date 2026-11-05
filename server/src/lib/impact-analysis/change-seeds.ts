@@ -809,7 +809,10 @@ function storedLinkOrder(a: StoredLinkRow, b: StoredLinkRow): number {
 }
 
 /** The symbols one link seeds: its own symbol, else the symbols on its lines, else the file's first few. */
-function linkSymbols(link: StoredLinkRow, inFile: readonly SeedSymbolRow[]): SeedSymbolRow[] {
+export function linkSymbols(
+  link: StoredLinkRow,
+  inFile: readonly SeedSymbolRow[],
+): SeedSymbolRow[] {
   const own = link.codeSymbolId ? inFile.find((r) => r.id === link.codeSymbolId) : undefined;
   if (own) return [own];
   const code = inFile.filter((r) => r.kind !== "module" && !isSchemaSymbol(r));

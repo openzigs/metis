@@ -46,6 +46,7 @@ import {
   impactLlmEditRerankEnabled,
   rerankEditCandidates,
 } from "../lib/impact-analysis/edit-candidate-reranker.js";
+import { impactAgentSeedsEnabled } from "../lib/impact-analysis/agent-seeder.js";
 import {
   parseRequirementIds,
   triggerImpactAnalysis,
@@ -480,8 +481,11 @@ export function impactRunDeps(actorId: string, projectIds: readonly string[]): I
   const editCandidateReranker = editCandidateRerankerDep(runtime);
   // #1776 — likewise off by default.
   const requestEditRanking = impactRequestEditRankingEnabled();
+  // #1759 — likewise off by default. Reuses stored citations: no model call.
+  const agentSeeds = impactAgentSeedsEnabled();
   return {
     ...(storedLinkSeeds ? { storedLinkSeeds } : {}),
+    ...(agentSeeds ? { agentSeeds } : {}),
     ...(requestEditRanking ? { requestEditRanking } : {}),
     ...(editCandidateVerifier ? { editCandidateVerifier } : {}),
     ...(editCandidateReranker ? { editCandidateReranker } : {}),

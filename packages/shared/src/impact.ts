@@ -568,13 +568,17 @@ export interface ImpactTableFeedbackView {
  * requirement-to-code link (`RequirementCodeMapping`); `edit-verifier` (#1756)
  * is a file the LLM edit-candidate check promoted from the hybrid pool, at a
  * line checked against the code graph; `edit-reranker` (#1798) is a pool file
- * the LLM re-order put into the files to edit, at a line checked the same way.
+ * the LLM re-order put into the files to edit, at a line checked the same way;
+ * `code-agent` (#1759) is a file the Analysis code agent cited for the
+ * requirement ("Evaluate new requirements"), resolved to the code graph, which
+ * leads the files to edit.
  */
 export const IMPACT_SEED_CHANNELS = [
   "hybrid",
   "stored-link",
   "edit-verifier",
   "edit-reranker",
+  "code-agent",
 ] as const;
 export type ImpactSeedChannel = (typeof IMPACT_SEED_CHANNELS)[number];
 
@@ -599,7 +603,8 @@ export type ImpactEditVerdict = z.infer<typeof impactEditVerdictSchema>;
 /**
  * #1754 / #1756 — how one change was seeded into one project, recorded only when
  * a seed channel beyond the default one ran (`IMPACT_STORED_LINK_SEEDS`,
- * `IMPACT_LLM_EDIT_VERIFY`, `IMPACT_LLM_EDIT_RERANK`). #1762 shows it.
+ * `IMPACT_LLM_EDIT_VERIFY`, `IMPACT_LLM_EDIT_RERANK`, `IMPACT_AGENT_SEEDS`).
+ * #1762 shows it.
  */
 export const impactSeedEvidenceSchema = z.object({
   /** #1754 — present when the stored-link channel ran. */
@@ -636,6 +641,20 @@ export const impactSeedEvidenceSchema = z.object({
       promoted: z.number().int().min(0),
       /** Model picks dropped: a line outside every named symbol of the file, an index naming no pool file, a malformed entry, or one past the limit. */
       droppedPicks: z.number().int().min(0),
+    })
+    .optional(),
+  /**
+   * #1759 — present when the code agent's stored citations were read
+   * (`IMPACT_AGENT_SEEDS`, a change about a tracked requirement).
+   */
+  agentCitations: z
+    .object({
+      /** Citations whose file is in the code graph: seeded. */
+      used: z.number().int().min(0),
+      /** Citations whose file is no longer in the code graph: dropped. */
+      stale: z.number().int().min(0),
+      /** Distinct cited files placed at the head of the files to edit. */
+      led: z.number().int().min(0),
     })
     .optional(),
   /** Every edit-candidate file, in edit order, with the channels that named it. */
