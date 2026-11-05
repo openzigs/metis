@@ -232,11 +232,11 @@ describe("editRerankNotice", () => {
 
   it("names the moves, the files the search had not picked, and the drops", () => {
     expect(editRerankNotice({ moved: 2, promoted: 0, dropped: 0 })).toBe(
-      "The AI re-order ranked 2 files higher in the order of the files to edit; the list shown keeps its own sort (depth, then confidence), and every file the search picked is still listed.",
+      "The AI re-order ranked 2 files higher in the order of the files to edit; the impact page shows the files to edit in this order, and every file the search picked is still listed.",
     );
     expect(editRerankNotice({ moved: 1, promoted: 1, dropped: 2 })).toBe(
       "The AI re-order ranked 1 file higher in the order of the files to edit, 1 of them not picked by the search " +
-        "(each at a line checked against the code); the list shown keeps its own sort (depth, then confidence), and every file the search picked is still listed. " +
+        "(each at a line checked against the code); the impact page shows the files to edit in this order, and every file the search picked is still listed. " +
         "2 suggestions were dropped because they could not be checked: a line outside every function or type of that file, " +
         "a file not in the list, an unreadable entry, or more than 10 suggestions.",
     );

@@ -5,6 +5,11 @@
  * the affected symbols as two lists (#1036) — the files to edit, kept small, and
  * the wider blast radius to review. The split is `impactSymbolRole` from
  * `@metis/shared`, the same rule the API's `editCandidateFiles` uses.
+ *
+ * #1762 — when the server recorded how the change was seeded (`seedEvidence`),
+ * the files to edit come in the server's edit order, each with why it was
+ * chosen ({@link EditCandidateFiles}), and "not found" is said plainly. Without
+ * it, the group renders exactly as before.
  */
 "use client";
 
@@ -20,6 +25,7 @@ import { renderInlineCode } from "@/lib/inline-code-text";
 import { AffectedSymbolRow } from "./affected-symbol-row";
 import { AffectedTablesSection } from "./affected-tables-section";
 import { ColumnProposalsSection } from "./column-proposals-section";
+import { EditCandidateFiles, isDoubtful, orderEditFiles } from "./edit-candidate-files";
 import { useImpactSymbolRepo } from "./impact-symbol-repo-context";
 
 const SEVERITY_VARIANT: Record<
@@ -54,6 +60,8 @@ export interface ChangedRequirementGroupProps {
   ) => void;
   /** Issue #966 — remove a feedback mark on THIS item. */
   onDeleteFeedback?: (itemId: string, feedbackId: string) => void;
+  /** #1762 — the item's project, named when METIS could not find the code. */
+  projectName?: string | null;
 }
 
 /** Group symbols by file, preserving first-seen file order. */
@@ -79,6 +87,7 @@ export function ChangedRequirementGroup({
   currentUserId,
   onMarkFeedback,
   onDeleteFeedback,
+  projectName,
 }: ChangedRequirementGroupProps) {
   // #992 — the item's project repo (from the page's provider) for symbol links.
   const repo = useImpactSymbolRepo(item.projectId);
@@ -94,6 +103,12 @@ export function ChangedRequirementGroup({
   // Files that are ONLY in the blast radius: a file to edit is not "more to review".
   const editFiles = new Set(editFileGroups.map((g) => g.filePath));
   const reviewOnlyFileCount = radiusFileGroups.filter((g) => !editFiles.has(g.filePath)).length;
+  // #1762 — with seed evidence: the server's edit order, each file's sources and
+  // verdict; a doubtful file is listed but not counted as a file to edit.
+  const editRows = item.seedEvidence ? orderEditFiles(editFileGroups, item.seedEvidence) : null;
+  const editFileCount = editRows
+    ? editRows.filter((r) => !isDoubtful(r)).length
+    : editFileGroups.length;
 
   // #962 — the impacted test files, grouped out of the prod blast radius, and the
   // untested write-path callouts. Both are deterministic QA-handoff signals.
@@ -114,7 +129,7 @@ export function ChangedRequirementGroup({
           </h3>
           <p className="text-xs text-muted-foreground" data-testid="impact-headline">
             <span className="font-medium text-foreground">
-              {editFileGroups.length} {editFileGroups.length === 1 ? "file" : "files"} to edit
+              {editFileCount} {editFileCount === 1 ? "file" : "files"} to edit
             </span>{" "}
             · {reviewOnlyFileCount} more to review
           </p>
@@ -207,7 +222,13 @@ export function ChangedRequirementGroup({
         </div>
       ) : null}
 
-      {editCandidates.length > 0 ? (
+      {editRows ? (
+        <EditCandidateFiles
+          rows={editRows}
+          repo={repo}
+          projectLabel={projectName ?? "this project"}
+        />
+      ) : editCandidates.length > 0 ? (
         <div data-testid="edit-candidates">
           <p className="mb-1 text-xs font-medium text-muted-foreground">
             Files to edit — the code this change most likely has to touch
