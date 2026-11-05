@@ -202,6 +202,20 @@ describe("createMaterializedAgentPass", () => {
     expect(input.systemMessage).toContain("NO WORKING TREE");
   });
 
+  it("refuses an A3N pass with no clone on disk instead of scoring about 0 at full cost (#1810)", async () => {
+    const missing = path.join(root, "absent");
+    const deps = depsWith(missing);
+    await expect(
+      createMaterializedAgentPass(deps)({ corpus: "c", repo: "r", text: "t", toolset: "files" }),
+    ).rejects.toThrow(
+      new RegExp(
+        `A3N needs the clone of c/r, and ${missing.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} is not a directory: run pnpm eval:materialize c`,
+      ),
+    );
+    expect(deps.runLoop).not.toHaveBeenCalled();
+    expect(deps.extractRequirements).not.toHaveBeenCalled();
+  });
+
   it("refuses a corpus or a repository that is not materialized", async () => {
     const pass = createMaterializedAgentPass(depsWith(root));
     await expect(pass({ corpus: "other", repo: "r", text: "t", toolset: "graph" })).rejects.toThrow(

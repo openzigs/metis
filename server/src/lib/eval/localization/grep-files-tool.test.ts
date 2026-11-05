@@ -2,7 +2,12 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { grepFilesTool, MAX_FILE_BYTES, MAX_MATCHES } from "./grep-files-tool.js";
+import {
+  createGrepFilesTool,
+  grepFilesTool,
+  MAX_FILE_BYTES,
+  MAX_MATCHES,
+} from "./grep-files-tool.js";
 
 let root: string;
 let clone: string;
@@ -29,6 +34,7 @@ beforeAll(async () => {
   await writeFile(path.join(outside, "secret.txt"), "RefreshFeed secret\n");
   await symlink(outside, path.join(clone, "escape"));
   await symlink(path.join(clone, "internal"), path.join(clone, "inner-link"));
+  await symlink(path.join(clone, "README.md"), path.join(clone, "readme-link.md"));
 });
 
 afterAll(async () => {
@@ -43,13 +49,12 @@ describe("grep_files (eval-only, #1755)", () => {
     const r = await run({ text: "refreshfeed" });
     expect(r.isError).toBeUndefined();
     expect(r.content.split("\n")).toEqual([
-      "inner-link/reader/feed.go:3: func RefreshFeed() error {",
-      "inner-link/reader/feed.go:4: return refreshFeed()",
       "internal/reader/feed.go:3: func RefreshFeed() error {",
       "internal/reader/feed.go:4: return refreshFeed()",
+      "readme-link.md:1: Call RefreshFeed to update.",
       "README.md:1: Call RefreshFeed to update.",
     ]);
-    expect(r.resultCount).toBe(5);
+    expect(r.resultCount).toBe(4);
   });
 
   it("never reads hidden directories, node_modules, binary or oversized files, or outside the clone", async () => {
@@ -59,12 +64,64 @@ describe("grep_files (eval-only, #1755)", () => {
 
   it("treats the text as a literal, not a pattern", async () => {
     expect((await run({ text: "Refresh.*" })).resultCount).toBe(0);
-    expect((await run({ text: "Feed()" })).resultCount).toBe(4);
+    expect((await run({ text: "Feed()" })).resultCount).toBe(2);
   });
 
   it("narrows to paths containing pathContains", async () => {
     const r = await run({ text: "RefreshFeed", pathContains: "INTERNAL/" });
     expect(r.content.split("\n")).toHaveLength(2);
+  });
+
+  it("never descends into a symlinked directory, so a cycle cannot loop or hang (#1810)", async () => {
+    // The reviewer's two reproductions: a/{x,y} -> ..  and  b/{x,y} -> .
+    const loops = await mkdtemp(path.join(tmpdir(), "grep-files-loop-"));
+    try {
+      await mkdir(path.join(loops, "a"));
+      await mkdir(path.join(loops, "b"));
+      await writeFile(path.join(loops, "a", "one.txt"), "loopneedle\n");
+      await writeFile(path.join(loops, "b", "two.txt"), "loopneedle\n");
+      for (const d of ["x", "y"]) {
+        await symlink("..", path.join(loops, "a", d));
+        await symlink(".", path.join(loops, "b", d));
+      }
+      const r = await run({ text: "loopneedle" }, loops);
+      expect(r.content.split("\n")).toEqual(["a/one.txt:1: loopneedle", "b/two.txt:1: loopneedle"]);
+      expect(r.truncated).toBe(false);
+    } finally {
+      await rm(loops, { recursive: true, force: true });
+    }
+  }, 5_000);
+
+  it("caps the files it reads among the files in scope, not before pathContains (#1810)", async () => {
+    // big.txt and blob.bin sort before README.md: a cap applied before the
+    // scope would read only those two and report that nothing matched.
+    const r = await createGrepFilesTool({ maxFilesScanned: 2 }).execute(
+      { text: "RefreshFeed", pathContains: "readme" },
+      { projectId: "p", cloneDir: clone },
+    );
+    expect(r.content.split("\n")).toEqual([
+      "readme-link.md:1: Call RefreshFeed to update.",
+      "README.md:1: Call RefreshFeed to update.",
+    ]);
+    expect(r.truncated).toBe(false);
+  });
+
+  it("says the file cap cut the search short, with or without a match (#1810)", async () => {
+    const ctx = { projectId: "p", cloneDir: clone };
+    // big.txt, blob.bin, internal/reader/feed.go: the cap is reached with files left.
+    const hit = await createGrepFilesTool({ maxFilesScanned: 3 }).execute(
+      { text: "RefreshFeed" },
+      ctx,
+    );
+    expect(hit.resultCount).toBe(2);
+    expect(hit.truncated).toBe(true);
+    const miss = await createGrepFilesTool({ maxFilesScanned: 1 }).execute(
+      { text: "to update." },
+      ctx,
+    );
+    expect(miss.truncated).toBe(true);
+    expect(miss.content).toMatch(/^No lines contain: to update\. in the first 1 file\(s\)/);
+    expect(miss.content).toMatch(/pathContains/);
   });
 
   it("stops at the match cap and says so", async () => {
