@@ -751,6 +751,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Impact analysis: one LLM call per changed requirement and project that orders the hybrid candidate pool (about 30 files) by how likely the change edits each file, up to 10 picks, each at a line checked against the code graph (#1798). OFF by default. A bounded exception to the #931 rule: the model may re-order the head of the files to edit, never drop one. The final order fuses the deterministic order with the model's checked order (reciprocal-rank fusion); the top 5 of it plus every deterministic candidate are the files to edit; a pick's symbol carries the file's own hybrid score, never a model score; an unchecked pick is dropped and counted in the run summary, which also says how many files moved. Metered as impact.edit-rerank under the 60-second impact deadline. The default flips only on a significant held-out Recall@5 gain measured by `pnpm eval:localization --arms A0,A13` (#1753), shown on claude-sonnet-5-5 on 2026-11-05 (pooled 0.53 -> 0.70, about $0.02 per requirement), and once #1762 shows the analyst the re-ordered list.",
     sensitive: false,
   },
+  // ── Epic #1751 / Issue #1759 — the code agent's citations lead the edit list ─
+  IMPACT_AGENT_SEEDS: {
+    tier: "tunable",
+    valueType: "bool",
+    schema: z.coerce.boolean(),
+    description:
+      'Impact analysis: for a change about a tracked requirement (a run started with requirementIds), put the files the Analysis code agent cited for that requirement in "Evaluate new requirements" at the TOP of the files to edit (#1759). OFF by default. It reuses the citations that pass already stored (RequirementCodeMapping rows with source analysis-grounding), so it makes no model call and adds no time against the 60-second impact deadline. At most 5 cited files lead, in citation order; any further cited file follows the existing candidates. Every file the search picked stays a file to edit, with its score; a cited file the code graph no longer holds is dropped and counted in the run summary. Runs after the LLM edit check and re-order, so they cannot push the citations down. A pasted request has no stored citations and is unchanged. Measured as arm A3A of `pnpm eval:localization` (#1755): Recall@5 +0.31 over the hybrid seeding pooled on 29 held-out items on claude-sonnet-5-5 (p < 0.001). Off: the seeding and the result are exactly as before.',
+    sensitive: false,
+  },
   // ── Epic #1751 / Issue #1776 — rank edit candidates once per request ────
   IMPACT_REQUEST_EDIT_RANKING: {
     tier: "tunable",
