@@ -26,52 +26,34 @@
  * (the rule of `seed-code-links-from-findings.ts`), so graph resolution is 1.00
  * after the resolve step; the citations that did not resolve are counted.
  */
+import { randomUUID } from "node:crypto";
 import { resolveChangeSeeds, type StoredLinkRow } from "../../impact-analysis/change-seeds.js";
 import { extractChangesByShape } from "../../impact-analysis/change-request.js";
-import type { CitationTarget } from "../../traceability/seed-code-links-from-findings.js";
 import {
   corpusFileSymbols,
   createA0Arm,
   mergeSeedings,
   requirementText,
+  type AgentCitation,
+  type AgentPass,
+  type AgentPassResult,
+  type AgentToolset,
   type ArmDeps,
   type ArmOutput,
   type LocalizationArm,
   type SeedingFiles,
-} from "./arms.js";
+} from "./arm-core.js";
 import { fileKey, type LocalizationCorpus, type LocalizationItem } from "./corpus.js";
+import type { AgentRunStats } from "./scorer.js";
 
-/** Which tools the agent pass gets. */
-export type AgentToolset =
-  /** Production's `assembleAgenticCodeTools` and seeded blocks. */
-  | "graph"
-  /** `list_files`, `read_file_slice`, `grep_files`; no seeded blocks. */
-  | "files";
-
-/** One agent pass: one requirement text against one repository of a corpus. */
-export interface AgentPassRequest {
-  corpus: string;
-  repo: string;
-  /** The analyst's text, as the "Evaluate new requirements" box receives it. */
-  text: string;
-  toolset: AgentToolset;
-}
-
-/** A citation of the pass's final answer, with its finding's confidence. */
-export interface AgentCitation extends CitationTarget {
-  confidence: number;
-}
-
-export interface AgentPassResult {
-  /** Every citation that could be code, in answer order (findings, then citations). */
-  citations: AgentCitation[];
-  turns: number;
-  toolCalls: number;
-  /** The loop produced a schema-valid final answer. */
-  answered: boolean;
-}
-
-export type AgentPass = (request: AgentPassRequest) => Promise<AgentPassResult>;
+// The pass contract lives in arm-core.ts (#1810: no import cycle with arms.ts).
+export type {
+  AgentCitation,
+  AgentPass,
+  AgentPassRequest,
+  AgentPassResult,
+  AgentToolset,
+} from "./arm-core.js";
 
 /** A3's variants. */
 export interface AgentVariant {
@@ -137,6 +119,8 @@ export function resolveCitations(
 
 /** A pass, and what it cost the meter, shared by the arms that read it. */
 interface SharedPass {
+  /** #1810 — names the pass, so a report can tell when two arms read different passes. */
+  id: string;
   result: AgentPassResult;
   /** Null when the pass made an unpriced call. */
   costUsd: number | null;
@@ -185,6 +169,7 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
       text: requirementText(item),
       toolset: variant.toolset,
     }).then((result): SharedPass => ({
+      id: randomUUID(),
       result,
       costUsd: meter!.unpricedCalls() > unpriced ? null : meter!.spentUsd() - spent,
       seconds: (now() - started) / 1000,
@@ -234,6 +219,15 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
       const seedings: SeedingFiles[] = [];
       const named: string[] = [];
       let turns = 0;
+      const agent: AgentRunStats = {
+        passes: 0,
+        unanswered: 0,
+        toolCalls: 0,
+        citedFiles: 0,
+        unresolvedFiles: 0,
+        passGroup: variant.toolset,
+        passIds: [],
+      };
       let reusedCost: number | null = 0;
       let reusedSeconds = 0;
       for (const repo of corpus.manifest.repos) {
@@ -245,6 +239,15 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
             reusedCost === null || shared.costUsd === null ? null : reusedCost + shared.costUsd;
         }
         const resolved = resolveCitations(shared.result.citations, repo.name, corpus.graphFiles);
+        // #1810 — the counts the pass computes, for the report: the graph
+        // resolution of the files kept is 1.00 by construction, so the rate
+        // before the resolve step and the unanswered passes are read here.
+        agent.passes += 1;
+        agent.unanswered += shared.result.answered ? 0 : 1;
+        agent.toolCalls += shared.result.toolCalls;
+        agent.citedFiles += resolved.files.length + resolved.unresolvedFiles;
+        agent.unresolvedFiles += resolved.unresolvedFiles;
+        agent.passIds.push(shared.id);
         const key = (filePath: string) => fileKey(repo.name, filePath);
         named.push(...resolved.files.map(key));
         if (!variant.union) {
@@ -270,6 +273,7 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
         ...mergeSeedings(seedings),
         llmNamedFiles: [...new Set(named)],
         agentTurns: turns,
+        agent,
         ...(reusedSeconds > 0 || reusedCost !== 0
           ? { reusedCostUsd: reusedCost, reusedSeconds }
           : {}),

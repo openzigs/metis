@@ -20,6 +20,51 @@
  */
 import type { GapVerdict } from "./corpus.js";
 
+/** #1810 — what the agent passes behind one reading of an agent arm did. */
+export interface AgentRunStats {
+  /** Passes the reading read: one per repository of the corpus. */
+  passes: number;
+  /** Passes whose loop gave no schema-valid final answer. */
+  unanswered: number;
+  /** Tool calls the passes made. */
+  toolCalls: number;
+  /** Distinct files the passes cited (per repository), before the code-graph check. */
+  citedFiles: number;
+  /** Of those, the files the code graph does not hold: the resolve step drops them. */
+  unresolvedFiles: number;
+  /** Arms that read the same passes in one run share a group (A3 and A3A: `graph`). */
+  passGroup: string;
+  /** The passes read, one id per repository: two arms of a group should read the same ids. */
+  passIds: string[];
+}
+
+/** #1810 — agent-pass counts summed over readings (an item's runs, or an arm's items). */
+export interface AgentTotals {
+  /** Readings that carried agent-pass counts. */
+  readings: number;
+  passes: number;
+  /** Agent-loop turns, summed over every pass. */
+  turns: number;
+  unanswered: number;
+  toolCalls: number;
+  citedFiles: number;
+  unresolvedFiles: number;
+}
+
+function addAgentTotals(totals: readonly AgentTotals[]): AgentTotals | null {
+  if (totals.length === 0) return null;
+  const sum = (f: (t: AgentTotals) => number) => totals.reduce((s, t) => s + f(t), 0);
+  return {
+    readings: sum((t) => t.readings),
+    passes: sum((t) => t.passes),
+    turns: sum((t) => t.turns),
+    unanswered: sum((t) => t.unanswered),
+    toolCalls: sum((t) => t.toolCalls),
+    citedFiles: sum((t) => t.citedFiles),
+    unresolvedFiles: sum((t) => t.unresolvedFiles),
+  };
+}
+
 /** What one arm produced for one requirement on one run. */
 export interface ArmObservation {
   /** Every file the arm surfaced, best first, `<repo>:<path>`, deduplicated. */
@@ -39,6 +84,8 @@ export interface ArmObservation {
   seconds: number;
   /** #1755 — agent-loop turns this requirement took; absent for an arm with no agent loop. */
   agentTurns?: number;
+  /** #1810 — what the agent passes behind this reading did; absent for an arm with no agent loop. */
+  agent?: AgentRunStats;
 }
 
 /** The scores of one requirement on one run. */
@@ -62,6 +109,8 @@ export interface ItemRunScore {
   seconds: number;
   /** #1755 — agent-loop turns; absent for an arm with no agent loop. */
   agentTurns?: number;
+  /** #1810 — what the agent passes behind this reading did; absent for an arm with no agent loop. */
+  agent?: AgentRunStats;
 }
 
 /** Recall of the top `k` ranked files against `expected`. */
@@ -144,6 +193,7 @@ export function scoreObservation(
     costUsd: obs.costUsd,
     seconds: obs.seconds,
     ...(obs.agentTurns === undefined ? {} : { agentTurns: obs.agentTurns }),
+    ...(obs.agent === undefined ? {} : { agent: obs.agent }),
   };
 }
 
@@ -177,6 +227,8 @@ export interface ItemScore {
   seconds: number;
   /** #1755 — mean agent-loop turns per run; absent for an arm with no agent loop. */
   agentTurns?: number;
+  /** #1810 — agent-pass counts summed over the runs; absent when no run carried them. */
+  agent?: AgentTotals;
 }
 
 function mean(values: readonly number[]): number {
@@ -197,6 +249,23 @@ export function averageRuns(id: string, runs: readonly ItemRunScore[]): ItemScor
   const confined = runs.map((r) =>
     r.editRepoConfined === null ? null : r.editRepoConfined ? 1 : 0,
   );
+  const agent = addAgentTotals(
+    runs.flatMap((r) =>
+      r.agent
+        ? [
+            {
+              readings: 1,
+              passes: r.agent.passes,
+              turns: r.agentTurns ?? 0,
+              unanswered: r.agent.unanswered,
+              toolCalls: r.agent.toolCalls,
+              citedFiles: r.agent.citedFiles,
+              unresolvedFiles: r.agent.unresolvedFiles,
+            },
+          ]
+        : [],
+    ),
+  );
   return {
     id,
     runs: runs.length,
@@ -213,6 +282,7 @@ export function averageRuns(id: string, runs: readonly ItemRunScore[]): ItemScor
     costUsd: runs.some((r) => r.costUsd === null) ? null : pick((r) => r.costUsd ?? 0),
     seconds: pick((r) => r.seconds),
     ...(turns === null ? {} : { agentTurns: turns }),
+    ...(agent === null ? {} : { agent }),
   };
 }
 
@@ -241,6 +311,8 @@ export interface ArmAggregate {
   totalCostUsd: number | null;
   /** #1755 — mean agent-loop turns per requirement; null when no item ran an agent loop. */
   agentTurnsPerRequirement: number | null;
+  /** #1810 — agent-pass counts summed over every item and run; null when none carried them. */
+  agent: AgentTotals | null;
 }
 
 /** Aggregate per-requirement scores. */
@@ -263,6 +335,7 @@ export function aggregateItems(items: readonly ItemScore[]): ArmAggregate {
     secondsPerRequirement: pick((s) => s.seconds),
     totalCostUsd: unpriced ? null : totalCost,
     agentTurnsPerRequirement: meanOrNull(items.map((s) => s.agentTurns ?? null)),
+    agent: addAgentTotals(items.flatMap((s) => (s.agent ? [s.agent] : []))),
   };
 }
 

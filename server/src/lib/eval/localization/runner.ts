@@ -287,6 +287,55 @@ export interface LocalizationReport {
   detectableGap: string;
   /** Caveats a reader must see next to the numbers (e.g. a metric with no signal). */
   notes: string[];
+  /**
+   * #1810 — where arms that share one agent pass per requirement and run (A3
+   * and A3A) read different passes on the scored runs: a resumed slice ran them
+   * in separate invocations. Empty when every such pair read one pass.
+   */
+  splitAgentPasses: SplitAgentPasses[];
+}
+
+/** #1810 — arms of one pass group that read different agent passes. */
+export interface SplitAgentPasses {
+  /** The pass group (`graph`: A3 and A3A). */
+  group: string;
+  arms: string[];
+  readings: Array<{ item: string; run: number }>;
+}
+
+/**
+ * #1810 — per pass group, the requirement-runs on which the group's arms read
+ * different agent passes. In one invocation A3 and A3A read the SAME pass for
+ * an item and run; a resume can score one of them in an earlier invocation and
+ * the other in a later one, on two passes. Their paired difference there then
+ * carries the model's run-to-run variation, so the report must say so.
+ */
+export function splitAgentPassesOf(
+  armIds: readonly string[],
+  itemIds: readonly string[],
+  runs: number,
+  scoreOf: (arm: string, run: number, item: string) => ItemRunScore | undefined,
+): SplitAgentPasses[] {
+  const byGroup = new Map<string, SplitAgentPasses>();
+  for (let run = 1; run <= runs; run++) {
+    for (const item of itemIds) {
+      const groups = new Map<string, Map<string, string>>();
+      for (const arm of armIds) {
+        const agent = scoreOf(arm, run, item)?.agent;
+        if (!agent) continue;
+        if (!groups.has(agent.passGroup)) groups.set(agent.passGroup, new Map());
+        groups.get(agent.passGroup)!.set(arm, agent.passIds.join("\u0000"));
+      }
+      for (const [group, read] of groups) {
+        if (new Set(read.values()).size < 2) continue;
+        const split = byGroup.get(group) ?? { group, arms: [], readings: [] };
+        for (const arm of read.keys()) if (!split.arms.includes(arm)) split.arms.push(arm);
+        split.readings.push({ item, run });
+        byGroup.set(group, split);
+      }
+    }
+  }
+  return [...byGroup.values()];
 }
 
 export type LocalizationStop =
@@ -474,6 +523,12 @@ export async function runLocalizationEval(
     comparisons,
     detectableGap: minimumDetectableGapStatement(corpus.manifest.items.length),
     notes: corpusNotes(corpus),
+    splitAgentPasses: splitAgentPassesOf(
+      opts.arms.map((a) => a.id),
+      corpus.manifest.items.map((i) => i.id),
+      scoredRuns,
+      (armId, run, itemId) => scores.get(armId)!.get(itemId)?.get(run),
+    ),
   };
 }
 
@@ -718,6 +773,17 @@ export function toMarkdownReport(report: LocalizationReport): string {
     );
   }
   for (const note of report.notes) lines.push(`> **Note.** ${note}`, "");
+  // #1810 — a resume that split a shared agent pass says where.
+  for (const s of report.splitAgentPasses) {
+    lines.push(
+      `> **Separate agent passes.** ${s.arms.join(" and ")} share one agent pass per requirement ` +
+        `and run, but read different passes on ${s.readings.length} requirement-run(s) ` +
+        `(${s.readings.map((r) => `${r.item} run ${r.run}`).join(", ")}): a resumed slice ran ` +
+        `them in separate invocations. There, their difference includes the model's run-to-run ` +
+        `variation, not only what each arm does with the citations.`,
+      "",
+    );
+  }
   lines.push("## Arms", "");
   for (const a of report.arms) {
     lines.push(`### ${a.label}`, "");
@@ -747,16 +813,40 @@ export function toMarkdownReport(report: LocalizationReport): string {
     );
   }
   lines.push("");
-  // #1755 — an agent arm's turns per requirement, from the agent loop.
+  // #1755 — an agent arm's turns per requirement, from the agent loop. #1810 —
+  // a portfolio runs one pass per repository, and the figure is their sum.
   const agentArms = report.arms.filter((a) => a.aggregate.agentTurnsPerRequirement !== null);
   if (agentArms.length > 0) {
+    const summed =
+      c.repos.length > 1
+        ? ` (summed over the ${c.repos.length} repositories' passes, one pass per repository)`
+        : "";
     lines.push(
-      `Agent-loop turns per requirement: ${agentArms
+      `Agent-loop turns per requirement${summed}: ${agentArms
         .map((a) => `${a.id} ${a.aggregate.agentTurnsPerRequirement!.toFixed(1)}`)
         .join(" · ")}`,
       "",
     );
   }
+  // #1810 — what the agent passes computed: the Graph resolution column reads
+  // 1.00 by construction for an agent arm, because only resolved files are kept.
+  const passArms = report.arms.filter((a) => a.aggregate.agent !== null);
+  for (const a of passArms) {
+    const t = a.aggregate.agent!;
+    const resolved = t.citedFiles - t.unresolvedFiles;
+    const perPass = (n: number) => (t.passes === 0 ? "n/a" : (n / t.passes).toFixed(1));
+    lines.push(
+      `- ${a.id} agent passes: ${t.passes} over ${t.readings} reading(s), ` +
+        `${t.unanswered} without a schema-valid answer; ${perPass(t.turns)} turns and ` +
+        `${perPass(t.toolCalls)} tool calls per pass; cited files in the code graph before the ` +
+        `resolve step: ${
+          t.citedFiles === 0
+            ? "n/a (no file cited)"
+            : `${resolved} of ${t.citedFiles} (${f2(resolved / t.citedFiles)})`
+        }. The Graph resolution column keeps only resolved files, so it reads 1.00 by construction.`,
+    );
+  }
+  if (passArms.length > 0) lines.push("");
   // #1784 — only a portfolio can name a file outside the answer's repository.
   if (c.repos.length > 1) {
     const confinement = report.arms.map((a) => {

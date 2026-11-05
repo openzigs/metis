@@ -367,10 +367,19 @@ pnpm eval:localization --merge <dir> --md
   (`extractNewRequirementCandidates`, `assembleAgenticPassSeeds`, `buildAgenticPassPrompt`,
   `runAgentLoop`), with no escalation and no post-loop salvage.
 - **A cited file counts only if the code graph holds it** (the rule in
-  `seed-code-links-from-findings.ts`), so graph resolution is 1.00 after that step.
+  `seed-code-links-from-findings.ts`), so graph resolution is 1.00 after that step. The
+  report gives the share before that step: how many cited files the graph held (#1810).
 - **`A3` and `A3A` read the same pass in a run.** Each reports that pass's cost and time as
-  its own, and the cap counts the money once.
-- **The report adds agent-loop turns per requirement.**
+  its own, and the cap counts the money once. A resume can score them in separate
+  invocations, on two passes. The report then names the requirement-runs this affected.
+- **The report adds agent-loop turns per requirement.** On a portfolio this is the sum over
+  the per-repository passes. Each agent arm also gets a line with its passes, the passes
+  with no schema-valid answer, and turns and tool calls per pass.
+- **`grep_files` is bounded.** It is a literal search, capped at 50 matching lines and
+  5,000 files. The file cap counts only files inside the `pathContains` scope, and it never
+  descends into a symlinked directory. A search the cap cut short says so.
+- **`A3N` needs the clone.** If a repository's clone is missing, `A3N` stops with an error
+  telling you to run `pnpm eval:materialize`.
 - **The `--arms` list binds the run to the materialized database.** When it names an agent
   arm, the runner sets `DATABASE_URL`, `REPO_CLONE_DIR` and `LANCEDB_PATH` to the
   materialized layout before Prisma loads, and refuses any other database.
