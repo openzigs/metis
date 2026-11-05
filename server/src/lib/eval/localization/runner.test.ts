@@ -8,10 +8,12 @@ import {
   memoisedA0TableGuard,
   poolHeldOutReports,
   runLocalizationEval,
+  splitAgentPassesOf,
   toMarkdownReport,
   toPooledMarkdownReport,
   type TableGuardReading,
 } from "./runner.js";
+import type { AgentRunStats, ItemRunScore } from "./scorer.js";
 
 function items(n: number): LocalizationItem[] {
   return Array.from({ length: n }, (_, i) => ({
@@ -988,5 +990,126 @@ describe("--reference: pairing with an arm other than A0 (#1806)", () => {
     expect(
       poolHeldOutReports([miniflux, without]).referenceComparisons.map((c) => c.baseline),
     ).toEqual(["A12", "A12"]);
+  });
+});
+
+describe("agent-pass counts and split passes in the report (#1810)", () => {
+  const stats = (over: Partial<AgentRunStats> = {}): AgentRunStats => ({
+    passes: 2,
+    unanswered: 1,
+    toolCalls: 6,
+    citedFiles: 4,
+    unresolvedFiles: 1,
+    passGroup: "graph",
+    passIds: ["p1", "p2"],
+    ...over,
+  });
+  /** An agent arm whose readings carry `agentOf(item, run)`. */
+  function passArm(
+    id: string,
+    agentOf: (item: LocalizationItem, run: number) => AgentRunStats,
+  ): LocalizationArm {
+    return {
+      id,
+      label: `${id} agent arm`,
+      configuration: { llm: true },
+      async localize(item, _corpus, context) {
+        return {
+          rankedFiles: [item.expectedFiles[0]!],
+          editCandidateFiles: [item.expectedFiles[0]!],
+          llmNamedFiles: [item.expectedFiles[0]!],
+          agentTurns: 8,
+          agent: agentOf(item, context!.run),
+        };
+      },
+    };
+  }
+  const portfolioOf = (n: number): LocalizationCorpus => {
+    const one = corpus(n);
+    return {
+      ...one,
+      manifest: {
+        ...one.manifest,
+        repos: [...one.manifest.repos, { ...one.manifest.repos[0]!, name: "s" }],
+      },
+    };
+  };
+
+  it("sums the passes' counts and reports unanswered passes, per-pass turns and the rate before the resolve step", async () => {
+    const report = await runLocalizationEval(portfolioOf(2), {
+      arms: [arm("A0", () => 1), passArm("A3A", () => stats())],
+      runs: 2,
+      meter: new FakeMeter(),
+    });
+    expect(report.arms[1]!.aggregate.agent).toEqual({
+      readings: 4,
+      passes: 8,
+      turns: 32,
+      unanswered: 4,
+      toolCalls: 24,
+      citedFiles: 16,
+      unresolvedFiles: 4,
+    });
+    expect(report.arms[0]!.aggregate.agent).toBeNull();
+    const md = toMarkdownReport(report);
+    expect(md).toContain(
+      "Agent-loop turns per requirement (summed over the 2 repositories' passes, one pass per repository): A3A 8.0",
+    );
+    expect(md).toContain(
+      "- A3A agent passes: 8 over 4 reading(s), 4 without a schema-valid answer; 4.0 turns and 3.0 tool calls per pass; " +
+        "cited files in the code graph before the resolve step: 12 of 16 (0.75).",
+    );
+    expect(md).toContain("so it reads 1.00 by construction");
+    expect(md).not.toContain("Separate agent passes");
+  });
+
+  it("does not call the turns a sum on one repository, and says when no file was cited", async () => {
+    const report = await runLocalizationEval(corpus(1), {
+      arms: [
+        arm("A0", () => 1),
+        passArm("A3N", () => stats({ passes: 1, citedFiles: 0, unresolvedFiles: 0 })),
+      ],
+      runs: 1,
+      meter: new FakeMeter(),
+    });
+    const md = toMarkdownReport(report);
+    expect(md).toContain("Agent-loop turns per requirement: A3N 8.0");
+    expect(md).toContain("before the resolve step: n/a (no file cited).");
+  });
+
+  it("records the requirement-runs where A3 and A3A read different passes, and only those", async () => {
+    // I-2 run 1 was scored by A3 in one invocation and A3A in another: two passes.
+    const ids = (arm: string) => (item: LocalizationItem, run: number) =>
+      stats({
+        passIds: [item.id === "I-2" && run === 1 ? `${arm}-${item.id}` : `${item.id}-${run}`],
+      });
+    const report = await runLocalizationEval(corpus(3), {
+      arms: [
+        arm("A0", () => 1),
+        passArm("A3", ids("A3")),
+        passArm("A3A", ids("A3A")),
+        // A3N reads its own passes, in its own group: never a split with A3.
+        passArm("A3N", (item) => stats({ passGroup: "files", passIds: [`n-${item.id}`] })),
+      ],
+      runs: 2,
+      meter: new FakeMeter(),
+    });
+    expect(report.splitAgentPasses).toEqual([
+      { group: "graph", arms: ["A3", "A3A"], readings: [{ item: "I-2", run: 1 }] },
+    ]);
+    expect(toMarkdownReport(report)).toContain(
+      "> **Separate agent passes.** A3 and A3A share one agent pass per requirement and run, " +
+        "but read different passes on 1 requirement-run(s) (I-2 run 1)",
+    );
+  });
+
+  it("finds no split when an arm of the group has no reading, or none carries counts", () => {
+    const score = (agent?: AgentRunStats) => ({ agent }) as unknown as ItemRunScore;
+    expect(
+      splitAgentPassesOf(["A3", "A3A"], ["I-1"], 1, (a) =>
+        a === "A3" ? score(stats()) : undefined,
+      ),
+    ).toEqual([]);
+    expect(splitAgentPassesOf(["A3", "A3A"], ["I-1"], 1, () => score())).toEqual([]);
   });
 });

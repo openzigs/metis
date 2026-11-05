@@ -8,8 +8,9 @@
  * (never a regex, so no pattern can backtrack), at most {@link MAX_MATCHES}
  * matching lines are returned, at most {@link MAX_FILES_SCANNED} files and
  * {@link MAX_FILE_BYTES} per file are read, and the walk never leaves the clone:
- * hidden directories and `node_modules` are skipped, and a symlink is followed
- * only when it resolves inside the clone. Not offered to any production agent.
+ * hidden directories and `node_modules` are skipped, a symlinked file is read
+ * only when it resolves inside the clone, and a symlinked directory is never
+ * descended into (#1810). Not offered to any production agent.
  */
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
@@ -60,11 +61,34 @@ function validateArgs(args: unknown): GrepArgs | null {
   };
 }
 
-/** Every regular file under `root`, relative, in a stable order; never outside `root`. */
-async function listFiles(root: string, realRoot: string, limit: number): Promise<string[]> {
-  const out: string[] = [];
+/** The files a walk found, and whether the cap left files unlisted. */
+interface ListedFiles {
+  files: string[];
+  capped: boolean;
+}
+
+/**
+ * Every regular file under `root` whose relative path contains `scope` (all
+ * when absent), relative, in a stable order, at most `limit`; never outside
+ * `root`. The cap counts files IN SCOPE, so a scoped search on a large clone
+ * still reaches the files it asked for (#1810).
+ *
+ * A symlinked DIRECTORY is never descended into (#1810): a link such as
+ * `x -> ..` or `x -> .` would otherwise walk the same tree forever, and the cap
+ * cannot stop a walk that keeps finding directories but no new files. Nothing
+ * is lost: a link is followed only inside the clone, and the walk reaches every
+ * directory inside the clone by its real path. A symlinked FILE inside the
+ * clone is still read.
+ */
+async function listFiles(
+  root: string,
+  realRoot: string,
+  limit: number,
+  scope: string | undefined,
+): Promise<ListedFiles> {
+  const files: string[] = [];
+  let capped = false;
   async function walk(dir: string): Promise<void> {
-    if (out.length >= limit) return;
     let entries;
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
@@ -73,11 +97,14 @@ async function listFiles(root: string, realRoot: string, limit: number): Promise
     }
     entries.sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
-      if (out.length >= limit) return;
+      if (capped) return;
       if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
       const full = path.join(dir, entry.name);
-      let isDir = entry.isDirectory();
       let isFile = entry.isFile();
+      if (entry.isDirectory()) {
+        await walk(full);
+        continue;
+      }
       if (entry.isSymbolicLink()) {
         let real: string;
         try {
@@ -85,20 +112,29 @@ async function listFiles(root: string, realRoot: string, limit: number): Promise
         } catch {
           continue;
         }
-        if (real !== realRoot && !real.startsWith(realRoot + path.sep)) continue;
+        if (!real.startsWith(realRoot + path.sep)) continue;
         const stat = await fs.stat(full).catch(() => null);
-        isDir = stat?.isDirectory() ?? false;
         isFile = stat?.isFile() ?? false;
       }
-      if (isDir) await walk(full);
-      else if (isFile) out.push(path.relative(root, full).split(path.sep).join("/"));
+      if (!isFile) continue;
+      const rel = path.relative(root, full).split(path.sep).join("/");
+      if (scope && !rel.toLowerCase().includes(scope)) continue;
+      if (files.length >= limit) {
+        capped = true;
+        return;
+      }
+      files.push(rel);
     }
   }
   await walk(root);
-  return out;
+  return { files, capped };
 }
 
-async function execute(args: unknown, context: ToolContext): Promise<ToolResult> {
+async function execute(
+  args: unknown,
+  context: ToolContext,
+  maxFilesScanned: number,
+): Promise<ToolResult> {
   const validated = validateArgs(args);
   if (!validated) {
     return {
@@ -126,11 +162,10 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
   }
   const needle = validated.text.toLowerCase();
   const scope = validated.pathContains?.toLowerCase();
-  const files = await listFiles(context.cloneDir, realRoot, MAX_FILES_SCANNED);
+  const { files, capped } = await listFiles(context.cloneDir, realRoot, maxFilesScanned, scope);
   const matches: string[] = [];
   for (const rel of files) {
     if (matches.length >= MAX_MATCHES) break;
-    if (scope && !rel.toLowerCase().includes(scope)) continue;
     const full = path.join(context.cloneDir, rel);
     const stat = await fs.stat(full).catch(() => null);
     if (!stat || stat.size > MAX_FILE_BYTES) continue;
@@ -144,21 +179,36 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
     }
   }
   if (matches.length === 0) {
-    return { content: `No lines contain: ${validated.text}`, resultCount: 0 };
+    // #1810 — a search the file cap cut short must not read as "absent".
+    return capped
+      ? {
+          content:
+            `No lines contain: ${validated.text} in the first ${maxFilesScanned} file(s) searched; ` +
+            "more files were not searched. Narrow the search with pathContains.",
+          truncated: true,
+          resultCount: 0,
+        }
+      : { content: `No lines contain: ${validated.text}`, resultCount: 0 };
   }
   return {
     content: matches.join("\n"),
-    truncated: matches.length >= MAX_MATCHES,
+    truncated: capped || matches.length >= MAX_MATCHES,
     resultCount: matches.length,
   };
 }
 
-export const grepFilesTool: AgentTool = {
-  name: "grep_files",
-  description:
-    "Search the repository's files for a literal text (case-insensitive). Returns up to 50 " +
-    "matching lines as `path:line: text`. Use it to find where a name or phrase appears, then " +
-    "read_file_slice to read around a match.",
-  parameters,
-  execute,
-};
+/** The tool with its file cap; tests lower the cap instead of writing thousands of files. */
+export function createGrepFilesTool(opts: { maxFilesScanned?: number } = {}): AgentTool {
+  const maxFilesScanned = opts.maxFilesScanned ?? MAX_FILES_SCANNED;
+  return {
+    name: "grep_files",
+    description:
+      "Search the repository's files for a literal text (case-insensitive). Returns up to 50 " +
+      "matching lines as `path:line: text`. Use it to find where a name or phrase appears, then " +
+      "read_file_slice to read around a match.",
+    parameters,
+    execute: (args, context) => execute(args, context, maxFilesScanned),
+  };
+}
+
+export const grepFilesTool: AgentTool = createGrepFilesTool();

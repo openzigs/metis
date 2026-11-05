@@ -48,7 +48,7 @@ import {
   citationTargets,
   DEFAULT_SEED_CONFIDENCE,
 } from "../../traceability/seed-code-links-from-findings.js";
-import type { AgentCitation, AgentPass, AgentPassRequest, AgentPassResult } from "./agent-arms.js";
+import type { AgentCitation, AgentPass, AgentPassRequest, AgentPassResult } from "./arm-core.js";
 import { grepFilesTool } from "./grep-files-tool.js";
 import type { MaterializedState } from "./materialize.js";
 
@@ -182,9 +182,17 @@ export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): Ag
     }
     const project = await deps.loadProject(repo.projectId);
     const cloneDir = await existingDir(repo.cloneDir);
+    const graph = request.toolset === "graph";
+    // #1810 — the file tools read only the clone. Without it every A3N call
+    // fails, and the pass would score about 0 at full cost; the graph pass runs
+    // without a working tree, as production does.
+    if (!graph && cloneDir === undefined) {
+      throw new Error(
+        `A3N needs the clone of ${request.corpus}/${request.repo}, and ${repo.cloneDir} is not a directory: run pnpm eval:materialize ${request.corpus}`,
+      );
+    }
     const extracted = await deps.extractRequirements(request.text);
     const requirements = extracted.length > 0 ? extracted : [{ id: "NR-1", text: request.text }];
-    const graph = request.toolset === "graph";
     const seeds = graph
       ? await deps.assembleSeeds({
           projectId: repo.projectId,
@@ -201,7 +209,7 @@ export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): Ag
       projectDescription: project.description,
       requirements,
       seeds,
-      fileToolsAvailable: graph ? cloneDir !== undefined : true,
+      fileToolsAvailable: cloneDir !== undefined,
     });
     const systemMessage = graph
       ? prompt.systemMessage
