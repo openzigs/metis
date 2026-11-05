@@ -3080,6 +3080,18 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   or off (`A7O`, the control for the change of wording). Both read one analysis
   per item, repository and run. The generated requirement texts are embedded
   live (`--embed` is required) and never written to a recorded vectors file.
+- **A7's table guard (#1823)** — eval only. `table-guard-agent.ts` runs
+  "Evaluate new requirements" for each `impact-recall-01-jpetstore` requirement and
+  run on mybatis/jpetstore-6, materialized by `pnpm eval:materialize
+  impact-recall-01-jpetstore` (`table-guard-source.ts`; the check is
+  `requiredFiles`, not committed rows). It then runs `observeChange` on the
+  fixture for each persisted requirement, on the split seeding, with the live #936
+  filter. With `SplitSeedingOptions.agentSeeds` set, the stored citations lead,
+  translated onto the fixture's paths and symbols by `translateCitations`; without
+  it, the run is A7O. The tables are unioned per requirement, and the result sits
+  next to A0 on the split seeding. Each analysis and each reading run is appended
+  to `<partials>/table-guard/records.jsonl`, so `--guard-steps` bounds a call and
+  the same `--merge` resumes.
 - **Edit-candidate re-order (#1798)** — behind `IMPACT_LLM_EDIT_RERANK` (key
   registry, tunable, **off**). It is the bounded exception to the #931 rule
   (docs/IMPACT_ANALYSIS_LLM_STAGES.md): one call per change and project

@@ -10,6 +10,7 @@ import type { EditCandidateVerifierFn } from "../src/lib/impact-analysis/impact-
 import { buildSyntheticFixture } from "../src/lib/eval/impact-recall/fixture.js";
 import {
   describeConfiguration,
+  observeChange,
   observeRequirement,
   runImpactRecallEval,
 } from "../src/lib/eval/impact-recall/runner.js";
@@ -109,5 +110,78 @@ describe("describeConfiguration names the seeding (#1786)", () => {
       isProductionConfiguration: false,
     });
     expect(checked.label).toContain("IMPACT_LLM_EDIT_VERIFY=1");
+  });
+});
+
+describe("the split seeding with the stored agent citations leading (#1823)", () => {
+  it("names the stage, and leads with the cited file for a change with a requirement id", async () => {
+    const loadCitations = vi.fn(async () => [
+      {
+        codeSymbolId: "s_readbeta",
+        filePath: "DataMapper.xml",
+        startLine: null,
+        endLine: null,
+        confidence: 0.9,
+        source: "analysis-grounding",
+      },
+    ]);
+    /** The search finds only readAlpha: beta is reachable only through the citation. */
+    const alphaOnly: SeedSearcher = {
+      search: async () => [
+        {
+          symbolId: "m_readalpha",
+          filePath: "DataMapper.java",
+          name: "readAlpha",
+          kind: "method",
+          score: 1,
+        },
+      ],
+    };
+    // No DAO sibling expansion: it would reach readBeta from readAlpha's mapper.
+    const opts = {
+      expandDaoSiblings: false,
+      splitSeeding: {
+        searcher: alphaOnly,
+        loadSymbols,
+        agentSeeds: {
+          loadCitations,
+          loadFileSymbols: async (paths: string[]) =>
+            fx.manifest.codeSymbols
+              .filter((s) => paths.includes(s.filePath))
+              .map((s) => ({
+                id: s.id,
+                qualifiedName: s.qualifiedName,
+                filePath: s.filePath,
+                kind: s.kind,
+                language: s.language,
+                startLine: 1,
+                endLine: 2,
+                signature: null,
+              })),
+        },
+      },
+    };
+    expect(describeConfiguration(opts)).toMatchObject({
+      seeding: "split + agent citations",
+      isProductionConfiguration: false,
+    });
+    expect(describeConfiguration(opts).label).toContain("IMPACT_AGENT_SEEDS=1");
+    const requirement = fx.requirements[0]!;
+    const change = {
+      requirementId: "persisted-1",
+      title: requirement.text,
+      body: requirement.text,
+      changeType: "added" as const,
+      bodyDelta: requirement.text.length,
+    };
+    const led = await observeChange(fx, change, mapperSearcher, opts);
+    expect(loadCitations).toHaveBeenCalledWith("persisted-1", fx.projectId);
+    expect(led.foundTables.sort()).toEqual(["alpha", "beta"]);
+    expect(led.foundCodeSymbols).toContain("syn.DataMapper.readBeta.statement");
+    const unled = await observeChange(fx, change, mapperSearcher, {
+      expandDaoSiblings: false,
+      splitSeeding: { searcher: alphaOnly, loadSymbols },
+    });
+    expect(unled.foundTables).toEqual(["alpha"]);
   });
 });

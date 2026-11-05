@@ -21,7 +21,6 @@ import path from "node:path";
 import {
   fileKey,
   localizationCorpusRoot,
-  type LocalizationCorpusManifest,
   type LocalizationRepo,
   type LocalizationSymbolRow,
 } from "./corpus.js";
@@ -196,6 +195,22 @@ export function compareSymbolSets(
   };
 }
 
+/** #1823 — the required files (`<repo>:<path>`) the materialized graph does not hold. */
+export function missingRequiredFiles(
+  repo: string,
+  required: readonly string[],
+  materialized: readonly SymbolKeyRow[],
+): SymbolSetDiff {
+  const have = symbolKeys(repo, materialized).files;
+  return {
+    repo,
+    missingFiles: [...new Set(required)].filter((f) => !have.has(f)).sort(),
+    extraFiles: [],
+    missingSymbols: [],
+    extraSymbols: [],
+  };
+}
+
 export function symbolSetDiffIsEmpty(d: SymbolSetDiff): boolean {
   return (
     d.missingFiles.length +
@@ -306,6 +321,15 @@ export async function readMaterializedState(
   return parseMaterializedState(text);
 }
 
+/**
+ * What a materialization reads of a corpus: its id and pinned repositories.
+ * A localization manifest, or #1823's table-guard corpus (`table-guard-source.ts`).
+ */
+export interface MaterializeManifest {
+  id: string;
+  repos: readonly LocalizationRepo[];
+}
+
 /** What to do with one manifest repository. */
 export type RepoPlan =
   | { action: "keep"; repo: LocalizationRepo; entry: MaterializedRepo }
@@ -318,7 +342,7 @@ export type RepoPlan =
  * `keep` against the database and disk ({@link MaterializeDeps.probe}).
  */
 export function planMaterialization(
-  manifest: Pick<LocalizationCorpusManifest, "id" | "repos">,
+  manifest: MaterializeManifest,
   state: MaterializedState | null,
   env: MaterializeEnv,
 ): { repos: RepoPlan[]; drop: MaterializedRepo[] } {
@@ -387,13 +411,22 @@ export interface MaterializeResult {
  * and a repository built by this run is dropped rather than left behind.
  */
 export async function materializeCorpus(input: {
-  manifest: Pick<LocalizationCorpusManifest, "id" | "repos">;
-  committedRows: readonly LocalizationSymbolRow[];
+  manifest: MaterializeManifest;
+  /** A localization corpus: the graph must hold exactly these symbols. */
+  committedRows?: readonly LocalizationSymbolRow[];
+  /**
+   * #1823 — a corpus with no committed rows (the table guard's): the graph
+   * must hold each of these files (`<repo>:<path>`). One of the two.
+   */
+  requiredFiles?: readonly string[];
   state: MaterializedState | null;
   env: MaterializeEnv;
   deps: MaterializeDeps;
 }): Promise<MaterializeResult> {
   const { manifest, deps } = input;
+  if (!input.committedRows === !input.requiredFiles) {
+    throw new Error("a materialization checks committed rows or required files: exactly one");
+  }
   for (const repo of manifest.repos) {
     parseGithubRepoUrl(repo.url);
     assertCommitSha(repo.sha);
@@ -420,7 +453,21 @@ export async function materializeCorpus(input: {
 
   const diffs: SymbolSetDiff[] = [];
   for (const entry of entries) {
-    const committed = input.committedRows.filter((r) => r.repo === entry.name);
+    if (input.requiredFiles) {
+      const required = input.requiredFiles.filter((f) => f.startsWith(`${entry.name}:`));
+      if (required.length === 0) throw new Error(`no required file names ${entry.name}`);
+      const diff = missingRequiredFiles(
+        entry.name,
+        required,
+        await deps.readSymbols(entry.projectId),
+      );
+      diffs.push(diff);
+      if (symbolSetDiffIsEmpty(diff)) {
+        deps.log(`${entry.name}: holds every required file (${required.length})`);
+      }
+      continue;
+    }
+    const committed = input.committedRows!.filter((r) => r.repo === entry.name);
     if (committed.length === 0) {
       throw new Error(`the committed symbol rows hold nothing for ${entry.name}`);
     }
@@ -433,7 +480,7 @@ export async function materializeCorpus(input: {
   if (!diffs.every(symbolSetDiffIsEmpty)) {
     for (const entry of built) await deps.drop(entry);
     throw new Error(
-      `${manifest.id}: the materialized graph does not match the committed symbol rows\n` +
+      `${manifest.id}: the materialized graph does not match ${input.requiredFiles ? "its required files" : "the committed symbol rows"}\n` +
         formatSymbolSetDiffs(diffs),
     );
   }

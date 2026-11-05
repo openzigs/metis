@@ -339,6 +339,45 @@ file. If they differ, the run fails and lists the missing and extra files and sy
 A repository built in that run is deleted rather than left half-trusted. This keeps the
 agent arms and A0 measuring the same code.
 
+**The table guard's repository (#1823).** `impact-recall-01-jpetstore` is a hand-authored
+graph with no source text, so A7's table guard needs the repository it models:
+
+```bash
+TRANSFORMERS_CACHE=~/.cache/metis-transformers HF_HUB_OFFLINE=1 \
+pnpm eval:materialize impact-recall-01-jpetstore
+```
+
+This materializes mybatis/jpetstore-6 at `jpetstore-6.3.0`, the last release with the Stripes
+action beans the fixture's web layer models (`TABLE_GUARD_REPO` in
+`server/src/lib/eval/localization/table-guard-source.ts`). There are no committed rows to
+compare, so the check is instead that the graph holds every fixture file the repository has
+(`requiredRepoFiles`). The fixture's `web/beans` layer and its inventory, profile and sign-on
+classes are its own modelling and are not required.
+
+Then read the guard over a partials directory that recorded A7:
+
+```bash
+pnpm eval:localization --merge <dir> --arms A0,A7,A7O --table-guard --embed --guard-steps 5
+```
+
+The guard runs "Evaluate new requirements" once for each of the 11 table requirements on
+each of 3 runs. It then reads A0 on the split seeding, A7 and A7O, 3 runs each, with the
+live #936 filter. Each step is an analysis or one run of one reading. Each step is recorded
+in `<dir>/table-guard/records.jsonl` as it ends. `--guard-steps <n>` limits a call to n new
+steps, so repeat the same command until the report reads the guard. A step recorded on
+another model is refused.
+
+A stored citation names a repository file and symbol, and is read on the fixture in this
+order:
+
+1. as the same symbol;
+2. as the one same-named method or MyBatis statement in the same layer (the fixture keeps
+   `insertLineItem` in `OrderMapper`);
+3. as its file, with no symbol;
+4. dropped, when the fixture has no such file.
+
+The A7 reading's configuration counts each outcome.
+
 **A re-run is a no-op.** When the state file, the database and the clones still hold
 every repository at its pinned commit, with every symbol embedded by the current model,
 nothing is built or written. A changed commit, URL or embedding model rebuilds only what

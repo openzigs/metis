@@ -145,9 +145,26 @@ files that follow the candidates at 5 (any further one is listed under related, 
 seeded), and measured the SHIPPED path as arm A7: a real "Evaluate new requirements" run
 on each held-out item, then `computeProjectImpact` on the requirements it persisted.
 Recall@5 +0.256 [0.16, 0.35] over A0, pooled on 39 held-out items on `claude-sonnet-5-5`
-(p < 0.001; one run, $14.58). The flag stays **off**: its table-precision guard is not
-measured yet, because the cited files become blast-radius seeds that reach the schema
-crossing, and the table corpus has no stored citations.
+(p < 0.001; one run, $14.58). The cited files become blast-radius seeds that reach the
+schema crossing, so #1823 measured the table-precision guard. A real analysis ran on each
+`impact-recall-01-jpetstore` requirement against the repository the fixture models
+(mybatis/jpetstore-6), and the citations it stored were read onto the fixture. The table
+precisions are on `deepseek-flash`, with 3 runs and the live #936 filter, 2026-11-05:
+
+| Reading | Table precision |
+|---|---|
+| A0 on the split seeding (the requirement's own text) | 0.685 |
+| A7O (the analysis's requirements, flag off) | 0.432 |
+| A7 (the analysis's requirements, flag on) | 0.453 |
+
+Against A0, A7 fails the 0.03 guard: −0.23, 95% CI [−0.41, −0.05] over the 11
+requirements. The flag does not cause that drop: A7O, with the flag off, drops by the
+same amount (−0.25). The analysis splits each requirement into about 4.5 tracked
+requirements, and the union of their tables is wider than the one requirement's label.
+The flag's own effect, A7 against A7O on the same changes, is +0.02 [−0.02, +0.06]. The
+flag stays **off** until the owner decides. The guard as written (against A0) fails. The
+flag itself does not lower table precision on DeepSeek. Neither result has a Sonnet
+reading yet.
 
 **#1798 is a deliberate, bounded exception to this rule.** Nothing additive raised
 Recall@5 (an appended file lands after the deterministic picks), so the edit-candidate
