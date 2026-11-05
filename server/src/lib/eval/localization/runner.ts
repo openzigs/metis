@@ -208,6 +208,11 @@ export interface RunLocalizationOptions {
   runItem?: (item: LocalizationItem) => boolean;
   /** #1800 — earlier calls' scores (never re-run), and the sink for this call's. */
   checkpoint?: RunCheckpoint;
+  /**
+   * #1806 — arms (never A0) every other arm is also paired with (`--reference`).
+   * Report-only: they change no score and are not part of the run's fingerprint.
+   */
+  references?: readonly string[];
 }
 
 export interface ArmResult {
@@ -244,7 +249,8 @@ export interface HitComparison {
 
 export interface ArmComparison {
   arm: string;
-  baseline: "A0";
+  /** A0, or a `--reference` arm (#1806). */
+  baseline: string;
   items: number;
   metrics: MetricComparison[];
   hits: HitComparison[];
@@ -284,9 +290,62 @@ export interface LocalizationReport {
   missing: MissingItems[];
   arms: ArmResult[];
   comparisons: ArmComparison[];
+  /** #1806 — the `--reference` arms, in the order asked for. */
+  references: string[];
+  /** #1806 — every arm but A0 and the reference, paired with each reference in turn. */
+  referenceComparisons: ArmComparison[];
   detectableGap: string;
   /** Caveats a reader must see next to the numbers (e.g. a metric with no signal). */
   notes: string[];
+  /**
+   * #1810 — where arms that share one agent pass per requirement and run (A3
+   * and A3A) read different passes on the scored runs: a resumed slice ran them
+   * in separate invocations. Empty when every such pair read one pass.
+   */
+  splitAgentPasses: SplitAgentPasses[];
+}
+
+/** #1810 — arms of one pass group that read different agent passes. */
+export interface SplitAgentPasses {
+  /** The pass group (`graph`: A3 and A3A). */
+  group: string;
+  arms: string[];
+  readings: Array<{ item: string; run: number }>;
+}
+
+/**
+ * #1810 — per pass group, the requirement-runs on which the group's arms read
+ * different agent passes. In one invocation A3 and A3A read the SAME pass for
+ * an item and run; a resume can score one of them in an earlier invocation and
+ * the other in a later one, on two passes. Their paired difference there then
+ * carries the model's run-to-run variation, so the report must say so.
+ */
+export function splitAgentPassesOf(
+  armIds: readonly string[],
+  itemIds: readonly string[],
+  runs: number,
+  scoreOf: (arm: string, run: number, item: string) => ItemRunScore | undefined,
+): SplitAgentPasses[] {
+  const byGroup = new Map<string, SplitAgentPasses>();
+  for (let run = 1; run <= runs; run++) {
+    for (const item of itemIds) {
+      const groups = new Map<string, Map<string, string>>();
+      for (const arm of armIds) {
+        const agent = scoreOf(arm, run, item)?.agent;
+        if (!agent) continue;
+        if (!groups.has(agent.passGroup)) groups.set(agent.passGroup, new Map());
+        groups.get(agent.passGroup)!.set(arm, agent.passIds.join("\u0000"));
+      }
+      for (const [group, read] of groups) {
+        if (new Set(read.values()).size < 2) continue;
+        const split = byGroup.get(group) ?? { group, arms: [], readings: [] };
+        for (const arm of read.keys()) if (!split.arms.includes(arm)) split.arms.push(arm);
+        split.readings.push({ item, run });
+        byGroup.set(group, split);
+      }
+    }
+  }
+  return [...byGroup.values()];
 }
 
 export type LocalizationStop =
@@ -309,6 +368,17 @@ export async function runLocalizationEval(
   const { meter } = opts;
   const now = opts.now ?? (() => performance.now());
   if (opts.arms[0]?.id !== "A0") throw new Error("A0 must be the first arm: it is the baseline");
+  const references = [...(opts.references ?? [])];
+  const armIdList = opts.arms.map((a) => a.id);
+  for (const ref of references) {
+    if (ref === "A0" || !armIdList.includes(ref)) {
+      throw new Error(
+        ref === "A0"
+          ? "--reference A0: every arm is already compared with A0"
+          : `--reference ${ref} is not one of this run's arms (${armIdList.join(", ")})`,
+      );
+    }
+  }
 
   // Per arm, per item, per run: every score held, recorded or new.
   const scores = new Map(
@@ -455,6 +525,13 @@ export async function runLocalizationEval(
 
   const baseline = arms[0]!;
   const comparisons = arms.slice(1).map((arm) => compareArms(baseline, arm));
+  const referenceComparisons = references.flatMap((ref) => {
+    const reference = arms.find((a) => a.id === ref)!;
+    return arms
+      .slice(1)
+      .filter((a) => a.id !== ref)
+      .map((arm) => compareWithReference(reference, arm));
+  });
   return {
     kind: "localization-eval",
     corpus: {
@@ -472,8 +549,16 @@ export async function runLocalizationEval(
     missing,
     arms,
     comparisons,
+    references,
+    referenceComparisons,
     detectableGap: minimumDetectableGapStatement(corpus.manifest.items.length),
     notes: corpusNotes(corpus),
+    splitAgentPasses: splitAgentPassesOf(
+      opts.arms.map((a) => a.id),
+      corpus.manifest.items.map((i) => i.id),
+      scoredRuns,
+      (armId, run, itemId) => scores.get(armId)!.get(itemId)?.get(run),
+    ),
   };
 }
 
@@ -550,12 +635,30 @@ export function compareArms(baseline: ArmResult, arm: ArmResult): ArmComparison 
   };
 }
 
+/**
+ * #1806 — an arm against a `--reference` arm, with the same paired statistics
+ * as {@link compareArms}. The table-precision gate is A0's (no arm may drop
+ * table precision below A0's), so a reference pairing does not read it.
+ */
+export function compareWithReference(reference: ArmResult, arm: ArmResult): ArmComparison {
+  const pairs = pairsOf(reference, arm);
+  return {
+    arm: arm.id,
+    baseline: reference.id,
+    items: pairs.length,
+    metrics: metricComparisons([pairs]),
+    hits: hitComparisons(pairs),
+    tableGuardPassed: null,
+  };
+}
+
 // ── Pooled comparison (#1770) ───────────────────────────────────────────────
 
 /** One arm against A0 over the held-out corpora pooled, stratified by corpus. */
 export interface PooledComparison {
   arm: string;
-  baseline: "A0";
+  /** A0, or a `--reference` arm (#1806). */
+  baseline: string;
   /** The paired items this comparison rests on. */
   items: number;
   strata: Array<{ corpus: string; items: number }>;
@@ -580,6 +683,8 @@ export interface PooledLocalizationReport {
   /** A0's scored items over every pooled corpus. */
   items: number;
   comparisons: PooledComparison[];
+  /** #1806 — the pairings with each `--reference` arm every held-out report carries. */
+  referenceComparisons: PooledComparison[];
   /**
    * The gap the pooled comparison can resolve: on the fewest paired items any
    * comparison rests on, or on A0's items when no arm was compared (#1779).
@@ -605,25 +710,31 @@ export function poolHeldOutReports(
     .slice(1)
     .map((a) => a.id)
     .filter((id) => heldOut.every((r) => r.arms.some((a) => a.id === id)));
-  const comparisons = armIds.map((id): PooledComparison => {
+  const armOf = (r: LocalizationReport, id: string) => r.arms.find((a) => a.id === id)!;
+  const pooledComparison = (baselineId: string, id: string): PooledComparison => {
     const strata = heldOut.map((r) => ({
       corpus: r.corpus.id,
-      pairs: pairsOf(
-        r.arms[0]!,
-        r.arms.find((a) => a.id === id)!,
-      ),
+      pairs: pairsOf(armOf(r, baselineId), armOf(r, id)),
     }));
     const pooledPairs = strata.flatMap((s) => s.pairs);
     return {
       arm: id,
-      baseline: "A0",
+      baseline: baselineId,
       items: pooledPairs.length,
       strata: strata.map((s) => ({ corpus: s.corpus, items: s.pairs.length })),
       metrics: metricComparisons(strata.map((s) => s.pairs)),
       hits: hitComparisons(pooledPairs),
       detectableGap: minimumDetectableGapStatement(pooledPairs.length),
     };
-  });
+  };
+  const comparisons = armIds.map((id) => pooledComparison("A0", id));
+  // #1806 — a reference is pooled only when every held-out report was read against it.
+  const references = heldOut[0]!.references.filter(
+    (ref) => armIds.includes(ref) && heldOut.every((r) => r.references.includes(ref)),
+  );
+  const referenceComparisons = references.flatMap((ref) =>
+    armIds.filter((id) => id !== ref).map((id) => pooledComparison(ref, id)),
+  );
   const items = heldOut.reduce((sum, r) => sum + r.arms[0]!.items.length, 0);
   const pairedItems = Math.min(items, ...comparisons.map((c) => c.items));
   return {
@@ -638,6 +749,7 @@ export function poolHeldOutReports(
     })),
     items,
     comparisons,
+    referenceComparisons,
     detectableGap: minimumDetectableGapStatement(pairedItems),
   };
 }
@@ -718,6 +830,17 @@ export function toMarkdownReport(report: LocalizationReport): string {
     );
   }
   for (const note of report.notes) lines.push(`> **Note.** ${note}`, "");
+  // #1810 — a resume that split a shared agent pass says where.
+  for (const s of report.splitAgentPasses) {
+    lines.push(
+      `> **Separate agent passes.** ${s.arms.join(" and ")} share one agent pass per requirement ` +
+        `and run, but read different passes on ${s.readings.length} requirement-run(s) ` +
+        `(${s.readings.map((r) => `${r.item} run ${r.run}`).join(", ")}): a resumed slice ran ` +
+        `them in separate invocations. There, their difference includes the model's run-to-run ` +
+        `variation, not only what each arm does with the citations.`,
+      "",
+    );
+  }
   lines.push("## Arms", "");
   for (const a of report.arms) {
     lines.push(`### ${a.label}`, "");
@@ -747,16 +870,40 @@ export function toMarkdownReport(report: LocalizationReport): string {
     );
   }
   lines.push("");
-  // #1755 — an agent arm's turns per requirement, from the agent loop.
+  // #1755 — an agent arm's turns per requirement, from the agent loop. #1810 —
+  // a portfolio runs one pass per repository, and the figure is their sum.
   const agentArms = report.arms.filter((a) => a.aggregate.agentTurnsPerRequirement !== null);
   if (agentArms.length > 0) {
+    const summed =
+      c.repos.length > 1
+        ? ` (summed over the ${c.repos.length} repositories' passes, one pass per repository)`
+        : "";
     lines.push(
-      `Agent-loop turns per requirement: ${agentArms
+      `Agent-loop turns per requirement${summed}: ${agentArms
         .map((a) => `${a.id} ${a.aggregate.agentTurnsPerRequirement!.toFixed(1)}`)
         .join(" · ")}`,
       "",
     );
   }
+  // #1810 — what the agent passes computed: the Graph resolution column reads
+  // 1.00 by construction for an agent arm, because only resolved files are kept.
+  const passArms = report.arms.filter((a) => a.aggregate.agent !== null);
+  for (const a of passArms) {
+    const t = a.aggregate.agent!;
+    const resolved = t.citedFiles - t.unresolvedFiles;
+    const perPass = (n: number) => (t.passes === 0 ? "n/a" : (n / t.passes).toFixed(1));
+    lines.push(
+      `- ${a.id} agent passes: ${t.passes} over ${t.readings} reading(s), ` +
+        `${t.unanswered} without a schema-valid answer; ${perPass(t.turns)} turns and ` +
+        `${perPass(t.toolCalls)} tool calls per pass; cited files in the code graph before the ` +
+        `resolve step: ${
+          t.citedFiles === 0
+            ? "n/a (no file cited)"
+            : `${resolved} of ${t.citedFiles} (${f2(resolved / t.citedFiles)})`
+        }. The Graph resolution column keeps only resolved files, so it reads 1.00 by construction.`,
+    );
+  }
+  if (passArms.length > 0) lines.push("");
   // #1784 — only a portfolio can name a file outside the answer's repository.
   if (c.repos.length > 1) {
     const confinement = report.arms.map((a) => {
@@ -800,6 +947,7 @@ export function toMarkdownReport(report: LocalizationReport): string {
     }
     lines.push("");
   }
+  lines.push(...referenceSections(report.references, report.referenceComparisons, ""));
   lines.push("## Per requirement", "");
   lines.push(
     `| Item | ${report.arms.map((a) => `${a.id} R@5 / R@10 / EditP / RR`).join(" | ")} |`,
@@ -857,5 +1005,40 @@ export function toPooledMarkdownReport(report: PooledLocalizationReport): string
     lines.push(...comparisonRows(cmp));
   }
   lines.push("");
+  const references = [...new Set(report.referenceComparisons.map((c) => c.baseline))];
+  lines.push(...referenceSections(references, report.referenceComparisons, ", pooled"));
   return lines.join("\n");
+}
+
+/**
+ * #1806 — one table per `--reference` arm: every other arm paired with it. The
+ * decision bars are read against A0; these tables say what an arm adds over
+ * another arm, such as the re-order on A12's base against A12 itself.
+ */
+function referenceSections(
+  references: readonly string[],
+  comparisons: ReadonlyArray<{
+    arm: string;
+    baseline: string;
+    metrics: readonly MetricComparison[];
+    hits: readonly HitComparison[];
+  }>,
+  suffix: string,
+): string[] {
+  const lines: string[] = [];
+  for (const ref of references) {
+    const rows = comparisons.filter((c) => c.baseline === ref);
+    lines.push(`## Paired comparison with ${ref} (\`--reference ${ref}\`)${suffix}`, "");
+    if (rows.length === 0) {
+      lines.push(`No arm other than A0 and ${ref} was run: there is nothing to pair with it.`, "");
+      continue;
+    }
+    lines.push(
+      `| Arm | Metric | Δ vs ${ref} | 95% CI | p | Reading |`,
+      "|---|---|---|---|---|---|",
+      ...rows.flatMap((cmp) => comparisonRows(cmp)),
+      "",
+    );
+  }
+  return lines;
 }

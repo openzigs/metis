@@ -3065,6 +3065,11 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   or from a pass with file tools only (`A3N`, the eval-only `grep_files`, no
   graph or symbol search). `LocalizationArm.localize` now receives the run, so
   two arms can read one pass and each report its cost (`ArmOutput.reusedCostUsd`).
+  The arm contract, the agent-pass seam and A0 live in `arm-core.ts`, imported by
+  both `arms.ts` (the registry) and `agent-arms.ts`, so the two do not import each
+  other (#1810). Each agent reading carries `ArmOutput.agent`: passes, unanswered
+  passes, tool calls, cited and unresolved files, and pass ids. The report uses it
+  for the rate before the resolve step and to flag a resume that split A3 from A3A.
 - **Edit-candidate re-order (#1798)** — behind `IMPACT_LLM_EDIT_RERANK` (key
   registry, tunable, **off**). It is the bounded exception to the #931 rule
   (docs/IMPACT_ANALYSIS_LLM_STAGES.md): one call per change and project

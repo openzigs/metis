@@ -225,10 +225,22 @@ reproducibility.
 pnpm eval:localization                 # A0 on both held-out sets, 3 runs, $35 cap
 pnpm eval:localization --arms A0,A4    # an arm against A0, paired, on the same items
 pnpm eval:localization --arms A0,A13,A13C,A13S  # #1798 LLM re-order: A0 base, A12 base, shuffled pool
+pnpm eval:localization --merge <dir> --reference A12,A13  # + every arm paired with A12, then A13 (#1806)
+pnpm eval:localization --in-sample --arms A13 --rerank-weight 0.05  # tune the re-order's model weight
 pnpm eval:localization --in-sample     # also the run-7 six (a sanity check, not a claim)
 pnpm eval:localization --table-guard   # + table precision on impact-recall-01 (live provider)
 pnpm eval:localization --budget 25     # the dollar cap; the run stops before it is passed
 ```
+
+`--reference <arm>[,<arm>…]` adds a table per arm that pairs every other arm with it
+(a pooled table too, when both held-out sets ran). Use it for comparisons such as A13C
+against A12 or A13S against A13. It changes no score, and you can pass it to `--merge`.
+The decision bars are still read against A0.
+
+**A `deepseek-flash` tuning run needs `MODEL_PRICES` set**, for example
+`MODEL_PRICES='{"deepseek-flash":{"inputPerMTok":…,"outputPerMTok":…}}'` at DeepSeek's
+published per-MTok prices (`server/src/lib/finops/model-prices-schema.ts`). The model has no built-in price, and the run stops on its first
+unpriced call (#1806).
 
 Arms are chosen only by `--arms`; no `IMPACT_LLM_*` variable changes what is
 measured, and every report names each arm's configuration. Reports go to
@@ -367,10 +379,19 @@ pnpm eval:localization --merge <dir> --md
   (`extractNewRequirementCandidates`, `assembleAgenticPassSeeds`, `buildAgenticPassPrompt`,
   `runAgentLoop`), with no escalation and no post-loop salvage.
 - **A cited file counts only if the code graph holds it** (the rule in
-  `seed-code-links-from-findings.ts`), so graph resolution is 1.00 after that step.
+  `seed-code-links-from-findings.ts`), so graph resolution is 1.00 after that step. The
+  report gives the share before that step: how many cited files the graph held (#1810).
 - **`A3` and `A3A` read the same pass in a run.** Each reports that pass's cost and time as
-  its own, and the cap counts the money once.
-- **The report adds agent-loop turns per requirement.**
+  its own, and the cap counts the money once. A resume can score them in separate
+  invocations, on two passes. The report then names the requirement-runs this affected.
+- **The report adds agent-loop turns per requirement.** On a portfolio this is the sum over
+  the per-repository passes. Each agent arm also gets a line with its passes, the passes
+  with no schema-valid answer, and turns and tool calls per pass.
+- **`grep_files` is bounded.** It is a literal search, capped at 50 matching lines and
+  5,000 files. The file cap counts only files inside the `pathContains` scope, and it never
+  descends into a symlinked directory. A search the cap cut short says so.
+- **`A3N` needs the clone.** If a repository's clone is missing, `A3N` stops with an error
+  telling you to run `pnpm eval:materialize`.
 - **The `--arms` list binds the run to the materialized database.** When it names an agent
   arm, the runner sets `DATABASE_URL`, `REPO_CLONE_DIR` and `LANCEDB_PATH` to the
   materialized layout before Prisma loads, and refuses any other database.

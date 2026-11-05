@@ -159,10 +159,18 @@ re-order lets one model call move files UP the list of files to edit. It keeps w
   high. The model weight bounds how far down the pool a model-only pick can reach. A
   model-first pick at deterministic rank `r` outranks the deterministic first file the
   model left out when `w > 1 - 61/(60 + r)`: about 0.08 at `r = 6`, about 0.13 at
-  `r = 10` and about 0.32 at `r = 30` (the pool's last file). So the search's first file
-  is kept in the top 5 against any model answer only below about 0.08, a weight at which
-  the model cannot lift a file the search ranked 6th or lower, which is the point of the
-  stage (#1806). At weight 1 (`k = 60`) a model-first pick displaces it even when the
+  `r = 10` and about 0.32 at `r = 30` (the pool's last file). To push the search's first
+  file out of the top 5, five files must outrank it. The search ranked only four files 2nd
+  to 5th, so one of the five must be a file it ranked 6th or lower, and that needs
+  `w > 5/66 ≈ 0.076`. Below that weight, the search's first file stays in the top 5
+  whatever the model answers. The threshold stops a file from being lifted **above the
+  search's first file**. It does not stop a file from being lifted **into the top 5**: at
+  `w = 0.05`, a model-first pick the search ranked 6th fuses to 3rd. Below
+  `1/62 ≈ 0.016`, the model cannot change which file comes first. So a weight that keeps
+  the guarantee and still lets the model change the first file lies between about 0.016
+  and 0.076. The in-sample sweep below started at 0.1, so that range is not measured yet
+  (#1806). `fuseEditOrder`'s tests pin these thresholds. At weight 1 (`k = 60`) a
+  model-first pick displaces the search's first file even when the
   search ranked that pick 30th: the guarantee the stage does keep is that no
   deterministic candidate leaves the list, not that the search's best stays in the top 5.
 - **The weight was fixed in-sample, before either held-out set was read.**
@@ -197,13 +205,15 @@ bar is met.
 
 - **Recall@10 and MRR rise too** (pooled A13 +0.081 and +0.164, both significant), and
   every model-named file resolves to the code graph (graph resolution 1.00 on every arm).
-- **Against A12** (one-off pairing with the runner's own statistics): A13C, the re-order
+- **Against A12** (computed one-off with the runner's own statistics; `--reference A12`
+  now prints this pairing, #1806): A13C, the re-order
   on A12's base, adds pooled Recall@5 +0.097 [0.02, 0.18] with edit precision not
   measurably different (−0.057, n.s.); A13 has edit precision −0.130 below A12, because
   A0's cut keeps more files than A12's.
 - **Table guard held:** A13 on the split seeding 0.531 against A0 on that seeding 0.511
   (`impact-recall-01-jpetstore`, 3 runs each).
-- **No position bias in Recall@5:** A13S against A13 pooled, Recall@5 +0.005 (p 0.75).
+- **No position bias in Recall@5:** A13S against A13 pooled (`--reference A13`),
+  Recall@5 +0.005 (p 0.75).
   Which file comes first does depend on order on the small fixture set (MRR −0.096,
   p 0.004), so the deterministic presentation stays.
 - **About 6 s per requirement on Miniflux and 12 s on the fixture set** (one call per

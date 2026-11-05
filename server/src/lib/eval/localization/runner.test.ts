@@ -8,10 +8,12 @@ import {
   memoisedA0TableGuard,
   poolHeldOutReports,
   runLocalizationEval,
+  splitAgentPassesOf,
   toMarkdownReport,
   toPooledMarkdownReport,
   type TableGuardReading,
 } from "./runner.js";
+import type { AgentRunStats, ItemRunScore } from "./scorer.js";
 
 function items(n: number): LocalizationItem[] {
   return Array.from({ length: n }, (_, i) => ({
@@ -886,5 +888,228 @@ describe("agent arms: run context, reused work and turns (#1755)", () => {
     });
     expect(report.arms[1]!.items[0]!.costUsd).toBeNull();
     expect(toMarkdownReport(report)).not.toContain("Agent-loop turns");
+  });
+});
+
+describe("--reference: pairing with an arm other than A0 (#1806)", () => {
+  // A0 finds every even item first; A12 every item 2nd; A13 every item first.
+  const arms = () => [
+    arm("A0", (i) => (Number(i.id.slice(2)) % 2 === 0 ? 1 : 0)),
+    arm("A12", () => 2),
+    arm("A13", () => 1),
+    arm("A13S", () => 1),
+  ];
+  const reportOf = (
+    n: number,
+    id: LocalizationCorpus["name"] = "localization-02-fixture-portfolio",
+    references: string[] = ["A12", "A13"],
+  ) =>
+    runLocalizationEval(corpus(n, "held-out", id), {
+      arms: arms(),
+      runs: 1,
+      meter: new FakeMeter(),
+      references,
+    });
+
+  it("pairs every other arm with each reference, with the runner's own statistics", async () => {
+    const report = await reportOf(12);
+    expect(report.references).toEqual(["A12", "A13"]);
+    expect(report.comparisons.map((c) => `${c.arm} vs ${c.baseline}`)).toEqual([
+      "A12 vs A0",
+      "A13 vs A0",
+      "A13S vs A0",
+    ]);
+    expect(report.referenceComparisons.map((c) => `${c.arm} vs ${c.baseline}`)).toEqual([
+      "A13 vs A12",
+      "A13S vs A12",
+      "A12 vs A13",
+      "A13S vs A13",
+    ]);
+    const a13VsA12 = report.referenceComparisons[0]!;
+    // A12 ranks the file 2nd (RR 0.5), A13 1st (RR 1): +0.5 on every item.
+    expect(a13VsA12.metrics.find((m) => m.metric === "reciprocalRank")!.meanDifference).toBe(0.5);
+    expect(a13VsA12.items).toBe(12);
+    expect(a13VsA12.tableGuardPassed).toBeNull();
+    const md = toMarkdownReport(report);
+    expect(md).toContain("## Paired comparison with A12 (`--reference A12`)");
+    expect(md).toContain("## Paired comparison with A13 (`--reference A13`)");
+    expect(md).toContain("| A13S | reciprocalRank | +0.000 |");
+    // The table-precision gate is A0's; a reference table does not repeat it.
+    const a12Section = md.slice(md.indexOf("--reference A12"), md.indexOf("--reference A13"));
+    expect(a12Section).toContain("| A13 | reciprocalRank | +0.500 |");
+    expect(a12Section).not.toContain("table precision guard");
+  });
+
+  it("adds nothing when no reference is asked for", async () => {
+    const report = await reportOf(4, undefined, []);
+    expect(report.referenceComparisons).toEqual([]);
+    expect(toMarkdownReport(report)).not.toContain("--reference");
+  });
+
+  it("says so when the reference is the only arm besides A0", async () => {
+    const report = await runLocalizationEval(corpus(2), {
+      arms: [arm("A0", () => 1), arm("A12", () => 2)],
+      runs: 1,
+      meter: new FakeMeter(),
+      references: ["A12"],
+    });
+    expect(report.referenceComparisons).toEqual([]);
+    expect(toMarkdownReport(report)).toContain(
+      "No arm other than A0 and A12 was run: there is nothing to pair with it.",
+    );
+  });
+
+  it("refuses a reference that is not one of the run's arms, or A0", async () => {
+    await expect(reportOf(2, undefined, ["A4"])).rejects.toThrow(
+      /--reference A4 is not one of this run's arms \(A0, A12, A13, A13S\)/,
+    );
+    await expect(reportOf(2, undefined, ["A0"])).rejects.toThrow(/--reference A0/);
+  });
+
+  it("pools the reference pairings over the held-out corpora, stratified by corpus", async () => {
+    const miniflux = await reportOf(12, "localization-01-miniflux-heldout");
+    const fixture = await reportOf(8, "localization-02-fixture-portfolio");
+    const pooled = poolHeldOutReports([miniflux, fixture]);
+    expect(pooled.referenceComparisons.map((c) => `${c.arm} vs ${c.baseline}`)).toEqual([
+      "A13 vs A12",
+      "A13S vs A12",
+      "A12 vs A13",
+      "A13S vs A13",
+    ]);
+    const a13VsA12 = pooled.referenceComparisons[0]!;
+    expect(a13VsA12.items).toBe(20);
+    expect(a13VsA12.strata).toEqual([
+      { corpus: "localization-01-miniflux-heldout", items: 12 },
+      { corpus: "localization-02-fixture-portfolio", items: 8 },
+    ]);
+    const md = toPooledMarkdownReport(pooled);
+    expect(md).toContain("## Paired comparison with A12 (`--reference A12`), pooled");
+    expect(md).toContain("| A13S | reciprocalRank | +0.000 |");
+    // A reference pooled only when every held-out report carries it.
+    const without = await reportOf(8, "localization-02-fixture-portfolio", ["A12"]);
+    expect(
+      poolHeldOutReports([miniflux, without]).referenceComparisons.map((c) => c.baseline),
+    ).toEqual(["A12", "A12"]);
+  });
+});
+
+describe("agent-pass counts and split passes in the report (#1810)", () => {
+  const stats = (over: Partial<AgentRunStats> = {}): AgentRunStats => ({
+    passes: 2,
+    unanswered: 1,
+    toolCalls: 6,
+    citedFiles: 4,
+    unresolvedFiles: 1,
+    passGroup: "graph",
+    passIds: ["p1", "p2"],
+    ...over,
+  });
+  /** An agent arm whose readings carry `agentOf(item, run)`. */
+  function passArm(
+    id: string,
+    agentOf: (item: LocalizationItem, run: number) => AgentRunStats,
+  ): LocalizationArm {
+    return {
+      id,
+      label: `${id} agent arm`,
+      configuration: { llm: true },
+      async localize(item, _corpus, context) {
+        return {
+          rankedFiles: [item.expectedFiles[0]!],
+          editCandidateFiles: [item.expectedFiles[0]!],
+          llmNamedFiles: [item.expectedFiles[0]!],
+          agentTurns: 8,
+          agent: agentOf(item, context!.run),
+        };
+      },
+    };
+  }
+  const portfolioOf = (n: number): LocalizationCorpus => {
+    const one = corpus(n);
+    return {
+      ...one,
+      manifest: {
+        ...one.manifest,
+        repos: [...one.manifest.repos, { ...one.manifest.repos[0]!, name: "s" }],
+      },
+    };
+  };
+
+  it("sums the passes' counts and reports unanswered passes, per-pass turns and the rate before the resolve step", async () => {
+    const report = await runLocalizationEval(portfolioOf(2), {
+      arms: [arm("A0", () => 1), passArm("A3A", () => stats())],
+      runs: 2,
+      meter: new FakeMeter(),
+    });
+    expect(report.arms[1]!.aggregate.agent).toEqual({
+      readings: 4,
+      passes: 8,
+      turns: 32,
+      unanswered: 4,
+      toolCalls: 24,
+      citedFiles: 16,
+      unresolvedFiles: 4,
+    });
+    expect(report.arms[0]!.aggregate.agent).toBeNull();
+    const md = toMarkdownReport(report);
+    expect(md).toContain(
+      "Agent-loop turns per requirement (summed over the 2 repositories' passes, one pass per repository): A3A 8.0",
+    );
+    expect(md).toContain(
+      "- A3A agent passes: 8 over 4 reading(s), 4 without a schema-valid answer; 4.0 turns and 3.0 tool calls per pass; " +
+        "cited files in the code graph before the resolve step: 12 of 16 (0.75).",
+    );
+    expect(md).toContain("so it reads 1.00 by construction");
+    expect(md).not.toContain("Separate agent passes");
+  });
+
+  it("does not call the turns a sum on one repository, and says when no file was cited", async () => {
+    const report = await runLocalizationEval(corpus(1), {
+      arms: [
+        arm("A0", () => 1),
+        passArm("A3N", () => stats({ passes: 1, citedFiles: 0, unresolvedFiles: 0 })),
+      ],
+      runs: 1,
+      meter: new FakeMeter(),
+    });
+    const md = toMarkdownReport(report);
+    expect(md).toContain("Agent-loop turns per requirement: A3N 8.0");
+    expect(md).toContain("before the resolve step: n/a (no file cited).");
+  });
+
+  it("records the requirement-runs where A3 and A3A read different passes, and only those", async () => {
+    // I-2 run 1 was scored by A3 in one invocation and A3A in another: two passes.
+    const ids = (arm: string) => (item: LocalizationItem, run: number) =>
+      stats({
+        passIds: [item.id === "I-2" && run === 1 ? `${arm}-${item.id}` : `${item.id}-${run}`],
+      });
+    const report = await runLocalizationEval(corpus(3), {
+      arms: [
+        arm("A0", () => 1),
+        passArm("A3", ids("A3")),
+        passArm("A3A", ids("A3A")),
+        // A3N reads its own passes, in its own group: never a split with A3.
+        passArm("A3N", (item) => stats({ passGroup: "files", passIds: [`n-${item.id}`] })),
+      ],
+      runs: 2,
+      meter: new FakeMeter(),
+    });
+    expect(report.splitAgentPasses).toEqual([
+      { group: "graph", arms: ["A3", "A3A"], readings: [{ item: "I-2", run: 1 }] },
+    ]);
+    expect(toMarkdownReport(report)).toContain(
+      "> **Separate agent passes.** A3 and A3A share one agent pass per requirement and run, " +
+        "but read different passes on 1 requirement-run(s) (I-2 run 1)",
+    );
+  });
+
+  it("finds no split when an arm of the group has no reading, or none carries counts", () => {
+    const score = (agent?: AgentRunStats) => ({ agent }) as unknown as ItemRunScore;
+    expect(
+      splitAgentPassesOf(["A3", "A3A"], ["I-1"], 1, (a) =>
+        a === "A3" ? score(stats()) : undefined,
+      ),
+    ).toEqual([]);
+    expect(splitAgentPassesOf(["A3", "A3A"], ["I-1"], 1, () => score())).toEqual([]);
   });
 });

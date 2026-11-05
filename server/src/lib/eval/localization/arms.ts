@@ -12,19 +12,14 @@
  * to {@link ARM_FACTORIES} in its own PR; until then asking for it fails loudly.
  */
 import {
-  EDIT_POOL,
-  FILE_HIT_DECAY,
   MAX_EDIT_FILES,
-  MAX_SYMBOLS_PER_EDIT_FILE,
   MIN_FILE_SHARE,
   REQUEST_COSINE_MARGIN,
-  SEED_POOL_PER_QUERY,
   VERIFY_POOL_FILES,
   rankEditCandidatesPerRequest,
   resolveChangeSeeds,
   type RequestRankingBasis,
   type RequestSeeding,
-  type SeedSymbolRow,
   type StoredLinkDeps,
   type StoredLinkRow,
 } from "../../impact-analysis/change-seeds.js";
@@ -43,8 +38,6 @@ import {
   rerankEditCandidates,
 } from "../../impact-analysis/edit-candidate-reranker.js";
 import type { ChangedRequirement } from "../../impact-analysis/extract-changes.js";
-import type { AIProvider } from "../../ai/types.js";
-import { DEFAULT_WEIGHTS } from "../../code-graph/hybrid-search.js";
 import {
   DEFAULT_TOP_K,
   mapRequirementToCode,
@@ -53,65 +46,33 @@ import {
 } from "../../traceability/requirement-code-mapping.js";
 import { fileKey, type LocalizationCorpus, type LocalizationItem } from "./corpus.js";
 import type { CorpusSearch } from "./search.js";
-import type { GapVerdict } from "./corpus.js";
 import { seededRandom } from "./stats.js";
-import type { CostMeter } from "./cost.js";
-import { createA3AArm, createA3Arm, createA3NArm, type AgentPass } from "./agent-arms.js";
+import { createA3AArm, createA3Arm, createA3NArm } from "./agent-arms.js";
+import {
+  corpusFileSymbols,
+  createA0Arm,
+  mergeSeedings,
+  requirementText,
+  uniqueInOrder,
+  type ArmDeps,
+  type ArmOutput,
+  type LocalizationArm,
+  type SeedingFiles,
+} from "./arm-core.js";
 
-/** What an arm returns for one requirement (cost and time are the runner's). */
-export interface ArmOutput {
-  rankedFiles: string[];
-  editCandidateFiles: string[];
-  llmNamedFiles?: string[];
-  verdict?: GapVerdict;
-  /** #1755 — agent-loop turns this requirement took (an agent arm). */
-  agentTurns?: number;
-  /**
-   * #1755 — the cost of model work this reading REUSED from another arm's call
-   * in the same run (one agent pass read two ways), added to what this call
-   * spent so each reading reports what it costs on its own; null = unpriced.
-   */
-  reusedCostUsd?: number | null;
-  /** #1755 — the wall-clock seconds of that reused work. */
-  reusedSeconds?: number;
-}
-
-/** What the runner tells an arm about the reading it asks for. */
-export interface LocalizeContext {
-  /** 1-based run number: two arms reading one item in the same run may share model work. */
-  run: number;
-}
-
-/** One configuration under test. */
-export interface LocalizationArm {
-  id: string;
-  label: string;
-  /** Everything that identifies the configuration; printed in every report. */
-  configuration: Record<string, string | number | boolean>;
-  localize(
-    item: LocalizationItem,
-    corpus: LocalizationCorpus,
-    context?: LocalizeContext,
-  ): Promise<ArmOutput>;
-}
-
-/** What an arm factory is given. A model-backed arm also receives its metered provider. */
-export interface ArmDeps {
-  search: CorpusSearch;
-  /** The METERED provider (`meterProvider`), for an arm with a model in the loop. */
-  provider?: AIProvider;
-  /**
-   * The model's weight in the A13 family's rank fusion (#1798). Default
-   * `RERANK_MODEL_WEIGHT`; the in-sample tuning run sets it (`--rerank-weight`).
-   */
-  rerankWeight?: number;
-  /** #1755 — the analysis agent pass over the materialized corpus (the A3 arms). */
-  agentPass?: AgentPass;
-  /** #1755 — the run's meter, to price an agent pass a second arm reuses. */
-  meter?: CostMeter;
-  /** Milliseconds; a seam for tests. */
-  now?: () => number;
-}
+// #1810 — the shared contract and helpers live in arm-core.ts (no import cycle
+// with agent-arms.ts); re-exported for the modules that import them from here.
+export {
+  corpusFileSymbols,
+  createA0Arm,
+  mergeSeedings,
+  requirementText,
+  type ArmDeps,
+  type ArmOutput,
+  type LocalizationArm,
+  type LocalizeContext,
+  type SeedingFiles,
+} from "./arm-core.js";
 
 /** The arms that call a model: the CLI builds a live, metered provider only for these. */
 export const MODEL_ARMS: ReadonlySet<string> = new Set([
@@ -123,104 +84,6 @@ export const MODEL_ARMS: ReadonlySet<string> = new Set([
   "A13C",
   "A13S",
 ]);
-
-/** One seeding's files, in its own order. */
-export interface SeedingFiles {
-  edit: string[];
-  other: string[];
-}
-
-/**
- * Merge several seedings (one per change the text splits into, per repository)
- * into one ranking. Round-robin by position, in input order, so a single seeding
- * keeps its own order exactly and no repository's top file is buried under
- * another's tail. Edit files come first; a file that is an edit candidate in any
- * seeding is one in the merge.
- */
-export function mergeSeedings(seedings: readonly SeedingFiles[]): {
-  rankedFiles: string[];
-  editCandidateFiles: string[];
-} {
-  const interleave = (lists: string[][]): string[] => {
-    const out: string[] = [];
-    const seen = new Set<string>();
-    const longest = Math.max(0, ...lists.map((l) => l.length));
-    for (let i = 0; i < longest; i++) {
-      for (const l of lists) {
-        const f = l[i];
-        if (f !== undefined && !seen.has(f)) {
-          seen.add(f);
-          out.push(f);
-        }
-      }
-    }
-    return out;
-  };
-  const editCandidateFiles = interleave(seedings.map((s) => s.edit));
-  const editSet = new Set(editCandidateFiles);
-  const others = interleave(seedings.map((s) => s.other)).filter((f) => !editSet.has(f));
-  return { rankedFiles: [...editCandidateFiles, ...others], editCandidateFiles };
-}
-
-function uniqueInOrder(files: string[]): string[] {
-  return [...new Set(files)];
-}
-
-/** The text the arms are given, as an analyst would paste it into impact analysis. */
-export function requirementText(item: Pick<LocalizationItem, "title" | "text">): string {
-  return `${item.title}\n\n${item.text}`;
-}
-
-/**
- * A0 — the shipped seeding. The pasted text goes through the shape-aware
- * extractor production wires (`shapeAwareChangeExtractor`), and each change is
- * seeded by `resolveChangeSeeds` over production's `HybridCodeSearch` in every
- * repository of the corpus, exactly as `defaultSeedChange` does. No model is
- * called. Ranked files: the edit candidates, then the related hits and schema
- * seeds, in seeding order.
- */
-export function createA0Arm(deps: ArmDeps): LocalizationArm {
-  const { search } = deps;
-  return {
-    id: "A0",
-    label: "A0 — shipped seeding (resolveChangeSeeds over HybridCodeSearch), no model",
-    configuration: {
-      stage: "resolveChangeSeeds (impact-analysis/change-seeds.ts)",
-      extractor: "shapeAwareChangeExtractor",
-      searcher: "HybridCodeSearch (BM25 + symbol vectors, RRF)",
-      bm25Weight: DEFAULT_WEIGHTS.bm25Weight,
-      vectorWeight: DEFAULT_WEIGHTS.vectorWeight,
-      embeddingModel: search.embeddingModel,
-      symbols: search.symbolsDigest,
-      SEED_POOL_PER_QUERY,
-      EDIT_POOL,
-      MAX_EDIT_FILES,
-      MIN_FILE_SHARE,
-      FILE_HIT_DECAY,
-      MAX_SYMBOLS_PER_EDIT_FILE,
-      llm: false,
-    },
-    async localize(item, corpus) {
-      const changes = extractChangesByShape(requirementText(item));
-      const seedings: SeedingFiles[] = [];
-      for (const repo of corpus.manifest.repos) {
-        for (const change of changes) {
-          const seeds = await resolveChangeSeeds(change, repo.name, {
-            searcher: search.searcher,
-            loadSymbols: search.loadSymbols,
-            loadWriterIds: search.loadWriterIds,
-          });
-          const key = (m: { filePath: string }) => fileKey(repo.name, m.filePath);
-          seedings.push({
-            edit: uniqueInOrder(seeds.editCandidates.map(key)),
-            other: uniqueInOrder([...seeds.related, ...seeds.schemaSeeds].map(key)),
-          });
-        }
-      }
-      return mergeSeedings(seedings);
-    },
-  };
-}
 
 /**
  * #1754 — the mapper over the corpus search, as the traceability mapping job
@@ -259,25 +122,6 @@ function corpusMapperSearcher(search: CorpusSearch): CodeSymbolSearcher {
           : [];
       });
     },
-  };
-}
-
-/** The corpus's symbols of the given files in one repository: the graph-membership lookup. */
-export function corpusFileSymbols(corpus: LocalizationCorpus): StoredLinkDeps["loadFileSymbols"] {
-  return async (filePaths, repo) => {
-    const wanted = new Set(filePaths);
-    return corpus.symbols
-      .filter((r) => r.repo === repo && wanted.has(r.filePath))
-      .map((r): SeedSymbolRow => ({
-        id: r.id,
-        qualifiedName: r.qualifiedName,
-        filePath: r.filePath,
-        kind: r.kind,
-        language: r.language,
-        startLine: r.startLine,
-        endLine: r.endLine,
-        signature: r.signature ?? null,
-      }));
   };
 }
 

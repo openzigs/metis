@@ -35,3 +35,28 @@ export function positiveInteger(raw: string | undefined, fallback: number, name:
   }
   return n;
 }
+
+/**
+ * #1806 — `--reference A12,A13`: arms each other arm is ALSO paired with, beside
+ * A0, so a pairing such as A13C against A12 comes from the runner's own
+ * statistics rather than a one-off script. A0 is refused: every report already
+ * pairs every arm with it. Whether each id is one of the run's arms is checked
+ * by the runner, which knows the arms.
+ */
+export function referenceArmIds(argv: readonly string[]): string[] {
+  const raw = flagValue(argv, "reference");
+  if (raw === undefined) return [];
+  const ids = [
+    ...new Set(
+      raw
+        .split(",")
+        .map((s) => s.trim().toUpperCase())
+        .filter(Boolean),
+    ),
+  ];
+  if (ids.length === 0) throw new Error("--reference needs an arm id, e.g. --reference A12");
+  if (ids.includes("A0")) {
+    throw new Error("--reference A0: every arm is already compared with A0");
+  }
+  return ids;
+}

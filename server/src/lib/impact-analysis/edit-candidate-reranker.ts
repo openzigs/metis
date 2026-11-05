@@ -78,8 +78,9 @@ export const RERANK_RRF_K = 60;
  * from there (0.75 at 1, 0.73 at 2, 0.75 at 4), so the plateau's plain-RRF
  * value stays. At 1, a pick the search ranked 30th and the model ranked 1st
  * (1/90 + 1/61) outranks a deterministic first file the model left out
- * (1/61), so the model can fill the top five; only a weight below about 0.08
- * keeps the search's first file in the top five (#1806).
+ * (1/61), so the model can fill the top five; only a weight below 5/66 (about
+ * 0.076) keeps the search's first file in the top five, and even then a pick
+ * the search ranked 6th can be lifted into it (#1806).
  */
 export const RERANK_MODEL_WEIGHT = 1;
 
@@ -277,6 +278,10 @@ export async function rerankEditCandidates(input: RerankEditCandidatesInput): Pr
       }
       const p = parsed.data;
       const symbol = p.line >= 1 ? await input.lineCheck(file.filePath, p.line) : null;
+      // The file test guards the `LineCheck` contract, not `graphLineCheck`
+      // (which only returns a symbol of the file it was asked about): a check
+      // that answered with another file's symbol must not move this file up.
+      // Pinned by "a line check that names another file" (#1806).
       if (!symbol || symbol.filePath !== file.filePath) {
         dropped++;
         continue;

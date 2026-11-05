@@ -291,6 +291,65 @@ describe("A3 arms (#1755)", () => {
     expect(out.editCandidateFiles).toEqual(["r:a.go"]);
   });
 
+  it("reports the counts each pass computed: passes, unanswered, tool calls, cited and unresolved files (#1810)", async () => {
+    const meter = fakeMeter();
+    const agentPass = vi.fn(async (req: AgentPassRequest) =>
+      req.repo === "r"
+        ? {
+            citations: [cite("a.go"), cite("docs/x.md"), cite("a.go", 0.9, 7), cite("gone.go")],
+            turns: 5,
+            toolCalls: 4,
+            answered: false,
+          }
+        : { citations: [cite("b.go")], turns: 2, toolCalls: 1, answered: true },
+    );
+    const out = await createA3AArm({ search, agentPass, meter, provider }).localize(
+      item,
+      corpusOf(["r", "s"]),
+      { run: 1 },
+    );
+    expect(out.agentTurns).toBe(7);
+    expect(out.agent).toMatchObject({
+      passes: 2,
+      unanswered: 1,
+      toolCalls: 5,
+      // r: a.go resolves, docs/x.md and gone.go do not; s: b.go resolves.
+      citedFiles: 4,
+      unresolvedFiles: 2,
+      passGroup: "graph",
+    });
+    expect(out.agent!.passIds).toHaveLength(2);
+    expect(new Set(out.agent!.passIds).size).toBe(2);
+  });
+
+  it("A3 and A3A name the same pass ids for a shared pass; A3N its own group (#1810)", async () => {
+    const meter = fakeMeter();
+    const agentPass = stubPass(meter, { r: [cite("a.go")] });
+    const [a3, a3a, a3n] = buildArms(["A3", "A3A", "A3N"], { search, agentPass, meter, provider });
+    const corpus = corpusOf(["r"]);
+    const one = await a3!.localize(item, corpus, { run: 1 });
+    const two = await a3a!.localize(item, corpus, { run: 1 });
+    const nograph = await a3n!.localize(item, corpus, { run: 1 });
+    expect(two.agent!.passIds).toEqual(one.agent!.passIds);
+    expect(nograph.agent!.passGroup).toBe("files");
+    expect(nograph.agent!.passIds).not.toEqual(one.agent!.passIds);
+    // Another run is another pass, with another id.
+    const again = await a3a!.localize(item, corpus, { run: 2 });
+    expect(again.agent!.passIds).not.toEqual(one.agent!.passIds);
+  });
+
+  it("agent-arms.ts and arm-core.ts do not import arms.ts: no import cycle (#1810)", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const here = path.dirname(new URL(import.meta.url).pathname);
+    for (const file of ["agent-arms.ts", "arm-core.ts"]) {
+      const source = await readFile(path.join(here, file), "utf8");
+      expect(source, file).not.toMatch(/from "\.\/arms\.js"/);
+    }
+    expect(await readFile(path.join(here, "arm-core.ts"), "utf8")).not.toMatch(
+      /from "\.\/agent-arms\.js"/,
+    );
+  });
+
   it("names its configuration", () => {
     const meter = fakeMeter();
     const a3 = createA3Arm({ search, agentPass: vi.fn(), meter, provider });
