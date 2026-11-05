@@ -505,6 +505,7 @@ describe("toMarkdownReport — no-code dimension + failing thresholds", () => {
       matchQualities: { R1: "weak" as const },
       configuration: {
         searcher: "bm25" as const,
+        seeding: "mapper" as const,
         tableFilter: "off" as const,
         isProductionConfiguration: false,
         label: "NON-PRODUCTION (searcher=bm25, table filter=off)",

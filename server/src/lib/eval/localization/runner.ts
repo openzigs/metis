@@ -102,9 +102,26 @@ export class EvalBudget {
   }
 }
 
-/** The table-precision guard rail reading for one arm. */
+/** One measured table precision, and what produced it. */
+export interface TableGuardMeasurement {
+  tablePrecision: number;
+  runs: number;
+  configuration: string;
+  /**
+   * #1786 — how the guard's requirements were seeded into code: the mapper
+   * (`mapRequirementToCode`), or the split hybrid seeding (with or without the
+   * edit-candidate check). Two readings compare only on the same seeding.
+   */
+  seeding: string;
+}
+
+/**
+ * The table-precision guard rail reading for one arm. `baseline` (#1786) is
+ * A0 measured on THIS reading's seeding, when that is not A0's own: the arm is
+ * gated against it, so a seeding change is never read as the arm's effect.
+ */
 export type TableGuardReading =
-  | { measured: true; tablePrecision: number; runs: number; configuration: string }
+  | ({ measured: true; baseline?: TableGuardMeasurement } & TableGuardMeasurement)
   | { measured: false; reason: string };
 
 /**
@@ -119,20 +136,27 @@ export interface TableGuard {
 }
 
 /**
- * The CLI's guard: `measureA0` runs once, for A0, and its reading is memoised
- * for every later corpus; any other arm has no guard run wired yet (#1756) and
- * is answered at no cost. Only A0's first reading spends money (#1779).
+ * The CLI's guard: `measureA0` runs once, for A0, and each arm in `others`
+ * (#1786: A4, on the split seeding) runs its own measurement once; every
+ * reading is memoised for every later corpus. An arm with no measurement wired
+ * is answered at no cost. Only an arm's first reading spends money (#1779).
  */
-export function memoisedA0TableGuard(measureA0: () => Promise<TableGuardReading>): TableGuard {
-  let a0: TableGuardReading | null = null;
+export function memoisedA0TableGuard(
+  measureA0: () => Promise<TableGuardReading>,
+  others: Readonly<Record<string, () => Promise<TableGuardReading>>> = {},
+): TableGuard {
+  const measure: Record<string, () => Promise<TableGuardReading>> = { ...others, A0: measureA0 };
+  const readings = new Map<string, TableGuardReading>();
   const guard: TableGuard = async (arm) => {
-    if (arm.id !== "A0") {
+    const run = Object.hasOwn(measure, arm.id) ? measure[arm.id] : undefined;
+    if (!run) {
       return { measured: false, reason: `arm ${arm.id} does not wire a table-precision run yet` };
     }
-    a0 ??= await measureA0();
-    return a0;
+    const memo = readings.get(arm.id) ?? (await run());
+    readings.set(arm.id, memo);
+    return memo;
   };
-  guard.isFree = (arm) => arm.id !== "A0" || a0 !== null;
+  guard.isFree = (arm) => !Object.hasOwn(measure, arm.id) || readings.has(arm.id);
   return guard;
 }
 
@@ -412,8 +436,14 @@ export function compareArms(baseline: ArmResult, arm: ArmResult): ArmComparison 
   const pairs = pairsOf(baseline, arm);
   const metrics = metricComparisons([pairs]);
   const hits = hitComparisons(pairs);
-  const g0 = baseline.tableGuard;
   const g1 = arm.tableGuard;
+  // #1786 — gate against A0 on the arm's own seeding when the arm measured it.
+  const g0: TableGuardMeasurement | null =
+    g1.measured && g1.baseline
+      ? g1.baseline
+      : baseline.tableGuard.measured
+        ? baseline.tableGuard
+        : null;
   return {
     arm: arm.id,
     baseline: "A0",
@@ -421,9 +451,7 @@ export function compareArms(baseline: ArmResult, arm: ArmResult): ArmComparison 
     metrics,
     hits,
     tableGuardPassed:
-      g0.measured && g1.measured
-        ? g1.tablePrecision >= g0.tablePrecision - TABLE_PRECISION_TOLERANCE
-        : null,
+      g0 && g1.measured ? g1.tablePrecision >= g0.tablePrecision - TABLE_PRECISION_TOLERANCE : null,
   };
 }
 
@@ -598,8 +626,10 @@ export function toMarkdownReport(report: LocalizationReport): string {
   );
   for (const a of report.arms) {
     const g = a.aggregate;
-    const guard = a.tableGuard.measured
-      ? `${f3(a.tableGuard.tablePrecision)} (${a.tableGuard.runs} runs)`
+    const t = a.tableGuard;
+    // #1786 — an arm read on another seeding shows A0's reading on that seeding beside it.
+    const guard = t.measured
+      ? `${f3(t.tablePrecision)} (${t.runs} runs${t.baseline ? `; A0 on its seeding ${f3(t.baseline.tablePrecision)}` : ""})`
       : "not measured";
     lines.push(
       `| ${a.id} | ${f2(g.recallAt5)} ${ci(a.intervals.recallAt5)} | ${f2(g.recallAt10)} ${ci(a.intervals.recallAt10)} | ` +
@@ -622,8 +652,19 @@ export function toMarkdownReport(report: LocalizationReport): string {
     );
   }
   for (const a of report.arms) {
-    if (!a.tableGuard.measured) lines.push(`- ${a.id} table precision: ${a.tableGuard.reason}`);
-    else lines.push(`- ${a.id} table precision measured on: ${a.tableGuard.configuration}`);
+    const g = a.tableGuard;
+    if (!g.measured) {
+      lines.push(`- ${a.id} table precision: ${g.reason}`);
+      continue;
+    }
+    lines.push(`- ${a.id} table precision (seeding: ${g.seeding}) measured on: ${g.configuration}`);
+    // #1786 — the same-seeding A0 reading this arm is gated against.
+    if (g.baseline) {
+      lines.push(
+        `  - next to A0 on the same seeding (seeding: ${g.baseline.seeding}): ` +
+          `${f3(g.baseline.tablePrecision)} (${g.baseline.runs} runs), measured on: ${g.baseline.configuration}`,
+      );
+    }
   }
   lines.push("");
   lines.push("## Paired comparison with A0", "");

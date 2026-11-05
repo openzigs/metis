@@ -8,6 +8,7 @@
  *   pnpm eval:localization --in-sample           # also the six run-7 issues (never a gain claim)
  *   pnpm eval:localization --runs 1 --budget 10  # fewer runs, a lower dollar cap
  *   pnpm eval:localization --table-guard         # + table precision on impact-recall-01 (live provider)
+ *   pnpm eval:localization --arms A0,A4 --table-guard  # + A4 on the split seeding, next to A0 on it (#1786)
  *   pnpm eval:localization --embed               # embed missing vectors with the local model
  *   pnpm eval:localization --md                  # print the Markdown report
  *   pnpm eval:localization --baseline            # A0 only: write baseline-A0.{json,md} into each corpus
@@ -70,7 +71,18 @@ import {
   toPooledMarkdownReport,
   type LocalizationReport,
   type TableGuard,
+  type TableGuardReading,
 } from "../src/lib/eval/localization/runner.js";
+import {
+  MAPPER_SEEDING,
+  fixtureEditCandidateVerifier,
+  fixtureSearchRows,
+  measureSplitSeedingGuard,
+} from "../src/lib/eval/localization/table-guard.js";
+import type {
+  ImpactRecallRunSummary,
+  RunImpactRecallOptions,
+} from "../src/lib/eval/impact-recall/runner.js";
 import {
   EmbedCache,
   assertNoMissingVectors,
@@ -81,6 +93,8 @@ import type { EmbedService } from "../src/lib/code-graph/symbol-embeddings.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
+/** Runs per table-precision reading: the #936 filter is a live model call (#1016). */
+const TABLE_GUARD_RUNS = 3;
 
 /** The corpora to run: one by name, else both held-out sets (+ the in-sample one on request). */
 function corporaFor(argv: string[]): LocalizationCorpusName[] {
@@ -128,12 +142,20 @@ async function embedCacheFor(
 }
 
 /**
- * The table-precision guard rail for A0: impact-recall-01 in the PRODUCTION
- * configuration (BM25 seeding + the #936 LLM table filter), 3 runs, metered.
- * Measured once and memoised: every later reading, and every other arm's, is
- * free, so the runner does not hold it under the cap (#1779).
+ * The table-precision guard rail: impact-recall-01 with the live #936 table
+ * filter, 3 runs, metered. A0 is read on the mapper path, the configuration
+ * the impact-recall floors were measured on. #1786 — A4's check runs only on
+ * the split seeding, so A4 is read on the split seeding plus the check, next to
+ * A0 on the split seeding alone, on the same corpus, provider and run count.
+ * Each reading is measured once and memoised: every later reading is free, so
+ * the runner does not hold it under the cap (#1779).
  */
-async function tableGuardFor(meter: LedgerCostMeter): Promise<TableGuard> {
+async function tableGuardFor(
+  meter: LedgerCostMeter,
+  armIds: readonly string[],
+  armProvider: AIProvider | undefined,
+  embed: boolean,
+): Promise<TableGuard> {
   const { buildProvider, loadAIConfig } = await import("../src/lib/ai/index.js");
   const provider = buildProvider({ config: loadAIConfig() });
   if (provider.offline) {
@@ -147,26 +169,63 @@ async function tableGuardFor(meter: LedgerCostMeter): Promise<TableGuard> {
     await import("../src/lib/impact-analysis/table-relevance-filter.js");
   const fixtureMod = await import("../src/lib/eval/impact-recall/fixture.js");
   const runnerMod = await import("../src/lib/eval/impact-recall/runner.js");
+  const corpusName = "impact-recall-01-jpetstore";
+  const fixture = await fixtureMod.loadImpactRecallFixture(fixtureMod.resolveCorpusDir(corpusName));
+  const options: RunImpactRecallOptions = {
+    consumerResolver: (args) => fixtureMod.resolveFixtureConsumers(args),
+    tableRelevanceFilter: (text, tables) =>
+      filterAffectedTablesByRelevance(text, tables, metered, { enabled: true }),
+  };
+  const describe = (summary: ImpactRecallRunSummary) =>
+    `${corpusName}, ${summary.configuration.label}, ${provider.key}/${provider.model}`;
+  const runRepeated = (opts: RunImpactRecallOptions) =>
+    runnerMod.runImpactRecallEvalRepeated(fixture, opts, TABLE_GUARD_RUNS);
+
+  const others: Record<string, () => Promise<TableGuardReading>> = {};
+  if (armIds.includes("A4") && armProvider) {
+    others.A4 = async () => {
+      const file = fixtureMod.recordedVectorsFile(fixtureMod.resolveCorpusDir(corpusName));
+      let inner: EmbedService | null = null;
+      if (embed) {
+        const { getEmbedder } = await import("../src/lib/rag/embedder.js");
+        inner = getEmbedder();
+      }
+      const cache = new EmbedCache(
+        await loadRecordedVectors(file),
+        inner,
+        "pnpm eval:localization --arms A0,A4 --table-guard --embed (with the local model)",
+      );
+      const search = await buildCorpusSearch(fixtureSearchRows(fixture), cache);
+      const reading = await measureSplitSeedingGuard({
+        search,
+        options,
+        editCandidateVerifier: fixtureEditCandidateVerifier(fixture, armProvider),
+        runRepeated,
+        describe,
+      });
+      assertNoMissingVectors(cache);
+      if (cache.embeddedCount > 0) {
+        await writeRecordedVectors(
+          file,
+          cache.toFiles(
+            "Recorded by `pnpm eval:impact-recall --searcher hybrid --record-vectors` (#1097) and `pnpm eval:localization --table-guard --embed` (#1786): the corpus's symbol texts and requirement queries, embedded by the local model.",
+          ),
+        );
+        console.log(`recorded ${cache.embeddedCount} new vectors → ${file}`);
+      }
+      return reading;
+    };
+  }
   return memoisedA0TableGuard(async () => {
-    const fixture = await fixtureMod.loadImpactRecallFixture(
-      fixtureMod.resolveCorpusDir("impact-recall-01-jpetstore"),
-    );
-    const summary = await runnerMod.runImpactRecallEvalRepeated(
-      fixture,
-      {
-        consumerResolver: (args) => fixtureMod.resolveFixtureConsumers(args),
-        tableRelevanceFilter: (text, tables) =>
-          filterAffectedTablesByRelevance(text, tables, metered, { enabled: true }),
-      },
-      3,
-    );
+    const summary = await runRepeated(options);
     return {
       measured: true,
       tablePrecision: summary.meanAggregate.tables.macroPrecision,
       runs: summary.runCount,
-      configuration: `impact-recall-01-jpetstore, ${summary.configuration.label}, ${provider.key}/${provider.model}`,
+      configuration: describe(summary),
+      seeding: MAPPER_SEEDING,
     };
-  });
+  }, others);
 }
 
 /**
@@ -199,7 +258,9 @@ async function main(): Promise<void> {
   const provider = armIds.some((id) => MODEL_ARMS.has(id))
     ? await armProviderFor(meter)
     : undefined;
-  const tableGuard = argv.includes("--table-guard") ? await tableGuardFor(meter) : undefined;
+  const tableGuard = argv.includes("--table-guard")
+    ? await tableGuardFor(meter, armIds, provider, argv.includes("--embed"))
+    : undefined;
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
   const resultsDir = path.join(REPO_ROOT, "eval-results");
   await mkdir(resultsDir, { recursive: true });
