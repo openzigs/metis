@@ -40,7 +40,7 @@ rather than a degraded mode.
 | Code-symbol seeder/reranker (#931) | `traceability/requirement-code-mapping.ts` (`LlmCodeSymbolSearcher`) | `IMPACT_LLM_SEEDING` | **off** | the BM25 wide pool (union, never a replacement) | deterministic BM25 top-K |
 | Entity-seed recall union (#1002) | `traceability/requirement-entity-seeds.ts` | `IMPACT_LLM_ENTITY_SEEDS` | **off** | the project's code-graph entity vocabulary (exact name match) | base searcher unchanged |
 | Edit-candidate check (#1756) | `impact-analysis/edit-candidate-verifier.ts` | `IMPACT_LLM_EDIT_VERIFY` | **off** | integer index into the hybrid FILE pool (about 30 files: the deterministic edit candidates, then the next files of the same ranking); a promotion's line must fall inside a named symbol of that file in the code graph (never the file's whole-file `module` symbol, #1781), checked without a model. Additive only (the #931 rule below): it may append a verified file and mark a candidate doubtful, never remove, move or re-score one; a promoted file carries its own hybrid score. The pool (code identifiers and signatures, which can carry comments) is fenced as untrusted data like the requirement | deterministic edit candidates unchanged |
-| Edit-candidate re-order (#1798) | `impact-analysis/edit-candidate-reranker.ts` | `IMPACT_LLM_EDIT_RERANK` | **off** | integer index into the same hybrid FILE pool, shown without `[EDIT]` marks; up to 10 picks, most likely first, each with a line that must fall inside a named symbol of that file in the code graph (never its `module` symbol), checked without a model; an unchecked pick is dropped and counted. The **bounded exception to the #931 rule** below: the model may move files into the head of the files to edit, never remove one and never score one. The order is a reciprocal-rank fusion (`k = 60`, model weight `RERANK_MODEL_WEIGHT`, provisional) of the deterministic order and the model's checked order; its top 5 plus every deterministic candidate are the files to edit. Fenced as untrusted data like the #1756 check | deterministic edit candidates and order unchanged |
+| Edit-candidate re-order (#1798) | `impact-analysis/edit-candidate-reranker.ts` | `IMPACT_LLM_EDIT_RERANK` | **off** | integer index into the same hybrid FILE pool, shown without `[EDIT]` marks; up to 10 picks, most likely first, each with a line that must fall inside a named symbol of that file in the code graph (never its `module` symbol), checked without a model; an unchecked pick is dropped and counted. The **bounded exception to the #931 rule** below: the model may move files into the head of the files to edit, never remove one and never score one. The order is a reciprocal-rank fusion (`k = 60`, model weight `RERANK_MODEL_WEIGHT` = 1, fixed on the in-sample set) of the deterministic order and the model's checked order; its top 5 plus every deterministic candidate are the files to edit. Fenced as untrusted data like the #1756 check | deterministic edit candidates and order unchanged |
 | Table-relevance output filter (#936) | `impact-analysis/table-relevance-filter.ts` | `IMPACT_LLM_TABLE_FILTER` | **ON** (#1025) | integer index into the crossing's own candidate rows | unfiltered crossing |
 | Additive column DDL proposal (#1001) | `impact-analysis/additive-column-proposer.ts` | `IMPACT_LLM_ADDITIVE_DDL` | **ON** (#1025) | integer index into the crossing's own tables + a closed type allowlist; a column already in the live schema or the code graph is dropped (#1003). Since #791 it is shown the lineage writers and answers with covering writers, a justification and a `coveredBy` per proposal; a deterministic gate (`column-proposal-gate.ts`) then decides. In a **covered** request (bounded by an age or a date, with a lineage writer that filters on a time column) no field a model chose can make a column core: every proposal is optional or not proposed, and core comes only from what the user wrote in the request (an `ALTER TABLE`, or an add-a-column sentence the #923 fast path reads). Coverage is decided on the writers of every table the crossing reached, looked up before the #936 table filter is applied, so that filter's answer does not change it; the #1029 judge runs only when the proposer does not. The one limit: with `IMPACT_LLM_SEEDING` / `IMPACT_LLM_ENTITY_SEEDS` on, a model shapes the seeds, and so which tables the crossing reaches. The cost: a genuinely new column in a covered request shows as optional. In an uncovered request the gate does not rule: a proposal is core and marked `unchecked` with the reason, except one the proposer itself labels `user-preference`, which is optional (a demotion only). The write-path block is repository text: fenced as untrusted like the requirement, every field capped | no proposals appended |
 | Clause-vs-impact reconciliation (#1005) | `impact-analysis/clause-coverage-reconciler.ts` | `IMPACT_LLM_CLAUSE_RECONCILE` | **ON** (#1025) | integer index into the project's **unsurfaced** tables | no advisories |
@@ -146,11 +146,21 @@ re-order lets one model call move files UP the list of files to edit. It keeps w
   deterministic order and the model's checked order means a file both rank high stays
   high. The model weight bounds how far down the pool a model-only pick can reach. A
   model-first pick at deterministic rank `r` outranks the deterministic first file the
-  model left out when `w > 1 - 61/(60 + r)`: about 0.13 at `r = 10`, about 0.08 at
-  `r = 6`, and below 0.5 for every `r` up to 30. At weight 1 (`k = 60`) it does so even
-  when the search ranked that pick 30th. `RERANK_MODEL_WEIGHT` is fixed on the in-sample
-  set before either held-out set is read; `pnpm eval:localization --rerank-weight <w>`
-  sets it for a tuning run, and the report's configuration names the value.
+  model left out when `w > 1 - 61/(60 + r)`: about 0.08 at `r = 6`, about 0.13 at
+  `r = 10` and about 0.32 at `r = 30` (the pool's last file). So the search's first file
+  is kept in the top 5 against any model answer only below about 0.08, a weight at which
+  the model cannot lift a file the search ranked 6th or lower, which is the point of the
+  stage (#1806). At weight 1 (`k = 60`) a model-first pick displaces it even when the
+  search ranked that pick 30th: the guarantee the stage does keep is that no
+  deterministic candidate leaves the list, not that the search's best stays in the top 5.
+- **The weight was fixed in-sample, before either held-out set was read.**
+  `RERANK_MODEL_WEIGHT = 1` (plain RRF). On the six run-7 issues (`deepseek-flash`,
+  2 runs per weight, 2026-11-05) A13's Recall@5 rose with the weight to a plateau and was
+  flat after it: 0.64 at 0.1, 0.70 at 0.3, 0.72 at 0.6, 0.75 at 1 (5 runs), 0.73 at 2,
+  0.75 at 4 (4 runs), against A0's 0.62. Between two runs at one weight it moved by up
+  to 0.12 (the model's answer varies), so nothing above 0.6 is distinguishable, and the
+  plateau's plain-RRF value stayed. `pnpm eval:localization --rerank-weight <w>` sets it
+  for a tuning run, and the report's configuration names the value.
 
 It ships **off**. The order the fusion makes is not yet what the analyst sees: the
 impact list is sorted by depth then confidence, and the fused order survives only in
@@ -161,6 +171,36 @@ pooled held-out set (`pnpm eval:localization --arms A0,A13,A13C`), table precisi
 more than 0.03 below A0 on the same (split) seeding (`--table-guard`), and no more than
 $0.05 per requirement on `claude-sonnet-5-5`. `A13S` shows the pool shuffled and reads
 whether Recall@5 depends on the order the model is shown.
+
+**Measured 2026-11-05 (held-out, `claude-sonnet-5-5`, 2 runs per set, weight 1):** the
+bar is met.
+
+| Arm | Miniflux R@5 (24) | Fixture R@5 (15) | Pooled ΔR@5 vs A0 (39) | Pooled Δ edit precision | $ / req |
+|---|---|---|---|---|---|
+| A0 | 0.52 | 0.54 | — | — | $0 |
+| A12 | 0.52 | 0.73 | +0.073 [0.01, 0.14] | +0.141 | $0 |
+| A13 | 0.67 | 0.74 | **+0.166 [0.09, 0.25], p < 0.001** | +0.011 (n.s.) | $0.020 to $0.023 |
+| A13C | 0.69 | 0.72 | **+0.170 [0.10, 0.25], p < 0.001** | +0.084 [0.06, 0.11] | $0.020 to $0.023 |
+| A13S | 0.70 | 0.70 | +0.171 [0.09, 0.26], p < 0.001 | +0.015 (n.s.) | $0.021 to $0.023 |
+
+- **Recall@10 and MRR rise too** (pooled A13 +0.081 and +0.164, both significant), and
+  every model-named file resolves to the code graph (graph resolution 1.00 on every arm).
+- **Against A12** (one-off pairing with the runner's own statistics): A13C, the re-order
+  on A12's base, adds pooled Recall@5 +0.097 [0.02, 0.18] with edit precision not
+  measurably different (−0.057, n.s.); A13 has edit precision −0.130 below A12, because
+  A0's cut keeps more files than A12's.
+- **Table guard held:** A13 on the split seeding 0.531 against A0 on that seeding 0.511
+  (`impact-recall-01-jpetstore`, 3 runs each).
+- **No position bias in Recall@5:** A13S against A13 pooled, Recall@5 +0.005 (p 0.75).
+  Which file comes first does depend on order on the small fixture set (MRR −0.096,
+  p 0.004), so the deterministic presentation stays.
+- **About 6 s per requirement on Miniflux and 12 s on the fixture set** (one call per
+  change and repository; the fixture items each search three repositories).
+
+The flag stays **off** until #1762 renders the edit order (above): until then a gain
+in the fused order changes nothing the analyst reads. When it flips, A13C's base needs
+`IMPACT_REQUEST_EDIT_RANKING`, which is itself off pending #1795, so A13 (A0's base) is
+the configuration production has today.
 
 ## Two measurement lessons that invalidated earlier numbers
 
