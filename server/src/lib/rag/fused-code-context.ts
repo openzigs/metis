@@ -113,6 +113,8 @@ export interface RawCodeSymbolHit {
   kind: string;
   score: number;
   snippet?: string;
+  /** #1784 — the vector channel's cosine, when it returned this hit (#1097). */
+  vectorScore?: number;
 }
 
 /** Injectable code searcher — matches `HybridCodeSearch.search`'s signature. */

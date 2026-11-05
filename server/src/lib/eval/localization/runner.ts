@@ -295,6 +295,7 @@ export async function runLocalizationEval(
           { ...out, costUsd: unpriced ? null : itemCost, seconds },
           corpus.graphFiles,
           item.expectedVerdict,
+          item.expectedRepos,
         );
         state.perItem.set(item.id, [...(state.perItem.get(item.id) ?? []), score]);
       }
@@ -609,6 +610,17 @@ export function toMarkdownReport(report: LocalizationReport): string {
     );
   }
   lines.push("");
+  // #1784 — only a portfolio can name a file outside the answer's repository.
+  if (c.repos.length > 1) {
+    const confinement = report.arms.map((a) => {
+      const r = a.aggregate.repoConfinement;
+      return `${a.id} ${r ? `${r.confined}/${r.of}` : "n/a"}`;
+    });
+    lines.push(
+      `Edit candidates only in the answer's repository (items with a one-repository answer): ${confinement.join(" · ")}`,
+      "",
+    );
+  }
   for (const a of report.arms) {
     if (!a.tableGuard.measured) lines.push(`- ${a.id} table precision: ${a.tableGuard.reason}`);
     else lines.push(`- ${a.id} table precision measured on: ${a.tableGuard.configuration}`);

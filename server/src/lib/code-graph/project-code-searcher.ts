@@ -396,6 +396,8 @@ export function createDefaultCodeSearcher(deps: CodeSearcherDeps = {}): FusedCod
         // The fallback is the signature: one line of repository text, quoted
         // on a line of its own, so it is defused like a snippet line.
         snippet: snippets.get(r.symbolId) ?? quotableSnippet(r.snippet),
+        // #1784 — the cosine compares across searches; the fused score does not.
+        ...(r.vectorScore !== undefined ? { vectorScore: r.vectorScore } : {}),
       }));
     },
   };
