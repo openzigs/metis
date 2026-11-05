@@ -11,6 +11,7 @@
  *   pnpm eval:localization --arms A0,A4 --table-guard  # + A4 on the split seeding, next to A0 on it (#1786)
  *   pnpm eval:localization --arms A0,A13,A13C,A13S     # #1798 re-order: A0 base, A12 base, shuffled pool
  *   pnpm eval:localization --in-sample --arms A13 --rerank-weight 0.3  # tune the A13 model weight (#1798)
+ *   pnpm eval:localization --merge <dir> --reference A12,A13   # + every arm paired with A12, then with A13 (#1806)
  *   pnpm eval:localization --arms A0,A3,A3A,A3N --shard 1/10   # #1755 analysis-agent citations (materialize first)
  *   pnpm eval:localization --embed               # embed missing vectors with the local model
  *   pnpm eval:localization --md                  # print the Markdown report
@@ -71,6 +72,7 @@ import {
   flagValue,
   nonNegativeNumber,
   positiveInteger,
+  referenceArmIds,
 } from "../src/lib/eval/localization/cli-args.js";
 import {
   LOCALIZATION_CORPORA,
@@ -381,6 +383,8 @@ async function main(): Promise<void> {
     throw new Error("--table-guard reads every arm once: pass it to --merge, not to a slice");
   }
   const armIds = parseArmIds(argv);
+  // #1806 — report-only: also pair every arm with these, beside A0.
+  const references = referenceArmIds(argv);
   const runs = positiveInteger(flagValue(argv, "runs"), DEFAULT_RUNS, "runs");
   const budgetUsd = nonNegativeNumber(flagValue(argv, "budget"), DEFAULT_BUDGET_USD, "budget");
   const rerankWeight = nonNegativeNumber(
@@ -472,6 +476,7 @@ async function main(): Promise<void> {
         tableGuard,
         checkpoint,
         runItem,
+        references,
       });
       await store.recordOtherSpend(runId, meter);
       reports.push(report);

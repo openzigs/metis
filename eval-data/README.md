@@ -225,10 +225,22 @@ reproducibility.
 pnpm eval:localization                 # A0 on both held-out sets, 3 runs, $35 cap
 pnpm eval:localization --arms A0,A4    # an arm against A0, paired, on the same items
 pnpm eval:localization --arms A0,A13,A13C,A13S  # #1798 LLM re-order: A0 base, A12 base, shuffled pool
+pnpm eval:localization --merge <dir> --reference A12,A13  # + every arm paired with A12, then A13 (#1806)
+pnpm eval:localization --in-sample --arms A13 --rerank-weight 0.05  # tune the re-order's model weight
 pnpm eval:localization --in-sample     # also the run-7 six (a sanity check, not a claim)
 pnpm eval:localization --table-guard   # + table precision on impact-recall-01 (live provider)
 pnpm eval:localization --budget 25     # the dollar cap; the run stops before it is passed
 ```
+
+`--reference <arm>[,<arm>…]` adds a table per arm that pairs every other arm with it
+(a pooled table too, when both held-out sets ran). Use it for comparisons such as A13C
+against A12 or A13S against A13. It changes no score, and you can pass it to `--merge`.
+The decision bars are still read against A0.
+
+**A `deepseek-flash` tuning run needs `MODEL_PRICES` set**, for example
+`MODEL_PRICES='{"deepseek-flash":{"inputPerMTok":…,"outputPerMTok":…}}'` at DeepSeek's
+published per-MTok prices (`server/src/lib/finops/model-prices-schema.ts`). The model has no built-in price, and the run stops on its first
+unpriced call (#1806).
 
 Arms are chosen only by `--arms`; no `IMPACT_LLM_*` variable changes what is
 measured, and every report names each arm's configuration. Reports go to

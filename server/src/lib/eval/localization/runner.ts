@@ -208,6 +208,11 @@ export interface RunLocalizationOptions {
   runItem?: (item: LocalizationItem) => boolean;
   /** #1800 — earlier calls' scores (never re-run), and the sink for this call's. */
   checkpoint?: RunCheckpoint;
+  /**
+   * #1806 — arms (never A0) every other arm is also paired with (`--reference`).
+   * Report-only: they change no score and are not part of the run's fingerprint.
+   */
+  references?: readonly string[];
 }
 
 export interface ArmResult {
@@ -244,7 +249,8 @@ export interface HitComparison {
 
 export interface ArmComparison {
   arm: string;
-  baseline: "A0";
+  /** A0, or a `--reference` arm (#1806). */
+  baseline: string;
   items: number;
   metrics: MetricComparison[];
   hits: HitComparison[];
@@ -284,6 +290,10 @@ export interface LocalizationReport {
   missing: MissingItems[];
   arms: ArmResult[];
   comparisons: ArmComparison[];
+  /** #1806 — the `--reference` arms, in the order asked for. */
+  references: string[];
+  /** #1806 — every arm but A0 and the reference, paired with each reference in turn. */
+  referenceComparisons: ArmComparison[];
   detectableGap: string;
   /** Caveats a reader must see next to the numbers (e.g. a metric with no signal). */
   notes: string[];
@@ -309,6 +319,17 @@ export async function runLocalizationEval(
   const { meter } = opts;
   const now = opts.now ?? (() => performance.now());
   if (opts.arms[0]?.id !== "A0") throw new Error("A0 must be the first arm: it is the baseline");
+  const references = [...(opts.references ?? [])];
+  const armIdList = opts.arms.map((a) => a.id);
+  for (const ref of references) {
+    if (ref === "A0" || !armIdList.includes(ref)) {
+      throw new Error(
+        ref === "A0"
+          ? "--reference A0: every arm is already compared with A0"
+          : `--reference ${ref} is not one of this run's arms (${armIdList.join(", ")})`,
+      );
+    }
+  }
 
   // Per arm, per item, per run: every score held, recorded or new.
   const scores = new Map(
@@ -455,6 +476,13 @@ export async function runLocalizationEval(
 
   const baseline = arms[0]!;
   const comparisons = arms.slice(1).map((arm) => compareArms(baseline, arm));
+  const referenceComparisons = references.flatMap((ref) => {
+    const reference = arms.find((a) => a.id === ref)!;
+    return arms
+      .slice(1)
+      .filter((a) => a.id !== ref)
+      .map((arm) => compareWithReference(reference, arm));
+  });
   return {
     kind: "localization-eval",
     corpus: {
@@ -472,6 +500,8 @@ export async function runLocalizationEval(
     missing,
     arms,
     comparisons,
+    references,
+    referenceComparisons,
     detectableGap: minimumDetectableGapStatement(corpus.manifest.items.length),
     notes: corpusNotes(corpus),
   };
@@ -550,12 +580,30 @@ export function compareArms(baseline: ArmResult, arm: ArmResult): ArmComparison 
   };
 }
 
+/**
+ * #1806 — an arm against a `--reference` arm, with the same paired statistics
+ * as {@link compareArms}. The table-precision gate is A0's (no arm may drop
+ * table precision below A0's), so a reference pairing does not read it.
+ */
+export function compareWithReference(reference: ArmResult, arm: ArmResult): ArmComparison {
+  const pairs = pairsOf(reference, arm);
+  return {
+    arm: arm.id,
+    baseline: reference.id,
+    items: pairs.length,
+    metrics: metricComparisons([pairs]),
+    hits: hitComparisons(pairs),
+    tableGuardPassed: null,
+  };
+}
+
 // ── Pooled comparison (#1770) ───────────────────────────────────────────────
 
 /** One arm against A0 over the held-out corpora pooled, stratified by corpus. */
 export interface PooledComparison {
   arm: string;
-  baseline: "A0";
+  /** A0, or a `--reference` arm (#1806). */
+  baseline: string;
   /** The paired items this comparison rests on. */
   items: number;
   strata: Array<{ corpus: string; items: number }>;
@@ -580,6 +628,8 @@ export interface PooledLocalizationReport {
   /** A0's scored items over every pooled corpus. */
   items: number;
   comparisons: PooledComparison[];
+  /** #1806 — the pairings with each `--reference` arm every held-out report carries. */
+  referenceComparisons: PooledComparison[];
   /**
    * The gap the pooled comparison can resolve: on the fewest paired items any
    * comparison rests on, or on A0's items when no arm was compared (#1779).
@@ -605,25 +655,31 @@ export function poolHeldOutReports(
     .slice(1)
     .map((a) => a.id)
     .filter((id) => heldOut.every((r) => r.arms.some((a) => a.id === id)));
-  const comparisons = armIds.map((id): PooledComparison => {
+  const armOf = (r: LocalizationReport, id: string) => r.arms.find((a) => a.id === id)!;
+  const pooledComparison = (baselineId: string, id: string): PooledComparison => {
     const strata = heldOut.map((r) => ({
       corpus: r.corpus.id,
-      pairs: pairsOf(
-        r.arms[0]!,
-        r.arms.find((a) => a.id === id)!,
-      ),
+      pairs: pairsOf(armOf(r, baselineId), armOf(r, id)),
     }));
     const pooledPairs = strata.flatMap((s) => s.pairs);
     return {
       arm: id,
-      baseline: "A0",
+      baseline: baselineId,
       items: pooledPairs.length,
       strata: strata.map((s) => ({ corpus: s.corpus, items: s.pairs.length })),
       metrics: metricComparisons(strata.map((s) => s.pairs)),
       hits: hitComparisons(pooledPairs),
       detectableGap: minimumDetectableGapStatement(pooledPairs.length),
     };
-  });
+  };
+  const comparisons = armIds.map((id) => pooledComparison("A0", id));
+  // #1806 — a reference is pooled only when every held-out report was read against it.
+  const references = heldOut[0]!.references.filter(
+    (ref) => armIds.includes(ref) && heldOut.every((r) => r.references.includes(ref)),
+  );
+  const referenceComparisons = references.flatMap((ref) =>
+    armIds.filter((id) => id !== ref).map((id) => pooledComparison(ref, id)),
+  );
   const items = heldOut.reduce((sum, r) => sum + r.arms[0]!.items.length, 0);
   const pairedItems = Math.min(items, ...comparisons.map((c) => c.items));
   return {
@@ -638,6 +694,7 @@ export function poolHeldOutReports(
     })),
     items,
     comparisons,
+    referenceComparisons,
     detectableGap: minimumDetectableGapStatement(pairedItems),
   };
 }
@@ -800,6 +857,7 @@ export function toMarkdownReport(report: LocalizationReport): string {
     }
     lines.push("");
   }
+  lines.push(...referenceSections(report.references, report.referenceComparisons, ""));
   lines.push("## Per requirement", "");
   lines.push(
     `| Item | ${report.arms.map((a) => `${a.id} R@5 / R@10 / EditP / RR`).join(" | ")} |`,
@@ -857,5 +915,40 @@ export function toPooledMarkdownReport(report: PooledLocalizationReport): string
     lines.push(...comparisonRows(cmp));
   }
   lines.push("");
+  const references = [...new Set(report.referenceComparisons.map((c) => c.baseline))];
+  lines.push(...referenceSections(references, report.referenceComparisons, ", pooled"));
   return lines.join("\n");
+}
+
+/**
+ * #1806 — one table per `--reference` arm: every other arm paired with it. The
+ * decision bars are read against A0; these tables say what an arm adds over
+ * another arm, such as the re-order on A12's base against A12 itself.
+ */
+function referenceSections(
+  references: readonly string[],
+  comparisons: ReadonlyArray<{
+    arm: string;
+    baseline: string;
+    metrics: readonly MetricComparison[];
+    hits: readonly HitComparison[];
+  }>,
+  suffix: string,
+): string[] {
+  const lines: string[] = [];
+  for (const ref of references) {
+    const rows = comparisons.filter((c) => c.baseline === ref);
+    lines.push(`## Paired comparison with ${ref} (\`--reference ${ref}\`)${suffix}`, "");
+    if (rows.length === 0) {
+      lines.push(`No arm other than A0 and ${ref} was run: there is nothing to pair with it.`, "");
+      continue;
+    }
+    lines.push(
+      `| Arm | Metric | Δ vs ${ref} | 95% CI | p | Reading |`,
+      "|---|---|---|---|---|---|",
+      ...rows.flatMap((cmp) => comparisonRows(cmp)),
+      "",
+    );
+  }
+  return lines;
 }
