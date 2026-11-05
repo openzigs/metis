@@ -283,6 +283,35 @@ describe("fuseEditOrder", () => {
   });
 });
 
+// #1806 — the thresholds docs/IMPACT_ANALYSIS_LLM_STAGES.md states for the model weight.
+describe("fuseEditOrder — where the model weight lets the search's first file be displaced (#1806)", () => {
+  const det = Array.from({ length: 30 }, (_, i) => `d${i + 1}`);
+  const top5 = (model: string[], w: number) => fuseEditOrder(det, model, w).slice(0, 5);
+  /**
+   * The worst answer for the search's first file: it leaves d1 out and ranks
+   * d6 first, then d2..d5. Five files outrank d1 only if d6 does, because the
+   * search ranked only four files above d6.
+   */
+  const worst = ["d6", "d2", "d3", "d4", "d5"];
+
+  it("keeps the search's first file in the top 5 below 5/66, and loses it above", () => {
+    expect(5 / 66).toBeCloseTo(0.0758, 4);
+    expect(top5(worst, 0.075)).toContain("d1");
+    expect(top5(worst, 0.077)).not.toContain("d1");
+    // At weight 1, a pick the search ranked 30th is enough to displace it from first place.
+    expect(fuseEditOrder(det, ["d30"], 1)[0]).toBe("d30");
+  });
+
+  it("still lifts a file the search ranked 6th INTO the top 5 below that threshold: 3rd at 0.05", () => {
+    expect(fuseEditOrder(det, ["d6"], 0.05).indexOf("d6")).toBe(2);
+  });
+
+  it("cannot change which file comes first below 1/62", () => {
+    expect(fuseEditOrder(det, ["d2"], 0.015)[0]).toBe("d1");
+    expect(fuseEditOrder(det, ["d2"], 0.017)[0]).toBe("d2");
+  });
+});
+
 describe("rerankEditCandidates — a line check that names another file (#1798)", () => {
   it("drops a pick whose checked symbol is in a different file", async () => {
     const stray: LineCheck = async () => GRAPH.find((g) => g.id === "src/f3.ts#fn")!;

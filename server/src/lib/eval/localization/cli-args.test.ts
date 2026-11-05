@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { flagValue, nonNegativeNumber, positiveInteger } from "./cli-args.js";
+import { flagValue, nonNegativeNumber, positiveInteger, referenceArmIds } from "./cli-args.js";
 
 describe("flagValue", () => {
   it("reads the value after a flag, and nothing for an absent flag", () => {
@@ -36,5 +36,19 @@ describe("nonNegativeNumber", () => {
 
   it.each(["-0.01", "lots", "Infinity", ""])("refuses %j", (raw) => {
     expect(() => nonNegativeNumber(raw, 35, "budget")).toThrow(/^--budget must be a non-negative/);
+  });
+});
+
+describe("referenceArmIds (#1806)", () => {
+  it("reads a comma list, upper-cased and deduplicated; none when absent", () => {
+    expect(referenceArmIds(["--reference", "a12, A13,a12"])).toEqual(["A12", "A13"]);
+    expect(referenceArmIds(["--md"])).toEqual([]);
+  });
+
+  it("refuses A0, which every report already compares against, and an empty list", () => {
+    expect(() => referenceArmIds(["--reference", "A12,a0"])).toThrow(
+      /^--reference A0: every arm is already compared with A0/,
+    );
+    expect(() => referenceArmIds(["--reference", " , "])).toThrow(/^--reference needs an arm/);
   });
 });

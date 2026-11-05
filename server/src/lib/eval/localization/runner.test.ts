@@ -891,6 +891,108 @@ describe("agent arms: run context, reused work and turns (#1755)", () => {
   });
 });
 
+describe("--reference: pairing with an arm other than A0 (#1806)", () => {
+  // A0 finds every even item first; A12 every item 2nd; A13 every item first.
+  const arms = () => [
+    arm("A0", (i) => (Number(i.id.slice(2)) % 2 === 0 ? 1 : 0)),
+    arm("A12", () => 2),
+    arm("A13", () => 1),
+    arm("A13S", () => 1),
+  ];
+  const reportOf = (
+    n: number,
+    id: LocalizationCorpus["name"] = "localization-02-fixture-portfolio",
+    references: string[] = ["A12", "A13"],
+  ) =>
+    runLocalizationEval(corpus(n, "held-out", id), {
+      arms: arms(),
+      runs: 1,
+      meter: new FakeMeter(),
+      references,
+    });
+
+  it("pairs every other arm with each reference, with the runner's own statistics", async () => {
+    const report = await reportOf(12);
+    expect(report.references).toEqual(["A12", "A13"]);
+    expect(report.comparisons.map((c) => `${c.arm} vs ${c.baseline}`)).toEqual([
+      "A12 vs A0",
+      "A13 vs A0",
+      "A13S vs A0",
+    ]);
+    expect(report.referenceComparisons.map((c) => `${c.arm} vs ${c.baseline}`)).toEqual([
+      "A13 vs A12",
+      "A13S vs A12",
+      "A12 vs A13",
+      "A13S vs A13",
+    ]);
+    const a13VsA12 = report.referenceComparisons[0]!;
+    // A12 ranks the file 2nd (RR 0.5), A13 1st (RR 1): +0.5 on every item.
+    expect(a13VsA12.metrics.find((m) => m.metric === "reciprocalRank")!.meanDifference).toBe(0.5);
+    expect(a13VsA12.items).toBe(12);
+    expect(a13VsA12.tableGuardPassed).toBeNull();
+    const md = toMarkdownReport(report);
+    expect(md).toContain("## Paired comparison with A12 (`--reference A12`)");
+    expect(md).toContain("## Paired comparison with A13 (`--reference A13`)");
+    expect(md).toContain("| A13S | reciprocalRank | +0.000 |");
+    // The table-precision gate is A0's; a reference table does not repeat it.
+    const a12Section = md.slice(md.indexOf("--reference A12"), md.indexOf("--reference A13"));
+    expect(a12Section).toContain("| A13 | reciprocalRank | +0.500 |");
+    expect(a12Section).not.toContain("table precision guard");
+  });
+
+  it("adds nothing when no reference is asked for", async () => {
+    const report = await reportOf(4, undefined, []);
+    expect(report.referenceComparisons).toEqual([]);
+    expect(toMarkdownReport(report)).not.toContain("--reference");
+  });
+
+  it("says so when the reference is the only arm besides A0", async () => {
+    const report = await runLocalizationEval(corpus(2), {
+      arms: [arm("A0", () => 1), arm("A12", () => 2)],
+      runs: 1,
+      meter: new FakeMeter(),
+      references: ["A12"],
+    });
+    expect(report.referenceComparisons).toEqual([]);
+    expect(toMarkdownReport(report)).toContain(
+      "No arm other than A0 and A12 was run: there is nothing to pair with it.",
+    );
+  });
+
+  it("refuses a reference that is not one of the run's arms, or A0", async () => {
+    await expect(reportOf(2, undefined, ["A4"])).rejects.toThrow(
+      /--reference A4 is not one of this run's arms \(A0, A12, A13, A13S\)/,
+    );
+    await expect(reportOf(2, undefined, ["A0"])).rejects.toThrow(/--reference A0/);
+  });
+
+  it("pools the reference pairings over the held-out corpora, stratified by corpus", async () => {
+    const miniflux = await reportOf(12, "localization-01-miniflux-heldout");
+    const fixture = await reportOf(8, "localization-02-fixture-portfolio");
+    const pooled = poolHeldOutReports([miniflux, fixture]);
+    expect(pooled.referenceComparisons.map((c) => `${c.arm} vs ${c.baseline}`)).toEqual([
+      "A13 vs A12",
+      "A13S vs A12",
+      "A12 vs A13",
+      "A13S vs A13",
+    ]);
+    const a13VsA12 = pooled.referenceComparisons[0]!;
+    expect(a13VsA12.items).toBe(20);
+    expect(a13VsA12.strata).toEqual([
+      { corpus: "localization-01-miniflux-heldout", items: 12 },
+      { corpus: "localization-02-fixture-portfolio", items: 8 },
+    ]);
+    const md = toPooledMarkdownReport(pooled);
+    expect(md).toContain("## Paired comparison with A12 (`--reference A12`), pooled");
+    expect(md).toContain("| A13S | reciprocalRank | +0.000 |");
+    // A reference pooled only when every held-out report carries it.
+    const without = await reportOf(8, "localization-02-fixture-portfolio", ["A12"]);
+    expect(
+      poolHeldOutReports([miniflux, without]).referenceComparisons.map((c) => c.baseline),
+    ).toEqual(["A12", "A12"]);
+  });
+});
+
 describe("agent-pass counts and split passes in the report (#1810)", () => {
   const stats = (over: Partial<AgentRunStats> = {}): AgentRunStats => ({
     passes: 2,
