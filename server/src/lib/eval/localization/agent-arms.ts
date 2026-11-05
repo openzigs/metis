@@ -147,12 +147,15 @@ interface SharedPass {
 const sharedPasses = new WeakMap<AgentPass, Map<string, Promise<SharedPass>>>();
 
 /**
- * Build an A3 variant. Needs `deps.agentPass` (the CLI's materialized pass) and
- * `deps.meter` (to price a pass another arm reuses).
+ * Build an A3 variant. Needs `deps.agentPass` (the CLI's materialized pass),
+ * `deps.meter` (to price a pass another arm reuses) and `deps.provider` (the
+ * pass's model, named in the configuration so a resume on another model is refused).
  */
 export function createAgentArm(deps: ArmDeps, variant: AgentVariant): LocalizationArm {
-  const { agentPass, meter } = deps;
-  if (!agentPass || !meter) {
+  const { agentPass, meter, provider } = deps;
+  // #1810 — the provider is the pass's model: the configuration names it, so a
+  // resume on another model is refused and the report says which model ran.
+  if (!agentPass || !meter || !provider) {
     throw new Error(
       `arm ${variant.id} runs the analysis agent: it needs a materialized corpus and a live, metered provider (pnpm eval:materialize <corpus>; AI_PROVIDER and its key)`,
     );
@@ -201,7 +204,8 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
     label:
       `${variant.id} — the Analysis code agent's graph-resolving citations` +
       `${variant.union ? ", unioned with A0's hybrid seeds" : " alone"}` +
-      `${variant.toolset === "files" ? ", file tools only (no graph)" : ""}`,
+      `${variant.toolset === "files" ? ", file tools only (no graph)" : ""}` +
+      ` (${provider.key}/${provider.model})`,
     configuration: {
       ...(a0 ? a0.configuration : {}),
       stage: variant.union
@@ -219,6 +223,8 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
         variant.toolset === "graph"
           ? "A3 and A3A read one pass per item, repository and run; each reports the pass's cost and time"
           : "own pass",
+      provider: provider.key,
+      model: provider.model,
       llm: true,
     },
     async localize(item, corpus, context): Promise<ArmOutput> {

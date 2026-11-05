@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   AGENT_ARM_IDS,
@@ -13,6 +16,7 @@ import {
 import { AGENT_ARMS } from "./agent-env.js";
 import { buildArms, createA0Arm, MODEL_ARMS } from "./arms.js";
 import type { CostMeter } from "./cost.js";
+import { PartialStore, runFingerprint } from "./partials.js";
 import type { CorpusSearch } from "./search.js";
 
 // Two files in each of two repositories; every query finds a.go strongly and
@@ -60,6 +64,9 @@ const cite = (filePath: string, confidence = 0.5, line = 2): AgentCitation => ({
   endLine: line + 1,
   confidence,
 });
+
+/** The pass's model: the arm names it, so a resume on another model is refused (#1810). */
+const provider = { key: "anthropic", model: "claude-sonnet-5-5" } as never;
 
 /** A meter the stub pass charges: each pass costs `perPass` dollars. */
 function fakeMeter(): CostMeter & { charge(usd: number, unpriced?: boolean): void } {
@@ -144,8 +151,11 @@ describe("resolveCitations — the seed-code-links-from-findings rule", () => {
 });
 
 describe("A3 arms (#1755)", () => {
-  it("refuse to run without a pass and a meter, and are model arms", () => {
+  it("refuse to run without a pass, a meter and a provider, and are model arms", () => {
     expect(() => createA3Arm({ search })).toThrow(/A3 runs the analysis agent/);
+    expect(() => createA3Arm({ search, agentPass: vi.fn(), meter: fakeMeter() })).toThrow(
+      /A3 runs the analysis agent/,
+    );
     expect(() => createA3AArm({ search, agentPass: vi.fn() })).toThrow(/A3A runs/);
     expect(() => buildArms(["A0", "A3N"], { search })).toThrow(/A3N runs the analysis agent/);
     expect(() => createA3NArm({ search, meter: fakeMeter() })).toThrow(/A3N runs/);
@@ -158,9 +168,13 @@ describe("A3 arms (#1755)", () => {
   it("A3A: the cited graph files alone, in cited order, and only those named", async () => {
     const meter = fakeMeter();
     const agentPass = stubPass(meter, { r: [cite("b.go"), cite("nope.go"), cite("a.go")] });
-    const out = await createA3AArm({ search, agentPass, meter }).localize(item, corpusOf(["r"]), {
-      run: 1,
-    });
+    const out = await createA3AArm({ search, agentPass, meter, provider }).localize(
+      item,
+      corpusOf(["r"]),
+      {
+        run: 1,
+      },
+    );
     expect(out.editCandidateFiles).toEqual(["r:b.go", "r:a.go"]);
     expect(out.rankedFiles).toEqual(["r:b.go", "r:a.go"]);
     expect(out.llmNamedFiles).toEqual(["r:b.go", "r:a.go"]);
@@ -179,7 +193,9 @@ describe("A3 arms (#1755)", () => {
     const corpus = corpusOf(["r"]);
     const a0 = await createA0Arm({ search }).localize(item, corpus);
     const agentPass = stubPass(meter, { r: [cite("b.go")] });
-    const a3 = await createA3Arm({ search, agentPass, meter }).localize(item, corpus, { run: 1 });
+    const a3 = await createA3Arm({ search, agentPass, meter, provider }).localize(item, corpus, {
+      run: 1,
+    });
     expect(a0.editCandidateFiles).toEqual(["r:a.go"]);
     expect(a3.editCandidateFiles).toEqual(["r:a.go", "r:b.go"]);
     expect(a3.rankedFiles.slice(0, a0.editCandidateFiles.length)).toEqual(a0.editCandidateFiles);
@@ -189,10 +205,12 @@ describe("A3 arms (#1755)", () => {
     const meter = fakeMeter();
     const corpus = corpusOf(["r"]);
     const a0 = await createA0Arm({ search }).localize(item, corpus);
-    const a3 = await createA3Arm({ search, agentPass: stubPass(meter, {}), meter }).localize(
-      item,
-      corpus,
-    );
+    const a3 = await createA3Arm({
+      search,
+      agentPass: stubPass(meter, {}),
+      meter,
+      provider,
+    }).localize(item, corpus);
     expect(a3.rankedFiles).toEqual(a0.rankedFiles);
     expect(a3.editCandidateFiles).toEqual(a0.editCandidateFiles);
     expect(a3.llmNamedFiles).toEqual([]);
@@ -206,6 +224,7 @@ describe("A3 arms (#1755)", () => {
       search,
       agentPass,
       meter,
+      provider,
       now: () => {
         clock += 1000;
         return clock;
@@ -228,7 +247,7 @@ describe("A3 arms (#1755)", () => {
   it("a reused pass that made an unpriced call is reported unpriced", async () => {
     const meter = fakeMeter();
     const agentPass = stubPass(meter, {}, { unpriced: true });
-    const [a3, a3a] = buildArms(["A3", "A3A"], { search, agentPass, meter });
+    const [a3, a3a] = buildArms(["A3", "A3A"], { search, agentPass, meter, provider });
     await a3!.localize(item, corpusOf(["r"]), { run: 1 });
     const second = await a3a!.localize(item, corpusOf(["r"]), { run: 1 });
     expect(second.reusedCostUsd).toBeNull();
@@ -237,7 +256,7 @@ describe("A3 arms (#1755)", () => {
   it("A3N runs its own pass on the file tools, never A3's", async () => {
     const meter = fakeMeter();
     const agentPass = stubPass(meter, { r: [cite("a.go")] });
-    const [a3a, a3n] = buildArms(["A3A", "A3N"], { search, agentPass, meter });
+    const [a3a, a3n] = buildArms(["A3A", "A3N"], { search, agentPass, meter, provider });
     await a3a!.localize(item, corpusOf(["r"]), { run: 1 });
     const out = await a3n!.localize(item, corpusOf(["r"]), { run: 1 });
     expect(agentPass).toHaveBeenCalledTimes(2);
@@ -250,7 +269,7 @@ describe("A3 arms (#1755)", () => {
   it("runs one pass per repository and interleaves their citations", async () => {
     const meter = fakeMeter();
     const agentPass = stubPass(meter, { r: [cite("b.go"), cite("a.go")], s: [cite("a.go")] });
-    const out = await createA3AArm({ search, agentPass, meter }).localize(
+    const out = await createA3AArm({ search, agentPass, meter, provider }).localize(
       item,
       corpusOf(["r", "s"]),
       { run: 1 },
@@ -266,7 +285,7 @@ describe("A3 arms (#1755)", () => {
       .fn<AgentPass>()
       .mockRejectedValueOnce(new Error("provider down"))
       .mockResolvedValue({ citations: [cite("a.go")], turns: 1, toolCalls: 0, answered: true });
-    const arm = createA3AArm({ search, agentPass, meter });
+    const arm = createA3AArm({ search, agentPass, meter, provider });
     await expect(arm.localize(item, corpusOf(["r"]), { run: 1 })).rejects.toThrow(/provider down/);
     const out = await arm.localize(item, corpusOf(["r"]), { run: 1 });
     expect(out.editCandidateFiles).toEqual(["r:a.go"]);
@@ -274,12 +293,49 @@ describe("A3 arms (#1755)", () => {
 
   it("names its configuration", () => {
     const meter = fakeMeter();
-    const a3 = createA3Arm({ search, agentPass: vi.fn(), meter });
+    const a3 = createA3Arm({ search, agentPass: vi.fn(), meter, provider });
     expect(a3.configuration).toMatchObject({ llm: true, embeddingModel: "toy" });
     expect(a3.configuration.stage).toMatch(/stored-link channel/);
-    expect(createA3AArm({ search, agentPass: vi.fn(), meter }).configuration.stage).toMatch(
-      /citations alone/,
-    );
+    expect(
+      createA3AArm({ search, agentPass: vi.fn(), meter, provider }).configuration.stage,
+    ).toMatch(/citations alone/);
     expect(a3.label).toMatch(/unioned with A0's hybrid seeds/);
+  });
+
+  it("name the pass's provider and model, in the configuration and the label (#1810)", () => {
+    for (const id of ["A3", "A3A", "A3N"]) {
+      const [arm] = buildArms([id], { search, agentPass: vi.fn(), meter: fakeMeter(), provider });
+      expect(arm!.configuration).toMatchObject({
+        provider: "anthropic",
+        model: "claude-sonnet-5-5",
+      });
+      expect(arm!.label).toContain("(anthropic/claude-sonnet-5-5)");
+    }
+  });
+
+  it("refuse a resume on a different model (#1810)", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "loc-a3-model-"));
+    try {
+      const store = new PartialStore(dir);
+      const armsOn = (model: string) =>
+        buildArms(["A3", "A3A", "A3N"], {
+          search,
+          agentPass: vi.fn(),
+          meter: fakeMeter(),
+          provider: { key: "anthropic", model } as never,
+        });
+      const corpus = corpusOf(["r"]);
+      await store.openForRun(corpus, runFingerprint(corpus, armsOn("claude-sonnet-5-5"), 2));
+      await expect(
+        store.openForRun(corpus, runFingerprint(corpus, armsOn("deepseek-chat"), 2)),
+      ).rejects.toThrow(
+        /configuration changed since the first slice:[\s\S]*arm A3 model: recorded "claude-sonnet-5-5", now "deepseek-chat"/,
+      );
+      await expect(
+        store.openForRun(corpus, runFingerprint(corpus, armsOn("claude-sonnet-5-5"), 2)),
+      ).resolves.toBeDefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
