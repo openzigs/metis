@@ -6,6 +6,8 @@
  *   edit precision   = |edit candidates ∩ expected| / |edit candidates|
  *   reciprocal rank  = 1 / rank of the first expected file in the ranking (0 if none)
  *   graph resolution = |LLM-named files ∩ code graph| / |LLM-named files|
+ *   repo confinement = every edit candidate is in the answer's ONE repository
+ *                      (#1784; only for an item whose answer is in one repository)
  *
  * Empty-set conventions match the impact-recall scorer
  * (`impact-recall/scorer.ts`, the #738 reqmap convention):
@@ -47,6 +49,12 @@ export interface ItemRunScore {
   graphResolution: number | null;
   /** null when the arm gives no verdict, or the item expects none. */
   verdictCorrect: boolean | null;
+  /**
+   * #1784 — true when the arm named at least one edit candidate and every one
+   * is in the answer's repository. null when the answer spans several
+   * repositories (or names none): there is no single repository to stay in.
+   */
+  editRepoConfined: boolean | null;
   editCandidateCount: number;
   costUsd: number | null;
   seconds: number;
@@ -97,12 +105,22 @@ export function graphResolutionRate(
   return resolved / set.size;
 }
 
+/**
+ * #1784 — whether every edit candidate (`<repo>:<path>`) is in `repo`; false
+ * when there is none, so a silent arm is never read as a confined one.
+ */
+export function editConfinedToRepo(editFiles: readonly string[], repo: string): boolean {
+  return editFiles.length > 0 && editFiles.every((f) => f.startsWith(`${repo}:`));
+}
+
 /** Score one observation of one requirement. */
 export function scoreObservation(
   expected: readonly string[],
   obs: ArmObservation,
   graphFiles: ReadonlySet<string>,
   expectedVerdict?: GapVerdict,
+  /** The repositories the answer is in; one repository makes confinement scorable. */
+  expectedRepos?: readonly string[],
 ): ItemRunScore {
   return {
     recallAt5: recallAtK(obs.rankedFiles, expected, 5),
@@ -114,6 +132,10 @@ export function scoreObservation(
       obs.verdict === undefined || expectedVerdict === undefined
         ? null
         : obs.verdict === expectedVerdict,
+    editRepoConfined:
+      expectedRepos?.length === 1
+        ? editConfinedToRepo(obs.editCandidateFiles, expectedRepos[0]!)
+        : null,
     editCandidateCount: new Set(obs.editCandidateFiles).size,
     costUsd: obs.costUsd,
     seconds: obs.seconds,
@@ -142,6 +164,8 @@ export interface ItemScore {
   hitAt5: number;
   hitAt10: number;
   verdictAccuracy: number | null;
+  /** #1784 — share of runs whose edit candidates stayed in the answer's one repository; null when n/a. */
+  editRepoConfined: number | null;
   editCandidateCount: number;
   /** Mean dollars per run; null when any run was unpriced. */
   costUsd: number | null;
@@ -162,6 +186,9 @@ export function averageRuns(id: string, runs: readonly ItemRunScore[]): ItemScor
   if (runs.length === 0) throw new Error(`no runs to average for ${id}`);
   const pick = (f: (r: ItemRunScore) => number) => mean(runs.map(f));
   const verdicts = runs.map((r) => (r.verdictCorrect === null ? null : r.verdictCorrect ? 1 : 0));
+  const confined = runs.map((r) =>
+    r.editRepoConfined === null ? null : r.editRepoConfined ? 1 : 0,
+  );
   return {
     id,
     runs: runs.length,
@@ -173,6 +200,7 @@ export function averageRuns(id: string, runs: readonly ItemRunScore[]): ItemScor
     hitAt5: pick((r) => (r.recallAt5 > 0 ? 1 : 0)),
     hitAt10: pick((r) => (r.recallAt10 > 0 ? 1 : 0)),
     verdictAccuracy: meanOrNull(verdicts),
+    editRepoConfined: meanOrNull(confined),
     editCandidateCount: pick((r) => r.editCandidateCount),
     costUsd: runs.some((r) => r.costUsd === null) ? null : pick((r) => r.costUsd ?? 0),
     seconds: pick((r) => r.seconds),
@@ -189,6 +217,12 @@ export interface ArmAggregate {
   /** Mean over the items whose arm named files by model; null when none did. */
   graphResolution: number | null;
   verdictAccuracy: number | null;
+  /**
+   * #1784 — of the requirements whose answer is in ONE repository, how many
+   * kept their edit candidates in it (on at least half their runs); null when
+   * no requirement has a single-repository answer.
+   */
+  repoConfinement: { confined: number; of: number } | null;
   /** Requirements with no edit candidate on any run: their precision of 1 is vacuous. */
   itemsWithNoEditCandidate: number;
   meanEditCandidates: number;
@@ -211,10 +245,20 @@ export function aggregateItems(items: readonly ItemScore[]): ArmAggregate {
     mrr: pick((s) => s.reciprocalRank),
     graphResolution: meanOrNull(items.map((s) => s.graphResolution)),
     verdictAccuracy: meanOrNull(items.map((s) => s.verdictAccuracy)),
+    repoConfinement: repoConfinementOf(items),
     itemsWithNoEditCandidate: items.filter((s) => s.editCandidateCount === 0).length,
     meanEditCandidates: pick((s) => s.editCandidateCount),
     costUsdPerRequirement: unpriced ? null : pick((s) => s.costUsd ?? 0),
     secondsPerRequirement: pick((s) => s.seconds),
     totalCostUsd: unpriced ? null : totalCost,
+  };
+}
+
+function repoConfinementOf(items: readonly ItemScore[]): ArmAggregate["repoConfinement"] {
+  const scorable = items.filter((s) => s.editRepoConfined !== null);
+  if (scorable.length === 0) return null;
+  return {
+    confined: scorable.filter((s) => (s.editRepoConfined ?? 0) >= 0.5).length,
+    of: scorable.length,
   };
 }

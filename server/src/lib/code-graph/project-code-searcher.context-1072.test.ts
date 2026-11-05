@@ -317,3 +317,27 @@ describe("createDefaultSnippetLookup", () => {
     expect(map.get("a")).toBe("function a() {}");
   });
 });
+
+describe("#1784 — a fused hit carries the vector channel's cosine", () => {
+  it("passes the cosine through for a vector hit and leaves it off a keyword-only hit", async () => {
+    const symbolIndex = {
+      getSymbols: async () => [
+        { symbolId: "c1", name: "saveUser", qualifiedName: "q1", kind: "function", filePath: "f" },
+        { symbolId: "c2", name: "saveOrder", qualifiedName: "q2", kind: "function", filePath: "g" },
+      ],
+    };
+    const searcher = createDefaultCodeSearcher({
+      symbolIndex,
+      snippetLookup: null,
+      vectorStore: {
+        search: async () => [{ metadata: { symbolId: "c1" }, score: 0.71 }],
+      },
+      embedService: { embed: async () => ({ vectors: [[1, 0]], dimension: 2, model: "m" }) },
+    } as never);
+    const hits = await searcher.search("saveUser saveOrder", "p1");
+    expect(hits.find((h) => h.symbolId === "c1")?.vectorScore).toBe(0.71);
+    const keywordOnly = hits.find((h) => h.symbolId === "c2");
+    expect(keywordOnly).toBeDefined();
+    expect("vectorScore" in keywordOnly!).toBe(false);
+  });
+});

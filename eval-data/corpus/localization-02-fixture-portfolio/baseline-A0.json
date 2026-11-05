@@ -55,9 +55,10 @@
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.011537458000000014
+            "seconds": 0.0020402079999998933
           },
           {
             "recallAt5": 0.5,
@@ -66,9 +67,10 @@
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006842079999999555
+            "seconds": 0.000638459000000239
           },
           {
             "recallAt5": 0.5,
@@ -77,9 +79,10 @@
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006193340000000375
+            "seconds": 0.0009686670000000958
           }
         ],
         "FX-02": [
@@ -90,9 +93,10 @@
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.001339999999999975
+            "seconds": 0.0034435840000001006
           },
           {
             "recallAt5": 0.5,
@@ -101,9 +105,10 @@
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006812919999999849
+            "seconds": 0.0006301669999998012
           },
           {
             "recallAt5": 0.5,
@@ -112,9 +117,10 @@
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006277499999999918
+            "seconds": 0.0006412499999996726
           }
         ],
         "FX-03": [
@@ -125,9 +131,10 @@
             "reciprocalRank": 0.14285714285714285,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.001004583000000025
+            "seconds": 0.0008272909999996046
           },
           {
             "recallAt5": 0,
@@ -136,9 +143,10 @@
             "reciprocalRank": 0.14285714285714285,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0007188339999999585
+            "seconds": 0.0017075829999998859
           },
           {
             "recallAt5": 0,
@@ -147,9 +155,10 @@
             "reciprocalRank": 0.14285714285714285,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006225000000000023
+            "seconds": 0.0006332920000004378
           }
         ],
         "FX-04": [
@@ -160,9 +169,10 @@
             "reciprocalRank": 0.3333333333333333,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0009242919999999799
+            "seconds": 0.0012645830000001298
           },
           {
             "recallAt5": 0.5,
@@ -171,9 +181,10 @@
             "reciprocalRank": 0.3333333333333333,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0010082500000000323
+            "seconds": 0.001496625000000222
           },
           {
             "recallAt5": 0.5,
@@ -182,9 +193,10 @@
             "reciprocalRank": 0.3333333333333333,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.000613207999999986
+            "seconds": 0.001205333999999766
           }
         ],
         "FX-05": [
@@ -195,9 +207,10 @@
             "reciprocalRank": 0.2,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0011135409999999978
+            "seconds": 0.0006354999999998654
           },
           {
             "recallAt5": 0.5,
@@ -206,9 +219,10 @@
             "reciprocalRank": 0.2,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0007579999999999813
+            "seconds": 0.0022958340000000135
           },
           {
             "recallAt5": 0.5,
@@ -217,9 +231,10 @@
             "reciprocalRank": 0.2,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006160830000000033
+            "seconds": 0.000703708000000006
           }
         ],
         "FX-06": [
@@ -230,9 +245,10 @@
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0007724999999999796
+            "seconds": 0.0025402909999997975
           },
           {
             "recallAt5": 1,
@@ -241,9 +257,10 @@
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006957500000000323
+            "seconds": 0.0011294170000001032
           },
           {
             "recallAt5": 1,
@@ -252,9 +269,10 @@
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006110420000000544
+            "seconds": 0.0020953749999998764
           }
         ],
         "FX-07": [
@@ -265,9 +283,10 @@
             "reciprocalRank": 0.5,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006881669999999645
+            "seconds": 0.0007126250000001164
           },
           {
             "recallAt5": 0.6666666666666666,
@@ -276,9 +295,10 @@
             "reciprocalRank": 0.5,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.000699957999999981
+            "seconds": 0.0006397079999997004
           },
           {
             "recallAt5": 0.6666666666666666,
@@ -287,9 +307,10 @@
             "reciprocalRank": 0.5,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006054169999999885
+            "seconds": 0.0009805419999997867
           }
         ],
         "FX-08": [
@@ -300,9 +321,10 @@
             "reciprocalRank": 0.5,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0007170419999999922
+            "seconds": 0.0006317090000002282
           },
           {
             "recallAt5": 0.5,
@@ -311,9 +333,10 @@
             "reciprocalRank": 0.5,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006975419999999986
+            "seconds": 0.0013710829999999986
           },
           {
             "recallAt5": 0.5,
@@ -322,9 +345,10 @@
             "reciprocalRank": 0.5,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006992500000000064
+            "seconds": 0.0006388330000004316
           }
         ],
         "FX-09": [
@@ -335,9 +359,10 @@
             "reciprocalRank": 0.25,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0015938330000000178
+            "seconds": 0.0006216250000002219
           },
           {
             "recallAt5": 0.4,
@@ -346,9 +371,10 @@
             "reciprocalRank": 0.25,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0007222079999999664
+            "seconds": 0.002680250000000342
           },
           {
             "recallAt5": 0.4,
@@ -357,9 +383,10 @@
             "reciprocalRank": 0.25,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": null,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006887090000000172
+            "seconds": 0.000578457999999955
           }
         ],
         "FX-10": [
@@ -370,9 +397,10 @@
             "reciprocalRank": 0.3333333333333333,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0007234169999999836
+            "seconds": 0.0005812500000001819
           },
           {
             "recallAt5": 1,
@@ -381,9 +409,10 @@
             "reciprocalRank": 0.3333333333333333,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006709580000000415
+            "seconds": 0.0017818750000001273
           },
           {
             "recallAt5": 1,
@@ -392,9 +421,10 @@
             "reciprocalRank": 0.3333333333333333,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006538340000000176
+            "seconds": 0.0005824170000000776
           }
         ],
         "FX-11": [
@@ -405,9 +435,10 @@
             "reciprocalRank": 0.125,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0007212079999999901
+            "seconds": 0.0006129999999998291
           },
           {
             "recallAt5": 0,
@@ -416,9 +447,10 @@
             "reciprocalRank": 0.125,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006916659999999979
+            "seconds": 0.0009639170000000376
           },
           {
             "recallAt5": 0,
@@ -427,9 +459,10 @@
             "reciprocalRank": 0.125,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006751659999999902
+            "seconds": 0.0006015419999998812
           }
         ],
         "FX-12": [
@@ -440,9 +473,10 @@
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006460420000000227
+            "seconds": 0.0005946669999998449
           },
           {
             "recallAt5": 0.5,
@@ -451,9 +485,10 @@
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0015492080000000215
+            "seconds": 0.0012957910000000084
           },
           {
             "recallAt5": 0.5,
@@ -462,9 +497,10 @@
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005795420000000035
+            "seconds": 0.0005247079999999187
           }
         ],
         "FX-13": [
@@ -475,9 +511,10 @@
             "reciprocalRank": 0.5,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0007204169999999976
+            "seconds": 0.0014146670000000086
           },
           {
             "recallAt5": 0.5,
@@ -486,9 +523,10 @@
             "reciprocalRank": 0.5,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006369159999999852
+            "seconds": 0.000804417000000285
           },
           {
             "recallAt5": 0.5,
@@ -497,9 +535,10 @@
             "reciprocalRank": 0.5,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005923750000000041
+            "seconds": 0.0005486670000000231
           }
         ],
         "FX-14": [
@@ -510,9 +549,10 @@
             "reciprocalRank": 0.25,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006907920000000445
+            "seconds": 0.002945459000000028
           },
           {
             "recallAt5": 1,
@@ -521,9 +561,10 @@
             "reciprocalRank": 0.25,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006303749999999581
+            "seconds": 0.0005948749999997744
           },
           {
             "recallAt5": 1,
@@ -532,9 +573,10 @@
             "reciprocalRank": 0.25,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005907920000000217
+            "seconds": 0.0029535000000000763
           }
         ],
         "FX-15": [
@@ -545,9 +587,10 @@
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006687089999999785
+            "seconds": 0.0006930419999998775
           },
           {
             "recallAt5": 0.5,
@@ -556,9 +599,10 @@
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0006231669999999667
+            "seconds": 0.00060024999999996
           },
           {
             "recallAt5": 0.5,
@@ -567,9 +611,10 @@
             "reciprocalRank": 1,
             "graphResolution": null,
             "verdictCorrect": null,
+            "editRepoConfined": false,
             "editCandidateCount": 10,
             "costUsd": 0,
-            "seconds": 0.0005826670000000149
+            "seconds": 0.0012391660000002956
           }
         ]
       },
@@ -586,9 +631,10 @@
           "hitAt5": 1,
           "hitAt10": 1,
           "verdictAccuracy": null,
+          "editRepoConfined": 0,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.004280333333333336
+          "seconds": 0.001215778000000076
         },
         {
           "id": "FX-02",
@@ -601,9 +647,10 @@
           "hitAt5": 1,
           "hitAt10": 1,
           "verdictAccuracy": null,
+          "editRepoConfined": 0,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0008830139999999837
+          "seconds": 0.001571666999999858
         },
         {
           "id": "FX-03",
@@ -616,9 +663,10 @@
           "hitAt5": 0,
           "hitAt10": 1,
           "verdictAccuracy": null,
+          "editRepoConfined": 0,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0007819723333333286
+          "seconds": 0.0010560553333333093
         },
         {
           "id": "FX-04",
@@ -631,9 +679,10 @@
           "hitAt5": 1,
           "hitAt10": 1,
           "verdictAccuracy": null,
+          "editRepoConfined": 0,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0008485833333333328
+          "seconds": 0.001322180666666706
         },
         {
           "id": "FX-05",
@@ -646,9 +695,10 @@
           "hitAt5": 1,
           "hitAt10": 1,
           "verdictAccuracy": null,
+          "editRepoConfined": 0,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0008292079999999942
+          "seconds": 0.0012116806666666283
         },
         {
           "id": "FX-06",
@@ -661,9 +711,10 @@
           "hitAt5": 1,
           "hitAt10": 1,
           "verdictAccuracy": null,
+          "editRepoConfined": 0,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0006930973333333554
+          "seconds": 0.001921694333333259
         },
         {
           "id": "FX-07",
@@ -676,9 +727,10 @@
           "hitAt5": 1,
           "hitAt10": 1,
           "verdictAccuracy": null,
+          "editRepoConfined": 0,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.000664513999999978
+          "seconds": 0.0007776249999998678
         },
         {
           "id": "FX-08",
@@ -691,9 +743,10 @@
           "hitAt5": 1,
           "hitAt10": 1,
           "verdictAccuracy": null,
+          "editRepoConfined": 0,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0007046113333333324
+          "seconds": 0.0008805416666668862
         },
         {
           "id": "FX-09",
@@ -706,9 +759,10 @@
           "hitAt5": 1,
           "hitAt10": 1,
           "verdictAccuracy": null,
+          "editRepoConfined": null,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0010015833333333337
+          "seconds": 0.0012934443333335063
         },
         {
           "id": "FX-10",
@@ -721,9 +775,10 @@
           "hitAt5": 1,
           "hitAt10": 1,
           "verdictAccuracy": null,
+          "editRepoConfined": 0,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0006827363333333476
+          "seconds": 0.0009818473333334623
         },
         {
           "id": "FX-11",
@@ -736,9 +791,10 @@
           "hitAt5": 0,
           "hitAt10": 1,
           "verdictAccuracy": null,
+          "editRepoConfined": 0,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.000696013333333326
+          "seconds": 0.000726152999999916
         },
         {
           "id": "FX-12",
@@ -751,9 +807,10 @@
           "hitAt5": 1,
           "hitAt10": 1,
           "verdictAccuracy": null,
+          "editRepoConfined": 0,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0009249306666666827
+          "seconds": 0.0008050553333332572
         },
         {
           "id": "FX-13",
@@ -766,9 +823,10 @@
           "hitAt5": 1,
           "hitAt10": 1,
           "verdictAccuracy": null,
+          "editRepoConfined": 0,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0006499026666666622
+          "seconds": 0.0009225836666667723
         },
         {
           "id": "FX-14",
@@ -781,9 +839,10 @@
           "hitAt5": 1,
           "hitAt10": 1,
           "verdictAccuracy": null,
+          "editRepoConfined": 0,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0006373196666666748
+          "seconds": 0.002164611333333293
         },
         {
           "id": "FX-15",
@@ -796,9 +855,10 @@
           "hitAt5": 1,
           "hitAt10": 1,
           "verdictAccuracy": null,
+          "editRepoConfined": 0,
           "editCandidateCount": 10,
           "costUsd": 0,
-          "seconds": 0.0006248476666666534
+          "seconds": 0.000844152666666711
         }
       ],
       "aggregate": {
@@ -809,10 +869,14 @@
         "mrr": 0.5423015873015873,
         "graphResolution": null,
         "verdictAccuracy": null,
+        "repoConfinement": {
+          "confined": 0,
+          "of": 14
+        },
         "itemsWithNoEditCandidate": 0,
         "meanEditCandidates": 10,
         "costUsdPerRequirement": 0,
-        "secondsPerRequirement": 0.0009935111555555546,
+        "secondsPerRequirement": 0.0011796713555555674,
         "totalCostUsd": 0
       },
       "intervals": {
@@ -832,5 +896,5 @@
   "notes": [
     "The code graph holds only 10 files, so an arm that ranks all of them scores Recall@10 = 1.00 by construction: Recall@10 and hit@10 carry no signal on this corpus. Read Recall@5, edit precision and MRR."
   ],
-  "generatedAt": "2026-11-04T14:05:54.562Z"
+  "generatedAt": "2026-11-04T21:47:51.706Z"
 }

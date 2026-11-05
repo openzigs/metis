@@ -1171,8 +1171,9 @@ export interface ImpactServiceDeps {
    * #1776 — rank edit candidates once per request, across every change and
    * project (`IMPACT_REQUEST_EDIT_RANKING`, read by the route). Every change is
    * seeded in every accessible project first; then
-   * {@link rankEditCandidatesPerRequest} keeps the request's best files and
-   * moves the rest to related, still seeding the blast radius. Absent: each
+   * {@link rankEditCandidatesPerRequest} keeps the request's best files on the
+   * cross-search cosine score (#1784) and moves the rest to related, still
+   * seeding the blast radius. Absent: each
    * change is ranked on its own in each project, as before.
    */
   requestEditRanking?: boolean;
@@ -1554,7 +1555,8 @@ function toSummaryTableFact(t: AffectedTableInput): SummaryTableFact {
 
 /**
  * #1776 — seed every change in every accessible project, rank the edit
- * candidates once over the whole request ({@link rankEditCandidatesPerRequest}),
+ * candidates once over the whole request ({@link rankEditCandidatesPerRequest},
+ * on the #1784 cross-search score),
  * and return a {@link SeedChangeFn} that answers from those seeds. A project the
  * starter cannot open is never searched (#1609). Each project's searches run in
  * its own attribution scope, as they do in the per-project loop (#1021).
@@ -1573,7 +1575,9 @@ async function seedRequestOnce(
       seedings.push({ change, projectId, seeds: await seedChange(change, projectId) });
     }
   }
-  const ranked = rankEditCandidatesPerRequest(seedings);
+  // #1784 — on the cross-search (cosine) score: fused RRF scores of separate
+  // searches are near-ties, and ranking on them lowered Recall@5 (#1776).
+  const ranked = rankEditCandidatesPerRequest(seedings, "cosine");
   const byChange = new Map<ChangedRequirement, Map<string, ChangeSeeds>>();
   seedings.forEach(({ change, projectId }, i) => {
     const forChange = byChange.get(change) ?? new Map<string, ChangeSeeds>();

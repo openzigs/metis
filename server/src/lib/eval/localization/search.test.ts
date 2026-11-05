@@ -147,6 +147,9 @@ describe("buildCorpusSearch", () => {
       onRetrievalMode: (m) => modes.push(m),
     });
     expect(hits[0]).toMatchObject({ symbolId: "app#1", filePath: "inv.ts" });
+    // #1784 — a vector hit carries its cosine, which compares across searches.
+    expect(hits[0]!.vectorScore).toBeGreaterThan(0);
+    expect(hits[0]!.vectorScore).toBeLessThanOrEqual(1);
     expect(hits.every((h) => h.symbolId.startsWith("app#"))).toBe(true);
     expect(modes).toEqual(["hybrid"]);
     expect(await s.searcher.search("invoice", "missing", {})).toEqual([]);

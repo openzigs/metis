@@ -11,6 +11,7 @@ import {
   createA2Arm,
   createA4Arm,
   createA11Arm,
+  createA12Arm,
   mergeSeedings,
   parseArmIds,
   requirementText,
@@ -68,7 +69,7 @@ describe("arm selection", () => {
     expect(() => buildArms(["A0", "A4"], deps)).toThrow(/A4 calls a model: it needs a live/);
     expect(() => buildArms(["ZZ"], deps)).toThrow(/unknown arm "ZZ"/);
     expect(buildArms(["A0"], deps).map((a) => a.id)).toEqual(["A0"]);
-    expect(Object.keys(ARM_FACTORIES)).toEqual(["A0", "A2", "A4", "A11"]);
+    expect(Object.keys(ARM_FACTORIES)).toEqual(["A0", "A2", "A4", "A11", "A12"]);
   });
 
   it("gives the arms the requirement as an analyst would paste it", () => {
@@ -310,6 +311,40 @@ describe("A11 on the committed fixture-portfolio corpus (#1776)", () => {
     // The demoted files stay in the ranking: every file is still ranked.
     expect(a11!.aggregate.recallAt10).toBe(1);
     expect(a11!.configuration.stage).toMatch(/rankEditCandidatesPerRequest/);
+    expect(report.spentUsd).toBe(0);
+  });
+});
+
+/**
+ * #1784 — A12 end to end on the committed fixture corpus: the per-request
+ * ranking on the cross-search (cosine) score. Deterministic, so the reading
+ * recorded in docs/ARCHITECTURE.md is pinned here: a change to the score or
+ * the margin must re-measure it.
+ */
+describe("A12 on the committed fixture-portfolio corpus (#1784)", () => {
+  it("separates the repositories the fused score cannot, and reproduces the recorded reading", async () => {
+    const corpus = await loadLocalizationCorpus("localization-02-fixture-portfolio");
+    const recorded = await loadRecordedVectors(
+      path.join(corpus.dir, "vectors.gte-modernbert-base.json"),
+    );
+    const cache = new EmbedCache(recorded, null, "pnpm eval:localization --embed");
+    const search = await buildCorpusSearch(corpus.symbols, cache);
+    const report = await runLocalizationEval(corpus, {
+      arms: [createA0Arm({ search }), createA11Arm({ search }), createA12Arm({ search })],
+      runs: 1,
+      meter: new LedgerCostMeter(),
+    });
+    assertNoMissingVectors(cache);
+    const [a0, a11, a12] = report.arms;
+    // A11 keeps five files and still names another repository on every item.
+    expect(a11!.aggregate.repoConfinement).toEqual({ confined: 0, of: 14 });
+    expect(a12!.aggregate.meanEditCandidates).toBeCloseTo(53 / 15, 9);
+    expect(a12!.aggregate.repoConfinement).toEqual({ confined: 3, of: 14 });
+    expect(a12!.aggregate.editPrecision).toBeGreaterThan(a11!.aggregate.editPrecision);
+    expect(a12!.aggregate.recallAt5).toBeGreaterThan(a0!.aggregate.recallAt5);
+    expect(a12!.aggregate.recallAt10).toBe(1);
+    expect(a12!.configuration.stage).toMatch(/rankEditCandidatesPerRequest\(cosine\)/);
+    expect(a12!.configuration.editCut).toContain(String(changeSeeds.REQUEST_COSINE_MARGIN));
     expect(report.spentUsd).toBe(0);
   });
 });

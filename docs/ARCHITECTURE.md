@@ -3024,6 +3024,38 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   half the request's best; the cap then picks among near-ties. Comparing seedings
   needs a score that means the same across searches; the impact-recall eval
   drives `mapRequirement`, not this seeding, so it cannot see the flag.
+- **Per-request ranking on a cross-search score (#1784)** — the hybrid search's
+  vector cosine (`HybridSearchResult.vectorScore`, #1097) now travels through
+  `SeedSearchHit` (production's `createDefaultCodeSearcher` and the corpus
+  searcher both carry it; across the two seed queries a symbol keeps its better
+  cosine), and each `EditFileScore` carries its best hit's cosine. With
+  `IMPACT_REQUEST_EDIT_RANKING` on, the engine now ranks per request on
+  `crossSearchScore`: a file's fused-score share of its seeding's best file,
+  times that seeding's best cosine, keeping at most `MAX_EDIT_FILES` files within
+  `REQUEST_COSINE_MARGIN` (0.05) of the request's best. A seeding with no cosine
+  (keyword-only) cannot be compared, so its files are kept. The #1776 fused cut
+  remains as `rankEditCandidatesPerRequest(…, "fused")` for arm A11. The score
+  form and the margin were fixed on the in-sample run-7 set (6 issues; the widest
+  margin reaching its best edit precision) before the held-out sets were read.
+  Measured as arm A12 (`pnpm eval:localization --arms A0,A11,A12`, no model,
+  deterministic, one run per set, 2026-11-04): on Miniflux (24) Recall@5 holds
+  at 0.52 (Δ 0.000), edit precision rises 0.17 → 0.30 (Δ +0.133, 95% CI
+  [0.02, 0.25], p 0.015, better) and edit files per requirement fall 7.17 →
+  2.21; MRR is unchanged (−0.019, n.s.). On the fixture set (15) Recall@5 rises
+  0.54 → 0.73 (+0.189 [0.02, 0.37], p 0.041), edit precision 0.21 → 0.36
+  (+0.152 [0.04, 0.28], p 0.007) and MRR +0.190; pooled over 39 items Recall@5
+  +0.073 [0.01, 0.14], edit precision +0.141 [0.06, 0.23], MRR +0.062, all
+  better. But the fixture set's repository test fails: of the 14 requirements
+  whose answer is in one repository, A12 keeps its edit candidates in that
+  repository on **3** (A0 and A11 on 0), not on most; the eval report now prints
+  this count for any multi-repository corpus (`ArmAggregate.repoConfinement`).
+  So the #1784 bar (Recall@5 not lower AND single-repository answers confined
+  on most items) is not met and the flag stays **off**. A sensitivity sweep run
+  after the fact shows the trade-off sits in the margin: 0.01 confines 8/14 with
+  Miniflux Recall@5 unchanged, 0.03 confines 6/14, 0.10 confines 0/14. Choosing
+  0.01 now would be tuning on the held-out sets; it needs a fresh held-out
+  reading or the #1757 adaptive cut. The margin is a cosine distance for
+  `gte-modernbert-base`; another embedding model's band needs it re-sized.
 - **Stored requirement links (#1754)** — `POST /api/impact-analyses` accepts
   `requirementIds` (deduplicated, at most 50). The route refuses a requirement
   whose project the caller cannot read with the project check's own error (a

@@ -243,6 +243,7 @@ export async function buildCorpusSearch(
           name: h.name,
           kind: h.kind,
           score: h.score,
+          ...(h.vectorScore !== undefined ? { vectorScore: h.vectorScore } : {}),
         }));
       },
     },
