@@ -381,14 +381,16 @@ export async function runLocalizationEval(
         const spent = meter.spentUsd();
         const unpricedBefore = meter.unpricedCalls();
         const t0 = now();
-        const out = await arm.localize(item, corpus);
-        const seconds = (now() - t0) / 1000;
+        const out = await arm.localize(item, corpus, { run });
+        // #1755 — a reading that reused another arm's model work in this run
+        // reports that work's cost and time as its own; the cap sees only spend.
+        const seconds = (now() - t0) / 1000 + (out.reusedSeconds ?? 0);
         const itemCost = meter.spentUsd() - spent;
         budget.observeItem(arm.id, itemCost);
-        const unpriced = meter.unpricedCalls() > 0;
+        const unpriced = meter.unpricedCalls() > 0 || out.reusedCostUsd === null;
         const score = scoreObservation(
           item.expectedFiles,
-          { ...out, costUsd: unpriced ? null : itemCost, seconds },
+          { ...out, costUsd: unpriced ? null : itemCost + (out.reusedCostUsd ?? 0), seconds },
           corpus.graphFiles,
           item.expectedVerdict,
           item.expectedRepos,
@@ -745,6 +747,16 @@ export function toMarkdownReport(report: LocalizationReport): string {
     );
   }
   lines.push("");
+  // #1755 — an agent arm's turns per requirement, from the agent loop.
+  const agentArms = report.arms.filter((a) => a.aggregate.agentTurnsPerRequirement !== null);
+  if (agentArms.length > 0) {
+    lines.push(
+      `Agent-loop turns per requirement: ${agentArms
+        .map((a) => `${a.id} ${a.aggregate.agentTurnsPerRequirement!.toFixed(1)}`)
+        .join(" · ")}`,
+      "",
+    );
+  }
   // #1784 — only a portfolio can name a file outside the answer's repository.
   if (c.repos.length > 1) {
     const confinement = report.arms.map((a) => {

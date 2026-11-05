@@ -11,6 +11,7 @@
  *   pnpm eval:localization --arms A0,A4 --table-guard  # + A4 on the split seeding, next to A0 on it (#1786)
  *   pnpm eval:localization --arms A0,A13,A13C,A13S     # #1798 re-order: A0 base, A12 base, shuffled pool
  *   pnpm eval:localization --in-sample --arms A13 --rerank-weight 0.3  # tune the A13 model weight (#1798)
+ *   pnpm eval:localization --arms A0,A3,A3A,A3N --shard 1/10   # #1755 analysis-agent citations (materialize first)
  *   pnpm eval:localization --embed               # embed missing vectors with the local model
  *   pnpm eval:localization --md                  # print the Markdown report
  *   pnpm eval:localization --baseline            # A0 only: write baseline-A0.{json,md} into each corpus
@@ -58,6 +59,8 @@
  * numbers under the production label (#1016), so it fails loud instead.
  */
 /* eslint-disable no-console -- a CLI whose output is its report */
+// #1755 — first: an agent arm binds the database to the materialized corpus before Prisma loads.
+import "./eval-localization-env.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -121,6 +124,13 @@ import {
 import { loadRecordedVectors, writeRecordedVectors } from "../src/lib/eval/recorded-vectors.js";
 import type { EmbedService } from "../src/lib/code-graph/symbol-embeddings.js";
 import type { LocalizationArm } from "../src/lib/eval/localization/arms.js";
+import { AGENT_ARM_IDS, type AgentPass } from "../src/lib/eval/localization/agent-arms.js";
+import {
+  assertEvalDatabase,
+  materializeLayout,
+  readMaterializedState,
+  type MaterializedState,
+} from "../src/lib/eval/localization/materialize.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
@@ -293,6 +303,57 @@ async function armProviderFor(meter: LedgerCostMeter): Promise<AIProvider> {
   return meterProvider(provider, meter);
 }
 
+/**
+ * #1755 — the analysis agent pass for the A3 arms, over the materialized
+ * corpora. Refuses a database other than the eval one (the env binding in
+ * `eval-localization-env.ts` must have run) and a corpus not materialized.
+ */
+async function agentPassFor(
+  provider: AIProvider,
+  corpora: readonly LocalizationCorpusName[],
+): Promise<AgentPass> {
+  const layout = materializeLayout();
+  const { prisma, boundDatabaseUrl } = await import("../src/lib/prisma.js");
+  assertEvalDatabase(boundDatabaseUrl, layout);
+  const states = new Map<string, MaterializedState>();
+  for (const corpus of corpora) {
+    const state = await readMaterializedState(corpus, layout);
+    if (!state)
+      throw new Error(`${corpus} is not materialized: run pnpm eval:materialize ${corpus}`);
+    states.set(corpus, state);
+  }
+  const { createMaterializedAgentPass } =
+    await import("../src/lib/eval/localization/agent-pass.js");
+  const { assembleAgenticCodeTools } = await import("../src/lib/analysis/orchestrator.js");
+  const { assembleAgenticPassSeeds, resolveDatabaseAwareDecision } =
+    await import("../src/lib/analysis/agentic-pass-context.js");
+  const { extractNewRequirementCandidates } =
+    await import("../src/lib/analysis/new-requirements.js");
+  const { getKnowledgeService } = await import("../src/lib/rag/knowledge-service.js");
+  return createMaterializedAgentPass({
+    provider,
+    states,
+    async loadProject(projectId) {
+      const project = await prisma.project.findUnique({
+        where: { id: projectId },
+        select: { name: true, description: true, databaseAwareAnalysis: true },
+      });
+      if (!project)
+        throw new Error(`materialized project ${projectId} is not in the eval database`);
+      const decision = await resolveDatabaseAwareDecision(projectId, project.databaseAwareAnalysis);
+      return {
+        name: project.name,
+        description: project.description,
+        databaseAware: decision.enabled,
+      };
+    },
+    assembleSeeds: (input) => assembleAgenticPassSeeds(input),
+    graphTools: (cloneDir) =>
+      assembleAgenticCodeTools({ knowledgeService: getKnowledgeService(), cloneDir }),
+    extractRequirements: (text) => extractNewRequirementCandidates(text),
+  });
+}
+
 /** #1800 — the corpora a merge reports: those the directory holds, or the one named. */
 async function mergeCorporaFor(
   argv: string[],
@@ -350,6 +411,11 @@ async function main(): Promise<void> {
     reportedArmIds.some((id) => MODEL_ARMS.has(id)) &&
     (!mergeDir || argv.includes("--table-guard"));
   const provider = needsProvider ? await armProviderFor(meter) : undefined;
+  // #1755 — the agent arms read the materialized corpora; a merge runs no pass.
+  const agentPass =
+    !mergeDir && provider && armIds.some((id) => AGENT_ARM_IDS.has(id))
+      ? await agentPassFor(provider, corpora)
+      : undefined;
   const tableGuard = argv.includes("--table-guard")
     ? await tableGuardFor(meter, reportedArmIds, provider, argv.includes("--embed"))
     : undefined;
@@ -387,7 +453,13 @@ async function main(): Promise<void> {
       } else {
         ({ cache, file: vectorsFile } = await embedCacheFor(corpus, argv.includes("--embed")));
         const search = await buildCorpusSearch(corpus.symbols, cache);
-        arms = buildArms(armIds, { search, rerankWeight, ...(provider ? { provider } : {}) });
+        arms = buildArms(armIds, {
+          search,
+          rerankWeight,
+          meter: capped,
+          ...(provider ? { provider } : {}),
+          ...(agentPass ? { agentPass } : {}),
+        });
         checkpoint = await store.openForRun(corpus, runFingerprint(corpus, arms, runs));
         const ids = sliceItemIds(corpus.manifest.items, slice);
         runItem = (item) => ids.has(item.id);
