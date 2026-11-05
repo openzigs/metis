@@ -29,6 +29,7 @@ import {
   type SeedSymbolLoader,
 } from "../../impact-analysis/change-seeds.js";
 import type { ChangedRequirement } from "../../impact-analysis/extract-changes.js";
+import type { AgentCitationDeps } from "../../impact-analysis/agent-seeder.js";
 import { mapRequirementToCode } from "../../traceability/requirement-code-mapping.js";
 import type { CodeSymbolSearcher } from "../../traceability/requirement-code-mapping.js";
 import {
@@ -70,11 +71,21 @@ export interface SplitSeedingOptions {
   editCandidateVerifier?: EditCandidateVerifierFn;
   /** #1798 — the LLM re-order of the edit candidates over the file pool. Absent: no re-order. */
   editCandidateReranker?: EditCandidateRerankerFn;
+  /**
+   * #1823 — `IMPACT_AGENT_SEEDS` (#1759): a tracked requirement's stored code
+   * agent citations lead the files to edit. Read only for a change that
+   * carries a requirement id. Absent: off.
+   */
+  agentSeeds?: AgentCitationDeps;
 }
 
 /** #1786 — which seeding produced a reading. */
 export type ImpactRecallSeeding =
-  "mapper" | "split" | "split + edit-candidate check" | "split + edit re-order";
+  | "mapper"
+  | "split"
+  | "split + edit-candidate check"
+  | "split + edit re-order"
+  | "split + agent citations";
 
 export interface RunImpactRecallOptions {
   /** Directly inject a searcher (wins over `searcherKind`). Used by tests. */
@@ -429,7 +440,9 @@ export function describeConfiguration(opts: RunImpactRecallOptions): ImpactRecal
       ? "split + edit-candidate check"
       : opts.splitSeeding.editCandidateReranker
         ? "split + edit re-order"
-        : "split";
+        : opts.splitSeeding.agentSeeds
+          ? "split + agent citations"
+          : "split";
     return {
       searcher: "hybrid",
       seeding,
@@ -442,7 +455,9 @@ export function describeConfiguration(opts: RunImpactRecallOptions): ImpactRecal
           ? "; + #1756 LLM edit-candidate check, IMPACT_LLM_EDIT_VERIFY=1)"
           : opts.splitSeeding.editCandidateReranker
             ? "; + #1798 LLM edit re-order, IMPACT_LLM_EDIT_RERANK=1)"
-            : ")"),
+            : opts.splitSeeding.agentSeeds
+              ? "; + #1759 stored code agent citations lead, IMPACT_AGENT_SEEDS=1)"
+              : ")"),
     };
   }
   const searcher: SearcherKind = opts.searcher ? "bm25" : (opts.searcherKind ?? "bm25");
@@ -525,8 +540,22 @@ export async function observeRequirement(
   searcher: CodeSymbolSearcher,
   opts: RunImpactRecallOptions,
 ): Promise<{ foundTables: string[]; foundCodeSymbols: string[]; matchQuality: MatchQuality }> {
+  return observeChange(fixture, requirementToChange(requirement), searcher, opts);
+}
+
+/**
+ * Run the impact engine for ONE change over the fixture. #1823 — a change
+ * other than the labeled requirement's own text: a requirement an analysis
+ * persisted, whose id the agent-citation stage reads.
+ */
+export async function observeChange(
+  fixture: ImpactRecallFixture,
+  change: ChangedRequirement,
+  searcher: CodeSymbolSearcher,
+  opts: RunImpactRecallOptions,
+): Promise<{ foundTables: string[]; foundCodeSymbols: string[]; matchQuality: MatchQuality }> {
   const split = opts.splitSeeding;
-  const impact = await computeProjectImpact(requirementToChange(requirement), fixture.projectId, {
+  const impact = await computeProjectImpact(change, fixture.projectId, {
     // #1786 — the split seeding replaces the mapper for this change, with the
     // file pool the edit-candidate check reads, exactly as defaultSeedChange.
     ...(split
@@ -543,6 +572,7 @@ export async function observeRequirement(
           ...(split.editCandidateReranker
             ? { editCandidateReranker: split.editCandidateReranker }
             : {}),
+          ...(split.agentSeeds ? { agentSeeds: split.agentSeeds } : {}),
         }
       : {}),
     mapRequirement: (req, projectId) =>

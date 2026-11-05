@@ -477,6 +477,55 @@ describe("materializeCorpus", () => {
     ).rejects.toThrow(/nothing for billing/);
   });
 
+  it("#1823: checks a corpus with no committed rows for its required files instead", async () => {
+    const { deps, calls, written } = fakeDeps(graph);
+    const result = await materializeCorpus({
+      manifest: m,
+      requiredFiles: ["orders:src/b.ts", "billing:src/c.ts"],
+      state: null,
+      env: ENV,
+      deps,
+    });
+    expect(result.changed).toBe(true);
+    expect(calls).toEqual(["build orders", "build billing"]);
+    expect(written).toHaveLength(1);
+  });
+
+  it("#1823: fails on a required file the graph lacks, lists it, and drops what it built", async () => {
+    const { deps, calls, written } = fakeDeps(graph);
+    await expect(
+      materializeCorpus({
+        manifest: m,
+        requiredFiles: ["orders:src/a.ts", "orders:src/gone.ts", "billing:src/c.ts"],
+        state: null,
+        env: ENV,
+        deps,
+      }),
+    ).rejects.toThrow(/does not match its required files[\s\S]*- orders:src\/gone\.ts/);
+    expect(calls).toEqual(["build orders", "build billing", "drop orders", "drop billing"]);
+    expect(written).toEqual([]);
+  });
+
+  it("#1823: fails when no required file names a repository, and takes exactly one check", async () => {
+    const { deps } = fakeDeps(graph);
+    await expect(
+      materializeCorpus({
+        manifest: m,
+        requiredFiles: ["orders:src/a.ts"],
+        state: null,
+        env: ENV,
+        deps,
+      }),
+    ).rejects.toThrow(/no required file names billing/);
+    for (const both of [{ committedRows: committed, requiredFiles: ["orders:src/a.ts"] }, {}]) {
+      const fresh = fakeDeps(graph);
+      await expect(
+        materializeCorpus({ manifest: m, ...both, state: null, env: ENV, deps: fresh.deps }),
+      ).rejects.toThrow(/exactly one/);
+      expect(fresh.calls).toEqual([]);
+    }
+  });
+
   it("refuses a repository URL or commit that is not safe to hand to git, before any I/O", async () => {
     for (const bad of [
       { ...repo("orders"), url: "--upload-pack=touch /tmp/x" },

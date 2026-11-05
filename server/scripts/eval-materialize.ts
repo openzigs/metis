@@ -4,6 +4,7 @@
  *
  *   pnpm eval:materialize localization-01-miniflux-heldout
  *   pnpm eval:materialize localization-02-fixture-portfolio
+ *   pnpm eval:materialize impact-recall-01-jpetstore   # #1823: the table guard's repository
  *
  * Per manifest repository: a shallow clone at the pinned commit, a project with a
  * GitHub repository connector, the normal code-graph ingest (SQL lineage off, as
@@ -24,6 +25,10 @@
  * Idempotent: a re-run with the same commits builds and writes nothing. Either
  * way the materialized symbol set is checked against the committed
  * `symbols.json.gz`, and a difference fails the run, listed.
+ *
+ * #1823 — `impact-recall-01-jpetstore` is a hand-authored graph with no
+ * committed rows: its schema-bearing repository (`TABLE_GUARD_REPO`) is
+ * materialized instead, and checked for every file the fixture maps to it.
  */
 /* eslint-disable no-console -- a local CLI whose output is what it did */
 import { execFileSync } from "node:child_process";
@@ -51,14 +56,22 @@ import {
   type MaterializeDeps,
   type MaterializedRepo,
 } from "../src/lib/eval/localization/materialize.js";
+import {
+  requiredRepoFiles,
+  TABLE_GUARD_CORPUS,
+  TABLE_GUARD_REPO,
+} from "../src/lib/eval/localization/table-guard-source.js";
 
 const SERVER_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_EMBED_MODEL = "Alibaba-NLP/gte-modernbert-base";
 
-function corpusArg(): LocalizationCorpusName {
+function corpusArg(): LocalizationCorpusName | typeof TABLE_GUARD_CORPUS {
   const [name] = process.argv.slice(2).filter((a) => a !== "--");
+  if (name === TABLE_GUARD_CORPUS) return name;
   if (!name || !(LOCALIZATION_CORPORA as readonly string[]).includes(name)) {
-    throw new Error(`usage: pnpm eval:materialize <${LOCALIZATION_CORPORA.join("|")}>`);
+    throw new Error(
+      `usage: pnpm eval:materialize <${[...LOCALIZATION_CORPORA, TABLE_GUARD_CORPUS].join("|")}>`,
+    );
   }
   return name as LocalizationCorpusName;
 }
@@ -115,7 +128,26 @@ async function main(): Promise<void> {
   const { inspectClone } = await import("../src/lib/connectors/repo/clone-health.js");
   const { resolveRepoClonePath } = await import("../src/lib/connectors/repo/clone-path.js");
 
-  const corpus = await loadLocalizationCorpus(corpusName);
+  // #1823 — the table guard's corpus is checked for its required files, not committed rows.
+  const expected: Pick<
+    Parameters<typeof materializeCorpus>[0],
+    "manifest" | "committedRows" | "requiredFiles"
+  > =
+    corpusName === TABLE_GUARD_CORPUS
+      ? await (async () => {
+          const fixtureMod = await import("../src/lib/eval/impact-recall/fixture.js");
+          const fixture = await fixtureMod.loadImpactRecallFixture(
+            fixtureMod.resolveCorpusDir(TABLE_GUARD_CORPUS),
+          );
+          return {
+            manifest: { id: TABLE_GUARD_CORPUS, repos: [TABLE_GUARD_REPO] },
+            requiredFiles: requiredRepoFiles(fixture),
+          };
+        })()
+      : await (async () => {
+          const corpus = await loadLocalizationCorpus(corpusName);
+          return { manifest: corpus.manifest, committedRows: corpus.symbols };
+        })();
 
   async function evalUserId(): Promise<string> {
     const user = await prisma.user.upsert({
@@ -265,8 +297,7 @@ async function main(): Promise<void> {
 
   try {
     const result = await materializeCorpus({
-      manifest: corpus.manifest,
-      committedRows: corpus.symbols,
+      ...expected,
       state: await readMaterializedState(corpusName, layout),
       env: {
         databaseUrl: layout.databaseUrl,

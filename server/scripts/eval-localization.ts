@@ -14,6 +14,8 @@
  *   pnpm eval:localization --merge <dir> --reference A12,A13   # + every arm paired with A12, then with A13 (#1806)
  *   pnpm eval:localization --arms A0,A3,A3A,A3N --shard 1/10   # #1755 analysis-agent citations (materialize first)
  *   pnpm eval:localization --arms A0,A3A,A7,A7O --reference A3A --items 0:4   # #1818 the shipped IMPACT_AGENT_SEEDS order
+ *   pnpm eval:localization --merge <dir> --arms A0,A7,A7O --table-guard --embed --guard-steps 5
+ *                                                # #1823 A7's table guard, 5 more steps per call
  *   pnpm eval:localization --embed               # embed missing vectors with the local model
  *   pnpm eval:localization --md                  # print the Markdown report
  *   pnpm eval:localization --baseline            # A0 only: write baseline-A0.{json,md} into each corpus
@@ -59,6 +61,16 @@
  * The table guard needs a live provider (`AI_PROVIDER=…` and its key): it is
  * the #936 LLM table filter, and an offline stub would report unfiltered
  * numbers under the production label (#1016), so it fails loud instead.
+ *
+ * #1823 — A7's table guard runs "Evaluate new requirements" once per table
+ * requirement and run on the materialized repository the table corpus models
+ * (`pnpm eval:materialize impact-recall-01-jpetstore` first), then reads A0 on
+ * the split seeding, A7 and A7O, 3 runs each. Each step (an analysis, or a run
+ * of a reading) is recorded in the partials directory
+ * (`table-guard/records.jsonl`) as it ends, so `--guard-steps <n>` takes at
+ * most n more per call and the same `--merge` resumes. It needs `--embed` (the
+ * analyses' requirement texts are new) and `--arms` naming A7 (which binds the
+ * eval database).
  */
 /* eslint-disable no-console -- a CLI whose output is its report */
 // #1755 — first: an agent arm binds the database to the materialized corpus before Prisma loads.
@@ -129,6 +141,17 @@ import type { EmbedService } from "../src/lib/code-graph/symbol-embeddings.js";
 import type { LocalizationArm } from "../src/lib/eval/localization/arms.js";
 import { AGENT_ARM_IDS, type AgentPass } from "../src/lib/eval/localization/agent-arms.js";
 import { ANALYSIS_ARM_IDS } from "../src/lib/eval/localization/analysis-arms.js";
+import { agentArmsRequested } from "../src/lib/eval/localization/agent-env.js";
+import {
+  createAgentSeedGuard,
+  fileGuardStore,
+  guardRecordsFile,
+} from "../src/lib/eval/localization/table-guard-agent.js";
+import {
+  TABLE_GUARD_CORPUS,
+  TABLE_GUARD_REPO,
+} from "../src/lib/eval/localization/table-guard-source.js";
+import type { CostMeter } from "../src/lib/eval/localization/cost.js";
 import type { AnalysisArmIO } from "../src/lib/eval/localization/arm-core.js";
 import {
   assertEvalDatabase,
@@ -197,11 +220,24 @@ async function embedCacheFor(
  * Each reading is measured once and memoised: every later reading is free, so
  * the runner does not hold it under the cap (#1779).
  */
+/** #1823 — what A7's guard needs beyond the other readings. */
+interface AgentGuardContext {
+  /** The partials directory: the guard's analyses are recorded in it. */
+  partialsDir: string;
+  /** The cap's meter (this call plus earlier slices) and the cap. */
+  capped: CostMeter;
+  budgetUsd: number;
+  /** `--guard-steps`: new steps (an analysis, or a run of a reading) this call may take. */
+  maxSteps: number | undefined;
+  argv: readonly string[];
+}
+
 async function tableGuardFor(
   meter: LedgerCostMeter,
   armIds: readonly string[],
   armProvider: AIProvider | undefined,
   embed: boolean,
+  agent: AgentGuardContext,
 ): Promise<TableGuard> {
   const { buildProvider, loadAIConfig } = await import("../src/lib/ai/index.js");
   const provider = buildProvider({ config: loadAIConfig() });
@@ -229,6 +265,21 @@ async function tableGuardFor(
     runnerMod.runImpactRecallEvalRepeated(fixture, opts, TABLE_GUARD_RUNS);
 
   const others: Record<string, () => Promise<TableGuardReading>> = {};
+  /** The split seeding's search over the fixture, from its recorded vectors (+ the local model with --embed). */
+  const splitSearch = async (arm: string) => {
+    const file = fixtureMod.recordedVectorsFile(fixtureMod.resolveCorpusDir(corpusName));
+    let inner: EmbedService | null = null;
+    if (embed) {
+      const { getEmbedder } = await import("../src/lib/rag/embedder.js");
+      inner = getEmbedder();
+    }
+    const cache = new EmbedCache(
+      await loadRecordedVectors(file),
+      inner,
+      `pnpm eval:localization --arms A0,${arm} --table-guard --embed (with the local model)`,
+    );
+    return { file, cache, search: await buildCorpusSearch(fixtureSearchRows(fixture), cache) };
+  };
   // #1786 / #1798 — an arm whose stage runs on the split seeding is read there,
   // next to A0 on the same seeding.
   const splitGuard =
@@ -237,18 +288,7 @@ async function tableGuardFor(
       stage: Pick<SplitSeedingGuardDeps, "editCandidateVerifier" | "editCandidateReranker">,
     ) =>
     async (): Promise<TableGuardReading> => {
-      const file = fixtureMod.recordedVectorsFile(fixtureMod.resolveCorpusDir(corpusName));
-      let inner: EmbedService | null = null;
-      if (embed) {
-        const { getEmbedder } = await import("../src/lib/rag/embedder.js");
-        inner = getEmbedder();
-      }
-      const cache = new EmbedCache(
-        await loadRecordedVectors(file),
-        inner,
-        `pnpm eval:localization --arms A0,${arm} --table-guard --embed (with the local model)`,
-      );
-      const search = await buildCorpusSearch(fixtureSearchRows(fixture), cache);
+      const { file, cache, search } = await splitSearch(arm);
       const reading = await measureSplitSeedingGuard({
         search,
         options,
@@ -279,6 +319,75 @@ async function tableGuardFor(
     others.A13 = splitGuard("A13", {
       editCandidateReranker: fixtureEditCandidateReranker(fixture, armProvider),
     });
+  }
+  // #1823 — A7 (and its control A7O) on the table corpus, with citations a real
+  // analysis stored on the repository the corpus models.
+  const agentArms = armIds.filter((id) => ANALYSIS_ARM_IDS.has(id));
+  if (agentArms.length > 0 && armProvider) {
+    if (!agentArmsRequested(agent.argv)) {
+      throw new Error(
+        `--table-guard reads ${agentArms.join(",")} on the materialized table corpus: pass --arms (the recorded arms) so the eval database is bound`,
+      );
+    }
+    if (!embed) {
+      throw new Error(
+        "A7's table guard searches with the texts of the requirements its analyses write, new on every run: pass --embed (the local model)",
+      );
+    }
+    let agentGuard: ReturnType<typeof createAgentSeedGuard> | null = null;
+    const build = async () => {
+      const io = await analysisIOFor(armProvider, [TABLE_GUARD_CORPUS]);
+      const { prisma } = await import("../src/lib/prisma.js");
+      const state = (await materializedStates([TABLE_GUARD_CORPUS])).get(TABLE_GUARD_CORPUS)!;
+      const projectId = state.repos.find((r) => r.name === TABLE_GUARD_REPO.name)?.projectId;
+      if (!projectId)
+        throw new Error(`${TABLE_GUARD_CORPUS}: ${TABLE_GUARD_REPO.name} is not materialized`);
+      // The analyses' requirement texts are new on every run: embedded live, never recorded.
+      const { search } = await splitSearch("A7");
+      return createAgentSeedGuard({
+        fixture,
+        search,
+        options,
+        runs: TABLE_GUARD_RUNS,
+        model: `${armProvider.key}/${armProvider.model}`,
+        store: fileGuardStore(guardRecordsFile(agent.partialsDir)),
+        analyze: async (text) => {
+          const r = await io.pass({
+            corpus: TABLE_GUARD_CORPUS,
+            repo: TABLE_GUARD_REPO.name,
+            text,
+          });
+          return { analysisId: r.analysisId, requirementIds: r.requirementIds };
+        },
+        loadRequirementChanges: io.loadRequirementChanges,
+        loadCitations: (requirementId) =>
+          io.loadCitations(requirementId, TABLE_GUARD_CORPUS, TABLE_GUARD_REPO.name),
+        qualifiedNames: async (ids) =>
+          new Map(
+            (
+              await prisma.codeSymbol.findMany({
+                where: { projectId, id: { in: [...ids] } },
+                select: { id: true, qualifiedName: true },
+              })
+            ).map((r) => [r.id, r.qualifiedName]),
+          ),
+        meter,
+        blocked: () =>
+          agent.capped.unpricedCalls() > 0
+            ? "an unpriced model call"
+            : agent.capped.spentUsd() >= agent.budgetUsd
+              ? `budget: $${agent.capped.spentUsd().toFixed(4)} spent of $${agent.budgetUsd}`
+              : null,
+        maxSteps: agent.maxSteps,
+        runOnce: (opts) => runnerMod.runImpactRecallEval(fixture, opts),
+        describe: (label) => `${corpusName}, ${label}, ${provider.key}/${provider.model}`,
+        log: (line) => console.log(line),
+      });
+    };
+    for (const id of agentArms) {
+      const variant = id as "A7" | "A7O";
+      others[id] = async () => (agentGuard ??= await build())[variant]();
+    }
   }
   return memoisedA0TableGuard(async () => {
     const summary = await runRepeated(options);
@@ -315,7 +424,7 @@ async function armProviderFor(meter: LedgerCostMeter): Promise<AIProvider> {
  * `eval-localization-env.ts` must have run) and a corpus not materialized.
  */
 async function materializedStates(
-  corpora: readonly LocalizationCorpusName[],
+  corpora: readonly string[],
 ): Promise<Map<string, MaterializedState>> {
   const layout = materializeLayout();
   const { boundDatabaseUrl } = await import("../src/lib/prisma.js");
@@ -376,7 +485,7 @@ async function agentPassFor(
  */
 async function analysisIOFor(
   provider: AIProvider,
-  corpora: readonly LocalizationCorpusName[],
+  corpora: readonly string[],
 ): Promise<AnalysisArmIO> {
   const states = await materializedStates(corpora);
   // The analysis monthly TOKEN cap (5M by default) counts every analysis in the
@@ -512,8 +621,19 @@ async function main(): Promise<void> {
     !mergeDir && provider && armIds.some((id) => ANALYSIS_ARM_IDS.has(id))
       ? await analysisIOFor(provider, corpora)
       : undefined;
+  const guardSteps = flagValue(argv, "guard-steps");
+  if (guardSteps !== undefined && !argv.includes("--table-guard")) {
+    throw new Error("--guard-steps bounds A7's table guard: pass it with --table-guard");
+  }
   const tableGuard = argv.includes("--table-guard")
-    ? await tableGuardFor(meter, reportedArmIds, provider, argv.includes("--embed"))
+    ? await tableGuardFor(meter, reportedArmIds, provider, argv.includes("--embed"), {
+        partialsDir: store.dir,
+        capped,
+        budgetUsd,
+        maxSteps:
+          guardSteps === undefined ? undefined : positiveInteger(guardSteps, 1, "guard-steps"),
+        argv,
+      })
     : undefined;
   console.log(
     `partials: ${store.dir} (${mergeDir ? "merge" : describeSlice(slice)}; ` +
