@@ -3067,8 +3067,8 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   span). An unchecked pick is dropped and counted.
   `applyEditRerank` then fuses the deterministic order (the edit candidates,
   then the rest of the pool) with the model's checked order by reciprocal rank
-  (`RERANK_RRF_K = 60`, `RERANK_MODEL_WEIGHT`, provisional: it is to be fixed
-  on the in-sample set). The top `MAX_EDIT_FILES` of the fused order, plus every
+  (`RERANK_RRF_K = 60`, `RERANK_MODEL_WEIGHT = 1`, fixed on the in-sample set
+  before either held-out set was read). The top `MAX_EDIT_FILES` of the fused order, plus every
   deterministic candidate as the same object, are the edit candidates, in fused
   order. A pick that was not a candidate carries its checked symbol at the
   file's own hybrid confidence (channel `edit-reranker`, `modelRank` and the
@@ -3081,7 +3081,12 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   It is measured as arms A13 (A0's order), A13C (A12's cosine order) and A13S
   (A13 with the pool shown in a seeded shuffle, the position-bias reading). The
   table guard reads A13 on the split seeding (`SplitSeedingOptions.editCandidateReranker`).
-  It is not yet measured on a live model.
+  Measured 2026-11-05 on `claude-sonnet-5-5` (2 runs per held-out set, pooled
+  over 39 items): Recall@5 +0.166 over A0 for A13 and +0.170 for A13C (both
+  p < 0.001), table precision on the split seeding 0.531 against A0's 0.511,
+  about $0.02 per requirement, every model-named file in the graph. A13S reads
+  no position bias in Recall@5. The flip bar is met; the flag stays off until
+  #1762 renders the edit order (docs/IMPACT_ANALYSIS_LLM_STAGES.md).
 - **Stored requirement links (#1754)** — `POST /api/impact-analyses` accepts
   `requirementIds` (deduplicated, at most 50). The route refuses a requirement
   whose project the caller cannot read with the project check's own error (a

@@ -58,7 +58,10 @@ const log = createChildLogger("impact-edit-reranker");
 /** The env/runtime flag for this stage. Off by default (#1798). */
 export const EDIT_RERANK_FLAG = "IMPACT_LLM_EDIT_RERANK";
 
-/** #1798 — whether the stage runs. Off until a held-out Recall@5 gain is shown (#1753). */
+/**
+ * #1798 — whether the stage runs. The held-out Recall@5 gain is shown (2026-11-05); it
+ * stays off until #1762 renders the fused edit order, which the impact list does not keep.
+ */
 export function impactLlmEditRerankEnabled(): boolean {
   return getConfigService().getBool(EDIT_RERANK_FLAG, false);
 }
@@ -68,12 +71,15 @@ export const MAX_RERANK_PICKS = 10;
 /** The reciprocal-rank-fusion constant: the usual 60. */
 export const RERANK_RRF_K = 60;
 /**
- * PROVISIONAL — the model list's weight in the fusion, against the
- * deterministic list's 1. #1798 fixes it on the IN-SAMPLE set (the six run-7
- * issues) before either held-out set is read. At 1, a pick the search ranked
- * 30th and the model ranked 1st (1/90 + 1/61) outranks a deterministic first
- * file the model left out (1/61), so the model can fill the top five; a
- * lower weight bounds how far down the pool it can reach.
+ * The model list's weight in the fusion, against the deterministic list's 1.
+ * #1798 fixed it on the IN-SAMPLE set (the six run-7 issues, `deepseek-flash`,
+ * 2026-11-05) before either held-out set was read: Recall@5 rose with the
+ * weight up to about 0.6 (0.64 at 0.1, 0.70 at 0.3, 0.72 at 0.6) and was flat
+ * from there (0.75 at 1, 0.73 at 2, 0.75 at 4), so the plateau's plain-RRF
+ * value stays. At 1, a pick the search ranked 30th and the model ranked 1st
+ * (1/90 + 1/61) outranks a deterministic first file the model left out
+ * (1/61), so the model can fill the top five; only a weight below about 0.08
+ * keeps the search's first file in the top five (#1806).
  */
 export const RERANK_MODEL_WEIGHT = 1;
 
