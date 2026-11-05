@@ -29,6 +29,9 @@ import {
 /** Bumped when the state file's shape changes; an older state is rebuilt. */
 export const MATERIALIZED_STATE_VERSION = 1;
 
+/** The eval database's user: it owns the materialized projects and starts the A7 analyses (#1818). */
+export const EVAL_USER_EMAIL = "eval-materialize@corpus.invalid";
+
 /** Where everything a materialization writes lives. */
 export interface MaterializeLayout {
   /** The gitignored eval directory (`eval-data/.materialized`). */

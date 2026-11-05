@@ -139,7 +139,15 @@ same object), a cited file the graph no longer holds is dropped and counted, and
 file's symbols are the graph's own rows at the citation's stored confidence. It runs
 last, so the #1798 fusion cannot undo it. Measured as arm A3A (#1755): Recall@5 +0.31
 over A0 pooled on 29 held-out items on `claude-sonnet-5-5`; appending the same files
-(A3) moved Recall@5 by +0.000.
+(A3) moved Recall@5 by +0.000. #1818 made the order explicit (the surer citation first,
+then citation order, which the writer now stores deterministically), capped the cited
+files that follow the candidates at 5 (any further one is listed under related, not
+seeded), and measured the SHIPPED path as arm A7: a real "Evaluate new requirements" run
+on each held-out item, then `computeProjectImpact` on the requirements it persisted.
+Recall@5 +0.256 [0.16, 0.35] over A0, pooled on 39 held-out items on `claude-sonnet-5-5`
+(p < 0.001; one run, $14.58). The flag stays **off**: its table-precision guard is not
+measured yet, because the cited files become blast-radius seeds that reach the schema
+crossing, and the table corpus has no stored citations.
 
 **#1798 is a deliberate, bounded exception to this rule.** Nothing additive raised
 Recall@5 (an appended file lands after the deterministic picks), so the edit-candidate

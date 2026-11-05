@@ -1103,6 +1103,29 @@ describe("agent-pass counts and split passes in the report (#1810)", () => {
     );
   });
 
+  it("reports an analysis arm's passes as analyses that persisted requirements (#1818)", async () => {
+    const report = await runLocalizationEval(corpus(1), {
+      arms: [
+        arm("A0", () => 1),
+        passArm("A7", () =>
+          stats({ passes: 1, unanswered: 1, passGroup: "analysis", passIds: ["an-1"] }),
+        ),
+        passArm("A7O", () =>
+          stats({ passes: 1, citedFiles: 0, unresolvedFiles: 0, passGroup: "analysis" }),
+        ),
+      ],
+      runs: 1,
+      meter: new FakeMeter(),
+    });
+    const md = toMarkdownReport(report);
+    expect(md).toContain(
+      '- A7 analyses ("Evaluate new requirements"): 1 over 1 reading(s), 1 that persisted no ' +
+        "requirement (read as the pasted text); stored citations' files in the code graph: 3 of 4 (0.75).",
+    );
+    expect(md).toContain("stored citations' files in the code graph: n/a (no citation stored).");
+    expect(md).not.toContain("A7 agent passes");
+  });
+
   it("finds no split when an arm of the group has no reading, or none carries counts", () => {
     const score = (agent?: AgentRunStats) => ({ agent }) as unknown as ItemRunScore;
     expect(

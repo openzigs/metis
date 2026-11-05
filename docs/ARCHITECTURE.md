@@ -3070,6 +3070,16 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   other (#1810). Each agent reading carries `ArmOutput.agent`: passes, unanswered
   passes, tool calls, cited and unresolved files, and pass ids. The report uses it
   for the rate before the resolve step and to flag a resume that split A3 from A3A.
+- **The shipped agent-seed order, measured (#1818)** — eval only. Arms `A7` /
+  `A7O` (`analysis-arms.ts`, `analysis-pass.ts`) run the real
+  `AnalysisOrchestrator.start` ("Evaluate new requirements", the code agent, the
+  item text as `extraInstructions`) on each repository's materialized project,
+  then read `computeProjectImpact` on the requirements it persisted, one change
+  per requirement, with A0's corpus search as `seedChange` and the stored
+  citations read back by `prismaAgentCitationDeps`: `IMPACT_AGENT_SEEDS` on (`A7`)
+  or off (`A7O`, the control for the change of wording). Both read one analysis
+  per item, repository and run. The generated requirement texts are embedded
+  live (`--embed` is required) and never written to a recorded vectors file.
 - **Edit-candidate re-order (#1798)** — behind `IMPACT_LLM_EDIT_RERANK` (key
   registry, tunable, **off**). It is the bounded exception to the #931 rule
   (docs/IMPACT_ANALYSIS_LLM_STAGES.md): one call per change and project
@@ -3133,12 +3143,21 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   reads that requirement's `RequirementCodeMapping` rows with source
   `analysis-grounding` (the citations the Analysis code agent made in "Evaluate
   new requirements", already resolved to the code graph when they were stored),
-  for the requirement AND the project, in stored order (`agent-seeder.ts`,
-  `leadWithAgentCitations`). It runs LAST in `computeProjectImpact`, after the
+  for the requirement AND the project (`agent-seeder.ts`,
+  `leadWithAgentCitations`), in an explicit order (#1818, `citationOrder`): the
+  surer first, then citation order. The writer
+  (`seedRequirementCodeLinksFromFindings`) stores that order deterministically,
+  the requirement's evidence findings in label order and each finding's
+  citations in theirs, and dedupes only against its own `analysis-grounding`
+  rows, so a manual or semantic link to the same code no longer hides the
+  agent's citation. It runs LAST in `computeProjectImpact`, after the
   #1756 check and the #1798 re-order, so neither can push the citations down: the
   first `MAX_AGENT_LEAD_FILES` (5) distinct cited files whose file the graph still
-  holds go to the head of the edit candidates, further cited files follow them,
-  and every other candidate stays one as the same object with the same score. A
+  holds go to the head of the edit candidates, at most `MAX_AGENT_TAIL_FILES` (5)
+  further cited files follow them (any beyond are listed under `related`, not
+  seeded), and every other candidate stays one as the same object with the same
+  score. A file that becomes a file to edit leaves `related` here, in the #1756
+  check and in the #1798 re-order (`relatedOutsideEditFiles`). A
   cited file the graph no longer holds is dropped and counted. The channel is
   `code-agent` in `seedEvidence`, whose `agentCitations` records used, stale and
   led; the run summary gains one sentence. It REUSES the pass instead of running

@@ -162,8 +162,11 @@ const evidenceOf = (item: Record<string, unknown>) =>
 beforeEach(() => search.mockClear());
 
 describe("a run about stored requirements with IMPACT_AGENT_SEEDS (#1759)", () => {
-  it("with the flag off: reads no citation, and the output is byte-identical", async () => {
-    const plain = prismaMock(reqRun(), [cite(CITED_FILE)]);
+  it("with the flag off: the stored citations change nothing (as if none were stored)", async () => {
+    // #1818 — the reference has NO citation stored, so a flag-off run that
+    // read or applied the citations would differ from it. (Comparing the flag
+    // absent with the flag false ran one branch twice and proved nothing.)
+    const plain = prismaMock(reqRun(), []);
     await run(plain.prisma);
     const off = prismaMock(reqRun(), [cite(CITED_FILE)]);
     await run(off.prisma, { agentSeeds: false });

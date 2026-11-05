@@ -30,9 +30,17 @@
  * `traceability-spine.ts`):
  *   - Conservative: a path is never invented, and never stored unless the
  *     project's code graph contains it.
- *   - Idempotent: deduped within a run and against existing rows (any source)
- *     by (requirementId, filePath, codeSymbolId). Re-running synthesis creates
- *     no duplicates.
+ *   - Idempotent: deduped within a run and against the requirement's existing
+ *     `analysis-grounding` rows by (requirementId, filePath, codeSymbolId).
+ *     Re-running synthesis creates no duplicates. #1818 — a link of another
+ *     source (`manual`, `semantic`) does NOT suppress the agent's citation of
+ *     the same code: a file a person linked that the agent also cited counts as
+ *     cited, so `IMPACT_AGENT_SEEDS` (#1759) can lead with it. The semantic
+ *     mapper's write does not dedupe against these rows either.
+ *   - Ordered (#1818): rows are written one at a time in CITATION ORDER — the
+ *     requirement's evidence findings in the order its labels list them, then
+ *     each finding's citations in theirs — so `IMPACT_AGENT_SEEDS`, which reads
+ *     them back in stored order, sees the same order on every run.
  *   - Prisma is dependency-injected so the orchestration is unit-testable with
  *     no DB.
  */
@@ -267,13 +275,19 @@ export async function seedRequirementCodeLinksFromFindings(
     // projectId relation path. Finding ids already come from the project-scoped
     // requirement's own labels, so this is belt-and-suspenders against a stray
     // id leaking a cross-project finding's citations into this project's spine.
-    const findings = await prisma.finding.findMany({
-      where: {
-        id: { in: findingIds },
-        agentResult: { analysis: { projectId: input.projectId } },
-      },
-      select: { evidence: true, confidence: true },
-    });
+    // #1818 — in the order the requirement's labels list them: `findMany`
+    // returns rows in no guaranteed order, and that order becomes the stored
+    // citation order `IMPACT_AGENT_SEEDS` leads with.
+    const evidenceRank = new Map(findingIds.map((id, i) => [id, i]));
+    const findings = (
+      await prisma.finding.findMany({
+        where: {
+          id: { in: findingIds },
+          agentResult: { analysis: { projectId: input.projectId } },
+        },
+        select: { id: true, evidence: true, confidence: true },
+      })
+    ).sort((a, b) => evidenceRank.get(a.id)! - evidenceRank.get(b.id)!);
 
     // Collect the citations that could be code, with the confidence of the
     // finding that cites them.
@@ -310,6 +324,8 @@ export async function seedRequirementCodeLinksFromFindings(
     }
 
     // One candidate per (filePath, codeSymbolId), keeping the highest confidence.
+    // A Map keeps first-cited order: a later, surer citation updates the value
+    // in place.
     const candidates = new Map<string, SeedCandidate>();
     for (const { target, confidence } of cited) {
       const resolved = resolveTarget(target, symbolsByFile);
@@ -322,11 +338,11 @@ export async function seedRequirementCodeLinksFromFindings(
     }
     if (candidates.size === 0) continue;
 
-    // Dedupe against existing spine rows for this requirement (any source) so a
-    // re-run — or a manual/semantic link that already exists — is never
-    // duplicated.
+    // Dedupe against this requirement's existing agent rows, so a re-run is
+    // never duplicated. #1818 — not against other sources: a manual or
+    // semantic link to the same code would otherwise hide the citation.
     const existing = await prisma.requirementCodeMapping.findMany({
-      where: { requirementId, projectId: input.projectId },
+      where: { requirementId, projectId: input.projectId, source: ANALYSIS_GROUNDING_SOURCE },
       select: { filePath: true, codeSymbolId: true },
     });
     const existingKeys = new Set(existing.map((e) => mappingKey(e.filePath, e.codeSymbolId)));
