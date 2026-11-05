@@ -3075,8 +3075,9 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   checked line in `seedEvidence`, counts in `seedEvidence.reranker`).
   The engine runs it after the #1756 check, over the same pool, so a check
   promotion counts as deterministic here. The run summary says how many files
-  moved into the top, how many the search had not picked, and how many picks
-  were dropped (`editRerankNotice`).
+  ranked higher, how many the search had not picked, and how many picks
+  were dropped (`editRerankNotice`). The persisted list is still sorted by depth
+  then confidence, so the fused order is visible only in `seedEvidence` until #1762.
   It is measured as arms A13 (A0's order), A13C (A12's cosine order) and A13S
   (A13 with the pool shown in a seeded shuffle, the position-bias reading). The
   table guard reads A13 on the split seeding (`SplitSeedingOptions.editCandidateReranker`).

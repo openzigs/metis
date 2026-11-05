@@ -197,7 +197,7 @@ describe("the engine with the edit re-order (#1798)", () => {
     const added = direct(on.affected).length - direct(off.affected).length;
     expect(added).toBeGreaterThan(0);
     expect(String(on.analyses.get("ia")?.summary)).toMatch(
-      /The AI re-order moved \d+ files? into the top of the files to edit, \d+ of them not picked by the search/,
+      /The AI re-order ranked \d+ files? higher in the order of the files to edit, \d+ of them not picked by the search/,
     );
   });
 
@@ -226,17 +226,17 @@ describe("the engine with the edit re-order (#1798)", () => {
 describe("editRerankNotice", () => {
   it("says nothing moved, and that every search pick is still listed", () => {
     expect(editRerankNotice({ moved: 0, promoted: 0, dropped: 0 })).toBe(
-      "The AI re-order moved no files into the top of the files to edit; every file the search picked is still listed.",
+      "The AI re-order changed no file's place in the order of the files to edit; every file the search picked is still listed.",
     );
   });
 
   it("names the moves, the files the search had not picked, and the drops", () => {
     expect(editRerankNotice({ moved: 2, promoted: 0, dropped: 0 })).toBe(
-      "The AI re-order moved 2 files into the top of the files to edit; every file the search picked is still listed.",
+      "The AI re-order ranked 2 files higher in the order of the files to edit; the list shown keeps its own sort (depth, then confidence), and every file the search picked is still listed.",
     );
     expect(editRerankNotice({ moved: 1, promoted: 1, dropped: 2 })).toBe(
-      "The AI re-order moved 1 file into the top of the files to edit, 1 of them not picked by the search " +
-        "(each at a line checked against the code); every file the search picked is still listed. " +
+      "The AI re-order ranked 1 file higher in the order of the files to edit, 1 of them not picked by the search " +
+        "(each at a line checked against the code); the list shown keeps its own sort (depth, then confidence), and every file the search picked is still listed. " +
         "2 suggestions were dropped because they could not be checked: a line outside every function or type of that file, " +
         "a file not in the list, an unreadable entry, or more than 10 suggestions.",
     );

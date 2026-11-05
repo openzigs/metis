@@ -470,6 +470,17 @@ describe("A13 — the LLM re-order of the edit candidates (#1798)", () => {
     );
   });
 
+  it("takes the fusion's model weight from the deps, and reports it", async () => {
+    const reply = '{"order":[{"index":1,"line":4,"reason":"It sums the total."}]}';
+    const heavy = createA13Arm({ search, provider: saying(reply) });
+    const light = createA13Arm({ search, provider: saying(reply), rerankWeight: 0.01 });
+    // b is the model's only pick; at weight 1 it passes a, at 0.01 it cannot.
+    expect((await heavy.localize(item, corpus)).editCandidateFiles).toEqual(["r:b.go", "r:a.go"]);
+    expect((await light.localize(item, corpus)).editCandidateFiles).toEqual(["r:a.go", "r:b.go"]);
+    expect(light.configuration.fusion).toMatch(/model weight 0\.01;/);
+    expect(heavy.configuration.fusion).toMatch(/model weight 1;/);
+  });
+
   it("refuses to run without a provider, and is registered as a model arm", () => {
     expect(() => buildArms(["A0", "A13"], { search })).toThrow(/A13 calls a model/);
     for (const id of ["A13", "A13C", "A13S"]) expect(MODEL_ARMS.has(id)).toBe(true);

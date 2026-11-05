@@ -283,6 +283,20 @@ describe("fuseEditOrder", () => {
   });
 });
 
+describe("rerankEditCandidates — a line check that names another file (#1798)", () => {
+  it("drops a pick whose checked symbol is in a different file", async () => {
+    const stray: LineCheck = async () => GRAPH.find((g) => g.id === "src/f3.ts#fn")!;
+    const r = await rerankEditCandidates({
+      requirementText: "x",
+      pool: POOL,
+      provider: provider(order([0, 12])),
+      lineCheck: stray,
+    });
+    expect(r.picks).toEqual([]);
+    expect(r.droppedPicks).toBe(1);
+  });
+});
+
 describe("applyEditRerank", () => {
   const picks = (...files: number[]): EditRerank => ({
     applied: true,

@@ -819,7 +819,7 @@ describe("#1798 — the edit re-order is wired, metered and reported", () => {
       confidence: 0.4,
     });
     expect(String(row.summary)).toContain(
-      "The AI re-order moved 1 file into the top of the files to edit",
+      "The AI re-order ranked 1 file higher in the order of the files to edit",
     );
   });
 

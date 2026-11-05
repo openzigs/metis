@@ -144,13 +144,19 @@ re-order lets one model call move files UP the list of files to edit. It keeps w
   carries its symbol's own hybrid confidence (channel `edit-reranker` in `seedEvidence`).
 - **The order is a fusion, not a replacement.** Reciprocal-rank fusion of the
   deterministic order and the model's checked order means a file both rank high stays
-  high. The model weight bounds how far down the pool a model-only pick can reach. At
-  weight 1 (`k = 60`), the model's first pick outranks a deterministic first file the
-  model left out, even when the search ranked that pick 30th. At about 0.3 or below it
-  cannot. `RERANK_MODEL_WEIGHT` is fixed on the in-sample set before either held-out set
-  is read.
+  high. The model weight bounds how far down the pool a model-only pick can reach. A
+  model-first pick at deterministic rank `r` outranks the deterministic first file the
+  model left out when `w > 1 - 61/(60 + r)`: about 0.13 at `r = 10`, about 0.08 at
+  `r = 6`, and below 0.5 for every `r` up to 30. At weight 1 (`k = 60`) it does so even
+  when the search ranked that pick 30th. `RERANK_MODEL_WEIGHT` is fixed on the in-sample
+  set before either held-out set is read; `pnpm eval:localization --rerank-weight <w>`
+  sets it for a tuning run, and the report's configuration names the value.
 
-It ships **off**. The bar for turning it on: a significant Recall@5 gain over A0 on the
+It ships **off**. The order the fusion makes is not yet what the analyst sees: the
+impact list is sorted by depth then confidence, and the fused order survives only in
+`seedEvidence`. So the flag does not flip on a Recall@5 gain alone: it also needs #1762
+to render the edit order, and the run summary says the list keeps its own sort until
+then. The bar for turning it on: a significant Recall@5 gain over A0 on the
 pooled held-out set (`pnpm eval:localization --arms A0,A13,A13C`), table precision no
 more than 0.03 below A0 on the same (split) seeding (`--table-guard`), and no more than
 $0.05 per requirement on `claude-sonnet-5-5`. `A13S` shows the pool shuffled and reads

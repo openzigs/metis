@@ -10,6 +10,7 @@
  *   pnpm eval:localization --table-guard         # + table precision on impact-recall-01 (live provider)
  *   pnpm eval:localization --arms A0,A4 --table-guard  # + A4 on the split seeding, next to A0 on it (#1786)
  *   pnpm eval:localization --arms A0,A13,A13C,A13S     # #1798 re-order: A0 base, A12 base, shuffled pool
+ *   pnpm eval:localization --in-sample --arms A13 --rerank-weight 0.3  # tune the A13 model weight (#1798)
  *   pnpm eval:localization --embed               # embed missing vectors with the local model
  *   pnpm eval:localization --md                  # print the Markdown report
  *   pnpm eval:localization --baseline            # A0 only: write baseline-A0.{json,md} into each corpus
@@ -47,6 +48,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildArms, MODEL_ARMS, parseArmIds } from "../src/lib/eval/localization/arms.js";
+import { RERANK_MODEL_WEIGHT } from "../src/lib/impact-analysis/edit-candidate-reranker.js";
 import type { AIProvider } from "../src/lib/ai/types.js";
 import {
   flagValue,
@@ -270,6 +272,11 @@ async function main(): Promise<void> {
   const armIds = parseArmIds(argv);
   const runs = positiveInteger(flagValue(argv, "runs"), DEFAULT_RUNS, "runs");
   const budgetUsd = nonNegativeNumber(flagValue(argv, "budget"), DEFAULT_BUDGET_USD, "budget");
+  const rerankWeight = nonNegativeNumber(
+    flagValue(argv, "rerank-weight"),
+    RERANK_MODEL_WEIGHT,
+    "rerank-weight",
+  );
   const writeBaseline = argv.includes("--baseline");
   if (writeBaseline && armIds.length > 1) throw new Error("--baseline writes A0's report only");
   const meter = new LedgerCostMeter();
@@ -289,7 +296,7 @@ async function main(): Promise<void> {
     const corpus = await loadLocalizationCorpus(name);
     const { cache, file } = await embedCacheFor(corpus, argv.includes("--embed"));
     const search = await buildCorpusSearch(corpus.symbols, cache);
-    const arms = buildArms(armIds, { search, ...(provider ? { provider } : {}) });
+    const arms = buildArms(armIds, { search, rerankWeight, ...(provider ? { provider } : {}) });
     const report = await runLocalizationEval(corpus, { arms, runs, budget, meter, tableGuard });
     reports.push(report);
     assertNoMissingVectors(cache);

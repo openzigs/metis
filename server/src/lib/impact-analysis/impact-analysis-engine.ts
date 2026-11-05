@@ -1537,7 +1537,8 @@ export function editVerifierNotice(t: {
 
 /**
  * #1798 — the sentence a run's summary gains when the edit re-order answered:
- * how many files it moved into the head of the files to edit, how many of
+ * how many files it ranked higher in the order of the files to edit (the list
+ * shown is still sorted by depth then confidence, so the notice says so), how many of
  * those the search had not picked (each at a line checked against the code),
  * and how many of its picks it dropped. Every file the search picked stays
  * listed.
@@ -1546,12 +1547,12 @@ export function editRerankNotice(t: { moved: number; promoted: number; dropped: 
   const files = (n: number) => (n === 0 ? "no files" : `${n} file${n === 1 ? "" : "s"}`);
   const head =
     t.moved === 0
-      ? "The AI re-order moved no files into the top of the files to edit; every file the search picked is still listed."
-      : `The AI re-order moved ${files(t.moved)} into the top of the files to edit` +
+      ? "The AI re-order changed no file's place in the order of the files to edit; every file the search picked is still listed."
+      : `The AI re-order ranked ${files(t.moved)} higher in the order of the files to edit` +
         (t.promoted === 0
           ? ""
           : `, ${t.promoted} of them not picked by the search (each at a line checked against the code)`) +
-        "; every file the search picked is still listed.";
+        "; the list shown keeps its own sort (depth, then confidence), and every file the search picked is still listed.";
   return t.dropped === 0
     ? head
     : `${head} ${t.dropped} suggestion${t.dropped === 1 ? " was" : "s were"} dropped because ${t.dropped === 1 ? "it" : "they"} could not be checked: a line outside every function or type of that file, a file not in the list, an unreadable entry, or more than ${MAX_RERANK_PICKS} suggestions.`;

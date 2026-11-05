@@ -78,6 +78,11 @@ export interface ArmDeps {
   search: CorpusSearch;
   /** The METERED provider (`meterProvider`), for an arm with a model in the loop. */
   provider?: AIProvider;
+  /**
+   * The model's weight in the A13 family's rank fusion (#1798). Default
+   * `RERANK_MODEL_WEIGHT`; the in-sample tuning run sets it (`--rerank-weight`).
+   */
+  rerankWeight?: number;
 }
 
 /** The arms that call a model: the CLI builds a live, metered provider only for these. */
@@ -501,6 +506,7 @@ interface RerankVariant {
  */
 function createRerankArm(deps: ArmDeps, variant: RerankVariant): LocalizationArm {
   const { search, provider } = deps;
+  const weight = deps.rerankWeight ?? RERANK_MODEL_WEIGHT;
   if (!provider) {
     throw new Error(
       `arm ${variant.id} calls a model: it needs a live, metered provider (AI_PROVIDER and its key)`,
@@ -529,7 +535,7 @@ function createRerankArm(deps: ArmDeps, variant: RerankVariant): LocalizationArm
         : {}),
       poolFiles: VERIFY_POOL_FILES,
       maxPicks: MAX_RERANK_PICKS,
-      fusion: `reciprocal rank, k = ${RERANK_RRF_K}, model weight ${RERANK_MODEL_WEIGHT}; top ${MAX_EDIT_FILES} plus every deterministic candidate`,
+      fusion: `reciprocal rank, k = ${RERANK_RRF_K}, model weight ${weight}; top ${MAX_EDIT_FILES} plus every deterministic candidate`,
       presentation: variant.shuffled
         ? "pool shuffled per change and repository (seeded by the item id)"
         : "pool in the deterministic order",
@@ -575,7 +581,7 @@ function createRerankArm(deps: ArmDeps, variant: RerankVariant): LocalizationArm
             ? { presentation: shuffledPresentation(pool.length, `${item.id}|${repo}|${i}`) }
             : {}),
         });
-        const reranked = applyEditRerank(seeds, rerank);
+        const reranked = applyEditRerank(seeds, rerank, weight);
         const key = (m: { filePath: string }) => fileKey(repo, m.filePath);
         named.push(...rerank.namedFiles.map((f) => fileKey(repo, f)));
         files.push({
