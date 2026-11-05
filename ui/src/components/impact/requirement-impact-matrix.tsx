@@ -260,7 +260,10 @@ export function RequirementImpactMatrix({ items, projects }: RequirementImpactMa
               Close
             </button>
           </div>
-          <ChangedRequirementGroup item={selectedItem} />
+          <ChangedRequirementGroup
+            item={selectedItem}
+            projectName={projects.find((p) => p.id === selectedItem.projectId)?.name ?? null}
+          />
         </Card>
       ) : null}
     </section>

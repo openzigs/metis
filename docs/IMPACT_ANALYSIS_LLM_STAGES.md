@@ -182,11 +182,11 @@ re-order lets one model call move files UP the list of files to edit. It keeps w
   plateau's plain-RRF value stayed. `pnpm eval:localization --rerank-weight <w>` sets it
   for a tuning run, and the report's configuration names the value.
 
-It ships **off**. The order the fusion makes is not yet what the analyst sees: the
-impact list is sorted by depth then confidence, and the fused order survives only in
-`seedEvidence`. So the flag does not flip on a Recall@5 gain alone: it also needs #1762
-to render the edit order, and the run summary says the list keeps its own sort until
-then. The bar for turning it on: a significant Recall@5 gain over A0 on the
+It ships **off**. The fused order survives only in `seedEvidence` (the persisted
+affected-symbol list is sorted by depth then confidence), and since #1762 the impact
+page lists the files to edit in that order, each with what found it and, for a checked
+pick, the model's reason and line. The markdown export still lists them by depth then
+confidence. The bar for turning it on: a significant Recall@5 gain over A0 on the
 pooled held-out set (`pnpm eval:localization --arms A0,A13,A13C`), table precision no
 more than 0.03 below A0 on the same (split) seeding (`--table-guard`), and no more than
 $0.05 per requirement on `claude-sonnet-5-5`. `A13S` shows the pool shuffled and reads
