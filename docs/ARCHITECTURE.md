@@ -3056,6 +3056,15 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   0.01 now would be tuning on the held-out sets; it needs a fresh held-out
   reading or the #1757 adaptive cut. The margin is a cosine distance for
   `gte-modernbert-base`; another embedding model's band needs it re-sized.
+- **Analysis-agent citations as impact seeds, measured (#1755)** — eval only, no
+  product change. Arms `A3` / `A3A` / `A3N` of `pnpm eval:localization`
+  (`server/src/lib/eval/localization/agent-arms.ts`, `agent-pass.ts`) run the
+  orchestrator's agentic code pass on each held-out item over the materialized
+  corpus (#1799), keep the cited files the code graph holds, and score them
+  unioned with A0's seeds through the stored-link channel (`A3`), alone (`A3A`),
+  or from a pass with file tools only (`A3N`, the eval-only `grep_files`, no
+  graph or symbol search). `LocalizationArm.localize` now receives the run, so
+  two arms can read one pass and each report its cost (`ArmOutput.reusedCostUsd`).
 - **Edit-candidate re-order (#1798)** — behind `IMPACT_LLM_EDIT_RERANK` (key
   registry, tunable, **off**). It is the bounded exception to the #931 rule
   (docs/IMPACT_ANALYSIS_LLM_STAGES.md): one call per change and project

@@ -77,6 +77,9 @@ describe("arm selection", () => {
     expect(Object.keys(ARM_FACTORIES)).toEqual([
       "A0",
       "A2",
+      "A3",
+      "A3A",
+      "A3N",
       "A4",
       "A11",
       "A12",

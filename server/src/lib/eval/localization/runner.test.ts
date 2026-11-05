@@ -832,3 +832,59 @@ describe("repository confinement in the report (#1784)", () => {
     );
   });
 });
+
+describe("agent arms: run context, reused work and turns (#1755)", () => {
+  /** An arm that records the run it was asked for and reports reused work and turns. */
+  function agentArm(id: string, out: Record<string, unknown>, runs: number[]): LocalizationArm {
+    return {
+      id,
+      label: `${id} agent arm`,
+      configuration: { llm: true },
+      async localize(item, _corpus, context) {
+        runs.push(context!.run);
+        return {
+          rankedFiles: [item.expectedFiles[0]!],
+          editCandidateFiles: [item.expectedFiles[0]!],
+          ...out,
+        };
+      },
+    };
+  }
+
+  it("tells each arm the run, and adds reused cost and time to the reading's own", async () => {
+    const seen: number[] = [];
+    let t = 0;
+    const meter = new FakeMeter();
+    const report = await runLocalizationEval(corpus(2), {
+      arms: [
+        arm("A0", () => 1),
+        agentArm("A3A", { reusedCostUsd: 0.25, reusedSeconds: 4, agentTurns: 7 }, seen),
+      ],
+      runs: 2,
+      meter,
+      now: () => (t += 1000),
+    });
+    expect(seen).toEqual([1, 1, 2, 2]);
+    const a3a = report.arms[1]!;
+    expect(a3a.items.map((s) => s.costUsd)).toEqual([0.25, 0.25]);
+    // 1 s measured by the clock + 4 s reused.
+    expect(a3a.items.map((s) => s.seconds)).toEqual([5, 5]);
+    expect(a3a.aggregate.agentTurnsPerRequirement).toBe(7);
+    expect(report.arms[0]!.aggregate.agentTurnsPerRequirement).toBeNull();
+    expect(report.arms[0]!.items[0]).not.toHaveProperty("agentTurns");
+    // The cap counts spend, not reused work: nothing was spent.
+    expect(report.spentUsd).toBe(0);
+    const md = toMarkdownReport(report);
+    expect(md).toContain("Agent-loop turns per requirement: A3A 7.0");
+  });
+
+  it("reports a reading whose reused work was unpriced as unpriced", async () => {
+    const report = await runLocalizationEval(corpus(1), {
+      arms: [arm("A0", () => 1), agentArm("A3A", { reusedCostUsd: null, reusedSeconds: 1 }, [])],
+      runs: 1,
+      meter: new FakeMeter(),
+    });
+    expect(report.arms[1]!.items[0]!.costUsd).toBeNull();
+    expect(toMarkdownReport(report)).not.toContain("Agent-loop turns");
+  });
+});

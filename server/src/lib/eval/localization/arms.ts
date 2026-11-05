@@ -55,6 +55,8 @@ import { fileKey, type LocalizationCorpus, type LocalizationItem } from "./corpu
 import type { CorpusSearch } from "./search.js";
 import type { GapVerdict } from "./corpus.js";
 import { seededRandom } from "./stats.js";
+import type { CostMeter } from "./cost.js";
+import { createA3AArm, createA3Arm, createA3NArm, type AgentPass } from "./agent-arms.js";
 
 /** What an arm returns for one requirement (cost and time are the runner's). */
 export interface ArmOutput {
@@ -62,6 +64,22 @@ export interface ArmOutput {
   editCandidateFiles: string[];
   llmNamedFiles?: string[];
   verdict?: GapVerdict;
+  /** #1755 — agent-loop turns this requirement took (an agent arm). */
+  agentTurns?: number;
+  /**
+   * #1755 — the cost of model work this reading REUSED from another arm's call
+   * in the same run (one agent pass read two ways), added to what this call
+   * spent so each reading reports what it costs on its own; null = unpriced.
+   */
+  reusedCostUsd?: number | null;
+  /** #1755 — the wall-clock seconds of that reused work. */
+  reusedSeconds?: number;
+}
+
+/** What the runner tells an arm about the reading it asks for. */
+export interface LocalizeContext {
+  /** 1-based run number: two arms reading one item in the same run may share model work. */
+  run: number;
 }
 
 /** One configuration under test. */
@@ -70,7 +88,11 @@ export interface LocalizationArm {
   label: string;
   /** Everything that identifies the configuration; printed in every report. */
   configuration: Record<string, string | number | boolean>;
-  localize(item: LocalizationItem, corpus: LocalizationCorpus): Promise<ArmOutput>;
+  localize(
+    item: LocalizationItem,
+    corpus: LocalizationCorpus,
+    context?: LocalizeContext,
+  ): Promise<ArmOutput>;
 }
 
 /** What an arm factory is given. A model-backed arm also receives its metered provider. */
@@ -83,10 +105,24 @@ export interface ArmDeps {
    * `RERANK_MODEL_WEIGHT`; the in-sample tuning run sets it (`--rerank-weight`).
    */
   rerankWeight?: number;
+  /** #1755 — the analysis agent pass over the materialized corpus (the A3 arms). */
+  agentPass?: AgentPass;
+  /** #1755 — the run's meter, to price an agent pass a second arm reuses. */
+  meter?: CostMeter;
+  /** Milliseconds; a seam for tests. */
+  now?: () => number;
 }
 
 /** The arms that call a model: the CLI builds a live, metered provider only for these. */
-export const MODEL_ARMS: ReadonlySet<string> = new Set(["A4", "A13", "A13C", "A13S"]);
+export const MODEL_ARMS: ReadonlySet<string> = new Set([
+  "A3",
+  "A3A",
+  "A3N",
+  "A4",
+  "A13",
+  "A13C",
+  "A13S",
+]);
 
 /** One seeding's files, in its own order. */
 export interface SeedingFiles {
@@ -227,7 +263,7 @@ function corpusMapperSearcher(search: CorpusSearch): CodeSymbolSearcher {
 }
 
 /** The corpus's symbols of the given files in one repository: the graph-membership lookup. */
-function corpusFileSymbols(corpus: LocalizationCorpus): StoredLinkDeps["loadFileSymbols"] {
+export function corpusFileSymbols(corpus: LocalizationCorpus): StoredLinkDeps["loadFileSymbols"] {
   return async (filePaths, repo) => {
     const wanted = new Set(filePaths);
     return corpus.symbols
@@ -613,6 +649,9 @@ export function createA13SArm(deps: ArmDeps): LocalizationArm {
 export const ARM_FACTORIES: Record<string, (deps: ArmDeps) => LocalizationArm> = {
   A0: createA0Arm,
   A2: createA2Arm,
+  A3: createA3Arm,
+  A3A: createA3AArm,
+  A3N: createA3NArm,
   A4: createA4Arm,
   A11: createA11Arm,
   A12: createA12Arm,
@@ -623,7 +662,6 @@ export const ARM_FACTORIES: Record<string, (deps: ArmDeps) => LocalizationArm> =
 
 /** The arms issues #1754–#1761 will add; named so a request for one fails with its issue. */
 export const PLANNED_ARMS: Record<string, string> = {
-  A3: "#1755 analysis-agent citations",
   A5: "#1757 adaptive cap",
   A6: "#1758 summaries",
   A7: "#1759 agentic seeder",

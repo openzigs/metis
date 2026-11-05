@@ -347,6 +347,36 @@ The first run with an empty model cache also downloads the embedding model (drop
 `<corpus>.state.json` makes the next run of that corpus rebuild and replace its
 projects, which have fixed slugs and connector ids.
 
+### The analysis-agent arms (#1755)
+
+`A3`, `A3A` and `A3N` run the Analysis code agent behind "Evaluate new requirements" on
+each held-out item and score the files it cites. Materialize both corpora first (above).
+
+```bash
+pnpm eval:localization --arms A0,A3,A3A,A3N --runs 1 --shard 1/12   # then 2/12 … with --resume <dir>
+pnpm eval:localization --merge <dir> --md
+```
+
+| Arm | Agent tools | Files scored |
+|---|---|---|
+| `A3` (A3-union) | production's (`search_code_graph`, `search_code_symbols`, `search_knowledge`, `read_file_slice`, `list_files`) and seeded blocks | A0's edit candidates, then the cited files through the stored-link channel (#1754) |
+| `A3A` (A3-alone) | the same pass as `A3` | the cited files alone, in first-cited order |
+| `A3N` (A3-nograph) | `list_files`, `read_file_slice` and the eval-only `grep_files`; no seeded blocks | the cited files alone |
+
+- **One pass per item and repository.** The pass uses the orchestrator's own functions
+  (`extractNewRequirementCandidates`, `assembleAgenticPassSeeds`, `buildAgenticPassPrompt`,
+  `runAgentLoop`), with no escalation and no post-loop salvage.
+- **A cited file counts only if the code graph holds it** (the rule in
+  `seed-code-links-from-findings.ts`), so graph resolution is 1.00 after that step.
+- **`A3` and `A3A` read the same pass in a run.** Each reports that pass's cost and time as
+  its own, and the cap counts the money once.
+- **The report adds agent-loop turns per requirement.**
+- **The `--arms` list binds the run to the materialized database.** When it names an agent
+  arm, the runner sets `DATABASE_URL`, `REPO_CLONE_DIR` and `LANCEDB_PATH` to the
+  materialized layout before Prisma loads, and refuses any other database.
+- **DeepSeek pricing.** A `deepseek-flash` run needs `MODEL_PRICES` set. Without a price,
+  the first call is unpriced, and an unpriced call stops the run.
+
 ### Rebuilding a corpus
 
 ```bash

@@ -37,6 +37,8 @@ export interface ArmObservation {
   costUsd: number | null;
   /** Wall-clock seconds this requirement took. */
   seconds: number;
+  /** #1755 — agent-loop turns this requirement took; absent for an arm with no agent loop. */
+  agentTurns?: number;
 }
 
 /** The scores of one requirement on one run. */
@@ -58,6 +60,8 @@ export interface ItemRunScore {
   editCandidateCount: number;
   costUsd: number | null;
   seconds: number;
+  /** #1755 — agent-loop turns; absent for an arm with no agent loop. */
+  agentTurns?: number;
 }
 
 /** Recall of the top `k` ranked files against `expected`. */
@@ -139,6 +143,7 @@ export function scoreObservation(
     editCandidateCount: new Set(obs.editCandidateFiles).size,
     costUsd: obs.costUsd,
     seconds: obs.seconds,
+    ...(obs.agentTurns === undefined ? {} : { agentTurns: obs.agentTurns }),
   };
 }
 
@@ -170,6 +175,8 @@ export interface ItemScore {
   /** Mean dollars per run; null when any run was unpriced. */
   costUsd: number | null;
   seconds: number;
+  /** #1755 — mean agent-loop turns per run; absent for an arm with no agent loop. */
+  agentTurns?: number;
 }
 
 function mean(values: readonly number[]): number {
@@ -185,6 +192,7 @@ function meanOrNull(values: ReadonlyArray<number | null>): number | null {
 export function averageRuns(id: string, runs: readonly ItemRunScore[]): ItemScore {
   if (runs.length === 0) throw new Error(`no runs to average for ${id}`);
   const pick = (f: (r: ItemRunScore) => number) => mean(runs.map(f));
+  const turns = meanOrNull(runs.map((r) => r.agentTurns ?? null));
   const verdicts = runs.map((r) => (r.verdictCorrect === null ? null : r.verdictCorrect ? 1 : 0));
   const confined = runs.map((r) =>
     r.editRepoConfined === null ? null : r.editRepoConfined ? 1 : 0,
@@ -204,6 +212,7 @@ export function averageRuns(id: string, runs: readonly ItemRunScore[]): ItemScor
     editCandidateCount: pick((r) => r.editCandidateCount),
     costUsd: runs.some((r) => r.costUsd === null) ? null : pick((r) => r.costUsd ?? 0),
     seconds: pick((r) => r.seconds),
+    ...(turns === null ? {} : { agentTurns: turns }),
   };
 }
 
@@ -230,6 +239,8 @@ export interface ArmAggregate {
   costUsdPerRequirement: number | null;
   secondsPerRequirement: number;
   totalCostUsd: number | null;
+  /** #1755 — mean agent-loop turns per requirement; null when no item ran an agent loop. */
+  agentTurnsPerRequirement: number | null;
 }
 
 /** Aggregate per-requirement scores. */
@@ -251,6 +262,7 @@ export function aggregateItems(items: readonly ItemScore[]): ArmAggregate {
     costUsdPerRequirement: unpriced ? null : pick((s) => s.costUsd ?? 0),
     secondsPerRequirement: pick((s) => s.seconds),
     totalCostUsd: unpriced ? null : totalCost,
+    agentTurnsPerRequirement: meanOrNull(items.map((s) => s.agentTurns ?? null)),
   };
 }
 
