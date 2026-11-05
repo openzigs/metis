@@ -2379,6 +2379,29 @@ dependencies).
 
    The card's headline counts both (*"3 files to edit · 41 more to review"*), and
    the markdown export has the same two sections.
+
+   **Why each file is listed.** When your administrator has turned on one of the
+   extra ways of choosing the files to edit (stored requirement links, the AI
+   edit check, the AI ranking or the code agent, all off by default), each file
+   to edit says why it is there, and the files are listed most likely first:
+   - **Found by** names what picked the file: *Keyword and meaning search* (the
+     code search), *Linked to this requirement* (a stored link to the
+     requirement), *AI edit check*, *AI ranking*, *Code agent* (the files
+     Analysis's code agent cited when you ran "Evaluate new requirements"),
+     *Data lineage* (code that writes the affected data) or *Table definition*.
+   - **Why** and **Code** appear only when the AI named a line and METIS checked
+     that line against the code: the one-line reason and a link to that line.
+     A reason METIS could not check is never shown as a fact.
+   - **Doubtful** marks a file the AI check doubts, with its reason. The file is
+     still listed, so you can judge it yourself, but it is not counted as a file
+     to edit.
+   - When there is no file to edit, or only doubtful ones, the card says
+     *"METIS could not find the code this change touches in* project*"* instead
+     of showing an empty list. The blast radius is still listed for review, under
+     its own heading.
+
+   With every one of those options off, the card looks exactly as described
+   above.
 6. Projects with nothing to show are listed together below the report, in a
    collapsed **Not affected or not checked** group, each with what happened:
    **Checked: nothing affected** (METIS searched it and nothing matched),

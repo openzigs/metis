@@ -104,6 +104,7 @@ export function ProjectImpactSection({
               currentUserId={currentUserId}
               onMarkFeedback={onMarkFeedback}
               onDeleteFeedback={onDeleteFeedback}
+              projectName={projectName ?? projectId}
             />
           ))}
         </div>
