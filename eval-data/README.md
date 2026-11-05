@@ -282,6 +282,70 @@ pnpm eval:localization --merge <dir> --md                       # the report; ru
   file recorded under another configuration. Pass the same `--arms` and `--runs` to
   every slice.
 
+### Materializing a corpus for agent arms (#1799)
+
+An agent arm runs the Analysis code agent, whose tools (`search_code_graph`,
+`search_code_symbols`, `read_file_slice`, `list_files`) read an ingested project, its
+symbol vectors and a clone. The committed symbol rows are not enough for that, so
+materialize the corpus first:
+
+```bash
+TRANSFORMERS_CACHE=~/.cache/metis-transformers HF_HUB_OFFLINE=1 \
+pnpm eval:materialize localization-01-miniflux-heldout
+TRANSFORMERS_CACHE=~/.cache/metis-transformers HF_HUB_OFFLINE=1 \
+pnpm eval:materialize localization-02-fixture-portfolio
+```
+
+For each repository in the manifest, the command:
+
+1. makes a shallow clone at the pinned commit;
+2. creates a project with a GitHub repository connector;
+3. runs the normal code-graph ingest, with SQL lineage off as the committed rows were built;
+4. embeds the symbols with the local embedder (`EMBED_BACKEND=xenova`,
+   `Alibaba-NLP/gte-modernbert-base` unless `EMBED_MODEL` says otherwise).
+
+No hosted model is called, so it costs $0. Everything goes into the gitignored
+`eval-data/.materialized/`:
+
+| Path | What | Variable an arm sets from it |
+|---|---|---|
+| `eval.db` | the SQLite eval database | `DATABASE_URL` |
+| `clones/<connectorId>/` | one clone per repository | `REPO_CLONE_DIR` |
+| `lancedb/` | the symbol vectors | `LANCEDB_PATH` |
+| `<corpus>.state.json` | each repository's `projectId`, `connectorId` and commit SHA, plus the three paths above | (read it with `readMaterializedState`) |
+
+The script sets those variables itself and reads no `.env`. It fails unless Prisma is
+bound to `eval.db`, so it never writes to `server/dev.db`. It also fails if
+`VECTOR_STORE` or `AI_OFFLINE` would send the vectors anywhere but `lancedb/`. Each
+repository is its own project: the analysis agent pass works on one connector's clone
+at a time.
+
+**The symbol-set check.** Every run compares each repository's materialized graph with
+the committed `symbols.json.gz`: the same files, and the same qualified names in each
+file. If they differ, the run fails and lists the missing and extra files and symbols.
+A repository built in that run is deleted rather than left half-trusted. This keeps the
+agent arms and A0 measuring the same code.
+
+**A re-run is a no-op.** When the state file, the database and the clones still hold
+every repository at its pinned commit, with every symbol embedded by the current model,
+nothing is built or written. A changed commit, URL or embedding model rebuilds only what
+it affects.
+
+**Disk and time** (measured 2026-11-04 on an Apple-silicon laptop, model already cached):
+
+| Corpus | Symbols | Clone | Ingest | Embed | Re-run |
+|---|---|---|---|---|---|
+| `localization-01-miniflux-heldout` | 3,533 | 1 s | 4 s | 82 s | 2 s |
+| `localization-02-fixture-portfolio` (3 repositories) | 40 | 1.4 s | < 1 s | 4 s | 2 s |
+
+Both corpora together take about 57 MB: 22 MB database, 26 MB vectors, 8 MB clones.
+The first run with an empty model cache also downloads the embedding model (drop
+`HF_HUB_OFFLINE=1` for that run).
+
+**Cleanup.** `rm -rf eval-data/.materialized` removes everything. Deleting one
+`<corpus>.state.json` makes the next run of that corpus rebuild and replace its
+projects, which have fixed slugs and connector ids.
+
 ### Rebuilding a corpus
 
 ```bash

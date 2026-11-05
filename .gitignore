@@ -194,6 +194,10 @@ eval-data/corpus/*/docs/
 # `symbols.json.gz` by `pnpm eval:localization --embed` and the local model. The fixture-portfolio corpus's recording (0.15 MB) stays tracked.
 eval-data/corpus/localization-01-miniflux-heldout/vectors.*
 
+# #1799 — `pnpm eval:materialize <corpus>`: the localization corpora as ingested
+# METIS projects for agent-based eval arms (clones, eval.db, LanceDB, state files).
+eval-data/.materialized/
+
 # Local SAML test harness (#523) — the throwaway mock-IdP signing keypair is
 # generated per-developer by scripts/saml-harness/up.sh. NEVER commit private
 # keys (also trips the Semgrep secret-detection gate).
