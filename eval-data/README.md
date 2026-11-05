@@ -247,6 +247,41 @@ pnpm eval:localization --embed --in-sample
 Without `--embed` a missing vector fails the run instead of letting the search fall
 back to BM25 under the hybrid label.
 
+### Slices, resume and merge (#1800)
+
+A slow arm (agent passes, a slow provider) does not fit one ten-minute call. Every run
+records each requirement's score as its own partial file, so a run can be split into
+item slices, resumed after a stop, and merged into one report by the runner itself:
+
+```bash
+pnpm eval:localization --arms A0,A4 --shard 1/3                 # prints its partials directory, <dir>
+pnpm eval:localization --arms A0,A4 --shard 2/3 --resume <dir>  # each later slice writes into <dir>
+pnpm eval:localization --arms A0,A4 --shard 3/3 --resume <dir>
+pnpm eval:localization --merge <dir> --md                       # the report; runs nothing
+```
+
+- **Slices.** `--shard <n>/<m>` runs the n-th of m contiguous shards of each corpus's
+  items; `--items <from>:<to>` runs an item range (0-based, end exclusive). Without
+  either, every item runs.
+- **Partial files** live in `eval-results/localization-partials-<run>/`:
+  `<corpus>/config.json` (the configuration), one `<corpus>/<arm>/run-<n>/<item>.json`
+  per requirement score, and `spend/<invocation>.json` for spend outside requirements
+  (the table guard).
+- **Resume.** `--resume <dir>` loads every score already recorded and runs only the
+  missing ones, so a stop mid-slice re-runs nothing that finished.
+- **Merge.** `--merge <dir>` builds the per-corpus and pooled reports from the partial
+  files with the runner's own scoring and statistics; three slices merged give the
+  report one full run gives. Every report lists the requirements still missing a score.
+  Read the table guard here (`--merge <dir> --table-guard`): a slice refuses it.
+- **One cap across slices.** `--budget` holds against what every slice in the directory
+  has spent, read back from the partial files, with the same per-arm look-ahead. A
+  recorded unpriced call stops every later slice.
+- **One configuration.** The first slice writes the arms' configuration, the model, the
+  run count and a digest of the corpus. A slice or resume that differs in any of them
+  is refused with the difference listed; a merge refuses a changed corpus or a partial
+  file recorded under another configuration. Pass the same `--arms` and `--runs` to
+  every slice.
+
 ### Rebuilding a corpus
 
 ```bash

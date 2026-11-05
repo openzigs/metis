@@ -18,11 +18,18 @@
  * reached the budget, so `--budget 0` runs nothing. An unpriced call stops the
  * run too: unknown spend cannot be held under a cap.
  *
+ * #1800 — a run can be done in SLICES and RESUMED: scores an earlier call
+ * recorded (a {@link RunCheckpoint}) are loaded and never re-run, `runItem`
+ * says which of the rest this call may run, and every new score is handed to
+ * the checkpoint as soon as it exists. The report is always built from every
+ * score held, recorded or new, so three slices and a merge give the report one
+ * full run gives; the requirements still missing are listed (`missing`).
+ *
  * Pure orchestration over injected arms, meter and clock: no environment
  * reads, no network of its own.
  */
 import type { LocalizationArm } from "./arms.js";
-import type { LocalizationCorpus } from "./corpus.js";
+import type { LocalizationCorpus, LocalizationItem } from "./corpus.js";
 import type { CostMeter } from "./cost.js";
 import {
   PAIRED_METRICS,
@@ -160,6 +167,31 @@ export function memoisedA0TableGuard(
   return guard;
 }
 
+/** #1800 — one requirement's score on one run of one arm, as a checkpoint records it. */
+export interface RecordedScore {
+  arm: string;
+  run: number;
+  item: string;
+  score: ItemRunScore;
+  /** What the requirement spent, by the meter (also when the score's cost is null). */
+  spentUsd: number;
+  /** Unpriced model calls the requirement made. */
+  unpricedCalls: number;
+}
+
+/** #1800 — scores recorded by earlier calls, and where this call records its own. */
+export interface RunCheckpoint {
+  recorded: readonly RecordedScore[];
+  record(score: RecordedScore): Promise<void>;
+}
+
+/** #1800 — the requirements an arm has no score for on a run. */
+export interface MissingItems {
+  arm: string;
+  run: number;
+  items: string[];
+}
+
 export interface RunLocalizationOptions {
   arms: LocalizationArm[];
   runs?: number;
@@ -172,6 +204,10 @@ export interface RunLocalizationOptions {
   now?: () => number;
   /** Measures the table-precision guard rail for an arm (the CLI wires impact-recall-01). */
   tableGuard?: TableGuard;
+  /** #1800 — the slice: whether this call may RUN an item (default: every item). */
+  runItem?: (item: LocalizationItem) => boolean;
+  /** #1800 — earlier calls' scores (never re-run), and the sink for this call's. */
+  checkpoint?: RunCheckpoint;
 }
 
 export interface ArmResult {
@@ -241,6 +277,11 @@ export interface LocalizationReport {
    * reached: the one the requirement belonged to, or the arm's last complete run.
    */
   stopped: LocalizationStop | null;
+  /**
+   * #1800 — per arm and run, the requirements with no score: outside the slices
+   * run so far, or after a stop. Empty when every arm scored every run.
+   */
+  missing: MissingItems[];
   arms: ArmResult[];
   comparisons: ArmComparison[];
   detectableGap: string;
@@ -269,9 +310,38 @@ export async function runLocalizationEval(
   const now = opts.now ?? (() => performance.now());
   if (opts.arms[0]?.id !== "A0") throw new Error("A0 must be the first arm: it is the baseline");
 
-  const perArm = new Map(
-    opts.arms.map((a) => [a.id, { completedRuns: 0, perItem: new Map<string, ItemRunScore[]>() }]),
+  // Per arm, per item, per run: every score held, recorded or new.
+  const scores = new Map(
+    opts.arms.map((a) => [a.id, new Map<string, Map<number, ItemRunScore>>()]),
   );
+  const itemIds = new Set(corpus.manifest.items.map((i) => i.id));
+  const hold = (armId: string, run: number, itemId: string, score: ItemRunScore) => {
+    const perItem = scores.get(armId)!;
+    if (!perItem.has(itemId)) perItem.set(itemId, new Map());
+    perItem.get(itemId)!.set(run, score);
+  };
+  for (const r of opts.checkpoint?.recorded ?? []) {
+    if (
+      !scores.has(r.arm) ||
+      !itemIds.has(r.item) ||
+      !Number.isInteger(r.run) ||
+      r.run < 1 ||
+      r.run > runs
+    ) {
+      throw new Error(
+        `a recorded score (arm ${r.arm}, run ${r.run}, item ${r.item}) is not part of this run's arms, runs or items`,
+      );
+    }
+    hold(r.arm, r.run, r.item, r.score);
+  }
+  const held = (armId: string, run: number, itemId: string) =>
+    scores.get(armId)!.get(itemId)?.has(run) ?? false;
+  /** The leading runs on which the arm scored every item. */
+  const completedRunsOf = (armId: string) => {
+    let n = 0;
+    while (n < runs && corpus.manifest.items.every((i) => held(armId, n + 1, i.id))) n++;
+    return n;
+  };
   let stopped: LocalizationReport["stopped"] = null;
 
   /**
@@ -287,7 +357,7 @@ export async function runLocalizationEval(
       }
       const blocked = budget.beforeGuard(meter);
       if (blocked) {
-        const run = perArm.get(arm.id)!.completedRuns;
+        const run = completedRunsOf(arm.id);
         stopped = { phase: "table-guard", reason: blocked, arm: arm.id, run, item: null };
         return { measured: false, reason: `skipped: ${blocked}` };
       }
@@ -300,14 +370,16 @@ export async function runLocalizationEval(
 
   outer: for (let run = 1; run <= runs; run++) {
     for (const arm of opts.arms) {
-      const state = perArm.get(arm.id)!;
       for (const item of corpus.manifest.items) {
+        if (held(arm.id, run, item.id)) continue;
+        if (opts.runItem && !opts.runItem(item)) continue;
         const blocked = budget.beforeItem(meter, arm.id);
         if (blocked) {
           stopped = { phase: "requirement", reason: blocked, arm: arm.id, run, item: item.id };
           break outer;
         }
         const spent = meter.spentUsd();
+        const unpricedBefore = meter.unpricedCalls();
         const t0 = now();
         const out = await arm.localize(item, corpus);
         const seconds = (now() - t0) / 1000;
@@ -321,25 +393,45 @@ export async function runLocalizationEval(
           item.expectedVerdict,
           item.expectedRepos,
         );
-        state.perItem.set(item.id, [...(state.perItem.get(item.id) ?? []), score]);
+        hold(arm.id, run, item.id, score);
+        await opts.checkpoint?.record({
+          arm: arm.id,
+          run,
+          item: item.id,
+          score,
+          spentUsd: itemCost,
+          unpricedCalls: meter.unpricedCalls() - unpricedBefore,
+        });
       }
-      state.completedRuns = run;
     }
   }
 
   // Score every arm on the runs all of them completed; a partial first run when none did.
-  const commonRuns = Math.min(...[...perArm.values()].map((s) => s.completedRuns));
+  const completed = new Map(opts.arms.map((a) => [a.id, completedRunsOf(a.id)]));
+  const commonRuns = Math.min(...completed.values());
   const scoredRuns = Math.max(1, commonRuns);
+
+  const missing: MissingItems[] = [];
+  for (const arm of opts.arms) {
+    for (let run = 1; run <= runs; run++) {
+      const items = corpus.manifest.items.filter((i) => !held(arm.id, run, i.id)).map((i) => i.id);
+      if (items.length > 0) missing.push({ arm: arm.id, run, items });
+    }
+  }
 
   const arms: ArmResult[] = [];
   for (const arm of opts.arms) {
-    const state = perArm.get(arm.id)!;
+    const perItem = scores.get(arm.id)!;
     let dropped = 0;
     const items: ItemScore[] = [];
+    const perItemRuns: Record<string, ItemRunScore[]> = {};
     for (const i of corpus.manifest.items) {
-      const all = state.perItem.get(i.id) ?? [];
-      const kept = all.slice(0, scoredRuns);
-      dropped += all.length - kept.length;
+      const byRun = perItem.get(i.id);
+      if (!byRun) continue;
+      const ordered = [...byRun].sort(([a], [b]) => a - b);
+      perItemRuns[i.id] = ordered.map(([, s]) => s);
+      const kept = ordered.filter(([run]) => run <= scoredRuns).map(([, s]) => s);
+      dropped += ordered.length - kept.length;
       if (kept.length > 0) items.push(averageRuns(i.id, kept));
     }
     const intervals = Object.fromEntries(
@@ -349,8 +441,8 @@ export async function runLocalizationEval(
       id: arm.id,
       label: arm.label,
       configuration: arm.configuration,
-      completedRuns: state.completedRuns,
-      perItemRuns: Object.fromEntries(state.perItem),
+      completedRuns: completed.get(arm.id)!,
+      perItemRuns,
       droppedRunScores: dropped,
       items,
       aggregate: aggregateItems(items),
@@ -375,6 +467,7 @@ export async function runLocalizationEval(
     budgetUsd: budget.budgetUsd,
     spentUsd: meter.spentUsd(),
     stopped,
+    missing,
     arms,
     comparisons,
     detectableGap: minimumDetectableGapStatement(corpus.manifest.items.length),
@@ -479,6 +572,8 @@ export interface PooledLocalizationReport {
     partialFirstRun: boolean;
     /** Why the corpus's run stopped early (the cap, or an unpriced call); null when it ran to the end. */
     stopped: string | null;
+    /** #1800 — requirement scores (arm × run × item) the corpus's report lacks. */
+    missingScores: number;
   }>;
   /** A0's scored items over every pooled corpus. */
   items: number;
@@ -537,6 +632,7 @@ export function poolHeldOutReports(
       scoredRuns: r.scoredRuns,
       partialFirstRun: r.partialFirstRun,
       stopped: r.stopped?.reason ?? null,
+      missingScores: r.missing.reduce((n, m) => n + m.items.length, 0),
     })),
     items,
     comparisons,
@@ -594,6 +690,15 @@ export function toMarkdownReport(report: LocalizationReport): string {
         ? `before arm ${s.arm}'s table-precision guard`
         : `before arm ${s.arm}, run ${s.run}, item ${s.item}`;
     lines.push(`> **Stopped early** (${s.reason}) ${where}.`, "");
+  }
+  // #1800 — a sliced run, merged before every slice ran, says what it lacks.
+  if (report.missing.length > 0) {
+    lines.push(
+      `> **Missing requirements** (no score yet): ${report.missing
+        .map((m) => `${m.arm} run ${m.run}: ${m.items.join(", ")}`)
+        .join("; ")}.`,
+      "",
+    );
   }
   const dropped = report.arms.filter((a) => a.droppedRunScores > 0);
   if (report.partialFirstRun && report.arms.length > 1) {
@@ -710,7 +815,7 @@ export function toPooledMarkdownReport(report: PooledLocalizationReport): string
     `Corpora: ${report.corpora
       .map(
         (c) =>
-          `\`${c.id}\` (${c.items} items, ${c.scoredRuns} scored run(s)${c.partialFirstRun ? ", run 1 incomplete" : ""}${c.stopped ? `, stopped early: ${c.stopped}` : ""})`,
+          `\`${c.id}\` (${c.items} items, ${c.scoredRuns} scored run(s)${c.partialFirstRun ? ", run 1 incomplete" : ""}${c.stopped ? `, stopped early: ${c.stopped}` : ""}${c.missingScores > 0 ? `, ${c.missingScores} requirement score(s) missing` : ""})`,
       )
       .join(", ")} · Items pooled: **${report.items}**`,
     "",
