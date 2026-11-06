@@ -1618,6 +1618,22 @@ is not cached at all. Error results are never cached.
 
 Hit, miss and bypass counts: `metis_chat_tool_result_cache_total` on `/metrics`.
 
+#### Semantic answer cache (off by default, #1844)
+
+`server/src/lib/ai/semantic-cache.ts` can serve a stored `/chat` answer for a repeated
+question. It is **off** unless `SEMANTIC_CACHE_ENABLED=1`, and it is meant only for a
+measured trial (#1845). When it is on:
+
+- An entry is scoped to the model, the system-prompt hash, the project, the project's
+  content version (above), the caller and the conversation so far.
+- An exact match on the normalised question is tried first. The similarity path needs
+  cosine ≥ 0.97 (`SEMANTIC_CACHE_THRESHOLD`; it was 0.92 before #1844).
+- A turn that called any tool is never stored, and neither is a project whose content
+  version is incomplete.
+
+Chat questions and answers are never written to the vector store
+([ADR 0022](decisions/0022-no-chat-answers-in-the-vector-store.md)).
+
 #### Measuring what caching saves (#1277)
 
 `pnpm cache:report -- --db <sqlite file>` reads the `token_usages` ledger and

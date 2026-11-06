@@ -448,9 +448,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       __resetSemanticCacheSingleton();
       model.embed = async () => ({ vectors: [[1, 0, 0]], dimension: 3, model: "stub" });
       try {
-        const sid = await newSession(alice);
-        const first = await as(alice).post("/api/ai/chat", { sessionId: sid, message: "same q" });
+        // #1844 — the cache is scoped to the conversation so far, so the same
+        // question hits from a fresh session, not later in the same one.
+        const first = await as(alice).post("/api/ai/chat", {
+          sessionId: await newSession(alice),
+          message: "same q",
+        });
         expect(first.status).toBe(200);
+        const sid = await newSession(alice);
         const chatCalls = () => model.calls.filter((c) => c.kind === "chat").length;
         const before = chatCalls();
         const restore = failSnapshotWrites();
@@ -464,12 +469,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(second.body.data.response.cached).toBe(true);
         expect(chatCalls()).toBe(before); // the provider was not called again
         const rows = (await transcript(alice, sid)).body.data.messages;
-        expect(rows.map((r: { role: string }) => r.role)).toEqual([
-          "user",
-          "assistant",
-          "user",
-          "assistant",
-        ]);
+        expect(rows.map((r: { role: string }) => r.role)).toEqual(["user", "assistant"]);
       } finally {
         delete process.env.SEMANTIC_CACHE_ENABLED;
         __resetSemanticCacheSingleton();
@@ -498,11 +498,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(first.body.data.response.cached).toBeUndefined();
         const chatCalls = () => model.calls.filter((c) => c.kind === "chat").length;
         const before = chatCalls();
-        const second = await as(alice).post("/api/ai/chat", { sessionId: sid, message: "q211" });
+        // #1844 — a fresh session: the cache is scoped to the conversation so far.
+        const sid2 = await newSession(alice);
+        const second = await as(alice).post("/api/ai/chat", { sessionId: sid2, message: "q211" });
         expect(second.status).toBe(200);
         expect(second.body.data.response.cached).toBe(true);
         expect(second.body.data.response.content).toBe(first.body.data.response.content);
         expect(chatCalls()).toBe(before);
+        // …and later in the SAME conversation the same words are not served from it.
+        const third = await as(alice).post("/api/ai/chat", { sessionId: sid, message: "q211" });
+        expect(third.status).toBe(200);
+        expect(third.body.data.response.cached).toBeUndefined();
+        expect(chatCalls()).toBe(before + 1);
       } finally {
         delete process.env.SEMANTIC_CACHE_ENABLED;
         __resetSemanticCacheSingleton();
