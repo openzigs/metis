@@ -17,9 +17,11 @@
  *      seeding, with the live #936 table filter. With the flag on (A7), the
  *      stored citations, translated onto the fixture, lead the files to edit;
  *      off (A7O), the same changes are seeded by the hybrid search alone.
- *   3. A requirement's tables are the union over its changes, scored against
- *      the fixture's labels; a run's reading is the macro table precision, and
- *      the guard's is the mean over the runs.
+ *   3. #1848 — each change's own tables are recorded. A requirement is scored
+ *      on the analysis's FIRST persisted requirement, its restatement of the
+ *      labelled one; the union over all its changes (#1823's reading) is
+ *      reported beside it ({@link GuardScoring}). A run's reading is the
+ *      macro table precision, and the guard's is the mean over the runs.
  *
  * The baseline is A0 on the split seeding, the fixture's own text: the
  * reading the A4 and A13 guards are gated against (#1786). A7O against it
@@ -145,6 +147,20 @@ export interface GuardRunRecord {
   untracked: number;
   /** How A7's citations reached the fixture. */
   citations?: CitationTranslation;
+  /**
+   * #1848 — A7, A7O: each change's own tables before the union, per fixture
+   * requirement, in the order the analysis persisted them. Absent on records
+   * written before #1848.
+   */
+  pieces?: Record<string, GuardPiece[]>;
+}
+
+/** #1848 — one change an A7 or A7O run read, and the tables it surfaced on its own. */
+export interface GuardPiece {
+  /** The persisted requirement's id; the fixture requirement's when the analysis persisted none. */
+  requirementId: string;
+  title: string;
+  tables: string[];
 }
 
 export type GuardRecord = GuardAnalysisRecord | GuardRunRecord;
@@ -156,6 +172,24 @@ export interface GuardStore {
 }
 
 const READINGS: ReadonlySet<string> = new Set(["baseline", "A7", "A7O", "mapper"]);
+
+/** #1848 — a run's per-requirement tables: requirement id → its changes, each with string tables. */
+function validPieces(v: unknown): boolean {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  return Object.values(v).every(
+    (list) =>
+      Array.isArray(list) &&
+      list.length > 0 &&
+      list.every(
+        (p: Partial<GuardPiece> | null) =>
+          !!p &&
+          typeof p.requirementId === "string" &&
+          typeof p.title === "string" &&
+          Array.isArray(p.tables) &&
+          p.tables.every((t) => typeof t === "string"),
+      ),
+  );
+}
 
 /** Parse one recorded line; a malformed one throws rather than being half-trusted. */
 export function parseGuardRecord(line: string): GuardRecord {
@@ -184,6 +218,7 @@ export function parseGuardRecord(line: string): GuardRecord {
     if (!r.tables || typeof r.tables !== "object") bad("no tables");
     if (typeof r.label !== "string" || typeof r.seeding !== "string") bad("no configuration");
     if (typeof r.changes !== "number" || typeof r.untracked !== "number") bad("no change counts");
+    if (r.pieces !== undefined && !validPieces(r.pieces)) bad("malformed pieces");
   } else {
     bad(`unknown kind ${JSON.stringify(r.kind)}`);
   }
@@ -281,11 +316,77 @@ export function lazyAgentSeedGuard(build: () => Promise<AgentSeedGuard>): AgentS
   };
 }
 
+/**
+ * #1848 — which tables of an A7 or A7O run are scored against a fixture
+ * requirement's label:
+ *
+ * - `headline`: those of the FIRST requirement the analysis persisted, its own
+ *   restatement of the fixture requirement. The rest are further requirements
+ *   the analysis wrote beside it (elicited non-functional ones, mostly:
+ *   transactions, schema checks, access control), each with its own tables,
+ *   and each its own impact item in production. The label was written for the
+ *   restatement, not for them.
+ * - `union`: every persisted requirement's tables, unioned (#1823's reading).
+ *   About 4.5 requirements per analysis against one label: on 2026-11-06
+ *   DeepSeek records this alone took A7O from 0.760 to 0.466.
+ *
+ * A0's readings (`baseline`, `mapper`) read the fixture's own text, the same
+ * under either.
+ */
+export type GuardScoring = "headline" | "union";
+
+/**
+ * The tables a run surfaced for one fixture requirement under `scoring`; null
+ * when the run cannot be read that way (an A7 or A7O run recorded before #1848
+ * has no per-requirement tables).
+ */
+export function guardRunTables(
+  record: GuardRunRecord,
+  requirementId: string,
+  scoring: GuardScoring,
+): string[] | null {
+  if (scoring === "union" || (record.reading !== "A7" && record.reading !== "A7O")) {
+    return record.tables[requirementId] ?? [];
+  }
+  const pieces = record.pieces?.[requirementId];
+  return pieces ? (pieces[0]?.tables ?? []) : null;
+}
+
+/** A scoring in the words the guard's log and configuration use. */
+const SCORING_WORDS: Record<GuardScoring, string> = {
+  headline: "the analysis's first persisted requirement",
+  union: "every persisted requirement unioned",
+};
+
+/** Each fixture requirement's table precision on one run under `scoring`; null when unreadable. */
+function runPrecisions(
+  record: GuardRunRecord,
+  fixture: Pick<ImpactRecallFixture, "requirements">,
+  scoring: GuardScoring,
+): number[] | null {
+  const out: number[] = [];
+  for (const q of fixture.requirements) {
+    const found = guardRunTables(record, q.id, scoring);
+    if (found === null) return null;
+    out.push(scoreSet(found, q.expectedTables, normalizeTable).precision);
+  }
+  return out;
+}
+
+/**
+ * #1848 — the scoring a set of A7/A7O runs is read with: `headline` when every
+ * one recorded its per-requirement tables, else `union` (records before #1848).
+ */
+export function guardScoringOf(records: readonly GuardRunRecord[]): GuardScoring {
+  return records.every((r) => r.pieces !== undefined) ? "headline" : "union";
+}
+
 /** One paired comparison of two readings over the fixture's requirements. */
 export interface GuardDifference {
   arm: GuardReadingId;
   baseline: GuardReadingId;
   runs: number;
+  scoring: GuardScoring;
   /** `mean(arm − baseline)` of each requirement's table precision, averaged over the runs. */
   interval: PairedTInterval;
 }
@@ -301,31 +402,31 @@ const PAIRS: ReadonlyArray<readonly [GuardReadingId, GuardReadingId]> = [
  * #1847 — the paired intervals over a guard's records (`records.jsonl`): each
  * requirement's table precision, averaged over runs 1 to `runs`, paired
  * reading against reading over the fixture's requirements, with a 95%
- * t-interval. A comparison missing a run of either reading is left out.
+ * t-interval. A comparison missing a run of either reading, or one that cannot
+ * be read under `scoring` (#1848), is left out.
  */
 export function guardPairedDifferences(
   records: readonly GuardRecord[],
   fixture: Pick<ImpactRecallFixture, "requirements">,
   runs: number,
+  scoring: GuardScoring = "union",
 ): GuardDifference[] {
   const perRequirement = (reading: GuardReadingId): number[] | null => {
-    const own: GuardRunRecord[] = [];
+    const own: number[][] = [];
     for (let run = 1; run <= runs; run++) {
       const r = records.find((x) => x.kind === "run" && x.reading === reading && x.run === run);
       if (!r || r.kind !== "run") return null;
-      own.push(r);
+      const p = runPrecisions(r, fixture, scoring);
+      if (!p) return null;
+      own.push(p);
     }
-    return fixture.requirements.map((q) =>
-      mean(
-        own.map((r) => scoreSet(r.tables[q.id] ?? [], q.expectedTables, normalizeTable).precision),
-      ),
-    );
+    return fixture.requirements.map((_, i) => mean(own.map((p) => p[i]!)));
   };
   const out: GuardDifference[] = [];
   for (const [arm, baseline] of PAIRS) {
     const a = perRequirement(arm);
     const b = perRequirement(baseline);
-    if (a && b) out.push({ arm, baseline, runs, interval: pairedTInterval(b, a) });
+    if (a && b) out.push({ arm, baseline, runs, scoring, interval: pairedTInterval(b, a) });
   }
   return out;
 }
@@ -474,6 +575,10 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
     trackedBy: ReadonlyMap<string, ChangedRequirement[]>,
   ): Promise<GuardRunRecord> {
     const counts = emptyTranslation();
+    // #1848 — the agent-citation stage keeps the search's seeds when a lookup
+    // throws, so a failed read (an eval database missing a later migration)
+    // would quietly make A7 read as A7O. Remembered here, and the run refused.
+    let lookupFailed: unknown = null;
     const seeding: SplitSeedingOptions =
       reading === "A7"
         ? {
@@ -481,9 +586,15 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
             agentSeeds: {
               // computeProjectImpact runs on the fixture's project only.
               loadCitations: async (requirementId) => {
-                const links = await deps.loadCitations(requirementId);
-                const ids = links.flatMap((l) => (l.codeSymbolId ? [l.codeSymbolId] : []));
-                return translateCitations(links, await deps.qualifiedNames(ids), fixture, counts);
+                try {
+                  const links = await deps.loadCitations(requirementId);
+                  const ids = links.flatMap((l) => (l.codeSymbolId ? [l.codeSymbolId] : []));
+                  const names = await deps.qualifiedNames(ids);
+                  return translateCitations(links, names, fixture, counts);
+                } catch (err) {
+                  lookupFailed ??= err;
+                  throw err;
+                }
               },
               loadFileSymbols: fixtureFileSymbols(fixture),
             },
@@ -491,6 +602,7 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
         : split;
     const options: RunImpactRecallOptions = { ...deps.options, splitSeeding: seeding };
     const scores: RequirementScore[] = [];
+    const pieces: Record<string, GuardPiece[]> = {};
     let changes = 0;
     let untracked = 0;
     for (const requirement of fixture.requirements) {
@@ -500,10 +612,25 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
       changes += tracked.length;
       const tables = new Set<string>();
       const symbols = new Set<string>();
+      const own: GuardPiece[] = [];
       for (const change of tracked.length > 0 ? tracked : [requirementToChange(requirement)]) {
         const found = await observeChange(fixture, change, fixture.searcher, options);
         for (const t of found.foundTables) tables.add(t);
         for (const s of found.foundCodeSymbols) symbols.add(s);
+        own.push({
+          requirementId: change.requirementId ?? requirement.id,
+          title: change.title,
+          tables: [...new Set(found.foundTables)],
+        });
+      }
+      pieces[requirement.id] = own;
+      if (lookupFailed !== null) {
+        const why = lookupFailed instanceof Error ? lookupFailed.message : String(lookupFailed);
+        throw new Error(
+          `A7 run ${run}: a stored-citation lookup failed, so the run would read as A7O; nothing recorded. ` +
+            `If the eval database predates a migration, run pnpm eval:materialize ${fixture.manifest.id} to migrate it. ` +
+            `The lookup's error: ${why}`,
+        );
       }
       const foundTables = [...tables];
       const foundCodeSymbols = [...symbols];
@@ -544,6 +671,7 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
           : "split (an analysis's requirements, IMPACT_AGENT_SEEDS off)",
       changes,
       untracked,
+      pieces,
       ...(reading === "A7" ? { citations: counts } : {}),
     };
   }
@@ -563,7 +691,10 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
         await deps.store.record(record);
         runs.set(keyOf(reading, run), record);
         deps.log?.(
-          `table guard: ${reading} run ${run}: table precision ${record.tablePrecision.toFixed(3)}`,
+          `table guard: ${reading} run ${run}: table precision ${record.tablePrecision.toFixed(3)}` +
+            (record.pieces
+              ? ` (${SCORING_WORDS.union}); ${precisionOf(record, "headline").toFixed(3)} (${SCORING_WORDS.headline})`
+              : ""),
         );
       }
       out.push(record);
@@ -571,9 +702,18 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
     return out;
   }
 
-  function measurement(records: readonly GuardRunRecord[]): TableGuardMeasurement {
+  /** A run's macro table precision under `scoring` (#1848); `union` is what the run recorded. */
+  function precisionOf(record: GuardRunRecord, scoring: GuardScoring): number {
+    if (scoring === "union") return record.tablePrecision;
+    return mean(runPrecisions(record, fixture, scoring)!);
+  }
+
+  function measurement(
+    records: readonly GuardRunRecord[],
+    scoring: GuardScoring = "union",
+  ): TableGuardMeasurement {
     return {
-      tablePrecision: mean(records.map((r) => r.tablePrecision)),
+      tablePrecision: mean(records.map((r) => precisionOf(r, scoring))),
       runs: records.length,
       configuration: deps.describe(records[0]!.label),
       seeding: records[0]!.seeding,
@@ -583,15 +723,18 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
   /** Log each paired comparison once, the first time both its readings are complete. */
   function logDifferences(): void {
     if (!deps.log) return;
-    for (const d of guardPairedDifferences([...runs.values()], fixture, deps.runs)) {
-      const key = `${d.arm} − ${d.baseline}`;
-      if (logged.has(key)) continue;
-      logged.add(key);
-      const { meanDifference, ci, n } = d.interval;
-      deps.log(
-        `table guard: ${key}, paired over ${n} requirements (mean of ${d.runs} runs each): ` +
-          `${signed(meanDifference)} [${signed(ci[0])}, ${signed(ci[1])}] (95% t-interval)`,
-      );
+    const all = [...runs.values()];
+    for (const scoring of ["headline", "union"] as const) {
+      for (const d of guardPairedDifferences(all, fixture, deps.runs, scoring)) {
+        const key = `${d.arm} − ${d.baseline}, ${SCORING_WORDS[scoring]}`;
+        if (logged.has(key)) continue;
+        logged.add(key);
+        const { meanDifference, ci, n } = d.interval;
+        deps.log(
+          `table guard: ${key}, paired over ${n} requirements (mean of ${d.runs} runs each): ` +
+            `${signed(meanDifference)} [${signed(ci[0])}, ${signed(ci[1])}] (95% t-interval)`,
+        );
+      }
     }
   }
 
@@ -633,7 +776,10 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
             return `; citations: ${c("symbol")} by symbol, ${c("member")} by name, ${c("file")} as their file, ${c("dropped")} dropped (not in the fixture)`;
           })()
         : "";
-      const m = measurement(own);
+      // #1848 — A7 and its control are read the same way: the headline only
+      // when both recorded their per-requirement tables.
+      const scoring = guardScoringOf(control ? [...own, ...control] : own);
+      const m = measurement(own, scoring);
       logDifferences();
       return {
         measured: true,
@@ -642,11 +788,15 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
           m.configuration +
           `; "Evaluate new requirements" on ${deps.model}, one per requirement and run; ` +
           `${sum((r) => r.changes)} persisted requirement(s) read, ${sum((r) => r.untracked)} analysis(es) read as the text` +
+          `; scored on ${SCORING_WORDS[scoring]}` +
+          (scoring === "headline"
+            ? ` (#1848); ${SCORING_WORDS.union}: ${measurement(own).tablePrecision.toFixed(3)}`
+            : "") +
           cited +
           (control
             ? `; A0 on the split seeding: ${measurement(base).tablePrecision.toFixed(3)} (${base.length} runs)`
             : ""),
-        baseline: control ? { ...measurement(control), arm: "A7O" } : measurement(base),
+        baseline: control ? { ...measurement(control, scoring), arm: "A7O" } : measurement(base),
       };
     } catch (err) {
       return stoppedReading(err);

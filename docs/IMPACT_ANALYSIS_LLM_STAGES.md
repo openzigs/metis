@@ -187,6 +187,60 @@ path's drop, not the flag's. The run's records are committed
 (`server/src/lib/eval/localization/__fixtures__/table-guard-sonnet-2026-11-06.runs.jsonl`),
 and a test reads these intervals from them.
 
+**#1848: the drop on the analysis path was the measurement.** Each analysis persists
+its restatement of the requirement first, then about 3.5 to 4.7 further requirements,
+mostly elicited non-functional ones (#1613), such as "Transactional order persistence",
+"Schema verification" or "Authenticated checkout access". Each of those is its own
+impact item in production, with tables of its own, and the guard unioned all of their
+tables against the one label. The guard now records each persisted requirement's own
+tables. It scores A7 and A7O on the analysis's **first persisted requirement** and still
+reports the union beside it.
+
+- **The first requirement is never an elicited one.** It leads the analysis's own
+  requirement set, which is written before the elicited requirements. It is functional in
+  32 of 33 DeepSeek analyses and 25 of 33 Sonnet ones. The others state the requirement
+  as the gap the code leaves, for example "Prevent negative inventory on concurrent
+  orders" for "Track inventory stock levels for each item".
+- **Matching by title words is no substitute.** Picking the persisted requirement whose
+  title shares the most words with the label agreed with the first requirement in only 36
+  to 38 of 66 runs.
+
+These readings are from the analyses #1823 already stored, with 3 runs and the live #936
+filter, re-read on 2026-11-06:
+
+| Reading (table precision) | `claude-sonnet-5-5` | `deepseek-flash` |
+|---|---|---|
+| A0 on the split seeding | 0.556 | 0.585 |
+| A7O, first persisted requirement | **0.702** | **0.760** |
+| A7, first persisted requirement | **0.731** | **0.648** |
+| A7O, every persisted requirement unioned | 0.373 | 0.466 |
+| A7O, each requirement on its own (mean) | 0.615 | 0.685 |
+
+Paired over the 11 requirements (each one's mean over the 3 runs; 95% t-interval):
+
+| Comparison | Sonnet, first persisted requirement | Sonnet, unioned | DeepSeek, first persisted requirement |
+|---|---|---|---|
+| A7O − A0 (split) | **+0.146 [+0.042, +0.250]** | −0.184 [−0.275, −0.093] | +0.174 [+0.010, +0.338] |
+| A7 − A0 (split) | **+0.175 [+0.073, +0.276]** | −0.190 [−0.266, −0.113] | +0.063 [−0.106, +0.231] |
+| A7 − A7O | +0.029 [−0.052, +0.109] | −0.006 [−0.040, +0.028] | −0.112 [−0.227, +0.004] |
+
+- **Measured, not real.** Read on its own restatement, the analysis path raises table
+  precision over the requirement's raw text, by +0.15 with the flag off and +0.18 with it
+  on (Sonnet). The whole ~0.2 drop came from unioning the further requirements.
+- **The further requirements are on topic.** Alone, a non-functional one scores 0.58 to
+  0.66 against the original label (A7O), at or above A0's 0.556 to 0.585. Their extra tables belong to the
+  scope they add, such as `inventory` for "Inventory consistency during order placement".
+  The restatement surfaces fewer tables than the raw text: 2.2 against 3.1 on Sonnet.
+  Nothing in the impact path needs a fix.
+- **The flag holds on the corrected measure.** On Sonnet, the production model, A7 −
+  A7O is +0.029 on the first persisted requirement, so `IMPACT_AGENT_SEEDS` stays on. On
+  DeepSeek it is −0.112, and its interval includes zero. There, A7's citations lead
+  mapper files whose statements touch sibling tables: `AccountMapper` brings `profile` and
+  `signon` to "Add a status flag to account". This gap between the models is not resolved.
+- The records are committed (`__fixtures__/table-guard-{sonnet,deepseek}-2026-11-06-pieces.runs.jsonl`),
+  and a test reads these intervals from them. The Sonnet re-read cost $2.15: six A7/A7O
+  runs, with no new analysis.
+
 **#1798 is a deliberate, bounded exception to this rule.** Nothing additive raised
 Recall@5 (an appended file lands after the deterministic picks), so the edit-candidate
 re-order lets one model call move files UP the list of files to edit. It keeps what the

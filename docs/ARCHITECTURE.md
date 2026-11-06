@@ -3128,7 +3128,14 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   fixture for each persisted requirement, on the split seeding, with the live #936
   filter. With `SplitSeedingOptions.agentSeeds` set, the stored citations lead,
   translated onto the fixture's paths and symbols by `translateCitations`; without
-  it, the run is A7O. The tables are unioned per requirement, and the result sits
+  it, the run is A7O. #1848 — each persisted requirement's own tables are
+  recorded (`GuardRunRecord.pieces`), and A7 and A7O are scored on the analysis's
+  first persisted requirement, its restatement of the labelled one
+  (`guardRunTables`). The union of every persisted requirement's tables, #1823's
+  reading, is still reported beside it; records without `pieces` are read on it.
+  An A7 run whose stored-citation lookup throws is refused rather than recorded:
+  the agent-citation stage keeps the search's seeds on a failed lookup, so a stale
+  eval database would read as A7O. The result sits
   next to A0 on the split seeding; A7 is gated against A7O (owner, #1823). Each analysis and each reading run (A0's
   mapper reading included, #1847) is appended to
   `<partials>/table-guard/records.jsonl`, so `--guard-steps` bounds a call and
