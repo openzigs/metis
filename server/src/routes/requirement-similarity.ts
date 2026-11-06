@@ -1,0 +1,76 @@
+/**
+ * Issue #1837 (epic #1828) — similar and duplicate requirements.
+ *
+ *   GET  /api/projects/:projectId/requirements/:requirementId/similar?limit=5
+ *   POST /api/projects/:projectId/requirements/similar   { text, acceptanceCriteria?, limit? }
+ *   200  { success, data: { items: SimilarRequirementItem[] } }
+ *
+ * Both routes run behind `requireProjectAccess()`: a caller who cannot reach the
+ * project gets 404, and a requirement id of another project answers 404 from the
+ * service (it is looked up on the project AND the id), never its neighbours.
+ */
+import { Router, type Request } from "express";
+import {
+  similarRequirementsDraftSchema,
+  similarRequirementsLimitSchema,
+  type ApiResponse,
+  type SimilarRequirementsResponse,
+} from "@metis/shared";
+import { requireAuth } from "../middleware/auth.js";
+import { requirePermission } from "../middleware/require-permission.js";
+import { requireProjectAccess } from "../middleware/require-project-access.js";
+import { requirementSimilarityPreAuthRateLimiter } from "../middleware/requirement-similarity-rate-limit.js";
+import { AppError } from "../middleware/error-handler.js";
+import { findSimilarRequirements } from "../lib/requirements/similar-requirements.js";
+import { resolveSimilarityVerifier } from "../lib/requirements/similarity-verifier-resolver.js";
+
+function ok<T>(data: T): ApiResponse<T> {
+  return { success: true, data };
+}
+
+const projectIdOf = (req: Request): string => String(req.params.projectId);
+
+function validationError(issues: unknown): AppError {
+  return new AppError(400, "VALIDATION_ERROR", "invalid similar-requirements request", {
+    issues,
+  });
+}
+
+export function requirementSimilarityRouter(): Router {
+  const r = Router({ mergeParams: true });
+  // Per route, NOT `r.use()`: this router is mounted at `/projects/:projectId/requirements`
+  // ahead of `stakeholdersRouter()`, and a router-level `use` would run the similarity
+  // limiter (and its auth) on every `/requirements/:id/stakeholders*` request too.
+  const guard = [requirementSimilarityPreAuthRateLimiter, requireAuth, requireProjectAccess()];
+
+  r.post("/similar", ...guard, requirePermission("analysis.read"), async (req, res) => {
+    const parsed = similarRequirementsDraftSchema.safeParse(req.body ?? {});
+    if (!parsed.success) throw validationError(parsed.error.flatten());
+    const projectId = projectIdOf(req);
+    const items = await findSimilarRequirements(
+      projectId,
+      { text: parsed.data.text, acceptanceCriteria: parsed.data.acceptanceCriteria ?? [] },
+      { limit: parsed.data.limit, verifier: await resolveSimilarityVerifier(projectId) },
+    );
+    res.json(ok<SimilarRequirementsResponse>({ items }));
+  });
+
+  r.get(
+    "/:requirementId/similar",
+    ...guard,
+    requirePermission("analysis.read"),
+    async (req, res) => {
+      const limit = similarRequirementsLimitSchema.safeParse(req.query.limit ?? undefined);
+      if (!limit.success) throw validationError(limit.error.flatten());
+      const projectId = projectIdOf(req);
+      const items = await findSimilarRequirements(
+        projectId,
+        { requirementId: String(req.params.requirementId) },
+        { limit: limit.data, verifier: await resolveSimilarityVerifier(projectId) },
+      );
+      res.json(ok<SimilarRequirementsResponse>({ items }));
+    },
+  );
+
+  return r;
+}

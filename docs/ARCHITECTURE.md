@@ -975,6 +975,19 @@ change). Writers only enqueue it, debounced, through the `noteProjectRequirement
 turns the warm-up off); `findNearestRequirements` runs it first, so a query never reads an
 index older than the requirements, and re-reads every hit on project, id and `deletedAt`.
 
+**Similar and duplicate requirements (#1836, #1837).** `GET /api/projects/:projectId/requirements/:requirementId/similar`
+and `POST …/requirements/similar` (draft text) run behind `requireProjectAccess()`
+(`routes/requirement-similarity.ts`, `lib/requirements/similar-requirements.ts`). Vector
+candidates from the index above are fused by reciprocal rank with an in-request BM25 over the
+project's requirement titles and bodies, then labelled `duplicate` / `overlap` / `related` from
+the cosine and the thresholds `eval:req-similarity` calibrated on 124 labelled pairs
+(`requirement-similarity-config.ts`); below the `related` floor a candidate is dropped. Each
+item carries its saved code links with their #1830 freshness (`unverified` when unstamped).
+The embedder is a good candidate filter and a poor judge (duplicate precision 0.48 on the
+pairs), so a `duplicate` is a suggestion an analyst confirms. `REQ_SIMILARITY_VERIFIER=1`
+adds an LLM verifier on the project's provider, every requirement fenced as untrusted text;
+an unreadable reply or a provider failure keeps the threshold labels.
+
 **`search_code_symbols` (#730, Epic #725)** — the same hybrid (BM25 + vector RRF) symbol
 tool chat got in Epic #712 (`createSearchSymbolsTool`), now offered to Winston's agentic
 loop. It is **complementary to #729's passive fused-symbol seeding**: the seed grounds
@@ -3109,7 +3122,7 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   filter. With `SplitSeedingOptions.agentSeeds` set, the stored citations lead,
   translated onto the fixture's paths and symbols by `translateCitations`; without
   it, the run is A7O. The tables are unioned per requirement, and the result sits
-  next to A0 on the split seeding. Each analysis and each reading run (A0's
+  next to A0 on the split seeding; A7 is gated against A7O (owner, #1823). Each analysis and each reading run (A0's
   mapper reading included, #1847) is appended to
   `<partials>/table-guard/records.jsonl`, so `--guard-steps` bounds a call and
   the same `--merge` resumes. #1847 — each record carries the fixture's and the
@@ -3175,7 +3188,10 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   are not in the held-out corpora, so they are not measured yet; table precision
   (impact-recall-01, a live model) was not measured for A2.
 - **The code agent's citations lead (#1759)** — with `IMPACT_AGENT_SEEDS` on (key
-  registry, tunable, **off** by default), a change about a tracked requirement
+  registry, tunable, **on** by default since #1823: on claude-sonnet-5-5, A7's
+  average table precision is within 0.03 of A7O's, its control; the 95% interval's
+  lower bound is −0.043; `IMPACT_AGENT_SEEDS=0` turns it off), a change about a
+  tracked requirement
   reads that requirement's `RequirementCodeMapping` rows with source
   `analysis-grounding` (the citations the Analysis code agent made in "Evaluate
   new requirements", already resolved to the code graph when they were stored),

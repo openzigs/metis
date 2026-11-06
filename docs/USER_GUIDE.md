@@ -2436,7 +2436,7 @@ says how many links were used and how many were skipped. It stays off until it
 is shown to help: on the held-out measurement it did not yet (see
 `docs/ARCHITECTURE.md`, "Stored requirement links").
 
-When your administrator turns on **`IMPACT_AGENT_SEEDS`** (off by default), such
+Unless your administrator turns off **`IMPACT_AGENT_SEEDS`** (on by default), such
 a run also puts the files that **Analysis's code agent cited** for the
 requirement, when you ran "Evaluate new requirements", at the **top** of the
 files to edit: at most five, in the order the agent cited them. Nothing the

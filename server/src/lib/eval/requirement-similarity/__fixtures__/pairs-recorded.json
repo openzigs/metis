@@ -1,0 +1,16 @@
+{
+  "model": "Alibaba-NLP/gte-modernbert-base",
+  "dimension": 768,
+  "note": "eval:req-similarity --record-vectors wh-dup-05,wh-rel-05,wh-unr-05,wh-ovl-04,inv-rel-01,inv-unr-01",
+  "encoding": "float16-le",
+  "keys": [
+    "327af57ed7100e1d3b2578fe7f07a994e42356f46de928ef5fce127032167511",
+    "3843850f43652d183988ad6b33d1b8f19038dcb101f479874613396d654ecb70",
+    "4337d54d94f25f1e77ca1680b44c8429439b337b6282a6a3bca5e0c3118f1b52",
+    "4622adffb1719a8682116f40629bfda0d9d54890d0e1b862c4bc05522b203b97",
+    "7165aa6849a3d0ca8b23dd08c65f4a7904ebe3c98e43b511a75e7bd7f996b9ba",
+    "732231eef51e377594680080356b2e0af2a099fa0d91cde0ed51628da896e0c1",
+    "77113d85c1308d8541f001cb8bcd96ca7b3dc7c83fb15625eb5fc47e9e78db00",
+    "df3870f34d7d71d26f73c5700504d355732dd7deb474dca6c9bb8038585d4722"
+  ]
+}

@@ -379,7 +379,9 @@ A resume is refused, and needs a new partials directory, when (#1847):
 
 Once two readings are complete, the guard prints their paired 95% t-interval over the 11
 requirements (each requirement's table precision, averaged over the runs):
-`guardPairedDifferences` in `table-guard-agent.ts`.
+`guardPairedDifferences` in `table-guard-agent.ts`. A7 is gated against A7O, the same
+analyses with the flag off, not against A0 (owner decision, #1823): the report's guard
+row for A7 reads "against A7O".
 
 A stored citation names a repository file and symbol, and is read on the fixture in this
 order:

@@ -1634,6 +1634,54 @@ measured trial (#1845). When it is on:
 Chat questions and answers are never written to the vector store
 ([ADR 0022](decisions/0022-no-chat-answers-in-the-vector-store.md)).
 
+The cache is wired into `POST /api/ai/chat` only. The workbench chat streams through
+`/api/ai/stream`, which never consults it. On the `anthropic` provider it does nothing even
+when it is on: the `/chat` lookup embeds the question with the chat provider
+(`providerInstance.embed`), the Anthropic provider has no embeddings, so the call throws,
+the lookup is skipped at debug level, and nothing is stored. Both were found by #1845.
+
+#### Measuring the chat caches (#1845)
+
+`pnpm eval:chat-cache --budget <usd>` asks the 40 questions of
+`eval-data/corpus/chatcache-01-miniflux/` (paraphrase, near-miss and repeat pairs) over the
+materialized Miniflux project (`pnpm eval:materialize localization-01-miniflux-heldout`),
+each as its own one-turn chat on the configured provider. It reuses production's chat
+pieces: `resolveSessionTools`, the library system prompt, auto-RAG, `prepareTurn` and
+`runChatToolTurn`. The run has these steps:
+
+1. `before`, arm `off`: the tool loop caches only the system prefix.
+2. `before`, arm `on`: the shipped #1842 posture.
+3. It commits the synthetic patch in `patch.json` to the clone and re-ingests.
+4. `after`, arm `on`.
+
+The tool-result cache is not cleared between the passes. The semantic answer cache is
+replayed over the recorded turns at 0.92, 0.95 and 0.97, and a hit counts as wrong when
+its answer cites different files from a fresh run. Spend is ledger-priced and capped by
+`--budget`. The clone and the graph are restored afterwards, including after an
+interrupted run. Use `--arms`, `--passes`, `--concurrency` and `--include
+<earlier envelope>` to split a run. Results go to `eval-results/chat-cache/`, which is
+published on the `eval-results` branch.
+
+Measured on 2026-11-06 (40 sessions per row):
+
+| | Sonnet 5.5, #1842 off | Sonnet 5.5, #1842 on | DeepSeek flash, off | DeepSeek flash, on |
+|---|---:|---:|---:|---:|
+| Cache-read share of input tokens | 38.7% | 77.1% | 69.2% | 67.6% |
+| Cost per session | $0.0289 | $0.0176 | $0.0072 | $0.0075 |
+| Tool-result cache hit rate | 9.4% | 8.1% (10.2% after re-ingest) | 5.2% | 5.7% (6.4% after re-ingest) |
+
+- **Tool-result cache:** no result computed before the re-ingest was served after it,
+  although 60 (Sonnet) and 89 (DeepSeek) post-re-ingest calls repeated a pre-re-ingest key.
+- **Semantic cache, shipped settings:** 0 hits in 80 turns on either model. Almost every
+  turn calls a tool, and with `CHAT_FUSED_CODE_RETRIEVAL` on, the per-question retrieval
+  block keys even an exact repeat apart.
+- **Semantic cache, with retrieval left out of the key:** the similarity path served
+  nothing at any threshold. Paraphrases score 0.76–0.87 on the RAG embedder. The closest
+  near-miss pair scores 0.877, above every paraphrase, so no threshold separates the two.
+- **Semantic cache, without the content version:** 40 answers would have been served
+  across the re-ingest. 28 (Sonnet) and 39 (DeepSeek) of them cite different files from a
+  fresh run, and 6 to 7 miss a file the re-ingest created.
+
 #### Measuring what caching saves (#1277)
 
 `pnpm cache:report -- --db <sqlite file>` reads the `token_usages` ledger and
