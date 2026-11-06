@@ -20,6 +20,10 @@
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { readBrdLayoutSetting } from "./brd-layout.js";
+import {
+  enqueueRequirementEmbeddingSync,
+  enqueueRequirementEmbeddingSyncFor,
+} from "../requirements/requirement-embeddings.js";
 
 const log = createChildLogger("docs-gen-approved-requirements-staleness");
 
@@ -88,6 +92,9 @@ function checkProject(projectId: string, scopedOnly = false): Promise<void> {
  * check is done; never rejects.
  */
 export async function noteProjectRequirementsChanged(projectId: string): Promise<void> {
+  // #1835 — every requirement writer already signals here, so this is where the
+  // requirement vectors are told to catch up (debounced, off the request path).
+  enqueueRequirementEmbeddingSync(projectId);
   try {
     // Under the catalogue layout no BRD lists approved requirements.
     if (readBrdLayoutSetting().layout !== "reader") return;
@@ -106,6 +113,8 @@ export async function noteProjectRequirementsChanged(projectId: string): Promise
  * may leave it unawaited (`void noteRequirementsChanged(...)`).
  */
 export async function noteRequirementsChanged(requirementIds: readonly string[]): Promise<void> {
+  // #1835 — as above: an edit or a restore may change the embedded text.
+  enqueueRequirementEmbeddingSyncFor(requirementIds);
   await noteChanged(requirementIds, false);
 }
 
