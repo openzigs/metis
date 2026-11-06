@@ -57,6 +57,7 @@ import { embedInBoundedBatches } from "./embed-batched.js";
 import { getDocumentStorage, type StorageBackend } from "../documents/storage.js";
 import { onArchive } from "../projects/project-service.js";
 import { createChildLogger } from "../logger.js";
+import { requirementVectorsId } from "../requirements/requirement-embeddings.js";
 import { BM25Index, getBM25Index, RRF_K, reciprocalRankFusion } from "./bm25-index.js";
 import { getReranker, type Reranker } from "./reranker.js";
 import { type AclActor, filterAccessible, parseAclSubjects } from "./acl.js";
@@ -987,6 +988,13 @@ export class KnowledgeService {
       // makes it abort if someone force-took ours in turn.
       await this.symbols.dropProject(projectId, lease).catch((err: unknown) => {
         log.warn("symbol vector drop failed", { projectId, error: (err as Error).message });
+      });
+      // Issue #1835 review — the project's REQUIREMENT vectors (and their text) live in
+      // `<projectId>__requirements`. Same leak as the symbols above if left behind. The
+      // bookkeeping rows need no cleanup: the reconcile re-embeds any requirement whose
+      // vector is missing, whatever its recorded hash says.
+      await this.store.dropTable(requirementVectorsId(projectId)).catch((err: unknown) => {
+        log.warn("requirement vector drop failed", { projectId, error: (err as Error).message });
       });
     };
 

@@ -258,6 +258,38 @@ describe("dropProject + retagToActiveModel", () => {
     expect(isFence(vi.mocked(symbols.dropProject).mock.calls[0]?.[1])).toBe(true);
   });
 
+  it("drops the project's requirement vectors namespace too (#1835 review)", async () => {
+    // `<projectId>__requirements` holds requirement text and vectors; an archive that
+    // left it behind would leak both into LanceDB / local / pgvector.
+    const vs = store();
+    const svc = new KnowledgeService({
+      embedder: embedder(),
+      vectorStore: vs,
+      symbolEmbeddings: symbolPort(),
+      bm25: { dropProject: vi.fn() } as never,
+    });
+
+    await svc.dropProject("p1");
+    expect(vs.dropTable).toHaveBeenCalledWith("p1__requirements");
+  });
+
+  it("still completes the archive when the requirement namespace drop fails", async () => {
+    const vs = store();
+    vi.mocked(vs.dropTable).mockImplementation(async (ns: string) => {
+      if (ns === "p1__requirements") throw new Error("lance busy");
+    });
+    const bm25 = { dropProject: vi.fn() };
+    const svc = new KnowledgeService({
+      embedder: embedder(),
+      vectorStore: vs,
+      symbolEmbeddings: symbolPort(),
+      bm25: bm25 as never,
+    });
+
+    await expect(svc.dropProject("p1")).resolves.toBeUndefined();
+    expect(bm25.dropProject).toHaveBeenCalledWith("p1");
+  });
+
   it("refuses a reindex while this pod is embedding the project's symbols", async () => {
     // PR #803 review (D3). The old advisory lock threw from INSIDE phase 2 — after the
     // document swap and retag had committed — which is how a leaked lock produced a

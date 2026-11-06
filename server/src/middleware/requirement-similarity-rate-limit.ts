@@ -1,6 +1,6 @@
 /**
- * Issue #1837 — a per-IP ceiling ahead of `requirementSimilarityRouter()`'s
- * router-level `requireAuth` and `requireProjectAccess()`.
+ * Issue #1837 — a per-IP ceiling ahead of the `requireAuth` and
+ * `requireProjectAccess()` on each `requirementSimilarityRouter()` route.
  *
  * Each similarity call embeds text and reads a project's requirements (and, with
  * `REQ_SIMILARITY_VERIFIER` on, makes a model call), so it is limited before

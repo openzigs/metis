@@ -43,9 +43,12 @@ function validationError(issues: unknown): AppError {
 
 export function requirementSimilarityRouter(): Router {
   const r = Router({ mergeParams: true });
-  r.use(requirementSimilarityPreAuthRateLimiter, requireAuth, requireProjectAccess());
+  // Per route, NOT `r.use()`: this router is mounted at `/projects/:projectId/requirements`
+  // ahead of `stakeholdersRouter()`, and a router-level `use` would run the similarity
+  // limiter (and its auth) on every `/requirements/:id/stakeholders*` request too.
+  const guard = [requirementSimilarityPreAuthRateLimiter, requireAuth, requireProjectAccess()];
 
-  r.post("/similar", requirePermission("analysis.read"), async (req, res) => {
+  r.post("/similar", ...guard, requirePermission("analysis.read"), async (req, res) => {
     const parsed = similarRequirementsDraftSchema.safeParse(req.body ?? {});
     if (!parsed.success) throw validationError(parsed.error.flatten());
     const projectId = projectIdOf(req);
@@ -57,17 +60,22 @@ export function requirementSimilarityRouter(): Router {
     res.json(ok<SimilarRequirementsResponse>({ items }));
   });
 
-  r.get("/:requirementId/similar", requirePermission("analysis.read"), async (req, res) => {
-    const limit = similarRequirementsLimitSchema.safeParse(req.query.limit ?? undefined);
-    if (!limit.success) throw validationError(limit.error.flatten());
-    const projectId = projectIdOf(req);
-    const items = await findSimilarRequirements(
-      projectId,
-      { requirementId: String(req.params.requirementId) },
-      { limit: limit.data, verifier: await resolveSimilarityVerifier(projectId) },
-    );
-    res.json(ok<SimilarRequirementsResponse>({ items }));
-  });
+  r.get(
+    "/:requirementId/similar",
+    ...guard,
+    requirePermission("analysis.read"),
+    async (req, res) => {
+      const limit = similarRequirementsLimitSchema.safeParse(req.query.limit ?? undefined);
+      if (!limit.success) throw validationError(limit.error.flatten());
+      const projectId = projectIdOf(req);
+      const items = await findSimilarRequirements(
+        projectId,
+        { requirementId: String(req.params.requirementId) },
+        { limit: limit.data, verifier: await resolveSimilarityVerifier(projectId) },
+      );
+      res.json(ok<SimilarRequirementsResponse>({ items }));
+    },
+  );
 
   // #1838 — "Not a duplicate": remembered for the pair, so a reload does not
   // raise the duplicate warning again. Same write permission as adding a link.
