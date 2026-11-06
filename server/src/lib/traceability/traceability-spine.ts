@@ -15,6 +15,7 @@
  * requirements. Prisma is dependency-injected for unit testing.
  */
 import type {
+  CodeCitationFreshness,
   RequirementTraceabilityChain,
   SpecMappingSource,
   TraceabilityCodeNode,
@@ -60,6 +61,25 @@ function toCodeNode(row: {
     confidence: row.confidence,
     source: row.source as SpecMappingSource,
     isTest: classifyTestSymbol({ filePath: row.filePath }).isTestFile,
+  };
+}
+
+/**
+ * #1830 — a direct requirement→code link, with the code-graph version it was
+ * read from and whether it still holds.
+ */
+function toDirectCodeNode(
+  row: Parameters<typeof toCodeNode>[0] & {
+    freshness: string;
+    commitSha: string | null;
+    validatedAt: Date | null;
+  },
+): TraceabilityCodeNode {
+  return {
+    ...toCodeNode(row),
+    freshness: row.freshness as CodeCitationFreshness,
+    commitSha: row.commitSha,
+    validatedAt: row.validatedAt?.toISOString() ?? null,
   };
 }
 
@@ -134,6 +154,9 @@ export async function getRequirementChain(
       endLine: true,
       confidence: true,
       source: true,
+      freshness: true,
+      commitSha: true,
+      validatedAt: true,
     },
     orderBy: [{ confidence: "desc" }],
   });
@@ -153,7 +176,7 @@ export async function getRequirementChain(
     requirementTitle: requirement.title,
     projectId,
     specs,
-    directCode: directRows.map(toCodeNode),
+    directCode: directRows.map(toDirectCodeNode),
     testedBy: tested.get(requirement.id) ?? [],
   };
 }

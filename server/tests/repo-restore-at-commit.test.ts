@@ -77,6 +77,8 @@ function git(cwd: string, ...args: string[]): string {
   }).trim();
 }
 
+// Nine synchronous git subprocesses: real I/O that took over the 10 s default hook
+// timeout on a contended postgres-unit leg (PR #1859), so the hook gets its own budget.
 beforeAll(() => {
   base = mkdtempSync(join(tmpdir(), "metis-1322-git-"));
   const work = join(base, "work");
@@ -95,7 +97,7 @@ beforeAll(() => {
   git(bare, "config", "uploadpack.allowReachableSHA1InWant", "true");
   // …and honours a partial-clone filter (M6: no oversized blob is downloaded).
   git(bare, "config", "uploadpack.allowFilter", "true");
-});
+}, 60_000);
 
 afterAll(() => {
   rmSync(base, { recursive: true, force: true });

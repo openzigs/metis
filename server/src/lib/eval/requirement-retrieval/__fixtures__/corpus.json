@@ -1,0 +1,180 @@
+{
+  "version": 1,
+  "description": "Issue #1841 — a synthetic B2B ordering portal's requirements and analyst questions for chat's list_requirements. `expected` is the requirement that answers the question, or null when none does. Invented content only.",
+  "requirements": [
+    {
+      "id": "r01",
+      "status": "approved",
+      "title": "Deferred settlement terms",
+      "body": "Approved trade accounts may settle an invoice up to 60 days after delivery."
+    },
+    {
+      "id": "r02",
+      "status": "approved",
+      "title": "Export invoices to CSV",
+      "body": "Finance exports the month's invoices to a CSV file for the accounting system."
+    },
+    {
+      "id": "r03",
+      "status": "approved",
+      "title": "Reset a forgotten password",
+      "body": "A user who forgot their password gets a reset link by email."
+    },
+    {
+      "id": "r04",
+      "status": "draft",
+      "title": "Two-factor sign-in",
+      "body": "Users confirm each sign-in with a code from an authenticator app."
+    },
+    {
+      "id": "r05",
+      "status": "approved",
+      "title": "Monthly customer statement",
+      "body": "Each customer receives a monthly statement of open invoices and payments received."
+    },
+    {
+      "id": "r06",
+      "status": "approved",
+      "title": "Bulk order upload",
+      "body": "Buyers upload a spreadsheet of SKUs and quantities to create one order."
+    },
+    {
+      "id": "r07",
+      "status": "draft",
+      "title": "Reorder from history",
+      "body": "Buyers repeat a previous order in one click from their order history."
+    },
+    {
+      "id": "r08",
+      "status": "approved",
+      "title": "Credit limit check",
+      "body": "An order that would take an account over its credit limit is held for review by finance."
+    },
+    {
+      "id": "r09",
+      "status": "approved",
+      "title": "Volume price breaks",
+      "body": "Unit prices drop at 100, 500 and 1,000 units of the same SKU."
+    },
+    {
+      "id": "r10",
+      "status": "draft",
+      "title": "Delivery slot booking",
+      "body": "Buyers choose a two-hour delivery window at checkout."
+    },
+    {
+      "id": "r11",
+      "status": "approved",
+      "title": "Shipment tracking",
+      "body": "Buyers follow each shipment's progress with the carrier's tracking number."
+    },
+    {
+      "id": "r12",
+      "status": "approved",
+      "title": "Return authorisation",
+      "body": "Buyers request a return for damaged goods within 14 days and get an RMA number."
+    },
+    {
+      "id": "r13",
+      "status": "draft",
+      "title": "Multiple delivery addresses",
+      "body": "An account can store several delivery addresses and pick one per order."
+    },
+    {
+      "id": "r14",
+      "status": "approved",
+      "title": "Purchase order number on invoices",
+      "body": "Buyers enter their own PO number at checkout and it is printed on the invoice."
+    },
+    {
+      "id": "r15",
+      "status": "approved",
+      "title": "Approval workflow for large orders",
+      "body": "Orders above 5,000 placed by junior buyers need a manager's approval."
+    },
+    {
+      "id": "r16",
+      "status": "approved",
+      "title": "Product search by SKU",
+      "body": "Buyers find a product by typing its exact SKU."
+    },
+    {
+      "id": "r17",
+      "status": "draft",
+      "title": "Stock availability display",
+      "body": "Each product page shows whether the item is in stock at the nearest warehouse."
+    },
+    {
+      "id": "r18",
+      "status": "approved",
+      "title": "Account user roles",
+      "body": "An account administrator invites colleagues and gives each a buyer or viewer role."
+    },
+    {
+      "id": "r19",
+      "status": "approved",
+      "title": "Audit trail of order changes",
+      "body": "Every change to an order is logged with who made it and when."
+    },
+    {
+      "id": "r20",
+      "status": "draft",
+      "title": "VAT exemption certificates",
+      "body": "Exempt customers upload a certificate and are not charged VAT."
+    },
+    {
+      "id": "r21",
+      "status": "approved",
+      "title": "Email order confirmation",
+      "body": "The buyer receives an email confirming each order with its lines and total."
+    },
+    {
+      "id": "r22",
+      "status": "draft",
+      "title": "Saved shopping lists",
+      "body": "Buyers keep named lists of products they order often."
+    },
+    {
+      "id": "r23",
+      "status": "approved",
+      "title": "Cookie consent banner",
+      "body": "Visitors accept or reject analytics cookies on their first visit."
+    },
+    {
+      "id": "r24",
+      "status": "approved",
+      "title": "Session timeout",
+      "body": "A signed-in user is signed out after 30 minutes without activity."
+    }
+  ],
+  "questions": [
+    { "id": "q01", "text": "let customers pay later", "expected": "r01" },
+    {
+      "id": "q02",
+      "text": "can trade accounts get extra time to pay their bills",
+      "expected": "r01"
+    },
+    { "id": "q03", "text": "log in with a one-time code from a phone app", "expected": "r04" },
+    { "id": "q04", "text": "spreadsheet download of bills for the bookkeepers", "expected": "r02" },
+    {
+      "id": "q05",
+      "text": "what happens if a client has spent past what we allow them",
+      "expected": "r08"
+    },
+    { "id": "q06", "text": "cheaper per unit when buying a lot", "expected": "r09" },
+    { "id": "q07", "text": "pick a time window for the lorry to arrive", "expected": "r10" },
+    { "id": "q08", "text": "where is my parcel", "expected": "r11" },
+    { "id": "q09", "text": "sending back broken items", "expected": "r12" },
+    { "id": "q10", "text": "ship to different sites", "expected": "r13" },
+    { "id": "q11", "text": "a manager has to sign off big purchases", "expected": "r15" },
+    { "id": "q12", "text": "who changed this order", "expected": "r19" },
+    { "id": "q13", "text": "tax exempt customers", "expected": "r20" },
+    { "id": "q14", "text": "favourite products to buy again and again", "expected": "r22" },
+    { "id": "q15", "text": "forgot my password", "expected": "r03" },
+    { "id": "q16", "text": "CSV export of invoices", "expected": "r02" },
+    { "id": "q17", "text": "find a product by SKU", "expected": "r16" },
+    { "id": "q18", "text": "loyalty points for frequent buyers", "expected": null },
+    { "id": "q19", "text": "dark mode for the portal", "expected": null },
+    { "id": "q20", "text": "integration with the warehouse robots", "expected": null }
+  ]
+}
