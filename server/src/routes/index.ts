@@ -67,6 +67,7 @@ import { workspacesRouter } from "./workspaces.js";
 import { finopsWorkspaceRouter } from "./finops-workspace.js";
 import { dataMappingsRouter } from "./data-mappings.js";
 import { traceabilityRouter, workspaceTraceabilityRouter } from "./traceability.js";
+import { requirementSimilarityRouter } from "./requirement-similarity.js";
 import { stakeholdersRouter } from "./stakeholders.js";
 import { commentsRouter, specKitArtifactCommentsRouter } from "./comments.js";
 import { requirementsCollaborationRouter } from "./requirements.js";
@@ -205,6 +206,8 @@ export function apiRouter(): Router {
   r.use("/projects/:projectId", dataMappingsRouter());
   // Epic #207 — requirement→spec→code traceability spine.
   r.use("/projects/:projectId", traceabilityRouter());
+  // Epic #1828 (#1837) — similar and duplicate requirements.
+  r.use("/projects/:projectId/requirements", requirementSimilarityRouter());
   // Epic #208 — stakeholder + project-context model.
   r.use("/projects/:projectId", stakeholdersRouter());
   // Epic #728 — multi-user collaboration (comments, assignments, optimistic lock).
