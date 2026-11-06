@@ -27,6 +27,8 @@ import {
   guardFingerprint,
   guardPairedDifferences,
   guardRecordsFile,
+  guardRunTables,
+  guardScoringOf,
   lazyAgentSeedGuard,
   parseGuardRecord,
   type AgentSeedGuard,
@@ -451,6 +453,44 @@ describe("the guard's record file (#1823)", () => {
     if (error === null) expect(parseGuardRecord(line)).toMatchObject({ reading: "mapper" });
     else expect(() => parseGuardRecord(line)).toThrow(error);
   });
+
+  const a7Line = (pieces: unknown) =>
+    JSON.stringify({
+      kind: "run",
+      model: "m",
+      fingerprint: { fixture: "f", repository: "r" },
+      run: 1,
+      reading: "A7",
+      tablePrecision: 1,
+      tables: {},
+      label: "l",
+      seeding: "s",
+      changes: 1,
+      untracked: 0,
+      pieces,
+    });
+
+  it("#1848 — reads a run's per-requirement tables", () => {
+    const pieces = { "REQ-01": [{ requirementId: "pr-1", title: "t", tables: ["product"] }] };
+    expect(parseGuardRecord(a7Line(pieces))).toMatchObject({ pieces });
+  });
+
+  it.each([
+    ["an array", []],
+    ["null", null],
+    ["a requirement with no changes", { "REQ-01": [] }],
+    ["a requirement that is not a list", { "REQ-01": "x" }],
+    ["a null change", { "REQ-01": [null] }],
+    ["a change with no id", { "REQ-01": [{ title: "t", tables: [] }] }],
+    ["a change with no title", { "REQ-01": [{ requirementId: "p", tables: [] }] }],
+    ["a change with no tables", { "REQ-01": [{ requirementId: "p", title: "t" }] }],
+    [
+      "a change with a non-string table",
+      { "REQ-01": [{ requirementId: "p", title: "t", tables: [1] }] },
+    ],
+  ])("#1848 — refuses per-requirement tables that are %s", (_, pieces) => {
+    expect(() => parseGuardRecord(a7Line(pieces))).toThrow(/malformed pieces/);
+  });
 });
 
 describe("a resumed table guard checks what it resumes against (#1847)", () => {
@@ -742,6 +782,109 @@ describe("guardPairedDifferences (#1847)", () => {
     expect(out[2]!.interval.meanDifference).toBeGreaterThanOrEqual(-TABLE_PRECISION_TOLERANCE);
   });
 
+  it("#1848 — pairs the analysis's first persisted requirement when asked, and nothing it cannot read", () => {
+    const first = fixture.requirements[0]!.id;
+    // A7 surfaces only the label as its headline; the union adds a wrong table.
+    const withPieces = (reading: GuardRunRecord["reading"], n: number): GuardRunRecord => ({
+      ...run(reading, n, (_, e) => [...e, "bogus"]),
+      pieces: Object.fromEntries(
+        fixture.requirements.map((r) => [
+          r.id,
+          [
+            { requirementId: `${r.id}-h`, title: r.text, tables: r.expectedTables },
+            { requirementId: `${r.id}-n`, title: "nfr", tables: ["bogus"] },
+          ],
+        ]),
+      ),
+    });
+    const records: GuardRecord[] = [
+      run("baseline", 1, (id, e) => (id === first ? [...e, "bogus"] : e)),
+      withPieces("A7", 1),
+      withPieces("A7O", 1),
+    ];
+    const headline = guardPairedDifferences(records, fixture, 1, "headline");
+    expect(headline.map((d) => `${d.arm} − ${d.baseline} ${d.scoring}`)).toEqual([
+      "A7 − baseline headline",
+      "A7O − baseline headline",
+      "A7 − A7O headline",
+    ]);
+    // Only the first requirement's baseline had a wrong table: the headline gains there.
+    const labelled = fixture.requirements[0]!.expectedTables;
+    const gain = 1 - precision(labelled, [...labelled, "bogus"]);
+    expect(headline[0]!.interval.meanDifference).toBeCloseTo(
+      gain / fixture.requirements.length,
+      10,
+    );
+    expect(headline[2]!.interval.meanDifference).toBe(0);
+    const union = guardPairedDifferences(records, fixture, 1);
+    expect(union.every((d) => d.scoring === "union")).toBe(true);
+    expect(union[0]!.interval.meanDifference).toBeLessThan(0);
+    // Without per-requirement tables, no comparison of A7 or A7O is read on the headline.
+    const old = records.map((r) => {
+      if (r.kind !== "run") return r;
+      const { pieces: _pieces, ...rest } = r;
+      return rest;
+    });
+    expect(guardPairedDifferences(old, fixture, 1, "headline")).toEqual([]);
+    expect(guardPairedDifferences(old, fixture, 1)).toHaveLength(3);
+  });
+
+  /** Paired intervals over committed records, as `[mean, low, high]` to 3 places. */
+  async function committed(file: string, scoring: "headline" | "union") {
+    const text = await readFile(path.join(import.meta.dirname, "__fixtures__", file), "utf8");
+    const records = text
+      .split("\n")
+      .filter((l) => l.trim() !== "")
+      .map(parseGuardRecord);
+    expect(records.every((r) => r.fingerprint.fixture === FINGERPRINT.fixture)).toBe(true);
+    expect(records.every((r) => r.fingerprint.repository === FINGERPRINT.repository)).toBe(true);
+    return {
+      records,
+      read: guardPairedDifferences(records, fixture, 3, scoring).map((d) => {
+        const { meanDifference, ci } = d.interval;
+        return [meanDifference, ...ci].map((x) => x.toFixed(3));
+      }),
+    };
+  }
+
+  it("#1848 — reads the 2026-11-06 Sonnet records: on its first persisted requirement the analysis path raises table precision", async () => {
+    const file = "table-guard-sonnet-2026-11-06-pieces.runs.jsonl";
+    const headline = await committed(file, "headline");
+    expect(new Set(headline.records.map((r) => r.model))).toEqual(
+      new Set(["anthropic/claude-sonnet-5-5"]),
+    );
+    // A7 − A0 (split), A7O − A0 (split), A7 − A7O.
+    expect(headline.read).toEqual([
+      ["0.175", "0.073", "0.276"],
+      ["0.146", "0.042", "0.250"],
+      ["0.029", "-0.052", "0.109"],
+    ]);
+    // The union of every persisted requirement: #1823's reading, reproduced.
+    expect((await committed(file, "union")).read).toEqual([
+      ["-0.190", "-0.266", "-0.113"],
+      ["-0.184", "-0.275", "-0.093"],
+      ["-0.006", "-0.040", "0.028"],
+    ]);
+  });
+
+  it("#1848 — reads the 2026-11-06 DeepSeek records the same way", async () => {
+    const file = "table-guard-deepseek-2026-11-06-pieces.runs.jsonl";
+    const headline = await committed(file, "headline");
+    expect(new Set(headline.records.map((r) => r.model))).toEqual(
+      new Set(["anthropic/deepseek-flash"]),
+    );
+    expect(headline.read).toEqual([
+      ["0.063", "-0.106", "0.231"],
+      ["0.174", "0.010", "0.338"],
+      ["-0.112", "-0.227", "0.004"],
+    ]);
+    expect((await committed(file, "union")).read).toEqual([
+      ["-0.124", "-0.272", "0.023"],
+      ["-0.119", "-0.291", "0.053"],
+      ["-0.005", "-0.050", "0.040"],
+    ]);
+  });
+
   it("logs each comparison once, as soon as both its readings are complete", async () => {
     const lines: string[] = [];
     const guard = createAgentSeedGuard({
@@ -751,14 +894,190 @@ describe("guardPairedDifferences (#1847)", () => {
     });
     await guard.A0();
     expect(lines.filter((l) => l.includes("paired over"))).toEqual([]);
-    // #1823 — A7's reading takes A7O's runs too (its control): every comparison is complete.
+    // #1823 — A7's reading takes A7O's runs too (its control): every comparison is complete,
+    // #1848 — under both scorings, the analysis's first persisted requirement first.
     await guard.A7();
-    expect(lines.filter((l) => l.includes("paired over"))).toHaveLength(3);
+    expect(lines.filter((l) => l.includes("paired over"))).toHaveLength(6);
     await guard.A7O();
     const paired = lines.filter((l) => l.includes("paired over"));
-    expect(paired).toHaveLength(3);
+    expect(paired).toHaveLength(6);
+    const interval = String.raw`[+−]\d\.\d{3} \[[+−]\d\.\d{3}, [+−]\d\.\d{3}\] \(95% t-interval\)$`;
     expect(paired[2]).toMatch(
-      /^table guard: A7 − A7O, paired over 11 requirements \(mean of 2 runs each\): [+−]\d\.\d{3} \[[+−]\d\.\d{3}, [+−]\d\.\d{3}\] \(95% t-interval\)$/,
+      new RegExp(
+        String.raw`^table guard: A7 − A7O, the analysis's first persisted requirement, paired over 11 requirements \(mean of 2 runs each\): ${interval}`,
+      ),
     );
+    expect(paired[5]).toMatch(
+      new RegExp(
+        String.raw`^table guard: A7 − A7O, every persisted requirement unioned, paired over 11 requirements \(mean of 2 runs each\): ${interval}`,
+      ),
+    );
+    // A run's own line names both readings.
+    expect(lines).toContainEqual(
+      expect.stringMatching(
+        /^table guard: A7O run 1: table precision \d\.\d{3} \(every persisted requirement unioned\); \d\.\d{3} \(the analysis's first persisted requirement\)$/,
+      ),
+    );
+    expect(lines).toContainEqual(
+      expect.stringMatching(/^table guard: baseline run 1: table precision \d\.\d{3}$/),
+    );
+  });
+});
+
+describe("#1848 — the analysis's first persisted requirement, not the union of all", () => {
+  const order = fixture.requirements.find(
+    (r) => r.text === "Store a shipping method on each order",
+  )!;
+  const precision = (expected: string[], found: string[]) =>
+    scoreSet(found, expected, normalizeTable).precision;
+  const runOf = (store: { records: GuardRecord[] }, reading: string, n = 1) => {
+    const r = store.records.find((x) => x.kind === "run" && x.reading === reading && x.run === n);
+    if (r?.kind !== "run") throw new Error(`no ${reading} run ${n}`);
+    return r;
+  };
+
+  it("records each persisted requirement's own tables and scores the first one against the label", async () => {
+    const store = memoryStore();
+    // The product update's analysis also persists the order requirement: a
+    // further requirement with tables of its own, as an elicited NFR does.
+    const { deps } = fakes({ alsoFor: { text: CITED.text, also: order.text } });
+    const guard = createAgentSeedGuard({ ...deps, store });
+    const a7o = await guard.A7O();
+    const a7 = await guard.A7();
+    if (!a7o.measured || !a7.measured) throw new Error("both readings should be measured");
+
+    const base = runOf(store, "baseline");
+    const run = runOf(store, "A7O");
+    const pieces = run.pieces![CITED.id]!;
+    expect(pieces.map((p) => p.title)).toEqual([CITED.text, order.text]);
+    expect(pieces[0]!.requirementId).toMatch(/^pr-\d+$/);
+    expect(pieces[1]!.requirementId).toMatch(/^pr-\d+-b$/);
+    expect([...pieces[0]!.tables].sort()).toEqual([...base.tables[CITED.id]!].sort());
+    expect([...pieces[1]!.tables].sort()).toEqual([...base.tables[order.id]!].sort());
+    // The union adds the order requirement's tables to the product label …
+    expect(run.tables[CITED.id]).toEqual(
+      [...new Set([...pieces[0]!.tables, ...pieces[1]!.tables])].sort(),
+    );
+    expect(precision(CITED.expectedTables, run.tables[CITED.id]!)).toBeLessThan(
+      precision(CITED.expectedTables, pieces[0]!.tables),
+    );
+    // … the first persisted requirement is the fixture's text here: A0 on the split seeding.
+    expect(a7o.tablePrecision).toBeCloseTo(a7o.baseline!.tablePrecision, 10);
+    const unioned = (run1: GuardRunRecord, run2: GuardRunRecord) =>
+      (run1.tablePrecision + run2.tablePrecision) / 2;
+    const union = unioned(run, runOf(store, "A7O", 2));
+    expect(union).toBeLessThan(a7o.tablePrecision);
+    expect(a7o.configuration).toContain(
+      `scored on the analysis's first persisted requirement (#1848); every persisted requirement unioned: ${union.toFixed(3)}`,
+    );
+    // A7's control is read the same way.
+    expect(a7.baseline).toMatchObject({ arm: "A7O", tablePrecision: a7o.tablePrecision });
+    expect(a7.tablePrecision).toBeLessThan(a7o.tablePrecision);
+    // Each analysis still contributes one change per persisted requirement.
+    expect(Object.values(run.pieces!).flat()).toHaveLength(fixture.requirements.length + 1);
+  });
+
+  it("reads A7 and A7O runs recorded before #1848 on the union, as recorded", async () => {
+    const store = memoryStore();
+    const { deps } = fakes({ alsoFor: { text: CITED.text, also: order.text } });
+    const first = await createAgentSeedGuard({ ...deps, store }).A7();
+    if (!first.measured) throw new Error("should be measured");
+    // The same records without their per-requirement tables.
+    const old = store.records.map((r) => {
+      if (r.kind !== "run") return r;
+      const { pieces: _pieces, ...rest } = r;
+      return rest;
+    });
+    const again = await createAgentSeedGuard({ ...deps, store: memoryStore(old) }).A7();
+    if (!again.measured) throw new Error("should be measured");
+    const recorded = (reading: string) =>
+      (runOf({ records: old }, reading, 1).tablePrecision +
+        runOf({ records: old }, reading, 2).tablePrecision) /
+      2;
+    expect(again.tablePrecision).toBeCloseTo(recorded("A7"), 10);
+    expect(again.baseline!.tablePrecision).toBeCloseTo(recorded("A7O"), 10);
+    expect(again.configuration).toContain("scored on every persisted requirement unioned;");
+    expect(again.configuration).not.toContain("(#1848)");
+    // With them, the headline differs from the union.
+    expect(first.baseline!.tablePrecision).toBeGreaterThan(recorded("A7O"));
+  });
+
+  it("refuses an A7 run whose stored-citation lookup failed, rather than recording A7O under A7's name", async () => {
+    const store = memoryStore();
+    const { deps } = fakes();
+    const reading = createAgentSeedGuard({
+      ...deps,
+      store,
+      loadCitations: async () => {
+        throw new Error("The column `main.requirement_code_mappings.freshness` does not exist");
+      },
+    }).A7();
+    await expect(reading).rejects.toThrow(
+      "A7 run 1: a stored-citation lookup failed, so the run would read as A7O; nothing recorded. " +
+        "If the eval database predates a migration, run pnpm eval:materialize impact-recall-01-jpetstore to migrate it. " +
+        "The lookup's error: The column `main.requirement_code_mappings.freshness` does not exist",
+    );
+    expect(store.records.filter((r) => r.kind === "run" && r.reading === "A7")).toEqual([]);
+    expect(store.records.filter((r) => r.kind === "run" && r.reading === "A7O")).toHaveLength(2);
+  });
+
+  it("refuses an A7 run whose symbol-name lookup failed", async () => {
+    const { deps } = fakes();
+    await expect(
+      createAgentSeedGuard({
+        ...deps,
+        store: memoryStore(),
+        qualifiedNames: async () => {
+          throw "database is locked";
+        },
+      }).A7(),
+    ).rejects.toThrow(/stored-citation lookup failed.*The lookup's error: database is locked$/);
+  });
+
+  describe("guardRunTables and guardScoringOf", () => {
+    const record = (
+      reading: GuardRunRecord["reading"],
+      pieces?: GuardRunRecord["pieces"],
+    ): GuardRunRecord => ({
+      kind: "run",
+      reading,
+      run: 1,
+      model: MODEL,
+      fingerprint: FINGERPRINT,
+      tablePrecision: 0,
+      tables: { "REQ-01": ["item", "product"] },
+      label: "l",
+      seeding: "s",
+      changes: 2,
+      untracked: 0,
+      ...(pieces ? { pieces } : {}),
+    });
+    const pieces = {
+      "REQ-01": [
+        { requirementId: "pr-1", title: "headline", tables: ["product"] },
+        { requirementId: "pr-2", title: "nfr", tables: ["item"] },
+      ],
+    };
+
+    it.each(["A7", "A7O"] as const)("reads %s's first persisted requirement, or its union", (r) => {
+      expect(guardRunTables(record(r, pieces), "REQ-01", "headline")).toEqual(["product"]);
+      expect(guardRunTables(record(r, pieces), "REQ-01", "union")).toEqual(["item", "product"]);
+      expect(guardRunTables(record(r, pieces), "REQ-02", "union")).toEqual([]);
+      // Recorded before #1848: no headline to read.
+      expect(guardRunTables(record(r), "REQ-01", "headline")).toBeNull();
+      expect(guardRunTables(record(r, pieces), "REQ-02", "headline")).toBeNull();
+      expect(guardRunTables(record(r, { "REQ-01": [] }), "REQ-01", "headline")).toEqual([]);
+    });
+
+    it.each(["baseline", "mapper"] as const)("reads %s's own tables either way", (r) => {
+      expect(guardRunTables(record(r), "REQ-01", "headline")).toEqual(["item", "product"]);
+      expect(guardRunTables(record(r), "REQ-01", "union")).toEqual(["item", "product"]);
+    });
+
+    it("scores the headline only when every run recorded its per-requirement tables", () => {
+      expect(guardScoringOf([record("A7", pieces), record("A7O", pieces)])).toBe("headline");
+      expect(guardScoringOf([record("A7", pieces), record("A7O")])).toBe("union");
+      expect(guardScoringOf([record("A7O")])).toBe("union");
+    });
   });
 });

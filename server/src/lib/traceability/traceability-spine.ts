@@ -26,6 +26,7 @@ import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { classifyTestSymbol } from "../code-graph/test-conventions.js";
+import { uniqueCodeLinks } from "./code-link-key.js";
 import { resolveTestedByForTargets, type TestedByPrisma } from "./tested-by.js";
 import { hideSupersededBorrowedLinks } from "./borrow-citations.js";
 
@@ -181,7 +182,9 @@ export async function getRequirementChain(
   });
   // #1839 — a link borrowed from a similar requirement gives way to this
   // requirement's own analysis grounding of the same file: never shown twice.
-  const directRows = hideSupersededBorrowedLinks(storedDirectRows);
+  // #1825 — then each (filePath, codeSymbolId) once: the code agent's citation and
+  // the semantic mapper can both link a file. The surer row (read first) is kept.
+  const directRows = uniqueCodeLinks(hideSupersededBorrowedLinks(storedDirectRows));
 
   // #814 — the tests that cover this requirement, resolved from the code rows
   // just read (the resolver issues only its code-graph queries).

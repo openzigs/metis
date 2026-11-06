@@ -58,6 +58,7 @@ import { prisma as defaultPrisma } from "../prisma.js";
 import { noteRequirementCodeLinksChanged } from "../docs-gen/approved-requirements-staleness.js";
 import { createChildLogger } from "../logger.js";
 import { extractRepoRelPath } from "../rag/fused-code-context.js";
+import { codeLinkKey as mappingKey } from "./code-link-key.js";
 
 const log = createChildLogger("seed-code-links-from-findings");
 
@@ -314,9 +315,6 @@ function resolveTarget(
     ...NO_SYMBOL,
   };
 }
-
-const mappingKey = (filePath: string, codeSymbolId: string | null): string =>
-  `${filePath}\u0000${codeSymbolId ?? ""}`;
 
 /** A spine row candidate derived from a finding citation (pre-persistence). */
 export interface SeedCandidate {

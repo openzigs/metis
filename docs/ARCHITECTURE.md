@@ -2556,7 +2556,7 @@ Epic #207 completes the traceability chain by introducing a first-class **Spec**
 
 Since #814 the router mounts `requireAuth, requireProjectAccess()` itself, ahead of every handler, instead of relying on the upstream `projectsRouter()` catch-all (it left the `project-access-baseline.ts` ratchet). `test-gaps` takes a Zod-validated query (`traceabilityTestGapsQuerySchema` in `@metis/shared`: `limit` 1–200, default 50; `analysisId` and `cursor` are id-shaped strings) and returns `RequirementTestGaps` — `{ total, tested, untested[], noCode, nextCursor }`, untested requirements paged by requirement id. An `analysisId` outside the project is a `404`; soft-deleted requirements are excluded. Because each call loads every requirement in scope, `test-gaps` has its own per-user limiter (`middleware/traceability-gaps-rate-limit.ts`, `TRACEABILITY_GAPS_RATE_LIMIT_MAX`, default 300 / 15 min). Since #815 the workspace `GET /workspaces/:id/traceability/summary` shares that per-user budget; its router has no upstream auth, so it runs a pre-auth ceiling first (`TRACEABILITY_PREAUTH_RATE_LIMIT_MAX`, default 3,600 / 15 min; since #1349 keyed like `runs-rate-limit.ts` — the signed-token user, else the TCP peer, never `X-Forwarded-For`), then `requireAuth`, then the per-user limiter. Since #838 the summary computes at most `TRACEABILITY_ROLLUP_CONCURRENCY` projects at once (default 4, max 32) instead of all of them together, and the analysis matrix (`GET /projects/:projectId/analyses/:id/traceability`, and `…/:id/export`, which builds the same matrix) has its own pair: `middleware/analysis-matrix-rate-limit.ts`, a pre-auth guard with `runs-rate-limit.ts`'s keys and #1117 handler (the user in a token this server signed, unexpired or expired at most 15 minutes, else the TCP peer, whose spent bucket answers `requireAuth`'s 401; `ANALYSIS_MATRIX_PREAUTH_RATE_LIMIT_MAX`, default 3,000 / 15 min), then a per-user budget (`ANALYSIS_MATRIX_RATE_LIMIT_MAX`, default 300 / 15 min).
 
-**UI** — `TraceabilityView` (`ui/src/components/traceability/traceability-view.tsx`, client `traceability-api.ts`) renders the read-only chain under each requirement on the analysis page.
+**UI** — `TraceabilityView` (`ui/src/components/traceability/traceability-view.tsx`, client `traceability-api.ts`) renders the read-only chain under each requirement on the analysis page. #1833: each direct code link shows its freshness as text (`code-link-freshness.tsx`): "Up to date", "Moved" with the location it was moved from, or "Out of date" with the reason in plain words. An unverified link shows nothing. A summary counted from the links on screen reads "N of M code links may be out of date: the code changed since commit X", where X is the commit the stale links last held at, or "since they were saved" when there is no single commit. For a viewer with `analysis.run`, the summary offers "Re-run code evaluation". There is no per-requirement re-run, so this is the code agent's Regenerate on the requirement's analysis (`POST /api/analyses/:id/agents/code/regenerate`). It first shows the existing pre-run estimate (`POST /projects/:id/analyses/model-recommendation` with `agentKeys: ["code"]`) and says the re-run covers the whole analysis. On the impact page, `EditCandidateFiles` says "N stale citations were set aside" when `seedEvidence.agentCitations.demotedStaleCitations > 0` (#1832).
 
 #### 12.2.2 Typed cross-project requirement links (Epic #610)
 
@@ -3129,7 +3129,14 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   fixture for each persisted requirement, on the split seeding, with the live #936
   filter. With `SplitSeedingOptions.agentSeeds` set, the stored citations lead,
   translated onto the fixture's paths and symbols by `translateCitations`; without
-  it, the run is A7O. The tables are unioned per requirement, and the result sits
+  it, the run is A7O. #1848 — each persisted requirement's own tables are
+  recorded (`GuardRunRecord.pieces`), and A7 and A7O are scored on the analysis's
+  first persisted requirement, its restatement of the labelled one
+  (`guardRunTables`). The union of every persisted requirement's tables, #1823's
+  reading, is still reported beside it; records without `pieces` are read on it.
+  An A7 run whose stored-citation lookup throws is refused rather than recorded:
+  the agent-citation stage keeps the search's seeds on a failed lookup, so a stale
+  eval database would read as A7O. The result sits
   next to A0 on the split seeding; A7 is gated against A7O (owner, #1823). Each analysis and each reading run (A0's
   mapper reading included, #1847) is appended to
   `<partials>/table-guard/records.jsonl`, so `--guard-steps` bounds a call and

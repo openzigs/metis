@@ -383,6 +383,23 @@ requirements (each requirement's table precision, averaged over the runs):
 analyses with the flag off, not against A0 (owner decision, #1823): the report's guard
 row for A7 reads "against A7O".
 
+**What A7 and A7O are scored on (#1848).** An analysis persists its restatement of the
+requirement first. It then persists about four further requirements, mostly elicited
+non-functional ones, each with tables of its own. A run records every persisted
+requirement's own tables, and A7 and A7O are scored on the **first** one. Each run's
+line, the reading's configuration and the paired intervals also give the union of every
+persisted requirement's tables, the reading before #1848. Scored against one label, that
+union cost about 0.2 table precision that the analysis path does not lose
+(docs/IMPACT_ANALYSIS_LLM_STAGES.md). Records written before #1848 have no per-requirement
+tables, so they are read on the union.
+
+**A stale eval database is refused.** The impact path keeps the search's seeds when a
+stored-citation lookup throws. An eval database that predates a migration, such as the
+`freshness` column added in #1830, would therefore read A7 as A7O. The guard refuses such
+an A7 run and records nothing. Run `pnpm eval:materialize impact-recall-01-jpetstore`:
+it migrates the database first, and does nothing else when the corpus is already
+materialized.
+
 A stored citation names a repository file and symbol, and is read on the fixture in this
 order:
 

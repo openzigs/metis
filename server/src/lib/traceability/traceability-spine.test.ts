@@ -141,6 +141,52 @@ describe("getRequirementChain", () => {
     expect(chain.directCode[0].filePath).toBe("src/login.ts");
   });
 
+  it("lists a (file, symbol) linked by two sources once, keeping the surer row (#1825)", async () => {
+    const link = (
+      codeSymbolId: string | null,
+      filePath: string,
+      confidence: number,
+      source: string,
+    ) => ({
+      codeSymbolId,
+      filePath,
+      startLine: codeSymbolId ? 3 : null,
+      endLine: codeSymbolId ? 9 : null,
+      confidence,
+      source,
+      freshness: "fresh",
+      commitSha: null,
+      validatedAt: null,
+    });
+    const p = {
+      requirement: { findFirst: vi.fn().mockResolvedValue({ id: "req-1", title: "Login" }) },
+      requirementSpecMapping: { findMany: vi.fn().mockResolvedValue([]) },
+      specCodeMapping: { findMany: vi.fn() },
+      // Read surer first, as the query orders it.
+      requirementCodeMapping: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([
+            link("sym-1", "src/login.ts", 0.9, "semantic"),
+            link("sym-1", "src/login.ts", 0.6, "analysis-grounding"),
+            link("sym-2", "src/login.ts", 0.5, "analysis-grounding"),
+            link(null, "src/login.ts", 0.4, "analysis-grounding"),
+            link(null, "src/login.ts", 0.3, "semantic"),
+          ]),
+      },
+      codeSymbol: { findMany: vi.fn().mockResolvedValue([]) },
+      codeEdge: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+
+    const chain = await getRequirementChain("proj-1", "req-1", deps(p));
+
+    expect(chain.directCode.map((c) => [c.codeSymbolId, c.confidence, c.source])).toEqual([
+      ["sym-1", 0.9, "semantic"],
+      ["sym-2", 0.5, "analysis-grounding"],
+      [null, 0.4, "analysis-grounding"],
+    ]);
+  });
+
   it("404s for an unknown requirement", async () => {
     const p = { requirement: { findFirst: vi.fn().mockResolvedValue(null) } };
     await expect(getRequirementChain("proj-1", "ghost", deps(p))).rejects.toMatchObject({
