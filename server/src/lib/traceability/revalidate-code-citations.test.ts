@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  captureCitedSymbolIdentity,
   revalidateCodeCitations,
   revalidateCodeCitationsAfterIngest,
   type RevalidatePrisma,
@@ -273,6 +274,86 @@ describe("revalidateCodeCitations (#1831)", () => {
     const summary = await revalidateCodeCitations(prisma, "g", NOW);
     expect(summary).toMatchObject({ checked: 1200, fresh: 1200, writes: 3 });
     expect(updates.map((u) => u.ids.length)).toEqual([500, 500, 200]);
+  });
+});
+
+describe("revalidateCodeCitations — files with no symbol (#1831)", () => {
+  const fileLink = (id: string, filePath: string): Link => ({
+    id,
+    source: "manual",
+    codeSymbolId: null,
+    filePath,
+    startLine: 1,
+    endLine: 3,
+    symbolQualifiedName: null,
+    symbolKind: null,
+    symbolContentHash: null,
+    codeSymbol: null,
+  });
+
+  it("a file the walk found but the graph holds no symbol for is present, not file-missing", async () => {
+    const { prisma, of } = fakePrisma({ symbols: [], links: [fileLink("l", "docs/notes.txt")] });
+    await revalidateCodeCitations(prisma, "g", NOW, { presentFiles: new Set(["docs/notes.txt"]) });
+    expect(of("l")).toMatchObject({ freshness: "fresh", staleReason: null });
+  });
+
+  it("without the walk's files, such a file reads file-missing", async () => {
+    const { prisma, of } = fakePrisma({ symbols: [], links: [fileLink("l", "docs/notes.txt")] });
+    await revalidateCodeCitations(prisma, "g", NOW);
+    expect(of("l")).toMatchObject({ freshness: "stale", staleReason: "file-missing" });
+  });
+
+  it("a symbol link into a present file with no symbols is symbol-missing", async () => {
+    const s = fn("a", "src/a.ts", 1, "h");
+    const { prisma, of } = fakePrisma({ symbols: [], links: [citing("l", s)] });
+    await revalidateCodeCitations(prisma, "g", NOW, { presentFiles: new Set(["src/a.ts"]) });
+    expect(of("l")).toMatchObject({ freshness: "stale", staleReason: "symbol-missing" });
+  });
+});
+
+describe("captureCitedSymbolIdentity (#1831)", () => {
+  const s = fn("a", "src/a.ts", 1, "h");
+  const legacy = (id: string, codeGraphId: string | null, withSymbol = true) =>
+    ({
+      id,
+      codeGraphId,
+      codeSymbol: withSymbol
+        ? { qualifiedName: s.qualifiedName, kind: s.kind, contentHash: s.contentHash }
+        : null,
+    }) as unknown as Link;
+
+  it("copies the live symbol's identity onto each link, and attributes an unstamped one to the graph", async () => {
+    const { prisma, of, updates } = fakePrisma({
+      symbols: [],
+      links: [legacy("stamped", "g"), legacy("unstamped", null), legacy("gone", "g", false)],
+    });
+    expect(await captureCitedSymbolIdentity(prisma, "g")).toBe(true);
+    const identity = {
+      symbolQualifiedName: "src/a.ts::a",
+      symbolKind: "function",
+      symbolContentHash: "h",
+    };
+    expect(of("stamped")).toEqual(identity);
+    expect(of("unstamped")).toEqual({ ...identity, codeGraphId: "g" });
+    expect(of("gone")).toBeUndefined();
+    expect(updates).toHaveLength(2);
+  });
+
+  it("does nothing for a graph that is gone", async () => {
+    const { prisma, updates } = fakePrisma({ graph: false, symbols: [], links: [] });
+    expect(await captureCitedSymbolIdentity(prisma, "g")).toBe(true);
+    expect(updates).toEqual([]);
+  });
+
+  it("never throws: a fault returns false", async () => {
+    const prisma = {
+      codeGraph: {
+        findUnique: async () => {
+          throw new Error("db down");
+        },
+      },
+    } as unknown as RevalidatePrisma;
+    await expect(captureCitedSymbolIdentity(prisma, "g")).resolves.toBe(false);
   });
 });
 

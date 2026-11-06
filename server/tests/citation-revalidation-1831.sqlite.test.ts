@@ -330,10 +330,87 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     describe("after repo A changes", () => {
+      /** Links written before #1831: no stored symbol identity. */
+      const legacyReq = { stamped: "", unstamped: "" };
+      let symbollessFileReq = "";
       beforeAll(async () => {
-        await writeTree(rootA(), FIXTURE.after);
+        // A link to `edited` as #1830 wrote it (stamped) and as a pre-#1830
+        // writer did (unstamped): neither holds the symbol's identity, and the
+        // ingest below deletes the symbol row they point at.
+        const seeded = await db.requirementCodeMapping.findFirstOrThrow({
+          where: { requirementId: req.get("edited") },
+        });
+        for (const kind of ["stamped", "unstamped"] as const) {
+          legacyReq[kind] = (
+            await db.requirement.create({
+              data: { projectId: PROJ, analysisId: "an-1831", title: kind, body: kind },
+            })
+          ).id;
+          await db.requirementCodeMapping.create({
+            data: {
+              requirementId: legacyReq[kind],
+              projectId: PROJ,
+              codeSymbolId: seeded.codeSymbolId,
+              filePath: seeded.filePath,
+              startLine: seeded.startLine,
+              endLine: seeded.endLine,
+              confidence: 0.8,
+              source: "agent",
+              ...(kind === "stamped"
+                ? {
+                    codeGraphId: graph.A,
+                    commitSha: SHA_BEFORE,
+                    freshness: "fresh",
+                    validatedAt: new Date(),
+                  }
+                : {}),
+            },
+          });
+        }
+        // A file the walk finds but no parser gives a symbol: still in the repo.
+        symbollessFileReq = (
+          await db.requirement.create({
+            data: { projectId: PROJ, analysisId: "an-1831", title: "notes", body: "notes" },
+          })
+        ).id;
+        await db.requirementCodeMapping.create({
+          data: {
+            requirementId: symbollessFileReq,
+            projectId: PROJ,
+            filePath: "docs/notes.txt",
+            confidence: 1,
+            source: "manual",
+            codeGraphId: graph.A,
+            freshness: "fresh",
+          },
+        });
+        await writeTree(rootA(), { ...FIXTURE.after, "docs/notes.txt": "release notes\n" });
         await ingestA(SHA_AFTER);
       }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
+
+      it("a link written before #1831 whose symbol was edited is stale, never fresh", async () => {
+        for (const kind of ["stamped", "unstamped"] as const) {
+          const row = await db.requirementCodeMapping.findFirstOrThrow({
+            where: { requirementId: legacyReq[kind] },
+          });
+          expect({ kind, ...row }).toMatchObject({
+            kind,
+            freshness: "stale",
+            staleReason: "content-changed",
+            codeGraphId: graph.A,
+            filePath: "src/edited.ts",
+            symbolQualifiedName: "src/edited.ts::edited",
+            symbolKind: "function",
+          });
+        }
+      });
+
+      it("a file the graph walked but holds no symbol for is not file-missing", async () => {
+        const row = await db.requirementCodeMapping.findFirstOrThrow({
+          where: { requirementId: symbollessFileReq },
+        });
+        expect(row).toMatchObject({ freshness: "fresh", staleReason: null });
+      });
 
       const symbolAfter = (name: string, filePath: string) =>
         db.codeSymbol.findFirstOrThrow({ where: { codeGraphId: graph.A, name, filePath } });
