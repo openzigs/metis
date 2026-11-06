@@ -10,8 +10,10 @@
  *   1. A link to a symbol is looked up by kind and its name WITHIN its file
  *      (the qualified name less its file-path root, `Foo::bar`), from the
  *      identity the link stored (`symbolQualifiedName`/`symbolKind`/
- *      `symbolContentHash`, #1831) or, for a link written before that, from
- *      the symbol row it still points at.
+ *      `symbolContentHash`, #1831). A link written before that stores none,
+ *      and the ingest deletes the symbol rows of every file it re-parses
+ *      (`codeSymbolId` is ON DELETE SET NULL), so the ingest calls
+ *      {@link captureCitedSymbolIdentity} first, while those rows still exist.
  *   2. Exactly one such symbol in the same file, with the same content hash:
  *      `fresh`, its lines (and symbol id) updated if they drifted. A different
  *      hash: `stale`, `content-changed`.
@@ -25,7 +27,9 @@
  *      is not. An ambiguous match is never a guess.
  *   5. A file-level link (no symbol identity): `fresh` when the file is in the
  *      graph and the cited lines are within it, else `stale` (`file-missing`,
- *      or `content-changed` when the file is now shorter than the lines).
+ *      or `content-changed` when the file is now shorter than the lines). A
+ *      file the ingest walked but holds no symbol for (no parser for it, or
+ *      unparseable) is still in the repo: its length is unknown, never missing.
  *
  * A `manual` link is a person's statement: it is never rewritten (nor deleted)
  * here, only flagged. A verdict that would move it marks it `stale` instead,
@@ -57,6 +61,15 @@ export type RevalidatePrisma = Pick<
   PrismaClient,
   "codeGraph" | "codeSymbol" | "requirementCodeMapping"
 >;
+
+export interface RevalidateOptions {
+  /**
+   * Every file the ingest's walk found in the tree. A file is present when the
+   * graph holds a symbol for it or the walk found it; without this, only the
+   * first.
+   */
+  presentFiles?: ReadonlySet<string>;
+}
 
 export interface RevalidationSummary {
   checked: number;
@@ -269,6 +282,7 @@ export async function revalidateCodeCitations(
   prisma: RevalidatePrisma,
   codeGraphId: string,
   now: Date = new Date(),
+  options: RevalidateOptions = {},
 ): Promise<RevalidationSummary> {
   const summary: RevalidationSummary = { checked: 0, fresh: 0, moved: 0, stale: 0, writes: 0 };
   const graph = await prisma.codeGraph.findUnique({
@@ -348,6 +362,12 @@ export async function revalidateCodeCitations(
     });
     for (const f of files) fileLength.set(f.filePath, f._max.endLine ?? 0);
   }
+  // In the tree with no symbol to bound it: present, of unknown length.
+  for (const filePath of new Set(rows.map((r) => r.filePath))) {
+    if (!fileLength.has(filePath) && options.presentFiles?.has(filePath)) {
+      fileLength.set(filePath, Number.POSITIVE_INFINITY);
+    }
+  }
 
   const stamp = { codeGraphId, commitSha: graph.commitSha, validatedAt: now };
   const groups = new Map<string, { data: Record<string, unknown>; ids: string[] }>();
@@ -375,15 +395,82 @@ export async function revalidateCodeCitations(
 }
 
 /**
+ * The ingest's first step, before it deletes a single symbol row: copy the
+ * identity of the symbol each link into this graph points at onto every link
+ * that does not hold one yet (a link written before #1831, or by a writer that
+ * stores none). Without it, a link whose symbol's file is re-parsed loses its
+ * `codeSymbolId` and would be judged as a file-level link — `fresh` while the
+ * file exists, for exactly the code that changed. An unstamped link is
+ * attributed to this graph as well, so re-validation still finds it.
+ *
+ * Never throws: returns false on a fault, and the ingest then skips
+ * re-validation rather than judge links it could not capture.
+ */
+export async function captureCitedSymbolIdentity(
+  prisma: RevalidatePrisma,
+  codeGraphId: string,
+): Promise<boolean> {
+  try {
+    const graph = await prisma.codeGraph.findUnique({
+      where: { id: codeGraphId },
+      select: { projectId: true },
+    });
+    if (!graph) return true;
+    const rows = await prisma.requirementCodeMapping.findMany({
+      where: {
+        projectId: graph.projectId,
+        codeSymbol: { codeGraphId },
+        OR: [{ symbolQualifiedName: null }, { symbolKind: null }, { symbolContentHash: null }],
+      },
+      select: {
+        id: true,
+        codeGraphId: true,
+        codeSymbol: { select: { qualifiedName: true, kind: true, contentHash: true } },
+      },
+    });
+    const groups = new Map<string, { data: Record<string, unknown>; ids: string[] }>();
+    for (const row of rows) {
+      if (!row.codeSymbol) continue;
+      const data = {
+        symbolQualifiedName: row.codeSymbol.qualifiedName,
+        symbolKind: row.codeSymbol.kind,
+        symbolContentHash: row.codeSymbol.contentHash,
+        ...(row.codeGraphId === null ? { codeGraphId } : {}),
+      };
+      const key = JSON.stringify(data);
+      const group = groups.get(key) ?? { data, ids: [] };
+      group.ids.push(row.id);
+      groups.set(key, group);
+    }
+    for (const { data, ids } of groups.values()) {
+      for (const idChunk of chunks(ids)) {
+        await prisma.requirementCodeMapping.updateMany({
+          where: { id: { in: idChunk }, projectId: graph.projectId },
+          data,
+        });
+      }
+    }
+    return true;
+  } catch (err) {
+    log.warn("could not capture cited symbol identity; re-validation skipped", {
+      codeGraphId,
+      error: String(err),
+    });
+    return false;
+  }
+}
+
+/**
  * The ingest's hook: re-validate after a graph completes, and never fail the
  * ingest that produced it — a fault leaves the links as they were.
  */
 export async function revalidateCodeCitationsAfterIngest(
   prisma: RevalidatePrisma,
   codeGraphId: string,
+  options: RevalidateOptions = {},
 ): Promise<RevalidationSummary | null> {
   try {
-    const summary = await revalidateCodeCitations(prisma, codeGraphId);
+    const summary = await revalidateCodeCitations(prisma, codeGraphId, new Date(), options);
     if (summary.checked > 0) log.info("re-validated code links", { codeGraphId, ...summary });
     return summary;
   } catch (err) {
