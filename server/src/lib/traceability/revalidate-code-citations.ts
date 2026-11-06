@@ -431,7 +431,7 @@ export async function captureCitedSymbolIdentity(
     const groups = new Map<string, { data: Record<string, unknown>; ids: string[] }>();
     for (const row of rows) {
       if (!row.codeSymbol) continue;
-      const data = {
+      const data: Record<string, unknown> = {
         symbolQualifiedName: row.codeSymbol.qualifiedName,
         symbolKind: row.codeSymbol.kind,
         symbolContentHash: row.codeSymbol.contentHash,
