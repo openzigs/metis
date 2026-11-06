@@ -6,7 +6,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import type { StoredLinkRow } from "../../impact-analysis/change-seeds.js";
 import type { ChangedRequirement } from "../../impact-analysis/extract-changes.js";
 import {
@@ -14,20 +14,27 @@ import {
   recordedVectorsFile,
   resolveCorpusDir,
 } from "../impact-recall/fixture.js";
-import { runImpactRecallEval } from "../impact-recall/runner.js";
+import { runImpactRecallEval, runImpactRecallEvalRepeated } from "../impact-recall/runner.js";
+import { normalizeTable, scoreSet } from "../impact-recall/scorer.js";
 import { loadRecordedVectors } from "../recorded-vectors.js";
 import { EmbedCache, buildCorpusSearch } from "./search.js";
-import { fixtureSearchRows } from "./table-guard.js";
+import { pairedTInterval } from "./stats.js";
+import { MAPPER_SEEDING, fixtureSearchRows } from "./table-guard.js";
 import {
   createAgentSeedGuard,
   fileGuardStore,
+  guardFingerprint,
+  guardPairedDifferences,
   guardRecordsFile,
+  lazyAgentSeedGuard,
   parseGuardRecord,
+  type AgentSeedGuard,
   type AgentSeedGuardDeps,
   type GuardRecord,
+  type GuardRunRecord,
   type GuardStore,
 } from "./table-guard-agent.js";
-import { TABLE_GUARD_CORPUS } from "./table-guard-source.js";
+import { TABLE_GUARD_CORPUS, TABLE_GUARD_REPO } from "./table-guard-source.js";
 
 const dir = resolveCorpusDir(TABLE_GUARD_CORPUS);
 const fixture = await loadImpactRecallFixture(dir);
@@ -38,6 +45,7 @@ const search = await buildCorpusSearch(
   new EmbedCache(await loadRecordedVectors(recordedVectorsFile(dir)), null, "test"),
 );
 const MODEL = "anthropic/deepseek-flash";
+const FINGERPRINT = guardFingerprint(fixture, TABLE_GUARD_REPO);
 const CITED = fixture.requirements.find((r) => r.text === "Update product details in the catalog")!;
 
 function memoryStore(initial: GuardRecord[] = []): GuardStore & { records: GuardRecord[] } {
@@ -55,23 +63,31 @@ function memoryStore(initial: GuardRecord[] = []): GuardStore & { records: Guard
  * The analysis fakes: each analysis persists one requirement with the fixture
  * requirement's own text, except `emptyFor`, which persists none. The product
  * update's persisted requirements cite the order INSERT statement: a wrong
- * table, which only the A7 lead can bring in.
+ * table, which only the A7 lead can bring in. `db` is the eval database the
+ * analyses persist into: share one across calls to resume against it.
  */
-function fakes(opts: { emptyFor?: string; alsoFor?: { text: string; also: string } } = {}) {
+function fakes(
+  opts: {
+    emptyFor?: string;
+    alsoFor?: { text: string; also: string };
+    db?: Map<string, string>;
+  } = {},
+) {
   let spent = 0;
   let unpriced = 0;
   const analyzed: string[] = [];
-  const persisted = new Map<string, string>(); // persisted id → fixture text
+  const persisted = opts.db ?? new Map<string, string>(); // persisted id → fixture text
   const deps = {
     fixture,
     search,
     options: {},
     runs: 2,
     model: MODEL,
+    repo: TABLE_GUARD_REPO,
     analyze: async (text: string) => {
       analyzed.push(text);
       spent += 0.02;
-      const n = analyzed.length;
+      const n = persisted.size + 1;
       if (text === opts.emptyFor) return { analysisId: `an-${n}`, requirementIds: [] };
       persisted.set(`pr-${n}`, text);
       if (text === opts.alsoFor?.text) {
@@ -80,14 +96,22 @@ function fakes(opts: { emptyFor?: string; alsoFor?: { text: string; also: string
       }
       return { analysisId: `an-${n}`, requirementIds: [`pr-${n}`] };
     },
+    // Production's read: an id the database no longer holds is skipped.
     loadRequirementChanges: async (ids: readonly string[]): Promise<ChangedRequirement[]> =>
-      ids.map((id) => ({
-        requirementId: id,
-        title: persisted.get(id)!,
-        body: persisted.get(id)!,
-        changeType: "added",
-        bodyDelta: persisted.get(id)!.length,
-      })),
+      ids.flatMap((id) => {
+        const text = persisted.get(id);
+        return text === undefined
+          ? []
+          : [
+              {
+                requirementId: id,
+                title: text,
+                body: text,
+                changeType: "added",
+                bodyDelta: text.length,
+              },
+            ];
+      }),
     loadCitations: async (requirementId: string): Promise<StoredLinkRow[]> =>
       persisted.get(requirementId) === CITED.text
         ? [
@@ -112,7 +136,7 @@ function fakes(opts: { emptyFor?: string; alsoFor?: { text: string; also: string
     runOnce: (o: Parameters<AgentSeedGuardDeps["runOnce"]>[0]) => runImpactRecallEval(fixture, o),
     describe: (label: string) => `${TABLE_GUARD_CORPUS}, ${label}`,
   };
-  return { deps, analyzed, setUnpriced: () => (unpriced = 1) };
+  return { deps, analyzed, persisted, setUnpriced: () => (unpriced = 1) };
 }
 
 describe("createAgentSeedGuard (#1823)", () => {
@@ -164,7 +188,8 @@ describe("createAgentSeedGuard (#1823)", () => {
 
   it("stops at the step limit, records what it took, and a later call takes only the rest", async () => {
     const store = memoryStore();
-    const first = fakes();
+    const db = new Map<string, string>();
+    const first = fakes({ db });
     const stopped = await createAgentSeedGuard({ ...first.deps, store, maxSteps: 5 }).A7();
     expect(stopped).toEqual({
       measured: false,
@@ -173,7 +198,7 @@ describe("createAgentSeedGuard (#1823)", () => {
     expect(first.analyzed).toHaveLength(5);
     expect(store.records).toHaveLength(5);
 
-    const second = fakes();
+    const second = fakes({ db });
     const reading = await createAgentSeedGuard({ ...second.deps, store }).A7();
     expect(second.analyzed).toEqual(
       [...fixture.requirements, ...fixture.requirements].slice(5).map((r) => r.text),
@@ -181,7 +206,7 @@ describe("createAgentSeedGuard (#1823)", () => {
     expect(reading.measured).toBe(true);
 
     // A third call has every step: it runs nothing and reads the same.
-    const third = fakes();
+    const third = fakes({ db });
     const again = await createAgentSeedGuard({ ...third.deps, store, maxSteps: 1 }).A7();
     expect(third.analyzed).toEqual([]);
     expect(again).toEqual(reading);
@@ -255,6 +280,7 @@ describe("createAgentSeedGuard (#1823)", () => {
         requirement: CITED.id,
         run: 1,
         model: "anthropic/claude-sonnet-5-5",
+        fingerprint: FINGERPRINT,
         analysisId: "x",
         requirementIds: [],
         costUsd: 0.1,
@@ -302,6 +328,7 @@ describe("the guard's record file (#1823)", () => {
       requirement: "REQ-01",
       run: 1,
       model: MODEL,
+      fingerprint: FINGERPRINT,
       analysisId: "an-1",
       requirementIds: ["pr-1"],
       costUsd: null,
@@ -312,6 +339,7 @@ describe("the guard's record file (#1823)", () => {
       reading: "A7",
       run: 1,
       model: MODEL,
+      fingerprint: FINGERPRINT,
       tablePrecision: 0.5,
       tables: { "REQ-01": ["product"] },
       label: "x",
@@ -335,52 +363,365 @@ describe("the guard's record file (#1823)", () => {
       requirement: "REQ-01",
       run: 1,
       model: MODEL,
+      fingerprint: FINGERPRINT,
       analysisId: "an-1",
       requirementIds: [],
       costUsd: 0,
       seconds: 1,
     });
-    await writeFile(file, `${await readFile(file, "utf8")}{"kind":"run","model":"m","run":1}\n`);
+    await writeFile(
+      file,
+      `${await readFile(file, "utf8")}{"kind":"run","model":"m","fingerprint":{"fixture":"f","repository":"r"},"run":1}\n`,
+    );
     await expect(fileGuardStore(file).read()).rejects.toThrow(/no reading/);
   });
 
   it.each([
-    ['{"kind":"analysis","model":"m","run":0}', /no run/],
-    ['{"kind":"analysis","run":1}', /no model/],
     [
-      '{"kind":"analysis","model":"m","run":1,"analysisId":"a","requirementIds":[]}',
+      '{"kind":"analysis","model":"m","fingerprint":{"fixture":"f","repository":"r"},"run":0}',
+      /no run/,
+    ],
+    ['{"kind":"analysis","run":1}', /no model/],
+    ['{"kind":"analysis","model":"m","run":1}', /no fingerprint \(recorded before #1847\)/],
+    ['{"kind":"analysis","model":"m","run":1,"fingerprint":{"fixture":"f"}}', /no fingerprint/],
+    [
+      '{"kind":"analysis","model":"m","fingerprint":{"fixture":"f","repository":"r"},"run":1,"analysisId":"a","requirementIds":[]}',
       /no requirement$/,
     ],
     [
-      '{"kind":"analysis","model":"m","run":1,"requirement":"R","requirementIds":[]}',
+      '{"kind":"analysis","model":"m","fingerprint":{"fixture":"f","repository":"r"},"run":1,"requirement":"R","requirementIds":[]}',
       /no analysisId/,
     ],
     [
-      '{"kind":"analysis","model":"m","run":1,"requirement":"R","analysisId":"a","requirementIds":[1]}',
+      '{"kind":"analysis","model":"m","fingerprint":{"fixture":"f","repository":"r"},"run":1,"requirement":"R","analysisId":"a","requirementIds":[1]}',
       /no requirementIds/,
     ],
     [
-      '{"kind":"analysis","model":"m","run":1,"requirement":"R","analysisId":"a","requirementIds":[],"costUsd":"1"}',
+      '{"kind":"analysis","model":"m","fingerprint":{"fixture":"f","repository":"r"},"run":1,"requirement":"R","analysisId":"a","requirementIds":[],"costUsd":"1"}',
       /no costUsd/,
     ],
     [
-      '{"kind":"analysis","model":"m","run":1,"requirement":"R","analysisId":"a","requirementIds":[],"costUsd":1}',
+      '{"kind":"analysis","model":"m","fingerprint":{"fixture":"f","repository":"r"},"run":1,"requirement":"R","analysisId":"a","requirementIds":[],"costUsd":1}',
       /no seconds/,
     ],
-    ['{"kind":"run","model":"m","run":1,"reading":"A9"}', /no reading/],
-    ['{"kind":"run","model":"m","run":1,"reading":"A7"}', /no tablePrecision/],
-    ['{"kind":"run","model":"m","run":1,"reading":"A7","tablePrecision":1}', /no tables/],
     [
-      '{"kind":"run","model":"m","run":1,"reading":"A7","tablePrecision":1,"tables":{}}',
+      '{"kind":"run","model":"m","fingerprint":{"fixture":"f","repository":"r"},"run":1,"reading":"A9"}',
+      /no reading/,
+    ],
+    [
+      '{"kind":"run","model":"m","fingerprint":{"fixture":"f","repository":"r"},"run":1,"reading":"mapper","tablePrecision":1,"tables":{},"label":"l","seeding":"s","changes":0,"untracked":0}',
+      null,
+    ],
+    [
+      '{"kind":"run","model":"m","fingerprint":{"fixture":"f","repository":"r"},"run":1,"reading":"A7"}',
+      /no tablePrecision/,
+    ],
+    [
+      '{"kind":"run","model":"m","fingerprint":{"fixture":"f","repository":"r"},"run":1,"reading":"A7","tablePrecision":1}',
+      /no tables/,
+    ],
+    [
+      '{"kind":"run","model":"m","fingerprint":{"fixture":"f","repository":"r"},"run":1,"reading":"A7","tablePrecision":1,"tables":{}}',
       /no configuration/,
     ],
     [
-      '{"kind":"run","model":"m","run":1,"reading":"A7","tablePrecision":1,"tables":{},"label":"l","seeding":"s"}',
+      '{"kind":"run","model":"m","fingerprint":{"fixture":"f","repository":"r"},"run":1,"reading":"A7","tablePrecision":1,"tables":{},"label":"l","seeding":"s"}',
       /no change counts/,
     ],
-    ['{"kind":"other","model":"m","run":1}', /unknown kind/],
+    [
+      '{"kind":"other","model":"m","fingerprint":{"fixture":"f","repository":"r"},"run":1}',
+      /unknown kind/,
+    ],
     ["null", /not an object/],
-  ])("parseGuardRecord refuses %s", (line, error) => {
-    expect(() => parseGuardRecord(line)).toThrow(error);
+  ])("parseGuardRecord reads %s", (line, error) => {
+    if (error === null) expect(parseGuardRecord(line)).toMatchObject({ reading: "mapper" });
+    else expect(() => parseGuardRecord(line)).toThrow(error);
+  });
+});
+
+describe("a resumed table guard checks what it resumes against (#1847)", () => {
+  const total = fixture.requirements.length * 2;
+
+  it("refuses to read runs when a recorded analysis's requirements no longer resolve", async () => {
+    const store = memoryStore();
+    const first = fakes();
+    // Only the analyses are recorded.
+    await createAgentSeedGuard({ ...first.deps, store, maxSteps: total }).A7();
+    expect(store.records).toHaveLength(total);
+
+    // The eval database was reset: none of the recorded ids resolves.
+    const second = fakes();
+    const runOnce = vi.fn(second.deps.runOnce);
+    await expect(createAgentSeedGuard({ ...second.deps, store, runOnce }).A7()).rejects.toThrow(
+      /refusing to resume the table guard: analysis an-1 \(REQ-01, run 1\) persisted 1 requirement\(s\); 1 no longer resolve/,
+    );
+    expect(second.analyzed).toEqual([]);
+    // The baseline does not read the analyses; no A7 run was taken or recorded.
+    expect(store.records.filter((r) => r.kind === "run" && r.reading === "A7")).toEqual([]);
+  });
+
+  it("refuses when one of an analysis's requirements was deleted, the rest still there", async () => {
+    const store = memoryStore();
+    const db = new Map<string, string>();
+    const order = fixture.requirements.find(
+      (r) => r.text === "Store a shipping method on each order",
+    )!;
+    const alsoFor = { text: CITED.text, also: order.text };
+    const first = fakes({ db, alsoFor });
+    await createAgentSeedGuard({ ...first.deps, store, maxSteps: total }).A7();
+    // The run-1 analysis of the product update persisted two requirements:
+    // delete only the second, so one of its ids still resolves.
+    const analysis = store.records.find(
+      (r) => r.kind === "analysis" && r.requirement === CITED.id && r.run === 1,
+    );
+    if (analysis?.kind !== "analysis") throw new Error("the analysis should be recorded");
+    expect(analysis.requirementIds).toHaveLength(2);
+    const [kept, deleted] = analysis.requirementIds;
+    expect(deleted).toMatch(/^pr-\d+-b$/);
+    db.delete(deleted!);
+    expect(db.has(kept!)).toBe(true);
+    await expect(
+      createAgentSeedGuard({ ...fakes({ db, alsoFor }).deps, store }).A7O(),
+    ).rejects.toThrow(
+      new RegExp(
+        `analysis ${analysis.analysisId} \\(${CITED.id}, run 1\\) persisted 2 requirement\\(s\\); 1 no longer resolve`,
+      ),
+    );
+  });
+
+  it("resumes against the same database", async () => {
+    const store = memoryStore();
+    const db = new Map<string, string>();
+    await createAgentSeedGuard({ ...fakes({ db }).deps, store, maxSteps: total }).A7();
+    const reading = await createAgentSeedGuard({ ...fakes({ db }).deps, store }).A7();
+    expect(reading.measured).toBe(true);
+  });
+
+  it("refuses steps recorded on another fixture", async () => {
+    const store = memoryStore();
+    await createAgentSeedGuard({ ...fakes().deps, store, maxSteps: 1 }).A7();
+    const relabelled = {
+      ...fixture,
+      manifest: {
+        ...fixture.manifest,
+        requirements: fixture.manifest.requirements.map((r, i) =>
+          i === 0 ? { ...r, text: `${r.text}, and its price` } : r,
+        ),
+      },
+    };
+    await expect(
+      createAgentSeedGuard({ ...fakes().deps, fixture: relabelled, store }).A7(),
+    ).rejects.toThrow(
+      /recorded under another configuration:\n {2}- the fixture \(its requirement texts, labels or graph\) changed/,
+    );
+  });
+
+  it("refuses steps recorded against another repository pin", async () => {
+    const store = memoryStore();
+    await createAgentSeedGuard({ ...fakes().deps, store, maxSteps: 1 }).A7();
+    const repo = { ...TABLE_GUARD_REPO, ref: "jpetstore-6.4.0", sha: "0".repeat(40) };
+    await expect(createAgentSeedGuard({ ...fakes().deps, repo, store }).A7()).rejects.toThrow(
+      `repository: recorded ${TABLE_GUARD_REPO.url}@jpetstore-6.3.0 (${TABLE_GUARD_REPO.sha}), now ${TABLE_GUARD_REPO.url}@jpetstore-6.4.0 (${"0".repeat(40)})`,
+    );
+  });
+
+  it("fingerprints the fixture and the pin, not the order of the manifest's keys", () => {
+    const reordered = {
+      manifest: Object.fromEntries(Object.entries(fixture.manifest).reverse()),
+    } as unknown as typeof fixture;
+    expect(guardFingerprint(reordered, TABLE_GUARD_REPO)).toEqual(FINGERPRINT);
+    expect(FINGERPRINT.repository).toBe(
+      `${TABLE_GUARD_REPO.url}@${TABLE_GUARD_REPO.ref} (${TABLE_GUARD_REPO.sha})`,
+    );
+    expect(FINGERPRINT.fixture).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("stamps every record it writes with the fingerprint", async () => {
+    const store = memoryStore();
+    await createAgentSeedGuard({ ...fakes().deps, store }).A7();
+    expect(store.records.length).toBeGreaterThan(total);
+    expect(store.records.every((r) => r.fingerprint.fixture === FINGERPRINT.fixture)).toBe(true);
+    expect(store.records.every((r) => r.fingerprint.repository === FINGERPRINT.repository)).toBe(
+      true,
+    );
+  });
+});
+
+describe("A0's mapper reading, recorded (#1847)", () => {
+  it("records each mapper run, so a resumed call pays for none of them again", async () => {
+    const store = memoryStore();
+    const f = fakes();
+    const runOnce = vi.fn(f.deps.runOnce);
+    const a0 = await createAgentSeedGuard({ ...f.deps, store, runOnce }).A0();
+    if (!a0.measured) throw new Error("should be measured");
+    // The mapper path: no split seeding.
+    expect(runOnce).toHaveBeenCalledTimes(2);
+    expect(runOnce.mock.calls.every(([o]) => o.splitSeeding === undefined)).toBe(true);
+    const expected = await runImpactRecallEvalRepeated(fixture, {}, 2);
+    expect(a0).toEqual({
+      measured: true,
+      tablePrecision: expected.meanAggregate.tables.macroPrecision,
+      runs: 2,
+      configuration: `${TABLE_GUARD_CORPUS}, ${expected.configuration.label}`,
+      seeding: MAPPER_SEEDING,
+    });
+    // It takes no analysis: A0 reads the fixture's own text.
+    expect(f.analyzed).toEqual([]);
+    expect(store.records.map((r) => (r.kind === "run" ? `${r.reading} ${r.run}` : r.kind))).toEqual(
+      ["mapper 1", "mapper 2"],
+    );
+
+    const again = vi.fn(f.deps.runOnce);
+    const resumed = await createAgentSeedGuard({ ...f.deps, store, runOnce: again }).A0();
+    expect(again).not.toHaveBeenCalled();
+    expect(resumed).toEqual(a0);
+  });
+
+  it("is a step: the step limit and the cap stop it", async () => {
+    const store = memoryStore();
+    const f = fakes();
+    expect(await createAgentSeedGuard({ ...f.deps, store, maxSteps: 1 }).A0()).toEqual({
+      measured: false,
+      reason: `0 of ${fixture.requirements.length * 2} analyses and 1 reading run(s) recorded; stopped by the --guard-steps limit (1). Run the same --merge again to continue`,
+    });
+    const capped = await createAgentSeedGuard({
+      ...f.deps,
+      store,
+      blocked: () => "an unpriced model call",
+    }).A0();
+    expect(capped).toMatchObject({ measured: false, reason: expect.stringContaining("unpriced") });
+  });
+});
+
+describe("lazyAgentSeedGuard (#1847)", () => {
+  it("builds the guard once, even when two readings start together", async () => {
+    let builds = 0;
+    const guard: AgentSeedGuard = {
+      A0: async () => ({ measured: false, reason: "A0" }),
+      A7: async () => ({ measured: false, reason: "A7" }),
+      A7O: async () => ({ measured: false, reason: "A7O" }),
+    };
+    const lazy = lazyAgentSeedGuard(async () => {
+      builds++;
+      await new Promise((r) => setTimeout(r, 5));
+      return guard;
+    });
+    expect(builds).toBe(0);
+    const readings = await Promise.all([lazy.A7(), lazy.A7O(), lazy.A0()]);
+    expect(builds).toBe(1);
+    expect(readings.map((r) => (r.measured ? "" : r.reason))).toEqual(["A7", "A7O", "A0"]);
+  });
+});
+
+describe("guardPairedDifferences (#1847)", () => {
+  /** A run record whose tables per requirement are given. */
+  const run = (
+    reading: GuardRunRecord["reading"],
+    n: number,
+    tables: (id: string, expected: string[]) => string[],
+  ): GuardRunRecord => ({
+    kind: "run",
+    reading,
+    run: n,
+    model: MODEL,
+    fingerprint: FINGERPRINT,
+    tablePrecision: 0,
+    tables: Object.fromEntries(
+      fixture.requirements.map((r) => [r.id, tables(r.id, r.expectedTables)]),
+    ),
+    label: "l",
+    seeding: "s",
+    changes: 0,
+    untracked: 0,
+  });
+  const precision = (expected: string[], found: string[]) =>
+    scoreSet(found, expected, normalizeTable).precision;
+
+  it("pairs each requirement's mean table precision over the runs, reading against reading", () => {
+    const first = fixture.requirements[0]!.id;
+    const second = fixture.requirements[1]!.id;
+    const records: GuardRecord[] = [
+      run("baseline", 1, (_, e) => e),
+      run("baseline", 2, (_, e) => e),
+      // A7 adds a wrong table to the first requirement on run 1 only.
+      run("A7", 1, (id, e) => (id === first ? [...e, "bogus"] : e)),
+      run("A7", 2, (_, e) => e),
+      // A7O adds one to the second requirement on both runs.
+      run("A7O", 1, (id, e) => (id === second ? [...e, "bogus"] : e)),
+      run("A7O", 2, (id, e) => (id === second ? [...e, "bogus"] : e)),
+      run("mapper", 1, () => ["bogus"]),
+    ];
+    const mean = (reading: GuardRunRecord["reading"]) =>
+      fixture.requirements.map((r) => {
+        const rs = records.filter(
+          (x): x is GuardRunRecord => x.kind === "run" && x.reading === reading,
+        );
+        return rs.reduce((a, x) => a + precision(r.expectedTables, x.tables[r.id]!), 0) / rs.length;
+      });
+    const out = guardPairedDifferences(records, fixture, 2);
+    expect(out.map((d) => `${d.arm} − ${d.baseline}`)).toEqual([
+      "A7 − baseline",
+      "A7O − baseline",
+      "A7 − A7O",
+    ]);
+    expect(out[0]!.interval).toEqual(pairedTInterval(mean("baseline"), mean("A7")));
+    expect(out[1]!.interval).toEqual(pairedTInterval(mean("baseline"), mean("A7O")));
+    expect(out[2]!.interval).toEqual(pairedTInterval(mean("A7O"), mean("A7")));
+    expect(out[0]!.interval.meanDifference).toBeLessThan(0);
+    expect(out[2]!.interval.n).toBe(fixture.requirements.length);
+  });
+
+  it("reads only the runs it was asked for, and no comparison missing a run", () => {
+    const records: GuardRecord[] = [
+      run("baseline", 1, (_, e) => e),
+      run("A7", 1, (_, e) => [...e, "bogus"]),
+      run("A7", 2, () => []),
+    ];
+    const out = guardPairedDifferences(records, fixture, 1);
+    expect(out.map((d) => `${d.arm} − ${d.baseline}`)).toEqual(["A7 − baseline"]);
+    expect(out[0]!.interval.meanDifference).toBeLessThan(0);
+    expect(guardPairedDifferences(records, fixture, 2)).toEqual([]);
+  });
+
+  it("reproduces the intervals docs/IMPACT_ANALYSIS_LLM_STAGES.md reports from the 2026-11-05 DeepSeek records", async () => {
+    const text = await readFile(
+      path.join(import.meta.dirname, "__fixtures__", "table-guard-deepseek-2026-11-05.runs.jsonl"),
+      "utf8",
+    );
+    // Recorded before #1847: no fingerprint, so read without parseGuardRecord.
+    const records = text
+      .split("\n")
+      .filter((l) => l.trim() !== "")
+      .map((l) => ({ ...JSON.parse(l), fingerprint: FINGERPRINT }) as GuardRecord);
+    const out = guardPairedDifferences(records, fixture, 3);
+    const read = (i: number) => {
+      const { meanDifference, ci } = out[i]!.interval;
+      return [meanDifference, ...ci].map((x) => x.toFixed(3));
+    };
+    expect(read(0)).toEqual(["-0.232", "-0.410", "-0.054"]);
+    expect(read(1)).toEqual(["-0.252", "-0.417", "-0.087"]);
+    expect(read(2)).toEqual(["0.020", "-0.018", "0.059"]);
+  });
+
+  it("logs each comparison once, as soon as both its readings are complete", async () => {
+    const lines: string[] = [];
+    const guard = createAgentSeedGuard({
+      ...fakes().deps,
+      store: memoryStore(),
+      log: (l) => lines.push(l),
+    });
+    await guard.A0();
+    expect(lines.filter((l) => l.includes("paired over"))).toEqual([]);
+    await guard.A7();
+    expect(lines.filter((l) => l.includes("paired over"))).toEqual([
+      expect.stringMatching(/^table guard: A7 − baseline, paired over/),
+    ]);
+    await guard.A7O();
+    await guard.A7O();
+    const paired = lines.filter((l) => l.includes("paired over"));
+    expect(paired).toHaveLength(3);
+    expect(paired[2]).toMatch(
+      /^table guard: A7 − A7O, paired over 11 requirements \(mean of 2 runs each\): [+−]\d\.\d{3} \[[+−]\d\.\d{3}, [+−]\d\.\d{3}\] \(95% t-interval\)$/,
+    );
   });
 });

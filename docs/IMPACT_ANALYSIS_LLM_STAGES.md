@@ -158,7 +158,10 @@ precisions are on `deepseek-flash`, with 3 runs and the live #936 filter, 2026-1
 | A7 (the analysis's requirements, flag on) | 0.453 |
 
 Against A0, A7 fails the 0.03 guard: −0.23, 95% CI [−0.41, −0.05] over the 11
-requirements. The flag does not cause that drop: A7O, with the flag off, drops by the
+requirements. (Each interval pairs the requirements' table precisions, averaged over the 3
+runs, with a t-interval: `guardPairedDifferences` in
+`server/src/lib/eval/localization/table-guard-agent.ts`, which the guard prints. A test
+reproduces these from the run's committed records, #1847.) The flag does not cause that drop: A7O, with the flag off, drops by the
 same amount (−0.25). The analysis splits each requirement into about 4.5 tracked
 requirements, and the union of their tables is wider than the one requirement's label.
 The flag's own effect, A7 against A7O on the same changes, is +0.02 [−0.02, +0.06]. The
