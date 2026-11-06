@@ -406,6 +406,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           staleReason: "content-changed",
           filePath: "src/edited.ts",
           previousFilePath: null,
+          // Still the commit it last held at: "changed since <that commit>".
+          commitSha: SHA_BEFORE,
         });
       });
 

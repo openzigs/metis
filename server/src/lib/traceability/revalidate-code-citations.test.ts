@@ -143,6 +143,8 @@ describe("revalidateCodeCitations (#1831)", () => {
     await revalidateCodeCitations(prisma, "g", NOW);
     expect(of("l1")).toMatchObject({ freshness: "stale", staleReason: "content-changed" });
     expect(of("l1")).not.toHaveProperty("filePath");
+    // A stale link keeps the commit it last held at.
+    expect(of("l1")).not.toHaveProperty("commitSha");
   });
 
   it("no candidate while the file remains is stale, symbol-missing", async () => {
