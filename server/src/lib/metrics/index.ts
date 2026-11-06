@@ -16,6 +16,7 @@ let httpRequestDurationSeconds: Histogram<string>;
 let httpRequestErrorsTotal: Counter<string>;
 let mcpServerStatus: Gauge<string>;
 let socketEventsTotal: Counter<string>;
+let toolResultCacheTotal: Counter<string>;
 let initialized = false;
 
 function ensureInit(): void {
@@ -56,6 +57,13 @@ function ensureInit(): void {
     name: "metis_socket_events_total",
     help: "Total Socket.IO events emitted, labelled by namespace and event name.",
     labelNames: ["namespace", "event"],
+    registers: [registry],
+  });
+
+  toolResultCacheTotal = new Counter({
+    name: "metis_chat_tool_result_cache_total",
+    help: "Chat read-tool result cache lookups (#1843), labelled by tool and outcome (hit, miss, bypass).",
+    labelNames: ["tool", "outcome"],
     registers: [registry],
   });
 
@@ -100,6 +108,12 @@ export function setMcpServerStatus(opts: {
 export function recordSocketEvent(opts: { namespace: string; event: string }): void {
   ensureInit();
   socketEventsTotal.inc({ namespace: opts.namespace, event: opts.event }, 1);
+}
+
+/** #1843 — count one chat tool-result cache lookup. `tool` is a fixed canonical name. */
+export function recordToolResultCache(tool: string, outcome: "hit" | "miss" | "bypass"): void {
+  ensureInit();
+  toolResultCacheTotal.inc({ tool, outcome }, 1);
 }
 
 /** Bucket status code into 2xx/3xx/4xx/5xx/other for cardinality control. */
