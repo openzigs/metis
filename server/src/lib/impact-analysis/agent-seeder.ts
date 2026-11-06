@@ -33,6 +33,12 @@
  *     rest keep their relative order after the lead;
  *   - a cited file the code graph no longer holds is dropped and counted, so
  *     every agent-named file in the output resolves to the graph;
+ *   - #1832 — a citation is led with only when it is not known to be out of
+ *     date: `fresh`, then `moved`, then `unverified` (a link no re-ingest has
+ *     checked yet, #1830), each tier in the #1818 order. A `stale` citation
+ *     (#1831) seeds nothing and is counted as demoted. The rule is additive: a
+ *     stale citation's file the hybrid search finds on its own stays exactly
+ *     where search ranked it;
  *   - links are read for the requirement AND the project, never by id alone.
  *
  * It applies only to a change about a tracked requirement (a `requirementId`):
@@ -85,13 +91,28 @@ export const MAX_AGENT_LEAD_FILES = MAX_EDIT_FILES;
 export const MAX_AGENT_TAIL_FILES = MAX_EDIT_FILES;
 
 /**
- * #1818 — the order the citations are read in: the surer first, then the
- * order they were stored in (a stable sort, so equal confidences keep it).
+ * #1832 — the freshness tiers a citation is led with in: known current first,
+ * then rewritten to its new place, then never checked. Anything else (a row
+ * read without the column) ranks as never checked.
+ */
+const FRESHNESS_TIER: Readonly<Record<string, number>> = { fresh: 0, moved: 1, unverified: 2 };
+const tierOf = (link: StoredLinkRow): number => FRESHNESS_TIER[link.freshness ?? ""] ?? 2;
+
+/** #1832 — a citation re-validation found out of date (#1831): it is not a seed. */
+export const isStaleCitation = (link: StoredLinkRow): boolean => link.freshness === "stale";
+
+/**
+ * #1818 — the order the citations are read in: #1832 the freshness tier first
+ * (`fresh`, `moved`, `unverified`), then the surer, then the order they were
+ * stored in (a stable sort, so equal confidences keep it).
  */
 export function citationOrder(links: readonly StoredLinkRow[]): StoredLinkRow[] {
   return links
     .map((link, i) => ({ link, i }))
-    .sort((a, b) => b.link.confidence - a.link.confidence || a.i - b.i)
+    .sort(
+      (a, b) =>
+        tierOf(a.link) - tierOf(b.link) || b.link.confidence - a.link.confidence || a.i - b.i,
+    )
     .map(({ link }) => link);
 }
 
@@ -149,9 +170,13 @@ export async function leadWithAgentCitations(
   deps: AgentCitationDeps,
 ): Promise<ChangeSeeds> {
   let links: StoredLinkRow[];
+  let demoted = 0;
   let fileRows: Awaited<ReturnType<AgentCitationDeps["loadFileSymbols"]>>;
   try {
-    links = citationOrder(await deps.loadCitations(requirementId, projectId));
+    const stored = await deps.loadCitations(requirementId, projectId);
+    // #1832 — a stale citation leads nothing and is not appended: set aside, counted.
+    links = citationOrder(stored.filter((l) => !isStaleCitation(l)));
+    demoted = stored.length - links.length;
     fileRows =
       links.length === 0
         ? []
@@ -160,7 +185,13 @@ export async function leadWithAgentCitations(
     log.warn("agent citation lookup failed; seeds kept", { projectId, error: String(err) });
     return {
       ...seeds,
-      evidence: withAgentCounts(seeds, { used: 0, stale: 0, led: 0 }),
+      evidence: withAgentCounts(seeds, {
+        used: 0,
+        stale: 0,
+        led: 0,
+        demotedStaleCitations: 0,
+        unverifiedCitations: 0,
+      }),
     };
   }
   const byFile = new Map<string, typeof fileRows>();
@@ -170,16 +201,27 @@ export async function leadWithAgentCitations(
   const cited = new Map<string, StoredLinkRow[]>();
   let used = 0;
   let stale = 0;
+  let unverified = 0;
   for (const link of links) {
     if ((byFile.get(link.filePath) ?? []).length === 0) {
       stale++;
       continue;
     }
     used++;
+    if (tierOf(link) === FRESHNESS_TIER.unverified) unverified++;
     cited.set(link.filePath, [...(cited.get(link.filePath) ?? []), link]);
   }
   if (cited.size === 0) {
-    return { ...seeds, evidence: withAgentCounts(seeds, { used, stale, led: 0 }) };
+    return {
+      ...seeds,
+      evidence: withAgentCounts(seeds, {
+        used,
+        stale,
+        led: 0,
+        demotedStaleCitations: demoted,
+        unverifiedCitations: unverified,
+      }),
+    };
   }
 
   const existingBy = new Map<string, RequirementCodeMatch[]>();
@@ -235,7 +277,13 @@ export async function leadWithAgentCitations(
     editCandidates,
     related,
     evidence: {
-      ...withAgentCounts(seeds, { used, stale, led: lead.length }),
+      ...withAgentCounts(seeds, {
+        used,
+        stale,
+        led: lead.length,
+        demotedStaleCitations: demoted,
+        unverifiedCitations: unverified,
+      }),
       editCandidates: editFiles.map((filePath) => {
         const before = prior.get(filePath);
         const base: ImpactSeedChannel[] =
