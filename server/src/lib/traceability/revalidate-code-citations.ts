@@ -220,7 +220,10 @@ function updateFor(
 ): { kind: "fresh" | "moved" | "stale"; data: Record<string, unknown> } {
   const base = { ...stamp, freshness: verdict.freshness, staleReason: null as string | null };
   if (verdict.freshness === "stale") {
-    return { kind: "stale", data: { ...base, staleReason: verdict.reason } };
+    // `commitSha` stays the commit the link last held at, so "changed since
+    // commit X" names the code it was read from, not the code that broke it.
+    const { commitSha: _new, ...unstamped } = base;
+    return { kind: "stale", data: { ...unstamped, staleReason: verdict.reason } };
   }
   if (row.source === "manual") {
     // What it points at is left alone; the identity it was checked by is kept
