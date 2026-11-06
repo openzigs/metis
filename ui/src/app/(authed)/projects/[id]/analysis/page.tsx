@@ -123,6 +123,7 @@ import { GapReport } from "@/components/analysis/gap-report";
 import { RequirementDiff } from "@/components/analysis/requirement-diff";
 import { DataMappingsPanel } from "@/components/traceability/data-mappings-panel";
 import { RequirementLinksPanel } from "@/components/requirements/requirement-links-panel";
+import { SimilarRequirementsPanel } from "@/components/requirements/similar-requirements-panel";
 import { TraceabilityView } from "@/components/traceability/traceability-view";
 import { UntestedRequirementsPanel } from "@/components/traceability/untested-requirements-panel";
 import { RequirementHistoryTab } from "@/components/requirements/RequirementHistoryTab";
@@ -877,7 +878,11 @@ export default function AnalysisPage(): React.ReactElement {
             onChange={setImportedRequirementIds}
           />
 
-          <EvaluateRequirementsPanel value={extraInstructions} onChange={setExtraInstructions} />
+          <EvaluateRequirementsPanel
+            value={extraInstructions}
+            onChange={setExtraInstructions}
+            projectId={projectId}
+          />
 
           <ModelRecommendation
             projectId={projectId}
@@ -1434,6 +1439,8 @@ export default function AnalysisPage(): React.ReactElement {
                             requirementId={req.id}
                             workspaceId={project.data?.workspaceId ?? null}
                           />
+                          {/* #1838 — similar requirements and the duplicate warning. */}
+                          <SimilarRequirementsPanel projectId={projectId} requirementId={req.id} />
                           <div className="mt-3 border-t border-border pt-3">
                             <TraceabilityView
                               projectId={projectId}

@@ -199,6 +199,44 @@ describe("translateCitations (#1823)", () => {
     });
   });
 
+  it("never moves a citation of a file the fixture holds to another file by name (#1847)", () => {
+    const sym = (filePath: string, qualifiedName: string) => ({
+      id: qualifiedName,
+      name: qualifiedName.split("::").pop()!,
+      qualifiedName,
+      kind: "method",
+      filePath,
+      language: "java",
+      inCorpus: true,
+    });
+    // The cited file is in the fixture, without the cited method; one other
+    // file of the layer has a method of that name, on other tables.
+    const oneOwner = {
+      manifest: {
+        ...fixture.manifest,
+        codeSymbols: [
+          sym(
+            "persistence/AccountMapper.java",
+            "persistence/AccountMapper.java::AccountMapper::getAccount",
+          ),
+          sym("persistence/OrderMapper.java", "persistence/OrderMapper.java::OrderMapper::touch"),
+        ],
+      },
+    };
+    const counts = emptyTranslation();
+    const out = translateCitations(
+      [link(`${JAVA}/mapper/AccountMapper.java`, "r-touch")],
+      new Map([["r-touch", `${JAVA}/mapper/AccountMapper.java::AccountMapper::touch`]]),
+      oneOwner,
+      counts,
+    );
+    expect(counts).toEqual({ symbol: 0, member: 0, file: 1, dropped: 0 });
+    expect(out[0]).toMatchObject({
+      filePath: "persistence/AccountMapper.java",
+      codeSymbolId: null,
+    });
+  });
+
   it("adds to the counts it is given", () => {
     const counts = { symbol: 1, member: 0, file: 0, dropped: 3 };
     translateCitations(

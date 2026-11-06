@@ -147,9 +147,10 @@ function layerOf(fixturePath: string): string {
  * fixture. In order of preference, a citation becomes:
  *
  *   1. `symbol` — the fixture symbol with the translated qualified name;
- *   2. `member` — else the one fixture method (or MyBatis statement) of that
- *      name in the same layer (the fixture keeps `insertLineItem` in
- *      `OrderMapper`, the repository in `LineItemMapper`);
+ *   2. `member` — else, when the fixture does not hold the cited file, the
+ *      one fixture method (or MyBatis statement) of that name in the same
+ *      layer (the fixture keeps `insertLineItem` in `OrderMapper`, the
+ *      repository in `LineItemMapper`);
  *   3. `file` — else the translated file, when the fixture holds it, with no
  *      symbol and no lines (the fixture's lines are not the repository's), so
  *      the stage reads it as production reads a file-level citation;
@@ -175,7 +176,9 @@ export function translateCitations(
     const exact = fixtureName ? byQualifiedName.get(fixtureName) : undefined;
     let match = exact;
     const member = fixtureName ? memberOf(fixtureName) : null;
-    if (!match && member && filePath) {
+    // Only a citation of a file the fixture lacks may move to another file by
+    // name: one the fixture holds is read as that file, never another's tables.
+    if (!match && member && filePath && !files.has(filePath)) {
       const layer = layerOf(filePath);
       const same = symbols.filter(
         (s) => layerOf(s.filePath) === layer && memberOf(s.qualifiedName) === member,

@@ -753,6 +753,46 @@ describe("a table guard read on another seeding (#1786)", () => {
     expect((await run()).comparisons[0]!.tableGuardPassed).toBe(false);
   });
 
+  it("gates an arm against the control its reading names, and says so (#1823: A7 against A7O)", async () => {
+    const a7o = {
+      tablePrecision: 0.43,
+      runs: 3,
+      configuration: "flag off",
+      seeding: "split (flag off)",
+      arm: "A7O",
+    };
+    const readings: Record<string, TableGuardReading> = {
+      A0: { measured: true, ...mapper },
+      // Far below A0 on either seeding, within 0.03 of its control.
+      A7: {
+        measured: true,
+        tablePrecision: 0.41,
+        runs: 3,
+        configuration: "flag on",
+        seeding: "split + agent citations",
+        baseline: a7o,
+      },
+    };
+    const run = () =>
+      runLocalizationEval(corpus(4), {
+        arms: [arm("A0", () => 1), arm("A7", () => 1)],
+        runs: 1,
+        meter: new FakeMeter(),
+        tableGuard: async (a) => readings[a.id]!,
+      });
+    const report = await run();
+    expect(report.comparisons[0]!.tableGuardPassed).toBe(true);
+    const md = toMarkdownReport(report);
+    expect(md).toContain("| 0.410 (3 runs; A7O on its seeding 0.430) |");
+    expect(md).toContain(
+      "  - next to A7O on the same seeding (seeding: split (flag off)): 0.430 (3 runs), measured on: flag off",
+    );
+    expect(md).toContain("| A7 | table precision guard (≤ 0.03 drop against A7O) |");
+    expect(md).not.toContain("A0 on its seeding");
+    readings.A7 = { ...(readings.A7 as object), tablePrecision: 0.39 } as TableGuardReading;
+    expect((await run()).comparisons[0]!.tableGuardPassed).toBe(false);
+  });
+
   it("is unread when neither the arm's baseline nor A0 was measured", async () => {
     const report = await runLocalizationEval(corpus(2), {
       arms: [arm("A0", () => 1), arm("A4", () => 1)],

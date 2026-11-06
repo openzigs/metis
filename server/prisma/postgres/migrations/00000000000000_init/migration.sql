@@ -4510,3 +4510,50 @@ CREATE UNIQUE INDEX "product_resources_productId_kind_name_key" ON "product_reso
 
 -- AddForeignKey
 ALTER TABLE "product_resources" ADD CONSTRAINT "product_resources_productId_fkey" FOREIGN KEY ("productId") REFERENCES "products"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- Issue #1835 — requirement embedding bookkeeping (the vectors live in rag_vectors).
+-- CreateTable
+CREATE TABLE "requirement_embeddings" (
+    "id" TEXT NOT NULL,
+    "requirementId" TEXT NOT NULL,
+    "projectId" TEXT NOT NULL,
+    "contentHash" TEXT NOT NULL,
+    "embeddingModel" TEXT NOT NULL,
+    "embeddedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "requirement_embeddings_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE UNIQUE INDEX "requirement_embeddings_requirementId_key" ON "requirement_embeddings"("requirementId");
+
+-- CreateIndex
+CREATE INDEX "requirement_embeddings_projectId_idx" ON "requirement_embeddings"("projectId");
+
+-- AddForeignKey
+ALTER TABLE "requirement_embeddings" ADD CONSTRAINT "requirement_embeddings_requirementId_fkey" FOREIGN KEY ("requirementId") REFERENCES "requirements"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- Issue #1838 — "Not a duplicate" answers to the similar-requirements warning.
+-- CreateTable
+CREATE TABLE "requirement_similarity_dismissals" (
+    "id" TEXT NOT NULL,
+    "projectId" TEXT NOT NULL,
+    "requirementId" TEXT NOT NULL,
+    "otherRequirementId" TEXT NOT NULL,
+    "dismissedById" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "requirement_similarity_dismissals_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE UNIQUE INDEX "requirement_similarity_dismissals_pair_key" ON "requirement_similarity_dismissals"("requirementId", "otherRequirementId");
+
+-- CreateIndex
+CREATE INDEX "requirement_similarity_dismissals_otherRequirementId_idx" ON "requirement_similarity_dismissals"("otherRequirementId");
+
+-- AddForeignKey
+ALTER TABLE "requirement_similarity_dismissals" ADD CONSTRAINT "requirement_similarity_dismissals_requirementId_fkey" FOREIGN KEY ("requirementId") REFERENCES "requirements"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "requirement_similarity_dismissals" ADD CONSTRAINT "requirement_similarity_dismissals_otherRequirementId_fkey" FOREIGN KEY ("otherRequirementId") REFERENCES "requirements"("id") ON DELETE CASCADE ON UPDATE CASCADE;

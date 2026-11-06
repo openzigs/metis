@@ -716,7 +716,7 @@ Token counts per category use a character-based estimator (1 token ≈ 4 chars).
 
 | Piece | File | Role |
 | --- | --- | --- |
-| Toolset | `toolset.ts` | METIS registry tools (JSON Schema derived from zod by `json-schema.ts`, or an MCP server's own `inputSchema`), MCP tools **only from servers the project may use** (`MCPRegistryService.listForProject`) and admitted by each server's governance allowlist, and — with `CHAT_CODE_SEARCH_TOOLS` — the code-search tools plus `read_file_slice`, which reads only the session project's own repo clones (#736). `search-knowledge-global` is never offered (it crosses projects). A project-scoped session is also offered the read-only, `low`-risk requirement tools `list_requirements` and `get_requirement` (#1030, `lib/requirements/requirements-chat-tools.ts`): they filter every query on the session's `projectId` (the model never names a project), refuse an unscoped session, hide `finding:*` / `review:*` labels, and are subject to the agent `tools:` allowlist like any registry tool (all four built-ins — BA, Architect, PO and QA — allowlist both, #1050; none is given a write tool). `list_requirements` scans at most 5000 rows and says so when that truncates its totals. Canonical names such as `mcp:github:list_issues` are mapped to provider-safe wire names (`^[a-zA-Z0-9_-]{1,64}$`) and back. |
+| Toolset | `toolset.ts` | METIS registry tools (JSON Schema derived from zod by `json-schema.ts`, or an MCP server's own `inputSchema`), MCP tools **only from servers the project may use** (`MCPRegistryService.listForProject`) and admitted by each server's governance allowlist, and — with `CHAT_CODE_SEARCH_TOOLS` — the code-search tools plus `read_file_slice`, which reads only the session project's own repo clones (#736). `search-knowledge-global` is never offered (it crosses projects). A project-scoped session is also offered the read-only, `low`-risk requirement tools `list_requirements` and `get_requirement` (#1030, `lib/requirements/requirements-chat-tools.ts`): they filter every query on the session's `projectId` (the model never names a project), refuse an unscoped session, hide `finding:*` / `review:*` labels, and are subject to the agent `tools:` allowlist like any registry tool (all four built-ins — BA, Architect, PO and QA — allowlist both, #1050; none is given a write tool). `list_requirements` scans at most 5000 rows and says so when that truncates its totals. Since #1841 its `query` is matched by meaning as well as by words: hits from the requirement index (#1835, cosine >= 0.5) are fused by reciprocal rank with the word matches, approved ahead of draft at equal relevance, and only the session project's live, filtered rows can be returned; a call without `query` is unchanged, and a failed meaning search falls back to words and says so (`pnpm --filter @metis/server eval:req-retrieval`: recall@3 0.29 before, 1.00 after, on 17 questions). Canonical names such as `mcp:github:list_issues` are mapped to provider-safe wire names (`^[a-zA-Z0-9_-]{1,64}$`) and back. |
 | Session tools | `session-tools.ts` | Mode per turn: **native** when the model catalog marks the model tool-capable, **text** (the #713 code tools on the textual protocol, byte-identical prompt) otherwise, **off** for an unscoped session (#1368) or `CHAT_TOOLS=false`. Loads the agent's `tools:` allowlist (an agent that can no longer be read gets **no** tools) and approval override. Since #129 it also adds the **agent tools** — `load_skill` and one tool per callable agent (§6.4.1); an unscoped session is offered `load_skill` only. |
 | Loop | `chat-turn.ts` → `analysis/agent-loop.ts` | The shared agent loop, in native mode: tool definitions on `ChatOptions.tools`, calls from `ChatResponse.toolCalls`, results as `tool` messages answering each call id (calls over the per-reply cap are answered with an error, never left open). Results are capped in the model's copy (#138), fenced as untrusted data (`fence.ts`), and recorded in full. `/stream` streams each native turn's text as it arrives through `collectGuardedStream` (`stream-collect.ts`), one idle guard and one local slot per model call; `/chat` returns the same joined text (`replyText`), not only the last turn's. #1139: a model call whose stream drops mid-reply (#1174's `isMidStreamDrop`, now exported from `transient-retry.ts`) is retried once (`CHAT_MODEL_CALL_ATTEMPTS = 2`) with the identical messages, i.e. from the last complete tool result; `/stream` sends a `retry` frame (`keepChars`, `message`) so the client takes back what the dropped attempt streamed. A cancel, an idle-guard abort, a 4xx or a config error is never retried. |
 | Executor | `executor.ts` | Per call: `started` → validate args (before anyone is asked) → **gate** → execute → `result` / `error`. A refused call never reaches `execute`. Every call is audited (`ai.tool.call`: actor, session, tool, args hash, outcome, decision). |
@@ -962,6 +962,38 @@ reached document chunks only. It is now wired end to end:
   - Memory: ~27 MB retained for a 24k-symbol project (one unfiltered index), so near 110 MB
     worst case across four projects; each filter variant adds an index, but no production
     caller passes a filter today.
+
+**Requirement embeddings (#1835, Epic #1828).** Each live requirement (title, body,
+acceptance criteria) is embedded into `<projectId>__requirements` in the same
+`VectorStore`, with its content hash and model tag in Prisma (`RequirementEmbedding`)
+— the symbol pattern above (`lib/requirements/requirement-embeddings.ts`). Because
+requirements are written from many places and a re-run deletes and recreates them, there
+is no per-writer hook: `syncRequirementEmbeddings(projectId)` reconciles the namespace with
+the current rows (embed new or changed, delete gone or soft-deleted, rebuild on a model
+change). Writers only enqueue it, debounced, through the `noteProjectRequirementsChanged` /
+`noteRequirementsChanged` signals they already send (`REQUIREMENT_EMBEDDINGS_SYNC_ON_WRITE=0`
+turns the warm-up off); `findNearestRequirements` runs it first, so a query never reads an
+index older than the requirements, and re-reads every hit on project, id and `deletedAt`.
+
+**Similar and duplicate requirements (#1836, #1837).** `GET /api/projects/:projectId/requirements/:requirementId/similar`
+and `POST …/requirements/similar` (draft text) run behind `requireProjectAccess()`
+(`routes/requirement-similarity.ts`, `lib/requirements/similar-requirements.ts`). Vector
+candidates from the index above are fused by reciprocal rank with an in-request BM25 over the
+project's requirement titles and bodies, then labelled `duplicate` / `overlap` / `related` from
+the cosine and the thresholds `eval:req-similarity` calibrated on 124 labelled pairs
+(`requirement-similarity-config.ts`); below the `related` floor a candidate is dropped. Each
+item carries its saved code links with their #1830 freshness (`unverified` when unstamped).
+The embedder is a good candidate filter and a poor judge (duplicate precision 0.48 on the
+pairs), so a `duplicate` is a suggestion an analyst confirms. `REQ_SIMILARITY_VERIFIER=1`
+adds an LLM verifier on the project's provider, every requirement fenced as untrusted text;
+an unreadable reply or a provider failure keeps the threshold labels. The UI (#1838,
+`components/requirements/similar-requirements-panel.tsx`) shows the list on each requirement
+card and for draft text (500 ms debounce, the in-flight request aborted on each change).
+"Mark as duplicate" creates the existing `duplicates` link; "Not a duplicate" is stored
+server-side as one `RequirementSimilarityDismissal` row per unordered pair (both ids cascade),
+and the API reports each item's `notDuplicate` / `linkedAsDuplicate` so a reload keeps the
+answer. A dedicated table rather than a `not_duplicate` link type, because every link consumer
+(the links panel, the link picker, the workspace traceability rollup) would otherwise show it.
 
 **`search_code_symbols` (#730, Epic #725)** — the same hybrid (BM25 + vector RRF) symbol
 tool chat got in Epic #712 (`createSearchSymbolsTool`), now offered to Winston's agentic
@@ -3097,9 +3129,13 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   filter. With `SplitSeedingOptions.agentSeeds` set, the stored citations lead,
   translated onto the fixture's paths and symbols by `translateCitations`; without
   it, the run is A7O. The tables are unioned per requirement, and the result sits
-  next to A0 on the split seeding. Each analysis and each reading run is appended
-  to `<partials>/table-guard/records.jsonl`, so `--guard-steps` bounds a call and
-  the same `--merge` resumes.
+  next to A0 on the split seeding; A7 is gated against A7O (owner, #1823). Each analysis and each reading run (A0's
+  mapper reading included, #1847) is appended to
+  `<partials>/table-guard/records.jsonl`, so `--guard-steps` bounds a call and
+  the same `--merge` resumes. #1847 — each record carries the fixture's and the
+  repository pin's fingerprint, and a run is refused when an analysis's stored
+  requirement ids no longer resolve; `guardPairedDifferences` computes the
+  paired t-intervals over the records.
 - **Edit-candidate re-order (#1798)** — behind `IMPACT_LLM_EDIT_RERANK` (key
   registry, tunable, **off**). It is the bounded exception to the #931 rule
   (docs/IMPACT_ANALYSIS_LLM_STAGES.md): one call per change and project
@@ -3159,7 +3195,10 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   are not in the held-out corpora, so they are not measured yet; table precision
   (impact-recall-01, a live model) was not measured for A2.
 - **The code agent's citations lead (#1759)** — with `IMPACT_AGENT_SEEDS` on (key
-  registry, tunable, **off** by default), a change about a tracked requirement
+  registry, tunable, **on** by default since #1823: on claude-sonnet-5-5, A7's
+  average table precision is within 0.03 of A7O's, its control; the 95% interval's
+  lower bound is −0.043; `IMPACT_AGENT_SEEDS=0` turns it off), a change about a
+  tracked requirement
   reads that requirement's `RequirementCodeMapping` rows with source
   `analysis-grounding` (the citations the Analysis code agent made in "Evaluate
   new requirements", already resolved to the code graph when they were stored),

@@ -66,11 +66,14 @@
  * requirement and run on the materialized repository the table corpus models
  * (`pnpm eval:materialize impact-recall-01-jpetstore` first), then reads A0 on
  * the split seeding, A7 and A7O, 3 runs each. Each step (an analysis, or a run
- * of a reading) is recorded in the partials directory
- * (`table-guard/records.jsonl`) as it ends, so `--guard-steps <n>` takes at
- * most n more per call and the same `--merge` resumes. It needs `--embed` (the
- * analyses' requirement texts are new) and `--arms` naming A7 (which binds the
- * eval database).
+ * of a reading, A0's mapper reading included, #1847) is recorded in the
+ * partials directory (`table-guard/records.jsonl`) as it ends, so
+ * `--guard-steps <n>` takes at most n more per call and the same `--merge`
+ * resumes. It needs `--embed` (the analyses' requirement texts are new) and
+ * `--arms` naming A7 (which binds the eval database). #1847 — a resume is
+ * refused on another fixture or repository pin, or when an analysis's stored
+ * requirements no longer resolve; and once two readings are complete, their
+ * paired 95% t-interval over the requirements is printed.
  */
 /* eslint-disable no-console -- a CLI whose output is its report */
 // #1755 — first: an agent arm binds the database to the materialized corpus before Prisma loads.
@@ -146,6 +149,8 @@ import {
   createAgentSeedGuard,
   fileGuardStore,
   guardRecordsFile,
+  lazyAgentSeedGuard,
+  type AgentSeedGuard,
 } from "../src/lib/eval/localization/table-guard-agent.js";
 import {
   TABLE_GUARD_CORPUS,
@@ -323,6 +328,7 @@ async function tableGuardFor(
   // #1823 — A7 (and its control A7O) on the table corpus, with citations a real
   // analysis stored on the repository the corpus models.
   const agentArms = armIds.filter((id) => ANALYSIS_ARM_IDS.has(id));
+  let agentGuard: AgentSeedGuard | null = null;
   if (agentArms.length > 0 && armProvider) {
     if (!agentArmsRequested(agent.argv)) {
       throw new Error(
@@ -334,8 +340,9 @@ async function tableGuardFor(
         "A7's table guard searches with the texts of the requirements its analyses write, new on every run: pass --embed (the local model)",
       );
     }
-    let agentGuard: ReturnType<typeof createAgentSeedGuard> | null = null;
-    const build = async () => {
+    // #1847 — built once, on the first reading, as a promise: two readings
+    // that start together share one build.
+    agentGuard = lazyAgentSeedGuard(async () => {
       const io = await analysisIOFor(armProvider, [TABLE_GUARD_CORPUS]);
       const { prisma } = await import("../src/lib/prisma.js");
       const state = (await materializedStates([TABLE_GUARD_CORPUS])).get(TABLE_GUARD_CORPUS)!;
@@ -350,6 +357,7 @@ async function tableGuardFor(
         options,
         runs: TABLE_GUARD_RUNS,
         model: `${armProvider.key}/${armProvider.model}`,
+        repo: TABLE_GUARD_REPO,
         store: fileGuardStore(guardRecordsFile(agent.partialsDir)),
         analyze: async (text) => {
           const r = await io.pass({
@@ -383,12 +391,16 @@ async function tableGuardFor(
         describe: (label) => `${corpusName}, ${label}, ${provider.key}/${provider.model}`,
         log: (line) => console.log(line),
       });
-    };
+    });
     for (const id of agentArms) {
       const variant = id as "A7" | "A7O";
-      others[id] = async () => (agentGuard ??= await build())[variant]();
+      const guard = agentGuard;
+      others[id] = () => guard[variant]();
     }
   }
+  // #1847 — with A7's guard, A0's mapper reading is one of its recorded steps,
+  // so a resumed --merge does not pay for it again.
+  if (agentGuard) return memoisedA0TableGuard(agentGuard.A0, others);
   return memoisedA0TableGuard(async () => {
     const summary = await runRepeated(options);
     return {
