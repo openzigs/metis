@@ -1770,6 +1770,19 @@ Click **Unlink** on any row to remove the relationship; the panel updates immedi
 
 Once links exist, they roll up to a workspace-wide picture — see [Section 12.10](#1210-workspace-traceability-rollup).
 
+#### Similar requirements and duplicate warnings
+
+Each requirement card has a **Similar requirements** section listing up to five requirements of the same project that read alike. Each one is labelled in words: **Likely duplicate**, **Overlaps** or **Related**. Each also shows its review status and how many of its saved code links are fresh or stale ("3 code links: 2 fresh, 1 stale"), and links to that requirement's card. When the project has none, the section says *No similar requirements in this project*.
+
+A **Likely duplicate** also raises a warning on the card with two choices:
+
+- **Mark as duplicate** adds a *duplicates* link (see above).
+- **Not a duplicate** is remembered for that pair of requirements, so the warning does not come back after a reload.
+
+METIS never merges or deletes a requirement for you. The labels are suggestions: related requirements often read almost alike (exporting invoices to CSV vs to PDF), so a "likely duplicate" is for you to confirm.
+
+While you type in **Evaluate new requirements** (Section 11.2), the same list appears for your text, half a second after you stop typing. If something already looks like a duplicate, the panel says so first: *"Before you add this: REQ-42 … looks like a duplicate (it already links to 3 files)."*
+
 ---
 
 ### 12.9 Version History & Audit Trail

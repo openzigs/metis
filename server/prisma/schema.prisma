@@ -1541,6 +1541,10 @@ model Requirement {
   /// #1835 — the content hash and model tag of this requirement's vector in
   /// `<projectId>__requirements` (cascade: a hard delete takes it with it).
   embedding         RequirementEmbedding?
+  /// #1838 — "Not a duplicate" answers about this requirement and another
+  /// (the pair is stored lowest id first, so this one is on either side).
+  similarityDismissalsA RequirementSimilarityDismissal[] @relation("SimilarityDismissalA")
+  similarityDismissalsB RequirementSimilarityDismissal[] @relation("SimilarityDismissalB")
 
   @@unique([projectId, externalSource, externalId], name: "requirement_external_dedup")
   @@index([projectId])
@@ -3983,6 +3987,28 @@ model RequirementEmbedding {
 
   @@index([projectId])
   @@map("requirement_embeddings")
+}
+
+/// Issue #1838 (epic #1828) — an analyst's "Not a duplicate" answer to a
+/// similar-requirements duplicate warning, so a reload does not raise the
+/// warning for that pair again. One row per unordered pair: `requirementId`
+/// is the lower of the two ids, `otherRequirementId` the higher. Both cascade,
+/// so a re-run that recreates either requirement drops the answer with it.
+model RequirementSimilarityDismissal {
+  id                 String   @id @default(cuid())
+  projectId          String
+  requirementId      String
+  otherRequirementId String
+  /// Scalar soft-link to users.id, like RequirementLink.createdById.
+  dismissedById      String
+  createdAt          DateTime @default(now())
+
+  requirement      Requirement @relation("SimilarityDismissalA", fields: [requirementId], references: [id], onDelete: Cascade)
+  otherRequirement Requirement @relation("SimilarityDismissalB", fields: [otherRequirementId], references: [id], onDelete: Cascade)
+
+  @@unique([requirementId, otherRequirementId], map: "requirement_similarity_dismissals_pair_key")
+  @@index([otherRequirementId])
+  @@map("requirement_similarity_dismissals")
 }
 
 

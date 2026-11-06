@@ -4,6 +4,8 @@
  *   GET  /api/projects/:projectId/requirements/:requirementId/similar?limit=5
  *   POST /api/projects/:projectId/requirements/similar   { text, acceptanceCriteria?, limit? }
  *   200  { success, data: { items: SimilarRequirementItem[] } }
+ *   POST /api/projects/:projectId/requirements/:requirementId/similar/:otherRequirementId/not-duplicate
+ *        (#1838) remembers an analyst's "Not a duplicate" for the pair
  *
  * Both routes run behind `requireProjectAccess()`: a caller who cannot reach the
  * project gets 404, and a requirement id of another project answers 404 from the
@@ -21,7 +23,10 @@ import { requirePermission } from "../middleware/require-permission.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
 import { requirementSimilarityPreAuthRateLimiter } from "../middleware/requirement-similarity-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
-import { findSimilarRequirements } from "../lib/requirements/similar-requirements.js";
+import {
+  findSimilarRequirements,
+  markNotDuplicate,
+} from "../lib/requirements/similar-requirements.js";
 import { resolveSimilarityVerifier } from "../lib/requirements/similarity-verifier-resolver.js";
 
 function ok<T>(data: T): ApiResponse<T> {
@@ -63,6 +68,23 @@ export function requirementSimilarityRouter(): Router {
     );
     res.json(ok<SimilarRequirementsResponse>({ items }));
   });
+
+  // #1838 — "Not a duplicate": remembered for the pair, so a reload does not
+  // raise the duplicate warning again. Same write permission as adding a link.
+  r.post(
+    "/:requirementId/similar/:otherRequirementId/not-duplicate",
+    requirePermission("project.update"),
+    async (req, res) => {
+      if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+      await markNotDuplicate(
+        projectIdOf(req),
+        String(req.params.requirementId),
+        String(req.params.otherRequirementId),
+        req.user.userId,
+      );
+      res.json(ok({ notDuplicate: true }));
+    },
+  );
 
   return r;
 }

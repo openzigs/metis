@@ -56,7 +56,11 @@ export const SIMILAR_CODE_LINKS_PER_ITEM = 20;
 
 export type SimilarRequirementsDb = Pick<
   PrismaClient,
-  "requirement" | "requirementEmbedding" | "requirementCodeMapping"
+  | "requirement"
+  | "requirementEmbedding"
+  | "requirementCodeMapping"
+  | "requirementLink"
+  | "requirementSimilarityDismissal"
 >;
 
 export interface SimilarRequirementsOptions extends Omit<RequirementEmbeddingDeps, "db"> {
@@ -171,7 +175,12 @@ export async function findSimilarRequirements(
   }
 
   candidates.sort((a, b) => LABEL_ORDER[a.label] - LABEL_ORDER[b.label] || b.fused - a.fused);
-  return hydrate(db, projectId, candidates.slice(0, limit));
+  return hydrate(
+    db,
+    projectId,
+    candidates.slice(0, limit),
+    "requirementId" in query ? query.requirementId : null,
+  );
 }
 
 async function verify(
@@ -220,18 +229,68 @@ function bm25Search(
     .map((h) => ({ chunkId: String(h.id), score: h.score }));
 }
 
+/** The two ids of a pair in the order a dismissal row stores them (lowest first). */
+export function dismissalPair(
+  a: string,
+  b: string,
+): { requirementId: string; otherRequirementId: string } {
+  return a < b
+    ? { requirementId: a, otherRequirementId: b }
+    : { requirementId: b, otherRequirementId: a };
+}
+
+/**
+ * #1838 — for a stored requirement's list: which candidates an analyst said are
+ * not duplicates of it, and which a `duplicates` link already joins to it.
+ */
+async function pairDecisions(
+  db: SimilarRequirementsDb,
+  self: string | null,
+  ids: string[],
+): Promise<{ dismissed: Set<string>; linked: Set<string> }> {
+  if (!self) return { dismissed: new Set(), linked: new Set() };
+  const [dismissals, links] = await Promise.all([
+    db.requirementSimilarityDismissal.findMany({
+      where: {
+        OR: [
+          { requirementId: self, otherRequirementId: { in: ids } },
+          { otherRequirementId: self, requirementId: { in: ids } },
+        ],
+      },
+      select: { requirementId: true, otherRequirementId: true },
+    }),
+    db.requirementLink.findMany({
+      where: {
+        type: "duplicates",
+        OR: [
+          { sourceRequirementId: self, targetRequirementId: { in: ids } },
+          { targetRequirementId: self, sourceRequirementId: { in: ids } },
+        ],
+      },
+      select: { sourceRequirementId: true, targetRequirementId: true },
+    }),
+  ]);
+  const other = (a: string, b: string): string => (a === self ? b : a);
+  return {
+    dismissed: new Set(dismissals.map((d) => other(d.requirementId, d.otherRequirementId))),
+    linked: new Set(links.map((l) => other(l.sourceRequirementId, l.targetRequirementId))),
+  };
+}
+
 async function hydrate(
   db: SimilarRequirementsDb,
   projectId: string,
   candidates: Candidate[],
+  self: string | null,
 ): Promise<SimilarRequirementItem[]> {
   if (candidates.length === 0) return [];
   const ids = candidates.map((c) => c.id);
-  const [reqs, mappings] = await Promise.all([
+  const [reqs, mappings, decisions] = await Promise.all([
     db.requirement.findMany({
       where: { projectId, id: { in: ids }, deletedAt: null },
       select: {
         id: true,
+        analysisId: true,
         title: true,
         reviewStatus: true,
         labels: true,
@@ -244,6 +303,7 @@ async function hydrate(
       where: { projectId, requirementId: { in: ids } },
       orderBy: [{ confidence: "desc" }, { createdAt: "asc" }],
     }),
+    pairDecisions(db, self, ids),
   ]);
   const byId = new Map(reqs.map((r) => [r.id, r]));
   const links = new Map<string, SimilarRequirementCodeLink[]>();
@@ -265,13 +325,46 @@ async function hydrate(
     return [
       {
         requirementId: r.id,
+        analysisId: r.analysisId,
         key: r.promotedStructuredId ?? r.externalId ?? null,
         title: r.title,
         status: resolveRequirementReviewStatus(r.reviewStatus, parseRequirementLabels(r.labels)),
         score: Math.round(c.score * 1000) / 1000,
         label: c.label,
         codeLinks: links.get(r.id) ?? [],
+        notDuplicate: decisions.dismissed.has(r.id),
+        linkedAsDuplicate: decisions.linked.has(r.id),
       },
     ];
+  });
+}
+
+/**
+ * #1838 — record an analyst's "Not a duplicate" for a pair of the project's live
+ * requirements, so the duplicate warning stays down after a reload. Idempotent.
+ *
+ * @throws AppError 400 `SAME_REQUIREMENT` — the pair is one requirement.
+ * @throws AppError 404 `REQUIREMENT_NOT_FOUND` — either is not a live requirement
+ *         of `projectId` (looked up on the project AND the id).
+ */
+export async function markNotDuplicate(
+  projectId: string,
+  requirementId: string,
+  otherRequirementId: string,
+  dismissedById: string,
+  db: Pick<SimilarRequirementsDb, "requirement" | "requirementSimilarityDismissal"> = prisma,
+): Promise<void> {
+  if (requirementId === otherRequirementId) {
+    throw new AppError(400, "SAME_REQUIREMENT", "A requirement cannot be compared with itself");
+  }
+  const found = await db.requirement.count({
+    where: { projectId, id: { in: [requirementId, otherRequirementId] }, deletedAt: null },
+  });
+  if (found !== 2) throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+  const pair = dismissalPair(requirementId, otherRequirementId);
+  await db.requirementSimilarityDismissal.upsert({
+    where: { requirementId_otherRequirementId: pair },
+    create: { ...pair, projectId, dismissedById },
+    update: {},
   });
 }
