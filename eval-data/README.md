@@ -362,17 +362,31 @@ pnpm eval:localization --merge <dir> --arms A0,A7,A7O --table-guard --embed --gu
 
 The guard runs "Evaluate new requirements" once for each of the 11 table requirements on
 each of 3 runs. It then reads A0 on the split seeding, A7 and A7O, 3 runs each, with the
-live #936 filter. Each step is an analysis or one run of one reading. Each step is recorded
+live #936 filter. Each step is an analysis or one run of one reading, A0's mapper reading
+included (#1847), so a resumed call pays for none of them again. Each step is recorded
 in `<dir>/table-guard/records.jsonl` as it ends. `--guard-steps <n>` limits a call to n new
-steps, so repeat the same command until the report reads the guard. A step recorded on
-another model is refused.
+steps, so repeat the same command until the report reads the guard.
+
+A resume is refused, and needs a new partials directory, when (#1847):
+
+- a step was recorded on another model;
+- a step was recorded on another fixture (its requirement texts, labels or graph) or
+  another repository pin (`TABLE_GUARD_REPO`): every record carries that fingerprint;
+- an analysis's stored requirements no longer resolve in the eval database (after a
+  re-materialize, a reset or on another database). Production's read skips such an id,
+  so every analysis would otherwise be read as the fixture's text, and A7 and A7O would
+  converge on the baseline.
+
+Once two readings are complete, the guard prints their paired 95% t-interval over the 11
+requirements (each requirement's table precision, averaged over the runs):
+`guardPairedDifferences` in `table-guard-agent.ts`.
 
 A stored citation names a repository file and symbol, and is read on the fixture in this
 order:
 
 1. as the same symbol;
-2. as the one same-named method or MyBatis statement in the same layer (the fixture keeps
-   `insertLineItem` in `OrderMapper`);
+2. when the fixture does not hold the cited file, as the one same-named method or MyBatis
+   statement in the same layer (the fixture keeps `insertLineItem` in `OrderMapper`);
 3. as its file, with no symbol;
 4. dropped, when the fixture has no such file.
 

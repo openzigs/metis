@@ -174,3 +174,114 @@ export function readDifference(d: PairedDifference, alpha = 0.05): ComparisonVer
   if (d.p >= alpha || (d.ci[0] <= 0 && d.ci[1] >= 0)) return "no measurable difference";
   return d.meanDifference > 0 ? "better" : "worse";
 }
+
+// ── Paired t-interval (#1847) ──────────────────────────────────────────────
+
+/** ln Γ(x) for x > 0 (Lanczos, g = 7, n = 9). */
+function logGamma(x: number): number {
+  const c = [
+    0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313,
+    -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6,
+    1.5056327351493116e-7,
+  ];
+  if (x < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * x)) - logGamma(1 - x);
+  const z = x - 1;
+  let a = c[0]!;
+  const t = z + 7.5;
+  for (let i = 1; i < 9; i++) a += c[i]! / (z + i);
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(a);
+}
+
+/** The continued fraction of the incomplete beta function (modified Lentz). */
+function betaFraction(x: number, a: number, b: number): number {
+  const tiny = 1e-300;
+  let c = 1;
+  let d = 1 - ((a + b) * x) / (a + 1);
+  if (Math.abs(d) < tiny) d = tiny;
+  d = 1 / d;
+  let h = d;
+  for (let m = 1; m <= 300; m++) {
+    const m2 = 2 * m;
+    for (const aa of [
+      (m * (b - m) * x) / ((a + m2 - 1) * (a + m2)),
+      (-(a + m) * (a + b + m) * x) / ((a + m2) * (a + m2 + 1)),
+    ]) {
+      d = 1 + aa * d;
+      if (Math.abs(d) < tiny) d = tiny;
+      c = 1 + aa / c;
+      if (Math.abs(c) < tiny) c = tiny;
+      d = 1 / d;
+      h *= d * c;
+    }
+    if (Math.abs(d * c - 1) < 1e-15) break;
+  }
+  return h;
+}
+
+/**
+ * The regularized incomplete beta function I_x(a, b). `y` is 1 − x, passed
+ * when the caller has it exactly, so an x near 1 loses no precision.
+ */
+function incompleteBeta(x: number, a: number, b: number, y = 1 - x): number {
+  if (x <= 0) return 0;
+  if (y <= 0) return 1;
+  const front = Math.exp(
+    logGamma(a + b) - logGamma(a) - logGamma(b) + a * Math.log(x) + b * Math.log(y),
+  );
+  return x < (a + 1) / (a + b + 2)
+    ? (front * betaFraction(x, a, b)) / a
+    : 1 - (front * betaFraction(y, b, a)) / b;
+}
+
+/** P(T ≤ t) for Student's t with `df` degrees of freedom. */
+function studentTCdf(t: number, df: number): number {
+  const tail = 0.5 * incompleteBeta(df / (df + t * t), df / 2, 0.5, (t * t) / (df + t * t));
+  return t >= 0 ? 1 - tail : tail;
+}
+
+/** The `p` quantile of Student's t with `df` degrees of freedom (bisection on the CDF). */
+export function studentTQuantile(p: number, df: number): number {
+  if (!(p > 0 && p < 1) || !(df > 0)) {
+    throw new Error(`no t quantile for p ${p} and df ${df}`);
+  }
+  let hi = 1;
+  while (studentTCdf(hi, df) < p) hi *= 2;
+  let lo = -1;
+  while (studentTCdf(lo, df) > p) lo *= 2;
+  for (let i = 0; i < 200 && hi - lo > 1e-12; i++) {
+    const mid = (lo + hi) / 2;
+    if (studentTCdf(mid, df) < p) lo = mid;
+    else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+/** A paired mean difference with its t-interval. */
+export interface PairedTInterval {
+  /** mean(arm − baseline) over the paired items. */
+  meanDifference: number;
+  ci: [number, number];
+  n: number;
+}
+
+/**
+ * #1847 — the paired t-interval of `mean(arm − baseline)`: the mean difference
+ * ± t(1 − α/2, n − 1) × its standard error. The two arrays are the SAME items
+ * in the same order. The table guard's intervals over its requirements.
+ */
+export function pairedTInterval(
+  baseline: readonly number[],
+  arm: readonly number[],
+  alpha = 0.05,
+): PairedTInterval {
+  if (baseline.length !== arm.length) {
+    throw new Error("a paired interval needs the same items on both sides");
+  }
+  const n = arm.length;
+  if (n < 2) throw new Error(`a paired interval needs at least 2 items, not ${n}`);
+  const d = arm.map((x, i) => x - baseline[i]!);
+  const mean = d.reduce((a, b) => a + b, 0) / n;
+  const variance = d.reduce((a, x) => a + (x - mean) ** 2, 0) / (n - 1);
+  const half = studentTQuantile(1 - alpha / 2, n - 1) * Math.sqrt(variance / n);
+  return { meanDifference: mean, ci: [mean - half, mean + half], n };
+}
