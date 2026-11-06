@@ -19,6 +19,7 @@ import type { AgentTool } from "../../analysis/tools/types.js";
 import { matchesToolRef } from "../approval-policy.js";
 import type { RiskLevel } from "../types.js";
 import type { RuntimeTool, RuntimeToolContext } from "./types.js";
+import { withToolResultCache } from "./tool-result-cache.js";
 
 /**
  * Tools that reach BEYOND the session's project. A project-scoped chat must not
@@ -166,9 +167,12 @@ function allowedByAgent(name: string, allowlist: readonly string[] | null | unde
   return allowlist.some((ref) => matchesToolRef(ref, name));
 }
 
-/** Wrap one curated code tool. They are read-only and project-scoped: `low` risk. */
+/**
+ * Wrap one curated code tool. They are read-only and project-scoped: `low` risk.
+ * #1843 — the read tools' results are cached on the project's content version.
+ */
 export function codeRuntimeTool(tool: AgentTool, wireName: string): RuntimeTool {
-  return {
+  return withToolResultCache({
     name: tool.name,
     wireName,
     description: tool.description,
@@ -191,7 +195,7 @@ export function codeRuntimeTool(tool: AgentTool, wireName: string): RuntimeTool 
         ...(r.truncated ? { truncated: true } : {}),
       };
     },
-  };
+  });
 }
 
 function registryRuntimeTool(
@@ -201,7 +205,8 @@ function registryRuntimeTool(
   forcePrompt: boolean,
   forcePromptNow?: () => Promise<boolean>,
 ): RuntimeTool {
-  return {
+  // #1843 — `search-knowledge` is cached on the project's content version.
+  return withToolResultCache({
     name: view.name,
     wireName,
     description: view.description,
@@ -246,7 +251,7 @@ function registryRuntimeTool(
         ...(typeof r.resultCount === "number" ? { resultCount: r.resultCount } : {}),
       };
     },
-  };
+  });
 }
 
 /**
