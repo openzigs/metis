@@ -229,6 +229,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // wh-dup-05 (cosine 0.884): a duplicate, with its key, status and saved links.
       expect(items[0]).toMatchObject({
         requirementId: ids.lot,
+        analysisId: `a-${A}`,
+        notDuplicate: false,
+        linkedAsDuplicate: false,
         key: "REQ-007",
         status: "approved",
         label: "duplicate",
@@ -371,6 +374,63 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         { db: stamped, limit: 1 },
       );
       expect(lot?.codeLinks.map((l) => l.freshness)).toEqual(["stale", "unverified"]);
+    });
+
+    it("#1838 — 'Not a duplicate' is remembered for the pair, read back through the API from either card", async () => {
+      const mark = (project: string, a: string, b: string, token = memberToken) =>
+        request(app())
+          .post(`/api/projects/${project}/requirements/${a}/similar/${b}/not-duplicate`)
+          .set("Authorization", `Bearer ${token}`);
+      expect((await mark(A, ids.batch, ids.lot)).status).toBe(200);
+      // Idempotent.
+      expect((await mark(A, ids.batch, ids.lot)).status).toBe(200);
+      const fromBatch = (await get(A, ids.batch)).body.data.items as Array<Record<string, unknown>>;
+      expect(fromBatch.find((i) => i.requirementId === ids.lot)).toMatchObject({
+        label: "duplicate",
+        notDuplicate: true,
+      });
+      const fromLot = (await get(A, ids.lot)).body.data.items as Array<Record<string, unknown>>;
+      expect(fromLot.find((i) => i.requirementId === ids.batch)).toMatchObject({
+        notDuplicate: true,
+      });
+      // Another pair is untouched.
+      expect(fromBatch.find((i) => i.requirementId === ids.serial)).toMatchObject({
+        notDuplicate: false,
+      });
+      expect(await db.requirementSimilarityDismissal.count()).toBe(1);
+
+      // Refused: the same requirement, another project's requirement, a caller without access.
+      expect((await mark(A, ids.batch, ids.batch)).status).toBe(400);
+      expect((await mark(A, ids.batch, ids.lotInB)).status).toBe(404);
+      expect((await mark(A, ids.batch, ids.serial, outsiderToken)).status).toBe(404);
+      expect(await db.requirementSimilarityDismissal.count()).toBe(1);
+    });
+
+    it("#1838 — a 'duplicates' link in either direction is reported as linkedAsDuplicate", async () => {
+      await db.requirementLink.create({
+        data: {
+          sourceRequirementId: ids.serial,
+          targetRequirementId: ids.batch,
+          type: "duplicates",
+          createdById: MEMBER,
+        },
+      });
+      const items = (await get(A, ids.batch)).body.data.items as Array<Record<string, unknown>>;
+      expect(items.find((i) => i.requirementId === ids.serial)).toMatchObject({
+        linkedAsDuplicate: true,
+      });
+      expect(items.find((i) => i.requirementId === ids.lot)).toMatchObject({
+        linkedAsDuplicate: false,
+      });
+      // Draft text has no pair: nothing is ever dismissed or linked.
+      const draft = await post(A, {
+        text: "Export invoices to CSV\n\nAs a finance clerk I want to export the month's invoices to a CSV file so that I can load them into the accounting system.",
+      });
+      expect(draft.status).toBe(200);
+      expect(draft.body.data.items.length).toBeGreaterThan(0);
+      for (const i of draft.body.data.items as Array<Record<string, unknown>>) {
+        expect(i).toMatchObject({ notDuplicate: false, linkedAsDuplicate: false });
+      }
     });
   },
 );

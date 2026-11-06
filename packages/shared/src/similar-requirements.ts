@@ -37,6 +37,8 @@ export interface SimilarRequirementCodeLink {
 
 export interface SimilarRequirementItem {
   requirementId: string;
+  /** #1838 — the analysis run that holds it, for a link to its card. */
+  analysisId: string;
   /** The requirement's display key (`REQ-003`, an imported item's id), when it has one. */
   key: string | null;
   title: string;
@@ -46,6 +48,13 @@ export interface SimilarRequirementItem {
   score: number;
   label: SimilarRequirementLabel;
   codeLinks: SimilarRequirementCodeLink[];
+  /**
+   * #1838 — an analyst answered "Not a duplicate" for this pair. Always false
+   * for draft text (there is no pair yet).
+   */
+  notDuplicate: boolean;
+  /** #1838 — a `duplicates` link joins the pair already, in either direction. */
+  linkedAsDuplicate: boolean;
 }
 
 export interface SimilarRequirementsResponse {

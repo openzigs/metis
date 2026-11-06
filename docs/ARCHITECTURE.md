@@ -986,7 +986,14 @@ item carries its saved code links with their #1830 freshness (`unverified` when 
 The embedder is a good candidate filter and a poor judge (duplicate precision 0.48 on the
 pairs), so a `duplicate` is a suggestion an analyst confirms. `REQ_SIMILARITY_VERIFIER=1`
 adds an LLM verifier on the project's provider, every requirement fenced as untrusted text;
-an unreadable reply or a provider failure keeps the threshold labels.
+an unreadable reply or a provider failure keeps the threshold labels. The UI (#1838,
+`components/requirements/similar-requirements-panel.tsx`) shows the list on each requirement
+card and for draft text (500 ms debounce, the in-flight request aborted on each change).
+"Mark as duplicate" creates the existing `duplicates` link; "Not a duplicate" is stored
+server-side as one `RequirementSimilarityDismissal` row per unordered pair (both ids cascade),
+and the API reports each item's `notDuplicate` / `linkedAsDuplicate` so a reload keeps the
+answer. A dedicated table rather than a `not_duplicate` link type, because every link consumer
+(the links panel, the link picker, the workspace traceability rollup) would otherwise show it.
 
 **`search_code_symbols` (#730, Epic #725)** — the same hybrid (BM25 + vector RRF) symbol
 tool chat got in Epic #712 (`createSearchSymbolsTool`), now offered to Winston's agentic

@@ -17,6 +17,7 @@ import { MAX_EXTRA_INSTRUCTIONS } from "@metis/shared";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { DraftSimilarRequirements } from "@/components/requirements/similar-requirements-panel";
 
 /**
  * Maximum length for the free-text requirements. Re-exported from `@metis/shared`
@@ -35,12 +36,15 @@ interface Props {
   onChange: (next: string) => void;
   /** Start collapsed (default) or expanded. */
   defaultExpanded?: boolean;
+  /** #1838 — the project whose requirements the draft is compared with. */
+  projectId?: string;
 }
 
 export function EvaluateRequirementsPanel({
   value,
   onChange,
   defaultExpanded = false,
+  projectId,
 }: Props): React.ReactElement {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const textareaId = useId();
@@ -109,6 +113,8 @@ export function EvaluateRequirementsPanel({
           >
             {value.length} / {MAX_EXTRA_INSTRUCTIONS}
           </div>
+          {/* #1838 — what the project already has that looks like this. */}
+          {projectId ? <DraftSimilarRequirements projectId={projectId} text={value} /> : null}
         </div>
       ) : null}
     </div>
