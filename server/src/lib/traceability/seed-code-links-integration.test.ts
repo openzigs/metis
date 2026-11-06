@@ -86,7 +86,17 @@ vi.mock("../prisma.js", () => ({
       findMany: vi.fn(
         async ({ where }: { where: { projectId: string; filePath: { in: string[] } } }) =>
           where.projectId === "proj-1" && where.filePath.in.includes("server/src/auth.ts")
-            ? [{ id: "sym-auth", filePath: "server/src/auth.ts", startLine: 1, endLine: 80 }]
+            ? [
+                {
+                  id: "sym-auth",
+                  filePath: "server/src/auth.ts",
+                  startLine: 1,
+                  endLine: 80,
+                  // #1830 — the symbol's graph, read with it.
+                  codeGraphId: "graph-1",
+                  graph: { repoConnectionId: "conn-1", commitSha: "abc1234" },
+                },
+              ]
             : [],
       ),
     },
@@ -170,6 +180,9 @@ describe("synthesis hook → requirement→code spine", () => {
       codeSymbolId: null,
       source: "analysis-grounding",
       confidence: 0.7,
+      codeGraphId: "graph-1",
+      commitSha: "abc1234",
+      freshness: "fresh",
     });
   });
 });

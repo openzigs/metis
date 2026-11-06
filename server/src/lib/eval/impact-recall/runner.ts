@@ -80,12 +80,7 @@ export interface SplitSeedingOptions {
 }
 
 /** #1786 — which seeding produced a reading. */
-export type ImpactRecallSeeding =
-  | "mapper"
-  | "split"
-  | "split + edit-candidate check"
-  | "split + edit re-order"
-  | "split + agent citations";
+export type ImpactRecallSeeding = "mapper" | "split" | `split + ${string}`;
 
 export interface RunImpactRecallOptions {
   /** Directly inject a searcher (wins over `searcherKind`). Used by tests. */
@@ -436,28 +431,33 @@ export function describeConfiguration(opts: RunImpactRecallOptions): ImpactRecal
   if (opts.splitSeeding) {
     // #1786 — the split seeding is not the configuration these floors were
     // measured on (the mapper path), so it is never gated as production.
-    const seeding: ImpactRecallSeeding = opts.splitSeeding.editCandidateVerifier
-      ? "split + edit-candidate check"
-      : opts.splitSeeding.editCandidateReranker
-        ? "split + edit re-order"
-        : opts.splitSeeding.agentSeeds
-          ? "split + agent citations"
-          : "split";
+    // #1847 — every stage that runs is named, in the order production runs
+    // them (the check, the re-order, then the citations), so a combined
+    // configuration is never labelled as one of its parts.
+    const stages = [
+      opts.splitSeeding.editCandidateVerifier && {
+        seeding: "edit-candidate check",
+        label: "#1756 LLM edit-candidate check, IMPACT_LLM_EDIT_VERIFY=1",
+      },
+      opts.splitSeeding.editCandidateReranker && {
+        seeding: "edit re-order",
+        label: "#1798 LLM edit re-order, IMPACT_LLM_EDIT_RERANK=1",
+      },
+      opts.splitSeeding.agentSeeds && {
+        seeding: "agent citations",
+        label: "#1759 stored code agent citations lead, IMPACT_AGENT_SEEDS=1",
+      },
+    ].filter((x): x is { seeding: string; label: string } => Boolean(x));
     return {
       searcher: "hybrid",
-      seeding,
+      seeding: ["split", ...stages.map((x) => x.seeding)].join(" + ") as ImpactRecallSeeding,
       tableFilter,
       isProductionConfiguration: false,
       label:
         `SPLIT SEEDING (resolveChangeSeeds over the hybrid search, as defaultSeedChange; ` +
         `table filter=${tableFilter}` +
-        (opts.splitSeeding.editCandidateVerifier
-          ? "; + #1756 LLM edit-candidate check, IMPACT_LLM_EDIT_VERIFY=1)"
-          : opts.splitSeeding.editCandidateReranker
-            ? "; + #1798 LLM edit re-order, IMPACT_LLM_EDIT_RERANK=1)"
-            : opts.splitSeeding.agentSeeds
-              ? "; + #1759 stored code agent citations lead, IMPACT_AGENT_SEEDS=1)"
-              : ")"),
+        stages.map((x) => `; + ${x.label}`).join("") +
+        ")",
     };
   }
   const searcher: SearcherKind = opts.searcher ? "bm25" : (opts.searcherKind ?? "bm25");
