@@ -359,6 +359,10 @@ describe("traceability router", () => {
           endLine: 20,
           confidence: 0.7,
           source: "semantic",
+          // #1830 — the version stamp a real row reads with.
+          freshness: "unverified",
+          commitSha: null,
+          validatedAt: null,
         },
       ]);
       mockPrisma.codeSymbol.findMany
@@ -390,8 +394,16 @@ describe("traceability router", () => {
       expect(res.status).toBe(200);
       const { testedBy, ...rest } = res.body.data;
       const strip = (nodes: Array<Record<string, unknown>>) =>
-        nodes.map(({ isTest: _isTest, ...n }) => n);
-      // The #229 shape, byte for byte, once the two additive fields are removed.
+        nodes.map(
+          ({
+            isTest: _isTest,
+            freshness: _freshness,
+            commitSha: _commitSha,
+            validatedAt: _validatedAt,
+            ...n
+          }) => n,
+        );
+      // The #229 shape, byte for byte, once the additive fields (#814, #1830) are removed.
       expect(
         JSON.stringify({
           ...rest,
@@ -406,6 +418,12 @@ describe("traceability router", () => {
       );
       expect(rest.specs[0].code[0].isTest).toBe(true);
       expect(rest.directCode[0].isTest).toBe(false);
+      expect(rest.directCode[0]).toMatchObject({
+        freshness: "unverified",
+        commitSha: null,
+        validatedAt: null,
+      });
+      expect(rest.specs[0].code[0]).not.toHaveProperty("freshness");
       expect(
         testedBy.map((t: { symbol: string; relation: string }) => [t.symbol, t.relation]),
       ).toEqual([

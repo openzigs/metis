@@ -40,6 +40,8 @@ interface FindingRow {
    * project the query scopes to (so project-agnostic tests need not set it).
    */
   projectId?: string;
+  /** #1830 — the repository the finding's code pass ran for (`AgentResult.connectorId`). */
+  connectorId?: string | null;
 }
 interface SymbolRow {
   id: string;
@@ -47,7 +49,13 @@ interface SymbolRow {
   filePath: string;
   startLine: number;
   endLine: number;
+  /** #1830 — the symbol's graph. Defaults to {@link GRAPH_1} (repo `conn-1`). */
+  codeGraphId?: string;
+  graph?: { repoConnectionId: string | null; commitSha: string | null };
 }
+
+/** #1830 — the default code graph every fake symbol belongs to. */
+const GRAPH_1 = { id: "graph-1", repoConnectionId: "conn-1", commitSha: "sha-1" };
 interface MappingRow {
   requirementId: string;
   projectId: string;
@@ -57,6 +65,11 @@ interface MappingRow {
   endLine: number | null;
   confidence: number;
   source: string;
+  /** #1830 — the version stamp the writer adds. */
+  codeGraphId?: string | null;
+  commitSha?: string | null;
+  freshness?: string;
+  validatedAt?: Date | null;
 }
 
 /** A whole-file symbol in `proj-1` for each path, so a repo citation resolves. */
@@ -111,6 +124,7 @@ function makeFakePrisma(opts: {
         // none, so the seeder must order the findings itself (#1818).
         return [...opts.findings]
           .reverse()
+          .map((f) => ({ ...f, agentResult: { connectorId: f.connectorId ?? null } }))
           .filter(
             (f) =>
               where.id.in.includes(f.id) &&
@@ -122,9 +136,16 @@ function makeFakePrisma(opts: {
     },
     codeSymbol: {
       findMany: async ({ where }: { where: { projectId: string; filePath: { in: string[] } } }) =>
-        symbols.filter(
-          (s) => s.projectId === where.projectId && where.filePath.in.includes(s.filePath),
-        ),
+        symbols
+          .filter((s) => s.projectId === where.projectId && where.filePath.in.includes(s.filePath))
+          .map((s) => ({
+            ...s,
+            codeGraphId: s.codeGraphId ?? GRAPH_1.id,
+            graph: s.graph ?? {
+              repoConnectionId: GRAPH_1.repoConnectionId,
+              commitSha: GRAPH_1.commitSha,
+            },
+          })),
     },
     requirementCodeMapping: {
       findMany: async ({
@@ -198,7 +219,9 @@ describe("parseCitationTargets (#768)", () => {
       ],
       true,
     );
-    expect(parseCitationTargets(raw)).toEqual([{ filePath: "internal/config/options.go" }]);
+    expect(parseCitationTargets(raw)).toEqual([
+      { filePath: "internal/config/options.go", repoConnectionId: "conn-1" },
+    ]);
   });
 
   it("keeps code citations with their span and symbol id, normalising the path", () => {
@@ -788,5 +811,187 @@ describe("seedRequirementCodeLinksFromFindings", () => {
     );
     expect(created).toHaveLength(0);
     expect(summary.requirementsSeeded).toBe(0);
+  });
+});
+
+describe("seedRequirementCodeLinksFromFindings — code-graph version stamp (#1830)", () => {
+  const projectId = "proj-1";
+  const run = (prisma: SeedDeps["prisma"]) =>
+    seedRequirementCodeLinksFromFindings(
+      { analysisId: "an-1", projectId, requirementIds: ["req-1"] },
+      { prisma },
+    );
+  /** Repos A and B both hold the same `src/auth.ts`, each in its own graph; A is listed first. */
+  const GRAPH_A = { repoConnectionId: "conn-A", commitSha: "aaaaaaa" };
+  const GRAPH_B = { repoConnectionId: "conn-B", commitSha: "bbbbbbb" };
+  const twoRepos: SymbolRow[] = [
+    {
+      id: "login-A",
+      projectId,
+      filePath: "src/auth.ts",
+      startLine: 5,
+      endLine: 20,
+      codeGraphId: "graph-A",
+      graph: GRAPH_A,
+    },
+    {
+      id: "login-B",
+      projectId,
+      filePath: "src/auth.ts",
+      startLine: 5,
+      endLine: 20,
+      codeGraphId: "graph-B",
+      graph: GRAPH_B,
+    },
+  ];
+  const codeCitation = (extra: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      citations: [{ filePath: "src/auth.ts", startLine: 8, endLine: 12, ...extra }],
+    });
+
+  it("stamps a new row with its symbol's graph, that graph's commit, fresh and validatedAt", async () => {
+    const before = Date.now();
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [{ id: "f1", evidence: evidence(["src/a.ts"]), confidence: 0.6 }],
+    });
+    await run(prisma);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      codeGraphId: "graph-1",
+      commitSha: "sha-1",
+      freshness: "fresh",
+    });
+    expect(created[0].validatedAt).toBeInstanceOf(Date);
+    expect(created[0].validatedAt!.getTime()).toBeGreaterThanOrEqual(before);
+  });
+
+  it("resolves and stamps the repo a code citation names, when two repos hold the file", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        { id: "f1", evidence: codeCitation({ repoConnectionId: "conn-B" }), confidence: 0.6 },
+      ],
+      symbols: twoRepos,
+    });
+    await run(prisma);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      codeSymbolId: "login-B",
+      codeGraphId: "graph-B",
+      commitSha: "bbbbbbb",
+      freshness: "fresh",
+    });
+  });
+
+  it("falls back to the repo the finding's code pass ran for", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [{ id: "f1", evidence: codeCitation(), confidence: 0.6, connectorId: "conn-B" }],
+      symbols: twoRepos,
+    });
+    await run(prisma);
+    expect(created[0]).toMatchObject({
+      codeSymbolId: "login-B",
+      codeGraphId: "graph-B",
+      commitSha: "bbbbbbb",
+    });
+  });
+
+  it("reads the repo of a connector:repo:<id>:src/ document key", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        {
+          id: "f1",
+          evidence: evidence(["connector:repo:conn-B:src/src/auth.ts"], true),
+          confidence: 0.6,
+        },
+      ],
+      symbols: twoRepos,
+    });
+    await run(prisma);
+    expect(created[0]).toMatchObject({
+      codeSymbolId: null,
+      filePath: "src/auth.ts",
+      codeGraphId: "graph-B",
+      freshness: "fresh",
+    });
+  });
+
+  it("writes a file link two repos hold, with no repo of theirs named, unverified with no graph", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        {
+          id: "f1",
+          evidence: evidence(["repo:conn-other:src/src/auth.ts"], true),
+          confidence: 0.6,
+        },
+      ],
+      symbols: twoRepos,
+    });
+    await run(prisma);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      filePath: "src/auth.ts",
+      codeGraphId: null,
+      commitSha: null,
+      freshness: "unverified",
+      validatedAt: null,
+    });
+  });
+
+  it("keeps the location but stamps no graph when the named repo's graph does not hold the file", async () => {
+    const onlyA = twoRepos.filter((s) => s.id === "login-A");
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        { id: "f1", evidence: codeCitation({ repoConnectionId: "conn-B" }), confidence: 0.6 },
+      ],
+      symbols: onlyA,
+    });
+    await run(prisma);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      codeSymbolId: "login-A",
+      filePath: "src/auth.ts",
+      startLine: 5,
+      endLine: 20,
+      codeGraphId: null,
+      commitSha: null,
+      freshness: "unverified",
+      validatedAt: null,
+    });
+  });
+
+  it("stamps no graph on a file link whose named repo's graph does not hold the file", async () => {
+    const onlyA = twoRepos.filter((s) => s.id === "login-A");
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        {
+          id: "f1",
+          evidence: evidence(["connector:repo:conn-B:src/src/auth.ts"], true),
+          confidence: 0.6,
+        },
+      ],
+      symbols: onlyA,
+    });
+    await run(prisma);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      codeSymbolId: null,
+      filePath: "src/auth.ts",
+      codeGraphId: null,
+      commitSha: null,
+      freshness: "unverified",
+    });
+  });
+
+  it("keeps a code citation's server-stamped repo on its target", () => {
+    expect(parseCitationTargets(codeCitation({ repoConnectionId: "conn-A" }))).toEqual([
+      { filePath: "src/auth.ts", startLine: 8, endLine: 12, repoConnectionId: "conn-A" },
+    ]);
   });
 });

@@ -89,6 +89,8 @@ export const POSTGRES_PATTERNS = Object.freeze([
   "server/src/lib/rag/knowledge-service.ts",
   "server/src/lib/rag/reindex-lease.ts",
   "server/src/lib/rag/vector-store.ts",
+  // #1835 — requirement-embeddings-pgvector runs the real requirement index.
+  "server/src/lib/requirements/requirement-embeddings.ts",
   "server/src/lib/requirements/requirement-version-service.ts",
   "server/src/lib/reviews/notify.ts",
   "server/src/lib/reviews/review-service.ts",

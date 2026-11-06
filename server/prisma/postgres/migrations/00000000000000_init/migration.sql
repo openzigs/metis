@@ -4510,3 +4510,25 @@ CREATE UNIQUE INDEX "product_resources_productId_kind_name_key" ON "product_reso
 
 -- AddForeignKey
 ALTER TABLE "product_resources" ADD CONSTRAINT "product_resources_productId_fkey" FOREIGN KEY ("productId") REFERENCES "products"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- Issue #1835 — requirement embedding bookkeeping (the vectors live in rag_vectors).
+-- CreateTable
+CREATE TABLE "requirement_embeddings" (
+    "id" TEXT NOT NULL,
+    "requirementId" TEXT NOT NULL,
+    "projectId" TEXT NOT NULL,
+    "contentHash" TEXT NOT NULL,
+    "embeddingModel" TEXT NOT NULL,
+    "embeddedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "requirement_embeddings_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE UNIQUE INDEX "requirement_embeddings_requirementId_key" ON "requirement_embeddings"("requirementId");
+
+-- CreateIndex
+CREATE INDEX "requirement_embeddings_projectId_idx" ON "requirement_embeddings"("projectId");
+
+-- AddForeignKey
+ALTER TABLE "requirement_embeddings" ADD CONSTRAINT "requirement_embeddings_requirementId_fkey" FOREIGN KEY ("requirementId") REFERENCES "requirements"("id") ON DELETE CASCADE ON UPDATE CASCADE;

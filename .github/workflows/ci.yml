@@ -1216,6 +1216,13 @@ jobs:
         working-directory: server
         run: pnpm test:integration vector-store-pgvector
 
+      # Issue #1835 — requirement vectors on pgvector: a query in one project never
+      # returns another project's near-identical requirement, an unchanged one is
+      # not re-embedded, and a deleted one leaves no vector.
+      - name: Prove project-scoped requirement vectors on real pgvector
+        working-directory: server
+        run: pnpm test:integration requirement-embeddings-pgvector
+
       # Issue #798 — prove the reindex LEASE against the same real Postgres, through
       # Prisma's real connection POOL (the bug it fixes is invisible to any test that
       # mocks the pool). Covers: take+release are pool-agnostic (the session advisory

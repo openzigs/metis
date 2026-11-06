@@ -1538,6 +1538,9 @@ model Requirement {
   /// #1621 — portfolio assessments started from this requirement (SetNull: an
   /// assessment outlives the re-run that recreates its requirement).
   portfolioAssessments PortfolioAssessment[]
+  /// #1835 — the content hash and model tag of this requirement's vector in
+  /// `<projectId>__requirements` (cascade: a hard delete takes it with it).
+  embedding         RequirementEmbedding?
 
   @@unique([projectId, externalSource, externalId], name: "requirement_external_dedup")
   @@index([projectId])
@@ -2055,14 +2058,35 @@ model RequirementCodeMapping {
   confidence    Float    @default(0.7) // 0.0–1.0
   source        String   @default("semantic") // semantic|manual
   createdAt     DateTime @default(now())
+  /// Issue #1830 (epic #1827) — the code-graph version a citation was read
+  /// from, and whether it still holds. Written for `analysis-grounding` rows
+  /// by `seed-code-links-from-findings.ts`; null on `manual` / `semantic`
+  /// rows and on every row written before #1830. `codeGraphId` is the graph of
+  /// the repository the cited file belongs to (SetNull when the graph goes);
+  /// `commitSha` is copied from that graph at write time, so it survives a
+  /// later ingest that moves the graph on.
+  codeGraphId       String?
+  commitSha         String?
+  /// `fresh` (checked against the graph), `moved` (found elsewhere; the old
+  /// location is kept in `previous*`), `stale` (no longer found; see
+  /// `staleReason`) or `unverified` (never checked: every pre-#1830 row).
+  freshness         String    @default("unverified")
+  validatedAt       DateTime?
+  previousFilePath  String?
+  previousStartLine Int?
+  previousEndLine   Int?
+  /// `file-missing` | `symbol-missing` | `content-changed`, when `stale`.
+  staleReason       String?
 
   requirement Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
   project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
   codeSymbol  CodeSymbol? @relation(fields: [codeSymbolId], references: [id], onDelete: SetNull)
+  codeGraph   CodeGraph?  @relation(fields: [codeGraphId], references: [id], onDelete: SetNull)
 
   @@index([requirementId])
   @@index([projectId])
   @@index([codeSymbolId])
+  @@index([codeGraphId])
   @@map("requirement_code_mappings")
 }
 
@@ -3858,6 +3882,8 @@ model CodeGraph {
 
   symbols CodeSymbol[]
   edges   CodeEdge[]
+  /// Issue #1830 — the code citations read from this graph.
+  requirementCodeMappings RequirementCodeMapping[]
 
   @@unique([projectId, repoConnectionId])
   @@index([projectId])
@@ -3953,6 +3979,33 @@ model CodeSymbolEmbedding {
   @@index([projectId, embeddingModel])
   @@index([codeGraphId])
   @@map("code_symbol_embeddings")
+}
+
+/// Issue #1835 (epic #1828) — bookkeeping for one requirement's embedding.
+///
+/// As for `CodeSymbolEmbedding`, the VECTOR lives in the shared vector store,
+/// under the namespace `<projectId>__requirements`, never in Prisma. This row
+/// holds what the reconcile (`syncRequirementEmbeddings`) compares: the hash of
+/// the embedded text (title, body, acceptance criteria) TAGGED with the model
+/// that embedded it, so an edit or an embedder change re-embeds and nothing
+/// else does. Requirements are deleted and recreated on analysis re-runs, so
+/// the row is keyed on `requirementId` and cascade-deleted with it.
+model RequirementEmbedding {
+  id             String   @id @default(cuid())
+  /// 1:1 with the requirement; cascade-deleted with it.
+  requirementId  String   @unique
+  /// Denormalised from the requirement: the reconcile reads one project's rows.
+  projectId      String
+  /// SHA-256 of `embeddingModel` + the embedded text.
+  contentHash    String
+  /// The id of the model whose vector is live for this requirement.
+  embeddingModel String
+  embeddedAt     DateTime @default(now())
+
+  requirement Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("requirement_embeddings")
 }
 
 

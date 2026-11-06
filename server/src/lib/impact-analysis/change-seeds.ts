@@ -179,6 +179,14 @@ export interface StoredLinkRow {
   confidence: number;
   /** `manual` (a person confirmed it) or `semantic` (written by a mapper or the code agent). */
   source: string;
+  /**
+   * #1830 — the code agent's citations carry the code-graph version they were
+   * read from and whether they still hold (`CodeCitationFreshness`). Read by
+   * `prismaAgentCitationDeps`; absent on the other channels' rows.
+   */
+  freshness?: string;
+  commitSha?: string | null;
+  validatedAt?: Date | null;
 }
 
 export interface StoredLinkDeps {

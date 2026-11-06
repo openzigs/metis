@@ -16,7 +16,10 @@ import {
   createGetRequirementTool,
   createListRequirementsTool,
   registerRequirementTools,
+  SEMANTIC_MIN_SCORE,
+  SEMANTIC_POOL,
   type RequirementToolsDeps,
+  type SemanticRequirementSearch,
 } from "./requirements-chat-tools.js";
 
 interface Row {
@@ -130,6 +133,9 @@ function emptyChain(id: string): RequirementTraceabilityChain {
 
 const ctx: ToolContext = { sessionId: "s", userId: "u", projectId: "p1" };
 
+/** #1841 — no meaning-based hits: the word path alone, as before #1841. */
+const noSemantic: SemanticRequirementSearch = async () => [];
+
 const ROWS: Row[] = [
   row({
     id: "r-db",
@@ -182,7 +188,7 @@ const ROWS: Row[] = [
 describe("list_requirements (#1030)", () => {
   it("lists the session project's live requirements only", async () => {
     const { prisma } = stubPrisma(ROWS);
-    const tool = createListRequirementsTool({ prisma });
+    const tool = createListRequirementsTool({ prisma, semantic: noSemantic });
     const res = await tool.exec({}, ctx);
     expect(res.isError).toBeFalsy();
     const ids = (res.data as { requirements: Array<{ id: string }> }).requirements.map((r) => r.id);
@@ -194,7 +200,7 @@ describe("list_requirements (#1030)", () => {
 
   it("filters by review status, reading the legacy review:* label when the column is null", async () => {
     const { prisma } = stubPrisma(ROWS);
-    const tool = createListRequirementsTool({ prisma });
+    const tool = createListRequirementsTool({ prisma, semantic: noSemantic });
     const res = await tool.exec({ status: "approved" }, ctx);
     const ids = (res.data as { requirements: Array<{ id: string }> }).requirements.map((r) => r.id);
     expect(ids.sort()).toEqual(["r-db", "r-legacy", "r-ui"]);
@@ -202,7 +208,7 @@ describe("list_requirements (#1030)", () => {
 
   it("filters by visible label, case-insensitively, and never exposes hidden labels", async () => {
     const { prisma } = stubPrisma(ROWS);
-    const tool = createListRequirementsTool({ prisma });
+    const tool = createListRequirementsTool({ prisma, semantic: noSemantic });
     const res = await tool.exec({ label: "Persistence" }, ctx);
     const ids = (res.data as { requirements: Array<{ id: string }> }).requirements.map((r) => r.id);
     expect(ids).toEqual(["r-db"]);
@@ -214,7 +220,7 @@ describe("list_requirements (#1030)", () => {
 
   it("searches title and body case-insensitively, combining with the status filter", async () => {
     const { prisma } = stubPrisma(ROWS);
-    const tool = createListRequirementsTool({ prisma });
+    const tool = createListRequirementsTool({ prisma, semantic: noSemantic });
     const res = await tool.exec({ status: "approved", query: "DATABASE" }, ctx);
     const ids = (res.data as { requirements: Array<{ id: string }> }).requirements.map((r) => r.id);
     expect(ids.sort()).toEqual(["r-db", "r-legacy"]);
@@ -227,7 +233,7 @@ describe("list_requirements (#1030)", () => {
 
   it("caps the listing at the limit and says how many matched", async () => {
     const { prisma } = stubPrisma(ROWS);
-    const tool = createListRequirementsTool({ prisma });
+    const tool = createListRequirementsTool({ prisma, semantic: noSemantic });
     const res = await tool.exec({ limit: 1 }, ctx);
     expect((res.data as { requirements: unknown[] }).requirements).toHaveLength(1);
     expect((res.data as { total: number }).total).toBe(4);
@@ -236,7 +242,7 @@ describe("list_requirements (#1030)", () => {
 
   it("an empty match states the project's status totals instead of implying none exist", async () => {
     const { prisma } = stubPrisma(ROWS);
-    const tool = createListRequirementsTool({ prisma });
+    const tool = createListRequirementsTool({ prisma, semantic: noSemantic });
     const res = await tool.exec({ status: "rejected" }, ctx);
     expect(res.isError).toBeFalsy();
     expect(res.resultCount).toBe(0);
@@ -247,13 +253,16 @@ describe("list_requirements (#1030)", () => {
 
   it("does not count a soft-deleted data mapping", async () => {
     const { prisma } = stubPrisma(ROWS);
-    const res = await createListRequirementsTool({ prisma }).exec({ query: "orders" }, ctx);
+    const res = await createListRequirementsTool({ prisma, semantic: noSemantic }).exec(
+      { query: "orders" },
+      ctx,
+    );
     expect(res.text).toContain("data mappings: 1");
   });
 
   it("reads the body only when there is a query to match it against", async () => {
     const { prisma, findMany } = stubPrisma(ROWS);
-    const tool = createListRequirementsTool({ prisma });
+    const tool = createListRequirementsTool({ prisma, semantic: noSemantic });
     await tool.exec({}, ctx);
     expect(findMany.mock.calls[0]![0].select.body).toBe(false);
     await tool.exec({ query: "orders" }, ctx);
@@ -263,20 +272,23 @@ describe("list_requirements (#1030)", () => {
   it("says when the scan hit its ceiling so totals are not read as complete", async () => {
     const many = Array.from({ length: 5001 }, (_, i) => row({ id: `r${i}` }));
     const { prisma } = stubPrisma(many);
-    const tool = createListRequirementsTool({ prisma });
+    const tool = createListRequirementsTool({ prisma, semantic: noSemantic });
     const res = await tool.exec({ status: "rejected" }, ctx);
     expect(res.text).toContain("5000 requirements in total");
     expect(res.text).toContain("partial");
     const full = await tool.exec({ limit: 1 }, ctx);
     expect(full.text).toContain("partial");
     const { prisma: small } = stubPrisma(ROWS);
-    const ok = await createListRequirementsTool({ prisma: small }).exec({ limit: 1 }, ctx);
+    const ok = await createListRequirementsTool({ prisma: small, semantic: noSemantic }).exec(
+      { limit: 1 },
+      ctx,
+    );
     expect(ok.text).not.toContain("partial");
   });
 
   it("refuses an unscoped session without touching the database", async () => {
     const { prisma, findMany } = stubPrisma(ROWS);
-    const tool = createListRequirementsTool({ prisma });
+    const tool = createListRequirementsTool({ prisma, semantic: noSemantic });
     const res = await tool.exec({}, { sessionId: "s", userId: "u" });
     expect(res.isError).toBe(true);
     expect(findMany).not.toHaveBeenCalled();
@@ -287,6 +299,111 @@ describe("list_requirements (#1030)", () => {
     expect(tool.schema.safeParse({ status: "approved" }).success).toBe(true);
     expect(tool.schema.safeParse({ status: "bogus" }).success).toBe(false);
     expect(tool.risk).toBe("low");
+  });
+});
+
+describe("list_requirements by meaning (#1841)", () => {
+  const idsOf = (res: { data?: unknown }) =>
+    (res.data as { requirements: Array<{ id: string }> }).requirements.map((r) => r.id);
+
+  it("a call without a query is exactly as before #1841, and never searches by meaning", async () => {
+    const { prisma } = stubPrisma(ROWS);
+    const semantic = vi.fn(noSemantic);
+    const res = await createListRequirementsTool({ prisma, semantic }).exec(
+      { status: "approved" },
+      ctx,
+    );
+    expect(semantic).not.toHaveBeenCalled();
+    expect(res.text).toMatchInlineSnapshot(`
+      "3 matching requirements.
+      - [r-db] Store orders in the database (approved, medium, feature) labels: persistence; code links: 2; data mappings: 1
+      - [r-ui] Show a login form (approved, medium, feature) labels: auth; code links: 0; data mappings: 0
+      - [r-legacy] Export a database backup nightly (approved, medium, feature) labels: ops; code links: 0; data mappings: 0"
+    `);
+    expect((res.data as { requirements: object[] }).requirements[0]).not.toHaveProperty(
+      "matchedBy",
+    );
+  });
+
+  it("adds a meaning-only match to the word matches, and says how each matched", async () => {
+    const { prisma } = stubPrisma(ROWS);
+    const semantic = vi.fn<SemanticRequirementSearch>(async () => [
+      { requirementId: "r-ui", score: 0.7 },
+      { requirementId: "r-db", score: 0.6 },
+    ]);
+    const res = await createListRequirementsTool({ prisma, semantic }).exec(
+      { query: "orders" },
+      ctx,
+    );
+    expect(semantic).toHaveBeenCalledWith("p1", "orders", SEMANTIC_POOL);
+    // r-db: by meaning AND words, so it leads; r-ui by meaning only.
+    expect(idsOf(res)).toEqual(["r-db", "r-ui"]);
+    expect(res.text).toContain("matched by meaning and words");
+    expect(res.text).toContain(
+      "Show a login form (approved, medium, feature) labels: auth; code links: 0; data mappings: 0; matched by meaning",
+    );
+  });
+
+  it("drops a meaning-based hit below the floor", async () => {
+    const { prisma } = stubPrisma(ROWS);
+    const semantic: SemanticRequirementSearch = async () => [
+      { requirementId: "r-ui", score: SEMANTIC_MIN_SCORE - 0.01 },
+    ];
+    const res = await createListRequirementsTool({ prisma, semantic }).exec({ query: "zzz" }, ctx);
+    expect(res.resultCount).toBe(0);
+  });
+
+  it("ranks approved ahead of draft at equal relevance", async () => {
+    const twins = [
+      row({ id: "t-draft", title: "Archive stale feeds", reviewStatus: "draft" }),
+      row({ id: "t-approved", title: "Archive stale feeds", reviewStatus: "approved" }),
+    ];
+    const { prisma } = stubPrisma(twins);
+    // The index answers the draft first; the two are equally relevant.
+    const semantic: SemanticRequirementSearch = async () => [
+      { requirementId: "t-draft", score: 0.8 },
+      { requirementId: "t-approved", score: 0.8 },
+    ];
+    const res = await createListRequirementsTool({ prisma, semantic }).exec(
+      { query: "archive" },
+      ctx,
+    );
+    expect(idsOf(res)).toEqual(["t-approved", "t-draft"]);
+    const wordsOnly = await createListRequirementsTool({ prisma, semantic: noSemantic }).exec(
+      { query: "archive" },
+      ctx,
+    );
+    expect(idsOf(wordsOnly)).toEqual(["t-approved", "t-draft"]);
+  });
+
+  it("never returns a hit outside the session project, deleted, or filtered out", async () => {
+    const { prisma } = stubPrisma(ROWS);
+    const semantic: SemanticRequirementSearch = async () => [
+      { requirementId: "r-other", score: 0.95 },
+      { requirementId: "r-deleted", score: 0.95 },
+      { requirementId: "r-draft", score: 0.9 },
+      { requirementId: "r-ui", score: 0.9 },
+    ];
+    const res = await createListRequirementsTool({ prisma, semantic }).exec(
+      { query: "zzz", status: "approved" },
+      ctx,
+    );
+    expect(idsOf(res)).toEqual(["r-ui"]);
+  });
+
+  it("falls back to words, and says so, when the meaning search fails", async () => {
+    const { prisma } = stubPrisma(ROWS);
+    const semantic: SemanticRequirementSearch = async () => {
+      throw new Error("embedder down");
+    };
+    const res = await createListRequirementsTool({ prisma, semantic }).exec(
+      { query: "orders" },
+      ctx,
+    );
+    expect(idsOf(res)).toEqual(["r-db"]);
+    expect(res.text).toContain("Search by meaning was unavailable");
+    const none = await createListRequirementsTool({ prisma, semantic }).exec({ query: "zzz" }, ctx);
+    expect(none.text).toContain("Search by meaning was unavailable");
   });
 });
 

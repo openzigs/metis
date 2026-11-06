@@ -36,7 +36,8 @@ describe("citationsFromAnswer", () => {
     ]);
     expect(citationsFromAnswer(`Here it is:\n${text}`)).toEqual([
       { filePath: "internal/a.go", startLine: 3, endLine: 9, confidence: 0.9 },
-      { filePath: "internal/b.go", confidence: 0.9 },
+      // #1830 — the repository the source key names rides along.
+      { filePath: "internal/b.go", repoConnectionId: "c1", confidence: 0.9 },
       { filePath: "c.go", startLine: 1, endLine: 2, confidence: 0.5 },
       { filePath: "d.go", startLine: 1, endLine: 1, confidence: 1 },
     ]);
