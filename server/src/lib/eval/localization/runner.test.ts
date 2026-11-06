@@ -1166,6 +1166,22 @@ describe("agent-pass counts and split passes in the report (#1810)", () => {
     expect(md).not.toContain("A7 agent passes");
   });
 
+  it("words an arm's passes by the pass group its readings carry, not by its id (#1825)", async () => {
+    const report = await runLocalizationEval(corpus(1), {
+      arms: [
+        arm("A0", () => 1),
+        passArm("A9", () => stats({ passes: 1, passGroup: "analysis", passIds: ["an-1"] })),
+        passArm("A7", () => stats({ passes: 1, passGroup: "graph", passIds: ["g-1"] })),
+      ],
+      runs: 1,
+      meter: new FakeMeter(),
+    });
+    const md = toMarkdownReport(report);
+    expect(md).toContain('- A9 analyses ("Evaluate new requirements"): 1 over 1 reading(s)');
+    expect(md).toContain("- A7 agent passes: 1 over 1 reading(s)");
+    expect(md).not.toContain("A7 analyses");
+  });
+
   it("finds no split when an arm of the group has no reading, or none carries counts", () => {
     const score = (agent?: AgentRunStats) => ({ agent }) as unknown as ItemRunScore;
     expect(

@@ -8,5 +8,6 @@ section: Fixed
   run. At most five further cited files are added as files to edit; any beyond that are listed
   under Related instead. A file promoted to the files to edit (by the citations, the AI edit
   check or the AI ranking) is no longer also listed under Related.
-- "Evaluate new requirements" now records the code agent's citation of a file even when someone
-  already linked that file to the requirement by hand, so the citation is not lost.
+- "Evaluate new requirements" now records the code agent's citation of a file even when METIS's
+  automatic requirement-to-code mapping already linked that file to the requirement, so the
+  citation is not lost.
