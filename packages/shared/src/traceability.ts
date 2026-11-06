@@ -211,7 +211,25 @@ export interface TraceabilityCodeNode {
   commitSha?: string | null;
   /** #1830 — when the freshness was last decided (ISO 8601); null when never. */
   validatedAt?: string | null;
+  /** #1831 — why a `stale` link no longer holds; null otherwise. */
+  staleReason?: CodeCitationStaleReason | null;
+  /** #1831 — where a `moved` link pointed before re-validation rewrote it; null otherwise. */
+  previousFilePath?: string | null;
+  previousStartLine?: number | null;
+  previousEndLine?: number | null;
 }
+
+/**
+ * #1831 — why re-validation marked a code link `stale`: its file is gone, its
+ * symbol is no longer found (or no longer found unambiguously), or the code it
+ * names was edited.
+ */
+export const CODE_CITATION_STALE_REASONS = [
+  "file-missing",
+  "symbol-missing",
+  "content-changed",
+] as const;
+export type CodeCitationStaleReason = (typeof CODE_CITATION_STALE_REASONS)[number];
 
 /** A spec node plus the code it links to. */
 export interface TraceabilitySpecNode {
