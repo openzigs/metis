@@ -60,11 +60,11 @@ Each `expected.json` is an array of golden requirements:
 [
   {
     "id": "R1",
-    "type": "feature",        // feature | bug | chore | epic | task
+    "type": "feature", // feature | bug | chore | epic | task
     "title": "Email and password sign-in",
     "description": "Registered customers sign in with an email address and password.",
-    "priority": "high"        // low | medium | high | critical
-  }
+    "priority": "high", // low | medium | high | critical
+  },
 ]
 ```
 
@@ -113,21 +113,21 @@ directory and pairs each `queryId` with a gold answer plus its provenance:
 ```jsonc
 {
   "corpusId": "docretrieval-01-metis-docs",
-  "license": "CC0-1.0",                 // an SPDX identifier — see below
-  "snapshotCommit": "953bfe70…",        // must match queries.json
+  "license": "CC0-1.0", // an SPDX identifier — see below
+  "snapshotCommit": "953bfe70…", // must match queries.json
   "answers": [
     {
-      "queryId": "dq-ops-01",           // must exist in queries.json
-      "answer": "…",                    // 1–3 sentences of self-contained prose
+      "queryId": "dq-ops-01", // must exist in queries.json
+      "answer": "…", // 1–3 sentences of self-contained prose
       "note": "anything deliberately out of scope",
       "provenance": {
         "author": "gh:some-person",
         "date": "2026-08-27",
-        "reviewedBy": "gh:another-person",   // optional; may NOT be the author
-        "reviewedAt": "2026-08-28"           // optional; may not precede `date`
-      }
-    }
-  ]
+        "reviewedBy": "gh:another-person", // optional; may NOT be the author
+        "reviewedAt": "2026-08-28", // optional; may not precede `date`
+      },
+    },
+  ],
 }
 ```
 
@@ -190,11 +190,11 @@ File localization of **analyst-worded** requirements: which files of a code grap
 requirement should lead to. Every arm of epic #1751 is measured on these, so the
 ground truth was fixed before any arm ran.
 
-| Corpus | Items | Purpose | Repositories |
-|---|---|---|---|
-| `localization-01-miniflux-heldout` | 25 | **held-out** | `miniflux/v2` at `v2.3.3` |
-| `localization-02-fixture-portfolio` | 15 | **held-out** (reused by #1766) | `openzigs/metis-fixture-{orders,billing,notify}` |
-| `localization-00-miniflux-run7-insample` | 6 | **in-sample only**: never used to claim a gain | `miniflux/v2` at `v2.3.3` |
+| Corpus                                   | Items | Purpose                                        | Repositories                                     |
+| ---------------------------------------- | ----- | ---------------------------------------------- | ------------------------------------------------ |
+| `localization-01-miniflux-heldout`       | 25    | **held-out**                                   | `miniflux/v2` at `v2.3.3`                        |
+| `localization-02-fixture-portfolio`      | 15    | **held-out** (reused by #1766)                 | `openzigs/metis-fixture-{orders,billing,notify}` |
+| `localization-00-miniflux-run7-insample` | 6     | **in-sample only**: never used to claim a gain | `miniflux/v2` at `v2.3.3`                        |
 
 Each corpus holds a `manifest.json` (items, ground truth, provenance, who wrote the
 text), the code graph's symbol rows as `symbols.json.gz`, and `baseline-A0.{json,md}`.
@@ -320,12 +320,12 @@ For each repository in the manifest, the command:
 No hosted model is called, so it costs $0. Everything goes into the gitignored
 `eval-data/.materialized/`:
 
-| Path | What | Variable an arm sets from it |
-|---|---|---|
-| `eval.db` | the SQLite eval database | `DATABASE_URL` |
-| `clones/<connectorId>/` | one clone per repository | `REPO_CLONE_DIR` |
-| `lancedb/` | the symbol vectors | `LANCEDB_PATH` |
-| `<corpus>.state.json` | each repository's `projectId`, `connectorId` and commit SHA, plus the three paths above | (read it with `readMaterializedState`) |
+| Path                    | What                                                                                    | Variable an arm sets from it           |
+| ----------------------- | --------------------------------------------------------------------------------------- | -------------------------------------- |
+| `eval.db`               | the SQLite eval database                                                                | `DATABASE_URL`                         |
+| `clones/<connectorId>/` | one clone per repository                                                                | `REPO_CLONE_DIR`                       |
+| `lancedb/`              | the symbol vectors                                                                      | `LANCEDB_PATH`                         |
+| `<corpus>.state.json`   | each repository's `projectId`, `connectorId` and commit SHA, plus the three paths above | (read it with `readMaterializedState`) |
 
 The script sets those variables itself and reads no `.env`. It fails unless Prisma is
 bound to `eval.db`, so it never writes to `server/dev.db`. It also fails if
@@ -379,7 +379,9 @@ A resume is refused, and needs a new partials directory, when (#1847):
 
 Once two readings are complete, the guard prints their paired 95% t-interval over the 11
 requirements (each requirement's table precision, averaged over the runs):
-`guardPairedDifferences` in `table-guard-agent.ts`.
+`guardPairedDifferences` in `table-guard-agent.ts`. A7 is gated against A7O, the same analyses with the
+flag off, not against A0 (owner decision, #1823): the report's guard row for A7 reads
+"against A7O".
 
 A stored citation names a repository file and symbol, and is read on the fixture in this
 order:
@@ -399,10 +401,10 @@ it affects.
 
 **Disk and time** (measured 2026-11-04 on an Apple-silicon laptop, model already cached):
 
-| Corpus | Symbols | Clone | Ingest | Embed | Re-run |
-|---|---|---|---|---|---|
-| `localization-01-miniflux-heldout` | 3,533 | 1 s | 4 s | 82 s | 2 s |
-| `localization-02-fixture-portfolio` (3 repositories) | 40 | 1.4 s | < 1 s | 4 s | 2 s |
+| Corpus                                               | Symbols | Clone | Ingest | Embed | Re-run |
+| ---------------------------------------------------- | ------- | ----- | ------ | ----- | ------ |
+| `localization-01-miniflux-heldout`                   | 3,533   | 1 s   | 4 s    | 82 s  | 2 s    |
+| `localization-02-fixture-portfolio` (3 repositories) | 40      | 1.4 s | < 1 s  | 4 s   | 2 s    |
 
 Both corpora together take about 57 MB: 22 MB database, 26 MB vectors, 8 MB clones.
 The first run with an empty model cache also downloads the embedding model (drop
@@ -422,11 +424,11 @@ pnpm eval:localization --arms A0,A3,A3A,A3N --runs 1 --shard 1/12   # then 2/12 
 pnpm eval:localization --merge <dir> --md
 ```
 
-| Arm | Agent tools | Files scored |
-|---|---|---|
-| `A3` (A3-union) | production's (`search_code_graph`, `search_code_symbols`, `search_knowledge`, `read_file_slice`, `list_files`) and seeded blocks | A0's edit candidates, then the cited files through the stored-link channel (#1754) |
-| `A3A` (A3-alone) | the same pass as `A3` | the cited files alone, in first-cited order |
-| `A3N` (A3-nograph) | `list_files`, `read_file_slice` and the eval-only `grep_files`; no seeded blocks | the cited files alone |
+| Arm                | Agent tools                                                                                                                      | Files scored                                                                       |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `A3` (A3-union)    | production's (`search_code_graph`, `search_code_symbols`, `search_knowledge`, `read_file_slice`, `list_files`) and seeded blocks | A0's edit candidates, then the cited files through the stored-link channel (#1754) |
+| `A3A` (A3-alone)   | the same pass as `A3`                                                                                                            | the cited files alone, in first-cited order                                        |
+| `A3N` (A3-nograph) | `list_files`, `read_file_slice` and the eval-only `grep_files`; no seeded blocks                                                 | the cited files alone                                                              |
 
 - **One pass per item and repository.** The pass uses the orchestrator's own functions
   (`extractNewRequirementCandidates`, `assembleAgenticPassSeeds`, `buildAgenticPassPrompt`,

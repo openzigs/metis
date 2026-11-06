@@ -11,7 +11,7 @@
  * (p < 0.001), and +0.29 on `deepseek-flash`. Appended after the hybrid picks
  * (A3, the #1754 stored-link channel) they cannot move Recall@5 at all.
  *
- * So this stage, behind `IMPACT_AGENT_SEEDS` (off by default), REUSES the
+ * So this stage, behind `IMPACT_AGENT_SEEDS` (on by default since #1823), REUSES the
  * stored citations — no model call, no agent loop, nothing that can miss the
  * 60-second impact deadline — and puts their files at the HEAD of the edit
  * candidates:
@@ -64,12 +64,16 @@ import {
 
 const log = createChildLogger("impact-agent-seeder");
 
-/** The env/runtime flag for this stage. Off by default (#1759). */
+/**
+ * The env/runtime flag for this stage. On by default since #1823: a held-out
+ * Recall@5 gain (#1818) and the table-precision guard against its control
+ * (A7 against A7O, claude-sonnet-5-5) both held.
+ */
 export const AGENT_SEEDS_FLAG = "IMPACT_AGENT_SEEDS";
 
-/** #1759 — whether the code agent's citations lead the files to edit. */
+/** #1759 — whether the code agent's citations lead the files to edit (`IMPACT_AGENT_SEEDS=0` turns it off). */
 export function impactAgentSeedsEnabled(): boolean {
-  return getConfigService().getBool(AGENT_SEEDS_FLAG, false);
+  return getConfigService().getBool(AGENT_SEEDS_FLAG, true);
 }
 
 /** Distinct cited files that lead the files to edit, at most: the edit-file cut. */

@@ -156,9 +156,22 @@ describe("createAgentSeedGuard (#1823)", () => {
     // A7O reads the fixture's own text without citations: A0 on the split seeding.
     expect(a7o.tablePrecision).toBeCloseTo(a7o.baseline!.tablePrecision, 10);
     expect(a7o.baseline!.seeding).toBe("split");
+    expect(a7o.baseline!.arm).toBeUndefined();
     // The product update's citation brings in the order table: precision drops.
     expect(a7.tablePrecision).toBeLessThan(a7o.tablePrecision);
-    expect(a7).toMatchObject({ runs: 2, baseline: a7o.baseline });
+    // #1823 (owner, option A) — A7 is gated against A7O, the same analyses with the flag off.
+    expect(a7).toMatchObject({ runs: 2 });
+    expect(a7.baseline).toEqual({
+      tablePrecision: a7o.tablePrecision,
+      runs: a7o.runs,
+      configuration: expect.stringContaining(TABLE_GUARD_CORPUS),
+      seeding: a7o.seeding,
+      arm: "A7O",
+    });
+    // A0 on the split seeding is still reported beside it.
+    expect(a7.configuration).toContain(
+      `A0 on the split seeding: ${a7o.baseline!.tablePrecision.toFixed(3)} (2 runs)`,
+    );
     expect(a7.seeding).toContain("IMPACT_AGENT_SEEDS on");
     expect(a7o.seeding).toContain("IMPACT_AGENT_SEEDS off");
     expect(a7.configuration).toContain("IMPACT_AGENT_SEEDS=1");
@@ -170,10 +183,10 @@ describe("createAgentSeedGuard (#1823)", () => {
     expect(runs.map((r) => (r.kind === "run" ? `${r.reading} ${r.run}` : ""))).toEqual([
       "baseline 1",
       "baseline 2",
-      "A7 1",
-      "A7 2",
       "A7O 1",
       "A7O 2",
+      "A7 1",
+      "A7 2",
     ]);
     const tablesOf = (reading: string) => {
       const r = runs.find((x) => x.kind === "run" && x.reading === reading);
@@ -685,6 +698,30 @@ describe("guardPairedDifferences (#1847)", () => {
     expect(read(2)).toEqual(["0.020", "-0.018", "0.059"]);
   });
 
+  it("reads the 2026-11-06 Sonnet guard from its committed records: A7 within 0.03 of A7O (#1823)", async () => {
+    const text = await readFile(
+      path.join(import.meta.dirname, "__fixtures__", "table-guard-sonnet-2026-11-06.runs.jsonl"),
+      "utf8",
+    );
+    const records = text
+      .split("\n")
+      .filter((l) => l.trim() !== "")
+      .map(parseGuardRecord);
+    expect(new Set(records.map((r) => r.model))).toEqual(new Set(["anthropic/claude-sonnet-5-5"]));
+    expect(records.every((r) => r.fingerprint.fixture === FINGERPRINT.fixture)).toBe(true);
+    expect(records.every((r) => r.fingerprint.repository === FINGERPRINT.repository)).toBe(true);
+    const out = guardPairedDifferences(records, fixture, 3);
+    const read = (i: number) => {
+      const { meanDifference, ci } = out[i]!.interval;
+      return [meanDifference, ...ci].map((x) => x.toFixed(3));
+    };
+    expect(read(0)).toEqual(["-0.189", "-0.266", "-0.113"]);
+    expect(read(1)).toEqual(["-0.182", "-0.277", "-0.087"]);
+    expect(read(2)).toEqual(["-0.007", "-0.043", "0.028"]);
+    // The owner's rule (option A): A7 within 0.03 of A7O, or better.
+    expect(out[2]!.interval.meanDifference).toBeGreaterThanOrEqual(-0.03);
+  });
+
   it("logs each comparison once, as soon as both its readings are complete", async () => {
     const lines: string[] = [];
     const guard = createAgentSeedGuard({
@@ -694,11 +731,9 @@ describe("guardPairedDifferences (#1847)", () => {
     });
     await guard.A0();
     expect(lines.filter((l) => l.includes("paired over"))).toEqual([]);
+    // #1823 — A7's reading takes A7O's runs too (its control): every comparison is complete.
     await guard.A7();
-    expect(lines.filter((l) => l.includes("paired over"))).toEqual([
-      expect.stringMatching(/^table guard: A7 − baseline, paired over/),
-    ]);
-    await guard.A7O();
+    expect(lines.filter((l) => l.includes("paired over"))).toHaveLength(3);
     await guard.A7O();
     const paired = lines.filter((l) => l.includes("paired over"));
     expect(paired).toHaveLength(3);

@@ -622,6 +622,9 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
       await (loaded ??= load());
       await ensureAnalyses();
       const base = await ensureRuns("baseline");
+      // #1823 (owner, option A) — A7 is gated against A7O, the same analyses
+      // with the flag off, which isolates the flag; read A7O first.
+      const control = id === "A7" ? await ensureRuns("A7O") : null;
       const own = await ensureRuns(id);
       const sum = (pick: (r: GuardRunRecord) => number) => own.reduce((n, r) => n + pick(r), 0);
       const cited = own[0]!.citations
@@ -639,8 +642,11 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
           m.configuration +
           `; "Evaluate new requirements" on ${deps.model}, one per requirement and run; ` +
           `${sum((r) => r.changes)} persisted requirement(s) read, ${sum((r) => r.untracked)} analysis(es) read as the text` +
-          cited,
-        baseline: measurement(base),
+          cited +
+          (control
+            ? `; A0 on the split seeding: ${measurement(base).tablePrecision.toFixed(3)} (${base.length} runs)`
+            : ""),
+        baseline: control ? { ...measurement(control), arm: "A7O" } : measurement(base),
       };
     } catch (err) {
       return stoppedReading(err);

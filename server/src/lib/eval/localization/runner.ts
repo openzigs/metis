@@ -121,6 +121,12 @@ export interface TableGuardMeasurement {
    * edit-candidate check). Two readings compare only on the same seeding.
    */
   seeding: string;
+  /**
+   * #1823 — the arm a `baseline` reading belongs to, when it is not A0: A7 is
+   * gated against A7O, the same analyses with `IMPACT_AGENT_SEEDS` off (owner
+   * decision 2026-11-05), not against A0.
+   */
+  arm?: string;
 }
 
 /**
@@ -257,6 +263,8 @@ export interface ArmComparison {
   hits: HitComparison[];
   /** null when either reading was not measured. */
   tableGuardPassed: boolean | null;
+  /** #1823 — the arm the guard was read against, when not A0 (A7 against A7O). */
+  tableGuardAgainst?: string;
 }
 
 export interface LocalizationReport {
@@ -633,6 +641,7 @@ export function compareArms(baseline: ArmResult, arm: ArmResult): ArmComparison 
     hits,
     tableGuardPassed:
       g0 && g1.measured ? g1.tablePrecision >= g0.tablePrecision - TABLE_PRECISION_TOLERANCE : null,
+    ...(g0?.arm ? { tableGuardAgainst: g0.arm } : {}),
   };
 }
 
@@ -860,7 +869,7 @@ export function toMarkdownReport(report: LocalizationReport): string {
     const t = a.tableGuard;
     // #1786 — an arm read on another seeding shows A0's reading on that seeding beside it.
     const guard = t.measured
-      ? `${f3(t.tablePrecision)} (${t.runs} runs${t.baseline ? `; A0 on its seeding ${f3(t.baseline.tablePrecision)}` : ""})`
+      ? `${f3(t.tablePrecision)} (${t.runs} runs${t.baseline ? `; ${t.baseline.arm ?? "A0"} on its seeding ${f3(t.baseline.tablePrecision)}` : ""})`
       : "not measured";
     lines.push(
       `| ${a.id} | ${f2(g.recallAt5)} ${ci(a.intervals.recallAt5)} | ${f2(g.recallAt10)} ${ci(a.intervals.recallAt10)} | ` +
@@ -936,10 +945,10 @@ export function toMarkdownReport(report: LocalizationReport): string {
       continue;
     }
     lines.push(`- ${a.id} table precision (seeding: ${g.seeding}) measured on: ${g.configuration}`);
-    // #1786 — the same-seeding A0 reading this arm is gated against.
+    // #1786 — the same-seeding reading this arm is gated against (A0's, or #1823 its control's).
     if (g.baseline) {
       lines.push(
-        `  - next to A0 on the same seeding (seeding: ${g.baseline.seeding}): ` +
+        `  - next to ${g.baseline.arm ?? "A0"} on the same seeding (seeding: ${g.baseline.seeding}): ` +
           `${f3(g.baseline.tablePrecision)} (${g.baseline.runs} runs), measured on: ${g.baseline.configuration}`,
       );
     }
@@ -954,7 +963,7 @@ export function toMarkdownReport(report: LocalizationReport): string {
     for (const cmp of report.comparisons) {
       lines.push(...comparisonRows(cmp));
       lines.push(
-        `| ${cmp.arm} | table precision guard (≤ ${TABLE_PRECISION_TOLERANCE} drop) | — | — | — | ${
+        `| ${cmp.arm} | table precision guard (≤ ${TABLE_PRECISION_TOLERANCE} drop${cmp.tableGuardAgainst ? ` against ${cmp.tableGuardAgainst}` : ""}) | — | — | — | ${
           cmp.tableGuardPassed === null ? "not measured" : cmp.tableGuardPassed ? "held" : "FAILED"
         } |`,
       );
