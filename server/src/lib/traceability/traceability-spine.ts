@@ -16,6 +16,7 @@
  */
 import type {
   CodeCitationFreshness,
+  CodeCitationStaleReason,
   RequirementTraceabilityChain,
   SpecMappingSource,
   TraceabilityCodeNode,
@@ -74,6 +75,10 @@ function toDirectCodeNode(
     freshness: string;
     commitSha: string | null;
     validatedAt: Date | null;
+    staleReason: string | null;
+    previousFilePath: string | null;
+    previousStartLine: number | null;
+    previousEndLine: number | null;
   },
 ): TraceabilityCodeNode {
   return {
@@ -81,6 +86,11 @@ function toDirectCodeNode(
     freshness: row.freshness as CodeCitationFreshness,
     commitSha: row.commitSha,
     validatedAt: row.validatedAt?.toISOString() ?? null,
+    // #1831 — why a stale link no longer holds, and where a moved one was.
+    staleReason: row.staleReason as CodeCitationStaleReason | null,
+    previousFilePath: row.previousFilePath,
+    previousStartLine: row.previousStartLine,
+    previousEndLine: row.previousEndLine,
   };
 }
 
@@ -161,6 +171,10 @@ export async function getRequirementChain(
         freshness: true,
         commitSha: true,
         validatedAt: true,
+        staleReason: true,
+        previousFilePath: true,
+        previousStartLine: true,
+        previousEndLine: true,
       },
       orderBy: [{ confidence: "desc" }],
     }),

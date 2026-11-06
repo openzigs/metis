@@ -2083,6 +2083,13 @@ model RequirementCodeMapping {
   previousEndLine   Int?
   /// `file-missing` | `symbol-missing` | `content-changed`, when `stale`.
   staleReason       String?
+  /// Issue #1831 — the cited symbol as it was when last validated: its
+  /// qualified name, kind and content hash. Re-validation finds the symbol in
+  /// a new graph by these after an ingest has deleted the old row (which
+  /// nulls `codeSymbolId`). Null on a file-level link and before #1831.
+  symbolQualifiedName String?
+  symbolKind          String?
+  symbolContentHash   String?
 
   requirement Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
   project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)

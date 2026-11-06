@@ -114,6 +114,10 @@ import {
 } from "./symbol-embeddings.js";
 import { enqueueSymbolEmbeddings } from "./symbol-embedding-service.js";
 import {
+  captureCitedSymbolIdentity,
+  revalidateCodeCitationsAfterIngest,
+} from "../traceability/revalidate-code-citations.js";
+import {
   extractOwnFileContext,
   packageOfFile,
   receiverOf,
@@ -937,6 +941,9 @@ export async function ingestCodeGraph(
 
   // Step 1 — locate or create the CodeGraph row.
   const graph = await upsertCodeGraph(prisma, projectId, repoConnectionId);
+  // #1831 — before any symbol row is deleted: a saved code link that does not
+  // store its symbol's identity takes it from the row it still points at.
+  const citedIdentityCaptured = await captureCitedSymbolIdentity(prisma, graph.id);
 
   // #721 — Step 6 runs only over re-parsed files, so an incremental run whose
   // lineage inputs changed would leave every unchanged file without lineage.
@@ -1573,6 +1580,15 @@ export async function ingestCodeGraph(
     ]);
   } else {
     await finalise;
+  }
+
+  // #1831 (epic #1827) — the graph is complete: re-check the saved code links
+  // into this repo against it (no model call). Never fails the ingest; an
+  // ingest that threw above never gets here, so a partial graph re-checks
+  // nothing. Skipped when the identity capture above failed: a link that lost
+  // its symbol row would otherwise be judged as a file-level link.
+  if (citedIdentityCaptured) {
+    await revalidateCodeCitationsAfterIngest(prisma, graph.id, { presentFiles: walkedPaths });
   }
 
   // Step 9 — Epic #780 / Issue #797. Symbols (and their index-time text) are
