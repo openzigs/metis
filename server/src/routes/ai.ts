@@ -119,6 +119,7 @@ import { getOnlineEvalScorer } from "../lib/eval/online/scorer.js";
 import { messageText } from "../lib/ai/index.js";
 import { AIError, AIOfflineError, AIProviderError } from "../lib/ai/errors.js";
 import { getSemanticCache, shouldSkipCache } from "../lib/ai/semantic-cache.js";
+import { CHAT_PROMPT_CACHING, chatToolLoopPromptCaching } from "../lib/ai/chat-prompt-caching.js";
 import { getKnowledgeService } from "../lib/rag/knowledge-service.js";
 import { formatDerivedLabel } from "../lib/rag/derived-label.js";
 import { formatHitLocator, formatHitScore } from "../lib/rag/hit-locator.js";
@@ -265,10 +266,14 @@ export async function chatProviderForSession(session: {
  * premium with no reuse (#389). These flags are honoured on the
  * BedrockDirect/native-Anthropic paths and are an inert no-op on the plain
  * OpenAI-compatible path, where transparent gateway caching applies instead.
+ *
+ * #1842 — a TOOL LOOP re-sends its transcript on every call, so there the
+ * native Anthropic path also caches the messages: see
+ * {@link chatToolLoopPromptCaching}, applied by the tool-loop branches below.
  */
 export const CHAT_CACHE_OPTS = {
   callType: "chat",
-  promptCaching: { system: true },
+  promptCaching: CHAT_PROMPT_CACHING,
 } as const satisfies Pick<ChatOptions, "callType" | "promptCaching">;
 
 /**
@@ -1638,7 +1643,11 @@ export function aiRouter(): Router {
           },
           {
             signal: ac.signal,
-            providerChatOptions: chatProviderOptions,
+            // #1842 — the loop re-sends its transcript each call: cache it too.
+            providerChatOptions: {
+              ...chatProviderOptions,
+              promptCaching: chatToolLoopPromptCaching(providerInstance.key),
+            },
             toolResultMaxChars: turn.build.toolResultMaxChars,
             onToolEvent: emitToolEventToSession,
             // Recorded as each call finishes, so a later failure keeps them.
@@ -2257,9 +2266,14 @@ export function aiRouter(): Router {
         // own (below). The queue hooks stay, so a text-protocol call (`chat`)
         // is timed the same way (#204).
         const { onSlotAcquired: _unused, ...loopBase } = streamProviderOptions;
+        // #1842 — the loop re-sends its transcript each call: cache it too.
+        const loopCached: Partial<ChatOptions> = {
+          ...loopBase,
+          promptCaching: chatToolLoopPromptCaching(streamProvider.key),
+        };
         const loopOptions: Partial<ChatOptions> = slot
-          ? { ...loopBase, onSlotAcquired: onQueueSlotAcquired }
-          : loopBase;
+          ? { ...loopCached, onSlotAcquired: onQueueSlotAcquired }
+          : loopCached;
         let streamedText = "";
         const streamDelta = (text: string): void => {
           if (!text) return;
