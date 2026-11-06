@@ -481,7 +481,8 @@ export function impactRunDeps(actorId: string, projectIds: readonly string[]): I
   const editCandidateReranker = editCandidateRerankerDep(runtime);
   // #1776 — likewise off by default.
   const requestEditRanking = impactRequestEditRankingEnabled();
-  // #1759 — likewise off by default. Reuses stored citations: no model call.
+  // #1759 — ON by default since #1823 (IMPACT_AGENT_SEEDS=0 turns it off).
+  // Reuses stored citations: no model call.
   const agentSeeds = impactAgentSeedsEnabled();
   return {
     ...(storedLinkSeeds ? { storedLinkSeeds } : {}),

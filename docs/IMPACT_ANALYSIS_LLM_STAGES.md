@@ -41,7 +41,7 @@ rather than a degraded mode.
 | Entity-seed recall union (#1002) | `traceability/requirement-entity-seeds.ts` | `IMPACT_LLM_ENTITY_SEEDS` | **off** | the project's code-graph entity vocabulary (exact name match) | base searcher unchanged |
 | Edit-candidate check (#1756) | `impact-analysis/edit-candidate-verifier.ts` | `IMPACT_LLM_EDIT_VERIFY` | **off** | integer index into the hybrid FILE pool (about 30 files: the deterministic edit candidates, then the next files of the same ranking); a promotion's line must fall inside a named symbol of that file in the code graph (never the file's whole-file `module` symbol, #1781), checked without a model. Additive only (the #931 rule below): it may append a verified file and mark a candidate doubtful, never remove, move or re-score one; a promoted file carries its own hybrid score. The pool (code identifiers and signatures, which can carry comments) is fenced as untrusted data like the requirement | deterministic edit candidates unchanged |
 | Edit-candidate re-order (#1798) | `impact-analysis/edit-candidate-reranker.ts` | `IMPACT_LLM_EDIT_RERANK` | **off** | integer index into the same hybrid FILE pool, shown without `[EDIT]` marks; up to 10 picks, most likely first, each with a line that must fall inside a named symbol of that file in the code graph (never its `module` symbol), checked without a model; an unchecked pick is dropped and counted. The **bounded exception to the #931 rule** below: the model may move files into the head of the files to edit, never remove one and never score one. The order is a reciprocal-rank fusion (`k = 60`, model weight `RERANK_MODEL_WEIGHT` = 1, fixed on the in-sample set) of the deterministic order and the model's checked order; its top 5 plus every deterministic candidate are the files to edit. Fenced as untrusted data like the #1756 check | deterministic edit candidates and order unchanged |
-| Code-agent citations lead (#1759) | `impact-analysis/agent-seeder.ts` | `IMPACT_AGENT_SEEDS` | **off** | no model call in the impact run: it reuses the Analysis code agent's stored citations of the requirement (`analysis-grounding` links), read for the requirement and the project; a citation counts only when the project's code graph still holds its file, else it is dropped and counted. The seeded symbols are the graph's rows. The second **bounded exception to the #931 rule** below: the first 5 cited files lead the files to edit, run after the #1756 check and the #1798 re-order; every other candidate stays one, with its score | seeds unchanged |
+| Code-agent citations lead (#1759) | `impact-analysis/agent-seeder.ts` | `IMPACT_AGENT_SEEDS` | **on** (#1823) | no model call in the impact run: it reuses the Analysis code agent's stored citations of the requirement (`analysis-grounding` links), read for the requirement and the project; a citation counts only when the project's code graph still holds its file, else it is dropped and counted. The seeded symbols are the graph's rows. The second **bounded exception to the #931 rule** below: the first 5 cited files lead the files to edit, run after the #1756 check and the #1798 re-order; every other candidate stays one, with its score | seeds unchanged |
 | Table-relevance output filter (#936) | `impact-analysis/table-relevance-filter.ts` | `IMPACT_LLM_TABLE_FILTER` | **ON** (#1025) | integer index into the crossing's own candidate rows | unfiltered crossing |
 | Additive column DDL proposal (#1001) | `impact-analysis/additive-column-proposer.ts` | `IMPACT_LLM_ADDITIVE_DDL` | **ON** (#1025) | integer index into the crossing's own tables + a closed type allowlist; a column already in the live schema or the code graph is dropped (#1003). Since #791 it is shown the lineage writers and answers with covering writers, a justification and a `coveredBy` per proposal; a deterministic gate (`column-proposal-gate.ts`) then decides. In a **covered** request (bounded by an age or a date, with a lineage writer that filters on a time column) no field a model chose can make a column core: every proposal is optional or not proposed, and core comes only from what the user wrote in the request (an `ALTER TABLE`, or an add-a-column sentence the #923 fast path reads). Coverage is decided on the writers of every table the crossing reached, looked up before the #936 table filter is applied, so that filter's answer does not change it; the #1029 judge runs only when the proposer does not. The one limit: with `IMPACT_LLM_SEEDING` / `IMPACT_LLM_ENTITY_SEEDS` on, a model shapes the seeds, and so which tables the crossing reaches. The cost: a genuinely new column in a covered request shows as optional. In an uncovered request the gate does not rule: a proposal is core and marked `unchecked` with the reason, except one the proposer itself labels `user-preference`, which is optional (a demotion only). The write-path block is repository text: fenced as untrusted like the requirement, every field capped | no proposals appended |
 | Clause-vs-impact reconciliation (#1005) | `impact-analysis/clause-coverage-reconciler.ts` | `IMPACT_LLM_CLAUSE_RECONCILE` | **ON** (#1025) | integer index into the project's **unsurfaced** tables | no advisories |
@@ -164,10 +164,28 @@ runs, with a t-interval: `guardPairedDifferences` in
 reproduces these from the run's committed records, #1847.) The flag does not cause that drop: A7O, with the flag off, drops by the
 same amount (−0.25). The analysis splits each requirement into about 4.5 tracked
 requirements, and the union of their tables is wider than the one requirement's label.
-The flag's own effect, A7 against A7O on the same changes, is +0.02 [−0.02, +0.06]. The
-flag stays **off** until the owner decides. The guard as written (against A0) fails. The
-flag itself does not lower table precision on DeepSeek. Neither result has a Sonnet
-reading yet.
+The flag's own effect, A7 against A7O on the same changes, is +0.02 [−0.02, +0.06].
+
+The owner chose to gate the flag on its own effect (2026-11-05, option A): A7 against A7O,
+with A7's average table precision within 0.03 of A7O's or better. The ~0.2 drop on the
+analysis path, flag on or off, is tracked as #1848. The Sonnet reading
+(`claude-sonnet-5-5`, 3 runs, live #936 filter, 33 analyses, 2026-11-06, $7.52 under an
+$8 cap):
+
+| Reading                                     | Table precision |
+| ------------------------------------------- | --------------- |
+| A0, mapper path (the floors' path)          | 0.732           |
+| A0 on the split seeding                     | 0.556           |
+| A7O (the analysis's requirements, flag off) | 0.374           |
+| A7 (the analysis's requirements, flag on)   | 0.367           |
+
+**A7 − A7O: −0.007 [−0.043, +0.028]**: the average is within 0.03 of A7O; the 95%
+interval's lower bound is −0.043, so the interval itself does not clear −0.03. The flag is
+**on by default** since #1823 (`IMPACT_AGENT_SEEDS=0` turns it off). Against A0 on the
+split seeding, A7 is −0.189 [−0.266, −0.113] and A7O −0.182 [−0.277, −0.087]: the analysis
+path's drop, not the flag's. The run's records are committed
+(`server/src/lib/eval/localization/__fixtures__/table-guard-sonnet-2026-11-06.runs.jsonl`),
+and a test reads these intervals from them.
 
 **#1798 is a deliberate, bounded exception to this rule.** Nothing additive raised
 Recall@5 (an appended file lands after the deterministic picks), so the edit-candidate

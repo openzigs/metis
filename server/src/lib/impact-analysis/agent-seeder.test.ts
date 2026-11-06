@@ -466,12 +466,14 @@ describe("impactAgentSeedsEnabled (#1759)", () => {
     else process.env[AGENT_SEEDS_FLAG] = prior;
   });
 
-  it("is off by default and on only when the flag says so", () => {
+  it("is on by default (#1823) and off only when the flag says so", () => {
     delete process.env[AGENT_SEEDS_FLAG];
+    expect(impactAgentSeedsEnabled()).toBe(true);
+    process.env[AGENT_SEEDS_FLAG] = "0";
+    expect(impactAgentSeedsEnabled()).toBe(false);
+    process.env[AGENT_SEEDS_FLAG] = "false";
     expect(impactAgentSeedsEnabled()).toBe(false);
     process.env[AGENT_SEEDS_FLAG] = "1";
     expect(impactAgentSeedsEnabled()).toBe(true);
-    process.env[AGENT_SEEDS_FLAG] = "false";
-    expect(impactAgentSeedsEnabled()).toBe(false);
   });
 });
