@@ -110,6 +110,7 @@ scrape_configs:
 - `metis_http_request_errors_total{method,route}` — RED: errors (status ≥ 500).
 - `metis_mcp_server_status{server,name}` — gauge: `1` ready, `-1` error, `0` stopped/disabled.
 - `metis_socket_events_total{namespace,event}` — server-side Socket.IO emits.
+- `metis_chat_tool_result_cache_total{tool,outcome}` — chat read-tool result cache lookups (#1843): `hit`, `miss`, or `bypass` (content version incomplete or unreadable).
 - Default Node.js process metrics (CPU, memory, GC, event-loop lag) via `prom-client`.
 
 ### 2.2 Log shipping
@@ -1593,6 +1594,29 @@ PROMPT_CACHE_TTL=1h          # optional — extends the gateway path from 5min t
                              # native-Anthropic ANTHROPIC_PROMPT_CACHE_TTL (#702).
                              # See the TTL-availability matrix below.
 ```
+
+#### Chat tool-result cache (#1843)
+
+Chat's read tools (`search_code_graph`, `search_code_symbols`, `read_file_slice`,
+`search-knowledge`) keep their results in an in-process LRU cache. The cache is bounded at
+500 entries and 32 MiB, and each entry lives for 30 minutes. The key is the tool, its
+canonical arguments, the project, the caller and the project's **content version**
+(`server/src/lib/projects/content-version.ts`). The content version is a hash of:
+
+- each code graph's `commitSha` and `lastIndexedAt`, which only a finished ingest writes (#758);
+- the project's symbol-embedding counts per model;
+- every document row's indexing state;
+- the active embedder model.
+
+A re-ingest, a document upload, edit or delete, or an embedder model change therefore
+makes every older entry unreachable. A project with a code graph that has no `commitSha`
+is not cached at all. Error results are never cached.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `CHAT_TOOL_RESULT_CACHE_ENABLED` | on | `0` turns the cache off |
+
+Hit, miss and bypass counts: `metis_chat_tool_result_cache_total` on `/metrics`.
 
 #### Measuring what caching saves (#1277)
 
