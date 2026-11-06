@@ -505,6 +505,9 @@ export default function AnalysisPage(): React.ReactElement {
   // gets the controls disabled with the reason rather than a 403 afterwards.
   const canEditRequirements = user?.permissions.includes("project.update") ?? false;
   const requirementWriteHint = canEditRequirements ? undefined : REQUIRES_PROJECT_UPDATE;
+  // #1833 — re-running the code evaluation is the agent Regenerate, an
+  // `analysis.run` write server-side: a viewer without it is offered no re-run.
+  const canRunAnalysis = user?.permissions.includes("analysis.run") ?? false;
   const [commentsReqId, setCommentsReqId] = useState<string | null>(null);
   // AC2 — pending optimistic-lock conflict awaiting 3-way merge resolution.
   const [conflict, setConflict] = useState<{
@@ -1439,7 +1442,12 @@ export default function AnalysisPage(): React.ReactElement {
                           {/* #1838 — similar requirements and the duplicate warning. */}
                           <SimilarRequirementsPanel projectId={projectId} requirementId={req.id} />
                           <div className="mt-3 border-t border-border pt-3">
-                            <TraceabilityView projectId={projectId} requirementId={req.id} />
+                            <TraceabilityView
+                              projectId={projectId}
+                              requirementId={req.id}
+                              analysisId={selectedAnalysisId}
+                              canRerunEvaluation={canRunAnalysis}
+                            />
                           </div>
                           {historyReqId === req.id ? (
                             <div className="mt-3 border-t border-border pt-3">

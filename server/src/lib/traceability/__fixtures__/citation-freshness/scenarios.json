@@ -1,0 +1,31 @@
+{
+  "description": "#1831 — synthetic repository trees for citation re-validation. Written to a temp directory and ingested as repo A before and after a change. No real repository content.",
+  "before": {
+    "src/unchanged.ts": "export function unchanged(a: number): number {\n  return a + 1;\n}\n",
+    "src/shifted.ts": "export function shifted(a: number): number {\n  return a * 2;\n}\n",
+    "src/mover.ts": "export function stays(): number {\n  return 1;\n}\n\nexport function relocated(x: number): number {\n  return x - 1;\n}\n",
+    "src/old-name.ts": "export function renamedFile(): boolean {\n  return true;\n}\n",
+    "src/edited.ts": "export function edited(): number {\n  return 1;\n}\n",
+    "src/deleted.ts": "export function doomed(): string {\n  return \"gone\";\n}\n",
+    "src/split.ts": "export function handle(e: string): string {\n  return e.trim();\n}\n"
+  },
+  "after": {
+    "src/unchanged.ts": "export function unchanged(a: number): number {\n  return a + 1;\n}\n",
+    "src/shifted.ts": "export function inserted(): string {\n  return \"new\";\n}\n\nexport function shifted(a: number): number {\n  return a * 2;\n}\n",
+    "src/mover.ts": "export function stays(): number {\n  return 1;\n}\n",
+    "src/destination.ts": "export function relocated(x: number): number {\n  return x - 1;\n}\n",
+    "src/new-name.ts": "export function renamedFile(): boolean {\n  return true;\n}\n",
+    "src/edited.ts": "export function edited(): number {\n  return 2;\n}\n",
+    "src/split-a.ts": "export function handle(e: string): string {\n  return e.trim();\n}\n",
+    "src/split-b.ts": "export function handle(e: string): string {\n  return e.trim();\n}\n"
+  },
+  "citations": [
+    { "name": "unchanged", "filePath": "src/unchanged.ts", "startLine": 2, "endLine": 2 },
+    { "name": "shifted", "filePath": "src/shifted.ts", "startLine": 2, "endLine": 2 },
+    { "name": "relocated", "filePath": "src/mover.ts", "startLine": 6, "endLine": 6 },
+    { "name": "renamedFile", "filePath": "src/old-name.ts", "startLine": 2, "endLine": 2 },
+    { "name": "edited", "filePath": "src/edited.ts", "startLine": 2, "endLine": 2 },
+    { "name": "doomed", "filePath": "src/deleted.ts", "startLine": 2, "endLine": 2 },
+    { "name": "handle", "filePath": "src/split.ts", "startLine": 2, "endLine": 2 }
+  ]
+}

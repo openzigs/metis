@@ -108,16 +108,10 @@ export const isStaleCitation = (link: StoredLinkRow): boolean => link.freshness 
 /**
  * #1818 — the order the citations are read in: #1832 the freshness tier first
  * (`fresh`, `moved`, `unverified`), then the surer, then the order they were
- * stored in (a stable sort, so equal confidences keep it).
+ * stored in. `Array.prototype.sort` is stable (ES2019), so equal keys keep it.
  */
 export function citationOrder(links: readonly StoredLinkRow[]): StoredLinkRow[] {
-  return links
-    .map((link, i) => ({ link, i }))
-    .sort(
-      (a, b) =>
-        tierOf(a.link) - tierOf(b.link) || b.link.confidence - a.link.confidence || a.i - b.i,
-    )
-    .map(({ link }) => link);
+  return [...links].sort((a, b) => tierOf(a) - tierOf(b) || b.confidence - a.confidence);
 }
 
 export interface AgentCitationDeps {

@@ -51,6 +51,7 @@
  */
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
+import { uniqueCodeLinks } from "../traceability/code-link-key.js";
 import { PublishError } from "./types.js";
 
 const log = createChildLogger("draft-code-links");
@@ -486,10 +487,11 @@ async function readRequirementLinks(
   requirementId: string,
 ): Promise<RequirementCodeLinks> {
   const where = { projectId, requirementId };
-  const rows = await prisma.requirementCodeMapping.findMany({
+  const read = await prisma.requirementCodeMapping.findMany({
     where,
     select: {
       filePath: true,
+      codeSymbolId: true,
       startLine: true,
       endLine: true,
       codeSymbol: { select: { name: true, kind: true } },
@@ -497,10 +499,15 @@ async function readRequirementLinks(
     orderBy: [{ confidence: "desc" }, { filePath: "asc" }, { startLine: "asc" }, { id: "asc" }],
     take: CODE_LINK_READ_CAP,
   });
+  // #1825 — one link per (filePath, codeSymbolId): the code agent's citation and
+  // the semantic mapper can both link a file. The surer row (read first) is kept.
+  const rows = uniqueCodeLinks(read);
+  // Past the cap the rest are counted, not read: repeats among the rows read are
+  // taken off the count; a repeat among the unread rows still counts.
   const total =
-    rows.length < CODE_LINK_READ_CAP
+    read.length < CODE_LINK_READ_CAP
       ? rows.length
-      : await prisma.requirementCodeMapping.count({ where });
+      : (await prisma.requirementCodeMapping.count({ where })) - (read.length - rows.length);
   return {
     total,
     links: rows.map((row) => ({

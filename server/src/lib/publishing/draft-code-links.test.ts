@@ -388,6 +388,7 @@ describe("renderCodeLinksSection", () => {
 describe("loadDraftCodeLinks", () => {
   const row = (filePath: string, over: object = {}) => ({
     filePath,
+    codeSymbolId: null,
     startLine: null,
     endLine: null,
     codeSymbol: null,
@@ -466,6 +467,50 @@ describe("loadDraftCodeLinks", () => {
     expect(renderCodeLinksSection(r1.links, loaded!.repo, r1.total).at(-1)).toBe(
       "_…and 690 more linked locations not shown — the requirement in METIS lists all 700._",
     );
+  });
+
+  it("lists a (file, symbol) linked by two sources once, the surer row, and counts it once (#1825)", async () => {
+    const fn = (name: string) => ({ codeSymbol: { name, kind: "function" } });
+    mappingsByRequirement({
+      r1: [
+        // The semantic mapper's row, then the code agent's citation of the same symbol.
+        row("a.go", { codeSymbolId: "s1", startLine: 10, endLine: 20, ...fn("A") }),
+        row("b.go"),
+        row("a.go", { codeSymbolId: "s1", startLine: 12, endLine: 14, ...fn("A") }),
+        // Another symbol in the same file, and the file itself, are links of their own.
+        row("a.go", { codeSymbolId: "s2", startLine: 30, endLine: 40, ...fn("B") }),
+        row("a.go"),
+        row("b.go"),
+      ],
+    });
+    repoFindMany.mockResolvedValue([connector()]);
+
+    const r1 = (await loadDraftCodeLinks("p1", ["r1"], TARGET))!.byRequirement.get("r1")!;
+
+    expect(r1.links.map((l) => [l.filePath, l.symbolName, l.startLine])).toEqual([
+      ["a.go", "A", 10],
+      ["b.go", null, null],
+      ["a.go", "B", 30],
+      ["a.go", null, null],
+    ]);
+    expect(r1.total).toBe(4);
+    expect(
+      renderCodeLinksSection(r1.links, null, r1.total).filter((l) => l.startsWith("- ")),
+    ).toHaveLength(4);
+  });
+
+  it("past the cap, takes the repeats it read off the count (#1825)", async () => {
+    const many = Array.from({ length: 60 }, (_, i) =>
+      row(`src/f${i % 47}.go`, { codeSymbolId: `s${i % 47}` }),
+    );
+    mappingsByRequirement({ r1: many });
+    repoFindMany.mockResolvedValue([connector()]);
+
+    const r1 = (await loadDraftCodeLinks("p1", ["r1"], TARGET))!.byRequirement.get("r1")!;
+
+    // 50 rows read, 3 of them repeats: 47 links; 60 counted, less those 3.
+    expect(r1.links).toHaveLength(47);
+    expect(r1.total).toBe(57);
   });
 
   it("offers the repository to link into only when the drafts target that repository on its host", async () => {

@@ -15,6 +15,13 @@ export const AGENT_ARMS = ["A3", "A3A", "A3N"] as const;
 /** #1818 — the analysis arms; `analysis-arms.ts` holds their definitions (a test pins them too). */
 export const ANALYSIS_ARMS = ["A7", "A7O"] as const;
 
+/**
+ * The pass group the report reads: A7 and A7O must read the same analyses.
+ * Here, not in `analysis-arms.ts`, so the report (`runner.ts`) can key on it
+ * without importing the engine (#1825).
+ */
+export const ANALYSIS_PASS_GROUP = "analysis";
+
 /** True when `--arms` names an arm that reads the materialized corpus (the same parsing as `parseArmIds`). */
 export function agentArmsRequested(argv: readonly string[]): boolean {
   const i = argv.indexOf("--arms");

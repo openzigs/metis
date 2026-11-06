@@ -100,15 +100,22 @@ export function ChangedRequirementGroup({
 
   const editFileGroups = groupByFile(editCandidates);
   const radiusFileGroups = groupByFile(radius);
-  // Files that are ONLY in the blast radius: a file to edit is not "more to review".
-  const editFiles = new Set(editFileGroups.map((g) => g.filePath));
-  const reviewOnlyFileCount = radiusFileGroups.filter((g) => !editFiles.has(g.filePath)).length;
   // #1762 — with seed evidence: the server's edit order, each file's sources and
   // verdict; a doubtful file is listed but not counted as a file to edit.
   const editRows = item.seedEvidence ? orderEditFiles(editFileGroups, item.seedEvidence) : null;
-  const editFileCount = editRows
-    ? editRows.filter((r) => !isDoubtful(r)).length
-    : editFileGroups.length;
+  const editFiles = new Set(
+    editRows
+      ? editRows.filter((r) => !isDoubtful(r)).map((r) => r.filePath)
+      : editFileGroups.map((g) => g.filePath),
+  );
+  const editFileCount = editFiles.size;
+  // "More to review": the blast-radius files and (#1820) the doubtful files, each
+  // once. A file to edit is not "more to review".
+  const reviewFiles = new Set([
+    ...radiusFileGroups.map((g) => g.filePath),
+    ...(editRows ?? []).filter(isDoubtful).map((r) => r.filePath),
+  ]);
+  const reviewOnlyFileCount = [...reviewFiles].filter((f) => !editFiles.has(f)).length;
 
   // #962 — the impacted test files, grouped out of the prod blast radius, and the
   // untested write-path callouts. Both are deterministic QA-handoff signals.
@@ -227,6 +234,7 @@ export function ChangedRequirementGroup({
           rows={editRows}
           repo={repo}
           projectLabel={projectName ?? "this project"}
+          staleSetAside={item.seedEvidence?.agentCitations?.demotedStaleCitations ?? 0}
         />
       ) : editCandidates.length > 0 ? (
         <div data-testid="edit-candidates">

@@ -28,7 +28,7 @@
  * Pure orchestration over injected arms, meter and clock: no environment
  * reads, no network of its own.
  */
-import { ANALYSIS_ARMS } from "./agent-env.js";
+import { ANALYSIS_PASS_GROUP } from "./agent-env.js";
 import type { LocalizationArm } from "./arms.js";
 import type { LocalizationCorpus, LocalizationItem } from "./corpus.js";
 import type { CostMeter } from "./cost.js";
@@ -903,7 +903,11 @@ export function toMarkdownReport(report: LocalizationReport): string {
     const resolved = t.citedFiles - t.unresolvedFiles;
     const perPass = (n: number) => (t.passes === 0 ? "n/a" : (n / t.passes).toFixed(1));
     // #1818 — an analysis arm's passes are whole "Evaluate new requirements" runs.
-    if ((ANALYSIS_ARMS as readonly string[]).includes(a.id)) {
+    // #1825 — told by the pass group its readings carry, not by a copy of the arm ids.
+    const analysis = Object.values(a.perItemRuns).some((runs) =>
+      runs.some((r) => r.agent?.passGroup === ANALYSIS_PASS_GROUP),
+    );
+    if (analysis) {
       lines.push(
         `- ${a.id} analyses ("Evaluate new requirements"): ${t.passes} over ${t.readings} ` +
           `reading(s), ${t.unanswered} that persisted no requirement (read as the pasted text); ` +

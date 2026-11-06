@@ -363,6 +363,11 @@ describe("traceability router", () => {
           freshness: "unverified",
           commitSha: null,
           validatedAt: null,
+          // #1831 — and the re-validation outcome.
+          staleReason: null,
+          previousFilePath: null,
+          previousStartLine: null,
+          previousEndLine: null,
         },
       ]);
       mockPrisma.codeSymbol.findMany
@@ -400,10 +405,14 @@ describe("traceability router", () => {
             freshness: _freshness,
             commitSha: _commitSha,
             validatedAt: _validatedAt,
+            staleReason: _staleReason,
+            previousFilePath: _previousFilePath,
+            previousStartLine: _previousStartLine,
+            previousEndLine: _previousEndLine,
             ...n
           }) => n,
         );
-      // The #229 shape, byte for byte, once the additive fields (#814, #1830) are removed.
+      // The #229 shape, byte for byte, once the additive fields (#814, #1830, #1831) are removed.
       expect(
         JSON.stringify({
           ...rest,
@@ -422,6 +431,8 @@ describe("traceability router", () => {
         freshness: "unverified",
         commitSha: null,
         validatedAt: null,
+        staleReason: null,
+        previousFilePath: null,
       });
       expect(rest.specs[0].code[0]).not.toHaveProperty("freshness");
       expect(

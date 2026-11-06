@@ -12,6 +12,11 @@
  * (#814), each with a text relation badge. Its two empty states are distinct:
  * mapped code with no test is "No linked test"; no mapped code at all means
  * testedness cannot be told, and says so.
+ *
+ * #1833 — each direct code link shows whether it still points at the code it
+ * was read from (up to date, moved, out of date and why), and a summary counts
+ * the out-of-date ones, with a re-run for someone who may run analyses
+ * (`code-link-freshness.tsx`).
  */
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -25,10 +30,15 @@ import { ApiError } from "@/lib/api-client";
 import { traceabilityApi } from "@/lib/traceability-api";
 import { Badge } from "@/components/ui/badge";
 import { TEST_RELATION_DESCRIPTION, TEST_RELATION_LABEL } from "./test-relation";
+import { FreshnessBadge, FreshnessNote, StaleCodeLinksSummary } from "./code-link-freshness";
 
 export interface TraceabilityViewProps {
   projectId: string;
   requirementId: string;
+  /** #1833 — the analysis the requirement came from: what "Re-run code evaluation" re-runs. */
+  analysisId?: string | null;
+  /** #1833 — the viewer may run analyses (`analysis.run`); without it no re-run is offered. */
+  canRerunEvaluation?: boolean;
 }
 
 export function traceabilityKey(projectId: string, requirementId: string) {
@@ -52,15 +62,16 @@ function codeLocation(c: TraceabilityCodeNode): string {
 
 function CodeRow({ c }: { c: TraceabilityCodeNode }): React.ReactElement {
   return (
-    <li
-      data-testid="traceability-code-row"
-      className="flex items-center justify-between gap-2 py-1 pl-4 text-sm"
-    >
-      <code className="truncate font-mono text-xs">{codeLocation(c)}</code>
-      <span className="flex shrink-0 items-center gap-1">
-        {c.isTest ? <Badge variant="outline">test</Badge> : null}
-        <ConfidenceBadge confidence={c.confidence} />
-      </span>
+    <li data-testid="traceability-code-row" className="py-1 text-sm">
+      <div className="flex items-center justify-between gap-2 pl-4">
+        <code className="truncate font-mono text-xs">{codeLocation(c)}</code>
+        <span className="flex shrink-0 items-center gap-1">
+          <FreshnessBadge link={c} />
+          {c.isTest ? <Badge variant="outline">test</Badge> : null}
+          <ConfidenceBadge confidence={c.confidence} />
+        </span>
+      </div>
+      <FreshnessNote link={c} />
     </li>
   );
 }
@@ -166,6 +177,8 @@ function SpecBlock({ spec }: { spec: TraceabilitySpecNode }): React.ReactElement
 export function TraceabilityView({
   projectId,
   requirementId,
+  analysisId,
+  canRerunEvaluation = false,
 }: TraceabilityViewProps): React.ReactElement {
   const query = useQuery<RequirementTraceabilityChain>({
     queryKey: traceabilityKey(projectId, requirementId),
@@ -223,6 +236,12 @@ export function TraceabilityView({
       {chain.directCode.length > 0 && (
         <div className="space-y-1">
           <h4 className="text-sm font-medium">Direct code links ({chain.directCode.length})</h4>
+          <StaleCodeLinksSummary
+            links={chain.directCode}
+            projectId={projectId}
+            analysisId={analysisId}
+            canRerun={canRerunEvaluation}
+          />
           <ul className="rounded-md border p-2">
             {chain.directCode.map((c, i) => (
               <CodeRow key={`${c.filePath}-${c.codeSymbolId ?? i}`} c={c} />
