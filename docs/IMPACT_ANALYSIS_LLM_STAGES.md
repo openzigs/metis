@@ -10,7 +10,7 @@
 > [Defaults, and what they cost](#defaults-and-what-they-cost-1025) before
 > deploying, and disable any stage you do not want with its `=0` kill-switch.
 
-This document exists so the question _"is this stage LLM-backed?"_ never has to be
+This document exists so the question *"is this stage LLM-backed?"* never has to be
 re-derived by grepping every provider call site again. It also records the
 **reasons** for each side of the split, because the reasons are what stop a
 well-meaning change from re-opening a measured regression.
@@ -35,17 +35,17 @@ imported by it. That is deliberate: `computeProjectImpact` stays runnable with
 zero LLM collaborators, which is what makes the deterministic result the baseline
 rather than a degraded mode.
 
-| Stage                                             | File                                                                 | Flag                          | Default        | Grounded against                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | On failure                                        |
-| ------------------------------------------------- | -------------------------------------------------------------------- | ----------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| Code-symbol seeder/reranker (#931)                | `traceability/requirement-code-mapping.ts` (`LlmCodeSymbolSearcher`) | `IMPACT_LLM_SEEDING`          | **off**        | the BM25 wide pool (union, never a replacement)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | deterministic BM25 top-K                          |
-| Entity-seed recall union (#1002)                  | `traceability/requirement-entity-seeds.ts`                           | `IMPACT_LLM_ENTITY_SEEDS`     | **off**        | the project's code-graph entity vocabulary (exact name match)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | base searcher unchanged                           |
-| Edit-candidate check (#1756)                      | `impact-analysis/edit-candidate-verifier.ts`                         | `IMPACT_LLM_EDIT_VERIFY`      | **off**        | integer index into the hybrid FILE pool (about 30 files: the deterministic edit candidates, then the next files of the same ranking); a promotion's line must fall inside a named symbol of that file in the code graph (never the file's whole-file `module` symbol, #1781), checked without a model. Additive only (the #931 rule below): it may append a verified file and mark a candidate doubtful, never remove, move or re-score one; a promoted file carries its own hybrid score. The pool (code identifiers and signatures, which can carry comments) is fenced as untrusted data like the requirement                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | deterministic edit candidates unchanged           |
-| Edit-candidate re-order (#1798)                   | `impact-analysis/edit-candidate-reranker.ts`                         | `IMPACT_LLM_EDIT_RERANK`      | **off**        | integer index into the same hybrid FILE pool, shown without `[EDIT]` marks; up to 10 picks, most likely first, each with a line that must fall inside a named symbol of that file in the code graph (never its `module` symbol), checked without a model; an unchecked pick is dropped and counted. The **bounded exception to the #931 rule** below: the model may move files into the head of the files to edit, never remove one and never score one. The order is a reciprocal-rank fusion (`k = 60`, model weight `RERANK_MODEL_WEIGHT` = 1, fixed on the in-sample set) of the deterministic order and the model's checked order; its top 5 plus every deterministic candidate are the files to edit. Fenced as untrusted data like the #1756 check                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | deterministic edit candidates and order unchanged |
-| Code-agent citations lead (#1759)                 | `impact-analysis/agent-seeder.ts`                                    | `IMPACT_AGENT_SEEDS`          | **on** (#1823) | no model call in the impact run: it reuses the Analysis code agent's stored citations of the requirement (`analysis-grounding` links), read for the requirement and the project; a citation counts only when the project's code graph still holds its file, else it is dropped and counted. The seeded symbols are the graph's rows. The second **bounded exception to the #931 rule** below: the first 5 cited files lead the files to edit, run after the #1756 check and the #1798 re-order; every other candidate stays one, with its score                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | seeds unchanged                                   |
-| Table-relevance output filter (#936)              | `impact-analysis/table-relevance-filter.ts`                          | `IMPACT_LLM_TABLE_FILTER`     | **ON** (#1025) | integer index into the crossing's own candidate rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | unfiltered crossing                               |
-| Additive column DDL proposal (#1001)              | `impact-analysis/additive-column-proposer.ts`                        | `IMPACT_LLM_ADDITIVE_DDL`     | **ON** (#1025) | integer index into the crossing's own tables + a closed type allowlist; a column already in the live schema or the code graph is dropped (#1003). Since #791 it is shown the lineage writers and answers with covering writers, a justification and a `coveredBy` per proposal; a deterministic gate (`column-proposal-gate.ts`) then decides. In a **covered** request (bounded by an age or a date, with a lineage writer that filters on a time column) no field a model chose can make a column core: every proposal is optional or not proposed, and core comes only from what the user wrote in the request (an `ALTER TABLE`, or an add-a-column sentence the #923 fast path reads). Coverage is decided on the writers of every table the crossing reached, looked up before the #936 table filter is applied, so that filter's answer does not change it; the #1029 judge runs only when the proposer does not. The one limit: with `IMPACT_LLM_SEEDING` / `IMPACT_LLM_ENTITY_SEEDS` on, a model shapes the seeds, and so which tables the crossing reaches. The cost: a genuinely new column in a covered request shows as optional. In an uncovered request the gate does not rule: a proposal is core and marked `unchecked` with the reason, except one the proposer itself labels `user-preference`, which is optional (a demotion only). The write-path block is repository text: fenced as untrusted like the requirement, every field capped | no proposals appended                             |
-| Clause-vs-impact reconciliation (#1005)           | `impact-analysis/clause-coverage-reconciler.ts`                      | `IMPACT_LLM_CLAUSE_RECONCILE` | **ON** (#1025) | integer index into the project's **unsurfaced** tables                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | no advisories                                     |
-| BA narrative, per item + per run (#932/#949/#984) | `impact-analysis/impact-summarizer.ts`                               | `IMPACT_LLM_SUMMARY`          | **ON** (#1025) | identifier-level allowlist built from engine facts only                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `summary = null`                                  |
+| Stage | File | Flag | Default | Grounded against | On failure |
+|---|---|---|---|---|---|
+| Code-symbol seeder/reranker (#931) | `traceability/requirement-code-mapping.ts` (`LlmCodeSymbolSearcher`) | `IMPACT_LLM_SEEDING` | **off** | the BM25 wide pool (union, never a replacement) | deterministic BM25 top-K |
+| Entity-seed recall union (#1002) | `traceability/requirement-entity-seeds.ts` | `IMPACT_LLM_ENTITY_SEEDS` | **off** | the project's code-graph entity vocabulary (exact name match) | base searcher unchanged |
+| Edit-candidate check (#1756) | `impact-analysis/edit-candidate-verifier.ts` | `IMPACT_LLM_EDIT_VERIFY` | **off** | integer index into the hybrid FILE pool (about 30 files: the deterministic edit candidates, then the next files of the same ranking); a promotion's line must fall inside a named symbol of that file in the code graph (never the file's whole-file `module` symbol, #1781), checked without a model. Additive only (the #931 rule below): it may append a verified file and mark a candidate doubtful, never remove, move or re-score one; a promoted file carries its own hybrid score. The pool (code identifiers and signatures, which can carry comments) is fenced as untrusted data like the requirement | deterministic edit candidates unchanged |
+| Edit-candidate re-order (#1798) | `impact-analysis/edit-candidate-reranker.ts` | `IMPACT_LLM_EDIT_RERANK` | **off** | integer index into the same hybrid FILE pool, shown without `[EDIT]` marks; up to 10 picks, most likely first, each with a line that must fall inside a named symbol of that file in the code graph (never its `module` symbol), checked without a model; an unchecked pick is dropped and counted. The **bounded exception to the #931 rule** below: the model may move files into the head of the files to edit, never remove one and never score one. The order is a reciprocal-rank fusion (`k = 60`, model weight `RERANK_MODEL_WEIGHT` = 1, fixed on the in-sample set) of the deterministic order and the model's checked order; its top 5 plus every deterministic candidate are the files to edit. Fenced as untrusted data like the #1756 check | deterministic edit candidates and order unchanged |
+| Code-agent citations lead (#1759) | `impact-analysis/agent-seeder.ts` | `IMPACT_AGENT_SEEDS` | **on** (#1823) | no model call in the impact run: it reuses the Analysis code agent's stored citations of the requirement (`analysis-grounding` links), read for the requirement and the project; a citation counts only when the project's code graph still holds its file, else it is dropped and counted. The seeded symbols are the graph's rows. The second **bounded exception to the #931 rule** below: the first 5 cited files lead the files to edit, run after the #1756 check and the #1798 re-order; every other candidate stays one, with its score | seeds unchanged |
+| Table-relevance output filter (#936) | `impact-analysis/table-relevance-filter.ts` | `IMPACT_LLM_TABLE_FILTER` | **ON** (#1025) | integer index into the crossing's own candidate rows | unfiltered crossing |
+| Additive column DDL proposal (#1001) | `impact-analysis/additive-column-proposer.ts` | `IMPACT_LLM_ADDITIVE_DDL` | **ON** (#1025) | integer index into the crossing's own tables + a closed type allowlist; a column already in the live schema or the code graph is dropped (#1003). Since #791 it is shown the lineage writers and answers with covering writers, a justification and a `coveredBy` per proposal; a deterministic gate (`column-proposal-gate.ts`) then decides. In a **covered** request (bounded by an age or a date, with a lineage writer that filters on a time column) no field a model chose can make a column core: every proposal is optional or not proposed, and core comes only from what the user wrote in the request (an `ALTER TABLE`, or an add-a-column sentence the #923 fast path reads). Coverage is decided on the writers of every table the crossing reached, looked up before the #936 table filter is applied, so that filter's answer does not change it; the #1029 judge runs only when the proposer does not. The one limit: with `IMPACT_LLM_SEEDING` / `IMPACT_LLM_ENTITY_SEEDS` on, a model shapes the seeds, and so which tables the crossing reaches. The cost: a genuinely new column in a covered request shows as optional. In an uncovered request the gate does not rule: a proposal is core and marked `unchecked` with the reason, except one the proposer itself labels `user-preference`, which is optional (a demotion only). The write-path block is repository text: fenced as untrusted like the requirement, every field capped | no proposals appended |
+| Clause-vs-impact reconciliation (#1005) | `impact-analysis/clause-coverage-reconciler.ts` | `IMPACT_LLM_CLAUSE_RECONCILE` | **ON** (#1025) | integer index into the project's **unsurfaced** tables | no advisories |
+| BA narrative, per item + per run (#932/#949/#984) | `impact-analysis/impact-summarizer.ts` | `IMPACT_LLM_SUMMARY` | **ON** (#1025) | identifier-level allowlist built from engine facts only | `summary = null` |
 
 Every default-ON flag is a **kill-switch**: `=0` or `=false` disables that stage
 and only that stage (`v !== "0" && v !== "false"`, the idiom `IMPACT_QUERY_DENOISE`
@@ -82,7 +82,7 @@ is not. `denoiseRequirementQuery` (`traceability/requirement-code-mapping.ts`,
 #943) strips a **static stopword list** — English function words, requirement
 boilerplate, and generic attribute nouns — from the query before BM25, and falls
 back to the raw query if every token is a stopword. `IMPACT_QUERY_DENOISE` is a
-kill-switch on that list, and until #1025 it was the _only_ impact flag that
+kill-switch on that list, and until #1025 it was the *only* impact flag that
 defaulted **ON** — precisely because it is cheap and deterministic. It is still
 the only default-ON impact flag that makes **no provider call at all**, and its
 `v !== "0" && v !== "false"` reader is the idiom the four #1025 flips copied.
@@ -91,16 +91,16 @@ That mistake is the reason this document leads with the `grep` recipe.
 
 ## The deterministic stages, and why they stay that way
 
-| Stage                                    | File                                                                        | Why it must not become an LLM call                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| ---------------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| DDL risk classification                  | `impact-analysis/ddl-risk-classifier.ts` (`classifyDdlRisk`)                | It is a **safety signal**. A BA decides whether a change is breaking from it. A safety signal must be reproducible: the same input must yield the same class today and in six months, and must be explainable to an auditor without "the model said so". Non-determinism here would be a regression, not a feature.                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Write-path coverage gaps                 | `impact-analysis/impact-analysis-read.ts` (`computeWritePathGaps`)          | A pure set intersection over graph edges. The ground truth is _in the graph_; asking a model to infer it can only add error. #1000 showed the failure mode is a **graph** defect (the java/sql symbol-identity split), and the fix belonged in the graph.                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| Affected-test matching                   | `analysis/traceability-matrix.ts` (`isTestFilePath`)                        | A path predicate. Cheaper, faster and **exact**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| Documentation-file filtering             | `isDocumentationFilePath` (#1003)                                           | Same reason: a path predicate is exact, and #1003 removed the noise by tightening the predicate, not by asking a model to judge relevance.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Symbol ranking                           | `code-graph/hybrid-search.ts` (`BM25Index`)                                 | Lexical, explainable, and the yardstick every LLM lever is measured against. It is also the fallback every LLM stage degrades to.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Additive-column _intent_ fast path       | `impact-analysis/schema-impact.ts` (`detectAdditiveColumnIntent`, #923)     | Still first in `crossToSchema` and untouched by #1001. It fires instantly for a developer imperative; the LLM proposer only covers the business-analyst obligation phrasings it cannot match. Since #1036 it also reads a column the request states as DDL (`ALTER TABLE entries ADD COLUMN read_at …`), taking only the two identifiers. It reads what the request asks (primary request + sub-aspects), not its context sections, so DDL quoted under "Alternatives considered" proposes nothing; a heading the parser does not know is a sub-aspect, so DDL under "Workaround" does count. These three forms (the DDL and the two prose ones) are how a column becomes core in a request the #791 gate calls covered. |
-| Change extraction (#1036)                | `impact-analysis/change-request.ts` (`parseChangeRequest`)                  | Reading a pasted issue as one change is a question about the text's SHAPE (a title, then template headings), which a parser answers exactly and for free. The model's share of the failure it fixes was nil: run 7 split each issue into 5 to 12 fragments before any model saw it. An LLM extractor can still replace it behind `ChangeExtractor`.                                                                                                                                                                                                                                                                                                                                                                      |
-| Seeding and the edit/blast split (#1036) | `impact-analysis/change-seeds.ts`, `impact-roles.ts`, `structural-twins.ts` | Seeding is the chat path's `HybridCodeSearch` (BM25 fused with symbol embeddings — a local embedder, not a provider call), ranked by file. When a project's symbols are not embedded yet it degrades to BM25 and records `retrievalMode: "bm25-only"`, which the run summary states. The cut sizes are provisional: tuned on six Miniflux issues, to be revisited at run 8. Which symbols are edit candidates is then decided by rules over retrieval, lineage and the schema result, so the list a caller scores on precision is reproducible. The opt-in LLM seeders above still take a BM25 base and are used as-is when their flag is on.                                                                            |
+| Stage | File | Why it must not become an LLM call |
+|---|---|---|
+| DDL risk classification | `impact-analysis/ddl-risk-classifier.ts` (`classifyDdlRisk`) | It is a **safety signal**. A BA decides whether a change is breaking from it. A safety signal must be reproducible: the same input must yield the same class today and in six months, and must be explainable to an auditor without "the model said so". Non-determinism here would be a regression, not a feature. |
+| Write-path coverage gaps | `impact-analysis/impact-analysis-read.ts` (`computeWritePathGaps`) | A pure set intersection over graph edges. The ground truth is *in the graph*; asking a model to infer it can only add error. #1000 showed the failure mode is a **graph** defect (the java/sql symbol-identity split), and the fix belonged in the graph. |
+| Affected-test matching | `analysis/traceability-matrix.ts` (`isTestFilePath`) | A path predicate. Cheaper, faster and **exact**. |
+| Documentation-file filtering | `isDocumentationFilePath` (#1003) | Same reason: a path predicate is exact, and #1003 removed the noise by tightening the predicate, not by asking a model to judge relevance. |
+| Symbol ranking | `code-graph/hybrid-search.ts` (`BM25Index`) | Lexical, explainable, and the yardstick every LLM lever is measured against. It is also the fallback every LLM stage degrades to. |
+| Additive-column *intent* fast path | `impact-analysis/schema-impact.ts` (`detectAdditiveColumnIntent`, #923) | Still first in `crossToSchema` and untouched by #1001. It fires instantly for a developer imperative; the LLM proposer only covers the business-analyst obligation phrasings it cannot match. Since #1036 it also reads a column the request states as DDL (`ALTER TABLE entries ADD COLUMN read_at …`), taking only the two identifiers. It reads what the request asks (primary request + sub-aspects), not its context sections, so DDL quoted under "Alternatives considered" proposes nothing; a heading the parser does not know is a sub-aspect, so DDL under "Workaround" does count. These three forms (the DDL and the two prose ones) are how a column becomes core in a request the #791 gate calls covered. |
+| Change extraction (#1036) | `impact-analysis/change-request.ts` (`parseChangeRequest`) | Reading a pasted issue as one change is a question about the text's SHAPE (a title, then template headings), which a parser answers exactly and for free. The model's share of the failure it fixes was nil: run 7 split each issue into 5 to 12 fragments before any model saw it. An LLM extractor can still replace it behind `ChangeExtractor`. |
+| Seeding and the edit/blast split (#1036) | `impact-analysis/change-seeds.ts`, `impact-roles.ts`, `structural-twins.ts` | Seeding is the chat path's `HybridCodeSearch` (BM25 fused with symbol embeddings — a local embedder, not a provider call), ranked by file. When a project's symbols are not embedded yet it degrades to BM25 and records `retrievalMode: "bm25-only"`, which the run summary states. The cut sizes are provisional: tuned on six Miniflux issues, to be revisited at run 8. Which symbols are edit candidates is then decided by rules over retrieval, lineage and the schema result, so the list a caller scores on precision is reproducible. The opt-in LLM seeders above still take a BM25 base and are used as-is when their flag is on. |
 
 ### The #931 seeder must not be revived as-is
 
@@ -108,7 +108,7 @@ An LLM **seeder** — one that picks the code symbols BM25 will expand from — 
 built (#931) and measured: table precision fell **0.42 → 0.29**. The mechanism is
 recorded because it generalises: the seeder scored its own picks 1.0 and the
 deterministic top-K 0.2, below `DEFAULT_MIN_CONFIDENCE` (0.3), so good BM25 seeds
-were _dropped_. It shipped flag-off and is still flag-off.
+were *dropped*. It shipped flag-off and is still flag-off.
 
 The rule that came out of it: **prefer an LLM at the OUTPUT, or as a strictly
 additive union, over an LLM at the SEED.** #936 (prune the output) and #1002
@@ -151,11 +151,11 @@ schema crossing, so #1823 measured the table-precision guard. A real analysis ra
 (mybatis/jpetstore-6), and the citations it stored were read onto the fixture. The table
 precisions are on `deepseek-flash`, with 3 runs and the live #936 filter, 2026-11-05:
 
-| Reading                                              | Table precision |
-| ---------------------------------------------------- | --------------- |
-| A0 on the split seeding (the requirement's own text) | 0.685           |
-| A7O (the analysis's requirements, flag off)          | 0.432           |
-| A7 (the analysis's requirements, flag on)            | 0.453           |
+| Reading | Table precision |
+|---|---|
+| A0 on the split seeding (the requirement's own text) | 0.685 |
+| A7O (the analysis's requirements, flag off) | 0.432 |
+| A7 (the analysis's requirements, flag on) | 0.453 |
 
 Against A0, A7 fails the 0.03 guard: −0.23, 95% CI [−0.41, −0.05] over the 11
 requirements. (Each interval pairs the requirements' table precisions, averaged over the 3
@@ -167,9 +167,10 @@ requirements, and the union of their tables is wider than the one requirement's 
 The flag's own effect, A7 against A7O on the same changes, is +0.02 [−0.02, +0.06].
 
 The owner chose to gate the flag on its own effect (2026-11-05, option A): A7 against A7O,
-within 0.03 table precision or better. The ~0.2 drop on the analysis path, flag on or off,
-is tracked as #1848. The Sonnet reading (`claude-sonnet-5-5`, 3 runs, live #936 filter,
-33 analyses, 2026-11-06, $7.52 under an $8 cap):
+with A7's average table precision within 0.03 of A7O's or better. The ~0.2 drop on the
+analysis path, flag on or off, is tracked as #1848. The Sonnet reading
+(`claude-sonnet-5-5`, 3 runs, live #936 filter, 33 analyses, 2026-11-06, $7.52 under an
+$8 cap):
 
 | Reading                                     | Table precision |
 | ------------------------------------------- | --------------- |
@@ -178,10 +179,11 @@ is tracked as #1848. The Sonnet reading (`claude-sonnet-5-5`, 3 runs, live #936 
 | A7O (the analysis's requirements, flag off) | 0.374           |
 | A7 (the analysis's requirements, flag on)   | 0.367           |
 
-**A7 − A7O: −0.007 [−0.043, +0.028]**, within the 0.03 guard, so the flag is **on by
-default** since #1823 (`IMPACT_AGENT_SEEDS=0` turns it off). Against A0 on the split
-seeding, A7 is −0.189 [−0.266, −0.113] and A7O −0.182 [−0.277, −0.087]: the analysis path's
-drop, not the flag's. The run's records are committed
+**A7 − A7O: −0.007 [−0.043, +0.028]**: the average is within 0.03 of A7O; the 95%
+interval's lower bound is −0.043, so the interval itself does not clear −0.03. The flag is
+**on by default** since #1823 (`IMPACT_AGENT_SEEDS=0` turns it off). Against A0 on the
+split seeding, A7 is −0.189 [−0.266, −0.113] and A7O −0.182 [−0.277, −0.087]: the analysis
+path's drop, not the flag's. The run's records are committed
 (`server/src/lib/eval/localization/__fixtures__/table-guard-sonnet-2026-11-06.runs.jsonl`),
 and a test reads these intervals from them.
 
@@ -239,13 +241,13 @@ whether Recall@5 depends on the order the model is shown.
 **Measured 2026-11-05 (held-out, `claude-sonnet-5-5`, 2 runs per set, weight 1):** the
 bar is met.
 
-| Arm  | Miniflux R@5 (24) | Fixture R@5 (15) | Pooled ΔR@5 vs A0 (39)             | Pooled Δ edit precision | $ / req          |
-| ---- | ----------------- | ---------------- | ---------------------------------- | ----------------------- | ---------------- |
-| A0   | 0.52              | 0.54             | —                                  | —                       | $0               |
-| A12  | 0.52              | 0.73             | +0.073 [0.01, 0.14]                | +0.141                  | $0               |
-| A13  | 0.67              | 0.74             | **+0.166 [0.09, 0.25], p < 0.001** | +0.011 (n.s.)           | $0.020 to $0.023 |
-| A13C | 0.69              | 0.72             | **+0.170 [0.10, 0.25], p < 0.001** | +0.084 [0.06, 0.11]     | $0.020 to $0.023 |
-| A13S | 0.70              | 0.70             | +0.171 [0.09, 0.26], p < 0.001     | +0.015 (n.s.)           | $0.021 to $0.023 |
+| Arm | Miniflux R@5 (24) | Fixture R@5 (15) | Pooled ΔR@5 vs A0 (39) | Pooled Δ edit precision | $ / req |
+|---|---|---|---|---|---|
+| A0 | 0.52 | 0.54 | — | — | $0 |
+| A12 | 0.52 | 0.73 | +0.073 [0.01, 0.14] | +0.141 | $0 |
+| A13 | 0.67 | 0.74 | **+0.166 [0.09, 0.25], p < 0.001** | +0.011 (n.s.) | $0.020 to $0.023 |
+| A13C | 0.69 | 0.72 | **+0.170 [0.10, 0.25], p < 0.001** | +0.084 [0.06, 0.11] | $0.020 to $0.023 |
+| A13S | 0.70 | 0.70 | +0.171 [0.09, 0.26], p < 0.001 | +0.015 (n.s.) | $0.021 to $0.023 |
 
 - **Recall@10 and MRR rise too** (pooled A13 +0.081 and +0.164, both significant), and
   every model-named file resolves to the code graph (graph resolution 1.00 on every arm).
@@ -271,7 +273,7 @@ the configuration production has today.
 ## Two measurement lessons that invalidated earlier numbers
 
 Both are the reason several figures quoted during epic #999 were wrong. They are
-recorded here because they are properties of the _harness_, not of any one issue.
+recorded here because they are properties of the *harness*, not of any one issue.
 
 ### 1. Measure the configuration you actually ship (#1016)
 
@@ -279,10 +281,10 @@ recorded here because they are properties of the _harness_, not of any one issue
 described a configuration nobody deploys — the shipped `.env` sets
 `IMPACT_LLM_TABLE_FILTER=1`.
 
-| Configuration                            | Macro table precision |
-| ---------------------------------------- | --------------------- |
-| old harness default (filter off)         | ≈0.40                 |
-| production (`IMPACT_LLM_TABLE_FILTER=1`) | ≈0.78                 |
+| Configuration | Macro table precision |
+|---|---|
+| old harness default (filter off) | ≈0.40 |
+| production (`IMPACT_LLM_TABLE_FILTER=1`) | ≈0.78 |
 
 A "must not drop below 0.40" gate had been set from the unfiltered number and was
 therefore ~0.38 too lenient — it would have waved through a large real regression.
@@ -293,7 +295,7 @@ provider is an offline stub (which would silently emit unfiltered numbers under 
 production label).
 
 Corollary, from `scorer.ts`: an empty `found` set scores **precision 1.00** by
-convention. So a requirement the engine misses entirely is _vacuously_ precise —
+convention. So a requirement the engine misses entirely is *vacuously* precise —
 adding a genuinely failing regression case pushes macro precision **up**, and
 fixing the miss pushes it **down**. Always decompose a macro move per requirement
 before calling it a regression.
@@ -311,7 +313,7 @@ measurement rather than quietly measuring the wrong thing.
 
 ### What it is
 
-The summarizer was already doing this _incidentally_: on the JPetStore
+The summarizer was already doing this *incidentally*: on the JPetStore
 order-cancellation requirement it noted, unprompted, that the requirement talks
 about returning items to stock while no inventory table had been surfaced. Made
 explicit and structured, that becomes a real "**this analysis may be incomplete**"
@@ -326,7 +328,7 @@ tables, each naming a real project table that was not surfaced.
 ### The inverted grounding vocabulary
 
 Every other stage grounds on the impact result's own rows, because their job is to
-prune or annotate what was _found_. This stage's job is to name what was
+prune or annotate what was *found*. This stage's job is to name what was
 **missed**, so grounding on the result would make it structurally incapable of
 ever firing. It grounds on the **complement** instead: the project's real
 code-graph tables **minus** those already surfaced, still index-keyed, still
@@ -357,7 +359,7 @@ Two alternatives were rejected for the prototype:
   before the measurement below.
 - **Appending the advisory to the persisted `summary` string after generation.**
   That column's documented invariant is "grounded ⊆ engine facts"; a gap table is
-  by definition _not_ an affected-table fact, so appending post-hoc would quietly
+  by definition *not* an affected-table fact, so appending post-hoc would quietly
   violate the contract the column advertises.
 
 With gaps empty — which is what a disabled reconciler, an unavailable provider or
@@ -370,11 +372,11 @@ Live Anthropic (`claude-sonnet-5`), JPetStore MyBatis project
 `cmrqrf1sd0002y89k6hj6ph66`, in-process against a copy of `server/dev.db`,
 3 runs per requirement, `IMPACT_LLM_TABLE_FILTER=1`.
 
-| Requirement           | Known miss (#999)         | Still reproducible?                                                                        | Reconciler result                                                                                         |
-| --------------------- | ------------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
-| 1 — cancellation      | `inventory` never flagged | **No.** `inventory` is a PRIMARY table in 3/3 runs (also 3/3 with the reconciler disabled) | Correctly reported **no** `inventory` gap. Reported `account` for _"record who cancelled it"_ in 2/3 runs |
-| 3 — loyalty           | `account` absent          | **Yes.** `account` is absent from primary and secondary in 3/3 runs                        | **Caught in 3/3**, clause _"running points balance must be visible on the customer's account"_            |
-| 2 — partial shipments | (no known miss)           | —                                                                                          | **Zero** gaps in 3/3 — no false positives on the requirement that was already well covered                |
+| Requirement | Known miss (#999) | Still reproducible? | Reconciler result |
+|---|---|---|---|
+| 1 — cancellation | `inventory` never flagged | **No.** `inventory` is a PRIMARY table in 3/3 runs (also 3/3 with the reconciler disabled) | Correctly reported **no** `inventory` gap. Reported `account` for *"record who cancelled it"* in 2/3 runs |
+| 3 — loyalty | `account` absent | **Yes.** `account` is absent from primary and secondary in 3/3 runs | **Caught in 3/3**, clause *"running points balance must be visible on the customer's account"* |
+| 2 — partial shipments | (no known miss) | — | **Zero** gaps in 3/3 — no false positives on the requirement that was already well covered |
 
 So: **one of the two known misses is caught (3/3); the other is no longer
 reproducible**, so there was nothing to catch — and the reconciler correctly said
@@ -395,7 +397,7 @@ runner has no reconciler seam at all, so `coverageGaps` is always empty there.
 
 **ON since #1025** (`IMPACT_LLM_CLAUSE_RECONCILE=0` disables it).
 
-When #1005 shipped this said _OFF_, on the reasoning that one caught miss and a
+When #1005 shipped this said *OFF*, on the reasoning that one caught miss and a
 stochastic marginal advisory is a promising prototype rather than evidence for a
 flip, and that flipping it needed a wider corpus with labelled misses. #1025
 flipped it anyway, on a different argument — not a stronger version of the same
@@ -403,7 +405,7 @@ one. The argument is **blast radius**, not efficacy: this stage writes **zero**
 rows to `affectedTables`, so it is structurally incapable of moving recall or
 precision, and the eval distribution across the flip is unchanged. Its worst case
 is an advisory sentence a BA can ignore; its best case is the only signal in the
-product that says _this analysis may be incomplete_. That asymmetry is what
+product that says *this analysis may be incomplete*. That asymmetry is what
 justifies default-ON for an advisory stage and would **not** justify it for a
 stage that writes rows.
 
@@ -417,14 +419,14 @@ Until #1025 every LLM stage shipped **off**, so the out-of-the-box product was t
 deterministic-only one. Measured on JPetStore in the production configuration,
 that default was poor for the audience the feature is for:
 
-|                                       | deterministic only | with the four stages                                                |
-| ------------------------------------- | ------------------ | ------------------------------------------------------------------- |
-| Macro table precision                 | **0.4636**         | **0.7803**                                                          |
-| Actionable `ALTER TABLE … ADD COLUMN` | **0**              | 2 per requirement                                                   |
-| Per-table rationale                   | none               | requirement-specific prose                                          |
-| Incompleteness advisory               | none               | e.g. _"no surfaced table … was identified as storing that balance"_ |
+| | deterministic only | with the four stages |
+|---|---|---|
+| Macro table precision | **0.4636** | **0.7803** |
+| Actionable `ALTER TABLE … ADD COLUMN` | **0** | 2 per requirement |
+| Per-table rationale | none | requirement-specific prose |
+| Incompleteness advisory | none | e.g. *"no surfaced table … was identified as storing that balance"* |
 
-A BA asking _"a cancelled order must record who cancelled it and when"_ got 27
+A BA asking *"a cancelled order must record who cancelled it and when"* got 27
 `-- Verify column orders.billaddr1 — referenced by impacted code` comments and
 nothing actionable.
 
@@ -436,10 +438,10 @@ calls and spends real money.** Measured live (JPetStore, Anthropic
 `dev.db`):
 
 | Run | Wall clock | Provider calls | Tokens | Cost (USD) |
-| --- | ---------- | -------------- | ------ | ---------- |
-| 1   | 20.2 s     | 5              | 12,763 | 0.0505     |
-| 2   | 20.1 s     | 5              | 12,386 | 0.0487     |
-| 3   | 27.9 s     | **6**          | 21,330 | **0.0775** |
+|---|---|---|---|---|
+| 1 | 20.2 s | 5 | 12,763 | 0.0505 |
+| 2 | 20.1 s | 5 | 12,386 | 0.0487 |
+| 3 | 27.9 s | **6** | 21,330 | **0.0775** |
 
 Budget **≈$0.05 and ≈20 s per changed requirement**, and know that a
 retry-with-repair (run 3 above — a summarizer draft failed grounding or table
@@ -489,15 +491,15 @@ neighbours.
 `pnpm eval:impact-recall` (production configuration, 3 runs each, corpus
 `impact-recall-01-jpetstore`, 11 requirements, live `claude-sonnet-5`):
 
-|                             | macro table recall | macro table precision | per-run precision        |
-| --------------------------- | ------------------ | --------------------- | ------------------------ |
-| before (pre-#1025 defaults) | 0.9091             | 0.7475                | 0.7727 / 0.7121 / 0.7576 |
-| after (#1025 defaults)      | 0.9091             | 0.7778                | 0.8030 / 0.7879 / 0.7424 |
+| | macro table recall | macro table precision | per-run precision |
+|---|---|---|---|
+| before (pre-#1025 defaults) | 0.9091 | 0.7475 | 0.7727 / 0.7121 / 0.7576 |
+| after (#1025 defaults) | 0.9091 | 0.7778 | 0.8030 / 0.7879 / 0.7424 |
 
 Both PASS their production floors; **no threshold was moved**. The +0.030
 precision difference is **run-to-run LLM noise, not an effect of the flip** — the
 spreads overlap (0.742–0.773 is common to both), and more decisively the harness
-is _structurally invariant_ to these env flags: `scripts/eval-impact-recall.ts`
+is *structurally invariant* to these env flags: `scripts/eval-impact-recall.ts`
 constructs the filter itself with an explicit `{ enabled: true }` and never reads
 an `IMPACT_LLM_*` variable. That is #1016's design (measure the shipped
 configuration whatever the ambient env says), and the corollary is that this
@@ -507,19 +509,19 @@ harness can neither confirm nor refute a default flip. It is reported here as a
 Absolute surfaced-table counts per requirement, both configurations, so the ratio
 above cannot hide magnitude — these are small sets:
 
-| Req    | before (3 runs) | after (3 runs) |
-| ------ | --------------- | -------------- |
-| REQ-01 | 1 / 1 / 1       | 1 / 1 / 1      |
-| REQ-02 | 2 / 2 / 2       | 1 / 2 / 2      |
-| REQ-03 | 3 / 3 / 3       | 3 / 3 / 3      |
-| REQ-04 | 3 / 3 / 3       | 3 / 3 / 3      |
-| REQ-05 | 2 / 3 / 3       | 3 / 2 / 3      |
-| REQ-06 | 2 / 2 / 2       | 2 / 2 / 2      |
-| REQ-07 | 4 / 3 / 3       | 3 / 3 / 4      |
-| REQ-08 | 1 / 2 / 1       | 1 / 1 / 1      |
-| REQ-09 | 2 / 2 / 2       | 2 / 2 / 2      |
-| REQ-10 | 3 / 3 / 3       | 3 / 3 / 3      |
-| REQ-11 | 0 / 0 / 0       | 0 / 0 / 0      |
+| Req | before (3 runs) | after (3 runs) |
+|---|---|---|
+| REQ-01 | 1 / 1 / 1 | 1 / 1 / 1 |
+| REQ-02 | 2 / 2 / 2 | 1 / 2 / 2 |
+| REQ-03 | 3 / 3 / 3 | 3 / 3 / 3 |
+| REQ-04 | 3 / 3 / 3 | 3 / 3 / 3 |
+| REQ-05 | 2 / 3 / 3 | 3 / 2 / 3 |
+| REQ-06 | 2 / 2 / 2 | 2 / 2 / 2 |
+| REQ-07 | 4 / 3 / 3 | 3 / 3 / 4 |
+| REQ-08 | 1 / 2 / 1 | 1 / 1 / 1 |
+| REQ-09 | 2 / 2 / 2 | 2 / 2 / 2 |
+| REQ-10 | 3 / 3 / 3 | 3 / 3 / 3 |
+| REQ-11 | 0 / 0 / 0 | 0 / 0 / 0 |
 
 REQ-11 surfaces nothing in either configuration, which by the `scorer.ts`
 convention scores **precision 1.00** vacuously — see the corollary below before
@@ -545,13 +547,13 @@ The fix is a single chokepoint. `routes/impact-analysis.ts` builds one
 every stage's provider goes through `runtime.instrument(provider, stage)`. The
 decorator records one `AITokenUsage` row per completed call:
 
-| Column             | Value                                                                                                                                                                            |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agentStep`        | `impact.<stage>` — `impact.table-filter`, `impact.additive-ddl`, `impact.clause-reconcile`, `impact.summary-item`, `impact.summary-run`, `impact.entity-seeds`, `impact.seeding` |
-| `projectId`        | the project the engine was working on when the call was made                                                                                                                     |
-| `sessionId`        | one lazily-created `AISession` per run (no LLM call ⇒ no session row)                                                                                                            |
-| `userId`           | the actor who started the run                                                                                                                                                    |
-| `estimatedCostUsd` | the usual `estimateUsageCostUsd` cache-aware estimate                                                                                                                            |
+| Column | Value |
+|---|---|
+| `agentStep` | `impact.<stage>` — `impact.table-filter`, `impact.additive-ddl`, `impact.clause-reconcile`, `impact.summary-item`, `impact.summary-run`, `impact.entity-seeds`, `impact.seeding` |
+| `projectId` | the project the engine was working on when the call was made |
+| `sessionId` | one lazily-created `AISession` per run (no LLM call ⇒ no session row) |
+| `userId` | the actor who started the run |
+| `estimatedCostUsd` | the usual `estimateUsageCostUsd` cache-aware estimate |
 
 Query the whole feature with `agentStep LIKE 'impact.%'`, or one stage exactly.
 
@@ -576,10 +578,10 @@ Four flags on (`IMPACT_LLM_TABLE_FILTER`, `IMPACT_LLM_SUMMARY`,
 against a copy of `dev.db`. Three runs:
 
 | Run | Wall clock | Provider calls | Tokens | Cost (USD) |
-| --- | ---------- | -------------- | ------ | ---------- |
-| 1   | 18.4 s     | 5              | 12,781 | 0.0504     |
-| 2   | 15.8 s     | 5              | 12,630 | 0.0500     |
-| 3   | 20.2 s     | 5              | 13,006 | 0.0532     |
+|---|---|---|---|---|
+| 1 | 18.4 s | 5 | 12,781 | 0.0504 |
+| 2 | 15.8 s | 5 | 12,630 | 0.0500 |
+| 3 | 20.2 s | 5 | 13,006 | 0.0532 |
 
 Mean **≈18 s and ≈$0.051 per single-requirement analysis** (spread 15.8–20.2 s,
 $0.0500–$0.0532). Five calls for one requirement, not four, because the
@@ -640,9 +642,9 @@ sentence to the run summary:
 > applied: table relevance filtering, additive-column proposals, clause coverage
 > advisories, narrative summaries.
 
-The reason clause distinguishes _no provider configured_ / _the AI provider
-returned an error_ / _the AI provider timed out_ / _the AI provider was
-unavailable_ (mixed). Two things it deliberately does **not** say:
+The reason clause distinguishes *no provider configured* / *the AI provider
+returned an error* / *the AI provider timed out* / *the AI provider was
+unavailable* (mixed). Two things it deliberately does **not** say:
 
 - a stage that made at least one successful call is never named, even if a later
   call failed — it contributed real output, and the result is not un-enriched;
@@ -661,12 +663,12 @@ was skipped, rather than being indistinguishable from the old unmetered normal.
 
 Same harness as the cost table, with the four flags on:
 
-| Scenario                                     | Status    | Wall clock | Token rows | Affected symbols | Affected tables | `add-column` rows | Tiered tables | Narratives |
-| -------------------------------------------- | --------- | ---------- | ---------- | ---------------- | --------------- | ----------------- | ------------- | ---------- |
-| Live provider                                | completed | ~18 s      | 5          | 27               | 58              | 2                 | 56            | 1          |
-| No provider (`AI_PROVIDER=offline-stub`)     | completed | 0.6 s      | 0          | 27               | 56              | 0                 | 0             | 0          |
-| Invalid API key (401 on every call)          | completed | 2.0 s      | 0          | 27               | 56              | 0                 | 0             | 0          |
-| Provider timeout (`IMPACT_LLM_TIMEOUT_MS=1`) | completed | 0.6 s      | 0          | 27               | 56              | 0                 | 0             | 0          |
+| Scenario | Status | Wall clock | Token rows | Affected symbols | Affected tables | `add-column` rows | Tiered tables | Narratives |
+|---|---|---|---|---|---|---|---|---|
+| Live provider | completed | ~18 s | 5 | 27 | 58 | 2 | 56 | 1 |
+| No provider (`AI_PROVIDER=offline-stub`) | completed | 0.6 s | 0 | 27 | 56 | 0 | 0 | 0 |
+| Invalid API key (401 on every call) | completed | 2.0 s | 0 | 27 | 56 | 0 | 0 | 0 |
+| Provider timeout (`IMPACT_LLM_TIMEOUT_MS=1`) | completed | 0.6 s | 0 | 27 | 56 | 0 | 0 | 0 |
 
 The deterministic floor is byte-for-byte the same in all three degraded modes:
 27 affected symbols and 56 affected tables — the live run's 58 is those same 56
@@ -675,8 +677,8 @@ plus the 2 LLM-proposed `add-column` rows, which is the append-only property of
 
 #1025 re-ran this under the **new defaults** (nothing set but the provider) and
 reproduced every row: no provider ⇒ `completed` in 0.1 s at 27/56/0 with the
-disclosure sentence _"(no AI provider is configured)"_; an invalid key ⇒
-`completed` in 3.2 s at 27/56/0 with _"(the AI provider returned an error)"_. It
+disclosure sentence *"(no AI provider is configured)"*; an invalid key ⇒
+`completed` in 3.2 s at 27/56/0 with *"(the AI provider returned an error)"*. It
 also confirmed the kill-switches reach the same floor by a different route:
 `IMPACT_LLM_TABLE_FILTER=0 IMPACT_LLM_ADDITIVE_DDL=0 IMPACT_LLM_CLAUSE_RECONCILE=0
 IMPACT_LLM_SUMMARY=0` (and the same four spelled `false`) ⇒ `completed` in 0.1 s,

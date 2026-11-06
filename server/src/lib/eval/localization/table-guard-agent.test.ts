@@ -19,6 +19,7 @@ import { normalizeTable, scoreSet } from "../impact-recall/scorer.js";
 import { loadRecordedVectors } from "../recorded-vectors.js";
 import { EmbedCache, buildCorpusSearch } from "./search.js";
 import { pairedTInterval } from "./stats.js";
+import { TABLE_PRECISION_TOLERANCE } from "./runner.js";
 import { MAPPER_SEEDING, fixtureSearchRows } from "./table-guard.js";
 import {
   createAgentSeedGuard,
@@ -718,8 +719,9 @@ describe("guardPairedDifferences (#1847)", () => {
     expect(read(0)).toEqual(["-0.189", "-0.266", "-0.113"]);
     expect(read(1)).toEqual(["-0.182", "-0.277", "-0.087"]);
     expect(read(2)).toEqual(["-0.007", "-0.043", "0.028"]);
-    // The owner's rule (option A): A7 within 0.03 of A7O, or better.
-    expect(out[2]!.interval.meanDifference).toBeGreaterThanOrEqual(-0.03);
+    // The owner's rule (option A): A7's average within 0.03 of A7O, or better.
+    // The rule reads the mean only: the interval's lower bound (-0.043) is past it.
+    expect(out[2]!.interval.meanDifference).toBeGreaterThanOrEqual(-TABLE_PRECISION_TOLERANCE);
   });
 
   it("logs each comparison once, as soon as both its readings are complete", async () => {
