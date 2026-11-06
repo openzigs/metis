@@ -192,8 +192,23 @@ describe("EditCandidateFiles (#1762)", () => {
     );
     // Its symbols are still listed.
     expect(within(orders).getAllByTestId("affected-symbol-row")).toHaveLength(1);
-    // A doubtful file is not counted as a file to edit.
-    expect(screen.getByTestId("impact-headline").textContent).toMatch(/^2 files to edit/);
+    // A doubtful file is not counted as a file to edit (#1820): it is one more to
+    // review, next to the blast-radius file.
+    expect(screen.getByTestId("impact-headline").textContent).toBe(
+      "2 files to edit · 2 more to review",
+    );
+  });
+
+  it("counts a doubtful file that is also in the blast radius once, as one to review (#1820)", () => {
+    renderGroup(
+      item(EVIDENCE, [
+        ...SYMBOLS,
+        sym("o2", ORDERS, { relation: "caller", depth: 1, confidence: 0.3 }),
+      ]),
+    );
+    expect(screen.getByTestId("impact-headline").textContent).toBe(
+      "2 files to edit · 2 more to review",
+    );
   });
 
   it('says "not found", naming the project, when every candidate is doubtful', () => {
@@ -216,7 +231,10 @@ describe("EditCandidateFiles (#1762)", () => {
     expect(fileGroups().map(pathOf)).toEqual([ORDERS]);
     expect(screen.getByTestId("edit-candidate-doubtful")).toBeInTheDocument();
     expect(screen.queryByText(/most likely has to touch/)).toBeNull();
-    expect(screen.getByTestId("impact-headline").textContent).toMatch(/^0 files to edit/);
+    // #1820 — the listed doubtful file is counted as one to review, never nowhere.
+    expect(screen.getByTestId("impact-headline").textContent).toBe(
+      "0 files to edit · 2 more to review",
+    );
   });
 
   it('says "not found" when the result has no edit candidates, without listing the blast radius as one', () => {

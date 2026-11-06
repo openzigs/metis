@@ -103,6 +103,10 @@ function fileName(filePath: string): string {
 function EditFile({ row, repo }: { row: EditFileRow; repo: CodeCitationRepo | null }) {
   const verdict = row.verdict;
   // Only a promotion the server checked against the code graph carries a reason shown as fact.
+  // `verified === true` repeats the shared schema's `verified: z.literal(true)`
+  // (`impactEditVerdictSchema`) on purpose (#1820): the type already says it, but
+  // this guard keeps an unchecked reason from reading as fact if the schema is
+  // ever loosened or a view arrives without passing through it.
   const verified = verdict?.kind === "promoted" && verdict.verified === true ? verdict : null;
   const doubt = verdict?.kind === "doubtful" ? verdict : null;
   const codeHref = verified
