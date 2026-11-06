@@ -27,6 +27,7 @@ import { prisma as defaultPrisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { classifyTestSymbol } from "../code-graph/test-conventions.js";
 import { resolveTestedByForTargets, type TestedByPrisma } from "./tested-by.js";
+import { hideSupersededBorrowedLinks } from "./borrow-citations.js";
 
 type SpinePrisma = Pick<
   PrismaClient,
@@ -78,6 +79,7 @@ function toDirectCodeNode(
     previousFilePath: string | null;
     previousStartLine: number | null;
     previousEndLine: number | null;
+    originRequirementId: string | null;
   },
 ): TraceabilityCodeNode {
   return {
@@ -90,6 +92,8 @@ function toDirectCodeNode(
     previousFilePath: row.previousFilePath,
     previousStartLine: row.previousStartLine,
     previousEndLine: row.previousEndLine,
+    // #1839 — where a borrowed (`similar-requirement`) link was copied from.
+    originRequirementId: row.originRequirementId,
   };
 }
 
@@ -155,7 +159,7 @@ export async function getRequirementChain(
     code: codeBySpec.get(s.specDocumentId) ?? [],
   }));
 
-  const directRows = await prisma.requirementCodeMapping.findMany({
+  const storedDirectRows = await prisma.requirementCodeMapping.findMany({
     where: { requirementId, projectId },
     select: {
       codeSymbolId: true,
@@ -171,9 +175,13 @@ export async function getRequirementChain(
       previousFilePath: true,
       previousStartLine: true,
       previousEndLine: true,
+      originRequirementId: true,
     },
     orderBy: [{ confidence: "desc" }],
   });
+  // #1839 — a link borrowed from a similar requirement gives way to this
+  // requirement's own analysis grounding of the same file: never shown twice.
+  const directRows = hideSupersededBorrowedLinks(storedDirectRows);
 
   // #814 — the tests that cover this requirement, resolved from the code rows
   // just read (the resolver issues only its code-graph queries).

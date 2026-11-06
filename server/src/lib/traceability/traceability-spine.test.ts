@@ -163,6 +163,39 @@ describe("getRequirementChain", () => {
     expect(specCodeFindMany).not.toHaveBeenCalled();
   });
 
+  it("#1839 — shows a borrowed link with its origin, unless its file is grounded by the analysis", async () => {
+    const row = (filePath: string, source: string, originRequirementId: string | null = null) => ({
+      codeSymbolId: null,
+      filePath,
+      startLine: null,
+      endLine: null,
+      confidence: 0.4,
+      source,
+      originRequirementId,
+    });
+    const codeLinks = vi
+      .fn()
+      .mockResolvedValue([
+        row("src/grounded.ts", "analysis-grounding"),
+        row("src/grounded.ts", "similar-requirement", "req-origin"),
+        row("src/borrowed.ts", "similar-requirement", "req-origin"),
+      ]);
+    const p = {
+      requirement: { findFirst: vi.fn().mockResolvedValue({ id: "req-1", title: "X" }) },
+      requirementSpecMapping: { findMany: vi.fn().mockResolvedValue([]) },
+      specCodeMapping: { findMany: vi.fn() },
+      requirementCodeMapping: { findMany: codeLinks },
+      codeSymbol: { findMany: vi.fn().mockResolvedValue([]) },
+      codeEdge: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+    const chain = await getRequirementChain("proj-1", "req-1", deps(p));
+    expect(chain.directCode.map((c) => [c.filePath, c.source, c.originRequirementId])).toEqual([
+      ["src/grounded.ts", "analysis-grounding", null],
+      ["src/borrowed.ts", "similar-requirement", "req-origin"],
+    ]);
+    expect(codeLinks.mock.calls[0][0].select.originRequirementId).toBe(true);
+  });
+
   it("defaults a missing spec title to null", async () => {
     const p = {
       requirement: { findFirst: vi.fn().mockResolvedValue({ id: "req-1", title: "X" }) },

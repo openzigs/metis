@@ -6,6 +6,10 @@
  *   200  { success, data: { items: SimilarRequirementItem[] } }
  *   POST /api/projects/:projectId/requirements/:requirementId/similar/:otherRequirementId/not-duplicate
  *        (#1838) remembers an analyst's "Not a duplicate" for the pair
+ *   POST /api/projects/:projectId/requirements/:requirementId/borrow-citations
+ *        { fromRequirementId, mappingIds? }  (#1839) copies the similar
+ *        requirement's current code links as `similar-requirement` suggestions
+ *   200  { success, data: { copied, skippedStale, skippedDuplicate } }
  *
  * Every route runs behind `requireProjectAccess()`: a caller who cannot reach the
  * project gets 404, and a requirement id of another project answers 404 from the
@@ -13,9 +17,11 @@
  */
 import { Router, type Request } from "express";
 import {
+  borrowCitationsSchema,
   similarRequirementsDraftSchema,
   similarRequirementsLimitSchema,
   type ApiResponse,
+  type BorrowCitationsResult,
   type SimilarRequirementsResponse,
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
@@ -28,6 +34,7 @@ import {
   markNotDuplicate,
 } from "../lib/requirements/similar-requirements.js";
 import { resolveSimilarityVerifier } from "../lib/requirements/similarity-verifier-resolver.js";
+import { borrowCitations } from "../lib/traceability/borrow-citations.js";
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -92,6 +99,25 @@ export function requirementSimilarityRouter(): Router {
         req.user.userId,
       );
       res.json(ok({ notDuplicate: true }));
+    },
+  );
+
+  // #1839 — start from a similar requirement's saved code links. A write, so
+  // the same edit permission as "Not a duplicate" and adding a link; both
+  // requirements are looked up on this project, so another project's id is 404.
+  r.post(
+    "/:requirementId/borrow-citations",
+    ...guard,
+    requirePermission("project.update"),
+    async (req, res) => {
+      const parsed = borrowCitationsSchema.safeParse(req.body ?? {});
+      if (!parsed.success) throw validationError(parsed.error.flatten());
+      const result = await borrowCitations(
+        projectIdOf(req),
+        String(req.params.requirementId),
+        parsed.data,
+      );
+      res.json(ok<BorrowCitationsResult>(result));
     },
   );
 
