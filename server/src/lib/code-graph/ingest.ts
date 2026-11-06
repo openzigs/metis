@@ -113,6 +113,7 @@ import {
   type SymbolKind as EmbeddingSymbolKind,
 } from "./symbol-embeddings.js";
 import { enqueueSymbolEmbeddings } from "./symbol-embedding-service.js";
+import { revalidateCodeCitationsAfterIngest } from "../traceability/revalidate-code-citations.js";
 import {
   extractOwnFileContext,
   packageOfFile,
@@ -1574,6 +1575,12 @@ export async function ingestCodeGraph(
   } else {
     await finalise;
   }
+
+  // #1831 (epic #1827) — the graph is complete: re-check the saved code links
+  // into this repo against it (no model call). Never fails the ingest; an
+  // ingest that threw above never gets here, so a partial graph re-checks
+  // nothing.
+  await revalidateCodeCitationsAfterIngest(prisma, graph.id);
 
   // Step 9 — Epic #780 / Issue #797. Symbols (and their index-time text) are
   // durable now; hand the embedding off to a background job. Fire-and-forget:

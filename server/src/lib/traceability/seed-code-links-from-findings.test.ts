@@ -52,6 +52,10 @@ interface SymbolRow {
   /** #1830 — the symbol's graph. Defaults to {@link GRAPH_1} (repo `conn-1`). */
   codeGraphId?: string;
   graph?: { repoConnectionId: string | null; commitSha: string | null };
+  /** #1831 — the symbol's identity. */
+  qualifiedName?: string;
+  kind?: string;
+  contentHash?: string;
 }
 
 /** #1830 — the default code graph every fake symbol belongs to. */
@@ -939,6 +943,39 @@ describe("seedRequirementCodeLinksFromFindings — code-graph version stamp (#18
       commitSha: null,
       freshness: "unverified",
       validatedAt: null,
+    });
+  });
+
+  it("stores the bound symbol's identity, and none on a file-level link (#1831)", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1", "f2"]) }],
+      findings: [
+        { id: "f1", evidence: codeCitation(), confidence: 0.6 },
+        { id: "f2", evidence: evidence(["src/b.ts"]), confidence: 0.6 },
+      ],
+      symbols: [
+        {
+          ...twoRepos[0],
+          qualifiedName: "src/auth.ts::login",
+          kind: "function",
+          contentHash: "hash-login",
+        },
+        ...graphFiles("src/b.ts"),
+      ],
+    });
+    await run(prisma);
+    expect(created[0]).toMatchObject({
+      codeSymbolId: "login-A",
+      symbolQualifiedName: "src/auth.ts::login",
+      symbolKind: "function",
+      symbolContentHash: "hash-login",
+    });
+    expect(created[1]).toMatchObject({
+      filePath: "src/b.ts",
+      codeSymbolId: null,
+      symbolQualifiedName: null,
+      symbolKind: null,
+      symbolContentHash: null,
     });
   });
 
