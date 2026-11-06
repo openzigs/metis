@@ -26,13 +26,17 @@ import {
   MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
 } from "./helpers/sqlite-migrated-db.js";
 import type { ToolDefinition } from "../src/lib/ai/types.js";
+import type { Mock } from "vitest";
+
+/** The fake SDK's `messages.create` / `messages.stream`. */
+type SdkMock = Mock<(...args: unknown[]) => unknown>;
 
 const state = vi.hoisted(() => {
   process.env.AI_RATE_LIMIT_MAX = "10000";
   return {
     db: null as unknown,
-    create: null as unknown as ReturnType<typeof import("vitest").vi.fn>,
-    stream: null as unknown as ReturnType<typeof import("vitest").vi.fn>,
+    create: null as unknown as SdkMock,
+    stream: null as unknown as SdkMock,
   };
 });
 vi.mock("@anthropic-ai/sdk", async () => {
