@@ -24,6 +24,8 @@
  * the optional LLM verifier (#1837, `REQ_SIMILARITY_VERIFIER`) is the arm to
  * measure next.
  */
+import type { SimilarRequirementLabel } from "@metis/shared";
+
 export interface RequirementSimilarityThresholds {
   /** The embedder the numbers were measured on; another model needs its own run. */
   model: string;
@@ -50,3 +52,14 @@ export const REQUIREMENT_SIMILARITY_THRESHOLDS: RequirementSimilarityThresholds 
   duplicatePrecision: 0.476,
   analystConfirmRequired: true,
 };
+
+/** The label a cosine earns, or `null` below the `related` floor (not similar at all). */
+export function labelForScore(
+  score: number,
+  t: RequirementSimilarityThresholds = REQUIREMENT_SIMILARITY_THRESHOLDS,
+): SimilarRequirementLabel | null {
+  if (score >= t.duplicate) return "duplicate";
+  if (score >= t.overlap) return "overlap";
+  if (score >= t.related) return "related";
+  return null;
+}

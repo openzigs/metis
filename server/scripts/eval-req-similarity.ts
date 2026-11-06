@@ -22,9 +22,18 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getEmbedder } from "../src/lib/rag/embedder.js";
+import { loadAIConfig } from "../src/lib/ai/config.js";
+import { buildProvider } from "../src/lib/ai/providers/factory.js";
+import { createLlmSimilarityVerifier } from "../src/lib/requirements/similarity-verifier.js";
+import { RecordingEmbedService, writeRecordedVectors } from "../src/lib/eval/recorded-vectors.js";
+import {
+  renderVerifierArmReport,
+  runVerifierArm,
+} from "../src/lib/eval/requirement-similarity/verifier-arm.js";
 import {
   loadRequirementPairs,
   PairFixtureError,
+  pairRequirementText,
   renderCalibrationReport,
   runCalibration,
 } from "../src/lib/eval/requirement-similarity/calibration.js";
@@ -40,6 +49,9 @@ const DEFAULT_FIXTURE = path.join(
   "__fixtures__",
   "pairs.json",
 );
+
+/** The vectors `--record-vectors` writes (`.json` + `.bin`). */
+const RECORDED_VECTORS = path.join(path.dirname(DEFAULT_FIXTURE), "pairs-recorded.json");
 
 function argValue(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -60,6 +72,25 @@ async function main(): Promise<number> {
   }
 
   const embedder = getEmbedder();
+
+  // #1837 — record the vectors of the named pairs for the similar-requirements
+  // test (`tests/similar-requirements-1837.sqlite.test.ts`), which replays them.
+  const recordIds = argValue("--record-vectors");
+  if (recordIds) {
+    const ids = new Set(recordIds.split(",").map((s) => s.trim()));
+    const recording = new RecordingEmbedService(embedder);
+    const chosen = pairs.filter((p) => ids.has(p.id));
+    await recording.embed(
+      chosen.flatMap((p) => [pairRequirementText(p.a), pairRequirementText(p.b)]),
+    );
+    await writeRecordedVectors(
+      RECORDED_VECTORS,
+      recording.toFiles(`eval:req-similarity --record-vectors ${[...ids].join(",")}`),
+    );
+    process.stdout.write(`recorded ${chosen.length} pairs -> ${RECORDED_VECTORS}\n`);
+    return 0;
+  }
+
   const report = await runCalibration(pairs, (texts) => embedder.embed(texts));
   if (embedder.fellBack) {
     process.stderr.write(
@@ -68,6 +99,15 @@ async function main(): Promise<number> {
     return 1;
   }
   process.stdout.write(`${renderCalibrationReport(report)}\n`);
+
+  // #1837 — the LLM verifier arm, on the configured provider (iterate on DeepSeek;
+  // a paid Sonnet run needs the owner's approval first).
+  if (process.argv.includes("--verifier")) {
+    const config = loadAIConfig();
+    const verifier = createLlmSimilarityVerifier(buildProvider({ config }));
+    const arm = await runVerifierArm(pairs, report.scored, verifier);
+    process.stdout.write(`\n${renderVerifierArmReport(arm, config.model)}\n`);
+  }
   const out = argValue("--json");
   if (out) await writeFile(out, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   return 0;
