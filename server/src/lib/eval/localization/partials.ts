@@ -92,8 +92,13 @@ export function runFingerprint(
   };
 }
 
+/** A short, key-order-independent digest of a JSON value. */
+export function stableDigest(value: unknown): string {
+  return sha256(stableJson(value)).slice(0, 16);
+}
+
 export function fingerprintDigest(fp: RunFingerprint): string {
-  return sha256(stableJson(fp)).slice(0, 16);
+  return stableDigest(fp);
 }
 
 /** What differs between a recorded and a current configuration, in words; empty when equal. */

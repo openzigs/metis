@@ -113,6 +113,49 @@ describe("describeConfiguration names the seeding (#1786)", () => {
   });
 });
 
+describe("describeConfiguration names every stage of a combined seeding (#1847)", () => {
+  const agentSeeds = { loadCitations: vi.fn(), loadFileSymbols: vi.fn() };
+
+  it("keeps the agent citations when the re-order runs too", () => {
+    const c = describeConfiguration({
+      splitSeeding: { searcher, loadSymbols, editCandidateReranker: vi.fn(), agentSeeds },
+    });
+    expect(c.seeding).toBe("split + edit re-order + agent citations");
+    expect(c.label).toContain("IMPACT_LLM_EDIT_RERANK=1");
+    expect(c.label).toContain("IMPACT_AGENT_SEEDS=1");
+  });
+
+  it("names the check, the re-order and the citations, in the order they run", () => {
+    const c = describeConfiguration({
+      splitSeeding: {
+        searcher,
+        loadSymbols,
+        editCandidateVerifier: vi.fn(),
+        editCandidateReranker: vi.fn(),
+        agentSeeds,
+      },
+    });
+    expect(c.seeding).toBe("split + edit-candidate check + edit re-order + agent citations");
+    expect(c.label).toBe(
+      "SPLIT SEEDING (resolveChangeSeeds over the hybrid search, as defaultSeedChange; table filter=off" +
+        "; + #1756 LLM edit-candidate check, IMPACT_LLM_EDIT_VERIFY=1" +
+        "; + #1798 LLM edit re-order, IMPACT_LLM_EDIT_RERANK=1" +
+        "; + #1759 stored code agent citations lead, IMPACT_AGENT_SEEDS=1)",
+    );
+  });
+
+  it("labels one stage as it always has", () => {
+    expect(
+      describeConfiguration({
+        splitSeeding: { searcher, loadSymbols, editCandidateReranker: vi.fn() },
+      }).label,
+    ).toBe(
+      "SPLIT SEEDING (resolveChangeSeeds over the hybrid search, as defaultSeedChange; table filter=off" +
+        "; + #1798 LLM edit re-order, IMPACT_LLM_EDIT_RERANK=1)",
+    );
+  });
+});
+
 describe("the split seeding with the stored agent citations leading (#1823)", () => {
   it("names the stage, and leads with the cited file for a change with a requirement id", async () => {
     const loadCitations = vi.fn(async () => [

@@ -38,6 +38,11 @@ process.env.EMBED_INPROCESS_RUNTIME = process.env.EMBED_INPROCESS_RUNTIME ?? "in
 // (`local-capability-discovery.test.ts`).
 process.env.LOCAL_GEMMA_DISCOVER_CAPABILITIES =
   process.env.LOCAL_GEMMA_DISCOVER_CAPABILITIES ?? "0";
+// #1835 — a requirement write schedules a background reconcile of the
+// requirement vectors, which would embed and write a vector table from whatever
+// suite happened to write a requirement. Off here; its own tests turn it on.
+process.env.REQUIREMENT_EMBEDDINGS_SYNC_ON_WRITE =
+  process.env.REQUIREMENT_EMBEDDINGS_SYNC_ON_WRITE ?? "0";
 // Epic #158 — never auto-start OTel during tests so individual specs can
 // install their own SpanProcessor.
 process.env.OTEL_SDK_DISABLED = process.env.OTEL_SDK_DISABLED ?? "true";

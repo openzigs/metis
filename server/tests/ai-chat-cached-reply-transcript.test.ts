@@ -40,7 +40,17 @@ vi.mock("../src/lib/ai/semantic-cache.js", () => ({
     lookup: async () => ({ response: "the cached answer" }),
     store: async () => undefined,
   }),
+  // #1844 — an unscoped session's scope; the route asks for it before the lookup.
+  buildSemanticCacheScope: async () => ({
+    model: "stub",
+    systemPromptHash: "h",
+    projectId: null,
+    contentVersion: "unscoped",
+    callerScope: "u1",
+    conversationHash: "c",
+  }),
   shouldSkipCache: () => false,
+  shouldStoreTurn: () => true,
 }));
 
 const { aiRouter, setAIProviderForTests } = await import("../src/routes/ai.js");

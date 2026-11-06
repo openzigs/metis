@@ -963,6 +963,18 @@ reached document chunks only. It is now wired end to end:
     worst case across four projects; each filter variant adds an index, but no production
     caller passes a filter today.
 
+**Requirement embeddings (#1835, Epic #1828).** Each live requirement (title, body,
+acceptance criteria) is embedded into `<projectId>__requirements` in the same
+`VectorStore`, with its content hash and model tag in Prisma (`RequirementEmbedding`)
+— the symbol pattern above (`lib/requirements/requirement-embeddings.ts`). Because
+requirements are written from many places and a re-run deletes and recreates them, there
+is no per-writer hook: `syncRequirementEmbeddings(projectId)` reconciles the namespace with
+the current rows (embed new or changed, delete gone or soft-deleted, rebuild on a model
+change). Writers only enqueue it, debounced, through the `noteProjectRequirementsChanged` /
+`noteRequirementsChanged` signals they already send (`REQUIREMENT_EMBEDDINGS_SYNC_ON_WRITE=0`
+turns the warm-up off); `findNearestRequirements` runs it first, so a query never reads an
+index older than the requirements, and re-reads every hit on project, id and `deletedAt`.
+
 **`search_code_symbols` (#730, Epic #725)** — the same hybrid (BM25 + vector RRF) symbol
 tool chat got in Epic #712 (`createSearchSymbolsTool`), now offered to Winston's agentic
 loop. It is **complementary to #729's passive fused-symbol seeding**: the seed grounds
@@ -3097,9 +3109,13 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   filter. With `SplitSeedingOptions.agentSeeds` set, the stored citations lead,
   translated onto the fixture's paths and symbols by `translateCitations`; without
   it, the run is A7O. The tables are unioned per requirement, and the result sits
-  next to A0 on the split seeding. Each analysis and each reading run is appended
-  to `<partials>/table-guard/records.jsonl`, so `--guard-steps` bounds a call and
-  the same `--merge` resumes.
+  next to A0 on the split seeding. Each analysis and each reading run (A0's
+  mapper reading included, #1847) is appended to
+  `<partials>/table-guard/records.jsonl`, so `--guard-steps` bounds a call and
+  the same `--merge` resumes. #1847 — each record carries the fixture's and the
+  repository pin's fingerprint, and a run is refused when an analysis's stored
+  requirement ids no longer resolve; `guardPairedDifferences` computes the
+  paired t-intervals over the records.
 - **Edit-candidate re-order (#1798)** — behind `IMPACT_LLM_EDIT_RERANK` (key
   registry, tunable, **off**). It is the bounded exception to the #931 rule
   (docs/IMPACT_ANALYSIS_LLM_STAGES.md): one call per change and project
@@ -3180,7 +3196,16 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   check and in the #1798 re-order (`relatedOutsideEditFiles`). A
   cited file the graph no longer holds is dropped and counted. The channel is
   `code-agent` in `seedEvidence`, whose `agentCitations` records used, stale and
-  led; the run summary gains one sentence. It REUSES the pass instead of running
+  led; the run summary gains one sentence. **#1832 — freshness:** the order is
+  the freshness tier first (`fresh`, then `moved`, then `unverified`, epic
+  #1827), then the surer, then citation order. A citation re-validation marked
+  `stale` (#1831) seeds nothing, neither in the lead nor in the tail. It is
+  counted as `agentCitations.demotedStaleCitations`, and `unverifiedCitations`
+  counts the seeded citations no re-ingest has checked yet. Both are returned on
+  the item's `seedEvidence` by `GET /api/impact-analyses/:id`, and the summary
+  sentence says how many were set aside. The rule is additive: a stale
+  citation's file that the hybrid search finds on its own stays where search
+  ranked it. With the flag off nothing changes. It REUSES the pass instead of running
   one, so the impact request makes no model call for it: #1755 measured a fresh
   Sonnet pass at a median 52 s on a three-repository project, against the 60 s
   impact deadline. The reason it leads instead of appending: the citations alone

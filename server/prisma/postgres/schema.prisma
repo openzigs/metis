@@ -1540,6 +1540,9 @@ model Requirement {
   /// #1621 — portfolio assessments started from this requirement (SetNull: an
   /// assessment outlives the re-run that recreates its requirement).
   portfolioAssessments PortfolioAssessment[]
+  /// #1835 — the content hash and model tag of this requirement's vector in
+  /// `<projectId>__requirements` (cascade: a hard delete takes it with it).
+  embedding         RequirementEmbedding?
 
   @@unique([projectId, externalSource, externalId], name: "requirement_external_dedup")
   @@index([projectId])
@@ -3985,6 +3988,33 @@ model CodeSymbolEmbedding {
   @@index([projectId, embeddingModel])
   @@index([codeGraphId])
   @@map("code_symbol_embeddings")
+}
+
+/// Issue #1835 (epic #1828) — bookkeeping for one requirement's embedding.
+///
+/// As for `CodeSymbolEmbedding`, the VECTOR lives in the shared vector store,
+/// under the namespace `<projectId>__requirements`, never in Prisma. This row
+/// holds what the reconcile (`syncRequirementEmbeddings`) compares: the hash of
+/// the embedded text (title, body, acceptance criteria) TAGGED with the model
+/// that embedded it, so an edit or an embedder change re-embeds and nothing
+/// else does. Requirements are deleted and recreated on analysis re-runs, so
+/// the row is keyed on `requirementId` and cascade-deleted with it.
+model RequirementEmbedding {
+  id             String   @id @default(cuid())
+  /// 1:1 with the requirement; cascade-deleted with it.
+  requirementId  String   @unique
+  /// Denormalised from the requirement: the reconcile reads one project's rows.
+  projectId      String
+  /// SHA-256 of `embeddingModel` + the embedded text.
+  contentHash    String
+  /// The id of the model whose vector is live for this requirement.
+  embeddingModel String
+  embeddedAt     DateTime @default(now())
+
+  requirement Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("requirement_embeddings")
 }
 
 

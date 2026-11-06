@@ -110,6 +110,7 @@ scrape_configs:
 - `metis_http_request_errors_total{method,route}` — RED: errors (status ≥ 500).
 - `metis_mcp_server_status{server,name}` — gauge: `1` ready, `-1` error, `0` stopped/disabled.
 - `metis_socket_events_total{namespace,event}` — server-side Socket.IO emits.
+- `metis_chat_tool_result_cache_total{tool,outcome}` — chat read-tool result cache lookups (#1843): `hit`, `miss`, or `bypass` (content version incomplete or unreadable).
 - Default Node.js process metrics (CPU, memory, GC, event-loop lag) via `prom-client`.
 
 ### 2.2 Log shipping
@@ -1578,7 +1579,7 @@ prompts and context. METIS uses two complementary mechanisms:
 
 | Path | Mechanism | Configuration |
 |------|-----------|---------------|
-| **Chat/stream, discussions, spec-kit** (interactive flows) | The server sets `promptCaching.system` + a `callType` tag on these flows (#700). Spec Kit sets it only on `/speckit.plan`, whose five calls share the constitution + project-context prefix; on native Anthropic the breakpoint ends that prefix (`promptCaching.systemPrefix`) so four of the five calls read the first's write, and single-call commands request no cache write (#1144). The flags are **honoured only** on the BedrockDirect (`extra_body.prompt_caching`) and native-Anthropic (`cache_control`) providers; on the plain OpenAI-compatible / bedrock-access-gateway path they are an **inert no-op** and caching is done by the gateway itself. | Server flags are automatic; the gateway path additionally needs `ENABLE_PROMPT_CACHING=true` on the bedrock-access-gateway container (#656) |
+| **Chat/stream, discussions, spec-kit** (interactive flows) | The server sets `promptCaching.system` + a `callType` tag on these flows (#700). A chat turn's **tool loop** on native Anthropic also sets `promptCaching.messages`, so each model call's breakpoint moves to the newest tool results and the next call reads the earlier transcript back at 0.1x (#1842; two of the four breakpoints, one TTL; every other provider key keeps the system-only request byte for byte). Spec Kit sets it only on `/speckit.plan`, whose five calls share the constitution + project-context prefix; on native Anthropic the breakpoint ends that prefix (`promptCaching.systemPrefix`) so four of the five calls read the first's write, and single-call commands request no cache write (#1144). The flags are **honoured only** on the BedrockDirect (`extra_body.prompt_caching`) and native-Anthropic (`cache_control`) providers; on the plain OpenAI-compatible / bedrock-access-gateway path they are an **inert no-op** and caching is done by the gateway itself. | Server flags are automatic; the gateway path additionally needs `ENABLE_PROMPT_CACHING=true` on the bedrock-access-gateway container (#656) |
 | **Analysis/docs-gen** (BedrockDirectProvider) | Per-request `extra_body.prompt_caching` sent by the server | Automatic when `BEDROCK_GATEWAY_URL` + `BEDROCK_GATEWAY_API_KEY` are set |
 | **Native Anthropic** (AnthropicProvider) | Per-block `cache_control` on the system + last-user breakpoints; TTL via `ANTHROPIC_PROMPT_CACHE_TTL` (#702) | Automatic when `AI_PROVIDER=anthropic` |
 
@@ -1593,6 +1594,45 @@ PROMPT_CACHE_TTL=1h          # optional — extends the gateway path from 5min t
                              # native-Anthropic ANTHROPIC_PROMPT_CACHE_TTL (#702).
                              # See the TTL-availability matrix below.
 ```
+
+#### Chat tool-result cache (#1843)
+
+Chat's read tools (`search_code_graph`, `search_code_symbols`, `read_file_slice`,
+`search-knowledge`) keep their results in an in-process LRU cache. The cache is bounded at
+500 entries and 32 MiB, and each entry lives for 30 minutes. The key is the tool, its
+canonical arguments, the project, the caller and the project's **content version**
+(`server/src/lib/projects/content-version.ts`). The content version is a hash of:
+
+- each code graph's `commitSha` and `lastIndexedAt`, which only a finished ingest writes (#758);
+- the project's symbol-embedding counts per model;
+- every document row's indexing state;
+- the active embedder model.
+
+A re-ingest, a document upload, edit or delete, or an embedder model change therefore
+makes every older entry unreachable. A project with a code graph that has no `commitSha`
+is not cached at all. Error results are never cached.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `CHAT_TOOL_RESULT_CACHE_ENABLED` | on | `0` turns the cache off |
+
+Hit, miss and bypass counts: `metis_chat_tool_result_cache_total` on `/metrics`.
+
+#### Semantic answer cache (off by default, #1844)
+
+`server/src/lib/ai/semantic-cache.ts` can serve a stored `/chat` answer for a repeated
+question. It is **off** unless `SEMANTIC_CACHE_ENABLED=1`, and it is meant only for a
+measured trial (#1845). When it is on:
+
+- An entry is scoped to the model, the system-prompt hash, the project, the project's
+  content version (above), the caller and the conversation so far.
+- An exact match on the normalised question is tried first. The similarity path needs
+  cosine ≥ 0.97 (`SEMANTIC_CACHE_THRESHOLD`; it was 0.92 before #1844).
+- A turn that called any tool is never stored, and neither is a project whose content
+  version is incomplete.
+
+Chat questions and answers are never written to the vector store
+([ADR 0022](decisions/0022-no-chat-answers-in-the-vector-store.md)).
 
 #### Measuring what caching saves (#1277)
 
@@ -1747,6 +1787,7 @@ toward ITPM. Sources: AWS doc above,
 | Key / tag | Path | Default | Issue |
 |---|---|---|---|
 | `promptCaching.system` + `callType` on chat/discussions/spec-kit (byte-stable chat prompt) | BedrockDirect + native only; inert on SDK/gateway | flags on, inert on gateway | #700 |
+| `promptCaching.messages` on the chat tool loop (moving transcript breakpoint) | native Anthropic only (`anthropic` provider key) | on | #1842 |
 | `ANTHROPIC_PROMPT_CACHE_TTL` (`5m`\|`1h`) | native Anthropic only | `5m` | #702 |
 | `DOCS_GEN_CLAIM_MODEL` (verdict: **keep Haiku** for claim extraction) | docs-gen claim extraction | unset → Haiku default kept | #701 |
 | cache-aware `estimateUsageCostUsd` (0.1× read, 1.25× 5m / 2× 1h write; gateway path understates the write premium) | all cost estimates | — | #698 |
