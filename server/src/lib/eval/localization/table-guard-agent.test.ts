@@ -463,11 +463,29 @@ describe("a resumed table guard checks what it resumes against (#1847)", () => {
   it("refuses when one of an analysis's requirements was deleted, the rest still there", async () => {
     const store = memoryStore();
     const db = new Map<string, string>();
-    const first = fakes({ db });
+    const order = fixture.requirements.find(
+      (r) => r.text === "Store a shipping method on each order",
+    )!;
+    const alsoFor = { text: CITED.text, also: order.text };
+    const first = fakes({ db, alsoFor });
     await createAgentSeedGuard({ ...first.deps, store, maxSteps: total }).A7();
-    db.delete("pr-3");
-    await expect(createAgentSeedGuard({ ...fakes({ db }).deps, store }).A7O()).rejects.toThrow(
-      /analysis an-3 \(REQ-03, run 1\).*1 no longer resolve/,
+    // The run-1 analysis of the product update persisted two requirements:
+    // delete only the second, so one of its ids still resolves.
+    const analysis = store.records.find(
+      (r) => r.kind === "analysis" && r.requirement === CITED.id && r.run === 1,
+    );
+    if (analysis?.kind !== "analysis") throw new Error("the analysis should be recorded");
+    expect(analysis.requirementIds).toHaveLength(2);
+    const [kept, deleted] = analysis.requirementIds;
+    expect(deleted).toMatch(/^pr-\d+-b$/);
+    db.delete(deleted!);
+    expect(db.has(kept!)).toBe(true);
+    await expect(
+      createAgentSeedGuard({ ...fakes({ db, alsoFor }).deps, store }).A7O(),
+    ).rejects.toThrow(
+      new RegExp(
+        `analysis ${analysis.analysisId} \\(${CITED.id}, run 1\\) persisted 2 requirement\\(s\\); 1 no longer resolve`,
+      ),
     );
   });
 
