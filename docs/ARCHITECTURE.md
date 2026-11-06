@@ -3173,7 +3173,16 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   check and in the #1798 re-order (`relatedOutsideEditFiles`). A
   cited file the graph no longer holds is dropped and counted. The channel is
   `code-agent` in `seedEvidence`, whose `agentCitations` records used, stale and
-  led; the run summary gains one sentence. It REUSES the pass instead of running
+  led; the run summary gains one sentence. **#1832 — freshness:** the order is
+  the freshness tier first (`fresh`, then `moved`, then `unverified`, epic
+  #1827), then the surer, then citation order. A citation re-validation marked
+  `stale` (#1831) seeds nothing, neither in the lead nor in the tail. It is
+  counted as `agentCitations.demotedStaleCitations`, and `unverifiedCitations`
+  counts the seeded citations no re-ingest has checked yet. Both are returned on
+  the item's `seedEvidence` by `GET /api/impact-analyses/:id`, and the summary
+  sentence says how many were set aside. The rule is additive: a stale
+  citation's file that the hybrid search finds on its own stays where search
+  ranked it. With the flag off nothing changes. It REUSES the pass instead of running
   one, so the impact request makes no model call for it: #1755 measured a fresh
   Sonnet pass at a median 52 s on a three-repository project, against the 60 s
   impact deadline. The reason it leads instead of appending: the citations alone

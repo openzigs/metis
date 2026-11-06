@@ -153,7 +153,13 @@ describe("leadWithAgentCitations (#1759)", () => {
     const a0 = out.editCandidates.filter((m) => m.filePath === AGENT_FILES[0]);
     expect(a0.map((m) => m.codeSymbolId)).toEqual(["A0-1", "A0-2"]);
     expect(a0.every((m) => m.confidence === 0.5)).toBe(true);
-    expect(out.evidence?.agentCitations).toEqual({ used: 4, stale: 0, led: 3 });
+    expect(out.evidence?.agentCitations).toEqual({
+      used: 4,
+      stale: 0,
+      led: 3,
+      demotedStaleCitations: 0,
+      unverifiedCitations: 4,
+    });
   });
 
   it("leads with at most MAX_AGENT_LEAD_FILES files; later citations follow the candidates", async () => {
@@ -201,7 +207,13 @@ describe("leadWithAgentCitations (#1759)", () => {
     expect([...new Set(listed.map((m) => m.filePath))]).toEqual(overflow);
     expect(listed.every((m) => m.confidence === 0.5 * RELATED_CONFIDENCE_FACTOR)).toBe(true);
     for (const m of HYBRID.related) expect(out.related).toContain(m);
-    expect(out.evidence?.agentCitations).toEqual({ used: cited.length, stale: 0, led: 5 });
+    expect(out.evidence?.agentCitations).toEqual({
+      used: cited.length,
+      stale: 0,
+      led: 5,
+      demotedStaleCitations: 0,
+      unverifiedCitations: cited.length,
+    });
   });
 
   it("removes a cited file's hits from related: never both to edit and related (#1818)", async () => {
@@ -218,7 +230,13 @@ describe("leadWithAgentCitations (#1759)", () => {
       cite("gone/two.go"),
       cite("gone/one.go", { startLine: 4, endLine: 6 }),
     ]);
-    expect(out.evidence?.agentCitations).toEqual({ used: 1, stale: 3, led: 1 });
+    expect(out.evidence?.agentCitations).toEqual({
+      used: 1,
+      stale: 3,
+      led: 1,
+      demotedStaleCitations: 0,
+      unverifiedCitations: 1,
+    });
     const graphFiles = new Set(GRAPH.map((r) => r.filePath));
     expect(out.editCandidates.every((m) => graphFiles.has(m.filePath))).toBe(true);
     expect(files(out)[0]).toBe(AGENT_FILES[3]);
@@ -227,10 +245,22 @@ describe("leadWithAgentCitations (#1759)", () => {
   it("with no usable citation, leaves the candidates as they were and counts what it read", async () => {
     const none = await lead([]);
     expect(none.editCandidates).toEqual(HYBRID.editCandidates);
-    expect(none.evidence?.agentCitations).toEqual({ used: 0, stale: 0, led: 0 });
+    expect(none.evidence?.agentCitations).toEqual({
+      used: 0,
+      stale: 0,
+      led: 0,
+      demotedStaleCitations: 0,
+      unverifiedCitations: 0,
+    });
     const stale = await lead([cite("gone/one.go")]);
     expect(stale.editCandidates).toEqual(HYBRID.editCandidates);
-    expect(stale.evidence?.agentCitations).toEqual({ used: 0, stale: 1, led: 0 });
+    expect(stale.evidence?.agentCitations).toEqual({
+      used: 0,
+      stale: 1,
+      led: 0,
+      demotedStaleCitations: 0,
+      unverifiedCitations: 0,
+    });
     expect(stale.evidence?.editCandidates.map((e) => e.filePath)).toEqual(files(HYBRID));
   });
 
@@ -243,7 +273,13 @@ describe("leadWithAgentCitations (#1759)", () => {
     };
     const out = await leadWithAgentCitations(HYBRID, "req-1", "p1", deps);
     expect(out.editCandidates).toEqual(HYBRID.editCandidates);
-    expect(out.evidence?.agentCitations).toEqual({ used: 0, stale: 0, led: 0 });
+    expect(out.evidence?.agentCitations).toEqual({
+      used: 0,
+      stale: 0,
+      led: 0,
+      demotedStaleCitations: 0,
+      unverifiedCitations: 0,
+    });
     expect(deps.loadFileSymbols).not.toHaveBeenCalled();
   });
 
@@ -317,6 +353,87 @@ describe("citationOrder (#1818)", () => {
     ]);
     // It does not reorder the caller's array.
     expect(links.map((l) => l.filePath)).toEqual(["a.go", "b.go", "c.go", "d.go", "e.go"]);
+  });
+});
+
+describe("freshness demotion (#1832)", () => {
+  it("a stale citation is not in the lead files and the fresh one is first", async () => {
+    const out = await lead([
+      cite(AGENT_FILES[0]!, { confidence: 0.9, freshness: "stale" }),
+      cite(AGENT_FILES[1]!, { confidence: 0.4, freshness: "fresh" }),
+    ]);
+    expect(files(out)[0]).toBe(AGENT_FILES[1]);
+    expect(files(out)).not.toContain(AGENT_FILES[0]);
+    expect(out.related.map((m) => m.filePath)).not.toContain(AGENT_FILES[0]);
+    expect(out.evidence?.agentCitations).toEqual({
+      used: 1,
+      stale: 0,
+      led: 1,
+      demotedStaleCitations: 1,
+      unverifiedCitations: 0,
+    });
+  });
+
+  it("a stale citation of a file the hybrid search found leaves that file where search ranked it", async () => {
+    const hybridFiles = files(HYBRID);
+    const searched = hybridFiles[2]!;
+    const out = await lead([
+      cite(searched, { confidence: 1, freshness: "stale" }),
+      cite(AGENT_FILES[0]!, { freshness: "fresh" }),
+    ]);
+    // The search's own order after the lead: the stale citation did not move it up.
+    expect(files(out)).toEqual([AGENT_FILES[0], ...hybridFiles]);
+    expect(out.editCandidates.filter((m) => m.filePath === searched)).toEqual(
+      HYBRID.editCandidates.filter((m) => m.filePath === searched),
+    );
+    const channels = out.evidence?.editCandidates.find((e) => e.filePath === searched)?.channels;
+    expect(channels).toEqual(["hybrid"]);
+  });
+
+  it("unverified citations rank after fresh and moved ones, and are not dropped", async () => {
+    const out = await lead([
+      cite(AGENT_FILES[0]!, { confidence: 1 }), // no column read: unverified
+      cite(AGENT_FILES[1]!, { confidence: 1, freshness: "unverified" }),
+      cite(AGENT_FILES[2]!, { confidence: 0.1, freshness: "moved" }),
+      cite(AGENT_FILES[3]!, { confidence: 0.2, freshness: "fresh" }),
+    ]);
+    expect(files(out).slice(0, 4)).toEqual([
+      AGENT_FILES[3],
+      AGENT_FILES[2],
+      AGENT_FILES[0],
+      AGENT_FILES[1],
+    ]);
+    expect(out.evidence?.agentCitations).toMatchObject({
+      used: 4,
+      led: 4,
+      demotedStaleCitations: 0,
+      unverifiedCitations: 2,
+    });
+  });
+
+  it("only stale citations: the seeds are as they were, and every one is counted", async () => {
+    const out = await lead([
+      cite(AGENT_FILES[0]!, { freshness: "stale" }),
+      cite(AGENT_FILES[1]!, { freshness: "stale" }),
+    ]);
+    expect(out.editCandidates).toEqual(HYBRID.editCandidates);
+    expect(out.evidence?.agentCitations).toEqual({
+      used: 0,
+      stale: 0,
+      led: 0,
+      demotedStaleCitations: 2,
+      unverifiedCitations: 0,
+    });
+  });
+
+  it("citationOrder: freshness tier first, then confidence, then stored order", () => {
+    const order = citationOrder([
+      cite("u.go", { confidence: 0.9 }),
+      cite("m.go", { confidence: 0.1, freshness: "moved" }),
+      cite("f2.go", { confidence: 0.3, freshness: "fresh" }),
+      cite("f1.go", { confidence: 0.6, freshness: "fresh" }),
+    ]);
+    expect(order.map((l) => l.filePath)).toEqual(["f1.go", "f2.go", "m.go", "u.go"]);
   });
 });
 
