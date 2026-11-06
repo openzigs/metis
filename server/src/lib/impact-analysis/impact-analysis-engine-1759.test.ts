@@ -186,7 +186,13 @@ describe("a run about stored requirements with IMPACT_AGENT_SEEDS (#1759)", () =
     ]);
     await run(prisma, { agentSeeds: true });
     const evidence = evidenceOf(items[0]!);
-    expect(evidence.agentCitations).toEqual({ used: 1, stale: 1, led: 1 });
+    expect(evidence.agentCitations).toEqual({
+      used: 1,
+      stale: 1,
+      led: 1,
+      demotedStaleCitations: 0,
+      unverifiedCitations: 1,
+    });
     expect(evidence.editCandidates[0]).toEqual({ filePath: CITED_FILE, channels: ["code-agent"] });
     expect(evidence.editCandidates.slice(1).every((e) => e.channels.includes("hybrid"))).toBe(true);
     expect(affected.find((s) => s.codeSymbolId === "CITED-1")).toMatchObject({
@@ -232,7 +238,13 @@ describe("a run about stored requirements with IMPACT_AGENT_SEEDS (#1759)", () =
         where: { requirementId: REQ.id, projectId: "p1", source: "analysis-grounding" },
       }),
     );
-    expect(evidenceOf(items[0]!).agentCitations).toEqual({ used: 0, stale: 0, led: 0 });
+    expect(evidenceOf(items[0]!).agentCitations).toEqual({
+      used: 0,
+      stale: 0,
+      led: 0,
+      demotedStaleCitations: 0,
+      unverifiedCitations: 0,
+    });
   });
 });
 
@@ -345,7 +357,13 @@ describe("computeProjectImpact: the citations lead after the LLM re-order (#1759
     expect(loadCitations).toHaveBeenCalledWith("req-1", "p1");
     expect(result.seedEvidence?.editCandidates.map((e) => e.filePath)).toEqual(["b.go", "a.go"]);
     expect(result.seedEvidence?.reranker).toBeDefined();
-    expect(result.seedEvidence?.agentCitations).toEqual({ used: 1, stale: 0, led: 1 });
+    expect(result.seedEvidence?.agentCitations).toEqual({
+      used: 1,
+      stale: 0,
+      led: 1,
+      demotedStaleCitations: 0,
+      unverifiedCitations: 1,
+    });
   });
 
   it("a change with no tracked requirement reads no citation", async () => {
@@ -373,5 +391,48 @@ describe("agentCitationNotice (#1759)", () => {
     expect(agentCitationNotice({ used: 0, stale: 2, led: 0 })).toBe(
       'No code-agent citation from "Evaluate new requirements" seeded the files to edit. 2 code-agent citations were dropped: the cited file is no longer in the code graph.',
     );
+  });
+
+  it("#1832 — says how many out-of-date citations were set aside, only when there are some", () => {
+    expect(agentCitationNotice({ used: 1, stale: 0, led: 1, demoted: 0 })).toBe(
+      agentCitationNotice({ used: 1, stale: 0, led: 1 }),
+    );
+    expect(agentCitationNotice({ used: 1, stale: 1, led: 1, demoted: 2 })).toBe(
+      '1 code-agent citation from "Evaluate new requirements" put 1 file at the top of the files to edit; every file the search picked is still listed. 1 code-agent citation was dropped: the cited file is no longer in the code graph. 2 code-agent citations were set aside: the code they cite changed since the analysis.',
+    );
+  });
+});
+
+describe("IMPACT_AGENT_SEEDS off: freshness changes nothing (#1832)", () => {
+  it("a run with fresh, stale and unverified citations is the run with none (snapshot)", async () => {
+    const plain = prismaMock(reqRun(), []);
+    await run(plain.prisma);
+    const off = prismaMock(reqRun(), [
+      cite(CITED_FILE, { freshness: "stale", confidence: 0.99 }),
+      cite("internal/reader/fresh.go", { freshness: "fresh" }),
+      cite("internal/reader/old.go", { freshness: "unverified" }),
+    ]);
+    await run(off.prisma, { agentSeeds: false });
+    expect(off.mappingFindMany).not.toHaveBeenCalled();
+    expect(off.items).toEqual(plain.items);
+    expect(off.affected).toEqual(plain.affected);
+    expect(off.analyses.get("ia")?.summary).toEqual(plain.analyses.get("ia")?.summary);
+    const directFiles = [
+      ...new Set(
+        off.affected.filter((a) => a.relation === "direct").map((a) => String(a.filePath)),
+      ),
+    ];
+    expect({ items: off.items.length, directFiles }).toMatchInlineSnapshot(`
+      {
+        "directFiles": [
+          "internal/ui/unread_mark_all_read.go",
+          "client/client.go",
+          "internal/storage/entry.go",
+          "internal/ui/static/js/app.js",
+          "internal/storage/feed.go",
+        ],
+        "items": 1,
+      }
+    `);
   });
 });

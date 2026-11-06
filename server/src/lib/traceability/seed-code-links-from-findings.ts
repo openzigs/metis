@@ -41,6 +41,15 @@
  *     requirement's evidence findings in the order its labels list them, then
  *     each finding's citations in theirs — so `IMPACT_AGENT_SEEDS`, which reads
  *     them back in stored order, sees the same order on every run.
+ *   - Versioned (#1830): each row records the code graph it was read from
+ *     (`codeGraphId`, the graph of the repository the cited file belongs to),
+ *     that graph's `commitSha` at write time, and `freshness = "fresh"` with
+ *     `validatedAt`, because the citation was just checked against the graph.
+ *     The repository is the one the citation names (`repoConnectionId`, or the
+ *     `connector:repo:<id>:` key), else the one the finding's code pass ran
+ *     for; a file both repositories hold resolves against that repository's
+ *     symbols. When no single graph can be told apart the row is written
+ *     `unverified` with no graph, never stamped with a guess.
  *   - Prisma is dependency-injected so the orchestration is unit-testable with
  *     no DB.
  */
@@ -116,7 +125,16 @@ export interface CitationTarget {
   startLine?: number;
   endLine?: number;
   symbolId?: string;
+  /**
+   * #1830 — the repository the citation names: a code citation's
+   * server-stamped `repoConnectionId` (#1611), or the `<id>` of a
+   * `connector:repo:<id>:src/` document key.
+   */
+  repoConnectionId?: string;
 }
+
+/** The `<id>` of a `connector:repo:<id>:src/…` (or lenient `repo:<id>:src/…`) key. */
+const REPO_KEY_CONNECTOR = /^(?:connector:)?repo:([^:]+):src\//;
 
 /** Repo-relative form of a path: forward slashes, no leading `./` or `/`. */
 function normalizeFilePath(p: string): string {
@@ -167,13 +185,18 @@ export function citationTargets(citations: unknown): CitationTarget[] {
         startLine: Math.min(c.startLine, c.endLine),
         endLine: Math.max(c.startLine, c.endLine),
         ...(typeof c.symbolId === "string" && c.symbolId ? { symbolId: c.symbolId } : {}),
+        ...(typeof c.repoConnectionId === "string" && c.repoConnectionId
+          ? { repoConnectionId: c.repoConnectionId }
+          : {}),
       });
       continue;
     }
     if (typeof c.filename === "string") {
-      const rel = extractRepoRelPath(c.filename.trim());
+      const key = c.filename.trim();
+      const rel = extractRepoRelPath(key);
       const filePath = rel === null ? "" : normalizeFilePath(rel);
-      if (filePath) targets.push({ filePath });
+      const repoConnectionId = REPO_KEY_CONNECTOR.exec(key)?.[1];
+      if (filePath) targets.push({ filePath, ...(repoConnectionId ? { repoConnectionId } : {}) });
     }
   }
   return targets;
@@ -184,6 +207,22 @@ interface GraphSymbol {
   filePath: string;
   startLine: number;
   endLine: number;
+  /** #1830 — the symbol's code graph, and that graph's repository and commit. */
+  codeGraphId: string;
+  graph: { repoConnectionId: string | null; commitSha: string | null };
+}
+
+/** #1830 — the code-graph version a citation was read from. */
+interface CitationVersion {
+  codeGraphId: string | null;
+  commitSha: string | null;
+}
+
+/** The one graph every symbol in `symbols` belongs to; nulls when they span several. */
+function soleGraph(symbols: GraphSymbol[]): CitationVersion {
+  const ids = new Set(symbols.map((s) => s.codeGraphId));
+  if (ids.size !== 1) return { codeGraphId: null, commitSha: null };
+  return { codeGraphId: symbols[0].codeGraphId, commitSha: symbols[0].graph.commitSha };
 }
 
 /** The innermost symbol whose range encloses `[start, end]`, if any. */
@@ -201,15 +240,37 @@ function enclosingSymbol(
   return best;
 }
 
-/** Resolve a citation against the graph symbols of its file; `null` when unresolved. */
+/**
+ * Resolve a citation against the graph symbols of its file; `null` when
+ * unresolved. #1830 — when the citation's repository holds the file, only that
+ * repository's symbols are considered, so a path two repositories share
+ * resolves (and is stamped) to the right one.
+ */
 function resolveTarget(
   target: CitationTarget,
   symbolsByFile: Map<string, GraphSymbol[]>,
-): Pick<SeedCandidate, "codeSymbolId" | "filePath" | "startLine" | "endLine"> | null {
-  const inFile = symbolsByFile.get(target.filePath);
-  if (!inFile || inFile.length === 0) return null; // not code the graph knows
+  repoConnectionId: string | undefined,
+): Omit<SeedCandidate, "requirementId" | "projectId" | "confidence"> | null {
+  const allInFile = symbolsByFile.get(target.filePath);
+  if (!allInFile || allInFile.length === 0) return null; // not code the graph knows
+  const inRepo = repoConnectionId
+    ? allInFile.filter((s) => s.graph.repoConnectionId === repoConnectionId)
+    : [];
+  const inFile = inRepo.length > 0 ? inRepo : allInFile;
+  // A citation naming a repository whose graph does not hold the file still
+  // resolves its location against the other repos, but is never stamped with
+  // another repository's graph: the row is written unverified.
+  const foreignRepo = repoConnectionId !== undefined && inRepo.length === 0;
+  const versionOf = (v: CitationVersion): CitationVersion =>
+    foreignRepo ? { codeGraphId: null, commitSha: null } : v;
   if (target.startLine === undefined || target.endLine === undefined) {
-    return { codeSymbolId: null, filePath: target.filePath, startLine: null, endLine: null };
+    return {
+      codeSymbolId: null,
+      filePath: target.filePath,
+      startLine: null,
+      endLine: null,
+      ...versionOf(soleGraph(inFile)),
+    };
   }
   const sym =
     (target.symbolId ? inFile.find((s) => s.id === target.symbolId) : undefined) ??
@@ -220,6 +281,7 @@ function resolveTarget(
       filePath: sym.filePath,
       startLine: sym.startLine,
       endLine: sym.endLine,
+      ...versionOf({ codeGraphId: sym.codeGraphId, commitSha: sym.graph.commitSha }),
     };
   }
   return {
@@ -227,6 +289,7 @@ function resolveTarget(
     filePath: target.filePath,
     startLine: target.startLine,
     endLine: target.endLine,
+    ...versionOf(soleGraph(inFile)),
   };
 }
 
@@ -242,6 +305,9 @@ export interface SeedCandidate {
   startLine: number | null;
   endLine: number | null;
   confidence: number;
+  /** #1830 — the graph the citation resolved in; null when no single graph could be told apart. */
+  codeGraphId: string | null;
+  commitSha: string | null;
 }
 
 /**
@@ -285,13 +351,23 @@ export async function seedRequirementCodeLinksFromFindings(
           id: { in: findingIds },
           agentResult: { analysis: { projectId: input.projectId } },
         },
-        select: { id: true, evidence: true, confidence: true },
+        select: {
+          id: true,
+          evidence: true,
+          confidence: true,
+          // #1830 — the repository the finding's code pass ran for (#763).
+          agentResult: { select: { connectorId: true } },
+        },
       })
     ).sort((a, b) => evidenceRank.get(a.id)! - evidenceRank.get(b.id)!);
 
     // Collect the citations that could be code, with the confidence of the
-    // finding that cites them.
-    const cited: Array<{ target: CitationTarget; confidence: number }> = [];
+    // finding that cites them and the repository they name.
+    const cited: Array<{
+      target: CitationTarget;
+      confidence: number;
+      repoConnectionId: string | undefined;
+    }> = [];
     for (const finding of findings) {
       const rawConfidence =
         typeof finding.confidence === "number" && Number.isFinite(finding.confidence)
@@ -301,8 +377,9 @@ export async function seedRequirementCodeLinksFromFindings(
       // DB column has no CHECK, so an out-of-range value (e.g. 1.7) would
       // otherwise propagate and render as "170%" in the UI ConfidenceBadge.
       const confidence = Math.min(1, Math.max(0, rawConfidence));
+      const passRepo = finding.agentResult?.connectorId ?? undefined;
       for (const target of parseCitationTargets(finding.evidence)) {
-        cited.push({ target, confidence });
+        cited.push({ target, confidence, repoConnectionId: target.repoConnectionId ?? passRepo });
       }
     }
     if (cited.length === 0) continue;
@@ -314,7 +391,14 @@ export async function seedRequirementCodeLinksFromFindings(
         projectId: input.projectId,
         filePath: { in: [...new Set(cited.map((c) => c.target.filePath))] },
       },
-      select: { id: true, filePath: true, startLine: true, endLine: true },
+      select: {
+        id: true,
+        filePath: true,
+        startLine: true,
+        endLine: true,
+        codeGraphId: true,
+        graph: { select: { repoConnectionId: true, commitSha: true } },
+      },
     });
     const symbolsByFile = new Map<string, GraphSymbol[]>();
     for (const row of graphRows) {
@@ -327,8 +411,8 @@ export async function seedRequirementCodeLinksFromFindings(
     // A Map keeps first-cited order: a later, surer citation updates the value
     // in place.
     const candidates = new Map<string, SeedCandidate>();
-    for (const { target, confidence } of cited) {
-      const resolved = resolveTarget(target, symbolsByFile);
+    for (const { target, confidence, repoConnectionId } of cited) {
+      const resolved = resolveTarget(target, symbolsByFile, repoConnectionId);
       if (!resolved) continue;
       const key = mappingKey(resolved.filePath, resolved.codeSymbolId);
       const prev = candidates.get(key);
@@ -348,6 +432,7 @@ export async function seedRequirementCodeLinksFromFindings(
     const existingKeys = new Set(existing.map((e) => mappingKey(e.filePath, e.codeSymbolId)));
 
     let seededAny = false;
+    const validatedAt = new Date();
     for (const [key, candidate] of candidates) {
       if (existingKeys.has(key)) {
         linksSkipped += 1;
@@ -363,6 +448,12 @@ export async function seedRequirementCodeLinksFromFindings(
           endLine: candidate.endLine,
           confidence: candidate.confidence,
           source: ANALYSIS_GROUNDING_SOURCE,
+          // #1830 — just checked against this graph; a row whose graph could
+          // not be told apart stays `unverified`, as every pre-#1830 row is.
+          codeGraphId: candidate.codeGraphId,
+          commitSha: candidate.commitSha,
+          freshness: candidate.codeGraphId ? "fresh" : "unverified",
+          validatedAt: candidate.codeGraphId ? validatedAt : null,
         },
       });
       existingKeys.add(key);
