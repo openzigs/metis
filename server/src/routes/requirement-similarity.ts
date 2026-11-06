@@ -7,7 +7,7 @@
  *   POST /api/projects/:projectId/requirements/:requirementId/similar/:otherRequirementId/not-duplicate
  *        (#1838) remembers an analyst's "Not a duplicate" for the pair
  *
- * Both routes run behind `requireProjectAccess()`: a caller who cannot reach the
+ * Every route runs behind `requireProjectAccess()`: a caller who cannot reach the
  * project gets 404, and a requirement id of another project answers 404 from the
  * service (it is looked up on the project AND the id), never its neighbours.
  */
@@ -81,6 +81,7 @@ export function requirementSimilarityRouter(): Router {
   // raise the duplicate warning again. Same write permission as adding a link.
   r.post(
     "/:requirementId/similar/:otherRequirementId/not-duplicate",
+    ...guard,
     requirePermission("project.update"),
     async (req, res) => {
       if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");

@@ -87,4 +87,17 @@ describe("#1837 — the similarity middleware is scoped to the similarity routes
     expect(get.status).toBe(429);
     expect(get.body.error?.code).toBe("REQUIREMENT_SIMILARITY_RATE_LIMITED");
   });
+
+  it("the #1838 not-duplicate route carries the same guard (limiter, auth, project access)", async () => {
+    process.env.REQUIREMENT_SIMILARITY_RATE_LIMIT_MAX = "1";
+    const ip = "198.51.100.73";
+    const url = "/api/projects/p1/requirements/r1/similar/r2/not-duplicate";
+    // The first call is refused by `requireAuth`, the second by the limiter: both
+    // only happen if the guard runs ahead of the handler.
+    const first = await request(app()).post(url).set("X-Forwarded-For", ip);
+    expect(first.status).toBe(401);
+    const second = await request(app()).post(url).set("X-Forwarded-For", ip);
+    expect(second.status).toBe(429);
+    expect(second.body.error?.code).toBe("REQUIREMENT_SIMILARITY_RATE_LIMITED");
+  });
 });
