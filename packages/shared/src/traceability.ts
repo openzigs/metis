@@ -183,6 +183,15 @@ export interface BackfillSpecLinksResult {
 
 // ---- Traceability query (#229) --------------------------------------------
 
+/**
+ * #1830 (epic #1827) — whether a stored code citation still points at the code
+ * it was read from: `fresh` (checked against the code graph), `moved` (found
+ * at a new location, which the link now holds), `stale` (no longer found) or
+ * `unverified` (never checked: every link written before #1830).
+ */
+export const CODE_CITATION_FRESHNESS = ["fresh", "moved", "stale", "unverified"] as const;
+export type CodeCitationFreshness = (typeof CODE_CITATION_FRESHNESS)[number];
+
 /** A code location in a traceability chain. */
 export interface TraceabilityCodeNode {
   codeSymbolId: string | null;
@@ -193,6 +202,15 @@ export interface TraceabilityCodeNode {
   source: SpecMappingSource;
   /** #814 — the mapped file itself classifies as a test (`code-graph/test-conventions.ts`). */
   isTest: boolean;
+  /**
+   * #1830 — a direct requirement→code link's freshness. Optional and additive:
+   * absent on a spec→code link and from a server older than #1830.
+   */
+  freshness?: CodeCitationFreshness;
+  /** #1830 — the commit of the code graph the link was read from; null when unknown. */
+  commitSha?: string | null;
+  /** #1830 — when the freshness was last decided (ISO 8601); null when never. */
+  validatedAt?: string | null;
 }
 
 /** A spec node plus the code it links to. */
