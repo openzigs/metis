@@ -227,6 +227,7 @@ export function ChangedRequirementGroup({
           rows={editRows}
           repo={repo}
           projectLabel={projectName ?? "this project"}
+          staleSetAside={item.seedEvidence?.agentCitations?.demotedStaleCitations ?? 0}
         />
       ) : editCandidates.length > 0 ? (
         <div data-testid="edit-candidates">
