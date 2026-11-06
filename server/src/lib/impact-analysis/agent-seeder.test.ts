@@ -216,6 +216,35 @@ describe("leadWithAgentCitations (#1759)", () => {
     });
   });
 
+  it("a cited file that is already a candidate takes no tail slot (#1825)", async () => {
+    const hybridFiles = files(HYBRID);
+    const lead5 = AGENT_FILES.slice(0, MAX_AGENT_LEAD_FILES);
+    const tail = AGENT_FILES.slice(
+      MAX_AGENT_LEAD_FILES,
+      MAX_AGENT_LEAD_FILES + MAX_AGENT_TAIL_FILES,
+    );
+    // Past the lead: a hybrid candidate first, then a full tail of new files.
+    const out = await lead([...lead5, hybridFiles[1]!, ...tail].map((f) => cite(f)));
+    // Every new file past the lead is still to edit: the candidate used no slot.
+    expect(files(out)).toEqual([...lead5, ...hybridFiles, ...tail]);
+    expect(out.related.some((m) => tail.includes(m.filePath))).toBe(false);
+    // And the candidate's hits are listed once, where the hybrid search put them.
+    const theirs = HYBRID.editCandidates.filter((m) => m.filePath === hybridFiles[1]);
+    expect(out.editCandidates.filter((m) => m.filePath === hybridFiles[1])).toEqual(theirs);
+  });
+
+  it("a cited file past the tail that is already related is listed there once (#1825)", async () => {
+    const relatedFile = HYBRID.related.find((m) => !files(HYBRID).includes(m.filePath))!.filePath;
+    const before = HYBRID.related.filter((m) => m.filePath === relatedFile);
+    const cited = AGENT_FILES.slice(0, MAX_AGENT_LEAD_FILES + MAX_AGENT_TAIL_FILES);
+    const out = await lead([...cited, relatedFile].map((f) => cite(f)));
+    // The graph holds the file: the citation is used, and it overflows the tail.
+    expect(out.evidence?.agentCitations?.used).toBe(cited.length + 1);
+    expect(files(out)).not.toContain(relatedFile);
+    // Its related hits are the search's, unchanged, and not added a second time.
+    expect(out.related.filter((m) => m.filePath === relatedFile)).toEqual(before);
+  });
+
   it("removes a cited file's hits from related: never both to edit and related (#1818)", async () => {
     const relatedFile = HYBRID.related.find((m) => !files(HYBRID).includes(m.filePath))!.filePath;
     const out = await lead([cite(relatedFile)]);

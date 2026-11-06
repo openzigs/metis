@@ -55,6 +55,7 @@ import {
   type LocalizationArm,
   type SeedingFiles,
 } from "./arm-core.js";
+import { ANALYSIS_PASS_GROUP } from "./agent-env.js";
 import { fileKey, type LocalizationCorpus, type LocalizationItem } from "./corpus.js";
 import type { AgentRunStats } from "./scorer.js";
 
@@ -73,8 +74,8 @@ export const ANALYSIS_VARIANTS: Readonly<Record<AnalysisVariant["id"], AnalysisV
 /** The arms that run "Evaluate new requirements": the CLI materializes their database. */
 export const ANALYSIS_ARM_IDS: ReadonlySet<string> = new Set(Object.keys(ANALYSIS_VARIANTS));
 
-/** The pass group the report reads: A7 and A7O must read the same analyses. */
-export const ANALYSIS_PASS_GROUP = "analysis";
+/** The pass group the report reads; defined in `agent-env.ts` so the report needs no engine (#1825). */
+export { ANALYSIS_PASS_GROUP };
 
 /** One item's analyses (one per repository, in manifest order), and what they cost. */
 interface SharedAnalyses {

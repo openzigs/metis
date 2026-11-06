@@ -26,6 +26,7 @@ import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { classifyTestSymbol } from "../code-graph/test-conventions.js";
+import { uniqueCodeLinks } from "./code-link-key.js";
 import { resolveTestedByForTargets, type TestedByPrisma } from "./tested-by.js";
 
 type SpinePrisma = Pick<
@@ -155,25 +156,29 @@ export async function getRequirementChain(
     code: codeBySpec.get(s.specDocumentId) ?? [],
   }));
 
-  const directRows = await prisma.requirementCodeMapping.findMany({
-    where: { requirementId, projectId },
-    select: {
-      codeSymbolId: true,
-      filePath: true,
-      startLine: true,
-      endLine: true,
-      confidence: true,
-      source: true,
-      freshness: true,
-      commitSha: true,
-      validatedAt: true,
-      staleReason: true,
-      previousFilePath: true,
-      previousStartLine: true,
-      previousEndLine: true,
-    },
-    orderBy: [{ confidence: "desc" }],
-  });
+  // #1825 — each (filePath, codeSymbolId) once: the code agent's citation and the
+  // semantic mapper can both link a file. The surer row (read first) is kept.
+  const directRows = uniqueCodeLinks(
+    await prisma.requirementCodeMapping.findMany({
+      where: { requirementId, projectId },
+      select: {
+        codeSymbolId: true,
+        filePath: true,
+        startLine: true,
+        endLine: true,
+        confidence: true,
+        source: true,
+        freshness: true,
+        commitSha: true,
+        validatedAt: true,
+        staleReason: true,
+        previousFilePath: true,
+        previousStartLine: true,
+        previousEndLine: true,
+      },
+      orderBy: [{ confidence: "desc" }],
+    }),
+  );
 
   // #814 — the tests that cover this requirement, resolved from the code rows
   // just read (the resolver issues only its code-graph queries).
