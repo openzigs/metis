@@ -81,7 +81,7 @@
         },
         "query": {
           "type": "string",
-          "description": "Words to look for in the title or body; a requirement matching any word is kept"
+          "description": "What to look for, in the analyst's own words: requirements are matched by meaning and by any word in the title or body, best match first, approved before draft at equal match"
         },
         "limit": {
           "type": "integer"

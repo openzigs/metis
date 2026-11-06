@@ -10,6 +10,12 @@ const mocks = vi.hoisted(() => ({
   check: vi.fn(),
   layout: vi.fn(),
   warn: vi.fn(),
+  enqueue: vi.fn(),
+  enqueueFor: vi.fn(),
+}));
+vi.mock("../requirements/requirement-embeddings.js", () => ({
+  enqueueRequirementEmbeddingSync: mocks.enqueue,
+  enqueueRequirementEmbeddingSyncFor: mocks.enqueueFor,
 }));
 vi.mock("../prisma.js", () => ({ prisma: { requirement: { findMany: mocks.findMany } } }));
 vi.mock("./incremental.js", () => ({ checkIncrementalRegeneration: mocks.check }));
@@ -73,6 +79,16 @@ describe("noteRequirementsChanged (#1230)", () => {
     // A later change starts a fresh check.
     await noteRequirementsChanged(["r99"]);
     expect(mocks.check).toHaveBeenCalledTimes(3);
+  });
+
+  it("#1835 — tells the requirement vectors to catch up, under either layout", async () => {
+    mocks.layout.mockReturnValue({ layout: "catalogue" });
+    await noteProjectRequirementsChanged("p1");
+    await noteRequirementsChanged(["r1", "r2"]);
+    await noteRequirementCodeLinksChanged(["r3"]);
+    expect(mocks.enqueue.mock.calls).toEqual([["p1"]]);
+    // A code-link write does not change the embedded text.
+    expect(mocks.enqueueFor.mock.calls).toEqual([[["r1", "r2"]]]);
   });
 
   it("checks a project named directly (a promotion), and not under the catalogue layout", async () => {
