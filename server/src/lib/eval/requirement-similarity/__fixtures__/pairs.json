@@ -1,0 +1,1655 @@
+{
+  "version": 1,
+  "description": "Issue #1836 — synthetic, analyst-worded requirement pairs in four invented domains, labelled duplicate / overlap / related / unrelated. `hardNegative` marks a pair worded almost alike whose requirements are nonetheless different (CSV vs PDF). No customer, production or walkthrough content.",
+  "pairs": [
+    {
+      "id": "inv-dup-01",
+      "domain": "invoicing",
+      "label": "duplicate",
+      "a": {
+        "title": "Export invoices to CSV",
+        "body": "As a finance clerk I want to export the month's invoices to a CSV file so that I can load them into the accounting system."
+      },
+      "b": {
+        "title": "Download invoices as a comma-separated file",
+        "body": "Finance staff need a way to download all invoices for a month as comma-separated values for import into accounting."
+      }
+    },
+    {
+      "id": "inv-dup-02",
+      "domain": "invoicing",
+      "label": "duplicate",
+      "a": {
+        "title": "Send overdue payment reminders",
+        "body": "The system emails the customer a reminder when an invoice is 7 days past its due date."
+      },
+      "b": {
+        "title": "Automatic email for late invoices",
+        "body": "When an invoice has not been paid a week after it was due, the customer is sent a reminder email automatically."
+      }
+    },
+    {
+      "id": "inv-dup-03",
+      "domain": "invoicing",
+      "label": "duplicate",
+      "a": {
+        "title": "Apply early payment discount",
+        "body": "Customers who pay within 10 days get 2% off the invoice total."
+      },
+      "b": {
+        "title": "Discount for paying early",
+        "body": "If a customer settles an invoice within ten days of issue, reduce the amount due by two percent."
+      }
+    },
+    {
+      "id": "inv-dup-04",
+      "domain": "invoicing",
+      "label": "duplicate",
+      "a": {
+        "title": "Approve invoices above a limit",
+        "body": "Invoices over 10,000 need a manager's approval before they are sent.",
+        "acceptanceCriteria": ["An invoice over 10,000 cannot be sent until a manager approves it"]
+      },
+      "b": {
+        "title": "Manager sign-off for large invoices",
+        "body": "Any invoice whose total exceeds 10k must be signed off by a manager before it goes to the customer."
+      }
+    },
+    {
+      "id": "inv-dup-05",
+      "domain": "invoicing",
+      "label": "duplicate",
+      "a": {
+        "title": "Credit note for returned goods",
+        "body": "When goods are returned, the clerk can issue a credit note linked to the original invoice."
+      },
+      "b": {
+        "title": "Raise credit notes against invoices",
+        "body": "Allow finance to raise a credit note that references the original invoice when a customer sends items back."
+      }
+    },
+    {
+      "id": "inv-dup-06",
+      "domain": "invoicing",
+      "label": "duplicate",
+      "a": {
+        "title": "Multi-currency invoices",
+        "body": "An invoice can be issued in the customer's currency, with the exchange rate recorded at the issue date."
+      },
+      "b": {
+        "title": "Bill customers in their own currency",
+        "body": "Let users invoice a customer in their local currency and store the rate used on the day the invoice was created."
+      }
+    },
+    {
+      "id": "inv-dup-07",
+      "domain": "invoicing",
+      "label": "duplicate",
+      "a": {
+        "title": "Recurring monthly invoices",
+        "body": "Subscriptions generate an invoice automatically on the first day of every month."
+      },
+      "b": {
+        "title": "Bill subscriptions automatically each month",
+        "body": "For each active subscription, create its invoice on the 1st of the month without manual work."
+      }
+    },
+    {
+      "id": "inv-dup-08",
+      "domain": "invoicing",
+      "label": "duplicate",
+      "a": {
+        "title": "Search invoices by customer",
+        "body": "Users can find all invoices for a customer by typing part of the customer's name."
+      },
+      "b": {
+        "title": "Find a customer's invoices",
+        "body": "Provide a search box where typing some of a customer name lists every invoice for that customer."
+      }
+    },
+    {
+      "id": "inv-ovl-01",
+      "domain": "invoicing",
+      "label": "overlap",
+      "a": {
+        "title": "Export invoices to CSV",
+        "body": "As a finance clerk I want to export the month's invoices to a CSV file so that I can load them into the accounting system."
+      },
+      "b": {
+        "title": "Year-end export for the auditors",
+        "body": "Produce a yearly CSV export containing invoices, payments received and credit notes for the external audit."
+      }
+    },
+    {
+      "id": "inv-ovl-02",
+      "domain": "invoicing",
+      "label": "overlap",
+      "a": {
+        "title": "Send overdue payment reminders",
+        "body": "The system emails the customer a reminder when an invoice is 7 days past its due date."
+      },
+      "b": {
+        "title": "Escalate unpaid invoices",
+        "body": "Customers are emailed when an invoice is a week overdue; after two reminders the invoice is flagged for the collections team and the account is put on hold."
+      }
+    },
+    {
+      "id": "inv-ovl-03",
+      "domain": "invoicing",
+      "label": "overlap",
+      "a": {
+        "title": "Approve invoices above a limit",
+        "body": "Invoices over 10,000 need a manager's approval before they are sent."
+      },
+      "b": {
+        "title": "Two-step approval for outgoing documents",
+        "body": "Invoices, quotes and credit notes over 10,000 need approval by a manager and then by the finance director."
+      }
+    },
+    {
+      "id": "inv-ovl-04",
+      "domain": "invoicing",
+      "label": "overlap",
+      "a": {
+        "title": "Recurring monthly invoices",
+        "body": "Subscriptions generate an invoice automatically on the first day of every month."
+      },
+      "b": {
+        "title": "Usage-based subscription billing",
+        "body": "At month end, subscriptions are invoiced for the base fee plus the metered usage recorded during the month."
+      }
+    },
+    {
+      "id": "inv-ovl-05",
+      "domain": "invoicing",
+      "label": "overlap",
+      "a": {
+        "title": "Multi-currency invoices",
+        "body": "An invoice can be issued in the customer's currency, with the exchange rate recorded at the issue date."
+      },
+      "b": {
+        "title": "Report revenue in the home currency",
+        "body": "Revenue reports convert foreign-currency invoices to euros at the exchange rate stored on each invoice."
+      }
+    },
+    {
+      "id": "inv-ovl-06",
+      "domain": "invoicing",
+      "label": "overlap",
+      "a": {
+        "title": "Monthly customer statement",
+        "body": "Send each customer a monthly statement listing their open invoices and the payments received."
+      },
+      "b": {
+        "title": "Reminders list every open invoice",
+        "body": "Overdue reminder emails include a table of every unpaid invoice for the customer, with its due date."
+      }
+    },
+    {
+      "id": "inv-rel-01",
+      "domain": "invoicing",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Export invoices to CSV",
+        "body": "As a finance clerk I want to export the month's invoices to a CSV file so that I can load them into the accounting system."
+      },
+      "b": {
+        "title": "Export invoices to PDF",
+        "body": "As a finance clerk I want to export the month's invoices to a PDF file so that I can send them to the customer for printing."
+      }
+    },
+    {
+      "id": "inv-rel-02",
+      "domain": "invoicing",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Send overdue payment reminders by email",
+        "body": "The system emails the customer a reminder when an invoice is 7 days past its due date."
+      },
+      "b": {
+        "title": "Send overdue payment reminders by text message",
+        "body": "Customers who opted in to text messages receive an SMS when an invoice is 7 days past its due date."
+      }
+    },
+    {
+      "id": "inv-rel-03",
+      "domain": "invoicing",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Apply early payment discount",
+        "body": "Customers who pay within 10 days get 2% off the invoice total."
+      },
+      "b": {
+        "title": "Apply late payment fee",
+        "body": "Customers who pay more than 30 days late are charged 2% on top of the invoice total."
+      }
+    },
+    {
+      "id": "inv-rel-04",
+      "domain": "invoicing",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Approve invoices above a limit",
+        "body": "Invoices over 10,000 need a manager's approval before they are sent to the customer."
+      },
+      "b": {
+        "title": "Approve purchase orders above a limit",
+        "body": "Purchase orders over 10,000 need a manager's approval before they are sent to the supplier."
+      }
+    },
+    {
+      "id": "inv-rel-05",
+      "domain": "invoicing",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Credit note for returned goods",
+        "body": "When goods are returned, the clerk can issue a credit note linked to the original invoice."
+      },
+      "b": {
+        "title": "Debit note for undercharged invoices",
+        "body": "When an invoice undercharged the customer, the clerk can issue a debit note linked to the original invoice."
+      }
+    },
+    {
+      "id": "inv-rel-06",
+      "domain": "invoicing",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Search invoices by customer",
+        "body": "Users can find all invoices for a customer by typing part of the customer's name."
+      },
+      "b": {
+        "title": "Search invoices by invoice number",
+        "body": "Users can open a single invoice directly by typing its exact invoice number."
+      }
+    },
+    {
+      "id": "inv-rel-07",
+      "domain": "invoicing",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Recurring monthly invoices",
+        "body": "Subscriptions generate an invoice automatically on the first day of every month."
+      },
+      "b": {
+        "title": "Recurring monthly supplier payments",
+        "body": "Standing supplier bills are paid automatically on the first day of every month."
+      }
+    },
+    {
+      "id": "inv-rel-08",
+      "domain": "invoicing",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Multi-currency invoices",
+        "body": "An invoice can be issued in the customer's currency, with the exchange rate recorded at the issue date."
+      },
+      "b": {
+        "title": "Multi-language invoices",
+        "body": "An invoice can be printed in the customer's preferred language, with translated item descriptions."
+      }
+    },
+    {
+      "id": "inv-rel-09",
+      "domain": "invoicing",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Delete draft invoices",
+        "body": "A user can delete an invoice while it is still a draft."
+      },
+      "b": {
+        "title": "Void issued invoices",
+        "body": "An invoice that has already been sent cannot be deleted; it can only be voided with a reason, and it stays in the ledger."
+      }
+    },
+    {
+      "id": "inv-unr-01",
+      "domain": "invoicing",
+      "label": "unrelated",
+      "a": {
+        "title": "Export invoices to CSV",
+        "body": "As a finance clerk I want to export the month's invoices to a CSV file so that I can load them into the accounting system."
+      },
+      "b": {
+        "title": "Reset a forgotten password",
+        "body": "A user who has forgotten their password gets a reset link by email."
+      }
+    },
+    {
+      "id": "inv-unr-02",
+      "domain": "invoicing",
+      "label": "unrelated",
+      "a": {
+        "title": "Send overdue payment reminders",
+        "body": "The system emails the customer a reminder when an invoice is 7 days past its due date."
+      },
+      "b": {
+        "title": "Upload a company logo",
+        "body": "An administrator can upload the company logo shown in the top bar of the application."
+      }
+    },
+    {
+      "id": "inv-unr-03",
+      "domain": "invoicing",
+      "label": "unrelated",
+      "a": {
+        "title": "Apply early payment discount",
+        "body": "Customers who pay within 10 days get 2% off the invoice total."
+      },
+      "b": {
+        "title": "Audit log of sign-ins",
+        "body": "Every sign-in is recorded with the time and the IP address it came from."
+      }
+    },
+    {
+      "id": "inv-unr-04",
+      "domain": "invoicing",
+      "label": "unrelated",
+      "a": {
+        "title": "Approve invoices above a limit",
+        "body": "Invoices over 10,000 need a manager's approval before they are sent."
+      },
+      "b": {
+        "title": "Dark mode",
+        "body": "Users can switch the interface to a dark colour scheme."
+      }
+    },
+    {
+      "id": "inv-unr-05",
+      "domain": "invoicing",
+      "label": "unrelated",
+      "a": {
+        "title": "Credit note for returned goods",
+        "body": "When goods are returned, the clerk can issue a credit note linked to the original invoice."
+      },
+      "b": {
+        "title": "Import the customer list",
+        "body": "Administrators can import customers from a spreadsheet when setting up the system."
+      }
+    },
+    {
+      "id": "inv-unr-06",
+      "domain": "invoicing",
+      "label": "unrelated",
+      "a": {
+        "title": "Multi-currency invoices",
+        "body": "An invoice can be issued in the customer's currency, with the exchange rate recorded at the issue date."
+      },
+      "b": {
+        "title": "Two-factor sign-in",
+        "body": "Users must confirm each sign-in with a code from an authenticator app."
+      }
+    },
+    {
+      "id": "inv-unr-07",
+      "domain": "invoicing",
+      "label": "unrelated",
+      "a": {
+        "title": "Recurring monthly invoices",
+        "body": "Subscriptions generate an invoice automatically on the first day of every month."
+      },
+      "b": {
+        "title": "Keyboard shortcuts",
+        "body": "Power users can open the most common screens with keyboard shortcuts."
+      }
+    },
+    {
+      "id": "inv-unr-08",
+      "domain": "invoicing",
+      "label": "unrelated",
+      "a": {
+        "title": "Search invoices by customer",
+        "body": "Users can find all invoices for a customer by typing part of the customer's name."
+      },
+      "b": {
+        "title": "Sign out after inactivity",
+        "body": "A user is signed out after 30 minutes without any activity."
+      }
+    },
+    {
+      "id": "cli-dup-01",
+      "domain": "clinic",
+      "label": "duplicate",
+      "a": {
+        "title": "Book an appointment online",
+        "body": "Patients can choose a doctor and a free time slot on the website and book it without calling."
+      },
+      "b": {
+        "title": "Self-service appointment booking",
+        "body": "Allow a patient to pick an available slot with their doctor through the web portal instead of phoning reception."
+      }
+    },
+    {
+      "id": "cli-dup-02",
+      "domain": "clinic",
+      "label": "duplicate",
+      "a": {
+        "title": "Appointment reminder text",
+        "body": "Patients receive a text message 24 hours before their appointment."
+      },
+      "b": {
+        "title": "SMS reminder the day before",
+        "body": "Send an SMS to the patient one day ahead of each booked appointment."
+      }
+    },
+    {
+      "id": "cli-dup-03",
+      "domain": "clinic",
+      "label": "duplicate",
+      "a": {
+        "title": "Cancel an appointment",
+        "body": "A patient can cancel their own appointment up to 2 hours before it starts."
+      },
+      "b": {
+        "title": "Patient self-cancellation",
+        "body": "Let patients cancel a booking from the portal, as long as it is more than two hours away."
+      }
+    },
+    {
+      "id": "cli-dup-04",
+      "domain": "clinic",
+      "label": "duplicate",
+      "a": {
+        "title": "Waiting list for fully booked days",
+        "body": "When no slot is free, the patient can join a waiting list and is offered the next cancelled slot."
+      },
+      "b": {
+        "title": "Offer cancelled slots to waiting patients",
+        "body": "Keep a queue of patients who wanted a fully booked day and give them the first slot that is freed up."
+      }
+    },
+    {
+      "id": "cli-dup-05",
+      "domain": "clinic",
+      "label": "duplicate",
+      "a": {
+        "title": "Doctors' weekly rota",
+        "body": "Reception can see each doctor's working hours for the week."
+      },
+      "b": {
+        "title": "Weekly view of clinician schedules",
+        "body": "Show reception a weekly view of when every doctor is working."
+      }
+    },
+    {
+      "id": "cli-dup-06",
+      "domain": "clinic",
+      "label": "duplicate",
+      "a": {
+        "title": "Record no-shows",
+        "body": "Reception marks a patient as a no-show when they miss an appointment without cancelling."
+      },
+      "b": {
+        "title": "Flag missed appointments",
+        "body": "Staff can flag that a patient did not turn up for their appointment and did not cancel it."
+      }
+    },
+    {
+      "id": "cli-dup-07",
+      "domain": "clinic",
+      "label": "duplicate",
+      "a": {
+        "title": "Block out holiday time",
+        "body": "Doctors can block the days they are on holiday so that no appointments can be booked then."
+      },
+      "b": {
+        "title": "Doctor leave stops bookings",
+        "body": "When a doctor records annual leave, those days are closed for booking."
+      }
+    },
+    {
+      "id": "cli-dup-08",
+      "domain": "clinic",
+      "label": "duplicate",
+      "a": {
+        "title": "Check in on arrival",
+        "body": "Patients check in at a kiosk when they arrive, and the doctor sees that they are waiting."
+      },
+      "b": {
+        "title": "Kiosk arrival check-in",
+        "body": "On arrival the patient confirms their appointment at a self-service screen, which tells the doctor they are in the waiting room."
+      }
+    },
+    {
+      "id": "cli-ovl-01",
+      "domain": "clinic",
+      "label": "overlap",
+      "a": {
+        "title": "Book an appointment online",
+        "body": "Patients can choose a doctor and a free time slot on the website and book it without calling."
+      },
+      "b": {
+        "title": "Book appointments for family members",
+        "body": "A parent or carer can book, move and cancel appointments online on behalf of the dependants linked to their account."
+      }
+    },
+    {
+      "id": "cli-ovl-02",
+      "domain": "clinic",
+      "label": "overlap",
+      "a": {
+        "title": "Appointment reminder text",
+        "body": "Patients receive a text message 24 hours before their appointment."
+      },
+      "b": {
+        "title": "Reminders and follow-up messages",
+        "body": "Patients get a text the day before an appointment and a satisfaction survey by email the day after it."
+      }
+    },
+    {
+      "id": "cli-ovl-03",
+      "domain": "clinic",
+      "label": "overlap",
+      "a": {
+        "title": "Cancel an appointment",
+        "body": "A patient can cancel their own appointment up to 2 hours before it starts."
+      },
+      "b": {
+        "title": "Reschedule an appointment",
+        "body": "A patient can move their booking to another free slot, which cancels the original appointment."
+      }
+    },
+    {
+      "id": "cli-ovl-04",
+      "domain": "clinic",
+      "label": "overlap",
+      "a": {
+        "title": "Record no-shows",
+        "body": "Reception marks a patient as a no-show when they miss an appointment without cancelling."
+      },
+      "b": {
+        "title": "No-show fee",
+        "body": "Missed appointments are recorded, and patients who miss two appointments in a year without cancelling are charged a fee and must book by phone."
+      }
+    },
+    {
+      "id": "cli-ovl-05",
+      "domain": "clinic",
+      "label": "overlap",
+      "a": {
+        "title": "Doctors' weekly rota",
+        "body": "Reception can see each doctor's working hours for the week."
+      },
+      "b": {
+        "title": "Consulting room allocation",
+        "body": "Reception sees each doctor's working hours for the week together with the consulting room they are assigned."
+      }
+    },
+    {
+      "id": "cli-ovl-06",
+      "domain": "clinic",
+      "label": "overlap",
+      "a": {
+        "title": "Waiting list for fully booked days",
+        "body": "When no slot is free, the patient can join a waiting list and is offered the next cancelled slot."
+      },
+      "b": {
+        "title": "Urgent same-day slots",
+        "body": "Each morning some slots are held back for urgent cases; unused ones are released to patients on the waiting list at noon."
+      }
+    },
+    {
+      "id": "cli-rel-01",
+      "domain": "clinic",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Appointment reminder by text",
+        "body": "Patients receive a text message 24 hours before their appointment."
+      },
+      "b": {
+        "title": "Appointment reminder by email",
+        "body": "Patients receive an email 24 hours before their appointment."
+      }
+    },
+    {
+      "id": "cli-rel-02",
+      "domain": "clinic",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Book a doctor's appointment online",
+        "body": "Patients can choose a doctor and a free time slot on the website and book it without calling."
+      },
+      "b": {
+        "title": "Book a vaccination online",
+        "body": "Patients can choose a free slot at the vaccination clinic on the website and book it without calling."
+      }
+    },
+    {
+      "id": "cli-rel-03",
+      "domain": "clinic",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Patient cancels an appointment",
+        "body": "A patient can cancel their own appointment up to 2 hours before it starts."
+      },
+      "b": {
+        "title": "Doctor cancels a clinic session",
+        "body": "A doctor can cancel a whole afternoon's clinic, and every patient booked into it is asked to rebook."
+      }
+    },
+    {
+      "id": "cli-rel-04",
+      "domain": "clinic",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Record no-shows",
+        "body": "Reception marks a patient as a no-show when they miss an appointment without cancelling."
+      },
+      "b": {
+        "title": "Record late arrivals",
+        "body": "Reception marks a patient as late when they arrive more than 15 minutes after their appointment time."
+      }
+    },
+    {
+      "id": "cli-rel-05",
+      "domain": "clinic",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Doctors' weekly rota",
+        "body": "Reception can see each doctor's working hours for the week."
+      },
+      "b": {
+        "title": "Nurses' weekly rota",
+        "body": "Reception can see each nurse's working hours for the week."
+      }
+    },
+    {
+      "id": "cli-rel-06",
+      "domain": "clinic",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Block out holiday time",
+        "body": "Doctors can block the days they are on holiday so that no appointments can be booked then."
+      },
+      "b": {
+        "title": "Block out training time",
+        "body": "Doctors can mark training sessions so that only emergency appointments can be booked in them."
+      }
+    },
+    {
+      "id": "cli-rel-07",
+      "domain": "clinic",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Check in on arrival",
+        "body": "Patients check in at a kiosk when they arrive, and the doctor sees that they are waiting."
+      },
+      "b": {
+        "title": "Check out after the appointment",
+        "body": "After the consultation the patient checks out at the desk to book a follow-up and pay any fee."
+      }
+    },
+    {
+      "id": "cli-rel-08",
+      "domain": "clinic",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Waiting list for fully booked days",
+        "body": "When no slot is free, the patient can join a waiting list and is offered the next cancelled slot."
+      },
+      "b": {
+        "title": "Waiting list for specialist referrals",
+        "body": "Patients referred to a specialist are queued by urgency until the specialist hospital accepts them."
+      }
+    },
+    {
+      "id": "cli-rel-09",
+      "domain": "clinic",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "See upcoming appointments",
+        "body": "The patient portal lists the patient's future bookings."
+      },
+      "b": {
+        "title": "See past appointments",
+        "body": "The patient portal lists the patient's previous visits with a summary of the doctor's notes."
+      }
+    },
+    {
+      "id": "cli-unr-01",
+      "domain": "clinic",
+      "label": "unrelated",
+      "a": {
+        "title": "Book an appointment online",
+        "body": "Patients can choose a doctor and a free time slot on the website and book it without calling."
+      },
+      "b": {
+        "title": "Staff payroll export",
+        "body": "At month end, staff working hours are exported to the payroll provider."
+      }
+    },
+    {
+      "id": "cli-unr-02",
+      "domain": "clinic",
+      "label": "unrelated",
+      "a": {
+        "title": "Appointment reminder text",
+        "body": "Patients receive a text message 24 hours before their appointment."
+      },
+      "b": {
+        "title": "Large-text mode",
+        "body": "The patient portal offers a large-text mode for people with poor eyesight."
+      }
+    },
+    {
+      "id": "cli-unr-03",
+      "domain": "clinic",
+      "label": "unrelated",
+      "a": {
+        "title": "Cancel an appointment",
+        "body": "A patient can cancel their own appointment up to 2 hours before it starts."
+      },
+      "b": {
+        "title": "Track medical supplies",
+        "body": "The practice manager records the stock of gloves, syringes and dressings."
+      }
+    },
+    {
+      "id": "cli-unr-04",
+      "domain": "clinic",
+      "label": "unrelated",
+      "a": {
+        "title": "Waiting list for fully booked days",
+        "body": "When no slot is free, the patient can join a waiting list and is offered the next cancelled slot."
+      },
+      "b": {
+        "title": "Car park permits",
+        "body": "Staff can apply for a car park permit through the intranet."
+      }
+    },
+    {
+      "id": "cli-unr-05",
+      "domain": "clinic",
+      "label": "unrelated",
+      "a": {
+        "title": "Doctors' weekly rota",
+        "body": "Reception can see each doctor's working hours for the week."
+      },
+      "b": {
+        "title": "Welsh language portal",
+        "body": "Every page of the patient portal is available in Welsh."
+      }
+    },
+    {
+      "id": "cli-unr-06",
+      "domain": "clinic",
+      "label": "unrelated",
+      "a": {
+        "title": "Record no-shows",
+        "body": "Reception marks a patient as a no-show when they miss an appointment without cancelling."
+      },
+      "b": {
+        "title": "Nightly backup of patient records",
+        "body": "Patient records are backed up every night to a second data centre."
+      }
+    },
+    {
+      "id": "cli-unr-07",
+      "domain": "clinic",
+      "label": "unrelated",
+      "a": {
+        "title": "Block out holiday time",
+        "body": "Doctors can block the days they are on holiday so that no appointments can be booked then."
+      },
+      "b": {
+        "title": "Attach laboratory results",
+        "body": "Laboratory results are attached to the patient's record when they arrive from the lab."
+      }
+    },
+    {
+      "id": "cli-unr-08",
+      "domain": "clinic",
+      "label": "unrelated",
+      "a": {
+        "title": "Check in on arrival",
+        "body": "Patients check in at a kiosk when they arrive, and the doctor sees that they are waiting."
+      },
+      "b": {
+        "title": "Staff password rules",
+        "body": "Staff passwords must be at least 12 characters long and changed every year."
+      }
+    },
+    {
+      "id": "wh-dup-01",
+      "domain": "warehouse",
+      "label": "duplicate",
+      "a": {
+        "title": "Low stock alert",
+        "body": "Notify the buyer when a product's quantity falls below its reorder point."
+      },
+      "b": {
+        "title": "Reorder-point notification",
+        "body": "Send the purchasing team an alert once the stock of an item drops under its configured minimum."
+      }
+    },
+    {
+      "id": "wh-dup-02",
+      "domain": "warehouse",
+      "label": "duplicate",
+      "a": {
+        "title": "Scan items on receipt",
+        "body": "Warehouse staff scan each item's barcode when a delivery arrives, and the stock level goes up."
+      },
+      "b": {
+        "title": "Barcode goods-in",
+        "body": "When a shipment arrives, staff scan the barcodes of the received items, which adds them to inventory."
+      }
+    },
+    {
+      "id": "wh-dup-03",
+      "domain": "warehouse",
+      "label": "duplicate",
+      "a": {
+        "title": "Pick list per order",
+        "body": "For each customer order, print a pick list sorted by bin location."
+      },
+      "b": {
+        "title": "Location-sorted picking sheet",
+        "body": "Generate a picking document for every order, with the lines ordered by where the items are stored."
+      }
+    },
+    {
+      "id": "wh-dup-04",
+      "domain": "warehouse",
+      "label": "duplicate",
+      "a": {
+        "title": "Cycle count",
+        "body": "Each week staff count a rotating subset of bins, and the system records any differences."
+      },
+      "b": {
+        "title": "Rolling stock count",
+        "body": "Count some bins every week in rotation and log any discrepancy with the quantity the system holds."
+      }
+    },
+    {
+      "id": "wh-dup-05",
+      "domain": "warehouse",
+      "label": "duplicate",
+      "a": {
+        "title": "Track batch numbers",
+        "body": "Record the batch number of every received item so that a recall can find it."
+      },
+      "b": {
+        "title": "Lot tracking for recalls",
+        "body": "Store the lot number of each item received, so that affected stock can be located if a batch is recalled."
+      }
+    },
+    {
+      "id": "wh-dup-06",
+      "domain": "warehouse",
+      "label": "duplicate",
+      "a": {
+        "title": "Reserve stock for orders",
+        "body": "When an order is confirmed, its items are reserved so they cannot be sold twice."
+      },
+      "b": {
+        "title": "Allocate inventory on order confirmation",
+        "body": "A confirmed order sets aside the ordered quantity so that another order cannot take it."
+      }
+    },
+    {
+      "id": "wh-dup-07",
+      "domain": "warehouse",
+      "label": "duplicate",
+      "a": {
+        "title": "Transfer stock between warehouses",
+        "body": "A manager can move stock from one warehouse to another, and both stock levels update."
+      },
+      "b": {
+        "title": "Inter-site stock moves",
+        "body": "Allow managers to transfer items between our sites, with the quantities adjusted at both."
+      }
+    },
+    {
+      "id": "wh-dup-08",
+      "domain": "warehouse",
+      "label": "duplicate",
+      "a": {
+        "title": "Expiry date warnings",
+        "body": "Items expiring within 30 days are listed so the team can sell or discount them first."
+      },
+      "b": {
+        "title": "Near-expiry report",
+        "body": "Show a list of stock whose expiry date is less than a month away, so that it can be moved first."
+      }
+    },
+    {
+      "id": "wh-ovl-01",
+      "domain": "warehouse",
+      "label": "overlap",
+      "a": {
+        "title": "Low stock alert",
+        "body": "Notify the buyer when a product's quantity falls below its reorder point."
+      },
+      "b": {
+        "title": "Automatic purchase orders",
+        "body": "When stock falls below the reorder point, a draft purchase order for the usual supplier is created and the buyer is notified."
+      }
+    },
+    {
+      "id": "wh-ovl-02",
+      "domain": "warehouse",
+      "label": "overlap",
+      "a": {
+        "title": "Scan items on receipt",
+        "body": "Warehouse staff scan each item's barcode when a delivery arrives, and the stock level goes up."
+      },
+      "b": {
+        "title": "Check deliveries against purchase orders",
+        "body": "When a delivery is scanned in, the quantities are compared with the purchase order and any shortfall is reported to the supplier."
+      }
+    },
+    {
+      "id": "wh-ovl-03",
+      "domain": "warehouse",
+      "label": "overlap",
+      "a": {
+        "title": "Pick list per order",
+        "body": "For each customer order, print a pick list sorted by bin location."
+      },
+      "b": {
+        "title": "Batch picking",
+        "body": "Group several small orders into one pick route through the warehouse, sorted by bin location."
+      }
+    },
+    {
+      "id": "wh-ovl-04",
+      "domain": "warehouse",
+      "label": "overlap",
+      "a": {
+        "title": "Track batch numbers",
+        "body": "Record the batch number of every received item so that a recall can find it."
+      },
+      "b": {
+        "title": "Recall workflow",
+        "body": "When a batch is recalled, list where its items are stored and which customers received them, and block it from picking."
+      }
+    },
+    {
+      "id": "wh-ovl-05",
+      "domain": "warehouse",
+      "label": "overlap",
+      "a": {
+        "title": "Expiry date warnings",
+        "body": "Items expiring within 30 days are listed so the team can sell or discount them first."
+      },
+      "b": {
+        "title": "First-expiry-first-out picking",
+        "body": "Pick lists always choose the units that expire soonest, and items past their expiry date are blocked."
+      }
+    },
+    {
+      "id": "wh-ovl-06",
+      "domain": "warehouse",
+      "label": "overlap",
+      "a": {
+        "title": "Cycle count",
+        "body": "Each week staff count a rotating subset of bins, and the system records any differences."
+      },
+      "b": {
+        "title": "Year-end stock take",
+        "body": "Once a year every bin in the warehouse is counted, and the differences are posted to the accounts."
+      }
+    },
+    {
+      "id": "wh-rel-01",
+      "domain": "warehouse",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Low stock alert",
+        "body": "Notify the buyer when a product's quantity falls below its reorder point."
+      },
+      "b": {
+        "title": "Overstock alert",
+        "body": "Notify the buyer when a product's quantity rises above its maximum stock level."
+      }
+    },
+    {
+      "id": "wh-rel-02",
+      "domain": "warehouse",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Scan items on receipt",
+        "body": "Warehouse staff scan each item's barcode when a delivery arrives, and the stock level goes up."
+      },
+      "b": {
+        "title": "Scan items on dispatch",
+        "body": "Warehouse staff scan each item's barcode when it is loaded for shipping, and the stock level goes down."
+      }
+    },
+    {
+      "id": "wh-rel-03",
+      "domain": "warehouse",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Pick list per order",
+        "body": "For each customer order, print a pick list sorted by bin location."
+      },
+      "b": {
+        "title": "Packing list per order",
+        "body": "For each customer order, print a packing list to put in the box, showing the items and quantities shipped."
+      }
+    },
+    {
+      "id": "wh-rel-04",
+      "domain": "warehouse",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Transfer stock between warehouses",
+        "body": "A manager can move stock from one warehouse to another, and both stock levels update."
+      },
+      "b": {
+        "title": "Move stock between bins",
+        "body": "Staff can move items from one bin to another inside the same warehouse."
+      }
+    },
+    {
+      "id": "wh-rel-05",
+      "domain": "warehouse",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Track batch numbers",
+        "body": "Record the batch number of every received item so that a recall can find it."
+      },
+      "b": {
+        "title": "Track serial numbers",
+        "body": "Record the unique serial number of each high-value item when it is shipped, for warranty claims."
+      }
+    },
+    {
+      "id": "wh-rel-06",
+      "domain": "warehouse",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Reserve stock for orders",
+        "body": "When an order is confirmed, its items are reserved so they cannot be sold twice."
+      },
+      "b": {
+        "title": "Reserve loading dock slots",
+        "body": "Suppliers reserve a time slot at the loading dock before they deliver."
+      }
+    },
+    {
+      "id": "wh-rel-07",
+      "domain": "warehouse",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Expiry date warnings",
+        "body": "Items expiring within 30 days are listed so the team can sell or discount them first."
+      },
+      "b": {
+        "title": "Warranty expiry warnings",
+        "body": "Customers are emailed 30 days before the warranty on a product they bought expires."
+      }
+    },
+    {
+      "id": "wh-rel-08",
+      "domain": "warehouse",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Return items to stock",
+        "body": "Customer returns that pass inspection are added back to stock."
+      },
+      "b": {
+        "title": "Return items to the supplier",
+        "body": "Faulty items are sent back to the supplier and removed from stock with a return reference."
+      }
+    },
+    {
+      "id": "wh-rel-09",
+      "domain": "warehouse",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Monthly stock valuation report",
+        "body": "Value the stock at first-in-first-out cost for the monthly report."
+      },
+      "b": {
+        "title": "Monthly stock movement report",
+        "body": "List every stock movement in the month together with the user who made it."
+      }
+    },
+    {
+      "id": "wh-unr-01",
+      "domain": "warehouse",
+      "label": "unrelated",
+      "a": {
+        "title": "Low stock alert",
+        "body": "Notify the buyer when a product's quantity falls below its reorder point."
+      },
+      "b": {
+        "title": "Driver timesheets",
+        "body": "Delivery drivers record their working hours each day."
+      }
+    },
+    {
+      "id": "wh-unr-02",
+      "domain": "warehouse",
+      "label": "unrelated",
+      "a": {
+        "title": "Scan items on receipt",
+        "body": "Warehouse staff scan each item's barcode when a delivery arrives, and the stock level goes up."
+      },
+      "b": {
+        "title": "Customer satisfaction survey",
+        "body": "After delivery, customers are emailed a short survey about their order."
+      }
+    },
+    {
+      "id": "wh-unr-03",
+      "domain": "warehouse",
+      "label": "unrelated",
+      "a": {
+        "title": "Pick list per order",
+        "body": "For each customer order, print a pick list sorted by bin location."
+      },
+      "b": {
+        "title": "Single sign-on",
+        "body": "Staff sign in with their company Microsoft account."
+      }
+    },
+    {
+      "id": "wh-unr-04",
+      "domain": "warehouse",
+      "label": "unrelated",
+      "a": {
+        "title": "Cycle count",
+        "body": "Each week staff count a rotating subset of bins, and the system records any differences."
+      },
+      "b": {
+        "title": "Forklift maintenance log",
+        "body": "Engineers record each forklift service and the date the next one is due."
+      }
+    },
+    {
+      "id": "wh-unr-05",
+      "domain": "warehouse",
+      "label": "unrelated",
+      "a": {
+        "title": "Track batch numbers",
+        "body": "Record the batch number of every received item so that a recall can find it."
+      },
+      "b": {
+        "title": "Holiday requests",
+        "body": "Warehouse staff request annual leave and their supervisor approves it."
+      }
+    },
+    {
+      "id": "wh-unr-06",
+      "domain": "warehouse",
+      "label": "unrelated",
+      "a": {
+        "title": "Reserve stock for orders",
+        "body": "When an order is confirmed, its items are reserved so they cannot be sold twice."
+      },
+      "b": {
+        "title": "Cookie consent banner",
+        "body": "Website visitors are asked to accept or reject analytics cookies."
+      }
+    },
+    {
+      "id": "wh-unr-07",
+      "domain": "warehouse",
+      "label": "unrelated",
+      "a": {
+        "title": "Transfer stock between warehouses",
+        "body": "A manager can move stock from one warehouse to another, and both stock levels update."
+      },
+      "b": {
+        "title": "Energy usage dashboard",
+        "body": "Facilities staff can see the electricity used per building per day."
+      }
+    },
+    {
+      "id": "wh-unr-08",
+      "domain": "warehouse",
+      "label": "unrelated",
+      "a": {
+        "title": "Expiry date warnings",
+        "body": "Items expiring within 30 days are listed so the team can sell or discount them first."
+      },
+      "b": {
+        "title": "Visitor sign-in",
+        "body": "Visitors to the warehouse sign in at reception and are given a badge."
+      }
+    },
+    {
+      "id": "lib-dup-01",
+      "domain": "library",
+      "label": "duplicate",
+      "a": {
+        "title": "Renew a loan online",
+        "body": "Members can extend the due date of a borrowed book from their account, unless someone has reserved it."
+      },
+      "b": {
+        "title": "Self-service loan extension",
+        "body": "Let a member push back the return date of a book through the website if no reservation is waiting for it."
+      }
+    },
+    {
+      "id": "lib-dup-02",
+      "domain": "library",
+      "label": "duplicate",
+      "a": {
+        "title": "Reserve a book that is on loan",
+        "body": "Members can place a hold on a book that is out, and are told when it comes back."
+      },
+      "b": {
+        "title": "Hold queue for borrowed items",
+        "body": "Allow members to queue for a title that is checked out and notify them when it is returned."
+      }
+    },
+    {
+      "id": "lib-dup-03",
+      "domain": "library",
+      "label": "duplicate",
+      "a": {
+        "title": "Overdue fines",
+        "body": "A fine of 20 cents per day is added for each overdue book."
+      },
+      "b": {
+        "title": "Daily late fee",
+        "body": "Charge members twenty cents for every day a borrowed item is late."
+      }
+    },
+    {
+      "id": "lib-dup-04",
+      "domain": "library",
+      "label": "duplicate",
+      "a": {
+        "title": "Search the catalogue",
+        "body": "Members can search the books by title, author or subject."
+      },
+      "b": {
+        "title": "Catalogue lookup",
+        "body": "Provide a search over the collection by title, author name or topic."
+      }
+    },
+    {
+      "id": "lib-dup-05",
+      "domain": "library",
+      "label": "duplicate",
+      "a": {
+        "title": "Borrowing limit",
+        "body": "A member can have at most 10 items on loan at once."
+      },
+      "b": {
+        "title": "Cap on concurrent loans",
+        "body": "Stop a member from borrowing an eleventh item while ten are still out."
+      }
+    },
+    {
+      "id": "lib-dup-06",
+      "domain": "library",
+      "label": "duplicate",
+      "a": {
+        "title": "Due date reminder",
+        "body": "Members get an email 3 days before a loan is due back."
+      },
+      "b": {
+        "title": "Pre-due notification",
+        "body": "Email the borrower three days ahead of the return date."
+      }
+    },
+    {
+      "id": "lib-dup-07",
+      "domain": "library",
+      "label": "duplicate",
+      "a": {
+        "title": "Self-checkout kiosk",
+        "body": "Members can borrow books by scanning their card and the book at a kiosk."
+      },
+      "b": {
+        "title": "Self-service lending machine",
+        "body": "Allow members to check out items themselves at a machine using their library card."
+      }
+    },
+    {
+      "id": "lib-dup-08",
+      "domain": "library",
+      "label": "duplicate",
+      "a": {
+        "title": "Reading history",
+        "body": "Members can see a list of everything they have borrowed, and can turn the history off."
+      },
+      "b": {
+        "title": "Borrowing history page",
+        "body": "Show members their past loans, with an option to stop recording them."
+      }
+    },
+    {
+      "id": "lib-ovl-01",
+      "domain": "library",
+      "label": "overlap",
+      "a": {
+        "title": "Renew a loan online",
+        "body": "Members can extend the due date of a borrowed book from their account, unless someone has reserved it."
+      },
+      "b": {
+        "title": "Automatic renewal",
+        "body": "Loans are renewed automatically on the due date unless reserved, up to three times, and the member is emailed the new date."
+      }
+    },
+    {
+      "id": "lib-ovl-02",
+      "domain": "library",
+      "label": "overlap",
+      "a": {
+        "title": "Reserve a book that is on loan",
+        "body": "Members can place a hold on a book that is out, and are told when it comes back."
+      },
+      "b": {
+        "title": "Reserve from another branch",
+        "body": "Members can request a book held at any branch, including books on loan, and collect it at their home branch."
+      }
+    },
+    {
+      "id": "lib-ovl-03",
+      "domain": "library",
+      "label": "overlap",
+      "a": {
+        "title": "Overdue fines",
+        "body": "A fine of 20 cents per day is added for each overdue book."
+      },
+      "b": {
+        "title": "Block borrowing for unpaid fines",
+        "body": "Fines accrue daily on late items, and members owing more than 5 cannot borrow until they pay."
+      }
+    },
+    {
+      "id": "lib-ovl-04",
+      "domain": "library",
+      "label": "overlap",
+      "a": {
+        "title": "Due date reminder",
+        "body": "Members get an email 3 days before a loan is due back."
+      },
+      "b": {
+        "title": "Overdue notices",
+        "body": "Members are emailed three days before the due date and again every week that the item is overdue."
+      }
+    },
+    {
+      "id": "lib-ovl-05",
+      "domain": "library",
+      "label": "overlap",
+      "a": {
+        "title": "Search the catalogue",
+        "body": "Members can search the books by title, author or subject."
+      },
+      "b": {
+        "title": "Search e-books and audiobooks",
+        "body": "The catalogue search also returns digital titles from the e-lending platform, with their availability."
+      }
+    },
+    {
+      "id": "lib-ovl-06",
+      "domain": "library",
+      "label": "overlap",
+      "a": {
+        "title": "Borrowing limit",
+        "body": "A member can have at most 10 items on loan at once."
+      },
+      "b": {
+        "title": "Membership tiers",
+        "body": "Child members can borrow 5 items at once and adult members 10, and only adults can borrow DVDs."
+      }
+    },
+    {
+      "id": "lib-rel-01",
+      "domain": "library",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Renew a book loan online",
+        "body": "Members can extend the due date of a borrowed book from their account, unless someone has reserved it."
+      },
+      "b": {
+        "title": "Renew a membership online",
+        "body": "Members can extend their library membership for another year from their account and pay online."
+      }
+    },
+    {
+      "id": "lib-rel-02",
+      "domain": "library",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Reserve a book",
+        "body": "Members can place a hold on a book that is out, and are told when it comes back."
+      },
+      "b": {
+        "title": "Reserve a study room",
+        "body": "Members can reserve a study room for up to two hours, and are told when the booking is confirmed."
+      }
+    },
+    {
+      "id": "lib-rel-03",
+      "domain": "library",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Overdue fines for books",
+        "body": "A fine of 20 cents per day is added for each overdue book."
+      },
+      "b": {
+        "title": "Lost book charges",
+        "body": "If a book is not returned 60 days after its due date, the member is charged its replacement cost."
+      }
+    },
+    {
+      "id": "lib-rel-04",
+      "domain": "library",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Search the catalogue",
+        "body": "Members can search the books by title, author or subject."
+      },
+      "b": {
+        "title": "Search the events calendar",
+        "body": "Members can search library events by date, branch or subject."
+      }
+    },
+    {
+      "id": "lib-rel-05",
+      "domain": "library",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Borrowing limit",
+        "body": "A member can have at most 10 items on loan at once."
+      },
+      "b": {
+        "title": "Printing limit",
+        "body": "A member can print at most 50 pages a day on the library printers."
+      }
+    },
+    {
+      "id": "lib-rel-06",
+      "domain": "library",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Due date reminder",
+        "body": "Members get an email 3 days before a loan is due back."
+      },
+      "b": {
+        "title": "Pickup reminder for holds",
+        "body": "Members get an email when a reserved book is ready to collect, and again after 5 days if it has not been collected."
+      }
+    },
+    {
+      "id": "lib-rel-07",
+      "domain": "library",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Self-checkout kiosk",
+        "body": "Members can borrow books by scanning their card and the book at a kiosk."
+      },
+      "b": {
+        "title": "Self-return drop box",
+        "body": "Members can return books through a drop box at any time, and the loan is closed when staff scan them the next morning."
+      }
+    },
+    {
+      "id": "lib-rel-08",
+      "domain": "library",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Reading history",
+        "body": "Members can see a list of everything they have borrowed, and can turn the history off."
+      },
+      "b": {
+        "title": "Reading recommendations",
+        "body": "Members get suggestions of books based on what they have borrowed before."
+      }
+    },
+    {
+      "id": "lib-rel-09",
+      "domain": "library",
+      "label": "related",
+      "hardNegative": true,
+      "a": {
+        "title": "Accept donated books",
+        "body": "Members can offer books they no longer need, and staff decide whether to add them to the collection."
+      },
+      "b": {
+        "title": "Withdraw damaged books",
+        "body": "Staff remove worn or damaged books from the collection and mark them as withdrawn."
+      }
+    },
+    {
+      "id": "lib-unr-01",
+      "domain": "library",
+      "label": "unrelated",
+      "a": {
+        "title": "Renew a loan online",
+        "body": "Members can extend the due date of a borrowed book from their account, unless someone has reserved it."
+      },
+      "b": {
+        "title": "Visitor Wi-Fi",
+        "body": "Visitors can connect to the library Wi-Fi after accepting the terms of use."
+      }
+    },
+    {
+      "id": "lib-unr-02",
+      "domain": "library",
+      "label": "unrelated",
+      "a": {
+        "title": "Reserve a book that is on loan",
+        "body": "Members can place a hold on a book that is out, and are told when it comes back."
+      },
+      "b": {
+        "title": "Issue desk staff rota",
+        "body": "Branch managers plan which staff work at the issue desk each day."
+      }
+    },
+    {
+      "id": "lib-unr-03",
+      "domain": "library",
+      "label": "unrelated",
+      "a": {
+        "title": "Overdue fines",
+        "body": "A fine of 20 cents per day is added for each overdue book."
+      },
+      "b": {
+        "title": "Newsletter sign-up",
+        "body": "Members can subscribe to the monthly events newsletter."
+      }
+    },
+    {
+      "id": "lib-unr-04",
+      "domain": "library",
+      "label": "unrelated",
+      "a": {
+        "title": "Search the catalogue",
+        "body": "Members can search the books by title, author or subject."
+      },
+      "b": {
+        "title": "Report a broken computer",
+        "body": "Members can report a faulty public computer, and the IT team is notified."
+      }
+    },
+    {
+      "id": "lib-unr-05",
+      "domain": "library",
+      "label": "unrelated",
+      "a": {
+        "title": "Borrowing limit",
+        "body": "A member can have at most 10 items on loan at once."
+      },
+      "b": {
+        "title": "Photo on the membership card",
+        "body": "Members can upload a photo to be printed on their library card."
+      }
+    },
+    {
+      "id": "lib-unr-06",
+      "domain": "library",
+      "label": "unrelated",
+      "a": {
+        "title": "Due date reminder",
+        "body": "Members get an email 3 days before a loan is due back."
+      },
+      "b": {
+        "title": "Archive access log",
+        "body": "Every request to view the local history archive is logged with the reader's name."
+      }
+    },
+    {
+      "id": "lib-unr-07",
+      "domain": "library",
+      "label": "unrelated",
+      "a": {
+        "title": "Self-checkout kiosk",
+        "body": "Members can borrow books by scanning their card and the book at a kiosk."
+      },
+      "b": {
+        "title": "Volunteer registration",
+        "body": "People can apply online to volunteer at a branch."
+      }
+    },
+    {
+      "id": "lib-unr-08",
+      "domain": "library",
+      "label": "unrelated",
+      "a": {
+        "title": "Reading history",
+        "body": "Members can see a list of everything they have borrowed, and can turn the history off."
+      },
+      "b": {
+        "title": "Branch opening hours page",
+        "body": "The website shows each branch's opening hours and its holiday closures."
+      }
+    }
+  ]
+}
