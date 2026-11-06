@@ -274,13 +274,19 @@ function resolveTarget(
     ? allInFile.filter((s) => s.graph.repoConnectionId === repoConnectionId)
     : [];
   const inFile = inRepo.length > 0 ? inRepo : allInFile;
+  // A citation naming a repository whose graph does not hold the file still
+  // resolves its location against the other repos, but is never stamped with
+  // another repository's graph: the row is written unverified.
+  const foreignRepo = repoConnectionId !== undefined && inRepo.length === 0;
+  const versionOf = (v: CitationVersion): CitationVersion =>
+    foreignRepo ? { codeGraphId: null, commitSha: null } : v;
   if (target.startLine === undefined || target.endLine === undefined) {
     return {
       codeSymbolId: null,
       filePath: target.filePath,
       startLine: null,
       endLine: null,
-      ...soleGraph(inFile),
+      ...versionOf(soleGraph(inFile)),
       ...NO_SYMBOL,
     };
   }
@@ -293,8 +299,7 @@ function resolveTarget(
       filePath: sym.filePath,
       startLine: sym.startLine,
       endLine: sym.endLine,
-      codeGraphId: sym.codeGraphId,
-      commitSha: sym.graph.commitSha,
+      ...versionOf({ codeGraphId: sym.codeGraphId, commitSha: sym.graph.commitSha }),
       symbolQualifiedName: sym.qualifiedName,
       symbolKind: sym.kind,
       symbolContentHash: sym.contentHash,
@@ -305,7 +310,7 @@ function resolveTarget(
     filePath: target.filePath,
     startLine: target.startLine,
     endLine: target.endLine,
-    ...soleGraph(inFile),
+    ...versionOf(soleGraph(inFile)),
     ...NO_SYMBOL,
   };
 }
