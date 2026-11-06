@@ -187,15 +187,37 @@ export interface EditCandidateFilesProps {
   repo: CodeCitationRepo | null;
   /** The project searched, named in the "not found" message. */
   projectLabel: string;
+  /**
+   * #1833 — code-agent citations the run set aside because the code they cite
+   * changed (`seedEvidence.agentCitations.demotedStaleCitations`, #1832).
+   */
+  staleSetAside?: number;
 }
 
-export function EditCandidateFiles({ rows, repo, projectLabel }: EditCandidateFilesProps) {
+/** #1833 — "N stale citations were set aside", only when there were some. */
+function StaleSetAside({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return (
+    <p className="mb-1 text-xs text-muted-foreground" data-testid="edit-candidates-stale-set-aside">
+      {count} stale citation{count === 1 ? " was" : "s were"} set aside: the code{" "}
+      {count === 1 ? "it points" : "they point"} at changed since the requirement was evaluated.
+    </p>
+  );
+}
+
+export function EditCandidateFiles({
+  rows,
+  repo,
+  projectLabel,
+  staleSetAside = 0,
+}: EditCandidateFilesProps) {
   const confident = rows.filter((r) => !isDoubtful(r));
   const doubtful = rows.filter(isDoubtful);
 
   if (confident.length === 0) {
     return (
       <div className="space-y-2" data-testid="edit-candidates">
+        <StaleSetAside count={staleSetAside} />
         <p
           className="rounded border border-border/60 bg-muted/40 px-3 py-2 text-sm text-foreground"
           data-testid="edit-candidates-not-found"
@@ -223,6 +245,7 @@ export function EditCandidateFiles({ rows, repo, projectLabel }: EditCandidateFi
       <p className="mb-1 text-xs font-medium text-muted-foreground">
         Files to edit — the code this change most likely has to touch, most likely first
       </p>
+      <StaleSetAside count={staleSetAside} />
       <div className="space-y-3">
         {rows.map((row) => (
           <EditFile key={row.filePath} row={row} repo={repo} />

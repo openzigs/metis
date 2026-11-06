@@ -279,3 +279,49 @@ describe("orderEditFiles (#1762)", () => {
     }
   });
 });
+
+describe("stale citations set aside (#1833)", () => {
+  const withAgent = (demotedStaleCitations: number): ImpactSeedEvidence => ({
+    ...EVIDENCE,
+    agentCitations: { used: 1, stale: 0, led: 1, demotedStaleCitations, unverifiedCitations: 0 },
+  });
+
+  it("says how many stale citations were set aside when the run set some aside", () => {
+    renderGroup(item(withAgent(2), SYMBOLS));
+    expect(screen.getByTestId("edit-candidates-stale-set-aside")).toHaveTextContent(
+      "2 stale citations were set aside: the code they point at changed since the requirement was evaluated.",
+    );
+  });
+
+  it("uses the singular for one", () => {
+    renderGroup(item(withAgent(1), SYMBOLS));
+    expect(screen.getByTestId("edit-candidates-stale-set-aside")).toHaveTextContent(
+      "1 stale citation was set aside: the code it points at changed",
+    );
+  });
+
+  it("says nothing when none was set aside, or the run recorded no count", () => {
+    renderGroup(item(withAgent(0), SYMBOLS));
+    expect(screen.queryByTestId("edit-candidates-stale-set-aside")).toBeNull();
+    renderGroup(item(EVIDENCE, SYMBOLS));
+    expect(screen.queryByTestId("edit-candidates-stale-set-aside")).toBeNull();
+  });
+
+  it("says it beside 'could not find the code' too", () => {
+    const doubtedOnly: ImpactSeedEvidence = {
+      agentCitations: { used: 0, stale: 0, led: 0, demotedStaleCitations: 3 },
+      editCandidates: [
+        {
+          filePath: ORDERS,
+          channels: ["hybrid"],
+          verdict: { kind: "doubtful", reason: "Lists orders; sends nothing" },
+        },
+      ],
+    };
+    renderGroup(item(doubtedOnly, [sym("o1", ORDERS)]), "Shop");
+    expect(screen.getByTestId("edit-candidates-not-found")).toBeInTheDocument();
+    expect(screen.getByTestId("edit-candidates-stale-set-aside")).toHaveTextContent(
+      "3 stale citations were set aside",
+    );
+  });
+});

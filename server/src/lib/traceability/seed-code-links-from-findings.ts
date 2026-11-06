@@ -210,7 +210,24 @@ interface GraphSymbol {
   /** #1830 — the symbol's code graph, and that graph's repository and commit. */
   codeGraphId: string;
   graph: { repoConnectionId: string | null; commitSha: string | null };
+  /** #1831 — the symbol's identity, kept on the link so re-validation can find it again. */
+  qualifiedName: string;
+  kind: string;
+  contentHash: string;
 }
+
+/** #1831 — the identity of the symbol a link names; nulls on a file-level link. */
+interface CitedSymbolIdentity {
+  symbolQualifiedName: string | null;
+  symbolKind: string | null;
+  symbolContentHash: string | null;
+}
+
+const NO_SYMBOL: CitedSymbolIdentity = {
+  symbolQualifiedName: null,
+  symbolKind: null,
+  symbolContentHash: null,
+};
 
 /** #1830 — the code-graph version a citation was read from. */
 interface CitationVersion {
@@ -270,6 +287,7 @@ function resolveTarget(
       startLine: null,
       endLine: null,
       ...versionOf(soleGraph(inFile)),
+      ...NO_SYMBOL,
     };
   }
   const sym =
@@ -282,6 +300,9 @@ function resolveTarget(
       startLine: sym.startLine,
       endLine: sym.endLine,
       ...versionOf({ codeGraphId: sym.codeGraphId, commitSha: sym.graph.commitSha }),
+      symbolQualifiedName: sym.qualifiedName,
+      symbolKind: sym.kind,
+      symbolContentHash: sym.contentHash,
     };
   }
   return {
@@ -290,6 +311,7 @@ function resolveTarget(
     startLine: target.startLine,
     endLine: target.endLine,
     ...versionOf(soleGraph(inFile)),
+    ...NO_SYMBOL,
   };
 }
 
@@ -308,6 +330,10 @@ export interface SeedCandidate {
   /** #1830 — the graph the citation resolved in; null when no single graph could be told apart. */
   codeGraphId: string | null;
   commitSha: string | null;
+  /** #1831 — the bound symbol's identity; null on a file-level link. */
+  symbolQualifiedName: string | null;
+  symbolKind: string | null;
+  symbolContentHash: string | null;
 }
 
 /**
@@ -398,6 +424,9 @@ export async function seedRequirementCodeLinksFromFindings(
         endLine: true,
         codeGraphId: true,
         graph: { select: { repoConnectionId: true, commitSha: true } },
+        qualifiedName: true,
+        kind: true,
+        contentHash: true,
       },
     });
     const symbolsByFile = new Map<string, GraphSymbol[]>();
@@ -452,6 +481,10 @@ export async function seedRequirementCodeLinksFromFindings(
           // not be told apart stays `unverified`, as every pre-#1830 row is.
           codeGraphId: candidate.codeGraphId,
           commitSha: candidate.commitSha,
+          // #1831 — what re-validation finds the symbol by after a re-ingest.
+          symbolQualifiedName: candidate.symbolQualifiedName,
+          symbolKind: candidate.symbolKind,
+          symbolContentHash: candidate.symbolContentHash,
           freshness: candidate.codeGraphId ? "fresh" : "unverified",
           validatedAt: candidate.codeGraphId ? validatedAt : null,
         },
