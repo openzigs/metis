@@ -1,0 +1,102 @@
+{
+  "id": "chatcache-01-miniflux",
+  "version": 1,
+  "description": "Synthetic chat replay set for #1845: analyst questions over the materialized Miniflux v2.3.3 project, with paraphrase pairs that should share an answer, near-miss pairs that must not, and exact repeats. Asked once before and once after the synthetic patch in patch.json is ingested.",
+  "license": "CC0-1.0 (questions written for METIS; no production content)",
+  "project": { "corpus": "localization-01-miniflux-heldout", "repo": "miniflux" },
+  "questions": [
+    { "id": "q01", "text": "Which files handle importing feeds from an OPML file?" },
+    {
+      "id": "q02",
+      "text": "Where is the code that reads an uploaded OPML subscription list and adds those feeds?"
+    },
+    { "id": "q03", "text": "Which files handle exporting subscriptions to an OPML file?" },
+    {
+      "id": "q04",
+      "text": "Which files turn a YouTube link in an article into an embedded video player?"
+    },
+    {
+      "id": "q05",
+      "text": "Where does Miniflux put a YouTube video player into an article's content?"
+    },
+    { "id": "q06", "text": "Which files look up how long a YouTube video is?" },
+    { "id": "q07", "text": "Which files run the scheduled background refresh of all feeds?" },
+    {
+      "id": "q08",
+      "text": "Where is the code that periodically refreshes every feed in the background?"
+    },
+    { "id": "q09", "text": "Which files run the scheduled cleanup of old entries?" },
+    { "id": "q10", "text": "Which files decide how many feeds are refreshed in each batch?" },
+    { "id": "q11", "text": "Which files send a saved article to Wallabag?" },
+    {
+      "id": "q12",
+      "text": "Where is the Wallabag integration that receives the articles a user saves?"
+    },
+    { "id": "q13", "text": "Which files send a saved article to Readwise?" },
+    { "id": "q14", "text": "Which files implement the Fever API?" },
+    {
+      "id": "q15",
+      "text": "Where is the Fever-compatible API for third-party reader apps implemented?"
+    },
+    { "id": "q16", "text": "Which files implement the Google Reader API?" },
+    {
+      "id": "q17",
+      "text": "Which files remove unsafe HTML from article content before it is shown?"
+    },
+    {
+      "id": "q18",
+      "text": "Where is article HTML sanitized to strip dangerous tags and attributes?"
+    },
+    { "id": "q19", "text": "Which files add links to Hacker News comment pages in articles?" },
+    {
+      "id": "q20",
+      "text": "Where does Miniflux rewrite Hacker News links so they open in a Hacker News app?"
+    },
+    { "id": "q21", "text": "Which files estimate how long an article takes to read?" },
+    { "id": "q22", "text": "Where is an entry's reading time calculated?" },
+    { "id": "q23", "text": "Which files send new entries to a Telegram chat?" },
+    { "id": "q24", "text": "Which files send new entries to a Discord channel?" },
+    { "id": "q25", "text": "Which files handle signing in with a username and password?" },
+    { "id": "q26", "text": "Which files handle signing in with a passkey?" },
+    { "id": "q27", "text": "Which files create a new API key for a user?" },
+    { "id": "q28", "text": "Which files delete one of a user's API keys?" },
+    { "id": "q29", "text": "Which files mark a single entry as read?" },
+    { "id": "q30", "text": "Which files mark every entry in a category as read?" },
+    { "id": "q31", "text": "Which files find the feed address from a website's address?" },
+    { "id": "q32", "text": "Which files find and download a website's icon?" },
+    { "id": "q33", "text": "Which files proxy article images through Miniflux?" },
+    { "id": "q34", "text": "Which files apply a feed's block and keep rules to new entries?" },
+    { "id": "q35", "text": "Which files remove tracking parameters from article links?" },
+    {
+      "id": "q36",
+      "text": "Which files fetch the full article content from the original website?"
+    },
+    { "id": "q37", "text": "Which files let a user share an entry through a public link?" },
+    { "id": "q38", "text": "Which files embed Invidious videos in articles?" },
+    { "id": "q39", "text": "which files handle importing feeds from an OPML file?" },
+    { "id": "q40", "text": "Which files  implement the  Fever API?" }
+  ],
+  "pairs": [
+    { "a": "q01", "b": "q02", "label": "paraphrase" },
+    { "a": "q04", "b": "q05", "label": "paraphrase" },
+    { "a": "q07", "b": "q08", "label": "paraphrase" },
+    { "a": "q11", "b": "q12", "label": "paraphrase" },
+    { "a": "q14", "b": "q15", "label": "paraphrase" },
+    { "a": "q17", "b": "q18", "label": "paraphrase" },
+    { "a": "q19", "b": "q20", "label": "paraphrase" },
+    { "a": "q21", "b": "q22", "label": "paraphrase" },
+    { "a": "q01", "b": "q03", "label": "near-miss" },
+    { "a": "q04", "b": "q06", "label": "near-miss" },
+    { "a": "q07", "b": "q09", "label": "near-miss" },
+    { "a": "q07", "b": "q10", "label": "near-miss" },
+    { "a": "q11", "b": "q13", "label": "near-miss" },
+    { "a": "q14", "b": "q16", "label": "near-miss" },
+    { "a": "q23", "b": "q24", "label": "near-miss" },
+    { "a": "q25", "b": "q26", "label": "near-miss" },
+    { "a": "q27", "b": "q28", "label": "near-miss" },
+    { "a": "q29", "b": "q30", "label": "near-miss" },
+    { "a": "q31", "b": "q32", "label": "near-miss" },
+    { "a": "q01", "b": "q39", "label": "repeat" },
+    { "a": "q14", "b": "q40", "label": "repeat" }
+  ]
+}

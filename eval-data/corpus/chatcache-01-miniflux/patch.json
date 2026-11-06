@@ -1,0 +1,33 @@
+{
+  "id": "chatcache-01-miniflux-patch-1",
+  "description": "Synthetic re-ingest for #1845: move the video-embedding rewrite functions and the Hacker News rewrite function out of content_rewrite_functions.go into two new files, so the answers to q04/q05/q19/q20/q38 cite different files after the re-ingest while most others do not. Applied by code to the clone (no third-party source is stored here), committed with a fixed author and date, then re-ingested. The patched tree is parsed, not built: the original file keeps its now-unused imports.",
+  "license": "CC0-1.0",
+  "commit": {
+    "message": "eval(#1845): split video and Hacker News rewrites into their own files",
+    "authorName": "METIS eval",
+    "authorEmail": "eval-chatcache@corpus.invalid",
+    "date": "2026-11-06T00:00:00Z"
+  },
+  "moves": [
+    {
+      "from": "internal/reader/rewrite/content_rewrite_functions.go",
+      "to": "internal/reader/rewrite/content_rewrite_video.go",
+      "header": "package rewrite // import \"miniflux.app/v2/internal/reader/rewrite\"\n\nimport (\n\t\"net/url\"\n\t\"strings\"\n\n\t\"miniflux.app/v2/internal/config\"\n)\n",
+      "functions": [
+        "getYoutubVideoIDFromURL",
+        "buildVideoPlayerIframe",
+        "addVideoPlayerIframe",
+        "addYoutubeVideoRewriteRule",
+        "addYoutubeVideoUsingInvidiousPlayer",
+        "addYoutubeVideoFromId",
+        "addInvidiousVideo"
+      ]
+    },
+    {
+      "from": "internal/reader/rewrite/content_rewrite_functions.go",
+      "to": "internal/reader/rewrite/content_rewrite_hackernews.go",
+      "header": "package rewrite // import \"miniflux.app/v2/internal/reader/rewrite\"\n\nimport (\n\t\"log/slog\"\n\t\"net/url\"\n\t\"strings\"\n\n\t\"github.com/PuerkitoBio/goquery\"\n)\n",
+      "functions": ["addHackerNewsLinksUsing"]
+    }
+  ]
+}
