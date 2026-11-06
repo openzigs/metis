@@ -655,6 +655,13 @@ export const impactSeedEvidenceSchema = z.object({
       stale: z.number().int().min(0),
       /** Distinct cited files placed at the head of the files to edit. */
       led: z.number().int().min(0),
+      /**
+       * #1832 — citations re-validation found out of date (`stale`, #1831): set
+       * aside, never a seed. Optional: absent from evidence written before #1832.
+       */
+      demotedStaleCitations: z.number().int().min(0).optional(),
+      /** #1832 — seeded citations no re-ingest has checked yet (`unverified`, #1830). */
+      unverifiedCitations: z.number().int().min(0).optional(),
     })
     .optional(),
   /** Every edit-candidate file, in edit order, with the channels that named it. */

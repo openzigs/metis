@@ -5,9 +5,11 @@ import {
   minimumDetectableGap,
   minimumDetectableGapStatement,
   pairedBootstrap,
+  pairedTInterval,
   readDifference,
   seededRandom,
   stratifiedPairedBootstrap,
+  studentTQuantile,
 } from "./stats.js";
 
 describe("mcnemarExact", () => {
@@ -164,5 +166,62 @@ describe("minimumDetectableGap", () => {
 
   it("is maximal with no items", () => {
     expect(minimumDetectableGap(0).sePerArm).toBe(1);
+  });
+});
+
+describe("studentTQuantile (#1847)", () => {
+  it.each([
+    [0.975, 1, 12.706205],
+    [0.975, 2, 4.302653],
+    [0.975, 10, 2.228139],
+    [0.975, 30, 2.042272],
+    [0.995, 10, 3.169273],
+    [0.025, 10, -2.228139],
+    [0.9, 4, 1.533206],
+  ])("t(%s, df %s) = %s, as the published tables give", (p, df, t) => {
+    expect(studentTQuantile(p, df)).toBeCloseTo(t, 5);
+  });
+
+  it("is 0 at the median", () => {
+    expect(studentTQuantile(0.5, 7)).toBeCloseTo(0, 10);
+  });
+
+  it.each([
+    [0, 5],
+    [1, 5],
+    [0.5, 0],
+  ])("refuses p %s with df %s", (p, df) => {
+    expect(() => studentTQuantile(p, df)).toThrow(/quantile/);
+  });
+});
+
+describe("pairedTInterval (#1847)", () => {
+  it("is the mean difference ± t(0.975, n − 1) × its standard error", () => {
+    // Differences 1, 2, 3, 4, 5: mean 3, sd √2.5, se √0.5, t(0.975, 4) = 2.776445.
+    const d = pairedTInterval([0, 0, 0, 0, 0], [1, 2, 3, 4, 5]);
+    const half = 2.776445 * Math.sqrt(0.5);
+    expect(d.n).toBe(5);
+    expect(d.meanDifference).toBeCloseTo(3, 12);
+    expect(d.ci[0]).toBeCloseTo(3 - half, 5);
+    expect(d.ci[1]).toBeCloseTo(3 + half, 5);
+  });
+
+  it("subtracts the baseline from the arm, pair by pair", () => {
+    const d = pairedTInterval([5, 1, 3], [4, 0, 2]);
+    expect(d.meanDifference).toBeCloseTo(-1, 12);
+    // Every pair differs by exactly −1: no spread, so the interval is the point.
+    expect(d.ci).toEqual([-1, -1]);
+  });
+
+  it("widens with alpha", () => {
+    const a = pairedTInterval([0, 0, 0, 0], [1, 3, 2, 6]);
+    const b = pairedTInterval([0, 0, 0, 0], [1, 3, 2, 6], 0.01);
+    expect(b.ci[0]).toBeLessThan(a.ci[0]);
+    expect(b.ci[1]).toBeGreaterThan(a.ci[1]);
+  });
+
+  it("refuses unpaired or too few items", () => {
+    expect(() => pairedTInterval([1, 2], [1])).toThrow(/same items/);
+    expect(() => pairedTInterval([1], [2])).toThrow(/at least 2/);
   });
 });
