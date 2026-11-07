@@ -8,7 +8,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SimilarRequirementItem } from "@metis/shared";
+import { SIMILAR_CODE_LINKS_PER_ITEM, type SimilarRequirementItem } from "@metis/shared";
 
 const server = vi.hoisted(() => ({
   dismissed: new Set<string>(),
@@ -44,6 +44,7 @@ const item = (over: Partial<SimilarRequirementItem>): SimilarRequirementItem => 
   score: 0.7,
   label: "related",
   codeLinks: [],
+  codeLinksTruncated: false,
   notDuplicate: false,
   linkedAsDuplicate: false,
   ...over,
@@ -108,6 +109,20 @@ const LOT_ONE_FILE = {
     { ...LOT.codeLinks[0]!, mappingId: "m-a2", startLine: 40, endLine: 55 },
   ],
 };
+
+/**
+ * #1931 — LOT holding links into the server's cap of files: `truncated` when
+ * it holds more than the cap returns.
+ */
+const lotAtCap = (truncated: boolean): SimilarRequirementItem => ({
+  ...LOT,
+  codeLinks: Array.from({ length: SIMILAR_CODE_LINKS_PER_ITEM }, (_, i) => ({
+    ...LOT.codeLinks[0]!,
+    mappingId: `m-cap-${i}`,
+    filePath: `cap-${i}.ts`,
+  })),
+  codeLinksTruncated: truncated,
+});
 
 /** The fake server's routes. */
 function route(path: string, opts: { method?: string; body?: unknown } = {}) {
@@ -206,6 +221,28 @@ describe("SimilarRequirementsPanel (#1838)", () => {
     mountPanel();
     expect(await screen.findByTestId("duplicate-warning")).toHaveTextContent(
       "looks like the same requirement (it already links to 1 file).",
+    );
+  });
+
+  it("past the server's cap of links, reads the file and link counts as lower bounds (#1931)", async () => {
+    server.items = [lotAtCap(true)];
+    mountPanel();
+    const [lot] = await screen.findAllByTestId("similar-requirement");
+    expect(
+      within(lot!).getByText("More than 20 code links, of the first 20: 20 fresh, 0 stale"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("duplicate-warning")).toHaveTextContent(
+      "looks like the same requirement (it already links to at least 20 files).",
+    );
+  });
+
+  it("at exactly the cap, the counts are exact (#1931)", async () => {
+    server.items = [lotAtCap(false)];
+    mountPanel();
+    const [lot] = await screen.findAllByTestId("similar-requirement");
+    expect(within(lot!).getByText("20 code links: 20 fresh, 0 stale")).toBeInTheDocument();
+    expect(screen.getByTestId("duplicate-warning")).toHaveTextContent(
+      "looks like the same requirement (it already links to 20 files).",
     );
   });
 
@@ -324,6 +361,17 @@ describe("DraftSimilarRequirements (#1838)", () => {
     });
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Before you add this: REQ-7 Lot tracking for recalls looks like a duplicate (it already links to 1 file).",
+    );
+  });
+
+  it("the draft's duplicate warning reads a file count past the cap as a lower bound (#1931)", async () => {
+    apiFetch.mockResolvedValue({ items: [lotAtCap(true)] });
+    render(<DraftSimilarRequirements projectId={P} text="Track batch numbers on receipt" />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Before you add this: REQ-7 Lot tracking for recalls looks like a duplicate (it already links to at least 20 files).",
     );
   });
 
