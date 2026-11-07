@@ -38,6 +38,12 @@
  */
 import { classifyChunkerIdentity } from "./chunker.js";
 import { createChildLogger } from "../logger.js";
+import {
+  governingCoverage,
+  reindexGoverningRevisions,
+  type GoverningCoverage,
+  type GoverningReindexResult,
+} from "../governing/governing-reindex.js";
 import { Embedder, getEmbedder, type EmbedderHealth } from "./embedder.js";
 import {
   getKnowledgeService,
@@ -79,6 +85,12 @@ export interface MigrationStatus {
   embedder: EmbedderHealth;
   store: MigrationStoreState;
   coverage: DeploymentCoverageReport;
+  /**
+   * Issue #1947 — the workspaces' governing-document tables, which no project's
+   * coverage counts. Absent when `deps` has no reader; `{ error }` when reading
+   * them failed (the status still reports, and is not up to date).
+   */
+  governing?: GoverningCoverage | { error: string };
 }
 
 /** The ordered steps an operator must take to get from `status` to a healthy index. */
@@ -115,6 +127,12 @@ export interface MigrationPlan {
    * ("coverage reporting an index that is not there").
    */
   projectsToReingest: string[];
+  /**
+   * Issue #1947 — workspaces whose governing table holds another model's rows
+   * or misses a live revision. Part of {@link upToDate}: those revisions are
+   * DARK to governing search, exactly like a project's model drift.
+   */
+  governingWorkspacesToReindex: string[];
   steps: string[];
 }
 
@@ -134,6 +152,13 @@ export interface MigrationDeps {
   embedder: Pick<Embedder, "health">;
   store: VectorStore;
   kind: VectorStoreKind;
+  /**
+   * Issue #1918 — rebuild the workspaces' governing-document tables, which no
+   * project reindex touches. Absent, {@link reindexAll} migrates projects only.
+   */
+  reindexGoverning?: () => Promise<GoverningReindexResult>;
+  /** Issue #1947 — read the governing tables' coverage for `status`. */
+  governingCoverage?: () => Promise<GoverningCoverage>;
 }
 
 export function defaultMigrationDeps(): MigrationDeps {
@@ -142,6 +167,8 @@ export function defaultMigrationDeps(): MigrationDeps {
     embedder: getEmbedder(),
     store: getVectorStore(),
     kind: vectorStoreKind(),
+    reindexGoverning: () => reindexGoverningRevisions(),
+    governingCoverage: () => governingCoverage(),
   };
 }
 
@@ -164,7 +191,19 @@ export async function migrationStatus(deps: MigrationDeps): Promise<MigrationSta
 
   const coverage = await deps.knowledge.deploymentCoverage();
 
+  // Issue #1947 — never throws, like the rest: a failed read is reported.
+  let governing: MigrationStatus["governing"];
+  if (deps.governingCoverage) {
+    try {
+      governing = await deps.governingCoverage();
+    } catch (err) {
+      governing = { error: (err as Error).message };
+      log.warn("could not read the governing tables' coverage", { error: governing.error });
+    }
+  }
+
   return {
+    ...(governing ? { governing } : {}),
     embedder,
     store: {
       kind: deps.kind,
@@ -219,8 +258,18 @@ export function planMigration(status: MigrationStatus): MigrationPlan {
     .filter((p) => p.needsReingest)
     .map((p) => p.projectId);
 
+  // Issue #1947 — governing rows on another model are as dark as a project's.
+  const governing = status.governing;
+  const governingError = governing && "error" in governing ? governing.error : null;
+  const governingWorkspacesToReindex =
+    governing && !("error" in governing) ? governing.workspaces.map((w) => w.workspaceId) : [];
+
   const upToDate =
-    blocked === null && !status.store.needsColumnMigration && projectsToReindex.length === 0;
+    blocked === null &&
+    !status.store.needsColumnMigration &&
+    projectsToReindex.length === 0 &&
+    governingWorkspacesToReindex.length === 0 &&
+    governingError === null;
 
   const steps: string[] = [];
   if (blocked) {
@@ -231,6 +280,7 @@ export function planMigration(status: MigrationStatus): MigrationPlan {
       needsColumnMigration: false,
       projectsToReindex,
       projectsToReingest,
+      governingWorkspacesToReindex,
       steps,
     };
   }
@@ -244,6 +294,25 @@ export function planMigration(status: MigrationStatus): MigrationPlan {
   }
   for (const projectId of projectsToReindex) {
     steps.push(`Reindex ${projectId}: \`pnpm embeddings:migrate reindex --project ${projectId}\``);
+  }
+  // Issue #1947 — `reindex --all` sweeps the governing tables after the projects
+  // it needs to reindex; there is no governing-only command.
+  if (governingWorkspacesToReindex.length > 0) {
+    const dark = (governing as GoverningCoverage).workspaces.reduce(
+      (n, w) => n + w.darkRevisions.length,
+      0,
+    );
+    steps.push(
+      `Rebuild the governing-document index of ${governingWorkspacesToReindex.length} ` +
+        `workspace(s) (${dark} revision(s) not searchable on the active model): ` +
+        `\`pnpm embeddings:migrate reindex --all\`.`,
+    );
+  }
+  if (governingError !== null) {
+    steps.push(
+      `The governing documents' index could not be read (${governingError}); fix that and ` +
+        `re-run \`status\` before trusting it.`,
+    );
   }
   // #1182 — named as a step, but a DIFFERENT step, and always after the reindexes.
   // The verb matters more than the ordering: an operator who reads "reindex" here
@@ -265,6 +334,7 @@ export function planMigration(status: MigrationStatus): MigrationPlan {
     needsColumnMigration: status.store.needsColumnMigration,
     projectsToReindex,
     projectsToReingest,
+    governingWorkspacesToReindex,
     steps,
   };
 }
@@ -388,6 +458,10 @@ export interface ReindexAllOptions {
 export interface ReindexAllResult {
   results: ReindexResult[];
   failures: Array<{ projectId: string; error: string }>;
+  /** Issue #1918 — the governing tables' sweep; absent when `deps` has none. */
+  governing?: GoverningReindexResult;
+  /** Issue #1918 — set when the governing sweep itself threw. */
+  governingError?: string;
 }
 
 /**
@@ -437,7 +511,47 @@ export async function reindexAll(
     }
   }
 
-  return { results, failures };
+  // Issue #1918 — the governing tables after the projects: their rows are tagged
+  // with the same model identity, so a model change leaves them as dark as a
+  // project's, and on pgvector `prepare` deletes them with every other row.
+  if (!deps.reindexGoverning) return { results, failures };
+  try {
+    return { results, failures, governing: await deps.reindexGoverning() };
+  } catch (err) {
+    const governingError = (err as Error).message;
+    log.error("governing reindex failed during migration", { error: governingError });
+    return { results, failures, governingError };
+  }
+}
+
+/**
+ * Issue #1918 — the governing sweep's lines for `embeddings:migrate reindex --all`:
+ * the summary for stdout, and (#1947) the failures for stderr, where the
+ * project failures go. Each `null` when there is nothing to write there.
+ */
+export function formatGoverningReindex(
+  result: GoverningReindexResult | undefined,
+  error?: string,
+): { stdout: string | null; stderr: string | null } {
+  if (error !== undefined) {
+    return { stdout: null, stderr: `Governing documents: reindex FAILED: ${error}` };
+  }
+  if (!result) return { stdout: null, stderr: null };
+  if (result.skipped) {
+    return {
+      stdout: "Governing documents: skipped (GOVERNING_DOCS_ENABLED is off).",
+      stderr: null,
+    };
+  }
+  const stdout =
+    `Governing documents: ${result.reindexed.length} of ${result.revisions} revision(s) ` +
+    `re-embedded, ${result.rebuiltWorkspaces.length} workspace table(s) rebuilt.`;
+  if (result.failures.length === 0) return { stdout, stderr: null };
+  const lines = [`${result.failures.length} governing revision(s) FAILED (left pending):`];
+  for (const f of result.failures) {
+    lines.push(`  ${f.workspaceId}/${f.revisionId}: ${f.error}`);
+  }
+  return { stdout, stderr: lines.join("\n") };
 }
 
 /**
@@ -512,6 +626,30 @@ function namedModels(counts: Record<string, number>): string {
   return Object.keys(counts)
     .map((m) => (m === "" ? "pending — not embedded yet" : m))
     .join(", ");
+}
+
+/** Issue #1947 — the governing tables' lines of `status`; none when nothing was read. */
+function formatGoverningCoverage(governing: MigrationStatus["governing"]): string[] {
+  if (!governing) return [];
+  if ("error" in governing) {
+    return [`Governing documents: coverage could not be read: ${governing.error}`];
+  }
+  if (governing.skipped) {
+    return ["Governing documents: not checked (GOVERNING_DOCS_ENABLED is off)."];
+  }
+  const dark = governing.workspaces.reduce((n, w) => n + w.darkRevisions.length, 0);
+  const lines = [
+    `Governing documents: ${governing.revisions - dark}/${governing.revisions} revision(s) ` +
+      `searchable on the active model; workspaces needing reindex: ` +
+      `${governing.workspaces.length}`,
+  ];
+  for (const w of governing.workspaces) {
+    lines.push(
+      `  ${w.workspaceId}  ${w.darkRevisions.length} revision(s) not on the active model` +
+        (w.foreignRows ? ", table holds another model's rows" : ""),
+    );
+  }
+  return lines;
 }
 
 /** Render a {@link MigrationStatus} + {@link MigrationPlan} as operator-facing text. */
@@ -644,6 +782,7 @@ export function formatStatus(status: MigrationStatus, plan: MigrationPlan): stri
           .join(", ")})`,
     );
   }
+  lines.push(...formatGoverningCoverage(status.governing));
   lines.push("");
   // #1182 — `upToDate` covers only the model/column half, so a store whose ONLY
   // outstanding work is chunker drift must not print "Up to date."

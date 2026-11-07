@@ -13,6 +13,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import {
+  formatGoverningReindex,
   formatLockStatus,
   formatStatus,
   migrationStatus,
@@ -364,6 +365,149 @@ describe("reindexAll", () => {
     });
     await reindexAll(makeDeps({ coverage: empty, reindexProject }), { all: true });
     expect(reindexProject).not.toHaveBeenCalled();
+  });
+
+  // Issue #1918 — the governing tables are swept after the projects.
+  it("runs the governing sweep after the projects and returns its result", async () => {
+    const order: string[] = [];
+    const reindexProject = vi.fn(async (projectId: string) => {
+      order.push(projectId);
+      return result(projectId);
+    }) as unknown as MigrationDeps["knowledge"]["reindexProject"];
+    const governing = {
+      skipped: false,
+      revisions: 1,
+      rebuiltWorkspaces: ["ws1"],
+      reindexed: [{ workspaceId: "ws1", revisionId: "r1", chunkCount: 3 }],
+      failures: [],
+    };
+    const reindexGoverning = vi.fn(async () => {
+      order.push("governing");
+      return governing;
+    });
+    const out = await reindexAll({
+      ...makeDeps({ coverage: MIXED, reindexProject }),
+      reindexGoverning,
+    });
+    expect(order).toEqual(["p-old", "governing"]);
+    expect(out.governing).toBe(governing);
+    expect(out.governingError).toBeUndefined();
+  });
+
+  it("reports a governing sweep that throws without losing the project results", async () => {
+    const reindexProject = vi.fn(async (projectId: string) =>
+      result(projectId),
+    ) as unknown as MigrationDeps["knowledge"]["reindexProject"];
+    const out = await reindexAll({
+      ...makeDeps({ coverage: MIXED, reindexProject }),
+      reindexGoverning: vi.fn(async () => {
+        throw new Error("db gone");
+      }),
+    });
+    expect(out.results.map((r) => r.projectId)).toEqual(["p-old"]);
+    expect(out.governingError).toBe("db gone");
+    expect(out.governing).toBeUndefined();
+  });
+});
+
+describe("#1947 — status counts the governing tables", () => {
+  const dark = {
+    skipped: false,
+    revisions: 3,
+    workspaces: [{ workspaceId: "ws1", darkRevisions: ["r1", "r2"], foreignRows: true }],
+  };
+  const withGoverning = (governingCoverage: MigrationDeps["governingCoverage"]) => ({
+    ...makeDeps({}),
+    governingCoverage,
+  });
+
+  it("a model change with ONLY governing rows is not up to date, and names the remedy", async () => {
+    const status = await migrationStatus(withGoverning(async () => dark));
+    expect(status.governing).toEqual(dark);
+    const plan = planMigration(status);
+    expect(plan.projectsToReindex).toEqual([]);
+    expect(plan.governingWorkspacesToReindex).toEqual(["ws1"]);
+    expect(plan.upToDate).toBe(false);
+    expect(plan.steps.join("\n")).toMatch(
+      /governing-document index of 1 workspace\(s\) \(2 revision\(s\) not searchable.*reindex --all/,
+    );
+    const text = formatStatus(status, plan);
+    expect(text).toContain(
+      "Governing documents: 1/3 revision(s) searchable on the active model; workspaces needing reindex: 1",
+    );
+    expect(text).toContain(
+      "ws1  2 revision(s) not on the active model, table holds another model's rows",
+    );
+    expect(text).not.toContain("Up to date.");
+  });
+
+  it("is up to date when every governing revision is on the active model, or the flag is off", async () => {
+    for (const governing of [
+      { skipped: false, revisions: 3, workspaces: [] },
+      { skipped: true, revisions: 0, workspaces: [] },
+    ]) {
+      const status = await migrationStatus(withGoverning(async () => governing));
+      const plan = planMigration(status);
+      expect(plan.upToDate).toBe(true);
+      expect(formatStatus(status, plan)).toContain("Up to date.");
+    }
+    const off = await migrationStatus(
+      withGoverning(async () => ({ skipped: true, revisions: 0, workspaces: [] })),
+    );
+    expect(formatStatus(off, planMigration(off))).toContain(
+      "Governing documents: not checked (GOVERNING_DOCS_ENABLED is off).",
+    );
+  });
+
+  it("reports an unreadable governing index without throwing, and not as up to date", async () => {
+    const status = await migrationStatus(
+      withGoverning(async () => {
+        throw new Error("db gone");
+      }),
+    );
+    expect(status.governing).toEqual({ error: "db gone" });
+    const plan = planMigration(status);
+    expect(plan.upToDate).toBe(false);
+    expect(plan.steps.join("\n")).toContain("could not be read (db gone)");
+    expect(formatStatus(status, plan)).toContain(
+      "Governing documents: coverage could not be read: db gone",
+    );
+  });
+
+  it("says nothing about governing documents when no reader is wired", async () => {
+    const status = await migrationStatus(makeDeps({}));
+    expect(status).not.toHaveProperty("governing");
+    expect(formatStatus(status, planMigration(status))).not.toContain("Governing documents");
+  });
+});
+
+describe("formatGoverningReindex (#1918)", () => {
+  const base = { skipped: false, revisions: 4, rebuiltWorkspaces: ["ws1"], failures: [] };
+
+  it("is silent with no sweep, and says so when the flag skipped it", () => {
+    expect(formatGoverningReindex(undefined)).toEqual({ stdout: null, stderr: null });
+    const skipped = formatGoverningReindex({ ...base, skipped: true, reindexed: [] });
+    expect(skipped.stdout).toMatch(/skipped \(GOVERNING_DOCS_ENABLED is off\)/);
+    expect(skipped.stderr).toBeNull();
+  });
+
+  it("counts the work on stdout and names every failed revision on stderr (#1947)", () => {
+    const text = formatGoverningReindex({
+      ...base,
+      reindexed: [{ workspaceId: "ws1", revisionId: "r1", chunkCount: 2 }],
+      failures: [{ workspaceId: "ws1", revisionId: "r2", error: "embedder down" }],
+    });
+    expect(text.stdout).toContain("1 of 4 revision(s) re-embedded, 1 workspace table(s) rebuilt");
+    expect(text.stdout).not.toContain("FAILED");
+    expect(text.stderr).toContain("1 governing revision(s) FAILED (left pending)");
+    expect(text.stderr).toContain("ws1/r2: embedder down");
+    expect(
+      formatGoverningReindex({ ...base, reindexed: [], rebuiltWorkspaces: [] }).stderr,
+    ).toBeNull();
+    expect(formatGoverningReindex(undefined, "db gone")).toEqual({
+      stdout: null,
+      stderr: "Governing documents: reindex FAILED: db gone",
+    });
   });
 });
 

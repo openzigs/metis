@@ -65,6 +65,7 @@ process.env.LANCEDB_PATH = path.join(vectorTmp, "vectors");
 const { governingDocumentsRouter, governingStorageKey } =
   await import("../src/routes/governing-documents.js");
 const { GoverningIndex } = await import("../src/lib/governing/governing-index.js");
+const { reindexGoverningRevisions } = await import("../src/lib/governing/governing-reindex.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { DocumentStorage } = await import("../src/lib/documents/storage.js");
 const { validateUpload } = await import("../src/lib/documents/upload.js");
@@ -76,25 +77,28 @@ type Embedder = import("../src/lib/rag/embedder.js").Embedder;
 
 // ── A deterministic embedder: hashed bag of words, unit length ──────────────
 const DIM = 64;
-function bow(text: string): number[] {
-  const v = new Array<number>(DIM).fill(0);
+function bow(text: string, dim = DIM): number[] {
+  const v = new Array<number>(dim).fill(0);
   for (const word of text.toLowerCase().match(/[a-z0-9]+/g) ?? []) {
     let h = 0;
     for (const ch of word) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-    v[h % DIM] += 1;
+    v[h % dim] += 1;
   }
   const norm = Math.hypot(...v) || 1;
   return v.map((x) => x / norm);
 }
-const embedder = {
-  model: "test-bow",
-  dimension: DIM,
-  embed: async (texts: string[]) => ({
-    vectors: texts.map(bow),
-    model: "test-bow",
-    dimension: DIM,
-  }),
-};
+function bowEmbedder(model: string, dim: number) {
+  return {
+    model,
+    dimension: dim,
+    embed: async (texts: string[]) => ({
+      vectors: texts.map((t) => bow(t, dim)),
+      model,
+      dimension: dim,
+    }),
+  };
+}
+const embedder = bowEmbedder("test-bow", DIM);
 
 // ── Who is calling ───────────────────────────────────────────────────────────
 const ID = {
@@ -144,7 +148,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       a.use(express.json());
       a.use(
         "/api/workspaces/:workspaceId/governing-documents",
-        governingDocumentsRouter({ storage: new DocumentStorage({ root: uploadsRoot }), index }),
+        governingDocumentsRouter({
+          storage: new DocumentStorage({ root: uploadsRoot }),
+          index,
+          // #1870's rule extraction is covered by governing-rules.extraction.sqlite.test.ts;
+          // here it would run in the background against the offline stub.
+          extractRules: async () => undefined,
+        }),
       );
       a.use(notFoundHandler);
       a.use(errorHandler);
@@ -184,9 +194,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     }
 
     /** A fresh index over a fresh store instance: nothing cached from the write. */
-    function freshIndex() {
+    function freshIndex(e: typeof embedder = embedder) {
       __resetVectorStoreSingleton();
-      return new GoverningIndex({ embedder });
+      return new GoverningIndex({ embedder: e });
     }
 
     const actor = (who: keyof typeof ID) => ({
@@ -657,6 +667,239 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         .delete(`${base(ID.wsA)}/${res.body.data.documentId}`)
         .set("x-test-user", "adminA")
         .expect(200);
+    });
+
+    it("#1918 — a failed embed of a new revision keeps the document in default search by its previous revision, until the sweep recovers it", async () => {
+      const v1 = await upload("adminA", ID.wsA, { fields: fieldsFor("Recovering", "v1") });
+      expect(v1.status).toBe(201);
+      const { documentId, revisionId: v1Id } = v1.body.data;
+      const broken = new GoverningIndex({
+        embedder: {
+          embed: async () => {
+            throw new Error("embedder down");
+          },
+        },
+      });
+      const v2 = await upload("adminA", ID.wsA, {
+        a: app(broken),
+        path: `${base(ID.wsA)}/${documentId}/revisions`,
+        body: POLICY_V2,
+        fields: { revisionLabel: "v2", effectiveDate: "2026-06-01" },
+      });
+      expect(v2.status).toBe(201);
+      expect(v2.body.data.indexState).toBe("pending");
+      const v2Id = v2.body.data.revisionId;
+
+      // The list says the current revision is v2 and not yet embedded.
+      const list = await request(app()).get(base(ID.wsA)).set("x-test-user", "memberA");
+      expect(
+        list.body.data.documents.find((d: { id: string }) => d.id === documentId),
+      ).toMatchObject({ currentRevision: { id: v2Id, indexState: "pending", isCurrent: true } });
+
+      // Default search still finds the document, answered (and labelled) by v1.
+      const query = "service account password must be rotated every days";
+      const during = (await freshIndex().search(ID.wsA, query, 50, actor("memberA"))).filter(
+        (h) => h.documentId === documentId,
+      );
+      expect(during.length).toBeGreaterThan(0);
+      expect(during.every((h) => h.revisionId === v1Id && h.revisionLabel === "v1")).toBe(true);
+      expect(during.some((h) => h.text.includes("every ninety days"))).toBe(true);
+
+      // The sweep embeds the pending revision from its stored text, and search moves to v2.
+      const swept = await reindexGoverningRevisions({ index: freshIndex() });
+      expect(swept.failures).toEqual([]);
+      expect(swept.rebuiltWorkspaces).toEqual([]);
+      expect(swept.reindexed.map((r) => r.revisionId)).toEqual([v2Id]);
+      const row = await db.governingDocumentRevision.findUnique({ where: { id: v2Id } });
+      expect(row?.indexState).toBe("indexed");
+      const after = (await freshIndex().search(ID.wsA, query, 50, actor("memberA"))).filter(
+        (h) => h.documentId === documentId,
+      );
+      expect(after.length).toBeGreaterThan(0);
+      expect(after.every((h) => h.revisionId === v2Id)).toBe(true);
+      expect(after.some((h) => h.text.includes("every thirty days"))).toBe(true);
+
+      await request(app())
+        .delete(`${base(ID.wsA)}/${documentId}`)
+        .set("x-test-user", "adminA")
+        .expect(200);
+    });
+
+    it("#1918 — after an embedding-model change search finds nothing until the sweep rebuilds every workspace's table", async () => {
+      const res = await upload("adminA", ID.wsA, { fields: fieldsFor("Model change", "m1") });
+      expect(res.status).toBe(201);
+      const { documentId, revisionId } = res.body.data;
+      const query = "service account password must be rotated every ninety days";
+      const renamed = bowEmbedder("test-bow-v2", 48);
+
+      // On the new model the old rows are filtered out: the document is dark.
+      expect(
+        (await freshIndex(renamed).search(ID.wsA, query, 50, actor("memberA"))).filter(
+          (h) => h.documentId === documentId,
+        ),
+      ).toEqual([]);
+
+      try {
+        const swept = await reindexGoverningRevisions({ index: freshIndex(renamed) });
+        expect(swept.skipped).toBe(false);
+        expect(swept.failures).toEqual([]);
+        expect(new Set(swept.rebuiltWorkspaces)).toEqual(new Set([ID.wsA, ID.wsB]));
+        expect(swept.reindexed.map((r) => r.revisionId)).toEqual(
+          expect.arrayContaining([revisionId, docB.revisionId]),
+        );
+
+        const hits = await freshIndex(renamed).search(ID.wsA, query, 50, actor("memberA"));
+        expect(hits.find((h) => h.documentId === documentId)?.revisionId).toBe(revisionId);
+        const inB = await freshIndex(renamed).search(
+          ID.wsB,
+          "vendor contract reviewed by legal",
+          5,
+          actor("adminB"),
+        );
+        expect(inB.map((h) => h.documentId)).toContain(docB.documentId);
+        // Every stored row is on the new model now: nothing of the old one is left.
+        const stored = await freshIndex(renamed).storedIdentities(ID.wsA);
+        expect(new Set([...stored.values()].flatMap((s) => [...s]))).toEqual(
+          new Set(["test-bow-v2"]),
+        );
+        // A second sweep has nothing to do.
+        const again = await reindexGoverningRevisions({ index: freshIndex(renamed) });
+        expect(again.reindexed).toEqual([]);
+        expect(again.rebuiltWorkspaces).toEqual([]);
+      } finally {
+        // Back to the suite's model, so the tests after this one read their own rows.
+        await reindexGoverningRevisions({ index: freshIndex() });
+        await request(app())
+          .delete(`${base(ID.wsA)}/${documentId}`)
+          .set("x-test-user", "adminA")
+          .expect(200);
+      }
+    });
+
+    it("#1947 — the fallback serves the NEWEST embedded revision: v1 and v2 indexed, v3 pending, hits come from v2", async () => {
+      const v1 = await upload("adminA", ID.wsA, { fields: fieldsFor("Newest first", "v1") });
+      expect(v1.status).toBe(201);
+      const { documentId } = v1.body.data;
+      const revisionsPath = `${base(ID.wsA)}/${documentId}/revisions`;
+      const v2 = await upload("adminA", ID.wsA, {
+        path: revisionsPath,
+        body: POLICY_V2,
+        fields: { revisionLabel: "v2", effectiveDate: "2026-06-01" },
+      });
+      expect(v2.body.data.indexState).toBe("indexed");
+      const broken = new GoverningIndex({
+        embedder: {
+          embed: async () => {
+            throw new Error("embedder down");
+          },
+        },
+      });
+      const v3 = await upload("adminA", ID.wsA, {
+        a: app(broken),
+        path: revisionsPath,
+        body: POLICY_V2.replace("thirty", "seven"),
+        fields: { revisionLabel: "v3", effectiveDate: "2026-09-01" },
+      });
+      expect(v3.body.data.indexState).toBe("pending");
+
+      const hits = (
+        await freshIndex().search(
+          ID.wsA,
+          "service account password must be rotated every days",
+          50,
+          actor("memberA"),
+        )
+      ).filter((h) => h.documentId === documentId);
+      expect(hits.length).toBeGreaterThan(0);
+      expect(hits.every((h) => h.revisionId === v2.body.data.revisionId)).toBe(true);
+      expect(hits.every((h) => h.revisionLabel === "v2")).toBe(true);
+
+      await request(app())
+        .delete(`${base(ID.wsA)}/${documentId}`)
+        .set("x-test-user", "adminA");
+    });
+
+    it("#1947 — a revision uploaded between the sweep's snapshot and its rebuild is searchable afterwards, and search is not empty during the rebuild", async () => {
+      const query = "service account password must be rotated every days";
+      const v1 = await upload("adminA", ID.wsA, { fields: fieldsFor("Raced", "v1") });
+      expect(v1.status).toBe(201);
+      const { documentId } = v1.body.data;
+      // The model changes; the vector width does not, so a live upload can still
+      // write into the old table — the shape of the race.
+      const renamed = bowEmbedder("test-bow-race", DIM);
+      const sweepIndex = freshIndex(renamed);
+      let v3Id = "";
+      const duringRebuild: string[] = [];
+
+      // Step 1: the sweep has taken its snapshot (listReindexTargets) and reads
+      // the table's identities next. Before it does, an admin uploads v3 on the
+      // new model: v3 is stored, embedded into the LIVE table and marked indexed.
+      const realStored = sweepIndex.storedIdentities.bind(sweepIndex);
+      vi.spyOn(sweepIndex, "storedIdentities").mockImplementationOnce(async (ws) => {
+        const v3 = await upload("adminA", ID.wsA, {
+          a: app(new GoverningIndex({ embedder: renamed })),
+          path: `${base(ID.wsA)}/${documentId}/revisions`,
+          body: POLICY_V2,
+          fields: { revisionLabel: "v3", effectiveDate: "2026-09-01" },
+        });
+        expect(v3.body.data.indexState).toBe("indexed");
+        v3Id = v3.body.data.revisionId;
+        return realStored(ws);
+      });
+      // Step 2: while A's rebuild writes, A's search still reads the live table.
+      // One search per shadow write of A's: each must find v3.
+      const realIndex = sweepIndex.indexRevision.bind(sweepIndex);
+      vi.spyOn(sweepIndex, "indexRevision").mockImplementation(async (input, opts) => {
+        if (opts?.shadow && input.workspaceId === ID.wsA) {
+          const hits = await new GoverningIndex({ embedder: renamed }).search(
+            ID.wsA,
+            query,
+            50,
+            actor("memberA"),
+          );
+          duringRebuild.push(
+            hits
+              .filter((h) => h.documentId === documentId)
+              .map((h) => h.revisionId)
+              .join(","),
+          );
+        }
+        return realIndex(input, opts);
+      });
+
+      try {
+        const swept = await reindexGoverningRevisions({ index: sweepIndex });
+        expect(swept.failures).toEqual([]);
+        expect(swept.rebuiltWorkspaces).toContain(ID.wsA);
+        expect(swept.reindexed.map((r) => r.revisionId)).toContain(v3Id);
+        // v3 was in the live table while the rebuild ran...
+        expect(duringRebuild.length).toBeGreaterThan(0);
+        for (const found of duringRebuild) {
+          expect(new Set(found.split(","))).toEqual(new Set([v3Id]));
+        }
+        // ...and is current, indexed and searchable after it.
+        const row = await db.governingDocumentRevision.findUnique({ where: { id: v3Id } });
+        expect(row?.indexState).toBe("indexed");
+        const after = (
+          await freshIndex(renamed).search(ID.wsA, query, 50, actor("memberA"))
+        ).filter((h) => h.documentId === documentId);
+        expect(after.length).toBeGreaterThan(0);
+        expect(after.every((h) => h.revisionId === v3Id)).toBe(true);
+      } finally {
+        await reindexGoverningRevisions({ index: freshIndex() });
+        await request(app())
+          .delete(`${base(ID.wsA)}/${documentId}`)
+          .set("x-test-user", "adminA");
+      }
+    });
+
+    it("#1918 — the sweep touches nothing with the flag off", async () => {
+      delete process.env.GOVERNING_DOCS_ENABLED;
+      const index = freshIndex();
+      const probe = vi.spyOn(index, "activeEmbeddingIdentity");
+      const swept = await reindexGoverningRevisions({ index });
+      expect(swept).toMatchObject({ skipped: true, revisions: 0, reindexed: [] });
+      expect(probe).not.toHaveBeenCalled();
     });
 
     it("a deployment admin reads a live workspace without membership, and nobody reads a soft-deleted one", async () => {

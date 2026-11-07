@@ -8,7 +8,10 @@
  * one per-chunk field every backend persists (Lance and pgvector keep a fixed
  * column set), so a search filters to revisions by it. A new revision adds rows
  * and leaves the previous revision's rows in place; a search returns the current
- * revision's chunks unless it asks for superseded ones too.
+ * revision's chunks unless it asks for superseded ones too, and the previous
+ * revision's while the current one is not yet embedded (#1918,
+ * `searchableRevisions`). `governing-reindex.ts` rebuilds the tables after an
+ * embedding-model change.
  *
  * `search` checks the actor's workspace membership BEFORE it touches the table,
  * and re-reads the searchable revisions from the database, so a stale vector of
@@ -57,6 +60,9 @@ export interface GoverningSearchOptions {
 /** Search results per call: at least one, at most this many. */
 export const MAX_GOVERNING_SEARCH_K = 50;
 
+/** Appended to a workspace id to name the table its rebuild is written into (#1947). */
+export const GOVERNING_SHADOW_SUFFIX = "__reindex";
+
 export class GoverningIndex {
   private readonly space: GoverningVectorSpace;
   private readonly embedder: GoverningEmbedder;
@@ -76,12 +82,15 @@ export class GoverningIndex {
    * Returns the number of chunks written. The caller has already authorised the
    * write and stored the revision row.
    */
-  async indexRevision(input: {
-    workspaceId: string;
-    revisionId: string;
-    filename: string;
-    text: string;
-  }): Promise<number> {
+  async indexRevision(
+    input: {
+      workspaceId: string;
+      revisionId: string;
+      filename: string;
+      text: string;
+    },
+    opts: { shadow?: boolean } = {},
+  ): Promise<number> {
     const chunks = chunkMarkdown(input.text, this.chunkOptions);
     if (chunks.length === 0) return 0;
     const embeddings = await embedInBoundedBatches(
@@ -109,10 +118,66 @@ export class GoverningIndex {
         },
       };
     });
-    const key = this.space.tableKey(input.workspaceId);
+    const key = opts.shadow
+      ? this.shadowTableKey(input.workspaceId)
+      : this.space.tableKey(input.workspaceId);
     await this.space.store.ensureTable(key);
     await this.space.store.upsert(key, rows);
     return rows.length;
+  }
+
+  /**
+   * The table a rebuild of the workspace's table is written into before it
+   * replaces the live one (#1947). A workspace id is a cuid, which never
+   * contains `__`, so no workspace's live key is another's shadow key.
+   */
+  private shadowTableKey(workspaceId: string): string {
+    return this.space.tableKey(`${workspaceId}${GOVERNING_SHADOW_SUFFIX}`);
+  }
+
+  /**
+   * The embedding identity a row written now is tagged with, and the one a
+   * search filters on: one embed of a blank string, read the way
+   * {@link indexRevision} and {@link search} read theirs (#1918).
+   */
+  async activeEmbeddingIdentity(): Promise<string> {
+    const probe = await this.embedder.embed([" "]);
+    return probe.identity ?? probe.model;
+  }
+
+  /**
+   * The embedding identities stored for each revision in the workspace's table,
+   * keyed by revision id (a chunk id is `<revisionId>:<position>`) (#1918).
+   */
+  async storedIdentities(workspaceId: string): Promise<Map<string, Set<string>>> {
+    const refs = await this.space.store.listChunkRefs(this.space.tableKey(workspaceId));
+    const out = new Map<string, Set<string>>();
+    for (const ref of refs) {
+      const revisionId = ref.chunkId.split(":")[0];
+      const set = out.get(revisionId) ?? new Set<string>();
+      set.add(ref.embeddingModel);
+      out.set(revisionId, set);
+    }
+    return out;
+  }
+
+  /**
+   * Start a rebuild of the workspace's table (#1947): an empty shadow table,
+   * any left by an interrupted rebuild dropped first. The live table, which
+   * search reads, is untouched until {@link swapInShadow}.
+   */
+  async beginShadow(workspaceId: string): Promise<void> {
+    const key = this.shadowTableKey(workspaceId);
+    await this.space.store.dropTable(key);
+    await this.space.store.ensureTable(key);
+  }
+
+  /** Replace the workspace's live table with its rebuilt shadow (#1947; the store's reindex swap). */
+  async swapInShadow(workspaceId: string): Promise<void> {
+    await this.space.store.swapTable(
+      this.space.tableKey(workspaceId),
+      this.shadowTableKey(workspaceId),
+    );
   }
 
   /**

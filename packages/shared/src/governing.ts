@@ -15,6 +15,8 @@ import { DOCUMENT_INDEX_STATES } from "./rag-hardening.js";
 /** Rule extraction from a revision (#1870). */
 export const GOVERNING_EXTRACTION_STATES = ["pending", "running", "done", "failed"] as const;
 export type GoverningExtractionState = (typeof GOVERNING_EXTRACTION_STATES)[number];
+/** The longest extraction error a revision carries; longer messages are cut. */
+export const GOVERNING_EXTRACTION_ERROR_MAX = 500;
 
 /** One row of a rule's edit history: a change to its fields, or its soft delete. */
 export const GOVERNING_RULE_EDIT_KINDS = ["edit", "delete"] as const;
@@ -48,6 +50,13 @@ export const governingDocumentRevisionSchema = z.object({
   /** The quarantine lifecycle `Document` uses (Epic #157). */
   indexState: z.enum(DOCUMENT_INDEX_STATES),
   extractionState: z.enum(GOVERNING_EXTRACTION_STATES),
+  /** Why rule extraction failed (#1870); null unless `extractionState` is `failed`. */
+  extractionError: z.string().min(1).max(GOVERNING_EXTRACTION_ERROR_MAX).nullable(),
+  /**
+   * Rules the model returned whose clause excerpt is not in the revision's text
+   * verbatim (whitespace aside), dropped rather than stored with an invented citation.
+   */
+  droppedUnverified: z.number().int().min(0),
   uploadedById: id,
   createdAt: timestamp,
 });
@@ -57,7 +66,7 @@ export const governingRuleSchema = z
   .object({
     id,
     revisionId: id,
-    /** The policy's own control id (`AC-2`, `4.3.1`), or a generated `R-012`. */
+    /** The policy's own control id (`AC-2`, `4.3.1`), or a generated `METIS-012` (#1947). */
     controlId: z.string().min(1).max(64),
     /** One line. */
     summary: z.string().min(1).max(500),

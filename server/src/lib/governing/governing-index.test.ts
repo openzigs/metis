@@ -146,6 +146,71 @@ describe("GoverningIndex", () => {
     expect(await index.search("ws1", "clause", 5, actor)).toEqual([]);
   });
 
+  it("#1918 — reports the active identity and the identities stored per revision", async () => {
+    const tagged = {
+      embed: async (texts: string[]) => ({
+        vectors: texts.map(() => [1, 0, 0]),
+        model: "m",
+        identity: "m|cls|q8",
+        dimension: 3,
+      }),
+    };
+    const index = new GoverningIndex({ space: space(), embedder: tagged });
+    expect(await index.activeEmbeddingIdentity()).toBe("m|cls|q8");
+    expect(await new GoverningIndex({ space: space(), embedder }).activeEmbeddingIdentity()).toBe(
+      "m",
+    );
+    for (const revisionId of ["r1", "r2"]) {
+      await index.indexRevision({
+        workspaceId: "ws1",
+        revisionId,
+        filename: "p.md",
+        text: `# Policy ${revisionId}\n\nAll laptops are encrypted.`,
+      });
+    }
+    const stored = await index.storedIdentities("ws1");
+    expect([...stored.keys()].sort()).toEqual(["r1", "r2"]);
+    expect([...stored.get("r1")!]).toEqual(["m|cls|q8"]);
+    expect((await index.storedIdentities("ws-empty")).size).toBe(0);
+  });
+
+  it("#1947 — a rebuild writes a shadow the live table never sees until the swap", async () => {
+    const index = new GoverningIndex({ space: space(), embedder });
+    const write = (revisionId: string, shadow: boolean) =>
+      index.indexRevision(
+        { workspaceId: "ws1", revisionId, filename: "p.md", text: `Clause of ${revisionId}.` },
+        { shadow },
+      );
+    await write("old", false);
+    // A stale shadow from an interrupted rebuild is dropped when the next begins.
+    await index.beginShadow("ws1");
+    await write("stale", true);
+    await index.beginShadow("ws1");
+    await write("rebuilt", true);
+    // Search's table still holds only the live row.
+    expect([...(await index.storedIdentities("ws1")).keys()]).toEqual(["old"]);
+    expect((await store.listChunkRefs("ws1__reindex")).map((r) => r.chunkId)).toEqual([
+      "rebuilt:0",
+    ]);
+
+    await index.swapInShadow("ws1");
+    expect([...(await index.storedIdentities("ws1")).keys()]).toEqual(["rebuilt"]);
+    expect(await store.listChunkRefs("ws1__reindex")).toEqual([]);
+  });
+
+  it("#1947 — an empty rebuild still swaps in (the shadow table exists from the start)", async () => {
+    const index = new GoverningIndex({ space: space(), embedder });
+    await index.indexRevision({
+      workspaceId: "ws1",
+      revisionId: "old",
+      filename: "p.md",
+      text: "Clause.",
+    });
+    await index.beginShadow("ws1");
+    await index.swapInShadow("ws1");
+    expect((await index.storedIdentities("ws1")).size).toBe(0);
+  });
+
   it("keeps one process-wide index", () => {
     __resetGoverningIndexSingleton();
     process.env.LANCEDB_PATH = root;
