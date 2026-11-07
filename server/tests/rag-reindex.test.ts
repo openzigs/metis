@@ -170,6 +170,9 @@ vi.mock("vectordb", () => {
           where() {
             return q;
           },
+          prefilter() {
+            return q;
+          },
           metricType() {
             return q;
           },

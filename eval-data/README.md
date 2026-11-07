@@ -403,6 +403,13 @@ union cost about 0.2 table precision that the analysis path does not lose
 (docs/IMPACT_ANALYSIS_LLM_STAGES.md). Records written before #1848 have no per-requirement
 tables, so they are read on the union.
 
+**A7's gate reads both scorings (#1890).** Against A7O the union's artefact mostly cancels,
+so A7 must hold within 0.03 of A7O on the first persisted requirement **and** on the
+union. The guard row says which scoring decided it, for example
+`FAILED (failed on the analysis's first persisted requirement (0.648 against 0.760))`. A
+run whose per-requirement tables miss a requirement is refused by name; use a new
+partials directory.
+
 **A stale eval database is refused.** The impact path keeps the search's seeds when a
 stored-citation lookup throws. An eval database that predates a migration, such as the
 `freshness` column added in #1830, would therefore read A7 as A7O. The guard refuses such
