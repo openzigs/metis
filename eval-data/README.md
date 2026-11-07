@@ -641,8 +641,9 @@ The records are committed in `server/src/lib/eval/localization/__fixtures__/`, a
 
 **The no-op re-ingest arms** (#1915, 2026-11-07, on `main` at `a6577a7e`). A0, A7, A7R,
 A7RD, A7S and A7SD were read together on fresh analyses: `claude-sonnet-5-5`, one run,
-both held-out corpora, one corpus per call in slices of 2 or 3 Miniflux items, or 1 or 2
-fixture items:
+both held-out corpora, one corpus per call. Keep each call to at most 2 items, so it fits a
+10-minute call: fixture slices of 1 or 2 items took 230–460 s. (Some Miniflux slices of this
+run were 3 items, 166–333 s; 2 is the safe size to repeat it with.)
 
 ```bash
 pnpm eval:localization --corpus localization-02-fixture-portfolio \
@@ -683,7 +684,8 @@ Paired comparisons, pooled over the 39 items:
   and A7RD, 1 item per corpus).
 
 The records are `__fixtures__/staleness-noop-reingest-sonnet-2026-11-07.partials.jsonl`,
-and `staleness-results.test.ts` pins these figures.
+and `staleness-results.test.ts` pins the paired comparisons and the freshness counts (not
+the per-arm table).
 
 ### The analysis-agent arms (#1755)
 
