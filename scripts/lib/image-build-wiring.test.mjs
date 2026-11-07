@@ -555,6 +555,12 @@ describe("container images are digest-pinned, patched and scanned (#1379)", () =
     expect(api.match(/OS_PATCH_DATE=\$\{\{ steps\.patch\.outputs\.date \}\}/g)).toHaveLength(4);
   });
 
+  it("ci.yml `api` busts the OS-upgrade layer hourly, not daily (#1904)", () => {
+    // A daily key let a layer cached before the day's distro fix (zlib1g, 2026-11-07)
+    // survive every re-run of the same day, and the Trivy gate failed on a fixed CVE.
+    expect(api).toMatch(/date=\$\(date -u \+%FT%H\)/);
+  });
+
   it("ci.yml `api` scans all four built images through the gate script", () => {
     for (const label of ["server", "ui", "embeddings-svc", "sql-lineage"]) {
       expect(api).toMatch(new RegExp(`"${label}=metis-[a-z-]+:\\$\\{IMAGE_TAG\\}"`));
