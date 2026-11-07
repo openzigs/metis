@@ -226,7 +226,7 @@ const STOP_WORDS = new Set(
 /**
  * #1900 — subject words shorter than four letters that still carry subject
  * matter: without them `log`, `tax`, `pii` and `vat` would never count as
- * shared vocabulary. A plural (`logs`, `taxes`) meets its singular.
+ * shared vocabulary. An inflection (`logs`, `logged`, `taxation`) meets its base.
  */
 export const SHORT_SUBJECT_WORDS: ReadonlySet<string> = new Set([
   "api",
@@ -244,9 +244,18 @@ export const SHORT_SUBJECT_WORDS: ReadonlySet<string> = new Set([
   "vpn",
 ]);
 
-/** A short subject word `raw` is, or is the plural of; undefined when none. */
+/**
+ * The endings folded onto a short subject word (#1920): plural, past, -ing
+ * and -ation, so `logs`, `logged`, `logging`, `taxation` and `keyed` meet
+ * `log`, `tax` and `key`.
+ */
+const SHORT_WORD_INFLECTION = /(?:ations?|ings?|ed|e?s)$/;
+
+/** A short subject word `raw` is, or is an inflection of; undefined when none. */
 function shortSubjectWord(raw: string): string | undefined {
-  for (const base of [raw, raw.replace(/e?s$/, "")]) {
+  const stem = raw.replace(SHORT_WORD_INFLECTION, "");
+  // `logged` and `logging` double the consonant before the ending.
+  for (const base of [raw, stem, stem.replace(/(.)\1$/, "$1")]) {
     if (SHORT_SUBJECT_WORDS.has(base)) return base;
   }
   return undefined;
@@ -256,7 +265,7 @@ function shortSubjectWord(raw: string): string | undefined {
  * The subject-matter stems of a text: lower-cased words of four letters or
  * more that are not stop words, each cut to its first five letters, so
  * `records` meets `recorded` and `finance` meets `financial`; plus every
- * {@link SHORT_SUBJECT_WORDS} word, plural or not. Deliberately eager to
+ * {@link SHORT_SUBJECT_WORDS} word, inflected or not. Deliberately eager to
  * match: a `nonResembling` label must survive the strictest reading.
  */
 export function contentStems(text: string): Set<string> {
