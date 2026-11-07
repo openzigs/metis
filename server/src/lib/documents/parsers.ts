@@ -329,9 +329,11 @@ export function sanitiseHtml(html: string): string {
   // `/<embed\b[^>]*\/?>/gi`, `/<[^>]+>/g`) and a leading `\s+` retried from
   // every opener when no closer followed, so an upload of repeated `<!--`, `<`
   // or spaces held the event loop for quadratic time: 14-22 s at 200 KB, far
-  // longer at the 10 MB cap. Each pass removes exactly what its regex removed.
+  // longer at the 10 MB cap. Each pass removes what its regex removed
+  // (`tests/sanitise-html-linear-1869.test.ts` compares against the old code).
   let out = html;
-  out = stripSpans(out, /<!--/g, /-->/g);
+  // A comment ends at `-->` or `--!>`, as an HTML parser ends it.
+  out = stripSpans(out, /<!--/g, /--!?>/g);
   out = stripSpans(out, /<script\b/gi, /<\/script\s*>/gi);
   out = stripSpans(out, /<style\b/gi, /<\/style\s*>/gi);
   out = stripSpans(out, /<iframe\b/gi, /<\/iframe\s*>/gi);

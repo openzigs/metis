@@ -3,42 +3,15 @@
  *
  * The governing-document upload parses a file inside the HTTP request, and
  * CodeQL (js/polynomial-redos) traced the uploaded bytes into this function. The
- * regexes it used retried from every opener when no closer followed. This file
- * holds the previous implementation as the reference: on ordinary and on
- * randomly built HTML the new one must give the same output, and on the inputs
- * that were quadratic it must finish in a bounded time.
+ * regexes it used retried from every opener when no closer followed. The
+ * previous implementation is the reference (`fixtures/sanitise-html-reference-1869.ts`):
+ * on ordinary and on randomly built HTML the new one must give the same output,
+ * and on the inputs that were quadratic it must finish in a bounded time. The
+ * one intended difference: a comment also ends at `--!>`, as HTML parsers end it.
  */
 import { describe, expect, it } from "vitest";
-import { sanitiseHtml } from "./parsers.js";
-
-/** The implementation before #1869, verbatim. */
-function referenceSanitiseHtml(html: string): string {
-  let out = html;
-  out = out.replace(/<!--[\s\S]*?-->/g, "");
-  out = out.replace(/<script\b[\s\S]*?<\/script\s*>/gi, "");
-  out = out.replace(/<style\b[\s\S]*?<\/style\s*>/gi, "");
-  out = out.replace(/<iframe\b[\s\S]*?<\/iframe\s*>/gi, "");
-  out = out.replace(/<object\b[\s\S]*?<\/object\s*>/gi, "");
-  out = out.replace(/<embed\b[^>]*\/?>/gi, "");
-  out = out.replace(/<noscript\b[\s\S]*?<\/noscript\s*>/gi, "");
-  out = out.replace(/\s+on[a-z]+\s*=\s*"[^"]*"/gi, "");
-  out = out.replace(/\s+on[a-z]+\s*=\s*'[^']*'/gi, "");
-  out = out.replace(/\s+on[a-z]+\s*=\s*[^\s>]+/gi, "");
-  out = out.replace(/(href|src)\s*=\s*"\s*(javascript|data):[^"]*"/gi, '$1=""');
-  out = out.replace(/(href|src)\s*=\s*'\s*(javascript|data):[^']*'/gi, "$1=''");
-  out = out.replace(/<\/(p|div|section|article|h[1-6]|li|tr|br)\s*>/gi, "\n");
-  out = out.replace(/<br\s*\/?>(?!\n)/gi, "\n");
-  out = out.replace(/<[^>]+>/g, "");
-  out = out
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&amp;/gi, "&");
-  out = out.replace(/[\t ]+/g, " ").replace(/\n{3,}/g, "\n\n");
-  return out.trim();
-}
+import { sanitiseHtml } from "../src/lib/documents/parsers.js";
+import { referenceSanitiseHtml } from "./fixtures/sanitise-html-reference-1869.js";
 
 const FRAGMENTS = [
   "<!--",
@@ -104,6 +77,11 @@ describe("sanitiseHtml (#1869)", () => {
       "unclosed <!-- comment and <script> and <a tag",
     ];
     for (const doc of docs) expect(sanitiseHtml(doc)).toBe(referenceSanitiseHtml(doc));
+  });
+
+  it("ends a comment at --!> as well as -->", () => {
+    expect(sanitiseHtml("a<!-- hidden --!>b")).toBe("ab");
+    expect(sanitiseHtml("a<!-- hidden -->b")).toBe("ab");
   });
 
   it("gives the reference output on 3,000 randomly built inputs", () => {
