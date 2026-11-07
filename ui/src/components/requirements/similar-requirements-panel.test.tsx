@@ -84,6 +84,21 @@ const LOT = item({
   ],
 });
 const SERIAL = item({ requirementId: "r-serial", title: "Track serial numbers", label: "related" });
+/** #1902 — LOT, holding one more link it borrowed itself from a similar requirement. */
+const LOT_WITH_BORROWED = {
+  ...LOT,
+  codeLinks: [
+    ...LOT.codeLinks,
+    {
+      mappingId: "m-d",
+      filePath: "d.ts",
+      startLine: 1,
+      endLine: 2,
+      source: "similar-requirement",
+      freshness: "fresh" as const,
+    },
+  ],
+};
 
 /** The fake server's routes. */
 function route(path: string, opts: { method?: string; body?: unknown } = {}) {
@@ -163,6 +178,18 @@ describe("SimilarRequirementsPanel (#1838)", () => {
     ).toBeInTheDocument();
     // Only the duplicate warns.
     expect(screen.getAllByTestId("duplicate-warning")).toHaveLength(1);
+  });
+
+  it("counts a link the similar requirement borrowed apart, never as code it links (#1902)", async () => {
+    server.items = [LOT_WITH_BORROWED, SERIAL];
+    mountPanel();
+    const [lot] = await screen.findAllByTestId("similar-requirement");
+    expect(
+      within(lot!).getByText("4 code links: 2 fresh, 1 stale, 1 borrowed"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("duplicate-warning")).toHaveTextContent(
+      "looks like the same requirement (it already links to 3 files)",
+    );
   });
 
   it("'Not a duplicate' stays answered after a full reload: the server says so", async () => {
@@ -261,6 +288,17 @@ describe("DraftSimilarRequirements (#1838)", () => {
     );
   });
 
+  it("the draft's duplicate warning counts only the code the duplicate links of its own (#1902)", async () => {
+    apiFetch.mockResolvedValue({ items: [LOT_WITH_BORROWED] });
+    render(<DraftSimilarRequirements projectId={P} text="Track batch numbers on receipt" />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Before you add this: REQ-7 Lot tracking for recalls looks like a duplicate (it already links to 3 files).",
+    );
+  });
+
   it("does not look up a draft too short to compare, and shows the empty state", async () => {
     const view = render(<DraftSimilarRequirements projectId={P} text="Track" />);
     await act(async () => {
@@ -293,5 +331,23 @@ describe("codeLinkSummary", () => {
         },
       ]),
     ).toBe("1 code link: 0 fresh, 0 stale, 1 not yet checked");
+  });
+
+  it("counts a borrowed link apart, whatever its freshness (#1902)", () => {
+    const link = (source: string, freshness: "fresh" | "stale" | "unverified") => ({
+      mappingId: `m-${source}-${freshness}`,
+      filePath: "a",
+      startLine: null,
+      endLine: null,
+      source,
+      freshness,
+    });
+    expect(
+      codeLinkSummary([
+        link("manual", "fresh"),
+        link("similar-requirement", "fresh"),
+        link("similar-requirement", "unverified"),
+      ]),
+    ).toBe("3 code links: 1 fresh, 0 stale, 2 borrowed");
   });
 });

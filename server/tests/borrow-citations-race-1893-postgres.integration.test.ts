@@ -7,9 +7,10 @@
  *
  * On Postgres the racers run their transactions on separate pooled
  * connections at once, every one reading the target's links before any
- * writes. Under SERIALIZABLE the database aborts all but one with a
- * serialization failure (P2034), and the retry sees the winner's rows; under
- * READ COMMITTED, or with no transaction, every racer copied every link.
+ * writes. Under SERIALIZABLE the database aborts all but one with a write
+ * conflict (the pg adapter's `TransactionWriteConflict`, which carries no
+ * Prisma code; not P2034), and the retry sees the winner's rows; under READ
+ * COMMITTED, or with no transaction, every racer copied every link.
  *
  * Gated like the other `*-postgres.integration.test.ts` suites: runs only when
  * `RUN_INTEGRATION_TESTS=1` AND `DATABASE_URL` is Postgres-shaped.

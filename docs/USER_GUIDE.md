@@ -1772,7 +1772,7 @@ Once links exist, they roll up to a workspace-wide picture — see [Section 12.1
 
 #### Similar requirements and duplicate warnings
 
-Each requirement card has a **Similar requirements** section listing up to five requirements of the same project that read alike. Each one is labelled in words: **Likely duplicate**, **Overlaps** or **Related**. Each also shows its review status and how many of its saved code links are fresh or stale ("3 code links: 2 fresh, 1 stale"), and links to that requirement's card. When the project has none, the section says *No similar requirements in this project*.
+Each requirement card has a **Similar requirements** section listing up to five requirements of the same project that read alike. Each one is labelled in words: **Likely duplicate**, **Overlaps** or **Related**. Each also shows its review status and how many of its saved code links are fresh or stale ("3 code links: 2 fresh, 1 stale"), and links to that requirement's card. Links that requirement borrowed from another one are counted apart ("4 code links: 2 fresh, 1 stale, 1 borrowed"), and a duplicate warning's "it already links to N files" counts only the files it links of its own. When the project has none, the section says *No similar requirements in this project*.
 
 A **Likely duplicate** also raises a warning on the card with two choices:
 

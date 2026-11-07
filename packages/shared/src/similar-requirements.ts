@@ -150,3 +150,9 @@ export interface BorrowCitationsResult {
 
 /** #1893 — the 400 a requirement asked to borrow its own code links answers. */
 export const BORROW_FROM_SELF_CODE = "BORROW_FROM_SELF";
+
+/**
+ * #1902 — the 409 a borrow answers when every attempt lost a write conflict to
+ * a concurrent borrow: nothing was copied, and asking again is safe.
+ */
+export const BORROW_CONFLICT_CODE = "BORROW_CONFLICT";

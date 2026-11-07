@@ -65,14 +65,28 @@ export function similarRequirementsPrefix(projectId: string) {
   return ["similar-requirements", projectId] as const;
 }
 
-/** "3 code links: 2 fresh, 1 stale" — `moved` links were re-pointed and count as fresh. */
+/**
+ * #1902 — the links the requirement holds of its own: a link it borrowed from
+ * a similar requirement (#1839) is a hypothesis no analysis has checked.
+ */
+function ownCodeLinks(links: SimilarRequirementItem["codeLinks"]) {
+  return links.filter((l) => l.source !== SIMILAR_REQUIREMENT_SOURCE);
+}
+
+/**
+ * "3 code links: 2 fresh, 1 stale" — `moved` links were re-pointed and count as
+ * fresh. A borrowed link is counted apart (#1902), never as fresh or stale.
+ */
 export function codeLinkSummary(links: SimilarRequirementItem["codeLinks"]): string {
   if (links.length === 0) return "No code links";
-  const fresh = links.filter((l) => l.freshness === "fresh" || l.freshness === "moved").length;
-  const stale = links.filter((l) => l.freshness === "stale").length;
-  const unchecked = links.length - fresh - stale;
+  const own = ownCodeLinks(links);
+  const fresh = own.filter((l) => l.freshness === "fresh" || l.freshness === "moved").length;
+  const stale = own.filter((l) => l.freshness === "stale").length;
+  const unchecked = own.length - fresh - stale;
+  const borrowed = links.length - own.length;
   const parts = [`${fresh} fresh`, `${stale} stale`];
   if (unchecked > 0) parts.push(`${unchecked} not yet checked`);
+  if (borrowed > 0) parts.push(`${borrowed} borrowed`);
   return `${links.length} code link${links.length === 1 ? "" : "s"}: ${parts.join(", ")}`;
 }
 
@@ -341,7 +355,8 @@ function DuplicateWarning({
     onError: (err) => toast.error(apiErrorMessage(err as ApiError, "Could not save your answer")),
   });
   const busy = mark.isPending || dismiss.isPending;
-  const links = item.codeLinks.length;
+  // #1902 — the code it links of its own, not what it borrowed.
+  const links = ownCodeLinks(item.codeLinks).length;
   return (
     <div
       role="alert"
@@ -466,6 +481,7 @@ export function DraftSimilarRequirements({
 
   if (items === null) return null;
   const duplicate = items.find((i) => i.label === "duplicate");
+  const duplicateLinks = duplicate ? ownCodeLinks(duplicate.codeLinks).length : 0;
   return (
     <section
       className="mt-2 space-y-2"
@@ -475,8 +491,8 @@ export function DraftSimilarRequirements({
       {duplicate ? (
         <p role="alert" className="rounded border border-warning/40 bg-warning-muted p-2 text-xs">
           <strong>Before you add this:</strong> {nameOf(duplicate)} looks like a duplicate
-          {duplicate.codeLinks.length > 0
-            ? ` (it already links to ${duplicate.codeLinks.length} file${duplicate.codeLinks.length === 1 ? "" : "s"})`
+          {duplicateLinks > 0
+            ? ` (it already links to ${duplicateLinks} file${duplicateLinks === 1 ? "" : "s"})`
             : ""}
           .
         </p>

@@ -11,6 +11,7 @@
  *        requirement's current code links as `similar-requirement` suggestions
  *   200  { success, data: { copied, skippedStale, skippedDuplicate, skippedBorrowed, notFound } }
  *   400  BORROW_FROM_SELF when the two requirements are the same (#1893)
+ *   409  BORROW_CONFLICT when every attempt lost a write conflict; nothing copied (#1902)
  *
  * Every route runs behind `requireProjectAccess()`: a caller who cannot reach the
  * project gets 404, and a requirement id of another project answers 404 from the

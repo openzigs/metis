@@ -21,10 +21,13 @@
  *   - is never made from a link that was itself borrowed: a hypothesis is not
  *     lent on. Such a link is counted in `skippedBorrowed` (#1893);
  *   - is read only where it is shown as borrowed (the requirement's chain,
- *     `traceability-spine.ts`) or taken as the suggestion it is (the #1754
- *     stored-link channel). The issue-draft "Related code" section, the
- *     requirements BRD and its reader scope, and the analysis traceability
- *     matrix leave it out (#1893): none of them can say "borrowed".
+ *     `traceability-spine.ts`, and the #1838 similar-requirements panel, which
+ *     counts it apart) or taken as the suggestion it is (the #1754 stored-link
+ *     channel). The issue-draft "Related code" section, the requirements BRD
+ *     and its reader scope, the analysis traceability matrix (#1893), "Tested
+ *     by", the test gaps and the workspace coverage rollup (#1902) leave it
+ *     out: none of them can say "borrowed". The chain resolves its tests
+ *     without it for the same reason.
  *
  * Idempotent: a link whose code (file and symbol) the requirement already
  * holds, under any source, is counted in `skippedDuplicate`, as is any link
@@ -40,10 +43,13 @@
  *
  * The read of what the requirement holds and the write are one serializable
  * transaction (#1893), so two concurrent borrows cannot both copy the same
- * link: the database aborts one, and it is retried against the winner's rows.
+ * link: the database aborts one, and it is retried against the winner's rows
+ * after a short backoff. A borrow that loses every attempt answers 409
+ * `BORROW_CONFLICT` (#1902), having copied nothing, so the caller can ask again.
  */
 import type { PrismaClient } from "@prisma/client";
 import {
+  BORROW_CONFLICT_CODE,
   BORROW_FROM_SELF_CODE,
   BORROWABLE_FRESHNESS,
   SIMILAR_REQUIREMENT_SOURCE,
@@ -66,13 +72,18 @@ export const BORROWED_CONFIDENCE_CAP = DEFAULT_SEED_CONFIDENCE - 0.1;
 type BorrowPrisma = Pick<PrismaClient, "requirement" | "requirementCodeMapping" | "$transaction">;
 type BorrowTx = Pick<PrismaClient, "requirementCodeMapping">;
 
-/** Attempts at the borrow's transaction before a serialization failure is surfaced. */
+/** Attempts at the borrow's transaction before a write conflict is surfaced. */
 const MAX_ATTEMPTS = 3;
+/** The backoff step: a retry waits one step per attempt made, plus up to one at random. */
+export const BORROW_RETRY_BACKOFF_MS = 20;
+
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * A transaction the database aborted on a write conflict: Prisma's `P2034`, or
- * the driver adapter's own error when Postgres refuses the commit (`40001`,
- * measured on `@prisma/adapter-pg`, which surfaces it with no Prisma code).
+ * the driver adapter's own error when Postgres refuses the commit, which
+ * `@prisma/adapter-pg` surfaces with no Prisma code as `TransactionWriteConflict`
+ * for both a serialization failure (`40001`, measured) and a deadlock (`40P01`).
  */
 function isSerializationFailure(error: unknown): boolean {
   const e = error as { code?: unknown; cause?: { kind?: unknown } | null } | null;
@@ -81,6 +92,8 @@ function isSerializationFailure(error: unknown): boolean {
 
 export interface BorrowCitationsDeps {
   prisma?: BorrowPrisma;
+  /** The backoff between attempts (tests); defaults to a timer. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 const codeKey = (filePath: string, codeSymbolId: string | null): string =>
@@ -108,6 +121,7 @@ export async function borrowCitations(
   deps?: BorrowCitationsDeps,
 ): Promise<BorrowCitationsResult> {
   const prisma = deps?.prisma ?? (defaultPrisma as unknown as BorrowPrisma);
+  const sleep = deps?.sleep ?? wait;
   const { fromRequirementId } = input;
   if (requirementId === fromRequirementId) {
     throw new AppError(
@@ -134,7 +148,22 @@ export async function borrowCitations(
         { isolationLevel: "Serializable" },
       );
     } catch (error) {
-      if (!isSerializationFailure(error) || attempt >= MAX_ATTEMPTS) throw error;
+      if (!isSerializationFailure(error)) throw error;
+      if (attempt >= MAX_ATTEMPTS) {
+        log.warn("borrow lost every attempt to a concurrent write", {
+          projectId,
+          requirementId,
+          fromRequirementId,
+          attempts: attempt,
+        });
+        throw new AppError(
+          409,
+          BORROW_CONFLICT_CODE,
+          "The code links changed while they were being copied. Nothing was copied: try again.",
+        );
+      }
+      // Jittered, so racers that just collided do not retry in step.
+      await sleep(BORROW_RETRY_BACKOFF_MS * (attempt + Math.random()));
     }
   }
   log.info("borrowed code links from a similar requirement", {
