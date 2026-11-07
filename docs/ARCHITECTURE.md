@@ -3110,6 +3110,18 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   `blastRadiusFiles`), the markdown export and the UI. No migration: `depth` has
   always meant "0 = direct, ≥1 = blast radius", and a run stored before #1036
   reads through the same rule. Relations added: `data-model` and `related`.
+- **Files are (repository, path) (#1965)** — a project can connect several
+  repositories, and the same path can exist in more than one. The read path joins
+  each affected symbol through `codeSymbol → CodeGraph → RepoConnection` and puts
+  `repo: { id, name }` on the symbol view (`null` when the code-symbol row is gone,
+  for instance after a re-ingest replaced it); `editCandidateFiles` /
+  `blastRadiusFiles` are `{ repoConnectionId, filePath }` keyed by
+  `impactFileKey`, so those counts treat same-path files in two repositories as
+  two files. The UI names each file's repository when the project connects more
+  than one (or the item spans more than one); the markdown export names it when
+  the item spans more than one. No migration: nothing new is stored. The seed
+  evidence (`seedEvidence.editCandidates`) still names files by path only, because
+  seeding does not know repositories.
 - **Edit-candidate check (#1756)** — behind `IMPACT_LLM_EDIT_VERIFY` (key
   registry, tunable, **off**), the default seeding also returns its FILE pool
   (`ChangeSeeds.filePool`, `VERIFY_POOL_FILES = 30`: the deterministic edit files

@@ -28,6 +28,8 @@
 import {
   formatCodeCitationLocator,
   DDL_RISK_LABEL,
+  impactFileKey,
+  impactRepoCount,
   impactSymbolRole,
   groupImpactTables,
   groupRepresentative,
@@ -592,13 +594,17 @@ function relevanceTierLabel(tier: ImpactAffectedTableView["relevanceTier"]): str
   }
 }
 
-/** #963 — render one affected symbol as a sanitized bullet (persisted row only). */
-function impactSymbolBullet(sym: ImpactAffectedSymbolView): string {
+/**
+ * #963 — render one affected symbol as a sanitized bullet (persisted row only).
+ * #1965 — `withRepo`: the item spans several repositories, so name the symbol's.
+ */
+function impactSymbolBullet(sym: ImpactAffectedSymbolView, withRepo: boolean): string {
   const loc =
     sym.startLine != null
       ? `${sym.filePath}:${sym.startLine}${sym.endLine != null ? `-${sym.endLine}` : ""}`
       : sym.filePath;
-  return `- ${codeSpan(loc)} · ${codeSpan(sym.qualifiedName)} — ${mdInline(
+  const repo = withRepo && sym.repo ? ` in ${mdInline(sym.repo.name)}` : "";
+  return `- ${codeSpan(loc)}${repo} · ${codeSpan(sym.qualifiedName)} — ${mdInline(
     sym.relation,
   )}, depth ${sym.depth} · confidence ${sym.confidence.toFixed(2)}`;
 }
@@ -815,14 +821,15 @@ function writePathGapSection(gaps: WritePathCoverageGap[]): string[] {
  * #1004 — the #962 "tests covering the impacted code" panel, in the exported
  * artifact (it was on screen but absent from the download). Empty ⇒ no section.
  */
-function affectedTestsSection(tests: ImpactAffectedSymbolView[]): string[] {
+function affectedTestsSection(tests: ImpactAffectedSymbolView[], withRepo: boolean): string[] {
   if (tests.length === 0) return [];
-  const fileCount = new Set(tests.map((t) => t.filePath)).size;
+  // #1965 — a file is (repository, path): one path in two repositories is two files.
+  const fileCount = new Set(tests.map(impactFileKey)).size;
   return [
     `#### Tests covering the impacted code (${tests.length} across ${fileCount} ${
       fileCount === 1 ? "file" : "files"
     })`,
-    tests.map(impactSymbolBullet).join("\n"),
+    tests.map((t) => impactSymbolBullet(t, withRepo)).join("\n"),
   ];
 }
 
@@ -937,20 +944,23 @@ function impactItemSection(item: ImpactItemView, ctx: ImpactItemLabelContext): s
     (s) => impactSymbolRole(s) === "edit-candidate",
   );
   const blastRadius = item.affectedSymbols.filter((s) => impactSymbolRole(s) === "blast-radius");
+  // #1965 — the same path can exist in two repositories of one project: name each
+  // symbol's repository when this item's code comes from more than one.
+  const withRepo = impactRepoCount([...item.affectedSymbols, ...item.affectedTests]) > 1;
   if (editCandidates.length > 0) {
     parts.push("#### Files to edit (edit candidates)");
-    parts.push(editCandidates.map(impactSymbolBullet).join("\n"));
+    parts.push(editCandidates.map((s) => impactSymbolBullet(s, withRepo)).join("\n"));
   }
   if (blastRadius.length > 0) {
     parts.push("#### Blast radius (for review)");
     parts.push(
       "_Callers, lineage writers and related code. Listed for review; not a claim that each one changes._",
     );
-    parts.push(blastRadius.map(impactSymbolBullet).join("\n"));
+    parts.push(blastRadius.map((s) => impactSymbolBullet(s, withRepo)).join("\n"));
   }
 
   // #962/#1004 — the tests that already cover the impacted code.
-  parts.push(...affectedTestsSection(item.affectedTests));
+  parts.push(...affectedTestsSection(item.affectedTests, withRepo));
 
   return parts.join("\n\n");
 }

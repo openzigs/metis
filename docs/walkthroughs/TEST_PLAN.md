@@ -917,7 +917,8 @@ scored differently** (#1073, owner decision of 2026-10-10 in #1068):
   functions, in the blast radius (both groups together, as for `tp`), **after the neutral and
   excluded items are removed** (the reference set's Neutral list, test files and generated
   files: the same exclusions as every other count). It needs no judgement on any entry beyond
-  those exclusions; from the API it is `blastRadiusFiles.length` less the excluded and neutral
+  those exclusions; from the API it is `blastRadiusFiles.length` (each entry `{ repoConnectionId,
+  filePath }` since #1965) less the excluded and neutral
   files. `listed` is **a count, not a score**: the deck prints it as a plain number in its own
   "Listed" column and never as a ratio or a precision, and nobody should turn it into one.
   `listed - tp` is what the rule before #1073 called `fp`, which is how a new run is restated

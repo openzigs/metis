@@ -21,6 +21,7 @@ import type {
   ImpactProjectOutcome,
   ImpactProjectOutcomeKind,
   ImpactSeedEvidence,
+  ImpactSymbolRepoRef,
   ImpactTableConsumerView,
   ImpactTableFeedbackVerdict,
   ImpactTableFeedbackView,
@@ -67,7 +68,20 @@ function resolvePrisma(prisma?: ReadPrisma): ReadPrisma {
 const ITEM_INCLUDE = {
   items: {
     include: {
-      affectedSymbols: { orderBy: [{ depth: "asc" }, { confidence: "desc" }] },
+      affectedSymbols: {
+        orderBy: [{ depth: "asc" }, { confidence: "desc" }],
+        // #1965 — the repository each symbol came from: a project can connect
+        // several, and the same path can exist in more than one of them.
+        include: {
+          codeSymbol: {
+            select: {
+              graph: {
+                select: { repoConnection: { select: { id: true, label: true, repoName: true } } },
+              },
+            },
+          },
+        },
+      },
       // #1051 — the proposed columns the #791 gate ruled out, stable-sorted.
       columnProposals: { orderBy: [{ tableName: "asc" }, { columnName: "asc" }] },
       affectedTables: {
@@ -138,6 +152,10 @@ interface RawAffectedSymbol {
   relation: string;
   depth: number;
   confidence: number;
+  /** #1965 — null when the symbol row is gone (SetNull) or the graph has no repo. */
+  codeSymbol?: {
+    graph: { repoConnection: { id: string; label: string; repoName: string | null } | null };
+  } | null;
 }
 
 interface RawConsumer {
@@ -339,7 +357,15 @@ function toAffectedSymbolView(s: RawAffectedSymbol): ImpactAffectedSymbolView {
     relation: s.relation as ImpactAffectedSymbolView["relation"],
     depth: s.depth,
     confidence: s.confidence,
+    repo: toSymbolRepo(s.codeSymbol?.graph.repoConnection),
   };
+}
+
+/** #1965 — a connector is named by its repository, else its label (as `repoNamesById` in the UI). */
+function toSymbolRepo(
+  c: { id: string; label: string; repoName: string | null } | null | undefined,
+): ImpactSymbolRepoRef | null {
+  return c ? { id: c.id, name: c.repoName?.trim() || c.label } : null;
 }
 
 function toAffectedTableView(t: RawAffectedTable): ImpactAffectedTableView {
