@@ -467,8 +467,13 @@ measures that on the held-out corpora, over the same analyses as A7:
 With no re-ingest every citation is still `unverified`, so A7K reads the same as A7
 **by construction**: hiding freshness can neither reorder nor set aside anything. A7K
 therefore checks the wiring. It does not measure what demotion costs when nothing is
-stale (#1899). The production case is a routine re-ingest that changes nothing. That
-leaves the citations `fresh` or `moved`, and #1832's freshness tier then reorders them.
+stale (#1899). The production case is a routine re-ingest that changes nothing. Its
+re-validation (#1831) gives every citation a verdict, and #1832's freshness tier then
+reorders them. Most read `fresh`, including a symbol whose lines drifted within its file
+(its lines are updated, it is not `moved`). `moved` means the cited symbol now sits, with
+the same content, in another file. A no-op re-ingest can still give `stale` (#1925): a
+file-level link whose lines run past the end of the file, or a symbol that is missing from
+its file or matches more than one candidate.
 A7R and A7RD measure that case: every repository is re-ingested at its pinned commit
 with no patch, and the result is read without and with demotion. Read A7RD against A7R
 for demotion's cost after a routine re-ingest.

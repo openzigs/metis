@@ -72,7 +72,7 @@
     "type": "function",
     "function": {
       "name": "list_requirements",
-      "description": "List this project's METIS requirements (the ones produced by analyses or imported), optionally filtered by review status (draft|approved|rejected|deferred), label, or words in the title/body. Use this — not the knowledge-base search — whenever the user asks about the project's requirements. Returns id, title, status, labels and how many code links and data (table/column) mappings each has; read one in full with get_requirement.",
+      "description": "List this project's METIS requirements (the ones produced by analyses or imported), optionally filtered by review status (draft|approved|rejected|deferred), label, or words in the title/body. Use this — not the knowledge-base search — whenever the user asks about the project's requirements. Returns id, title, status, labels and how many code links of its own (a link borrowed from a similar requirement is not counted) and data (table/column) mappings each has; read one in full with get_requirement.",
       "parameters": {
         "type": "object",
         "properties": {

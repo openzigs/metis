@@ -46,8 +46,9 @@
  *
  * #1899 — A7K equals A7 by construction (no re-ingest, so every citation is
  * `unverified`), so it cannot show what demotion costs when nothing is stale.
- * The production case is a ROUTINE re-ingest, which leaves the citations
- * `fresh` or `moved` and lets the tier sort reorder them:
+ * The production case is a ROUTINE re-ingest, whose re-validation gives the
+ * citations a verdict (mostly `fresh`; `moved` only for a symbol now in another
+ * file; `stale` still possible, #1925) and lets the tier sort reorder them:
  *
  *   - `A7R`  — every repository re-ingested at its pinned commit, NO patch,
  *     read with the citations' freshness hidden (the stage before #1832).
@@ -137,6 +138,16 @@ export { ANALYSIS_PASS_GROUP };
 export const STALENESS_ARM_IDS: ReadonlySet<string> = new Set(
   Object.values(ANALYSIS_VARIANTS)
     .filter((v) => v.stale)
+    .map((v) => v.id),
+);
+
+/**
+ * #1925 — the arms that apply a committed staleness patch: only these need the
+ * patch sets, and only these does `--table-guard` read on the table corpus.
+ */
+export const PATCH_ARM_IDS: ReadonlySet<string> = new Set(
+  Object.values(ANALYSIS_VARIANTS)
+    .filter((v) => v.stale && v.patch)
     .map((v) => v.id),
 );
 

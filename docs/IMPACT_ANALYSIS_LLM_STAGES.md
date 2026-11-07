@@ -318,8 +318,11 @@ Pooled on the 39 held-out items, `claude-sonnet-5-5`, one run, 2026-11-06:
 - **A7K equals A7 by construction, so it does not measure demotion.** With no re-ingest,
   every citation is `unverified`, and hiding freshness can neither reorder nor set
   aside anything. #1832's default is therefore not supported by A7K − A7 = 0 (#1899).
-  The production case is a routine re-ingest that leaves the citations `fresh` or
-  `moved`, which lets the freshness tier reorder them. Arms A7R and A7RD (a no-op
+  The production case is a routine re-ingest that changes nothing. Its re-validation
+  gives every citation a verdict, which lets the freshness tier reorder them. Most read
+  `fresh`: line drift within a file is `fresh`, and `moved` means the symbol is now in
+  another file. A few can still read `stale` (a file-level link past the end of its
+  file, or a missing or ambiguous symbol, #1925). Arms A7R and A7RD (a no-op
   re-ingest at the pinned commit, read without and with demotion) measure that case,
   and they have not been run yet.
 - **Under this staleness, demotion costs ranking.** The patches left 346 citations stale

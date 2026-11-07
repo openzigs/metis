@@ -1789,7 +1789,7 @@ METIS never merges or deletes a requirement for you. The labels are suggestions:
 
 Choose **Copy N links** to copy exactly the first list, or **Cancel**. Code the requirement already links is not copied again. A message then says how many links were copied and why any were skipped.
 
-In the requirement's code links, each copied link carries a **borrowed** badge and the note *"Borrowed from REQ-xx, not yet checked by analysis"*. A borrowed link is a suggestion, not a finding. It is not used in the issue draft's "Related code" section, the requirements document, the analysis traceability matrix, **Tested by**, the test gaps or the workspace's code and test coverage. When the requirement's own analysis later links the same file, that link replaces the borrowed one.
+In the requirement's code links, each copied link carries a **borrowed** badge and the note *"Borrowed from REQ-xx, not yet checked by analysis"*. A borrowed link is a suggestion, not a finding. It is not used in the issue draft's "Related code" section, the requirements document, the analysis traceability matrix, **Tested by**, the test gaps, the workspace's code and test coverage, the list of requirements that touch a file, or the code-link counts chat gives when it lists requirements. When the requirement's own analysis later links the same file, that link replaces the borrowed one.
 
 While you type in **Evaluate new requirements** (Section 11.2), the same list appears for your text, half a second after you stop typing. If something already looks like a duplicate, the panel says so first: *"Before you add this: REQ-42 … looks like a duplicate (it already links to 3 files)."*
 
