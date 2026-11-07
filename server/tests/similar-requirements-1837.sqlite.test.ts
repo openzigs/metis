@@ -392,6 +392,36 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
     });
 
+    it("#1902 — a link the similar requirement borrowed itself arrives labelled, so the panel counts it apart", async () => {
+      const borrowed = await db.requirementCodeMapping.create({
+        data: {
+          requirementId: ids.lot,
+          projectId: A,
+          filePath: "src/inventory/borrowed.ts",
+          startLine: 1,
+          endLine: 5,
+          confidence: 0.4,
+          source: "similar-requirement",
+          originRequirementId: ids.serial,
+          freshness: "fresh",
+        },
+      });
+      try {
+        const [lot] = await findSimilarRequirements(
+          A,
+          { requirementId: ids.batch },
+          { db, limit: 1 },
+        );
+        expect(lot!.codeLinks.map((l) => [l.filePath, l.source])).toEqual([
+          ["src/inventory/lots.ts", "semantic"],
+          ["src/inventory/recall.ts", "semantic"],
+          ["src/inventory/borrowed.ts", "similar-requirement"],
+        ]);
+      } finally {
+        await db.requirementCodeMapping.delete({ where: { id: borrowed.id } });
+      }
+    });
+
     it("#1838 — 'Not a duplicate' is remembered for the pair, read back through the API from either card", async () => {
       const mark = (project: string, a: string, b: string, token = memberToken) =>
         request(app())

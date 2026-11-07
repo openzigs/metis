@@ -221,6 +221,20 @@ describe("scoreItem and aggregate", () => {
     expect(m.recall).toBeNull();
     expect(m.precision).toBe(0);
   });
+
+  it("scores a requirement the arm failed on as an error, never a clean negative (#1900)", () => {
+    const crashedNegative = scoreItem(corpus, item("N1", []), { judgements: [], error: "boom" });
+    const crashedPositive = scoreItem(corpus, item("R", [{ ruleId: "EN-03", verdict: "gap" }]), {
+      judgements: [],
+      error: "boom",
+    });
+    expect(crashedNegative.failures).toBe(1);
+    expect(scoreItem(corpus, item("N2", []), out()).failures).toBe(0);
+    const m = aggregate([crashedNegative, crashedPositive]);
+    expect(m.negatives).toBe(1);
+    expect(m.cleanNegatives).toBe(0);
+    expect(m.recall).toBe(0); // its truth pairs are misses
+  });
 });
 
 describe("bootstrapRatioCi", () => {
@@ -283,6 +297,37 @@ describe("checkThresholds", () => {
       pass: false,
       measured: "1 (worst run)",
     });
+  });
+
+  it("reports a bar on a metric fixed by construction as n/a, not a pass (#1900)", () => {
+    // Every rule judged gap with only verified citations: 0 hard errors and
+    // citation accuracy 1 hold by construction.
+    const s = summarizeRuns([
+      [
+        scoreItem(
+          corpus,
+          item("R", [{ ruleId: "AL-02", verdict: "needs-ba-input", businessFact: "x" }]),
+          out({ ruleId: "AL-02", verdict: "gap", citation: VERBATIM }),
+        ),
+      ],
+    ]);
+    expect(checkThresholds(s, bars).map((c) => c.pass)).toEqual([true, false, true, true, true]);
+    const fixed = checkThresholds(s, bars, {
+      hardErrors: "never says compliant",
+      citationAccuracy: "only verified citations",
+      askRate: "never asks",
+    });
+    const byBar = Object.fromEntries(fixed.map((c) => [c.bar, c]));
+    expect(byBar.maxNoEvidenceCompliantErrors).toMatchObject({
+      pass: null,
+      measured: "0 (worst run)",
+      note: "never says compliant",
+    });
+    expect(byBar.citationAccuracy).toMatchObject({ pass: null, note: "only verified citations" });
+    // A bar the arm can fail is still judged.
+    expect(byBar.overallRecall).toMatchObject({ pass: true });
+    expect(byBar.overallRecall).not.toHaveProperty("note");
+    expect(byBar.nonResemblingRecall!.pass).toBe(false);
   });
 
   it("summarizeRuns averages each metric over the runs it is defined in", () => {

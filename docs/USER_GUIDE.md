@@ -1772,7 +1772,7 @@ Once links exist, they roll up to a workspace-wide picture — see [Section 12.1
 
 #### Similar requirements and duplicate warnings
 
-Each requirement card has a **Similar requirements** section listing up to five requirements of the same project that read alike. Each one is labelled in words: **Likely duplicate**, **Overlaps** or **Related**. Each also shows its review status and how many of its saved code links are fresh or stale ("3 code links: 2 fresh, 1 stale"), and links to that requirement's card. When the project has none, the section says *No similar requirements in this project*.
+Each requirement card has a **Similar requirements** section listing up to five requirements of the same project that read alike. Each one is labelled in words: **Likely duplicate**, **Overlaps** or **Related**. Each also shows its review status and how many of its saved code links are fresh or stale ("3 code links: 2 fresh, 1 stale"), and links to that requirement's card. Links that requirement borrowed from another one are counted apart ("4 code links: 2 fresh, 1 stale, 1 borrowed"), and a duplicate warning's "it already links to N files" counts only the files it links of its own. When the project has none, the section says *No similar requirements in this project*.
 
 A **Likely duplicate** also raises a warning on the card with two choices:
 
@@ -1780,6 +1780,16 @@ A **Likely duplicate** also raises a warning on the card with two choices:
 - **Not a duplicate** is remembered for that pair of requirements, so the warning does not come back after a reload.
 
 METIS never merges or deletes a requirement for you. The labels are suggestions: related requirements often read almost alike (exporting invoices to CSV vs to PDF), so a "likely duplicate" is for you to confirm.
+
+**Start from these citations.** If you can edit requirements, a similar requirement that has code links offers **Start from these citations**. It copies that requirement's code links onto the one you are looking at, so you start from code someone already found instead of an empty list. No analysis runs. Before anything is copied, METIS shows three lists:
+
+- **Will be copied**: links known to match the current code (up to date, or moved and re-pointed).
+- **Skipped, stale or not yet checked: needs a re-check first**: links that are out of date or were never checked. Re-running code evaluation on that requirement's analysis checks them again.
+- **Skipped, borrowed by *that requirement* itself**: links it borrowed from another requirement. A borrowed link is never lent on.
+
+Choose **Copy N links** to copy exactly the first list, or **Cancel**. Code the requirement already links is not copied again. A message then says how many links were copied and why any were skipped.
+
+In the requirement's code links, each copied link carries a **borrowed** badge and the note *"Borrowed from REQ-xx, not yet checked by analysis"*. A borrowed link is a suggestion, not a finding. It is not used in the issue draft's "Related code" section, the requirements document, the analysis traceability matrix, **Tested by**, the test gaps or the workspace's code and test coverage. When the requirement's own analysis later links the same file, that link replaces the borrowed one.
 
 While you type in **Evaluate new requirements** (Section 11.2), the same list appears for your text, half a second after you stop typing. If something already looks like a duplicate, the panel says so first: *"Before you add this: REQ-42 … looks like a duplicate (it already links to 3 files)."*
 

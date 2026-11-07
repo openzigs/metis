@@ -7,6 +7,7 @@
  */
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  BORROW_RETRY_BACKOFF_MS,
   BORROWED_CONFIDENCE_CAP,
   borrowCitations,
   hideSupersededBorrowedLinks,
@@ -90,6 +91,8 @@ let conflictCode = "P2034";
 /** The shape the next conflicts are thrown in: Prisma's, or the pg driver adapter's. */
 let conflictShape: "prisma" | "adapter" = "prisma";
 let transactions: Array<{ isolationLevel?: string }> = [];
+/** The backoff waits the borrow asked for, in order (#1902). */
+let sleeps: number[] = [];
 
 function fakePrisma(): BorrowCitationsDeps["prisma"] {
   const client = {
@@ -147,6 +150,9 @@ const borrow = (to: string, from: string, mappingIds?: string[]) =>
     { fromRequirementId: from, ...(mappingIds ? { mappingIds } : {}) },
     {
       prisma: fakePrisma(),
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
     },
   );
 const rowsOf = (requirementId: string) => links.filter((l) => l.requirementId === requirementId);
@@ -157,6 +163,7 @@ beforeEach(() => {
   conflictCode = "P2034";
   conflictShape = "prisma";
   transactions = [];
+  sleeps = [];
   reqs = [
     { id: "to", projectId: P, deletedAt: null },
     { id: "from", projectId: P, deletedAt: null },
@@ -303,6 +310,12 @@ describe("borrowCitations (#1839)", () => {
     expect(await borrow("to", "from")).toEqual(counts({ copied: 1 }));
     expect(transactions).toHaveLength(3);
     expect(rowsOf("to")).toHaveLength(1);
+    // #1902 — a jittered wait before each retry, growing with the attempt.
+    expect(sleeps).toHaveLength(2);
+    expect(sleeps[0]).toBeGreaterThanOrEqual(BORROW_RETRY_BACKOFF_MS);
+    expect(sleeps[0]).toBeLessThan(2 * BORROW_RETRY_BACKOFF_MS);
+    expect(sleeps[1]).toBeGreaterThanOrEqual(2 * BORROW_RETRY_BACKOFF_MS);
+    expect(sleeps[1]).toBeLessThan(3 * BORROW_RETRY_BACKOFF_MS);
   });
 
   it("retries the pg driver adapter's write conflict, which carries no Prisma code", async () => {
@@ -319,15 +332,26 @@ describe("borrowCitations (#1839)", () => {
     conflictCode = "P1001";
     await expect(borrow("to", "from")).rejects.toMatchObject({ code: "P1001" });
     expect(transactions).toHaveLength(1);
+    expect(sleeps).toEqual([]);
   });
 
-  it("gives up after three write conflicts, copying nothing", async () => {
-    links.push(link({ requirementId: "from", filePath: "src/a.ts" }));
-    conflicts = 3;
-    await expect(borrow("to", "from")).rejects.toMatchObject({ code: "P2034" });
-    expect(transactions).toHaveLength(3);
-    expect(rowsOf("to")).toHaveLength(0);
-  });
+  it.each(["prisma", "adapter"] as const)(
+    "gives up after three %s write conflicts as a named 409, copying nothing (#1902)",
+    async (shape) => {
+      links.push(link({ requirementId: "from", filePath: "src/a.ts" }));
+      conflicts = 3;
+      conflictShape = shape;
+      await expect(borrow("to", "from")).rejects.toMatchObject({
+        name: "AppError",
+        statusCode: 409,
+        code: "BORROW_CONFLICT",
+      });
+      expect(transactions).toHaveLength(3);
+      // No wait after the last attempt: the caller hears at once.
+      expect(sleeps).toHaveLength(2);
+      expect(rowsOf("to")).toHaveLength(0);
+    },
+  );
 
   it.each([
     ["another project's requirement", "to", "elsewhere"],
