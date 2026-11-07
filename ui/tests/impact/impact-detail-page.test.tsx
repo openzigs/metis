@@ -267,6 +267,69 @@ describe("ImpactAnalysisDetailPage", () => {
     expect(listRepoConnectors).toHaveBeenCalledWith("project-001");
   });
 
+  it("names each file's repository when the project connects more than one (#1965)", async () => {
+    const connector = (id: string, repoName: string, deletedAt: string | null = null) => ({
+      id,
+      provider: "github",
+      ownerOrOrg: "openzigs",
+      repoName,
+      defaultBranch: "main",
+      apiBaseUrl: null,
+      lastCommitSha: null,
+      deletedAt,
+    });
+    listRepoConnectors.mockResolvedValue([
+      connector("rc-orders", "metis-fixture-orders"),
+      connector("rc-billing", "metis-fixture-billing"),
+    ]);
+    const item = detail.items[0]!;
+    const oneRepo: ImpactAnalysisDetail = {
+      ...detail,
+      // This item touches only the orders repository; the project has two.
+      items: [
+        {
+          ...item,
+          affectedSymbols: [
+            {
+              ...item.affectedSymbols[0]!,
+              repo: { id: "rc-orders", name: "metis-fixture-orders" },
+            },
+          ],
+        },
+      ],
+    };
+    mockUse.mockReturnValue(state({ data: oneRepo }));
+    render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByTestId("impact-file-repo")).toHaveTextContent("metis-fixture-orders");
+  });
+
+  it("names no repository when the project's second connector was removed (#1965)", async () => {
+    listRepoConnectors.mockResolvedValue([
+      { id: "rc-orders", provider: "github", repoName: "orders", deletedAt: null },
+      { id: "rc-old", provider: "github", repoName: "old", deletedAt: "2026-01-01T00:00:00.000Z" },
+    ]);
+    const item = detail.items[0]!;
+    mockUse.mockReturnValue(
+      state({
+        data: {
+          ...detail,
+          items: [
+            {
+              ...item,
+              affectedSymbols: [
+                { ...item.affectedSymbols[0]!, repo: { id: "rc-orders", name: "orders" } },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+    await waitFor(() => expect(listRepoConnectors).toHaveBeenCalledWith("project-001"));
+    expect(screen.getByText("a.fn")).toBeInTheDocument();
+    expect(screen.queryByTestId("impact-file-repo")).not.toBeInTheDocument();
+  });
+
   it("leaves impacted symbols as plain text when the project has no GitHub repo (#992)", async () => {
     mockUse.mockReturnValue(state({ data: detail }));
     render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });

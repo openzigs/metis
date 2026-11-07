@@ -385,23 +385,69 @@ function liveRevisionWhere(
 }
 
 /**
+ * #1947 — a `running` extraction that began longer ago than this is presumed
+ * dead (the job is in-process, so a server restart mid-run leaves the row
+ * `running` with nothing behind it) and may be started again. Generous: a
+ * revision of up to `MAX_SECTIONS` sections (`rule-extraction.ts`) is that many model calls.
+ */
+export const EXTRACTION_STALE_MS = 60 * 60 * 1000;
+
+/** The extraction states a run may start from at `now` (#1947); see {@link EXTRACTION_STALE_MS}. */
+function startableExtractionWhere(now: Date): Prisma.GoverningDocumentRevisionWhereInput {
+  const staleBefore = new Date(now.getTime() - EXTRACTION_STALE_MS);
+  return {
+    OR: [
+      { extractionState: { in: ["pending", "failed"] } },
+      {
+        extractionState: "running",
+        // Null: a run that began before #1947 recorded start times.
+        OR: [{ extractionStartedAt: null }, { extractionStartedAt: { lt: staleBefore } }],
+      },
+    ],
+  };
+}
+
+/**
+ * True when a run may start from this state at `now`: `pending`, `failed`, or
+ * a `running` run older than {@link EXTRACTION_STALE_MS} (#1947). The same
+ * rule {@link beginRuleExtraction} applies in its write.
+ */
+export function isExtractionStartable(
+  extractionState: string,
+  extractionStartedAt: Date | null,
+  now: Date = new Date(),
+): boolean {
+  if (extractionState === "pending" || extractionState === "failed") return true;
+  if (extractionState !== "running") return false;
+  return (
+    extractionStartedAt === null ||
+    extractionStartedAt.getTime() < now.getTime() - EXTRACTION_STALE_MS
+  );
+}
+
+/**
  * Mark a revision of this workspace's live document `running` and return what
- * extraction reads. `null` when there is no such revision, or its extraction
- * is already running or done: a revision's rules are extracted once, so a
- * second run can neither duplicate them nor replace rules an admin has edited.
+ * extraction reads, with the run's start time: the fence its writes carry.
+ * `null` when there is no such revision, or its extraction is done or still
+ * fresh-running ({@link isExtractionStartable}): a revision's rules are
+ * extracted once, so a second run can neither duplicate them nor replace rules
+ * an admin has edited. A stale run taken over here cannot store its rules
+ * afterwards (#1947): {@link completeRuleExtraction} checks the fence.
  */
 export async function beginRuleExtraction(
   workspaceId: string,
   revisionId: string,
+  now: Date = new Date(),
 ): Promise<{
   extractedText: string;
   revisionLabel: string;
   title: string;
+  startedAt: Date;
 } | null> {
   const where = liveRevisionWhere(workspaceId, revisionId);
   const updated = await prisma.governingDocumentRevision.updateMany({
-    where: { ...where, extractionState: { in: ["pending", "failed"] } },
-    data: { extractionState: "running", extractionError: null },
+    where: { AND: [where, startableExtractionWhere(now)] },
+    data: { extractionState: "running", extractionError: null, extractionStartedAt: now },
   });
   if (updated.count === 0) return null;
   const row = await prisma.governingDocumentRevision.findFirst({
@@ -417,7 +463,33 @@ export async function beginRuleExtraction(
     extractedText: row.extractedText,
     revisionLabel: row.revisionLabel,
     title: row.document.title,
+    startedAt: now,
   };
+}
+
+/**
+ * This workspace's live document's revision, with its extraction state and
+ * start time, for the admin retry (#1947). `null` when there is none.
+ */
+export async function extractionStatus(
+  workspaceId: string,
+  documentId: string,
+  revisionId: string,
+): Promise<{ extractionState: string; extractionStartedAt: Date | null } | null> {
+  return prisma.governingDocumentRevision.findFirst({
+    where: { id: revisionId, documentId, document: liveDocumentWhere(workspaceId) },
+    select: { extractionState: true, extractionStartedAt: true },
+  });
+}
+
+/** The run a write belongs to: the row must still be `running` from this start (#1947). */
+function runFence(workspaceId: string, revisionId: string, startedAt: Date) {
+  return {
+    id: revisionId,
+    document: { workspaceId },
+    extractionState: "running",
+    extractionStartedAt: startedAt,
+  } satisfies Prisma.GoverningDocumentRevisionWhereInput;
 }
 
 /** One rule to store, its citation already verified against the revision's text. */
@@ -432,24 +504,27 @@ export interface RuleInput {
 
 /**
  * Store a revision's extracted rules and mark it `done`, in one transaction, so
- * a reader sees either no rules and `running`, or every rule and `done`.
+ * a reader sees either no rules and `running`, or every rule and `done`. Only
+ * the run that began at `startedAt` may (#1947): `false`, and nothing written,
+ * when the revision has since been retried by another run.
  */
 export async function completeRuleExtraction(
   workspaceId: string,
   revisionId: string,
+  startedAt: Date,
   rules: RuleInput[],
   droppedUnverified: number,
-): Promise<void> {
-  await prisma.$transaction(async (tx) => {
-    const revision = await tx.governingDocumentRevision.findFirst({
-      where: { id: revisionId, document: { workspaceId } },
-      select: { id: true },
+): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const claimed = await tx.governingDocumentRevision.updateMany({
+      where: runFence(workspaceId, revisionId, startedAt),
+      data: { extractionState: "done", extractionError: null, droppedUnverified },
     });
-    if (!revision) return;
+    if (claimed.count === 0) return false;
     if (rules.length > 0) {
       await tx.governingRule.createMany({
         data: rules.map((rule) => ({
-          revisionId: revision.id,
+          revisionId,
           controlId: rule.controlId,
           summary: rule.summary,
           clauseRef: rule.clauseRef,
@@ -459,25 +534,22 @@ export async function completeRuleExtraction(
         })),
       });
     }
-    await tx.governingDocumentRevision.update({
-      where: { id: revision.id },
-      data: {
-        extractionState: "done",
-        extractionError: null,
-        droppedUnverified,
-      },
-    });
+    return true;
   });
 }
 
-/** Mark a revision's extraction `failed` with the reason a reader is shown. */
+/**
+ * Mark the run that began at `startedAt` `failed`, with the reason a reader is
+ * shown. A run another has since replaced writes nothing (#1947).
+ */
 export async function failRuleExtraction(
   workspaceId: string,
   revisionId: string,
+  startedAt: Date,
   extractionError: string,
 ): Promise<void> {
   await prisma.governingDocumentRevision.updateMany({
-    where: { id: revisionId, document: { workspaceId } },
+    where: runFence(workspaceId, revisionId, startedAt),
     data: { extractionState: "failed", extractionError },
   });
 }
@@ -616,10 +688,15 @@ export interface GoverningReindexTarget {
  * Every revision of every live document in every live workspace, grouped by
  * workspace: what an embedding-model migration must keep searchable (#1918).
  * No text: the sweep reads it one revision at a time ({@link revisionText}).
+ * With `workspaceId`, that workspace's only (the sweep's re-read, #1947).
  */
-export async function listReindexTargets(): Promise<GoverningReindexTarget[]> {
+export async function listReindexTargets(workspaceId?: string): Promise<GoverningReindexTarget[]> {
   const docs = await prisma.governingDocument.findMany({
-    where: { deletedAt: null, workspace: { deletedAt: null } },
+    where: {
+      deletedAt: null,
+      workspace: { deletedAt: null },
+      ...(workspaceId !== undefined ? { workspaceId } : {}),
+    },
     orderBy: [{ workspaceId: "asc" }, { createdAt: "asc" }],
     select: {
       workspaceId: true,

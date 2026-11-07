@@ -306,7 +306,10 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
                       ? `${repo.repoConnection.ownerOrOrg}/${repo.repoConnection.repoName}`
                       : repo.repoConnectionId}
                   </p>
-                  <p className="text-sm text-muted-foreground">Role: {repo.role}</p>
+                  {/* #1965 — a repo attached without a role shows no empty label. */}
+                  {repo.role ? (
+                    <p className="text-sm text-muted-foreground">Role: {repo.role}</p>
+                  ) : null}
                 </div>
                 <Button
                   variant="ghost"

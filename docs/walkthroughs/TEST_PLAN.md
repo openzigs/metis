@@ -635,6 +635,7 @@ Replaces the Test Coverage page, whose imports and runs were removed in #818 and
      - A member's upload answers 403, and a member of another workspace gets 404 on all of these.
      - #1870: within a minute of the upload, `GET /api/workspaces/:workspaceId/governing-documents/:documentId/rules` reads `extractionState: done`, and every rule's `clauseExcerpt` is a sentence of the uploaded policy. If it reads `failed`, `extractionError` gives the reason.
      - As a workspace admin, `PATCH /api/workspaces/:workspaceId/governing-rules/:ruleId` with `{ "summary": "…" }` changes the summary, and the next GET shows it with `editedById`. `{ "deleted": true }` drops the rule from the list. A member's PATCH answers 403.
+     - #1947: as a workspace admin, `POST /api/workspaces/:workspaceId/governing-documents/:documentId/revisions/:revisionId/rule-extraction` on a revision uploaded before #1870 (or one whose extraction failed) answers 202 and the revision then reads `extractionState: done`; on a `done` revision it answers 409 `EXTRACTION_NOT_RETRYABLE`, and a member gets 403. Each extraction call is in `token_usages` with `agentStep: governing.rule-extraction` and the workspace id.
      - `DELETE /api/workspaces/:workspaceId/governing-documents/:documentId` removes the document from the list.
   6. Sign out from the account menu.
 - **Works:** every legacy `/admin/*` URL redirects (`legacy-routes.ts`), and the admin pages load for an admin while showing 403 for a non-admin. Signing out lands on the plain sign-in page, not `/login?reason=expired` (#720). `/settings/auth` loads with no console error.
@@ -917,7 +918,8 @@ scored differently** (#1073, owner decision of 2026-10-10 in #1068):
   functions, in the blast radius (both groups together, as for `tp`), **after the neutral and
   excluded items are removed** (the reference set's Neutral list, test files and generated
   files: the same exclusions as every other count). It needs no judgement on any entry beyond
-  those exclusions; from the API it is `blastRadiusFiles.length` less the excluded and neutral
+  those exclusions; from the API it is `blastRadiusFiles.length` (each entry `{ repoConnectionId,
+  filePath }` since #1965) less the excluded and neutral
   files. `listed` is **a count, not a score**: the deck prints it as a plain number in its own
   "Listed" column and never as a ratio or a precision, and nobody should turn it into one.
   `listed - tp` is what the rule before #1073 called `fp`, which is how a new run is restated

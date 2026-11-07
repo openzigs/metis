@@ -22,15 +22,18 @@
  */
 "use client";
 
-import type {
-  ImpactAffectedSymbolView,
-  ImpactEditVerdict,
-  ImpactSeedChannel,
-  ImpactSeedEvidence,
+import {
+  impactFileKey,
+  type ImpactAffectedSymbolView,
+  type ImpactEditVerdict,
+  type ImpactSeedChannel,
+  type ImpactSeedEvidence,
+  type ImpactSymbolRepoRef,
 } from "@metis/shared";
 import { Badge } from "@/components/ui/badge";
 import { buildCodeCitationBlobUrl, type CodeCitationRepo } from "@/lib/code-citation-blob-url";
 import { AffectedSymbolRow } from "./affected-symbol-row";
+import { ImpactFileLabel } from "./impact-file-label";
 
 /** Business wording for each seed channel. A new channel must be named here (typecheck). */
 export const SEED_CHANNEL_LABEL: Record<ImpactSeedChannel, string> = {
@@ -48,7 +51,10 @@ const RELATION_FOUND_BY: Partial<Record<ImpactAffectedSymbolView["relation"], st
 };
 
 export interface EditFileRow {
+  /** #1965 — (repository, path): one path in two repositories is two rows. */
+  key: string;
   filePath: string;
+  repo: ImpactSymbolRepoRef | null;
   symbols: ImpactAffectedSymbolView[];
   /** Business-worded sources, in channel order; empty when unknown. */
   foundBy: string[];
@@ -59,9 +65,16 @@ export interface EditFileRow {
  * The edit files in the server's edit order, each with its sources and verdict.
  * A file the evidence does not list (a lineage writer or table definition the
  * engine added after seeding) follows, in the order given.
+ *
+ * #1965 — the evidence names a file by path only (the seeding does not know
+ * repositories), so a path in two repositories takes the same entry in each.
  */
 export function orderEditFiles(
-  groups: ReadonlyArray<{ filePath: string; symbols: ImpactAffectedSymbolView[] }>,
+  groups: ReadonlyArray<{
+    filePath: string;
+    repo?: ImpactSymbolRepoRef | null;
+    symbols: ImpactAffectedSymbolView[];
+  }>,
   evidence: ImpactSeedEvidence,
 ): EditFileRow[] {
   const entries = new Map(evidence.editCandidates.map((e, i) => [e.filePath, { e, i }]));
@@ -82,7 +95,9 @@ export function orderEditFiles(
             ),
           ];
       return {
+        key: impactFileKey(g),
         filePath: g.filePath,
+        repo: g.repo ?? null,
         symbols: g.symbols,
         foundBy,
         ...(entry?.verdict ? { verdict: entry.verdict } : {}),
@@ -100,7 +115,15 @@ function fileName(filePath: string): string {
   return filePath.split("/").pop() || filePath;
 }
 
-function EditFile({ row, repo }: { row: EditFileRow; repo: CodeCitationRepo | null }) {
+function EditFile({
+  row,
+  repo,
+  showRepo,
+}: {
+  row: EditFileRow;
+  repo: CodeCitationRepo | null;
+  showRepo: boolean;
+}) {
   const verdict = row.verdict;
   // Only a promotion the server checked against the code graph carries a reason shown as fact.
   // `verified === true` repeats the shared schema's `verified: z.literal(true)`
@@ -121,7 +144,11 @@ function EditFile({ row, repo }: { row: EditFileRow; repo: CodeCitationRepo | nu
   return (
     <div data-testid="edit-candidate-file-group" data-doubtful={doubt ? "true" : undefined}>
       <div className="mb-1 flex min-w-0 items-center gap-2">
-        <p className="truncate font-mono text-xs text-foreground">{row.filePath}</p>
+        <ImpactFileLabel
+          className="truncate font-mono text-xs text-foreground"
+          filePath={row.filePath}
+          repo={showRepo ? row.repo : null}
+        />
         {doubt ? (
           <Badge
             variant="outline"
@@ -192,6 +219,8 @@ export interface EditCandidateFilesProps {
    * changed (`seedEvidence.agentCitations.demotedStaleCitations`, #1832).
    */
   staleSetAside?: number;
+  /** #1965 — name each file's repository (the project connects more than one). */
+  showRepo?: boolean;
 }
 
 /** #1833 — "N stale citations were set aside", only when there were some. */
@@ -210,6 +239,7 @@ export function EditCandidateFiles({
   repo,
   projectLabel,
   staleSetAside = 0,
+  showRepo = false,
 }: EditCandidateFilesProps) {
   const confident = rows.filter((r) => !isDoubtful(r));
   const doubtful = rows.filter(isDoubtful);
@@ -232,7 +262,7 @@ export function EditCandidateFiles({
         {doubtful.length > 0 ? (
           <div className="space-y-3">
             {doubtful.map((row) => (
-              <EditFile key={row.filePath} row={row} repo={repo} />
+              <EditFile key={row.key} row={row} repo={repo} showRepo={showRepo} />
             ))}
           </div>
         ) : null}
@@ -248,7 +278,7 @@ export function EditCandidateFiles({
       <StaleSetAside count={staleSetAside} />
       <div className="space-y-3">
         {rows.map((row) => (
-          <EditFile key={row.filePath} row={row} repo={repo} />
+          <EditFile key={row.key} row={row} repo={repo} showRepo={showRepo} />
         ))}
       </div>
     </div>

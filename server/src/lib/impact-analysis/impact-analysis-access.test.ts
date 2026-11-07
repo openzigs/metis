@@ -164,7 +164,21 @@ describe("#103 getImpactAnalysisDetail query shape", () => {
         include: expect.objectContaining({
           items: expect.objectContaining({
             include: {
-              affectedSymbols: { orderBy: [{ depth: "asc" }, { confidence: "desc" }] },
+              affectedSymbols: {
+                orderBy: [{ depth: "asc" }, { confidence: "desc" }],
+                // #1965 — each symbol's repository, through its code graph.
+                include: {
+                  codeSymbol: {
+                    select: {
+                      graph: {
+                        select: {
+                          repoConnection: { select: { id: true, label: true, repoName: true } },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
               // #1051 — the ruled-out column proposals are part of the detail.
               columnProposals: { orderBy: [{ tableName: "asc" }, { columnName: "asc" }] },
               affectedTables: {
