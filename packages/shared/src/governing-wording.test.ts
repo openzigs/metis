@@ -100,6 +100,19 @@ describe("neutraliseComplianceClaims (#1875)", () => {
     ["It is compliant with the policy.", "It is checked against the policy."],
     ["It is fully compliant with HIPAA.", "It is checked against HIPAA."],
     ["The feature is fully compliant.", "The feature is reviewed."],
+    [
+      "The app passes SOC 2 certified controls.",
+      "The app was checked against SOC 2-reviewed controls.",
+    ],
+    [
+      "It is compliant with HIPAA compliant hosting.",
+      "It is checked against HIPAA-reviewed hosting.",
+    ],
+    ["It is compliant with the GDPR.", "It is checked against the GDPR."],
+    [
+      "Compliant with the Information Security Policy.",
+      "Checked against the Information Security Policy.",
+    ],
     ["The app passes SOC 2.", "The app was checked against SOC 2."],
     ["The design complies with GDPR.", "The design was checked against GDPR."],
     ["Certified against ISO 27001.", "Checked against ISO 27001."],
@@ -133,10 +146,35 @@ const TITLES = [
   "GDPR-compliant Data Handling",
   "HIPAA Certified Vendor Rules",
   "Payments (PCI DSS) Policy",
+  "Compliant Vendor Rules",
+  "Non-compliant Vendor List",
+  "Not SOC 2 Compliant Systems",
+  "Compliant with HIPAA Compliant Hosting Standard",
 ];
 const REVISIONS = ["v3", "2026-01", "", "rev 4 (SOC 2 certified)"];
 
+describe("curly apostrophe negation (#1875)", () => {
+  it("leaves a typographic-apostrophe negation alone", () => {
+    expect(neutraliseComplianceClaims("It isn\u2019t SOC 2 compliant.")).toBe(
+      "It isn\u2019t SOC 2 compliant.",
+    );
+  });
+});
+
 describe("governingSummarySentence (#1875)", () => {
+  it("drops a missing document name instead of leaving 'in .'", () => {
+    expect(
+      governingSummarySentence({
+        applicable: 1,
+        total: 2,
+        gaps: 0,
+        needsInput: 0,
+        documentTitle: " ",
+        revisionLabel: "",
+      }),
+    ).toBe("No gaps found against 1 of 2 applicable rules. Not an audit opinion.");
+  });
+
   it("reads as the agreed sentence when nothing is open", () => {
     expect(
       governingSummarySentence({

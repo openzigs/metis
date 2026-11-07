@@ -28,13 +28,13 @@ const PCI = String.raw`\bpci(?:[\s-]?dss)?\b`;
 /** A framework that can precede the claim word ("SOC 2 compliant"). */
 const FRAMEWORK = String.raw`(?:${SOC}|${ISO}|\bgdpr\b|\bhipaa\b|${PCI})`;
 /** A framework, or "the policy", after a preposition ("compliant with the policy"). */
-const TARGET = String.raw`(?:${FRAMEWORK}|\bthe\s+policy\b)`;
+const TARGET = String.raw`(?:(?:the\s+)?${FRAMEWORK}|\bthe\s+(?:[\w-]+\s+){0,4}policy\b)`;
 const SEP = String.raw`[\s-]+`;
 /**
  * A negation just before the phrase makes it something other than a claim of
  * compliance. Variable-length lookbehind (ES2018).
  */
-const NOT_NEGATED = String.raw`(?<!\b(?:not|non|never|isn't|aren't|wasn't)[\s-]+(?:yet[\s-]+)?(?:fully[\s-]+)?)`;
+const NOT_NEGATED = String.raw`(?<!\b(?:not|non|never|isn['’]t|aren['’]t|wasn['’]t)[\s-]+(?:yet[\s-]+)?(?:fully[\s-]+)?)`;
 
 interface ClaimShape {
   pattern: RegExp;
@@ -128,6 +128,19 @@ export function findForbiddenComplianceClaims(text: string): { match: string; in
  * becomes "checked against GDPR"). Text with no claim is returned unchanged.
  */
 export function neutraliseComplianceClaims(text: string): string {
+  // Overlapping shapes can leave a claim behind ("passes SOC 2 certified
+  // controls"): rewrite again until a scan finds nothing. Each pass removes
+  // claim words, so this ends; the cap is a backstop.
+  let current = text;
+  for (let pass = 0; pass < 10; pass += 1) {
+    const next = rewriteOnce(current);
+    if (next === current) break;
+    current = next;
+  }
+  return current;
+}
+
+function rewriteOnce(text: string): string {
   const parts: string[] = [];
   let from = 0;
   for (const claim of scanClaims(text)) {
@@ -136,6 +149,15 @@ export function neutraliseComplianceClaims(text: string): string {
   }
   parts.push(text.slice(from));
   return parts.join("");
+}
+
+/**
+ * A bare or negated "compliant" ("Compliant Vendor Rules", "Non-compliant
+ * Vendor List") is not a claim shape, but the summary sentence promises never to
+ * contain the word, so it is replaced in code.
+ */
+function stripBareCompliant(text: string): string {
+  return text.replace(/\b(?:(?:non|not)[\s-]+)?compliant\b/gi, (m) => matchCase(m, "reviewed"));
 }
 
 function plural(count: number, one: string, many: string): string {
@@ -163,8 +185,10 @@ export function governingSummarySentence(input: {
   const document = [input.documentTitle.trim(), input.revisionLabel.trim()]
     .filter(Boolean)
     .map(neutraliseComplianceClaims)
+    .map(stripBareCompliant)
     .join(" ");
-  const scope = `against ${applicable} of ${total} applicable ${total === 1 ? "rule" : "rules"} in ${document}`;
+  const where = document ? ` in ${document}` : "";
+  const scope = `against ${applicable} of ${total} applicable ${total === 1 ? "rule" : "rules"}${where}`;
   if (gaps === 0 && needsInput === 0) {
     return `No gaps found ${scope}. ${GOVERNING_AUDIT_DISCLAIMER}`;
   }
