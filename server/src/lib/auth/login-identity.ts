@@ -26,9 +26,14 @@
  *
  * A disabled or soft-deleted account is never written on the login path: its
  * sign-in is refused with `403 ACCOUNT_DISABLED`.
+ *
+ * #1959 — a sign-in that keeps losing its serializable claim to a write
+ * conflict is answered `503 SIGN_IN_CONFLICT`, unaudited: under Postgres's SSI
+ * that can be a false positive between unrelated rows, not an account conflict.
  */
 import { audit } from "../audit/audit-service.js";
-import { isSerializationFailure, isUniqueViolation } from "../db/prisma-errors.js";
+import { isUniqueViolation } from "../db/prisma-errors.js";
+import { retryOnWriteConflict } from "../db/write-conflict-retry.js";
 import { prisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { foldIdentity, isNfkcStable } from "./bootstrap-admins.js";
@@ -72,6 +77,7 @@ export interface LoginUserRow {
 
 export const ACCOUNT_LINK_REQUIRED = "ACCOUNT_LINK_REQUIRED";
 export const ACCOUNT_DISABLED = "ACCOUNT_DISABLED";
+export const SIGN_IN_CONFLICT = "SIGN_IN_CONFLICT";
 
 /** Why a username match was refused. */
 export type IdentityConflict = "other_provider" | "other_subject" | "unverified_email";
@@ -206,16 +212,6 @@ export function usernameClaimVerdict(
   return "claim";
 }
 
-/**
- * A lost race: a unique violation (P2002), or a write conflict Postgres aborted
- * the claim's transaction on (`P2034`, or the pg adapter's
- * `TransactionWriteConflict`, #1904). Either way the row changed under this
- * sign-in, so it is judged again.
- */
-function isLostRace(error: unknown): boolean {
-  return isUniqueViolation(error) || isSerializationFailure(error);
-}
-
 /** Only an active, undeleted account is ever written on the login path. */
 const ACTIVE = { deletedAt: null, status: "active" } as const;
 
@@ -278,6 +274,19 @@ function refuse(
         "with a different identity provider or identity. Ask an administrator to link " +
         "the accounts.";
   throw new AppError(409, ACCOUNT_LINK_REQUIRED, message, { reason });
+}
+
+/**
+ * #1959 — every attempt lost a write conflict. Transient, and no account
+ * conflict, so it is not audited as one.
+ */
+export function signInConflict(): AppError {
+  return new AppError(
+    503,
+    SIGN_IN_CONFLICT,
+    "This sign-in collided with others made at the same moment and was not completed. " +
+      "Try signing in again.",
+  );
 }
 
 function refuseInactive(identity: ExternalIdentity, profile: LoginProfile, userId: string): never {
@@ -425,16 +434,22 @@ export async function resolveLoginUser(input: {
   primaryKind: string | null;
 }): Promise<LoginUserRow> {
   const { identity, profile, primaryKind } = input;
+  // A write conflict rolled the claim back: run the whole resolution again. It
+  // re-reads the rows, so a racer that won is judged like any other existing row.
+  const attempt = () =>
+    retryOnWriteConflict(() => resolveOnce(identity, profile, primaryKind), {
+      exhausted: signInConflict,
+    });
   try {
-    return await resolveOnce(identity, profile, primaryKind);
+    return await attempt();
   } catch (error) {
-    if (!isLostRace(error)) throw error;
+    if (!isUniqueViolation(error)) throw error;
   }
   // A concurrent first sign-in won the race (or the e-mail is taken): judge again.
   try {
-    return await resolveOnce(identity, profile, primaryKind);
+    return await attempt();
   } catch (error) {
-    if (isLostRace(error)) refuse("unique_conflict", identity, profile, null);
+    if (isUniqueViolation(error)) refuse("unique_conflict", identity, profile, null);
     throw error;
   }
 }

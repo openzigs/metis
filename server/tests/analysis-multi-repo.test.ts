@@ -5,6 +5,10 @@
  * runs the agentic code agent per connector when multiple repos exist.
  */
 import { describe, expect, it } from "vitest";
+import {
+  capConnectorsForBudget,
+  orderConnectorsForBudgetCap,
+} from "../src/lib/analysis/orchestrator.js";
 
 describe("Multi-repo analysis (#668)", () => {
   it("splits token budget across multiple connectors", () => {
@@ -53,5 +57,58 @@ describe("Multi-repo analysis (#668)", () => {
     expect(agenticSection).toContain("resolveAgentTokenBudget()");
     // Should label with repo name
     expect(agenticSection).toContain("[repo: ${connector.label}]");
+  });
+});
+
+describe("orderConnectorsForBudgetCap (#1974)", () => {
+  const row = (id: string, createdAt: string, isPrimary = false) => ({
+    id,
+    label: id,
+    isPrimary,
+    createdAt: new Date(createdAt),
+  });
+
+  it("puts the primary first, then oldest first, with the id breaking a tie", () => {
+    const rows = [
+      row("b", "2026-01-02T00:00:00Z"),
+      row("newest", "2026-01-05T00:00:00Z"),
+      row("a", "2026-01-02T00:00:00Z"),
+      row("primary", "2026-01-09T00:00:00Z", true),
+      row("oldest", "2026-01-01T00:00:00Z"),
+    ];
+    expect(orderConnectorsForBudgetCap(rows).map((r) => r.id)).toEqual([
+      "primary",
+      "oldest",
+      "a",
+      "b",
+      "newest",
+    ]);
+    // A copy: the caller's list is left as the database returned it.
+    expect(rows[0]!.id).toBe("b");
+  });
+
+  it("with three connectors and a budget for two, every arrival order keeps the primary", () => {
+    const rows = [
+      row("primary", "2026-01-03T00:00:00Z", true),
+      row("billing", "2026-01-01T00:00:00Z"),
+      row("notify", "2026-01-02T00:00:00Z"),
+    ];
+    const orders = [
+      [0, 1, 2],
+      [0, 2, 1],
+      [1, 0, 2],
+      [1, 2, 0],
+      [2, 0, 1],
+      [2, 1, 0],
+    ];
+    for (const order of orders) {
+      const { effectiveConnectors, skipped } = capConnectorsForBudget(
+        orderConnectorsForBudgetCap(order.map((i) => rows[i]!)),
+        100_000,
+        50_000,
+      );
+      expect(effectiveConnectors.map((c) => c.id)).toEqual(["primary", "billing"]);
+      expect(skipped.map((c) => c.id)).toEqual(["notify"]);
+    }
   });
 });

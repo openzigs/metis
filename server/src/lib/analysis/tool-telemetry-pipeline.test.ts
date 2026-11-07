@@ -271,8 +271,8 @@ describe("#766 review — one live entry across a multi-repo code pass", () => {
     const { readLiveAgents } = await import("./live-agent-progress.js");
     const { prisma } = await import("../prisma.js");
     vi.mocked(prisma.repoConnection.findMany).mockResolvedValueOnce([
-      { id: "repo_a", label: "api" },
-      { id: "repo_b", label: "web" },
+      { id: "repo_a", label: "api", isPrimary: false, createdAt: new Date("2026-01-01") },
+      { id: "repo_b", label: "web", isPrimary: false, createdAt: new Date("2026-01-02") },
     ] as never);
     const script = [
       AGENT_ANSWER, // document agent
