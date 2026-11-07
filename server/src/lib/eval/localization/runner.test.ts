@@ -4,6 +4,7 @@ import type { LocalizationCorpus, LocalizationItem } from "./corpus.js";
 import type { CostMeter } from "./cost.js";
 import {
   EvalBudget,
+  TABLE_PRECISION_TOLERANCE,
   compareArms,
   memoisedA0TableGuard,
   poolHeldOutReports,
@@ -695,7 +696,9 @@ describe("toMarkdownReport", () => {
     expect(md).toContain("### A0 test arm");
     expect(md).toContain("| llm | false |");
     expect(md).toContain("> **Stopped early** (budget");
-    expect(md).toContain("> At 3 items and a hit rate near 0.5");
+    // #1925 — sized on the items paired with A0 (none: A4 never ran), not the corpus's 3.
+    expect(md).toContain("> At 0 items and a hit rate near 0.5");
+    expect(md).toContain("> A4 pairs 0 of A0's 2 items.");
     expect(md).toContain("| A4 | recallAt5 |");
     expect(md).toContain("hit@5 (McNemar");
     expect(md).toContain("| I-1 | 1.00 / 1.00 / 0.50 / 0.50 |");
@@ -853,6 +856,33 @@ describe("a table guard read on another seeding (#1786)", () => {
       { measured: true, ...mapper },
     );
     expect(plain).toEqual({ tableGuardPassed: true, tableGuardAgainst: "A7O" });
+  });
+
+  it("#1925 — holds on a drop of exactly the tolerance, on every scoring, and fails just past it", () => {
+    // 0.5 − 0.03 is the very number the gate computes, so the comparison is exact.
+    const atBar = 0.5 - TABLE_PRECISION_TOLERANCE;
+    const below = atBar - 2 ** -20;
+    const control = {
+      tablePrecision: 0.5,
+      runs: 3,
+      configuration: "off",
+      seeding: "s",
+      arm: "A7O",
+    };
+    const reading = (headline: number, union: number): TableGuardReading => ({
+      measured: true,
+      tablePrecision: headline,
+      runs: 3,
+      configuration: "on",
+      seeding: "s",
+      baseline: control,
+      scoring: "the first requirement",
+      alsoGatedOn: [{ scoring: "the union", tablePrecision: union, baselinePrecision: 0.5 }],
+    });
+    const unused = { measured: false, reason: "A7 names its control" } as const;
+    expect(tableGuardGate(reading(atBar, atBar), unused).tableGuardPassed).toBe(true);
+    expect(tableGuardGate(reading(below, atBar), unused).tableGuardPassed).toBe(false);
+    expect(tableGuardGate(reading(atBar, below), unused).tableGuardPassed).toBe(false);
   });
 
   it("is unread when neither the arm's baseline nor A0 was measured", async () => {
@@ -1114,6 +1144,39 @@ describe("--reference: pairing with an arm other than A0 (#1806)", () => {
     );
     expect(pooledSection).toContain("> At 4 items and a hit rate near 0.5");
     expect(pooledSection).toContain("> A13 pairs 4 of A12's 10 items. At 4 items");
+  });
+
+  it("#1925 — the per-corpus A0 table carries the reference table's coverage lines", async () => {
+    const meter = new FakeMeter();
+    // A13 charges $1 per item; the $2.5 cap stops it after 2 of the 6 items.
+    const report = await runLocalizationEval(corpus(6), {
+      arms: [
+        arm("A0", () => 1),
+        arm("A12", () => 2),
+        arm(
+          "A13",
+          () => 1,
+          () => (meter.spent += 1),
+        ),
+      ],
+      runs: 1,
+      meter,
+      budgetUsd: 2.5,
+    });
+    expect(report.comparisons.map((c) => [c.arm, c.items])).toEqual([
+      ["A12", 6],
+      ["A13", 2],
+    ]);
+    // The gap its fewest paired items can resolve, as the reference and pooled tables say.
+    expect(report.detectableGap).toMatch(/^At 2 items/);
+    const md = toMarkdownReport(report);
+    const a0Section = md.slice(
+      md.indexOf("## Paired comparison with A0"),
+      md.indexOf("## Per requirement"),
+    );
+    expect(a0Section).toContain("> At 2 items and a hit rate near 0.5");
+    expect(a0Section).toContain("> A13 pairs 2 of A0's 6 items. At 2 items");
+    expect(a0Section).not.toContain("> A12 pairs");
   });
 
   it("prints no coverage warning when every arm pairs all of the reference's items (#1819)", async () => {

@@ -29,6 +29,7 @@
  * reads, no network of its own.
  */
 import { ANALYSIS_PASS_GROUP } from "./agent-env.js";
+import { assertReferenceArms } from "./cli-args.js";
 import type { LocalizationArm } from "./arms.js";
 import type { LocalizationCorpus, LocalizationItem } from "./corpus.js";
 import type { CostMeter } from "./cost.js";
@@ -398,16 +399,11 @@ export async function runLocalizationEval(
   const now = opts.now ?? (() => performance.now());
   if (opts.arms[0]?.id !== "A0") throw new Error("A0 must be the first arm: it is the baseline");
   const references = [...(opts.references ?? [])];
-  const armIdList = opts.arms.map((a) => a.id);
-  for (const ref of references) {
-    if (ref === "A0" || !armIdList.includes(ref)) {
-      throw new Error(
-        ref === "A0"
-          ? "--reference A0: every arm is already compared with A0"
-          : `--reference ${ref} is not one of this run's arms (${armIdList.join(", ")})`,
-      );
-    }
-  }
+  // #1925 — the CLI's preflight refusal, called rather than copied.
+  assertReferenceArms(
+    references,
+    opts.arms.map((a) => a.id),
+  );
 
   // Per arm, per item, per run: every score held, recorded or new.
   const scores = new Map(
@@ -580,7 +576,10 @@ export async function runLocalizationEval(
     comparisons,
     references,
     referenceComparisons,
-    detectableGap: minimumDetectableGapStatement(corpus.manifest.items.length),
+    // #1925 — sized, as the reference and pooled tables are, on the fewest items paired with A0.
+    detectableGap: minimumDetectableGapStatement(
+      Math.min(baseline.items.length, ...comparisons.map((c) => c.items)),
+    ),
     notes: corpusNotes(corpus),
     splitAgentPasses: splitAgentPassesOf(
       opts.arms.map((a) => a.id),
@@ -1046,6 +1045,16 @@ export function toMarkdownReport(report: LocalizationReport): string {
   if (report.comparisons.length === 0) {
     lines.push("No other arm was run: this report is A0's baseline.", "");
   } else {
+    // #1925 — the coverage lines the reference tables carry (#1819).
+    const a0Items = report.arms[0]!.items.length;
+    for (const cmp of report.comparisons) {
+      if (cmp.items < a0Items) {
+        lines.push(
+          `> ${cmp.arm} pairs ${cmp.items} of A0's ${a0Items} items. ${minimumDetectableGapStatement(cmp.items)}`,
+          "",
+        );
+      }
+    }
     lines.push("| Arm | Metric | Δ vs A0 | 95% CI | p | Reading |", "|---|---|---|---|---|---|");
     for (const cmp of report.comparisons) {
       lines.push(...comparisonRows(cmp));

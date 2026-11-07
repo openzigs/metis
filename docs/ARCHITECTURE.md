@@ -4076,6 +4076,14 @@ of a *different* rule, which made the then-reported citation accuracy of 0.61 a 
 of the reader. A0's citation accuracy, hard errors and ask rate are fixed by construction
 (only verified citations; every rule judged `gap`), so the report prints them, and their
 bars, as `n/a` rather than as passes; an arm declares such metrics in `byConstruction`. A
+claim holds only while every run measures the fixed value (no hard error, no ask, no
+unverified citation): a reader change that breaks one has its bar judged and its number
+printed, marked `‡` (#1920). **A0 has no citation bar that can fail, and none is added
+(#1920):** a coverage bar set now, after A0's 0.59 was measured, would be fitted to the
+baseline, and the manifest's thresholds were recorded before any arm ran. Instead each arm
+is compared with A0 on **citation coverage**, paired per requirement over the requirements
+both applied a rule on, beside recall and non-resembling recall; coverage alone rewards
+citing anything, so the arm's own citation-accuracy bar keeps that comparison honest. A
 requirement an arm fails on is scored as an error, never as a clean negative. At 40 rules
 the policy is 8 chunks, under the retrieval's k of 10, so A0 sees the whole policy: its
 recall says nothing about top-k misses. The web specialist then names about nine rules per
