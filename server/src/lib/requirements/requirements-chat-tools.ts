@@ -31,6 +31,7 @@ import { z } from "zod";
 import type { PrismaClient } from "@prisma/client";
 import {
   REQUIREMENT_REVIEW_STATUSES,
+  SIMILAR_REQUIREMENT_SOURCE,
   parseAcceptanceCriteria,
   type RequirementReviewStatus,
   type RequirementTraceabilityChain,
@@ -263,7 +264,15 @@ export function createListRequirementsTool(
           priority: true,
           labels: true,
           reviewStatus: true,
-          _count: { select: { codeMappings: true, dataMappings: { where: { deletedAt: null } } } },
+          _count: {
+            select: {
+              // #1913 — the requirement's own links: one borrowed from a similar
+              // requirement (#1839) is a suggestion, which get_requirement lists
+              // with its source. A bare count could not say "borrowed".
+              codeMappings: { where: { source: { not: SIMILAR_REQUIREMENT_SOURCE } } },
+              dataMappings: { where: { deletedAt: null } },
+            },
+          },
         },
         orderBy: [{ updatedAt: "desc" }],
         take: MAX_SCAN + 1,
