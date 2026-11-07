@@ -101,11 +101,12 @@
  * conventions is done in code on stored rows and passed to Prisma only as bound
  * `in` values, never interpolated into SQL.
  */
-import type {
-  RequirementTestGap,
-  RequirementTestGaps,
-  TestLinkRelation,
-  TraceabilityTestNode,
+import {
+  SIMILAR_REQUIREMENT_SOURCE,
+  type RequirementTestGap,
+  type RequirementTestGaps,
+  type TestLinkRelation,
+  type TraceabilityTestNode,
 } from "@metis/shared";
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
@@ -957,8 +958,14 @@ export async function loadTestedByTargets(
     source: true,
   } as const;
   const [direct, specLinks] = await Promise.all([
+    // #1902 — a link borrowed from a similar requirement (#1839) is a hypothesis
+    // no analysis has checked: a test of the borrowed code tests nothing here.
     prisma.requirementCodeMapping.findMany({
-      where: { projectId, requirementId: { in: requirementIds } },
+      where: {
+        projectId,
+        requirementId: { in: requirementIds },
+        source: { not: SIMILAR_REQUIREMENT_SOURCE },
+      },
       select: { requirementId: true, ...select },
     }),
     prisma.requirementSpecMapping.findMany({
