@@ -239,6 +239,18 @@ describe("ChangedRequirementGroup — seed evidence of one repository's file (#1
     const groups = screen.getAllByTestId("edit-candidate-file-group");
     expect(groups.every((g) => g.getAttribute("data-doubtful") === "true")).toBe(true);
   });
+
+  it("still applies an entry naming a repository to a file whose repository is now unknown", () => {
+    // A re-ingest deletes the CodeSymbol rows, so the live repo reads null while the
+    // stored entry keeps the repository it was computed for.
+    render(
+      <ChangedRequirementGroup
+        item={item([sym(SHARED, null, 0, "Order")], { seedEvidence: doubtedInOrders })}
+      />,
+    );
+    const group = screen.getByTestId("edit-candidate-file-group");
+    expect(group.getAttribute("data-doubtful")).toBe("true");
+  });
 });
 
 describe("ImpactFileLabel (#1969)", () => {

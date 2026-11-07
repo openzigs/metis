@@ -69,7 +69,8 @@ export interface EditFileRow {
  * #1969 — an entry that names its file's repository (`repoConnectionId`)
  * speaks for that repository's file only. One that names none (the path was
  * seeded from several repositories, or the evidence predates #1969) speaks for
- * the path in each, as in #1965.
+ * the path in each, as in #1965. A file whose repository is unknown now (a
+ * re-ingest deleted its symbols) keeps the entry that names one.
  */
 export function orderEditFiles(
   groups: ReadonlyArray<{
@@ -83,7 +84,7 @@ export function orderEditFiles(
     const i = evidence.editCandidates.findIndex(
       (e) =>
         e.filePath === g.filePath &&
-        (e.repoConnectionId === undefined || e.repoConnectionId === g.repo?.id),
+        (e.repoConnectionId === undefined || !g.repo || e.repoConnectionId === g.repo.id),
     );
     return i < 0 ? undefined : { e: evidence.editCandidates[i]!, i };
   };
