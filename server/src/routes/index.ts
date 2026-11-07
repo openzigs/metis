@@ -203,7 +203,7 @@ export function apiRouter(): Router {
   r.use("/workspaces/:workspaceId/requirements", workspaceRequirementSearchRouter());
   // Epic #610 (#626) — workspace-level traceability rollup (coverage + link map).
   r.use("/workspaces/:workspaceId/traceability", workspaceTraceabilityRouter());
-  // Epic #1866 (#1869) — workspace governing documents (404 unless GOVERNING_DOCS_ENABLED=1).
+  // Epic #1866 (#1869) — workspace governing documents (404 unless GOVERNING_DOCS_ENABLED is on (1, true, yes or on)).
   r.use("/workspaces/:workspaceId/governing-documents", governingDocumentsRouter());
   // #1870 — edit or soft-delete an extracted governing rule (same flag).
   r.use("/workspaces/:workspaceId/governing-rules", governingRulesRouter());
