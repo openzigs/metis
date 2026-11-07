@@ -168,6 +168,27 @@ describe("SCIM role authority persistence", () => {
     },
   );
 
+  // #1959 — a write conflict was a 500 to the IdP; the transaction runs again.
+  it.each([
+    ["P2034", () => Object.assign(new Error("write conflict"), { code: "P2034" })],
+    [
+      "adapter-pg TransactionWriteConflict",
+      () =>
+        Object.assign(new Error("TransactionWriteConflict"), {
+          cause: { originalCode: "40001", kind: "TransactionWriteConflict" },
+        }),
+    ],
+  ])("provisions after a %s write conflict, in a new serializable transaction", async (_, make) => {
+    db.$transaction.mockRejectedValueOnce(make());
+    const response = await request(app)
+      .post("/scim/v2/Users")
+      .set("Authorization", authorization)
+      .send({ userName: user.username });
+    expect(response.status).toBe(201);
+    expect(db.$transaction).toHaveBeenCalledTimes(2);
+    expectProviderCleanup();
+  });
+
   it("does not change authority on a duplicate provisioning conflict", async () => {
     db.user.findUnique.mockResolvedValue(user);
     const response = await request(app)

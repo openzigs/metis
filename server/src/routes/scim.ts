@@ -8,6 +8,7 @@
  * - /scim/v2/ServiceProviderConfig
  */
 import crypto from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { Router, type Request, type Response } from "express";
 import { prisma } from "../lib/prisma.js";
 import { audit } from "../lib/audit/audit-service.js";
@@ -15,6 +16,7 @@ import { AppError } from "../middleware/error-handler.js";
 import { revokeAllUserSessions } from "../lib/auth/jwt.js";
 import { SCIM_AUTH_SOURCE } from "../lib/auth/login-identity.js";
 import { disconnectUserSockets, reconnectUserSockets } from "../lib/socket/user-disconnect.js";
+import { retryOnWriteConflict } from "../lib/db/write-conflict-retry.js";
 import type {
   SCIMUser,
   SCIMGroup,
@@ -27,6 +29,15 @@ import type {
 /** Helper to coerce Express v5 params (string | string[]) to string. */
 function param(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] : (value ?? "");
+}
+
+/**
+ * #1959 — every SCIM write is one SERIALIZABLE transaction, so it serialises
+ * with the login path's role reconciliation. A write conflict rolled it back:
+ * run it again rather than answer the IdP with a 500.
+ */
+function serializable<T>(work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+  return retryOnWriteConflict(() => prisma.$transaction(work, { isolationLevel: "Serializable" }));
 }
 
 /** SCIM schema URNs. */
@@ -224,41 +235,38 @@ export function scimRouter(): Router {
     const email = body.emails?.[0]?.value ?? `${body.userName}@scim.local`;
     const displayName = body.displayName ?? body.name?.formatted ?? body.userName;
 
-    const user = await prisma.$transaction(
-      async (tx) => {
-        const provisioned = await tx.user.upsert({
-          where: { username: body.userName },
-          update: {
-            displayName,
-            email,
-            status: body.active !== false ? "active" : "disabled",
-            deletedAt: null,
-            authRolesInitializedAt: new Date(),
-            authRoleAuthority: "scim",
-            // #1395 — a revived username is a new person: whatever provider the deleted
-            // one belonged to is dropped, and the row is the IdP's again (SCIM_AUTH_SOURCE).
-            authSource: SCIM_AUTH_SOURCE,
-          },
-          create: {
-            username: body.userName,
-            displayName,
-            email,
-            status: body.active !== false ? "active" : "disabled",
-            authRolesInitializedAt: new Date(),
-            authRoleAuthority: "scim",
-            // #1395 — the IdP's row: the AUTH_MODE provider claims it at first sign-in.
-            authSource: SCIM_AUTH_SOURCE,
-          },
-        });
-        // Re-provisioning must not expose provider grants left on a deleted user.
-        await tx.userRole.deleteMany({ where: { userId: provisioned.id, source: "provider" } });
-        // #1395 — nor its sign-in identities: the deleted person's IdP account must
-        // not sign in as whoever is provisioned under the name now.
-        await tx.userIdentity.deleteMany({ where: { userId: provisioned.id } });
-        return provisioned;
-      },
-      { isolationLevel: "Serializable" },
-    );
+    const user = await serializable(async (tx) => {
+      const provisioned = await tx.user.upsert({
+        where: { username: body.userName },
+        update: {
+          displayName,
+          email,
+          status: body.active !== false ? "active" : "disabled",
+          deletedAt: null,
+          authRolesInitializedAt: new Date(),
+          authRoleAuthority: "scim",
+          // #1395 — a revived username is a new person: whatever provider the deleted
+          // one belonged to is dropped, and the row is the IdP's again (SCIM_AUTH_SOURCE).
+          authSource: SCIM_AUTH_SOURCE,
+        },
+        create: {
+          username: body.userName,
+          displayName,
+          email,
+          status: body.active !== false ? "active" : "disabled",
+          authRolesInitializedAt: new Date(),
+          authRoleAuthority: "scim",
+          // #1395 — the IdP's row: the AUTH_MODE provider claims it at first sign-in.
+          authSource: SCIM_AUTH_SOURCE,
+        },
+      });
+      // Re-provisioning must not expose provider grants left on a deleted user.
+      await tx.userRole.deleteMany({ where: { userId: provisioned.id, source: "provider" } });
+      // #1395 — nor its sign-in identities: the deleted person's IdP account must
+      // not sign in as whoever is provisioned under the name now.
+      await tx.userIdentity.deleteMany({ where: { userId: provisioned.id } });
+      return provisioned;
+    });
 
     audit({
       actor: null,
@@ -302,30 +310,27 @@ export function scimRouter(): Router {
       return;
     }
 
-    const updated = await prisma.$transaction(
-      async (tx) => {
-        const current = await tx.user.findFirst({
-          where: { id: user.id, deletedAt: null },
-        });
-        if (!current) return null;
-        const statusChanged = update.status !== undefined && update.status !== current.status;
-        const provisioned = await tx.user.update({
-          where: { id: user.id },
-          data: {
-            ...update,
-            ...(statusChanged
-              ? { authRolesInitializedAt: new Date(), authRoleAuthority: "scim" }
-              : {}),
-          },
-        });
-        // Only an actual lifecycle transition transfers access authority to SCIM.
-        if (statusChanged) {
-          await tx.userRole.deleteMany({ where: { userId: user.id, source: "provider" } });
-        }
-        return provisioned;
-      },
-      { isolationLevel: "Serializable" },
-    );
+    const updated = await serializable(async (tx) => {
+      const current = await tx.user.findFirst({
+        where: { id: user.id, deletedAt: null },
+      });
+      if (!current) return null;
+      const statusChanged = update.status !== undefined && update.status !== current.status;
+      const provisioned = await tx.user.update({
+        where: { id: user.id },
+        data: {
+          ...update,
+          ...(statusChanged
+            ? { authRolesInitializedAt: new Date(), authRoleAuthority: "scim" }
+            : {}),
+        },
+      });
+      // Only an actual lifecycle transition transfers access authority to SCIM.
+      if (statusChanged) {
+        await tx.userRole.deleteMany({ where: { userId: user.id, source: "provider" } });
+      }
+      return provisioned;
+    });
     if (!updated) {
       res.status(404).json(scimErrorResponse("404", "User not found"));
       return;
@@ -357,21 +362,18 @@ export function scimRouter(): Router {
       return;
     }
 
-    await prisma.$transaction(
-      async (tx) => {
-        await tx.user.update({
-          where: { id: user.id },
-          data: {
-            deletedAt: new Date(),
-            status: "disabled",
-            authRolesInitializedAt: new Date(),
-            authRoleAuthority: "scim",
-          },
-        });
-        await tx.userRole.deleteMany({ where: { userId: user.id, source: "provider" } });
-      },
-      { isolationLevel: "Serializable" },
-    );
+    await serializable(async (tx) => {
+      await tx.user.update({
+        where: { id: user.id },
+        data: {
+          deletedAt: new Date(),
+          status: "disabled",
+          authRolesInitializedAt: new Date(),
+          authRoleAuthority: "scim",
+        },
+      });
+      await tx.userRole.deleteMany({ where: { userId: user.id, source: "provider" } });
+    });
 
     // Revoke all sessions when user is deprovisioned (Epic #748 AC #4), and
     // close their open sockets, which keep every room they joined (#612).
@@ -572,24 +574,21 @@ export function scimRouter(): Router {
       return;
     }
 
-    const deleted = await prisma.$transaction(
-      async (tx) => {
-        const assignments = await tx.userRole.findMany({ where: { roleId: role.id } });
-        // Roles are shared with local administration. Deleting one would cascade
-        // its local grants, so reject the whole operation without changing users.
-        if (assignments.some((assignment) => assignment.source === "local")) return null;
-        const userIds = assignments.map((assignment) => assignment.userId);
-        await tx.user.updateMany({
-          where: { id: { in: userIds } },
-          data: { authRolesInitializedAt: new Date(), authRoleAuthority: "scim" },
-        });
-        await tx.userRole.deleteMany({ where: { userId: { in: userIds }, source: "provider" } });
-        await tx.userRole.deleteMany({ where: { roleId: role.id } });
-        await tx.role.delete({ where: { id: role.id } });
-        return userIds;
-      },
-      { isolationLevel: "Serializable" },
-    );
+    const deleted = await serializable(async (tx) => {
+      const assignments = await tx.userRole.findMany({ where: { roleId: role.id } });
+      // Roles are shared with local administration. Deleting one would cascade
+      // its local grants, so reject the whole operation without changing users.
+      if (assignments.some((assignment) => assignment.source === "local")) return null;
+      const userIds = assignments.map((assignment) => assignment.userId);
+      await tx.user.updateMany({
+        where: { id: { in: userIds } },
+        data: { authRolesInitializedAt: new Date(), authRoleAuthority: "scim" },
+      });
+      await tx.userRole.deleteMany({ where: { userId: { in: userIds }, source: "provider" } });
+      await tx.userRole.deleteMany({ where: { roleId: role.id } });
+      await tx.role.delete({ where: { id: role.id } });
+      return userIds;
+    });
     if (!deleted) {
       res
         .status(409)
@@ -621,47 +620,44 @@ export function scimRouter(): Router {
  * the member's live sockets (#633).
  */
 async function changeScimMembership(userId: string, roleId: string, operation: "add" | "remove") {
-  const changed = await prisma.$transaction(
-    async (tx) => {
-      const membership = await tx.userRole.findUnique({
-        where: { userId_roleId: { userId, roleId } },
-      });
-      // An absent or explicitly local membership must not revoke other grants.
-      if (operation === "remove" && (!membership || membership.source === "local")) return false;
-      const before = await tx.user.findUnique({
-        where: { id: userId },
-        select: { authRoleAuthority: true },
-      });
-      await tx.user.update({
-        where: { id: userId },
-        data: { authRolesInitializedAt: new Date(), authRoleAuthority: "scim" },
-      });
-      // An explicit SCIM decision supersedes IdP grants, including on revocation.
-      // Otherwise removing the last SCIM reader could uncover a provider admin.
-      const providerDeleted = await tx.userRole.deleteMany({
-        where: { userId, source: "provider" },
-      });
-      let membershipChanged = false;
-      if (operation === "add") {
-        // An existing assignment — notably a local one — keeps its provenance.
-        // A provider row for this role was just deleted, so it is replaced.
-        if (!membership || membership.source === "provider") {
-          await tx.userRole.create({ data: { userId, roleId, source: "scim" } });
-          membershipChanged = true;
-        }
-      } else {
-        // Legacy assignments predate provenance. Preserve the pre-migration SCIM
-        // removal contract for the explicitly targeted membership, while never
-        // removing a positively identified local grant.
-        const removed = await tx.userRole.deleteMany({
-          where: { userId, roleId, source: { in: ["scim", "unknown"] } },
-        });
-        membershipChanged = removed.count > 0;
+  const changed = await serializable(async (tx) => {
+    const membership = await tx.userRole.findUnique({
+      where: { userId_roleId: { userId, roleId } },
+    });
+    // An absent or explicitly local membership must not revoke other grants.
+    if (operation === "remove" && (!membership || membership.source === "local")) return false;
+    const before = await tx.user.findUnique({
+      where: { id: userId },
+      select: { authRoleAuthority: true },
+    });
+    await tx.user.update({
+      where: { id: userId },
+      data: { authRolesInitializedAt: new Date(), authRoleAuthority: "scim" },
+    });
+    // An explicit SCIM decision supersedes IdP grants, including on revocation.
+    // Otherwise removing the last SCIM reader could uncover a provider admin.
+    const providerDeleted = await tx.userRole.deleteMany({
+      where: { userId, source: "provider" },
+    });
+    let membershipChanged = false;
+    if (operation === "add") {
+      // An existing assignment — notably a local one — keeps its provenance.
+      // A provider row for this role was just deleted, so it is replaced.
+      if (!membership || membership.source === "provider") {
+        await tx.userRole.create({ data: { userId, roleId, source: "scim" } });
+        membershipChanged = true;
       }
-      return membershipChanged || providerDeleted.count > 0 || before?.authRoleAuthority !== "scim";
-    },
-    { isolationLevel: "Serializable" },
-  );
+    } else {
+      // Legacy assignments predate provenance. Preserve the pre-migration SCIM
+      // removal contract for the explicitly targeted membership, while never
+      // removing a positively identified local grant.
+      const removed = await tx.userRole.deleteMany({
+        where: { userId, roleId, source: { in: ["scim", "unknown"] } },
+      });
+      membershipChanged = removed.count > 0;
+    }
+    return membershipChanged || providerDeleted.count > 0 || before?.authRoleAuthority !== "scim";
+  });
   // #633 — open sockets keep their connect-time role; make them re-handshake.
   if (changed) reconnectUserSockets(userId);
 }

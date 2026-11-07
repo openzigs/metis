@@ -1279,6 +1279,15 @@ jobs:
         working-directory: server
         run: pnpm test:integration borrow-citations-race-1893-postgres
 
+      # Issue #1959 — the login and SCIM paths' SERIALIZABLE transactions run again
+      # after a write conflict (P2034, or the pg adapter's TransactionWriteConflict).
+      # Prove each path lands after injected conflicts in both shapes, and that two
+      # unrelated users' first sign-ins, forced to read before either writes, both
+      # land although Postgres aborts one (40001).
+      - name: Prove login and SCIM transactions retry a write conflict on real Postgres
+        working-directory: server
+        run: pnpm test:integration write-conflict-retry-1959-postgres
+
       # Issue #1059 — the Spec Kit job table's rules are conditional UPDATEs, and
       # staleness is judged with the DATABASE's clock in SQL that differs per
       # engine (`clock_timestamp()` here, `strftime` on SQLite). Prove the same

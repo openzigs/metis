@@ -59,6 +59,7 @@ import {
 import { prisma as defaultPrisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { createChildLogger } from "../logger.js";
+import { isWriteConflict } from "../db/prisma-errors.js";
 import {
   ANALYSIS_GROUNDING_SOURCE,
   DEFAULT_SEED_CONFIDENCE,
@@ -78,17 +79,6 @@ const MAX_ATTEMPTS = 3;
 export const BORROW_RETRY_BACKOFF_MS = 20;
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-/**
- * A transaction the database aborted on a write conflict: Prisma's `P2034`, or
- * the driver adapter's own error when Postgres refuses the commit, which
- * `@prisma/adapter-pg` surfaces with no Prisma code as `TransactionWriteConflict`
- * for both a serialization failure (`40001`, measured) and a deadlock (`40P01`).
- */
-function isSerializationFailure(error: unknown): boolean {
-  const e = error as { code?: unknown; cause?: { kind?: unknown } | null } | null;
-  return e?.code === "P2034" || e?.cause?.kind === "TransactionWriteConflict";
-}
 
 export interface BorrowCitationsDeps {
   prisma?: BorrowPrisma;
@@ -148,7 +138,7 @@ export async function borrowCitations(
         { isolationLevel: "Serializable" },
       );
     } catch (error) {
-      if (!isSerializationFailure(error)) throw error;
+      if (!isWriteConflict(error)) throw error;
       if (attempt >= MAX_ATTEMPTS) {
         log.warn("borrow lost every attempt to a concurrent write", {
           projectId,
