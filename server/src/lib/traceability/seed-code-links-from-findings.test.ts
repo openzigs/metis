@@ -1026,6 +1026,26 @@ describe("seedRequirementCodeLinksFromFindings — code-graph version stamp (#18
     });
   });
 
+  // #1961 — the pass's repo is a hint, not a claim: a secondary repo's pass
+  // that cites the primary repo's code is stamped with the primary graph.
+  it("stamps the graph that holds the file when the pass's own repo does not (#1961)", async () => {
+    const onlyA = twoRepos.filter((s) => s.id === "login-A");
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [{ id: "f1", evidence: codeCitation(), confidence: 0.6, connectorId: "conn-B" }],
+      symbols: onlyA,
+    });
+    await run(prisma);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      codeSymbolId: "login-A",
+      codeGraphId: "graph-A",
+      commitSha: "aaaaaaa",
+      freshness: "fresh",
+    });
+    expect(created[0].validatedAt).toBeInstanceOf(Date);
+  });
+
   it("keeps a code citation's server-stamped repo on its target", () => {
     expect(parseCitationTargets(codeCitation({ repoConnectionId: "conn-A" }))).toEqual([
       { filePath: "src/auth.ts", startLine: 8, endLine: 12, repoConnectionId: "conn-A" },
