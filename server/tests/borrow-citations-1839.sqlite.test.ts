@@ -288,6 +288,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ["src/b.ts", "similar-requirement", ids.origin, "fresh"],
       ]);
       for (const l of links) expect(l.confidence).toBeLessThanOrEqual(BORROWED_CONFIDENCE_CAP);
+      // #1840 — the origin is named (it has no key, so by its title) for "Borrowed from …".
+      for (const l of links) expect(l.originRequirementLabel).toBe("Export the ledger as CSV");
     });
 
     it("the agent seeder never leads with a borrowed link", async () => {

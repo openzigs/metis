@@ -26,7 +26,22 @@ export type SimilarRequirementLabel = (typeof SIMILAR_REQUIREMENT_LABELS)[number
 export const SIMILAR_CODE_LINK_FRESHNESS = ["fresh", "moved", "stale", "unverified"] as const;
 export type SimilarCodeLinkFreshness = (typeof SIMILAR_CODE_LINK_FRESHNESS)[number];
 
+/**
+ * #1839 — the freshness a link must hold to be borrowed: known to point at
+ * current code. The server's borrow and the panel's preview of it (#1840) read
+ * this one set, so the preview never lists a link the borrow would skip (#1903).
+ */
+export const BORROWABLE_FRESHNESS: ReadonlySet<string> = new Set<SimilarCodeLinkFreshness>([
+  "fresh",
+  "moved",
+]);
+
 export interface SimilarRequirementCodeLink {
+  /**
+   * #1840 — the saved link's id: what "Start from these citations" names in
+   * `mappingIds`, so exactly the links it listed are borrowed.
+   */
+  mappingId: string;
   filePath: string;
   startLine: number | null;
   endLine: number | null;
@@ -135,3 +150,9 @@ export interface BorrowCitationsResult {
 
 /** #1893 — the 400 a requirement asked to borrow its own code links answers. */
 export const BORROW_FROM_SELF_CODE = "BORROW_FROM_SELF";
+
+/**
+ * #1902 — the 409 a borrow answers when every attempt lost a write conflict to
+ * a concurrent borrow: nothing was copied, and asking again is safe.
+ */
+export const BORROW_CONFLICT_CODE = "BORROW_CONFLICT";

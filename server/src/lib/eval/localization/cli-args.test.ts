@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { flagValue, nonNegativeNumber, positiveInteger, referenceArmIds } from "./cli-args.js";
+import {
+  assertReferenceArms,
+  flagValue,
+  nonNegativeNumber,
+  positiveInteger,
+  referenceArmIds,
+} from "./cli-args.js";
 
 describe("flagValue", () => {
   it("reads the value after a flag, and nothing for an absent flag", () => {
@@ -50,5 +56,19 @@ describe("referenceArmIds (#1806)", () => {
       /^--reference A0: every arm is already compared with A0/,
     );
     expect(() => referenceArmIds(["--reference", " , "])).toThrow(/^--reference needs an arm/);
+  });
+});
+
+describe("assertReferenceArms (#1819)", () => {
+  it("accepts references among the run's arms", () => {
+    expect(() => assertReferenceArms([], ["A0"])).not.toThrow();
+    expect(() => assertReferenceArms(["A12", "A13"], ["A0", "A12", "A13"])).not.toThrow();
+  });
+
+  it("refuses a reference the run does not report, naming the arms", () => {
+    expect(() => assertReferenceArms(["A12", "A31"], ["A0", "A12", "A13"])).toThrow(
+      "--reference A31 is not one of this run's arms (A0, A12, A13)",
+    );
+    expect(() => assertReferenceArms(["A0"], ["A0", "A12"])).toThrow(/--reference A0/);
   });
 });

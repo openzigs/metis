@@ -297,7 +297,9 @@ describe("fuseEditOrder — where the model weight lets the search's first file 
   it("keeps the search's first file in the top 5 below 5/66, and loses it above", () => {
     expect(5 / 66).toBeCloseTo(0.0758, 4);
     expect(top5(worst, 0.075)).toContain("d1");
-    expect(top5(worst, 0.077)).not.toContain("d1");
+    // #1819 — 0.0765 sits between 5/66 and 5·62/(61·66) ≈ 0.0770, the threshold a
+    // model rank one too large (1/(k + rank + 1)) would give: this line catches it.
+    expect(top5(worst, 0.0765)).not.toContain("d1");
     // At weight 1, a pick the search ranked 30th is enough to displace it from first place.
     expect(fuseEditOrder(det, ["d30"], 1)[0]).toBe("d30");
   });
@@ -308,7 +310,9 @@ describe("fuseEditOrder — where the model weight lets the search's first file 
 
   it("cannot change which file comes first below 1/62", () => {
     expect(fuseEditOrder(det, ["d2"], 0.015)[0]).toBe("d1");
-    expect(fuseEditOrder(det, ["d2"], 0.017)[0]).toBe("d2");
+    // #1819 — 0.0162 sits between 1/62 and 1/61, where a model rank one too large
+    // would move the threshold.
+    expect(fuseEditOrder(det, ["d2"], 0.0162)[0]).toBe("d2");
   });
 });
 

@@ -60,3 +60,20 @@ export function referenceArmIds(argv: readonly string[]): string[] {
   }
   return ids;
 }
+
+/**
+ * #1819 — the `--reference` ids checked against the arms the run reports,
+ * BEFORE the provider is built and the table guard runs: the runner checks them
+ * too, but only after a corpus's arms have spent. Same refusals as the runner's.
+ */
+export function assertReferenceArms(
+  references: readonly string[],
+  armIds: readonly string[],
+): void {
+  for (const ref of references) {
+    if (ref === "A0") throw new Error("--reference A0: every arm is already compared with A0");
+    if (!armIds.includes(ref)) {
+      throw new Error(`--reference ${ref} is not one of this run's arms (${armIds.join(", ")})`);
+    }
+  }
+}

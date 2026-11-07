@@ -311,6 +311,7 @@ async function hydrate(
     const list = links.get(m.requirementId) ?? [];
     if (list.length >= SIMILAR_CODE_LINKS_PER_ITEM) continue;
     list.push({
+      mappingId: m.id,
       filePath: m.filePath,
       startLine: m.startLine,
       endLine: m.endLine,

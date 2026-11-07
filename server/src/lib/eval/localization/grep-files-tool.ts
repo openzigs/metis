@@ -19,7 +19,7 @@ import { missingParamError } from "../../analysis/tools/arg-errors.js";
 
 /** Matching lines returned per call, at most. */
 export const MAX_MATCHES = 50;
-/** Files read per call, at most. */
+/** Files read per call, at most. They count files IN SCOPE: with `pathContains` the walk is not bounded by it (#1819). */
 export const MAX_FILES_SCANNED = 5000;
 /** A larger file is skipped: generated or vendored, not something to grep. */
 export const MAX_FILE_BYTES = 512 * 1024;
@@ -71,14 +71,17 @@ interface ListedFiles {
  * Every regular file under `root` whose relative path contains `scope` (all
  * when absent), relative, in a stable order, at most `limit`; never outside
  * `root`. The cap counts files IN SCOPE, so a scoped search on a large clone
- * still reaches the files it asked for (#1810).
+ * still reaches the files it asked for (#1810). So with `pathContains` set the
+ * cap does NOT bound the walk: every directory is still listed, and only the
+ * files that match the scope are counted against it (#1819).
  *
  * A symlinked DIRECTORY is never descended into (#1810): a link such as
  * `x -> ..` or `x -> .` would otherwise walk the same tree forever, and the cap
- * cannot stop a walk that keeps finding directories but no new files. Nothing
- * is lost: a link is followed only inside the clone, and the walk reaches every
- * directory inside the clone by its real path. A symlinked FILE inside the
- * clone is still read.
+ * cannot stop a walk that keeps finding directories but no new files. A link
+ * is followed only inside the clone, and the walk reaches a directory the link
+ * points at by its real path, unless that directory is one the walk skips
+ * (hidden, or `node_modules`): a link into one of those is no longer searched
+ * at all (#1819). A symlinked FILE inside the clone is still read.
  */
 async function listFiles(
   root: string,
