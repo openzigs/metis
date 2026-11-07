@@ -1053,9 +1053,23 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
       const scoring = guardScoringOf([...own, ...control.records]);
       const m = measurement(own, scoring);
       logDifferences();
+      // #1925 — as A7 against A7O (#1890): A7 and A7S, and A7S and A7SD, read
+      // the same analyses, so the union's artefact mostly cancels and a
+      // regression confined to the further requirements would pass unseen.
+      const alsoGatedOn =
+        scoring === "headline"
+          ? [
+              {
+                scoring: SCORING_WORDS.union,
+                tablePrecision: measurement(own).tablePrecision,
+                baselinePrecision: measurement(control.records).tablePrecision,
+              },
+            ]
+          : undefined;
       return {
         measured: true,
         ...m,
+        ...(alsoGatedOn ? { scoring: SCORING_WORDS[scoring], alsoGatedOn } : {}),
         configuration:
           m.configuration +
           `; "Evaluate new requirements" on ${deps.model}, one per requirement and run; ` +
