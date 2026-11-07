@@ -375,15 +375,82 @@ describe("extractRulesFromText — limits and ids", () => {
     const text = "## 4 Access\n\nIntro AC-9 text.\n\n**AC-2** Passwords rotate yearly.\nNext line.";
     const at = text.indexOf("Passwords");
     const clause = { clauseStart: at, clauseEnd: at + "Passwords rotate yearly.".length };
-    expect(controlIdRegion(text, clause, { start: 0 })).toBe("**AC-2** Passwords rotate yearly.");
+    expect(controlIdRegion(text, clause)).toBe("**AC-2** Passwords rotate yearly.");
     const first = text.indexOf("Intro");
-    expect(controlIdRegion(text, { clauseStart: first, clauseEnd: first + 5 }, { start: 0 })).toBe(
+    expect(controlIdRegion(text, { clauseStart: first, clauseEnd: first + 5 })).toBe(
       "## 4 Access\nIntro",
     );
-    // A section that does not open with a heading lends none.
-    expect(
-      controlIdRegion("Preamble.\n\nRule text.", { clauseStart: 11, clauseEnd: 21 }, { start: 0 }),
-    ).toBe("Rule text.");
+    // A clause above (a line ending a sentence) lends none; nor does the start of the text.
+    expect(controlIdRegion("Preamble.\n\nRule text.", { clauseStart: 11, clauseEnd: 21 })).toBe(
+      "Rule text.",
+    );
+    expect(controlIdRegion("Rule text.", { clauseStart: 0, clauseEnd: 4 })).toBe("Rule");
+    expect(controlIdRegion("\n\nRule text.", { clauseStart: 2, clauseEnd: 6 })).toBe("Rule");
+  });
+
+  it("#1958 — a label on its own line above the clause is in the region; a list item or table row above is not", () => {
+    const region = (text: string, excerpt: string) => {
+      const at = text.indexOf(excerpt);
+      return controlIdRegion(text, { clauseStart: at, clauseEnd: at + excerpt.length });
+    };
+    // A bold id paragraph, blank lines between.
+    expect(region("Intro.\n\n**AC-02**\n\n\nAccounts are personal.", "Accounts")).toBe(
+      "**AC-02**\nAccounts",
+    );
+    // A numbered label directly above, and a label with a short title.
+    expect(region("4.3.1\nRecords are shredded.", "Records")).toBe("4.3.1\nRecords");
+    expect(region("AC-07 Shredding\r\nRecords are shredded.", "Records")).toBe(
+      "AC-07 Shredding\r\nRecords",
+    );
+    // A heading is a label even when it ends in a full stop.
+    expect(region("### AC-3 Retention.\n\nRecords are kept.", "Records")).toBe(
+      "### AC-3 Retention.\nRecords",
+    );
+    // Clauses of their own, whose ids are theirs.
+    expect(region("- AC-1 Accounts are personal\n- Passwords rotate", "Passwords")).toBe(
+      "- Passwords",
+    );
+    expect(region("1) AC-1 Accounts are personal\n2) Passwords rotate", "Passwords")).toBe(
+      "2) Passwords",
+    );
+    expect(region("| AC-1 | Accounts |\n| AC-2 | Passwords |", "Passwords")).toBe(
+      "| AC-2 | Passwords",
+    );
+    expect(region("AC-1 Accounts are personal!\nPasswords rotate.", "Passwords")).toBe("Passwords");
+  });
+
+  it("#1958 — keeps a policy's own id from the label line above its clause", async () => {
+    const text = [
+      "# Access control",
+      "",
+      "**AC-02**",
+      "",
+      "Accounts are never shared between people.",
+      "",
+      "4.3.1",
+      "Printed customer records are shredded when no longer needed.",
+      "",
+      "Visitors are escorted at all times.",
+    ].join("\n");
+    const reply = JSON.stringify({
+      rules: [
+        {
+          controlId: "AC-02",
+          summary: "s",
+          clauseExcerpt: "Accounts are never shared between people.",
+        },
+        {
+          controlId: "4.3.1",
+          summary: "s",
+          clauseExcerpt: "Printed customer records are shredded when no longer needed.",
+        },
+        // Wrong: 4.3.1 labels the clause above, which ends its sentence.
+        { controlId: "4.3.1", summary: "s", clauseExcerpt: "Visitors are escorted at all times." },
+      ],
+    });
+    const { provider } = replayProvider([reply]);
+    const res = await extractRulesFromText({ text, title: "T", revisionLabel: "v1", provider });
+    expect(res.rules.map((r) => r.controlId)).toEqual(["AC-02", "4.3.1", "METIS-001"]);
   });
 
   it("#1947 — a generated id never collides with an id the policy or a kept rule uses", async () => {

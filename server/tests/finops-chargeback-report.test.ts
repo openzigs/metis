@@ -9,7 +9,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const projects: Array<{ id: string; name: string; workspaceId: string; deletedAt: Date | null }> =
   [];
 const tokenUsage: Array<{
-  projectId: string;
+  /** #1958 — NULL on a workspace-level row (governing rule extraction, #1947). */
+  projectId: string | null;
+  workspaceId?: string;
   userId: string | null;
   /** #761 — NULL on a row an old-version replica wrote during a rolling deploy. */
   costUsd: number | null;
@@ -45,7 +47,8 @@ vi.mock("../src/lib/prisma.js", () => ({
         }: {
           by: Array<"projectId" | "userId">;
           where: {
-            projectId: { in: string[] };
+            // #1958 — a workspace's live projects' rows, OR its workspace-level rows.
+            OR: Array<{ projectId: { in: string[] } } | { projectId: null; workspaceId: string }>;
             createdAt: { gte: Date; lt: Date };
             costUsd?: null;
           };
@@ -54,11 +57,19 @@ vi.mock("../src/lib/prisma.js", () => ({
           // Prisma semantics: `where: { costUsd: null }` keeps only NULL rows,
           // and `_sum` skips NULLs. The legacy query sums `costCents`.
           const legacy = "costUsd" in where && where.costUsd === null;
+          const inScope = (r: (typeof tokenUsage)[number]) =>
+            where.OR.some((branch) =>
+              branch.projectId === null
+                ? // Prisma semantics: an absent (undefined) filter matches every row.
+                  r.projectId === null &&
+                  (branch.workspaceId === undefined || r.workspaceId === branch.workspaceId)
+                : r.projectId !== null && branch.projectId.in.includes(r.projectId),
+            );
           const sums = new Map<string | null, number>();
           for (const r of tokenUsage) {
             if (legacy && r.costUsd !== null) continue;
             if (
-              where.projectId.in.includes(r.projectId) &&
+              inScope(r) &&
               r.createdAt >= where.createdAt.gte &&
               r.createdAt < where.createdAt.lt
             ) {
@@ -108,6 +119,7 @@ import {
   monthRange,
   renderChargebackMarkdown,
   runMonthlyChargeback,
+  WORKSPACE_LEVEL_LINE_ID,
 } from "../src/lib/finops/chargeback-report.js";
 import { exportDocument } from "../src/lib/docs-gen/exporters.js";
 
@@ -228,6 +240,57 @@ describe("gatherChargebackData", () => {
     expect(data?.byProject).toEqual([{ id: "p1", name: "Alpha", costCents: 400 }]);
     expect(data?.byUser).toEqual([{ id: "u1", name: "Alice", costCents: 400 }]);
     expect(data?.totalCurrentCents).toBe(400);
+  });
+
+  it("#1958 — total spend counts the workspace's own rows (no project), and no other workspace's", async () => {
+    workspaces.push({ id: "w1", name: "Acme", deletedAt: null });
+    projects.push({ id: "p1", name: "Alpha", workspaceId: "w1", deletedAt: null });
+    users.push({ id: "u1", displayName: "Alice", username: "alice" });
+    const june = new Date(Date.UTC(2026, 5, 10));
+    const may = new Date(Date.UTC(2026, 4, 10));
+    tokenUsage.push(
+      { projectId: "p1", userId: "u1", costUsd: 10, createdAt: june },
+      // Governing rule extraction (#1947): billed to the workspace, no project, no user.
+      { projectId: null, workspaceId: "w1", userId: null, costUsd: 2.5, createdAt: june },
+      {
+        projectId: null,
+        workspaceId: "w1",
+        userId: null,
+        costUsd: null,
+        costCents: 50,
+        createdAt: june,
+      },
+      { projectId: null, workspaceId: "w1", userId: null, costUsd: 4, createdAt: may },
+      // Another workspace's extraction is not this one's spend.
+      { projectId: null, workspaceId: "w2", userId: null, costUsd: 99, createdAt: june },
+    );
+    const data = await gatherChargebackData("w1", NOW);
+    expect(data?.totalCurrentCents).toBe(1_300);
+    expect(data?.totalPriorCents).toBe(400);
+    expect(data?.byProject).toEqual([
+      { id: "p1", name: "Alpha", costCents: 1_000 },
+      { id: WORKSPACE_LEVEL_LINE_ID, name: "Workspace (no project)", costCents: 300 },
+    ]);
+    // #854 — the per-user lines still add up to the total.
+    expect(data?.byUser).toEqual([
+      { id: "u1", name: "Alice", costCents: 1_000 },
+      { id: "unattributed", name: "Unattributed", costCents: 300 },
+    ]);
+  });
+
+  it("#1958 — a workspace with no projects still reports its workspace-level spend", async () => {
+    workspaces.push({ id: "w1", name: "Acme", deletedAt: null });
+    const june = new Date(Date.UTC(2026, 5, 10));
+    tokenUsage.push({
+      projectId: null,
+      workspaceId: "w1",
+      userId: null,
+      costUsd: 1,
+      createdAt: june,
+    });
+    const data = await gatherChargebackData("w1", NOW);
+    expect(data?.totalCurrentCents).toBe(100);
+    expect(data?.byUser.reduce((s, u) => s + u.costCents, 0)).toBe(100);
   });
 
   it("returns null for an unknown workspace", async () => {

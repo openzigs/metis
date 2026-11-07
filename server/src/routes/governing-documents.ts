@@ -15,7 +15,8 @@
  *                                             and its extraction state (#1870)
  *   POST   /:documentId/revisions/:revisionId/rule-extraction
  *                                     admin+  retry a failed, unstarted or stale-running
- *                                             extraction: 202, or 409 when done/running (#1947)
+ *                                             extraction: 202, or 409 when done/running (#1947);
+ *                                             the upload rate limit applies (#1958)
  *
  * /api/workspaces/:workspaceId/governing-rules — #1870.
  *
@@ -368,11 +369,14 @@ export function governingDocumentsRouter(deps: GoverningDocumentsRouterDeps = {}
    * #1947 — start a revision's rule extraction again: one that failed, never
    * began, or has been `running` past `EXTRACTION_STALE_MS` (a server restart
    * mid-run). 409 for one that is done or still fresh-running; the run itself
-   * is in the background, as at upload.
+   * is in the background, as at upload. Each 202 can start up to
+   * `MAX_SECTIONS` billed model calls, so the route takes the upload limiter
+   * (#1958).
    */
   r.post(
     "/:documentId/revisions/:revisionId/rule-extraction",
     ...admin,
+    uploadRateLimiter,
     async (req: Request, res: Response) => {
       const workspaceId = String(req.params.workspaceId);
       const documentId = String(req.params.documentId);
