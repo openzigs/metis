@@ -10,12 +10,20 @@
  * the files to edit come in the server's edit order, each with why it was
  * chosen ({@link EditCandidateFiles}), and "not found" is said plainly. Without
  * it, the group renders exactly as before.
+ *
+ * #1965 — a file is (repository, path): a project can connect several
+ * repositories and the same path can exist in more than one. Each such file is
+ * listed and counted on its own, and when the project has more than one
+ * repository every file heading names its repository.
  */
 "use client";
 
 import {
+  impactFileKey,
+  impactRepoCount,
   impactSymbolRole,
   type ImpactItemView,
+  type ImpactSymbolRepoRef,
   type ImpactTableFeedbackVerdict,
   type ProjectObjectUsage,
 } from "@metis/shared";
@@ -26,7 +34,8 @@ import { AffectedSymbolRow } from "./affected-symbol-row";
 import { AffectedTablesSection } from "./affected-tables-section";
 import { ColumnProposalsSection } from "./column-proposals-section";
 import { EditCandidateFiles, isDoubtful, orderEditFiles } from "./edit-candidate-files";
-import { useImpactSymbolRepo } from "./impact-symbol-repo-context";
+import { ImpactFileLabel } from "./impact-file-label";
+import { useImpactProjectHasManyRepos, useImpactSymbolRepo } from "./impact-symbol-repo-context";
 
 const SEVERITY_VARIANT: Record<
   ImpactItemView["severity"],
@@ -64,21 +73,24 @@ export interface ChangedRequirementGroupProps {
   projectName?: string | null;
 }
 
-/** Group symbols by file, preserving first-seen file order. */
-function groupByFile(
-  symbols: ImpactItemView["affectedSymbols"],
-): Array<{ filePath: string; symbols: ImpactItemView["affectedSymbols"] }> {
-  const order: string[] = [];
-  const byFile = new Map<string, ImpactItemView["affectedSymbols"]>();
+interface FileGroup {
+  /** #1965 — (repository, path), from `impactFileKey`. */
+  key: string;
+  filePath: string;
+  repo: ImpactSymbolRepoRef | null;
+  symbols: ImpactItemView["affectedSymbols"];
+}
+
+/** Group symbols by file — (repository, path) — preserving first-seen file order. */
+function groupByFile(symbols: ImpactItemView["affectedSymbols"]): FileGroup[] {
+  const byFile = new Map<string, FileGroup>();
   for (const s of symbols) {
-    const bucket = byFile.get(s.filePath);
-    if (bucket) bucket.push(s);
-    else {
-      byFile.set(s.filePath, [s]);
-      order.push(s.filePath);
-    }
+    const key = impactFileKey(s);
+    const group = byFile.get(key);
+    if (group) group.symbols.push(s);
+    else byFile.set(key, { key, filePath: s.filePath, repo: s.repo ?? null, symbols: [s] });
   }
-  return order.map((filePath) => ({ filePath, symbols: byFile.get(filePath)! }));
+  return [...byFile.values()];
 }
 
 export function ChangedRequirementGroup({
@@ -91,6 +103,12 @@ export function ChangedRequirementGroup({
 }: ChangedRequirementGroupProps) {
   // #992 — the item's project repo (from the page's provider) for symbol links.
   const repo = useImpactSymbolRepo(item.projectId);
+  // #1965 — name each file's repository when the project has more than one (or,
+  // without the page's provider, when this item's code comes from more than one).
+  const projectHasManyRepos = useImpactProjectHasManyRepos(item.projectId);
+  const showRepo =
+    projectHasManyRepos || impactRepoCount([...item.affectedSymbols, ...item.affectedTests]) > 1;
+  const repoOf = (group: { repo: ImpactSymbolRepoRef | null }) => (showRepo ? group.repo : null);
   // #1036 — two lists. Strongest edit candidates first so the card is scannable
   // top-down; each file once, with the symbols that put it there.
   const editCandidates = item.affectedSymbols
@@ -105,17 +123,21 @@ export function ChangedRequirementGroup({
   const editRows = item.seedEvidence ? orderEditFiles(editFileGroups, item.seedEvidence) : null;
   const editFiles = new Set(
     editRows
-      ? editRows.filter((r) => !isDoubtful(r)).map((r) => r.filePath)
-      : editFileGroups.map((g) => g.filePath),
+      ? editRows.filter((r) => !isDoubtful(r)).map((r) => r.key)
+      : editFileGroups.map((g) => g.key),
   );
   const editFileCount = editFiles.size;
   // "More to review": the blast-radius files and (#1820) the doubtful files, each
   // once. A file to edit is not "more to review".
   const reviewFiles = new Set([
-    ...radiusFileGroups.map((g) => g.filePath),
-    ...(editRows ?? []).filter(isDoubtful).map((r) => r.filePath),
+    ...radiusFileGroups.map((g) => g.key),
+    ...(editRows ?? []).filter(isDoubtful).map((r) => r.key),
   ]);
   const reviewOnlyFileCount = [...reviewFiles].filter((f) => !editFiles.has(f)).length;
+  // #1965 — the blast radius lists every reviewed file, files to edit included;
+  // its heading says how many of them are also files to edit, so its count and
+  // the headline's "more to review" read as one story.
+  const radiusAlsoEditCount = radiusFileGroups.filter((g) => editFiles.has(g.key)).length;
 
   // #962 — the impacted test files, grouped out of the prod blast radius, and the
   // untested write-path callouts. Both are deterministic QA-handoff signals.
@@ -235,6 +257,7 @@ export function ChangedRequirementGroup({
           repo={repo}
           projectLabel={projectName ?? "this project"}
           staleSetAside={item.seedEvidence?.agentCitations?.demotedStaleCitations ?? 0}
+          showRepo={showRepo}
         />
       ) : editCandidates.length > 0 ? (
         <div data-testid="edit-candidates">
@@ -243,8 +266,12 @@ export function ChangedRequirementGroup({
           </p>
           <div className="space-y-3">
             {editFileGroups.map((group) => (
-              <div key={group.filePath} data-testid="edit-candidate-file-group">
-                <p className="mb-1 truncate font-mono text-xs text-foreground">{group.filePath}</p>
+              <div key={group.key} data-testid="edit-candidate-file-group">
+                <ImpactFileLabel
+                  className="mb-1 truncate font-mono text-xs text-foreground"
+                  filePath={group.filePath}
+                  repo={repoOf(group)}
+                />
                 <ul className="space-y-1">
                   {group.symbols.map((s) => (
                     <AffectedSymbolRow key={s.id} symbol={s} repo={repo} />
@@ -266,14 +293,21 @@ export function ChangedRequirementGroup({
             data-testid="blast-radius-toggle"
           >
             Blast radius — {radius.length} symbols across {radiusFileGroups.length} files to review
+            {radiusAlsoEditCount > 0
+              ? `, ${radiusAlsoEditCount} of them also ${radiusAlsoEditCount === 1 ? "a file" : "files"} to edit`
+              : ""}{" "}
             (callers, data writers, related code)
           </summary>
           <div className="mt-2 space-y-3">
             {radiusFileGroups.map((group) => (
-              <div key={group.filePath} data-testid="blast-radius-file-group">
-                <p className="mb-1 truncate font-mono text-xs text-muted-foreground">
-                  {group.filePath} · {group.symbols.length}
-                </p>
+              <div key={group.key} data-testid="blast-radius-file-group">
+                <ImpactFileLabel
+                  className="mb-1 truncate font-mono text-xs text-muted-foreground"
+                  filePath={group.filePath}
+                  repo={repoOf(group)}
+                >
+                  {` · ${group.symbols.length}`}
+                </ImpactFileLabel>
                 <ul className="space-y-1">
                   {group.symbols.map((s) => (
                     <AffectedSymbolRow key={s.id} symbol={s} repo={repo} />
@@ -299,10 +333,14 @@ export function ChangedRequirementGroup({
           </summary>
           <div className="mt-2 space-y-3">
             {testGroups.map((group) => (
-              <div key={group.filePath} data-testid="affected-tests-file-group">
-                <p className="mb-1 truncate font-mono text-xs text-muted-foreground">
-                  {group.filePath} · {group.symbols.length}
-                </p>
+              <div key={group.key} data-testid="affected-tests-file-group">
+                <ImpactFileLabel
+                  className="mb-1 truncate font-mono text-xs text-muted-foreground"
+                  filePath={group.filePath}
+                  repo={repoOf(group)}
+                >
+                  {` · ${group.symbols.length}`}
+                </ImpactFileLabel>
                 <ul className="space-y-1">
                   {group.symbols.map((s) => (
                     <AffectedSymbolRow key={s.id} symbol={s} repo={repo} />

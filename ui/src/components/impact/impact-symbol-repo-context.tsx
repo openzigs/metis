@@ -52,3 +52,45 @@ export function useImpactProjectRepos(projectIds: readonly string[]): ImpactSymb
     combine,
   });
 }
+
+/**
+ * #1965 — `projectId -> true` for each project with more than one connected
+ * repository: there the same path can exist twice, so each file row names its
+ * repository. With no provider every project reads false, and the row still
+ * names its repository when the item itself spans several.
+ */
+export type ImpactMultiRepoProjects = Readonly<Record<string, boolean>>;
+
+export const ImpactMultiRepoProjectsContext = createContext<ImpactMultiRepoProjects>({});
+
+/** True when the project connects more than one repository. */
+export function useImpactProjectHasManyRepos(projectId: string): boolean {
+  return useContext(ImpactMultiRepoProjectsContext)[projectId] === true;
+}
+
+/**
+ * Which projects connect more than one repository, from the same
+ * `["connectors", "repos", projectId]` cache entry as {@link useImpactProjectRepos},
+ * so it adds no request. A failed list reads as one repository.
+ */
+export function useImpactMultiRepoProjects(projectIds: readonly string[]): ImpactMultiRepoProjects {
+  const combine = useCallback(
+    (results: UseQueryResult<RepoConnector[]>[]): ImpactMultiRepoProjects => {
+      const map: Record<string, boolean> = {};
+      results.forEach((r, i) => {
+        const live = Array.isArray(r.data) ? r.data.filter((c) => c && !c.deletedAt) : [];
+        map[projectIds[i]] = live.length > 1;
+      });
+      return map;
+    },
+    [projectIds],
+  );
+  return useQueries({
+    queries: projectIds.map((projectId) => ({
+      queryKey: ["connectors", "repos", projectId],
+      queryFn: () => repoConnectorsApi.list(projectId),
+      retry: false,
+    })),
+    combine,
+  });
+}
