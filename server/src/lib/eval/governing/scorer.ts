@@ -367,9 +367,40 @@ const BAR_METRIC: Partial<Record<keyof ThresholdBars, keyof ByConstruction>> = {
 };
 
 /**
+ * #1920 — whether a summary measured the value a metric is fixed at, in every
+ * run: no hard error, no ask, no unverified citation. An undefined ratio
+ * (nothing applied, nothing cited) is consistent with the construction.
+ */
+const MEASURED_AS_FIXED: Record<keyof ByConstruction, (s: MetricsSummary) => boolean> = {
+  hardErrors: (s) => s.hardErrorsPerRun.every((n) => n === 0),
+  askRate: (s) => s.metrics.askRate.perRun.every((v) => v === null || v === 0),
+  citationAccuracy: (s) => s.metrics.citationAccuracy.perRun.every((v) => v === null || v === 1),
+};
+
+/**
+ * The claims of `byConstruction` the summary bears out. A claim the
+ * measurement contradicts (a reader change let the arm say compliant, ask, or
+ * cite a clause that does not verify) is dropped, so it is judged and printed
+ * like any other metric, never hidden behind `n/a`.
+ */
+export function heldByConstruction(
+  s: MetricsSummary,
+  byConstruction: ByConstruction,
+): ByConstruction {
+  const held: ByConstruction = {};
+  for (const [metric, reason] of Object.entries(byConstruction) as Array<
+    [keyof ByConstruction, string]
+  >) {
+    if (MEASURED_AS_FIXED[metric](s)) held[metric] = reason;
+  }
+  return held;
+}
+
+/**
  * Each bar against the run-mean (hard errors: the most any one run made). A
  * null metric fails; a bar on a metric the arm fixes by construction is
- * neither passed nor failed (`pass: null`).
+ * neither passed nor failed (`pass: null`), but only while the summary
+ * measured the fixed value: otherwise the bar is judged, with a note.
  */
 export function checkThresholds(
   s: MetricsSummary,
@@ -399,9 +430,14 @@ export function checkThresholds(
       pass: worstRun <= bars.maxNoEvidenceCompliantErrors,
     },
   ];
+  const held = heldByConstruction(s, byConstruction);
   return checks.map((c) => {
     const metric = BAR_METRIC[c.bar];
-    const reason = metric ? byConstruction[metric] : undefined;
-    return reason === undefined ? c : { ...c, pass: null, note: reason };
+    if (metric === undefined || byConstruction[metric] === undefined) return c;
+    if (held[metric] !== undefined) return { ...c, pass: null, note: held[metric] };
+    return {
+      ...c,
+      note: `claimed fixed by construction (${byConstruction[metric]}), but measured otherwise`,
+    };
   });
 }

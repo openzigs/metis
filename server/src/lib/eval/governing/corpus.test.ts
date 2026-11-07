@@ -321,6 +321,23 @@ describe("the text checks", () => {
     expect(sharedVocabulary("keep the logs", "every log entry")).toEqual(["log"]);
   });
 
+  it("contentStems folds the past, -ing and -ation forms of a short subject word too (#1920)", () => {
+    for (const [inflected, base] of [
+      ["logging", "log"],
+      ["logged", "log"],
+      ["taxation", "tax"],
+      ["taxed", "tax"],
+      ["keyed", "key"],
+      ["keys", "key"],
+      ["paying", "pay"],
+    ] as const) {
+      expect(contentStems(inflected).has(base), inflected).toBe(true);
+    }
+    expect(sharedVocabulary("logging every login", "keep a log")).toEqual(["log"]);
+    // A word that only starts like one is not folded onto it.
+    expect([...contentStems("logic taxi")].sort()).toEqual(["logic", "taxi"]);
+  });
+
   it("sharedVocabulary is empty for the GR-01 pair and not for a resembling one", () => {
     expect(
       sharedVocabulary("download last month's invoices", "bulk extraction of financial records"),
