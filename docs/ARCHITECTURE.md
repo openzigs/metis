@@ -983,7 +983,10 @@ candidates from the index above are fused by reciprocal rank with an in-request 
 project's requirement titles and bodies, then labelled `duplicate` / `overlap` / `related` from
 the cosine and the thresholds `eval:req-similarity` calibrated on 124 labelled pairs
 (`requirement-similarity-config.ts`); below the `related` floor a candidate is dropped. Each
-item carries its saved code links with their #1830 freshness (`unverified` when unstamped).
+item carries its saved code links with their #1830 freshness (`unverified` when unstamped),
+at most `SIMILAR_CODE_LINKS_PER_ITEM` (20, `@metis/shared`) by confidence; past that
+`codeLinksTruncated` is set and the panel reads its counts as lower bounds ("More than 20 code
+links", "at least N files", #1931).
 The embedder is a good candidate filter and a poor judge (duplicate precision 0.48 on the
 pairs), so a `duplicate` is a suggestion an analyst confirms. `REQ_SIMILARITY_VERIFIER=1`
 adds an LLM verifier on the project's provider, every requirement fenced as untrusted text;
@@ -1000,7 +1003,10 @@ invalidates the cached lists under `['similar-requirements', projectId]` whose i
 the borrowing requirement, because those cards list it with its code links (#1903), and only
 those (#1914, a `predicate` on the prefix): every other list, its own card's included, is
 unchanged by the borrow, and each refetch reads the project's requirements and may call the
-`REQ_SIMILARITY_VERIFIER` model. The client preview
+`REQ_SIMILARITY_VERIFIER` model. A list with no answer yet is refetched too (#1931): its first
+fetch may have read the links before the borrow committed, and since React Query joins an
+in-flight fetch of a query with no data rather than restarting it, the panel cancels that fetch
+(`cancelQueries`) before invalidating. The client preview
 (`borrowPlan`) and the server's borrow read the one `BORROWABLE_FRESHNESS` set from
 `@metis/shared`, so the preview cannot list a link the borrow would skip.
 
