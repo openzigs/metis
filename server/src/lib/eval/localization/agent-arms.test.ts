@@ -16,7 +16,9 @@ import {
 import { AGENT_ARMS } from "./agent-env.js";
 import { buildArms, createA0Arm, MODEL_ARMS } from "./arms.js";
 import type { CostMeter } from "./cost.js";
+import type { LocalizationCorpus } from "./corpus.js";
 import { PartialStore, runFingerprint } from "./partials.js";
+import { runLocalizationEval } from "./runner.js";
 import type { CorpusSearch } from "./search.js";
 
 // Two files in each of two repositories; every query finds a.go strongly and
@@ -393,6 +395,100 @@ describe("A3 arms (#1755)", () => {
       await expect(
         store.openForRun(corpus, runFingerprint(corpus, armsOn("claude-sonnet-5-5"), 2)),
       ).resolves.toBeDefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// #1819 — split passes through a REAL resume: the partial files written by one
+// invocation, read back by another, not synthetic pass ids.
+describe("split agent passes on a resumed run (#1810, #1819)", () => {
+  const fullCorpus = {
+    name: "localization-02-fixture-portfolio",
+    dir: "/nowhere",
+    manifest: {
+      id: "localization-02-fixture-portfolio",
+      description: "t",
+      purpose: "held-out",
+      license: "CC0-1.0",
+      repos: [{ name: "r", url: "https://x/r", ref: "main", sha: "0123456789abcdef" }],
+      symbols: "s",
+      annotation: {
+        rewrittenBy: "p",
+        rewrittenAt: "d",
+        sawDiffsBeforeRewriting: false,
+        procedure: "x",
+        reviewedBy: null,
+      },
+      items: ["I-1", "I-2"].map((id) => ({
+        id,
+        title: "Change the order total",
+        text: "Body.",
+        expectedFiles: ["r:a.go"],
+        expectedRepos: ["r"],
+        source: { kind: "authored" as const },
+      })),
+    },
+    symbols: rows.filter((r) => r.repo === "r"),
+    graphFiles: new Set(["r:a.go", "r:b.go"]),
+  } as unknown as LocalizationCorpus;
+
+  /** One invocation of the CLI's loop: fresh arms, pass and meter, over the partials directory. */
+  async function invocation(dir: string, budgetUsd: number) {
+    const meter = fakeMeter();
+    const agentPass = stubPass(meter, { r: [cite("a.go")] });
+    const arms = buildArms(["A0", "A3", "A3A"], { search, agentPass, meter, provider });
+    const checkpoint = await new PartialStore(dir).openForRun(
+      fullCorpus,
+      runFingerprint(fullCorpus, arms, 1),
+    );
+    const report = await runLocalizationEval(fullCorpus, {
+      arms,
+      runs: 1,
+      meter,
+      budgetUsd,
+      checkpoint,
+    });
+    return { report, agentPass };
+  }
+
+  it("reports the requirement-runs A3A read on a later invocation's passes", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "loc-a3-resume-"));
+    try {
+      // $0.01 a pass: A3 spends the $0.02 cap on its two items, so A3A is stopped before its first.
+      const first = await invocation(dir, 0.02);
+      expect(first.report.stopped).toMatchObject({ arm: "A3A", item: "I-1" });
+      expect(first.agentPass).toHaveBeenCalledTimes(2);
+      // The resume reads A3's scores from the partial files and runs A3A on passes of its own.
+      const resumed = await invocation(dir, 1);
+      expect(resumed.report.stopped).toBeNull();
+      expect(resumed.agentPass).toHaveBeenCalledTimes(2);
+      expect(resumed.report.splitAgentPasses).toEqual([
+        {
+          group: "graph",
+          arms: ["A3", "A3A"],
+          readings: [
+            { item: "I-1", run: 1 },
+            { item: "I-2", run: 1 },
+          ],
+        },
+      ]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports no split when one invocation scored both arms", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "loc-a3-resume-"));
+    try {
+      const whole = await invocation(dir, 1);
+      expect(whole.agentPass).toHaveBeenCalledTimes(2);
+      expect(whole.report.splitAgentPasses).toEqual([]);
+      // A merge-style re-read of the same partials (nothing left to run) finds none either.
+      const reread = await invocation(dir, 1);
+      expect(reread.agentPass).not.toHaveBeenCalled();
+      expect(reread.report.splitAgentPasses).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

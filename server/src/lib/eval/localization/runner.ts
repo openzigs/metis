@@ -678,6 +678,12 @@ export interface PooledComparison {
   detectableGap: string;
 }
 
+/** #1819 — a `--reference` arm and the items it scored: what its table's coverage lines read. */
+export interface ReferenceArm {
+  id: string;
+  items: number;
+}
+
 export interface PooledLocalizationReport {
   kind: "localization-eval-pooled";
   corpora: Array<{
@@ -693,6 +699,12 @@ export interface PooledLocalizationReport {
   /** A0's scored items over every pooled corpus. */
   items: number;
   comparisons: PooledComparison[];
+  /**
+   * #1819 — the `--reference` arms every held-out report carries, with the
+   * items each scored over the pooled corpora: the reference sections are
+   * printed from these, so a reference with no other arm to pair still gets one.
+   */
+  references: ReferenceArm[];
   /** #1806 — the pairings with each `--reference` arm every held-out report carries. */
   referenceComparisons: PooledComparison[];
   /**
@@ -759,6 +771,10 @@ export function poolHeldOutReports(
     })),
     items,
     comparisons,
+    references: references.map((id) => ({
+      id,
+      items: heldOut.reduce((sum, r) => sum + armOf(r, id).items.length, 0),
+    })),
     referenceComparisons,
     detectableGap: minimumDetectableGapStatement(pairedItems),
   };
@@ -981,7 +997,16 @@ export function toMarkdownReport(report: LocalizationReport): string {
     }
     lines.push("");
   }
-  lines.push(...referenceSections(report.references, report.referenceComparisons, ""));
+  lines.push(
+    ...referenceSections(
+      report.references.map((id) => ({
+        id,
+        items: report.arms.find((a) => a.id === id)?.items.length ?? 0,
+      })),
+      report.referenceComparisons,
+      "",
+    ),
+  );
   lines.push("## Per requirement", "");
   lines.push(
     `| Item | ${report.arms.map((a) => `${a.id} R@5 / R@10 / EditP / RR`).join(" | ")} |`,
@@ -1039,8 +1064,7 @@ export function toPooledMarkdownReport(report: PooledLocalizationReport): string
     lines.push(...comparisonRows(cmp));
   }
   lines.push("");
-  const references = [...new Set(report.referenceComparisons.map((c) => c.baseline))];
-  lines.push(...referenceSections(references, report.referenceComparisons, ", pooled"));
+  lines.push(...referenceSections(report.references, report.referenceComparisons, ", pooled"));
   return lines.join("\n");
 }
 
@@ -1048,24 +1072,40 @@ export function toPooledMarkdownReport(report: PooledLocalizationReport): string
  * #1806 — one table per `--reference` arm: every other arm paired with it. The
  * decision bars are read against A0; these tables say what an arm adds over
  * another arm, such as the re-order on A12's base against A12 itself.
+ * #1819 — each carries the coverage lines the A0 tables do: the gap its fewest
+ * paired items can resolve, and every arm that pairs fewer items than the
+ * reference scored.
  */
 function referenceSections(
-  references: readonly string[],
+  references: readonly ReferenceArm[],
   comparisons: ReadonlyArray<{
     arm: string;
     baseline: string;
+    items: number;
     metrics: readonly MetricComparison[];
     hits: readonly HitComparison[];
   }>,
   suffix: string,
 ): string[] {
   const lines: string[] = [];
-  for (const ref of references) {
+  for (const { id: ref, items } of references) {
     const rows = comparisons.filter((c) => c.baseline === ref);
     lines.push(`## Paired comparison with ${ref} (\`--reference ${ref}\`)${suffix}`, "");
     if (rows.length === 0) {
       lines.push(`No arm other than A0 and ${ref} was run: there is nothing to pair with it.`, "");
       continue;
+    }
+    lines.push(
+      `> ${minimumDetectableGapStatement(Math.min(items, ...rows.map((c) => c.items)))}`,
+      "",
+    );
+    for (const cmp of rows) {
+      if (cmp.items < items) {
+        lines.push(
+          `> ${cmp.arm} pairs ${cmp.items} of ${ref}'s ${items} items. ${minimumDetectableGapStatement(cmp.items)}`,
+          "",
+        );
+      }
     }
     lines.push(
       `| Arm | Metric | Δ vs ${ref} | 95% CI | p | Reading |`,

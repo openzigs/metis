@@ -999,6 +999,88 @@ describe("--reference: pairing with an arm other than A0 (#1806)", () => {
     );
   });
 
+  it("prints the coverage lines the A0 tables carry: the gap, and an arm pairing fewer items (#1819)", async () => {
+    const meter = new FakeMeter();
+    // A13 charges $1 per item; the $2.5 cap stops it after 2 of the 6 items.
+    const report = await runLocalizationEval(corpus(6), {
+      arms: [
+        arm("A0", () => 1),
+        arm("A12", () => 2),
+        arm(
+          "A13",
+          () => 1,
+          () => (meter.spent += 1),
+        ),
+      ],
+      runs: 1,
+      meter,
+      budgetUsd: 2.5,
+      references: ["A12"],
+    });
+    expect(report.referenceComparisons.map((c) => [c.arm, c.items])).toEqual([["A13", 2]]);
+    const md = toMarkdownReport(report);
+    const a12Section = md.slice(md.indexOf("## Paired comparison with A12"));
+    expect(a12Section).toContain(`> At 2 items and a hit rate near 0.5`);
+    expect(a12Section).toContain("> A13 pairs 2 of A12's 6 items. At 2 items");
+
+    // Pooled: the same lines, over the pooled items.
+    const held = (id: LocalizationCorpus["name"], n: number) => {
+      const m = new FakeMeter();
+      return runLocalizationEval(corpus(n, "held-out", id), {
+        arms: [
+          arm("A0", () => 1),
+          arm("A12", () => 2),
+          arm(
+            "A13",
+            () => 1,
+            () => (m.spent += 1),
+          ),
+        ],
+        runs: 1,
+        meter: m,
+        budgetUsd: 2.5,
+        references: ["A12"],
+      });
+    };
+    const pooled = poolHeldOutReports([
+      await held("localization-01-miniflux-heldout", 6),
+      await held("localization-02-fixture-portfolio", 4),
+    ]);
+    expect(pooled.references).toEqual([{ id: "A12", items: 10 }]);
+    const pooledSection = toPooledMarkdownReport(pooled).slice(
+      toPooledMarkdownReport(pooled).indexOf("## Paired comparison with A12"),
+    );
+    expect(pooledSection).toContain("> At 4 items and a hit rate near 0.5");
+    expect(pooledSection).toContain("> A13 pairs 4 of A12's 10 items. At 4 items");
+  });
+
+  it("prints no coverage warning when every arm pairs all of the reference's items (#1819)", async () => {
+    const md = toMarkdownReport(await reportOf(12));
+    expect(md.slice(md.indexOf("## Paired comparison with A12"))).toContain(
+      "> At 12 items and a hit rate near 0.5",
+    );
+    expect(md).not.toMatch(/pairs \d+ of A1\d's/);
+  });
+
+  it("keeps the pooled reference section when the reference is the only arm besides A0 (#1819)", async () => {
+    const only = (id: LocalizationCorpus["name"]) =>
+      runLocalizationEval(corpus(2, "held-out", id), {
+        arms: [arm("A0", () => 1), arm("A12", () => 2)],
+        runs: 1,
+        meter: new FakeMeter(),
+        references: ["A12"],
+      });
+    const pooled = poolHeldOutReports([
+      await only("localization-01-miniflux-heldout"),
+      await only("localization-02-fixture-portfolio"),
+    ]);
+    expect(pooled.references).toEqual([{ id: "A12", items: 4 }]);
+    expect(pooled.referenceComparisons).toEqual([]);
+    expect(toPooledMarkdownReport(pooled)).toContain(
+      "## Paired comparison with A12 (`--reference A12`), pooled\n\nNo arm other than A0 and A12 was run: there is nothing to pair with it.",
+    );
+  });
+
   it("refuses a reference that is not one of the run's arms, or A0", async () => {
     await expect(reportOf(2, undefined, ["A4"])).rejects.toThrow(
       /--reference A4 is not one of this run's arms \(A0, A12, A13, A13S\)/,

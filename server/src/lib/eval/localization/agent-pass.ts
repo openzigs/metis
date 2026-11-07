@@ -165,6 +165,31 @@ async function existingDir(dir: string): Promise<string | undefined> {
   return stat?.isDirectory() ? dir : undefined;
 }
 
+/**
+ * #1819 — the CLI's preflight for A3N: every materialized repository's clone is
+ * on disk. The pass checks it too, but only at its first A3N reading, after
+ * run 1's A3 and A3A passes are paid for; this check runs before any spend.
+ */
+export async function assertA3NClones(
+  states: ReadonlyMap<string, Pick<MaterializedState, "repos">>,
+): Promise<void> {
+  const missing: string[] = [];
+  for (const [corpus, state] of states) {
+    for (const repo of state.repos) {
+      if ((await existingDir(repo.cloneDir)) === undefined) {
+        missing.push(
+          `${corpus}/${repo.name} (${repo.cloneDir}): run pnpm eval:materialize ${corpus}`,
+        );
+      }
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `A3N needs every repository's clone, and these are not directories:\n  - ${missing.join("\n  - ")}`,
+    );
+  }
+}
+
 /** The pass over a materialized corpus. Throws on an unmaterialized corpus or repository. */
 export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): AgentPass {
   const runLoop = deps.runLoop ?? runAgentLoop;

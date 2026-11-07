@@ -226,7 +226,7 @@ pnpm eval:localization                 # A0 on both held-out sets, 3 runs, $35 c
 pnpm eval:localization --arms A0,A4    # an arm against A0, paired, on the same items
 pnpm eval:localization --arms A0,A13,A13C,A13S  # #1798 LLM re-order: A0 base, A12 base, shuffled pool
 pnpm eval:localization --merge <dir> --reference A12,A13  # + every arm paired with A12, then A13 (#1806)
-pnpm eval:localization --in-sample --arms A13 --rerank-weight 0.05  # tune the re-order's model weight
+pnpm eval:localization --corpus localization-00-miniflux-run7-insample --arms A13 --rerank-weight 0.05  # tune the re-order's model weight
 pnpm eval:localization --in-sample     # also the run-7 six (a sanity check, not a claim)
 pnpm eval:localization --table-guard   # + table precision on impact-recall-01 (live provider)
 pnpm eval:localization --budget 25     # the dollar cap; the run stops before it is passed
@@ -235,7 +235,13 @@ pnpm eval:localization --budget 25     # the dollar cap; the run stops before it
 `--reference <arm>[,<arm>…]` adds a table per arm that pairs every other arm with it
 (a pooled table too, when both held-out sets ran). Use it for comparisons such as A13C
 against A12 or A13S against A13. It changes no score, and you can pass it to `--merge`.
-The decision bars are still read against A0.
+The decision bars are still read against A0. An id that is not one of the run's arms
+fails before the provider is built, so a typo spends nothing (#1819).
+
+**Tune on the in-sample set alone.** `--in-sample` ADDS the run-7 six to both held-out
+sets, so a weight sweep run with it reads the held-out sets at every candidate weight:
+that breaks the in-sample-only rule and costs about three times as much. Name the corpus
+instead, `--corpus localization-00-miniflux-run7-insample` (#1819).
 
 **A `deepseek-flash` tuning run needs `MODEL_PRICES` set**, for example
 `MODEL_PRICES='{"deepseek-flash":{"inputPerMTok":…,"outputPerMTok":…}}'` at DeepSeek's
@@ -281,7 +287,11 @@ pnpm eval:localization --merge <dir> --md                       # the report; ru
   per requirement score, and `spend/<invocation>.json` for spend outside requirements
   (the table guard).
 - **Resume.** `--resume <dir>` loads every score already recorded and runs only the
-  missing ones, so a stop mid-slice re-runs nothing that finished.
+  missing ones, so a stop mid-slice re-runs nothing that finished. A3 and A3A share one
+  agent pass per item and run in one invocation; when a resume scores them in different
+  invocations, the report flags the requirement-runs read on separate passes (#1810).
+  **Partials recorded before #1810 carry no pass ids**, so a split among them cannot be
+  seen: the report shows none there, not that there was none.
 - **Merge.** `--merge <dir>` builds the per-corpus and pooled reports from the partial
   files with the runner's own scoring and statistics; three slices merged give the
   report one full run gives. Every report lists the requirements still missing a score.
