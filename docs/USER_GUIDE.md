@@ -2466,7 +2466,11 @@ files to edit: at most five, in the order the agent cited them. Nothing the
 search found is removed, and no score changes; the search's files follow. A
 cited file that is no longer in the project's code is skipped. The run summary
 says how many citations were used, how many files they put at the top, and how
-many were skipped. It makes no extra AI call, so it costs nothing and adds no
+many were skipped. A citation whose code changed since the analysis is still
+used, and the summary says how many did; an administrator can set
+**`IMPACT_DEMOTE_STALE_CITATIONS=1`** to leave those out instead (off by default:
+on the held-out measurement, leaving them out found the right file less often).
+It makes no extra AI call, so it costs nothing and adds no
 time: it reuses what the analysis already found. A pasted request has no
 citations and is unchanged.
 
