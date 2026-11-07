@@ -248,6 +248,14 @@ a deleted username, the revived account drops the deleted person's identities
 and provider (`authSource` becomes `scim`): it is a new person, and the old
 IdP account cannot sign in as them.
 
+A sign-in's claim of an account and its role reconciliation each run in one
+serializable transaction. When the database aborts one on a write conflict
+(Postgres does so under load, sometimes between unrelated users), it runs
+again, up to three times. A sign-in that loses all three is answered
+`503 SIGN_IN_CONFLICT`: try again. It is not an account conflict, so it is not
+audited as `identity_conflict:*` (#1959). SCIM provisioning and role
+reconciliation retry in the same way.
+
 The upgrade migration fills `users.authSource` from the audit log: an account
 whose every recorded login came through OIDC is marked `oidc`, through SAML
 `saml`; an account SCIM provisioned is marked `scim`. Every other existing
