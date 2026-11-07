@@ -1408,6 +1408,58 @@ describe("A7's staleness readings on the table guard (#1834)", () => {
     expect(same.cycles).toEqual([]);
   });
 
+  it("#1925 — gates A7S against A7 and A7SD against A7S on the union too, beside the first persisted requirement", async () => {
+    const store = memoryStore();
+    const order = fixture.requirements.find(
+      (r) => r.text === "Store a shipping method on each order",
+    )!;
+    const { deps } = staleFakes({ freshness: "stale" }, undefined, undefined, {
+      alsoFor: { text: CITED.text, also: order.text },
+    });
+    const guard = createAgentSeedGuard({ ...deps, store });
+    const s = await guard.A7S();
+    const sd = await guard.A7SD();
+    if (!s.measured || !sd.measured) throw new Error("both readings should be measured");
+    const union = (reading: string) => {
+      const runs = store.records.filter((r) => r.kind === "run" && r.reading === reading);
+      expect(runs).toHaveLength(2);
+      return runs.reduce((n, r) => n + (r.kind === "run" ? r.tablePrecision : 0), 0) / 2;
+    };
+    for (const [reading, own, control] of [
+      [s, "A7S", "A7"],
+      [sd, "A7SD", "A7S"],
+    ] as const) {
+      expect(reading.scoring).toBe("the analysis's first persisted requirement");
+      expect(reading.alsoGatedOn).toEqual([
+        {
+          scoring: "every persisted requirement unioned",
+          tablePrecision: union(own),
+          baselinePrecision: union(control),
+        },
+      ]);
+      // The two scorings differ here: the gate reads two numbers, not one twice.
+      expect(reading.alsoGatedOn![0]!.baselinePrecision).not.toBeCloseTo(
+        reading.baseline!.tablePrecision,
+        3,
+      );
+    }
+  });
+
+  it("#1925 — reads A7S on the union alone when its A7 control was recorded before #1848", async () => {
+    const store = memoryStore();
+    const { deps } = staleFakes({ freshness: "stale" });
+    await createAgentSeedGuard({ ...deps, store }).A7S();
+    const mixed = store.records.map((r): GuardRecord => {
+      if (r.kind !== "run" || r.reading !== "A7") return r;
+      const { pieces: _pieces, ...rest } = r;
+      return rest;
+    });
+    const s = await createAgentSeedGuard({ ...deps, store: memoryStore(mixed) }).A7S();
+    if (!s.measured) throw new Error("should be measured");
+    expect(s.configuration).toMatch(/; scored on every persisted requirement unioned$/);
+    expect(s.alsoGatedOn).toBeUndefined();
+  });
+
   it("pairs A7S with A7 and A7SD with A7S", async () => {
     const store = memoryStore();
     await createAgentSeedGuard({ ...staleFakes({ freshness: "stale" }).deps, store }).A7SD();

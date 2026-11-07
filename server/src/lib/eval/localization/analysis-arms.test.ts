@@ -14,6 +14,7 @@ import {
   createA7SArm,
   createA7SDArm,
   NOOP_REINGEST_ARM_IDS,
+  PATCH_ARM_IDS,
   STALENESS_ARM_IDS,
   UNPATCHED_CITATION_ARM_IDS,
 } from "./analysis-arms.js";
@@ -319,7 +320,8 @@ describe("A7 staleness arms (#1834)", () => {
   function staleFixture(opts: { failRead?: boolean; strong?: string[] } = {}) {
     const meter = fakeMeter();
     let patched = false;
-    // #1899 — after a no-op re-ingest, re-validation finds c.go's lines moved and b.go fresh.
+    // #1899 — after a no-op re-ingest, re-validation finds c.go's symbol in another file
+    // (`moved`; line drift within a file would be `fresh`, #1925) and b.go fresh.
     let reingested = false;
     const pass = vi.fn(async () => {
       meter.charge(0.05);
@@ -388,6 +390,8 @@ describe("A7 staleness arms (#1834)", () => {
     }
     expect([...STALENESS_ARM_IDS]).toEqual(["A7S", "A7SD", "A7R", "A7RD"]);
     expect([...NOOP_REINGEST_ARM_IDS]).toEqual(["A7R", "A7RD"]);
+    // #1925 — only these need a patch set (and, under --table-guard, the table corpus).
+    expect([...PATCH_ARM_IDS]).toEqual(["A7S", "A7SD"]);
     expect([...UNPATCHED_CITATION_ARM_IDS]).toEqual(["A7", "A7K"]);
     const { search } = searchSpy();
     const meter = fakeMeter();
