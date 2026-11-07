@@ -27,10 +27,17 @@ vi.mock("./governing-store.js", () => ({
   completeRuleExtraction: (...a: unknown[]) => completeRuleExtraction(...a),
   failRuleExtraction: (...a: unknown[]) => failRuleExtraction(...a),
 }));
+const recordWorkspaceUsage = vi.fn();
+vi.mock("../finops/token-tracker.js", () => ({
+  recordWorkspaceUsage: (...a: unknown[]) => recordWorkspaceUsage(...a),
+}));
 
 const {
+  GENERATED_CONTROL_ID_PREFIX,
   MAX_SECTION_CHARS,
   MAX_SECTIONS,
+  RULE_EXTRACTION_AGENT_STEP,
+  controlIdRegion,
   extractRulesFromText,
   parseRuleExtractionReply,
   runRuleExtraction,
@@ -216,7 +223,7 @@ describe("extractRulesFromText — ids, duplicates and malformed entries", () =>
       revisionLabel: "v1",
       provider: replayProvider([reply]).provider,
     });
-    expect(result.rules.map((r) => r.controlId)).toEqual(["R-001", "R-002", "4.3.1"]);
+    expect(result.rules.map((r) => r.controlId)).toEqual(["METIS-001", "METIS-002", "4.3.1"]);
     // The model's clauseRef is absent, so the section heading stands in.
     expect(result.rules[0]!.clauseRef).toBe("(start)");
     expect(result.droppedUnverified).toBe(2);
@@ -316,25 +323,116 @@ describe("extractRulesFromText — limits and ids", () => {
     });
     const { provider } = replayProvider([reply]);
     const res = await extractRulesFromText({ text, title: "T", revisionLabel: "v1", provider });
-    expect(res.rules.map((r) => r.controlId).sort()).toEqual(["AC-10", "R-001", "R-002"].sort());
+    expect(res.rules.map((r) => r.controlId).sort()).toEqual(
+      ["AC-10", "METIS-001", "METIS-002"].sort(),
+    );
+  });
+
+  it("#1947 — keeps an id only in or beside its own clause: another clause's real id is replaced", async () => {
+    const text = [
+      "# Access",
+      "",
+      "**AC-1** Accounts are never shared between people.",
+      "",
+      "**AC-2** Passwords are rotated every ninety days.",
+      "",
+      "### 4.3.1 Shredding",
+      "",
+      "Printed customer records are shredded when no longer needed.",
+    ].join("\n");
+    const reply = JSON.stringify({
+      rules: [
+        // Right: the label at the start of the clause's own line.
+        {
+          controlId: "AC-1",
+          summary: "s",
+          clauseExcerpt: "Accounts are never shared between people.",
+        },
+        // Wrong: AC-1 is a real id of the policy, but of the clause above.
+        {
+          controlId: "AC-1",
+          summary: "s",
+          clauseExcerpt: "Passwords are rotated every ninety days.",
+        },
+      ],
+    });
+    const heading = JSON.stringify({
+      rules: [
+        // Right: the heading the clause sits directly under.
+        {
+          controlId: "4.3.1",
+          summary: "s",
+          clauseExcerpt: "Printed customer records are shredded when no longer needed.",
+        },
+      ],
+    });
+    const { provider } = replayProvider([reply, heading]);
+    const res = await extractRulesFromText({ text, title: "T", revisionLabel: "v1", provider });
+    expect(res.rules.map((r) => r.controlId)).toEqual(["AC-1", "METIS-001", "4.3.1"]);
+  });
+
+  it("#1947 — the region is the clause's own line, plus a heading only when nothing but blank lines separates them", () => {
+    const text = "## 4 Access\n\nIntro AC-9 text.\n\n**AC-2** Passwords rotate yearly.\nNext line.";
+    const at = text.indexOf("Passwords");
+    const clause = { clauseStart: at, clauseEnd: at + "Passwords rotate yearly.".length };
+    expect(controlIdRegion(text, clause, { start: 0 })).toBe("**AC-2** Passwords rotate yearly.");
+    const first = text.indexOf("Intro");
+    expect(controlIdRegion(text, { clauseStart: first, clauseEnd: first + 5 }, { start: 0 })).toBe(
+      "## 4 Access\nIntro",
+    );
+    // A section that does not open with a heading lends none.
+    expect(
+      controlIdRegion("Preamble.\n\nRule text.", { clauseStart: 11, clauseEnd: 21 }, { start: 0 }),
+    ).toBe("Rule text.");
+  });
+
+  it("#1947 — a generated id never collides with an id the policy or a kept rule uses", async () => {
+    const text = [
+      "METIS-001 is our own label for the first rule.",
+      "",
+      "Badges are worn visibly at all times inside the office.",
+      "",
+      "METIS-002 Laptops are locked away in a drawer every day.",
+    ].join("\n");
+    const reply = JSON.stringify({
+      rules: [
+        { summary: "s", clauseExcerpt: "Badges are worn visibly at all times inside the office." },
+        {
+          controlId: "METIS-002",
+          summary: "s",
+          clauseExcerpt: "Laptops are locked away in a drawer every day.",
+        },
+      ],
+    });
+    const { provider } = replayProvider([reply]);
+    const res = await extractRulesFromText({ text, title: "T", revisionLabel: "v1", provider });
+    expect(GENERATED_CONTROL_ID_PREFIX).toBe("METIS-");
+    expect(res.rules.map((r) => r.controlId)).toEqual(["METIS-003", "METIS-002"]);
   });
 });
 
 describe("runRuleExtraction — the job's states", () => {
-  const revision = { extractedText: POLICY_V1, revisionLabel: "v1", title: RECORDED.title };
+  const startedAt = new Date("2026-11-07T10:00:00.000Z");
+  const revision = {
+    extractedText: POLICY_V1,
+    revisionLabel: "v1",
+    title: RECORDED.title,
+    startedAt,
+  };
 
   beforeEach(() => {
     process.env.GOVERNING_DOCS_ENABLED = "1";
     logWarn.mockReset();
     beginRuleExtraction.mockReset().mockResolvedValue(revision);
-    completeRuleExtraction.mockReset().mockResolvedValue(undefined);
+    completeRuleExtraction.mockReset().mockResolvedValue(true);
     failRuleExtraction.mockReset().mockResolvedValue(undefined);
+    recordWorkspaceUsage.mockReset().mockReturnValue({ persisted: Promise.resolve() });
   });
   afterEach(() => {
     delete process.env.GOVERNING_DOCS_ENABLED;
   });
 
-  it("stores the verified rules and the dropped count", async () => {
+  it("stores the verified rules and the dropped count, fenced on the run's start", async () => {
     await runRuleExtraction({
       workspaceId: "ws1",
       revisionId: "rev1",
@@ -342,9 +440,82 @@ describe("runRuleExtraction — the job's states", () => {
     });
     expect(beginRuleExtraction).toHaveBeenCalledWith("ws1", "rev1");
     expect(completeRuleExtraction).toHaveBeenCalledTimes(1);
-    const [ws, rev, rules, dropped] = completeRuleExtraction.mock.calls[0]!;
-    expect([ws, rev, dropped]).toEqual(["ws1", "rev1", 0]);
+    const [ws, rev, at, rules, dropped] = completeRuleExtraction.mock.calls[0]!;
+    expect([ws, rev, at, dropped]).toEqual(["ws1", "rev1", startedAt, 0]);
     expect((rules as unknown[]).length).toBe(MANIFEST.rules.length);
+    expect(failRuleExtraction).not.toHaveBeenCalled();
+  });
+
+  it("#1947 — meters every model call under the workspace, and waits for the rows", async () => {
+    let settled = 0;
+    recordWorkspaceUsage.mockImplementation(() => ({
+      persisted: new Promise<void>((res) =>
+        setImmediate(() => {
+          settled++;
+          res();
+        }),
+      ),
+    }));
+    await runRuleExtraction({
+      workspaceId: "ws1",
+      revisionId: "rev1",
+      provider: replayProvider(RECORDED.replies).provider,
+    });
+    expect(recordWorkspaceUsage).toHaveBeenCalledTimes(RECORDED.replies.length);
+    expect(recordWorkspaceUsage).toHaveBeenCalledWith({
+      workspaceId: "ws1",
+      sessionId: "rev1",
+      agentStep: RULE_EXTRACTION_AGENT_STEP,
+      provider: "anthropic",
+      model: "deepseek-flash",
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+    expect(settled).toBe(RECORDED.replies.length);
+  });
+
+  it("#1947 — meters an unreadable reply too (its tokens were spent), but not a reply with no usage", async () => {
+    await runRuleExtraction({
+      workspaceId: "ws1",
+      revisionId: "rev1",
+      provider: replayProvider(['{"items":[]}']).provider,
+    });
+    expect(recordWorkspaceUsage).toHaveBeenCalledTimes(1);
+    expect(failRuleExtraction).toHaveBeenCalledTimes(1);
+
+    recordWorkspaceUsage.mockClear();
+    const unmetered = {
+      key: "anthropic",
+      model: "m",
+      offline: false,
+      chat: vi.fn(async () => ({
+        content: '{"rules":[]}',
+        model: "m",
+        provider: "anthropic",
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      })),
+    } as unknown as AIProvider;
+    await runRuleExtraction({
+      workspaceId: "ws1",
+      revisionId: "rev1",
+      provider: unmetered,
+    });
+    expect(recordWorkspaceUsage).not.toHaveBeenCalled();
+  });
+
+  it("#1947 — a run a retry has replaced stores nothing and logs no success", async () => {
+    completeRuleExtraction.mockResolvedValue(false);
+    await runRuleExtraction({
+      workspaceId: "ws1",
+      revisionId: "rev1",
+      provider: replayProvider(RECORDED.replies).provider,
+    });
+    expect(logWarn).toHaveBeenCalledWith(
+      "governing rule extraction superseded by a retry; its rules were not stored",
+      { workspaceId: "ws1", revisionId: "rev1" },
+    );
     expect(failRuleExtraction).not.toHaveBeenCalled();
   });
 
@@ -377,9 +548,13 @@ describe("runRuleExtraction — the job's states", () => {
         throw thrown;
       }),
     } as unknown as AIProvider;
-    await runRuleExtraction({ workspaceId: "ws1", revisionId: "rev1", provider });
+    await runRuleExtraction({
+      workspaceId: "ws1",
+      revisionId: "rev1",
+      provider,
+    });
     expect(completeRuleExtraction).not.toHaveBeenCalled();
-    expect(failRuleExtraction).toHaveBeenCalledWith("ws1", "rev1", shown);
+    expect(failRuleExtraction).toHaveBeenCalledWith("ws1", "rev1", startedAt, shown);
     // The original error reaches the server log, not the member (A09).
     expect(logWarn).toHaveBeenCalledWith(
       "governing rule extraction failed",
@@ -397,6 +572,7 @@ describe("runRuleExtraction — the job's states", () => {
     expect(failRuleExtraction).toHaveBeenCalledWith(
       "ws1",
       "rev1",
+      startedAt,
       "The model's reply had no rules array.",
     );
   });
@@ -404,11 +580,19 @@ describe("runRuleExtraction — the job's states", () => {
   it("does nothing with the flag off, or for a revision it may not start", async () => {
     const { provider } = replayProvider(RECORDED.replies);
     beginRuleExtraction.mockResolvedValue(null);
-    await runRuleExtraction({ workspaceId: "ws1", revisionId: "rev1", provider });
+    await runRuleExtraction({
+      workspaceId: "ws1",
+      revisionId: "rev1",
+      provider,
+    });
     expect(provider.chat).not.toHaveBeenCalled();
     delete process.env.GOVERNING_DOCS_ENABLED;
     beginRuleExtraction.mockClear();
-    await runRuleExtraction({ workspaceId: "ws1", revisionId: "rev1", provider });
+    await runRuleExtraction({
+      workspaceId: "ws1",
+      revisionId: "rev1",
+      provider,
+    });
     expect(beginRuleExtraction).not.toHaveBeenCalled();
   });
 });

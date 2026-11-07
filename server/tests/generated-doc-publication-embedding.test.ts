@@ -3,8 +3,9 @@
  * batches off the main thread, a recorded outcome, and startup repair of rows
  * that no task will ever finish.
  *
- * Real SQLite (same shape as `generated-doc-publication-ownership.test.ts`), a
- * file-backed vector store and MiniSearch; only auth setup is substituted.
+ * Real SQLite (same shape as `generated-doc-publication-ownership.test.ts`, held
+ * in memory so no hook waits on a contended disk, #1949), a file-backed vector
+ * store and MiniSearch; only auth setup is substituted.
  */
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
@@ -17,6 +18,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { getPermissionsForRole } from "@metis/shared";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import { probeHealthzDuring } from "./helpers/healthz-prober.js";
+import { IN_MEMORY_SQLITE, sqliteMainFile } from "./helpers/in-memory-sqlite.js";
 import type { LocalVectorStore as LocalStore } from "../src/lib/rag/vector-store.js";
 
 const state = vi.hoisted(() => ({
@@ -200,7 +202,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
     beforeAll(async () => {
       directory = await mkdtemp(join(tmpdir(), "metis-publication-embedding-"));
       db = new PrismaClient({
-        adapter: new PrismaBetterSqlite3({ url: `file:${join(directory, "db.sqlite")}` }),
+        adapter: new PrismaBetterSqlite3({ url: IN_MEMORY_SQLITE }),
       });
       state.db = db;
       const tables = [
@@ -305,6 +307,10 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
       state.vector = new LocalVectorStore({ root: join(directory, "vectors") });
       await state.vector.dropTable("project");
       __resetBM25IndexSingleton();
+    });
+
+    it("builds its tables in memory, so no hook waits on a contended disk's fsync (#1949)", async () => {
+      expect(await sqliteMainFile(db)).toBe("");
     });
 
     describe("publishGeneratedDocRevision", () => {

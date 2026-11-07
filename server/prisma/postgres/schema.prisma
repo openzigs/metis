@@ -183,6 +183,10 @@ model GoverningDocumentRevision {
   /// Rules the model returned whose clause excerpt was not found verbatim in
   /// `extractedText`, so were dropped rather than stored with an invented citation (#1870).
   droppedUnverified Int      @default(0)
+  /// When the current extraction run began (#1947). A run's writes are fenced
+  /// on it, so a retried revision's earlier run cannot store its rules, and a
+  /// `running` row older than the stale bound may be retried. Null until a run.
+  extractionStartedAt DateTime?
   uploadedById      String
   createdAt         DateTime @default(now())
 
@@ -199,7 +203,7 @@ model GoverningDocumentRevision {
 model GoverningRule {
   id            String    @id @default(cuid())
   revisionId    String
-  /// The policy's own control id (`AC-2`, `4.3.1`), or a generated `R-012`.
+  /// The policy's own control id (`AC-2`, `4.3.1`), or a generated `METIS-012` (#1947).
   controlId     String
   /// One line, the text the applicability screen reads for every rule (#1872).
   summary       String
@@ -802,7 +806,8 @@ model Project {
 /// MTD aggregation in the budget enforcer + cost projection.
 model TokenUsage {
   id               String   @id @default(cuid())
-  projectId        String
+  /// NULL only on a workspace-level row (`workspaceId` set, #1947).
+  projectId        String?
   sessionId        String?
   provider         String
   model            String
@@ -836,11 +841,17 @@ model TokenUsage {
   /// tier, so pricing such a row from its summed columns would bill a run of
   /// small requests at the long-prompt prices; every pricer reads this instead.
   requestTokens    String?
+  /// #1947 — the workspace a call with no project is billed to: governing rule
+  /// extraction, which reads a workspace's policy rather than a project. Plain
+  /// column, no FK, like `userId`. Set only when `projectId` is NULL; a
+  /// project's row reaches its workspace through the project.
+  workspaceId      String?
   createdAt        DateTime @default(now())
 
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([projectId, createdAt])
+  @@index([workspaceId, createdAt])
   @@map("token_usages")
 }
 

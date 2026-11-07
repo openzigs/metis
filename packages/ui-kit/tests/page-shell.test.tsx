@@ -16,6 +16,7 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
   EmptyState,
+  PAGE_HEADER_WITH_ACTIONS_CLASS,
   PAGE_TITLE_CLASS,
   PageHeader,
   PageHeaderSkeleton,
@@ -46,6 +47,27 @@ describe("PageHeader (#270)", () => {
     expect(within(header).getByText("beta")).toBeInTheDocument();
     // The adornment sits beside the heading, not inside its accessible name.
     expect(screen.getByRole("heading", { level: 1 })).toHaveAccessibleName("Agents");
+  });
+
+  // #1889 — layout is the e2e spec's to prove (`page-header-long-actions.spec.ts`);
+  // this pins the classes it depends on, so a revert fails in seconds, not on CI.
+  it("lays a header with actions out as a grid whose actions may shrink and wrap", () => {
+    render(<PageHeader title="Chat" actions={<button type="button">New chat</button>} />);
+    const header = screen.getByRole("banner", { hidden: true });
+    for (const cls of PAGE_HEADER_WITH_ACTIONS_CLASS.split(" ")) {
+      expect(header).toHaveClass(cls);
+    }
+    expect(PAGE_HEADER_WITH_ACTIONS_CLASS).toBe(
+      "sm:grid sm:grid-cols-[minmax(min-content,1fr)_auto]",
+    );
+    const actions = header.querySelector('[data-slot="page-header-actions"]');
+    expect(actions).toHaveClass("min-w-0", "flex-wrap");
+    expect(actions).not.toHaveClass("shrink-0");
+  });
+
+  it("keeps a header with no actions a plain flex row", () => {
+    render(<PageHeader title="Only a title" />);
+    expect(screen.getByRole("banner", { hidden: true })).not.toHaveClass("sm:grid");
   });
 
   it("omits the description and actions containers when not given", () => {

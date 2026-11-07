@@ -66,7 +66,7 @@ export const governingRuleSchema = z
   .object({
     id,
     revisionId: id,
-    /** The policy's own control id (`AC-2`, `4.3.1`), or a generated `R-012`. */
+    /** The policy's own control id (`AC-2`, `4.3.1`), or a generated `METIS-012` (#1947). */
     controlId: z.string().min(1).max(64),
     /** One line. */
     summary: z.string().min(1).max(500),

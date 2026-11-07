@@ -213,12 +213,16 @@ describe("GET /usage-totals (#977)", () => {
     expect(res.body.data.from).toBe(
       new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString(),
     );
-    // Every read is scoped to THIS workspace's projects and the month.
+    // Every read is scoped to THIS workspace — its projects' rows and its own
+    // project-less rows (#1947) — and the month.
     const base = ledgerAggregate.mock.calls[0]![0].where as {
-      project: { workspaceId: string };
+      OR: unknown[];
       createdAt: { gte: Date };
     };
-    expect(base.project).toEqual({ workspaceId: "w1" });
+    expect(base.OR).toEqual([
+      { project: { workspaceId: "w1" } },
+      { projectId: null, workspaceId: "w1" },
+    ]);
     expect(base.createdAt.gte.toISOString()).toBe(res.body.data.from);
     for (const [args] of ledgerAggregate.mock.calls.slice(1)) {
       expect((args.where.AND as unknown[])[0]).toBe(base);

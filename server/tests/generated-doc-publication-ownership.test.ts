@@ -1,4 +1,4 @@
-/** Real SQLite + file-backed vector store + MiniSearch; only external dependencies
+/** Real SQLite (in memory, #1949) + file-backed vector store + MiniSearch; only external dependencies
  * and authentication setup are substituted. Barriers pause store boundaries,
  * with final selection paused before acquiring project-write coordination. */
 import { mkdtemp, rm } from "node:fs/promises";
@@ -12,6 +12,7 @@ import MiniSearch from "minisearch";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import { isolateSupertestLoopback } from "./helpers/supertest-loopback.js";
+import { IN_MEMORY_SQLITE, sqliteMainFile } from "./helpers/in-memory-sqlite.js";
 import type { LocalVectorStore as LocalStore } from "../src/lib/rag/vector-store.js";
 import type { ProjectVectorWrite } from "../src/lib/rag/project-vector-write.js";
 
@@ -174,7 +175,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
   beforeAll(async () => {
     directory = await mkdtemp(join(tmpdir(), "metis-publication-ownership-"));
     db = new PrismaClient({
-      adapter: new PrismaBetterSqlite3({ url: `file:${join(directory, "db.sqlite")}` }),
+      adapter: new PrismaBetterSqlite3({ url: IN_MEMORY_SQLITE }),
     });
     state.db = db;
     // Exact scalar columns used by the real Prisma models; no app DB or migration state touched.
@@ -260,6 +261,10 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
     await state.vector.dropTable("project");
     __resetBM25IndexSingleton();
     await version(1);
+  });
+
+  it("builds its tables in memory, so no hook waits on a contended disk's fsync (#1949)", async () => {
+    expect(await sqliteMainFile(db)).toBe("");
   });
 
   describe("generated manual approval fence", () => {
