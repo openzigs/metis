@@ -236,6 +236,13 @@ export function parseGuardRecord(line: string): GuardRecord {
     if (typeof r.label !== "string" || typeof r.seeding !== "string") bad("no configuration");
     if (typeof r.changes !== "number" || typeof r.untracked !== "number") bad("no change counts");
     if (r.pieces !== undefined && !validPieces(r.pieces)) bad("malformed pieces");
+    // #1890 — the headline reads a piece for every requirement the run scored.
+    if (r.pieces !== undefined) {
+      const missing = Object.keys(r.tables as object).filter(
+        (id) => !Object.hasOwn(r.pieces as object, id),
+      );
+      if (missing.length > 0) bad(`pieces miss requirement(s) ${missing.join(", ")}`);
+    }
   } else {
     bad(`unknown kind ${JSON.stringify(r.kind)}`);
   }
@@ -521,6 +528,16 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
         throw new Error(
           `refusing to resume the table guard: its ${r.reading} run ${r.run} was read under staleness patches ${r.stalenessPatch}, not ${deps.staleness?.patchSetDigest ?? "none"}. Use a new partials directory`,
         );
+      }
+      // #1890 — a run's pieces must cover every fixture requirement, or the
+      // headline would crash on the hole instead of refusing the record.
+      if (r.kind === "run" && r.pieces !== undefined) {
+        const missing = fixture.requirements.filter((q) => !Object.hasOwn(r.pieces!, q.id));
+        if (missing.length > 0) {
+          throw new Error(
+            `malformed table-guard record: ${r.reading} run ${r.run}'s pieces miss fixture requirement(s) ${missing.map((q) => q.id).join(", ")}. Use a new partials directory`,
+          );
+        }
       }
       if (r.kind === "analysis") analyses.set(keyOf(r.requirement, r.run), r);
       else runs.set(keyOf(r.reading, r.run), r);
@@ -974,9 +991,23 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
       const scoring = guardScoringOf(control ? [...own, ...control] : own);
       const m = measurement(own, scoring);
       logDifferences();
+      // #1890 — against A7O both arms carry the same further requirements, so
+      // the union's artefact mostly cancels and a regression confined to them
+      // would pass the first-requirement gate unseen: gate on the union too.
+      const alsoGatedOn =
+        control && scoring === "headline"
+          ? [
+              {
+                scoring: SCORING_WORDS.union,
+                tablePrecision: measurement(own).tablePrecision,
+                baselinePrecision: measurement(control).tablePrecision,
+              },
+            ]
+          : undefined;
       return {
         measured: true,
         ...m,
+        ...(alsoGatedOn ? { scoring: SCORING_WORDS[scoring], alsoGatedOn } : {}),
         configuration:
           m.configuration +
           `; "Evaluate new requirements" on ${deps.model}, one per requirement and run; ` +
