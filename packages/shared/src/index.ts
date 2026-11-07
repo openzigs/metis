@@ -74,6 +74,9 @@ export * from "./requirements-run.js";
 export * from "./shared-criteria.js";
 // Epic #1866 (#1868) — workspace governing documents, revisions, rules and rule edits.
 export * from "./governing.js";
+// Epic #1866 (#1875) — the governing-findings wording guard: METIS never claims
+// SOC 2 / GDPR compliance or certification, in the UI summary or in model prose.
+export * from "./governing-wording.js";
 
 export const SHARED_PACKAGE_NAME = "@metis/shared";
 

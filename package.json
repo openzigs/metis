@@ -37,6 +37,7 @@
     "eval:impact-recall": "pnpm --filter @metis/server eval:impact-recall",
     "eval:localization": "pnpm --filter @metis/server eval:localization",
     "eval:materialize": "pnpm --filter @metis/server eval:materialize",
+    "eval:staleness-patches": "pnpm --filter @metis/server eval:staleness-patches",
     "eval:verification": "pnpm --filter @metis/server eval:verification",
     "eval:harvest-feedback": "pnpm --filter @metis/server eval:harvest-feedback",
     "eval:embed-retrieval": "pnpm --filter @metis/server eval:embed-retrieval",

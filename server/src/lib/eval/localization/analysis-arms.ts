@@ -34,10 +34,32 @@
  * analyst nothing tracked to run impact on: it is read as the pasted text
  * (A0's changes, no requirement id) and counted.
  *
+ * #1834 — the staleness slice, over the same analyses:
+ *
+ *   - `A7K`  — no staleness, the stage BEFORE #1832 (the citations' freshness
+ *     hidden, so nothing is set aside or ordered by tier). With no re-ingest
+ *     every citation is still `unverified`, so A7K must equal A7: the control
+ *     that demotion costs nothing when nothing is stale.
+ *   - `A7S`  — the item's committed staleness patch applied and re-ingested
+ *     (re-validating the citations, #1831), read WITHOUT demotion.
+ *   - `A7SD` — the same patched state read WITH demotion (#1832, as shipped).
+ *
+ * A7S and A7SD read ONE patch cycle per item and run (apply, re-ingest, read
+ * both, restore, re-ingest). The hybrid search reads the patched corpus (a
+ * renamed file at its new path, re-embedded; a deleted file gone), and so does
+ * the stage's graph check, as after a real re-ingest; an edited symbol keeps
+ * its vector. A renamed file is scored as the file it was.
+ *
  * Schema impact and the blast radius are off (an empty graph): A0 reads
  * neither, and the scorer reads files.
  */
-import { resolveChangeSeeds, type ChangeSeeds } from "../../impact-analysis/change-seeds.js";
+import type { AgentCitationDeps } from "../../impact-analysis/agent-seeder.js";
+import {
+  resolveChangeSeeds,
+  type ChangeSeeds,
+  type StoredLinkRow,
+} from "../../impact-analysis/change-seeds.js";
+import type { ChangedRequirement } from "../../impact-analysis/extract-changes.js";
 import { extractChangesByShape } from "../../impact-analysis/change-request.js";
 import {
   computeProjectImpact,
@@ -57,18 +79,36 @@ import {
 } from "./arm-core.js";
 import { ANALYSIS_PASS_GROUP } from "./agent-env.js";
 import { fileKey, type LocalizationCorpus, type LocalizationItem } from "./corpus.js";
-import type { AgentRunStats } from "./scorer.js";
+import type { AgentRunStats, CitationFreshnessCounts } from "./scorer.js";
+import type { CorpusSearch } from "./search.js";
+import {
+  emptyTally,
+  patchedFileSymbols,
+  patchedGraphFiles,
+  patchedSymbolRows,
+  tallyFreshness,
+  unrenamedFiles,
+  withoutFreshness,
+  type StalenessOp,
+} from "./staleness.js";
 
 /** A7's variants. */
 export interface AnalysisVariant {
-  id: "A7" | "A7O";
+  id: "A7" | "A7O" | "A7K" | "A7S" | "A7SD";
   /** `IMPACT_AGENT_SEEDS`: the stored citations lead the files to edit. */
   agentSeeds: boolean;
+  /** #1834 — read after the item's committed staleness patch is applied and re-ingested. */
+  stale: boolean;
+  /** #1834 — the stage demotes stale citations (#1832, shipped); false hides their freshness. */
+  demote: boolean;
 }
 
 export const ANALYSIS_VARIANTS: Readonly<Record<AnalysisVariant["id"], AnalysisVariant>> = {
-  A7: { id: "A7", agentSeeds: true },
-  A7O: { id: "A7O", agentSeeds: false },
+  A7: { id: "A7", agentSeeds: true, stale: false, demote: true },
+  A7O: { id: "A7O", agentSeeds: false, stale: false, demote: true },
+  A7K: { id: "A7K", agentSeeds: true, stale: false, demote: false },
+  A7S: { id: "A7S", agentSeeds: true, stale: true, demote: false },
+  A7SD: { id: "A7SD", agentSeeds: true, stale: true, demote: true },
 };
 
 /** The arms that run "Evaluate new requirements": the CLI materializes their database. */
@@ -76,6 +116,24 @@ export const ANALYSIS_ARM_IDS: ReadonlySet<string> = new Set(Object.keys(ANALYSI
 
 /** The pass group the report reads; defined in `agent-env.ts` so the report needs no engine (#1825). */
 export { ANALYSIS_PASS_GROUP };
+
+/** #1834 — the arms that read through the staleness cycle. */
+export const STALENESS_ARM_IDS: ReadonlySet<string> = new Set(
+  Object.values(ANALYSIS_VARIANTS)
+    .filter((v) => v.stale)
+    .map((v) => v.id),
+);
+
+/**
+ * #1834 — the arms that read stored citations WITHOUT a patch. A patch cycle
+ * re-validates every citation of the repository, so these must be read before
+ * any staleness arm in the same run (`buildArms` refuses another order).
+ */
+export const UNPATCHED_CITATION_ARM_IDS: ReadonlySet<string> = new Set(
+  Object.values(ANALYSIS_VARIANTS)
+    .filter((v) => v.agentSeeds && !v.stale)
+    .map((v) => v.id),
+);
 
 /** One item's analyses (one per repository, in manifest order), and what they cost. */
 interface SharedAnalyses {
@@ -85,31 +143,66 @@ interface SharedAnalyses {
   seconds: number;
 }
 
-/** One store per pass function: A7 and A7O built from the same deps share it. */
+/** One store per pass function: the variants built from the same deps share it. */
 const sharedAnalyses = new WeakMap<object, Map<string, Promise<SharedAnalyses>>>();
+
+/** #1834 — one patch cycle's two readings (without and with demotion). */
+interface StaleCycle {
+  keep: ImpactReading;
+  demote: ImpactReading;
+  /** The cited files (patched paths) and the ones the patched graph lacks. */
+  citedFiles: number;
+  unresolvedFiles: number;
+  tally: ReturnType<typeof emptyTally>;
+  seconds: number;
+}
+
+/** One store per staleness IO: A7S and A7SD built from the same deps share a cycle. */
+const sharedCycles = new WeakMap<object, Map<string, Promise<StaleCycle>>>();
 
 /** No graph: the blast radius and the structural twins are not read (A0 reads neither). */
 const NO_GRAPH = new InMemoryCodeGraphDataSource([], []);
 
+/** One impact reading of an item's changes, across the corpus's repositories. */
+interface ImpactReading {
+  seedings: SeedingFiles[];
+  /** Files the code-agent channel put among the files to edit (`<repo>:<path>`). */
+  led: Set<string>;
+  /** Stale citations the stage set aside (`demotedStaleCitations`, #1832). */
+  demoted: number;
+}
+
 /**
  * Build an A7 variant. Needs `deps.analysis` (the CLI's materialized analysis
  * run and reads), `deps.meter` and `deps.provider` (the analysis model, named
- * in the configuration so a resume on another model is refused).
+ * in the configuration so a resume on another model is refused); a staleness
+ * variant also needs `deps.staleness`.
  */
 export function createAnalysisArm(deps: ArmDeps, variant: AnalysisVariant): LocalizationArm {
-  const { analysis, meter, provider, search } = deps;
+  const { analysis, meter, provider, search, staleness } = deps;
   if (!analysis || !meter || !provider) {
     throw new Error(
       `arm ${variant.id} runs "Evaluate new requirements": it needs a materialized corpus and a live, metered provider (pnpm eval:materialize <corpus>; AI_PROVIDER and its key)`,
     );
   }
+  if (variant.stale && !staleness) {
+    throw new Error(
+      `arm ${variant.id} reads after a committed staleness patch: it needs the staleness cycle (server/scripts/eval-localization-staleness/)`,
+    );
+  }
   const now = deps.now ?? Date.now;
   if (!sharedAnalyses.has(analysis.pass)) sharedAnalyses.set(analysis.pass, new Map());
   const store = sharedAnalyses.get(analysis.pass)!;
+  if (staleness && !sharedCycles.has(staleness)) sharedCycles.set(staleness, new Map());
+  const cycles = staleness ? sharedCycles.get(staleness)! : null;
   const fileSymbols = new WeakMap<LocalizationCorpus, ReturnType<typeof corpusFileSymbols>>();
+  const symbolsOf = (corpus: LocalizationCorpus) => {
+    if (!fileSymbols.has(corpus)) fileSymbols.set(corpus, corpusFileSymbols(corpus));
+    return fileSymbols.get(corpus)!;
+  };
   const a0 = createA0Arm(deps);
 
-  /** Run the item's analyses, or reuse the ones the other variant ran in this run. */
+  /** Run the item's analyses, or reuse the ones another variant ran in this run. */
   async function analysesFor(
     corpus: LocalizationCorpus,
     item: LocalizationItem,
@@ -145,26 +238,195 @@ export function createAnalysisArm(deps: ArmDeps, variant: AnalysisVariant): Loca
     return { shared: await running, reused: false };
   }
 
+  /**
+   * Impact on the item's changes in every repository. With `citations`, the
+   * stored citations lead (`IMPACT_AGENT_SEEDS` on); without, A0's seeding.
+   */
+  async function readImpact(
+    corpus: LocalizationCorpus,
+    changes: readonly ChangedRequirement[],
+    citations: ((repo: string) => AgentCitationDeps) | null,
+    searched: CorpusSearch = search,
+  ): Promise<ImpactReading> {
+    const seedings: SeedingFiles[] = [];
+    const led = new Set<string>();
+    let demoted = 0;
+    for (const repo of corpus.manifest.repos) {
+      const key = (filePath: string) => fileKey(repo.name, filePath);
+      for (const change of changes) {
+        let seeded: ChangeSeeds | null = null;
+        const result = await computeProjectImpact(change, repo.name, {
+          mapRequirement: async () => {
+            throw new Error("A7 seeds with the split seeding (seedChange)");
+          },
+          seedChange: async (c, projectId) =>
+            (seeded = await resolveChangeSeeds(c, projectId, {
+              searcher: searched.searcher,
+              loadSymbols: searched.loadSymbols,
+              loadWriterIds: searched.loadWriterIds,
+            })),
+          ...(citations ? { agentSeeds: citations(repo.name) } : {}),
+          dataSourceFor: () => NO_GRAPH,
+          includeSchemaImpact: false,
+        });
+        demoted += result.seedEvidence?.agentCitations?.demotedStaleCitations ?? 0;
+        const evidence = result.seedEvidence?.editCandidates;
+        // The engine's edit order: the evidence's when a stage beyond the
+        // seeding ran (the UI reads it), else the seeding's own.
+        const edit = evidence
+          ? evidence.map((e) => e.filePath)
+          : uniqueInOrder(
+              (seeded as ChangeSeeds | null)?.editCandidates.map((m) => m.filePath) ?? [],
+            );
+        for (const e of evidence ?? []) {
+          if (e.channels.includes("code-agent")) led.add(key(e.filePath));
+        }
+        seedings.push({
+          edit: edit.map(key),
+          other: uniqueInOrder(
+            result.affectedSymbols.filter((s) => s.relation !== "direct").map((s) => s.filePath),
+          ).map(key),
+        });
+      }
+    }
+    return { seedings, led, demoted };
+  }
+
+  /** The stored citations' files (`<repo>:<path>`) of the item's requirements. */
+  async function citedFilesOf(
+    corpus: LocalizationCorpus,
+    shared: SharedAnalyses,
+    tally?: ReturnType<typeof emptyTally>,
+  ): Promise<Set<string>> {
+    const cited = new Set<string>();
+    for (const [i, repo] of corpus.manifest.repos.entries()) {
+      for (const requirementId of shared.results[i]?.requirementIds ?? []) {
+        const links = await analysis!.loadCitations(requirementId, corpus.name, repo.name);
+        if (tally) tallyFreshness(links, tally);
+        for (const link of links) cited.add(fileKey(repo.name, link.filePath));
+      }
+    }
+    return cited;
+  }
+
+  /** The stage's citation reads in one repository, demoting or not. */
+  const citationDeps =
+    (
+      corpus: LocalizationCorpus,
+      demote: boolean,
+      loadFileSymbols: AgentCitationDeps["loadFileSymbols"],
+    ) =>
+    (repo: string): AgentCitationDeps => {
+      const load = (requirementId: string): Promise<StoredLinkRow[]> =>
+        analysis!.loadCitations(requirementId, corpus.name, repo);
+      return {
+        loadCitations: demote ? (id) => load(id) : withoutFreshness((id) => load(id)),
+        loadFileSymbols,
+      };
+    };
+
+  /** #1834 — the item's patch cycle: both staleness readings, or the other variant's. */
+  async function cycleFor(
+    corpus: LocalizationCorpus,
+    item: LocalizationItem,
+    run: number,
+    shared: SharedAnalyses,
+    changes: readonly ChangedRequirement[],
+  ): Promise<{ cycle: StaleCycle; reused: boolean }> {
+    const key = [corpus.name, item.id, run].join("\u0000");
+    const existing = cycles!.get(key);
+    if (existing) return { cycle: await existing, reused: true };
+    const ops: readonly StalenessOp[] = staleness!.opsFor(corpus.name, item.id);
+    const started = now();
+    // The search a re-ingest would leave: a renamed file at its new path, a deleted one gone.
+    const running = (async () => {
+      const patched = await staleness!.searchFor(patchedSymbolRows(corpus.symbols, ops));
+      return staleness!.withPatch(corpus.name, ops, () => readCycle(patched));
+    })();
+    async function readCycle(patched: CorpusSearch): Promise<StaleCycle> {
+      const tally = emptyTally();
+      const cited = await citedFilesOf(corpus, shared, tally);
+      const graph = patchedGraphFiles(corpus.graphFiles, ops);
+      const loadFileSymbols = patchedFileSymbols(symbolsOf(corpus), ops);
+      const keep = await readImpact(
+        corpus,
+        changes,
+        citationDeps(corpus, false, loadFileSymbols),
+        patched,
+      );
+      const demote = await readImpact(
+        corpus,
+        changes,
+        citationDeps(corpus, true, loadFileSymbols),
+        patched,
+      );
+      return {
+        keep,
+        demote,
+        citedFiles: cited.size,
+        unresolvedFiles: [...cited].filter((f) => !graph.has(f)).length,
+        tally,
+        seconds: 0,
+      };
+    }
+    const timed = running.then((c) => ({
+      ...c,
+      seconds: (now() - started) / 1000,
+    }));
+    cycles!.set(key, timed);
+    // A failed cycle is not kept: a resume runs it again.
+    timed.catch(() => cycles!.delete(key));
+    return { cycle: await timed, reused: false };
+  }
+
+  const stage = (): string => {
+    if (!variant.agentSeeds) {
+      return "computeProjectImpact on the analysis's requirements, IMPACT_AGENT_SEEDS off (#1818 control)";
+    }
+    const demotion = variant.demote
+      ? "stale citations demoted (#1832, as shipped)"
+      : "the citations' freshness hidden: the stage before #1832 (#1834 control)";
+    return variant.stale
+      ? `computeProjectImpact on the analysis's requirements, IMPACT_AGENT_SEEDS on, after the item's staleness patch was re-ingested; ${demotion}`
+      : variant.demote
+        ? "computeProjectImpact on the analysis's requirements, IMPACT_AGENT_SEEDS on (#1759, #1818)"
+        : `computeProjectImpact on the analysis's requirements, IMPACT_AGENT_SEEDS on; ${demotion}`;
+  };
+
   return {
     id: variant.id,
     label:
       `${variant.id} — "Evaluate new requirements", then impact on its requirements ` +
-      `with IMPACT_AGENT_SEEDS ${variant.agentSeeds ? "on" : "off"} (${provider.key}/${provider.model})`,
+      `with IMPACT_AGENT_SEEDS ${variant.agentSeeds ? "on" : "off"}` +
+      (variant.stale
+        ? `, after a staleness patch, ${variant.demote ? "demoting" : "not demoting"} stale citations`
+        : "") +
+      (variant.agentSeeds && !variant.stale && !variant.demote ? ", freshness hidden" : "") +
+      ` (${provider.key}/${provider.model})`,
     configuration: {
       ...a0.configuration,
-      stage: variant.agentSeeds
-        ? "computeProjectImpact on the analysis's requirements, IMPACT_AGENT_SEEDS on (#1759, #1818)"
-        : "computeProjectImpact on the analysis's requirements, IMPACT_AGENT_SEEDS off (#1818 control)",
+      stage: stage(),
       analysis:
         'AnalysisOrchestrator.start: agentKeys ["code"], the item text as extraInstructions, no clarification, no web research; one analysis per repository',
       citations:
         "seedRequirementCodeLinksFromFindings rows (analysis-grounding), read by prismaAgentCitationDeps",
       changes:
         "loadRequirementChanges: one change per persisted requirement, in every repository; the item text (A0's changes) when none was persisted",
-      order: variant.agentSeeds
-        ? "leadWithAgentCitations: cited files first (confidence, then citation order), at most 5; then the hybrid candidates; at most 5 more cited files"
-        : "the hybrid candidates (A0's seeding of the requirement's text)",
-      sharedAnalysis: "A7 and A7O read one analysis per item, repository and run",
+      order: !variant.agentSeeds
+        ? "the hybrid candidates (A0's seeding of the requirement's text)"
+        : variant.demote
+          ? "leadWithAgentCitations: stale citations set aside; cited files first (freshness tier, then confidence, then citation order), at most 5; then the hybrid candidates; at most 5 more cited files"
+          : "leadWithAgentCitations with freshness hidden: cited files first (confidence, then citation order), at most 5; then the hybrid candidates; at most 5 more cited files",
+      sharedAnalysis: "the A7 variants read one analysis per item, repository and run",
+      ...(variant.stale
+        ? {
+            staleness:
+              "the item's committed patch (edit one function, rename one file, delete one file) applied to the materialized clone and committed, re-ingested incrementally (re-validating the citations, #1831), read, then restored and re-ingested; A7S and A7SD read one cycle per item and run",
+            stalenessPatchSets: staleness!.patchSetDigest,
+            stalenessScoring:
+              "the hybrid search and the stage's graph check read the patched rows (a renamed file at its new path, re-embedded; a deleted file gone; an edited symbol keeps its vector); a renamed file is scored as the file it was",
+          }
+        : {}),
       llmStages: "none in the impact run (#1756, #1798 and the table stages are off by default)",
       provider: provider.key,
       model: provider.model,
@@ -172,88 +434,68 @@ export function createAnalysisArm(deps: ArmDeps, variant: AnalysisVariant): Loca
     },
     async localize(item, corpus, context): Promise<ArmOutput> {
       const run = context?.run ?? 1;
-      if (!fileSymbols.has(corpus)) fileSymbols.set(corpus, corpusFileSymbols(corpus));
-      const loadFileSymbols = fileSymbols.get(corpus)!;
       const { shared, reused } = await analysesFor(corpus, item, run);
       const requirementIds = shared.results.flatMap((r) => r.requirementIds);
       const tracked = await analysis!.loadRequirementChanges(requirementIds);
       const changes = tracked.length > 0 ? tracked : extractChangesByShape(requirementText(item));
-
-      // What the analyses stored, for the report: every cited file, and the
-      // ones the code graph does not hold (the stage drops those).
-      const citedFiles = new Set<string>();
-      for (const [i, repo] of corpus.manifest.repos.entries()) {
-        for (const requirementId of shared.results[i]?.requirementIds ?? []) {
-          for (const link of await analysis!.loadCitations(requirementId, corpus.name, repo.name)) {
-            citedFiles.add(fileKey(repo.name, link.filePath));
-          }
-        }
-      }
-
-      const seedings: SeedingFiles[] = [];
-      const led = new Set<string>();
-      for (const repo of corpus.manifest.repos) {
-        const key = (filePath: string) => fileKey(repo.name, filePath);
-        for (const change of changes) {
-          let seeded: ChangeSeeds | null = null;
-          const result = await computeProjectImpact(change, repo.name, {
-            mapRequirement: async () => {
-              throw new Error("A7 seeds with the split seeding (seedChange)");
-            },
-            seedChange: async (c, projectId) =>
-              (seeded = await resolveChangeSeeds(c, projectId, {
-                searcher: search.searcher,
-                loadSymbols: search.loadSymbols,
-                loadWriterIds: search.loadWriterIds,
-              })),
-            ...(variant.agentSeeds
-              ? {
-                  agentSeeds: {
-                    loadCitations: (requirementId: string, r: string) =>
-                      analysis!.loadCitations(requirementId, corpus.name, r),
-                    loadFileSymbols,
-                  },
-                }
-              : {}),
-            dataSourceFor: () => NO_GRAPH,
-            includeSchemaImpact: false,
-          });
-          const evidence = result.seedEvidence?.editCandidates;
-          // The engine's edit order: the evidence's when a stage beyond the
-          // seeding ran (the UI reads it), else the seeding's own.
-          const edit = evidence
-            ? evidence.map((e) => e.filePath)
-            : uniqueInOrder(
-                (seeded as ChangeSeeds | null)?.editCandidates.map((m) => m.filePath) ?? [],
-              );
-          for (const e of evidence ?? []) {
-            if (e.channels.includes("code-agent")) led.add(key(e.filePath));
-          }
-          seedings.push({
-            edit: edit.map(key),
-            other: uniqueInOrder(
-              result.affectedSymbols.filter((s) => s.relation !== "direct").map((s) => s.filePath),
-            ).map(key),
-          });
-        }
-      }
-
-      const resolved = [...citedFiles].filter((f) => corpus.graphFiles.has(f)).length;
-      const stats: AgentRunStats = {
+      const base: Omit<AgentRunStats, "citedFiles" | "unresolvedFiles"> = {
         passes: shared.results.length,
         // An analysis that persisted no requirement leaves nothing tracked to read.
         unanswered: shared.results.filter((r) => r.requirementIds.length === 0).length,
         toolCalls: 0,
-        citedFiles: citedFiles.size,
-        unresolvedFiles: citedFiles.size - resolved,
         passGroup: ANALYSIS_PASS_GROUP,
         passIds: shared.results.map((r) => r.analysisId),
       };
+      const reusedAnalysis = reused
+        ? { reusedCostUsd: shared.costUsd, reusedSeconds: shared.seconds }
+        : {};
+
+      if (variant.stale) {
+        const ops = staleness!.opsFor(corpus.name, item.id);
+        const { cycle, reused: reusedCycle } = await cycleFor(corpus, item, run, shared, changes);
+        const reading = variant.demote ? cycle.demote : cycle.keep;
+        const merged = mergeSeedings(reading.seedings);
+        const freshness: CitationFreshnessCounts = {
+          ...cycle.tally,
+          demoted: reading.demoted,
+        };
+        return {
+          rankedFiles: unrenamedFiles(merged.rankedFiles, ops),
+          editCandidateFiles: unrenamedFiles(merged.editCandidateFiles, ops),
+          llmNamedFiles: unrenamedFiles([...reading.led], ops),
+          agent: {
+            ...base,
+            citedFiles: cycle.citedFiles,
+            unresolvedFiles: cycle.unresolvedFiles,
+            citationFreshness: freshness,
+          },
+          ...(reused || reusedCycle
+            ? {
+                reusedCostUsd: reused ? shared.costUsd : 0,
+                reusedSeconds: (reused ? shared.seconds : 0) + (reusedCycle ? cycle.seconds : 0),
+              }
+            : {}),
+        };
+      }
+
+      // What the analyses stored, for the report: every cited file, and the
+      // ones the code graph does not hold (the stage drops those).
+      const citedFiles = await citedFilesOf(corpus, shared);
+      const reading = await readImpact(
+        corpus,
+        changes,
+        variant.agentSeeds ? citationDeps(corpus, variant.demote, symbolsOf(corpus)) : null,
+      );
+      const resolved = [...citedFiles].filter((f) => corpus.graphFiles.has(f)).length;
       return {
-        ...mergeSeedings(seedings),
-        ...(variant.agentSeeds ? { llmNamedFiles: [...led] } : {}),
-        agent: stats,
-        ...(reused ? { reusedCostUsd: shared.costUsd, reusedSeconds: shared.seconds } : {}),
+        ...mergeSeedings(reading.seedings),
+        ...(variant.agentSeeds ? { llmNamedFiles: [...reading.led] } : {}),
+        agent: {
+          ...base,
+          citedFiles: citedFiles.size,
+          unresolvedFiles: citedFiles.size - resolved,
+        },
+        ...reusedAnalysis,
       };
     },
   };
@@ -267,4 +509,19 @@ export function createA7Arm(deps: ArmDeps): LocalizationArm {
 /** A7O — the same impact run with the flag off: the control for the change of text (#1818). */
 export function createA7OArm(deps: ArmDeps): LocalizationArm {
   return createAnalysisArm(deps, ANALYSIS_VARIANTS.A7O);
+}
+
+/** A7K — A7 with the citations' freshness hidden, no staleness: must equal A7 (#1834). */
+export function createA7KArm(deps: ArmDeps): LocalizationArm {
+  return createAnalysisArm(deps, ANALYSIS_VARIANTS.A7K);
+}
+
+/** A7S — after the item's staleness patch, without demotion (#1834). */
+export function createA7SArm(deps: ArmDeps): LocalizationArm {
+  return createAnalysisArm(deps, ANALYSIS_VARIANTS.A7S);
+}
+
+/** A7SD — after the item's staleness patch, with #1832's demotion (#1834). */
+export function createA7SDArm(deps: ArmDeps): LocalizationArm {
+  return createAnalysisArm(deps, ANALYSIS_VARIANTS.A7SD);
 }

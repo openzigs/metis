@@ -1,0 +1,592 @@
+{
+  "id": "governing-01-sample-policy",
+  "description": "Held-out governing-rules set (#1867): a synthetic retailer's information handling policy (40 atomic obligations) and analyst-worded requirements labelled with the rules that truly apply to each, a per-rule verdict, and the business fact a BA would supply when the verdict is needs-ba-input.",
+  "purpose": "held-out",
+  "license": "CC0-1.0",
+  "synthetic": true,
+  "files": ["ANNOTATION.md", "baseline-A0.json", "baseline-A0.md", "policy-v1.md", "policy-v2.md"],
+  "policy": {
+    "title": "Harbor Lane Outfitters — Information Handling Policy",
+    "scored": "v1",
+    "revisions": [
+      { "revision": "v1", "file": "policy-v1.md", "effective": "2026-01-01", "changedRules": [] },
+      {
+        "revision": "v2",
+        "file": "policy-v2.md",
+        "effective": "2026-07-01",
+        "changedRules": ["AC-05", "AL-04", "DR-04", "VM-04"]
+      }
+    ]
+  },
+  "annotation": {
+    "labelledBy": "claude-opus-5-5 (AI coding agent dispatched on #1867), not a person",
+    "labelledAt": "2026-11-06",
+    "groundTruthFixedBeforeAnyArmRan": true,
+    "procedure": "The policy was written for this fixture in original wording, then each requirement was written in business language and labelled against policy-v1 before any arm ran. See ANNOTATION.md.",
+    "reviewedBy": null
+  },
+  "thresholds": {
+    "status": "proposed",
+    "proposedIn": "#1867",
+    "proposedAt": "2026-11-06",
+    "recordedBeforeAnyArmRan": true,
+    "overallRecall": 0.9,
+    "nonResemblingRecall": 0.85,
+    "precision": 0.6,
+    "citationAccuracy": 0.95,
+    "maxNoEvidenceCompliantErrors": 0,
+    "changes": []
+  },
+  "rules": [
+    {
+      "id": "AC-01",
+      "area": "access-control",
+      "summary": "One named individual per sign-in identity; no sharing between people."
+    },
+    {
+      "id": "AC-02",
+      "area": "access-control",
+      "summary": "Administrative staff identities need a second sign-in factor."
+    },
+    {
+      "id": "AC-03",
+      "area": "access-control",
+      "summary": "Least privilege; broader permissions need the system owner's written approval."
+    },
+    {
+      "id": "AC-04",
+      "area": "access-control",
+      "summary": "A leaver's access is removed by the end of their final working day."
+    },
+    {
+      "id": "AC-05",
+      "area": "access-control",
+      "summary": "System owners review who holds access every quarter."
+    },
+    {
+      "id": "AC-06",
+      "area": "access-control",
+      "summary": "Customer sign-in locks for fifteen minutes after five failed attempts."
+    },
+    {
+      "id": "AC-07",
+      "area": "access-control",
+      "summary": "Internal application sessions end after thirty minutes of inactivity."
+    },
+    {
+      "id": "AL-01",
+      "area": "audit-logging",
+      "summary": "Permission changes are written to the audit trail with actor, subject and timestamp."
+    },
+    {
+      "id": "AL-02",
+      "area": "audit-logging",
+      "summary": "Bulk extraction of customer or financial records is audit-logged with actor, timestamp and scope."
+    },
+    {
+      "id": "AL-03",
+      "area": "audit-logging",
+      "summary": "Audit trail entries are tamper-proof, administrators included."
+    },
+    {
+      "id": "AL-04",
+      "area": "audit-logging",
+      "summary": "Security staff examine audit alerts at least monthly."
+    },
+    {
+      "id": "AL-05",
+      "area": "audit-logging",
+      "summary": "Audit trail entries are retained for at least one year."
+    },
+    {
+      "id": "AL-06",
+      "area": "audit-logging",
+      "summary": "Staff changes to prices, discounts or payment amounts are audit-logged with old and new values."
+    },
+    {
+      "id": "DR-01",
+      "area": "data-retention",
+      "summary": "Financial transaction records are retained for seven years after fiscal year end."
+    },
+    {
+      "id": "DR-02",
+      "area": "data-retention",
+      "summary": "Personal information of a closed customer account is erased or anonymised within ninety days."
+    },
+    {
+      "id": "DR-03",
+      "area": "data-retention",
+      "summary": "Personal information copied into test or training environments is erased within thirty days."
+    },
+    {
+      "id": "DR-04",
+      "area": "data-retention",
+      "summary": "Recorded support calls and chat transcripts are retained at most twelve months."
+    },
+    {
+      "id": "DR-05",
+      "area": "data-retention",
+      "summary": "Each personal-information dataset has a named owner and a documented retention period."
+    },
+    {
+      "id": "DR-06",
+      "area": "data-retention",
+      "summary": "Records under legal hold are never destroyed until the hold is lifted."
+    },
+    {
+      "id": "EN-01",
+      "area": "encryption",
+      "summary": "Personal and payment information is encrypted in transit."
+    },
+    {
+      "id": "EN-02",
+      "area": "encryption",
+      "summary": "Personal and payment information is encrypted at rest, backups included."
+    },
+    {
+      "id": "EN-03",
+      "area": "encryption",
+      "summary": "Full card numbers are never stored; only the last four digits."
+    },
+    {
+      "id": "EN-04",
+      "area": "encryption",
+      "summary": "Encryption keys rotate yearly and are held apart from the protected information."
+    },
+    {
+      "id": "EN-05",
+      "area": "encryption",
+      "summary": "Files of personal information sent to an outside party are protected for the intended recipient only."
+    },
+    {
+      "id": "CM-01",
+      "area": "change-management",
+      "summary": "Production changes are approved by someone other than their author before going live."
+    },
+    {
+      "id": "CM-02",
+      "area": "change-management",
+      "summary": "Changes are tested outside production before release."
+    },
+    {
+      "id": "CM-03",
+      "area": "change-management",
+      "summary": "Every production change has a documented undo path."
+    },
+    {
+      "id": "CM-04",
+      "area": "change-management",
+      "summary": "Emergency changes are reviewed and approved within two working days afterwards."
+    },
+    {
+      "id": "CM-05",
+      "area": "change-management",
+      "summary": "Customers get five working days' notice of planned downtime."
+    },
+    {
+      "id": "CM-06",
+      "area": "change-management",
+      "summary": "No standing developer write access to production data."
+    },
+    {
+      "id": "VM-01",
+      "area": "vendor-management",
+      "summary": "An outside company completes a security review and data protection agreement before it receives personal or payment information."
+    },
+    {
+      "id": "VM-02",
+      "area": "vendor-management",
+      "summary": "Outside companies handling personal information are re-assessed yearly."
+    },
+    {
+      "id": "VM-03",
+      "area": "vendor-management",
+      "summary": "Outside companies get only the information their service needs."
+    },
+    {
+      "id": "VM-04",
+      "area": "vendor-management",
+      "summary": "Outside company contracts require security incident notice within seventy-two hours."
+    },
+    {
+      "id": "VM-05",
+      "area": "vendor-management",
+      "summary": "A current register lists each outside company handling personal information and what it receives."
+    },
+    {
+      "id": "PR-01",
+      "area": "privacy",
+      "summary": "Personal information is collected only for a purpose stated at collection."
+    },
+    {
+      "id": "PR-02",
+      "area": "privacy",
+      "summary": "Marketing goes only to opted-in customers, with a one-step opt-out."
+    },
+    {
+      "id": "PR-03",
+      "area": "privacy",
+      "summary": "Requests to see held personal information are answered within thirty days."
+    },
+    {
+      "id": "PR-04",
+      "area": "privacy",
+      "summary": "Precise location needs explicit, withdrawable permission."
+    },
+    {
+      "id": "PR-05",
+      "area": "privacy",
+      "summary": "Personal information of children under sixteen needs verified parental consent."
+    }
+  ],
+  "items": [
+    {
+      "id": "GR-01",
+      "title": "Download last month's invoices",
+      "text": "The accounts team want a button on the billing screen that downloads all of last month's invoices as one spreadsheet, so they can reconcile them against the bank statement.",
+      "applies": [
+        {
+          "ruleId": "AL-02",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Will each download be attributed to the person who ran it, with the date and the invoice period it covered?"
+        }
+      ]
+    },
+    {
+      "id": "GR-02",
+      "title": "Promote a colleague to team lead",
+      "text": "A store manager can give any team member the team-lead role from the staff screen, which unlocks refunds and rota editing for that member.",
+      "applies": [
+        {
+          "ruleId": "AL-01",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Will each promotion be noted with who granted it, who received it and when?"
+        },
+        {
+          "ruleId": "AC-03",
+          "verdict": "needs-ba-input",
+          "businessFact": "Is the store manager the person the policy names as owner of the till and rota systems, and is their approval given in writing?"
+        }
+      ]
+    },
+    {
+      "id": "GR-03",
+      "title": "Nearest shops in the mobile app",
+      "text": "The mobile app's store finder should show the three nearest shops based on where the phone is right now.",
+      "applies": [
+        {
+          "ruleId": "PR-04",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Will the app ask the shopper before reading the phone's position, and can they turn that off later?"
+        }
+      ]
+    },
+    {
+      "id": "GR-04",
+      "title": "Quick fixes to misspelt street names",
+      "text": "Support should be able to ask engineering to correct misspelt street names straight in the order tables, to save time on parcels returned as undeliverable.",
+      "applies": [{ "ruleId": "CM-06", "verdict": "gap", "nonResembling": true }]
+    },
+    {
+      "id": "GR-05",
+      "title": "Seasonal holiday workers",
+      "text": "Temporary holiday workers get logins for the rota and till systems for December; their last shift is usually on the second of January.",
+      "applies": [
+        {
+          "ruleId": "AC-04",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Who switches off a seasonal worker's logins, and does that happen on their last shift?"
+        }
+      ]
+    },
+    {
+      "id": "GR-06",
+      "title": "Satisfaction survey through SurveyCo",
+      "text": "Send the list of last quarter's buyers to SurveyCo so they can email each buyer a short satisfaction questionnaire.",
+      "applies": [
+        {
+          "ruleId": "VM-01",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Has SurveyCo passed the supplier security review and signed the data protection agreement?"
+        },
+        {
+          "ruleId": "VM-03",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Which buyer details does SurveyCo need beyond an email address?"
+        },
+        {
+          "ruleId": "VM-05",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Will SurveyCo be added to the supplier register with the buyer details it gets?"
+        }
+      ]
+    },
+    {
+      "id": "GR-07",
+      "title": "Abandoned basket reminders",
+      "text": "Email shoppers who left items in their basket a reminder twenty-four hours later, with a ten percent off code.",
+      "applies": [
+        {
+          "ruleId": "PR-02",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Will reminders go only to shoppers who agreed to promotional email, and can they stop them in a single click?"
+        }
+      ]
+    },
+    {
+      "id": "GR-08",
+      "title": "Junior rewards club",
+      "text": "Launch a junior rewards club where youngsters aged twelve and below sign up with their name and birthday to get a treat on their special day.",
+      "applies": [
+        {
+          "ruleId": "PR-05",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Will a mum, dad or carer confirm each junior sign-up before it is accepted?"
+        }
+      ]
+    },
+    {
+      "id": "GR-09",
+      "title": "Hand parcels to FastShip",
+      "text": "Pass each parcel's recipient name, phone number and address to the new courier, FastShip, through their booking system.",
+      "applies": [
+        {
+          "ruleId": "VM-01",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Has FastShip passed the supplier security review and signed the data protection agreement?"
+        },
+        {
+          "ruleId": "VM-05",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Will FastShip be added to the supplier register with the parcel details it gets?"
+        },
+        {
+          "ruleId": "EN-01",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Is the connection to FastShip's booking system secured end to end?"
+        }
+      ]
+    },
+    {
+      "id": "GR-10",
+      "title": "Stay signed in to the returns tool",
+      "text": "Staff using the returns tool stay signed in for the whole shift, so they do not have to keep typing their password.",
+      "applies": [{ "ruleId": "AC-07", "verdict": "gap", "nonResembling": true }]
+    },
+    {
+      "id": "GR-11",
+      "title": "Yearly clear-out of old order emails",
+      "text": "Purge every order confirmation email older than two years each January.",
+      "applies": [
+        {
+          "ruleId": "DR-06",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Are any of those emails part of a dispute or lawsuit the legal team has asked us to preserve?"
+        }
+      ]
+    },
+    {
+      "id": "GR-12",
+      "title": "One login for the warehouse scanners",
+      "text": "Pickers on the warehouse floor should all use one common username and password on the handheld scanners, so shifts can swap devices quickly.",
+      "applies": [{ "ruleId": "AC-01", "verdict": "gap" }]
+    },
+    {
+      "id": "GR-13",
+      "title": "Closing a customer account",
+      "text": "When a customer closes their account, remove their name, email address and delivery addresses from our systems within one month, but keep their past orders for tax reporting.",
+      "applies": [
+        { "ruleId": "DR-02", "verdict": "compliant" },
+        {
+          "ruleId": "DR-01",
+          "verdict": "needs-ba-input",
+          "businessFact": "How long will the past orders be kept after the account is closed?"
+        }
+      ]
+    },
+    {
+      "id": "GR-14",
+      "title": "Price match at the till",
+      "text": "Store supervisors can override the price of any item at the checkout to match a competitor's advertised price.",
+      "applies": [
+        {
+          "ruleId": "AL-06",
+          "verdict": "needs-ba-input",
+          "businessFact": "Will the till keep the original price, the overridden price and the supervisor's name for each override?"
+        }
+      ]
+    },
+    {
+      "id": "GR-15",
+      "title": "Keep call recordings for coaching",
+      "text": "Keep recordings of customer service phone calls for two years so team leaders can use them to coach new starters.",
+      "applies": [{ "ruleId": "DR-04", "verdict": "gap" }]
+    },
+    {
+      "id": "GR-16",
+      "title": "Realistic data on the staging site",
+      "text": "Every night, copy the live order database to the staging site so testers can try new features on realistic data.",
+      "applies": [
+        {
+          "ruleId": "DR-03",
+          "verdict": "needs-ba-input",
+          "businessFact": "Is each nightly copy wiped within thirty days, or does staging keep old copies?"
+        }
+      ]
+    },
+    {
+      "id": "GR-17",
+      "title": "Authenticator app for back-office admins",
+      "text": "Administrators of the online shop's back office must confirm each sign-in with a code from an authenticator app as well as their password.",
+      "applies": [{ "ruleId": "AC-02", "verdict": "compliant" }]
+    },
+    {
+      "id": "GR-18",
+      "title": "Lock out repeated wrong passwords",
+      "text": "After five wrong passwords in a row, a shopper's account should be locked for fifteen minutes before they can try again.",
+      "applies": [{ "ruleId": "AC-06", "verdict": "compliant" }]
+    },
+    {
+      "id": "GR-19",
+      "title": "Remember full card details",
+      "text": "Save shoppers' full card numbers so they can check out with one click next time.",
+      "applies": [{ "ruleId": "EN-03", "verdict": "gap" }]
+    },
+    {
+      "id": "GR-20",
+      "title": "Friday evening fixes",
+      "text": "Let the lead developer push fixes to the live site on their own on Friday evenings, when nobody else is around to look at them.",
+      "applies": [
+        { "ruleId": "CM-01", "verdict": "gap" },
+        {
+          "ruleId": "CM-02",
+          "verdict": "needs-ba-input",
+          "businessFact": "Are the Friday fixes tried anywhere other than the live site before they go out?"
+        }
+      ]
+    },
+    {
+      "id": "GR-21",
+      "title": "Emergency checkout fixes",
+      "text": "When checkout is down, the on-call engineer may deploy a fix immediately and must get sign-off from the head of engineering by the next working day.",
+      "applies": [
+        { "ruleId": "CM-04", "verdict": "compliant" },
+        {
+          "ruleId": "CM-03",
+          "verdict": "needs-ba-input",
+          "businessFact": "Is there a written way to roll back an emergency fix if it makes things worse?"
+        }
+      ]
+    },
+    {
+      "id": "GR-22",
+      "title": "Announce planned maintenance",
+      "text": "Announce planned maintenance of the online shop with a banner one week ahead and an email to every account holder.",
+      "applies": [{ "ruleId": "CM-05", "verdict": "compliant" }]
+    },
+    {
+      "id": "GR-23",
+      "title": "Twice-yearly stock system access check",
+      "text": "Twice a year, each department head should confirm who still needs access to the stock system and ask IT to remove the rest.",
+      "applies": [{ "ruleId": "AC-05", "verdict": "gap" }]
+    },
+    {
+      "id": "GR-24",
+      "title": "Customers ask for their data",
+      "text": "Customers can ask for a copy of everything we hold about them, and we will email it to them within six weeks.",
+      "applies": [{ "ruleId": "PR-03", "verdict": "gap" }]
+    },
+    {
+      "id": "GR-25",
+      "title": "Newsletter box at checkout",
+      "text": "On the checkout page, add a pre-ticked box that signs shoppers up to the weekly newsletter.",
+      "applies": [{ "ruleId": "PR-02", "verdict": "gap" }]
+    },
+    {
+      "id": "GR-26",
+      "title": "Payment provider review cycle",
+      "text": "Our payment provider has been with us for five years; procurement only looks at them again when the contract renews every three years.",
+      "applies": [{ "ruleId": "VM-02", "verdict": "gap" }]
+    },
+    {
+      "id": "GR-27",
+      "title": "Breach notice in supplier contracts",
+      "text": "New supplier contracts should require the supplier to tell us about any breach affecting our data within three days.",
+      "applies": [{ "ruleId": "VM-04", "verdict": "compliant" }]
+    },
+    {
+      "id": "GR-28",
+      "title": "Customer database keys",
+      "text": "The encryption keys for the customer database are changed every two years and stored on the same server as the database for speed.",
+      "applies": [{ "ruleId": "EN-04", "verdict": "gap" }]
+    },
+    {
+      "id": "GR-29",
+      "title": "Tidy up mistaken log entries",
+      "text": "Give the IT manager a way to delete embarrassing audit trail entries that were made by mistake.",
+      "applies": [{ "ruleId": "AL-03", "verdict": "gap" }]
+    },
+    {
+      "id": "GR-30",
+      "title": "Year-end payroll file for the accountants",
+      "text": "Send the year-end payroll file to our external accountants as a password-protected archive that only they can open.",
+      "applies": [
+        { "ruleId": "EN-05", "verdict": "compliant" },
+        {
+          "ruleId": "VM-01",
+          "verdict": "needs-ba-input",
+          "businessFact": "Have the accountants passed the supplier security review and signed the data protection agreement?"
+        }
+      ]
+    },
+    {
+      "id": "GR-31",
+      "title": "Greener basket button",
+      "text": "Change the colour of the add-to-basket button to dark green to match the new brand guide.",
+      "applies": []
+    },
+    {
+      "id": "GR-32",
+      "title": "Most helpful reviews first",
+      "text": "Show product reviews sorted by most helpful first, with newest first as a second option.",
+      "applies": []
+    },
+    {
+      "id": "GR-33",
+      "title": "Shoe size guide",
+      "text": "Add a size guide table to every shoe product page, showing UK, EU and US sizes side by side.",
+      "applies": []
+    },
+    {
+      "id": "GR-34",
+      "title": "Estimated delivery dates",
+      "text": "Display an estimated delivery date on each product page, worked out from the warehouse's current stock level for that product.",
+      "applies": []
+    },
+    {
+      "id": "GR-35",
+      "title": "Filter the catalogue by material",
+      "text": "Let shoppers filter the catalogue by colour and by material, such as leather, canvas or wool.",
+      "applies": []
+    },
+    {
+      "id": "GR-36",
+      "title": "Rename the Specials menu",
+      "text": "Rename the Specials menu to Offers across the website and the mobile app.",
+      "applies": []
+    }
+  ]
+}

@@ -74,10 +74,25 @@
  * refused on another fixture or repository pin, or when an analysis's stored
  * requirements no longer resolve; and once two readings are complete, their
  * paired 95% t-interval over the requirements is printed.
+ *
+ * #1834 — the staleness slice: A7K (A7 with the citations' freshness hidden),
+ * A7S and A7SD (after each item's committed staleness patch, without and with
+ * #1832's demotion), on the HELD-OUT corpora only:
+ *
+ *   pnpm eval:materialize localization-01-miniflux-heldout   # and -02, and impact-recall-01-jpetstore
+ *   pnpm eval:localization --arms A0,A7,A7K,A7S,A7SD --reference A7,A7S --embed --items 0:4
+ *   pnpm eval:localization --merge <dir> --reference A7,A7S --table-guard --embed --guard-steps 5
+ *
+ * The patch sets are committed in `server/scripts/eval-localization-staleness/`
+ * (`pnpm eval:staleness-patches` writes them). Before the provider is built, a
+ * staleness run checks that every corpus is a held-out set, loads, is
+ * materialized and has a patch for every item that fits its graph, and puts
+ * back any clone an earlier, killed run left patched: it fails before spending.
  */
 /* eslint-disable no-console -- a CLI whose output is its report */
 // #1755 — first: an agent arm binds the database to the materialized corpus before Prisma loads.
 import "./eval-localization-env.js";
+import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -143,7 +158,16 @@ import { loadRecordedVectors, writeRecordedVectors } from "../src/lib/eval/recor
 import type { EmbedService } from "../src/lib/code-graph/symbol-embeddings.js";
 import type { LocalizationArm } from "../src/lib/eval/localization/arms.js";
 import { AGENT_ARM_IDS, type AgentPass } from "../src/lib/eval/localization/agent-arms.js";
-import { ANALYSIS_ARM_IDS } from "../src/lib/eval/localization/analysis-arms.js";
+import { ANALYSIS_ARM_IDS, STALENESS_ARM_IDS } from "../src/lib/eval/localization/analysis-arms.js";
+import {
+  applyOpsToClone,
+  loadStalenessPatchSets,
+  patchSetsDigest,
+  stalenessPatchProblems,
+  withStalePatch,
+  type StalenessCycleDeps,
+  type StalenessPatchSet,
+} from "../src/lib/eval/localization/staleness.js";
 import { agentArmsRequested } from "../src/lib/eval/localization/agent-env.js";
 import {
   createAgentSeedGuard,
@@ -151,18 +175,20 @@ import {
   guardRecordsFile,
   lazyAgentSeedGuard,
   type AgentSeedGuard,
+  type GuardStaleness,
 } from "../src/lib/eval/localization/table-guard-agent.js";
 import {
   TABLE_GUARD_CORPUS,
   TABLE_GUARD_REPO,
 } from "../src/lib/eval/localization/table-guard-source.js";
 import type { CostMeter } from "../src/lib/eval/localization/cost.js";
-import type { AnalysisArmIO } from "../src/lib/eval/localization/arm-core.js";
+import type { AnalysisArmIO, StalenessArmIO } from "../src/lib/eval/localization/arm-core.js";
 import {
   assertEvalDatabase,
   EVAL_USER_EMAIL,
   materializeLayout,
   readMaterializedState,
+  type MaterializedRepo,
   type MaterializedState,
 } from "../src/lib/eval/localization/materialize.js";
 
@@ -235,6 +261,8 @@ interface AgentGuardContext {
   /** `--guard-steps`: new steps (an analysis, or a run of a reading) this call may take. */
   maxSteps: number | undefined;
   argv: readonly string[];
+  /** #1834 — the staleness cycle on the table corpus's repository (A7S, A7SD). */
+  staleness: GuardStaleness | undefined;
 }
 
 async function tableGuardFor(
@@ -327,7 +355,9 @@ async function tableGuardFor(
   }
   // #1823 — A7 (and its control A7O) on the table corpus, with citations a real
   // analysis stored on the repository the corpus models.
-  const agentArms = armIds.filter((id) => ANALYSIS_ARM_IDS.has(id));
+  // #1834 — A7K reads nothing the guard can tell from A7 (no re-ingest, so no stale citation).
+  const GUARD_ARMS = ["A7", "A7O", "A7S", "A7SD"] as const;
+  const agentArms = armIds.filter((id) => (GUARD_ARMS as readonly string[]).includes(id));
   let agentGuard: AgentSeedGuard | null = null;
   if (agentArms.length > 0 && armProvider) {
     if (!agentArmsRequested(agent.argv)) {
@@ -387,13 +417,14 @@ async function tableGuardFor(
               ? `budget: $${agent.capped.spentUsd().toFixed(4)} spent of $${agent.budgetUsd}`
               : null,
         maxSteps: agent.maxSteps,
+        ...(agent.staleness ? { staleness: agent.staleness } : {}),
         runOnce: (opts) => runnerMod.runImpactRecallEval(fixture, opts),
         describe: (label) => `${corpusName}, ${label}, ${provider.key}/${provider.model}`,
         log: (line) => console.log(line),
       });
     });
     for (const id of agentArms) {
-      const variant = id as "A7" | "A7O";
+      const variant = id as (typeof GUARD_ARMS)[number];
       const guard = agentGuard;
       others[id] = () => guard[variant]();
     }
@@ -555,6 +586,232 @@ async function analysisIOFor(
   };
 }
 
+/** `git -C <clone> …` with an argument array: no shell; every path was checked first. */
+function gitIn(dir: string, args: string[], env: NodeJS.ProcessEnv = {}): string {
+  return execFileSync("git", ["-C", dir, ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, ...env },
+  }).trim();
+}
+
+/** A patch commit's fixed identity and date: the same patch is the same commit. */
+const PATCH_COMMIT_ENV = {
+  GIT_AUTHOR_NAME: "metis-eval",
+  GIT_AUTHOR_EMAIL: EVAL_USER_EMAIL,
+  GIT_COMMITTER_NAME: "metis-eval",
+  GIT_COMMITTER_EMAIL: EVAL_USER_EMAIL,
+  GIT_AUTHOR_DATE: "2026-11-06T00:00:00Z",
+  GIT_COMMITTER_DATE: "2026-11-06T00:00:00Z",
+};
+
+/** #1834 — what the staleness arms and the table guard's staleness readings read through. */
+interface StalenessWiring {
+  /** The corpus search over patched rows is per corpus: the main loop adds `searchFor`. */
+  arms: Omit<StalenessArmIO, "searchFor">;
+  guard: GuardStaleness | undefined;
+}
+
+/**
+ * #1834 — the staleness cycle, checked BEFORE the provider is built: every
+ * corpus is a held-out set that loads, is materialized and has a patch for
+ * each item that fits its graph (the table corpus's, with `--table-guard`, too);
+ * a clone or graph an earlier, killed run left patched is put back.
+ */
+async function stalenessFor(
+  corpora: readonly LocalizationCorpusName[],
+  withGuard: boolean,
+): Promise<StalenessWiring> {
+  const sets = await loadStalenessPatchSets();
+  const digest = patchSetsDigest(sets);
+  const problems: string[] = [];
+  const setOf = (name: string): StalenessPatchSet => {
+    const set = sets.get(name);
+    if (!set) {
+      throw new Error(
+        `${name} has no committed staleness patch set (server/scripts/eval-localization-staleness/; pnpm eval:staleness-patches)`,
+      );
+    }
+    return set;
+  };
+  for (const name of corpora) {
+    const corpus = await loadLocalizationCorpus(name);
+    if (corpus.manifest.purpose !== "held-out") {
+      throw new Error(
+        `the staleness arms run on the held-out sets only, not ${name} (${corpus.manifest.purpose}, #1819)`,
+      );
+    }
+    problems.push(
+      ...stalenessPatchProblems(setOf(name), {
+        name,
+        itemIds: corpus.manifest.items.map((i) => i.id),
+        symbols: corpus.symbols,
+      }).map((p) => `${name}: ${p}`),
+    );
+  }
+  const states = await materializedStates([...corpora, ...(withGuard ? [TABLE_GUARD_CORPUS] : [])]);
+  const { prisma } = await import("../src/lib/prisma.js");
+  const { ingestCodeGraph } = await import("../src/lib/code-graph/ingest.js");
+  const { embedProjectSymbols } = await import("../src/lib/code-graph/symbol-embedding-service.js");
+  const { resolveRepoClonePath } = await import("../src/lib/connectors/repo/clone-path.js");
+  if (withGuard) {
+    const fixtureMod = await import("../src/lib/eval/impact-recall/fixture.js");
+    const fixture = await fixtureMod.loadImpactRecallFixture(
+      fixtureMod.resolveCorpusDir(TABLE_GUARD_CORPUS),
+    );
+    const repo = states
+      .get(TABLE_GUARD_CORPUS)!
+      .repos.find((r) => r.name === TABLE_GUARD_REPO.name)!;
+    const rows = await prisma.codeSymbol.findMany({
+      where: { projectId: repo.projectId },
+      select: {
+        filePath: true,
+        qualifiedName: true,
+        kind: true,
+        language: true,
+        startLine: true,
+        endLine: true,
+      },
+    });
+    problems.push(
+      ...stalenessPatchProblems(setOf(TABLE_GUARD_CORPUS), {
+        name: TABLE_GUARD_CORPUS,
+        itemIds: fixture.requirements.map((r) => r.id),
+        symbols: rows.map((r) => ({ ...r, repo: TABLE_GUARD_REPO.name })),
+      }).map((p) => `${TABLE_GUARD_CORPUS}: ${p}`),
+    );
+  }
+  if (problems.length > 0) {
+    throw new Error(
+      `the staleness patch sets do not fit their corpora:\n  - ${problems.join("\n  - ")}`,
+    );
+  }
+
+  /** The clone of a materialized repository, where the materialization put it. */
+  const cloneOf = (repo: MaterializedRepo): string => {
+    const dir = resolveRepoClonePath(repo.connectorId);
+    if (path.resolve(repo.cloneDir) !== path.resolve(dir)) {
+      throw new Error(
+        `${repo.name}: the clone moved (${repo.cloneDir}); run pnpm eval:materialize again`,
+      );
+    }
+    return dir;
+  };
+  const cycle: StalenessCycleDeps<MaterializedRepo> = {
+    async applyAndCommit(repo, ops) {
+      const dir = cloneOf(repo);
+      await applyOpsToClone(dir, ops);
+      gitIn(dir, ["add", "--all"]);
+      gitIn(
+        dir,
+        [
+          "-c",
+          "commit.gpgsign=false",
+          "commit",
+          "--quiet",
+          "--no-verify",
+          "-m",
+          "metis-eval #1834: synthetic staleness patch",
+        ],
+        PATCH_COMMIT_ENV,
+      );
+      return gitIn(dir, ["rev-parse", "HEAD"]);
+    },
+    async restore(repo) {
+      const dir = cloneOf(repo);
+      gitIn(dir, ["reset", "--quiet", "--hard", repo.sha]);
+      gitIn(dir, ["clean", "-fdq"]);
+    },
+    async reingest(repo, commitSha) {
+      await ingestCodeGraph(prisma, {
+        projectId: repo.projectId,
+        rootDir: cloneOf(repo),
+        repoConnectionId: repo.connectorId,
+        commitSha,
+        incremental: true,
+        // The committed rows were built with lineage off, as the materialization ingests.
+        sqlLineageOverride: false,
+      });
+    },
+    pinnedSha: (repo) => repo.sha,
+    async afterRestore(repo) {
+      await embedProjectSymbols(repo.projectId);
+    },
+  };
+  // A clone or graph left patched by a killed run is put back, and its symbols embedded,
+  // before anything reads it.
+  for (const state of states.values()) {
+    for (const repo of state.repos) {
+      const dir = cloneOf(repo);
+      const head = gitIn(dir, ["rev-parse", "HEAD"]);
+      const dirty = gitIn(dir, ["status", "--porcelain"]) !== "";
+      const graph = await prisma.codeGraph.findFirst({
+        where: { projectId: repo.projectId, repoConnectionId: repo.connectorId },
+        select: { commitSha: true },
+      });
+      if (head === repo.sha && !dirty && graph?.commitSha === repo.sha) {
+        // A run killed during the restore's re-embed left symbols without vectors: embed them
+        // (a no-op when every symbol has one).
+        await cycle.afterRestore!(repo);
+        continue;
+      }
+      console.log(
+        `${state.corpus}/${repo.name}: left patched by an earlier run (clone ${head.slice(0, 8)}${dirty ? ", dirty" : ""}, graph ${graph?.commitSha?.slice(0, 8) ?? "none"}); restoring ${repo.sha.slice(0, 8)}`,
+      );
+      await cycle.restore(repo);
+      await cycle.reingest(repo, repo.sha);
+      await cycle.afterRestore!(repo);
+    }
+  }
+  const repoIn =
+    (corpus: string) =>
+    (name: string): MaterializedRepo => {
+      const repo = states.get(corpus)?.repos.find((r) => r.name === name);
+      if (!repo) throw new Error(`${corpus}/${name} is not materialized`);
+      return repo;
+    };
+  const timed = async <T>(label: string, run: () => Promise<T>): Promise<T> => {
+    const t0 = Date.now();
+    try {
+      return await run();
+    } finally {
+      console.log(
+        `staleness: ${label} patched, read and restored in ${((Date.now() - t0) / 1000).toFixed(1)} s`,
+      );
+    }
+  };
+  console.log(
+    `staleness: patch sets ${digest}; ${corpora.length + (withGuard ? 1 : 0)} corpus(es) checked`,
+  );
+  return {
+    arms: {
+      patchSetDigest: digest,
+      opsFor(corpus, itemId) {
+        const ops = sets.get(corpus)?.items[itemId];
+        if (!ops) throw new Error(`${corpus}: no staleness patch for ${itemId}`);
+        return ops;
+      },
+      withPatch: (corpus, ops, read) =>
+        timed(corpus, () => withStalePatch(ops, repoIn(corpus), cycle, read)),
+    },
+    guard: withGuard
+      ? {
+          patchSetDigest: digest,
+          opsFor(requirementId) {
+            const ops = sets.get(TABLE_GUARD_CORPUS)?.items[requirementId];
+            if (!ops)
+              throw new Error(`${TABLE_GUARD_CORPUS}: no staleness patch for ${requirementId}`);
+            return ops;
+          },
+          withPatch: (ops, read) =>
+            timed(TABLE_GUARD_CORPUS, () =>
+              withStalePatch(ops, repoIn(TABLE_GUARD_CORPUS), cycle, read),
+            ),
+        }
+      : undefined,
+  };
+}
+
 /** #1800 — the corpora a merge reports: those the directory holds, or the one named. */
 async function mergeCorporaFor(
   argv: string[],
@@ -619,6 +876,18 @@ async function main(): Promise<void> {
   // A merge reports the arms the slices recorded, and runs none: its provider
   // is needed only for A4's table guard.
   const reportedArmIds = mergeDir ? await store.recordedArmIds(corpora) : armIds;
+  // #1834 — a staleness run fails here, before the provider is built and before any spend,
+  // when a held-out set, its materialization or its patches are missing.
+  const stalenessRun = reportedArmIds.some((id) => STALENESS_ARM_IDS.has(id));
+  if (stalenessRun && mergeDir && argv.includes("--table-guard") && !agentArmsRequested(argv)) {
+    throw new Error(
+      `--table-guard reads ${reportedArmIds.filter((id) => STALENESS_ARM_IDS.has(id)).join(",")} on the materialized table corpus: pass --arms ${reportedArmIds.join(",")} (the recorded arms) so the eval database is bound`,
+    );
+  }
+  const staleness =
+    stalenessRun && (!mergeDir || argv.includes("--table-guard"))
+      ? await stalenessFor(mergeDir ? [] : corpora, argv.includes("--table-guard"))
+      : undefined;
   const needsProvider =
     reportedArmIds.some((id) => MODEL_ARMS.has(id)) &&
     (!mergeDir || argv.includes("--table-guard"));
@@ -645,6 +914,7 @@ async function main(): Promise<void> {
         maxSteps:
           guardSteps === undefined ? undefined : positiveInteger(guardSteps, 1, "guard-steps"),
         argv,
+        staleness: staleness?.guard,
       })
     : undefined;
   console.log(
@@ -688,6 +958,15 @@ async function main(): Promise<void> {
           ...(provider ? { provider } : {}),
           ...(agentPass ? { agentPass } : {}),
           ...(analysis ? { analysis } : {}),
+          ...(staleness
+            ? {
+                staleness: {
+                  ...staleness.arms,
+                  // #1834 — the patched rows, searched with this corpus's vectors (+ the live model).
+                  searchFor: (rows) => buildCorpusSearch(rows, cache!),
+                },
+              }
+            : {}),
         });
         checkpoint = await store.openForRun(corpus, runFingerprint(corpus, arms, runs));
         const ids = sliceItemIds(corpus.manifest.items, slice);

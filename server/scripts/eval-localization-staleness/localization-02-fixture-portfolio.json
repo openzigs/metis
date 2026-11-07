@@ -1,0 +1,451 @@
+{
+  "corpus": "localization-02-fixture-portfolio",
+  "issue": 1834,
+  "rule": "edit: one comment line inside every multi-line symbol the item's labels name, else inside every multi-line function/method, else inside the longest other multi-line non-module symbol, of the first ground-truth file that has one of that tier; rename: the first other ground-truth file, else the edited file's neighbour with the most symbols, to <name>_renamed<ext>; delete: the edited file's neighbour with the most symbols (same repository, nearest directory, never an answer, a test or a documentation file)",
+  "items": {
+    "FX-01": [
+      {
+        "op": "edit",
+        "repo": "orders",
+        "file": "src/db/orders-repo.ts",
+        "symbol": "src/db/orders-repo.ts::insertOrder",
+        "afterLine": 7,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "orders",
+        "file": "src/db/orders-repo.ts",
+        "symbol": "src/db/orders-repo.ts::insertCustomer",
+        "afterLine": 16,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "orders",
+        "file": "src/db/orders-repo.ts",
+        "symbol": "src/db/orders-repo.ts::updateCustomerEmail",
+        "afterLine": 24,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "orders",
+        "from": "src/routes/orders.ts",
+        "to": "src/routes/orders_renamed.ts"
+      },
+      {
+        "op": "delete",
+        "repo": "orders",
+        "file": "src/types/order.ts"
+      }
+    ],
+    "FX-02": [
+      {
+        "op": "edit",
+        "repo": "orders",
+        "file": "src/db/orders-repo.ts",
+        "symbol": "src/db/orders-repo.ts::insertOrder",
+        "afterLine": 7,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "orders",
+        "file": "src/db/orders-repo.ts",
+        "symbol": "src/db/orders-repo.ts::insertCustomer",
+        "afterLine": 16,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "orders",
+        "file": "src/db/orders-repo.ts",
+        "symbol": "src/db/orders-repo.ts::updateCustomerEmail",
+        "afterLine": 24,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "orders",
+        "from": "src/routes/orders.ts",
+        "to": "src/routes/orders_renamed.ts"
+      },
+      {
+        "op": "delete",
+        "repo": "orders",
+        "file": "src/types/order.ts"
+      }
+    ],
+    "FX-03": [
+      {
+        "op": "edit",
+        "repo": "orders",
+        "file": "src/events/publisher.ts",
+        "symbol": "src/events/publisher.ts::publishOrderCreated",
+        "afterLine": 8,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "orders",
+        "from": "src/routes/orders.ts",
+        "to": "src/routes/orders_renamed.ts"
+      },
+      {
+        "op": "delete",
+        "repo": "orders",
+        "file": "src/db/orders-repo.ts"
+      }
+    ],
+    "FX-04": [
+      {
+        "op": "edit",
+        "repo": "billing",
+        "file": "src/consumers/order-created.ts",
+        "symbol": "src/consumers/order-created.ts::start",
+        "afterLine": 16,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "billing",
+        "file": "src/consumers/order-created.ts",
+        "symbol": "src/consumers/order-created.ts::start::eachMessage",
+        "afterLine": 19,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "billing",
+        "from": "src/db/billing-repo.ts",
+        "to": "src/db/billing-repo_renamed.ts"
+      },
+      {
+        "op": "delete",
+        "repo": "billing",
+        "file": "src/types/order.ts"
+      }
+    ],
+    "FX-05": [
+      {
+        "op": "edit",
+        "repo": "notify",
+        "file": "src/consumers/invoice-issued.ts",
+        "symbol": "src/consumers/invoice-issued.ts::start",
+        "afterLine": 15,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "notify",
+        "file": "src/consumers/invoice-issued.ts",
+        "symbol": "src/consumers/invoice-issued.ts::start::eachMessage",
+        "afterLine": 18,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "notify",
+        "from": "src/db/notify-repo.ts",
+        "to": "src/db/notify-repo_renamed.ts"
+      }
+    ],
+    "FX-06": [
+      {
+        "op": "edit",
+        "repo": "orders",
+        "file": "src/db/orders-repo.ts",
+        "symbol": "src/db/orders-repo.ts::insertOrder",
+        "afterLine": 7,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "orders",
+        "file": "src/db/orders-repo.ts",
+        "symbol": "src/db/orders-repo.ts::insertCustomer",
+        "afterLine": 16,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "orders",
+        "file": "src/db/orders-repo.ts",
+        "symbol": "src/db/orders-repo.ts::updateCustomerEmail",
+        "afterLine": 24,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "orders",
+        "from": "src/types/order.ts",
+        "to": "src/types/order_renamed.ts"
+      },
+      {
+        "op": "delete",
+        "repo": "orders",
+        "file": "src/events/publisher.ts"
+      }
+    ],
+    "FX-07": [
+      {
+        "op": "edit",
+        "repo": "billing",
+        "file": "src/consumers/order-created.ts",
+        "symbol": "src/consumers/order-created.ts::start",
+        "afterLine": 16,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "billing",
+        "file": "src/consumers/order-created.ts",
+        "symbol": "src/consumers/order-created.ts::start::eachMessage",
+        "afterLine": 19,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "billing",
+        "from": "src/db/billing-repo.ts",
+        "to": "src/db/billing-repo_renamed.ts"
+      },
+      {
+        "op": "delete",
+        "repo": "billing",
+        "file": "src/routes/invoices.ts"
+      }
+    ],
+    "FX-08": [
+      {
+        "op": "edit",
+        "repo": "billing",
+        "file": "src/db/billing-repo.ts",
+        "symbol": "src/db/billing-repo.ts::loadOrderForInvoice",
+        "afterLine": 8,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "billing",
+        "file": "src/db/billing-repo.ts",
+        "symbol": "src/db/billing-repo.ts::insertInvoice",
+        "afterLine": 19,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "billing",
+        "from": "src/routes/invoices.ts",
+        "to": "src/routes/invoices_renamed.ts"
+      },
+      {
+        "op": "delete",
+        "repo": "billing",
+        "file": "src/consumers/order-created.ts"
+      }
+    ],
+    "FX-09": [
+      {
+        "op": "edit",
+        "repo": "billing",
+        "file": "src/db/billing-repo.ts",
+        "symbol": "src/db/billing-repo.ts::loadOrderForInvoice",
+        "afterLine": 8,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "billing",
+        "file": "src/db/billing-repo.ts",
+        "symbol": "src/db/billing-repo.ts::insertInvoice",
+        "afterLine": 19,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "billing",
+        "from": "src/types/order.ts",
+        "to": "src/types/order_renamed.ts"
+      },
+      {
+        "op": "delete",
+        "repo": "billing",
+        "file": "src/consumers/order-created.ts"
+      }
+    ],
+    "FX-10": [
+      {
+        "op": "edit",
+        "repo": "notify",
+        "file": "src/consumers/invoice-issued.ts",
+        "symbol": "src/consumers/invoice-issued.ts::start",
+        "afterLine": 15,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "notify",
+        "file": "src/consumers/invoice-issued.ts",
+        "symbol": "src/consumers/invoice-issued.ts::start::eachMessage",
+        "afterLine": 18,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "notify",
+        "from": "src/db/notify-repo.ts",
+        "to": "src/db/notify-repo_renamed.ts"
+      }
+    ],
+    "FX-11": [
+      {
+        "op": "edit",
+        "repo": "orders",
+        "file": "src/routes/orders.ts",
+        "symbol": "src/routes/orders.ts::Router",
+        "afterLine": 7,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "orders",
+        "from": "src/db/orders-repo.ts",
+        "to": "src/db/orders-repo_renamed.ts"
+      },
+      {
+        "op": "delete",
+        "repo": "orders",
+        "file": "src/types/order.ts"
+      }
+    ],
+    "FX-12": [
+      {
+        "op": "edit",
+        "repo": "orders",
+        "file": "src/db/orders-repo.ts",
+        "symbol": "src/db/orders-repo.ts::insertOrder",
+        "afterLine": 7,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "orders",
+        "file": "src/db/orders-repo.ts",
+        "symbol": "src/db/orders-repo.ts::insertCustomer",
+        "afterLine": 16,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "orders",
+        "file": "src/db/orders-repo.ts",
+        "symbol": "src/db/orders-repo.ts::updateCustomerEmail",
+        "afterLine": 24,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "orders",
+        "from": "src/routes/orders.ts",
+        "to": "src/routes/orders_renamed.ts"
+      },
+      {
+        "op": "delete",
+        "repo": "orders",
+        "file": "src/types/order.ts"
+      }
+    ],
+    "FX-13": [
+      {
+        "op": "edit",
+        "repo": "billing",
+        "file": "src/consumers/order-created.ts",
+        "symbol": "src/consumers/order-created.ts::start",
+        "afterLine": 16,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "billing",
+        "file": "src/consumers/order-created.ts",
+        "symbol": "src/consumers/order-created.ts::start::eachMessage",
+        "afterLine": 19,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "billing",
+        "from": "src/db/billing-repo.ts",
+        "to": "src/db/billing-repo_renamed.ts"
+      },
+      {
+        "op": "delete",
+        "repo": "billing",
+        "file": "src/types/order.ts"
+      }
+    ],
+    "FX-14": [
+      {
+        "op": "edit",
+        "repo": "notify",
+        "file": "src/consumers/invoice-issued.ts",
+        "symbol": "src/consumers/invoice-issued.ts::start",
+        "afterLine": 15,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "notify",
+        "file": "src/consumers/invoice-issued.ts",
+        "symbol": "src/consumers/invoice-issued.ts::start::eachMessage",
+        "afterLine": 18,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "notify",
+        "from": "src/db/notify-repo.ts",
+        "to": "src/db/notify-repo_renamed.ts"
+      }
+    ],
+    "FX-15": [
+      {
+        "op": "edit",
+        "repo": "orders",
+        "file": "src/db/orders-repo.ts",
+        "symbol": "src/db/orders-repo.ts::insertOrder",
+        "afterLine": 7,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "orders",
+        "file": "src/db/orders-repo.ts",
+        "symbol": "src/db/orders-repo.ts::insertCustomer",
+        "afterLine": 16,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "orders",
+        "file": "src/db/orders-repo.ts",
+        "symbol": "src/db/orders-repo.ts::updateCustomerEmail",
+        "afterLine": 24,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "orders",
+        "from": "src/routes/orders.ts",
+        "to": "src/routes/orders_renamed.ts"
+      },
+      {
+        "op": "delete",
+        "repo": "orders",
+        "file": "src/types/order.ts"
+      }
+    ]
+  }
+}

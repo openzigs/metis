@@ -93,6 +93,28 @@ export function requiredRepoFiles(fixture: Pick<ImpactRecallFixture, "manifest">
   return [...files].sort();
 }
 
+/**
+ * #1834 — each fixture requirement's ground-truth files on the repository
+ * (`jpetstore:<path>`): the files of the fixture symbols its
+ * `expectedCodeSymbols` name, in manifest order, without the fixture-only
+ * ones, and the symbol names themselves. What the staleness patch set's
+ * targets are chosen from.
+ */
+export function guardPatchTargets(
+  fixture: Pick<ImpactRecallFixture, "manifest">,
+): Array<{ id: string; expectedFiles: string[]; expectedSymbols: string[] }> {
+  return fixture.manifest.requirements.map((r) => {
+    const names = new Set(r.expectedCodeSymbols ?? []);
+    const files = new Set<string>();
+    for (const s of fixture.manifest.codeSymbols) {
+      if (!names.has(s.name) || FIXTURE_ONLY_FILES.has(s.filePath)) continue;
+      const repoPath = toRepoPath(s.filePath);
+      if (repoPath) files.add(fileKey(TABLE_GUARD_REPO.name, repoPath));
+    }
+    return { id: r.id, expectedFiles: [...files], expectedSymbols: [...names] };
+  });
+}
+
 /** How a reading's citations reached the fixture. */
 export interface CitationTranslation {
   /** Cited symbols the fixture holds under the same qualified name. */

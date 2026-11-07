@@ -1182,6 +1182,44 @@ describe("agent-pass counts and split passes in the report (#1810)", () => {
     expect(md).not.toContain("A7 analyses");
   });
 
+  it("sums a staleness arm's citation states over items and runs, and prints them (#1834)", async () => {
+    const fresh = { fresh: 1, moved: 1, stale: 2, unverified: 0 };
+    const report = await runLocalizationEval(corpus(2), {
+      arms: [
+        arm("A0", () => 1),
+        passArm("A7S", () =>
+          stats({ passGroup: "analysis", citationFreshness: { ...fresh, demoted: 0 } }),
+        ),
+        passArm("A7SD", () =>
+          stats({ passGroup: "analysis", citationFreshness: { ...fresh, demoted: 2 } }),
+        ),
+        passArm("A7", () => stats({ passGroup: "analysis" })),
+      ],
+      runs: 2,
+      meter: new FakeMeter(),
+    });
+    const sd = report.arms.find((a) => a.id === "A7SD")!;
+    // 2 items × 2 runs.
+    expect(sd.aggregate.agent!.citationFreshness).toEqual({
+      fresh: 4,
+      moved: 4,
+      stale: 8,
+      unverified: 0,
+      demoted: 8,
+    });
+    expect(
+      report.arms.find((a) => a.id === "A7")!.aggregate.agent!.citationFreshness,
+    ).toBeUndefined();
+    const md = toMarkdownReport(report);
+    expect(md).toContain(
+      "After the staleness patch's re-ingest (#1831): 8 stale, 4 moved, 4 fresh, 0 unverified citation(s); 8 set aside by the stage (#1832).",
+    );
+    expect(md).toContain("0 set aside by the stage");
+    expect(md.split("\n").filter((l) => l.startsWith("- A7 analyses"))[0]).not.toContain(
+      "After the staleness",
+    );
+  });
+
   it("finds no split when an arm of the group has no reading, or none carries counts", () => {
     const score = (agent?: AgentRunStats) => ({ agent }) as unknown as ItemRunScore;
     expect(
