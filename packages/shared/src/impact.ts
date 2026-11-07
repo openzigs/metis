@@ -74,19 +74,66 @@ export function impactSymbolRole(symbol: { depth: number }): ImpactSymbolRole {
 }
 
 /**
+ * #1965 — the repository an affected symbol's code graph was built from: the
+ * repo connector's id, and its repository name (else its label). A project can
+ * connect several repositories, and the same path can exist in more than one.
+ */
+export interface ImpactSymbolRepoRef {
+  id: string;
+  name: string;
+}
+
+/**
+ * #1965 — one file of an impact result: a path is a file only within its
+ * repository. `repoConnectionId` is null when the repository is not known (a
+ * symbol with no code-graph row behind it, or one a later ingest replaced).
+ */
+export interface ImpactFileRef {
+  repoConnectionId: string | null;
+  filePath: string;
+}
+
+/** #1965 — what identifies a file: its repository AND its path, never the path alone. */
+export function impactFileKey(s: { filePath: string; repo?: { id: string } | null }): string {
+  return `${s.repo?.id ?? ""}\u0000${s.filePath}`;
+}
+
+/** #1965 — the number of distinct known repositories among these symbols. */
+export function impactRepoCount(symbols: ReadonlyArray<{ repo?: { id: string } | null }>): number {
+  const ids = new Set<string>();
+  for (const s of symbols) if (s.repo) ids.add(s.repo.id);
+  return ids.size;
+}
+
+/**
  * #1036 — the files behind the two lists, in first-seen order. `blastRadiusFiles`
  * is the WHOLE reviewed surface, so it includes the edit-candidate files: a file
  * to edit is inside the blast radius by definition, and recall is measured on it.
+ *
+ * #1965 — a file is keyed by (repository, path), so `src/types/order.ts` in two
+ * repositories of one project is two files, in both lists and in both counts.
  */
-export function impactFileLists(symbols: ReadonlyArray<{ filePath: string; depth: number }>): {
-  editCandidateFiles: string[];
-  blastRadiusFiles: string[];
+export function impactFileLists(
+  symbols: ReadonlyArray<{ filePath: string; depth: number; repo?: { id: string } | null }>,
+): {
+  editCandidateFiles: ImpactFileRef[];
+  blastRadiusFiles: ImpactFileRef[];
 } {
-  const edit = new Set<string>();
-  for (const s of symbols) if (impactSymbolRole(s) === "edit-candidate") edit.add(s.filePath);
-  const all = new Set<string>(edit);
-  for (const s of symbols) all.add(s.filePath);
-  return { editCandidateFiles: [...edit], blastRadiusFiles: [...all] };
+  const ref = (s: (typeof symbols)[number]): ImpactFileRef => ({
+    repoConnectionId: s.repo?.id ?? null,
+    filePath: s.filePath,
+  });
+  const edit = new Map<string, ImpactFileRef>();
+  for (const s of symbols) {
+    const key = impactFileKey(s);
+    if (impactSymbolRole(s) === "edit-candidate" && !edit.has(key)) edit.set(key, ref(s));
+  }
+  const all = new Map(edit);
+  for (const s of symbols) {
+    const key = impactFileKey(s);
+    if (!all.has(key)) all.set(key, ref(s));
+  }
+  return { editCandidateFiles: [...edit.values()], blastRadiusFiles: [...all.values()] };
 }
 
 // ---- Match quality (#961) --------------------------------------------------
@@ -466,6 +513,12 @@ export interface ImpactAffectedSymbolView {
   relation: ImpactAffectedRelation;
   depth: number;
   confidence: number;
+  /**
+   * #1965 — the repository the symbol's code graph was built from; null when it
+   * is not known. The read path always sets it; absent only on a view built
+   * without one (a fixture), which reads as unknown.
+   */
+  repo?: ImpactSymbolRepoRef | null;
 }
 
 /**
@@ -677,6 +730,12 @@ export const impactSeedEvidenceSchema = z.object({
     .array(
       z.object({
         filePath: z.string().min(1).max(1024),
+        /**
+         * #1969 — the file's repository, when every seed behind the entry is in
+         * that one repository. Absent when the path was seeded from several (the
+         * entry then speaks for the path in each) and on evidence before #1969.
+         */
+        repoConnectionId: z.string().min(1).max(200).optional(),
         channels: z.array(z.enum(IMPACT_SEED_CHANNELS)).min(1),
         /** #1756 — the file's deterministic (hybrid) score, kept next to any verdict. */
         baseScore: z.number().min(0).optional(),
@@ -751,14 +810,14 @@ export interface ImpactItemView {
    * #1036 — the production files the change probably has to EDIT: the files of the
    * `edit-candidate` symbols in {@link affectedSymbols} (see
    * {@link impactSymbolRole}). Small and precise; the list to score on precision
-   * and recall.
+   * and recall. #1965 — each file is (repository, path): see {@link impactFileLists}.
    */
-  editCandidateFiles: string[];
+  editCandidateFiles: ImpactFileRef[];
   /**
    * #1036 — every production file in the result, edit candidates first. Wide by
-   * design; the list to score on recall only.
+   * design; the list to score on recall only. #1965 — keyed by (repository, path).
    */
-  blastRadiusFiles: string[];
+  blastRadiusFiles: ImpactFileRef[];
   /**
    * #962 (epic #960) — impacted tables whose WRITE path (the symbols that
    * `writes`/`persists-to` them) is reached by no test. A deterministic

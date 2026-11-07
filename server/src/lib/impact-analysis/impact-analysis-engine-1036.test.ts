@@ -138,7 +138,11 @@ describe("computeProjectImpact — split seeding (#1036)", () => {
       caller: "caller:blast-radius",
       related: "related:blast-radius",
     });
-    expect(impactFileLists(result.affectedSymbols)).toEqual({
+    const paths = impactFileLists(result.affectedSymbols);
+    expect({
+      editCandidateFiles: paths.editCandidateFiles.map((f) => f.filePath),
+      blastRadiusFiles: paths.blastRadiusFiles.map((f) => f.filePath),
+    }).toEqual({
       editCandidateFiles: ["storage/entry.go"],
       blastRadiusFiles: ["storage/entry.go", "api/handler.go", "ui/page.go"],
     });
@@ -432,8 +436,9 @@ describe("the verbatim run-7 #4478 issue, end to end on captured search hits (#1
     const { editCandidateFiles, blastRadiusFiles } = impactFileLists(
       affected as { filePath: string; depth: number }[],
     );
-    expect(editCandidateFiles).toContain("internal/storage/entry.go");
-    expect(editCandidateFiles).toContain("internal/ui/unread_mark_all_read.go");
+    const editPaths = editCandidateFiles.map((f) => f.filePath);
+    expect(editPaths).toContain("internal/storage/entry.go");
+    expect(editPaths).toContain("internal/ui/unread_mark_all_read.go");
     expect(editCandidateFiles.length).toBeLessThanOrEqual(5);
     expect(blastRadiusFiles.length).toBeGreaterThan(editCandidateFiles.length);
   });

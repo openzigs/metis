@@ -33,6 +33,9 @@
  * holds, under any source, is counted in `skippedDuplicate`, as is any link
  * into a file the requirement's own analysis has grounded: that grounding wins
  * (see {@link hideSupersededBorrowedLinks}, the read-side twin of this rule).
+ * The rule is `@metis/shared`'s `borrowDuplicateCheck`, which the panel's
+ * preview of a borrow reads too, so the preview lists these as already linked
+ * rather than promising to copy them (#1964).
  *
  * A named `mappingIds` entry that matches none of the origin's links is
  * counted in `notFound` (#1893), so the caller can say why nothing was copied.
@@ -52,17 +55,17 @@ import {
   BORROW_CONFLICT_CODE,
   BORROW_FROM_SELF_CODE,
   BORROWABLE_FRESHNESS,
+  borrowDuplicateCheck,
+  groundedFiles,
   SIMILAR_REQUIREMENT_SOURCE,
   type BorrowCitationsInput,
   type BorrowCitationsResult,
 } from "@metis/shared";
+import { isSerializationFailure } from "../db/prisma-errors.js";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { createChildLogger } from "../logger.js";
-import {
-  ANALYSIS_GROUNDING_SOURCE,
-  DEFAULT_SEED_CONFIDENCE,
-} from "./seed-code-links-from-findings.js";
+import { DEFAULT_SEED_CONFIDENCE } from "./seed-code-links-from-findings.js";
 
 const log = createChildLogger("borrow-citations");
 
@@ -79,25 +82,11 @@ export const BORROW_RETRY_BACKOFF_MS = 20;
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-/**
- * A transaction the database aborted on a write conflict: Prisma's `P2034`, or
- * the driver adapter's own error when Postgres refuses the commit, which
- * `@prisma/adapter-pg` surfaces with no Prisma code as `TransactionWriteConflict`
- * for both a serialization failure (`40001`, measured) and a deadlock (`40P01`).
- */
-function isSerializationFailure(error: unknown): boolean {
-  const e = error as { code?: unknown; cause?: { kind?: unknown } | null } | null;
-  return e?.code === "P2034" || e?.cause?.kind === "TransactionWriteConflict";
-}
-
 export interface BorrowCitationsDeps {
   prisma?: BorrowPrisma;
   /** The backoff between attempts (tests); defaults to a timer. */
   sleep?: (ms: number) => Promise<void>;
 }
-
-const codeKey = (filePath: string, codeSymbolId: string | null): string =>
-  `${filePath}\u0000${codeSymbolId ?? ""}`;
 
 /**
  * The read-side rule (#1839): a borrowed link into a file the requirement's own
@@ -107,9 +96,7 @@ const codeKey = (filePath: string, codeSymbolId: string | null): string =>
 export function hideSupersededBorrowedLinks<T extends { source: string; filePath: string }>(
   rows: readonly T[],
 ): T[] {
-  const grounded = new Set(
-    rows.filter((r) => r.source === ANALYSIS_GROUNDING_SOURCE).map((r) => r.filePath),
-  );
+  const grounded = groundedFiles(rows);
   return rows.filter((r) => r.source !== SIMILAR_REQUIREMENT_SOURCE || !grounded.has(r.filePath));
 }
 
@@ -194,10 +181,7 @@ async function copyLinks(
     where: { requirementId, projectId },
     select: { filePath: true, codeSymbolId: true, source: true },
   });
-  const heldKeys = new Set(held.map((h) => codeKey(h.filePath, h.codeSymbolId)));
-  const groundedFiles = new Set(
-    held.filter((h) => h.source === ANALYSIS_GROUNDING_SOURCE).map((h) => h.filePath),
-  );
+  const isDuplicate = borrowDuplicateCheck(held);
 
   const originIds = new Set(origin.map((link) => link.id));
   const result: BorrowCitationsResult = {
@@ -217,12 +201,10 @@ async function copyLinks(
       result.skippedStale += 1;
       continue;
     }
-    const key = codeKey(link.filePath, link.codeSymbolId);
-    if (heldKeys.has(key) || groundedFiles.has(link.filePath)) {
+    if (isDuplicate(link)) {
       result.skippedDuplicate += 1;
       continue;
     }
-    heldKeys.add(key);
     data.push({
       requirementId,
       projectId,

@@ -49,7 +49,14 @@
  *     `connector:repo:<id>:` key), else the one the finding's code pass ran
  *     for; a file both repositories hold resolves against that repository's
  *     symbols. When no single graph can be told apart the row is written
- *     `unverified` with no graph, never stamped with a guess.
+ *     `unverified` with no graph, never stamped with a guess. #1961 — the
+ *     pass's repository is only a hint: a pass searches the whole project's
+ *     graph, so a file its own repository does not hold resolves (and is
+ *     stamped) as if no repository were named. Only a repository the citation
+ *     itself names withholds the stamp when its graph lacks the file. #1969 —
+ *     a symbol found by span is stamped only when every candidate symbol of
+ *     the file is in one graph; one found by the citation's own symbol id is
+ *     stamped with that symbol's graph.
  *   - Prisma is dependency-injected so the orchestration is unit-testable with
  *     no DB.
  */
@@ -243,7 +250,11 @@ function soleGraph(symbols: GraphSymbol[]): CitationVersion {
   return { codeGraphId: symbols[0].codeGraphId, commitSha: symbols[0].graph.commitSha };
 }
 
-/** The innermost symbol whose range encloses `[start, end]`, if any. */
+/**
+ * The innermost symbol whose range encloses `[start, end]`, if any. #1969 — a
+ * tie between equal spans (the same file in two graphs) goes to the lowest
+ * symbol id, never to whichever row the query returned first.
+ */
 function enclosingSymbol(
   symbols: GraphSymbol[],
   start: number,
@@ -253,7 +264,8 @@ function enclosingSymbol(
   for (const sym of symbols) {
     if (sym.startLine > start || sym.endLine < end) continue;
     const span = sym.endLine - sym.startLine;
-    if (!best || span < best.endLine - best.startLine) best = sym;
+    const bestSpan = best ? best.endLine - best.startLine : Infinity;
+    if (span < bestSpan || (span === bestSpan && sym.id < best!.id)) best = sym;
   }
   return best;
 }
@@ -262,7 +274,8 @@ function enclosingSymbol(
  * Resolve a citation against the graph symbols of its file; `null` when
  * unresolved. #1830 — when the citation's repository holds the file, only that
  * repository's symbols are considered, so a path two repositories share
- * resolves (and is stamped) to the right one.
+ * resolves (and is stamped) to the right one. `repoConnectionId` is the
+ * citation's own repository, else the one its finding's code pass ran for.
  */
 function resolveTarget(
   target: CitationTarget,
@@ -278,9 +291,17 @@ function resolveTarget(
   // A citation naming a repository whose graph does not hold the file still
   // resolves its location against the other repos, but is never stamped with
   // another repository's graph: the row is written unverified.
-  const foreignRepo = repoConnectionId !== undefined && inRepo.length === 0;
+  // #1961 — only a repository the citation ITSELF names. The pass's repository
+  // is a fallback hint, not a claim: a secondary repository's pass that cites
+  // the primary repository's code (its tools search the whole project) would
+  // otherwise leave every such citation unverified until the next re-ingest.
+  const foreignRepo = target.repoConnectionId !== undefined && inRepo.length === 0;
   const versionOf = (v: CitationVersion): CitationVersion =>
     foreignRepo ? { codeGraphId: null, commitSha: null } : v;
+  // #1969 — a symbol found by the citation's own id names its graph. One found
+  // by span is stamped only when every candidate is in one graph: with the
+  // pass's repository lacking the file and several others holding it, or two
+  // graphs holding the same span, the graph would be a guess.
   if (target.startLine === undefined || target.endLine === undefined) {
     return {
       codeSymbolId: null,
@@ -291,16 +312,17 @@ function resolveTarget(
       ...NO_SYMBOL,
     };
   }
-  const sym =
-    (target.symbolId ? inFile.find((s) => s.id === target.symbolId) : undefined) ??
-    enclosingSymbol(inFile, target.startLine, target.endLine);
+  const own = target.symbolId ? inFile.find((s) => s.id === target.symbolId) : undefined;
+  const sym = own ?? enclosingSymbol(inFile, target.startLine, target.endLine);
   if (sym) {
     return {
       codeSymbolId: sym.id,
       filePath: sym.filePath,
       startLine: sym.startLine,
       endLine: sym.endLine,
-      ...versionOf({ codeGraphId: sym.codeGraphId, commitSha: sym.graph.commitSha }),
+      ...versionOf(
+        own ? { codeGraphId: sym.codeGraphId, commitSha: sym.graph.commitSha } : soleGraph(inFile),
+      ),
       symbolQualifiedName: sym.qualifiedName,
       symbolKind: sym.kind,
       symbolContentHash: sym.contentHash,

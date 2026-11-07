@@ -1138,7 +1138,22 @@ interface RawSymbolLike {
   relation: string;
   depth: number;
   confidence: number;
+  /** #1965 — the included code-graph row the symbol came from, as Prisma returns it. */
+  codeSymbol?: {
+    graph: { repoConnection: { id: string; label: string; repoName: string | null } | null };
+  } | null;
 }
+
+/** #1965 — a raw symbol's included code-graph row, in the given repository. */
+function inRepo(id: string, repoName: string | null, label = `${id} label`) {
+  return { codeSymbol: { graph: { repoConnection: { id, label, repoName } } } };
+}
+
+/** A file with no known repository: what a single-repo project's rows read as. */
+const fileRef = (filePath: string, repoConnectionId: string | null = null) => ({
+  repoConnectionId,
+  filePath,
+});
 
 function rawSymbol(over: Partial<RawSymbolLike> & { filePath: string }): RawSymbolLike {
   return {
@@ -1246,15 +1261,15 @@ describe("#962 groups impacted test files out of the prod blast radius", () => {
     const detail = await getImpactAnalysisDetail("ia-962", symbolItemPrisma(symbols) as never);
     const item = detail!.items[0];
     expect(item.editCandidateFiles).toEqual([
-      "internal/storage/entry.go",
-      "internal/model/entry.go",
+      fileRef("internal/storage/entry.go"),
+      fileRef("internal/model/entry.go"),
     ]);
     expect(item.blastRadiusFiles).toEqual([
-      "internal/storage/entry.go",
-      "internal/model/entry.go",
-      "internal/storage/feed.go",
-      "internal/api/handlers.go",
-      "internal/ui/page.go",
+      fileRef("internal/storage/entry.go"),
+      fileRef("internal/model/entry.go"),
+      fileRef("internal/storage/feed.go"),
+      fileRef("internal/api/handlers.go"),
+      fileRef("internal/ui/page.go"),
     ]);
     // The new relations survive the read path.
     expect(item.affectedSymbols.map((s) => s.relation)).toContain("data-model");
@@ -1268,8 +1283,63 @@ describe("#962 groups impacted test files out of the prod blast radius", () => {
       rawSymbol({ filePath: "c.go", relation: "caller", depth: 2 }),
     ];
     const detail = await getImpactAnalysisDetail("ia-962", symbolItemPrisma(symbols) as never);
-    expect(detail!.items[0].editCandidateFiles).toEqual(["a.go"]);
-    expect(detail!.items[0].blastRadiusFiles).toEqual(["a.go", "w.go", "c.go"]);
+    expect(detail!.items[0].editCandidateFiles).toEqual([fileRef("a.go")]);
+    expect(detail!.items[0].blastRadiusFiles).toEqual([
+      fileRef("a.go"),
+      fileRef("w.go"),
+      fileRef("c.go"),
+    ]);
+  });
+
+  it("#1965 — a path in two repositories of one project is two files, each naming its repo", async () => {
+    // The live check: `src/types/order.ts` exists in orders AND billing.
+    const symbols = [
+      rawSymbol({
+        filePath: "src/types/order.ts",
+        qualifiedName: "OrderCreatedEvent",
+        relation: "direct",
+        depth: 0,
+        ...inRepo("rc-orders", "metis-fixture-orders"),
+      }),
+      rawSymbol({
+        filePath: "src/types/order.ts",
+        qualifiedName: "OrderCreatedEvent",
+        relation: "direct",
+        depth: 0,
+        ...inRepo("rc-billing", "metis-fixture-billing"),
+      }),
+      rawSymbol({
+        filePath: "src/types/order.ts",
+        depth: 2,
+        ...inRepo("rc-billing", "metis-fixture-billing"),
+      }),
+      // A connector with no repository name is named by its label.
+      rawSymbol({ filePath: "src/notify.ts", depth: 1, ...inRepo("rc-notify", null, "Notify") }),
+      // No code-graph row behind it (the symbol was re-ingested away): repo unknown.
+      rawSymbol({ filePath: "src/types/order.ts", depth: 1, codeSymbol: null }),
+    ];
+    const detail = await getImpactAnalysisDetail("ia-962", symbolItemPrisma(symbols) as never);
+    const item = detail!.items[0];
+
+    expect(item.editCandidateFiles).toEqual([
+      fileRef("src/types/order.ts", "rc-orders"),
+      fileRef("src/types/order.ts", "rc-billing"),
+    ]);
+    expect(item.blastRadiusFiles).toEqual([
+      fileRef("src/types/order.ts", "rc-orders"),
+      fileRef("src/types/order.ts", "rc-billing"),
+      fileRef("src/notify.ts", "rc-notify"),
+      fileRef("src/types/order.ts"),
+    ]);
+    expect(item.affectedSymbols.map((s) => s.repo)).toEqual([
+      { id: "rc-orders", name: "metis-fixture-orders" },
+      { id: "rc-billing", name: "metis-fixture-billing" },
+      { id: "rc-billing", name: "metis-fixture-billing" },
+      { id: "rc-notify", name: "Notify" },
+      null,
+    ]);
+    // The raw include never leaks into the API view.
+    expect(item.affectedSymbols[0]).not.toHaveProperty("codeSymbol");
   });
 
   it("emits an empty affectedTests list when no impacted symbol is a test file", async () => {

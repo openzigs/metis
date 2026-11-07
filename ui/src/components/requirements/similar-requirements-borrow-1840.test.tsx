@@ -24,6 +24,9 @@ const server = vi.hoisted(() => ({
   /** #1931 — a list's next fetch, held open until the test resolves it. */
   pending: {} as Partial<Record<string, Promise<{ items: SimilarRequirementItem[] }>>>,
   directCode: [] as TraceabilityCodeNode[],
+  /** #1964 — the chain's next fetch, held open until the test resolves it. */
+  chainPending: null as Promise<void> | null,
+  failChain: false,
   borrowBodies: [] as unknown[],
   failBorrow: false,
 }));
@@ -55,6 +58,7 @@ const link = (
 ): SimilarRequirementCodeLink => ({
   mappingId,
   filePath: `src/${mappingId}.ts`,
+  codeSymbolId: null,
   startLine: 3,
   endLine: 9,
   source,
@@ -87,7 +91,7 @@ const SIMILAR_PATH = new RegExp(`^/projects/${P}/requirements/([^/]+)/similar$`)
 const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
 /** The fake server's routes. */
-function route(path: string, opts: { method?: string; body?: unknown } = {}) {
+function route(path: string, opts: { method?: string; body?: unknown } = {}): unknown {
   if (path === `/projects/${P}/requirements/${SELF}/similar` && !opts.method) {
     return { items: server.items };
   }
@@ -102,6 +106,12 @@ function route(path: string, opts: { method?: string; body?: unknown } = {}) {
     return { items: server.otherLists[other] };
   }
   if (path === `/projects/${P}/requirements/${SELF}/traceability` && !opts.method) {
+    if (server.failChain) throw new Error("Traceability is down");
+    if (server.chainPending) {
+      const wait = server.chainPending;
+      server.chainPending = null;
+      return wait.then(() => route(path, opts));
+    }
     const chain: RequirementTraceabilityChain = {
       requirementId: SELF,
       requirementTitle: "Recall a batch",
@@ -159,6 +169,8 @@ beforeEach(() => {
   server.otherLists = {};
   server.pending = {};
   server.directCode = [];
+  server.chainPending = null;
+  server.failChain = false;
   server.borrowBodies = [];
   server.failBorrow = false;
   toast.error.mockReset();
@@ -243,7 +255,7 @@ describe("Start from these citations (#1840)", () => {
     );
     await user.click(await screen.findByRole("button", { name: ACTION }));
     await waitFor(() => expect(fetches("r-other") + fetches("r-unrelated")).toBe(2));
-    await user.click(screen.getByRole("button", { name: "Copy 2 links" }));
+    await user.click(await screen.findByRole("button", { name: "Copy 2 links" }));
     await waitFor(() => expect(toast.success).toHaveBeenCalled());
 
     await waitFor(() => expect(fetches("r-other")).toBe(2));
@@ -276,7 +288,7 @@ describe("Start from these citations (#1840)", () => {
     );
     await user.click(await screen.findByRole("button", { name: ACTION }));
     await waitFor(() => expect(fetches()).toBe(1));
-    await user.click(screen.getByRole("button", { name: "Copy 2 links" }));
+    await user.click(await screen.findByRole("button", { name: "Copy 2 links" }));
     await waitFor(() => expect(toast.success).toHaveBeenCalled());
 
     await waitFor(() => expect(fetches()).toBe(2));
@@ -312,7 +324,7 @@ describe("Start from these citations (#1840)", () => {
     expect(screen.getByTestId("borrow-citations-confirm")).toHaveTextContent(
       "Nothing to copy from REQ-7 Lot tracking for recalls",
     );
-    expect(screen.getByRole("button", { name: "Copy 0 links" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Nothing to copy" })).toBeDisabled();
   });
 
   it("cancel closes the confirmation without borrowing", async () => {
@@ -330,9 +342,131 @@ describe("Start from these citations (#1840)", () => {
     const user = userEvent.setup();
     mount({ canEdit: true });
     await user.click(await screen.findByRole("button", { name: ACTION }));
-    await user.click(screen.getByRole("button", { name: "Copy 2 links" }));
+    await user.click(await screen.findByRole("button", { name: "Copy 2 links" }));
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Borrowing is down"));
     expect(screen.getByTestId("borrow-citations-confirm")).toBeInTheDocument();
+  });
+});
+
+/** #1964 — a code link this requirement holds, as its chain serves it. */
+const held = (over: Partial<TraceabilityCodeNode>): TraceabilityCodeNode => ({
+  codeSymbolId: null,
+  filePath: "src/x.ts",
+  startLine: 3,
+  endLine: 9,
+  confidence: 0.4,
+  source: "similar-requirement",
+  isTest: false,
+  freshness: "fresh",
+  originRequirementId: "r-lot",
+  originRequirementLabel: "REQ-7",
+  ...over,
+});
+
+describe("Start from these citations: code already linked (#1964)", () => {
+  const confirmGroup = () =>
+    screen.getByRole("group", { name: "Copy the code links of REQ-7 Lot tracking for recalls" });
+
+  it("lists links the requirement already holds as already linked, and offers no copy", async () => {
+    // It borrowed both current links from REQ-7 before.
+    server.directCode = [held({ filePath: "src/fresh.ts" }), held({ filePath: "src/moved.ts" })];
+    const user = userEvent.setup();
+    mount({ canEdit: true });
+    await user.click(await screen.findByRole("button", { name: ACTION }));
+
+    const confirm = confirmGroup();
+    expect(await within(confirm).findByTestId("borrow-already-linked")).toHaveTextContent(
+      "Already linked (2)src/fresh.ts:3-9src/moved.ts:3-9",
+    );
+    expect(within(confirm).queryByTestId("borrow-will-copy")).toBeNull();
+    expect(confirm).toHaveTextContent(
+      "Nothing to copy from REQ-7 Lot tracking for recalls: this requirement already links every one of its code links known to match the current code.",
+    );
+    expect(within(confirm).getByRole("button", { name: "Nothing to copy" })).toBeDisabled();
+    expect(within(confirm).queryByRole("button", { name: /^Copy \d/ })).toBeNull();
+  });
+
+  it("copies only what it does not hold, by file and symbol under any source", async () => {
+    server.directCode = [
+      // The same code, linked by hand: already linked.
+      held({ filePath: "src/fresh.ts", source: "manual", originRequirementId: null }),
+      // Another symbol of src/moved.ts, not grounded: the origin's link is still copied.
+      held({ filePath: "src/moved.ts", codeSymbolId: "sym-other", source: "semantic" }),
+    ];
+    const user = userEvent.setup();
+    mount({ canEdit: true });
+    await user.click(await screen.findByRole("button", { name: ACTION }));
+
+    const confirm = confirmGroup();
+    expect(await within(confirm).findByTestId("borrow-already-linked")).toHaveTextContent(
+      "Already linked (1)src/fresh.ts:3-9",
+    );
+    expect(within(confirm).getByTestId("borrow-will-copy")).toHaveTextContent(
+      "Will be copied (1)src/moved.ts:3-9",
+    );
+    await user.click(within(confirm).getByRole("button", { name: "Copy 1 link" }));
+    expect(server.borrowBodies).toEqual([{ fromRequirementId: "r-lot", mappingIds: ["moved"] }]);
+  });
+
+  it("counts any link into a file its own analysis grounded as already linked", async () => {
+    server.directCode = [
+      held({
+        filePath: "src/moved.ts",
+        codeSymbolId: "sym-other",
+        source: "analysis-grounding",
+        originRequirementId: null,
+      }),
+    ];
+    const user = userEvent.setup();
+    mount({ canEdit: true });
+    await user.click(await screen.findByRole("button", { name: ACTION }));
+
+    const confirm = confirmGroup();
+    expect(await within(confirm).findByTestId("borrow-already-linked")).toHaveTextContent(
+      "Already linked (1)src/moved.ts:3-9",
+    );
+    expect(within(confirm).getByTestId("borrow-will-copy")).toHaveTextContent(
+      "Will be copied (1)src/fresh.ts:3-9",
+    );
+  });
+
+  it("offers no copy until it knows what the requirement already links", async () => {
+    let answer!: () => void;
+    server.chainPending = new Promise((resolve) => (answer = resolve));
+    server.directCode = [held({ filePath: "src/fresh.ts" }), held({ filePath: "src/moved.ts" })];
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={newClient()}>
+        <SimilarRequirementsPanel projectId={P} requirementId={SELF} canEdit />
+      </QueryClientProvider>,
+    );
+    await user.click(await screen.findByRole("button", { name: ACTION }));
+
+    const confirm = confirmGroup();
+    expect(within(confirm).getByRole("status")).toHaveTextContent(
+      "Checking the code this requirement already links",
+    );
+    expect(within(confirm).queryByTestId("borrow-will-copy")).toBeNull();
+    expect(within(confirm).queryByRole("button", { name: /^Copy/ })).toBeNull();
+
+    answer();
+    expect(await within(confirm).findByRole("button", { name: "Nothing to copy" })).toBeDisabled();
+  });
+
+  it("when the requirement's links cannot be read, previews by the origin alone and says duplicates are skipped", async () => {
+    server.failChain = true;
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={newClient()}>
+        <SimilarRequirementsPanel projectId={P} requirementId={SELF} canEdit />
+      </QueryClientProvider>,
+    );
+    await user.click(await screen.findByRole("button", { name: ACTION }));
+
+    const confirm = confirmGroup();
+    expect(await within(confirm).findByRole("button", { name: "Copy 2 links" })).toBeEnabled();
+    expect(confirm).toHaveTextContent("Code this requirement already links is not copied again.");
+    expect(within(confirm).queryByTestId("borrow-already-linked")).toBeNull();
   });
 });
 
@@ -342,6 +476,46 @@ describe("borrowPlan", () => {
     expect(plan.copy.map((l) => l.mappingId)).toEqual(["fresh", "moved"]);
     expect(plan.needsRecheck.map((l) => l.mappingId)).toEqual(["stale", "never"]);
     expect(plan.borrowed.map((l) => l.mappingId)).toEqual(["hearsay"]);
+    expect(plan.alreadyLinked).toEqual([]);
+  });
+
+  it("checks re-check and borrowed before already linked, the server's order (#1964)", () => {
+    const plan = borrowPlan(LOT.codeLinks, [
+      held({ filePath: "src/stale.ts" }),
+      held({ filePath: "src/hearsay.ts" }),
+      held({ filePath: "src/fresh.ts" }),
+    ]);
+    expect(plan.copy.map((l) => l.mappingId)).toEqual(["moved"]);
+    expect(plan.alreadyLinked.map((l) => l.mappingId)).toEqual(["fresh"]);
+    expect(plan.needsRecheck.map((l) => l.mappingId)).toEqual(["stale", "never"]);
+    expect(plan.borrowed.map((l) => l.mappingId)).toEqual(["hearsay"]);
+  });
+
+  it("lists a second origin link to code the first one copies as already linked (#1964)", () => {
+    const twin = { ...link("fresh", "fresh"), mappingId: "fresh-twin" };
+    const plan = borrowPlan([link("fresh", "fresh"), twin], []);
+    expect(plan.copy.map((l) => l.mappingId)).toEqual(["fresh"]);
+    expect(plan.alreadyLinked.map((l) => l.mappingId)).toEqual(["fresh-twin"]);
+  });
+});
+
+describe("borrowPlan — files the requirement's own analysis grounded (#1969)", () => {
+  // The chain shows the surer semantic row on src/fresh.ts and hides the
+  // grounding row on the same code; it names the grounded file apart.
+  const semanticOnly = [
+    held({ filePath: "src/fresh.ts", codeSymbolId: "sym-a", source: "semantic" }),
+  ];
+  const other = { ...link("fresh", "fresh"), codeSymbolId: "sym-b" };
+
+  it("lists a link into a grounded file as already linked, as the server skips it", () => {
+    const plan = borrowPlan([other], semanticOnly, ["src/fresh.ts"]);
+    expect(plan.alreadyLinked.map((l) => l.mappingId)).toEqual(["fresh"]);
+    expect(plan.copy).toEqual([]);
+  });
+
+  it("copies it when no grounding of that file is known", () => {
+    const plan = borrowPlan([other], semanticOnly);
+    expect(plan.copy.map((l) => l.mappingId)).toEqual(["fresh"]);
   });
 });
 

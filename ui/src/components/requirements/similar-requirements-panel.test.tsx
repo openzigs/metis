@@ -61,6 +61,7 @@ const LOT = item({
     {
       mappingId: "m-a",
       filePath: "a.ts",
+      codeSymbolId: null,
       startLine: 1,
       endLine: 2,
       source: "semantic",
@@ -69,6 +70,7 @@ const LOT = item({
     {
       mappingId: "m-b",
       filePath: "b.ts",
+      codeSymbolId: null,
       startLine: 1,
       endLine: 2,
       source: "semantic",
@@ -77,6 +79,7 @@ const LOT = item({
     {
       mappingId: "m-c",
       filePath: "c.ts",
+      codeSymbolId: null,
       startLine: 1,
       endLine: 2,
       source: "semantic",
@@ -93,6 +96,7 @@ const LOT_WITH_BORROWED = {
     {
       mappingId: "m-d",
       filePath: "d.ts",
+      codeSymbolId: null,
       startLine: 1,
       endLine: 2,
       source: "similar-requirement",
@@ -402,6 +406,7 @@ describe("codeLinkSummary", () => {
         {
           mappingId: "m-1",
           filePath: "a",
+          codeSymbolId: null,
           startLine: null,
           endLine: null,
           source: "s",
@@ -415,6 +420,7 @@ describe("codeLinkSummary", () => {
     const link = (source: string, freshness: "fresh" | "stale" | "unverified") => ({
       mappingId: `m-${source}-${freshness}`,
       filePath: "a",
+      codeSymbolId: null,
       startLine: null,
       endLine: null,
       source,
