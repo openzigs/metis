@@ -13,7 +13,11 @@
  */
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { parseAcceptanceCriteria, stripMetisMarkers } from "@metis/shared";
+import {
+  parseAcceptanceCriteria,
+  SIMILAR_REQUIREMENT_SOURCE,
+  stripMetisMarkers,
+} from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { formatStartedAt } from "../analysis/run-start-label.js";
 import { snapshotAtVersion } from "../reviews/baseline-service.js";
@@ -135,8 +139,12 @@ export async function loadScopedRequirements(
       version: true,
       deletedAt: true,
       updatedAt: true,
+      // #1893 — a link borrowed from a similar requirement (#1839) is a hypothesis
+      // no analysis has checked: the document never lists it as this
+      // requirement's code, and it never brings a requirement into a scoped
+      // reader BRD (`requirementsInScope`).
       codeMappings: {
-        where: { projectId },
+        where: { projectId, source: { not: SIMILAR_REQUIREMENT_SOURCE } },
         orderBy: [{ filePath: "asc" }, { startLine: "asc" }],
         select: { filePath: true, startLine: true, endLine: true, confidence: true, source: true },
       },

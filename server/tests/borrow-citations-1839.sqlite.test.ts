@@ -41,9 +41,6 @@ vi.mock("../src/lib/prisma.js", async () => {
   };
 });
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
-vi.mock("../src/lib/docs-gen/approved-requirements-staleness.js", () => ({
-  noteRequirementCodeLinksChanged: vi.fn(),
-}));
 
 const { requirementSimilarityRouter } = await import("../src/routes/requirement-similarity.js");
 const { traceabilityRouter } = await import("../src/routes/traceability.js");
@@ -259,6 +256,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await borrowedRows()).toBe(0);
     });
 
+    it("answers 400 BORROW_FROM_SELF for a requirement borrowing from itself (#1893)", async () => {
+      const res = await borrow({ fromRequirementId: ids.origin }, tokens.coordinator, ids.origin);
+      expect(res.status).toBe(400);
+      expect(res.body.error?.code).toBe("BORROW_FROM_SELF");
+      expect(await borrowedRows()).toBe(0);
+    });
+
     it("rejects a malformed body (400)", async () => {
       expect((await borrow({})).status).toBe(400);
       expect((await borrow({ fromRequirementId: ids.origin, extra: 1 })).status).toBe(400);
@@ -268,7 +272,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     it("copies the fresh links, skips the stale and unverified ones, and reads them back labelled", async () => {
       const res = await borrow({ fromRequirementId: ids.origin });
       expect(res.status).toBe(200);
-      expect(res.body.data).toEqual({ copied: 2, skippedStale: 2, skippedDuplicate: 0 });
+      expect(res.body.data).toEqual({
+        copied: 2,
+        skippedStale: 2,
+        skippedDuplicate: 0,
+        skippedBorrowed: 0,
+        notFound: 0,
+      });
 
       const links = await directCode(ids.target);
       expect(
@@ -290,8 +300,40 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const before = await borrowedRows();
       const res = await borrow({ fromRequirementId: ids.origin });
       expect(res.status).toBe(200);
-      expect(res.body.data).toEqual({ copied: 0, skippedStale: 2, skippedDuplicate: 2 });
+      expect(res.body.data).toEqual({
+        copied: 0,
+        skippedStale: 2,
+        skippedDuplicate: 2,
+        skippedBorrowed: 0,
+        notFound: 0,
+      });
       expect(await borrowedRows()).toBe(before);
+    });
+
+    it("counts the origin's borrowed links and unknown mapping ids (#1893)", async () => {
+      // The target's links are all borrowed: a third requirement borrowing from it copies none.
+      const third = await requirementCiting(A, "Export the ledger as PDF", []);
+      const res = await borrow(
+        { fromRequirementId: ids.target, mappingIds: ["m-unknown"] },
+        undefined,
+        third,
+      );
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({
+        copied: 0,
+        skippedStale: 0,
+        skippedDuplicate: 0,
+        skippedBorrowed: 0,
+        notFound: 1,
+      });
+      const all = await borrow({ fromRequirementId: ids.target }, undefined, third);
+      expect(all.body.data).toEqual({
+        copied: 0,
+        skippedStale: 0,
+        skippedDuplicate: 0,
+        skippedBorrowed: 2,
+        notFound: 0,
+      });
     });
 
     it("once the requirement's own analysis grounds a file, that link wins and is shown once", async () => {

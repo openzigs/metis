@@ -420,7 +420,12 @@ describe("loadDraftCodeLinks", () => {
 
     expect(mappingFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { projectId: "p1", requirementId: "r1" },
+        // #1893 — never a link borrowed from a similar requirement.
+        where: {
+          projectId: "p1",
+          requirementId: "r1",
+          source: { not: "similar-requirement" },
+        },
         orderBy: [{ confidence: "desc" }, { filePath: "asc" }, { startLine: "asc" }, { id: "asc" }],
         take: CODE_LINK_READ_CAP,
       }),

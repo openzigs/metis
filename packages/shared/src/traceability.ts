@@ -192,7 +192,6 @@ export interface BackfillSpecLinksResult {
 export const CODE_CITATION_FRESHNESS = ["fresh", "moved", "stale", "unverified"] as const;
 export type CodeCitationFreshness = (typeof CODE_CITATION_FRESHNESS)[number];
 
-/** A code location in a traceability chain. */
 /**
  * #1839 (epic #1828) — provenance of a requirement→code link copied from a
  * similar requirement's saved link: a suggestion, never this requirement's own
@@ -201,6 +200,7 @@ export type CodeCitationFreshness = (typeof CODE_CITATION_FRESHNESS)[number];
  */
 export const SIMILAR_REQUIREMENT_SOURCE = "similar-requirement" as const;
 
+/** A code location in a traceability chain. */
 export interface TraceabilityCodeNode {
   codeSymbolId: string | null;
   filePath: string;

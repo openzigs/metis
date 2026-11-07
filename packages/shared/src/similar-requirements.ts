@@ -124,4 +124,14 @@ export interface BorrowCitationsResult {
   skippedStale: number;
   /** Links not copied because the requirement already holds the same code. */
   skippedDuplicate: number;
+  /**
+   * #1893 — the origin's links not copied because they were themselves
+   * borrowed: a hypothesis is not lent on.
+   */
+  skippedBorrowed: number;
+  /** #1893 — named `mappingIds` that match none of the origin requirement's links. */
+  notFound: number;
 }
+
+/** #1893 — the 400 a requirement asked to borrow its own code links answers. */
+export const BORROW_FROM_SELF_CODE = "BORROW_FROM_SELF";
