@@ -56,3 +56,6 @@ Measured across PR heads, 2026-10-16/17 (#1217 re-review, then every PR from #12
   15–40+ min after every step succeeded: read the job's steps, wait and re-read; past ~40 min
   `gh run rerun --job <id>` on that job cleared it (#1347, #1418).
 - [[image-budget-rationale-lives-in-three-places]] — the server image-budget rationale lives in `docs/OPERATIONS.md` and two comments (`verify-image-size.mjs`, `ci.yml`); an instance of "Correcting a fact in one place" above.
+
+**"Disk full" in a failing log can be a mocked string (2026-11-07).** On #1856 a `generative-e2e` failure was blamed on a runner disk-full; the runners are GitHub-hosted `ubuntu-latest`, and the text came from `recording-provider.test.ts:103`, which mocks that error. Before blaming infrastructure, grep the repo for the error text and find which job and step actually printed it.
+

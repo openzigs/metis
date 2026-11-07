@@ -117,7 +117,7 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Traceability tab + paging](project_traceability-tab-imports-and-paging.md) — tab in analysis page.tsx; orderBy tie-break (#1448)
 - [Webhook dedup + routing](project_github-webhook-dedup-and-routing.md) — one GUID per event: scope by receiver+signer; replay; derived secrets
 - [Connector proof + vault writes](project_repo-connector-proof-and-vault-writes.md) — "connected" is not ownership; rotate/undo ABA (#1494)
-- [SQLite interactive transactions](project_prisma-sqlite-interactive-transactions.md) — one lock, 2 s maxWait, P2028; spy via $transaction
+- [SQLite interactive transactions](project_prisma-sqlite-interactive-transactions.md) — one lock, 2 s maxWait, P2028; pg conflict is not P2034
 - [Suite traps: webhook wave](project_server-test-suite-traps-webhook-wave.md) — route-fixture-privilege; prisma doubles; egress guard; prettier
 - [Narrowed key unmasks uniqueness](project_review-heuristics-hidden-uniqueness-and-dead-claims.md) — fail-open reuse; no call site (#1508)
 - [Panel required? exit 2](project_adversarial-panel-trigger-and-gate-scripts.md) — review:adversarial-required; gate snippets fail open (#1482)
@@ -125,4 +125,8 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Run 10 fix review lessons](project_run10-fix-review-lessons.md) — plain-text views; metadata writers; AbortError mocks; throttle (#1593-#1601)
 - [Portfolio epic lessons](project_portfolio-phase3a-review-lessons.md) — regex; caps; mocked filters; walk skips; redaction (#1608)
 - [Portfolio walkthrough fixtures](project_portfolio-walkthrough-fixtures.md) — 3 repos, 7 edges; umbrella product; host via API (#1724-#1728)
-- [Localization eval lessons](project_localization-eval-and-gap-retrieval-lessons.md) — cap all spend; no usage=unpriced; crowd-out
+- [Localization eval lessons](project_localization-eval-and-gap-retrieval-lessons.md) — cap spend; unpriced; stale DB=A7O; flags forced
+- [Lance filters after top-k](project_lance-filters-after-topk.md) — filtered search returns <k; test on real Lance (#1917)
+- [Stacked PR squash conflicts](project_stacked-pr-squash-conflicts.md) — keep HEAD; union scripts/exports
+- [Borrow/governing lessons](project_review-lessons-borrowed-and-governing.md) — filter before dedupe; regex FNs; sibling merged?
+
