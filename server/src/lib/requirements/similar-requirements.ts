@@ -22,6 +22,7 @@ import type { PrismaClient } from "@prisma/client";
 import MiniSearch from "minisearch";
 import {
   SIMILAR_CODE_LINK_FRESHNESS,
+  SIMILAR_CODE_LINKS_PER_ITEM,
   type SimilarCodeLinkFreshness,
   type SimilarRequirementCodeLink,
   type SimilarRequirementItem,
@@ -51,8 +52,6 @@ const log = createChildLogger("similar-requirements");
 
 /** Vector and BM25 candidates fetched per call, before labelling and the limit. */
 export const SIMILAR_CANDIDATE_POOL = 25;
-/** Saved code links returned per similar requirement. */
-export const SIMILAR_CODE_LINKS_PER_ITEM = 20;
 
 export type SimilarRequirementsDb = Pick<
   PrismaClient,
@@ -307,9 +306,14 @@ async function hydrate(
   ]);
   const byId = new Map(reqs.map((r) => [r.id, r]));
   const links = new Map<string, SimilarRequirementCodeLink[]>();
+  // #1931 — the requirements holding more links than the cap returns.
+  const truncated = new Set<string>();
   for (const m of mappings) {
     const list = links.get(m.requirementId) ?? [];
-    if (list.length >= SIMILAR_CODE_LINKS_PER_ITEM) continue;
+    if (list.length >= SIMILAR_CODE_LINKS_PER_ITEM) {
+      truncated.add(m.requirementId);
+      continue;
+    }
     list.push({
       mappingId: m.id,
       filePath: m.filePath,
@@ -333,6 +337,7 @@ async function hydrate(
         score: Math.round(c.score * 1000) / 1000,
         label: c.label,
         codeLinks: links.get(r.id) ?? [],
+        codeLinksTruncated: truncated.has(r.id),
         notDuplicate: decisions.dismissed.has(r.id),
         linkedAsDuplicate: decisions.linked.has(r.id),
       },

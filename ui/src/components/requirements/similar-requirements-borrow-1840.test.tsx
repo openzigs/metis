@@ -21,6 +21,8 @@ const server = vi.hoisted(() => ({
   items: [] as SimilarRequirementItem[],
   /** #1914 — the similar lists of other cards, by requirement id. */
   otherLists: {} as Record<string, SimilarRequirementItem[]>,
+  /** #1931 — a list's next fetch, held open until the test resolves it. */
+  pending: {} as Partial<Record<string, Promise<{ items: SimilarRequirementItem[] }>>>,
   directCode: [] as TraceabilityCodeNode[],
   borrowBodies: [] as unknown[],
   failBorrow: false,
@@ -74,9 +76,13 @@ const LOT: SimilarRequirementItem = {
     link("never", "unverified"),
     link("hearsay", "fresh", "similar-requirement"),
   ],
+  codeLinksTruncated: false,
   notDuplicate: false,
   linkedAsDuplicate: false,
 };
+
+/** Another card's similar list, `([^/]+)` its requirement id. */
+const SIMILAR_PATH = new RegExp(`^/projects/${P}/requirements/([^/]+)/similar$`);
 
 const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
@@ -85,7 +91,13 @@ function route(path: string, opts: { method?: string; body?: unknown } = {}) {
   if (path === `/projects/${P}/requirements/${SELF}/similar` && !opts.method) {
     return { items: server.items };
   }
-  const other = /^\/projects\/p1\/requirements\/([^/]+)\/similar$/.exec(path)?.[1];
+  const other = SIMILAR_PATH.exec(path)?.[1];
+  if (other && !opts.method && server.pending[other]) {
+    // #1931 — a list whose first fetch answers only when the test says so.
+    const answer = server.pending[other];
+    delete server.pending[other];
+    return answer;
+  }
   if (other && !opts.method && server.otherLists[other]) {
     return { items: server.otherLists[other] };
   }
@@ -145,6 +157,7 @@ const ACTION = "Start from the citations of REQ-7 Lot tracking for recalls";
 beforeEach(() => {
   server.items = [LOT];
   server.otherLists = {};
+  server.pending = {};
   server.directCode = [];
   server.borrowBodies = [];
   server.failBorrow = false;
@@ -239,6 +252,39 @@ describe("Start from these citations (#1840)", () => {
     expect(fetches(SELF)).toBe(1);
     expect(qc.getQueryState(["similar-requirements", P, "r-unrelated"])?.isInvalidated).toBe(false);
     expect(qc.getQueryState(["similar-requirements", "p2", "r-other"])?.isInvalidated).toBe(false);
+  });
+
+  it("refetches a list still loading when the borrow lands, so it shows the links borrowed (#1931)", async () => {
+    // The card's first fetch read this requirement before the borrow committed:
+    // no code links. It answers only after the borrow; its refetch reads them.
+    let answerFirst!: (v: { items: SimilarRequirementItem[] }) => void;
+    server.pending["r-loading"] = new Promise((resolve) => (answerFirst = resolve));
+    const before = { ...LOT, requirementId: SELF, key: "REQ-1", title: "Recall a batch" };
+    server.otherLists = {
+      "r-loading": [{ ...before, codeLinks: [link("fresh", "fresh"), link("moved", "moved")] }],
+    };
+    const fetches = () =>
+      apiFetch.mock.calls.filter(
+        ([path]) => path === `/projects/${P}/requirements/r-loading/similar`,
+      ).length;
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={newClient()}>
+        <SimilarRequirementsPanel projectId={P} requirementId={SELF} canEdit />
+        <SimilarRequirementsPanel projectId={P} requirementId="r-loading" />
+      </QueryClientProvider>,
+    );
+    await user.click(await screen.findByRole("button", { name: ACTION }));
+    await waitFor(() => expect(fetches()).toBe(1));
+    await user.click(screen.getByRole("button", { name: "Copy 2 links" }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
+
+    await waitFor(() => expect(fetches()).toBe(2));
+    // The first answer arrives late, from before the borrow: it is not shown.
+    answerFirst({ items: [{ ...before, codeLinks: [] }] });
+    const loading = screen.getAllByTestId("similar-requirements")[1]!;
+    expect(await within(loading).findByText("2 code links: 2 fresh, 0 stale")).toBeInTheDocument();
+    expect(within(loading).queryByText("No code links")).toBeNull();
   });
 
   it("is hidden from a viewer without edit rights, and shown to an editor", async () => {

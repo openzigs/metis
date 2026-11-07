@@ -15,6 +15,7 @@ import request from "supertest";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { SIMILAR_CODE_LINKS_PER_ITEM, type SimilarRequirementItem } from "@metis/shared";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import {
   createMigratedSqlite,
@@ -419,6 +420,47 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ]);
       } finally {
         await db.requirementCodeMapping.delete({ where: { id: borrowed.id } });
+      }
+    });
+
+    it("#1931 — says when it holds more code links than the cap returns, and not at the cap", async () => {
+      const [first] = await findSimilarRequirements(
+        A,
+        { requirementId: ids.batch },
+        { db, limit: 1 },
+      );
+      expect(first).toMatchObject({ requirementId: ids.lot, codeLinksTruncated: false });
+      // lot holds 2 links: 18 more reach the cap exactly, one past it truncates.
+      const extra = (n: number, from: number) =>
+        Array.from({ length: n }, (_, i) => ({
+          requirementId: ids.lot!,
+          projectId: A,
+          filePath: `src/inventory/extra-${from + i}.ts`,
+          confidence: 0.1,
+        }));
+      await db.requirementCodeMapping.createMany({
+        data: extra(SIMILAR_CODE_LINKS_PER_ITEM - 2, 0),
+      });
+      try {
+        const [atCap] = await findSimilarRequirements(
+          A,
+          { requirementId: ids.batch },
+          { db, limit: 1 },
+        );
+        expect(atCap!.codeLinks).toHaveLength(SIMILAR_CODE_LINKS_PER_ITEM);
+        expect(atCap!.codeLinksTruncated).toBe(false);
+
+        await db.requirementCodeMapping.createMany({ data: extra(1, 100) });
+        const res = await get(A, ids.batch);
+        const lot = (res.body.data.items as SimilarRequirementItem[]).find(
+          (i) => i.requirementId === ids.lot,
+        );
+        expect(lot!.codeLinks).toHaveLength(SIMILAR_CODE_LINKS_PER_ITEM);
+        expect(lot!.codeLinksTruncated).toBe(true);
+      } finally {
+        await db.requirementCodeMapping.deleteMany({
+          where: { requirementId: ids.lot, filePath: { startsWith: "src/inventory/extra-" } },
+        });
       }
     });
 

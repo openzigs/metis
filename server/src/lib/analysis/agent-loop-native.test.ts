@@ -179,6 +179,48 @@ describe("#141 native tool calls in runAgentLoop", () => {
     expect(retry.messages.at(-1)).toEqual({ role: "user", content: "ANSWER NOW" });
   });
 
+  // #1863 — on Anthropic a changed tool_choice invalidates the cached messages,
+  // so the tool-free retry's messages breakpoint could only re-write the loop's
+  // longest transcript at the write premium. The system breakpoint stays.
+  it.each([
+    ["the loop's own promptCaching", { promptCaching: { system: true, messages: true } }],
+    [
+      "the caller's providerChatOptions (the chat route)",
+      { providerChatOptions: { promptCaching: { system: true, messages: true } } },
+    ],
+  ])("#1863 the native retry drops the messages breakpoint set through %s", async (_, opts) => {
+    const p = stub([
+      { content: "", toolCalls: [call("c1", "search_code_graph", "x")] },
+      { content: '{"findings":[]}' },
+    ]);
+    await runAgentLoop(p, input, {
+      maxTurns: 1,
+      native,
+      finalAnswerRetry: { instruction: "ANSWER NOW" },
+      ...opts,
+    });
+    const [loopCall, retry] = p.requests;
+    expect(loopCall!.opts.toolChoice).toBe("auto");
+    expect(loopCall!.opts.promptCaching).toEqual({ system: true, messages: true });
+    expect(retry!.opts.toolChoice).toBe("none");
+    expect(retry!.opts.promptCaching).toEqual({ system: true });
+  });
+
+  it("#1863 a text-protocol retry keeps the messages breakpoint: its tool_choice did not change", async () => {
+    const p = stub([
+      { content: '<tool_call>{"name":"search_code_graph","args":{"q":"x"}}</tool_call>' },
+      { content: '{"findings":[]}' },
+    ]);
+    await runAgentLoop(p, input, {
+      maxTurns: 1,
+      promptCaching: { system: true, messages: true },
+      finalAnswerRetry: { instruction: "ANSWER NOW" },
+    });
+    const retry = p.requests.at(-1)!;
+    expect(retry.opts.toolChoice).toBeUndefined();
+    expect(retry.opts.promptCaching).toEqual({ system: true, messages: true });
+  });
+
   it("#214 a retry answer that repeats the last tool-calling reply's text is accepted", async () => {
     const answer = '{"summary":"s","findings":[]}';
     const p = stub([

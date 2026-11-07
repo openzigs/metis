@@ -18,15 +18,28 @@
  * from the new breakpoint; a turn that adds 20 or more blocks (ten parallel
  * tool calls and their results) misses it and writes afresh.
  *
- * Only the `anthropic` provider gets the messages breakpoint. The
- * OpenAI-compatible client forwards `promptCaching.messages` as
- * `extra_body.prompt_caching` (bedrock-access-gateway reads it), so turning it
- * on there would change those requests; whether DeepSeek or the gateway need
- * anything is a separate question (#1829). A turn with no tools is one call,
- * whose last user block is never re-sent within the turn, so it keeps the
- * system-only posture (#389).
+ * #1863 — the FIRST call carries the breakpoint too, although a turn that
+ * answers on that call never reads its write back (1.25x, or 2x at the 1h
+ * TTL, on the whole transcript). Dropping it there would make call 2 pay full
+ * price for that transcript and then write it anyway (1x + 1.25x instead of
+ * 1.25x + 0.1x), and nothing in the request says in advance whether the model
+ * will call a tool. #1845 measured the posture as shipped, first call
+ * included, on `claude-sonnet-5-5`: cache-read share 38.7% to 77.1%, and cost
+ * per session $0.0289 to $0.0176, a 34–39% saving over 40 sessions.
+ *
+ * Only an Anthropic adapter whose endpoint is Anthropic's own API, or a proxy
+ * the operator declared relays to it (`ANTHROPIC_BASE_URL_BILLS_AS=anthropic`),
+ * gets the messages breakpoint. The `anthropic` provider key also covers
+ * DeepSeek's Anthropic-format endpoint and any other Anthropic-compatible host,
+ * whose requests must not change (#1863); DeepSeek caches prefixes on its own,
+ * and #1845 measured no saving there. `servesRouterModel` is the endpoint test
+ * pricing and the model router already read (#512). The OpenAI-compatible
+ * client forwards `promptCaching.messages` as `extra_body.prompt_caching`
+ * (bedrock-access-gateway reads it), so turning it on there would change those
+ * requests too. A turn with no tools is one call, whose last user block is
+ * never re-sent within the turn, so it keeps the system-only posture (#389).
  */
-import type { ChatOptions, ProviderKey } from "./types.js";
+import type { AIProvider, ChatOptions } from "./types.js";
 
 /** The chat workload's cache posture without a tool loop (#700). */
 export const CHAT_PROMPT_CACHING = { system: true } as const;
@@ -34,9 +47,14 @@ export const CHAT_PROMPT_CACHING = { system: true } as const;
 /** #1842 — the posture of a native-Anthropic tool loop: system plus the moving transcript. */
 export const CHAT_TOOL_LOOP_PROMPT_CACHING = { system: true, messages: true } as const;
 
-/** #1842 — the `promptCaching` a chat tool loop sends on `providerKey`. */
+/** The members of a provider {@link chatToolLoopPromptCaching} reads. */
+export type ToolLoopCachingProvider = Pick<AIProvider, "key" | "model" | "servesRouterModel">;
+
+/** #1842 / #1863 — the `promptCaching` a chat tool loop sends on `provider`. */
 export function chatToolLoopPromptCaching(
-  providerKey: ProviderKey,
+  provider: ToolLoopCachingProvider,
 ): NonNullable<ChatOptions["promptCaching"]> {
-  return providerKey === "anthropic" ? CHAT_TOOL_LOOP_PROMPT_CACHING : CHAT_PROMPT_CACHING;
+  const relaysToAnthropic =
+    provider.key === "anthropic" && provider.servesRouterModel?.(provider.model) === true;
+  return relaysToAnthropic ? CHAT_TOOL_LOOP_PROMPT_CACHING : CHAT_PROMPT_CACHING;
 }

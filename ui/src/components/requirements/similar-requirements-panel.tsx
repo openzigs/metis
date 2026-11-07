@@ -29,6 +29,7 @@ import { type Query, useMutation, useQuery, useQueryClient } from "@tanstack/rea
 import { toast } from "sonner";
 import {
   BORROWABLE_FRESHNESS,
+  SIMILAR_CODE_LINKS_PER_ITEM,
   SIMILAR_REQUIREMENT_SOURCE,
   type BorrowCitationsResult,
   type SimilarRequirementCodeLink,
@@ -79,22 +80,47 @@ function ownLinkedFiles(links: SimilarRequirementItem["codeLinks"]): number {
 }
 
 /**
+ * " (it already links to 3 files)" for a duplicate warning, or "" when it links
+ * none of its own. #1931 — past the cap the server returns only the first links,
+ * so the count is a lower bound and says so.
+ */
+export function alreadyLinksText(item: SimilarRequirementItem): string {
+  const files = ownLinkedFiles(item.codeLinks);
+  if (files === 0) return "";
+  const count = item.codeLinksTruncated ? `at least ${files}` : `${files}`;
+  return ` (it already links to ${count} file${files === 1 ? "" : "s"})`;
+}
+
+/**
  * #1914 — a cached similar list that lists `requirementId`: the lists a borrow
  * into it changes. The others are not refetched, since each refetch reads the
- * project's requirements and may call the verifier model.
+ * project's requirements and may call the verifier model. #1931 — and a list
+ * with no answer yet: its fetch may have read the links before the borrow
+ * committed, so it is refetched rather than trusted for `staleTime`.
  */
 function listsRequirement(requirementId: string) {
   return (query: Query): boolean => {
     const data = query.state.data as { items?: SimilarRequirementItem[] } | undefined;
-    return data?.items?.some((i) => i.requirementId === requirementId) ?? false;
+    if (data === undefined) return true;
+    return data.items?.some((i) => i.requirementId === requirementId) ?? false;
   };
+}
+
+/** #1931 — a list whose first fetch is still in flight: it has no answer to show yet. */
+function firstFetchInFlight(query: Query): boolean {
+  return query.state.data === undefined && query.state.fetchStatus !== "idle";
 }
 
 /**
  * "3 code links: 2 fresh, 1 stale" — `moved` links were re-pointed and count as
  * fresh. A borrowed link is counted apart (#1902), never as fresh or stale.
+ * #1931 — `truncated`: it holds more than the links given, which the server
+ * caps at `SIMILAR_CODE_LINKS_PER_ITEM`; the breakdown is of those given.
  */
-export function codeLinkSummary(links: SimilarRequirementItem["codeLinks"]): string {
+export function codeLinkSummary(
+  links: SimilarRequirementItem["codeLinks"],
+  truncated = false,
+): string {
   if (links.length === 0) return "No code links";
   const own = ownCodeLinks(links);
   const fresh = own.filter((l) => l.freshness === "fresh" || l.freshness === "moved").length;
@@ -104,6 +130,9 @@ export function codeLinkSummary(links: SimilarRequirementItem["codeLinks"]): str
   const parts = [`${fresh} fresh`, `${stale} stale`];
   if (unchecked > 0) parts.push(`${unchecked} not yet checked`);
   if (borrowed > 0) parts.push(`${borrowed} borrowed`);
+  if (truncated) {
+    return `More than ${SIMILAR_CODE_LINKS_PER_ITEM} code links, of the ${links.length} most confident: ${parts.join(", ")}`;
+  }
   return `${links.length} code link${links.length === 1 ? "" : "s"}: ${parts.join(", ")}`;
 }
 
@@ -211,10 +240,16 @@ function BorrowAction({
       setConfirming(false);
       toast.success(borrowResultText(result, item.key ?? item.title));
       await queryClient.invalidateQueries({ queryKey: traceabilityKey(projectId, requirementId) });
+      const lists = similarRequirementsPrefix(projectId);
+      // #1931 — a list still on its first fetch may have read the links before
+      // the borrow committed. Invalidating it alone joins that fetch (React
+      // Query restarts a fetch in flight only once the query has data), so
+      // cancel it first: the refetch below then starts afresh.
+      await queryClient.cancelQueries({ queryKey: lists, predicate: firstFetchInFlight });
       // #1903 — other cards list this requirement, with the code links it now
       // holds. #1914 — only those: no other list changed.
       await queryClient.invalidateQueries({
-        queryKey: similarRequirementsPrefix(projectId),
+        queryKey: lists,
         predicate: listsRequirement(requirementId),
       });
     },
@@ -304,7 +339,9 @@ function SimilarItem({
         {nameOf(item)}
       </Link>
       <span className="text-muted-foreground">{item.status}</span>
-      <span className="text-muted-foreground">{codeLinkSummary(item.codeLinks)}</span>
+      <span className="text-muted-foreground">
+        {codeLinkSummary(item.codeLinks, item.codeLinksTruncated)}
+      </span>
       {borrowInto && item.codeLinks.length > 0 ? (
         <BorrowAction projectId={projectId} requirementId={borrowInto} item={item} />
       ) : null}
@@ -375,8 +412,6 @@ function DuplicateWarning({
     onError: (err) => toast.error(apiErrorMessage(err as ApiError, "Could not save your answer")),
   });
   const busy = mark.isPending || dismiss.isPending;
-  // #1902 — the code it links of its own, not what it borrowed. #1914 — in files.
-  const links = ownLinkedFiles(item.codeLinks);
   return (
     <div
       role="alert"
@@ -385,7 +420,8 @@ function DuplicateWarning({
     >
       <p>
         <strong>Possible duplicate:</strong> {nameOf(item)} looks like the same requirement
-        {links > 0 ? ` (it already links to ${links} file${links === 1 ? "" : "s"})` : ""}.
+        {/* #1902 — the code it links of its own, not what it borrowed; #1914 — in files. */}
+        {alreadyLinksText(item)}.
       </p>
       <div className="flex gap-2">
         <Button
@@ -501,7 +537,6 @@ export function DraftSimilarRequirements({
 
   if (items === null) return null;
   const duplicate = items.find((i) => i.label === "duplicate");
-  const duplicateLinks = duplicate ? ownLinkedFiles(duplicate.codeLinks) : 0;
   return (
     <section
       className="mt-2 space-y-2"
@@ -511,10 +546,7 @@ export function DraftSimilarRequirements({
       {duplicate ? (
         <p role="alert" className="rounded border border-warning/40 bg-warning-muted p-2 text-xs">
           <strong>Before you add this:</strong> {nameOf(duplicate)} looks like a duplicate
-          {duplicateLinks > 0
-            ? ` (it already links to ${duplicateLinks} file${duplicateLinks === 1 ? "" : "s"})`
-            : ""}
-          .
+          {alreadyLinksText(duplicate)}.
         </p>
       ) : null}
       <h5 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">

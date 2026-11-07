@@ -338,8 +338,7 @@ async function main(): Promise<void> {
             sessionId: row.id,
             model,
             callType: "chat",
-            promptCaching:
-              arm === "on" ? chatToolLoopPromptCaching(provider.key) : CHAT_PROMPT_CACHING,
+            promptCaching: arm === "on" ? chatToolLoopPromptCaching(provider) : CHAT_PROMPT_CACHING,
           },
           toolResultMaxChars: turn.build.toolResultMaxChars,
           onUsage: (u) => {
