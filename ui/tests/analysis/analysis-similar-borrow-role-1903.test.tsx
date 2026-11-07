@@ -105,6 +105,7 @@ const LOT: SimilarRequirementItem = {
       freshness: "fresh",
     },
   ],
+  codeLinksTruncated: false,
   notDuplicate: false,
   linkedAsDuplicate: false,
 };

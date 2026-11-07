@@ -39,7 +39,8 @@
  *
  * "Fixed version" is Trivy's `FixedVersion`. The images apply the distro's
  * security updates at build time (`apt-get upgrade` / `apk upgrade`, with the
- * layer cache busted daily by OS_PATCH_DATE), so a fix the distro has shipped is
+ * layer cache busted by OS_PATCH_DATE: daily, and whenever Debian publishes a
+ * security update, scripts/ci/os-patch-stamp.sh), so a fix the distro has shipped is
  * already in the image; one still reported is a fix the image is not picking up.
  *
  * Waivers: `.github/image-scan-waivers.json` — see that file's `$comment`.

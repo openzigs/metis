@@ -62,7 +62,13 @@ export interface SimilarRequirementItem {
   /** Cosine similarity of the two requirements' embeddings, 0..1. */
   score: number;
   label: SimilarRequirementLabel;
+  /** Its saved code links, the first `SIMILAR_CODE_LINKS_PER_ITEM` by confidence. */
   codeLinks: SimilarRequirementCodeLink[];
+  /**
+   * #1931 — it holds more saved code links than `codeLinks` carries, so any
+   * count read from `codeLinks` is a lower bound.
+   */
+  codeLinksTruncated: boolean;
   /**
    * #1838 — an analyst answered "Not a duplicate" for this pair. Always false
    * for draft text (there is no pair yet).
@@ -75,6 +81,9 @@ export interface SimilarRequirementItem {
 export interface SimilarRequirementsResponse {
   items: SimilarRequirementItem[];
 }
+
+/** #1931 — saved code links returned per similar requirement; past it, `codeLinksTruncated`. */
+export const SIMILAR_CODE_LINKS_PER_ITEM = 20;
 
 /** The most items one call returns. */
 export const SIMILAR_REQUIREMENTS_MAX_LIMIT = 20;
