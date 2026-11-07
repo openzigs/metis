@@ -657,9 +657,17 @@ export const impactSeedEvidenceSchema = z.object({
       led: z.number().int().min(0),
       /**
        * #1832 — citations re-validation found out of date (`stale`, #1831): set
-       * aside, never a seed. Optional: absent from evidence written before #1832.
+       * aside, never a seed. Only with `IMPACT_DEMOTE_STALE_CITATIONS` on (#1939);
+       * 0 by default. Optional: absent from evidence written before #1832.
        */
       demotedStaleCitations: z.number().int().min(0).optional(),
+      /**
+       * #1939 — citations re-validation found out of date (`stale`) that the run
+       * read, set aside or not: with `IMPACT_DEMOTE_STALE_CITATIONS` off (the
+       * default) they still seed and `demotedStaleCitations` is 0. Optional:
+       * absent from evidence written before #1939.
+       */
+      outOfDateCitations: z.number().int().min(0).optional(),
       /** #1832 — seeded citations no re-ingest has checked yet (`unverified`, #1830). */
       unverifiedCitations: z.number().int().min(0).optional(),
     })

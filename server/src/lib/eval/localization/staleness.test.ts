@@ -25,7 +25,6 @@ import {
   StalenessRestoreError,
   withNoopReingest,
   withStalePatch,
-  withoutFreshness,
   type CloneFiles,
   type PatchSymbolRow,
   type StalenessOp,
@@ -459,7 +458,7 @@ describe("the patched corpus a staleness arm searches", () => {
   });
 });
 
-describe("withoutFreshness and tallyFreshness", () => {
+describe("tallyFreshness", () => {
   const row = (freshness?: string): StoredLinkRow => ({
     codeSymbolId: null,
     filePath: "a.go",
@@ -468,14 +467,6 @@ describe("withoutFreshness and tallyFreshness", () => {
     confidence: 0.5,
     source: "analysis-grounding",
     ...(freshness ? { freshness } : {}),
-  });
-
-  it("hides the freshness and keeps everything else", async () => {
-    const load = vi.fn(async () => [row("stale"), row("fresh")]);
-    const out = await withoutFreshness(load)("req", "proj");
-    expect(load).toHaveBeenCalledWith("req", "proj");
-    expect(out).toEqual([row(), row()]);
-    expect(out.every((l) => !("freshness" in l))).toBe(true);
   });
 
   it("counts each state; a row with none is unverified", () => {

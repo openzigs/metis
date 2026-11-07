@@ -536,7 +536,7 @@ describe("A7 staleness arms (#1834)", () => {
     expect(a7.editCandidateFiles).toEqual(keep.editCandidateFiles);
   });
 
-  it("A7 and A7K read the citations unpatched; A7K hides their freshness, so a stale one still leads", async () => {
+  it("A7 and A7K read the citations unpatched, without demotion (#1939), so a stale one still leads", async () => {
     const f = staleFixture();
     const corpus = corpusOf(["r"]);
     const a7 = await createA7Arm(f.deps).localize(item, corpus, { run: 1 });
@@ -547,13 +547,17 @@ describe("A7 staleness arms (#1834)", () => {
     expect(a7.editCandidateFiles).toEqual(["r:c.go", "r:b.go", "r:a.go"]);
     expect(a7.agent!.citationFreshness).toBeUndefined();
 
-    // A stored stale citation (from an earlier re-ingest): A7 sets it aside, A7K does not.
+    // A stored stale citation (from an earlier re-ingest): the shipped default
+    // (#1939) keeps it, in A7 as in A7K; only a demoting arm sets it aside.
     const meter = fakeMeter();
     const { io } = stubIO(meter, {
       r: [{ id: "req-1", title: "Order total", links: [link("c.go", 0.6, "stale")] }],
     });
     const deps = { search: searchSpy().search, analysis: io, meter, provider };
-    expect((await createA7Arm(deps).localize(item, corpus)).editCandidateFiles).toEqual(["r:a.go"]);
+    expect((await createA7Arm(deps).localize(item, corpus)).editCandidateFiles).toEqual([
+      "r:c.go",
+      "r:a.go",
+    ]);
     expect((await createA7KArm(deps).localize(item, corpus)).editCandidateFiles).toEqual([
       "r:c.go",
       "r:a.go",
@@ -586,11 +590,19 @@ describe("A7 staleness arms (#1834)", () => {
       stalenessPatchSets: "patches-1",
       model: "claude-sonnet-5-5",
     });
-    expect(String(s.configuration.stage)).toContain("before #1832");
-    expect(String(sd.configuration.stage)).toContain("demoted (#1832");
+    expect(String(s.configuration.stage)).toContain(
+      "IMPACT_DEMOTE_STALE_CITATIONS off, as shipped",
+    );
+    expect(String(sd.configuration.stage)).toContain(
+      "IMPACT_DEMOTE_STALE_CITATIONS forced on: stale citations demoted (#1832",
+    );
     expect(s.label).toContain("not demoting");
     expect(sd.label).toContain(", demoting");
-    expect(createA7KArm(deps).label).toContain("freshness hidden");
+    // #1939 — the shipped arm runs without demotion, and A7K reads as it does.
+    expect(String(createA7Arm(deps).configuration.order)).toContain(
+      "IMPACT_DEMOTE_STALE_CITATIONS off",
+    );
+    expect(createA7KArm(deps).configuration.order).toBe(createA7Arm(deps).configuration.order);
     expect(createA7Arm(deps).configuration.staleness).toBeUndefined();
   });
 });

@@ -33,12 +33,15 @@
  *     rest keep their relative order after the lead;
  *   - a cited file the code graph no longer holds is dropped and counted, so
  *     every agent-named file in the output resolves to the graph;
- *   - #1832 — a citation is led with only when it is not known to be out of
- *     date: `fresh`, then `moved`, then `unverified` (a link no re-ingest has
- *     checked yet, #1830), each tier in the #1818 order. A `stale` citation
+ *   - #1832 — with {@link DEMOTE_STALE_CITATIONS_FLAG} on (OFF by default
+ *     since #1939), a citation is led with only when it is not known to be out
+ *     of date: `fresh`, then `moved`, then `unverified` (a link no re-ingest
+ *     has checked yet, #1830), each tier in the #1818 order. A `stale` citation
  *     (#1831) seeds nothing and is counted as demoted. The rule is additive: a
  *     stale citation's file the hybrid search finds on its own stays exactly
- *     where search ranked it;
+ *     where search ranked it. With the flag off, freshness reorders and sets
+ *     aside nothing; the stale citations are only counted
+ *     (`outOfDateCitations`);
  *   - links are read for the requirement AND the project, never by id alone.
  *
  * It applies only to a change about a tracked requirement (a `requirementId`):
@@ -82,6 +85,21 @@ export function impactAgentSeedsEnabled(): boolean {
   return getConfigService().getBool(AGENT_SEEDS_FLAG, true);
 }
 
+/**
+ * #1939 — the env/runtime flag for #1832's demotion of stale citations (the
+ * freshness tier sort and the stale filter). OFF by default: on
+ * `claude-sonnet-5-5`, pooled on 39 held-out items (#1915), demotion after the
+ * code changed cost Recall@5 −0.097 [−0.17, −0.03] (A7SD − A7S, p = 0.004) and
+ * MRR −0.255, and after a routine no-op re-ingest it changed nothing (A7RD −
+ * A7R = 0.000: every citation was `fresh`, so there was nothing to demote).
+ */
+export const DEMOTE_STALE_CITATIONS_FLAG = "IMPACT_DEMOTE_STALE_CITATIONS";
+
+/** #1939 — whether #1832's demotion runs (`IMPACT_DEMOTE_STALE_CITATIONS=1` turns it on). */
+export function impactDemoteStaleCitationsEnabled(): boolean {
+  return getConfigService().getBool(DEMOTE_STALE_CITATIONS_FLAG, false);
+}
+
 /** Distinct cited files that lead the files to edit, at most: the edit-file cut. */
 export const MAX_AGENT_LEAD_FILES = MAX_EDIT_FILES;
 
@@ -106,12 +124,17 @@ const tierOf = (link: StoredLinkRow): number => FRESHNESS_TIER[link.freshness ??
 export const isStaleCitation = (link: StoredLinkRow): boolean => link.freshness === "stale";
 
 /**
- * #1818 — the order the citations are read in: #1832 the freshness tier first
- * (`fresh`, `moved`, `unverified`), then the surer, then the order they were
- * stored in. `Array.prototype.sort` is stable (ES2019), so equal keys keep it.
+ * #1818 — the order the citations are read in: the surer first, then the order
+ * they were stored in. #1832 — with `byFreshness` (the demotion flag, #1939),
+ * the freshness tier (`fresh`, `moved`, `unverified`) comes before both.
+ * `Array.prototype.sort` is stable (ES2019), so equal keys keep it.
  */
-export function citationOrder(links: readonly StoredLinkRow[]): StoredLinkRow[] {
-  return [...links].sort((a, b) => tierOf(a) - tierOf(b) || b.confidence - a.confidence);
+export function citationOrder(
+  links: readonly StoredLinkRow[],
+  byFreshness: boolean,
+): StoredLinkRow[] {
+  const tier = byFreshness ? tierOf : () => 0;
+  return [...links].sort((a, b) => tier(a) - tier(b) || b.confidence - a.confidence);
 }
 
 export interface AgentCitationDeps {
@@ -123,6 +146,12 @@ export interface AgentCitationDeps {
   loadCitations: (requirementId: string, projectId: string) => Promise<StoredLinkRow[]>;
   /** The project's code-graph symbols in the given files: none for a file the graph lost. */
   loadFileSymbols: StoredLinkDeps["loadFileSymbols"];
+  /**
+   * #1939 — run #1832's demotion (`IMPACT_DEMOTE_STALE_CITATIONS`, read by the
+   * route): set stale citations aside and order by freshness tier. Absent or
+   * false: the default, freshness reorders and sets aside nothing.
+   */
+  demoteStale?: boolean;
 }
 
 /**
@@ -133,8 +162,10 @@ export interface AgentCitationDeps {
  */
 export function prismaAgentCitationDeps(
   prisma: Pick<PrismaClient, "codeSymbol" | "requirementCodeMapping">,
+  demoteStale = false,
 ): AgentCitationDeps {
   return {
+    ...(demoteStale ? { demoteStale } : {}),
     loadCitations: (requirementId, projectId) =>
       prisma.requirementCodeMapping.findMany({
         where: { requirementId, projectId, source: ANALYSIS_GROUNDING_SOURCE },
@@ -169,11 +200,15 @@ export async function leadWithAgentCitations(
 ): Promise<ChangeSeeds> {
   let links: StoredLinkRow[];
   let demoted = 0;
+  let outOfDate = 0;
+  const demote = deps.demoteStale === true;
   let fileRows: Awaited<ReturnType<AgentCitationDeps["loadFileSymbols"]>>;
   try {
     const stored = await deps.loadCitations(requirementId, projectId);
-    // #1832 — a stale citation leads nothing and is not appended: set aside, counted.
-    links = citationOrder(stored.filter((l) => !isStaleCitation(l)));
+    outOfDate = stored.filter(isStaleCitation).length;
+    // #1832 — with the demotion flag (#1939), a stale citation leads nothing and
+    // is not appended: set aside, counted. Without it, it seeds like any other.
+    links = citationOrder(demote ? stored.filter((l) => !isStaleCitation(l)) : stored, demote);
     demoted = stored.length - links.length;
     fileRows =
       links.length === 0
@@ -188,6 +223,7 @@ export async function leadWithAgentCitations(
         stale: 0,
         led: 0,
         demotedStaleCitations: 0,
+        outOfDateCitations: 0,
         unverifiedCitations: 0,
       }),
     };
@@ -206,7 +242,8 @@ export async function leadWithAgentCitations(
       continue;
     }
     used++;
-    if (tierOf(link) === FRESHNESS_TIER.unverified) unverified++;
+    // A stale citation (seeding only with the demotion flag off) is not unverified.
+    if (!isStaleCitation(link) && tierOf(link) === FRESHNESS_TIER.unverified) unverified++;
     cited.set(link.filePath, [...(cited.get(link.filePath) ?? []), link]);
   }
   if (cited.size === 0) {
@@ -217,6 +254,7 @@ export async function leadWithAgentCitations(
         stale,
         led: 0,
         demotedStaleCitations: demoted,
+        outOfDateCitations: outOfDate,
         unverifiedCitations: unverified,
       }),
     };
@@ -280,6 +318,7 @@ export async function leadWithAgentCitations(
         stale,
         led: lead.length,
         demotedStaleCitations: demoted,
+        outOfDateCitations: outOfDate,
         unverifiedCitations: unverified,
       }),
       editCandidates: editFiles.map((filePath) => {
