@@ -25,7 +25,6 @@ import {
   StalenessRestoreError,
   withNoopReingest,
   withStalePatch,
-  withoutFreshness,
   type CloneFiles,
   type PatchSymbolRow,
   type StalenessOp,
@@ -459,7 +458,7 @@ describe("the patched corpus a staleness arm searches", () => {
   });
 });
 
-describe("withoutFreshness and tallyFreshness", () => {
+describe("tallyFreshness", () => {
   const row = (freshness?: string): StoredLinkRow => ({
     codeSymbolId: null,
     filePath: "a.go",
@@ -468,14 +467,6 @@ describe("withoutFreshness and tallyFreshness", () => {
     confidence: 0.5,
     source: "analysis-grounding",
     ...(freshness ? { freshness } : {}),
-  });
-
-  it("hides the freshness and keeps everything else", async () => {
-    const load = vi.fn(async () => [row("stale"), row("fresh")]);
-    const out = await withoutFreshness(load)("req", "proj");
-    expect(load).toHaveBeenCalledWith("req", "proj");
-    expect(out).toEqual([row(), row()]);
-    expect(out.every((l) => !("freshness" in l))).toBe(true);
   });
 
   it("counts each state; a row with none is unverified", () => {
@@ -680,6 +671,39 @@ describe("withStalePatch", () => {
     ]);
     // Neither re-embed ran: each repository's restore stopped at its failed re-ingest.
     expect(d.calls.filter((c) => c.startsWith("embed"))).toEqual([]);
+  });
+
+  it("#1925 — warns with the restore failures when the read threw a primitive they cannot ride on", async () => {
+    const d = deps();
+    d.cycle.restore.mockImplementation(async (repo: string) => {
+      if (repo === "r") throw new Error("git reset failed in r");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await expect(
+        withStalePatch(
+          twoRepos,
+          (n) => n,
+          d.cycle,
+          async () => {
+            throw "read failed";
+          },
+        ),
+      ).rejects.toBe("read failed");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toBe(
+        "restoring 1 repository after the staleness patch failed: git reset failed in r",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("#1925 — withNoopReingest refuses an empty repository list rather than read as if re-ingested", async () => {
+    const d = deps();
+    const read = vi.fn(async () => 3);
+    await expect(withNoopReingest([], d.cycle, read)).rejects.toThrow(/no repository to re-ingest/);
+    expect(read).not.toHaveBeenCalled();
   });
 
   it("#1899 — withNoopReingest re-ingests every repository at its pin, patches nothing, then reads", async () => {

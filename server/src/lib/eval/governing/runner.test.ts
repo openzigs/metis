@@ -286,6 +286,36 @@ describe("runGoverningEval", () => {
   });
 });
 
+describe("the per-call estimate (#1920)", () => {
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -0.01])(
+    "refuses %s before any call, since it would switch the cap off or shrink the reserve",
+    async (callEstimateUsd) => {
+      const a0 = fakeArm("A0", resemblingOnly);
+      await expect(
+        runGoverningEval(corpus, {
+          arms: [a0],
+          runs: 1,
+          budget: new EvalBudget(100),
+          provider: fakeProvider(),
+          callEstimateUsd,
+        }),
+      ).rejects.toThrow(/per-call estimate must be a non-negative number of dollars/);
+      expect(a0.calls).toBe(0);
+    },
+  );
+
+  it("accepts an estimate of zero", async () => {
+    const report = await runGoverningEval(corpus, {
+      arms: [fakeArm("A0", resemblingOnly)],
+      runs: 1,
+      budget: new EvalBudget(100),
+      provider: fakeProvider(),
+      callEstimateUsd: 0,
+    });
+    expect(report.stopped).toBeNull();
+  });
+});
+
 describe("SpendLedger", () => {
   it("adds a finished call's spend and reserves the costliest call for each in flight", () => {
     const ledger = new SpendLedger();
@@ -342,6 +372,35 @@ describe("a failure's error", () => {
 describe("compareWithA0", () => {
   it("compares nothing without an A0", () => {
     expect(compareWithA0(new Map([["A2", [[]]]]))).toEqual([]);
+  });
+
+  it("compares citation coverage with A0 too, over the items both arms applied a rule on (#1920)", async () => {
+    // A0 applies the resembling pairs and cites none; A2 cites every rule it applies.
+    const report = await runGoverningEval(corpus, {
+      arms: [
+        fakeArm("A0", resemblingOnly),
+        fakeArm(
+          "A2",
+          oracle(() => corpus),
+        ),
+      ],
+      runs: 2,
+      budget: new EvalBudget(100),
+      provider: fakeProvider(),
+    });
+    expect(report.comparisons.map((c) => c.metric)).toEqual([
+      "recall",
+      "nonResemblingRecall",
+      "citationCoverage",
+    ]);
+    const coverage = report.comparisons.find((c) => c.metric === "citationCoverage")!;
+    const bothApplied = corpus.manifest.items.filter((i) =>
+      i.applies.some((p) => !p.nonResembling),
+    ).length;
+    expect(coverage.difference.n).toBe(bothApplied);
+    expect(coverage.difference.meanDifference).toBe(1);
+    expect(coverage.verdict).toBe("better");
+    expect(toMarkdownReport(report)).toMatch(/\| A2 \| citationCoverage \| \+1\.00 \|/);
   });
 });
 
@@ -407,6 +466,31 @@ describe("toJsonReport", () => {
 });
 
 describe("toMarkdownReport", () => {
+  it("prints the measured value, not n/a, when a by-construction claim does not hold (#1920)", async () => {
+    // Claims A0's construction, but says compliant on every truth pair.
+    const allCompliant = (item: GoverningItem) => ({
+      judgements: item.applies.map((p) => ({ ruleId: p.ruleId, verdict: "compliant" as const })),
+    });
+    const arm = { ...fakeArm("A0", allCompliant), byConstruction: A0_BY_CONSTRUCTION };
+    const report = await runGoverningEval(corpus, {
+      arms: [arm],
+      runs: 1,
+      budget: new EvalBudget(100),
+      provider: fakeProvider(),
+    });
+    const hardErrors = report.arms[0]!.summary.hardErrors;
+    expect(hardErrors).toBeGreaterThan(0);
+    const md = toMarkdownReport(report);
+    expect(md).toMatch(
+      /\| A0 \| maxNoEvidenceCompliantErrors \| ≤ 0 per run \| \d+ \(worst run\) \| \*\*no\*\* \|/,
+    );
+    // The results row shows the real hard-error count; ask rate and citation accuracy still hold.
+    expect(md).toContain(`| ${hardErrors} | n/a† |`);
+    expect(md).toContain(
+      "‡ Claimed fixed by construction, but measured otherwise, so it is judged: A0 hardErrors.",
+    );
+  });
+
   it("states the metrics, the bars, the review status, the screen size and each arm's configuration", async () => {
     const report = await runGoverningEval(corpus, {
       arms: [fakeArm("A0", resemblingOnly)],
@@ -462,6 +546,7 @@ describe("toMarkdownReport", () => {
       provider: fakeProvider(),
     });
     const plainMd = toMarkdownReport(plain);
+    expect(md).not.toContain("‡");
     expect(plainMd).not.toContain("†");
     expect(plainMd).toContain(
       "| A0 | maxNoEvidenceCompliantErrors | ≤ 0 per run | 0 (worst run) | yes |",

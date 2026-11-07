@@ -11,8 +11,9 @@
  *
  * In-process only: an LRU bounded by entry count and by bytes, and every entry
  * expires after a TTL. Not cached:
- *   - a project whose content version is incomplete (a code graph with no
- *     commit SHA), counted as a `bypass`;
+ *   - a code tool's call on a project whose content version is incomplete (a
+ *     code graph with no commit SHA), counted as a `bypass`. `search-knowledge`
+ *     reads no code graph, so it is still cached there (#1864);
  *   - an error result (it may be transient);
  *   - a call with no project.
  * A failure to read the version also bypasses the cache, and the tool runs as
@@ -35,6 +36,17 @@ import {
 import type { RuntimeTool, RuntimeToolContext, RuntimeToolResult } from "./types.js";
 
 const log = createChildLogger("tool-result-cache");
+
+/**
+ * #1864 — the cacheable tools that read the code graph, and so cannot be
+ * cached under an incomplete content version. `search-knowledge` searches the
+ * document chunks only.
+ */
+const CODE_GRAPH_TOOLS: ReadonlySet<string> = new Set([
+  "search_code_graph",
+  "search_code_symbols",
+  "read_file_slice",
+]);
 
 /** The read tools whose results are cached (canonical names). */
 export const CACHEABLE_TOOLS: ReadonlySet<string> = new Set([
@@ -227,7 +239,7 @@ export function withToolResultCache(
         cache.count(tool.name, "bypass");
         return run(args, ctx);
       }
-      if (!version.complete) {
+      if (!version.complete && CODE_GRAPH_TOOLS.has(tool.name)) {
         cache.count(tool.name, "bypass");
         return run(args, ctx);
       }

@@ -245,6 +245,10 @@ export async function getRequirementChain(
  * Reverse lookup: given a file path, return the ids of requirements that reach
  * that file either directly (requirement→code) or via a spec (spec→code →
  * requirement→spec). Deduplicated, scoped to the project.
+ *
+ * #1913 — a link borrowed from a similar requirement (#1839) is not read: the
+ * answer is bare ids, so it cannot say "borrowed", and a suggestion no analysis
+ * has checked is no evidence that the requirement implements the file.
  */
 export async function getRequirementsForFile(
   projectId: string,
@@ -255,7 +259,7 @@ export async function getRequirementsForFile(
   const ids = new Set<string>();
 
   const direct = await prisma.requirementCodeMapping.findMany({
-    where: { projectId, filePath },
+    where: { projectId, filePath, source: { not: SIMILAR_REQUIREMENT_SOURCE } },
     select: { requirementId: true },
   });
   for (const r of direct) ids.add(r.requirementId);

@@ -12,10 +12,12 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { impactSeedEvidenceSchema } from "@metis/shared";
 import {
   AGENT_SEEDS_FLAG,
+  DEMOTE_STALE_CITATIONS_FLAG,
   MAX_AGENT_LEAD_FILES,
   MAX_AGENT_TAIL_FILES,
   citationOrder,
   impactAgentSeedsEnabled,
+  impactDemoteStaleCitationsEnabled,
   leadWithAgentCitations,
   prismaAgentCitationDeps,
   type AgentCitationDeps,
@@ -83,12 +85,17 @@ const GRAPH = [
   ]),
 ];
 
-function citationDeps(links: StoredLinkRow[], graph: SeedSymbolRow[] = GRAPH) {
+function citationDeps(
+  links: StoredLinkRow[],
+  graph: SeedSymbolRow[] = GRAPH,
+  demoteStale?: boolean,
+) {
   return {
     loadCitations: vi.fn(async () => links),
     loadFileSymbols: vi.fn(async (files: string[]) =>
       graph.filter((r) => files.includes(r.filePath)),
     ),
+    ...(demoteStale === undefined ? {} : { demoteStale }),
   } satisfies AgentCitationDeps;
 }
 
@@ -103,6 +110,9 @@ beforeAll(async () => {
 const files = (seeds: ChangeSeeds) => [...new Set(seeds.editCandidates.map((m) => m.filePath))];
 const lead = (links: StoredLinkRow[], seeds: ChangeSeeds = HYBRID, graph?: SeedSymbolRow[]) =>
   leadWithAgentCitations(seeds, "req-1", "p1", citationDeps(links, graph));
+/** #1939 — the stage with `IMPACT_DEMOTE_STALE_CITATIONS` on (#1832's demotion). */
+const leadDemoting = (links: StoredLinkRow[]) =>
+  leadWithAgentCitations(HYBRID, "req-1", "p1", citationDeps(links, GRAPH, true));
 
 describe("leadWithAgentCitations (#1759)", () => {
   it("the capture gives a real ranking to lead: several hybrid edit files, and related hits", () => {
@@ -158,6 +168,7 @@ describe("leadWithAgentCitations (#1759)", () => {
       stale: 0,
       led: 3,
       demotedStaleCitations: 0,
+      outOfDateCitations: 0,
       unverifiedCitations: 4,
     });
   });
@@ -212,6 +223,7 @@ describe("leadWithAgentCitations (#1759)", () => {
       stale: 0,
       led: 5,
       demotedStaleCitations: 0,
+      outOfDateCitations: 0,
       unverifiedCitations: cited.length,
     });
   });
@@ -264,6 +276,7 @@ describe("leadWithAgentCitations (#1759)", () => {
       stale: 3,
       led: 1,
       demotedStaleCitations: 0,
+      outOfDateCitations: 0,
       unverifiedCitations: 1,
     });
     const graphFiles = new Set(GRAPH.map((r) => r.filePath));
@@ -279,6 +292,7 @@ describe("leadWithAgentCitations (#1759)", () => {
       stale: 0,
       led: 0,
       demotedStaleCitations: 0,
+      outOfDateCitations: 0,
       unverifiedCitations: 0,
     });
     const stale = await lead([cite("gone/one.go")]);
@@ -288,6 +302,7 @@ describe("leadWithAgentCitations (#1759)", () => {
       stale: 1,
       led: 0,
       demotedStaleCitations: 0,
+      outOfDateCitations: 0,
       unverifiedCitations: 0,
     });
     expect(stale.evidence?.editCandidates.map((e) => e.filePath)).toEqual(files(HYBRID));
@@ -307,6 +322,7 @@ describe("leadWithAgentCitations (#1759)", () => {
       stale: 0,
       led: 0,
       demotedStaleCitations: 0,
+      outOfDateCitations: 0,
       unverifiedCitations: 0,
     });
     expect(deps.loadFileSymbols).not.toHaveBeenCalled();
@@ -373,7 +389,7 @@ describe("citationOrder (#1818)", () => {
       cite("d.go", { confidence: 0.8 }),
       cite("e.go", { confidence: 0.2 }),
     ];
-    expect(citationOrder(links).map((l) => l.filePath)).toEqual([
+    expect(citationOrder(links, false).map((l) => l.filePath)).toEqual([
       "b.go",
       "d.go",
       "a.go",
@@ -385,9 +401,9 @@ describe("citationOrder (#1818)", () => {
   });
 });
 
-describe("freshness demotion (#1832)", () => {
+describe("freshness demotion (#1832), with IMPACT_DEMOTE_STALE_CITATIONS on (#1939)", () => {
   it("a stale citation is not in the lead files and the fresh one is first", async () => {
-    const out = await lead([
+    const out = await leadDemoting([
       cite(AGENT_FILES[0]!, { confidence: 0.9, freshness: "stale" }),
       cite(AGENT_FILES[1]!, { confidence: 0.4, freshness: "fresh" }),
     ]);
@@ -399,6 +415,7 @@ describe("freshness demotion (#1832)", () => {
       stale: 0,
       led: 1,
       demotedStaleCitations: 1,
+      outOfDateCitations: 1,
       unverifiedCitations: 0,
     });
   });
@@ -406,7 +423,7 @@ describe("freshness demotion (#1832)", () => {
   it("a stale citation of a file the hybrid search found leaves that file where search ranked it", async () => {
     const hybridFiles = files(HYBRID);
     const searched = hybridFiles[2]!;
-    const out = await lead([
+    const out = await leadDemoting([
       cite(searched, { confidence: 1, freshness: "stale" }),
       cite(AGENT_FILES[0]!, { freshness: "fresh" }),
     ]);
@@ -420,7 +437,7 @@ describe("freshness demotion (#1832)", () => {
   });
 
   it("unverified citations rank after fresh and moved ones, and are not dropped", async () => {
-    const out = await lead([
+    const out = await leadDemoting([
       cite(AGENT_FILES[0]!, { confidence: 1 }), // no column read: unverified
       cite(AGENT_FILES[1]!, { confidence: 1, freshness: "unverified" }),
       cite(AGENT_FILES[2]!, { confidence: 0.1, freshness: "moved" }),
@@ -436,12 +453,13 @@ describe("freshness demotion (#1832)", () => {
       used: 4,
       led: 4,
       demotedStaleCitations: 0,
+      outOfDateCitations: 0,
       unverifiedCitations: 2,
     });
   });
 
   it("only stale citations: the seeds are as they were, and every one is counted", async () => {
-    const out = await lead([
+    const out = await leadDemoting([
       cite(AGENT_FILES[0]!, { freshness: "stale" }),
       cite(AGENT_FILES[1]!, { freshness: "stale" }),
     ]);
@@ -451,17 +469,21 @@ describe("freshness demotion (#1832)", () => {
       stale: 0,
       led: 0,
       demotedStaleCitations: 2,
+      outOfDateCitations: 2,
       unverifiedCitations: 0,
     });
   });
 
   it("citationOrder: freshness tier first, then confidence, then stored order", () => {
-    const order = citationOrder([
-      cite("u.go", { confidence: 0.9 }),
-      cite("m.go", { confidence: 0.1, freshness: "moved" }),
-      cite("f2.go", { confidence: 0.3, freshness: "fresh" }),
-      cite("f1.go", { confidence: 0.6, freshness: "fresh" }),
-    ]);
+    const order = citationOrder(
+      [
+        cite("u.go", { confidence: 0.9 }),
+        cite("m.go", { confidence: 0.1, freshness: "moved" }),
+        cite("f2.go", { confidence: 0.3, freshness: "fresh" }),
+        cite("f1.go", { confidence: 0.6, freshness: "fresh" }),
+      ],
+      true,
+    );
     expect(order.map((l) => l.filePath)).toEqual(["f1.go", "f2.go", "m.go", "u.go"]);
   });
 });
@@ -504,5 +526,112 @@ describe("impactAgentSeedsEnabled (#1759)", () => {
     expect(impactAgentSeedsEnabled()).toBe(false);
     process.env[AGENT_SEEDS_FLAG] = "1";
     expect(impactAgentSeedsEnabled()).toBe(true);
+  });
+});
+
+describe("#1939 — demotion is OFF by default", () => {
+  const prior = process.env[DEMOTE_STALE_CITATIONS_FLAG];
+  afterEach(() => {
+    if (prior === undefined) delete process.env[DEMOTE_STALE_CITATIONS_FLAG];
+    else process.env[DEMOTE_STALE_CITATIONS_FLAG] = prior;
+  });
+
+  it("the flag is off unless IMPACT_DEMOTE_STALE_CITATIONS turns it on", () => {
+    expect(DEMOTE_STALE_CITATIONS_FLAG).toBe("IMPACT_DEMOTE_STALE_CITATIONS");
+    delete process.env[DEMOTE_STALE_CITATIONS_FLAG];
+    expect(impactDemoteStaleCitationsEnabled()).toBe(false);
+    process.env[DEMOTE_STALE_CITATIONS_FLAG] = "1";
+    expect(impactDemoteStaleCitationsEnabled()).toBe(true);
+    process.env[DEMOTE_STALE_CITATIONS_FLAG] = "0";
+    expect(impactDemoteStaleCitationsEnabled()).toBe(false);
+  });
+
+  it("flag off: a stale citation still seeds, and is counted as out of date, not set aside", async () => {
+    const out = await lead([
+      cite(AGENT_FILES[0]!, { confidence: 0.9, freshness: "stale" }),
+      cite(AGENT_FILES[1]!, { confidence: 0.4, freshness: "fresh" }),
+    ]);
+    // The surer (stale) citation leads: freshness neither filters nor tier-sorts.
+    expect(files(out).slice(0, 2)).toEqual([AGENT_FILES[0], AGENT_FILES[1]]);
+    expect(out.evidence?.agentCitations).toEqual({
+      used: 2,
+      stale: 0,
+      led: 2,
+      demotedStaleCitations: 0,
+      outOfDateCitations: 1,
+      unverifiedCitations: 0,
+    });
+    // The evidence still parses against the shared schema the API returns.
+    expect(impactSeedEvidenceSchema.safeParse(out.evidence).success).toBe(true);
+  });
+
+  it("flag off: the order is confidence then stored order, whatever the freshness tier", async () => {
+    const out = await lead([
+      cite(AGENT_FILES[0]!, { confidence: 0.2, freshness: "fresh" }),
+      cite(AGENT_FILES[1]!, { confidence: 0.9 }), // no column read: unverified
+      cite(AGENT_FILES[2]!, { confidence: 0.5, freshness: "moved" }),
+      cite(AGENT_FILES[3]!, { confidence: 0.5, freshness: "stale" }),
+    ]);
+    expect(files(out).slice(0, 4)).toEqual([
+      AGENT_FILES[1],
+      AGENT_FILES[2],
+      AGENT_FILES[3],
+      AGENT_FILES[0],
+    ]);
+    expect(out.evidence?.agentCitations).toMatchObject({
+      demotedStaleCitations: 0,
+      outOfDateCitations: 1,
+    });
+  });
+
+  it("flag off: a stale citation whose file left the graph counts as dropped only, never as out of date and used", async () => {
+    const out = await lead([
+      cite("gone/deleted.go", { confidence: 0.9, freshness: "stale" }),
+      cite(AGENT_FILES[1]!, { confidence: 0.4, freshness: "fresh" }),
+    ]);
+    expect(out.evidence?.agentCitations).toEqual({
+      used: 1,
+      stale: 1,
+      led: 1,
+      demotedStaleCitations: 0,
+      outOfDateCitations: 0,
+      unverifiedCitations: 0,
+    });
+  });
+
+  it("demoteStale: false is the same as absent", async () => {
+    const links = [
+      cite(AGENT_FILES[0]!, { confidence: 0.9, freshness: "stale" }),
+      cite(AGENT_FILES[1]!, { confidence: 0.4, freshness: "fresh" }),
+    ];
+    const off = await leadWithAgentCitations(
+      HYBRID,
+      "req-1",
+      "p1",
+      citationDeps(links, GRAPH, false),
+    );
+    expect(off).toEqual(await lead(links));
+  });
+
+  it("citationOrder without byFreshness ignores the tier", () => {
+    const order = citationOrder(
+      [
+        cite("u.go", { confidence: 0.9 }),
+        cite("m.go", { confidence: 0.1, freshness: "moved" }),
+        cite("s.go", { confidence: 0.6, freshness: "stale" }),
+        cite("f.go", { confidence: 0.3, freshness: "fresh" }),
+      ],
+      false,
+    );
+    expect(order.map((l) => l.filePath)).toEqual(["u.go", "s.go", "f.go", "m.go"]);
+  });
+
+  it("prismaAgentCitationDeps carries the flag only when it is on", () => {
+    const prisma = {
+      requirementCodeMapping: { findMany: vi.fn() },
+      codeSymbol: { findMany: vi.fn() },
+    };
+    expect("demoteStale" in prismaAgentCitationDeps(prisma as never)).toBe(false);
+    expect(prismaAgentCitationDeps(prisma as never, true).demoteStale).toBe(true);
   });
 });

@@ -1789,7 +1789,7 @@ METIS never merges or deletes a requirement for you. The labels are suggestions:
 
 Choose **Copy N links** to copy exactly the first list, or **Cancel**. Code the requirement already links is not copied again. A message then says how many links were copied and why any were skipped.
 
-In the requirement's code links, each copied link carries a **borrowed** badge and the note *"Borrowed from REQ-xx, not yet checked by analysis"*. A borrowed link is a suggestion, not a finding. It is not used in the issue draft's "Related code" section, the requirements document, the analysis traceability matrix, **Tested by**, the test gaps or the workspace's code and test coverage. When the requirement's own analysis later links the same file, that link replaces the borrowed one.
+In the requirement's code links, each copied link carries a **borrowed** badge and the note *"Borrowed from REQ-xx, not yet checked by analysis"*. A borrowed link is a suggestion, not a finding. It is not used in the issue draft's "Related code" section, the requirements document, the analysis traceability matrix, **Tested by**, the test gaps, the workspace's code and test coverage, the list of requirements that touch a file, or the code-link counts chat gives when it lists requirements. When the requirement's own analysis later links the same file, that link replaces the borrowed one.
 
 While you type in **Evaluate new requirements** (Section 11.2), the same list appears for your text, half a second after you stop typing. If something already looks like a duplicate, the panel says so first: *"Before you add this: REQ-42 … looks like a duplicate (it already links to 3 files)."*
 
@@ -2466,7 +2466,11 @@ files to edit: at most five, in the order the agent cited them. Nothing the
 search found is removed, and no score changes; the search's files follow. A
 cited file that is no longer in the project's code is skipped. The run summary
 says how many citations were used, how many files they put at the top, and how
-many were skipped. It makes no extra AI call, so it costs nothing and adds no
+many were skipped. A citation whose code changed since the analysis is still
+used, and the summary says how many did; an administrator can set
+**`IMPACT_DEMOTE_STALE_CITATIONS=1`** to leave those out instead (off by default:
+on the held-out measurement, leaving them out found the right file less often).
+It makes no extra AI call, so it costs nothing and adds no
 time: it reuses what the analysis already found. A pasted request has no
 citations and is unchanged.
 

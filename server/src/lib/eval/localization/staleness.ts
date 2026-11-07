@@ -579,22 +579,6 @@ export function patchedGraphFiles(
   return out;
 }
 
-/**
- * #1834 — the stage BEFORE #1832, for the "without demotion" readings: the
- * same stored citations with their freshness hidden, so the stage neither sets
- * a stale one aside nor orders by freshness tier (every row reads as never
- * checked, and the order is confidence, then citation order, as #1818 shipped).
- */
-export function withoutFreshness(
-  load: (requirementId: string, projectId: string) => Promise<StoredLinkRow[]>,
-): (requirementId: string, projectId: string) => Promise<StoredLinkRow[]> {
-  return async (requirementId, projectId) =>
-    (await load(requirementId, projectId)).map((link) => {
-      const { freshness: _hidden, ...rest } = link;
-      return rest;
-    });
-}
-
 /** How many of a reading's stored citations re-validation left in each state. */
 export interface FreshnessTally {
   fresh: number;
@@ -775,8 +759,14 @@ export async function withStalePatch<R, T>(
   }
   if (!outcome.ok) {
     const { error } = outcome;
-    if (failures.length > 0 && error !== null && typeof error === "object") {
-      Object.assign(error, { restoreFailures: failures });
+    if (failures.length > 0) {
+      if (error !== null && typeof error === "object") {
+        Object.assign(error, { restoreFailures: failures });
+      } else {
+        // #1925 — a primitive cannot carry them: say so, or a clone left patched goes unseen.
+        // eslint-disable-next-line no-console -- an eval harness: the CLI's stderr is its only reader
+        console.warn(new StalenessRestoreError(failures).message);
+      }
     }
     throw error;
   }
@@ -788,13 +778,19 @@ export async function withStalePatch<R, T>(
  * #1899 — the no-op re-ingest: every repository re-ingested at its pinned
  * commit with no patch (re-validating its citations, #1831, as a routine
  * re-ingest does), then `read`. Nothing changed in the clone, so nothing is
- * restored.
+ * restored. #1925 — no repository is refused: re-ingesting nothing would read
+ * the citations still `unverified`, an A7K reading under A7R's name.
  */
 export async function withNoopReingest<R, T>(
   repos: readonly R[],
   deps: Pick<StalenessCycleDeps<R>, "reingest" | "pinnedSha">,
   read: () => Promise<T>,
 ): Promise<T> {
+  if (repos.length === 0) {
+    throw new Error(
+      "the no-op re-ingest has no repository to re-ingest: the read would see no re-validation",
+    );
+  }
   for (const repo of repos) await deps.reingest(repo, deps.pinnedSha(repo));
   return read();
 }

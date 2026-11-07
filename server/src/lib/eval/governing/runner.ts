@@ -30,6 +30,7 @@ import { measureScreenPromptSizes, type GoverningArm, type ScreenPromptSize } fr
 import type { GoverningCorpus, GoverningItem } from "./corpus.js";
 import {
   checkThresholds,
+  heldByConstruction,
   scoreItem,
   summarizeRuns,
   type ByConstruction,
@@ -186,10 +187,19 @@ export interface GoverningArmReport {
   records: ItemRunRecord[];
 }
 
+/** The per-item ratios compared with A0, each with its numerator and denominator. */
+const COMPARED = {
+  recall: ["truePositives", "truth"],
+  nonResemblingRecall: ["nonResemblingFound", "nonResemblingTruth"],
+  // #1920 — A0's citation accuracy is fixed by construction, so its quoting is
+  // read from coverage; an arm's own accuracy bar keeps coverage honest.
+  citationCoverage: ["cited", "applied"],
+} as const satisfies Record<string, readonly [keyof ItemScore, keyof ItemScore]>;
+
 /** An arm compared with A0 on the same requirements. */
 export interface ArmComparison {
   arm: string;
-  metric: "recall" | "nonResemblingRecall";
+  metric: keyof typeof COMPARED;
   difference: PairedDifference;
   verdict: ComparisonVerdict;
 }
@@ -245,24 +255,28 @@ function costOf(records: readonly ItemRunRecord[]): ArmCost {
   };
 }
 
-/** Per-item recall (or non-resembling recall) averaged over runs; null for an item with none to find. */
-function perItemRecall(
+/**
+ * Per-item ratio, its counts pooled over runs; null for an item with no
+ * denominator in any run. A recall's denominator is the same in every run, so
+ * this is the run-mean of the item's recall.
+ */
+function perItemRatio(
   scoresByRun: ReadonlyArray<readonly ItemScore[]>,
   metric: ArmComparison["metric"],
 ): Array<number | null> {
   const items = scoresByRun[0]?.length ?? 0;
+  const [num, den] = COMPARED[metric];
   return Array.from({ length: items }, (_, i) => {
-    const [num, den] =
-      metric === "recall"
-        ? (["truePositives", "truth"] as const)
-        : (["nonResemblingFound", "nonResemblingTruth"] as const);
-    const d = scoresByRun[0]![i]![den];
+    const d = scoresByRun.reduce((s, run) => s + run[i]![den], 0);
     if (d === 0) return null;
-    return scoresByRun.reduce((s, run) => s + run[i]![num] / d, 0) / scoresByRun.length;
+    return scoresByRun.reduce((s, run) => s + run[i]![num], 0) / d;
   });
 }
 
-/** Each arm's recall and non-resembling recall against A0, paired over the same items and runs. */
+/**
+ * Each arm's recall, non-resembling recall and citation coverage against A0,
+ * paired over the same items and runs (an item counts where both are defined).
+ */
 export function compareWithA0(
   scored: ReadonlyMap<string, ReadonlyArray<readonly ItemScore[]>>,
 ): ArmComparison[] {
@@ -272,9 +286,9 @@ export function compareWithA0(
   for (const [arm, runs] of scored) {
     if (arm === "A0" || runs.length === 0) continue;
     const common = Math.min(base.length, runs.length);
-    for (const metric of ["recall", "nonResemblingRecall"] as const) {
-      const a = perItemRecall(base.slice(0, common), metric);
-      const b = perItemRecall(runs.slice(0, common), metric);
+    for (const metric of Object.keys(COMPARED) as Array<ArmComparison["metric"]>) {
+      const a = perItemRatio(base.slice(0, common), metric);
+      const b = perItemRatio(runs.slice(0, common), metric);
       const keep = a.map((v, i) => v !== null && b[i] !== null);
       const difference = pairedBootstrap(
         a.filter((_, i) => keep[i]) as number[],
@@ -299,6 +313,13 @@ export async function runGoverningEval(
   const order = new Map(items.map((item, i) => [item.id, i]));
   const records = new Map<string, ItemRunRecord[]>(opts.arms.map((a) => [a.id, []]));
   const callEstimateUsd = opts.callEstimateUsd ?? estimateCallUsd(opts.provider);
+  // #1920 — NaN would spread into the reserve and the allowance and switch the
+  // cap off; a negative estimate would shrink the first wave's reserve.
+  if (!Number.isFinite(callEstimateUsd) || callEstimateUsd < 0) {
+    throw new Error(
+      `the per-call estimate must be a non-negative number of dollars, not ${callEstimateUsd}`,
+    );
+  }
   // Until a call finishes there is no observed cost: the estimate stands in for
   // the calls in flight and for the next one, so the first wave reserves too.
   // It stays a floor afterwards; stopping a call early is the cap's safe side.
@@ -497,9 +518,11 @@ export function toMarkdownReport(report: GoverningReport): string {
   for (const a of report.arms) {
     const m = a.summary.metrics;
     const usd = a.cost.usdPerRequirement;
-    // A metric the arm fixes by construction says nothing about it (#1900).
+    // A metric the arm fixes by construction says nothing about it (#1900),
+    // unless the run measured otherwise (#1920).
+    const held = heldByConstruction(a.summary, a.byConstruction);
     const fixed = (metric: keyof ByConstruction, value: string) =>
-      a.byConstruction[metric] === undefined ? value : "n/a†";
+      held[metric] === undefined ? value : "n/a†";
     lines.push(
       `| ${a.id} | ${a.completedRuns} | ${ci(m.recall)} | ${ci(m.nonResemblingRecall)} | ${ci(m.precision)} | ` +
         `${fixed("citationAccuracy", ci(m.citationAccuracy))} | ${ci(m.citationCoverage)} | ${ci(m.verdictAccuracy)} | ` +
@@ -518,11 +541,25 @@ export function toMarkdownReport(report: GoverningReport): string {
     "",
   );
   const fixedNotes = report.arms.flatMap((a) =>
-    Object.entries(a.byConstruction).map(([metric, why]) => `${a.id} ${metric}: ${why}`),
+    Object.entries(heldByConstruction(a.summary, a.byConstruction)).map(
+      ([metric, why]) => `${a.id} ${metric}: ${why}`,
+    ),
   );
   if (fixedNotes.length > 0) {
     lines.push(
       `† Fixed by construction, so it measures nothing and its bar is \`n/a\`: ${fixedNotes.join("; ")}.`,
+      "",
+    );
+  }
+  const brokenClaims = report.arms.flatMap((a) => {
+    const held = heldByConstruction(a.summary, a.byConstruction);
+    return Object.keys(a.byConstruction)
+      .filter((metric) => !(metric in held))
+      .map((metric) => `${a.id} ${metric}`);
+  });
+  if (brokenClaims.length > 0) {
+    lines.push(
+      `‡ Claimed fixed by construction, but measured otherwise, so it is judged: ${brokenClaims.join("; ")}.`,
       "",
     );
   }

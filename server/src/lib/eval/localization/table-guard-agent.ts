@@ -38,8 +38,9 @@
  * #1834 — the staleness readings, on the same analyses: per requirement and
  * run, the requirement's committed staleness patch is applied to the
  * materialized repository and re-ingested (re-validating the citations,
- * #1831), the requirement is read twice — `A7S` with the citations' freshness
- * hidden (the stage before #1832) and `A7SD` with #1832's demotion — and the
+ * #1831), the requirement is read twice — `A7S` without demotion (the
+ * shipped default since #1939) and `A7SD` with #1832's demotion forced on
+ * (`IMPACT_DEMOTE_STALE_CITATIONS`) — and the
  * patch is undone. A moved citation is read as the file it was (the fixture's
  * graph is the unpatched repository's) and a deleted file leaves the graph and
  * the search. A7S is gated against A7, A7SD against A7S; A7's runs are measured first,
@@ -761,7 +762,7 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
   /**
    * #1834 — one run of A7S and of A7SD, read in ONE patch cycle per
    * requirement: the requirement's patch applied and re-ingested, its tables
-   * read with the citations' freshness hidden and then with demotion, the
+   * read without demotion (the shipped default) and then with it, the
    * patch undone. A moved citation is read as the file it was; a deleted
    * file is in neither the graph nor the search.
    */
@@ -812,15 +813,16 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
             ...searchWithoutFiles(split, deleted),
             agentSeeds: {
               loadCitations: async (requirementId) => {
-                const links = (await deps.loadCitations(requirementId)).map((l) => {
-                  const { freshness, ...rest } = l;
-                  const filePath = back.get(l.filePath) ?? l.filePath;
-                  return r.demote ? { ...rest, filePath, freshness } : { ...rest, filePath };
-                });
+                const links = (await deps.loadCitations(requirementId)).map((l) => ({
+                  ...l,
+                  filePath: back.get(l.filePath) ?? l.filePath,
+                }));
                 const ids = links.flatMap((l) => (l.codeSymbolId ? [l.codeSymbolId] : []));
                 return translateCitations(links, await deps.qualifiedNames(ids), fixture, r.counts);
               },
               loadFileSymbols,
+              // #1939 — A7SD forces the demotion flag on; A7S is the shipped default (off).
+              demoteStale: r.demote,
             },
           };
           const options: RunImpactRecallOptions = { ...deps.options, splitSeeding: seeding };
@@ -846,7 +848,9 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
       tables: Object.fromEntries(r.scores.map((x) => [x.id, x.tables.found])),
       label: r.label,
       seeding: `split + agent citations after each requirement's staleness patch (IMPACT_AGENT_SEEDS on, ${
-        r.demote ? "stale citations demoted, #1832" : "freshness hidden: the stage before #1832"
+        r.demote
+          ? "IMPACT_DEMOTE_STALE_CITATIONS forced on: stale citations demoted, #1832"
+          : "IMPACT_DEMOTE_STALE_CITATIONS off, as shipped (#1939): stale citations kept"
       })`,
       changes,
       untracked,
@@ -1053,9 +1057,23 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
       const scoring = guardScoringOf([...own, ...control.records]);
       const m = measurement(own, scoring);
       logDifferences();
+      // #1925 — as A7 against A7O (#1890): A7 and A7S, and A7S and A7SD, read
+      // the same analyses, so the union's artefact mostly cancels and a
+      // regression confined to the further requirements would pass unseen.
+      const alsoGatedOn =
+        scoring === "headline"
+          ? [
+              {
+                scoring: SCORING_WORDS.union,
+                tablePrecision: measurement(own).tablePrecision,
+                baselinePrecision: measurement(control.records).tablePrecision,
+              },
+            ]
+          : undefined;
       return {
         measured: true,
         ...m,
+        ...(alsoGatedOn ? { scoring: SCORING_WORDS[scoring], alsoGatedOn } : {}),
         configuration:
           m.configuration +
           `; "Evaluate new requirements" on ${deps.model}, one per requirement and run; ` +
