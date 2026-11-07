@@ -25,7 +25,7 @@ Related: [[prisma-cross-database]], [[repo-connector-proof-and-vault-writes]].
 
 ## Postgres differs: a write conflict is not P2034 (2026-11-07)
 
-On Postgres through `@prisma/adapter-pg`, a `Serializable` transaction's write conflict (SQLSTATE `40001`, and deadlock `40P01`) surfaces as a `DriverAdapterError` whose `cause.kind` is `TransactionWriteConflict` — it carries **no** Prisma `P2034` code. A retry loop that checks only `code === "P2034"` retries on SQLite and gives up on the first conflict on Postgres (found on #1893's borrow race; `borrow-citations.ts` checks both; audit of other retry sites is #1904).
+On Postgres through `@prisma/adapter-pg`, a `Serializable` transaction's write conflict (SQLSTATE `40001`, and deadlock `40P01`) surfaces as a `DriverAdapterError` whose `cause.kind` is `TransactionWriteConflict` — it carries **no** Prisma `P2034` code. A retry loop that checks only `code === "P2034"` retries on SQLite and gives up on the first conflict on Postgres (found on #1893's borrow race). Measured on #1904: a refused STATEMENT inside an interactive transaction (two claims of one row) DOES arrive as `P2034`; a refused COMMIT (`could not serialize access due to read/write dependencies`, e.g. claims of two different rows that each read the table the other wrote) arrives as the raw `DriverAdapterError`. Use `isSerializationFailure` in `server/src/lib/db/prisma-errors.ts` (#1904); to force the commit-time shape, hold every racer at a barrier after its writes, before commit.
 
 **Why:** the SQLite driver path maps the conflict to P2034; the pg adapter does not, so a SQLite-only race test passes while production Postgres fails.
 
