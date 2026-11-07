@@ -146,8 +146,8 @@ describe("regenerate the code agent through its pipeline mode (#766)", () => {
 
   it("runs one budgeted pass per repo on a multi-repo project", async () => {
     prismaMock.repoConnection.findMany.mockResolvedValue([
-      { id: "repo_1", label: "api" },
-      { id: "repo_2", label: "web" },
+      { id: "repo_1", label: "api", isPrimary: false, createdAt: new Date("2026-01-01") },
+      { id: "repo_2", label: "web", isPrimary: false, createdAt: new Date("2026-01-02") },
     ]);
     const orch = makeOrchestrator("agentic");
     await regenerate(orch);
@@ -200,8 +200,8 @@ describe("regenerate carries the run's plan context (#1027)", () => {
 
   it("hands it to every agentic pass", async () => {
     prismaMock.repoConnection.findMany.mockResolvedValue([
-      { id: "repo_1", label: "api" },
-      { id: "repo_2", label: "web" },
+      { id: "repo_1", label: "api", isPrimary: false, createdAt: new Date("2026-01-03") },
+      { id: "repo_2", label: "web", isPrimary: false, createdAt: new Date("2026-01-04") },
     ]);
     const orch = makeOrchestrator("agentic");
     await run(orch, WITH_CONTEXT);
