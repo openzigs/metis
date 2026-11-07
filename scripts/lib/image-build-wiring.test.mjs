@@ -551,8 +551,11 @@ describe("container images are digest-pinned, patched and scanned (#1379)", () =
   const api = jobBlock(ci, "api");
   const release = read(".github/workflows/build-images.yml");
 
-  it("ci.yml `api` passes the OS patch date to all four image builds", () => {
-    expect(api.match(/OS_PATCH_DATE=\$\{\{ steps\.patch\.outputs\.date \}\}/g)).toHaveLength(4);
+  it("ci.yml `api` passes the OS patch stamp to all four image builds", () => {
+    expect(api.match(/OS_PATCH_DATE=\$\{\{ steps\.patch\.outputs\.stamp \}\}/g)).toHaveLength(4);
+    // The stamp adds Debian's security index date to the day, so a fix published
+    // after the day's first build is not hidden behind its cached upgrade layer.
+    expect(api).toContain("bash scripts/ci/os-patch-stamp.sh");
   });
 
   it("ci.yml `api` scans all four built images through the gate script", () => {
@@ -629,11 +632,11 @@ describe("container images are digest-pinned, patched and scanned (#1379)", () =
       scan.indexOf("- name: Restore Trivy DB cache"),
     );
     expect(scanBuild).not.toContain("BAKE_MODELS");
-    expect(scanBuild).toContain("OS_PATCH_DATE=${{ needs.prep.outputs.date }}");
+    expect(scanBuild).toContain("OS_PATCH_DATE=${{ needs.prep.outputs.stamp }}");
     // Every scan leg gates every publish leg.
     expect(build).toMatch(/needs: \[prep, scan\]/);
     const push = build.slice(build.indexOf("- name: Build & push (tag"));
-    expect(push).toContain("OS_PATCH_DATE=${{ needs.prep.outputs.date }}");
+    expect(push).toContain("OS_PATCH_DATE=${{ needs.prep.outputs.stamp }}");
   });
 
   it("both workflows install the same pinned, checksum-verified Trivy", () => {

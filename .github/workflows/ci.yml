@@ -221,7 +221,11 @@ jobs:
       - name: OS patch date
         id: patch
         if: ${{ needs.changes.outputs.images != 'false' }}
-        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+          # The upgrade layer's key: the date plus Debian's security index stamp,
+          # so a fix published later the same day is not hidden (os-patch-stamp.sh).
+          echo "stamp=$(bash scripts/ci/os-patch-stamp.sh)" >> "$GITHUB_OUTPUT"
 
       # Issue #145 — image-size budget gate. The `metis-embeddings` sidecar is
       # built but exempt from the cap (see docs/OPERATIONS.md > "Container
@@ -286,7 +290,7 @@ jobs:
           context: .
           file: Dockerfile.server
           build-args: |
-            OS_PATCH_DATE=${{ steps.patch.outputs.date }}
+            OS_PATCH_DATE=${{ steps.patch.outputs.stamp }}
           tags: metis-server:ci-${{ github.run_id }}
           load: true
           provenance: false
@@ -305,7 +309,7 @@ jobs:
           context: .
           file: Dockerfile.ui
           build-args: |
-            OS_PATCH_DATE=${{ steps.patch.outputs.date }}
+            OS_PATCH_DATE=${{ steps.patch.outputs.stamp }}
           tags: metis-ui:ci-${{ github.run_id }}
           load: true
           provenance: false
@@ -325,7 +329,7 @@ jobs:
           file: Dockerfile.embeddings
           build-args: |
             BAKE_MODELS=0
-            OS_PATCH_DATE=${{ steps.patch.outputs.date }}
+            OS_PATCH_DATE=${{ steps.patch.outputs.stamp }}
           tags: metis-embeddings:ci-${{ github.run_id }}
           load: true
           provenance: false
@@ -343,7 +347,7 @@ jobs:
           context: .
           file: Dockerfile.sql-lineage
           build-args: |
-            OS_PATCH_DATE=${{ steps.patch.outputs.date }}
+            OS_PATCH_DATE=${{ steps.patch.outputs.stamp }}
           tags: metis-sql-lineage:ci-${{ github.run_id }}
           load: true
           provenance: false
