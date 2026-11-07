@@ -13,6 +13,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import {
+  formatGoverningReindex,
   formatLockStatus,
   formatStatus,
   migrationStatus,
@@ -364,6 +365,73 @@ describe("reindexAll", () => {
     });
     await reindexAll(makeDeps({ coverage: empty, reindexProject }), { all: true });
     expect(reindexProject).not.toHaveBeenCalled();
+  });
+
+  // Issue #1918 — the governing tables are swept after the projects.
+  it("runs the governing sweep after the projects and returns its result", async () => {
+    const order: string[] = [];
+    const reindexProject = vi.fn(async (projectId: string) => {
+      order.push(projectId);
+      return result(projectId);
+    }) as unknown as MigrationDeps["knowledge"]["reindexProject"];
+    const governing = {
+      skipped: false,
+      revisions: 1,
+      rebuiltWorkspaces: ["ws1"],
+      reindexed: [{ workspaceId: "ws1", revisionId: "r1", chunkCount: 3 }],
+      failures: [],
+    };
+    const reindexGoverning = vi.fn(async () => {
+      order.push("governing");
+      return governing;
+    });
+    const out = await reindexAll({
+      ...makeDeps({ coverage: MIXED, reindexProject }),
+      reindexGoverning,
+    });
+    expect(order).toEqual(["p-old", "governing"]);
+    expect(out.governing).toBe(governing);
+    expect(out.governingError).toBeUndefined();
+  });
+
+  it("reports a governing sweep that throws without losing the project results", async () => {
+    const reindexProject = vi.fn(async (projectId: string) =>
+      result(projectId),
+    ) as unknown as MigrationDeps["knowledge"]["reindexProject"];
+    const out = await reindexAll({
+      ...makeDeps({ coverage: MIXED, reindexProject }),
+      reindexGoverning: vi.fn(async () => {
+        throw new Error("db gone");
+      }),
+    });
+    expect(out.results.map((r) => r.projectId)).toEqual(["p-old"]);
+    expect(out.governingError).toBe("db gone");
+    expect(out.governing).toBeUndefined();
+  });
+});
+
+describe("formatGoverningReindex (#1918)", () => {
+  const base = { skipped: false, revisions: 4, rebuiltWorkspaces: ["ws1"], failures: [] };
+
+  it("is silent with no sweep, and says so when the flag skipped it", () => {
+    expect(formatGoverningReindex(undefined)).toBeNull();
+    expect(formatGoverningReindex({ ...base, skipped: true, reindexed: [] })).toMatch(
+      /skipped \(GOVERNING_DOCS_ENABLED is off\)/,
+    );
+  });
+
+  it("counts the work and names every failed revision", () => {
+    const text = formatGoverningReindex({
+      ...base,
+      reindexed: [{ workspaceId: "ws1", revisionId: "r1", chunkCount: 2 }],
+      failures: [{ workspaceId: "ws1", revisionId: "r2", error: "embedder down" }],
+    });
+    expect(text).toContain("1 of 4 revision(s) re-embedded, 1 workspace table(s) rebuilt");
+    expect(text).toContain("1 governing revision(s) FAILED (left pending)");
+    expect(text).toContain("ws1/r2: embedder down");
+    expect(formatGoverningReindex(undefined, "db gone")).toBe(
+      "Governing documents: reindex FAILED: db gone",
+    );
   });
 });
 

@@ -38,6 +38,10 @@
  */
 import { classifyChunkerIdentity } from "./chunker.js";
 import { createChildLogger } from "../logger.js";
+import {
+  reindexGoverningRevisions,
+  type GoverningReindexResult,
+} from "../governing/governing-reindex.js";
 import { Embedder, getEmbedder, type EmbedderHealth } from "./embedder.js";
 import {
   getKnowledgeService,
@@ -134,6 +138,11 @@ export interface MigrationDeps {
   embedder: Pick<Embedder, "health">;
   store: VectorStore;
   kind: VectorStoreKind;
+  /**
+   * Issue #1918 — rebuild the workspaces' governing-document tables, which no
+   * project reindex touches. Absent, {@link reindexAll} migrates projects only.
+   */
+  reindexGoverning?: () => Promise<GoverningReindexResult>;
 }
 
 export function defaultMigrationDeps(): MigrationDeps {
@@ -142,6 +151,7 @@ export function defaultMigrationDeps(): MigrationDeps {
     embedder: getEmbedder(),
     store: getVectorStore(),
     kind: vectorStoreKind(),
+    reindexGoverning: () => reindexGoverningRevisions(),
   };
 }
 
@@ -388,6 +398,10 @@ export interface ReindexAllOptions {
 export interface ReindexAllResult {
   results: ReindexResult[];
   failures: Array<{ projectId: string; error: string }>;
+  /** Issue #1918 — the governing tables' sweep; absent when `deps` has none. */
+  governing?: GoverningReindexResult;
+  /** Issue #1918 — set when the governing sweep itself threw. */
+  governingError?: string;
 }
 
 /**
@@ -437,7 +451,41 @@ export async function reindexAll(
     }
   }
 
-  return { results, failures };
+  // Issue #1918 — the governing tables after the projects: their rows are tagged
+  // with the same model identity, so a model change leaves them as dark as a
+  // project's, and on pgvector `prepare` deletes them with every other row.
+  if (!deps.reindexGoverning) return { results, failures };
+  try {
+    return { results, failures, governing: await deps.reindexGoverning() };
+  } catch (err) {
+    const governingError = (err as Error).message;
+    log.error("governing reindex failed during migration", { error: governingError });
+    return { results, failures, governingError };
+  }
+}
+
+/**
+ * Issue #1918 — the governing sweep's lines for `embeddings:migrate reindex --all`.
+ * `null` when there was no sweep to report.
+ */
+export function formatGoverningReindex(
+  result: GoverningReindexResult | undefined,
+  error?: string,
+): string | null {
+  if (error !== undefined) return `Governing documents: reindex FAILED: ${error}`;
+  if (!result) return null;
+  if (result.skipped) return "Governing documents: skipped (GOVERNING_DOCS_ENABLED is off).";
+  const lines = [
+    `Governing documents: ${result.reindexed.length} of ${result.revisions} revision(s) ` +
+      `re-embedded, ${result.rebuiltWorkspaces.length} workspace table(s) rebuilt.`,
+  ];
+  if (result.failures.length > 0) {
+    lines.push(`${result.failures.length} governing revision(s) FAILED (left pending):`);
+    for (const f of result.failures) {
+      lines.push(`  ${f.workspaceId}/${f.revisionId}: ${f.error}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 /**

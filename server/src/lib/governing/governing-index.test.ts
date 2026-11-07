@@ -146,6 +146,37 @@ describe("GoverningIndex", () => {
     expect(await index.search("ws1", "clause", 5, actor)).toEqual([]);
   });
 
+  it("#1918 — reports the active identity and the identities stored per revision, and drops the table", async () => {
+    const tagged = {
+      embed: async (texts: string[]) => ({
+        vectors: texts.map(() => [1, 0, 0]),
+        model: "m",
+        identity: "m|cls|q8",
+        dimension: 3,
+      }),
+    };
+    const index = new GoverningIndex({ space: space(), embedder: tagged });
+    expect(await index.activeEmbeddingIdentity()).toBe("m|cls|q8");
+    expect(await new GoverningIndex({ space: space(), embedder }).activeEmbeddingIdentity()).toBe(
+      "m",
+    );
+    for (const revisionId of ["r1", "r2"]) {
+      await index.indexRevision({
+        workspaceId: "ws1",
+        revisionId,
+        filename: "p.md",
+        text: `# Policy ${revisionId}\n\nAll laptops are encrypted.`,
+      });
+    }
+    const stored = await index.storedIdentities("ws1");
+    expect([...stored.keys()].sort()).toEqual(["r1", "r2"]);
+    expect([...stored.get("r1")!]).toEqual(["m|cls|q8"]);
+    expect((await index.storedIdentities("ws-empty")).size).toBe(0);
+
+    await index.dropWorkspaceTable("ws1");
+    expect((await index.storedIdentities("ws1")).size).toBe(0);
+  });
+
   it("keeps one process-wide index", () => {
     __resetGoverningIndexSingleton();
     process.env.LANCEDB_PATH = root;

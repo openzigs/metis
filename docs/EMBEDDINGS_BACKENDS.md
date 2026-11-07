@@ -917,6 +917,17 @@ spaces into one table is the exact failure the model tagging exists to prevent.
 Force a clean rebuild with `--fresh`, or drop a checkpoint with
 `pnpm embeddings:migrate discard --project <id>`.
 
+**Governing documents (#1918).** `reindex --all` then rebuilds each workspace's
+governing-document table (`<root>/governing/<workspaceId>`, or the
+`governing/<workspaceId>` key on pgvector), which no project reindex touches. The
+source is each revision's stored text (`GoverningDocumentRevision.extractedText`), so
+a table emptied by `prepare` is rebuilt the same way. A workspace whose table holds
+any row of another model is dropped and rebuilt whole, with no shadow: its governing
+search returns nothing for the seconds that takes. A revision that fails to embed is
+left `pending` and listed, and the command exits 1; re-run it. The same pass embeds
+any revision whose upload-time embed failed. It runs only with
+`GOVERNING_DOCS_ENABLED=1`, and `--project <id>` skips it.
+
 `discard` takes the **same per-project reindex lease the reindex takes**, so it
 refuses (`409`) while a reindex is running — *including one running on another
 replica*, and including one started from the server while you are in a `kubectl exec`
