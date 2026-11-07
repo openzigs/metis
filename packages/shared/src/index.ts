@@ -72,6 +72,8 @@ export * from "./requirements-run.js";
 // #1203 — criteria one synthesis item wrote for several requirements: the record
 // promotion keeps and the note the requirement card, review card and issue show.
 export * from "./shared-criteria.js";
+// Epic #1866 (#1868) — workspace governing documents, revisions, rules and rule edits.
+export * from "./governing.js";
 
 export const SHARED_PACKAGE_NAME = "@metis/shared";
 
