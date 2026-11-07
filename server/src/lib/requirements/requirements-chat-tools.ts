@@ -247,7 +247,8 @@ export function createListRequirementsTool(
       "optionally filtered by review status (draft|approved|rejected|deferred), label, or words " +
       "in the title/body. Use this — not the knowledge-base search — whenever the user asks " +
       "about the project's requirements. Returns id, title, status, labels and how many code " +
-      "links and data (table/column) mappings each has; read one in full with get_requirement.",
+      "links of its own (a link borrowed from a similar requirement is not counted) and data " +
+      "(table/column) mappings each has; read one in full with get_requirement.",
     schema: listSchema,
     risk: "low",
     async exec(args, ctx): Promise<ToolResult> {
@@ -460,7 +461,16 @@ export function createGetRequirementTool(
       out.push(
         chain.directCode.length
           ? `Code links:\n${chain.directCode
-              .map((c) => `- ${c.filePath}${lineRange(c.startLine, c.endLine)} (${c.source})`)
+              .map(
+                (c) =>
+                  `- ${c.filePath}${lineRange(c.startLine, c.endLine)} (${
+                    // #1913 — say what a borrowed link is, as the UI does: list_requirements
+                    // leaves it out of its count, so a bare source string would contradict it.
+                    c.source === SIMILAR_REQUIREMENT_SOURCE
+                      ? `borrowed from ${c.originRequirementLabel ?? "a similar requirement"}, not yet checked by analysis`
+                      : c.source
+                  })`,
+              )
               .join("\n")}`
           : "Code links: none",
       );

@@ -31,7 +31,7 @@ vi.mock("../src/lib/prisma.js", async (importOriginal) => ({
 }));
 
 const { getRequirementsForFile } = await import("../src/lib/traceability/traceability-spine.js");
-const { createListRequirementsTool } =
+const { createGetRequirementTool, createListRequirementsTool } =
   await import("../src/lib/requirements/requirements-chat-tools.js");
 
 const USER = "u1913";
@@ -117,6 +117,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(counts).toEqual({ [ORIGIN]: 1, [BORROWER]: 0 });
       expect(res.text).toContain(`[${BORROWER}] Charge the card on renewal`);
       expect(res.text).toMatch(new RegExp(`\\[${BORROWER}\\][^\\n]* code links: 0;`));
+    });
+
+    it("chat's get_requirement names a borrowed link as borrowed, so it never contradicts the list's count", async () => {
+      const tool = createGetRequirementTool({ prisma: db as never });
+      const res = await tool.exec(
+        { requirementId: BORROWER },
+        { sessionId: "s", userId: USER, projectId: PROJECT },
+      );
+      expect(res.text).toContain(
+        `- ${FILE}:10-30 (borrowed from Charge the card, not yet checked by analysis)`,
+      );
+      expect(res.text).not.toContain("(similar-requirement)");
     });
   },
 );
