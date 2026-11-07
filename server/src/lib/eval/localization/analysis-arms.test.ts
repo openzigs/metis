@@ -9,8 +9,11 @@ import {
   createA7Arm,
   createA7KArm,
   createA7OArm,
+  createA7RArm,
+  createA7RDArm,
   createA7SArm,
   createA7SDArm,
+  NOOP_REINGEST_ARM_IDS,
   STALENESS_ARM_IDS,
   UNPATCHED_CITATION_ARM_IDS,
 } from "./analysis-arms.js";
@@ -316,6 +319,8 @@ describe("A7 staleness arms (#1834)", () => {
   function staleFixture(opts: { failRead?: boolean; strong?: string[] } = {}) {
     const meter = fakeMeter();
     let patched = false;
+    // #1899 — after a no-op re-ingest, re-validation finds c.go's lines moved and b.go fresh.
+    let reingested = false;
     const pass = vi.fn(async () => {
       meter.charge(0.05);
       return { analysisId: "an-1", status: "completed", requirementIds: ["req-1"] };
@@ -323,7 +328,9 @@ describe("A7 staleness arms (#1834)", () => {
     const loadCitations = vi.fn(async (): Promise<StoredLinkRow[]> =>
       patched
         ? [link("c.go", 0.9, "stale"), link("b_renamed.go", 0.5, "moved")]
-        : [link("c.go", 0.9, "unverified"), link("b.go", 0.5, "unverified")],
+        : reingested
+          ? [link("c.go", 0.9, "moved"), link("b.go", 0.5, "fresh")]
+          : [link("c.go", 0.9, "unverified"), link("b.go", 0.5, "unverified")],
     );
     const io: AnalysisArmIO = {
       pass,
@@ -352,10 +359,15 @@ describe("A7 staleness arms (#1834)", () => {
     const searchFor = vi.fn(async (patchedRows: readonly unknown[]) =>
       searchOver(patchedRows as typeof rows, opts.strong ?? ["a"]),
     );
+    const withReingest = vi.fn(async <T>(_corpus: string, read: () => Promise<T>) => {
+      reingested = true;
+      return read();
+    });
     const staleness: StalenessArmIO = {
       patchSetDigest: "patches-1",
       opsFor: vi.fn(() => ops),
       withPatch: withPatch as unknown as StalenessArmIO["withPatch"],
+      withReingest: withReingest as unknown as StalenessArmIO["withReingest"],
       searchFor,
     };
     const search = searchOver(rows, opts.strong ?? ["a"]);
@@ -363,17 +375,19 @@ describe("A7 staleness arms (#1834)", () => {
       deps: { search, analysis: io, meter, provider, staleness },
       pass,
       withPatch,
+      withReingest,
       staleness,
       searchFor,
     };
   }
 
   it("are model and analysis arms; a staleness arm refuses to run without the cycle", () => {
-    for (const id of ["A7K", "A7S", "A7SD"]) {
+    for (const id of ["A7K", "A7S", "A7SD", "A7R", "A7RD"]) {
       expect(MODEL_ARMS.has(id)).toBe(true);
       expect(ANALYSIS_ARM_IDS.has(id)).toBe(true);
     }
-    expect([...STALENESS_ARM_IDS]).toEqual(["A7S", "A7SD"]);
+    expect([...STALENESS_ARM_IDS]).toEqual(["A7S", "A7SD", "A7R", "A7RD"]);
+    expect([...NOOP_REINGEST_ARM_IDS]).toEqual(["A7R", "A7RD"]);
     expect([...UNPATCHED_CITATION_ARM_IDS]).toEqual(["A7", "A7K"]);
     const { search } = searchSpy();
     const meter = fakeMeter();
@@ -382,6 +396,7 @@ describe("A7 staleness arms (#1834)", () => {
       /A7S reads after a committed staleness patch/,
     );
     expect(() => createA7SDArm({ search, analysis: io, meter, provider })).toThrow(/A7SD/);
+    expect(() => createA7RArm({ search, analysis: io, meter, provider })).toThrow(/A7R reads/);
     expect(() => createA7KArm({ search, analysis: io, meter, provider })).not.toThrow();
   });
 
@@ -403,6 +418,24 @@ describe("A7 staleness arms (#1834)", () => {
     expect(() => buildArms(["A0", "A7S", "A7O"], deps)).not.toThrow();
   });
 
+  it("buildArms (#1899): A7 before the no-op re-ingest arms, and those before the patch arms", () => {
+    const { deps } = staleFixture();
+    expect(() => buildArms(["A0", "A7R", "A7"], deps)).toThrow(
+      /A7 reads the stored citations unpatched, so it must come before A7R/,
+    );
+    expect(() => buildArms(["A0", "A7S", "A7RD"], deps)).toThrow(
+      "--arms: A7RD reads after a no-op re-ingest, so it must come before A7S: a patch cycle's restore leaves a citation moved back",
+    );
+    expect(buildArms(["A0", "A7", "A7R", "A7RD", "A7S", "A7SD"], deps).map((a) => a.id)).toEqual([
+      "A0",
+      "A7",
+      "A7R",
+      "A7RD",
+      "A7S",
+      "A7SD",
+    ]);
+  });
+
   it("A7S leads with the stale citation; A7SD sets it aside; both read ONE patch cycle and the shared analysis", async () => {
     const f = staleFixture();
     const corpus = corpusOf(["r"]);
@@ -416,6 +449,12 @@ describe("A7 staleness arms (#1834)", () => {
     // The moved citation leads at its new path and is scored as the file it was.
     expect(keep.editCandidateFiles).toEqual(["r:c.go", "r:b.go", "r:a.go"]);
     expect(keep.llmNamedFiles).toEqual(["r:c.go", "r:b.go"]);
+    // #1899 — Recall@k and MRR read rankedFiles: the renamed file is scored as the file it was.
+    expect(keep.rankedFiles.slice(0, 3)).toEqual(["r:c.go", "r:b.go", "r:a.go"]);
+    expect(demote.rankedFiles[0]).toBe("r:b.go");
+    for (const out of [keep, demote]) {
+      expect(out.rankedFiles.some((f) => f.includes("b_renamed"))).toBe(false);
+    }
     expect(demote.editCandidateFiles).toEqual(["r:b.go", "r:a.go"]);
     expect(demote.llmNamedFiles).toEqual(["r:b.go"]);
     expect(keep.agent!.citationFreshness).toEqual({
@@ -432,6 +471,51 @@ describe("A7 staleness arms (#1834)", () => {
     expect(keep.reusedCostUsd).toBeUndefined();
     expect(demote.reusedCostUsd).toBeCloseTo(0.05);
     expect(demote.reusedSeconds).toBeGreaterThanOrEqual(0);
+  });
+
+  it("A7R and A7RD (#1899) read ONE no-op re-ingest: no patch, and demotion's tier sort can reorder", async () => {
+    const f = staleFixture();
+    const corpus = corpusOf(["r"]);
+    const keep = await createA7RArm(f.deps).localize(item, corpus, { run: 1 });
+    const demote = await createA7RDArm(f.deps).localize(item, corpus, { run: 1 });
+    expect(f.withReingest).toHaveBeenCalledTimes(1);
+    expect(f.withReingest.mock.calls[0]![0]).toBe("toy-corpus");
+    expect(f.withPatch).not.toHaveBeenCalled();
+    expect(f.staleness.opsFor).not.toHaveBeenCalled();
+    expect(f.searchFor).not.toHaveBeenCalled();
+    // Freshness hidden: confidence order, c.go (0.9) then b.go. With it, fresh b.go before moved c.go.
+    expect(keep.editCandidateFiles).toEqual(["r:c.go", "r:b.go", "r:a.go"]);
+    expect(demote.editCandidateFiles).toEqual(["r:b.go", "r:c.go", "r:a.go"]);
+    expect(demote.rankedFiles.slice(0, 3)).toEqual(["r:b.go", "r:c.go", "r:a.go"]);
+    for (const out of [keep, demote]) {
+      expect(out.agent!.citationFreshness).toEqual({
+        fresh: 1,
+        moved: 1,
+        stale: 0,
+        unverified: 0,
+        demoted: 0,
+      });
+    }
+    expect(demote.reusedCostUsd).toBeCloseTo(0.05);
+    // A patch arm of the same item and run reads a cycle of its own.
+    await createA7SArm(f.deps).localize(item, corpus, { run: 1 });
+    expect(f.withPatch).toHaveBeenCalledTimes(1);
+    expect(f.withReingest).toHaveBeenCalledTimes(1);
+  });
+
+  it("A7R and A7RD (#1899) name the no-op re-ingest, and no patch set, in their configuration", () => {
+    const { deps } = staleFixture();
+    const a7r = createA7RArm(deps);
+    const a7rd = createA7RDArm(deps);
+    expect(a7r.label).toContain("after a no-op re-ingest, not demoting stale citations");
+    expect(a7rd.label).toContain("after a no-op re-ingest, demoting stale citations");
+    expect(a7r.configuration.stage).toMatch(
+      /after a no-op re-ingest at the pinned commit \(#1899\)/,
+    );
+    expect(a7r.configuration.staleness).toMatch(/^no patch: every repository/);
+    expect(a7r.configuration.stalenessPatchSets).toBeUndefined();
+    expect(createA7SArm(deps).configuration.stalenessPatchSets).toBe("patches-1");
+    expect(createA7SArm(deps).label).toContain("after a staleness patch");
   });
 
   it("searches the patched corpus, so a moved citation of a file the search also finds still leads (MF-4500)", async () => {

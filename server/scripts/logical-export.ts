@@ -37,6 +37,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import type { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@prisma/client";
 import {
   assertParserCoversDmmfRelations,
@@ -63,7 +64,8 @@ const REPO_ROOT = path.resolve(SERVER_ROOT, "..");
 const SCHEMA_PATH = path.join(SERVER_ROOT, "prisma", "schema.prisma");
 
 const log = (m: string) => console.log(`[logical-export] ${m}`);
-const die = (m: string, code = 1): never => {
+// #1899 — annotated: only an explicitly typed `never` function narrows its caller (`delegate`).
+const die: (m: string, code?: number) => never = (m, code = 1) => {
   console.error(`[logical-export] ERROR: ${m}`);
   process.exit(code);
 };
@@ -165,7 +167,13 @@ async function main(): Promise<void> {
   const dmmfNames = new Set(Prisma.dmmf.datamodel.models.map((m) => m.name));
 
   const prisma = new PrismaClient({
-    adapter: await createLogicalAdapter(provider, dbUrl, (url) => new PrismaBetterSqlite3({ url })),
+    // #1899 — `createLogicalAdapter` types its result loosely (no adapter types at compile
+    // time); it builds one of these two.
+    adapter: (await createLogicalAdapter(
+      provider,
+      dbUrl,
+      (url) => new PrismaBetterSqlite3({ url }),
+    )) as PrismaBetterSqlite3 | PrismaPg,
   });
   const rowCounts: Record<string, number> = {};
   const includedModels: string[] = [];

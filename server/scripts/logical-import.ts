@@ -46,6 +46,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import type { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import { parsePrismaSchema, type ScalarFieldInfo } from "../src/lib/portability/schema-fk-graph.js";
 import {
@@ -74,7 +75,8 @@ const SERVER_ROOT = path.resolve(__dirname, "..");
 const SCHEMA_PATH = path.join(SERVER_ROOT, "prisma", "schema.prisma");
 
 const log = (m: string) => console.log(`[logical-import] ${m}`);
-const die = (m: string, code = 1): never => {
+// #1899 — annotated: only an explicitly typed `never` function narrows its caller (`delegate`).
+const die: (m: string, code?: number) => never = (m, code = 1) => {
   console.error(`[logical-import] ERROR: ${m}`);
   process.exit(code);
 };
@@ -214,11 +216,12 @@ async function main(): Promise<void> {
   let prisma: PrismaClient;
   try {
     prisma = new PrismaClient({
-      adapter: await createLogicalAdapter(
+      // #1899 — `createLogicalAdapter` types its result loosely; it builds one of these two.
+      adapter: (await createLogicalAdapter(
         provider,
         dbUrl,
         (url) => new PrismaBetterSqlite3({ url }),
-      ),
+      )) as PrismaBetterSqlite3 | PrismaPg,
     });
   } catch (err) {
     // Postgres adapter absent (or other adapter-construction failure) — fail loud.
