@@ -633,6 +633,8 @@ Replaces the Test Coverage page, whose imports and runs were removed in #818 and
      - As a member, `GET /api/workspaces/:workspaceId/governing-documents` lists the document.
      - `POST /api/workspaces/:workspaceId/governing-documents/:documentId/revisions` adds a revision, and `GET /api/workspaces/:workspaceId/governing-documents/:documentId` shows it as current, with the earlier revision still listed.
      - A member's upload answers 403, and a member of another workspace gets 404 on all of these.
+     - #1870: within a minute of the upload, `GET /api/workspaces/:workspaceId/governing-documents/:documentId/rules` reads `extractionState: done`, and every rule's `clauseExcerpt` is a sentence of the uploaded policy. If it reads `failed`, `extractionError` gives the reason.
+     - As a workspace admin, `PATCH /api/workspaces/:workspaceId/governing-rules/:ruleId` with `{ "summary": "…" }` changes the summary, and the next GET shows it with `editedById`. `{ "deleted": true }` drops the rule from the list. A member's PATCH answers 403.
      - `DELETE /api/workspaces/:workspaceId/governing-documents/:documentId` removes the document from the list.
   6. Sign out from the account menu.
 - **Works:** every legacy `/admin/*` URL redirects (`legacy-routes.ts`), and the admin pages load for an admin while showing 403 for a non-admin. Signing out lands on the plain sign-in page, not `/login?reason=expired` (#720). `/settings/auth` loads with no console error.

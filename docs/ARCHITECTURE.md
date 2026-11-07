@@ -2378,7 +2378,7 @@ gates on).
 | Table (Prisma model) | Holds | Scope / delete |
 |---|---|---|
 | `governing_documents` (`GoverningDocument`) | title, free-text `framework`, `currentRevisionId`, `deletedAt` | `workspaceId`, cascades with the workspace row |
-| `governing_document_revisions` (`GoverningDocumentRevision`) | `revisionLabel` (unique per document), `effectiveDate`, file metadata, `extractedText`, `indexState` (the `Document` quarantine values), `extractionState` (`pending\|running\|done\|failed`) | cascades with its document |
+| `governing_document_revisions` (`GoverningDocumentRevision`) | `revisionLabel` (unique per document), `effectiveDate`, file metadata, `extractedText`, `indexState` (the `Document` quarantine values), `extractionState` (`pending\|running\|done\|failed`), `extractionError`, `droppedUnverified` (#1870) | cascades with its document |
 | `governing_rules` (`GoverningRule`) | `controlId`, one-line `summary`, `clauseRef`, `clauseStart`/`clauseEnd` offsets into `extractedText`, `clauseExcerpt`, `category`, latest edit, `deletedAt` | cascades with its revision |
 | `governing_rule_edits` (`GoverningRuleEdit`) | one row per edit or soft delete: `kind`, `editedById`, `before`/`after` JSON | cascades with its rule |
 
@@ -2399,7 +2399,9 @@ gates on).
   `storagePath` and `extractedText`.
 - Migration `20261116001868_issue1868_governing_documents`, reverse scripts in
   `server/prisma/{,postgres/}rollbacks/`, up -> reverse -> up tested in
-  `server/tests/governing-documents-migration-1868.sqlite.test.ts`.
+  `server/tests/governing-documents-migration-1868.sqlite.test.ts`. #1870's
+  `20261117001870_issue1870_governing_rule_extraction` adds the revision's two extraction
+  columns, tested in `server/tests/governing-rule-extraction-migration-1870.sqlite.test.ts`.
 
 #### Upload, revisions and the workspace index (#1869)
 
@@ -2437,6 +2439,43 @@ gates on).
   it reads the table, then filters to the current revision of each live document
   (`includeSuperseded` for every revision). A failed embed leaves the revision
   `indexState: "pending"` and out of search.
+
+#### Rule extraction (#1870)
+
+Each stored revision starts `runRuleExtraction` (`lib/governing/rule-extraction.ts`) in the
+background; the upload answers first. The job:
+
+1. sets `extractionState: running`. A revision whose extraction is already `running` or `done`
+   is not started again, so rules are never duplicated or replaced under an admin's edits;
+2. splits `extractedText` at its Markdown headings (a section over 8,000 characters again at
+   paragraph breaks);
+3. sends each section to the deployment's configured provider (`loadAIConfig()`; there is no
+   project to take an override from) as fenced untrusted data: `fenceToolResult`, which runs
+   `scrubFenceLookalikes` first (`lib/governing/prompts.ts`). The title and revision label
+   travel inside the fence too;
+4. checks every returned rule deterministically (`lib/governing/clause-verify.ts`): its
+   `clauseExcerpt` must be in `extractedText` verbatim, with whitespace runs compared as one
+   space, and at least four words. The stored excerpt and `clauseStart`/`clauseEnd` are the
+   source's own, so `clauseExcerpt === extractedText.slice(clauseStart, clauseEnd)` always
+   holds. A rule that fails is dropped and counted in `droppedUnverified`;
+5. keeps a `controlId` only when that text appears in `extractedText`, and numbers every other
+   rule `R-001`… in clause order;
+6. stores the rules and `extractionState: done` in one transaction. Any failure sets `failed`,
+   and the revision stays stored. `extractionError` is read by every member, so it carries
+   only text METIS wrote: `describeProviderErrorSafely` for a provider error (provider,
+   operation, error class, HTTP status), the error code for a configuration error, and a
+   fixed sentence otherwise. The upstream's own message goes to the server log (#1059).
+
+| Route | Role | Does |
+|---|---|---|
+| `GET /api/workspaces/:workspaceId/governing-documents/:documentId/rules` | any member | the current revision's live rules in clause order, or `?revisionId=` another of the document's revisions; with the revision's `extractionState`, `extractionError` and `droppedUnverified` |
+| `PATCH /api/workspaces/:workspaceId/governing-rules/:ruleId` | `admin`/`owner` | `{ summary?, controlId? }` or `{ deleted: true }`. It sets `editedById`/`editedAt` on the rule and writes a `GoverningRuleEdit` row with the before and after values, in one transaction. A patch that changes nothing writes nothing |
+
+Rules are usable at once, with no analyst review (owner, 2026-11-06), and a new revision gets
+its own run while the previous revision's rules stay. `pnpm --filter server
+governing:extract-recall` runs the same extraction over the #1867 policy and reports recall
+against its obligation list. `--record` saves the replies as the fixture the unit tests
+replay (`lib/governing/__fixtures__/`).
 
 ---
 

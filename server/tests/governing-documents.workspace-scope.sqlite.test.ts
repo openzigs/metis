@@ -148,7 +148,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       a.use(express.json());
       a.use(
         "/api/workspaces/:workspaceId/governing-documents",
-        governingDocumentsRouter({ storage: new DocumentStorage({ root: uploadsRoot }), index }),
+        governingDocumentsRouter({
+          storage: new DocumentStorage({ root: uploadsRoot }),
+          index,
+          // #1870's rule extraction is covered by governing-rules.extraction.sqlite.test.ts;
+          // here it would run in the background against the offline stub.
+          extractRules: async () => undefined,
+        }),
       );
       a.use(notFoundHandler);
       a.use(errorHandler);

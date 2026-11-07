@@ -36,6 +36,7 @@
     "eval:impact-recall": "tsx scripts/eval-impact-recall.ts",
     "eval:localization": "tsx --env-file-if-exists=../.env scripts/eval-localization.ts",
     "eval:governing": "tsx --env-file-if-exists=../.env scripts/eval-governing.ts",
+    "governing:extract-recall": "tsx --env-file-if-exists=../.env scripts/governing-extract-recall.ts",
     "eval:materialize": "tsx scripts/eval-materialize.ts",
     "eval:staleness-patches": "tsx scripts/eval-staleness-patches.ts",
     "eval:verification": "tsx scripts/eval-verification.ts",

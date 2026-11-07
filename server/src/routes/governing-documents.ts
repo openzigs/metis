@@ -11,6 +11,16 @@
  *   GET    /                          member+ live documents, each with its current revision
  *   GET    /:documentId               member+ one document with every revision
  *   DELETE /:documentId               admin+  soft delete
+ *   GET    /:documentId/rules         member+ the current (or `?revisionId=`) revision's live rules
+ *                                             and its extraction state (#1870)
+ *
+ * /api/workspaces/:workspaceId/governing-rules — #1870.
+ *
+ *   PATCH  /:ruleId                   admin+  edit summary/controlId, or `{ deleted: true }`
+ *
+ * Every stored revision's rules are extracted in the background
+ * (`lib/governing/rule-extraction.ts`); the upload answers before that ends,
+ * and `GET …/rules` reports `extractionState` and any `extractionError`.
  *
  * Every route answers 404 while `GOVERNING_DOCS_ENABLED` is off, before
  * authentication runs. Access is the workspace's own roles
@@ -39,10 +49,13 @@ import { validateUpload } from "../lib/documents/upload.js";
 import { parseDocument } from "../lib/documents/parsers.js";
 import { isGoverningDocsEnabled } from "../lib/governing/flag.js";
 import { getGoverningIndex, type GoverningIndex } from "../lib/governing/governing-index.js";
+import { runRuleExtraction } from "../lib/governing/rule-extraction.js";
 import {
   addRevision,
   createDocumentWithRevision,
   documentExists,
+  editRule,
+  listRules,
   revisionLabelExists,
   getDocument,
   isWorkspaceLive,
@@ -60,6 +73,19 @@ const effectiveDate = z.union([z.iso.date(), z.iso.datetime({ offset: true })]);
 const revisionLabel = z.string().trim().min(1).max(64);
 
 const revisionFieldsSchema = z.object({ revisionLabel, effectiveDate });
+const rulesQuerySchema = z.object({ revisionId: z.string().min(1).max(64).optional() });
+/** #1870 — an admin's rule edit: new text for either field, or a soft delete on its own. */
+const rulePatchSchema = z.union([
+  z.strictObject({ deleted: z.literal(true) }),
+  z
+    .strictObject({
+      summary: z.string().trim().min(1).max(500).optional(),
+      controlId: z.string().trim().min(1).max(64).optional(),
+    })
+    .refine((p) => p.summary !== undefined || p.controlId !== undefined, {
+      message: "Give a summary, a controlId, or deleted: true",
+    }),
+]);
 const uploadFieldsSchema = revisionFieldsSchema.extend({
   title: z.string().trim().min(1).max(300),
   framework: z.string().trim().min(1).max(200).optional(),
@@ -104,23 +130,17 @@ function parseFields<S extends z.ZodType>(schema: S, body: unknown): z.infer<S> 
 export interface GoverningDocumentsRouterDeps {
   storage?: StorageBackend;
   index?: GoverningIndex;
+  /** #1870 — the rule-extraction job a stored revision starts; default {@link runRuleExtraction}. */
+  extractRules?: (input: { workspaceId: string; revisionId: string }) => Promise<void>;
 }
 
-export function governingDocumentsRouter(deps: GoverningDocumentsRouterDeps = {}): Router {
-  const r = Router({ mergeParams: true });
-
-  // The flag first: off, the routes do not exist, for anyone.
-  r.use((_req: Request, _res: Response, next: NextFunction) => {
-    if (!isGoverningDocsEnabled()) {
-      next(new AppError(404, "NOT_FOUND", "Not found"));
-      return;
-    }
-    next();
-  });
-  r.use(requireAuth);
-
-  // A deployment admin passes `requireWorkspaceRole` without a membership row,
-  // so the workspace itself must still be live.
+/**
+ * The governing routers' middleware: 404 while the flag is off (before
+ * authentication), then authentication, then the workspace roles. A
+ * deployment admin passes `requireWorkspaceRole` without a membership row, so
+ * the workspace itself must still be live.
+ */
+function governingGuards() {
   async function liveWorkspace(req: Request, _res: Response, next: NextFunction): Promise<void> {
     try {
       if (!(await isWorkspaceLive(String(req.params.workspaceId)))) {
@@ -131,11 +151,43 @@ export function governingDocumentsRouter(deps: GoverningDocumentsRouterDeps = {}
       next(err);
     }
   }
-  const member = [requireWorkspaceRole("member"), liveWorkspace];
-  const admin = [requireWorkspaceRole("admin"), liveWorkspace];
+  return {
+    flagThenAuth: [
+      (_req: Request, _res: Response, next: NextFunction) => {
+        if (!isGoverningDocsEnabled()) {
+          next(new AppError(404, "NOT_FOUND", "Not found"));
+          return;
+        }
+        next();
+      },
+      requireAuth,
+    ],
+    member: [requireWorkspaceRole("member"), liveWorkspace],
+    admin: [requireWorkspaceRole("admin"), liveWorkspace],
+  };
+}
+
+export function governingDocumentsRouter(deps: GoverningDocumentsRouterDeps = {}): Router {
+  const r = Router({ mergeParams: true });
+
+  // The flag first: off, the routes do not exist, for anyone.
+  const { flagThenAuth, member, admin } = governingGuards();
+  r.use(...flagThenAuth);
 
   const storage = (): StorageBackend => deps.storage ?? getDocumentStorage();
   const index = (): GoverningIndex => deps.index ?? getGoverningIndex();
+  const extractRules = deps.extractRules ?? runRuleExtraction;
+
+  /** Start the stored revision's rule extraction; the response does not wait for it. */
+  function scheduleExtraction(workspaceId: string, revisionId: string): void {
+    void extractRules({ workspaceId, revisionId }).catch((err: unknown) => {
+      log.error("governing rule extraction did not start", {
+        workspaceId,
+        revisionId,
+        error: String(err),
+      });
+    });
+  }
 
   /** Validate, parse and store the uploaded file; the revision row's fields. */
   async function storeFile(
@@ -223,6 +275,7 @@ export function governingDocumentsRouter(deps: GoverningDocumentsRouterDeps = {}
       filename,
       revision.extractedText,
     );
+    scheduleExtraction(workspaceId, created.revisionId);
     audit({
       actor: { id: actor.id },
       action: "governing_document.upload",
@@ -268,6 +321,7 @@ export function governingDocumentsRouter(deps: GoverningDocumentsRouterDeps = {}
         filename,
         revision.extractedText,
       );
+      scheduleExtraction(workspaceId, created.revisionId);
       audit({
         actor: { id: actor.id },
         action: "governing_document.revision",
@@ -297,6 +351,14 @@ export function governingDocumentsRouter(deps: GoverningDocumentsRouterDeps = {}
     res.json(ok({ document }));
   });
 
+  r.get("/:documentId/rules", ...member, async (req: Request, res: Response) => {
+    const query = parseFields(rulesQuerySchema, req.query);
+    const documentId = String(req.params.documentId);
+    const listing = await listRules(String(req.params.workspaceId), documentId, query.revisionId);
+    if (!listing) throw notFound();
+    res.json(ok({ documentId, ...listing }));
+  });
+
   r.delete("/:documentId", ...admin, async (req: Request, res: Response) => {
     const workspaceId = String(req.params.workspaceId);
     const documentId = String(req.params.documentId);
@@ -309,6 +371,33 @@ export function governingDocumentsRouter(deps: GoverningDocumentsRouterDeps = {}
       metadata: { workspaceId },
     });
     res.json(ok({ documentId, deleted: true }));
+  });
+
+  return r;
+}
+
+/** #1870 — edit or soft-delete one extracted rule of the workspace. */
+export function governingRulesRouter(): Router {
+  const r = Router({ mergeParams: true });
+  const { flagThenAuth, admin } = governingGuards();
+  r.use(...flagThenAuth);
+
+  r.patch("/:ruleId", ...admin, async (req: Request, res: Response) => {
+    const workspaceId = String(req.params.workspaceId);
+    const ruleId = String(req.params.ruleId);
+    const actor = actorOf(req);
+    const patch = parseFields(rulePatchSchema, req.body);
+    const result = await editRule(workspaceId, ruleId, actor.id, patch);
+    if (!result) throw new AppError(404, "NOT_FOUND", "Governing rule not found");
+    if (result.changed) {
+      audit({
+        actor: { id: actor.id },
+        action: "deleted" in patch ? "governing_rule.delete" : "governing_rule.edit",
+        target: { type: "governing_rule", id: ruleId },
+        metadata: { workspaceId, revisionId: result.rule.revisionId },
+      });
+    }
+    res.json(ok({ rule: result.rule, changed: result.changed }));
   });
 
   return r;
