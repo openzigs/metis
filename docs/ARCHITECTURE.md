@@ -2371,7 +2371,7 @@ When a document is uploaded to a project:
 
 A company's own policies and control frameworks are uploaded **once per workspace**, not per
 project, and later checked against requirements. #1868 adds the store, #1869 the upload
-routes and the workspace index (below), no LLM yet — behind `GOVERNING_DOCS_ENABLED` (`"1"` enables; default off; read at call time by
+routes and the workspace index (below), no LLM yet — behind `GOVERNING_DOCS_ENABLED` (`1`, `true`, `yes` or `on`, case-insensitive, enables — the spellings `ConfigService.getBool` accepts, #1962; default off; read at call time by
 `isGoverningDocsEnabled()` in `server/src/lib/governing/flag.ts`, which every later issue
 gates on).
 
