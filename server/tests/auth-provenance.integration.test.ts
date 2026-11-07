@@ -80,6 +80,12 @@ describe.runIf(enabled)(`auth provenance with real ${provider} persistence`, () 
       // Model queries and unqualified migration SQL must BOTH use our schema.
       expect(await db.$queryRawUnsafe("SELECT current_schema() AS schema")).toEqual([{ schema }]);
     } else {
+      // #1960 — a file, not `:memory:` (tests/helpers/in-memory-sqlite.ts):
+      // `runCli` starts the reconciliation CLI as a child process on this same
+      // database, and an in-memory one is private to the connection that made
+      // it. No CI job runs this `*.integration.test.ts` suite (`server-unit`
+      // excludes the pattern; `pnpm test:integration` runs it, at a 60 s
+      // `hookTimeout`), so the hook's fsyncs never meet a shared runner disk.
       directory = await mkdtemp(join(tmpdir(), "metis-auth-provenance-"));
       db = new PrismaClient({
         adapter: new PrismaBetterSqlite3({ url: `file:${join(directory, "auth.db")}` }),

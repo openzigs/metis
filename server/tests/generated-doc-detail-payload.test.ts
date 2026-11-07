@@ -7,9 +7,6 @@
  * so the access assertions exercise the same path production does. Every
  * assertion reads back through the HTTP route a consumer uses.
  */
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { PrismaClient } from "@prisma/client";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import express from "express";
@@ -17,6 +14,7 @@ import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import { isolateSupertestLoopback } from "./helpers/supertest-loopback.js";
+import { IN_MEMORY_SQLITE, sqliteMainFile } from "./helpers/in-memory-sqlite.js";
 import { getPermissionsForRole, type RoleKey } from "@metis/shared";
 import { issueTokens } from "../src/lib/auth/jwt.js";
 
@@ -98,7 +96,6 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
   "#190 generated-doc detail payload and per-version endpoints",
   () => {
     let db: PrismaClient;
-    let directory: string;
     const router = express();
     router.use("/projects/:projectId/docs", generatedDocsRouter());
     router.use(errorHandler);
@@ -142,9 +139,9 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         );
 
     beforeAll(async () => {
-      directory = await mkdtemp(join(tmpdir(), "metis-doc-detail-"));
+      // #1960 — in memory: one client, never reopened, so a file only cost fsyncs.
       db = new PrismaClient({
-        adapter: new PrismaBetterSqlite3({ url: `file:${join(directory, "test.db")}` }),
+        adapter: new PrismaBetterSqlite3({ url: IN_MEMORY_SQLITE }),
       });
       state.db = recordingVersionReads(db, versionReads);
       for (const sql of [
@@ -235,7 +232,10 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
 
     afterAll(async () => {
       await db?.$disconnect();
-      if (directory) await rm(directory, { recursive: true, force: true });
+    });
+
+    it("builds its tables in memory, so no hook waits on a contended disk's fsync (#1960)", async () => {
+      expect(await sqliteMainFile(db)).toBe("");
     });
 
     it("detail carries the content once and stays within 1.5x of it", async () => {
