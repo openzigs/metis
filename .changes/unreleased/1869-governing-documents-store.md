@@ -10,3 +10,6 @@ section: Added
   separate from every project's documents, and only the current revision is
   searched by default. Behind the `GOVERNING_DOCS_ENABLED` setting, which is
   still off by default; nothing in analysis reads these documents yet.
+- Reading an uploaded HTML file full of unclosed comments, unclosed tags or
+  long runs of spaces no longer holds up the server for minutes. This applies
+  to project documents as well as governing documents.

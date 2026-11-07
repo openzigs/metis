@@ -324,18 +324,26 @@ function prettyJson(raw: string): string {
  * whitespace.
  */
 export function sanitiseHtml(html: string): string {
+  // #1869 — every strip here is linear in the input. The regexes the span and
+  // tag strips replace (`/<!--[\s\S]*?-->/g`, `/<script\b[\s\S]*?<\/script\s*>/gi`,
+  // `/<embed\b[^>]*\/?>/gi`, `/<[^>]+>/g`) and a leading `\s+` retried from
+  // every opener when no closer followed, so an upload of repeated `<!--`, `<`
+  // or spaces held the event loop for quadratic time: 14-22 s at 200 KB, far
+  // longer at the 10 MB cap. Each pass removes exactly what its regex removed.
   let out = html;
-  out = out.replace(/<!--[\s\S]*?-->/g, "");
-  out = out.replace(/<script\b[\s\S]*?<\/script\s*>/gi, "");
-  out = out.replace(/<style\b[\s\S]*?<\/style\s*>/gi, "");
-  out = out.replace(/<iframe\b[\s\S]*?<\/iframe\s*>/gi, "");
-  out = out.replace(/<object\b[\s\S]*?<\/object\s*>/gi, "");
-  out = out.replace(/<embed\b[^>]*\/?>/gi, "");
-  out = out.replace(/<noscript\b[\s\S]*?<\/noscript\s*>/gi, "");
-  // Strip on* event handler attributes anywhere.
-  out = out.replace(/\s+on[a-z]+\s*=\s*"[^"]*"/gi, "");
-  out = out.replace(/\s+on[a-z]+\s*=\s*'[^']*'/gi, "");
-  out = out.replace(/\s+on[a-z]+\s*=\s*[^\s>]+/gi, "");
+  out = stripSpans(out, /<!--/g, /-->/g);
+  out = stripSpans(out, /<script\b/gi, /<\/script\s*>/gi);
+  out = stripSpans(out, /<style\b/gi, /<\/style\s*>/gi);
+  out = stripSpans(out, /<iframe\b/gi, /<\/iframe\s*>/gi);
+  out = stripSpans(out, /<object\b/gi, /<\/object\s*>/gi);
+  out = stripSpans(out, /<embed\b/gi, />/g);
+  out = stripSpans(out, /<noscript\b/gi, /<\/noscript\s*>/gi);
+  // Strip on* event handler attributes anywhere. `(?<!\s)` starts a match only
+  // at the start of a whitespace run; without it the regex retried from every
+  // position inside the run.
+  out = out.replace(/(?<!\s)\s+on[a-z]+\s*=\s*"[^"]*"/gi, "");
+  out = out.replace(/(?<!\s)\s+on[a-z]+\s*=\s*'[^']*'/gi, "");
+  out = out.replace(/(?<!\s)\s+on[a-z]+\s*=\s*[^\s>]+/gi, "");
   // Drop javascript: and data: URLs from href/src to be safe (output is text
   // anyway but we want the textual fragments to be benign).
   out = out.replace(/(href|src)\s*=\s*"\s*(javascript|data):[^"]*"/gi, '$1=""');
@@ -345,7 +353,7 @@ export function sanitiseHtml(html: string): string {
   out = out.replace(/<\/(p|div|section|article|h[1-6]|li|tr|br)\s*>/gi, "\n");
   out = out.replace(/<br\s*\/?>(?!\n)/gi, "\n");
   // Strip remaining tags.
-  out = out.replace(/<[^>]+>/g, "");
+  out = stripTags(out);
   // Decode the most common HTML entities — full entity decoding is overkill
   // for our embedding purposes. `&amp;` goes last (#1542): decoded first, the
   // literal text `&amp;lt;` would become `&lt;` and then `<`.
@@ -359,4 +367,48 @@ export function sanitiseHtml(html: string): string {
   // Collapse runs of whitespace.
   out = out.replace(/[\t ]+/g, " ").replace(/\n{3,}/g, "\n\n");
   return out.trim();
+}
+
+/**
+ * Remove every span from an `open` match to the first `close` match after it,
+ * which is what `text.replace(/OPEN[\s\S]*?CLOSE/g, "")` removes, in one forward
+ * pass. An opener with no closer after it ends the pass: no later opener can
+ * have one either, so the rest is kept, as the regex kept it. Both patterns
+ * must be global (`lastIndex` drives the search).
+ */
+function stripSpans(text: string, open: RegExp, close: RegExp): string {
+  let out = "";
+  let from = 0;
+  for (;;) {
+    open.lastIndex = from;
+    const opened = open.exec(text);
+    if (!opened) break;
+    close.lastIndex = opened.index + opened[0].length;
+    const closed = close.exec(text);
+    if (!closed) break;
+    out += text.slice(from, opened.index);
+    from = closed.index + closed[0].length;
+  }
+  return out + text.slice(from);
+}
+
+/** `text.replace(/<[^>]+>/g, "")` in one forward pass: a `<`, at least one character, the next `>`. */
+function stripTags(text: string): string {
+  let out = "";
+  let from = 0;
+  let search = 0;
+  for (;;) {
+    const lt = text.indexOf("<", search);
+    if (lt === -1) break;
+    const gt = text.indexOf(">", lt + 1);
+    if (gt === -1) break;
+    if (gt === lt + 1) {
+      // `<>` is not a tag: the regex moved on to the next character.
+      search = lt + 1;
+      continue;
+    }
+    out += text.slice(from, lt);
+    from = search = gt + 1;
+  }
+  return out + text.slice(from);
 }
