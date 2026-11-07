@@ -76,6 +76,8 @@ const LOT: SimilarRequirementItem = {
   linkedAsDuplicate: false,
 };
 
+const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
 /** The fake server's routes. */
 function route(path: string, opts: { method?: string; body?: unknown } = {}) {
   if (path === `/projects/${P}/requirements/${SELF}/similar` && !opts.method) {
@@ -123,8 +125,7 @@ function route(path: string, opts: { method?: string; body?: unknown } = {}) {
   throw new Error(`unexpected ${opts.method ?? "GET"} ${path}`);
 }
 
-function mount({ canEdit }: { canEdit: boolean }) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function mount({ canEdit, qc = newClient() }: { canEdit: boolean; qc?: QueryClient }) {
   return render(
     <QueryClientProvider client={qc}>
       <SimilarRequirementsPanel projectId={P} requirementId={SELF} canEdit={canEdit} />
@@ -195,6 +196,23 @@ describe("Start from these citations (#1840)", () => {
     }
     expect(toast.success).toHaveBeenCalledWith("Copied 2 code links from REQ-7.");
     expect(screen.queryByTestId("borrow-citations-confirm")).toBeNull();
+  });
+
+  it("marks every similar list of the project stale after a borrow, not only this card's (#1903)", async () => {
+    const qc = newClient();
+    const items = { items: [] as SimilarRequirementItem[] };
+    // Another card's list names this requirement and its code links; another project's does not.
+    qc.setQueryData(["similar-requirements", P, "r-other"], items);
+    qc.setQueryData(["similar-requirements", "p2", "r-other"], items);
+    const user = userEvent.setup();
+    mount({ canEdit: true, qc });
+    await user.click(await screen.findByRole("button", { name: ACTION }));
+    await user.click(screen.getByRole("button", { name: "Copy 2 links" }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(qc.getQueryState(["similar-requirements", P, "r-other"])?.isInvalidated).toBe(true),
+    );
+    expect(qc.getQueryState(["similar-requirements", "p2", "r-other"])?.isInvalidated).toBe(false);
   });
 
   it("is hidden from a viewer without edit rights, and shown to an editor", async () => {
@@ -274,7 +292,13 @@ describe("borrowResultText", () => {
         "REQ-7",
       ),
     ).toBe(
-      "No code links copied from REQ-7. Skipped: 2 already linked, 1 need a re-check, 3 borrowed themselves, 4 no longer found.",
+      "No code links copied from REQ-7. Skipped: 2 already linked, 1 needs a re-check, 3 borrowed themselves, 4 no longer found.",
+    );
+  });
+
+  it("agrees each reason with its count (#1903)", () => {
+    expect(borrowResultText({ ...result, skippedStale: 2, skippedBorrowed: 1 }, "REQ-7")).toBe(
+      "No code links copied from REQ-7. Skipped: 2 need a re-check, 1 borrowed itself.",
     );
   });
 });

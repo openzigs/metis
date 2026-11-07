@@ -995,6 +995,11 @@ server-side as one `RequirementSimilarityDismissal` row per unordered pair (both
 and the API reports each item's `notDuplicate` / `linkedAsDuplicate` so a reload keeps the
 answer. A dedicated table rather than a `not_duplicate` link type, because every link consumer
 (the links panel, the link picker, the workspace traceability rollup) would otherwise show it.
+After "Start from these citations" (#1840, see Borrowed code links below), the panel
+invalidates the prefix `['similar-requirements', projectId]`, not only its own card's list,
+because other cards list this requirement with its code links (#1903). The client preview
+(`borrowPlan`) and the server's borrow read the one `BORROWABLE_FRESHNESS` set from
+`@metis/shared`, so the preview cannot list a link the borrow would skip.
 
 **`search_code_symbols` (#730, Epic #725)** — the same hybrid (BM25 + vector RRF) symbol
 tool chat got in Epic #712 (`createSearchSymbolsTool`), now offered to Winston's agentic

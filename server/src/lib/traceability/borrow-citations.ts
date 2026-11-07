@@ -45,6 +45,7 @@
 import type { PrismaClient } from "@prisma/client";
 import {
   BORROW_FROM_SELF_CODE,
+  BORROWABLE_FRESHNESS,
   SIMILAR_REQUIREMENT_SOURCE,
   type BorrowCitationsInput,
   type BorrowCitationsResult,
@@ -61,9 +62,6 @@ const log = createChildLogger("borrow-citations");
 
 /** The highest confidence a borrowed link carries: below an analysis-seeded one. */
 export const BORROWED_CONFIDENCE_CAP = DEFAULT_SEED_CONFIDENCE - 0.1;
-
-/** The freshness a link must hold to be borrowed (#1830): known to point at current code. */
-const BORROWABLE_FRESHNESS: ReadonlySet<string> = new Set(["fresh", "moved"]);
 
 type BorrowPrisma = Pick<PrismaClient, "requirement" | "requirementCodeMapping" | "$transaction">;
 type BorrowTx = Pick<PrismaClient, "requirementCodeMapping">;
