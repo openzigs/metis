@@ -34,10 +34,20 @@
  * would read something else than what was recorded: every record carries the
  * fixture's and the repository pin's fingerprint, and a run is not read from
  * an analysis whose persisted requirements no longer resolve.
+ *
+ * #1834 — the staleness readings, on the same analyses: per requirement and
+ * run, the requirement's committed staleness patch is applied to the
+ * materialized repository and re-ingested (re-validating the citations,
+ * #1831), the requirement is read twice — `A7S` with the citations' freshness
+ * hidden (the stage before #1832) and `A7SD` with #1832's demotion — and the
+ * patch is undone. A moved citation is read as the file it was (the fixture's
+ * graph is the unpatched repository's) and a deleted file leaves the graph and
+ * the search. A7S is gated against A7, A7SD against A7S; A7's runs are measured first,
+ * because a patch cycle re-validates every citation of the repository.
  */
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { StoredLinkRow } from "../../impact-analysis/change-seeds.js";
+import type { SeedSymbolRow, StoredLinkRow } from "../../impact-analysis/change-seeds.js";
 import type { ChangedRequirement } from "../../impact-analysis/extract-changes.js";
 import type { ImpactRecallFixture } from "../impact-recall/fixture.js";
 import {
@@ -57,6 +67,7 @@ import {
 } from "../impact-recall/scorer.js";
 import type { LocalizationRepo } from "./corpus.js";
 import type { CostMeter } from "./cost.js";
+import type { CitationFreshnessCounts } from "./scorer.js";
 import { stableDigest } from "./partials.js";
 import type { TableGuardMeasurement, TableGuardReading } from "./runner.js";
 import type { CorpusSearch } from "./search.js";
@@ -64,9 +75,11 @@ import { pairedTInterval, type PairedTInterval } from "./stats.js";
 import { MAPPER_SEEDING, fixtureFileSymbols } from "./table-guard.js";
 import {
   emptyTranslation,
+  toFixturePath,
   translateCitations,
   type CitationTranslation,
 } from "./table-guard-source.js";
+import { emptyTally, searchWithoutFiles, tallyFreshness, type StalenessOp } from "./staleness.js";
 
 /**
  * #1847 — what a record depends on besides the model: a resume under another
@@ -124,7 +137,7 @@ export interface GuardAnalysisRecord {
  * A7O, or A0 on the mapper path (`mapper`, #1847: recorded so a resumed call
  * does not pay for it again).
  */
-export type GuardReadingId = "baseline" | "A7" | "A7O" | "mapper";
+export type GuardReadingId = "baseline" | "A7" | "A7O" | "mapper" | "A7S" | "A7SD";
 
 /** One run of one reading. */
 export interface GuardRunRecord {
@@ -153,6 +166,10 @@ export interface GuardRunRecord {
    * written before #1848.
    */
   pieces?: Record<string, GuardPiece[]>;
+  /** #1834 — a staleness reading's patch sets (their digest): a resume under others is refused. */
+  stalenessPatch?: string;
+  /** #1834 — the citations after each patch's re-ingest, and how many the stage set aside. */
+  citationFreshness?: CitationFreshnessCounts;
 }
 
 /** #1848 — one change an A7 or A7O run read, and the tables it surfaced on its own. */
@@ -171,7 +188,7 @@ export interface GuardStore {
   record(record: GuardRecord): Promise<void>;
 }
 
-const READINGS: ReadonlySet<string> = new Set(["baseline", "A7", "A7O", "mapper"]);
+const READINGS: ReadonlySet<string> = new Set(["baseline", "A7", "A7O", "mapper", "A7S", "A7SD"]);
 
 /** #1848 — a run's per-requirement tables: requirement id → its changes, each with string tables. */
 function validPieces(v: unknown): boolean {
@@ -290,6 +307,18 @@ export interface AgentSeedGuardDeps {
   log?: (line: string) => void;
   /** Milliseconds; a seam for tests. */
   now?: () => number;
+  /** #1834 — the staleness cycle on the materialized repository (the A7S and A7SD readings). */
+  staleness?: GuardStaleness;
+}
+
+/** #1834 — what the staleness readings need: the committed patches and the cycle. */
+export interface GuardStaleness {
+  /** A digest of the patch set: recorded with each staleness run. */
+  patchSetDigest: string;
+  /** A fixture requirement's committed operations (on the repository's paths). */
+  opsFor: (requirementId: string) => readonly StalenessOp[];
+  /** Apply and re-ingest, run `read`, then restore and re-ingest. */
+  withPatch: <T>(ops: readonly StalenessOp[], read: () => Promise<T>) => Promise<T>;
 }
 
 /**
@@ -300,6 +329,10 @@ export interface AgentSeedGuard {
   A0: () => Promise<TableGuardReading>;
   A7: () => Promise<TableGuardReading>;
   A7O: () => Promise<TableGuardReading>;
+  /** #1834 — after each requirement's staleness patch, without demotion. */
+  A7S: () => Promise<TableGuardReading>;
+  /** #1834 — after each requirement's staleness patch, with #1832's demotion. */
+  A7SD: () => Promise<TableGuardReading>;
 }
 
 /**
@@ -313,6 +346,8 @@ export function lazyAgentSeedGuard(build: () => Promise<AgentSeedGuard>): AgentS
     A0: async () => (await get()).A0(),
     A7: async () => (await get()).A7(),
     A7O: async () => (await get()).A7O(),
+    A7S: async () => (await get()).A7S(),
+    A7SD: async () => (await get()).A7SD(),
   };
 }
 
@@ -345,12 +380,15 @@ export function guardRunTables(
   requirementId: string,
   scoring: GuardScoring,
 ): string[] | null {
-  if (scoring === "union" || (record.reading !== "A7" && record.reading !== "A7O")) {
+  if (scoring === "union" || !ANALYSIS_READINGS.has(record.reading)) {
     return record.tables[requirementId] ?? [];
   }
   const pieces = record.pieces?.[requirementId];
   return pieces ? (pieces[0]?.tables ?? []) : null;
 }
+
+/** #1848 / #1834 — the readings of an analysis's requirements, scored on its first one. */
+const ANALYSIS_READINGS: ReadonlySet<string> = new Set(["A7", "A7O", "A7S", "A7SD"]);
 
 /** A scoring in the words the guard's log and configuration use. */
 const SCORING_WORDS: Record<GuardScoring, string> = {
@@ -396,6 +434,8 @@ const PAIRS: ReadonlyArray<readonly [GuardReadingId, GuardReadingId]> = [
   ["A7", "baseline"],
   ["A7O", "baseline"],
   ["A7", "A7O"],
+  ["A7S", "A7"],
+  ["A7SD", "A7S"],
 ];
 
 /**
@@ -470,6 +510,16 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
       if (diff.length > 0) {
         throw new Error(
           `refusing to resume the table guard: its steps were recorded under another configuration:\n  - ${diff.join("\n  - ")}\nUse a new partials directory`,
+        );
+      }
+      // #1834 — a staleness run read under other patches is not this reading's.
+      if (
+        r.kind === "run" &&
+        r.stalenessPatch !== undefined &&
+        r.stalenessPatch !== deps.staleness?.patchSetDigest
+      ) {
+        throw new Error(
+          `refusing to resume the table guard: its ${r.reading} run ${r.run} was read under staleness patches ${r.stalenessPatch}, not ${deps.staleness?.patchSetDigest ?? "none"}. Use a new partials directory`,
         );
       }
       if (r.kind === "analysis") analyses.set(keyOf(r.requirement, r.run), r);
@@ -568,6 +618,51 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
     return out;
   }
 
+  /**
+   * A requirement's tables (and symbols), unioned over its tracked changes,
+   * scored; and #1848 each change's own tables, in the order persisted.
+   */
+  async function scoreAgainstFixture(
+    requirement: ImpactRecallFixture["requirements"][number],
+    tracked: readonly ChangedRequirement[],
+    options: RunImpactRecallOptions,
+  ): Promise<{ score: RequirementScore; pieces: GuardPiece[] }> {
+    const tables = new Set<string>();
+    const symbols = new Set<string>();
+    const pieces: GuardPiece[] = [];
+    for (const change of tracked.length > 0 ? tracked : [requirementToChange(requirement)]) {
+      const found = await observeChange(fixture, change, fixture.searcher, options);
+      for (const t of found.foundTables) tables.add(t);
+      for (const s of found.foundCodeSymbols) symbols.add(s);
+      pieces.push({
+        requirementId: change.requirementId ?? requirement.id,
+        title: change.title,
+        tables: [...new Set(found.foundTables)],
+      });
+    }
+    const foundTables = [...tables];
+    const foundCodeSymbols = [...symbols];
+    const score = scoreRequirement({
+      id: requirement.id,
+      text: requirement.text,
+      expectedTables: requirement.expectedTables,
+      expectedCodeSymbols: requirement.expectedCodeSymbols,
+      expectedConsumers: requirement.expectedConsumers,
+      foundTables,
+      foundCodeSymbols,
+      foundConsumers:
+        requirement.expectedConsumers !== undefined && deps.options.consumerResolver
+          ? await deps.options.consumerResolver({
+              requirement,
+              foundTables,
+              foundCodeSymbols,
+              fixture,
+            })
+          : [],
+    });
+    return { score, pieces };
+  }
+
   /** One run of A7 or A7O: impact on each analysis's requirements, tables unioned per requirement. */
   async function agentRun(
     reading: "A7" | "A7O",
@@ -610,19 +705,7 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
       // An analysis that persisted nothing leaves nothing tracked: its text is read, as A7 does.
       if (tracked.length === 0) untracked++;
       changes += tracked.length;
-      const tables = new Set<string>();
-      const symbols = new Set<string>();
-      const own: GuardPiece[] = [];
-      for (const change of tracked.length > 0 ? tracked : [requirementToChange(requirement)]) {
-        const found = await observeChange(fixture, change, fixture.searcher, options);
-        for (const t of found.foundTables) tables.add(t);
-        for (const s of found.foundCodeSymbols) symbols.add(s);
-        own.push({
-          requirementId: change.requirementId ?? requirement.id,
-          title: change.title,
-          tables: [...new Set(found.foundTables)],
-        });
-      }
+      const { score, pieces: own } = await scoreAgainstFixture(requirement, tracked, options);
       pieces[requirement.id] = own;
       if (lookupFailed !== null) {
         const why = lookupFailed instanceof Error ? lookupFailed.message : String(lookupFailed);
@@ -632,28 +715,7 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
             `The lookup's error: ${why}`,
         );
       }
-      const foundTables = [...tables];
-      const foundCodeSymbols = [...symbols];
-      scores.push(
-        scoreRequirement({
-          id: requirement.id,
-          text: requirement.text,
-          expectedTables: requirement.expectedTables,
-          expectedCodeSymbols: requirement.expectedCodeSymbols,
-          expectedConsumers: requirement.expectedConsumers,
-          foundTables,
-          foundCodeSymbols,
-          foundConsumers:
-            requirement.expectedConsumers !== undefined && deps.options.consumerResolver
-              ? await deps.options.consumerResolver({
-                  requirement,
-                  foundTables,
-                  foundCodeSymbols,
-                  fixture,
-                })
-              : [],
-        }),
-      );
+      scores.push(score);
     }
     const configuration = describeConfiguration(options);
     return {
@@ -674,6 +736,137 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
       pieces,
       ...(reading === "A7" ? { citations: counts } : {}),
     };
+  }
+
+  /**
+   * #1834 — one run of A7S and of A7SD, read in ONE patch cycle per
+   * requirement: the requirement's patch applied and re-ingested, its tables
+   * read with the citations' freshness hidden and then with demotion, the
+   * patch undone. A moved citation is read as the file it was; a deleted
+   * file is in neither the graph nor the search.
+   */
+  async function staleRun(
+    run: number,
+    trackedBy: ReadonlyMap<string, ChangedRequirement[]>,
+  ): Promise<Record<"A7S" | "A7SD", GuardRunRecord>> {
+    const staleness = deps.staleness!;
+    const fixtureSymbols = fixtureFileSymbols(fixture);
+    const readings = (["A7S", "A7SD"] as const).map((reading) => ({
+      reading,
+      demote: reading === "A7SD",
+      counts: emptyTranslation(),
+      scores: [] as RequirementScore[],
+      pieces: {} as Record<string, GuardPiece[]>,
+      demoted: 0,
+      label: "",
+    }));
+    const tally = emptyTally();
+    let changes = 0;
+    let untracked = 0;
+    for (const requirement of fixture.requirements) {
+      const tracked = trackedBy.get(requirement.id)!;
+      if (tracked.length === 0) untracked++;
+      changes += tracked.length;
+      const ops = staleness.opsFor(requirement.id);
+      const back = new Map(ops.flatMap((o) => (o.op === "rename" ? [[o.to, o.from]] : [])));
+      const deleted = new Set(
+        ops.flatMap((o) => (o.op === "delete" ? [toFixturePath(o.file) ?? o.file] : [])),
+      );
+      const loadFileSymbols = async (
+        paths: string[],
+        projectId: string,
+      ): Promise<SeedSymbolRow[]> =>
+        fixtureSymbols(
+          paths.filter((p) => !deleted.has(p)),
+          projectId,
+        );
+      await staleness.withPatch(ops, async () => {
+        for (const requirementId of tracked.flatMap((c) =>
+          c.requirementId ? [c.requirementId] : [],
+        )) {
+          tallyFreshness(await deps.loadCitations(requirementId), tally);
+        }
+        for (const r of readings) {
+          const seeding: SplitSeedingOptions = {
+            // A deleted file is no longer found by the search either.
+            ...searchWithoutFiles(split, deleted),
+            agentSeeds: {
+              loadCitations: async (requirementId) => {
+                const links = (await deps.loadCitations(requirementId)).map((l) => {
+                  const { freshness, ...rest } = l;
+                  const filePath = back.get(l.filePath) ?? l.filePath;
+                  return r.demote ? { ...rest, filePath, freshness } : { ...rest, filePath };
+                });
+                const ids = links.flatMap((l) => (l.codeSymbolId ? [l.codeSymbolId] : []));
+                const out = translateCitations(
+                  links,
+                  await deps.qualifiedNames(ids),
+                  fixture,
+                  r.counts,
+                );
+                if (r.demote) r.demoted += out.filter((l) => l.freshness === "stale").length;
+                return out;
+              },
+              loadFileSymbols,
+            },
+          };
+          const options: RunImpactRecallOptions = { ...deps.options, splitSeeding: seeding };
+          r.label = describeConfiguration(options).label;
+          const { score, pieces } = await scoreAgainstFixture(requirement, tracked, options);
+          r.scores.push(score);
+          r.pieces[requirement.id] = pieces;
+        }
+      });
+    }
+    const record = (r: (typeof readings)[number]): GuardRunRecord => ({
+      kind: "run",
+      reading: r.reading,
+      run,
+      model: deps.model,
+      fingerprint,
+      tablePrecision: aggregateScores(r.scores).tables.macroPrecision,
+      tables: Object.fromEntries(r.scores.map((x) => [x.id, x.tables.found])),
+      label: r.label,
+      seeding: `split + agent citations after each requirement's staleness patch (IMPACT_AGENT_SEEDS on, ${
+        r.demote ? "stale citations demoted, #1832" : "freshness hidden: the stage before #1832"
+      })`,
+      changes,
+      untracked,
+      citations: r.counts,
+      pieces: r.pieces,
+      stalenessPatch: staleness.patchSetDigest,
+      citationFreshness: { ...tally, demoted: r.demoted },
+    });
+    return { A7S: record(readings[0]!), A7SD: record(readings[1]!) };
+  }
+
+  /** #1834 — every run of A7S and A7SD, measuring (and recording) the missing ones together. */
+  async function ensureStaleRuns(): Promise<Record<"A7S" | "A7SD", GuardRunRecord[]>> {
+    const out: Record<"A7S" | "A7SD", GuardRunRecord[]> = { A7S: [], A7SD: [] };
+    for (let run = 1; run <= deps.runs; run++) {
+      let s = runs.get(keyOf("A7S", run));
+      let sd = runs.get(keyOf("A7SD", run));
+      if (!s || !sd) {
+        const tracked = await trackedChanges(run);
+        step();
+        const read = await staleRun(run, tracked);
+        for (const record of [read.A7S, read.A7SD]) {
+          await deps.store.record(record);
+          runs.set(keyOf(record.reading, run), record);
+        }
+        s = read.A7S;
+        sd = read.A7SD;
+        const f = read.A7S.citationFreshness!;
+        deps.log?.(
+          `table guard: A7S/A7SD run ${run}: table precision ${s.tablePrecision.toFixed(3)} / ${sd.tablePrecision.toFixed(3)} (${SCORING_WORDS.union}); ` +
+            `${precisionOf(s, "headline").toFixed(3)} / ${precisionOf(sd, "headline").toFixed(3)} (${SCORING_WORDS.headline}); ` +
+            `after the patches ${f.stale} stale, ${f.moved} moved, ${f.fresh} fresh citation(s), ${sd.citationFreshness!.demoted} set aside`,
+        );
+      }
+      out.A7S.push(s);
+      out.A7SD.push(sd);
+    }
+    return out;
   }
 
   /** Every run of a reading, measuring (and recording) the missing ones. */
@@ -803,5 +996,55 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
     }
   }
 
-  return { A0: mapperReading, A7: () => reading("A7"), A7O: () => reading("A7O") };
+  /**
+   * #1834 — A7S (gated against A7) or A7SD (gated against A7S). A7's runs are
+   * measured first: a patch cycle re-validates every citation of the repository.
+   */
+  async function staleReading(id: "A7S" | "A7SD"): Promise<TableGuardReading> {
+    if (!deps.staleness) {
+      return {
+        measured: false,
+        reason: `${id} needs the staleness patches of the table corpus (server/scripts/eval-localization-staleness/)`,
+      };
+    }
+    try {
+      await (loaded ??= load());
+      await ensureAnalyses();
+      const a7 = await ensureRuns("A7");
+      const stale = await ensureStaleRuns();
+      const own = stale[id];
+      const control =
+        id === "A7S" ? { records: a7, arm: "A7" } : { records: stale.A7S, arm: "A7S" };
+      const sum = (pick: (r: GuardRunRecord) => number) => own.reduce((n, r) => n + pick(r), 0);
+      const f = (k: keyof CitationFreshnessCounts) => sum((r) => r.citationFreshness?.[k] ?? 0);
+      // #1848 — read as A7 is: on the first persisted requirement when every run recorded its pieces.
+      const scoring = guardScoringOf([...own, ...control.records]);
+      const m = measurement(own, scoring);
+      logDifferences();
+      return {
+        measured: true,
+        ...m,
+        configuration:
+          m.configuration +
+          `; "Evaluate new requirements" on ${deps.model}, one per requirement and run; ` +
+          `staleness patches ${deps.staleness.patchSetDigest}: after their re-ingest ${f("stale")} stale, ${f("moved")} moved, ` +
+          `${f("fresh")} fresh, ${f("unverified")} unverified citation(s) over ${own.length} run(s); ${f("demoted")} set aside by the stage` +
+          `; scored on ${SCORING_WORDS[scoring]}` +
+          (scoring === "headline"
+            ? ` (#1848); ${SCORING_WORDS.union}: ${measurement(own).tablePrecision.toFixed(3)}`
+            : ""),
+        baseline: { ...measurement(control.records, scoring), arm: control.arm },
+      };
+    } catch (err) {
+      return stoppedReading(err);
+    }
+  }
+
+  return {
+    A0: mapperReading,
+    A7: () => reading("A7"),
+    A7O: () => reading("A7O"),
+    A7S: () => staleReading("A7S"),
+    A7SD: () => staleReading("A7SD"),
+  };
 }
