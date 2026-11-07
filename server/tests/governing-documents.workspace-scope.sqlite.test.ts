@@ -872,6 +872,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(swept.failures).toEqual([]);
         expect(swept.rebuiltWorkspaces).toContain(ID.wsA);
         expect(swept.reindexed.map((r) => r.revisionId)).toContain(v3Id);
+        // Every revision the sweep embedded is counted, the raced one included.
+        expect(swept.revisions).toBeGreaterThanOrEqual(swept.reindexed.length);
+        expect(swept.revisions).toBe(3);
         // v3 was in the live table while the rebuild ran...
         expect(duringRebuild.length).toBeGreaterThan(0);
         for (const found of duringRebuild) {

@@ -111,7 +111,10 @@ export async function reindexGoverningRevisions(
       await index.swapInShadow(workspaceId);
       result.rebuiltWorkspaces.push(workspaceId);
       // The re-read: a revision uploaded since the snapshot is not in the shadow.
+      const snapshot = new Set(revisions.map((r) => r.revisionId));
       revisions = (await listReindexTargets(workspaceId))[0]?.revisions ?? [];
+      // Revisions that arrived after the snapshot are swept too, so they count.
+      result.revisions += revisions.filter((r) => !snapshot.has(r.revisionId)).length;
       stored = await index.storedIdentities(workspaceId);
     }
     for (const rev of revisions) {
