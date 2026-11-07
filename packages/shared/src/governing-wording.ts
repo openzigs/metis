@@ -32,24 +32,41 @@ const TARGET = String.raw`(?:(?:the\s+)?${FRAMEWORK}|\bthe\s+(?:[\w-]+\s+){0,4}p
 const SEP = String.raw`[\s-]+`;
 /**
  * A negation just before the phrase makes it something other than a claim of
- * compliance. Variable-length lookbehind (ES2018).
+ * compliance, also across a few adverbs ("hasn't successfully passed SOC 2",
+ * "not currently SOC 2 compliant"; #1919). "not only" / "not merely" / "not
+ * simply" do not negate, so those adverbs do not count. Variable-length
+ * lookbehind (ES2018).
  */
-const NOT_NEGATED = String.raw`(?<!\b(?:not|non|never|isn['’]t|aren['’]t|wasn['’]t|hasn['’]t|haven['’]t|hadn['’]t)[\s-]+(?:yet[\s-]+)?(?:fully[\s-]+)?)`;
+const NOT_NEGATED = String.raw`(?<!\b(?:not|non|never|isn['’]t|aren['’]t|wasn['’]t|hasn['’]t|haven['’]t|hadn['’]t)[\s-]+(?:(?:yet|already|ever|still|(?!(?:only|merely|simply)\b)[a-z]+ly)[\s-]+){0,3})`;
+/**
+ * Where a phrase ends: the end of the text, punctuation other than a hyphen or a
+ * possessive `'s` (both join on to the next word: "policy-mandated", "policy's
+ * limit"; #1919), a spaced dash, or a word that starts a new clause.
+ */
+const PHRASE_ENDS = String.raw`(?=\s*$|\s*(?!['’]s\b)[^\w\s-]|\s+-|\s+(?:and|or|but|so|as|with|in|on|at|for|since|today|now|already|without)\b)`;
+/** Pronouns whose `'s` can only be "has" ("it's passed SOC 2"), never a possessive. */
+const PRONOUN_S = String.raw`(?<=\b(?:it|that|this|he|she|who|what|which|there|one|everyone|everything|someone|something|nothing))['’]s\s+`;
 /**
  * #1901 — a perfect-tense auxiliary right before "passed" / "complied with"
- * ("has passed SOC 2"), with at most one adverb ("has fully complied"). The
- * rewrite keeps it and uses the participle: "has been checked against SOC 2".
+ * ("has passed SOC 2"), with up to three adverbs ("has only partly complied";
+ * #1919). The rewrite keeps it and uses the participle: "has been checked
+ * against SOC 2". After a noun, `'s` followed by "passed <framework> <noun>" is
+ * a possessive ("the vendor's passed SOC 2 report"), not "has" (#1919).
  */
-const PERFECT_AUX = String.raw`(?<aux>\b(?:has|have|had)\s+|['’](?:s|ve|d)\s+)(?:(?:[a-z]+ly|already|now|also)\s+)?`;
+const PERFECT_AUX = String.raw`(?<aux>\b(?:has|have|had)\s+|['’](?:ve|d)\s+|${PRONOUN_S}|['’]s\s+(?!passed\s+(?:the\s+)?${FRAMEWORK}(?!${PHRASE_ENDS})))(?:(?:[a-z]+ly|already|now|also|since|just|still|ever|once)\s+){0,3}`;
 /**
  * #1901 — "the … policy" after "passes" is a claim only when the phrase ends
  * there ("passes the policy.", "passes the policy and ships"). Followed by
  * another noun it is a modifier, and "passes" means "goes beyond": "the value
- * passes the policy limit" claims nothing.
+ * passes the policy limit" claims nothing. #1919 — "requirements" / "controls"
+ * stay in the target ("passes the policy requirements"), and a claim-completing
+ * noun ends the phrase and is dropped from the rewrite ("passes the policy
+ * check" becomes "was checked against the policy").
  */
-const POLICY_PHRASE_ENDS = String.raw`(?=\s*(?:$|[^\w\s])|\s+(?:and|or|but|so|as|with|in|on|at|for|since|today|now|already|without)\b)`;
+const POLICY_TARGET = String.raw`\bthe\s+(?:[\w-]+\s+){0,4}policy\b(?:(?:['’]s)?\s+(?:requirements?|controls?)\b)?`;
+const CLAIM_NOUN = String.raw`(?:(?:['’]s)?\s+(?:checks?|reviews?|audits?|assessments?)\b)?`;
 /** What "passes" can claim to pass: a framework, or a "the … policy" phrase that ends there. */
-const PASS_TARGET = String.raw`(?:(?:the\s+)?${FRAMEWORK}|\bthe\s+(?:[\w-]+\s+){0,4}policy\b${POLICY_PHRASE_ENDS})`;
+const PASS_TARGET = String.raw`(?:(?<passFw>(?:the\s+)?${FRAMEWORK})|(?<passPolicy>${POLICY_TARGET})${CLAIM_NOUN}${PHRASE_ENDS})`;
 
 interface ClaimShape {
   pattern: RegExp;
@@ -87,19 +104,30 @@ const CLAIM_SHAPES: readonly ClaimShape[] = [
   {
     // "has passed SOC 2", "has complied with GDPR", "have fully complied with the policy"
     pattern: new RegExp(
-      String.raw`${NOT_NEGATED}${PERFECT_AUX}(?:complied\s+with\s+(?<target>${TARGET})|passed\s+(?<passTarget>${PASS_TARGET}))`,
+      String.raw`${NOT_NEGATED}${PERFECT_AUX}(?:complied\s+with\s+(?<target>${TARGET})|passed\s+${PASS_TARGET})`,
       "gi",
     ),
-    rewrite: ({ aux, target, passTarget }) =>
-      `${aux ?? ""}been checked against ${target ?? passTarget}`,
+    rewrite: ({ aux, target, passFw, passPolicy }) =>
+      `${aux ?? ""}been checked against ${target ?? passFw ?? passPolicy}`,
+  },
+  {
+    // #1919 — a possessive before an adjectival "passed": "the vendor's passed
+    // SOC 2 report" becomes "the vendor's SOC 2-reviewed report". It starts on
+    // "passed", as the next shape does, and wins the tie by coming first.
+    pattern: new RegExp(
+      String.raw`${NOT_NEGATED}(?<=\w['’]s\s+)passed\s+(?<fw>${FRAMEWORK})(?!${PHRASE_ENDS})`,
+      "gi",
+    ),
+    rewrite: ({ fw }) => `${fw}-reviewed`,
   },
   {
     // "complies with HIPAA", "fully complies with GDPR", "passes SOC 2", "passed SOC2"
     pattern: new RegExp(
-      String.raw`${NOT_NEGATED}\b(?:fully\s+)?(?:compl(?:ies|ied)\s+with\s+(?<target>${TARGET})|pass(?:es|ed)\s+(?<passTarget>${PASS_TARGET}))`,
+      String.raw`${NOT_NEGATED}\b(?:fully\s+)?(?:compl(?:ies|ied)\s+with\s+(?<target>${TARGET})|pass(?:es|ed)\s+${PASS_TARGET})`,
       "gi",
     ),
-    rewrite: ({ target, passTarget }) => `was checked against ${target ?? passTarget}`,
+    rewrite: ({ target, passFw, passPolicy }) =>
+      `was checked against ${target ?? passFw ?? passPolicy}`,
   },
 ];
 
@@ -111,8 +139,9 @@ interface ClaimMatch {
 
 /**
  * Every claim in `text`, earliest first. Where two shapes overlap ("fully
- * GDPR-compliant" holds "GDPR-compliant") the earlier start wins; no two shapes
- * can match at the same offset, as each starts on a different kind of word.
+ * GDPR-compliant" holds "GDPR-compliant") the earlier start wins. Where two
+ * start at the same offset (the possessive shape and "passes SOC 2"), the one
+ * listed first in `CLAIM_SHAPES` wins: the sort is stable.
  */
 function scanClaims(text: string): ClaimMatch[] {
   const candidates: ClaimMatch[] = [];

@@ -159,6 +159,216 @@ describe("neutraliseComplianceClaims (#1875)", () => {
   });
 });
 
+type Verdict = "claim" | "neutral";
+
+/**
+ * #1919 — every sentence from the review of PR #1908, with main's verdict (as
+ * measured by running this table against `origin/main`'s copy of the guard, see
+ * the PR) and the expected verdict now. A sentence main treated as a claim may
+ * become neutral only when `intended` names why.
+ */
+const VERDICTS: readonly {
+  text: string;
+  main: Verdict;
+  expected: Verdict;
+  rewrite?: string;
+  intended?: string;
+}[] = [
+  // 1. A claim-completing noun ends the "the … policy" phrase after "passes".
+  {
+    text: "The feature passes the policy check.",
+    main: "claim",
+    expected: "claim",
+    rewrite: "The feature was checked against the policy.",
+  },
+  {
+    text: "The release passes the policy review.",
+    main: "claim",
+    expected: "claim",
+    rewrite: "The release was checked against the policy.",
+  },
+  {
+    text: "The build passed the policy audit today.",
+    main: "claim",
+    expected: "claim",
+    rewrite: "The build was checked against the policy today.",
+  },
+  {
+    text: "The app passes the policy assessment and ships.",
+    main: "claim",
+    expected: "claim",
+    rewrite: "The app was checked against the policy and ships.",
+  },
+  {
+    text: "The app passes the policy requirements.",
+    main: "claim",
+    expected: "claim",
+    rewrite: "The app was checked against the policy requirements.",
+  },
+  {
+    text: "The app passes the access policy controls.",
+    main: "claim",
+    expected: "claim",
+    rewrite: "The app was checked against the access policy controls.",
+  },
+  {
+    text: "The app passes the policy’s requirements.",
+    main: "claim",
+    expected: "claim",
+    rewrite: "The app was checked against the policy’s requirements.",
+  },
+  {
+    text: "It has passed the policy audit.",
+    main: "claim",
+    expected: "claim",
+    rewrite: "It has been checked against the policy.",
+  },
+  // 2. A hyphen or a possessive apostrophe continues the phrase.
+  {
+    text: "The value passes the policy-mandated limit.",
+    main: "claim",
+    expected: "neutral",
+    intended:
+      "#1919 item 2: a hyphen joins 'policy' to the next word, so 'passes' means 'goes beyond'",
+  },
+  {
+    text: "The value passes the policy’s limit.",
+    main: "claim",
+    expected: "neutral",
+    intended: "#1919 item 2: a possessive followed by a non-claim noun is a limit, not a claim",
+  },
+  {
+    text: "The value passes the policy's limit.",
+    main: "claim",
+    expected: "neutral",
+    intended: "#1919 item 2: the straight-apostrophe spelling of the same",
+  },
+  // 3. More than one adverb after the auxiliary; a possessive 's.
+  {
+    text: "It has only partly complied with GDPR.",
+    main: "claim",
+    expected: "claim",
+    rewrite: "It has been checked against GDPR.",
+  },
+  {
+    text: "It has since successfully passed SOC 2.",
+    main: "claim",
+    expected: "claim",
+    rewrite: "It has been checked against SOC 2.",
+  },
+  {
+    text: "The vendor's passed SOC 2 report is on file.",
+    main: "claim",
+    expected: "claim",
+    rewrite: "The vendor's SOC 2-reviewed report is on file.",
+  },
+  {
+    text: "The vendor’s passed SOC 2.",
+    main: "claim",
+    expected: "claim",
+    rewrite: "The vendor’s been checked against SOC 2.",
+  },
+  {
+    text: "It's passed SOC 2 audits.",
+    main: "claim",
+    expected: "claim",
+    rewrite: "It's been checked against SOC 2 audits.",
+  },
+  // 4. A negation followed by adverbs other than "yet" / "fully".
+  {
+    text: "It hasn't successfully passed SOC 2.",
+    main: "claim",
+    expected: "neutral",
+    intended: "#1919 item 4: a negation, which claims nothing",
+  },
+  {
+    text: "It has never successfully passed SOC 2.",
+    main: "claim",
+    expected: "neutral",
+    intended: "#1919 item 4: a negation, which claims nothing",
+  },
+  {
+    text: "The system is not currently SOC 2 compliant.",
+    main: "claim",
+    expected: "neutral",
+    intended: "#1919 item 4: a negation, which claims nothing",
+  },
+  // "not only" / "not merely" still claim: the adverb does not negate.
+  {
+    text: "It is not only SOC 2 compliant but HIPAA compliant.",
+    main: "claim",
+    expected: "claim",
+    rewrite: "It is not only SOC 2-reviewed but HIPAA-reviewed.",
+  },
+  {
+    text: "It is not merely compliant with GDPR.",
+    main: "claim",
+    expected: "claim",
+    rewrite: "It is not merely checked against GDPR.",
+  },
+  // PR #1908's (#1901) intended changes, carried here because this branch builds on it.
+  {
+    text: "The value passes the policy limit.",
+    main: "claim",
+    expected: "neutral",
+    intended: "#1901: 'passes the policy limit' means 'goes beyond'",
+  },
+  {
+    text: "The order total passed the retention policy threshold.",
+    main: "claim",
+    expected: "neutral",
+    intended: "#1901: 'passed the … policy threshold' means 'went beyond'",
+  },
+  {
+    text: "The release has passed the policy review step.",
+    main: "claim",
+    expected: "neutral",
+    intended: "#1901: the phrase continues past 'review'",
+  },
+  {
+    text: "It hasn't passed SOC 2 yet.",
+    main: "claim",
+    expected: "neutral",
+    intended: "#1901: a perfect-tense negation",
+  },
+  {
+    text: "They haven’t complied with GDPR.",
+    main: "claim",
+    expected: "neutral",
+    intended: "#1901: a perfect-tense negation",
+  },
+];
+
+describe("verdict table for the #1908 review sentences (#1919)", () => {
+  it.each(VERDICTS)("$text is a $expected", ({ text, expected, rewrite }) => {
+    const found = findForbiddenComplianceClaims(text);
+    const out = neutraliseComplianceClaims(text);
+    if (expected === "claim") {
+      expect(found.length).toBeGreaterThan(0);
+      expect(out).toBe(rewrite);
+      expect(findForbiddenComplianceClaims(out)).toEqual([]);
+      expect(neutraliseComplianceClaims(out)).toBe(out);
+    } else {
+      expect(found).toEqual([]);
+      expect(out).toBe(text);
+    }
+  });
+
+  it("names a reason for every sentence main flagged that is no longer flagged", () => {
+    const dropped = VERDICTS.filter((r) => r.main === "claim" && r.expected === "neutral");
+    expect(dropped.length).toBeGreaterThan(0);
+    for (const row of dropped) expect(row.intended, row.text).toMatch(/^#\d+/);
+  });
+
+  it("never leaves a finite verb after an auxiliary, a contraction or an adverb run", () => {
+    for (const { text } of VERDICTS) {
+      expect(neutraliseComplianceClaims(text)).not.toMatch(
+        /(?:\b(?:has|have|had)|['’](?:s|ve|d)|n['’]t)\s+(?:\w+\s+){0,3}was\b/i,
+      );
+    }
+  });
+});
+
 /** A small seeded PRNG so the property run is reproducible. */
 function mulberry32(seed: number): () => number {
   let a = seed;
@@ -288,6 +498,8 @@ describe("governingSummarySentence (#1875)", () => {
     ["Compliant_x", "Reviewed_x"],
     ["GDPRcompliant Data Map", "GDPRreviewed Data Map"],
     ["NONCOMPLIANT-items register", "Reviewed-items register"],
+    // #1919 — pinned: the strip is substring-level, so a suffix survives.
+    ["Compliantly Built", "Reviewedly Built"],
   ])(
     "keeps 'compliant' out of the sentence even joined to another word: %j (#1901)",
     (title, shown) => {
