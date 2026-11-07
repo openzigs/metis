@@ -19,6 +19,8 @@ import type {
 
 const server = vi.hoisted(() => ({
   items: [] as SimilarRequirementItem[],
+  /** #1914 — the similar lists of other cards, by requirement id. */
+  otherLists: {} as Record<string, SimilarRequirementItem[]>,
   directCode: [] as TraceabilityCodeNode[],
   borrowBodies: [] as unknown[],
   failBorrow: false,
@@ -83,6 +85,10 @@ function route(path: string, opts: { method?: string; body?: unknown } = {}) {
   if (path === `/projects/${P}/requirements/${SELF}/similar` && !opts.method) {
     return { items: server.items };
   }
+  const other = /^\/projects\/p1\/requirements\/([^/]+)\/similar$/.exec(path)?.[1];
+  if (other && !opts.method && server.otherLists[other]) {
+    return { items: server.otherLists[other] };
+  }
   if (path === `/projects/${P}/requirements/${SELF}/traceability` && !opts.method) {
     const chain: RequirementTraceabilityChain = {
       requirementId: SELF,
@@ -138,6 +144,7 @@ const ACTION = "Start from the citations of REQ-7 Lot tracking for recalls";
 
 beforeEach(() => {
   server.items = [LOT];
+  server.otherLists = {};
   server.directCode = [];
   server.borrowBodies = [];
   server.failBorrow = false;
@@ -198,20 +205,39 @@ describe("Start from these citations (#1840)", () => {
     expect(screen.queryByTestId("borrow-citations-confirm")).toBeNull();
   });
 
-  it("marks every similar list of the project stale after a borrow, not only this card's (#1903)", async () => {
+  it("refetches only the similar lists that name this requirement after a borrow (#1903, #1914)", async () => {
+    // Another card's list names this requirement and the code links it holds;
+    // a third card's list does not, so a borrow into this one changes nothing in it.
+    server.otherLists = {
+      "r-other": [{ ...LOT, requirementId: SELF, key: "REQ-1", title: "Recall a batch" }],
+      "r-unrelated": [{ ...LOT, requirementId: "r-lot" }],
+    };
     const qc = newClient();
-    const items = { items: [] as SimilarRequirementItem[] };
-    // Another card's list names this requirement and its code links; another project's does not.
-    qc.setQueryData(["similar-requirements", P, "r-other"], items);
-    qc.setQueryData(["similar-requirements", "p2", "r-other"], items);
+    // Another project's list naming the same id is not this project's.
+    qc.setQueryData(["similar-requirements", "p2", "r-other"], {
+      items: [{ ...LOT, requirementId: SELF }],
+    });
+    const fetches = (id: string) =>
+      apiFetch.mock.calls.filter(([path]) => path === `/projects/${P}/requirements/${id}/similar`)
+        .length;
     const user = userEvent.setup();
-    mount({ canEdit: true, qc });
+    render(
+      <QueryClientProvider client={qc}>
+        <SimilarRequirementsPanel projectId={P} requirementId={SELF} canEdit />
+        <SimilarRequirementsPanel projectId={P} requirementId="r-other" />
+        <SimilarRequirementsPanel projectId={P} requirementId="r-unrelated" />
+      </QueryClientProvider>,
+    );
     await user.click(await screen.findByRole("button", { name: ACTION }));
+    await waitFor(() => expect(fetches("r-other") + fetches("r-unrelated")).toBe(2));
     await user.click(screen.getByRole("button", { name: "Copy 2 links" }));
     await waitFor(() => expect(toast.success).toHaveBeenCalled());
-    await waitFor(() =>
-      expect(qc.getQueryState(["similar-requirements", P, "r-other"])?.isInvalidated).toBe(true),
-    );
+
+    await waitFor(() => expect(fetches("r-other")).toBe(2));
+    expect(fetches("r-unrelated")).toBe(1);
+    // This card's own list holds the other requirements' links, which a borrow does not change.
+    expect(fetches(SELF)).toBe(1);
+    expect(qc.getQueryState(["similar-requirements", P, "r-unrelated"])?.isInvalidated).toBe(false);
     expect(qc.getQueryState(["similar-requirements", "p2", "r-other"])?.isInvalidated).toBe(false);
   });
 

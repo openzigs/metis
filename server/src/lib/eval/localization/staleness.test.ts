@@ -682,6 +682,39 @@ describe("withStalePatch", () => {
     expect(d.calls.filter((c) => c.startsWith("embed"))).toEqual([]);
   });
 
+  it("#1925 — warns with the restore failures when the read threw a primitive they cannot ride on", async () => {
+    const d = deps();
+    d.cycle.restore.mockImplementation(async (repo: string) => {
+      if (repo === "r") throw new Error("git reset failed in r");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await expect(
+        withStalePatch(
+          twoRepos,
+          (n) => n,
+          d.cycle,
+          async () => {
+            throw "read failed";
+          },
+        ),
+      ).rejects.toBe("read failed");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toBe(
+        "restoring 1 repository after the staleness patch failed: git reset failed in r",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("#1925 — withNoopReingest refuses an empty repository list rather than read as if re-ingested", async () => {
+    const d = deps();
+    const read = vi.fn(async () => 3);
+    await expect(withNoopReingest([], d.cycle, read)).rejects.toThrow(/no repository to re-ingest/);
+    expect(read).not.toHaveBeenCalled();
+  });
+
   it("#1899 — withNoopReingest re-ingests every repository at its pin, patches nothing, then reads", async () => {
     const d = deps();
     const out = await withNoopReingest(["r", "s"], d.cycle, async () => {

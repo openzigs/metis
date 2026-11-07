@@ -14,6 +14,16 @@
  * index, so cross-project leakage is structurally impossible. Concurrent
  * writes are serialised per project via an in-process mutex; cross-project
  * writes proceed in parallel.
+ *
+ * The one table that is not a project's is a workspace's governing-document
+ * index (Epic #1866, #1869): ONE table per workspace, never a global one, and
+ * never read by a project search. {@link getGoverningVectorSpace} keeps it out
+ * of the project namespace on every backend: the file stores root it in a
+ * separate directory, `<root>/governing/<workspaceId>`, whose name no project
+ * table may take ({@link GOVERNING_VECTOR_NAMESPACE} is refused as a project
+ * id); pgvector keys it `governing/<workspaceId>`, which a project id cannot be
+ * because none contains a `/`. The governing index reads it only after a
+ * workspace-membership check (`lib/governing/governing-index.ts`).
  */
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -1444,6 +1454,10 @@ function assertProjectId(id: string): void {
   if (id.includes("/") || id.includes("..") || id.includes("\\") || id.includes("\0")) {
     throw new Error("invalid projectId for filesystem table name");
   }
+  // #1869 — the governing tables' directory under the same root.
+  if (id === GOVERNING_VECTOR_NAMESPACE) {
+    throw new Error(`invalid projectId: "${GOVERNING_VECTOR_NAMESPACE}" is reserved`);
+  }
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
@@ -1485,12 +1499,14 @@ export function __setPgVectorStoreFactory(
 ): void {
   pgvectorStoreFactory = factory;
   singleton = null;
+  governingSpace = null;
 }
 
 /** Test seam — clear the registered pgvector factory + singleton. */
 export function __clearPgVectorStoreFactory(): void {
   pgvectorStoreFactory = null;
   singleton = null;
+  governingSpace = null;
 }
 
 /**
@@ -1505,14 +1521,18 @@ export function __clearPgVectorStoreFactory(): void {
  *   - (default)  — embedded LanceDB. Per-pod local directory; NOT multi-replica
  *     safe (kept as the default for single-replica dev/local compatibility).
  */
+function vectorStoreOptions(): VectorStoreOptions {
+  const root = process.env.LANCEDB_PATH ?? path.resolve(process.cwd(), "data", "lancedb");
+  const dimension = process.env.EMBED_DIM ? Number(process.env.EMBED_DIM) : undefined;
+  return {
+    root,
+    dimension: dimension !== undefined && Number.isFinite(dimension) ? dimension : undefined,
+  };
+}
+
 export function getVectorStore(): VectorStore {
   if (!singleton) {
-    const root = process.env.LANCEDB_PATH ?? path.resolve(process.cwd(), "data", "lancedb");
-    const dimension = process.env.EMBED_DIM ? Number(process.env.EMBED_DIM) : undefined;
-    const opts: VectorStoreOptions = {
-      root,
-      dimension: dimension !== undefined && Number.isFinite(dimension) ? dimension : undefined,
-    };
+    const opts = vectorStoreOptions();
     if (isOfflineVectorMode()) {
       singleton = new LocalVectorStore(opts);
     } else if (isPgVectorMode()) {
@@ -1554,4 +1574,64 @@ function isPgVectorMode(): boolean {
 /** Test seam — drop the singleton between tests. */
 export function __resetVectorStoreSingleton(): void {
   singleton = null;
+  governingSpace = null;
+}
+
+// ---- Governing-document namespace (Epic #1866, #1869) ---------------------
+
+/**
+ * The directory, under the vector root, that holds the workspaces' governing
+ * tables on the file stores, and the key prefix on pgvector. Refused as a
+ * project id, so no project table can be it.
+ */
+export const GOVERNING_VECTOR_NAMESPACE = "governing";
+
+/** A workspace id as it may appear in a table key (cuid; the storage key alphabet). */
+const WORKSPACE_KEY_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** The store that holds governing tables and the key of one workspace's table in it. */
+export interface GoverningVectorSpace {
+  store: VectorStore;
+  tableKey(workspaceId: string): string;
+}
+
+let governingSpace: GoverningVectorSpace | null = null;
+
+function assertWorkspaceKey(workspaceId: string): void {
+  if (typeof workspaceId !== "string" || !WORKSPACE_KEY_PATTERN.test(workspaceId)) {
+    throw new Error("invalid workspaceId for a governing vector table");
+  }
+}
+
+/**
+ * The governing-document vector space for the configured backend (same ladder as
+ * {@link getVectorStore}). Local and LanceDB get their own store rooted at
+ * `<root>/governing`, one table per workspace; pgvector shares the deployment's
+ * one table under the key `governing/<workspaceId>`.
+ */
+export function getGoverningVectorSpace(): GoverningVectorSpace {
+  if (!governingSpace) {
+    if (activeVectorBackend() === "pgvector") {
+      const store = getVectorStore();
+      governingSpace = {
+        store,
+        tableKey: (workspaceId) => {
+          assertWorkspaceKey(workspaceId);
+          return `${GOVERNING_VECTOR_NAMESPACE}/${workspaceId}`;
+        },
+      };
+    } else {
+      const base = vectorStoreOptions();
+      const opts = { ...base, root: path.join(base.root, GOVERNING_VECTOR_NAMESPACE) };
+      const store = isOfflineVectorMode() ? new LocalVectorStore(opts) : new LanceVectorStore(opts);
+      governingSpace = {
+        store,
+        tableKey: (workspaceId) => {
+          assertWorkspaceKey(workspaceId);
+          return workspaceId;
+        },
+      };
+    }
+  }
+  return governingSpace;
 }

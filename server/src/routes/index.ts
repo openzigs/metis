@@ -64,6 +64,7 @@ import { astCacheRouter } from "./ast-cache.js";
 import { ssoRouter } from "./sso.js";
 import { scimRouter } from "./scim.js";
 import { workspacesRouter } from "./workspaces.js";
+import { governingDocumentsRouter } from "./governing-documents.js";
 import { finopsWorkspaceRouter } from "./finops-workspace.js";
 import { dataMappingsRouter } from "./data-mappings.js";
 import { traceabilityRouter, workspaceTraceabilityRouter } from "./traceability.js";
@@ -202,6 +203,8 @@ export function apiRouter(): Router {
   r.use("/workspaces/:workspaceId/requirements", workspaceRequirementSearchRouter());
   // Epic #610 (#626) — workspace-level traceability rollup (coverage + link map).
   r.use("/workspaces/:workspaceId/traceability", workspaceTraceabilityRouter());
+  // Epic #1866 (#1869) — workspace governing documents (404 unless GOVERNING_DOCS_ENABLED=1).
+  r.use("/workspaces/:workspaceId/governing-documents", governingDocumentsRouter());
   // Epic #889 (#892) — requirement↔data traceability mappings.
   r.use("/projects/:projectId", dataMappingsRouter());
   // Epic #207 — requirement→spec→code traceability spine.
