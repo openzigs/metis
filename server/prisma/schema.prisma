@@ -159,25 +159,30 @@ model GoverningDocument {
 /// One uploaded revision of a governing document. Earlier revisions stay
 /// readable for the findings that cite their rules.
 model GoverningDocumentRevision {
-  id              String   @id @default(cuid())
-  documentId      String
+  id                String   @id @default(cuid())
+  documentId        String
   /// The policy's own revision name, e.g. "v3". One per document, so a
   /// finding's "Policy X v3" names exactly one revision.
-  revisionLabel   String
-  effectiveDate   DateTime
-  storagePath     String
-  contentHash     String
-  mimeType        String
-  sizeBytes       Int
+  revisionLabel     String
+  effectiveDate     DateTime
+  storagePath       String
+  contentHash       String
+  mimeType          String
+  sizeBytes         Int
   /// The parsed text. `GoverningRule.clauseStart`/`clauseEnd` are offsets into it.
-  extractedText   String
+  extractedText     String
   /// Quarantine lifecycle, the same values as `Document.indexState` (Epic #157,
   /// `DOCUMENT_INDEX_STATES` in `@metis/shared`).
-  indexState      String   @default("pending")
+  indexState        String   @default("pending")
   /// Rule extraction (#1870): pending|running|done|failed (`GOVERNING_EXTRACTION_STATES`).
-  extractionState String   @default("pending")
-  uploadedById    String
-  createdAt       DateTime @default(now())
+  extractionState   String   @default("pending")
+  /// Why extraction failed, safe to show every member (#1870). Null unless `failed`.
+  extractionError   String?
+  /// Rules the model returned whose clause excerpt was not found verbatim in
+  /// `extractedText`, so were dropped rather than stored with an invented citation (#1870).
+  droppedUnverified Int      @default(0)
+  uploadedById      String
+  createdAt         DateTime @default(now())
 
   document  GoverningDocument  @relation("GoverningDocumentRevisions", fields: [documentId], references: [id], onDelete: Cascade)
   currentOf GoverningDocument? @relation("GoverningDocumentCurrentRevision")
