@@ -675,6 +675,23 @@ export function capConnectorsForBudget<T extends BudgetCapConnector>(
   };
 }
 
+/**
+ * #1974 — the order the budget cap reads a project's connectors in: the
+ * primary repository first, then oldest first (id breaks a tie). The cap keeps
+ * the head of the list, and the database returns rows in no stated order, so
+ * an unordered list could drop the primary (the #1940 run did).
+ */
+export function orderConnectorsForBudgetCap<
+  T extends { id: string; isPrimary: boolean; createdAt: Date },
+>(connectors: readonly T[]): T[] {
+  return [...connectors].sort(
+    (a, b) =>
+      Number(b.isPrimary) - Number(a.isPrimary) ||
+      a.createdAt.getTime() - b.createdAt.getTime() ||
+      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
+}
+
 /** Sum two token-usage records (used to merge #739's split agentic passes). */
 function sumTokenUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
   return {
@@ -1625,10 +1642,12 @@ export class AnalysisOrchestrator {
       continueWith ? (continueWith.get(connectorId) ?? []) : requirements;
 
     const startedAt = new Date();
-    const connectors = await prisma.repoConnection.findMany({
-      where: { projectId: input.projectId, deletedAt: null },
-      select: { id: true, label: true },
-    });
+    const connectors = orderConnectorsForBudgetCap(
+      await prisma.repoConnection.findMany({
+        where: { projectId: input.projectId, deletedAt: null },
+        select: { id: true, label: true, isPrimary: true, createdAt: true },
+      }),
+    );
     const affectedCode = await this.computeAffectedCode(
       input.analysisId,
       input.projectId,
@@ -2526,10 +2545,13 @@ export class AnalysisOrchestrator {
           const codeController = new AbortController();
           run.controllers.set("code", codeController);
           // Find ALL connectors for the project (multi-repo support, epic #663/#668)
-          const connectors = await prisma.repoConnection.findMany({
-            where: { projectId: opts.projectId, deletedAt: null },
-            select: { id: true, label: true },
-          });
+          // #1974 — primary first, so the budget cap never drops it.
+          const connectors = orderConnectorsForBudgetCap(
+            await prisma.repoConnection.findMany({
+              where: { projectId: opts.projectId, deletedAt: null },
+              select: { id: true, label: true, isPrimary: true, createdAt: true },
+            }),
+          );
           // #766 — one live entry across every repository's pass, so the card's
           // step count and elapsed time do not restart per repository.
           const ownsCodeLiveEntry = beginLiveAgent(analysisId, "code", { rerun: false });

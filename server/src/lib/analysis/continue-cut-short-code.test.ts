@@ -263,8 +263,8 @@ describe("#1001 continue with a larger budget", () => {
 
   it("splits the extended budget across repos on a multi-repo project", async () => {
     prismaMock.repoConnection.findMany.mockResolvedValue([
-      { id: "repo_1", label: "api" },
-      { id: "repo_2", label: "web" },
+      { id: "repo_1", label: "api", isPrimary: false, createdAt: new Date("2026-01-01") },
+      { id: "repo_2", label: "web", isPrimary: false, createdAt: new Date("2026-01-02") },
     ]);
     const orch = makeOrchestrator();
     await regenerate(orch, { extendBudget: true });
@@ -946,8 +946,8 @@ describe("#1131 a successful continuation supersedes the placeholders it re-inve
    */
   it("a retry after a partial failure skips what the first attempt reached", async () => {
     prismaMock.repoConnection.findMany.mockResolvedValue([
-      { id: "repo_1", label: "api" },
-      { id: "repo_2", label: "web" },
+      { id: "repo_1", label: "api", isPrimary: false, createdAt: new Date("2026-01-03") },
+      { id: "repo_2", label: "web", isPrimary: false, createdAt: new Date("2026-01-04") },
     ]);
     rows.push(row("f3_repo2", PLACEHOLDER("REQ-3"), { connectorId: "repo_2" }));
     serviceMock.getAnalysisCapability.mockResolvedValue({
@@ -1086,9 +1086,9 @@ describe("#1131 a multi-repository continuation is scoped per repository", () =>
 
   it("re-runs each repository on what its own pass left unreached, and skips one with none", async () => {
     prismaMock.repoConnection.findMany.mockResolvedValue([
-      { id: "repo_1", label: "api" },
-      { id: "repo_2", label: "web" },
-      { id: "repo_3", label: "docs" },
+      { id: "repo_1", label: "api", isPrimary: false, createdAt: new Date("2026-01-05") },
+      { id: "repo_2", label: "web", isPrimary: false, createdAt: new Date("2026-01-06") },
+      { id: "repo_3", label: "docs", isPrimary: false, createdAt: new Date("2026-01-07") },
     ]);
     const orch = makeOrchestrator();
     orch.extractRequirementsFromDocAgent = vi.fn(async () => TWO);
