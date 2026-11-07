@@ -34,7 +34,22 @@ const SEP = String.raw`[\s-]+`;
  * A negation just before the phrase makes it something other than a claim of
  * compliance. Variable-length lookbehind (ES2018).
  */
-const NOT_NEGATED = String.raw`(?<!\b(?:not|non|never|isn['’]t|aren['’]t|wasn['’]t)[\s-]+(?:yet[\s-]+)?(?:fully[\s-]+)?)`;
+const NOT_NEGATED = String.raw`(?<!\b(?:not|non|never|isn['’]t|aren['’]t|wasn['’]t|hasn['’]t|haven['’]t|hadn['’]t)[\s-]+(?:yet[\s-]+)?(?:fully[\s-]+)?)`;
+/**
+ * #1901 — a perfect-tense auxiliary right before "passed" / "complied with"
+ * ("has passed SOC 2"), with at most one adverb ("has fully complied"). The
+ * rewrite keeps it and uses the participle: "has been checked against SOC 2".
+ */
+const PERFECT_AUX = String.raw`(?<aux>\b(?:has|have|had)\s+|['’](?:s|ve|d)\s+)(?:(?:[a-z]+ly|already|now|also)\s+)?`;
+/**
+ * #1901 — "the … policy" after "passes" is a claim only when the phrase ends
+ * there ("passes the policy.", "passes the policy and ships"). Followed by
+ * another noun it is a modifier, and "passes" means "goes beyond": "the value
+ * passes the policy limit" claims nothing.
+ */
+const POLICY_PHRASE_ENDS = String.raw`(?=\s*(?:$|[^\w\s])|\s+(?:and|or|but|so|as|with|in|on|at|for|since|today|now|already|without)\b)`;
+/** What "passes" can claim to pass: a framework, or a "the … policy" phrase that ends there. */
+const PASS_TARGET = String.raw`(?:(?:the\s+)?${FRAMEWORK}|\bthe\s+(?:[\w-]+\s+){0,4}policy\b${POLICY_PHRASE_ENDS})`;
 
 interface ClaimShape {
   pattern: RegExp;
@@ -70,12 +85,21 @@ const CLAIM_SHAPES: readonly ClaimShape[] = [
     rewrite: ({ target }) => `checked against ${target}`,
   },
   {
-    // "complies with HIPAA", "fully complies with GDPR", "passes SOC 2", "passed SOC2"
+    // "has passed SOC 2", "has complied with GDPR", "have fully complied with the policy"
     pattern: new RegExp(
-      String.raw`${NOT_NEGATED}\b(?:fully\s+)?(?:compl(?:ies|ied)\s+with|pass(?:es|ed))\s+(?<target>${TARGET})`,
+      String.raw`${NOT_NEGATED}${PERFECT_AUX}(?:complied\s+with\s+(?<target>${TARGET})|passed\s+(?<passTarget>${PASS_TARGET}))`,
       "gi",
     ),
-    rewrite: ({ target }) => `was checked against ${target}`,
+    rewrite: ({ aux, target, passTarget }) =>
+      `${aux ?? ""}been checked against ${target ?? passTarget}`,
+  },
+  {
+    // "complies with HIPAA", "fully complies with GDPR", "passes SOC 2", "passed SOC2"
+    pattern: new RegExp(
+      String.raw`${NOT_NEGATED}\b(?:fully\s+)?(?:compl(?:ies|ied)\s+with\s+(?<target>${TARGET})|pass(?:es|ed)\s+(?<passTarget>${PASS_TARGET}))`,
+      "gi",
+    ),
+    rewrite: ({ target, passTarget }) => `was checked against ${target ?? passTarget}`,
   },
 ];
 
@@ -155,9 +179,13 @@ function rewriteOnce(text: string): string {
  * A bare or negated "compliant" ("Compliant Vendor Rules", "Non-compliant
  * Vendor List") is not a claim shape, but the summary sentence promises never to
  * contain the word, so it is replaced in code.
+ *
+ * #1901 — the promise is substring-level: "compliant" inside a joined form
+ * ("Noncompliant Rules", "Compliant_x", "GDPRcompliant") is replaced too, so
+ * no spelling of a document title carries the word into the sentence.
  */
 function stripBareCompliant(text: string): string {
-  return text.replace(/\b(?:(?:non|not)[\s-]+)?compliant\b/gi, (m) => matchCase(m, "reviewed"));
+  return text.replace(/(?:\b(?:non|not)[\s_-]*)?compliant/gi, (m) => matchCase(m, "reviewed"));
 }
 
 function plural(count: number, one: string, many: string): string {

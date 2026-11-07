@@ -14,13 +14,14 @@
  * this file implement?" by walking spec→code and requirement→code back to the
  * requirements. Prisma is dependency-injected for unit testing.
  */
-import type {
-  CodeCitationFreshness,
-  CodeCitationStaleReason,
-  RequirementTraceabilityChain,
-  SpecMappingSource,
-  TraceabilityCodeNode,
-  TraceabilitySpecNode,
+import {
+  SIMILAR_REQUIREMENT_SOURCE,
+  type CodeCitationFreshness,
+  type CodeCitationStaleReason,
+  type RequirementTraceabilityChain,
+  type SpecMappingSource,
+  type TraceabilityCodeNode,
+  type TraceabilitySpecNode,
 } from "@metis/shared";
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
@@ -209,11 +210,17 @@ export async function getRequirementChain(
   const originLabels = await borrowedOriginLabels(prisma, projectId, directRows);
 
   // #814 — the tests that cover this requirement, resolved from the code rows
-  // just read (the resolver issues only its code-graph queries).
+  // just read (the resolver issues only its code-graph queries). #1902 — not
+  // from a borrowed link: its code node is labelled, a test it reached is not.
+  // Filtered before the dedupe: a borrowed row can outrank this requirement's own
+  // lower-confidence row on the same code, and filtering after would drop both.
+  const ownRows = uniqueCodeLinks(
+    storedDirectRows.filter((row) => row.source !== SIMILAR_REQUIREMENT_SOURCE),
+  );
   const tested = await resolveTestedByForTargets(
     projectId,
     [requirement],
-    new Map([[requirement.id, [...directRows, ...specCodeRows]]]),
+    new Map([[requirement.id, [...ownRows, ...specCodeRows]]]),
     undefined,
     { prisma: prisma as unknown as TestedByPrisma },
   );

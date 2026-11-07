@@ -8,9 +8,13 @@
  * Each arm call gets its own metered provider, so every requirement is priced
  * on its own even when `concurrency` runs several at once; while calls are in
  * flight the cap reserves the costliest call seen so far for each of them.
+ * Before any call has finished, that reserve (and the next call's allowance) is
+ * a per-call estimate ({@link estimateCallUsd}), so the first concurrent wave
+ * cannot run past the cap either (#1900).
  * An arm that throws on a requirement (a reply with no JSON, a provider error)
- * is recorded as a failure and scored as applying no rule: it is counted in the
- * report, never retried away.
+ * is recorded as a failure and scored as an error: its truth pairs are misses,
+ * and a negative requirement it failed on is not a clean negative. It is
+ * counted in the report, never retried away.
  */
 import type { AIProvider, TokenUsage } from "../../ai/types.js";
 import { LedgerCostMeter, meterProvider, type CostMeter } from "../localization/cost.js";
@@ -28,6 +32,7 @@ import {
   checkThresholds,
   scoreItem,
   summarizeRuns,
+  type ByConstruction,
   type GoverningJudgement,
   type ItemScore,
   type MetricsSummary,
@@ -76,7 +81,15 @@ export class SpendLedger {
   private usd = 0;
   private unpriced = 0;
   private inFlight = 0;
-  private maxCallUsd = 0;
+  private maxCallUsd: number;
+
+  /**
+   * @param estimatedCallUsd what one call is expected to cost: the reserve for
+   *   each call in flight until a finished call shows a costlier one.
+   */
+  constructor(estimatedCallUsd = 0) {
+    this.maxCallUsd = estimatedCallUsd;
+  }
 
   begin(): void {
     this.inFlight++;
@@ -111,6 +124,29 @@ export class SpendLedger {
   }
 }
 
+/**
+ * The tokens one arm call is estimated at: about twice what A0 spent per
+ * requirement in its committed baseline (2,386 in / 2,689 out on DeepSeek),
+ * since A2 makes two calls.
+ */
+export const ESTIMATED_CALL_TOKENS = { input: 6_000, output: 6_000 } as const;
+
+/**
+ * #1900 — one arm call at {@link ESTIMATED_CALL_TOKENS}, priced by the ledger
+ * for the provider's model; 0 when the model has no price (its first call
+ * then stops the run as unpriced).
+ */
+export function estimateCallUsd(provider: Pick<AIProvider, "key" | "model">): number {
+  const meter = new LedgerCostMeter();
+  const { input, output } = ESTIMATED_CALL_TOKENS;
+  const usd = meter.record(provider.key, provider.model, {
+    promptTokens: input,
+    completionTokens: output,
+    totalTokens: input + output,
+  });
+  return usd ?? 0;
+}
+
 /** One arm on one requirement in one run. */
 export interface ItemRunRecord {
   itemId: string;
@@ -139,6 +175,8 @@ export interface GoverningArmReport {
   id: string;
   label: string;
   configuration: Record<string, string | number | boolean>;
+  /** The metrics the arm fixes by construction, reported `n/a` (#1900). */
+  byConstruction: ByConstruction;
   /** Runs in which every requirement was assessed; only these are scored. */
   completedRuns: number;
   summary: MetricsSummary;
@@ -185,6 +223,8 @@ export interface GoverningRunOptions {
   provider: AIProvider;
   /** Requirements assessed at once within a run (default 1). */
   concurrency?: number;
+  /** What one arm call is expected to cost; default {@link estimateCallUsd} of `provider`. */
+  callEstimateUsd?: number;
   /** Milliseconds; a seam for tests. */
   now?: () => number;
   log?: (line: string) => void;
@@ -258,7 +298,12 @@ export async function runGoverningEval(
   const items = corpus.manifest.items;
   const order = new Map(items.map((item, i) => [item.id, i]));
   const records = new Map<string, ItemRunRecord[]>(opts.arms.map((a) => [a.id, []]));
-  const ledger = new SpendLedger();
+  const callEstimateUsd = opts.callEstimateUsd ?? estimateCallUsd(opts.provider);
+  // Until a call finishes there is no observed cost: the estimate stands in for
+  // the calls in flight and for the next one, so the first wave reserves too.
+  // It stays a floor afterwards; stopping a call early is the cap's safe side.
+  const ledger = new SpendLedger(callEstimateUsd);
+  for (const arm of opts.arms) opts.budget.observeItem(arm.id, callEstimateUsd);
   const cap = ledger.capView();
   const concurrency = Math.max(1, Math.floor(opts.concurrency ?? 1));
   let stopped: GoverningReport["stopped"] = null;
@@ -338,13 +383,15 @@ export async function runGoverningEval(
     }
     scored.set(arm.id, runsScored);
     const summary = summarizeRuns(runsScored);
+    const byConstruction = arm.byConstruction ?? {};
     return {
       id: arm.id,
       label: arm.label,
       configuration: arm.configuration,
+      byConstruction,
       completedRuns: runsScored.length,
       summary,
-      thresholds: checkThresholds(summary, corpus.manifest.thresholds),
+      thresholds: checkThresholds(summary, corpus.manifest.thresholds, byConstruction),
       cost: costOf(recs),
       failures: recs.filter((r) => r.error !== undefined).length,
       records: recs,
@@ -450,10 +497,13 @@ export function toMarkdownReport(report: GoverningReport): string {
   for (const a of report.arms) {
     const m = a.summary.metrics;
     const usd = a.cost.usdPerRequirement;
+    // A metric the arm fixes by construction says nothing about it (#1900).
+    const fixed = (metric: keyof ByConstruction, value: string) =>
+      a.byConstruction[metric] === undefined ? value : "n/a†";
     lines.push(
       `| ${a.id} | ${a.completedRuns} | ${ci(m.recall)} | ${ci(m.nonResemblingRecall)} | ${ci(m.precision)} | ` +
-        `${ci(m.citationAccuracy)} | ${ci(m.citationCoverage)} | ${ci(m.verdictAccuracy)} | ` +
-        `${a.summary.hardErrors} | ${ci(m.askRate)} | ` +
+        `${fixed("citationAccuracy", ci(m.citationAccuracy))} | ${ci(m.citationCoverage)} | ${ci(m.verdictAccuracy)} | ` +
+        `${fixed("hardErrors", String(a.summary.hardErrors))} | ${fixed("askRate", ci(m.askRate))} | ` +
         `${a.summary.cleanNegatives.join("/") || "n/a"} of ${a.summary.negatives} | ${a.failures} | ` +
         `${usd === null ? "unpriced" : `$${usd.toFixed(4)}`} | ` +
         `${Math.round(a.cost.inputTokensPerRequirement)} / ${Math.round(a.cost.completionTokensPerRequirement)} | ` +
@@ -463,9 +513,19 @@ export function toMarkdownReport(report: GoverningReport): string {
   lines.push("");
   lines.push(
     "Hard errors: `compliant` on a pair whose truth is `gap` or `needs-ba-input`, summed over runs. " +
-      "Clean negatives: negative requirements on which the arm applied no rule, per run.",
+      "Clean negatives: negative requirements on which the arm ran and applied no rule, per run " +
+      "(a failure is an error, never a clean negative).",
     "",
   );
+  const fixedNotes = report.arms.flatMap((a) =>
+    Object.entries(a.byConstruction).map(([metric, why]) => `${a.id} ${metric}: ${why}`),
+  );
+  if (fixedNotes.length > 0) {
+    lines.push(
+      `† Fixed by construction, so it measures nothing and its bar is \`n/a\`: ${fixedNotes.join("; ")}.`,
+      "",
+    );
+  }
   lines.push(
     `## Proposed pass thresholds (${report.thresholds.status}, ${report.thresholds.proposedIn})`,
     "",
@@ -474,7 +534,7 @@ export function toMarkdownReport(report: GoverningReport): string {
   for (const a of report.arms) {
     for (const t of a.thresholds) {
       lines.push(
-        `| ${a.id} | ${t.bar} | ${t.required} | ${t.measured} | ${t.pass ? "yes" : "**no**"} |`,
+        `| ${a.id} | ${t.bar} | ${t.required} | ${t.measured} | ${t.pass === null ? "n/a†" : t.pass ? "yes" : "**no**"} |`,
       );
     }
   }

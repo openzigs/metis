@@ -131,7 +131,7 @@ describe("readWebFindings — today's findings read as judgements", () => {
     expect(out.judgements.map((j) => j.ruleId)).toEqual(["EN-03"]);
   });
 
-  it("keeps a paraphrased snippet as an unverified citation, and none when nothing is cited", () => {
+  it("attaches no citation when no snippet verifies against the rule, or nothing is cited", () => {
     const out = readWebFindings(
       agentOutput(
         finding({
@@ -149,12 +149,36 @@ describe("readWebFindings — today's findings read as judgements", () => {
       corpus,
     );
     expect(out.judgements).toEqual([
-      {
-        ruleId: "PR-04",
-        verdict: "gap",
-        citation: { ruleId: "PR-04", excerpt: "ask before using GPS" },
-      },
+      { ruleId: "PR-04", verdict: "gap" },
       { ruleId: "DR-06", verdict: "gap" },
+    ]);
+  });
+
+  it("never hands one rule's verbatim clause to another rule the finding names (#1900)", () => {
+    // The finding names AL-02 and EN-03 but quotes only EN-03's clause: the old
+    // reader gave AL-02 that snippet too, a failed citation made by the reader.
+    const out = readWebFindings(
+      agentOutput(
+        finding({
+          body: "AL-02 and EN-03 both bear on the export.",
+          citations: [
+            {
+              documentId: policyDocumentId(corpus),
+              chunkIndex: 0,
+              snippet: "Full card numbers are never stored",
+            },
+          ],
+        }),
+      ),
+      corpus,
+    );
+    expect(out.judgements).toEqual([
+      { ruleId: "AL-02", verdict: "gap" },
+      {
+        ruleId: "EN-03",
+        verdict: "gap",
+        citation: { ruleId: "EN-03", excerpt: "Full card numbers are never stored" },
+      },
     ]);
   });
 
@@ -230,6 +254,17 @@ describe("A0 — the web specialist over chunk retrieval", () => {
     expect(out.diagnostics!.retrievedChunks).toBeGreaterThan(0);
     expect(out.diagnostics!.policyChunks).toBeGreaterThan(0);
     expect(out.diagnostics!.findings).toBe(1);
+  });
+
+  it("declares the metrics its reading fixes, so their bars cannot print as passes (#1900)", () => {
+    const [a0, a1, a2] = buildGoverningArms(["A0", "A1", "A2"], { model: "anthropic/stub-model" });
+    expect(Object.keys(a0!.byConstruction ?? {}).sort()).toEqual([
+      "askRate",
+      "citationAccuracy",
+      "hardErrors",
+    ]);
+    expect(a1!.byConstruction).toBeUndefined();
+    expect(a2!.byConstruction).toBeUndefined();
   });
 
   it("policyKnowledge ranks chunks lexically, as uploads with a positive score", async () => {
