@@ -265,8 +265,9 @@ guard row now reads as failing.
 
 **DeepSeek's A7 − A7O of −0.112, from the committed records (#1890).** The records hold
 each run's tables per persisted requirement, not the citations behind them. Paired per
-requirement (mean of 3 runs, first persisted requirement), the gap comes from 5 of the 11
-requirements:
+requirement (mean of 3 runs, first persisted requirement), the gap comes mostly from 5 of the 11
+requirements (two smaller losses, "Place an order" 0.411 to 0.328 and "Compute the checkout
+total" 0.556 to 0.522, are offset by a +0.167 gain on "Track inventory"):
 
 | Requirement | A7O | A7 | What A7 adds |
 |---|---|---|---|
@@ -281,13 +282,13 @@ requirements:
   `profile` and `signon` to an account change, and the product and category statements
   add `category` to a product change.
 - **Sonnet shows the same shape, less often.** On Sonnet, A7 adds `category` to the two
-  product requirements (−0.111 each). There, A7O already surfaces `profile` and `signon`
+  product requirements (−0.111 each). There, A7O already surfaces `signon` (all 3 runs)
   for the account flag, and A7 gains elsewhere: +0.333 on "Compute the checkout total for
   an order".
 - **Not explained by the file-level translation.** Most citations reach the fixture as
   their file, with no symbol (#1823's translation: the fixture's lines are not the
   repository's), so they seed every statement of the cited mapper. Of the citations kept,
-  that share is about 61% on DeepSeek (402 of 659 over the 3 runs) and about 67% on Sonnet
+  that share is about 60% on DeepSeek (402 of 665 over the 3 runs) and about 67% on Sonnet
   (490 of 735). It is *lower* on the model with the larger
   gap, so file-level widening alone does not account for the difference between the
   models.
