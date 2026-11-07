@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   BORROW_CITATIONS_MAX_MAPPING_IDS,
   borrowCitationsSchema,
+  borrowDuplicateCheck,
   SIMILAR_REQUIREMENTS_DEFAULT_LIMIT,
   SIMILAR_REQUIREMENTS_MAX_TEXT,
   similarRequirementsDraftSchema,
@@ -62,5 +63,39 @@ describe("borrow-citations request schema (#1839)", () => {
     ["an unknown key", { fromRequirementId: "r", source: "analysis-grounding" }],
   ])("rejects %s", (_label, body) => {
     expect(borrowCitationsSchema.safeParse(body).success).toBe(false);
+  });
+});
+
+describe("borrowDuplicateCheck (#1964)", () => {
+  const at = (filePath: string, codeSymbolId: string | null = null) => ({ filePath, codeSymbolId });
+
+  it("is a duplicate when the requirement holds the same file and symbol, under any source", () => {
+    const isDuplicate = borrowDuplicateCheck([
+      { ...at("a.ts", "sym-1"), source: "semantic" },
+      { ...at("b.ts"), source: "similar-requirement" },
+    ]);
+    expect(isDuplicate(at("a.ts", "sym-1"))).toBe(true);
+    expect(isDuplicate(at("b.ts"))).toBe(true);
+  });
+
+  it("is not a duplicate for another symbol in a file only linked, not grounded", () => {
+    const isDuplicate = borrowDuplicateCheck([{ ...at("a.ts", "sym-1"), source: "semantic" }]);
+    expect(isDuplicate(at("a.ts", "sym-2"))).toBe(false);
+    expect(isDuplicate(at("a.ts"))).toBe(false);
+  });
+
+  it("is a duplicate for any link into a file the requirement's own analysis grounded", () => {
+    const isDuplicate = borrowDuplicateCheck([
+      { ...at("g.ts", "sym-1"), source: "analysis-grounding" },
+    ]);
+    expect(isDuplicate(at("g.ts", "sym-9"))).toBe(true);
+    expect(isDuplicate(at("g.ts"))).toBe(true);
+  });
+
+  it("claims the code of a link it passes, so a second link to the same code is a duplicate", () => {
+    const isDuplicate = borrowDuplicateCheck([]);
+    expect(isDuplicate(at("a.ts", "sym-1"))).toBe(false);
+    expect(isDuplicate(at("a.ts", "sym-1"))).toBe(true);
+    expect(isDuplicate(at("a.ts", "sym-2"))).toBe(false);
   });
 });

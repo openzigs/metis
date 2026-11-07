@@ -99,6 +99,7 @@ const LOT: SimilarRequirementItem = {
     {
       mappingId: "m-1",
       filePath: "src/lots.ts",
+      codeSymbolId: null,
       startLine: 3,
       endLine: 9,
       source: "analysis-grounding",
@@ -207,7 +208,12 @@ vi.mock("@/lib/history-api", () => ({
 vi.mock("@/components/traceability/data-mappings-panel", () => ({
   DataMappingsPanel: () => null,
 }));
-vi.mock("@/components/traceability/traceability-view", () => ({ TraceabilityView: () => null }));
+vi.mock("@/components/traceability/traceability-view", () => ({
+  TraceabilityView: () => null,
+  // #1964 — the borrow preview reads the requirement's chain under this key.
+  traceabilityKey: (projectId: string, requirementId: string) =>
+    ["traceability-chain", projectId, requirementId] as const,
+}));
 vi.mock("@/components/requirements/RequirementHistoryTab", () => ({
   RequirementHistoryTab: () => null,
 }));
