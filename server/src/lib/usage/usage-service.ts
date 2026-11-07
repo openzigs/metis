@@ -467,7 +467,8 @@ const LEDGER_ROW_SELECT = {
 } as const;
 
 function ledgerInput(r: {
-  projectId: string;
+  /** NULL on a workspace-level row (governing rule extraction, #1947). */
+  projectId: string | null;
   provider: string;
   model: string;
   userId: string | null;
