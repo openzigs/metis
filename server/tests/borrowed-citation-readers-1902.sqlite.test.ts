@@ -167,6 +167,40 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(chain.testedBy).toEqual([]);
     });
 
+    it("the chain keeps a test reached by its own link that a surer borrowed link on the same code outranks", async () => {
+      // A semantic row sits below a borrowed row's 0.4, so the borrowed row wins the
+      // per-(file, symbol) dedupe; the test must still come from the own row.
+      const MIXED = "r1902-mixed";
+      await db.requirement.create({
+        data: { id: MIXED, analysisId: RUN, projectId: PROJECT, title: "Mixed", body: "Mixed." },
+      });
+      try {
+        for (const borrowed of [true, false]) {
+          await db.requirementCodeMapping.create({
+            data: {
+              requirementId: MIXED,
+              projectId: PROJECT,
+              filePath: TEST_FILE,
+              codeSymbolId: "s-test",
+              startLine: 10,
+              endLine: 30,
+              confidence: borrowed ? 0.4 : 0.1,
+              source: borrowed ? "similar-requirement" : "semantic",
+              originRequirementId: borrowed ? ORIGIN : null,
+              freshness: "fresh",
+            },
+          });
+        }
+        const chain = await getRequirementChain(PROJECT, MIXED, { prisma: db as never });
+        expect(chain.testedBy.map((t) => [t.symbol, t.relation])).toEqual([
+          [`${TEST_FILE}::TestChargeCard`, "direct"],
+        ]);
+      } finally {
+        await db.requirementCodeMapping.deleteMany({ where: { requirementId: MIXED } });
+        await db.requirement.delete({ where: { id: MIXED } });
+      }
+    });
+
     it("the workspace rollup counts no borrowed link as mapped code", async () => {
       const summary = await getWorkspaceTraceabilitySummary({ id: USER, role: "admin" }, WS, {
         prisma: db as never,

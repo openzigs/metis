@@ -212,7 +212,11 @@ export async function getRequirementChain(
   // #814 — the tests that cover this requirement, resolved from the code rows
   // just read (the resolver issues only its code-graph queries). #1902 — not
   // from a borrowed link: its code node is labelled, a test it reached is not.
-  const ownRows = directRows.filter((row) => row.source !== SIMILAR_REQUIREMENT_SOURCE);
+  // Filtered before the dedupe: a borrowed row can outrank this requirement's own
+  // lower-confidence row on the same code, and filtering after would drop both.
+  const ownRows = uniqueCodeLinks(
+    storedDirectRows.filter((row) => row.source !== SIMILAR_REQUIREMENT_SOURCE),
+  );
   const tested = await resolveTestedByForTargets(
     projectId,
     [requirement],
