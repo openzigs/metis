@@ -9,6 +9,7 @@
 -- like the forward migration (#556). The SQLite twin's up -> reverse -> up is
 -- tested in server/tests/tool-result-cache-1843.sqlite.test.ts.
 
+DROP INDEX IF EXISTS "knowledge_chunks_projectId_embeddingModel_idx";
 DROP INDEX IF EXISTS "documents_projectId_updatedAt_idx";
 ALTER TABLE "documents" DROP COLUMN IF EXISTS "updatedAt";
 DELETE FROM "_prisma_migrations" WHERE "migration_name" = '20261117001864_issue1864_document_updated_at';

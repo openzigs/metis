@@ -5,6 +5,10 @@
 -- latest value, and the rows written just before it, through the new
 -- (`projectId`, `updatedAt`) index.
 --
+-- The version also groups the project's chunks by `embeddingModel`; the
+-- (`projectId`, `embeddingModel`) index on `knowledge_chunks` lets that count
+-- run off the index alone instead of reading every chunk row.
+--
 -- Nullable DATETIME (SQLite cannot add a column whose default is
 -- CURRENT_TIMESTAMP), nothing backfilled: existing rows read null until their
 -- next update, and the row count still covers them.
@@ -17,3 +21,6 @@ ALTER TABLE "documents" ADD COLUMN "updatedAt" DATETIME;
 
 -- CreateIndex
 CREATE INDEX "documents_projectId_updatedAt_idx" ON "documents"("projectId", "updatedAt");
+
+-- CreateIndex
+CREATE INDEX "knowledge_chunks_projectId_embeddingModel_idx" ON "knowledge_chunks"("projectId", "embeddingModel");

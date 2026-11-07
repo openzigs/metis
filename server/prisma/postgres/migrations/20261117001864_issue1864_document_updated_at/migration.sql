@@ -10,3 +10,6 @@ ALTER TABLE "documents" ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP(3);
 
 -- CreateIndex
 CREATE INDEX IF NOT EXISTS "documents_projectId_updatedAt_idx" ON "documents"("projectId", "updatedAt");
+
+-- CreateIndex
+CREATE INDEX IF NOT EXISTS "knowledge_chunks_projectId_embeddingModel_idx" ON "knowledge_chunks"("projectId", "embeddingModel");

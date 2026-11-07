@@ -29,7 +29,11 @@ import {
   MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
 } from "./helpers/sqlite-migrated-db.js";
 
-const state = vi.hoisted(() => ({ db: null as unknown, embedModel: "embed-a" }));
+const state = vi.hoisted(() => ({
+  db: null as unknown,
+  embedModel: "embed-a",
+  embedPooling: "mean",
+}));
 vi.mock("../src/lib/prisma.js", async () => {
   const { Prisma } = await import("@prisma/client");
   return {
@@ -43,7 +47,8 @@ vi.mock("../src/lib/rag/embedder.js", async (original) => ({
   ...(await original<typeof import("../src/lib/rag/embedder.js")>()),
   getEmbedder: () => ({
     model: state.embedModel,
-    currentIdentity: async () => state.embedModel,
+    // The full identity (`model|pooling`, #792) differs from the bare model.
+    currentIdentity: async () => `${state.embedModel}|${state.embedPooling}`,
   }),
 }));
 
@@ -85,6 +90,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     beforeEach(() => {
       state.embedModel = "embed-a";
+      state.embedPooling = "mean";
       __resetToolResultCacheForTests();
     });
 
@@ -258,6 +264,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(k1).not.toBe(k0);
         state.embedModel = "embed-b";
         expect(await keyOf(p)).not.toBe(k1);
+      });
+
+      it("moves when only the embedder pooling changes (full identity, not the bare model)", async () => {
+        const p = await project();
+        const k0 = await keyOf(p);
+        state.embedPooling = "cls";
+        expect(await keyOf(p)).not.toBe(k0);
       });
 
       it("is incomplete while a repo's graph has no commit SHA", async () => {
@@ -528,6 +541,24 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           .map((i) => i.name)
           .sort(),
       );
+    const chunkIndexes = () =>
+      withDb((db) =>
+        (db.prepare(`PRAGMA index_list("knowledge_chunks")`).all() as Array<{ name: string }>)
+          .map((i) => i.name)
+          .sort(),
+      );
+    const chunkGroupPlan = () =>
+      withDb((db) =>
+        (
+          db
+            .prepare(
+              `EXPLAIN QUERY PLAN SELECT "embeddingModel", COUNT(*) FROM "knowledge_chunks" WHERE "projectId" = 'p-1' GROUP BY "embeddingModel"`,
+            )
+            .all() as Array<{ detail: string }>
+        )
+          .map((r) => r.detail)
+          .join(" | "),
+      );
     const row = () =>
       withDb((db) =>
         db.prepare(`SELECT "id","projectId","filename","checksum","status" FROM "documents"`).all(),
@@ -535,6 +566,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     let seeded: unknown;
     let before: string[];
     let beforeIndexes: string[];
+    let beforeChunkIndexes: string[];
 
     beforeAll(() => {
       sqlite = createMigratedSqlite("1864-document-updated-at", { stopBefore: MIGRATION });
@@ -548,6 +580,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       seeded = row();
       before = columns();
       beforeIndexes = indexes();
+      beforeChunkIndexes = chunkIndexes();
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(() => sqlite?.cleanup());
@@ -560,12 +593,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(columns()).toEqual([...before, "updatedAt"]);
         expect(indexes()).toEqual([...beforeIndexes, "documents_projectId_updatedAt_idx"].sort());
         expect(row()).toEqual(seeded);
+        // The chunk-count group-by is answered from the index, not by reading
+        // every chunk row and sorting them into a temp B-tree.
+        expect(chunkIndexes()).toEqual(
+          [...beforeChunkIndexes, "knowledge_chunks_projectId_embeddingModel_idx"].sort(),
+        );
+        expect(chunkGroupPlan()).toMatch(
+          /USING COVERING INDEX knowledge_chunks_projectId_embeddingModel_idx/,
+        );
+        expect(chunkGroupPlan()).not.toMatch(/TEMP B-TREE/);
         expect(withDb((db) => db.prepare(`SELECT "updatedAt" FROM "documents"`).get())).toEqual({
           updatedAt: null,
         });
         withDb((db) => db.exec(rollback));
         expect(columns()).toEqual(before);
         expect(indexes()).toEqual(beforeIndexes);
+        expect(chunkIndexes()).toEqual(beforeChunkIndexes);
         expect(row()).toEqual(seeded);
         sqlite.applyRemaining();
         expect(columns()).toContain("updatedAt");
@@ -578,6 +621,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(pgUp).toMatch(/ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP\(3\);/);
       expect(pgUp).toMatch(/CREATE INDEX IF NOT EXISTS "documents_projectId_updatedAt_idx"/);
       expect(pgDown).toMatch(/DROP INDEX IF EXISTS "documents_projectId_updatedAt_idx";/);
+      expect(pgUp).toMatch(
+        /CREATE INDEX IF NOT EXISTS "knowledge_chunks_projectId_embeddingModel_idx"/,
+      );
+      expect(pgDown).toMatch(
+        /DROP INDEX IF EXISTS "knowledge_chunks_projectId_embeddingModel_idx";/,
+      );
       expect(pgDown).toMatch(/DROP COLUMN IF EXISTS "updatedAt";/);
       expect(pgDown).toMatch(
         new RegExp(`DELETE FROM "_prisma_migrations" WHERE "migration_name" = '${MIGRATION}'`),

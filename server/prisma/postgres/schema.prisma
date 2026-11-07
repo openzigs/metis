@@ -1044,7 +1044,9 @@ model Document {
   /// written before the column existed, until their next update). The
   /// project content version (`projects/content-version.ts`) reads the
   /// project's row count, the latest value and the rows written just before
-  /// it, instead of hashing every document row on each cached tool call.
+  /// it, instead of hashing every document row on each cached tool call. The
+  /// row-lock touches (`updateMany({ data: { id } })`) stamp it too; that only
+  /// costs an extra cache miss, never a stale hit.
   updatedAt          DateTime? @updatedAt
 
   project    Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -1101,6 +1103,7 @@ model KnowledgeChunk {
   @@index([projectId])
   @@index([documentId, position])
   @@index([md5])
+  @@index([projectId, embeddingModel])
   @@map("knowledge_chunks")
 }
 

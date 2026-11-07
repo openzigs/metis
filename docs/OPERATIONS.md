@@ -1609,7 +1609,7 @@ canonical arguments, the project, the caller and the project's **content version
 - the project's document-chunk counts per `embeddingModel`, which a reindex or retag moves
   without touching any document row (#1864);
 - the documents: the row count, the latest `documents.updatedAt`, and the indexing state of
-  the rows written in the minute before it (#1864). These are two indexed queries. Before
+  the rows written in the minute before it (#1864). These are indexed queries (a count over the project's index entries, a max and a range). Before
   #1864 every document row was read and hashed on each call;
 - the active embedder identity (`model`, or `model|pooling|dtype`, #792).
 

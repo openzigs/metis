@@ -13,6 +13,7 @@
 -- One transaction: if the DELETE failed, the column would be gone while the
 -- migration still read as applied, and `migrate deploy` would not re-add it.
 BEGIN;
+DROP INDEX "knowledge_chunks_projectId_embeddingModel_idx";
 DROP INDEX "documents_projectId_updatedAt_idx";
 ALTER TABLE "documents" DROP COLUMN "updatedAt";
 DELETE FROM "_prisma_migrations" WHERE "migration_name" = '20261117001864_issue1864_document_updated_at';
