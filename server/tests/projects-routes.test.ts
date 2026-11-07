@@ -239,7 +239,9 @@ vi.mock("../src/lib/prisma.js", async () => {
 });
 
 import request from "supertest";
+import { MAX_DOCUMENT_BYTES } from "@metis/shared";
 import { createApp } from "../src/app.js";
+import { validateUpload } from "../src/lib/documents/upload.js";
 import { getDocumentStorage } from "../src/lib/documents/storage.js";
 import { prisma } from "../src/lib/prisma.js";
 import { ConnectorError } from "../src/lib/connectors/types.js";
@@ -506,6 +508,46 @@ describe("/api/projects/:id/documents", () => {
         contentType: "application/x-msdownload",
       });
     expect(res.status).toBe(415);
+  });
+
+  // #1921 — Multer stops reading at the cap and raises LIMIT_FILE_SIZE before
+  // `validateUpload` sees the buffer; that must still be the governing
+  // route's 413 FILE_TOO_LARGE (the code and message `validateUpload` gives),
+  // never the global handler's 500.
+  it("POST rejects an over-size file with 413 FILE_TOO_LARGE, matching validateUpload", async () => {
+    const id = await newProject("big");
+    const projectVerdict = validateUpload({
+      filename: "big.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.alloc(MAX_DOCUMENT_BYTES + 1, 0x61),
+    });
+    expect(projectVerdict.ok).toBe(false);
+    if (projectVerdict.ok) return;
+    const res = await request(app)
+      .post(`/api/projects/${id}/documents`)
+      .set("Authorization", `Bearer ${token}`)
+      .attach("file", Buffer.alloc(MAX_DOCUMENT_BYTES + 1, 0x61), {
+        filename: "big.txt",
+        contentType: "text/plain",
+      });
+    expect(res.status).toBe(413);
+    expect(res.body.error).toMatchObject({
+      code: "FILE_TOO_LARGE",
+      message: projectVerdict.message,
+    });
+    expect(documents.size).toBe(0);
+  });
+
+  it("POST with a second file answers 400 UPLOAD_ERROR, not 500", async () => {
+    const id = await newProject("two");
+    const res = await request(app)
+      .post(`/api/projects/${id}/documents`)
+      .set("Authorization", `Bearer ${token}`)
+      .attach("file", Buffer.from("# a"), { filename: "a.md", contentType: "text/markdown" })
+      .attach("file", Buffer.from("# b"), { filename: "b.md", contentType: "text/markdown" });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("UPLOAD_ERROR");
+    expect(documents.size).toBe(0);
   });
 
   it("POST refuses uploads to archived projects (409)", async () => {

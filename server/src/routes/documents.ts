@@ -4,7 +4,8 @@
  *
  * Phase 5 / issues #39, #43.
  *
- * Uploads use Multer's memory storage capped at MAX_DOCUMENT_BYTES so the
+ * Uploads use Multer's memory storage capped at MAX_DOCUMENT_BYTES
+ * (`documentFile`, shared with the governing route, #1921) so the
  * raw bytes are validated by `validateUpload` (size, MIME allowlist,
  * magic-byte sniff) before any filesystem write happens. Successful uploads
  * persist a `Document` row in `pending` state, then synchronously trigger the
@@ -12,7 +13,6 @@
  * `KnowledgeService` `emit` hook.
  */
 import { Router, type Request, type Response } from "express";
-import multer from "multer";
 import { z } from "zod";
 import {
   type ApiResponse,
@@ -26,6 +26,7 @@ import { requirePermission } from "../middleware/require-permission.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
 import { AppError } from "../middleware/error-handler.js";
 import { retrieveRateLimiter, uploadRateLimiter } from "../middleware/upload-rate-limit.js";
+import { documentFile } from "../middleware/document-file-upload.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { prisma } from "../lib/prisma.js";
 import { getDocumentStorage, type StorageBackend } from "../lib/documents/storage.js";
@@ -46,11 +47,6 @@ import {
 } from "../lib/rag/indexing-failure-message.js";
 
 const log = createChildLogger("documents-routes");
-
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_DOCUMENT_BYTES, files: 1 },
-});
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -142,7 +138,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
     requireAuth,
     requirePermission("document.upload"),
     uploadRateLimiter,
-    upload.single("file"),
+    documentFile,
     async (req: Request, res: Response) => {
       const actor = actorFromReq(req);
       const projectId = String(req.params.projectId);

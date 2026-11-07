@@ -25,14 +25,14 @@
  * `governing-<workspaceId>` and never contains the client's filename.
  */
 import { Router, type NextFunction, type Request, type Response } from "express";
-import multer from "multer";
 import { z } from "zod";
 import { Prisma } from "@prisma/client";
-import { type ApiResponse, MAX_DOCUMENT_BYTES } from "@metis/shared";
+import type { ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requireWorkspaceRole } from "../middleware/require-workspace-role.js";
 import { AppError } from "../middleware/error-handler.js";
 import { uploadRateLimiter } from "../middleware/upload-rate-limit.js";
+import { documentFile } from "../middleware/document-file-upload.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { getDocumentStorage, type StorageBackend } from "../lib/documents/storage.js";
 import { validateUpload } from "../lib/documents/upload.js";
@@ -54,30 +54,6 @@ import {
 import { createChildLogger } from "../lib/logger.js";
 
 const log = createChildLogger("governing-documents-routes");
-
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_DOCUMENT_BYTES, files: 1 },
-});
-
-/**
- * `upload.single("file")`, with Multer's own errors given the project upload
- * contract's codes: an over-size file is 413 `FILE_TOO_LARGE`, the code and
- * message `validateUpload` gives a buffer over the cap.
- */
-function singleFile(req: Request, res: Response, next: NextFunction): void {
-  upload.single("file")(req, res, (err: unknown) => {
-    if (err instanceof multer.MulterError) {
-      if (err.code === "LIMIT_FILE_SIZE") {
-        next(new AppError(413, "FILE_TOO_LARGE", `File exceeds ${MAX_DOCUMENT_BYTES} byte limit`));
-        return;
-      }
-      next(new AppError(400, "UPLOAD_ERROR", "Upload failed: one file in the 'file' field"));
-      return;
-    }
-    next(err);
-  });
-}
 
 /** `YYYY-MM-DD` or an ISO date-time. */
 const effectiveDate = z.union([z.iso.date(), z.iso.datetime({ offset: true })]);
@@ -229,7 +205,7 @@ export function governingDocumentsRouter(deps: GoverningDocumentsRouterDeps = {}
     }
   }
 
-  r.post("/", ...admin, uploadRateLimiter, singleFile, async (req: Request, res: Response) => {
+  r.post("/", ...admin, uploadRateLimiter, documentFile, async (req: Request, res: Response) => {
     const workspaceId = String(req.params.workspaceId);
     const actor = actorOf(req);
     const fields = parseFields(uploadFieldsSchema, req.body);
@@ -265,7 +241,7 @@ export function governingDocumentsRouter(deps: GoverningDocumentsRouterDeps = {}
     "/:documentId/revisions",
     ...admin,
     uploadRateLimiter,
-    singleFile,
+    documentFile,
     async (req: Request, res: Response) => {
       const workspaceId = String(req.params.workspaceId);
       const documentId = String(req.params.documentId);
