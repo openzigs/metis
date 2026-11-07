@@ -188,15 +188,17 @@ function storedLinks(stored: StoredProduct): StoredLink[] | null {
 }
 
 /**
- * #1963 — whether the run found this product's integration edges detected
- * (`impact.edgesDetected`). A row stored without it reads false: nothing says
- * its `none` had edges to reason over.
+ * #1963 — a stored boolean of the run's impact detail (`impact.edgesDetected`,
+ * `impact.connectedToChange`), or undefined when the row does not carry it. A
+ * row stored before #1963 carries neither, and nothing is inferred from that:
+ * it is neither left out of the verdict nor named never analysed.
  */
-function storedEdgesDetected(technicalDetail: unknown): boolean {
-  return (
-    (technicalDetail as { impact?: { edgesDetected?: unknown } } | null)?.impact?.edgesDetected ===
-    true
-  );
+function storedImpactFlag(
+  technicalDetail: unknown,
+  key: "edgesDetected" | "connectedToChange",
+): boolean | undefined {
+  const value = (technicalDetail as { impact?: Record<string, unknown> } | null)?.impact?.[key];
+  return typeof value === "boolean" ? value : undefined;
 }
 
 /** #1963 — the repos and products one stored link names. */
@@ -509,8 +511,9 @@ export async function viewPortfolioAssessment(
 
   const stored = portfolioVerdictFromStored(a.portfolioVerdict);
   // #1963 — as the run did (`scopedToChange`): a product not checked that the
-  // change's walk does not reach, and whose edges were detected, is not in
-  // scope. Any product that changes counts; of the rest, only a row the walk
+  // run found not connected to any product the change touches, and whose edges
+  // were detected, is not in scope; a row without those signals (stored before
+  // #1963) is neither. Any product that changes counts; of the rest, only a row the walk
   // itself listed under the current rule is known (a restricted row carries no
   // impact detail, so it is never one).
   const scope = scopeOfChange(
@@ -523,7 +526,8 @@ export async function viewPortfolioAssessment(
       .map((p) => ({
         productId: p.productId,
         impactKind: p.impactKind,
-        edgesDetected: storedEdgesDetected(p.technicalDetail),
+        edgesDetected: storedImpactFlag(p.technicalDetail, "edgesDetected"),
+        connectedToChange: storedImpactFlag(p.technicalDetail, "connectedToChange"),
       })),
   );
   const scopedVerdict = rollUpPortfolio(results, scope.notInScope);

@@ -813,7 +813,7 @@ export function portfolioSummary(
 
 /** #1963 — how the change scoped a verdict (`scopeOfChange`). */
 export interface ChangeScope {
-  /** Left out of the verdict: not checked, and not reached by the change. */
+  /** Left out of the verdict: not checked, and not connected to what changes. */
   notInScope?: ReadonlySet<string>;
   /** Kept in: not checked, and never analysed, so its reach is not known. */
   neverAnalysed?: ReadonlySet<string>;
@@ -1015,9 +1015,10 @@ async function evaluateParsed(
 
 /**
  * #1963 — the gap result with its verdict and summary rolled up over the
- * products in scope of the change: a product not checked that the impact walk
- * does not reach, and whose edges were detected, is left out of the verdict and
- * named after it (`scopeOfChange`). An `all-accessible` check reaches every
+ * products in scope of the change: a product not checked that is not connected
+ * to any product the change touches (no path of edges, either way, at any
+ * depth: `connectedToChange`), and whose edges were detected, is left out of
+ * the verdict and named after it (`scopeOfChange`). An `all-accessible` check reaches every
  * product its starter can see, so without this one unrelated product turns a
  * gap the changed products all confirm into "could not verify". One never
  * analysed stays in, named as such: its `none` says nothing. With no product
@@ -1028,7 +1029,7 @@ export function scopedToChange(
   impact: {
     products: readonly Pick<
       ProductImpact,
-      "productId" | "restricted" | "impactKind" | "edgesDetected"
+      "productId" | "restricted" | "impactKind" | "edgesDetected" | "connectedToChange"
     >[];
   },
 ): PortfolioGapResult {

@@ -102,6 +102,7 @@ const impactOf = (over: Partial<ProductImpact> & { productId: string }): Product
   hiddenEdgeCount: 0,
   links: [],
   edgesDetected: false,
+  connectedToChange: true,
   ...over,
 });
 
@@ -252,6 +253,7 @@ describe("withImpact", () => {
             links: [],
             // #1963 — whether its edges were ever detected (a completed product analysis).
             edgesDetected: false,
+            connectedToChange: true,
           },
         },
       }),

@@ -687,11 +687,12 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
     });
   });
 
-  describe("#1963 — a recomputed verdict leaves out what the change does not reach", () => {
+  describe("#1963 — a recomputed verdict leaves out what is not connected to the change", () => {
     /** Every scoped product the change touches confirms the gap; p4 was not checked. */
     function withUnreached(
       restrictedRule: string | null,
       edgesDetected = true,
+      connectedToChange = false,
     ): PortfolioAssessment {
       const a = withImpactRows();
       a.products[0] = { ...a.products[0], coverage: "not-covered" };
@@ -714,6 +715,8 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
             ...(restrictedRule ? { restrictedRule } : {}),
             // #1963 — a completed product analysis had detected its edges.
             edgesDetected,
+            // #1963 — and no path of edges, either way at any depth, links it.
+            connectedToChange,
           },
         },
       });
@@ -729,12 +732,12 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
       ]);
     });
 
-    it("a product not checked that the walk does not reach is not in scope, and named", async () => {
+    it("a product not checked and not connected to the change is not in scope, and named", async () => {
       store.getPortfolioAssessment.mockResolvedValue(withUnreached("walk"));
       const v = (await view())!;
       expect(v.verdict).toBe("gap-confirmed");
       expect(v.summary).toContain(
-        "Nothing checked covers this. Unrelated was not checked, but this change does not reach it, so it is not in scope.",
+        "Nothing checked covers this. Unrelated was not checked, but it is not connected to any product this change touches, so it is not in scope.",
       );
       // The page's headline reads the same set.
       expect(v.notInScope).toEqual(["p4"]);
@@ -752,10 +755,35 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
       expect(v.neverAnalysed).toEqual(["p4"]);
     });
 
-    it("a row stored without the analysed signal is not known to be unreached either", async () => {
+    it("one the walk lists none but that is connected to the change stays in the verdict", async () => {
+      // #1963 — beyond the walk's depth, or upstream of a changed product.
+      store.getPortfolioAssessment.mockResolvedValue(withUnreached("walk", true, true));
+      const v = (await view())!;
+      expect(v.verdict).toBe("could-not-verify");
+      expect(v.summary).not.toContain("not in scope");
+      expect(v.notInScope).toEqual([]);
+      expect(v.neverAnalysed).toEqual([]);
+    });
+
+    it("a row stored without the #1963 signals is read as before: nothing is inferred", async () => {
       const a = withUnreached("walk");
       const p4 = a.products.at(-1)!.technicalDetail as { impact: Record<string, unknown> };
       delete p4.impact.edgesDetected;
+      delete p4.impact.connectedToChange;
+      store.getPortfolioAssessment.mockResolvedValue(a);
+      const v = (await view())!;
+      expect(v.verdict).toBe("could-not-verify");
+      expect(v.notInScope).toEqual([]);
+      // Absent is not "never analysed": nothing says it was not.
+      expect(v.neverAnalysed).toEqual([]);
+      expect(v.summary).not.toContain("never been analysed");
+      expect(v.summary).not.toContain("not in scope");
+    });
+
+    it("a row with edges detected but no connectivity signal is not left out", async () => {
+      const a = withUnreached("walk");
+      const p4 = a.products.at(-1)!.technicalDetail as { impact: Record<string, unknown> };
+      delete p4.impact.connectedToChange;
       store.getPortfolioAssessment.mockResolvedValue(a);
       const v = (await view())!;
       expect(v.verdict).toBe("could-not-verify");
@@ -774,6 +802,51 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
       a.products[0] = { ...a.products[0], impactKind: "none" };
       store.getPortfolioAssessment.mockResolvedValue(a);
       expect((await view())!.verdict).toBe("could-not-verify");
+    });
+
+    it("a legacy row without edgesDetected keeps the summary it had before #1963", async () => {
+      // Stored before #1963: no `edgesDetected` on its rows. Both verdicts read
+      // could-not-verify, so the summary is the scoped one: it must not call the
+      // product never analysed, which nothing recorded.
+      db.product.findMany.mockResolvedValue([
+        { id: "p1", name: "One" },
+        { id: "p2", name: "Two" },
+        { id: "p3", name: "Three" },
+        { id: "p4", name: "Unrelated" },
+      ]);
+      const a = withUnreached("walk");
+      a.portfolioVerdict = "not-checked";
+      for (const row of a.products) {
+        const impact = (row.technicalDetail as { impact?: Record<string, unknown> }).impact;
+        if (impact) {
+          delete impact.edgesDetected;
+          delete impact.connectedToChange;
+        }
+      }
+      const p2 = a.products[1].technicalDetail as { impact: Record<string, unknown> };
+      a.products[1].technicalDetail = {
+        ...p2,
+        impact: {
+          ...p2.impact,
+          links: [
+            {
+              integrationKind: "event",
+              fromProductId: "p1",
+              edgeProductIds: ["p2"],
+              providerRepoId: "rc-gone",
+              consumerRepoId: "rc-two",
+            },
+          ],
+        },
+      };
+      store.getPortfolioAssessment.mockResolvedValue(a);
+      const v = (await view())!;
+      expect(v.verdict).toBe("could-not-verify");
+      expect(v.summary).toContain("Could not verify across the portfolio: of 3 products,");
+      expect(v.summary).not.toContain("never been analysed");
+      expect(v.summary).not.toContain("not in scope");
+      expect(v.neverAnalysed).toEqual([]);
+      expect(v.notInScope).toEqual([]);
     });
 
     it("a verdict stored before #1963 keeps its own wording when it is not recomputed", async () => {

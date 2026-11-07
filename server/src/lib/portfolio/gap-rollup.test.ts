@@ -204,7 +204,7 @@ describe("#1963 — the products not in scope of the change", () => {
     row("unreadable", "restricted"),
   ];
 
-  it("is each product not checked that the walk does not reach", () => {
+  it("is each product not checked that is known to be unconnected", () => {
     const unreached = new Set(["unrelated", "hidden-repos", "empty", "unreadable"]);
     expect([...notInScopeOfChange(products, unreached)].sort()).toEqual([
       "hidden-repos",
@@ -215,7 +215,12 @@ describe("#1963 — the products not in scope of the change", () => {
   it("only one whose edges were detected; one never analysed is kept in, and named so", () => {
     const walked = [
       { productId: "host", impactKind: "direct-change" as const, edgesDetected: false },
-      { productId: "unrelated", impactKind: "none" as const, edgesDetected: true },
+      {
+        productId: "unrelated",
+        impactKind: "none" as const,
+        edgesDetected: true,
+        connectedToChange: false,
+      },
       { productId: "hidden-repos", impactKind: "none" as const, edgesDetected: false },
     ];
     const scope = scopeOfChange(products, walked);
@@ -224,6 +229,34 @@ describe("#1963 — the products not in scope of the change", () => {
     // Nothing that changes: nothing was walked from, so neither is known.
     const still = walked.map((p) => ({ ...p, impactKind: "none" as const }));
     expect(scopeOfChange(products, still)).toEqual({
+      notInScope: new Set(),
+      neverAnalysed: new Set(),
+    });
+  });
+
+  it("never one connected to the change, beyond the walk's depth or upstream of it", () => {
+    // #1963 — the walk runs provider to consumer, to its depth: a `none` from it
+    // is not "unrelated" unless no path of edges links the product at all.
+    const walked = [
+      { productId: "host", impactKind: "direct-change" as const },
+      {
+        productId: "unrelated",
+        impactKind: "none" as const,
+        edgesDetected: true,
+        connectedToChange: true,
+      },
+    ];
+    expect(scopeOfChange(products, walked).notInScope).toEqual(new Set());
+  });
+
+  it("infers nothing from a row stored without the signals (before #1963)", () => {
+    const walked = [
+      { productId: "host", impactKind: "direct-change" as const },
+      { productId: "unrelated", impactKind: "none" as const },
+      // Detected, but nothing says whether it is connected: not left out either.
+      { productId: "hidden-repos", impactKind: "none" as const, edgesDetected: true },
+    ];
+    expect(scopeOfChange(products, walked)).toEqual({
       notInScope: new Set(),
       neverAnalysed: new Set(),
     });

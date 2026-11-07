@@ -174,7 +174,7 @@ describe("coverageHeadline", () => {
     expect(coverageHeadline(v)).toEqual({
       tone: "gap",
       text: "Nothing that was checked covers this",
-      note: "Walkthrough 1 and Walkthrough 2 were not checked, but this change does not reach them, so they are not in scope. Empty has no repositories, so there was nothing in it to check.",
+      note: "Walkthrough 1 and Walkthrough 2 were not checked, but they are not connected to any product this change touches, so they are not in scope. Empty has no repositories, so there was nothing in it to check.",
     });
   });
 
@@ -189,7 +189,7 @@ describe("coverageHeadline", () => {
     expect(coverageHeadline(v)).toEqual({
       tone: "unknown",
       text: "We could not tell whether anything in your portfolio covers this",
-      note: "Walkthrough 1 was not checked, but this change does not reach it, so it is not in scope.",
+      note: "Walkthrough 1 was not checked, but it is not connected to any product this change touches, so it is not in scope.",
     });
     // Nothing left out: the answer as before.
     expect(coverageHeadline({ ...v, notInScope: [] })).toEqual({
@@ -214,7 +214,7 @@ describe("coverageHeadline", () => {
     expect(coverageHeadline(v)).toEqual({
       tone: "unknown",
       text: "We could not tell whether anything in your portfolio covers this",
-      note: "Walkthrough 2 was not checked and has never been analysed, so whether this change reaches it is not known. Walkthrough 1 was not checked, but this change does not reach it, so it is not in scope.",
+      note: "Walkthrough 2 was not checked and has never been analysed, so whether this change reaches it is not known. Walkthrough 1 was not checked, but it is not connected to any product this change touches, so it is not in scope.",
     });
   });
 

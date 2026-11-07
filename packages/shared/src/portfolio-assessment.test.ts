@@ -48,10 +48,10 @@ describe("#1689 — product names in prose", () => {
 describe("#1963 — products left out of, or kept in, the verdict, in prose", () => {
   it("names the products not in scope, singular and plural", () => {
     expect(portfolioNotInScopeText(["A"])).toBe(
-      "A was not checked, but this change does not reach it, so it is not in scope.",
+      "A was not checked, but it is not connected to any product this change touches, so it is not in scope.",
     );
     expect(portfolioNotInScopeText(["A", "B"])).toBe(
-      "A and B were not checked, but this change does not reach them, so they are not in scope.",
+      "A and B were not checked, but they are not connected to any product this change touches, so they are not in scope.",
     );
   });
 

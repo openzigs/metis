@@ -622,18 +622,37 @@ describe("#1963 — the verdict over the products in scope of the change", () =>
     inaccessibleRepoCount: 0,
     costUsd: 0,
   });
-  /** `edgesDetected` defaults to true: a product analysed, so its `none` had edges to reason over. */
+  /**
+   * `edgesDetected` defaults to true: a product analysed, so its `none` had edges
+   * to reason over. `connectedToChange` defaults to false for a `none` (no path
+   * of edges links it to what changes) and true for anything the walk reached.
+   */
   const impactOf = (
     rows: Array<
-      [string, "direct-change" | "downstream-consumer" | "restricted" | "none", boolean?, boolean?]
+      [
+        string,
+        "direct-change" | "downstream-consumer" | "restricted" | "none",
+        boolean?,
+        boolean?,
+        boolean?,
+      ]
     >,
   ) => ({
-    products: rows.map(([productId, impactKind, restricted = false, edgesDetected = true]) => ({
-      productId,
-      impactKind,
-      restricted,
-      edgesDetected,
-    })),
+    products: rows.map(
+      ([
+        productId,
+        impactKind,
+        restricted = false,
+        edgesDetected = true,
+        connectedToChange = impactKind !== "none",
+      ]) => ({
+        productId,
+        impactKind,
+        restricted,
+        edgesDetected,
+        connectedToChange,
+      }),
+    ),
   });
   /** The #1940 live check: the host and its downstream products, and old ones nobody indexed. */
   const products = [
@@ -675,7 +694,7 @@ describe("#1963 — the verdict over the products in scope of the change", () =>
     expect(scoped.verdict).toBe("gap-confirmed");
     expect(scoped.notInScope).toEqual(["p-old-1", "p-old-2"]);
     expect(scoped.summary).toBe(
-      "Nothing checked covers this. Walkthrough 1 and Walkthrough 2 were not checked, but this change does not reach them, so they are not in scope.",
+      "Nothing checked covers this. Walkthrough 1 and Walkthrough 2 were not checked, but they are not connected to any product this change touches, so they are not in scope.",
     );
     // Stored as the scoped verdict.
     const record = toAssessmentInput(scoped, {
@@ -694,7 +713,7 @@ describe("#1963 — the verdict over the products in scope of the change", () =>
     const scoped = scopedToChange(gapOf(rows), issueImpact);
     expect(scoped.verdict).toBe("could-not-verify");
     expect(scoped.summary).toBe(
-      "Could not verify across the portfolio: of 4 products in scope, 1 not checked. Walkthrough 1 and Walkthrough 2 were not checked, but this change does not reach them, so they are not in scope.",
+      "Could not verify across the portfolio: of 4 products in scope, 1 not checked. Walkthrough 1 and Walkthrough 2 were not checked, but they are not connected to any product this change touches, so they are not in scope.",
     );
   });
 
@@ -713,7 +732,7 @@ describe("#1963 — the verdict over the products in scope of the change", () =>
     expect(scoped.notInScope).toEqual(["p-old-1"]);
     expect(scoped.neverAnalysed).toEqual(["p-old-2"]);
     expect(scoped.summary).toBe(
-      "Could not verify across the portfolio: of 5 products in scope, 1 not checked. Walkthrough 2 was not checked and has never been analysed, so whether this change reaches it is not known. Walkthrough 1 was not checked, but this change does not reach it, so it is not in scope.",
+      "Could not verify across the portfolio: of 5 products in scope, 1 not checked. Walkthrough 2 was not checked and has never been analysed, so whether this change reaches it is not known. Walkthrough 1 was not checked, but it is not connected to any product this change touches, so it is not in scope.",
     );
     const record = toAssessmentInput(scoped, {
       createdById: "u",
@@ -738,10 +757,29 @@ describe("#1963 — the verdict over the products in scope of the change", () =>
     );
   });
 
+  it("a product the walk lists none but that is connected to the change stays in the verdict", () => {
+    // #1963 — further out than the walk's depth, or upstream of a changed product:
+    // the walk reads `none`, but a path of edges links it, so it is not unrelated.
+    const connected = impactOf([
+      ["p-commerce", "direct-change"],
+      ["p-orders", "direct-change"],
+      ["p-billing", "downstream-consumer"],
+      ["p-notify", "downstream-consumer"],
+      ["p-old-1", "none", false, true, true],
+      ["p-old-2", "none"],
+    ]);
+    const scoped = scopedToChange(gapOf(products), connected);
+    expect(scoped.verdict).toBe("could-not-verify");
+    expect(scoped.notInScope).toEqual(["p-old-2"]);
+    expect(scoped.summary).toBe(
+      "Could not verify across the portfolio: of 5 products in scope, 1 not checked. Walkthrough 2 was not checked, but it is not connected to any product this change touches, so it is not in scope.",
+    );
+  });
+
   it("one unrelated product reads in the singular", () => {
     const scoped = scopedToChange(gapOf(products.slice(0, 5)), issueImpact);
     expect(scoped.summary).toBe(
-      "Nothing checked covers this. Walkthrough 1 was not checked, but this change does not reach it, so it is not in scope.",
+      "Nothing checked covers this. Walkthrough 1 was not checked, but it is not connected to any product this change touches, so it is not in scope.",
     );
   });
 

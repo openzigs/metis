@@ -217,7 +217,7 @@ export function buildReportPrompt(ctx: ReportContext, refs: ReadonlyMap<string, 
       : `Verdict: the requirement is ${VERDICT_TEXT[ctx.verdict]}.`,
     ...(ctx.notInScope > 0
       ? [
-          `Not in scope: ${ctx.notInScope} ${ctx.notInScope === 1 ? "product was" : "products were"} not checked, but the change does not reach ${ctx.notInScope === 1 ? "it" : "them"}, so the verdict leaves ${ctx.notInScope === 1 ? "it" : "them"} out.`,
+          `Not in scope: ${ctx.notInScope} ${ctx.notInScope === 1 ? "product was" : "products were"} not checked, but ${ctx.notInScope === 1 ? "it is" : "they are"} not connected to any product the change touches, so the verdict leaves ${ctx.notInScope === 1 ? "it" : "them"} out.`,
         ]
       : []),
     ...shown.map(

@@ -463,6 +463,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           links: [],
           // #1963 — nor whether it was analysed: a restricted product is never looked up.
           edgesDetected: false,
+          // #1963 — never proven unconnected: it is reached.
+          connectedToChange: true,
         });
         // Not walked through: Ledger is only reachable via Partner's own edges.
         // #1668 — the walk says it stopped there, and (#1673, the owner's AC3 call) a
@@ -564,6 +566,31 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           await withEdges([edgeData("e-core-idle-1685", R.partnerCore, R.idle)], async () => {
             expect(await idle()).toEqual(unreached);
           });
+        });
+
+        it("#1963 — one that only provides to the stopped product is still connected to the change", async () => {
+          // Analysed, so a `none` would leave it out of the verdict were it unconnected.
+          await db.productAnalysis.create({
+            data: { productId: P.idle, status: "completed", completedAt: new Date() },
+          });
+          try {
+            // Connected to nothing: proven so for either reader.
+            expect(of(await withIdle(ANA), P.idle).connectedToChange).toBe(false);
+            expect(of(await withIdle(MIA), P.idle).connectedToChange).toBe(false);
+            // Partner's partner-core consumes Idle: nothing flows to Idle, but it is
+            // linked to Billing through Partner, which Ana cannot read. Her search
+            // cannot follow it, so the one that reads everything decides: connected.
+            await withEdges([edgeData("e-core-idle-1963", R.partnerCore, R.idle)], async () => {
+              const ana = of(await withIdle(ANA), P.idle);
+              expect(ana.impactKind).toBe("none");
+              expect(ana.connectedToChange).toBe(true);
+              const mia = of(await withIdle(MIA), P.idle);
+              expect(mia.impactKind).toBe("none");
+              expect(mia.connectedToChange).toBe(true);
+            });
+          } finally {
+            await db.productAnalysis.deleteMany({ where: { productId: P.idle } });
+          }
         });
 
         it("two edges meeting at a resource the stopped product provides make it restricted", async () => {
@@ -1440,6 +1467,130 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           hostProductId: P.partner,
         });
         expect(of(impact, P.billing).impactKind).not.toBe("direct-change");
+      });
+    });
+
+    describe("#1963 — connected to the change at any depth, in either direction", () => {
+      // c0 changes. c1 consumes c0, c2 consumes c1, c3 consumes c2: c3 is three
+      // product boundaries out, past the default depth of two. c0 consumes Up, so
+      // Up is upstream of the change. S0 and S1 call each other, apart from the
+      // rest, and Iso has no edge at all. Every one has been analysed.
+      const C = {
+        c0: "p-c0-1963",
+        c1: "p-c1-1963",
+        c2: "p-c2-1963",
+        c3: "p-c3-1963",
+        up: "p-up-1963",
+        s0: "p-s0-1963",
+        s1: "p-s1-1963",
+        iso: "p-iso-1963",
+        hub: "p-hub-1963",
+        far: "p-far-1963",
+      } as const;
+      const repoOf = (productId: string) => `rc-${productId}`;
+      const chain: Array<[string, string, string]> = [
+        ["e-c1-c0-1963", C.c1, C.c0],
+        ["e-c2-c1-1963", C.c2, C.c1],
+        ["e-c3-c2-1963", C.c3, C.c2],
+        ["e-c0-up-1963", C.c0, C.up],
+        ["e-s0-s1-1963", C.s0, C.s1],
+        // Hub consumes c0 by its own repo; Far consumes Hub's second repo, which
+        // the change does not reach: Far is linked to the change only through Hub.
+        ["e-hub-c0-1963", C.hub, C.c0],
+        ["e-far-hub2-1963", C.far, `${C.hub}-2`],
+      ];
+      beforeAll(async () => {
+        for (const id of Object.values(C)) {
+          await db.repoConnection.create({
+            data: {
+              id: repoOf(id),
+              projectId: "proj-a-1623",
+              label: id,
+              ownerOrOrg: "acme",
+              repoName: id,
+            },
+          });
+          await db.product.create({
+            data: { id, name: id, slug: id, workspaceId: "ws-a-1623", createdById: "mia" },
+          });
+          await db.productRepo.create({ data: { productId: id, repoConnectionId: repoOf(id) } });
+          if (id === C.hub) {
+            await db.repoConnection.create({
+              data: {
+                id: repoOf(`${id}-2`),
+                projectId: "proj-a-1623",
+                label: `${id}-2`,
+                ownerOrOrg: "acme",
+                repoName: `${id}-2`,
+              },
+            });
+            await db.productRepo.create({
+              data: { productId: id, repoConnectionId: repoOf(`${id}-2`) },
+            });
+          }
+          await db.productAnalysis.create({
+            data: { productId: id, status: "completed", completedAt: new Date() },
+          });
+        }
+        for (const [id, consumer, provider] of chain) {
+          await db.productEdge.create({
+            data: {
+              id,
+              productId: consumer,
+              sourceRepoId: repoOf(consumer),
+              targetRepoId: repoOf(provider),
+              edgeType: "calls",
+              confidence: 0.9,
+              evidence: "[]",
+              integrationKind: "api",
+              strength: "contract",
+              direction: "consumes",
+            },
+          });
+        }
+      });
+
+      const fromC0 = () =>
+        evaluatePortfolioImpact(MIA, {
+          directChangeProductIds: [C.c0],
+          listedProductIds: Object.values(C),
+        });
+
+      it("three hops downstream, past the walk's depth, reads none but stays connected", async () => {
+        const impact = await fromC0();
+        expect(impact.maxDepth).toBe(2);
+        expect(of(impact, C.c2).impactKind).toBe("downstream-consumer");
+        expect(of(impact, C.c3).impactKind).toBe("none");
+        expect(of(impact, C.c3).connectedToChange).toBe(true);
+      });
+
+      it("upstream of a changed product reads none but stays connected", async () => {
+        const impact = await fromC0();
+        expect(of(impact, C.up).impactKind).toBe("none");
+        expect(of(impact, C.up).connectedToChange).toBe(true);
+      });
+
+      it("through another repo of a product the change reaches, it stays connected", async () => {
+        const impact = await fromC0();
+        expect(of(impact, C.hub).impactKind).toBe("downstream-consumer");
+        expect(of(impact, C.far).impactKind).toBe("none");
+        expect(of(impact, C.far).connectedToChange).toBe(true);
+      });
+
+      it("a separate component, or no edge at all, is proven unconnected", async () => {
+        const impact = await fromC0();
+        for (const id of [C.s0, C.s1, C.iso]) {
+          expect(of(impact, id).impactKind).toBe("none");
+          expect(of(impact, id).connectedToChange).toBe(false);
+        }
+      });
+
+      it("with nothing that changes, nothing is proven unconnected", async () => {
+        const impact = await evaluatePortfolioImpact(MIA, {
+          directChangeProductIds: [],
+          listedProductIds: Object.values(C),
+        });
+        for (const p of impact.products) expect(p.connectedToChange).toBe(true);
       });
     });
 

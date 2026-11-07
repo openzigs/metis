@@ -287,13 +287,13 @@ describe("generatePortfolioReport — the model path", () => {
     const gap = buildReportPrompt({ ...CTX, verdict: "gap-confirmed", notInScope: 2 }, refs);
     expect(gap).toContain("Verdict: the requirement is covered by nothing the assessment checked.");
     expect(gap).toContain(
-      "Not in scope: 2 products were not checked, but the change does not reach them, so the verdict leaves them out.",
+      "Not in scope: 2 products were not checked, but they are not connected to any product the change touches, so the verdict leaves them out.",
     );
     expect(gap).not.toContain("covered by nothing in the portfolio");
     const one = buildReportPrompt({ ...CTX, verdict: "could-not-verify", notInScope: 1 }, refs);
     expect(one).toContain("Verdict: the requirement is not verifiable across the portfolio.");
     expect(one).toContain(
-      "Not in scope: 1 product was not checked, but the change does not reach it, so the verdict leaves it out.",
+      "Not in scope: 1 product was not checked, but it is not connected to any product the change touches, so the verdict leaves it out.",
     );
     // Nothing left out: the verdict line as before, and no scope line.
     const all = buildReportPrompt({ ...CTX, verdict: "gap-confirmed" }, refs);
@@ -534,6 +534,7 @@ describe("templateParagraph and impactOverview", () => {
             hops: [{ fromProductId: "p1" } as never],
             hiddenEdgeCount: 0,
             edgesDetected: false,
+            connectedToChange: true,
             links: [
               {
                 integrationKind: "database",
@@ -590,6 +591,7 @@ describe("reportContext and withReport", () => {
             hops: [],
             hiddenEdgeCount: 0,
             edgesDetected: false,
+            connectedToChange: true,
             links: [],
           },
           {
@@ -603,6 +605,7 @@ describe("reportContext and withReport", () => {
             hops: [{ fromProductId: "p1" } as never],
             hiddenEdgeCount: 0,
             edgesDetected: false,
+            connectedToChange: true,
             links: [],
           },
           {
@@ -616,6 +619,7 @@ describe("reportContext and withReport", () => {
             hops: [],
             hiddenEdgeCount: 0,
             edgesDetected: false,
+            connectedToChange: true,
             links: [],
           },
         ],

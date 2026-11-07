@@ -303,7 +303,8 @@ export interface PortfolioAssessmentView extends PortfolioAssessment {
   productNames: Record<string, string>;
   /**
    * #1963 — the products in scope the verdict left out as not in scope of the
-   * change: not checked, and not reached by the impact walk. Empty when none
+   * change: not checked, and not connected (no path of product edges, either
+   * way, at any depth) to any product the change touches. Empty when none
    * was, or for a verdict stored before #1963 (which left none out).
    */
   notInScope?: string[];
@@ -374,7 +375,7 @@ export function portfolioNamedInProse(
  */
 export function portfolioNotInScopeText(names: readonly (string | null)[]): string {
   const one = names.length === 1;
-  return `${portfolioNamedInProse(names, { sentenceStart: true })} ${one ? "was" : "were"} not checked, but this change does not reach ${one ? "it" : "them"}, so ${one ? "it is" : "they are"} not in scope.`;
+  return `${portfolioNamedInProse(names, { sentenceStart: true })} ${one ? "was" : "were"} not checked, but ${one ? "it is" : "they are"} not connected to any product this change touches, so ${one ? "it is" : "they are"} not in scope.`;
 }
 
 /**
