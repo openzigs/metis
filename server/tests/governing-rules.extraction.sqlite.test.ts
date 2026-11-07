@@ -213,6 +213,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       rmSync(uploadsRoot, { recursive: true, force: true });
     });
 
+    it("runs once per revision: a second run on a done revision neither calls the model nor touches rules", async () => {
+      const { documentId, revisionId } = await uploadPolicy(app());
+      const before = await getRules(ID.wsA, documentId);
+      const ac01 = before.body.data.rules.find(
+        (r: { controlId: string }) => r.controlId === "AC-01",
+      );
+      await request(app())
+        .patch(`${rules(ID.wsA)}/${ac01.id}`)
+        .set("x-test-user", "adminA")
+        .send({ summary: "Edited by an admin." });
+
+      const provider = replay(RECORDED.replies);
+      const chat = vi.spyOn(provider, "chat");
+      await runRuleExtraction({ workspaceId: ID.wsA, revisionId, provider });
+
+      expect(chat).not.toHaveBeenCalled();
+      const after = await getRules(ID.wsA, documentId);
+      expect(after.body.data.rules).toHaveLength(RULE_COUNT);
+      expect(after.body.data.rules.find((r: { id: string }) => r.id === ac01.id).summary).toBe(
+        "Edited by an admin.",
+      );
+    });
+
     it("round trip: a fresh GET returns the committed rules; a PATCH is read back with its editor", async () => {
       const { documentId, revisionId } = await uploadPolicy(app());
 

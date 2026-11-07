@@ -43,6 +43,8 @@ const log = createChildLogger("governing-rule-extraction");
 
 /** A section longer than this is split at paragraph breaks before it is sent. */
 export const MAX_SECTION_CHARS = 8000;
+/** Model calls one revision may cost: one per section. */
+export const MAX_SECTIONS = 250;
 const MAX_SUMMARY_CHARS = 500;
 const MAX_CLAUSE_REF_CHARS = 200;
 const MAX_CONTROL_ID_CHARS = 64;
@@ -69,7 +71,25 @@ export interface RuleExtractionResult {
   sections: number;
 }
 
-const HEADING = /^#{1,6}[ \t]+(.+?)[ \t#]*$/gm;
+// Greedy to the end of the line, then trimmed by hand: a lazy capture followed
+// by a `[ \t#]*$` tail backtracks quadratically on a long run of blanks.
+const HEADING = /^#{1,6}[ \t]+(.*)$/gm;
+
+/** `s` without trailing spaces, tabs and `#`, in one linear pass. */
+function stripHeadingTail(s: string): string {
+  let end = s.length;
+  while (end > 0 && (s[end - 1] === " " || s[end - 1] === "\t" || s[end - 1] === "#")) end--;
+  return s.slice(0, end).trim();
+}
+
+/** `id` occurring in `text` not inside a longer alphanumeric run. */
+function containsToken(text: string, id: string): boolean {
+  const isWord = (ch: string | undefined) => ch !== undefined && /[A-Za-z0-9]/.test(ch);
+  for (let at = text.indexOf(id); at !== -1; at = text.indexOf(id, at + 1)) {
+    if (!isWord(text[at - 1]) && !isWord(text[at + id.length])) return true;
+  }
+  return false;
+}
 
 /**
  * `text` split at its Markdown headings, each section running to the next
@@ -78,7 +98,10 @@ const HEADING = /^#{1,6}[ \t]+(.+?)[ \t#]*$/gm;
  */
 export function splitSections(text: string): PolicySection[] {
   const marks: Array<{ at: number; heading: string }> = [];
-  for (const m of text.matchAll(HEADING)) marks.push({ at: m.index, heading: m[1].trim() });
+  for (const m of text.matchAll(HEADING)) {
+    const heading = stripHeadingTail(m[1]);
+    if (heading) marks.push({ at: m.index, heading });
+  }
   if (marks.length === 0 || marks[0].at > 0) marks.unshift({ at: 0, heading: "(start)" });
 
   const out: PolicySection[] = [];
@@ -104,7 +127,17 @@ function splitLong(
   while (end - from > MAX_SECTION_CHARS) {
     const window = text.slice(from, from + MAX_SECTION_CHARS);
     const lastBreak = window.lastIndexOf("\n\n");
-    const cut = lastBreak > 0 ? from + lastBreak + 2 : from + MAX_SECTION_CHARS;
+    // No blank line: cut after the later of the last line end and the last
+    // sentence end, so a clause is not halved mid-sentence where it can be avoided.
+    const lastLine = window.lastIndexOf("\n") + 1;
+    const lastSentence = Math.max(window.lastIndexOf(". "), window.lastIndexOf(".\n")) + 2;
+    const softCut = Math.max(lastLine, lastSentence);
+    const cut =
+      lastBreak > 0
+        ? from + lastBreak + 2
+        : softCut > 2
+          ? from + softCut
+          : from + MAX_SECTION_CHARS;
     pieces.push({ start: from, end: cut });
     from = cut;
   }
@@ -185,6 +218,11 @@ export async function extractRulesFromText(
   const { text, provider } = input;
   const locate = clauseLocator(text);
   const sections = splitSections(text);
+  if (sections.length > MAX_SECTIONS) {
+    throw new RuleExtractionReplyError(
+      `The document has ${sections.length} sections; rule extraction reads at most ${MAX_SECTIONS}. Split the document and upload the parts.`,
+    );
+  }
   const found: Array<Omit<ExtractedRule, "controlId"> & { controlId?: string }> = [];
   let droppedUnverified = 0;
 
@@ -210,7 +248,9 @@ export async function extractRulesFromText(
         continue;
       }
       const controlId =
-        c.controlId && c.controlId.length <= MAX_CONTROL_ID_CHARS && text.includes(c.controlId)
+        c.controlId &&
+        c.controlId.length <= MAX_CONTROL_ID_CHARS &&
+        containsToken(text, c.controlId)
           ? c.controlId
           : undefined;
       found.push({
@@ -291,7 +331,12 @@ export async function runRuleExtraction(input: RunRuleExtractionInput): Promise<
     });
   } catch (err) {
     const message = failureMessage(err);
-    log.warn("governing rule extraction failed", { workspaceId, revisionId, error: message });
+    log.warn("governing rule extraction failed", {
+      workspaceId,
+      revisionId,
+      error: message,
+      cause: String(err),
+    });
     await failRuleExtraction(workspaceId, revisionId, message).catch((writeErr: unknown) => {
       log.error("could not record a failed governing rule extraction", {
         workspaceId,

@@ -14,6 +14,11 @@ import type { AIProvider, ChatMessage, ChatOptions } from "../ai/types.js";
 import { TOOL_RESULT_FENCE } from "../ai/tool-runtime/fence.js";
 import { AIConfigError, AIProviderError } from "../ai/errors.js";
 
+const logWarn = vi.fn();
+vi.mock("../logger.js", () => ({
+  createChildLogger: () => ({ info: vi.fn(), warn: logWarn, error: vi.fn(), debug: vi.fn() }),
+}));
+
 const beginRuleExtraction = vi.fn();
 const completeRuleExtraction = vi.fn();
 const failRuleExtraction = vi.fn();
@@ -25,6 +30,7 @@ vi.mock("./governing-store.js", () => ({
 
 const {
   MAX_SECTION_CHARS,
+  MAX_SECTIONS,
   extractRulesFromText,
   parseRuleExtractionReply,
   runRuleExtraction,
@@ -253,6 +259,28 @@ describe("splitSections and parseRuleExtractionReply", () => {
     expect(splitSections("# A\n\n   \n").map((s) => s.heading)).toEqual(["A"]);
   });
 
+  it("splits a heading line of blanks in linear time (#1946: it was quadratic)", () => {
+    const text = `# Title${" ".repeat(200_000)}x${" \t".repeat(50_000)}\n\nBody.\n\n## ${"\t".repeat(100_000)}\n`;
+    const t0 = performance.now();
+    const sections = splitSections(text);
+    expect(performance.now() - t0).toBeLessThan(500);
+    expect(sections[0]!.heading).toBe(`Title${" ".repeat(200_000)}x`);
+    // A heading of only blanks and # marks is not a heading.
+    expect(splitSections("# A\n\ntext\n\n## ##\n\nmore").map((s) => s.heading)).toEqual(["A"]);
+    expect(splitSections("## Trailing marks ##  \n\nx")[0]!.heading).toBe("Trailing marks");
+  });
+
+  it("cuts a window with no blank line at a line or sentence end, not mid-clause", () => {
+    const sentence = "The quick brown fox must not share accounts. ";
+    const noNewline = `# H\n${sentence.repeat(400)}`;
+    const cuts = splitSections(noNewline);
+    expect(cuts.length).toBeGreaterThan(1);
+    for (const piece of cuts.slice(0, -1)) expect(piece.text.endsWith(". ")).toBe(true);
+    const lines = `# H\n${"A line of policy words here.\n".repeat(500)}`;
+    for (const piece of splitSections(lines).slice(0, -1))
+      expect(piece.text.endsWith("\n")).toBe(true);
+  });
+
   it("reads fenced or bare JSON and counts entries missing a summary or excerpt", () => {
     const parsed = parseRuleExtractionReply(
       '```json\n{"rules":[{"summary":"S","clauseExcerpt":"E","controlId":" AC-1 ","clauseRef":"§1"},{"summary":"S"}]}\n```',
@@ -265,11 +293,39 @@ describe("splitSections and parseRuleExtractionReply", () => {
   });
 });
 
+describe("extractRulesFromText — limits and ids", () => {
+  it("refuses a document over MAX_SECTIONS before any model call", async () => {
+    const text = Array.from({ length: MAX_SECTIONS + 1 }, (_, i) => `# S${i}\n\nbody ${i}`).join(
+      "\n\n",
+    );
+    const { provider } = replayProvider([]);
+    await expect(
+      extractRulesFromText({ text, title: "T", revisionLabel: "v1", provider }),
+    ).rejects.toThrow(/at most 250/);
+    expect(provider.chat).not.toHaveBeenCalled();
+  });
+
+  it("keeps a control id only as a whole token of the policy", async () => {
+    const text = "# Access\n\nAC-10 Accounts are never shared.\n\nSee item 45 for more.";
+    const reply = JSON.stringify({
+      rules: [
+        { controlId: "AC-1", summary: "s", clauseExcerpt: "Accounts are never shared." },
+        { controlId: "4", summary: "s", clauseExcerpt: "See item 45 for more." },
+        { controlId: "AC-10", summary: "s", clauseExcerpt: "AC-10 Accounts are never shared." },
+      ],
+    });
+    const { provider } = replayProvider([reply]);
+    const res = await extractRulesFromText({ text, title: "T", revisionLabel: "v1", provider });
+    expect(res.rules.map((r) => r.controlId).sort()).toEqual(["AC-10", "R-001", "R-002"].sort());
+  });
+});
+
 describe("runRuleExtraction — the job's states", () => {
   const revision = { extractedText: POLICY_V1, revisionLabel: "v1", title: RECORDED.title };
 
   beforeEach(() => {
     process.env.GOVERNING_DOCS_ENABLED = "1";
+    logWarn.mockReset();
     beginRuleExtraction.mockReset().mockResolvedValue(revision);
     completeRuleExtraction.mockReset().mockResolvedValue(undefined);
     failRuleExtraction.mockReset().mockResolvedValue(undefined);
@@ -324,6 +380,11 @@ describe("runRuleExtraction — the job's states", () => {
     await runRuleExtraction({ workspaceId: "ws1", revisionId: "rev1", provider });
     expect(completeRuleExtraction).not.toHaveBeenCalled();
     expect(failRuleExtraction).toHaveBeenCalledWith("ws1", "rev1", shown);
+    // The original error reaches the server log, not the member (A09).
+    expect(logWarn).toHaveBeenCalledWith(
+      "governing rule extraction failed",
+      expect.objectContaining({ cause: String(thrown) }),
+    );
     expect(shown.length).toBeLessThanOrEqual(GOVERNING_EXTRACTION_ERROR_MAX);
   });
 
