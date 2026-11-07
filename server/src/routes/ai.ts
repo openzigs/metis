@@ -1652,7 +1652,7 @@ export function aiRouter(): Router {
             // #1842 — the loop re-sends its transcript each call: cache it too.
             providerChatOptions: {
               ...chatProviderOptions,
-              promptCaching: chatToolLoopPromptCaching(providerInstance.key),
+              promptCaching: chatToolLoopPromptCaching(providerInstance),
             },
             toolResultMaxChars: turn.build.toolResultMaxChars,
             onToolEvent: emitToolEventToSession,
@@ -2274,7 +2274,7 @@ export function aiRouter(): Router {
         // #1842 — the loop re-sends its transcript each call: cache it too.
         const loopCached: Partial<ChatOptions> = {
           ...loopBase,
-          promptCaching: chatToolLoopPromptCaching(streamProvider.key),
+          promptCaching: chatToolLoopPromptCaching(streamProvider),
         };
         const loopOptions: Partial<ChatOptions> = slot
           ? { ...loopCached, onSlotAcquired: onQueueSlotAcquired }

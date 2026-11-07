@@ -1579,7 +1579,7 @@ prompts and context. METIS uses two complementary mechanisms:
 
 | Path | Mechanism | Configuration |
 |------|-----------|---------------|
-| **Chat/stream, discussions, spec-kit** (interactive flows) | The server sets `promptCaching.system` + a `callType` tag on these flows (#700). A chat turn's **tool loop** on native Anthropic also sets `promptCaching.messages`, so each model call's breakpoint moves to the newest tool results and the next call reads the earlier transcript back at 0.1x (#1842; two of the four breakpoints, one TTL; every other provider key keeps the system-only request byte for byte). Spec Kit sets it only on `/speckit.plan`, whose five calls share the constitution + project-context prefix; on native Anthropic the breakpoint ends that prefix (`promptCaching.systemPrefix`) so four of the five calls read the first's write, and single-call commands request no cache write (#1144). The flags are **honoured only** on the BedrockDirect (`extra_body.prompt_caching`) and native-Anthropic (`cache_control`) providers; on the plain OpenAI-compatible / bedrock-access-gateway path they are an **inert no-op** and caching is done by the gateway itself. | Server flags are automatic; the gateway path additionally needs `ENABLE_PROMPT_CACHING=true` on the bedrock-access-gateway container (#656) |
+| **Chat/stream, discussions, spec-kit** (interactive flows) | The server sets `promptCaching.system` + a `callType` tag on these flows (#700). A chat turn's **tool loop** on native Anthropic also sets `promptCaching.messages`, so each model call's breakpoint moves to the newest tool results and the next call reads the earlier transcript back at 0.1x (#1842; two of the four breakpoints, one TTL; every other provider key keeps the system-only request byte for byte). It applies only on Anthropic's own API or a proxy declared with `ANTHROPIC_BASE_URL_BILLS_AS=anthropic`; DeepSeek's Anthropic-format endpoint and other Anthropic-compatible hosts keep the system-only request, and the tool-free final-synthesis call that ends a spent step budget drops the messages breakpoint, because its changed `tool_choice` invalidates the cached messages (#1863). Spec Kit sets it only on `/speckit.plan`, whose five calls share the constitution + project-context prefix; on native Anthropic the breakpoint ends that prefix (`promptCaching.systemPrefix`) so four of the five calls read the first's write, and single-call commands request no cache write (#1144). The flags are **honoured only** on the BedrockDirect (`extra_body.prompt_caching`) and native-Anthropic (`cache_control`) providers; on the plain OpenAI-compatible / bedrock-access-gateway path they are an **inert no-op** and caching is done by the gateway itself. | Server flags are automatic; the gateway path additionally needs `ENABLE_PROMPT_CACHING=true` on the bedrock-access-gateway container (#656) |
 | **Analysis/docs-gen** (BedrockDirectProvider) | Per-request `extra_body.prompt_caching` sent by the server | Automatic when `BEDROCK_GATEWAY_URL` + `BEDROCK_GATEWAY_API_KEY` are set |
 | **Native Anthropic** (AnthropicProvider) | Per-block `cache_control` on the system + last-user breakpoints; TTL via `ANTHROPIC_PROMPT_CACHE_TTL` (#702) | Automatic when `AI_PROVIDER=anthropic` |
 
@@ -1650,7 +1650,8 @@ pieces: `resolveSessionTools`, the library system prompt, auto-RAG, `prepareTurn
 `runChatToolTurn`. The run has these steps:
 
 1. `before`, arm `off`: the tool loop caches only the system prefix.
-2. `before`, arm `on`: the shipped #1842 posture.
+2. `before`, arm `on`: the shipped #1842 posture. Since #1863 that posture is system-only on
+   DeepSeek's Anthropic-format endpoint, so there `on` sends what `off` does.
 3. It commits the synthetic patch in `patch.json` to the clone and re-ingests.
 4. `after`, arm `on`.
 
@@ -1835,7 +1836,7 @@ toward ITPM. Sources: AWS doc above,
 | Key / tag | Path | Default | Issue |
 |---|---|---|---|
 | `promptCaching.system` + `callType` on chat/discussions/spec-kit (byte-stable chat prompt) | BedrockDirect + native only; inert on SDK/gateway | flags on, inert on gateway | #700 |
-| `promptCaching.messages` on the chat tool loop (moving transcript breakpoint) | native Anthropic only (`anthropic` provider key) | on | #1842 |
+| `promptCaching.messages` on the chat tool loop (moving transcript breakpoint) | native Anthropic only: Anthropic's own API or a declared relay, not DeepSeek's Anthropic-format endpoint | on | #1842, #1863 |
 | `ANTHROPIC_PROMPT_CACHE_TTL` (`5m`\|`1h`) | native Anthropic only | `5m` | #702 |
 | `DOCS_GEN_CLAIM_MODEL` (verdict: **keep Haiku** for claim extraction) | docs-gen claim extraction | unset → Haiku default kept | #701 |
 | cache-aware `estimateUsageCostUsd` (0.1× read, 1.25× 5m / 2× 1h write; gateway path understates the write premium) | all cost estimates | — | #698 |
