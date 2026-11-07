@@ -1,12 +1,13 @@
 /**
  * #1842 — the Anthropic request a chat TOOL LOOP sends, call by call, under
- * the loop's prompt-cache posture (`chatToolLoopPromptCaching("anthropic")`).
+ * the loop's prompt-cache posture (`chatToolLoopPromptCaching(provider)`).
  *
  * Two documented 400s must never be built: more than four cache breakpoints
  * in one request (automatic top-level `cache_control` takes a slot too), and a
  * last block whose TTL differs from the rest. And the cache must actually be
  * reusable: each call's breakpoint sits after the newest tool results, and the
- * next call re-sends that prefix byte for byte. The SDK is mocked; nothing
+ * next call re-sends that prefix block for block. DeepSeek's Anthropic-format
+ * endpoint sends what it sent before #1842 (#1863). The SDK is mocked; nothing
  * dials out.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -28,7 +29,7 @@ vi.mock("../../logger.js", () => ({
 
 import { AnthropicProvider } from "./anthropic-provider.js";
 import { __resetModelCatalogForTests } from "../model-catalog.js";
-import { chatToolLoopPromptCaching } from "../chat-prompt-caching.js";
+import { CHAT_PROMPT_CACHING, chatToolLoopPromptCaching } from "../chat-prompt-caching.js";
 import type { ChatMessage, ChatOptions, ChatToolSpec } from "../types.js";
 
 const TOOLS: ChatToolSpec[] = [
@@ -78,15 +79,23 @@ function loopTranscripts(): ChatMessage[][] {
   return [q, [...q, ...round1], [...q, ...round1, ...round2]];
 }
 
-async function runLoop(opts: Partial<ChatOptions> = {}): Promise<Body[]> {
-  const p = new AnthropicProvider({ apiKey: "k", model: "claude-sonnet-5-5" });
+async function runLoop(
+  opts: Partial<ChatOptions> = {},
+  baseUrl?: string,
+  posture: (p: AnthropicProvider) => ChatOptions["promptCaching"] = chatToolLoopPromptCaching,
+): Promise<Body[]> {
+  const p = new AnthropicProvider({
+    apiKey: "k",
+    model: "claude-sonnet-5-5",
+    ...(baseUrl ? { baseUrl } : {}),
+  });
   const bodies: Body[] = [];
   for (const messages of loopTranscripts()) {
     await p.chat(messages, {
       systemMessage: SYSTEM,
       tools: TOOLS,
       callType: "chat",
-      promptCaching: chatToolLoopPromptCaching("anthropic"),
+      promptCaching: posture(p),
       ...opts,
     });
     // The provider hands the SDK one params object per call; copy it as sent.
@@ -160,7 +169,6 @@ describe("#1842 — a three-call chat tool loop on the Anthropic Messages API", 
         const marks = breakpoints(body);
         // System + the newest user turn: two, well inside the four allowed.
         expect(marks).toHaveLength(2);
-        expect(marks.length).toBeLessThanOrEqual(4);
         const ttls = new Set(marks.map((b) => b.cache_control?.ttl ?? "5m"));
         expect([...ttls]).toEqual([ttl ?? "5m"]);
         // The LAST block of the request carries the breakpoint, at that same TTL.
@@ -216,7 +224,7 @@ describe("#1842 — a three-call chat tool loop on the Anthropic Messages API", 
     expect(r1Again.every((b) => b.cache_control === undefined)).toBe(true);
   });
 
-  it("each call re-sends the previous call's cached prefix byte for byte, so it can be read back", async () => {
+  it("each call re-sends the previous call's cached prefix block for block, so it can be read back", async () => {
     const bodies = await runLoop();
     for (let i = 1; i < bodies.length; i++) {
       const prev = bodies[i - 1]!;
@@ -228,6 +236,24 @@ describe("#1842 — a three-call chat tool loop on the Anthropic Messages API", 
       const next = lastBreakpointIndex(bodies[i]!);
       expect(next).toBeGreaterThan(cut - 1);
       expect(next - (cut - 1)).toBeLessThan(20);
+    }
+  });
+});
+
+describe("#1863 — DeepSeek's Anthropic-format endpoint", () => {
+  const DEEPSEEK = "https://api.deepseek.com/anthropic";
+
+  it("sends the tool loop's three requests exactly as before #1842", async () => {
+    const before = await runLoop({}, DEEPSEEK, () => CHAT_PROMPT_CACHING);
+    const after = await runLoop({}, DEEPSEEK);
+    expect(after).toHaveLength(3);
+    expect(after).toEqual(before);
+    for (const body of after) {
+      // Only the system prefix is marked: no message block carries a breakpoint.
+      const marked = body.messages.flatMap((m) =>
+        Array.isArray(m.content) ? m.content.filter((b) => b.cache_control) : [],
+      );
+      expect(marked).toEqual([]);
     }
   });
 });

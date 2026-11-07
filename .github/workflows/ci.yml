@@ -214,14 +214,18 @@ jobs:
         uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
 
       # #1379 — every image's runtime stage runs `apt-get upgrade` / `apk upgrade`
-      # after `ARG OS_PATCH_DATE`. Passing the UTC date and hour busts that layer (and only
-      # the layers after it) hourly, so a distro security fix reaches the image
+      # after `ARG OS_PATCH_DATE`. Passing today's date busts that layer (and only
+      # the layers after it) once a day, so a distro security fix reaches the image
       # the day it ships instead of hiding behind a cached upgrade layer, while the
       # expensive builder stages stay cached.
       - name: OS patch date
         id: patch
         if: ${{ needs.changes.outputs.images != 'false' }}
-        run: echo "date=$(date -u +%FT%H)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+          # The upgrade layer's key: the date plus Debian's security index stamp,
+          # so a fix published later the same day is not hidden (os-patch-stamp.sh).
+          echo "stamp=$(bash scripts/ci/os-patch-stamp.sh)" >> "$GITHUB_OUTPUT"
 
       # Issue #145 — image-size budget gate. The `metis-embeddings` sidecar is
       # built but exempt from the cap (see docs/OPERATIONS.md > "Container
@@ -286,7 +290,7 @@ jobs:
           context: .
           file: Dockerfile.server
           build-args: |
-            OS_PATCH_DATE=${{ steps.patch.outputs.date }}
+            OS_PATCH_DATE=${{ steps.patch.outputs.stamp }}
           tags: metis-server:ci-${{ github.run_id }}
           load: true
           provenance: false
@@ -305,7 +309,7 @@ jobs:
           context: .
           file: Dockerfile.ui
           build-args: |
-            OS_PATCH_DATE=${{ steps.patch.outputs.date }}
+            OS_PATCH_DATE=${{ steps.patch.outputs.stamp }}
           tags: metis-ui:ci-${{ github.run_id }}
           load: true
           provenance: false
@@ -325,7 +329,7 @@ jobs:
           file: Dockerfile.embeddings
           build-args: |
             BAKE_MODELS=0
-            OS_PATCH_DATE=${{ steps.patch.outputs.date }}
+            OS_PATCH_DATE=${{ steps.patch.outputs.stamp }}
           tags: metis-embeddings:ci-${{ github.run_id }}
           load: true
           provenance: false
@@ -343,7 +347,7 @@ jobs:
           context: .
           file: Dockerfile.sql-lineage
           build-args: |
-            OS_PATCH_DATE=${{ steps.patch.outputs.date }}
+            OS_PATCH_DATE=${{ steps.patch.outputs.stamp }}
           tags: metis-sql-lineage:ci-${{ github.run_id }}
           load: true
           provenance: false

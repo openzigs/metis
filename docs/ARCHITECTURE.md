@@ -983,7 +983,10 @@ candidates from the index above are fused by reciprocal rank with an in-request 
 project's requirement titles and bodies, then labelled `duplicate` / `overlap` / `related` from
 the cosine and the thresholds `eval:req-similarity` calibrated on 124 labelled pairs
 (`requirement-similarity-config.ts`); below the `related` floor a candidate is dropped. Each
-item carries its saved code links with their #1830 freshness (`unverified` when unstamped).
+item carries its saved code links with their #1830 freshness (`unverified` when unstamped),
+at most `SIMILAR_CODE_LINKS_PER_ITEM` (20, `@metis/shared`) by confidence; past that
+`codeLinksTruncated` is set and the panel reads its counts as lower bounds ("More than 20 code
+links", "at least N files", #1931).
 The embedder is a good candidate filter and a poor judge (duplicate precision 0.48 on the
 pairs), so a `duplicate` is a suggestion an analyst confirms. `REQ_SIMILARITY_VERIFIER=1`
 adds an LLM verifier on the project's provider, every requirement fenced as untrusted text;
@@ -1000,7 +1003,10 @@ invalidates the cached lists under `['similar-requirements', projectId]` whose i
 the borrowing requirement, because those cards list it with its code links (#1903), and only
 those (#1914, a `predicate` on the prefix): every other list, its own card's included, is
 unchanged by the borrow, and each refetch reads the project's requirements and may call the
-`REQ_SIMILARITY_VERIFIER` model. The client preview
+`REQ_SIMILARITY_VERIFIER` model. A list with no answer yet is refetched too (#1931): its first
+fetch may have read the links before the borrow committed, and since React Query joins an
+in-flight fetch of a query with no data rather than restarting it, the panel cancels that fetch
+(`cancelQueries`) before invalidating. The client preview
 (`borrowPlan`) and the server's borrow read the one `BORROWABLE_FRESHNESS` set from
 `@metis/shared`, so the preview cannot list a link the borrow would skip.
 
@@ -1929,9 +1935,10 @@ The Phase 5 implementation grounds the conceptual pipeline above in concrete mod
 | `middleware/ai-rate-limit.ts` | Module-scope `aiRateLimiter` (was per-request before #241 fix). Per-user keyed, 60 req / 15 min default, tunable via `AI_RATE_LIMIT_MAX` / `AI_RATE_LIMIT_WINDOW_MS`. Returns 429 with `AI_RATE_LIMITED`. |
 | `middleware/project-workspace-rate-limit.ts` | Per-user `projectWorkspaceRateLimiter` for `PUT /api/projects/:id/workspace` (#731); default 30 / 15 min, tunable via `PROJECT_WORKSPACE_LIMIT_MAX` / `PROJECT_WORKSPACE_RATE_LIMIT_WINDOW_MS`; cluster store (#679). |
 | `middleware/upload-rate-limit.ts` | Per-user `uploadRateLimiter` (default 30 / 15 min) and `retrieveRateLimiter` (default 60 / 1 min). |
+| `middleware/document-file-upload.ts` | `documentFile` (#1921): the multipart `file` field for the project and governing upload routes — Multer memory storage capped at `MAX_DOCUMENT_BYTES` and one file. Multer's `LIMIT_FILE_SIZE` is `413 FILE_TOO_LARGE` (the code and message `validateUpload` gives), any other Multer error `400 UPLOAD_ERROR`. |
 | `middleware/generated-docs-rate-limit.ts` | #632 — router-level limiters on `/api/projects/:projectId/docs`: `generatedDocsPreAuthRateLimiter` (per IP, default 3,600 / 15 min, ahead of `requireAuth`) and `generatedDocsRateLimiter` (per user with IP fallback, default 900 / 15 min, ahead of the DB-reading `refreshAuthenticatedUser`). Tunable via `GENERATED_DOCS_RATE_LIMIT_MAX` / `GENERATED_DOCS_PREAUTH_RATE_LIMIT_MAX` / `GENERATED_DOCS_RATE_LIMIT_WINDOW_MS`; 429 with `GENERATED_DOCS_RATE_LIMITED`. The stricter per-route `/generate` limiter (5 / 15 min) still applies. |
 | `routes/projects.ts` | `GET/POST/PATCH/DELETE /api/projects`, `POST /api/projects/:id/archive`, `PUT /api/projects/:id/workspace` (`{ workspaceId }` — puts a project with no workspace into one the caller owns or administers; `409 PROJECT_ALREADY_IN_WORKSPACE` if it already has one, #731). POST accepts an optional `primaryRepo` and answers `201` with the project plus `primaryRepo` (the linked connector, or `null`) and `primaryRepoError` (`{ code, message }` when the link failed — the project is still created — else `null`) (#428, #448). PATCH accepts `aiProviderId` and `aiModel` for per-project provider/model overrides (#134, #234). |
-| `routes/documents.ts` | `POST/GET/DELETE /api/projects/:projectId/documents`, plus v1.0.1 (#132) `POST /documents/url` and `POST /documents/text`. v1.0.1 (#133): when an `IngestQueue` is wired (production), uploads return `202` with `{document, ingest: {status: "queued", queued: true}}` instead of blocking on the embedding pipeline. `POST /api/projects/:projectId/retrieve` accepts `mode: "dense" \| "hybrid"` and echoes `{mode, reranked}`. Multer memory storage with `MAX_DOCUMENT_BYTES` cap. List (#440): `GET ?limit=` (1–100, default 25) returns `{items, total, limit, offset, nextCursor}`, newest first by `(uploadedAt, id)`; pass `?cursor=<nextCursor>` for the next page, which returns `{items, limit, nextCursor}` without re-counting (`nextCursor: null` on the last page). A malformed cursor is `400 INVALID_CURSOR`. Each row carries `source` (`upload` \| `generated` \| `repo` \| `db` \| `confluence` \| `jira`, #474) and a nullable `title` (a Confluence page title); the Workbench document tree, the analysis capability probe, the analysis default document set and the docs-generation evidence gate and inputs classify on `source`, not the filename (#525). Search hits carry the row's `source` too (`RetrievedChunk.source`, #547), so grounding's evidence class, repository identity and path scope, schema-mapping suggestions, Spec Kit document expansion, chat, Spec Kit and analysis code-symbol dedup (`FusedRagChunkRef.source`; analysis threads it through `RetrievalContextChunk.source`, #573) and the UI's document lists (`formatDocumentName`, `formatDocLabel`) classify on it. Citation labels do too (#573): the analysis snapshot stamps each document citation with its row's `source` and cross-doc evidence refs carry it, both read project-scoped at read time, and a clarifying question's grounding citation carries `documentSource` from its search hit; `formatSourceLabel` parses a `connector:repo:` name only for a `repo` row, and falls back to the name only when the row no longer resolves — so uploads may no longer carry a reserved prefix; `pnpm --filter @metis/server documents:reserved-uploads` reports uploads stored before #540 under one, read-only. Every upload path (`POST /`, `/url`, `/text`) answers `400 RESERVED_FILENAME` for a sanitised filename starting with `connector:`, `repo:`, `jira:`, `confluence:`, `generated-doc-` or `live-schema:` (`RESERVED_FILENAME_PREFIXES`, `lib/documents/upload.ts`). Each prefix is matched with the case its readers use: exact case, except `generated-doc-`, which `ui/src/lib/doc-label.ts` matches case-insensitively — so a pasted title like `Jira: sprint 12 retro.md` is an ordinary upload. A generated row is one whose id starts `gendoc-` (migration `20261006000525`). |
+| `routes/documents.ts` | `POST/GET/DELETE /api/projects/:projectId/documents`, plus v1.0.1 (#132) `POST /documents/url` and `POST /documents/text`. v1.0.1 (#133): when an `IngestQueue` is wired (production), uploads return `202` with `{document, ingest: {status: "queued", queued: true}}` instead of blocking on the embedding pipeline. `POST /api/projects/:projectId/retrieve` accepts `mode: "dense" \| "hybrid"` and echoes `{mode, reranked}`. Multer memory storage with `MAX_DOCUMENT_BYTES` cap through `documentFile`, so an over-size file is `413 FILE_TOO_LARGE` (#1921). List (#440): `GET ?limit=` (1–100, default 25) returns `{items, total, limit, offset, nextCursor}`, newest first by `(uploadedAt, id)`; pass `?cursor=<nextCursor>` for the next page, which returns `{items, limit, nextCursor}` without re-counting (`nextCursor: null` on the last page). A malformed cursor is `400 INVALID_CURSOR`. Each row carries `source` (`upload` \| `generated` \| `repo` \| `db` \| `confluence` \| `jira`, #474) and a nullable `title` (a Confluence page title); the Workbench document tree, the analysis capability probe, the analysis default document set and the docs-generation evidence gate and inputs classify on `source`, not the filename (#525). Search hits carry the row's `source` too (`RetrievedChunk.source`, #547), so grounding's evidence class, repository identity and path scope, schema-mapping suggestions, Spec Kit document expansion, chat, Spec Kit and analysis code-symbol dedup (`FusedRagChunkRef.source`; analysis threads it through `RetrievalContextChunk.source`, #573) and the UI's document lists (`formatDocumentName`, `formatDocLabel`) classify on it. Citation labels do too (#573): the analysis snapshot stamps each document citation with its row's `source` and cross-doc evidence refs carry it, both read project-scoped at read time, and a clarifying question's grounding citation carries `documentSource` from its search hit; `formatSourceLabel` parses a `connector:repo:` name only for a `repo` row, and falls back to the name only when the row no longer resolves — so uploads may no longer carry a reserved prefix; `pnpm --filter @metis/server documents:reserved-uploads` reports uploads stored before #540 under one, read-only. Every upload path (`POST /`, `/url`, `/text`) answers `400 RESERVED_FILENAME` for a sanitised filename starting with `connector:`, `repo:`, `jira:`, `confluence:`, `generated-doc-` or `live-schema:` (`RESERVED_FILENAME_PREFIXES`, `lib/documents/upload.ts`). Each prefix is matched with the case its readers use: exact case, except `generated-doc-`, which `ui/src/lib/doc-label.ts` matches case-insensitively — so a pasted title like `Jira: sprint 12 retro.md` is an ordinary upload. A generated row is one whose id starts `gendoc-` (migration `20261006000525`). |
 
 v1.0.1 retrieval flow (#131):
 
@@ -2371,7 +2378,7 @@ gates on).
 | Table (Prisma model) | Holds | Scope / delete |
 |---|---|---|
 | `governing_documents` (`GoverningDocument`) | title, free-text `framework`, `currentRevisionId`, `deletedAt` | `workspaceId`, cascades with the workspace row |
-| `governing_document_revisions` (`GoverningDocumentRevision`) | `revisionLabel` (unique per document), `effectiveDate`, file metadata, `extractedText`, `indexState` (the `Document` quarantine values), `extractionState` (`pending\|running\|done\|failed`) | cascades with its document |
+| `governing_document_revisions` (`GoverningDocumentRevision`) | `revisionLabel` (unique per document), `effectiveDate`, file metadata, `extractedText`, `indexState` (the `Document` quarantine values), `extractionState` (`pending\|running\|done\|failed`), `extractionError`, `droppedUnverified` (#1870) | cascades with its document |
 | `governing_rules` (`GoverningRule`) | `controlId`, one-line `summary`, `clauseRef`, `clauseStart`/`clauseEnd` offsets into `extractedText`, `clauseExcerpt`, `category`, latest edit, `deletedAt` | cascades with its revision |
 | `governing_rule_edits` (`GoverningRuleEdit`) | one row per edit or soft delete: `kind`, `editedById`, `before`/`after` JSON | cascades with its rule |
 
@@ -2392,7 +2399,9 @@ gates on).
   `storagePath` and `extractedText`.
 - Migration `20261116001868_issue1868_governing_documents`, reverse scripts in
   `server/prisma/{,postgres/}rollbacks/`, up -> reverse -> up tested in
-  `server/tests/governing-documents-migration-1868.sqlite.test.ts`.
+  `server/tests/governing-documents-migration-1868.sqlite.test.ts`. #1870's
+  `20261117001870_issue1870_governing_rule_extraction` adds the revision's two extraction
+  columns, tested in `server/tests/governing-rule-extraction-migration-1870.sqlite.test.ts`.
 
 #### Upload, revisions and the workspace index (#1869)
 
@@ -2414,7 +2423,8 @@ gates on).
   so another workspace's id is a 404, not a read.
 - **Flag.** Every route is 404 while `GOVERNING_DOCS_ENABLED` is off, before authentication.
 - **Upload limits** are the project upload's: `MAX_DOCUMENT_BYTES` (an over-size multipart
-  file is `413 FILE_TOO_LARGE`, the code `validateUpload` gives), `UPLOAD_MIME_ALLOWLIST` and
+  file is `413 FILE_TOO_LARGE`, the code `validateUpload` gives, through the same
+  `documentFile` middleware the project route uses), `UPLOAD_MIME_ALLOWLIST` and
   the magic-byte check. The file is parsed (`parseDocument`) into the revision's
   `extractedText`; a file with no text is 422. The blob is stored content-addressed under
   `governing-<workspaceId>/…`, never under the client's filename.
@@ -2429,6 +2439,43 @@ gates on).
   it reads the table, then filters to the current revision of each live document
   (`includeSuperseded` for every revision). A failed embed leaves the revision
   `indexState: "pending"` and out of search.
+
+#### Rule extraction (#1870)
+
+Each stored revision starts `runRuleExtraction` (`lib/governing/rule-extraction.ts`) in the
+background; the upload answers first. The job:
+
+1. sets `extractionState: running`. A revision whose extraction is already `running` or `done`
+   is not started again, so rules are never duplicated or replaced under an admin's edits;
+2. splits `extractedText` at its Markdown headings (a section over 8,000 characters again at
+   paragraph breaks);
+3. sends each section to the deployment's configured provider (`loadAIConfig()`; there is no
+   project to take an override from) as fenced untrusted data: `fenceToolResult`, which runs
+   `scrubFenceLookalikes` first (`lib/governing/prompts.ts`). The title and revision label
+   travel inside the fence too;
+4. checks every returned rule deterministically (`lib/governing/clause-verify.ts`): its
+   `clauseExcerpt` must be in `extractedText` verbatim, with whitespace runs compared as one
+   space, and at least four words. The stored excerpt and `clauseStart`/`clauseEnd` are the
+   source's own, so `clauseExcerpt === extractedText.slice(clauseStart, clauseEnd)` always
+   holds. A rule that fails is dropped and counted in `droppedUnverified`;
+5. keeps a `controlId` only when that text appears in `extractedText`, and numbers every other
+   rule `R-001`… in clause order;
+6. stores the rules and `extractionState: done` in one transaction. Any failure sets `failed`,
+   and the revision stays stored. `extractionError` is read by every member, so it carries
+   only text METIS wrote: `describeProviderErrorSafely` for a provider error (provider,
+   operation, error class, HTTP status), the error code for a configuration error, and a
+   fixed sentence otherwise. The upstream's own message goes to the server log (#1059).
+
+| Route | Role | Does |
+|---|---|---|
+| `GET /api/workspaces/:workspaceId/governing-documents/:documentId/rules` | any member | the current revision's live rules in clause order, or `?revisionId=` another of the document's revisions; with the revision's `extractionState`, `extractionError` and `droppedUnverified` |
+| `PATCH /api/workspaces/:workspaceId/governing-rules/:ruleId` | `admin`/`owner` | `{ summary?, controlId? }` or `{ deleted: true }`. It sets `editedById`/`editedAt` on the rule and writes a `GoverningRuleEdit` row with the before and after values, in one transaction. A patch that changes nothing writes nothing |
+
+Rules are usable at once, with no analyst review (owner, 2026-11-06), and a new revision gets
+its own run while the previous revision's rules stay. `pnpm --filter server
+governing:extract-recall` runs the same extraction over the #1867 policy and reports recall
+against its obligation list. `--record` saves the replies as the fixture the unit tests
+replay (`lib/governing/__fixtures__/`).
 
 ---
 

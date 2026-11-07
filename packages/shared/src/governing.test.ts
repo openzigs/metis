@@ -32,6 +32,8 @@ const revision = {
   sizeBytes: 2048,
   indexState: "indexed",
   extractionState: "done",
+  extractionError: null,
+  droppedUnverified: 0,
   uploadedById: "u-1",
   createdAt: at,
 };
@@ -105,6 +107,16 @@ describe("governing document wire schemas (#1868)", () => {
       { ...revision, extractionState: "queued" },
     ],
     ["a negative size", governingDocumentRevisionSchema, { ...revision, sizeBytes: -1 }],
+    [
+      "a negative dropped-rule count",
+      governingDocumentRevisionSchema,
+      { ...revision, droppedUnverified: -1 },
+    ],
+    [
+      "an extraction error past the cap",
+      governingDocumentRevisionSchema,
+      { ...revision, extractionError: "x".repeat(501) },
+    ],
     [
       "an empty revision label",
       governingDocumentRevisionSchema,
