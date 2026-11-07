@@ -7,6 +7,7 @@ import type { runAgentLoop } from "../../analysis/agent-loop.js";
 import { buildAgenticPassPrompt } from "../../analysis/agentic-pass-context.js";
 import type { AgentTool } from "../../analysis/tools/types.js";
 import {
+  assertA3NClones,
   citationsFromAnswer,
   citationsOfLoop,
   createMaterializedAgentPass,
@@ -215,6 +216,25 @@ describe("createMaterializedAgentPass", () => {
     );
     expect(deps.runLoop).not.toHaveBeenCalled();
     expect(deps.extractRequirements).not.toHaveBeenCalled();
+  });
+
+  it("fails the A3N preflight before any pass when a clone is missing, naming every one (#1819)", async () => {
+    const missing = path.join(root, "gone");
+    const two = state(root);
+    two.repos.push({ ...two.repos[0]!, name: "s", cloneDir: missing });
+    await expect(assertA3NClones(new Map([["c", state(root)]]))).resolves.toBeUndefined();
+    await expect(
+      assertA3NClones(
+        new Map([
+          ["c", two],
+          ["d", state(path.join(root, "also-gone"))],
+        ]),
+      ),
+    ).rejects.toThrow(
+      /A3N needs every repository's clone[\s\S]*c\/s \(.*gone\): run pnpm eval:materialize c[\s\S]*d\/r \(.*also-gone\): run pnpm eval:materialize d/,
+    );
+    // The clone that is on disk is not listed.
+    await expect(assertA3NClones(new Map([["c", two]]))).rejects.not.toThrow(/c\/r /);
   });
 
   it("refuses a corpus or a repository that is not materialized", async () => {
