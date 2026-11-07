@@ -9,6 +9,7 @@ import {
   SemanticResponseCache,
   UNSCOPED_CONTENT_VERSION,
   buildSemanticCacheScope,
+  contentVersionUnchanged,
   cosineSimilarity,
   normalizeQuery,
   shouldSkipCache,
@@ -151,6 +152,63 @@ describe("SemanticResponseCache", () => {
       expect(await strict.lookup(q(at(0.98), "paraphrase"), SCOPE)).toMatchObject({
         match: "similar",
       });
+    });
+  });
+
+  describe("lookupExact (#1865)", () => {
+    it("returns the newest exact entry in scope, with no embedding asked for", async () => {
+      await cache.store(q([1, 0, 0], "the question"), SCOPE, "older");
+      await cache.store(q([0, 1, 0], "the question"), SCOPE, "newer");
+      await cache.store(q([0, 0, 1], "another question"), SCOPE, "other");
+      expect(cache.lookupExact("  THE question ", SCOPE)).toMatchObject({
+        response: "newer",
+        match: "exact",
+        similarity: 1,
+      });
+    });
+
+    it("misses on other words, another scope, an expired entry, or a disabled cache", async () => {
+      await cache.store(q([1, 0, 0], "the question"), SCOPE, "answer");
+      expect(cache.lookupExact("a near-identical question", SCOPE)).toBeNull();
+      expect(cache.lookupExact("the question", { ...SCOPE, callerScope: "u2" })).toBeNull();
+      (cache as unknown as { entries: { createdAt: Date }[] }).entries[0].createdAt = new Date(
+        Date.now() - 31 * 60_000,
+      );
+      expect(cache.lookupExact("the question", SCOPE)).toBeNull();
+      expect(new SemanticResponseCache({ enabled: false }).lookupExact("x", SCOPE)).toBeNull();
+    });
+  });
+
+  describe("contentVersionUnchanged (#1865)", () => {
+    const version = (key: string, complete = true): ProjectContentVersion => ({
+      codeShas: {},
+      docsVersion: "d",
+      key,
+      complete,
+    });
+
+    it("compares only the project's content version, read now", async () => {
+      const asked: string[] = [];
+      const read =
+        (key: string, complete = true) =>
+        async (projectId: string) => {
+          asked.push(projectId);
+          return version(key, complete);
+        };
+      expect(await contentVersionUnchanged(SCOPE, read("v1"))).toBe(true);
+      expect(await contentVersionUnchanged(SCOPE, read("v2"))).toBe(false);
+      // The same key, but no longer complete: never stored.
+      expect(await contentVersionUnchanged(SCOPE, read("v1", false))).toBe(false);
+      expect(asked).toEqual(["proj-1", "proj-1", "proj-1"]);
+    });
+
+    it("holds for a session with no project, without reading a version", async () => {
+      const unscoped = { ...SCOPE, projectId: null, contentVersion: UNSCOPED_CONTENT_VERSION };
+      expect(
+        await contentVersionUnchanged(unscoped, async () => {
+          throw new Error("must not be read");
+        }),
+      ).toBe(true);
     });
   });
 
