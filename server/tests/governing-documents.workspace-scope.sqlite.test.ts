@@ -776,6 +776,117 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
     });
 
+    it("#1947 — the fallback serves the NEWEST embedded revision: v1 and v2 indexed, v3 pending, hits come from v2", async () => {
+      const v1 = await upload("adminA", ID.wsA, { fields: fieldsFor("Newest first", "v1") });
+      expect(v1.status).toBe(201);
+      const { documentId } = v1.body.data;
+      const revisionsPath = `${base(ID.wsA)}/${documentId}/revisions`;
+      const v2 = await upload("adminA", ID.wsA, {
+        path: revisionsPath,
+        body: POLICY_V2,
+        fields: { revisionLabel: "v2", effectiveDate: "2026-06-01" },
+      });
+      expect(v2.body.data.indexState).toBe("indexed");
+      const broken = new GoverningIndex({
+        embedder: {
+          embed: async () => {
+            throw new Error("embedder down");
+          },
+        },
+      });
+      const v3 = await upload("adminA", ID.wsA, {
+        a: app(broken),
+        path: revisionsPath,
+        body: POLICY_V2.replace("thirty", "seven"),
+        fields: { revisionLabel: "v3", effectiveDate: "2026-09-01" },
+      });
+      expect(v3.body.data.indexState).toBe("pending");
+
+      const hits = (
+        await freshIndex().search(
+          ID.wsA,
+          "service account password must be rotated every days",
+          50,
+          actor("memberA"),
+        )
+      ).filter((h) => h.documentId === documentId);
+      expect(hits.length).toBeGreaterThan(0);
+      expect(hits.every((h) => h.revisionId === v2.body.data.revisionId)).toBe(true);
+      expect(hits.every((h) => h.revisionLabel === "v2")).toBe(true);
+
+      await request(app())
+        .delete(`${base(ID.wsA)}/${documentId}`)
+        .set("x-test-user", "adminA");
+    });
+
+    it("#1947 — a revision uploaded between the sweep's snapshot and its rebuild is searchable afterwards, and search is not empty during the rebuild", async () => {
+      const query = "service account password must be rotated every days";
+      const v1 = await upload("adminA", ID.wsA, { fields: fieldsFor("Raced", "v1") });
+      expect(v1.status).toBe(201);
+      const { documentId } = v1.body.data;
+      // The model changes; the vector width does not, so a live upload can still
+      // write into the old table — the shape of the race.
+      const renamed = bowEmbedder("test-bow-race", DIM);
+      const sweepIndex = freshIndex(renamed);
+      let v3Id = "";
+      const duringRebuild: string[] = [];
+
+      // Step 1: the sweep has taken its snapshot (listReindexTargets) and reads
+      // the table's identities next. Before it does, an admin uploads v3 on the
+      // new model: v3 is stored, embedded into the LIVE table and marked indexed.
+      const realStored = sweepIndex.storedIdentities.bind(sweepIndex);
+      vi.spyOn(sweepIndex, "storedIdentities").mockImplementationOnce(async (ws) => {
+        const v3 = await upload("adminA", ID.wsA, {
+          a: app(new GoverningIndex({ embedder: renamed })),
+          path: `${base(ID.wsA)}/${documentId}/revisions`,
+          body: POLICY_V2,
+          fields: { revisionLabel: "v3", effectiveDate: "2026-09-01" },
+        });
+        expect(v3.body.data.indexState).toBe("indexed");
+        v3Id = v3.body.data.revisionId;
+        return realStored(ws);
+      });
+      // Step 2: while the rebuild writes, search still reads the live table.
+      const realIndex = sweepIndex.indexRevision.bind(sweepIndex);
+      vi.spyOn(sweepIndex, "indexRevision").mockImplementation(async (input, opts) => {
+        if (opts?.shadow && duringRebuild.length === 0) {
+          const hits = await new GoverningIndex({ embedder: renamed }).search(
+            ID.wsA,
+            query,
+            50,
+            actor("memberA"),
+          );
+          duringRebuild.push(
+            ...hits.filter((h) => h.documentId === documentId).map((h) => h.revisionId),
+          );
+        }
+        return realIndex(input, opts);
+      });
+
+      try {
+        const swept = await reindexGoverningRevisions({ index: sweepIndex });
+        expect(swept.failures).toEqual([]);
+        expect(swept.rebuiltWorkspaces).toContain(ID.wsA);
+        expect(swept.reindexed.map((r) => r.revisionId)).toContain(v3Id);
+        // v3 was in the live table while the rebuild ran...
+        expect(duringRebuild.length).toBeGreaterThan(0);
+        expect(new Set(duringRebuild)).toEqual(new Set([v3Id]));
+        // ...and is current, indexed and searchable after it.
+        const row = await db.governingDocumentRevision.findUnique({ where: { id: v3Id } });
+        expect(row?.indexState).toBe("indexed");
+        const after = (
+          await freshIndex(renamed).search(ID.wsA, query, 50, actor("memberA"))
+        ).filter((h) => h.documentId === documentId);
+        expect(after.length).toBeGreaterThan(0);
+        expect(after.every((h) => h.revisionId === v3Id)).toBe(true);
+      } finally {
+        await reindexGoverningRevisions({ index: freshIndex() });
+        await request(app())
+          .delete(`${base(ID.wsA)}/${documentId}`)
+          .set("x-test-user", "adminA");
+      }
+    });
+
     it("#1918 — the sweep touches nothing with the flag off", async () => {
       delete process.env.GOVERNING_DOCS_ENABLED;
       const index = freshIndex();

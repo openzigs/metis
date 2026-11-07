@@ -289,6 +289,25 @@ export function priceLedgerTokensExact(
  * synchronously; the durable insert + Socket.IO emit run on a microtask.
  */
 export function recordUsage(input: RecordUsageInput): RecordUsageResult {
+  return recordScoped({ projectId: input.projectId }, input);
+}
+
+/**
+ * #1947 — a model call billed to a workspace rather than a project: governing
+ * rule extraction reads a workspace's policy, and has no project. The row
+ * carries `workspaceId` and no `projectId`, and is priced exactly as
+ * {@link recordUsage} prices a project's; no `project:{id}` room is told.
+ */
+export function recordWorkspaceUsage(
+  input: Omit<RecordUsageInput, "projectId"> & { workspaceId: string },
+): RecordUsageResult {
+  return recordScoped({ workspaceId: input.workspaceId }, input);
+}
+
+function recordScoped(
+  scope: { projectId: string } | { workspaceId: string },
+  input: Omit<RecordUsageInput, "projectId">,
+): RecordUsageResult {
   const inputTokens = sanitize(input.inputTokens);
   const outputTokens = sanitize(input.outputTokens);
   const cacheReadTokens = sanitize(input.cacheReadTokens);
@@ -328,7 +347,7 @@ export function recordUsage(input: RecordUsageInput): RecordUsageResult {
   });
   queueMicrotask(() => {
     void persist({
-      projectId: input.projectId,
+      ...scope,
       sessionId: input.sessionId,
       provider: input.provider,
       model: input.model,
@@ -348,10 +367,10 @@ export function recordUsage(input: RecordUsageInput): RecordUsageResult {
     });
   });
 
-  if (emitter) {
+  if (emitter && "projectId" in scope) {
     try {
-      emitter(input.projectId, {
-        projectId: input.projectId,
+      emitter(scope.projectId, {
+        projectId: scope.projectId,
         sessionId: input.sessionId,
         provider: input.provider,
         model: input.model,
@@ -379,7 +398,9 @@ export async function recordUsageAndFlush(input: RecordUsageInput): Promise<Reco
 }
 
 async function persist(row: {
-  projectId: string;
+  /** One of the two: a project's call, or a workspace's (#1947). */
+  projectId?: string;
+  workspaceId?: string;
   sessionId: string;
   provider: string;
   model: string;
@@ -399,6 +420,7 @@ async function persist(row: {
   } catch (err) {
     log.error("TokenUsage persist failed", {
       projectId: row.projectId,
+      workspaceId: row.workspaceId,
       provider: row.provider,
       error: (err as Error).message,
     });

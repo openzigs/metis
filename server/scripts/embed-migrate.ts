@@ -259,9 +259,11 @@ async function main(): Promise<number> {
         `Reindexed ${results.length} project(s): ${embedded} chunks embedded, ` +
           `${resumed} resumed from interrupted runs.\n`,
       );
-      // Issue #1918 — the workspaces' governing-document tables.
+      // Issue #1918 — the workspaces' governing-document tables. #1947 — their
+      // failures go to stderr, with the projects'.
       const governingReport = formatGoverningReindex(governing, governingError);
-      if (governingReport) process.stdout.write(`${governingReport}\n`);
+      if (governingReport.stdout) process.stdout.write(`${governingReport.stdout}\n`);
+      if (governingReport.stderr) process.stderr.write(`${governingReport.stderr}\n`);
       const governingFailed = governingError !== undefined || (governing?.failures.length ?? 0) > 0;
       if (failures.length > 0) {
         process.stderr.write(`\n${failures.length} project(s) FAILED:\n`);

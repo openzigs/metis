@@ -7,6 +7,7 @@
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { LEGACY_COST_ROW_WHERE, sumLedgerCents } from "../finops/ledger-cost.js";
+import { workspaceLedgerWhere } from "../finops/ledger-totals.js";
 
 const log = createChildLogger("workspace-usage-rollup");
 
@@ -31,9 +32,10 @@ export async function rollupWorkspaceUsage(date?: Date): Promise<number> {
   let upsertCount = 0;
 
   for (const ws of workspaces) {
-    // Aggregate TokenUsage for projects in this workspace on this date
+    // Aggregate TokenUsage for projects in this workspace on this date, and the
+    // workspace's own project-less rows (governing rule extraction, #1947).
     const where = {
-      project: { workspaceId: ws.id },
+      ...workspaceLedgerWhere(ws.id),
       createdAt: { gte: dayStart, lt: dayEnd },
     };
     const [aggregation, legacy] = await Promise.all([
