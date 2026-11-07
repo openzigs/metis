@@ -53,7 +53,10 @@
  *     pass's repository is only a hint: a pass searches the whole project's
  *     graph, so a file its own repository does not hold resolves (and is
  *     stamped) as if no repository were named. Only a repository the citation
- *     itself names withholds the stamp when its graph lacks the file.
+ *     itself names withholds the stamp when its graph lacks the file. #1969 —
+ *     a symbol found by span is stamped only when every candidate symbol of
+ *     the file is in one graph; one found by the citation's own symbol id is
+ *     stamped with that symbol's graph.
  *   - Prisma is dependency-injected so the orchestration is unit-testable with
  *     no DB.
  */
@@ -247,7 +250,11 @@ function soleGraph(symbols: GraphSymbol[]): CitationVersion {
   return { codeGraphId: symbols[0].codeGraphId, commitSha: symbols[0].graph.commitSha };
 }
 
-/** The innermost symbol whose range encloses `[start, end]`, if any. */
+/**
+ * The innermost symbol whose range encloses `[start, end]`, if any. #1969 — a
+ * tie between equal spans (the same file in two graphs) goes to the lowest
+ * symbol id, never to whichever row the query returned first.
+ */
 function enclosingSymbol(
   symbols: GraphSymbol[],
   start: number,
@@ -257,7 +264,8 @@ function enclosingSymbol(
   for (const sym of symbols) {
     if (sym.startLine > start || sym.endLine < end) continue;
     const span = sym.endLine - sym.startLine;
-    if (!best || span < best.endLine - best.startLine) best = sym;
+    const bestSpan = best ? best.endLine - best.startLine : Infinity;
+    if (span < bestSpan || (span === bestSpan && sym.id < best!.id)) best = sym;
   }
   return best;
 }
@@ -290,6 +298,10 @@ function resolveTarget(
   const foreignRepo = target.repoConnectionId !== undefined && inRepo.length === 0;
   const versionOf = (v: CitationVersion): CitationVersion =>
     foreignRepo ? { codeGraphId: null, commitSha: null } : v;
+  // #1969 — a symbol found by the citation's own id names its graph. One found
+  // by span is stamped only when every candidate is in one graph: with the
+  // pass's repository lacking the file and several others holding it, or two
+  // graphs holding the same span, the graph would be a guess.
   if (target.startLine === undefined || target.endLine === undefined) {
     return {
       codeSymbolId: null,
@@ -300,16 +312,17 @@ function resolveTarget(
       ...NO_SYMBOL,
     };
   }
-  const sym =
-    (target.symbolId ? inFile.find((s) => s.id === target.symbolId) : undefined) ??
-    enclosingSymbol(inFile, target.startLine, target.endLine);
+  const own = target.symbolId ? inFile.find((s) => s.id === target.symbolId) : undefined;
+  const sym = own ?? enclosingSymbol(inFile, target.startLine, target.endLine);
   if (sym) {
     return {
       codeSymbolId: sym.id,
       filePath: sym.filePath,
       startLine: sym.startLine,
       endLine: sym.endLine,
-      ...versionOf({ codeGraphId: sym.codeGraphId, commitSha: sym.graph.commitSha }),
+      ...versionOf(
+        own ? { codeGraphId: sym.codeGraphId, commitSha: sym.graph.commitSha } : soleGraph(inFile),
+      ),
       symbolQualifiedName: sym.qualifiedName,
       symbolKind: sym.kind,
       symbolContentHash: sym.contentHash,

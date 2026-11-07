@@ -19,6 +19,12 @@ export interface GraphSymbol {
   language: string;
   startLine: number;
   endLine: number;
+  /**
+   * #1969 — the repository of the symbol's code graph, when the source read it
+   * (null: a graph with no repository). A path is a file only within its
+   * repository; a source that leaves this out keys files by path alone.
+   */
+  repoConnectionId?: string | null;
 }
 
 export interface GraphEdge {
