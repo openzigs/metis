@@ -241,6 +241,62 @@ Paired over the 11 requirements (each one's mean over the 3 runs; 95% t-interval
   and a test reads these intervals from them. The Sonnet re-read cost $2.15: six A7/A7O
   runs, with no new analysis.
 
+**The flag's gate reads both scorings (#1890).** Against A7O, both arms carry the same
+further requirements, so the union's artefact mostly cancels: on Sonnet A7 − A7O is
+−0.006 unioned and +0.029 on the first persisted requirement. `IMPACT_AGENT_SEEDS` seeds
+impact for every persisted requirement, and about 4 in 5 of them are not the first, so a
+regression confined to the further requirements would pass a gate that read only the
+first requirement. A7 is therefore gated against A7O on **both** scorings: its average
+table precision must be within 0.03 of A7O's on the first persisted requirement **and**
+on the union, and the report names the scoring that decided the result
+(`tableGuardGate` in `runner.ts`). The A7O − A0 and A7 − A0 comparisons, where the
+artefact is one-sided, stay on the first requirement alone. When either A7 or A7O was
+recorded before #1848 and has no per-requirement tables, only the union can be read, and
+the gate reads only the union. Read from the committed records:
+
+| Model | First persisted requirement (A7 against A7O) | Unioned (A7 against A7O) | Gate |
+|---|---|---|---|
+| `claude-sonnet-5-5` | 0.731 against 0.702 | 0.366 against 0.373 | **held on both** |
+| `deepseek-flash` | 0.648 against 0.760 | 0.461 against 0.466 | **failed on the first requirement** |
+
+#1823's decision stands: the flag is gated on the production model, where it holds on
+both scorings, so `IMPACT_AGENT_SEEDS` stays on. On DeepSeek, the iteration model, the
+guard row now reads as failing.
+
+**DeepSeek's A7 − A7O of −0.112, from the committed records (#1890).** The records hold
+each run's tables per persisted requirement, not the citations behind them. Paired per
+requirement (mean of 3 runs, first persisted requirement), the gap comes from 5 of the 11
+requirements:
+
+| Requirement | A7O | A7 | What A7 adds |
+|---|---|---|---|
+| Add a status flag to account | 1.000 | 0.556 | `profile`, `signon` (2 of 3 runs) |
+| Update product details in the catalog | 0.833 | 0.500 | `category` (every run) |
+| List items by product for the storefront | 1.000 | 0.778 | `category` (2 of 3 runs) |
+| Add a discontinued flag to product | 0.667 | 0.500 | `category` (1 run) |
+| Introduce a loyalty programme | 0.889 | 0.778 | `profile` (2 of 3 runs) |
+
+- **Every loss is an extra table.** A7 never loses a labelled table that A7O found. Each
+  loss is a sibling table of a mapper that A7's citations lead: `AccountMapper` adds
+  `profile` and `signon` to an account change, and the product and category statements
+  add `category` to a product change.
+- **Sonnet shows the same shape, less often.** On Sonnet, A7 adds `category` to the two
+  product requirements (−0.111 each). There, A7O already surfaces `profile` and `signon`
+  for the account flag, and A7 gains elsewhere: +0.333 on "Compute the checkout total for
+  an order".
+- **Not explained by the file-level translation.** Most citations reach the fixture as
+  their file, with no symbol (#1823's translation: the fixture's lines are not the
+  repository's), so they seed every statement of the cited mapper. Of the citations kept,
+  that share is about 61% on DeepSeek (402 of 659 over the 3 runs) and about 67% on Sonnet
+  (490 of 735). It is *lower* on the model with the larger
+  gap, so file-level widening alone does not account for the difference between the
+  models.
+- **Not yet localized to a code path.** Telling which files each model cites, and whether
+  a symbol-level citation would keep the sibling statements out, needs the stored
+  citations in the materialized eval database. That means a DeepSeek re-read of the
+  stored analyses, which has not been run. Whether to confirm on Sonnet depends on that
+  result: only if a DeepSeek fix changes the code path.
+
 **#1832's demotion of stale citations, measured (#1834).** The staleness slice reads the
 same analyses as A7 four ways. Each item's committed patch edits every function of one
 answer file (one comment line each), renames one file and deletes one file. It is then
