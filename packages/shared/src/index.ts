@@ -72,6 +72,8 @@ export * from "./requirements-run.js";
 // #1203 — criteria one synthesis item wrote for several requirements: the record
 // promotion keeps and the note the requirement card, review card and issue show.
 export * from "./shared-criteria.js";
+// Epic #1866 (#1868) — workspace governing documents, revisions, rules and rule edits.
+export * from "./governing.js";
 // Epic #1866 (#1875) — the governing-findings wording guard: METIS never claims
 // SOC 2 / GDPR compliance or certification, in the UI summary or in model prose.
 export * from "./governing-wording.js";
