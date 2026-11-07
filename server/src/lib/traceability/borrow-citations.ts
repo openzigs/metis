@@ -56,6 +56,7 @@ import {
   type BorrowCitationsInput,
   type BorrowCitationsResult,
 } from "@metis/shared";
+import { isSerializationFailure } from "../db/prisma-errors.js";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { createChildLogger } from "../logger.js";
@@ -78,17 +79,6 @@ const MAX_ATTEMPTS = 3;
 export const BORROW_RETRY_BACKOFF_MS = 20;
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-/**
- * A transaction the database aborted on a write conflict: Prisma's `P2034`, or
- * the driver adapter's own error when Postgres refuses the commit, which
- * `@prisma/adapter-pg` surfaces with no Prisma code as `TransactionWriteConflict`
- * for both a serialization failure (`40001`, measured) and a deadlock (`40P01`).
- */
-function isSerializationFailure(error: unknown): boolean {
-  const e = error as { code?: unknown; cause?: { kind?: unknown } | null } | null;
-  return e?.code === "P2034" || e?.cause?.kind === "TransactionWriteConflict";
-}
 
 export interface BorrowCitationsDeps {
   prisma?: BorrowPrisma;
