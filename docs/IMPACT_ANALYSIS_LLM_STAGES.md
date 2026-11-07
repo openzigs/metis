@@ -333,8 +333,8 @@ Pooled on the 39 held-out items, `claude-sonnet-5-5`, one run, 2026-11-06:
   `fresh`: line drift within a file is `fresh`, and `moved` means the symbol is now in
   another file. A few can still read `stale` (a file-level link past the end of its
   file, or a missing or ambiguous symbol, #1925). Arms A7R and A7RD (a no-op
-  re-ingest at the pinned commit, read without and with demotion) measure that case,
-  and they have not been run yet.
+  re-ingest at the pinned commit, read without and with demotion) measure that case
+  (#1915, below).
 - **Under this staleness, demotion costs ranking.** The patches left 346 citations stale
   and 167 moved (of 1,316 read), and A7SD set all 346 aside.
 - **This patch is the worst case for demotion.** A comment-only edit changes a cited
@@ -349,6 +349,37 @@ The run records are committed (`__fixtures__/staleness-sonnet-2026-11-06.partial
 `__fixtures__/staleness-table-guard-deepseek-2026-11-06.runs.jsonl`), and
 `staleness-results.test.ts` reads these figures from them. How the slice runs:
 eval-data/README.md, "Stale citations".
+
+**Demotion after a routine re-ingest, measured (#1915).** Arms A7R and A7RD re-ingest
+every repository at its pinned commit with no patch, then read without and with
+demotion. They were read beside A7, A7S and A7SD on fresh analyses: pooled on the 39
+held-out items, `claude-sonnet-5-5`, one run, 2026-11-07, on `main` at `a6577a7e`.
+
+| Pair                                           | Recall@5                             | MRR                       |
+| ---------------------------------------------- | ------------------------------------ | ------------------------- |
+| A7R − A7 (no-op re-ingest, against none)       | +0.000 [0.00, 0.00]                  | +0.000 [0.00, 0.00]       |
+| A7RD − A7R (demotion, after a no-op re-ingest) | **+0.000 [0.00, 0.00], p = 1.000**   | **+0.000 [0.00, 0.00]**   |
+| A7S − A7 (staleness, no demotion)              | −0.013 [−0.04, 0.00], p = 0.70, n.s. | +0.000                    |
+| A7SD − A7S (demotion, under staleness)         | **−0.097 [−0.17, −0.03], p = 0.004** | **−0.255 [−0.35, −0.16]** |
+
+- **After a routine re-ingest, demotion shows no cost.** A7RD equals A7R on every item
+  and every metric (Recall@5, Recall@10, edit precision, MRR).
+- **The no-op re-ingest left every citation `fresh`.** All 1,354 citations read
+  (596 Miniflux, 758 fixture) came back `fresh`: none `moved`, none `stale`, none set
+  aside. None of #1925's no-op `stale` cases (a file-level link past the end of its
+  file, a missing or ambiguous symbol) occurred on these items. With every citation in
+  one tier, the tier sort reorders nothing and demotion has nothing to act on. The zero
+  is therefore what this re-ingest had to give. It does not show what demotion costs
+  when the code has changed: a symbol moved to another file, or a stale citation set
+  aside. That cost is A7SD − A7S (176 moved, 338 stale under the patches).
+- **A7R equals A7**, so the re-ingest itself changes no reading.
+- **Under staleness the cost reproduces.** The patches left 338 of the 1,354 citations
+  stale and 176 moved, and A7SD set all 338 aside. A7SD − A7S is −0.097 on Recall@5
+  here, against −0.061 on #1834's analyses. Both readings are significant.
+
+The run records are committed (`__fixtures__/staleness-noop-reingest-sonnet-2026-11-07.partials.jsonl`),
+and `staleness-results.test.ts` reads these figures from them. Cost: $11.32 on Sonnet,
+read from the eval database's ledger.
 
 **#1798 is a deliberate, bounded exception to this rule.** Nothing additive raised
 Recall@5 (an appended file lands after the deterministic picks), so the edit-candidate

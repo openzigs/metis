@@ -588,7 +588,7 @@ Paired comparisons, pooled over the 39 items:
 - **A7K − A7: exactly 0** on every metric, as it must be by construction: with no
   re-ingest every citation is `unverified`. This shows the wiring, not what demotion
   costs when nothing is stale. That case, after a routine re-ingest, is A7RD − A7R
-  (#1899), and it is not yet measured.
+  (#1899), measured below (#1915).
 - **A7S − A7:** Recall@5 −0.017 [−0.07, +0.03]. No measurable difference.
 - **A7SD − A7S:** Recall@5 **−0.061 [−0.11, −0.02], p = 0.002**, and MRR **−0.189
   [−0.28, −0.11]**. Under staleness, demotion lowers both.
@@ -623,8 +623,8 @@ on fresh analyses: a patch cycle re-validates every citation of the repository, 
 reading of A7 after a cycle would see citations the cycle had moved back as `moved`.
 
 **Reading it.** A7K − A7 = 0 holds by construction, so it gives no reading on #1832's
-default either way. Demotion's cost after a routine re-ingest is A7RD − A7R (#1899), which
-is not yet measured. Under this patch, demotion costs ranking. A
+default either way. Demotion's cost after a routine re-ingest is A7RD − A7R (#1899):
+zero, below (#1915). Under this patch, demotion costs ranking. A
 comment-only edit makes a citation stale while its file is still the answer, which is the
 worst case for demotion. This slice does not model drift that moves the behaviour
 elsewhere.
@@ -643,6 +643,54 @@ elsewhere.
 
 The records are committed in `server/src/lib/eval/localization/__fixtures__/`, and
 `staleness-results.test.ts` reproduces every figure above from them.
+
+**The no-op re-ingest arms** (#1915, 2026-11-07, on `main` at `a6577a7e`). A0, A7, A7R,
+A7RD, A7S and A7SD were read together on fresh analyses: `claude-sonnet-5-5`, one run,
+both held-out corpora, one corpus per call. Keep each call to at most 2 items, so it fits a
+10-minute call: fixture slices of 1 or 2 items took 230–460 s. (Some Miniflux slices of this
+run were 3 items, 166–333 s; 2 is the safe size to repeat it with.)
+
+```bash
+pnpm eval:localization --corpus localization-02-fixture-portfolio \
+  --arms A0,A7,A7R,A7RD,A7S,A7SD --reference A7,A7R,A7S --runs 1 --budget 18 --embed --items 0:1
+# … then --items 1:3 … 13:15, and the Miniflux corpus 0:2 … 22:24, each with --resume <dir>
+pnpm eval:localization --merge <dir> --reference A7,A7R,A7S
+```
+
+| Arm | Miniflux R@5 | Fixture R@5 | Pooled R@5 vs A0 | MRR (Miniflux / fixture) |
+|---|---|---|---|---|
+| A7 | 0.87 | 0.73 | +0.288 [0.19, 0.39] | 0.93 / 0.63 |
+| A7R | 0.87 | 0.73 | +0.288 [0.19, 0.39] | 0.93 / 0.63 |
+| A7RD | 0.87 | 0.73 | +0.288 [0.19, 0.39] | 0.93 / 0.63 |
+| A7S | 0.87 | 0.70 | +0.276 [0.18, 0.38] | 0.93 / 0.63 |
+| A7SD | 0.71 | 0.70 | +0.179 [0.09, 0.27] | 0.59 / 0.51 |
+
+Paired comparisons, pooled over the 39 items:
+
+- **A7RD − A7R: 0 on every metric**, Recall@5 +0.000 [0.00, 0.00], p = 1.000, and MRR
+  +0.000 [0.00, 0.00]. After a routine re-ingest, demotion shows no cost.
+- **Why it is zero.** The no-op re-ingest left all 1,354 citations read `fresh` (596
+  Miniflux, 758 fixture). None was `moved` or `stale`, and none was set aside: none of
+  the no-op `stale` cases above occurred on these items. With every citation in one
+  tier, the tier sort reorders nothing. The pair does not measure demotion when the code
+  has changed (a symbol moved to another file, a stale citation set aside): that is
+  A7SD − A7S.
+- **A7R − A7: 0 on every metric.** The re-ingest itself changes no reading.
+- **A7S − A7:** Recall@5 −0.013 [−0.04, 0.00], p = 0.70. No measurable difference.
+- **A7SD − A7S:** Recall@5 **−0.097 [−0.17, −0.03], p = 0.004**, and MRR **−0.255
+  [−0.35, −0.16]**. The patches left 338 citations stale, 176 moved and 840 fresh, and
+  A7SD set all 338 aside. #1834's analyses read −0.061: both are significant.
+
+**Cost**, read from the eval database's ledger (`token_usages`):
+
+- Sonnet: $11.32 over 787 calls (Miniflux $4.75, fixture $6.57), all in the readings
+  above. The cap was $18.
+- DeepSeek: $0.11 over 58 calls, for the harness smoke run first (`deepseek-flash`, A7R
+  and A7RD, 1 item per corpus).
+
+The records are `__fixtures__/staleness-noop-reingest-sonnet-2026-11-07.partials.jsonl`,
+and `staleness-results.test.ts` pins the paired comparisons and the freshness counts (not
+the per-arm table).
 
 ### The analysis-agent arms (#1755)
 
