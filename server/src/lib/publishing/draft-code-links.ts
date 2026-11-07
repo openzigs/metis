@@ -48,7 +48,13 @@
  *   - any other https host (GitHub Enterprise Server, API under `/api/v3`)
  *                                            → that host's origin
  *   - not https, not a URL, or none set for an Enterprise connector → no link.
+ *
+ * WHICH LINKS (#1893). A link borrowed from a similar requirement
+ * (`similar-requirement`, #1839) is a hypothesis no analysis has checked, not
+ * this requirement's code, so it is never written into a draft: an issue
+ * published to GitHub or Jira carries no provenance to say so.
  */
+import { SIMILAR_REQUIREMENT_SOURCE } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { uniqueCodeLinks } from "../traceability/code-link-key.js";
@@ -486,7 +492,8 @@ async function readRequirementLinks(
   projectId: string,
   requirementId: string,
 ): Promise<RequirementCodeLinks> {
-  const where = { projectId, requirementId };
+  // #1893 — borrowed links are left out of the read AND the count past the cap.
+  const where = { projectId, requirementId, source: { not: SIMILAR_REQUIREMENT_SOURCE } };
   const read = await prisma.requirementCodeMapping.findMany({
     where,
     select: {

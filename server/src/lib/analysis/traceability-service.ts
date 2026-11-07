@@ -25,6 +25,7 @@ import {
   type TraceabilityMatrix,
   type TraceabilityTestLink,
   FINDING_SEVERITIES,
+  SIMILAR_REQUIREMENT_SOURCE,
 } from "@metis/shared";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { getAnalysisSnapshot } from "./analysis-service.js";
@@ -97,7 +98,13 @@ export async function getTraceabilityMatrix(
   const deterministicByRequirement = new Map<string, TraceabilityCodeLocation[]>();
   if (requirementIds.length > 0) {
     const mappingRows = await prisma.requirementCodeMapping.findMany({
-      where: { requirementId: { in: requirementIds }, projectId: snapshot.projectId },
+      // #1893 — a link borrowed from a similar requirement (#1839) is not this
+      // requirement's mapping, so the matrix never shows it as one.
+      where: {
+        requirementId: { in: requirementIds },
+        projectId: snapshot.projectId,
+        source: { not: SIMILAR_REQUIREMENT_SOURCE },
+      },
       select: {
         requirementId: true,
         codeSymbolId: true,

@@ -62,7 +62,7 @@ function toCodeNode(row: {
     startLine: row.startLine,
     endLine: row.endLine,
     confidence: row.confidence,
-    source: row.source as SpecMappingSource,
+    source: row.source as TraceabilityCodeNode["source"],
     isTest: classifyTestSymbol({ filePath: row.filePath }).isTestFile,
   };
 }

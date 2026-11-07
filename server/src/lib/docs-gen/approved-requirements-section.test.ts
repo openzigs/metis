@@ -104,8 +104,11 @@ describe("loadApprovedRequirements", () => {
       analysisId: "run-2",
       reviewStatus: "approved",
     });
-    // The code links are read within the project too.
-    expect(findMany.mock.calls[0][0].select.codeMappings.where).toEqual({ projectId: "p1" });
+    // The code links are read within the project too, never a borrowed one (#1893).
+    expect(findMany.mock.calls[0][0].select.codeMappings.where).toEqual({
+      projectId: "p1",
+      source: { not: "similar-requirement" },
+    });
   });
 
   it("reads the re-run whose requirements are all draft, not an older run's approvals (#1230)", async () => {

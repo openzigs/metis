@@ -9,7 +9,8 @@
  *   POST /api/projects/:projectId/requirements/:requirementId/borrow-citations
  *        { fromRequirementId, mappingIds? }  (#1839) copies the similar
  *        requirement's current code links as `similar-requirement` suggestions
- *   200  { success, data: { copied, skippedStale, skippedDuplicate } }
+ *   200  { success, data: { copied, skippedStale, skippedDuplicate, skippedBorrowed, notFound } }
+ *   400  BORROW_FROM_SELF when the two requirements are the same (#1893)
  *
  * Every route runs behind `requireProjectAccess()`: a caller who cannot reach the
  * project gets 404, and a requirement id of another project answers 404 from the

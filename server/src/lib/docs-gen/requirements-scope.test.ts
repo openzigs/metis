@@ -127,7 +127,11 @@ describe("loadScopedRequirements", () => {
     expect(rows.map((r) => r.id)).toEqual(["crit", "high", "low", "odd"]);
     const args = findMany.mock.calls[0]![0];
     expect(args.where).toEqual({ projectId: "p1", deletedAt: null, analysisId: "a1" });
-    expect(args.select.codeMappings.where).toEqual({ projectId: "p1" });
+    // #1893 — never a link borrowed from a similar requirement.
+    expect(args.select.codeMappings.where).toEqual({
+      projectId: "p1",
+      source: { not: "similar-requirement" },
+    });
   });
 
   it("reads no review pins for a scope that is not a review", async () => {
