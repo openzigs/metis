@@ -1295,8 +1295,10 @@ describe("A7's staleness readings on the table guard (#1834)", () => {
     );
     expect(sd.configuration).toContain("2 set aside by the stage");
     expect(s.configuration).toContain("0 set aside by the stage");
-    expect(s.seeding).toContain("the stage before #1832");
-    expect(sd.seeding).toContain("stale citations demoted");
+    expect(s.seeding).toContain("IMPACT_DEMOTE_STALE_CITATIONS off, as shipped (#1939)");
+    expect(sd.seeding).toContain(
+      "IMPACT_DEMOTE_STALE_CITATIONS forced on: stale citations demoted",
+    );
     // A7's runs were measured before any patch cycle; A7S and A7SD together, run by run.
     const order = store.records.flatMap((r) => (r.kind === "run" ? [`${r.reading} ${r.run}`] : []));
     expect(order.indexOf("A7 2")).toBeLessThan(order.indexOf("A7S 1"));

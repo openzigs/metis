@@ -207,7 +207,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
       indexState TEXT DEFAULT 'pending', autoApproveTrusted BOOLEAN DEFAULT false,
       aclSubjects TEXT DEFAULT '[]', isSpec BOOLEAN DEFAULT false, source TEXT NOT NULL DEFAULT 'upload', title TEXT, errorMessage TEXT,
       chunkCount INTEGER DEFAULT 0, uploadedById TEXT, uploadedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-      processedAt DATETIME, deletedAt DATETIME)`,
+      processedAt DATETIME, deletedAt DATETIME, updatedAt DATETIME)`,
       `CREATE TABLE knowledge_chunks (id TEXT PRIMARY KEY, projectId TEXT, documentId TEXT,
       position INTEGER, text TEXT, md5 TEXT, embeddingModel TEXT, chunkerIdentity TEXT,
       vectorRef TEXT, metadata TEXT, aclSubjects TEXT DEFAULT '[]', createdAt DATETIME DEFAULT CURRENT_TIMESTAMP)`,

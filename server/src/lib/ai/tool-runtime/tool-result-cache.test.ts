@@ -166,6 +166,36 @@ describe("withToolResultCache", () => {
     expect(cache.stats()).toMatchObject({ entries: 0, hit: 0, miss: 0, bypass: 2 });
   });
 
+  // #1864 — completeness is about the code graph, which search-knowledge never reads.
+  it.each(["search_code_graph", "search_code_symbols", "read_file_slice"])(
+    "an incomplete version bypasses %s, a code tool",
+    async (name) => {
+      const { t, execute } = tool(name);
+      const cache = new ToolResultCache();
+      const cached = withToolResultCache(t, {
+        cache: () => cache,
+        version: async () => version("v1", false),
+      });
+      await cached.execute({ q: "a" }, ctx());
+      await cached.execute({ q: "a" }, ctx());
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(cache.stats()).toMatchObject({ entries: 0, bypass: 2 });
+    },
+  );
+
+  it("an incomplete version still caches search-knowledge", async () => {
+    const { t, execute } = tool("search-knowledge");
+    const cache = new ToolResultCache();
+    const cached = withToolResultCache(t, {
+      cache: () => cache,
+      version: async () => version("v1", false),
+    });
+    await cached.execute({ q: "a" }, ctx());
+    await cached.execute({ q: "a" }, ctx());
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(cache.stats()).toMatchObject({ entries: 1, hit: 1, miss: 1, bypass: 0 });
+  });
+
   it("a version that cannot be read bypasses the cache and still runs the tool", async () => {
     const { t, execute } = tool();
     const cache = new ToolResultCache();

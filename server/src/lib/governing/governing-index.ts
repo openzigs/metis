@@ -8,7 +8,10 @@
  * one per-chunk field every backend persists (Lance and pgvector keep a fixed
  * column set), so a search filters to revisions by it. A new revision adds rows
  * and leaves the previous revision's rows in place; a search returns the current
- * revision's chunks unless it asks for superseded ones too.
+ * revision's chunks unless it asks for superseded ones too, and the previous
+ * revision's while the current one is not yet embedded (#1918,
+ * `searchableRevisions`). `governing-reindex.ts` rebuilds the tables after an
+ * embedding-model change.
  *
  * `search` checks the actor's workspace membership BEFORE it touches the table,
  * and re-reads the searchable revisions from the database, so a stale vector of
@@ -113,6 +116,37 @@ export class GoverningIndex {
     await this.space.store.ensureTable(key);
     await this.space.store.upsert(key, rows);
     return rows.length;
+  }
+
+  /**
+   * The embedding identity a row written now is tagged with, and the one a
+   * search filters on: one embed of a blank string, read the way
+   * {@link indexRevision} and {@link search} read theirs (#1918).
+   */
+  async activeEmbeddingIdentity(): Promise<string> {
+    const probe = await this.embedder.embed([" "]);
+    return probe.identity ?? probe.model;
+  }
+
+  /**
+   * The embedding identities stored for each revision in the workspace's table,
+   * keyed by revision id (a chunk id is `<revisionId>:<position>`) (#1918).
+   */
+  async storedIdentities(workspaceId: string): Promise<Map<string, Set<string>>> {
+    const refs = await this.space.store.listChunkRefs(this.space.tableKey(workspaceId));
+    const out = new Map<string, Set<string>>();
+    for (const ref of refs) {
+      const revisionId = ref.chunkId.split(":")[0];
+      const set = out.get(revisionId) ?? new Set<string>();
+      set.add(ref.embeddingModel);
+      out.set(revisionId, set);
+    }
+    return out;
+  }
+
+  /** Remove the workspace's governing table, every revision's rows with it (#1918). */
+  async dropWorkspaceTable(workspaceId: string): Promise<void> {
+    await this.space.store.dropTable(this.space.tableKey(workspaceId));
   }
 
   /**

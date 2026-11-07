@@ -154,23 +154,12 @@ export class SemanticResponseCache {
   async lookup(query: SemanticQuery, scope: SemanticCacheScope): Promise<CacheHit | null> {
     if (!this.config.enabled) return null;
 
-    const now = Date.now();
-    const ttlMs = this.config.ttlMinutes * 60 * 1000;
-    const normalized = normalizeQuery(query.text);
-    const live = this.entries.filter(
-      (e) => sameScope(e, scope) && now - e.createdAt.getTime() <= ttlMs,
-    );
-
-    // Newest first, so a re-stored answer wins over an older one.
-    const exact = [...live].reverse().find((e) => e.normalizedText === normalized);
-    if (exact) {
-      log.info("Cache hit", { model: scope.model, match: "exact", projectId: scope.projectId });
-      return { response: exact.response, similarity: 1, cachedAt: exact.createdAt, match: "exact" };
-    }
+    const exact = this.lookupExact(query.text, scope);
+    if (exact) return exact;
 
     let bestHit: CacheHit | null = null;
     let bestSimilarity = 0;
-    for (const entry of live) {
+    for (const entry of this.live(scope)) {
       const similarity = cosineSimilarity(query.embedding, entry.embedding);
       if (similarity >= this.config.threshold && similarity > bestSimilarity) {
         bestSimilarity = similarity;
@@ -193,6 +182,32 @@ export class SemanticResponseCache {
     }
 
     return bestHit;
+  }
+
+  /**
+   * #1865 — the exact half of {@link lookup}: the newest live entry in `scope`
+   * whose normalised question is `text`'s. Needs no embedding, so a caller
+   * tries it before embedding the question.
+   */
+  lookupExact(text: string, scope: SemanticCacheScope): CacheHit | null {
+    if (!this.config.enabled) return null;
+    const normalized = normalizeQuery(text);
+    const live = this.live(scope);
+    // Newest first, so a re-stored answer wins over an older one.
+    for (let i = live.length - 1; i >= 0; i--) {
+      const e = live[i]!;
+      if (e.normalizedText !== normalized) continue;
+      log.info("Cache hit", { model: scope.model, match: "exact", projectId: scope.projectId });
+      return { response: e.response, similarity: 1, cachedAt: e.createdAt, match: "exact" };
+    }
+    return null;
+  }
+
+  /** The unexpired entries stored under `scope`, oldest first. */
+  private live(scope: SemanticCacheScope): CacheEntry[] {
+    const now = Date.now();
+    const ttlMs = this.config.ttlMinutes * 60 * 1000;
+    return this.entries.filter((e) => sameScope(e, scope) && now - e.createdAt.getTime() <= ttlMs);
   }
 
   /**
@@ -314,6 +329,23 @@ export async function buildSemanticCacheScope(input: {
     callerScope: input.userId,
     conversationHash: sha256(JSON.stringify(turns.map((m) => [m.role, messageText(m)]))),
   };
+}
+
+/**
+ * #1865 — whether the project's content version is still the one `scope` was
+ * built under, read now: the check a turn makes before storing its answer, so
+ * nothing computed over content that changed during the turn is stored under
+ * the version it started with. Only the version is compared; the rest of the
+ * scope cannot change within a turn. A session with no project has no version
+ * to move.
+ */
+export async function contentVersionUnchanged(
+  scope: SemanticCacheScope,
+  version: (projectId: string) => Promise<ProjectContentVersion> = getProjectContentVersion,
+): Promise<boolean> {
+  if (!scope.projectId) return true;
+  const now = await version(scope.projectId);
+  return now.complete && now.key === scope.contentVersion;
 }
 
 /** Determines if a response should NOT be cached. */

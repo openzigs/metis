@@ -46,7 +46,10 @@ import {
   impactLlmEditRerankEnabled,
   rerankEditCandidates,
 } from "../lib/impact-analysis/edit-candidate-reranker.js";
-import { impactAgentSeedsEnabled } from "../lib/impact-analysis/agent-seeder.js";
+import {
+  impactAgentSeedsEnabled,
+  impactDemoteStaleCitationsEnabled,
+} from "../lib/impact-analysis/agent-seeder.js";
 import {
   parseRequirementIds,
   triggerImpactAnalysis,
@@ -484,9 +487,12 @@ export function impactRunDeps(actorId: string, projectIds: readonly string[]): I
   // #1759 — ON by default since #1823 (IMPACT_AGENT_SEEDS=0 turns it off).
   // Reuses stored citations: no model call.
   const agentSeeds = impactAgentSeedsEnabled();
+  // #1939 — #1832's demotion of stale citations: OFF by default.
+  const demoteStaleCitations = agentSeeds && impactDemoteStaleCitationsEnabled();
   return {
     ...(storedLinkSeeds ? { storedLinkSeeds } : {}),
     ...(agentSeeds ? { agentSeeds } : {}),
+    ...(demoteStaleCitations ? { demoteStaleCitations } : {}),
     ...(requestEditRanking ? { requestEditRanking } : {}),
     ...(editCandidateVerifier ? { editCandidateVerifier } : {}),
     ...(editCandidateReranker ? { editCandidateReranker } : {}),

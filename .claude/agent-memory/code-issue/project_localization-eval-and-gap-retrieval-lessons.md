@@ -44,3 +44,10 @@ metadata:
 - **Widening a shared arm-id set widens every CLI preflight keyed on it** (`STALENESS_ARM_IDS` → patch-set checks, table-corpus binding). Grep each consumer in `scripts/eval-localization.ts`; unit tests do not cover the CLI wiring.
 - **Re-derive doc tables from committed records.** A throwaway vitest file importing `guardRunTables`/`parseGuardRecord` re-checks `docs/IMPACT_ANALYSIS_LLM_STAGES.md` numbers in a minute; on #1910 it caught a wrong denominator and a wrong table name that a green suite could not.
 
+## Added 2026-11-07 (#1915)
+
+- **A no-op re-ingest at the pinned commit leaves every citation `fresh`, none `moved`** (1,354 of 1,354), so A7RD = A7R and A7R = A7 here. Line drift within a file stays `fresh` (#1925); `moved` needs a symbol relocated to another file, so the moved-tier cost hides inside A7SD − A7S.
+- **Sonnet slice timings (2026-11-07):** fixture 1 item ≈ 230 s, 2 items 380–460 s; Miniflux 3 items 230–330 s. Run one corpus per call (`--corpus`), never both in one `--items` slice.
+- **Miniflux's corpus vectors are not committed and an A7 run never records them**: a fresh worktree must run `--arms A0 --runs 1 --embed` once (free, ~5 min) or every slice re-embeds 3,533 symbols.
+- **Ledger spend:** `sqlite3 eval-data/.materialized/eval.db "SELECT model, COUNT(*), SUM(costUsd) FROM token_usages GROUP BY model"` (`costCents` is rounded per row; read `costUsd`).
+

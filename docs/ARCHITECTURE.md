@@ -3308,16 +3308,26 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   check and in the #1798 re-order (`relatedOutsideEditFiles`). A
   cited file the graph no longer holds is dropped and counted. The channel is
   `code-agent` in `seedEvidence`, whose `agentCitations` records used, stale and
-  led; the run summary gains one sentence. **#1832 — freshness:** the order is
-  the freshness tier first (`fresh`, then `moved`, then `unverified`, epic
-  #1827), then the surer, then citation order. A citation re-validation marked
-  `stale` (#1831) seeds nothing, neither in the lead nor in the tail. It is
-  counted as `agentCitations.demotedStaleCitations`, and `unverifiedCitations`
-  counts the seeded citations no re-ingest has checked yet. Both are returned on
-  the item's `seedEvidence` by `GET /api/impact-analyses/:id`, and the summary
-  sentence says how many were set aside. The rule is additive: a stale
-  citation's file that the hybrid search finds on its own stays where search
-  ranked it. With the flag off nothing changes. It REUSES the pass instead of running
+  led; the run summary gains one sentence. **#1832 — freshness, behind
+  `IMPACT_DEMOTE_STALE_CITATIONS` (off by default since #1939):** with the flag
+  on, the order is the freshness tier first (`fresh`, then `moved`, then
+  `unverified`, epic #1827), then the surer, then citation order. A citation
+  re-validation marked `stale` (#1831) seeds nothing, neither in the lead nor in
+  the tail. It is counted as `agentCitations.demotedStaleCitations`, and
+  `unverifiedCitations` counts the seeded citations no re-ingest has checked
+  yet. Both are returned on the item's `seedEvidence` by
+  `GET /api/impact-analyses/:id`, and the summary sentence says how many were
+  set aside. The rule is additive: a stale citation's file that the hybrid
+  search finds on its own stays where search ranked it. With the flag off (the
+  default) freshness neither filters nor reorders: the citations lead in
+  confidence order, then citation order, `demotedStaleCitations` is 0, and
+  `agentCitations.outOfDateCitations` counts the stale ones the run set aside or still used (one whose file left the graph counts only as dropped),
+  which the summary says were still used. The reason: on `claude-sonnet-5-5`,
+  pooled on 39 held-out items (#1915), demotion after the code changed cost
+  Recall@5 −0.097 [−0.17, −0.03] (A7SD − A7S, p = 0.004; MRR −0.255), and after
+  a routine re-ingest it changed nothing (A7RD − A7R = 0.000, every citation
+  `fresh`). The eval's A7, A7S and A7R run the shipped default; A7SD and A7RD
+  force the flag on. With `IMPACT_AGENT_SEEDS` off nothing changes. It REUSES the pass instead of running
   one, so the impact request makes no model call for it: #1755 measured a fresh
   Sonnet pass at a median 52 s on a three-repository project, against the 60 s
   impact deadline. The reason it leads instead of appending: the citations alone
