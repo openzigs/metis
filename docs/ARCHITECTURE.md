@@ -3283,13 +3283,13 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   search finds on its own stays where search ranked it. With the flag off (the
   default) freshness neither filters nor reorders: the citations lead in
   confidence order, then citation order, `demotedStaleCitations` is 0, and
-  `agentCitations.outOfDateCitations` counts the stale ones the run still used,
+  `agentCitations.outOfDateCitations` counts the stale ones the run set aside or still used (one whose file left the graph counts only as dropped),
   which the summary says were still used. The reason: on `claude-sonnet-5-5`,
   pooled on 39 held-out items (#1915), demotion after the code changed cost
   Recall@5 −0.097 [−0.17, −0.03] (A7SD − A7S, p = 0.004; MRR −0.255), and after
   a routine re-ingest it changed nothing (A7RD − A7R = 0.000, every citation
   `fresh`). The eval's A7, A7S and A7R run the shipped default; A7SD and A7RD
-  force the flag on. With the flag off nothing changes. It REUSES the pass instead of running
+  force the flag on. With `IMPACT_AGENT_SEEDS` off nothing changes. It REUSES the pass instead of running
   one, so the impact request makes no model call for it: #1755 measured a fresh
   Sonnet pass at a median 52 s on a three-repository project, against the 60 s
   impact deadline. The reason it leads instead of appending: the citations alone

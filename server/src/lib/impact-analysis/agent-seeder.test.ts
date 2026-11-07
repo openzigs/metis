@@ -584,6 +584,21 @@ describe("#1939 — demotion is OFF by default", () => {
     });
   });
 
+  it("flag off: a stale citation whose file left the graph counts as dropped only, never as out of date and used", async () => {
+    const out = await lead([
+      cite("gone/deleted.go", { confidence: 0.9, freshness: "stale" }),
+      cite(AGENT_FILES[1]!, { confidence: 0.4, freshness: "fresh" }),
+    ]);
+    expect(out.evidence?.agentCitations).toEqual({
+      used: 1,
+      stale: 1,
+      led: 1,
+      demotedStaleCitations: 0,
+      outOfDateCitations: 0,
+      unverifiedCitations: 0,
+    });
+  });
+
   it("demoteStale: false is the same as absent", async () => {
     const links = [
       cite(AGENT_FILES[0]!, { confidence: 0.9, freshness: "stale" }),

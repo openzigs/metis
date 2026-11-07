@@ -205,7 +205,6 @@ export async function leadWithAgentCitations(
   let fileRows: Awaited<ReturnType<AgentCitationDeps["loadFileSymbols"]>>;
   try {
     const stored = await deps.loadCitations(requirementId, projectId);
-    outOfDate = stored.filter(isStaleCitation).length;
     // #1832 — with the demotion flag (#1939), a stale citation leads nothing and
     // is not appended: set aside, counted. Without it, it seeds like any other.
     links = citationOrder(demote ? stored.filter((l) => !isStaleCitation(l)) : stored, demote);
@@ -236,12 +235,16 @@ export async function leadWithAgentCitations(
   let used = 0;
   let stale = 0;
   let unverified = 0;
+  // #1939 — out of date = set aside (demoted) or still used; a stale citation whose
+  // file left the graph is counted once, as dropped (`stale`), never as used.
+  outOfDate = demoted;
   for (const link of links) {
     if ((byFile.get(link.filePath) ?? []).length === 0) {
       stale++;
       continue;
     }
     used++;
+    if (isStaleCitation(link)) outOfDate++;
     // A stale citation (seeding only with the demotion flag off) is not unverified.
     if (!isStaleCitation(link) && tierOf(link) === FRESHNESS_TIER.unverified) unverified++;
     cited.set(link.filePath, [...(cited.get(link.filePath) ?? []), link]);

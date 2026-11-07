@@ -304,7 +304,7 @@ same analyses as A7 four ways. Each item's committed patch edits every function 
 answer file (one comment line each), renames one file and deletes one file. It is then
 re-ingested, which re-validates the stored citations (#1831). The arms:
 
-- **A7K:** no staleness, freshness hidden. This is the stage before #1832.
+- **A7K:** no staleness, demotion off (the shipped default since #1939). With no re-ingest every citation is `unverified`, so it reads the same as A7.
 - **A7S:** after the patch, without demotion. Since #1939 this is the shipped behaviour.
 - **A7SD:** after the patch, with demotion (`IMPACT_DEMOTE_STALE_CITATIONS` forced on).
 

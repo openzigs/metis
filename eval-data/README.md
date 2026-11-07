@@ -470,7 +470,7 @@ re-ingest) read what production ships, and A7SD and A7RD force the flag on:
 | `A7RD` | none: a no-op re-ingest at the pinned commit (#1899) | on (the flag forced on) |
 
 With no re-ingest every citation is still `unverified`, so A7K reads the same as A7
-**by construction**: hiding freshness can neither reorder nor set aside anything. A7K
+**by construction**: with demotion off, nothing is reordered or set aside. A7K
 therefore checks the wiring. It does not measure what demotion costs when nothing is
 stale (#1899). The production case is a routine re-ingest that changes nothing. Its
 re-validation (#1831) gives every citation a verdict, and #1832's freshness tier then
