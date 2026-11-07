@@ -208,6 +208,18 @@ export async function documentExists(workspaceId: string, documentId: string): P
   return row !== null;
 }
 
+/** True when this document already has a revision with this label. */
+export async function revisionLabelExists(
+  documentId: string,
+  revisionLabel: string,
+): Promise<boolean> {
+  const row = await prisma.governingDocumentRevision.findFirst({
+    where: { documentId, revisionLabel },
+    select: { id: true },
+  });
+  return row !== null;
+}
+
 /** Record the outcome of embedding a revision of this workspace. */
 export async function setRevisionIndexState(
   workspaceId: string,

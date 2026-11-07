@@ -11,6 +11,7 @@
  * Two workspaces, A and B, each hold a governing document for the isolation
  * tests: both fixtures are present whenever a cross-workspace read is refused.
  */
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -475,6 +476,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       expect(dup.status).toBe(409);
       expect(dup.body.error.code).toBe("REVISION_LABEL_EXISTS");
+
+      // #1869 review — a duplicate label is refused before the upload is parsed or
+      // its blob written: new bytes under a taken label leave no orphan file.
+      const blobsBefore = readdirSync(uploadsRoot, { recursive: true }).length;
+      const dupNew = await upload("adminA", ID.wsA, {
+        path: `${base(ID.wsA)}/${documentId}/revisions`,
+        body: Buffer.from(`A different policy body, never stored: ${randomUUID()}\n`),
+        fields: { revisionLabel: "v2", effectiveDate: "2026-08-01" },
+      });
+      expect(dupNew.status).toBe(409);
+      expect(dupNew.body.error.code).toBe("REVISION_LABEL_EXISTS");
+      expect(readdirSync(uploadsRoot, { recursive: true }).length).toBe(blobsBefore);
 
       await request(app())
         .delete(`${base(ID.wsA)}/${documentId}`)

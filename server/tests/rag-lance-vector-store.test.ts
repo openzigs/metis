@@ -104,6 +104,17 @@ describeIfLance("LanceVectorStore", () => {
     expect(hits[0].row.metadata.documentId).toBe("d2");
   });
 
+  it("applies the filter before ranking, so non-matching nearer rows cannot fill the top-k (#1869)", async () => {
+    const rows = [0, 1, 2, 3, 4, 5].map((i) => row(`stale-${i}`, vec(0), { documentId: "stale" }));
+    rows.push(
+      row("live-1", vec(7), { documentId: "live" }),
+      row("live-2", vec(8), { documentId: "live" }),
+    );
+    await store.upsert("p1", rows);
+    const hits = await store.search("p1", vec(0), 2, { documentIds: ["live"] });
+    expect(hits.map((h) => h.row.metadata.documentId)).toEqual(["live", "live"]);
+  });
+
   it("upsert is idempotent — same id replaces", async () => {
     await store.upsert("p1", [row("a", vec(0), { text: "first" })]);
     await store.upsert("p1", [row("a", vec(0), { text: "second" })]);

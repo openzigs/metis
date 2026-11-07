@@ -43,6 +43,7 @@ import {
   addRevision,
   createDocumentWithRevision,
   documentExists,
+  revisionLabelExists,
   getDocument,
   isWorkspaceLive,
   listDocuments,
@@ -87,6 +88,14 @@ const uploadFieldsSchema = revisionFieldsSchema.extend({
   title: z.string().trim().min(1).max(300),
   framework: z.string().trim().min(1).max(200).optional(),
 });
+
+function labelExists(): AppError {
+  return new AppError(
+    409,
+    "REVISION_LABEL_EXISTS",
+    "This document already has a revision with that label",
+  );
+}
 
 function ok<T>(data: T): ApiResponse<T> {
   return { success: true, data };
@@ -263,17 +272,16 @@ export function governingDocumentsRouter(deps: GoverningDocumentsRouterDeps = {}
       const actor = actorOf(req);
       if (!(await documentExists(workspaceId, documentId))) throw notFound();
       const fields = parseFields(revisionFieldsSchema, req.body);
+      // Refuse a taken label before the upload is parsed or its blob written. The
+      // P2002 catch below still covers two concurrent uploads of one label.
+      if (await revisionLabelExists(documentId, fields.revisionLabel)) throw labelExists();
       const { revision, filename } = await storeFile(req, workspaceId, fields);
       let created;
       try {
         created = await addRevision(workspaceId, documentId, revision);
       } catch (err) {
         if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
-          throw new AppError(
-            409,
-            "REVISION_LABEL_EXISTS",
-            "This document already has a revision with that label",
-          );
+          throw labelExists();
         }
         throw err;
       }
