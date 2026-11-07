@@ -1603,14 +1603,20 @@ Chat's read tools (`search_code_graph`, `search_code_symbols`, `read_file_slice`
 canonical arguments, the project, the caller and the project's **content version**
 (`server/src/lib/projects/content-version.ts`). The content version is a hash of:
 
-- each code graph's `commitSha` and `lastIndexedAt`, which only a finished ingest writes (#758);
+- each code graph's `commitSha` and `lastIndexedAt`, which only a finished ingest writes (#758),
+  leaving out graphs whose repo connection is soft-deleted (#1864);
 - the project's symbol-embedding counts per model;
-- every document row's indexing state;
-- the active embedder model.
+- the project's document-chunk counts per `embeddingModel`, which a reindex or retag moves
+  without touching any document row (#1864);
+- the documents: the row count, the latest `documents.updatedAt`, and the indexing state of
+  the rows written in the minute before it (#1864). These are two indexed queries. Before
+  #1864 every document row was read and hashed on each call;
+- the active embedder identity (`model`, or `model|pooling|dtype`, #792).
 
-A re-ingest, a document upload, edit or delete, or an embedder model change therefore
-makes every older entry unreachable. A project with a code graph that has no `commitSha`
-is not cached at all. Error results are never cached.
+A re-ingest, a reindex, a document upload, edit or delete, a removed repo, or an embedder
+model or pooling change therefore makes every older entry unreachable. While a code graph
+has no `commitSha`, the code tools are not cached; `search-knowledge` reads no code graph
+and still is (#1864). Error results are never cached.
 
 | Variable | Default | Effect |
 |---|---|---|

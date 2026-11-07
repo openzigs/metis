@@ -1040,6 +1040,12 @@ model Document {
   uploadedAt         DateTime  @default(now())
   processedAt        DateTime?
   deletedAt          DateTime?
+  /// Issue #1864 — set by Prisma on every create and update (null on rows
+  /// written before the column existed, until their next update). The
+  /// project content version (`projects/content-version.ts`) reads the
+  /// project's row count, the latest value and the rows written just before
+  /// it, instead of hashing every document row on each cached tool call.
+  updatedAt          DateTime? @updatedAt
 
   project    Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   uploadedBy User    @relation(fields: [uploadedById], references: [id])
@@ -1052,6 +1058,7 @@ model Document {
   @@index([projectId])
   @@index([projectId, status])
   @@index([projectId, indexState])
+  @@index([projectId, updatedAt])
   @@index([checksum])
   @@map("documents")
 }

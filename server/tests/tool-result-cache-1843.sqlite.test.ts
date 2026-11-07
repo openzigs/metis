@@ -7,7 +7,16 @@
  * graph's symbols and progress columns, and only the finished ingest stamps
  * `commitSha` and `lastIndexedAt` (`code-graph/ingest.ts`, #758). Runs over a
  * real SQLite database built by the real migration chain.
+ *
+ * #1864 — the version reads the document count, the latest `updatedAt` and the
+ * rows written just before it; a reindex retag, a soft-deleted repo and an
+ * incomplete graph (for search-knowledge) are covered here too, and the
+ * `documents.updatedAt` migration applies up -> reverse -> up.
  */
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import Database from "better-sqlite3";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,7 +41,10 @@ vi.mock("../src/lib/prisma.js", async () => {
 });
 vi.mock("../src/lib/rag/embedder.js", async (original) => ({
   ...(await original<typeof import("../src/lib/rag/embedder.js")>()),
-  getEmbedder: () => ({ model: state.embedModel }),
+  getEmbedder: () => ({
+    model: state.embedModel,
+    currentIdentity: async () => state.embedModel,
+  }),
 }));
 
 const { getProjectContentVersion } = await import("../src/lib/projects/content-version.js");
@@ -44,6 +56,8 @@ const { getToolResultCache, __resetToolResultCacheForTests } =
   await import("../src/lib/ai/tool-runtime/tool-result-cache.js");
 
 const ALICE = "u-alice";
+const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const MIGRATION = "20261117001864_issue1864_document_updated_at";
 const SHA_A1 = "a".repeat(40);
 const SHA_A2 = "b".repeat(40);
 const SHA_B1 = "c".repeat(40);
@@ -256,6 +270,92 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(v.codeShas[repoB]).toBeNull();
       });
 
+      it("#1864 Prisma stamps updatedAt on create, update and updateMany, and each moves the key", async () => {
+        const p = await project();
+        const id = await upload(p, "policy.md");
+        const stamp = async () =>
+          (await db.document.findUniqueOrThrow({ where: { id } })).updatedAt;
+        const created = await stamp();
+        expect(created).toBeInstanceOf(Date);
+        const k0 = await keyOf(p);
+
+        await new Promise((r) => setTimeout(r, 2));
+        await db.document.update({ where: { id }, data: { status: "ready" } });
+        const updated = await stamp();
+        expect(updated!.getTime()).toBeGreaterThan(created!.getTime());
+        const k1 = await keyOf(p);
+        expect(k1).not.toBe(k0);
+
+        await new Promise((r) => setTimeout(r, 2));
+        await db.document.updateMany({
+          where: { projectId: p },
+          data: { aclSubjects: '[{"kind":"role","value":"admin"}]' },
+        });
+        expect((await stamp())!.getTime()).toBeGreaterThan(updated!.getTime());
+        expect(await keyOf(p)).not.toBe(k1);
+      });
+
+      it("#1864 a second write in the same millisecond still moves the key", async () => {
+        const p = await project();
+        const id = await upload(p, "policy.md");
+        const at = new Date();
+        await db.document.update({ where: { id }, data: { updatedAt: at } });
+        const before = await getProjectContentVersion(p);
+        // An ACL edit stamped with the very same instant: count and latest write hold.
+        await db.document.update({
+          where: { id },
+          data: { aclSubjects: '[{"kind":"role","value":"admin"}]', updatedAt: at },
+        });
+        expect((await db.document.findUniqueOrThrow({ where: { id } })).updatedAt).toEqual(at);
+        expect((await getProjectContentVersion(p)).key).not.toBe(before.key);
+      });
+
+      it("#1864 moves when a reindex retags the chunks, with no document row touched", async () => {
+        const p = await project();
+        const documentId = await upload(p, "policy.md");
+        await db.knowledgeChunk.create({
+          data: {
+            projectId: p,
+            documentId,
+            position: 0,
+            text: "t",
+            md5: "m",
+            embeddingModel: "embed-a",
+          },
+        });
+        const docBefore = await db.document.findUniqueOrThrow({ where: { id: documentId } });
+        const before = await getProjectContentVersion(p);
+        // What `retagToActiveModel` / the reindex swap write: the chunk tag only.
+        await db.knowledgeChunk.updateMany({
+          where: { projectId: p },
+          data: { embeddingModel: "embed-b" },
+        });
+        expect(await db.document.findUniqueOrThrow({ where: { id: documentId } })).toEqual(
+          docBefore,
+        );
+        const after = await getProjectContentVersion(p);
+        expect(after.docsVersion).toBe(before.docsVersion);
+        expect(after.key).not.toBe(before.key);
+      });
+
+      it("#1864 moves when a repo connection is soft-deleted; its graph leaves the version", async () => {
+        const p = await project();
+        const repoA = await repo(p, "a");
+        const repoB = await repo(p, "b");
+        await finishedGraph(p, repoA, SHA_A1, ["Refund"]);
+        await finishedGraph(p, repoB, null, ["Invoice"]);
+        const before = await getProjectContentVersion(p);
+        expect(before.complete).toBe(false);
+
+        // What `repo-service` does: the connection row is kept with `deletedAt`, and so is its graph.
+        await db.repoConnection.update({ where: { id: repoB }, data: { deletedAt: new Date() } });
+        expect(await db.codeGraph.count({ where: { repoConnectionId: repoB } })).toBe(1);
+        const after = await getProjectContentVersion(p);
+        expect(after.key).not.toBe(before.key);
+        expect(after.codeShas).toEqual({ [repoA]: SHA_A1 });
+        expect(after.complete).toBe(true);
+      });
+
       it("never reads another project's rows", async () => {
         const p1 = await project();
         const p2 = await project();
@@ -327,6 +427,27 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(getToolResultCache().stats()).toMatchObject({ entries: 0, hit: 0, bypass: 2 });
       });
 
+      it("#1864 search-knowledge is cached on a project whose graph has no commit SHA", async () => {
+        const p = await project();
+        await finishedGraph(p, await repo(p, "a"), null, ["Refund"]);
+        await upload(p, "refund-policy.md");
+        const registry = new ToolRegistry();
+        const knowledge = vi.fn(async () => ({ text: "refund-policy.md", resultCount: 1 }));
+        registry.register({
+          name: "search-knowledge",
+          description: "search-knowledge",
+          schema: z.object({ query: z.string() }),
+          risk: "low",
+          exec: knowledge,
+        } as unknown as ToolDefinition);
+        const ctx = { sessionId: "s", userId: ALICE, projectId: p };
+        const set = await buildSessionToolset({ ctx, registry });
+        await set.resolve("search-knowledge")!.execute({ query: "refund" }, ctx);
+        await set.resolve("search-knowledge")!.execute({ query: "refund" }, ctx);
+        expect(knowledge).toHaveBeenCalledTimes(1);
+        expect(getToolResultCache().stats()).toMatchObject({ hit: 1, miss: 1, bypass: 0 });
+      });
+
       it("search-knowledge from the registry is cached too; a write-capable tool is not", async () => {
         const p = await project();
         await finishedGraph(p, await repo(p, "a"), SHA_A1, []);
@@ -367,6 +488,100 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         await set.resolve("search-knowledge")!.execute({ query: "refund" }, ctx);
         expect(knowledge).toHaveBeenCalledTimes(2);
       });
+    });
+  },
+);
+
+describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
+  "#1864 — documents.updatedAt migration: up -> reverse -> up",
+  () => {
+    let sqlite: MigratedSqlite;
+    const rollback = readFileSync(
+      path.join(SERVER_ROOT, "prisma", "rollbacks", `${MIGRATION}.sql`),
+      "utf-8",
+    );
+    const pgUp = readFileSync(
+      path.join(SERVER_ROOT, "prisma", "postgres", "migrations", MIGRATION, "migration.sql"),
+      "utf-8",
+    );
+    const pgDown = readFileSync(
+      path.join(SERVER_ROOT, "prisma", "postgres", "rollbacks", `${MIGRATION}.sql`),
+      "utf-8",
+    );
+    const withDb = <T>(fn: (db: Database.Database) => T): T => {
+      const db = new Database(sqlite.dbFile);
+      try {
+        return fn(db);
+      } finally {
+        db.close();
+      }
+    };
+    const columns = () =>
+      withDb((db) =>
+        (db.prepare(`PRAGMA table_info("documents")`).all() as Array<{ name: string }>).map(
+          (c) => c.name,
+        ),
+      );
+    const indexes = () =>
+      withDb((db) =>
+        (db.prepare(`PRAGMA index_list("documents")`).all() as Array<{ name: string }>)
+          .map((i) => i.name)
+          .sort(),
+      );
+    const row = () =>
+      withDb((db) =>
+        db.prepare(`SELECT "id","projectId","filename","checksum","status" FROM "documents"`).all(),
+      );
+    let seeded: unknown;
+    let before: string[];
+    let beforeIndexes: string[];
+
+    beforeAll(() => {
+      sqlite = createMigratedSqlite("1864-document-updated-at", { stopBefore: MIGRATION });
+      withDb((db) => {
+        db.pragma("foreign_keys = OFF");
+        db.prepare(
+          `INSERT INTO "documents" ("id","projectId","filename","mimeType","sizeBytes","storagePath","checksum","uploadedById")
+           VALUES ('d-1','p-1','a.md','text/markdown',1,'/a.md','sum','u-1')`,
+        ).run();
+      });
+      seeded = row();
+      before = columns();
+      beforeIndexes = indexes();
+    }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
+
+    afterAll(() => sqlite?.cleanup());
+
+    it(
+      "up adds the nullable column and its index; reverse restores the shape; up again re-applies",
+      () => {
+        expect(before).not.toContain("updatedAt");
+        sqlite.apply(MIGRATION);
+        expect(columns()).toEqual([...before, "updatedAt"]);
+        expect(indexes()).toEqual([...beforeIndexes, "documents_projectId_updatedAt_idx"].sort());
+        expect(row()).toEqual(seeded);
+        expect(withDb((db) => db.prepare(`SELECT "updatedAt" FROM "documents"`).get())).toEqual({
+          updatedAt: null,
+        });
+        withDb((db) => db.exec(rollback));
+        expect(columns()).toEqual(before);
+        expect(indexes()).toEqual(beforeIndexes);
+        expect(row()).toEqual(seeded);
+        sqlite.applyRemaining();
+        expect(columns()).toContain("updatedAt");
+        expect(row()).toEqual(seeded);
+      },
+      MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
+    );
+
+    it("the Postgres twin adds and drops the same column and index, idempotently", () => {
+      expect(pgUp).toMatch(/ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP\(3\);/);
+      expect(pgUp).toMatch(/CREATE INDEX IF NOT EXISTS "documents_projectId_updatedAt_idx"/);
+      expect(pgDown).toMatch(/DROP INDEX IF EXISTS "documents_projectId_updatedAt_idx";/);
+      expect(pgDown).toMatch(/DROP COLUMN IF EXISTS "updatedAt";/);
+      expect(pgDown).toMatch(
+        new RegExp(`DELETE FROM "_prisma_migrations" WHERE "migration_name" = '${MIGRATION}'`),
+      );
     });
   },
 );
