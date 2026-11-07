@@ -25,6 +25,15 @@ export interface LedgerTotals {
   calls: number;
 }
 
+/**
+ * #1947 — every ledger row a workspace is billed for: its projects' rows, and
+ * its workspace-level rows (no project: governing rule extraction). A row has
+ * `workspaceId` only when it has no project, so no row is counted twice.
+ */
+export function workspaceLedgerWhere(workspaceId: string): Prisma.TokenUsageWhereInput {
+  return { OR: [{ project: { workspaceId } }, { projectId: null, workspaceId }] };
+}
+
 /** Sum the ledger rows matching `where`. Three grouped reads; no rows are loaded. */
 export async function sumLedgerUsage(where: Prisma.TokenUsageWhereInput): Promise<LedgerTotals> {
   const [all, legacy, unpriced] = await Promise.all([

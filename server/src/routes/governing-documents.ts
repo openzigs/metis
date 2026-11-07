@@ -13,6 +13,9 @@
  *   DELETE /:documentId               admin+  soft delete
  *   GET    /:documentId/rules         member+ the current (or `?revisionId=`) revision's live rules
  *                                             and its extraction state (#1870)
+ *   POST   /:documentId/revisions/:revisionId/rule-extraction
+ *                                     admin+  retry a failed, unstarted or stale-running
+ *                                             extraction: 202, or 409 when done/running (#1947)
  *
  * /api/workspaces/:workspaceId/governing-rules — #1870.
  *
@@ -55,6 +58,8 @@ import {
   createDocumentWithRevision,
   documentExists,
   editRule,
+  extractionStatus,
+  isExtractionStartable,
   listRules,
   revisionLabelExists,
   getDocument,
@@ -358,6 +363,42 @@ export function governingDocumentsRouter(deps: GoverningDocumentsRouterDeps = {}
     if (!listing) throw notFound();
     res.json(ok({ documentId, ...listing }));
   });
+
+  /**
+   * #1947 — start a revision's rule extraction again: one that failed, never
+   * began, or has been `running` past `EXTRACTION_STALE_MS` (a server restart
+   * mid-run). 409 for one that is done or still fresh-running; the run itself
+   * is in the background, as at upload.
+   */
+  r.post(
+    "/:documentId/revisions/:revisionId/rule-extraction",
+    ...admin,
+    async (req: Request, res: Response) => {
+      const workspaceId = String(req.params.workspaceId);
+      const documentId = String(req.params.documentId);
+      const revisionId = String(req.params.revisionId);
+      const actor = actorOf(req);
+      const status = await extractionStatus(workspaceId, documentId, revisionId);
+      if (!status) throw new AppError(404, "NOT_FOUND", "Governing revision not found");
+      if (!isExtractionStartable(status.extractionState, status.extractionStartedAt)) {
+        throw new AppError(
+          409,
+          "EXTRACTION_NOT_RETRYABLE",
+          status.extractionState === "done"
+            ? "This revision's rules are already extracted"
+            : "This revision's rule extraction is still running",
+        );
+      }
+      scheduleExtraction(workspaceId, revisionId);
+      audit({
+        actor: { id: actor.id },
+        action: "governing_document.extraction_retry",
+        target: { type: "governing_document", id: documentId },
+        metadata: { workspaceId, revisionId, previousState: status.extractionState },
+      });
+      res.status(202).json(ok({ documentId, revisionId, scheduled: true }));
+    },
+  );
 
   r.delete("/:documentId", ...admin, async (req: Request, res: Response) => {
     const workspaceId = String(req.params.workspaceId);
