@@ -8,9 +8,11 @@ Labels: **not yet reviewed by a person** (see ANNOTATION.md).
 
 | Arm | Runs | Recall | Non-resembling recall | Precision | Citation accuracy | Citation coverage | Verdict accuracy | Hard errors | Ask rate | Clean negatives | Failures | $ / req | Tokens in / out per req | s / req |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| A0 | 3 | 0.99 [0.97, 1.00] | 1.00 [1.00, 1.00] | 0.11 [0.09, 0.15] | 0.61 [0.54, 0.67] | 0.97 [0.93, 1.00] | 0.30 [0.16, 0.47] | 0 | 0.00 [0.00, 0.00] | 0/0/0 of 6 | 1 | $0.0033 | 2386 / 2689 | 20.1 |
+| A0 | 3 | 0.99 [0.97, 1.00] | 1.00 [1.00, 1.00] | 0.11 [0.09, 0.15] | n/a† | 0.59 [0.51, 0.66] | 0.30 [0.16, 0.47] | n/a† | n/a† | 0/0/0 of 6 | 1 | $0.0033 | 2386 / 2689 | 20.1 |
 
-Hard errors: `compliant` on a pair whose truth is `gap` or `needs-ba-input`, summed over runs. Clean negatives: negative requirements on which the arm applied no rule, per run.
+Hard errors: `compliant` on a pair whose truth is `gap` or `needs-ba-input`, summed over runs. Clean negatives: negative requirements on which the arm ran and applied no rule, per run (a failure is an error, never a clean negative).
+
+† Fixed by construction, so it measures nothing and its bar is `n/a`: A0 hardErrors: A0 judges every rule gap, so it never says compliant; A0 askRate: A0 judges every rule gap, so it never asks for business input; A0 citationAccuracy: A0's reader attaches a snippet only when it verifies against the rule.
 
 ## Proposed pass thresholds (proposed, #1867)
 
@@ -19,8 +21,8 @@ Hard errors: `compliant` on a pair whose truth is `gap` or `needs-ba-input`, sum
 | A0 | overallRecall | ≥ 0.90 | 0.99 | yes |
 | A0 | nonResemblingRecall | ≥ 0.85 | 1.00 | yes |
 | A0 | precision | ≥ 0.60 | 0.11 | **no** |
-| A0 | citationAccuracy | ≥ 0.95 | 0.61 | **no** |
-| A0 | maxNoEvidenceCompliantErrors | ≤ 0 per run | 0 (worst run) | yes |
+| A0 | citationAccuracy | ≥ 0.95 | 1.00 | n/a† |
+| A0 | maxNoEvidenceCompliantErrors | ≤ 0 per run | 0 (worst run) | n/a† |
 
 ## Paired comparison with A0
 
@@ -51,7 +53,7 @@ Estimated at the repository's 4-characters-per-token heuristic; no model was cal
 | rerank | false |
 | filter | selectWebAgentEvidence |
 | agent | runAgent web (analysis/agent-runner.ts) |
-| reading | readWebFindings: named or quoted rules, every one judged gap |
+| reading | readWebFindings: named or quoted rules, every one judged gap, cited only by a snippet that verifies |
 | model | anthropic/deepseek-flash |
 
 Non-resembling pairs missed in every run: none.
