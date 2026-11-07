@@ -193,13 +193,21 @@ export const CODE_CITATION_FRESHNESS = ["fresh", "moved", "stale", "unverified"]
 export type CodeCitationFreshness = (typeof CODE_CITATION_FRESHNESS)[number];
 
 /** A code location in a traceability chain. */
+/**
+ * #1839 (epic #1828) — provenance of a requirement→code link copied from a
+ * similar requirement's saved link: a suggestion, never this requirement's own
+ * grounding. Written only to `RequirementCodeMapping`, so it is not one of the
+ * {@link SPEC_MAPPING_SOURCES} a client may create a mapping with.
+ */
+export const SIMILAR_REQUIREMENT_SOURCE = "similar-requirement" as const;
+
 export interface TraceabilityCodeNode {
   codeSymbolId: string | null;
   filePath: string;
   startLine: number | null;
   endLine: number | null;
   confidence: number;
-  source: SpecMappingSource;
+  source: SpecMappingSource | typeof SIMILAR_REQUIREMENT_SOURCE;
   /** #814 — the mapped file itself classifies as a test (`code-graph/test-conventions.ts`). */
   isTest: boolean;
   /**
@@ -217,6 +225,11 @@ export interface TraceabilityCodeNode {
   previousFilePath?: string | null;
   previousStartLine?: number | null;
   previousEndLine?: number | null;
+  /**
+   * #1839 — on a `similar-requirement` link, the requirement it was borrowed
+   * from; null otherwise. Absent on a spec→code link.
+   */
+  originRequirementId?: string | null;
 }
 
 /**

@@ -2090,6 +2090,12 @@ model RequirementCodeMapping {
   symbolQualifiedName String?
   symbolKind          String?
   symbolContentHash   String?
+  /// Issue #1839 (epic #1828) — on a `similar-requirement` row, the
+  /// requirement whose saved link was borrowed: a suggestion copied from a
+  /// similar requirement, not this requirement's own grounding. A plain id,
+  /// not a foreign key: requirements are soft-deleted, and the copy stays
+  /// if its origin goes. Null on every other row.
+  originRequirementId String?
 
   requirement Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
   project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)

@@ -100,4 +100,21 @@ describe("#1837 — the similarity middleware is scoped to the similarity routes
     expect(second.status).toBe(429);
     expect(second.body.error?.code).toBe("REQUIREMENT_SIMILARITY_RATE_LIMITED");
   });
+
+  it("the #1839 borrow-citations route carries the same guard (limiter, auth, project access)", async () => {
+    process.env.REQUIREMENT_SIMILARITY_RATE_LIMIT_MAX = "1";
+    const ip = "198.51.100.74";
+    const url = "/api/projects/p1/requirements/r1/borrow-citations";
+    const first = await request(app())
+      .post(url)
+      .set("X-Forwarded-For", ip)
+      .send({ fromRequirementId: "r2" });
+    expect(first.status).toBe(401);
+    const second = await request(app())
+      .post(url)
+      .set("X-Forwarded-For", ip)
+      .send({ fromRequirementId: "r2" });
+    expect(second.status).toBe(429);
+    expect(second.body.error?.code).toBe("REQUIREMENT_SIMILARITY_RATE_LIMITED");
+  });
 });
