@@ -553,7 +553,13 @@ export async function observeChange(
   change: ChangedRequirement,
   searcher: CodeSymbolSearcher,
   opts: RunImpactRecallOptions,
-): Promise<{ foundTables: string[]; foundCodeSymbols: string[]; matchQuality: MatchQuality }> {
+): Promise<{
+  foundTables: string[];
+  foundCodeSymbols: string[];
+  matchQuality: MatchQuality;
+  /** #1899 — stale citations the agent-citation stage set aside (#1832): the stage's own count. */
+  demotedStaleCitations: number;
+}> {
   const split = opts.splitSeeding;
   const impact = await computeProjectImpact(change, fixture.projectId, {
     // #1786 — the split seeding replaces the mapper for this change, with the
@@ -602,7 +608,12 @@ export async function observeChange(
   // #961 — report the requirement→code match quality alongside the scored sets so
   // threshold drift is visible per requirement. It does NOT feed the scorer, so
   // corpus-01's recall/precision aggregates stay byte-identical.
-  return { foundTables, foundCodeSymbols, matchQuality: impact.matchQuality };
+  return {
+    foundTables,
+    foundCodeSymbols,
+    matchQuality: impact.matchQuality,
+    demotedStaleCitations: impact.seedEvidence?.agentCitations?.demotedStaleCitations ?? 0,
+  };
 }
 
 /** Run the full eval across every fixture requirement and aggregate the scores. */

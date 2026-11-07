@@ -19,7 +19,7 @@ import { normalizeTable, scoreSet } from "../impact-recall/scorer.js";
 import { loadRecordedVectors } from "../recorded-vectors.js";
 import { EmbedCache, buildCorpusSearch } from "./search.js";
 import { pairedTInterval } from "./stats.js";
-import { TABLE_PRECISION_TOLERANCE } from "./runner.js";
+import { TABLE_PRECISION_TOLERANCE, tableGuardGate } from "./runner.js";
 import { MAPPER_SEEDING, fixtureSearchRows } from "./table-guard.js";
 import {
   createAgentSeedGuard,
@@ -493,6 +493,35 @@ describe("the guard's record file (#1823)", () => {
   ])("#1848 — refuses per-requirement tables that are %s", (_, pieces) => {
     expect(() => parseGuardRecord(a7Line(pieces))).toThrow(/malformed pieces/);
   });
+
+  it("#1890 — refuses per-requirement tables that miss a requirement the run scored", () => {
+    const line = JSON.stringify({
+      ...JSON.parse(a7Line({ "REQ-01": [{ requirementId: "p", title: "t", tables: [] }] })),
+      tables: { "REQ-01": [], "REQ-02": ["orders"], "REQ-03": [] },
+    });
+    expect(() => parseGuardRecord(line)).toThrow(
+      "malformed table-guard record: pieces miss requirement(s) REQ-02, REQ-03",
+    );
+  });
+
+  it("#1890 — refuses, by name, a recorded run whose pieces miss a fixture requirement", async () => {
+    const store = memoryStore();
+    const { deps } = fakes();
+    await createAgentSeedGuard({ ...deps, store }).A7();
+    const dropped = fixture.requirements[1]!.id;
+    // A damaged record: the requirement is gone from its tables and its pieces alike.
+    const damaged = store.records.map((r) => {
+      if (r.kind !== "run" || r.reading !== "A7" || r.run !== 2) return r;
+      const { [dropped]: _t, ...tables } = r.tables;
+      const { [dropped]: _p, ...pieces } = r.pieces!;
+      return { ...r, tables, pieces };
+    });
+    await expect(
+      createAgentSeedGuard({ ...deps, store: memoryStore(damaged) }).A7(),
+    ).rejects.toThrow(
+      `malformed table-guard record: A7 run 2's pieces miss fixture requirement(s) ${dropped}. Use a new partials directory`,
+    );
+  });
 });
 
 describe("a resumed table guard checks what it resumes against (#1847)", () => {
@@ -895,6 +924,59 @@ describe("guardPairedDifferences (#1847)", () => {
     ]);
   });
 
+  /**
+   * #1890 — the A7 gate read from the committed records through the guard and
+   * the runner's gate: the records' runs are all recorded, so no analysis or
+   * impact run is made (each analysis is stubbed as recorded).
+   */
+  async function gateOnCommitted(file: string) {
+    const { records } = await committed(file, "headline");
+    const model = records[0]!.model;
+    const analyses: GuardRecord[] = [1, 2, 3].flatMap((run) =>
+      fixture.requirements.map((q) => ({
+        kind: "analysis" as const,
+        requirement: q.id,
+        run,
+        model,
+        fingerprint: FINGERPRINT,
+        analysisId: `an-${q.id}-${run}`,
+        requirementIds: [],
+        costUsd: 0,
+        seconds: 0,
+      })),
+    );
+    const { deps } = fakes();
+    const analyze = vi.fn(deps.analyze);
+    const a7 = await createAgentSeedGuard({
+      ...deps,
+      analyze,
+      runs: 3,
+      model,
+      store: memoryStore([...analyses, ...records]),
+    }).A7();
+    expect(analyze).not.toHaveBeenCalled();
+    return tableGuardGate(a7, { measured: false, reason: "unused: A7 names its control" });
+  }
+
+  it("#1890 — on the committed records, Sonnet's A7 holds on both scorings", async () => {
+    expect(await gateOnCommitted("table-guard-sonnet-2026-11-06-pieces.runs.jsonl")).toEqual({
+      tableGuardPassed: true,
+      tableGuardAgainst: "A7O",
+      tableGuardDecidedBy:
+        "held on all 2: the analysis's first persisted requirement (0.731 against 0.702); " +
+        "every persisted requirement unioned (0.366 against 0.373)",
+    });
+  });
+
+  it("#1890 — on the committed records, DeepSeek's A7 fails on the first persisted requirement alone", async () => {
+    expect(await gateOnCommitted("table-guard-deepseek-2026-11-06-pieces.runs.jsonl")).toEqual({
+      tableGuardPassed: false,
+      tableGuardAgainst: "A7O",
+      tableGuardDecidedBy:
+        "failed on the analysis's first persisted requirement (0.648 against 0.760)",
+    });
+  });
+
   it("logs each comparison once, as soon as both its readings are complete", async () => {
     const lines: string[] = [];
     const guard = createAgentSeedGuard({
@@ -1010,6 +1092,56 @@ describe("#1848 — the analysis's first persisted requirement, not the union of
     expect(again.configuration).not.toContain("(#1848)");
     // With them, the headline differs from the union.
     expect(first.baseline!.tablePrecision).toBeGreaterThan(recorded("A7O"));
+  });
+
+  it("#1890 — gates A7 against A7O on the union too, beside the first persisted requirement", async () => {
+    const store = memoryStore();
+    const { deps } = fakes({ alsoFor: { text: CITED.text, also: order.text } });
+    const guard = createAgentSeedGuard({ ...deps, store });
+    const a7 = await guard.A7();
+    const a7o = await guard.A7O();
+    if (!a7.measured || !a7o.measured) throw new Error("both readings should be measured");
+    const union = (reading: string) =>
+      (runOf(store, reading, 1).tablePrecision + runOf(store, reading, 2).tablePrecision) / 2;
+    expect(a7.scoring).toBe("the analysis's first persisted requirement");
+    expect(a7.alsoGatedOn).toEqual([
+      {
+        scoring: "every persisted requirement unioned",
+        tablePrecision: union("A7"),
+        baselinePrecision: union("A7O"),
+      },
+    ]);
+    // The headline and the union differ here: the gate reads two numbers, not one twice.
+    expect(a7.alsoGatedOn![0]!.baselinePrecision).not.toBeCloseTo(a7.baseline!.tablePrecision, 3);
+    // A7O is gated against A0 on the split seeding, where the union does not cancel: one scoring.
+    expect(a7o.alsoGatedOn).toBeUndefined();
+    expect(a7o.scoring).toBeUndefined();
+  });
+
+  it("#1890 — reads a pre-#1848 A7O control beside post-#1848 A7 runs on the union alone", async () => {
+    const store = memoryStore();
+    const { deps } = fakes({ alsoFor: { text: CITED.text, also: order.text } });
+    await createAgentSeedGuard({ ...deps, store }).A7();
+    // A7O's control runs recorded before #1848 (no per-requirement tables), A7's after.
+    const mixed = store.records.map((r): GuardRecord => {
+      if (r.kind !== "run" || r.reading !== "A7O") return r;
+      const { pieces: _pieces, ...rest } = r;
+      return rest;
+    });
+    expect(
+      mixed.some((r) => r.kind === "run" && r.reading === "A7" && r.pieces !== undefined),
+    ).toBe(true);
+    const a7 = await createAgentSeedGuard({ ...deps, store: memoryStore(mixed) }).A7();
+    if (!a7.measured) throw new Error("should be measured");
+    const union = (reading: string) =>
+      (runOf({ records: mixed }, reading, 1).tablePrecision +
+        runOf({ records: mixed }, reading, 2).tablePrecision) /
+      2;
+    expect(a7.tablePrecision).toBeCloseTo(union("A7"), 10);
+    expect(a7.baseline!.tablePrecision).toBeCloseTo(union("A7O"), 10);
+    expect(a7.configuration).toContain("scored on every persisted requirement unioned;");
+    // One scoring readable on both: nothing more to gate on.
+    expect(a7.alsoGatedOn).toBeUndefined();
   });
 
   it("refuses an A7 run whose stored-citation lookup failed, rather than recording A7O under A7's name", async () => {
@@ -1274,6 +1406,58 @@ describe("A7's staleness readings on the table guard (#1834)", () => {
     const again = await createAgentSeedGuard({ ...same.deps, store }).A7SD();
     expect(again.measured).toBe(true);
     expect(same.cycles).toEqual([]);
+  });
+
+  it("#1925 — gates A7S against A7 and A7SD against A7S on the union too, beside the first persisted requirement", async () => {
+    const store = memoryStore();
+    const order = fixture.requirements.find(
+      (r) => r.text === "Store a shipping method on each order",
+    )!;
+    const { deps } = staleFakes({ freshness: "stale" }, undefined, undefined, {
+      alsoFor: { text: CITED.text, also: order.text },
+    });
+    const guard = createAgentSeedGuard({ ...deps, store });
+    const s = await guard.A7S();
+    const sd = await guard.A7SD();
+    if (!s.measured || !sd.measured) throw new Error("both readings should be measured");
+    const union = (reading: string) => {
+      const runs = store.records.filter((r) => r.kind === "run" && r.reading === reading);
+      expect(runs).toHaveLength(2);
+      return runs.reduce((n, r) => n + (r.kind === "run" ? r.tablePrecision : 0), 0) / 2;
+    };
+    for (const [reading, own, control] of [
+      [s, "A7S", "A7"],
+      [sd, "A7SD", "A7S"],
+    ] as const) {
+      expect(reading.scoring).toBe("the analysis's first persisted requirement");
+      expect(reading.alsoGatedOn).toEqual([
+        {
+          scoring: "every persisted requirement unioned",
+          tablePrecision: union(own),
+          baselinePrecision: union(control),
+        },
+      ]);
+      // The two scorings differ here: the gate reads two numbers, not one twice.
+      expect(reading.alsoGatedOn![0]!.baselinePrecision).not.toBeCloseTo(
+        reading.baseline!.tablePrecision,
+        3,
+      );
+    }
+  });
+
+  it("#1925 — reads A7S on the union alone when its A7 control was recorded before #1848", async () => {
+    const store = memoryStore();
+    const { deps } = staleFakes({ freshness: "stale" });
+    await createAgentSeedGuard({ ...deps, store }).A7S();
+    const mixed = store.records.map((r): GuardRecord => {
+      if (r.kind !== "run" || r.reading !== "A7") return r;
+      const { pieces: _pieces, ...rest } = r;
+      return rest;
+    });
+    const s = await createAgentSeedGuard({ ...deps, store: memoryStore(mixed) }).A7S();
+    if (!s.measured) throw new Error("should be measured");
+    expect(s.configuration).toMatch(/; scored on every persisted requirement unioned$/);
+    expect(s.alsoGatedOn).toBeUndefined();
   });
 
   it("pairs A7S with A7 and A7SD with A7S", async () => {

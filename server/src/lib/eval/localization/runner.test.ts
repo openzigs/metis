@@ -4,11 +4,13 @@ import type { LocalizationCorpus, LocalizationItem } from "./corpus.js";
 import type { CostMeter } from "./cost.js";
 import {
   EvalBudget,
+  TABLE_PRECISION_TOLERANCE,
   compareArms,
   memoisedA0TableGuard,
   poolHeldOutReports,
   runLocalizationEval,
   splitAgentPassesOf,
+  tableGuardGate,
   toMarkdownReport,
   toPooledMarkdownReport,
   type TableGuardReading,
@@ -694,7 +696,9 @@ describe("toMarkdownReport", () => {
     expect(md).toContain("### A0 test arm");
     expect(md).toContain("| llm | false |");
     expect(md).toContain("> **Stopped early** (budget");
-    expect(md).toContain("> At 3 items and a hit rate near 0.5");
+    // #1925 — sized on the items paired with A0 (none: A4 never ran), not the corpus's 3.
+    expect(md).toContain("> At 0 items and a hit rate near 0.5");
+    expect(md).toContain("> A4 pairs 0 of A0's 2 items.");
     expect(md).toContain("| A4 | recallAt5 |");
     expect(md).toContain("hit@5 (McNemar");
     expect(md).toContain("| I-1 | 1.00 / 1.00 / 0.50 / 0.50 |");
@@ -791,6 +795,94 @@ describe("a table guard read on another seeding (#1786)", () => {
     expect(md).not.toContain("A0 on its seeding");
     readings.A7 = { ...(readings.A7 as object), tablePrecision: 0.39 } as TableGuardReading;
     expect((await run()).comparisons[0]!.tableGuardPassed).toBe(false);
+  });
+
+  it("#1890 — gates on every scoring the reading carries, and says which one decided it", async () => {
+    const a7o = {
+      tablePrecision: 0.43,
+      runs: 3,
+      configuration: "off",
+      seeding: "split",
+      arm: "A7O",
+    };
+    const a7 = (headline: number, union: number): TableGuardReading => ({
+      measured: true,
+      tablePrecision: headline,
+      runs: 3,
+      configuration: "on",
+      seeding: "split + agent citations",
+      baseline: a7o,
+      scoring: "the first requirement",
+      alsoGatedOn: [{ scoring: "the union", tablePrecision: union, baselinePrecision: 0.36 }],
+    });
+    const run = (reading: TableGuardReading) =>
+      runLocalizationEval(corpus(2), {
+        arms: [arm("A0", () => 1), arm("A7", () => 1)],
+        runs: 1,
+        meter: new FakeMeter(),
+        tableGuard: async (a) => (a.id === "A0" ? { measured: true, ...mapper } : reading),
+      });
+    // The headline holds (0.41 ≥ 0.43 − 0.03); the union does not (0.32 < 0.36 − 0.03).
+    const unionFails = await run(a7(0.41, 0.32));
+    expect(unionFails.comparisons[0]).toMatchObject({
+      tableGuardPassed: false,
+      tableGuardAgainst: "A7O",
+      tableGuardDecidedBy: "failed on the union (0.320 against 0.360)",
+    });
+    const md = toMarkdownReport(unionFails);
+    expect(md).toContain("| FAILED (failed on the union (0.320 against 0.360)) |");
+    expect(md).toContain("  - also gated on the union: 0.320, next to A7O's 0.360");
+    // Both hold.
+    expect((await run(a7(0.41, 0.34))).comparisons[0]).toMatchObject({
+      tableGuardPassed: true,
+      tableGuardDecidedBy:
+        "held on all 2: the first requirement (0.410 against 0.430); the union (0.340 against 0.360)",
+    });
+    // The headline fails while the union holds.
+    expect((await run(a7(0.39, 0.36))).comparisons[0]).toMatchObject({
+      tableGuardPassed: false,
+      tableGuardDecidedBy: "failed on the first requirement (0.390 against 0.430)",
+    });
+    // A reading with one scoring says nothing more than held or FAILED.
+    const plain = tableGuardGate(
+      {
+        measured: true,
+        tablePrecision: 0.41,
+        runs: 3,
+        configuration: "c",
+        seeding: "s",
+        baseline: a7o,
+      },
+      { measured: true, ...mapper },
+    );
+    expect(plain).toEqual({ tableGuardPassed: true, tableGuardAgainst: "A7O" });
+  });
+
+  it("#1925 — holds on a drop of exactly the tolerance, on every scoring, and fails just past it", () => {
+    // 0.5 − 0.03 is the very number the gate computes, so the comparison is exact.
+    const atBar = 0.5 - TABLE_PRECISION_TOLERANCE;
+    const below = atBar - 2 ** -20;
+    const control = {
+      tablePrecision: 0.5,
+      runs: 3,
+      configuration: "off",
+      seeding: "s",
+      arm: "A7O",
+    };
+    const reading = (headline: number, union: number): TableGuardReading => ({
+      measured: true,
+      tablePrecision: headline,
+      runs: 3,
+      configuration: "on",
+      seeding: "s",
+      baseline: control,
+      scoring: "the first requirement",
+      alsoGatedOn: [{ scoring: "the union", tablePrecision: union, baselinePrecision: 0.5 }],
+    });
+    const unused = { measured: false, reason: "A7 names its control" } as const;
+    expect(tableGuardGate(reading(atBar, atBar), unused).tableGuardPassed).toBe(true);
+    expect(tableGuardGate(reading(below, atBar), unused).tableGuardPassed).toBe(false);
+    expect(tableGuardGate(reading(atBar, below), unused).tableGuardPassed).toBe(false);
   });
 
   it("is unread when neither the arm's baseline nor A0 was measured", async () => {
@@ -996,6 +1088,121 @@ describe("--reference: pairing with an arm other than A0 (#1806)", () => {
     expect(report.referenceComparisons).toEqual([]);
     expect(toMarkdownReport(report)).toContain(
       "No arm other than A0 and A12 was run: there is nothing to pair with it.",
+    );
+  });
+
+  it("prints the coverage lines the A0 tables carry: the gap, and an arm pairing fewer items (#1819)", async () => {
+    const meter = new FakeMeter();
+    // A13 charges $1 per item; the $2.5 cap stops it after 2 of the 6 items.
+    const report = await runLocalizationEval(corpus(6), {
+      arms: [
+        arm("A0", () => 1),
+        arm("A12", () => 2),
+        arm(
+          "A13",
+          () => 1,
+          () => (meter.spent += 1),
+        ),
+      ],
+      runs: 1,
+      meter,
+      budgetUsd: 2.5,
+      references: ["A12"],
+    });
+    expect(report.referenceComparisons.map((c) => [c.arm, c.items])).toEqual([["A13", 2]]);
+    const md = toMarkdownReport(report);
+    const a12Section = md.slice(md.indexOf("## Paired comparison with A12"));
+    expect(a12Section).toContain(`> At 2 items and a hit rate near 0.5`);
+    expect(a12Section).toContain("> A13 pairs 2 of A12's 6 items. At 2 items");
+
+    // Pooled: the same lines, over the pooled items.
+    const held = (id: LocalizationCorpus["name"], n: number) => {
+      const m = new FakeMeter();
+      return runLocalizationEval(corpus(n, "held-out", id), {
+        arms: [
+          arm("A0", () => 1),
+          arm("A12", () => 2),
+          arm(
+            "A13",
+            () => 1,
+            () => (m.spent += 1),
+          ),
+        ],
+        runs: 1,
+        meter: m,
+        budgetUsd: 2.5,
+        references: ["A12"],
+      });
+    };
+    const pooled = poolHeldOutReports([
+      await held("localization-01-miniflux-heldout", 6),
+      await held("localization-02-fixture-portfolio", 4),
+    ]);
+    expect(pooled.references).toEqual([{ id: "A12", items: 10 }]);
+    const pooledSection = toPooledMarkdownReport(pooled).slice(
+      toPooledMarkdownReport(pooled).indexOf("## Paired comparison with A12"),
+    );
+    expect(pooledSection).toContain("> At 4 items and a hit rate near 0.5");
+    expect(pooledSection).toContain("> A13 pairs 4 of A12's 10 items. At 4 items");
+  });
+
+  it("#1925 — the per-corpus A0 table carries the reference table's coverage lines", async () => {
+    const meter = new FakeMeter();
+    // A13 charges $1 per item; the $2.5 cap stops it after 2 of the 6 items.
+    const report = await runLocalizationEval(corpus(6), {
+      arms: [
+        arm("A0", () => 1),
+        arm("A12", () => 2),
+        arm(
+          "A13",
+          () => 1,
+          () => (meter.spent += 1),
+        ),
+      ],
+      runs: 1,
+      meter,
+      budgetUsd: 2.5,
+    });
+    expect(report.comparisons.map((c) => [c.arm, c.items])).toEqual([
+      ["A12", 6],
+      ["A13", 2],
+    ]);
+    // The gap its fewest paired items can resolve, as the reference and pooled tables say.
+    expect(report.detectableGap).toMatch(/^At 2 items/);
+    const md = toMarkdownReport(report);
+    const a0Section = md.slice(
+      md.indexOf("## Paired comparison with A0"),
+      md.indexOf("## Per requirement"),
+    );
+    expect(a0Section).toContain("> At 2 items and a hit rate near 0.5");
+    expect(a0Section).toContain("> A13 pairs 2 of A0's 6 items. At 2 items");
+    expect(a0Section).not.toContain("> A12 pairs");
+  });
+
+  it("prints no coverage warning when every arm pairs all of the reference's items (#1819)", async () => {
+    const md = toMarkdownReport(await reportOf(12));
+    expect(md.slice(md.indexOf("## Paired comparison with A12"))).toContain(
+      "> At 12 items and a hit rate near 0.5",
+    );
+    expect(md).not.toMatch(/pairs \d+ of A1\d's/);
+  });
+
+  it("keeps the pooled reference section when the reference is the only arm besides A0 (#1819)", async () => {
+    const only = (id: LocalizationCorpus["name"]) =>
+      runLocalizationEval(corpus(2, "held-out", id), {
+        arms: [arm("A0", () => 1), arm("A12", () => 2)],
+        runs: 1,
+        meter: new FakeMeter(),
+        references: ["A12"],
+      });
+    const pooled = poolHeldOutReports([
+      await only("localization-01-miniflux-heldout"),
+      await only("localization-02-fixture-portfolio"),
+    ]);
+    expect(pooled.references).toEqual([{ id: "A12", items: 4 }]);
+    expect(pooled.referenceComparisons).toEqual([]);
+    expect(toPooledMarkdownReport(pooled)).toContain(
+      "## Paired comparison with A12 (`--reference A12`), pooled\n\nNo arm other than A0 and A12 was run: there is nothing to pair with it.",
     );
   });
 
@@ -1212,7 +1419,7 @@ describe("agent-pass counts and split passes in the report (#1810)", () => {
     ).toBeUndefined();
     const md = toMarkdownReport(report);
     expect(md).toContain(
-      "After the staleness patch's re-ingest (#1831): 8 stale, 4 moved, 4 fresh, 0 unverified citation(s); 8 set aside by the stage (#1832).",
+      "After the arm's re-ingest (#1831): 8 stale, 4 moved, 4 fresh, 0 unverified citation(s); 8 set aside by the stage (#1832).",
     );
     expect(md).toContain("0 set aside by the stage");
     expect(md.split("\n").filter((l) => l.startsWith("- A7 analyses"))[0]).not.toContain(

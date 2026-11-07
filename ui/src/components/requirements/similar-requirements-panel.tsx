@@ -25,9 +25,10 @@
  */
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type Query, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
+  BORROWABLE_FRESHNESS,
   SIMILAR_REQUIREMENT_SOURCE,
   type BorrowCitationsResult,
   type SimilarRequirementCodeLink,
@@ -56,17 +57,53 @@ const LABEL_TEXT: Record<SimilarRequirementLabel, string> = {
 };
 
 export function similarRequirementsKey(projectId: string, requirementId: string) {
-  return ["similar-requirements", projectId, requirementId] as const;
+  return [...similarRequirementsPrefix(projectId), requirementId] as const;
 }
 
-/** "3 code links: 2 fresh, 1 stale" — `moved` links were re-pointed and count as fresh. */
+/** #1903 — the prefix of every similar-requirements list of a project. */
+export function similarRequirementsPrefix(projectId: string) {
+  return ["similar-requirements", projectId] as const;
+}
+
+/**
+ * #1902 — the links the requirement holds of its own: a link it borrowed from
+ * a similar requirement (#1839) is a hypothesis no analysis has checked.
+ */
+function ownCodeLinks(links: SimilarRequirementItem["codeLinks"]) {
+  return links.filter((l) => l.source !== SIMILAR_REQUIREMENT_SOURCE);
+}
+
+/** #1914 — the files it links of its own: two links into one file are one file. */
+function ownLinkedFiles(links: SimilarRequirementItem["codeLinks"]): number {
+  return new Set(ownCodeLinks(links).map((l) => l.filePath)).size;
+}
+
+/**
+ * #1914 — a cached similar list that lists `requirementId`: the lists a borrow
+ * into it changes. The others are not refetched, since each refetch reads the
+ * project's requirements and may call the verifier model.
+ */
+function listsRequirement(requirementId: string) {
+  return (query: Query): boolean => {
+    const data = query.state.data as { items?: SimilarRequirementItem[] } | undefined;
+    return data?.items?.some((i) => i.requirementId === requirementId) ?? false;
+  };
+}
+
+/**
+ * "3 code links: 2 fresh, 1 stale" — `moved` links were re-pointed and count as
+ * fresh. A borrowed link is counted apart (#1902), never as fresh or stale.
+ */
 export function codeLinkSummary(links: SimilarRequirementItem["codeLinks"]): string {
   if (links.length === 0) return "No code links";
-  const fresh = links.filter((l) => l.freshness === "fresh" || l.freshness === "moved").length;
-  const stale = links.filter((l) => l.freshness === "stale").length;
-  const unchecked = links.length - fresh - stale;
+  const own = ownCodeLinks(links);
+  const fresh = own.filter((l) => l.freshness === "fresh" || l.freshness === "moved").length;
+  const stale = own.filter((l) => l.freshness === "stale").length;
+  const unchecked = own.length - fresh - stale;
+  const borrowed = links.length - own.length;
   const parts = [`${fresh} fresh`, `${stale} stale`];
   if (unchecked > 0) parts.push(`${unchecked} not yet checked`);
+  if (borrowed > 0) parts.push(`${borrowed} borrowed`);
   return `${links.length} code link${links.length === 1 ? "" : "s"}: ${parts.join(", ")}`;
 }
 
@@ -78,9 +115,6 @@ function requirementHref(projectId: string, item: SimilarRequirementItem): strin
 function nameOf(item: SimilarRequirementItem): string {
   return item.key ? `${item.key} ${item.title}` : item.title;
 }
-
-/** The freshness a link must hold to be borrowed (#1839): known to point at current code. */
-const BORROWABLE = new Set(["fresh", "moved"]);
 
 export interface BorrowPlan {
   /** Links the borrow copies (unless this requirement already holds the same code). */
@@ -96,7 +130,7 @@ export function borrowPlan(links: readonly SimilarRequirementCodeLink[]): Borrow
   const plan: BorrowPlan = { copy: [], needsRecheck: [], borrowed: [] };
   for (const link of links) {
     if (link.source === SIMILAR_REQUIREMENT_SOURCE) plan.borrowed.push(link);
-    else if (BORROWABLE.has(link.freshness)) plan.copy.push(link);
+    else if (BORROWABLE_FRESHNESS.has(link.freshness)) plan.copy.push(link);
     else plan.needsRecheck.push(link);
   }
   return plan;
@@ -108,8 +142,12 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 export function borrowResultText(result: BorrowCitationsResult, from: string): string {
   const skipped = [
     result.skippedDuplicate > 0 ? `${result.skippedDuplicate} already linked` : null,
-    result.skippedStale > 0 ? `${result.skippedStale} need a re-check` : null,
-    result.skippedBorrowed > 0 ? `${result.skippedBorrowed} borrowed themselves` : null,
+    result.skippedStale > 0
+      ? plural(result.skippedStale, "needs a re-check", "need a re-check")
+      : null,
+    result.skippedBorrowed > 0
+      ? plural(result.skippedBorrowed, "borrowed itself", "borrowed themselves")
+      : null,
     result.notFound > 0 ? `${result.notFound} no longer found` : null,
   ].filter((part): part is string => part !== null);
   const head =
@@ -173,8 +211,11 @@ function BorrowAction({
       setConfirming(false);
       toast.success(borrowResultText(result, item.key ?? item.title));
       await queryClient.invalidateQueries({ queryKey: traceabilityKey(projectId, requirementId) });
+      // #1903 — other cards list this requirement, with the code links it now
+      // holds. #1914 — only those: no other list changed.
       await queryClient.invalidateQueries({
-        queryKey: similarRequirementsKey(projectId, requirementId),
+        queryKey: similarRequirementsPrefix(projectId),
+        predicate: listsRequirement(requirementId),
       });
     },
     onError: (err) =>
@@ -334,7 +375,8 @@ function DuplicateWarning({
     onError: (err) => toast.error(apiErrorMessage(err as ApiError, "Could not save your answer")),
   });
   const busy = mark.isPending || dismiss.isPending;
-  const links = item.codeLinks.length;
+  // #1902 — the code it links of its own, not what it borrowed. #1914 — in files.
+  const links = ownLinkedFiles(item.codeLinks);
   return (
     <div
       role="alert"
@@ -459,6 +501,7 @@ export function DraftSimilarRequirements({
 
   if (items === null) return null;
   const duplicate = items.find((i) => i.label === "duplicate");
+  const duplicateLinks = duplicate ? ownLinkedFiles(duplicate.codeLinks) : 0;
   return (
     <section
       className="mt-2 space-y-2"
@@ -468,8 +511,8 @@ export function DraftSimilarRequirements({
       {duplicate ? (
         <p role="alert" className="rounded border border-warning/40 bg-warning-muted p-2 text-xs">
           <strong>Before you add this:</strong> {nameOf(duplicate)} looks like a duplicate
-          {duplicate.codeLinks.length > 0
-            ? ` (it already links to ${duplicate.codeLinks.length} file${duplicate.codeLinks.length === 1 ? "" : "s"})`
+          {duplicateLinks > 0
+            ? ` (it already links to ${duplicateLinks} file${duplicateLinks === 1 ? "" : "s"})`
             : ""}
           .
         </p>

@@ -1,11 +1,12 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import {
   MIN_NEGATIVE_ITEMS,
   MIN_NON_RESEMBLING_ITEMS,
   PROPOSED_THRESHOLDS,
+  SHORT_SUBJECT_WORDS,
   contentStems,
   evaluationLeaks,
   expectedThresholds,
@@ -152,6 +153,26 @@ describe("validateGoverningCorpus — the drift it must catch", () => {
     expect(evaluationLeaks("Effective 2026-01-01; see section 4.")).toEqual([]);
   });
 
+  it("FAILS on a requirement, rule summary or policy title that tells the model it is an evaluation (#1900)", async () => {
+    const { manifest, files } = await committed();
+    const m = clone(manifest);
+    m.items[0]!.text += " This is a synthetic eval item.";
+    m.items[1]!.title = "Fixture: export";
+    m.rules[0]!.summary += " (ground truth for #1867)";
+    m.policy.title = "METIS sample policy";
+    const problems = validateGoverningCorpus(m, files);
+    expect(problems).toContain(
+      `item ${m.items[0]!.id}: tells the model it is an evaluation (eval, synthetic)`,
+    );
+    expect(problems).toContain(
+      `item ${m.items[1]!.id}: tells the model it is an evaluation (Fixture)`,
+    );
+    expect(problems).toContain(
+      `rule ${m.rules[0]!.id}'s summary: tells the model it is an evaluation (#1867, ground truth)`,
+    );
+    expect(problems).toContain("the policy title: tells the model it is an evaluation (METIS)");
+  });
+
   it("FAILS when v2's changedRules does not match its text", async () => {
     const { manifest, files } = await committed();
     const m = clone(manifest);
@@ -284,6 +305,39 @@ describe("the text checks", () => {
     ).toEqual(["finan", "recor", "team"]);
   });
 
+  it("contentStems keeps short subject words, plural or not (#1900)", () => {
+    expect([...contentStems("Log the VAT and tax on PII; the logs list taxes")].sort()).toEqual([
+      "list",
+      "log",
+      "logs",
+      "pii",
+      "tax",
+      "taxes",
+      "vat",
+    ]);
+    expect(SHORT_SUBJECT_WORDS.has("log")).toBe(true);
+    // Other short words still carry nothing.
+    expect([...contentStems("the box was on top of it")]).toEqual([]);
+    expect(sharedVocabulary("keep the logs", "every log entry")).toEqual(["log"]);
+  });
+
+  it("contentStems folds the past, -ing and -ation forms of a short subject word too (#1920)", () => {
+    for (const [inflected, base] of [
+      ["logging", "log"],
+      ["logged", "log"],
+      ["taxation", "tax"],
+      ["taxed", "tax"],
+      ["keyed", "key"],
+      ["keys", "key"],
+      ["paying", "pay"],
+    ] as const) {
+      expect(contentStems(inflected).has(base), inflected).toBe(true);
+    }
+    expect(sharedVocabulary("logging every login", "keep a log")).toEqual(["log"]);
+    // A word that only starts like one is not folded onto it.
+    expect([...contentStems("logic taxi")].sort()).toEqual(["logic", "taxi"]);
+  });
+
   it("sharedVocabulary is empty for the GR-01 pair and not for a resembling one", () => {
     expect(
       sharedVocabulary("download last month's invoices", "bulk extraction of financial records"),
@@ -329,8 +383,14 @@ describe("loading", () => {
     expect(() => resolveGoverningCorpusDir("nope")).toThrow(/unknown governing corpus: "nope"/);
   });
 
+  const tempDirs: string[] = [];
+  afterAll(async () => {
+    await Promise.all(tempDirs.map((d) => fs.rm(d, { recursive: true, force: true })));
+  });
+
   async function tempCorpus(mutate: (m: GoverningCorpusManifest) => void): Promise<string> {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "governing-"));
+    tempDirs.push(dir);
     const { manifest } = await committed();
     for (const f of manifest.files) await fs.copyFile(path.join(DIR, f), path.join(dir, f));
     const m = clone(manifest);

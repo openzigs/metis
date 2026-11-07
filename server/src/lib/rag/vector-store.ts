@@ -573,6 +573,7 @@ interface LanceSchema {
 
 interface LanceQuery {
   limit(value: number): LanceQuery;
+  /** `vectordb` 0.21.2 `Query.prefilter` (`node_modules/vectordb/dist/query.d.ts`). */
   prefilter(value: boolean): LanceQuery;
   filter(value: string): LanceQuery;
   where(value: string): LanceQuery;
@@ -1292,9 +1293,11 @@ export class LanceVectorStore implements VectorStore {
     }
     let q: LanceQuery = table.search(query).limit(k).metricType("cosine");
     const where = buildLanceWhere(filter);
-    // #1869 — vectordb defaults to post-filtering, which ranks first and filters the
-    // k survivors; rows the filter excludes (superseded revisions, deleted
-    // documents) would take the top-k slots. Filter before ranking.
+    // #1917 — `vectordb` 0.21 defaults `_prefilter` to false: it picks the k nearest
+    // rows and only then drops the ones the filter excludes, so rows from other
+    // documents or models (a superseded revision, a stale model tag) nearer the query
+    // took the top-k slots and a filtered search returned fewer than k hits, or none.
+    // Prefilter restricts the candidates first, then ranks them.
     if (where) q = q.where(where).prefilter(true);
     const results = await q.execute<LanceRow>();
     // Issue #277 — score from the returned vectors, never from `_distance`. On an

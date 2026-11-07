@@ -22,6 +22,8 @@ import {
   STALENESS_ISSUE,
   tallyFreshness,
   unrenamedFiles,
+  StalenessRestoreError,
+  withNoopReingest,
   withStalePatch,
   withoutFreshness,
   type CloneFiles,
@@ -628,6 +630,101 @@ describe("withStalePatch", () => {
       "ingest s pin-s",
       "embed s",
     ]);
+  });
+
+  it("#1899 — restores every repository when one restore fails, and rethrows the read's error with it attached", async () => {
+    const d = deps();
+    d.cycle.restore.mockImplementation(async (repo: string) => {
+      d.calls.push(`restore ${repo}`);
+      if (repo === "r") throw new Error("git reset failed in r");
+    });
+    const readError = new Error("read failed");
+    const rejected = withStalePatch(
+      twoRepos,
+      (n) => n,
+      d.cycle,
+      async () => {
+        throw readError;
+      },
+    );
+    await expect(rejected).rejects.toBe(readError);
+    // s is still restored, re-ingested and embedded after r's restore threw.
+    expect(d.calls.slice(-4)).toEqual(["restore r", "restore s", "ingest s pin-s", "embed s"]);
+    const attached = (
+      readError as Error & { restoreFailures?: Array<{ repo: string; error: Error }> }
+    ).restoreFailures;
+    expect(attached?.map((f) => [f.repo, f.error.message])).toEqual([
+      ["r", "git reset failed in r"],
+    ]);
+  });
+
+  it("#1899 — a read that succeeds still fails when a restore did, naming every failure", async () => {
+    const d = deps();
+    d.cycle.reingest.mockImplementation(async (repo: string, sha: string) => {
+      d.calls.push(`ingest ${repo} ${sha}`);
+      if (sha.startsWith("pin-")) throw new Error(`re-ingest of ${repo} failed`);
+    });
+    const err = await withStalePatch(
+      twoRepos,
+      (n) => n,
+      d.cycle,
+      async () => 7,
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StalenessRestoreError);
+    expect((err as Error).message).toBe(
+      "restoring 2 repositories after the staleness patch failed: re-ingest of r failed; re-ingest of s failed",
+    );
+    expect((err as StalenessRestoreError<string>).restoreFailures.map((f) => f.repo)).toEqual([
+      "r",
+      "s",
+    ]);
+    // Neither re-embed ran: each repository's restore stopped at its failed re-ingest.
+    expect(d.calls.filter((c) => c.startsWith("embed"))).toEqual([]);
+  });
+
+  it("#1925 — warns with the restore failures when the read threw a primitive they cannot ride on", async () => {
+    const d = deps();
+    d.cycle.restore.mockImplementation(async (repo: string) => {
+      if (repo === "r") throw new Error("git reset failed in r");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await expect(
+        withStalePatch(
+          twoRepos,
+          (n) => n,
+          d.cycle,
+          async () => {
+            throw "read failed";
+          },
+        ),
+      ).rejects.toBe("read failed");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toBe(
+        "restoring 1 repository after the staleness patch failed: git reset failed in r",
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("#1925 — withNoopReingest refuses an empty repository list rather than read as if re-ingested", async () => {
+    const d = deps();
+    const read = vi.fn(async () => 3);
+    await expect(withNoopReingest([], d.cycle, read)).rejects.toThrow(/no repository to re-ingest/);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("#1899 — withNoopReingest re-ingests every repository at its pin, patches nothing, then reads", async () => {
+    const d = deps();
+    const out = await withNoopReingest(["r", "s"], d.cycle, async () => {
+      d.calls.push("read");
+      return 3;
+    });
+    expect(out).toBe(3);
+    expect(d.calls).toEqual(["ingest r pin-r", "ingest s pin-s", "read"]);
+    expect(d.cycle.applyAndCommit).not.toHaveBeenCalled();
+    expect(d.cycle.restore).not.toHaveBeenCalled();
   });
 
   it("restores when the read fails, and every repository touched when a patch fails", async () => {

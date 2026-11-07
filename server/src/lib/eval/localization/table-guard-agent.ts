@@ -236,6 +236,13 @@ export function parseGuardRecord(line: string): GuardRecord {
     if (typeof r.label !== "string" || typeof r.seeding !== "string") bad("no configuration");
     if (typeof r.changes !== "number" || typeof r.untracked !== "number") bad("no change counts");
     if (r.pieces !== undefined && !validPieces(r.pieces)) bad("malformed pieces");
+    // #1890 — the headline reads a piece for every requirement the run scored.
+    if (r.pieces !== undefined) {
+      const missing = Object.keys(r.tables as object).filter(
+        (id) => !Object.hasOwn(r.pieces as object, id),
+      );
+      if (missing.length > 0) bad(`pieces miss requirement(s) ${missing.join(", ")}`);
+    }
   } else {
     bad(`unknown kind ${JSON.stringify(r.kind)}`);
   }
@@ -522,6 +529,16 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
           `refusing to resume the table guard: its ${r.reading} run ${r.run} was read under staleness patches ${r.stalenessPatch}, not ${deps.staleness?.patchSetDigest ?? "none"}. Use a new partials directory`,
         );
       }
+      // #1890 — a run's pieces must cover every fixture requirement, or the
+      // headline would crash on the hole instead of refusing the record.
+      if (r.kind === "run" && r.pieces !== undefined) {
+        const missing = fixture.requirements.filter((q) => !Object.hasOwn(r.pieces!, q.id));
+        if (missing.length > 0) {
+          throw new Error(
+            `malformed table-guard record: ${r.reading} run ${r.run}'s pieces miss fixture requirement(s) ${missing.map((q) => q.id).join(", ")}. Use a new partials directory`,
+          );
+        }
+      }
       if (r.kind === "analysis") analyses.set(keyOf(r.requirement, r.run), r);
       else runs.set(keyOf(r.reading, r.run), r);
     }
@@ -626,12 +643,15 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
     requirement: ImpactRecallFixture["requirements"][number],
     tracked: readonly ChangedRequirement[],
     options: RunImpactRecallOptions,
-  ): Promise<{ score: RequirementScore; pieces: GuardPiece[] }> {
+  ): Promise<{ score: RequirementScore; pieces: GuardPiece[]; demoted: number }> {
     const tables = new Set<string>();
     const symbols = new Set<string>();
     const pieces: GuardPiece[] = [];
+    let demoted = 0;
     for (const change of tracked.length > 0 ? tracked : [requirementToChange(requirement)]) {
       const found = await observeChange(fixture, change, fixture.searcher, options);
+      // #1899 — the stage's own count of the stale citations it set aside.
+      demoted += found.demotedStaleCitations;
       for (const t of found.foundTables) tables.add(t);
       for (const s of found.foundCodeSymbols) symbols.add(s);
       pieces.push({
@@ -660,7 +680,7 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
             })
           : [],
     });
-    return { score, pieces };
+    return { score, pieces, demoted };
   }
 
   /** One run of A7 or A7O: impact on each analysis's requirements, tables unioned per requirement. */
@@ -798,23 +818,21 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
                   return r.demote ? { ...rest, filePath, freshness } : { ...rest, filePath };
                 });
                 const ids = links.flatMap((l) => (l.codeSymbolId ? [l.codeSymbolId] : []));
-                const out = translateCitations(
-                  links,
-                  await deps.qualifiedNames(ids),
-                  fixture,
-                  r.counts,
-                );
-                if (r.demote) r.demoted += out.filter((l) => l.freshness === "stale").length;
-                return out;
+                return translateCitations(links, await deps.qualifiedNames(ids), fixture, r.counts);
               },
               loadFileSymbols,
             },
           };
           const options: RunImpactRecallOptions = { ...deps.options, splitSeeding: seeding };
           r.label = describeConfiguration(options).label;
-          const { score, pieces } = await scoreAgainstFixture(requirement, tracked, options);
+          const { score, pieces, demoted } = await scoreAgainstFixture(
+            requirement,
+            tracked,
+            options,
+          );
           r.scores.push(score);
           r.pieces[requirement.id] = pieces;
+          r.demoted += demoted;
         }
       });
     }
@@ -974,9 +992,23 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
       const scoring = guardScoringOf(control ? [...own, ...control] : own);
       const m = measurement(own, scoring);
       logDifferences();
+      // #1890 — against A7O both arms carry the same further requirements, so
+      // the union's artefact mostly cancels and a regression confined to them
+      // would pass the first-requirement gate unseen: gate on the union too.
+      const alsoGatedOn =
+        control && scoring === "headline"
+          ? [
+              {
+                scoring: SCORING_WORDS.union,
+                tablePrecision: measurement(own).tablePrecision,
+                baselinePrecision: measurement(control).tablePrecision,
+              },
+            ]
+          : undefined;
       return {
         measured: true,
         ...m,
+        ...(alsoGatedOn ? { scoring: SCORING_WORDS[scoring], alsoGatedOn } : {}),
         configuration:
           m.configuration +
           `; "Evaluate new requirements" on ${deps.model}, one per requirement and run; ` +
@@ -1021,9 +1053,23 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
       const scoring = guardScoringOf([...own, ...control.records]);
       const m = measurement(own, scoring);
       logDifferences();
+      // #1925 — as A7 against A7O (#1890): A7 and A7S, and A7S and A7SD, read
+      // the same analyses, so the union's artefact mostly cancels and a
+      // regression confined to the further requirements would pass unseen.
+      const alsoGatedOn =
+        scoring === "headline"
+          ? [
+              {
+                scoring: SCORING_WORDS.union,
+                tablePrecision: measurement(own).tablePrecision,
+                baselinePrecision: measurement(control.records).tablePrecision,
+              },
+            ]
+          : undefined;
       return {
         measured: true,
         ...m,
+        ...(alsoGatedOn ? { scoring: SCORING_WORDS[scoring], alsoGatedOn } : {}),
         configuration:
           m.configuration +
           `; "Evaluate new requirements" on ${deps.model}, one per requirement and run; ` +

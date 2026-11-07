@@ -10,7 +10,8 @@
  *   pnpm eval:localization --table-guard         # + table precision on impact-recall-01 (live provider)
  *   pnpm eval:localization --arms A0,A4 --table-guard  # + A4 on the split seeding, next to A0 on it (#1786)
  *   pnpm eval:localization --arms A0,A13,A13C,A13S     # #1798 re-order: A0 base, A12 base, shuffled pool
- *   pnpm eval:localization --in-sample --arms A13 --rerank-weight 0.3  # tune the A13 model weight (#1798)
+ *   pnpm eval:localization --corpus localization-00-miniflux-run7-insample --arms A13 --rerank-weight 0.3
+ *                                                # tune the A13 model weight on the run-7 six ALONE (#1798, #1819)
  *   pnpm eval:localization --merge <dir> --reference A12,A13   # + every arm paired with A12, then with A13 (#1806)
  *   pnpm eval:localization --arms A0,A3,A3A,A3N --shard 1/10   # #1755 analysis-agent citations (materialize first)
  *   pnpm eval:localization --arms A0,A3A,A7,A7O --reference A3A --items 0:4   # #1818 the shipped IMPACT_AGENT_SEEDS order
@@ -81,6 +82,13 @@
  *
  *   pnpm eval:materialize localization-01-miniflux-heldout   # and -02, and impact-recall-01-jpetstore
  *   pnpm eval:localization --arms A0,A7,A7K,A7S,A7SD --reference A7,A7S --embed --items 0:4
+ *
+ * #1899 — A7R and A7RD: every repository re-ingested at its pinned commit with
+ * NO patch (a routine re-ingest, whose re-validation gives every citation a
+ * verdict: mostly fresh, moved only into another file, stale still possible),
+ * read without and with demotion. Read them after A7 and before A7S:
+ *
+ *   pnpm eval:localization --arms A0,A7,A7R,A7RD,A7S,A7SD --reference A7,A7R,A7S --embed --items 0:2
  *   pnpm eval:localization --merge <dir> --reference A7,A7S --table-guard --embed --guard-steps 5
  *
  * The patch sets are committed in `server/scripts/eval-localization-staleness/`
@@ -100,6 +108,8 @@ import { buildArms, MODEL_ARMS, parseArmIds } from "../src/lib/eval/localization
 import { RERANK_MODEL_WEIGHT } from "../src/lib/impact-analysis/edit-candidate-reranker.js";
 import type { AIProvider } from "../src/lib/ai/types.js";
 import {
+  assertReferenceArms,
+  assertReferenceArmsInEachCorpus,
   flagValue,
   nonNegativeNumber,
   positiveInteger,
@@ -158,12 +168,17 @@ import { loadRecordedVectors, writeRecordedVectors } from "../src/lib/eval/recor
 import type { EmbedService } from "../src/lib/code-graph/symbol-embeddings.js";
 import type { LocalizationArm } from "../src/lib/eval/localization/arms.js";
 import { AGENT_ARM_IDS, type AgentPass } from "../src/lib/eval/localization/agent-arms.js";
-import { ANALYSIS_ARM_IDS, STALENESS_ARM_IDS } from "../src/lib/eval/localization/analysis-arms.js";
+import {
+  ANALYSIS_ARM_IDS,
+  PATCH_ARM_IDS,
+  STALENESS_ARM_IDS,
+} from "../src/lib/eval/localization/analysis-arms.js";
 import {
   applyOpsToClone,
   loadStalenessPatchSets,
   patchSetsDigest,
   stalenessPatchProblems,
+  withNoopReingest,
   withStalePatch,
   type StalenessCycleDeps,
   type StalenessPatchSet,
@@ -485,11 +500,14 @@ async function materializedStates(
 async function agentPassFor(
   provider: AIProvider,
   corpora: readonly LocalizationCorpusName[],
+  armIds: readonly string[],
 ): Promise<AgentPass> {
   const states = await materializedStates(corpora);
-  const { prisma } = await import("../src/lib/prisma.js");
-  const { createMaterializedAgentPass } =
+  const { assertA3NClones, createMaterializedAgentPass } =
     await import("../src/lib/eval/localization/agent-pass.js");
+  // #1819 — before any pass: A3N's file tools read only the clone.
+  if (armIds.includes("A3N")) await assertA3NClones(states);
+  const { prisma } = await import("../src/lib/prisma.js");
   const { assembleAgenticCodeTools } = await import("../src/lib/analysis/orchestrator.js");
   const { assembleAgenticPassSeeds, resolveDatabaseAwareDecision } =
     await import("../src/lib/analysis/agentic-pass-context.js");
@@ -617,10 +635,14 @@ interface StalenessWiring {
  * corpus is a held-out set that loads, is materialized and has a patch for
  * each item that fits its graph (the table corpus's, with `--table-guard`, too);
  * a clone or graph an earlier, killed run left patched is put back.
+ * #1925 — `patches` is false when no arm applies one (A7R, A7RD alone): no
+ * patch set is then required. The caller passes `withGuard` only when
+ * `--table-guard` reads a patch arm (A7S, A7SD) on the table corpus.
  */
 async function stalenessFor(
   corpora: readonly LocalizationCorpusName[],
   withGuard: boolean,
+  patches: boolean,
 ): Promise<StalenessWiring> {
   const sets = await loadStalenessPatchSets();
   const digest = patchSetsDigest(sets);
@@ -641,6 +663,7 @@ async function stalenessFor(
         `the staleness arms run on the held-out sets only, not ${name} (${corpus.manifest.purpose}, #1819)`,
       );
     }
+    if (!patches) continue;
     problems.push(
       ...stalenessPatchProblems(setOf(name), {
         name,
@@ -770,14 +793,19 @@ async function stalenessFor(
       if (!repo) throw new Error(`${corpus}/${name} is not materialized`);
       return repo;
     };
+  // #1925 — every repository of a corpus, refused as repoIn refuses: an empty
+  // list would re-ingest nothing and read A7R/A7RD as A7K.
+  const reposIn = (corpus: string): readonly MaterializedRepo[] => {
+    const repos = states.get(corpus)?.repos;
+    if (!repos || repos.length === 0) throw new Error(`${corpus} is not materialized`);
+    return repos;
+  };
   const timed = async <T>(label: string, run: () => Promise<T>): Promise<T> => {
     const t0 = Date.now();
     try {
       return await run();
     } finally {
-      console.log(
-        `staleness: ${label} patched, read and restored in ${((Date.now() - t0) / 1000).toFixed(1)} s`,
-      );
+      console.log(`staleness: ${label} in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
     }
   };
   console.log(
@@ -792,7 +820,14 @@ async function stalenessFor(
         return ops;
       },
       withPatch: (corpus, ops, read) =>
-        timed(corpus, () => withStalePatch(ops, repoIn(corpus), cycle, read)),
+        timed(`${corpus} patched, read and restored`, () =>
+          withStalePatch(ops, repoIn(corpus), cycle, read),
+        ),
+      // #1899 — A7R, A7RD: every repository of the corpus re-ingested at its pin, no patch.
+      withReingest: (corpus, read) =>
+        timed(`${corpus} re-ingested with no patch and read`, () =>
+          withNoopReingest(reposIn(corpus), cycle, read),
+        ),
     },
     guard: withGuard
       ? {
@@ -804,7 +839,7 @@ async function stalenessFor(
             return ops;
           },
           withPatch: (ops, read) =>
-            timed(TABLE_GUARD_CORPUS, () =>
+            timed(`${TABLE_GUARD_CORPUS} patched, read and restored`, () =>
               withStalePatch(ops, repoIn(TABLE_GUARD_CORPUS), cycle, read),
             ),
         }
@@ -876,17 +911,30 @@ async function main(): Promise<void> {
   // A merge reports the arms the slices recorded, and runs none: its provider
   // is needed only for A4's table guard.
   const reportedArmIds = mergeDir ? await store.recordedArmIds(corpora) : armIds;
+  // #1819 — a mistyped --reference fails here, before the provider, the table guard or any arm spends.
+  if (mergeDir) {
+    // #1925 — each corpus is reported apart, so each must have recorded the reference.
+    const recordedByCorpus = new Map<string, string[]>();
+    for (const c of corpora) recordedByCorpus.set(c, await store.recordedArmIds([c]));
+    assertReferenceArmsInEachCorpus(references, recordedByCorpus);
+  } else {
+    assertReferenceArms(references, reportedArmIds);
+  }
   // #1834 — a staleness run fails here, before the provider is built and before any spend,
   // when a held-out set, its materialization or its patches are missing.
   const stalenessRun = reportedArmIds.some((id) => STALENESS_ARM_IDS.has(id));
-  if (stalenessRun && mergeDir && argv.includes("--table-guard") && !agentArmsRequested(argv)) {
+  // #1925 — only a patch arm (A7S, A7SD) needs the patch sets, and only it is
+  // read by --table-guard on the table corpus: A7R and A7RD need neither.
+  const patchArms = reportedArmIds.filter((id) => PATCH_ARM_IDS.has(id));
+  const guardPatches = patchArms.length > 0 && argv.includes("--table-guard");
+  if (guardPatches && mergeDir && !agentArmsRequested(argv)) {
     throw new Error(
-      `--table-guard reads ${reportedArmIds.filter((id) => STALENESS_ARM_IDS.has(id)).join(",")} on the materialized table corpus: pass --arms ${reportedArmIds.join(",")} (the recorded arms) so the eval database is bound`,
+      `--table-guard reads ${patchArms.join(",")} on the materialized table corpus: pass --arms ${reportedArmIds.join(",")} (the recorded arms) so the eval database is bound`,
     );
   }
   const staleness =
-    stalenessRun && (!mergeDir || argv.includes("--table-guard"))
-      ? await stalenessFor(mergeDir ? [] : corpora, argv.includes("--table-guard"))
+    stalenessRun && (!mergeDir || guardPatches)
+      ? await stalenessFor(mergeDir ? [] : corpora, guardPatches, patchArms.length > 0)
       : undefined;
   const needsProvider =
     reportedArmIds.some((id) => MODEL_ARMS.has(id)) &&
@@ -895,7 +943,7 @@ async function main(): Promise<void> {
   // #1755 — the agent arms read the materialized corpora; a merge runs no pass.
   const agentPass =
     !mergeDir && provider && armIds.some((id) => AGENT_ARM_IDS.has(id))
-      ? await agentPassFor(provider, corpora)
+      ? await agentPassFor(provider, corpora, armIds)
       : undefined;
   // #1818 — the A7 arms run "Evaluate new requirements" on the materialized corpora.
   const analysis =

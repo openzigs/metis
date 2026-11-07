@@ -32,4 +32,15 @@ metadata:
 - **Read A7/A7K before any patch cycle.** A cycle re-validates every citation of the repository. Restoring moves a link back as `moved`, which reorders A7's tiers on a later re-read. Re-read a guard on fresh analyses.
 - **Edit every function of the answer file, not one.** One edited function left 0 of 21 citations stale: nobody knows which function the model cites.
 - **#1831 tracks renames by symbol only.** A file-level citation of a renamed file goes `stale` (`file-missing`).
+- **A control equal by construction measures nothing.** A7K = A7 because, with no re-ingest, every citation is `unverified`. Demotion after a routine re-ingest is A7RD − A7R (#1899). Order the arms: A7/A7K, then A7R/A7RD, then A7S/A7SD.
+- **`pnpm typecheck` covers `server/scripts/**` since #1899** (`tsconfig.test.json`). A test-pass error naming a script is real, not noise.
 - **Sonnet A7 slices: at most 2 Miniflux items, or 2 fixture items, per 10-minute call.** 4 Miniflux items got killed twice. A killed slice records no `spend/`: write its A7 partials' `spentUsd` there by hand, and delete its A7/A7K partials so A7S reads the same analysis.
+
+## Added 2026-11-07 (#1834, #1848, #1890, #1899)
+
+- **Eval harnesses force flags on.** An arm reads the behaviour its id names whatever `.env` says; a result says nothing about the shipped default until the flag's default matches the arm.
+- **A stale eval database turns A7 into A7O silently.** A materialized eval DB that predates the freshness column reads every citation as `unverified`, so the freshness-aware arm equals the freshness-blind one. Re-materialize after any citation-schema migration before reading A7-family deltas.
+- **A7K = A7 by construction.** Hiding freshness on a corpus where nothing is stale measures nothing; the no-staleness cost needs a no-op re-ingest arm (A7R/A7RD, #1899, measured in #1915).
+- **Widening a shared arm-id set widens every CLI preflight keyed on it** (`STALENESS_ARM_IDS` → patch-set checks, table-corpus binding). Grep each consumer in `scripts/eval-localization.ts`; unit tests do not cover the CLI wiring.
+- **Re-derive doc tables from committed records.** A throwaway vitest file importing `guardRunTables`/`parseGuardRecord` re-checks `docs/IMPACT_ANALYSIS_LLM_STAGES.md` numbers in a minute; on #1910 it caught a wrong denominator and a wrong table name that a green suite could not.
+

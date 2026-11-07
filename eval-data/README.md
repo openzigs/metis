@@ -226,7 +226,7 @@ pnpm eval:localization                 # A0 on both held-out sets, 3 runs, $35 c
 pnpm eval:localization --arms A0,A4    # an arm against A0, paired, on the same items
 pnpm eval:localization --arms A0,A13,A13C,A13S  # #1798 LLM re-order: A0 base, A12 base, shuffled pool
 pnpm eval:localization --merge <dir> --reference A12,A13  # + every arm paired with A12, then A13 (#1806)
-pnpm eval:localization --in-sample --arms A13 --rerank-weight 0.05  # tune the re-order's model weight
+pnpm eval:localization --corpus localization-00-miniflux-run7-insample --arms A13 --rerank-weight 0.05  # tune the re-order's model weight
 pnpm eval:localization --in-sample     # also the run-7 six (a sanity check, not a claim)
 pnpm eval:localization --table-guard   # + table precision on impact-recall-01 (live provider)
 pnpm eval:localization --budget 25     # the dollar cap; the run stops before it is passed
@@ -235,7 +235,13 @@ pnpm eval:localization --budget 25     # the dollar cap; the run stops before it
 `--reference <arm>[,<arm>…]` adds a table per arm that pairs every other arm with it
 (a pooled table too, when both held-out sets ran). Use it for comparisons such as A13C
 against A12 or A13S against A13. It changes no score, and you can pass it to `--merge`.
-The decision bars are still read against A0.
+The decision bars are still read against A0. An id that is not one of the run's arms
+fails before the provider is built, so a typo spends nothing (#1819).
+
+**Tune on the in-sample set alone.** `--in-sample` ADDS the run-7 six to both held-out
+sets, so a weight sweep run with it reads the held-out sets at every candidate weight:
+that breaks the in-sample-only rule and costs about three times as much. Name the corpus
+instead, `--corpus localization-00-miniflux-run7-insample` (#1819).
 
 **A `deepseek-flash` tuning run needs `MODEL_PRICES` set**, for example
 `MODEL_PRICES='{"deepseek-flash":{"inputPerMTok":…,"outputPerMTok":…}}'` at DeepSeek's
@@ -281,7 +287,11 @@ pnpm eval:localization --merge <dir> --md                       # the report; ru
   per requirement score, and `spend/<invocation>.json` for spend outside requirements
   (the table guard).
 - **Resume.** `--resume <dir>` loads every score already recorded and runs only the
-  missing ones, so a stop mid-slice re-runs nothing that finished.
+  missing ones, so a stop mid-slice re-runs nothing that finished. A3 and A3A share one
+  agent pass per item and run in one invocation; when a resume scores them in different
+  invocations, the report flags the requirement-runs read on separate passes (#1810).
+  **Partials recorded before #1810 carry no pass ids**, so a split among them cannot be
+  seen: the report shows none there, not that there was none.
 - **Merge.** `--merge <dir>` builds the per-corpus and pooled reports from the partial
   files with the runner's own scoring and statistics; three slices merged give the
   report one full run gives. Every report lists the requirements still missing a score.
@@ -393,6 +403,13 @@ union cost about 0.2 table precision that the analysis path does not lose
 (docs/IMPACT_ANALYSIS_LLM_STAGES.md). Records written before #1848 have no per-requirement
 tables, so they are read on the union.
 
+**A7's gate reads both scorings (#1890).** Against A7O the union's artefact mostly cancels,
+so A7 must hold within 0.03 of A7O on the first persisted requirement **and** on the
+union. The guard row says which scoring decided it, for example
+`FAILED (failed on the analysis's first persisted requirement (0.648 against 0.760))`. A
+run whose per-requirement tables miss a requirement is refused by name; use a new
+partials directory.
+
 **A stale eval database is refused.** The impact path keeps the search's seeds when a
 stored-citation lookup throws. An eval database that predates a migration, such as the
 `freshness` column added in #1830, would therefore read A7 as A7O. The guard refuses such
@@ -444,9 +461,22 @@ measures that on the held-out corpora, over the same analyses as A7:
 | `A7K` | none | off: the citations' freshness hidden, the stage before #1832 |
 | `A7S` | the item's patch, re-ingested | off |
 | `A7SD` | the item's patch, re-ingested | on |
+| `A7R` | none: a no-op re-ingest at the pinned commit (#1899) | off |
+| `A7RD` | none: a no-op re-ingest at the pinned commit (#1899) | on |
 
-With no re-ingest no citation is stale, so A7K must read the same as A7: the control
-that demotion costs nothing when nothing is stale.
+With no re-ingest every citation is still `unverified`, so A7K reads the same as A7
+**by construction**: hiding freshness can neither reorder nor set aside anything. A7K
+therefore checks the wiring. It does not measure what demotion costs when nothing is
+stale (#1899). The production case is a routine re-ingest that changes nothing. Its
+re-validation (#1831) gives every citation a verdict, and #1832's freshness tier then
+reorders them. Most read `fresh`, including a symbol whose lines drifted within its file
+(its lines are updated, it is not `moved`). `moved` means the cited symbol now sits, with
+the same content, in another file. A no-op re-ingest can still give `stale` (#1925): a
+file-level link whose lines run past the end of the file, or a symbol that is missing from
+its file or matches more than one candidate.
+A7R and A7RD measure that case: every repository is re-ingested at its pinned commit
+with no patch, and the result is read without and with demotion. Read A7RD against A7R
+for demotion's cost after a routine re-ingest.
 
 **The patches are committed**, one file per corpus, in
 `server/scripts/eval-localization-staleness/`, and the script applies them. Each item's
@@ -498,13 +528,22 @@ symbols already taken by the search's hits at the old path, and lost the file. M
 read Recall@5 0.5 instead of 1.0 for that reason alone.)
 
 A cycle re-validates every citation of the repository, so A7 and A7K must come before
-A7S and A7SD in `--arms`. The arm builder refuses any other order.
+A7S and A7SD in `--arms`. A patch cycle's restore also leaves a citation `moved` back,
+so A7R and A7RD come after A7 and A7K and before A7S and A7SD. The arm builder refuses
+any other order.
+
+If a restore, re-ingest or re-embed throws for one repository, every other repository
+is still restored. The original error is then rethrown with the restore failures
+attached as `restoreFailures`. When only a restore failed, a `StalenessRestoreError`
+names every failure (#1899).
 
 ```bash
 pnpm eval:materialize localization-01-miniflux-heldout   # and -02, and impact-recall-01-jpetstore
 pnpm eval:localization --arms A0,A7,A7K,A7S,A7SD --reference A7,A7S --embed --items 0:4
 pnpm eval:localization --arms A0,A7,A7K,A7S,A7SD --reference A7,A7S --embed --items 4:8 --resume <dir>
 pnpm eval:localization --merge <dir> --reference A7,A7S --table-guard --embed --guard-steps 5
+# #1899 — the no-op re-ingest pair beside them (A7RD against A7R: demotion after a routine re-ingest)
+pnpm eval:localization --arms A0,A7,A7R,A7RD,A7S,A7SD --reference A7,A7R,A7S --embed --items 0:2
 ```
 
 **It fails before spending.** Before the provider is built, a staleness run checks:
@@ -541,7 +580,10 @@ The held-out run is on `claude-sonnet-5-5`, one run, both held-out corpora:
 
 Paired comparisons, pooled over the 39 items:
 
-- **A7K − A7: exactly 0** on every metric. Without staleness, demotion changes nothing.
+- **A7K − A7: exactly 0** on every metric, as it must be by construction: with no
+  re-ingest every citation is `unverified`. This shows the wiring, not what demotion
+  costs when nothing is stale. That case, after a routine re-ingest, is A7RD − A7R
+  (#1899), and it is not yet measured.
 - **A7S − A7:** Recall@5 −0.017 [−0.07, +0.03]. No measurable difference.
 - **A7SD − A7S:** Recall@5 **−0.061 [−0.11, −0.02], p = 0.002**, and MRR **−0.189
   [−0.28, −0.11]**. Under staleness, demotion lowers both.
@@ -575,8 +617,9 @@ hold the 0.03 guard on the mean. A7 − A7O on DeepSeek is −0.051 [−0.120, +
 on fresh analyses: a patch cycle re-validates every citation of the repository, so a
 reading of A7 after a cycle would see citations the cycle had moved back as `moved`.
 
-**Reading it.** Demotion is free when nothing is stale, so the no-staleness arm gives no
-reason to change #1832's default. Under this patch, though, demotion costs ranking. A
+**Reading it.** A7K − A7 = 0 holds by construction, so it gives no reading on #1832's
+default either way. Demotion's cost after a routine re-ingest is A7RD − A7R (#1899), which
+is not yet measured. Under this patch, demotion costs ranking. A
 comment-only edit makes a citation stale while its file is still the answer, which is the
 worst case for demotion. This slice does not model drift that moves the behaviour
 elsewhere.

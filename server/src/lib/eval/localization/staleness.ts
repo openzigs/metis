@@ -711,9 +711,35 @@ export interface StalenessCycleDeps<R> {
   afterRestore?(repo: R): Promise<void>;
 }
 
+/** #1899 — one repository whose restore (or its re-ingest or re-embed) failed. */
+export interface RestoreFailure<R> {
+  repo: R;
+  error: unknown;
+}
+
+/**
+ * #1899 — every restore failure of one patch cycle, after every repository was
+ * tried. Thrown when the read succeeded; when the patch or the read failed, the
+ * ORIGINAL error is rethrown instead, with these attached as `restoreFailures`.
+ */
+export class StalenessRestoreError<R = unknown> extends AggregateError {
+  constructor(readonly restoreFailures: ReadonlyArray<RestoreFailure<R>>) {
+    super(
+      restoreFailures.map((f) => f.error),
+      `restoring ${restoreFailures.length} repositor${restoreFailures.length === 1 ? "y" : "ies"} after the staleness patch failed: ` +
+        restoreFailures
+          .map((f) => (f.error instanceof Error ? f.error.message : String(f.error)))
+          .join("; "),
+    );
+    this.name = "StalenessRestoreError";
+  }
+}
+
 /**
  * Apply an item's patch, re-ingest, run `read`, then restore and re-ingest
  * every repository it touched, whether `read` (or the patch) failed or not.
+ * #1899 — a repository whose restore throws does not stop the others: every
+ * one is restored, and the original error wins over the restore failures.
  */
 export async function withStalePatch<R, T>(
   ops: readonly StalenessOp[],
@@ -722,6 +748,7 @@ export async function withStalePatch<R, T>(
   read: () => Promise<T>,
 ): Promise<T> {
   const touched: R[] = [];
+  let outcome: { ok: true; value: T } | { ok: false; error: unknown };
   try {
     for (const name of patchedRepos(ops)) {
       const repo = repoOf(name);
@@ -732,12 +759,54 @@ export async function withStalePatch<R, T>(
       );
       await deps.reingest(repo, sha);
     }
-    return await read();
-  } finally {
-    for (const repo of touched) {
+    outcome = { ok: true, value: await read() };
+  } catch (error) {
+    outcome = { ok: false, error };
+  }
+  const failures: RestoreFailure<R>[] = [];
+  for (const repo of touched) {
+    try {
       await deps.restore(repo);
       await deps.reingest(repo, deps.pinnedSha(repo));
       await deps.afterRestore?.(repo);
+    } catch (error) {
+      failures.push({ repo, error });
     }
   }
+  if (!outcome.ok) {
+    const { error } = outcome;
+    if (failures.length > 0) {
+      if (error !== null && typeof error === "object") {
+        Object.assign(error, { restoreFailures: failures });
+      } else {
+        // #1925 — a primitive cannot carry them: say so, or a clone left patched goes unseen.
+        // eslint-disable-next-line no-console -- an eval harness: the CLI's stderr is its only reader
+        console.warn(new StalenessRestoreError(failures).message);
+      }
+    }
+    throw error;
+  }
+  if (failures.length > 0) throw new StalenessRestoreError(failures);
+  return outcome.value;
+}
+
+/**
+ * #1899 — the no-op re-ingest: every repository re-ingested at its pinned
+ * commit with no patch (re-validating its citations, #1831, as a routine
+ * re-ingest does), then `read`. Nothing changed in the clone, so nothing is
+ * restored. #1925 — no repository is refused: re-ingesting nothing would read
+ * the citations still `unverified`, an A7K reading under A7R's name.
+ */
+export async function withNoopReingest<R, T>(
+  repos: readonly R[],
+  deps: Pick<StalenessCycleDeps<R>, "reingest" | "pinnedSha">,
+  read: () => Promise<T>,
+): Promise<T> {
+  if (repos.length === 0) {
+    throw new Error(
+      "the no-op re-ingest has no repository to re-ingest: the read would see no re-validation",
+    );
+  }
+  for (const repo of repos) await deps.reingest(repo, deps.pinnedSha(repo));
+  return read();
 }

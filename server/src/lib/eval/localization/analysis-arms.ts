@@ -44,8 +44,18 @@
  *     (re-validating the citations, #1831), read WITHOUT demotion.
  *   - `A7SD` — the same patched state read WITH demotion (#1832, as shipped).
  *
+ * #1899 — A7K equals A7 by construction (no re-ingest, so every citation is
+ * `unverified`), so it cannot show what demotion costs when nothing is stale.
+ * The production case is a ROUTINE re-ingest, whose re-validation gives the
+ * citations a verdict (mostly `fresh`; `moved` only for a symbol now in another
+ * file; `stale` still possible, #1925) and lets the tier sort reorder them:
+ *
+ *   - `A7R`  — every repository re-ingested at its pinned commit, NO patch,
+ *     read with the citations' freshness hidden (the stage before #1832).
+ *   - `A7RD` — the same re-ingested state read WITH demotion (#1832).
+ *
  * A7S and A7SD read ONE patch cycle per item and run (apply, re-ingest, read
- * both, restore, re-ingest). The hybrid search reads the patched corpus (a
+ * both, restore, re-ingest); A7R and A7RD one re-ingest. The hybrid search reads the patched corpus (a
  * renamed file at its new path, re-embedded; a deleted file gone), and so does
  * the stage's graph check, as after a real re-ingest; an edited symbol keeps
  * its vector. A renamed file is scored as the file it was.
@@ -94,21 +104,28 @@ import {
 
 /** A7's variants. */
 export interface AnalysisVariant {
-  id: "A7" | "A7O" | "A7K" | "A7S" | "A7SD";
+  id: "A7" | "A7O" | "A7K" | "A7S" | "A7SD" | "A7R" | "A7RD";
   /** `IMPACT_AGENT_SEEDS`: the stored citations lead the files to edit. */
   agentSeeds: boolean;
   /** #1834 — read after the item's committed staleness patch is applied and re-ingested. */
   stale: boolean;
   /** #1834 — the stage demotes stale citations (#1832, shipped); false hides their freshness. */
   demote: boolean;
+  /**
+   * #1899 — a staleness variant's cycle applies the item's committed patch;
+   * false (A7R, A7RD): a no-op re-ingest at the pinned commit.
+   */
+  patch: boolean;
 }
 
 export const ANALYSIS_VARIANTS: Readonly<Record<AnalysisVariant["id"], AnalysisVariant>> = {
-  A7: { id: "A7", agentSeeds: true, stale: false, demote: true },
-  A7O: { id: "A7O", agentSeeds: false, stale: false, demote: true },
-  A7K: { id: "A7K", agentSeeds: true, stale: false, demote: false },
-  A7S: { id: "A7S", agentSeeds: true, stale: true, demote: false },
-  A7SD: { id: "A7SD", agentSeeds: true, stale: true, demote: true },
+  A7: { id: "A7", agentSeeds: true, stale: false, demote: true, patch: false },
+  A7O: { id: "A7O", agentSeeds: false, stale: false, demote: true, patch: false },
+  A7K: { id: "A7K", agentSeeds: true, stale: false, demote: false, patch: false },
+  A7S: { id: "A7S", agentSeeds: true, stale: true, demote: false, patch: true },
+  A7SD: { id: "A7SD", agentSeeds: true, stale: true, demote: true, patch: true },
+  A7R: { id: "A7R", agentSeeds: true, stale: true, demote: false, patch: false },
+  A7RD: { id: "A7RD", agentSeeds: true, stale: true, demote: true, patch: false },
 };
 
 /** The arms that run "Evaluate new requirements": the CLI materializes their database. */
@@ -117,10 +134,31 @@ export const ANALYSIS_ARM_IDS: ReadonlySet<string> = new Set(Object.keys(ANALYSI
 /** The pass group the report reads; defined in `agent-env.ts` so the report needs no engine (#1825). */
 export { ANALYSIS_PASS_GROUP };
 
-/** #1834 — the arms that read through the staleness cycle. */
+/** #1834 — the arms that read through the staleness cycle (#1899: the no-op re-ingest's too). */
 export const STALENESS_ARM_IDS: ReadonlySet<string> = new Set(
   Object.values(ANALYSIS_VARIANTS)
     .filter((v) => v.stale)
+    .map((v) => v.id),
+);
+
+/**
+ * #1925 — the arms that apply a committed staleness patch: only these need the
+ * patch sets, and only these does `--table-guard` read on the table corpus.
+ */
+export const PATCH_ARM_IDS: ReadonlySet<string> = new Set(
+  Object.values(ANALYSIS_VARIANTS)
+    .filter((v) => v.stale && v.patch)
+    .map((v) => v.id),
+);
+
+/**
+ * #1899 — the arms that read after a no-op re-ingest. A patch cycle's restore
+ * leaves a citation `moved` back, so these must be read before every patch
+ * arm in the same run, and after the unpatched ones (`buildArms`).
+ */
+export const NOOP_REINGEST_ARM_IDS: ReadonlySet<string> = new Set(
+  Object.values(ANALYSIS_VARIANTS)
+    .filter((v) => v.stale && !v.patch)
     .map((v) => v.id),
 );
 
@@ -146,7 +184,7 @@ interface SharedAnalyses {
 /** One store per pass function: the variants built from the same deps share it. */
 const sharedAnalyses = new WeakMap<object, Map<string, Promise<SharedAnalyses>>>();
 
-/** #1834 — one patch cycle's two readings (without and with demotion). */
+/** #1834 — one patch cycle's (#1899: or no-op re-ingest's) two readings (without and with demotion). */
 interface StaleCycle {
   keep: ImpactReading;
   demote: ImpactReading;
@@ -325,6 +363,10 @@ export function createAnalysisArm(deps: ArmDeps, variant: AnalysisVariant): Loca
       };
     };
 
+  /** The item's committed patch (#1834), or none for a no-op re-ingest (#1899). */
+  const opsOf = (corpus: LocalizationCorpus, item: LocalizationItem): readonly StalenessOp[] =>
+    variant.patch ? staleness!.opsFor(corpus.name, item.id) : [];
+
   /** #1834 — the item's patch cycle: both staleness readings, or the other variant's. */
   async function cycleFor(
     corpus: LocalizationCorpus,
@@ -333,16 +375,20 @@ export function createAnalysisArm(deps: ArmDeps, variant: AnalysisVariant): Loca
     shared: SharedAnalyses,
     changes: readonly ChangedRequirement[],
   ): Promise<{ cycle: StaleCycle; reused: boolean }> {
-    const key = [corpus.name, item.id, run].join("\u0000");
+    // #1899 — a patch cycle and a no-op re-ingest are separate cycles.
+    const key = [corpus.name, item.id, run, variant.patch ? "patch" : "noop"].join("\u0000");
     const existing = cycles!.get(key);
     if (existing) return { cycle: await existing, reused: true };
-    const ops: readonly StalenessOp[] = staleness!.opsFor(corpus.name, item.id);
+    const ops = opsOf(corpus, item);
     const started = now();
     // The search a re-ingest would leave: a renamed file at its new path, a deleted one gone.
-    const running = (async () => {
-      const patched = await staleness!.searchFor(patchedSymbolRows(corpus.symbols, ops));
-      return staleness!.withPatch(corpus.name, ops, () => readCycle(patched));
-    })();
+    // A no-op re-ingest leaves the corpus as it is: the arm's own search.
+    const running = variant.patch
+      ? (async () => {
+          const patched = await staleness!.searchFor(patchedSymbolRows(corpus.symbols, ops));
+          return staleness!.withPatch(corpus.name, ops, () => readCycle(patched));
+        })()
+      : staleness!.withReingest(corpus.name, () => readCycle(search));
     async function readCycle(patched: CorpusSearch): Promise<StaleCycle> {
       const tally = emptyTally();
       const cited = await citedFilesOf(corpus, shared, tally);
@@ -386,6 +432,9 @@ export function createAnalysisArm(deps: ArmDeps, variant: AnalysisVariant): Loca
     const demotion = variant.demote
       ? "stale citations demoted (#1832, as shipped)"
       : "the citations' freshness hidden: the stage before #1832 (#1834 control)";
+    if (variant.stale && !variant.patch) {
+      return `computeProjectImpact on the analysis's requirements, IMPACT_AGENT_SEEDS on, after a no-op re-ingest at the pinned commit (#1899); ${demotion}`;
+    }
     return variant.stale
       ? `computeProjectImpact on the analysis's requirements, IMPACT_AGENT_SEEDS on, after the item's staleness patch was re-ingested; ${demotion}`
       : variant.demote
@@ -399,7 +448,7 @@ export function createAnalysisArm(deps: ArmDeps, variant: AnalysisVariant): Loca
       `${variant.id} — "Evaluate new requirements", then impact on its requirements ` +
       `with IMPACT_AGENT_SEEDS ${variant.agentSeeds ? "on" : "off"}` +
       (variant.stale
-        ? `, after a staleness patch, ${variant.demote ? "demoting" : "not demoting"} stale citations`
+        ? `, after ${variant.patch ? "a staleness patch" : "a no-op re-ingest"}, ${variant.demote ? "demoting" : "not demoting"} stale citations`
         : "") +
       (variant.agentSeeds && !variant.stale && !variant.demote ? ", freshness hidden" : "") +
       ` (${provider.key}/${provider.model})`,
@@ -418,7 +467,13 @@ export function createAnalysisArm(deps: ArmDeps, variant: AnalysisVariant): Loca
           ? "leadWithAgentCitations: stale citations set aside; cited files first (freshness tier, then confidence, then citation order), at most 5; then the hybrid candidates; at most 5 more cited files"
           : "leadWithAgentCitations with freshness hidden: cited files first (confidence, then citation order), at most 5; then the hybrid candidates; at most 5 more cited files",
       sharedAnalysis: "the A7 variants read one analysis per item, repository and run",
-      ...(variant.stale
+      ...(variant.stale && !variant.patch
+        ? {
+            staleness:
+              "no patch: every repository of the corpus re-ingested incrementally at its pinned commit (re-validating the citations, #1831, as a routine re-ingest does), then read; nothing to restore; A7R and A7RD read one re-ingest per item and run (#1899)",
+          }
+        : {}),
+      ...(variant.stale && variant.patch
         ? {
             staleness:
               "the item's committed patch (edit one function, rename one file, delete one file) applied to the materialized clone and committed, re-ingested incrementally (re-validating the citations, #1831), read, then restored and re-ingested; A7S and A7SD read one cycle per item and run",
@@ -451,7 +506,7 @@ export function createAnalysisArm(deps: ArmDeps, variant: AnalysisVariant): Loca
         : {};
 
       if (variant.stale) {
-        const ops = staleness!.opsFor(corpus.name, item.id);
+        const ops = opsOf(corpus, item);
         const { cycle, reused: reusedCycle } = await cycleFor(corpus, item, run, shared, changes);
         const reading = variant.demote ? cycle.demote : cycle.keep;
         const merged = mergeSeedings(reading.seedings);
@@ -524,4 +579,14 @@ export function createA7SArm(deps: ArmDeps): LocalizationArm {
 /** A7SD — after the item's staleness patch, with #1832's demotion (#1834). */
 export function createA7SDArm(deps: ArmDeps): LocalizationArm {
   return createAnalysisArm(deps, ANALYSIS_VARIANTS.A7SD);
+}
+
+/** A7R — after a no-op re-ingest, freshness hidden: the stage before #1832 (#1899). */
+export function createA7RArm(deps: ArmDeps): LocalizationArm {
+  return createAnalysisArm(deps, ANALYSIS_VARIANTS.A7R);
+}
+
+/** A7RD — after a no-op re-ingest, with #1832's demotion (#1899). */
+export function createA7RDArm(deps: ArmDeps): LocalizationArm {
+  return createAnalysisArm(deps, ANALYSIS_VARIANTS.A7RD);
 }

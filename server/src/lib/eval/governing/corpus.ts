@@ -8,8 +8,10 @@
  *
  *   - every file of the corpus directory is listed in the manifest, and the
  *     policy carries no AICPA Trust Services Criteria marker (#1867: the TSC
- *     text is copyrighted; the policy is written for the fixture) and no word
- *     telling a model it is reading an evaluation ({@link evaluationLeaks});
+ *     text is copyrighted; the policy is written for the fixture);
+ *   - no text an arm's prompt carries (the policy, its title, the rule
+ *     summaries, the requirements) has a word telling a model it is reading
+ *     an evaluation ({@link evaluationLeaks}, #1900);
  *   - each rule of the manifest has exactly one clause in every revision of the
  *     policy, and a later revision changes exactly the clauses it says it does;
  *   - a requirement reads as an analyst wrote it: no rule id, and no run of
@@ -222,14 +224,55 @@ const STOP_WORDS = new Set(
 );
 
 /**
+ * #1900 — subject words shorter than four letters that still carry subject
+ * matter: without them `log`, `tax`, `pii` and `vat` would never count as
+ * shared vocabulary. An inflection (`logs`, `logged`, `taxation`) meets its base.
+ */
+export const SHORT_SUBJECT_WORDS: ReadonlySet<string> = new Set([
+  "api",
+  "gps",
+  "key",
+  "log",
+  "mfa",
+  "pay",
+  "pii",
+  "sms",
+  "sso",
+  "ssn",
+  "tax",
+  "vat",
+  "vpn",
+]);
+
+/**
+ * The endings folded onto a short subject word (#1920): plural, past, -ing
+ * and -ation, so `logs`, `logged`, `logging`, `taxation` and `keyed` meet
+ * `log`, `tax` and `key`.
+ */
+const SHORT_WORD_INFLECTION = /(?:ations?|ings?|ed|e?s)$/;
+
+/** A short subject word `raw` is, or is an inflection of; undefined when none. */
+function shortSubjectWord(raw: string): string | undefined {
+  const stem = raw.replace(SHORT_WORD_INFLECTION, "");
+  // `logged` and `logging` double the consonant before the ending.
+  for (const base of [raw, stem, stem.replace(/(.)\1$/, "$1")]) {
+    if (SHORT_SUBJECT_WORDS.has(base)) return base;
+  }
+  return undefined;
+}
+
+/**
  * The subject-matter stems of a text: lower-cased words of four letters or
  * more that are not stop words, each cut to its first five letters, so
- * `records` meets `recorded` and `finance` meets `financial`. Deliberately
- * eager to match: a `nonResembling` label must survive the strictest reading.
+ * `records` meets `recorded` and `finance` meets `financial`; plus every
+ * {@link SHORT_SUBJECT_WORDS} word, inflected or not. Deliberately eager to
+ * match: a `nonResembling` label must survive the strictest reading.
  */
 export function contentStems(text: string): Set<string> {
   const out = new Set<string>();
   for (const raw of text.toLowerCase().split(/[^a-z0-9]+/)) {
+    const short = shortSubjectWord(raw);
+    if (short !== undefined) out.add(short);
     if (raw.length < 4 || STOP_WORDS.has(raw)) continue;
     out.add(raw.slice(0, 5));
   }
@@ -402,6 +445,24 @@ function validateItems(
   }
 }
 
+/**
+ * #1900 — every other text of the manifest that reaches an arm's prompt (the
+ * policy title, each rule summary, each requirement) must not tell the model
+ * it is an evaluation either; the policy revisions are checked in
+ * {@link validatePolicy}.
+ */
+function validatePromptTexts(m: GoverningCorpusManifest, problems: string[]): void {
+  const report = (where: string, text: string) => {
+    const leaks = evaluationLeaks(text);
+    if (leaks.length > 0) {
+      problems.push(`${where}: tells the model it is an evaluation (${leaks.join(", ")})`);
+    }
+  };
+  report("the policy title", m.policy.title);
+  for (const r of m.rules) report(`rule ${r.id}'s summary`, r.summary);
+  for (const item of m.items) report(`item ${item.id}`, `${item.title}\n${item.text}`);
+}
+
 function validateThresholds(t: PassThresholds, problems: string[]): void {
   if (!t.recordedBeforeAnyArmRan) problems.push("thresholds: not recorded before any arm ran");
   for (const c of t.changes) {
@@ -433,6 +494,7 @@ export function validateGoverningCorpus(
   validatePolicy(manifest, files, problems);
   const scored = files.policies.get(manifest.policy.scored);
   validateItems(manifest, scored ? parsePolicyClauses(scored).clauses : new Map(), problems);
+  validatePromptTexts(manifest, problems);
   validateThresholds(manifest.thresholds, problems);
   return problems;
 }

@@ -86,6 +86,8 @@ describe("arm selection", () => {
       "A7K",
       "A7S",
       "A7SD",
+      "A7R",
+      "A7RD",
       "A11",
       "A12",
       "A13",

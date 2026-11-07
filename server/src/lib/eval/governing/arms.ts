@@ -49,6 +49,7 @@ import {
   MIN_EXCERPT_WORDS,
   citationVerified,
   stripRuleMarker,
+  type ByConstruction,
   type GoverningArmOutput,
   type GoverningJudgement,
 } from "./scorer.js";
@@ -59,6 +60,8 @@ export interface GoverningArm {
   label: string;
   /** Everything that identifies the configuration; printed in every report. */
   configuration: Record<string, string | number | boolean>;
+  /** The metrics this arm fixes by construction; their bars are reported `n/a`. */
+  byConstruction?: ByConstruction;
   assess(
     item: GoverningItem,
     corpus: GoverningCorpus,
@@ -173,7 +176,12 @@ function findingSnippets(finding: AgentOutput["findings"][number]): string[] {
  *   - each such rule is judged `gap`: a finding is a gap or a risk, and the
  *     specialist has no `compliant` or `needs-ba-input` to say;
  *   - its citation is the finding's snippet that verifies against that rule's
- *     clause, else the finding's first snippet (which then does not verify).
+ *     clause, and none when no snippet does (#1900). A finding cites the
+ *     policy, not a rule: handing its first snippet to every rule it names
+ *     made a verbatim clause of one rule a failed citation of another, so A0's
+ *     citation accuracy measured this reader, not the specialist. The
+ *     specialist's quoting is read from citation coverage instead, and A0's
+ *     citation accuracy is 1 by construction ({@link A0_BY_CONSTRUCTION}).
  *
  * A rule found by several findings keeps the first verified citation.
  */
@@ -198,25 +206,30 @@ export function readWebFindings(output: AgentOutput, corpus: GoverningCorpus): G
       const verifying = snippets.find((s) =>
         citationVerified(corpus, ruleId, { ruleId, excerpt: s }),
       );
-      const excerpt = verifying ?? snippets[0];
       const judgement: GoverningJudgement = {
         ruleId,
         verdict: "gap",
-        ...(excerpt !== undefined ? { citation: { ruleId, excerpt } } : {}),
+        ...(verifying !== undefined ? { citation: { ruleId, excerpt: verifying } } : {}),
       };
       const held = byRule.get(ruleId);
-      if (!held || (verifying && !citationVerified(corpus, ruleId, held.citation))) {
-        byRule.set(ruleId, judgement);
-      }
+      if (!held || (verifying !== undefined && !held.citation)) byRule.set(ruleId, judgement);
     }
   }
   return { judgements: [...byRule.values()] };
 }
 
+/** #1900 — what A0's reading fixes, so its report cannot print those bars as passes. */
+export const A0_BY_CONSTRUCTION: Readonly<ByConstruction> = Object.freeze({
+  hardErrors: "A0 judges every rule gap, so it never says compliant",
+  askRate: "A0 judges every rule gap, so it never asks for business input",
+  citationAccuracy: "A0's reader attaches a snippet only when it verifies against the rule",
+});
+
 export function createA0Arm(deps: GoverningArmDeps): GoverningArm {
   return {
     id: "A0",
     label: "A0 — today's web specialist over chunk retrieval of the policy",
+    byConstruction: A0_BY_CONSTRUCTION,
     configuration: {
       chunker: "chunkMarkdown (rag/chunker.ts), default options",
       retrieval:
@@ -226,7 +239,8 @@ export function createA0Arm(deps: GoverningArmDeps): GoverningArm {
       rerank: false,
       filter: "selectWebAgentEvidence",
       agent: "runAgent web (analysis/agent-runner.ts)",
-      reading: "readWebFindings: named or quoted rules, every one judged gap",
+      reading:
+        "readWebFindings: named or quoted rules, every one judged gap, cited only by a snippet that verifies",
       model: deps.model,
     },
     async assess(item, corpus, { provider }) {

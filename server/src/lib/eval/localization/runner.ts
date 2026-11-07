@@ -29,6 +29,7 @@
  * reads, no network of its own.
  */
 import { ANALYSIS_PASS_GROUP } from "./agent-env.js";
+import { assertReferenceArms } from "./cli-args.js";
 import type { LocalizationArm } from "./arms.js";
 import type { LocalizationCorpus, LocalizationItem } from "./corpus.js";
 import type { CostMeter } from "./cost.js";
@@ -135,8 +136,26 @@ export interface TableGuardMeasurement {
  * gated against it, so a seeding change is never read as the arm's effect.
  */
 export type TableGuardReading =
-  | ({ measured: true; baseline?: TableGuardMeasurement } & TableGuardMeasurement)
+  | ({
+      measured: true;
+      baseline?: TableGuardMeasurement;
+      /** #1890 — what `tablePrecision` scores, in words, when the gate reads more than one scoring. */
+      scoring?: string;
+      /**
+       * #1890 — further scorings of the same runs the gate must ALSO hold on
+       * (A7 against A7O: the union beside the first persisted requirement).
+       */
+      alsoGatedOn?: TableGuardAlternate[];
+    } & TableGuardMeasurement)
   | { measured: false; reason: string };
+
+/** #1890 — one more scoring of an arm's guard and its baseline's, gated like the headline. */
+export interface TableGuardAlternate {
+  /** The scoring, in words. */
+  scoring: string;
+  tablePrecision: number;
+  baselinePrecision: number;
+}
 
 /**
  * Measures the table-precision guard rail for an arm. A guard that can say when
@@ -265,6 +284,8 @@ export interface ArmComparison {
   tableGuardPassed: boolean | null;
   /** #1823 — the arm the guard was read against, when not A0 (A7 against A7O). */
   tableGuardAgainst?: string;
+  /** #1890 — when the gate read more than one scoring: which held, or which failed it. */
+  tableGuardDecidedBy?: string;
 }
 
 export interface LocalizationReport {
@@ -378,16 +399,11 @@ export async function runLocalizationEval(
   const now = opts.now ?? (() => performance.now());
   if (opts.arms[0]?.id !== "A0") throw new Error("A0 must be the first arm: it is the baseline");
   const references = [...(opts.references ?? [])];
-  const armIdList = opts.arms.map((a) => a.id);
-  for (const ref of references) {
-    if (ref === "A0" || !armIdList.includes(ref)) {
-      throw new Error(
-        ref === "A0"
-          ? "--reference A0: every arm is already compared with A0"
-          : `--reference ${ref} is not one of this run's arms (${armIdList.join(", ")})`,
-      );
-    }
-  }
+  // #1925 — the CLI's preflight refusal, called rather than copied.
+  assertReferenceArms(
+    references,
+    opts.arms.map((a) => a.id),
+  );
 
   // Per arm, per item, per run: every score held, recorded or new.
   const scores = new Map(
@@ -560,7 +576,10 @@ export async function runLocalizationEval(
     comparisons,
     references,
     referenceComparisons,
-    detectableGap: minimumDetectableGapStatement(corpus.manifest.items.length),
+    // #1925 — sized, as the reference and pooled tables are, on the fewest items paired with A0.
+    detectableGap: minimumDetectableGapStatement(
+      Math.min(baseline.items.length, ...comparisons.map((c) => c.items)),
+    ),
     notes: corpusNotes(corpus),
     splitAgentPasses: splitAgentPassesOf(
       opts.arms.map((a) => a.id),
@@ -625,23 +644,57 @@ export function compareArms(baseline: ArmResult, arm: ArmResult): ArmComparison 
   const pairs = pairsOf(baseline, arm);
   const metrics = metricComparisons([pairs]);
   const hits = hitComparisons(pairs);
-  const g1 = arm.tableGuard;
-  // #1786 — gate against A0 on the arm's own seeding when the arm measured it.
-  const g0: TableGuardMeasurement | null =
-    g1.measured && g1.baseline
-      ? g1.baseline
-      : baseline.tableGuard.measured
-        ? baseline.tableGuard
-        : null;
   return {
     arm: arm.id,
     baseline: "A0",
     items: pairs.length,
     metrics,
     hits,
-    tableGuardPassed:
-      g0 && g1.measured ? g1.tablePrecision >= g0.tablePrecision - TABLE_PRECISION_TOLERANCE : null,
+    ...tableGuardGate(arm.tableGuard, baseline.tableGuard),
+  };
+}
+
+/**
+ * The table-precision gate of one arm's guard reading: no more than
+ * {@link TABLE_PRECISION_TOLERANCE} below its baseline — A0 on the arm's own
+ * seeding when the arm measured it (#1786), its control when it names one
+ * (#1823), else A0's reading. #1890 — every scoring the reading carries
+ * (`alsoGatedOn`) is gated the same way; one breach fails the arm, and the
+ * result says which scoring decided it.
+ */
+export function tableGuardGate(
+  g1: TableGuardReading,
+  a0: TableGuardReading,
+): Pick<ArmComparison, "tableGuardPassed" | "tableGuardAgainst" | "tableGuardDecidedBy"> {
+  const g0: TableGuardMeasurement | null =
+    g1.measured && g1.baseline ? g1.baseline : a0.measured ? a0 : null;
+  const gates: TableGuardAlternate[] =
+    g0 && g1.measured
+      ? [
+          {
+            scoring: g1.scoring ?? "the reading",
+            tablePrecision: g1.tablePrecision,
+            baselinePrecision: g0.tablePrecision,
+          },
+          ...(g1.alsoGatedOn ?? []),
+        ]
+      : [];
+  const failed = gates.filter(
+    (g) => g.tablePrecision < g.baselinePrecision - TABLE_PRECISION_TOLERANCE,
+  );
+  const words = (g: TableGuardAlternate) =>
+    `${g.scoring} (${g.tablePrecision.toFixed(3)} against ${g.baselinePrecision.toFixed(3)})`;
+  return {
+    tableGuardPassed: gates.length > 0 ? failed.length === 0 : null,
     ...(g0?.arm ? { tableGuardAgainst: g0.arm } : {}),
+    ...(gates.length > 1
+      ? {
+          tableGuardDecidedBy:
+            failed.length === 0
+              ? `held on all ${gates.length}: ${gates.map(words).join("; ")}`
+              : `failed on ${failed.map(words).join("; ")}`,
+        }
+      : {}),
   };
 }
 
@@ -678,6 +731,12 @@ export interface PooledComparison {
   detectableGap: string;
 }
 
+/** #1819 — a `--reference` arm and the items it scored: what its table's coverage lines read. */
+export interface ReferenceArm {
+  id: string;
+  items: number;
+}
+
 export interface PooledLocalizationReport {
   kind: "localization-eval-pooled";
   corpora: Array<{
@@ -693,6 +752,12 @@ export interface PooledLocalizationReport {
   /** A0's scored items over every pooled corpus. */
   items: number;
   comparisons: PooledComparison[];
+  /**
+   * #1819 — the `--reference` arms every held-out report carries, with the
+   * items each scored over the pooled corpora: the reference sections are
+   * printed from these, so a reference with no other arm to pair still gets one.
+   */
+  references: ReferenceArm[];
   /** #1806 — the pairings with each `--reference` arm every held-out report carries. */
   referenceComparisons: PooledComparison[];
   /**
@@ -759,6 +824,10 @@ export function poolHeldOutReports(
     })),
     items,
     comparisons,
+    references: references.map((id) => ({
+      id,
+      items: heldOut.reduce((sum, r) => sum + armOf(r, id).items.length, 0),
+    })),
     referenceComparisons,
     detectableGap: minimumDetectableGapStatement(pairedItems),
   };
@@ -918,7 +987,7 @@ export function toMarkdownReport(report: LocalizationReport): string {
           }.` +
           // #1834 — what the staleness patch did to the stored citations.
           (t.citationFreshness
-            ? ` After the staleness patch's re-ingest (#1831): ${t.citationFreshness.stale} stale, ` +
+            ? ` After the arm's re-ingest (#1831): ${t.citationFreshness.stale} stale, ` +
               `${t.citationFreshness.moved} moved, ${t.citationFreshness.fresh} fresh, ` +
               `${t.citationFreshness.unverified} unverified citation(s); ` +
               `${t.citationFreshness.demoted} set aside by the stage (#1832).`
@@ -963,6 +1032,12 @@ export function toMarkdownReport(report: LocalizationReport): string {
           `${f3(g.baseline.tablePrecision)} (${g.baseline.runs} runs), measured on: ${g.baseline.configuration}`,
       );
     }
+    // #1890 — the further scorings the gate also reads.
+    for (const alt of g.alsoGatedOn ?? []) {
+      lines.push(
+        `  - also gated on ${alt.scoring}: ${f3(alt.tablePrecision)}, next to ${g.baseline?.arm ?? "A0"}'s ${f3(alt.baselinePrecision)}`,
+      );
+    }
   }
   lines.push("");
   lines.push("## Paired comparison with A0", "");
@@ -970,18 +1045,37 @@ export function toMarkdownReport(report: LocalizationReport): string {
   if (report.comparisons.length === 0) {
     lines.push("No other arm was run: this report is A0's baseline.", "");
   } else {
+    // #1925 — the coverage lines the reference tables carry (#1819).
+    const a0Items = report.arms[0]!.items.length;
+    for (const cmp of report.comparisons) {
+      if (cmp.items < a0Items) {
+        lines.push(
+          `> ${cmp.arm} pairs ${cmp.items} of A0's ${a0Items} items. ${minimumDetectableGapStatement(cmp.items)}`,
+          "",
+        );
+      }
+    }
     lines.push("| Arm | Metric | Δ vs A0 | 95% CI | p | Reading |", "|---|---|---|---|---|---|");
     for (const cmp of report.comparisons) {
       lines.push(...comparisonRows(cmp));
       lines.push(
         `| ${cmp.arm} | table precision guard (≤ ${TABLE_PRECISION_TOLERANCE} drop${cmp.tableGuardAgainst ? ` against ${cmp.tableGuardAgainst}` : ""}) | — | — | — | ${
           cmp.tableGuardPassed === null ? "not measured" : cmp.tableGuardPassed ? "held" : "FAILED"
-        } |`,
+        }${cmp.tableGuardDecidedBy ? ` (${cmp.tableGuardDecidedBy})` : ""} |`,
       );
     }
     lines.push("");
   }
-  lines.push(...referenceSections(report.references, report.referenceComparisons, ""));
+  lines.push(
+    ...referenceSections(
+      report.references.map((id) => ({
+        id,
+        items: report.arms.find((a) => a.id === id)?.items.length ?? 0,
+      })),
+      report.referenceComparisons,
+      "",
+    ),
+  );
   lines.push("## Per requirement", "");
   lines.push(
     `| Item | ${report.arms.map((a) => `${a.id} R@5 / R@10 / EditP / RR`).join(" | ")} |`,
@@ -1039,8 +1133,7 @@ export function toPooledMarkdownReport(report: PooledLocalizationReport): string
     lines.push(...comparisonRows(cmp));
   }
   lines.push("");
-  const references = [...new Set(report.referenceComparisons.map((c) => c.baseline))];
-  lines.push(...referenceSections(references, report.referenceComparisons, ", pooled"));
+  lines.push(...referenceSections(report.references, report.referenceComparisons, ", pooled"));
   return lines.join("\n");
 }
 
@@ -1048,24 +1141,40 @@ export function toPooledMarkdownReport(report: PooledLocalizationReport): string
  * #1806 — one table per `--reference` arm: every other arm paired with it. The
  * decision bars are read against A0; these tables say what an arm adds over
  * another arm, such as the re-order on A12's base against A12 itself.
+ * #1819 — each carries the coverage lines the A0 tables do: the gap its fewest
+ * paired items can resolve, and every arm that pairs fewer items than the
+ * reference scored.
  */
 function referenceSections(
-  references: readonly string[],
+  references: readonly ReferenceArm[],
   comparisons: ReadonlyArray<{
     arm: string;
     baseline: string;
+    items: number;
     metrics: readonly MetricComparison[];
     hits: readonly HitComparison[];
   }>,
   suffix: string,
 ): string[] {
   const lines: string[] = [];
-  for (const ref of references) {
+  for (const { id: ref, items } of references) {
     const rows = comparisons.filter((c) => c.baseline === ref);
     lines.push(`## Paired comparison with ${ref} (\`--reference ${ref}\`)${suffix}`, "");
     if (rows.length === 0) {
       lines.push(`No arm other than A0 and ${ref} was run: there is nothing to pair with it.`, "");
       continue;
+    }
+    lines.push(
+      `> ${minimumDetectableGapStatement(Math.min(items, ...rows.map((c) => c.items)))}`,
+      "",
+    );
+    for (const cmp of rows) {
+      if (cmp.items < items) {
+        lines.push(
+          `> ${cmp.arm} pairs ${cmp.items} of ${ref}'s ${items} items. ${minimumDetectableGapStatement(cmp.items)}`,
+          "",
+        );
+      }
     }
     lines.push(
       `| Arm | Metric | Δ vs ${ref} | 95% CI | p | Reading |`,

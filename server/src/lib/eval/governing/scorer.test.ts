@@ -5,6 +5,7 @@ import {
   bootstrapRatioCi,
   checkThresholds,
   citationVerified,
+  heldByConstruction,
   scoreItem,
   stripRuleMarker,
   summarizeRuns,
@@ -46,6 +47,8 @@ const out = (...judgements: GoverningArmOutput["judgements"]): GoverningArmOutpu
   judgements,
 });
 const VERBATIM = { ruleId: "AL-02", excerpt: "recorded in the audit trail, naming the person" };
+/** A verbatim clause of EN-03, cited as AL-02: it does not verify. */
+const WRONG_RULE = { ruleId: "AL-02", excerpt: "Full card numbers are never stored" };
 
 describe("hard errors: a no-evidence outcome scored as compliant (#1867 AC)", () => {
   for (const truth of ["needs-ba-input", "gap"] as const) {
@@ -221,6 +224,20 @@ describe("scoreItem and aggregate", () => {
     expect(m.recall).toBeNull();
     expect(m.precision).toBe(0);
   });
+
+  it("scores a requirement the arm failed on as an error, never a clean negative (#1900)", () => {
+    const crashedNegative = scoreItem(corpus, item("N1", []), { judgements: [], error: "boom" });
+    const crashedPositive = scoreItem(corpus, item("R", [{ ruleId: "EN-03", verdict: "gap" }]), {
+      judgements: [],
+      error: "boom",
+    });
+    expect(crashedNegative.failures).toBe(1);
+    expect(scoreItem(corpus, item("N2", []), out()).failures).toBe(0);
+    const m = aggregate([crashedNegative, crashedPositive]);
+    expect(m.negatives).toBe(1);
+    expect(m.cleanNegatives).toBe(0);
+    expect(m.recall).toBe(0); // its truth pairs are misses
+  });
 });
 
 describe("bootstrapRatioCi", () => {
@@ -282,6 +299,97 @@ describe("checkThresholds", () => {
     expect(byBar.maxNoEvidenceCompliantErrors).toMatchObject({
       pass: false,
       measured: "1 (worst run)",
+    });
+  });
+
+  it("reports a bar on a metric fixed by construction as n/a, not a pass (#1900)", () => {
+    // Every rule judged gap with only verified citations: 0 hard errors and
+    // citation accuracy 1 hold by construction.
+    const s = summarizeRuns([
+      [
+        scoreItem(
+          corpus,
+          item("R", [{ ruleId: "AL-02", verdict: "needs-ba-input", businessFact: "x" }]),
+          out({ ruleId: "AL-02", verdict: "gap", citation: VERBATIM }),
+        ),
+      ],
+    ]);
+    expect(checkThresholds(s, bars).map((c) => c.pass)).toEqual([true, false, true, true, true]);
+    const fixed = checkThresholds(s, bars, {
+      hardErrors: "never says compliant",
+      citationAccuracy: "only verified citations",
+      askRate: "never asks",
+    });
+    const byBar = Object.fromEntries(fixed.map((c) => [c.bar, c]));
+    expect(byBar.maxNoEvidenceCompliantErrors).toMatchObject({
+      pass: null,
+      measured: "0 (worst run)",
+      note: "never says compliant",
+    });
+    expect(byBar.citationAccuracy).toMatchObject({ pass: null, note: "only verified citations" });
+    // A bar the arm can fail is still judged.
+    expect(byBar.overallRecall).toMatchObject({ pass: true });
+    expect(byBar.overallRecall).not.toHaveProperty("note");
+    expect(byBar.nonResemblingRecall!.pass).toBe(false);
+  });
+
+  it("judges a by-construction bar when the measured value is not the fixed one (#1920)", () => {
+    const claims = {
+      hardErrors: "never says compliant",
+      citationAccuracy: "only verified citations",
+      askRate: "never asks",
+    };
+    // A reader change let the arm say compliant on a gap and cite a wrong clause.
+    const broken = summarizeRuns([
+      [
+        scoreItem(
+          corpus,
+          item("R", [{ ruleId: "AL-02", verdict: "gap" }]),
+          out({ ruleId: "AL-02", verdict: "compliant", citation: WRONG_RULE }),
+        ),
+      ],
+      [
+        scoreItem(
+          corpus,
+          item("R", [{ ruleId: "AL-02", verdict: "gap" }]),
+          out({ ruleId: "AL-02", verdict: "needs-ba-input", citation: VERBATIM }),
+        ),
+      ],
+    ]);
+    expect(heldByConstruction(broken, claims)).toEqual({});
+    const byBar = Object.fromEntries(checkThresholds(broken, bars, claims).map((c) => [c.bar, c]));
+    expect(byBar.maxNoEvidenceCompliantErrors).toMatchObject({
+      pass: false,
+      measured: "1 (worst run)",
+    });
+    expect(byBar.maxNoEvidenceCompliantErrors!.note).toMatch(
+      /^claimed fixed by construction \(never says compliant\), but measured otherwise$/,
+    );
+    expect(byBar.citationAccuracy).toMatchObject({ pass: false, measured: "0.50" });
+
+    // Each claim is checked on its own, in every run.
+    const clean = summarizeRuns([
+      [
+        scoreItem(
+          corpus,
+          item("R", [{ ruleId: "AL-02", verdict: "gap" }]),
+          out({ ruleId: "AL-02", verdict: "gap", citation: VERBATIM }),
+        ),
+      ],
+    ]);
+    expect(heldByConstruction(clean, claims)).toEqual(claims);
+    const asks = summarizeRuns([
+      [
+        scoreItem(
+          corpus,
+          item("R", [{ ruleId: "AL-02", verdict: "gap" }]),
+          out({ ruleId: "AL-02", verdict: "needs-ba-input" }),
+        ),
+      ],
+    ]);
+    expect(heldByConstruction(asks, claims)).toEqual({
+      hardErrors: claims.hardErrors,
+      citationAccuracy: claims.citationAccuracy,
     });
   });
 
