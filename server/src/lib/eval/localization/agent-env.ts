@@ -1,6 +1,6 @@
 /**
  * #1755 — the environment an agent arm (A3, A3A, A3N) runs in, and #1818 an
- * analysis arm (A7, A7O, and #1834's A7K, A7S, A7SD). Its tools read
+ * analysis arm (A7, A7O, #1834's A7K, A7S, A7SD and #1899's A7R, A7RD). Its tools read
  * the MATERIALIZED corpus (#1799): the eval database, the clones and the symbol
  * vectors under `eval-data/.materialized/`. Prisma binds its database when it is
  * first imported, so the CLI binds these variables before anything that imports
@@ -13,7 +13,7 @@ import type { MaterializeLayout } from "./materialize.js";
 export const AGENT_ARMS = ["A3", "A3A", "A3N"] as const;
 
 /** #1818 — the analysis arms; `analysis-arms.ts` holds their definitions (a test pins them too). */
-export const ANALYSIS_ARMS = ["A7", "A7O", "A7K", "A7S", "A7SD"] as const;
+export const ANALYSIS_ARMS = ["A7", "A7O", "A7K", "A7S", "A7SD", "A7R", "A7RD"] as const;
 
 /**
  * The pass group the report reads: A7 and A7O must read the same analyses.

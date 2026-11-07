@@ -104,6 +104,114 @@ describeIfLance("LanceVectorStore", () => {
     expect(hits[0].row.metadata.documentId).toBe("d2");
   });
 
+  describe("filters apply BEFORE the top-k is picked (#1917)", () => {
+    // `vectordb` 0.21 post-filters by default: it ranks the k nearest rows and THEN
+    // drops the ones the filter excludes. These tables hold more than k excluded rows
+    // nearer the query than every match — a superseded revision's chunks, another
+    // model's tags — so a post-filter returns none of the k matches asked for.
+    const K = 5;
+
+    /** A unit vector at cosine `cos` to `vec(0)`, distinct per `axis`. */
+    function nearZero(cos: number, axis: number): number[] {
+      const out = new Array<number>(384).fill(0);
+      out[0] = cos;
+      out[axis] = Math.sqrt(1 - cos * cos);
+      return out;
+    }
+
+    it("documentIds: returns k matching rows past more than k nearer excluded rows", async () => {
+      const stale = Array.from({ length: 4 * K }, (_, i) =>
+        row(`stale-${i}`, nearZero(0.99, 10 + i), { documentId: "superseded" }),
+      );
+      const live = Array.from({ length: K + 2 }, (_, i) =>
+        row(`live-${i}`, nearZero(0.5, 100 + i), { documentId: "current" }),
+      );
+      await store.upsert("p1", [...stale, ...live]);
+
+      const hits = await store.search("p1", vec(0), K, { documentIds: ["current"] });
+      expect(hits).toHaveLength(K);
+      expect(new Set(hits.map((h) => h.row.metadata.documentId))).toEqual(new Set(["current"]));
+    });
+
+    it("embeddingModel: returns k matching rows past more than k nearer other-model rows", async () => {
+      const other = Array.from({ length: 4 * K }, (_, i) =>
+        row(`old-${i}`, nearZero(0.99, 10 + i), { embeddingModel: "old-model" }),
+      );
+      const active = Array.from({ length: K + 2 }, (_, i) =>
+        row(`new-${i}`, nearZero(0.5, 100 + i), { embeddingModel: "new-model" }),
+      );
+      await store.upsert("p1", [...other, ...active]);
+
+      const hits = await store.search("p1", vec(0), K, { embeddingModel: "new-model" });
+      expect(hits).toHaveLength(K);
+      expect(new Set(hits.map((h) => h.row.metadata.embeddingModel))).toEqual(
+        new Set(["new-model"]),
+      );
+    });
+
+    it("still ranks the matches nearest-first", async () => {
+      await store.upsert("p1", [
+        ...Array.from({ length: 4 * K }, (_, i) =>
+          row(`stale-${i}`, nearZero(0.99, 10 + i), { documentId: "superseded" }),
+        ),
+        row("far", nearZero(0.2, 200), { documentId: "current" }),
+        row("near", nearZero(0.8, 201), { documentId: "current" }),
+        row("mid", nearZero(0.5, 202), { documentId: "current" }),
+      ]);
+
+      const hits = await store.search("p1", vec(0), 2, { documentIds: ["current"] });
+      expect(hits.map((h) => h.row.id)).toEqual(["near", "mid"]);
+    });
+
+    it("holds once the table is past VECTOR_ANN_THRESHOLD and an IVF index serves the query", async () => {
+      // Seeded random unit vectors, so the IVF partitions spread the way a real
+      // table's do. Next to the query sit 4k superseded rows and, one step further
+      // out, the k + 2 current ones; the rest of the table is unrelated noise. The
+      // matches go in FIRST, so the index built at the threshold covers them and the
+      // query is answered by the index rather than an exhaustive scan.
+      let seed = 1917;
+      const rand = (): number =>
+        (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32 - 0.5;
+      const unit = (): number[] => {
+        const v = Array.from({ length: 384 }, rand);
+        const n = Math.hypot(...v);
+        return v.map((x) => x / n);
+      };
+      const query = unit();
+      /** A unit vector at exactly cosine `cos` to `query`. */
+      const around = (cos: number): number[] => {
+        const r = unit();
+        const dot = r.reduce((acc, x, i) => acc + x * query[i], 0);
+        const orth = r.map((x, i) => x - dot * query[i]);
+        const n = Math.hypot(...orth);
+        return query.map((q, i) => cos * q + Math.sqrt(1 - cos * cos) * (orth[i] / n));
+      };
+      const live = Array.from({ length: K + 2 }, (_, i) =>
+        row(`live-${i}`, around(0.8), { documentId: "current" }),
+      );
+      const near = Array.from({ length: 4 * K }, (_, i) =>
+        row(`stale-${i}`, around(0.9), { documentId: "superseded" }),
+      );
+      const noise = Array.from({ length: VECTOR_ANN_THRESHOLD + 100 }, (_, i) =>
+        row(`noise-${i}`, unit(), { documentId: "superseded" }),
+      );
+      const all = [...live, ...near, ...noise];
+      for (let i = 0; i < all.length; i += 250) await store.upsert("wide", all.slice(i, i + 250));
+      const table = await (
+        store as unknown as {
+          openOrCreateTable(
+            p: string,
+          ): Promise<{ listIndices(): Promise<Array<{ columns: string[] }>> }>;
+        }
+      ).openOrCreateTable("wide");
+      expect((await table.listIndices()).some((ix) => ix.columns.includes("vector"))).toBe(true);
+
+      const hits = await store.search("wide", query, K, { documentIds: ["current"] });
+      expect(hits).toHaveLength(K);
+      expect(new Set(hits.map((h) => h.row.metadata.documentId))).toEqual(new Set(["current"]));
+    });
+  });
+
   it("upsert is idempotent — same id replaces", async () => {
     await store.upsert("p1", [row("a", vec(0), { text: "first" })]);
     await store.upsert("p1", [row("a", vec(0), { text: "second" })]);

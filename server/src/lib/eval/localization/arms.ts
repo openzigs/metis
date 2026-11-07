@@ -52,8 +52,11 @@ import {
   createA7Arm,
   createA7KArm,
   createA7OArm,
+  createA7RArm,
+  createA7RDArm,
   createA7SArm,
   createA7SDArm,
+  NOOP_REINGEST_ARM_IDS,
   STALENESS_ARM_IDS,
   UNPATCHED_CITATION_ARM_IDS,
 } from "./analysis-arms.js";
@@ -94,6 +97,8 @@ export const MODEL_ARMS: ReadonlySet<string> = new Set([
   "A7K",
   "A7S",
   "A7SD",
+  "A7R",
+  "A7RD",
   "A13",
   "A13C",
   "A13S",
@@ -516,6 +521,8 @@ export const ARM_FACTORIES: Record<string, (deps: ArmDeps) => LocalizationArm> =
   A7K: createA7KArm,
   A7S: createA7SArm,
   A7SD: createA7SDArm,
+  A7R: createA7RArm,
+  A7RD: createA7RDArm,
   A11: createA11Arm,
   A12: createA12Arm,
   A13: createA13Arm,
@@ -550,6 +557,8 @@ export function parseArmIds(argv: readonly string[]): string[] {
  * #1834 — a staleness arm's patch cycle re-validates every stored citation of
  * the repository, so an arm that reads citations unpatched (A7, A7K) must come
  * before every staleness arm (A7S, A7SD): the runner reads arm by arm.
+ * #1899 — a patch cycle's restore leaves a citation `moved` back, so a no-op
+ * re-ingest arm (A7R, A7RD) must come before every patch arm too.
  */
 export function buildArms(ids: readonly string[], deps: ArmDeps): LocalizationArm[] {
   const firstStale = ids.findIndex((id) => STALENESS_ARM_IDS.has(id));
@@ -559,6 +568,17 @@ export function buildArms(ids: readonly string[], deps: ArmDeps): LocalizationAr
   if (lateUnpatched) {
     throw new Error(
       `--arms: ${lateUnpatched} reads the stored citations unpatched, so it must come before ${ids[firstStale]}: a staleness arm's patch cycle re-validates every citation of the repository`,
+    );
+  }
+  const firstPatch = ids.findIndex(
+    (id) => STALENESS_ARM_IDS.has(id) && !NOOP_REINGEST_ARM_IDS.has(id),
+  );
+  const lateNoop = ids.find(
+    (id, i) => firstPatch >= 0 && i > firstPatch && NOOP_REINGEST_ARM_IDS.has(id),
+  );
+  if (lateNoop) {
+    throw new Error(
+      `--arms: ${lateNoop} reads after a no-op re-ingest, so it must come before ${ids[firstPatch]}: a patch cycle's restore leaves a citation moved back`,
     );
   }
   return ids.map((id) => {

@@ -988,7 +988,7 @@ export function toMarkdownReport(report: LocalizationReport): string {
           }.` +
           // #1834 — what the staleness patch did to the stored citations.
           (t.citationFreshness
-            ? ` After the staleness patch's re-ingest (#1831): ${t.citationFreshness.stale} stale, ` +
+            ? ` After the arm's re-ingest (#1831): ${t.citationFreshness.stale} stale, ` +
               `${t.citationFreshness.moved} moved, ${t.citationFreshness.fresh} fresh, ` +
               `${t.citationFreshness.unverified} unverified citation(s); ` +
               `${t.citationFreshness.demoted} set aside by the stage (#1832).`
