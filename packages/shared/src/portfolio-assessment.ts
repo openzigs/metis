@@ -307,6 +307,13 @@ export interface PortfolioAssessmentView extends PortfolioAssessment {
    * was, or for a verdict stored before #1963 (which left none out).
    */
   notInScope?: string[];
+  /**
+   * #1963 — the products in scope not checked and never analysed (no completed
+   * product analysis, so their integration edges were never detected): the
+   * walk's `none` for them is not evidence the change does not reach them, so
+   * they stay in the verdict. Empty when none was.
+   */
+  neverAnalysed?: string[];
 }
 
 /** One row of `GET /api/portfolio-assessments`. */
@@ -359,6 +366,24 @@ export function portfolioNamedInProse(
   }
   const parts = rest > 0 ? [...shown, `${rest} more`] : shown;
   return parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+}
+
+/**
+ * #1963 — products the verdict left out as not in scope of the change, in the
+ * words the page's headline and the server's summary share.
+ */
+export function portfolioNotInScopeText(names: readonly (string | null)[]): string {
+  const one = names.length === 1;
+  return `${portfolioNamedInProse(names, { sentenceStart: true })} ${one ? "was" : "were"} not checked, but this change does not reach ${one ? "it" : "them"}, so ${one ? "it is" : "they are"} not in scope.`;
+}
+
+/**
+ * #1963 — products not checked whose integrations were never analysed, so
+ * nothing says whether the change reaches them: they stay in the verdict.
+ */
+export function portfolioNeverAnalysedText(names: readonly (string | null)[]): string {
+  const one = names.length === 1;
+  return `${portfolioNamedInProse(names, { sentenceStart: true })} ${one ? "was" : "were"} not checked and ${one ? "has" : "have"} never been analysed, so whether this change reaches ${one ? "it" : "them"} is not known.`;
 }
 
 /**

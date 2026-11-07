@@ -181,6 +181,15 @@ export interface ProductImpact {
   hiddenEdgeCount: number;
   /** #1963 — every classified hop the walk reached it by, the shown path's included. */
   links: ImpactLink[];
+  /**
+   * #1963 — whether this product's integration edges were ever detected: it
+   * has a completed product analysis (`ProductAnalysis.status = "completed"`,
+   * written only by the relationship detector's run, `products-multi.ts`). A
+   * `none` is evidence the change does not reach a product only when this is
+   * true: one never analysed has no detected edges to be reached by. Always
+   * false for a `restricted` product, which is not looked up.
+   */
+  edgesDetected: boolean;
 }
 
 export interface PortfolioImpactResult {
@@ -862,6 +871,7 @@ function emptyImpact(productId: string, name: string | null, restricted: boolean
     hops: [],
     hiddenEdgeCount: 0,
     links: [],
+    edgesDetected: false,
   };
 }
 
@@ -1260,6 +1270,22 @@ export async function evaluatePortfolioImpact(
     for (const p of unreached) if (reached.has(p.productId)) p.impactKind = "restricted";
   }
 
+  // #1963 — which readable products had their edges detected; a restricted one
+  // is never looked up, so it never reads as analysed.
+  const readableIds = [...out.values()].filter((p) => !p.restricted).map((p) => p.productId);
+  if (readableIds.length > 0) {
+    const analysed = await prisma.productAnalysis.findMany({
+      // No `orderBy`/`take`: Prisma splits a long `IN` list itself (#1346).
+      where: { productId: { in: readableIds }, status: "completed" },
+      select: { productId: true },
+      distinct: ["productId"],
+    });
+    for (const a of analysed) {
+      const p = out.get(a.productId);
+      if (p) p.edgesDetected = true;
+    }
+  }
+
   return {
     maxDepth,
     stoppedAtRestricted: stoppedAt.size,
@@ -1289,6 +1315,8 @@ export function impactDetail(
     hops: p.hops,
     // #1963 — every edge kind that reaches it; the view keeps only the readable ones.
     links: p.links,
+    // #1963 — whether a `none` here had detected edges to reason over.
+    edgesDetected: p.edgesDetected,
   };
 }
 

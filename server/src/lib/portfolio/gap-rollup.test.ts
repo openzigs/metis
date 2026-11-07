@@ -10,6 +10,7 @@ import {
   rollUpPortfolio,
   rollUpPortfolioVerdict,
   rollUpProductCoverage,
+  scopeOfChange,
   storedPortfolioVerdict,
   type RepoVerdictInput,
 } from "./gap-rollup.js";
@@ -209,6 +210,23 @@ describe("#1963 — the products not in scope of the change", () => {
       "hidden-repos",
       "unrelated",
     ]);
+  });
+
+  it("only one whose edges were detected; one never analysed is kept in, and named so", () => {
+    const walked = [
+      { productId: "host", impactKind: "direct-change" as const, edgesDetected: false },
+      { productId: "unrelated", impactKind: "none" as const, edgesDetected: true },
+      { productId: "hidden-repos", impactKind: "none" as const, edgesDetected: false },
+    ];
+    const scope = scopeOfChange(products, walked);
+    expect([...scope.notInScope]).toEqual(["unrelated"]);
+    expect([...scope.neverAnalysed]).toEqual(["hidden-repos"]);
+    // Nothing that changes: nothing was walked from, so neither is known.
+    const still = walked.map((p) => ({ ...p, impactKind: "none" as const }));
+    expect(scopeOfChange(products, still)).toEqual({
+      notInScope: new Set(),
+      neverAnalysed: new Set(),
+    });
   });
 
   it("never a product the walk reaches, however it reads", () => {

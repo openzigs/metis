@@ -42,10 +42,10 @@ import {
   type PortfolioRepoResult,
 } from "./gap-engine.js";
 import {
-  notInScopeOfChange,
   portfolioVerdictFromStored,
   rollUpPortfolio,
   rollUpProductCoverage,
+  scopeOfChange,
   storedPortfolioVerdict,
 } from "./gap-rollup.js";
 
@@ -185,6 +185,18 @@ interface StoredLink {
 function storedLinks(stored: StoredProduct): StoredLink[] | null {
   const links = (stored.technicalDetail as { impact?: { links?: unknown } }).impact?.links;
   return Array.isArray(links) ? (links as StoredLink[]) : null;
+}
+
+/**
+ * #1963 — whether the run found this product's integration edges detected
+ * (`impact.edgesDetected`). A row stored without it reads false: nothing says
+ * its `none` had edges to reason over.
+ */
+function storedEdgesDetected(technicalDetail: unknown): boolean {
+  return (
+    (technicalDetail as { impact?: { edgesDetected?: unknown } } | null)?.impact?.edgesDetected ===
+    true
+  );
 }
 
 /** #1963 — the repos and products one stored link names. */
@@ -497,27 +509,31 @@ export async function viewPortfolioAssessment(
 
   const stored = portfolioVerdictFromStored(a.portfolioVerdict);
   // #1963 — as the run did (`scopedToChange`): a product not checked that the
-  // change's walk does not reach is not in scope. Only a row the walk itself
-  // listed `none` under the current rule is known to be unreached.
-  const changes = products.some((p) => p.impactKind === "direct-change");
-  const unreached = new Set(
-    changes
-      ? products
-          .filter(
-            (p) =>
-              p.coverage !== "restricted" &&
-              p.impactKind === "none" &&
-              portfolioRestrictedRule(p.technicalDetail) === "walk",
-          )
-          .map((p) => p.productId)
-      : [],
+  // change's walk does not reach, and whose edges were detected, is not in
+  // scope. Any product that changes counts; of the rest, only a row the walk
+  // itself listed under the current rule is known (a restricted row carries no
+  // impact detail, so it is never one).
+  const scope = scopeOfChange(
+    results,
+    products
+      .filter(
+        (p) =>
+          p.impactKind === "direct-change" || portfolioRestrictedRule(p.technicalDetail) === "walk",
+      )
+      .map((p) => ({
+        productId: p.productId,
+        impactKind: p.impactKind,
+        edgesDetected: storedEdgesDetected(p.technicalDetail),
+      })),
   );
-  const notInScope = notInScopeOfChange(results, unreached);
-  const scopedVerdict = rollUpPortfolio(results, notInScope);
+  const scopedVerdict = rollUpPortfolio(results, scope.notInScope);
   const verdict = changed && a.status === "completed" ? scopedVerdict : stored;
   // A verdict stored before #1963 was rolled up over every product: its summary
   // leaves none out, so it never names a product as not in scope.
-  const summaryScope = verdict === scopedVerdict ? notInScope : new Set<string>();
+  const summaryScope =
+    verdict === scopedVerdict
+      ? scope
+      : { notInScope: new Set<string>(), neverAnalysed: new Set<string>() };
   // #1624 — the model's prose was written about what the run saw. A reader who sees
   // less gets the deterministic summary instead, and no impact paragraphs: either
   // could describe a product, repo or path withheld from them.
@@ -562,7 +578,9 @@ export async function viewPortfolioAssessment(
         : a.summary,
     report,
     // #1963 — so the page's headline can say which unchecked products were left out.
-    notInScope: [...summaryScope].sort(),
+    notInScope: [...summaryScope.notInScope].sort(),
+    // #1963 — and which were kept in because they were never analysed.
+    neverAnalysed: [...summaryScope.neverAnalysed].sort(),
     // #1657 — the stored total includes the calls on what this reader cannot
     // see, which tells them it was assessed: recomputed from what they see.
     // #1668 — from the products' repo calls only, so the run-wide calls that

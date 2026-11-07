@@ -26,9 +26,15 @@
  * except one with no repos at all (#1677, {@link rollUpPortfolio}): there was
  * nothing in it to check, rather than something that could not be checked.
  * #1963 — nor does a `not-checked` product the change's impact walk does not
- * reach ({@link notInScopeOfChange}): it is not in scope of the change.
+ * reach ({@link notInScopeOfChange}): it is not in scope of the change, when
+ * its edges were detected ({@link scopeOfChange}); one never analysed stays in.
  */
-import type { FindingVerdict, PortfolioCoverage, RequirementVerdict } from "@metis/shared";
+import type {
+  FindingVerdict,
+  PortfolioCoverage,
+  PortfolioImpactKind,
+  RequirementVerdict,
+} from "@metis/shared";
 
 /** A repo's verdict as the product roll-up reads it. */
 export interface RepoVerdictInput {
@@ -159,4 +165,36 @@ export function portfolioVerdictFromStored(
     (v) => STORED_VERDICT[v] === stored,
   );
   return hit ?? null;
+}
+
+/**
+ * #1963 — how the change scopes the verdict: the products left out as not in
+ * scope (`notInScope`), and the ones not checked that read `none` but were
+ * never analysed (`neverAnalysed`), which stay in. Edges come from a product
+ * analysis, so a product whose edges were never detected can only ever read
+ * `none`: that is not evidence the change does not reach it, and calling it
+ * "not in scope" would be an assurance nobody checked.
+ *
+ * `walked` holds only the rows the walk listed for a reader who can read them
+ * under the current rule (`walk`, #1689): a restricted product is never in it.
+ * With no product that changes, nothing was walked from, and both are empty.
+ */
+export function scopeOfChange(
+  products: readonly { productId: string; coverage: PortfolioCoverage; reason: string | null }[],
+  walked: readonly { productId: string; impactKind: PortfolioImpactKind; edgesDetected: boolean }[],
+): { notInScope: Set<string>; neverAnalysed: Set<string> } {
+  if (!walked.some((p) => p.impactKind === "direct-change")) {
+    return { notInScope: new Set(), neverAnalysed: new Set() };
+  }
+  const none = walked.filter((p) => p.impactKind === "none");
+  return {
+    notInScope: notInScopeOfChange(
+      products,
+      new Set(none.filter((p) => p.edgesDetected).map((p) => p.productId)),
+    ),
+    neverAnalysed: notInScopeOfChange(
+      products,
+      new Set(none.filter((p) => !p.edgesDetected).map((p) => p.productId)),
+    ),
+  };
 }

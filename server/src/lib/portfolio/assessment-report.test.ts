@@ -533,6 +533,7 @@ describe("templateParagraph and impactOverview", () => {
             edgeIds: ["e1", "e2"],
             hops: [{ fromProductId: "p1" } as never],
             hiddenEdgeCount: 0,
+            edgesDetected: false,
             links: [
               {
                 integrationKind: "database",
@@ -588,6 +589,7 @@ describe("reportContext and withReport", () => {
             edgeIds: [],
             hops: [],
             hiddenEdgeCount: 0,
+            edgesDetected: false,
             links: [],
           },
           {
@@ -600,6 +602,7 @@ describe("reportContext and withReport", () => {
             edgeIds: ["e"],
             hops: [{ fromProductId: "p1" } as never],
             hiddenEdgeCount: 0,
+            edgesDetected: false,
             links: [],
           },
           {
@@ -612,6 +615,7 @@ describe("reportContext and withReport", () => {
             edgeIds: [],
             hops: [],
             hiddenEdgeCount: 0,
+            edgesDetected: false,
             links: [],
           },
         ],

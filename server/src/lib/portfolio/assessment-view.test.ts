@@ -689,7 +689,10 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
 
   describe("#1963 — a recomputed verdict leaves out what the change does not reach", () => {
     /** Every scoped product the change touches confirms the gap; p4 was not checked. */
-    function withUnreached(restrictedRule: string | null): PortfolioAssessment {
+    function withUnreached(
+      restrictedRule: string | null,
+      edgesDetected = true,
+    ): PortfolioAssessment {
       const a = withImpactRows();
       a.products[0] = { ...a.products[0], coverage: "not-covered" };
       a.portfolioVerdict = "not-checked";
@@ -706,7 +709,12 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
           ...detail([]),
           reason: "could-not-verify",
           costUsd: 0,
-          impact: { ...impact([]), ...(restrictedRule ? { restrictedRule } : {}) },
+          impact: {
+            ...impact([]),
+            ...(restrictedRule ? { restrictedRule } : {}),
+            // #1963 — a completed product analysis had detected its edges.
+            edgesDetected,
+          },
         },
       });
       return a;
@@ -730,6 +738,28 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
       );
       // The page's headline reads the same set.
       expect(v.notInScope).toEqual(["p4"]);
+    });
+
+    it("one never analysed is not called out of scope: it stops the gap, and says why", async () => {
+      store.getPortfolioAssessment.mockResolvedValue(withUnreached("walk", false));
+      const v = (await view())!;
+      expect(v.verdict).toBe("could-not-verify");
+      expect(v.summary).toContain(
+        "Unrelated was not checked and has never been analysed, so whether this change reaches it is not known.",
+      );
+      expect(v.summary).not.toContain("not in scope");
+      expect(v.notInScope).toEqual([]);
+      expect(v.neverAnalysed).toEqual(["p4"]);
+    });
+
+    it("a row stored without the analysed signal is not known to be unreached either", async () => {
+      const a = withUnreached("walk");
+      const p4 = a.products.at(-1)!.technicalDetail as { impact: Record<string, unknown> };
+      delete p4.impact.edgesDetected;
+      store.getPortfolioAssessment.mockResolvedValue(a);
+      const v = (await view())!;
+      expect(v.verdict).toBe("could-not-verify");
+      expect(v.notInScope).toEqual([]);
     });
 
     it("one an older run listed none is not known to be unreached: it still stops the gap", async () => {

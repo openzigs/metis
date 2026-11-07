@@ -15,6 +15,8 @@ import {
   portfolioModifierText,
   portfolioModelErrorText,
   portfolioNamedInProse,
+  portfolioNeverAnalysedText,
+  portfolioNotInScopeText,
   portfolioOtherLinkKinds,
   portfolioRestrictedNote,
   portfolioImpactUnderOlderRule,
@@ -40,6 +42,26 @@ describe("#1689 — product names in prose", () => {
     expect(portfolioNamedInProse([null], { sentenceStart: true })).toBe("A product");
     expect(portfolioNamedInProse([null, null, null])).toBe("3 products");
     expect(portfolioNamedInProse([null, null], { sentenceStart: true })).toBe("2 products");
+  });
+});
+
+describe("#1963 — products left out of, or kept in, the verdict, in prose", () => {
+  it("names the products not in scope, singular and plural", () => {
+    expect(portfolioNotInScopeText(["A"])).toBe(
+      "A was not checked, but this change does not reach it, so it is not in scope.",
+    );
+    expect(portfolioNotInScopeText(["A", "B"])).toBe(
+      "A and B were not checked, but this change does not reach them, so they are not in scope.",
+    );
+  });
+
+  it("names the products never analysed, singular and plural", () => {
+    expect(portfolioNeverAnalysedText(["A"])).toBe(
+      "A was not checked and has never been analysed, so whether this change reaches it is not known.",
+    );
+    expect(portfolioNeverAnalysedText([null, null])).toBe(
+      "2 products were not checked and have never been analysed, so whether this change reaches them is not known.",
+    );
   });
 });
 

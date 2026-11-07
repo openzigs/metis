@@ -198,6 +198,26 @@ describe("coverageHeadline", () => {
     });
   });
 
+  it("#1963 — an unknown answer says which unchecked products were never analysed", () => {
+    const v = view({
+      verdict: "could-not-verify",
+      productIds: ["p", "old1", "old2"],
+      productNames: { p: "Payments", old1: "Walkthrough 1", old2: "Walkthrough 2" },
+      notInScope: ["old1"],
+      neverAnalysed: ["old2"],
+      products: [
+        product("p", "not-covered"),
+        product("old1", "not-checked"),
+        product("old2", "not-checked"),
+      ],
+    });
+    expect(coverageHeadline(v)).toEqual({
+      tone: "unknown",
+      text: "We could not tell whether anything in your portfolio covers this",
+      note: "Walkthrough 2 was not checked and has never been analysed, so whether this change reaches it is not known. Walkthrough 1 was not checked, but this change does not reach it, so it is not in scope.",
+    });
+  });
+
   it("names the products with no repositories under a confirmed gap (#1677)", () => {
     const v = view({
       verdict: "gap-confirmed",

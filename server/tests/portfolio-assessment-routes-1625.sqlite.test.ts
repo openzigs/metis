@@ -596,13 +596,42 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           await db.productRepo.create({ data: { productId: P_OLD, repoConnectionId: RC_OLD } });
         });
         afterAll(async () => {
+          await db.productAnalysis.deleteMany({ where: { productId: P_OLD } });
           await db.productRepo.deleteMany({ where: { productId: P_OLD } });
           await db.product.deleteMany({ where: { id: P_OLD } });
           await db.repoConnection.deleteMany({ where: { id: RC_OLD } });
           await db.project.deleteMany({ where: { id: PROJ_OLD } });
         });
 
+        it("never analysed, the old one is not called out of scope: it stops the gap, and says why", async () => {
+          // No product analysis ever detected its edges, so its `none` says nothing.
+          const id = await start("imp-1623", {
+            statement: CRYPTO_STATEMENT,
+            scope: "all-accessible",
+            hostProductId: P3,
+          });
+          const v = await settled(id, "imp-1623");
+          expect(v.status).toBe("completed");
+          expect(v.products.find((p) => p.productId === P_OLD)).toEqual(
+            expect.objectContaining({ coverage: "not-checked", impactKind: "none" }),
+          );
+          expect(v.verdict).toBe("could-not-verify");
+          expect(v.notInScope).toEqual([]);
+          expect(v.neverAnalysed).toEqual([P_OLD]);
+          expect(v.summary).toContain(
+            "Old walkthrough was not checked and has never been analysed, so whether this change reaches it is not known.",
+          );
+          expect(v.summary).not.toContain("not in scope");
+          expect(
+            (await db.portfolioAssessment.findUnique({ where: { id } }))?.portfolioVerdict,
+          ).toBe("not-checked");
+        });
+
         it("a gap every product the change touches confirms reads as a gap, the old one not in scope", async () => {
+          // A completed product analysis detected its edges: the walk's `none` is evidence.
+          await db.productAnalysis.create({
+            data: { productId: P_OLD, status: "completed", completedAt: new Date(), edgeCount: 0 },
+          });
           const id = await start("imp-1623", {
             statement: CRYPTO_STATEMENT,
             scope: "all-accessible",

@@ -10,6 +10,8 @@
 import {
   portfolioModelErrorText,
   portfolioNamedInProse,
+  portfolioNeverAnalysedText,
+  portfolioNotInScopeText,
   type CodeCitation,
   type PortfolioAssessmentView,
   type PortfolioCoverage,
@@ -262,11 +264,13 @@ function verdictHeadline(view: PortfolioAssessmentView): CoverageHeadline | null
       };
     }
     default: {
-      const outside = notInScopeNote(view, rows);
+      const notes = [neverAnalysedNote(view, rows), notInScopeNote(view, rows)].filter(
+        (n): n is string => n !== null,
+      );
       return {
         tone: "unknown",
         text: "We could not tell whether anything in your portfolio covers this",
-        ...(outside ? { note: outside } : {}),
+        ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
       };
     }
   }
@@ -279,10 +283,15 @@ function verdictHeadline(view: PortfolioAssessmentView): CoverageHeadline | null
 function notInScopeNote(view: PortfolioAssessmentView, rows: CoverageRow[]): string | null {
   const ids = new Set(view.notInScope ?? []);
   const outside = rows.filter((r) => ids.has(r.productId));
-  if (outside.length === 0) return null;
-  const one = outside.length === 1;
-  return `${portfolioNamedInProse(
-    outside.map((r) => r.name),
-    { sentenceStart: true },
-  )} ${one ? "was" : "were"} not checked, but this change does not reach ${one ? "it" : "them"}, so ${one ? "it is" : "they are"} not in scope.`;
+  return outside.length > 0 ? portfolioNotInScopeText(outside.map((r) => r.name)) : null;
+}
+
+/**
+ * #1963 — the products kept in the verdict because they were never analysed
+ * (`view.neverAnalysed`): not checked, and nothing says whether the change reaches them.
+ */
+function neverAnalysedNote(view: PortfolioAssessmentView, rows: CoverageRow[]): string | null {
+  const ids = new Set(view.neverAnalysed ?? []);
+  const kept = rows.filter((r) => ids.has(r.productId));
+  return kept.length > 0 ? portfolioNeverAnalysedText(kept.map((r) => r.name)) : null;
 }

@@ -119,6 +119,26 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ...(maxDepth ? { maxDepth } : {}),
       });
 
+    it("#1963 — a product reads edges detected only with a completed product analysis", async () => {
+      await db.productAnalysis.createMany({
+        data: [
+          { productId: P.idle, status: "completed", completedAt: new Date() },
+          { productId: P.notifications, status: "failed", completedAt: new Date() },
+          { productId: P.notifications, status: "running" },
+        ],
+      });
+      try {
+        const impact = await ordersImpact();
+        expect(of(impact, P.idle).edgesDetected).toBe(true);
+        expect(of(impact, P.notifications).edgesDetected).toBe(false);
+        expect(of(impact, P.storefront).edgesDetected).toBe(false);
+      } finally {
+        await db.productAnalysis.deleteMany({
+          where: { productId: { in: [P.idle, P.notifications] } },
+        });
+      }
+    });
+
     describe("Orders changes an API field Storefront consumes and writes a table Reporting reads", () => {
       it("a breaking field change: Storefront api/medium, Reporting database/high, each citing its evidence", async () => {
         const impact = await ordersImpact();
@@ -422,7 +442,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
 
       it("a product reached only through a product the caller cannot read is restricted, with no content", async () => {
-        const impact = await billing(ANA);
+        // #1963 — analysed, but its reader cannot read it: never said to be.
+        await db.productAnalysis.create({
+          data: { productId: P.partner, status: "completed", completedAt: new Date() },
+        });
+        const impact = await billing(ANA).finally(() =>
+          db.productAnalysis.deleteMany({ where: { productId: P.partner } }),
+        );
         expect(of(impact, P.partner)).toEqual({
           productId: P.partner,
           name: null,
@@ -435,6 +461,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           hiddenEdgeCount: 0,
           // #1963 — nor any link: a restricted product says no edge kind reaches it.
           links: [],
+          // #1963 — nor whether it was analysed: a restricted product is never looked up.
+          edgesDetected: false,
         });
         // Not walked through: Ledger is only reachable via Partner's own edges.
         // #1668 — the walk says it stopped there, and (#1673, the owner's AC3 call) a

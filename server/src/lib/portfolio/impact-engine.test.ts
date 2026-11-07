@@ -101,6 +101,7 @@ const impactOf = (over: Partial<ProductImpact> & { productId: string }): Product
   hops: [],
   hiddenEdgeCount: 0,
   links: [],
+  edgesDetected: false,
   ...over,
 });
 
@@ -249,6 +250,8 @@ describe("withImpact", () => {
             restrictedRule: "walk",
             hops: [],
             links: [],
+            // #1963 — whether its edges were ever detected (a completed product analysis).
+            edgesDetected: false,
           },
         },
       }),
