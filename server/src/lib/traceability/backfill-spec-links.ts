@@ -23,7 +23,7 @@
  * the derivation logic is pure and unit-testable with no DB. The default
  * `runBackfill` binds them to Prisma.
  */
-import type { BackfillSpecLinksResult } from "@metis/shared";
+import { SIMILAR_REQUIREMENT_SOURCE, type BackfillSpecLinksResult } from "@metis/shared";
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
@@ -224,7 +224,11 @@ export async function loadBackfillData(
     where: { projectId, deletedAt: null },
     select: {
       id: true,
+      // #1893 — a link borrowed from a similar requirement (#1839) is a hypothesis
+      // no analysis has checked: never let it link specs or become a derived
+      // spec->code row, where the chain could not label it as borrowed.
       codeMappings: {
+        where: { source: { not: SIMILAR_REQUIREMENT_SOURCE } },
         select: { codeSymbolId: true, filePath: true, startLine: true, endLine: true },
       },
     },
