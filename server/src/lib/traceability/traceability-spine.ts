@@ -28,6 +28,7 @@ import { AppError } from "../../middleware/error-handler.js";
 import { classifyTestSymbol } from "../code-graph/test-conventions.js";
 import { uniqueCodeLinks } from "./code-link-key.js";
 import { resolveTestedByForTargets, type TestedByPrisma } from "./tested-by.js";
+import { hideSupersededBorrowedLinks } from "./borrow-citations.js";
 
 type SpinePrisma = Pick<
   PrismaClient,
@@ -79,6 +80,7 @@ function toDirectCodeNode(
     previousFilePath: string | null;
     previousStartLine: number | null;
     previousEndLine: number | null;
+    originRequirementId: string | null;
   },
 ): TraceabilityCodeNode {
   return {
@@ -91,6 +93,8 @@ function toDirectCodeNode(
     previousFilePath: row.previousFilePath,
     previousStartLine: row.previousStartLine,
     previousEndLine: row.previousEndLine,
+    // #1839 — where a borrowed (`similar-requirement`) link was copied from.
+    originRequirementId: row.originRequirementId,
   };
 }
 
@@ -156,29 +160,31 @@ export async function getRequirementChain(
     code: codeBySpec.get(s.specDocumentId) ?? [],
   }));
 
-  // #1825 — each (filePath, codeSymbolId) once: the code agent's citation and the
-  // semantic mapper can both link a file. The surer row (read first) is kept.
-  const directRows = uniqueCodeLinks(
-    await prisma.requirementCodeMapping.findMany({
-      where: { requirementId, projectId },
-      select: {
-        codeSymbolId: true,
-        filePath: true,
-        startLine: true,
-        endLine: true,
-        confidence: true,
-        source: true,
-        freshness: true,
-        commitSha: true,
-        validatedAt: true,
-        staleReason: true,
-        previousFilePath: true,
-        previousStartLine: true,
-        previousEndLine: true,
-      },
-      orderBy: [{ confidence: "desc" }],
-    }),
-  );
+  const storedDirectRows = await prisma.requirementCodeMapping.findMany({
+    where: { requirementId, projectId },
+    select: {
+      codeSymbolId: true,
+      filePath: true,
+      startLine: true,
+      endLine: true,
+      confidence: true,
+      source: true,
+      freshness: true,
+      commitSha: true,
+      validatedAt: true,
+      staleReason: true,
+      previousFilePath: true,
+      previousStartLine: true,
+      previousEndLine: true,
+      originRequirementId: true,
+    },
+    orderBy: [{ confidence: "desc" }],
+  });
+  // #1839 — a link borrowed from a similar requirement gives way to this
+  // requirement's own analysis grounding of the same file: never shown twice.
+  // #1825 — then each (filePath, codeSymbolId) once: the code agent's citation and
+  // the semantic mapper can both link a file. The surer row (read first) is kept.
+  const directRows = uniqueCodeLinks(hideSupersededBorrowedLinks(storedDirectRows));
 
   // #814 — the tests that cover this requirement, resolved from the code rows
   // just read (the resolver issues only its code-graph queries).

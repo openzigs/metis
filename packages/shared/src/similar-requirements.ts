@@ -86,3 +86,42 @@ export const similarRequirementsDraftSchema = z
   .strict();
 
 export type SimilarRequirementsDraft = z.infer<typeof similarRequirementsDraftSchema>;
+
+// ---- Borrow a similar requirement's code links (#1839) ---------------------
+//
+//   POST /api/projects/:projectId/requirements/:requirementId/borrow-citations
+//   { fromRequirementId, mappingIds? }
+//   200  { success, data: BorrowCitationsResult }
+
+/** The most mapping ids one borrow request may name. */
+export const BORROW_CITATIONS_MAX_MAPPING_IDS = 200;
+
+const borrowIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9_-]+$/, "invalid id");
+
+export const borrowCitationsSchema = z
+  .object({
+    /** The similar requirement whose saved code links are copied (same project). */
+    fromRequirementId: borrowIdSchema,
+    /** Copy only these of its links; omitted = every link it holds. */
+    mappingIds: z.array(borrowIdSchema).min(1).max(BORROW_CITATIONS_MAX_MAPPING_IDS).optional(),
+  })
+  .strict();
+
+export type BorrowCitationsInput = z.infer<typeof borrowCitationsSchema>;
+
+export interface BorrowCitationsResult {
+  /** Links copied as `similar-requirement` suggestions. */
+  copied: number;
+  /**
+   * Links not copied because they need a re-check first: `stale`, or
+   * `unverified` (never checked against the code graph).
+   */
+  skippedStale: number;
+  /** Links not copied because the requirement already holds the same code. */
+  skippedDuplicate: number;
+}
