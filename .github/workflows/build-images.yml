@@ -52,10 +52,16 @@ jobs:
     timeout-minutes: 5
     outputs:
       date: ${{ steps.patch.outputs.date }}
+      stamp: ${{ steps.patch.outputs.stamp }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: OS patch date
         id: patch
-        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+          # The upgrade layer's key: the date plus Debian's security index stamp,
+          # so a fix published later the same day is not hidden (os-patch-stamp.sh).
+          echo "stamp=$(bash scripts/ci/os-patch-stamp.sh)" >> "$GITHUB_OUTPUT"
 
   # #1379 — scan BEFORE anything is published, on BOTH architectures, building
   # exactly what the publish builds (same Dockerfile, same OS_PATCH_DATE, the
@@ -117,7 +123,7 @@ jobs:
           context: .
           file: ${{ matrix.image.dockerfile }}
           build-args: |
-            OS_PATCH_DATE=${{ needs.prep.outputs.date }}
+            OS_PATCH_DATE=${{ needs.prep.outputs.stamp }}
           platforms: ${{ matrix.arch.platform }}
           push: false
           load: true
@@ -280,7 +286,7 @@ jobs:
           # the other images (only Dockerfile.embeddings reads BAKE_MODELS).
           build-args: |
             BAKE_MODELS=0
-            OS_PATCH_DATE=${{ needs.prep.outputs.date }}
+            OS_PATCH_DATE=${{ needs.prep.outputs.stamp }}
           # Native arch only — linux/amd64 on a GitHub-hosted runner. Building
           # the non-native arch here would force QEMU emulation, which is what
           # segfaulted `next build` (signal 11) on the old arm64 runner. Native
@@ -312,7 +318,7 @@ jobs:
           context: .
           file: ${{ matrix.image.dockerfile }}
           build-args: |
-            OS_PATCH_DATE=${{ needs.prep.outputs.date }}
+            OS_PATCH_DATE=${{ needs.prep.outputs.stamp }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
