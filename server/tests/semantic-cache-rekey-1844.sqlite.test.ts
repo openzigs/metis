@@ -6,6 +6,10 @@
  * A project-scoped session over a real SQLite database built by the real
  * migration chain; the provider is a scripted double that counts its calls,
  * so "served from the cache" means the model was not called.
+ *
+ * #1865 — also: a content change during the turn (during retrieval, or during
+ * the model call) keeps the answer out of the cache; a second user asking the
+ * same question misses; and an exact repeat is served without embedding.
  */
 import express from "express";
 import request from "supertest";
@@ -23,7 +27,11 @@ import type { AIProvider, ChatChunk, ChatResponse, ToolDefinition } from "../src
 
 const state = vi.hoisted(() => {
   process.env.AI_RATE_LIMIT_MAX = "10000";
-  return { db: null as unknown };
+  return {
+    db: null as unknown,
+    /** #1865 — run once, inside the next auto-RAG search. */
+    duringSearch: null as null | (() => Promise<void>),
+  };
 });
 vi.mock("../src/lib/prisma.js", async () => {
   const { Prisma } = await import("@prisma/client");
@@ -37,7 +45,14 @@ vi.mock("../src/lib/prisma.js", async () => {
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 vi.mock("../src/lib/rag/knowledge-service.js", async (original) => ({
   ...(await original<typeof import("../src/lib/rag/knowledge-service.js")>()),
-  getKnowledgeService: () => ({ search: async () => ({ hits: [] }) }),
+  getKnowledgeService: () => ({
+    search: async () => {
+      const hook = state.duringSearch;
+      state.duringSearch = null;
+      await hook?.();
+      return { hits: [] };
+    },
+  }),
 }));
 
 const { aiRouter, setAIProviderForTests } = await import("../src/routes/ai.js");
@@ -51,6 +66,8 @@ const { __resetToolApprovalBroker } = await import("../src/lib/ai/tool-runtime/a
 const { __resetModelCatalogForTests } = await import("../src/lib/ai/model-catalog.js");
 
 const ALICE = "u-alice";
+const BOB = "u-bob";
+const WORKSPACE = "ws-1865";
 const SONNET = "claude-sonnet-5-5";
 const QUESTION = "Which files handle refunds?";
 
@@ -61,12 +78,18 @@ class CountingProvider implements AIProvider {
   readonly capabilities = { responseFormat: false, nativeToolCalls: true };
   readonly model = SONNET;
   calls = 0;
+  embeds = 0;
   answer = "billing/refunds.go";
   callTool = false;
+  /** #1865 — run once, inside the next model call. */
+  duringChat: null | (() => Promise<void>) = null;
   private toolCalled = false;
 
   async chat(): Promise<ChatResponse> {
     this.calls += 1;
+    const hook = this.duringChat;
+    this.duringChat = null;
+    await hook?.();
     const tool = this.callTool && !this.toolCalled;
     if (tool) this.toolCalled = true;
     return {
@@ -84,6 +107,7 @@ class CountingProvider implements AIProvider {
     throw new Error("not used");
   }
   async embed() {
+    this.embeds += 1;
     return { vectors: [[1, 0, 0]], dimension: 3, model: "e" };
   }
   async models() {
@@ -100,6 +124,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     let sqlite: MigratedSqlite;
     let db: PrismaClient;
     let alice: string;
+    let bob: string;
     let seq = 0;
     let provider: CountingProvider;
     const savedEnv: Record<string, string | undefined> = {};
@@ -114,8 +139,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       a.use(errorHandler);
       return a;
     };
-    const post = (url: string, body: object = {}) =>
-      request(app()).post(url).set("Authorization", `Bearer ${alice}`).send(body);
+    const post = (url: string, body: object = {}, token = alice) =>
+      request(app()).post(url).set("Authorization", `Bearer ${token}`).send(body);
 
     /** A project whose one repository graph finished at `sha`. */
     async function project(sha: string): Promise<{ projectId: string; graphId: string }> {
@@ -128,6 +153,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           createdById: ALICE,
           aiProviderId: "anthropic",
           aiModel: SONNET,
+          workspaceId: WORKSPACE,
         },
       });
       const repo = await db.repoConnection.create({ data: { projectId, label: "r" } });
@@ -136,13 +162,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       return { projectId, graphId: graph.id };
     }
-    async function ask(projectId: string) {
-      const s = await post("/api/ai/sessions", { projectId });
+    async function ask(projectId: string, token = alice) {
+      const s = await post("/api/ai/sessions", { projectId }, token);
       expect(s.status, s.text).toBe(201);
-      const res = await post("/api/ai/chat", {
-        sessionId: (s.body.data.session as { id: string }).id,
-        message: QUESTION,
-      });
+      const res = await post(
+        "/api/ai/chat",
+        { sessionId: (s.body.data.session as { id: string }).id, message: QUESTION },
+        token,
+      );
       expect(res.status, res.text).toBe(200);
       return res.body.data.response as { content: string; cached?: boolean };
     }
@@ -154,12 +181,24 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.user.create({
         data: { id: ALICE, username: "alice", displayName: "alice", email: "a@example.test" },
       });
-      alice = issueTokens({
-        userId: ALICE,
-        username: "alice",
-        role: "developer",
-        permissions: [],
-      }).accessToken;
+      await db.user.create({
+        data: { id: BOB, username: "bob", displayName: "bob", email: "b@example.test" },
+      });
+      // #1865 — one workspace both users belong to, so Bob can open the project too.
+      await db.workspace.create({ data: { id: WORKSPACE, name: "WS", slug: "ws-1865" } });
+      for (const userId of [ALICE, BOB]) {
+        await db.workspaceMember.create({ data: { workspaceId: WORKSPACE, userId } });
+      }
+      const token = (userId: string, username: string) =>
+        issueTokens({
+          userId,
+          username,
+          role: "developer",
+          permissions: [],
+          workspaces: [WORKSPACE],
+        }).accessToken;
+      alice = token(ALICE, "alice");
+      bob = token(BOB, "bob");
       for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
@@ -186,6 +225,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       } as ToolDefinition);
       provider = new CountingProvider();
       setAIProviderForTests(provider);
+      state.duringSearch = null;
     });
 
     afterEach(() => {
@@ -204,6 +244,73 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(second.cached).toBe(true);
       expect(second.content).toBe(first.content);
       expect(provider.calls).toBe(1);
+    });
+
+    it("#1865 an exact repeat is served without embedding the question", async () => {
+      const { projectId } = await project("a".repeat(40));
+      await ask(projectId);
+      expect(provider.embeds).toBe(1);
+      const second = await ask(projectId);
+      expect(second.cached).toBe(true);
+      expect(provider.embeds).toBe(1);
+    });
+
+    it("#1865 another user asking the same question on the same project misses", async () => {
+      const { projectId } = await project("a".repeat(40));
+      const first = await ask(projectId);
+      const forBob = await ask(projectId, bob);
+      expect(forBob.cached).toBeUndefined();
+      expect(forBob.content).not.toBe(first.content);
+      expect(provider.calls).toBe(2);
+      // Each user's own repeat is still served: the miss was the caller, nothing else.
+      expect((await ask(projectId)).cached).toBe(true);
+      expect((await ask(projectId, bob)).cached).toBe(true);
+      expect(provider.calls).toBe(2);
+    });
+
+    // A re-ingest that finishes while the turn runs: the answer may rest on the old code.
+    const reingest = (graphId: string) => async () => {
+      await db.codeGraph.update({
+        where: { id: graphId },
+        data: { commitSha: "b".repeat(40), lastIndexedAt: new Date(Date.now() + 1_000) },
+      });
+    };
+
+    // The pre-store re-check: a version can come back (a document uploaded and
+    // removed again leaves the same version), so an answer given while the
+    // upload was there must not be stored under the version from before it.
+    it("#1865 an answer given while a document briefly existed is not served once it is gone", async () => {
+      const { projectId } = await project("a".repeat(40));
+      let doc = "";
+      provider.duringChat = async () => {
+        const d = await db.document.create({
+          data: {
+            projectId,
+            filename: "refund-approvals.md",
+            mimeType: "text/markdown",
+            sizeBytes: 1,
+            storagePath: "/refund-approvals.md",
+            checksum: "sum",
+            uploadedById: ALICE,
+          },
+        });
+        doc = d.id;
+      };
+      await ask(projectId);
+      await db.document.delete({ where: { id: doc } });
+      const second = await ask(projectId);
+      expect(second.cached).toBeUndefined();
+      expect(provider.calls).toBe(2);
+    });
+
+    it("#1865 an answer is not stored when the content changes during auto-RAG retrieval", async () => {
+      const { projectId, graphId } = await project("a".repeat(40));
+      state.duringSearch = reingest(graphId);
+      await ask(projectId);
+      expect(state.duringSearch).toBeNull(); // retrieval ran, and the change landed in it
+      const second = await ask(projectId);
+      expect(second.cached).toBeUndefined();
+      expect(provider.calls).toBe(2);
     });
 
     it("an answer stored before a re-ingest is not served after it", async () => {

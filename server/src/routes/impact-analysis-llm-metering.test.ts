@@ -948,3 +948,14 @@ describe("#1759 — the code agent's citations flag (#1818)", () => {
     expect("agentSeeds" in impactRunDeps("user-1", ["proj-1"])).toBe(false);
   });
 });
+
+describe("#1939 — #1832's stale-citation demotion flag", () => {
+  it("is not wired by default, and is wired when IMPACT_DEMOTE_STALE_CITATIONS is on", () => {
+    expect("demoteStaleCitations" in impactRunDeps("user-1", ["proj-1"])).toBe(false);
+    vi.stubEnv("IMPACT_DEMOTE_STALE_CITATIONS", "1");
+    expect(impactRunDeps("user-1", ["proj-1"]).demoteStaleCitations).toBe(true);
+    // Without the citations stage there is nothing to demote.
+    vi.stubEnv("IMPACT_AGENT_SEEDS", "0");
+    expect("demoteStaleCitations" in impactRunDeps("user-1", ["proj-1"])).toBe(false);
+  });
+});

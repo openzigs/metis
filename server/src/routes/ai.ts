@@ -118,8 +118,10 @@ import { providerSummarizer, type CompactionOutcome } from "../lib/async/compact
 import { getOnlineEvalScorer } from "../lib/eval/online/scorer.js";
 import { messageText } from "../lib/ai/index.js";
 import { AIError, AIOfflineError, AIProviderError } from "../lib/ai/errors.js";
+import { getProjectContentVersion } from "../lib/projects/content-version.js";
 import {
   buildSemanticCacheScope,
+  contentVersionUnchanged,
   getSemanticCache,
   shouldSkipCache,
   shouldStoreTurn,
@@ -1505,6 +1507,19 @@ export function aiRouter(): Router {
         prefix.push({ role: "system", content: parsed.data.systemMessage });
       }
 
+      // #1865 — the semantic cache's content version is read, to the end, BEFORE
+      // auto-RAG retrieves. A change that lands after it, during retrieval or
+      // the model call, then differs from the version the pre-store check
+      // reads, so an answer built on content older than its version is never
+      // stored. A failed read is re-raised in the lookup below, which skips
+      // the cache.
+      const semanticCache = getSemanticCache();
+      const turnVersion =
+        semanticCache.enabled && session.projectId
+          ? getProjectContentVersion(session.projectId)
+          : undefined;
+      await turnVersion?.catch(() => undefined);
+
       // Auto-RAG: inject relevant knowledge context for project-scoped sessions.
       // Issue #1321 — the observer needs the retrieved contexts as the model saw
       // them; the builder hands them over directly (no re-parsing of its block).
@@ -1547,22 +1562,24 @@ export function aiRouter(): Router {
       // Epic #647 / Issue #651 — semantic cache lookup. #1844 — scoped to the
       // project's content version, the caller and the conversation so far; a
       // project whose version is incomplete is neither looked up nor stored.
-      const semanticCache = getSemanticCache();
-      const cacheScopeInput = {
-        model,
-        messages: promptMessages,
-        projectId: session.projectId ?? null,
-        userId,
-      };
       let cacheScope: SemanticCacheScope | null = null;
       let cacheQuery: SemanticQuery | undefined;
       if (semanticCache.enabled) {
         try {
-          cacheScope = await buildSemanticCacheScope(cacheScopeInput);
-          const embedResult = cacheScope ? await providerInstance.embed([userText]) : null;
-          if (embedResult) cacheQuery = { text: userText, embedding: embedResult.vectors[0] };
-          const cacheHit =
-            cacheScope && cacheQuery ? await semanticCache.lookup(cacheQuery, cacheScope) : null;
+          cacheScope = await buildSemanticCacheScope({
+            model,
+            messages: promptMessages,
+            projectId: session.projectId ?? null,
+            userId,
+            ...(turnVersion ? { version: () => turnVersion } : {}),
+          });
+          // #1865 — the exact match needs no embedding: try it before embedding.
+          let cacheHit = cacheScope ? semanticCache.lookupExact(userText, cacheScope) : null;
+          if (cacheScope && !cacheHit) {
+            const embedResult = await providerInstance.embed([userText]);
+            cacheQuery = { text: userText, embedding: embedResult.vectors[0] };
+            cacheHit = await semanticCache.lookup(cacheQuery, cacheScope);
+          }
           if (cacheHit && !shouldSkipCache(cacheHit.response)) {
             // #136 — a cached answer is still an answer the user saw: record it,
             // or the transcript would hold a question with no reply.
@@ -1652,7 +1669,7 @@ export function aiRouter(): Router {
             // #1842 — the loop re-sends its transcript each call: cache it too.
             providerChatOptions: {
               ...chatProviderOptions,
-              promptCaching: chatToolLoopPromptCaching(providerInstance.key),
+              promptCaching: chatToolLoopPromptCaching(providerInstance),
             },
             toolResultMaxChars: turn.build.toolResultMaxChars,
             onToolEvent: emitToolEventToSession,
@@ -1810,8 +1827,8 @@ export function aiRouter(): Router {
           // #211 — stored under the REQUESTED model, the key the lookup above
           // uses. The served id (an alias, a profile ARN, a gateway rewrite) can
           // differ, and an entry keyed on it could never be found again.
-          const after = await buildSemanticCacheScope(cacheScopeInput);
-          if (after?.contentVersion === cacheScope.contentVersion) {
+          // #1865 — only the content version can have moved during the turn.
+          if (await contentVersionUnchanged(cacheScope)) {
             await semanticCache.store(cacheQuery, cacheScope, outContent);
           }
         } catch (err) {
@@ -2274,7 +2291,7 @@ export function aiRouter(): Router {
         // #1842 — the loop re-sends its transcript each call: cache it too.
         const loopCached: Partial<ChatOptions> = {
           ...loopBase,
-          promptCaching: chatToolLoopPromptCaching(streamProvider.key),
+          promptCaching: chatToolLoopPromptCaching(streamProvider),
         };
         const loopOptions: Partial<ChatOptions> = slot
           ? { ...loopCached, onSlotAcquired: onQueueSlotAcquired }

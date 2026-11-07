@@ -37,9 +37,12 @@ vi.mock("../src/lib/prisma.js", async () => {
 vi.mock("../src/lib/ai/semantic-cache.js", () => ({
   getSemanticCache: () => ({
     enabled: true,
+    // #1865 — the route tries the exact match before embedding; this hit is the similar one.
+    lookupExact: () => null,
     lookup: async () => ({ response: "the cached answer" }),
     store: async () => undefined,
   }),
+  contentVersionUnchanged: async () => true,
   // #1844 — an unscoped session's scope; the route asks for it before the lookup.
   buildSemanticCacheScope: async () => ({
     model: "stub",
