@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import type { ImpactAffectedSymbolView, ImpactItemView, ImpactSeedEvidence } from "@metis/shared";
 import { ChangedRequirementGroup } from "./changed-requirement-group";
+import { ImpactFileLabel } from "./impact-file-label";
 import { ImpactMultiRepoProjectsContext } from "./impact-symbol-repo-context";
 
 const ORDERS = { id: "rc-orders", name: "metis-fixture-orders" };
@@ -78,7 +79,11 @@ function fileRows(container: HTMLElement, testId: string) {
       const repo = heading.querySelector("[data-testid=impact-file-repo]");
       repo?.remove();
       // The heading is "<repo>path · <count>" in the blast radius and tests.
-      return { repo: repo?.textContent ?? null, path: heading.textContent!.replace(/ · \d+$/, "") };
+      // #1969 — a space separates the repository from the path.
+      return {
+        repo: repo?.textContent ?? null,
+        path: heading.textContent!.replace(/ · \d+$/, "").trimStart(),
+      };
     });
 }
 
@@ -186,5 +191,76 @@ describe("ChangedRequirementGroup — files in several repositories (#1965)", ()
     expect(screen.getByTestId("impact-headline").textContent).toBe(
       "2 files to edit · 1 more to review",
     );
+  });
+});
+
+describe("ChangedRequirementGroup — seed evidence of one repository's file (#1969)", () => {
+  // The AI check doubted the orders file; the billing file at the same path was
+  // never its subject.
+  const doubtedInOrders: ImpactSeedEvidence = {
+    editCandidates: [
+      {
+        filePath: SHARED,
+        repoConnectionId: ORDERS.id,
+        channels: ["hybrid", "edit-verifier"],
+        verdict: { kind: "doubtful", reason: "only a type" },
+      },
+    ],
+  };
+
+  it("marks only that repository's file doubtful, and still counts the other", () => {
+    render(
+      <ChangedRequirementGroup
+        item={item(twoRepos.affectedSymbols, { seedEvidence: doubtedInOrders })}
+      />,
+    );
+    const groups = screen.getAllByTestId("edit-candidate-file-group");
+    const doubtful = groups.map((g) => ({
+      repo: g.querySelector("[data-testid=impact-file-repo]")?.textContent,
+      doubtful: g.getAttribute("data-doubtful") === "true",
+    }));
+    // The file the evidence lists leads; the other follows, as an unlisted file does.
+    expect(doubtful).toEqual([
+      { repo: "metis-fixture-orders", doubtful: true },
+      { repo: "metis-fixture-billing", doubtful: false },
+    ]);
+    expect(screen.getByTestId("impact-headline").textContent).toBe(
+      "1 file to edit · 2 more to review",
+    );
+  });
+
+  it("applies an entry that names no repository to the path in each", () => {
+    const unnamed: ImpactSeedEvidence = {
+      editCandidates: [{ ...doubtedInOrders.editCandidates[0]!, repoConnectionId: undefined }],
+    };
+    render(
+      <ChangedRequirementGroup item={item(twoRepos.affectedSymbols, { seedEvidence: unnamed })} />,
+    );
+    const groups = screen.getAllByTestId("edit-candidate-file-group");
+    expect(groups.every((g) => g.getAttribute("data-doubtful") === "true")).toBe(true);
+  });
+
+  it("still applies an entry naming a repository to a file whose repository is now unknown", () => {
+    // A re-ingest deletes the CodeSymbol rows, so the live repo reads null while the
+    // stored entry keeps the repository it was computed for.
+    render(
+      <ChangedRequirementGroup
+        item={item([sym(SHARED, null, 0, "Order")], { seedEvidence: doubtedInOrders })}
+      />,
+    );
+    const group = screen.getByTestId("edit-candidate-file-group");
+    expect(group.getAttribute("data-doubtful")).toBe("true");
+  });
+});
+
+describe("ImpactFileLabel (#1969)", () => {
+  it("separates the repository from the path in the text a reader or a copy gets", () => {
+    const { container } = render(<ImpactFileLabel filePath={SHARED} repo={ORDERS} />);
+    expect(container.textContent).toBe(`metis-fixture-orders ${SHARED}`);
+  });
+
+  it("renders the bare path without a repository", () => {
+    const { container } = render(<ImpactFileLabel filePath={SHARED} />);
+    expect(container.textContent).toBe(SHARED);
   });
 });

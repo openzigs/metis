@@ -48,6 +48,26 @@ export interface HeldCodeLink {
 }
 
 /**
+ * #1825 / #1969 — the identity of one requirement-to-code link: its file and
+ * code symbol (a file-level link has none). Every reader that lists a
+ * requirement's links, and the borrow's duplicate rule, compare links on it.
+ */
+export const codeLinkKey = (filePath: string, codeSymbolId: string | null): string =>
+  `${filePath}\u0000${codeSymbolId ?? ""}`;
+
+/**
+ * #1839 / #1969 — the files a requirement's own analysis grounded: a borrowed
+ * link into one of them gives way to that grounding. Read from EVERY row the
+ * requirement holds, before any dedupe, so a surer row of another source on
+ * the same code does not hide the grounding.
+ */
+export function groundedFiles(
+  rows: ReadonlyArray<{ source: string; filePath: string }>,
+): Set<string> {
+  return new Set(rows.filter((r) => r.source === ANALYSIS_GROUNDING).map((r) => r.filePath));
+}
+
+/**
  * #1964 — the borrow's duplicate rule (#1839). The server's borrow and the
  * panel's preview of it (#1840) read this one rule, so the preview never
  * promises a copy the borrow skips as `skippedDuplicate`.
@@ -57,19 +77,20 @@ export interface HeldCodeLink {
  * requirement's own analysis grounded: that grounding wins. The check returned
  * claims the code of each link it passes, so a second link to the same code is
  * a duplicate of the copy the first one makes.
+ *
+ * #1969 — `grounded` adds files known to be grounded that `held` may not show:
+ * the preview reads `held` from the chain, which lists each code once and so
+ * can hide a grounding row behind a surer one (the chain's `groundedFiles`).
  */
 export function borrowDuplicateCheck(
   held: readonly HeldCodeLink[],
+  grounded: Iterable<string> = [],
 ): (link: { filePath: string; codeSymbolId: string | null }) => boolean {
-  const key = (filePath: string, codeSymbolId: string | null) =>
-    `${filePath}\u0000${codeSymbolId ?? ""}`;
-  const keys = new Set(held.map((h) => key(h.filePath, h.codeSymbolId)));
-  const grounded = new Set(
-    held.filter((h) => h.source === ANALYSIS_GROUNDING).map((h) => h.filePath),
-  );
+  const keys = new Set(held.map((h) => codeLinkKey(h.filePath, h.codeSymbolId)));
+  const groundedSet = new Set([...groundedFiles(held), ...grounded]);
   return (link) => {
-    const k = key(link.filePath, link.codeSymbolId);
-    if (keys.has(k) || grounded.has(link.filePath)) return true;
+    const k = codeLinkKey(link.filePath, link.codeSymbolId);
+    if (keys.has(k) || groundedSet.has(link.filePath)) return true;
     keys.add(k);
     return false;
   };

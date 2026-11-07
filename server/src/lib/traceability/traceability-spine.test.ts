@@ -187,6 +187,47 @@ describe("getRequirementChain", () => {
     ]);
   });
 
+  // #1969 — the borrow preview reads the files this requirement's own analysis
+  // grounded from the chain. A surer semantic row on the same (file, symbol)
+  // drops the grounding row from `directCode`, so the chain names them apart.
+  it("names the grounded files, including one whose grounding row a surer row hid (#1969)", async () => {
+    const link = (filePath: string, confidence: number, source: string) => ({
+      codeSymbolId: "sym-1",
+      filePath,
+      startLine: 3,
+      endLine: 9,
+      confidence,
+      source,
+      freshness: "fresh",
+      commitSha: null,
+      validatedAt: null,
+    });
+    const p = {
+      requirement: { findFirst: vi.fn().mockResolvedValue({ id: "req-1", title: "Login" }) },
+      requirementSpecMapping: { findMany: vi.fn().mockResolvedValue([]) },
+      specCodeMapping: { findMany: vi.fn() },
+      requirementCodeMapping: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([
+            link("src/login.ts", 0.9, "semantic"),
+            link("src/login.ts", 0.6, "analysis-grounding"),
+            link("src/session.ts", 0.5, "analysis-grounding"),
+            link("src/other.ts", 0.4, "manual"),
+          ]),
+      },
+      codeSymbol: { findMany: vi.fn().mockResolvedValue([]) },
+      codeEdge: { findMany: vi.fn().mockResolvedValue([]) },
+    };
+    const chain = await getRequirementChain("proj-1", "req-1", deps(p));
+    expect(chain.directCode.map((c) => [c.filePath, c.source])).toEqual([
+      ["src/login.ts", "semantic"],
+      ["src/session.ts", "analysis-grounding"],
+      ["src/other.ts", "manual"],
+    ]);
+    expect(chain.groundedFiles).toEqual(["src/login.ts", "src/session.ts"]);
+  });
+
   it("404s for an unknown requirement", async () => {
     const p = { requirement: { findFirst: vi.fn().mockResolvedValue(null) } };
     await expect(getRequirementChain("proj-1", "ghost", deps(p))).rejects.toMatchObject({
