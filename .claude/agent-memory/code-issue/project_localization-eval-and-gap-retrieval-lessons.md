@@ -26,3 +26,10 @@ metadata:
 - **Each new impact-analysis flag needs a wiring test** in `impact-analysis-llm-metering.test.ts` (`"x" in impactRunDeps(...)`): #1759 shipped without one, and deleting the route wiring left every test green (#1818).
 - **Arm A7 (shipped `IMPACT_AGENT_SEEDS` path) costs ~$0.19/Miniflux item, ~$0.44/fixture item on Sonnet** (~90 s / 228 s); needs `--embed`; keep slices under 10 min (~4 Miniflux or 1 fixture item); under a tight cap take run 1 fully first, since run-2 scores drop while run 1 is incomplete (#1818).
 - **In seed stages, delete each dedupe `.filter(!x.has(f))` and rerun its tests**: two such filters in agent-seeder survived mutation while every cap and order rule went red (#1825).
+
+**Staleness slice (#1834, PR #1884):**
+- **A patched graph needs a patched search.** With the committed rows still searched, the stage found a renamed file's symbol ids already taken by the search's hits at the old path, and dropped the moved citation (MF-4500: R@5 0.5 for no real reason). Patch the search too.
+- **Read A7/A7K before any patch cycle.** A cycle re-validates every citation of the repository. Restoring moves a link back as `moved`, which reorders A7's tiers on a later re-read. Re-read a guard on fresh analyses.
+- **Edit every function of the answer file, not one.** One edited function left 0 of 21 citations stale: nobody knows which function the model cites.
+- **#1831 tracks renames by symbol only.** A file-level citation of a renamed file goes `stale` (`file-missing`).
+- **Sonnet A7 slices: at most 2 Miniflux items, or 2 fixture items, per 10-minute call.** 4 Miniflux items got killed twice. A killed slice records no `spend/`: write its A7 partials' `spentUsd` there by hand, and delete its A7/A7K partials so A7S reads the same analysis.

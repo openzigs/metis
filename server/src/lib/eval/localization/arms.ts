@@ -48,7 +48,15 @@ import { fileKey, type LocalizationCorpus, type LocalizationItem } from "./corpu
 import type { CorpusSearch } from "./search.js";
 import { seededRandom } from "./stats.js";
 import { createA3AArm, createA3Arm, createA3NArm } from "./agent-arms.js";
-import { createA7Arm, createA7OArm } from "./analysis-arms.js";
+import {
+  createA7Arm,
+  createA7KArm,
+  createA7OArm,
+  createA7SArm,
+  createA7SDArm,
+  STALENESS_ARM_IDS,
+  UNPATCHED_CITATION_ARM_IDS,
+} from "./analysis-arms.js";
 import {
   corpusFileSymbols,
   createA0Arm,
@@ -83,6 +91,9 @@ export const MODEL_ARMS: ReadonlySet<string> = new Set([
   "A4",
   "A7",
   "A7O",
+  "A7K",
+  "A7S",
+  "A7SD",
   "A13",
   "A13C",
   "A13S",
@@ -502,6 +513,9 @@ export const ARM_FACTORIES: Record<string, (deps: ArmDeps) => LocalizationArm> =
   A4: createA4Arm,
   A7: createA7Arm,
   A7O: createA7OArm,
+  A7K: createA7KArm,
+  A7S: createA7SArm,
+  A7SD: createA7SDArm,
   A11: createA11Arm,
   A12: createA12Arm,
   A13: createA13Arm,
@@ -531,8 +545,22 @@ export function parseArmIds(argv: readonly string[]): string[] {
   return ["A0", ...ids.filter((id) => id !== "A0")].filter((id, n, all) => all.indexOf(id) === n);
 }
 
-/** Build the requested arms; an unknown or not-yet-built arm throws, naming its issue. */
+/**
+ * Build the requested arms; an unknown or not-yet-built arm throws, naming its issue.
+ * #1834 — a staleness arm's patch cycle re-validates every stored citation of
+ * the repository, so an arm that reads citations unpatched (A7, A7K) must come
+ * before every staleness arm (A7S, A7SD): the runner reads arm by arm.
+ */
 export function buildArms(ids: readonly string[], deps: ArmDeps): LocalizationArm[] {
+  const firstStale = ids.findIndex((id) => STALENESS_ARM_IDS.has(id));
+  const lateUnpatched = ids.find(
+    (id, i) => firstStale >= 0 && i > firstStale && UNPATCHED_CITATION_ARM_IDS.has(id),
+  );
+  if (lateUnpatched) {
+    throw new Error(
+      `--arms: ${lateUnpatched} reads the stored citations unpatched, so it must come before ${ids[firstStale]}: a staleness arm's patch cycle re-validates every citation of the repository`,
+    );
+  }
   return ids.map((id) => {
     const factory = ARM_FACTORIES[id];
     if (factory) return factory(deps);

@@ -431,6 +431,171 @@ The first run with an empty model cache also downloads the embedding model (drop
 `<corpus>.state.json` makes the next run of that corpus rebuild and replace its
 projects, which have fixed slugs and connector ids.
 
+### Stale citations: the staleness slice (#1834)
+
+Arm A7 (`IMPACT_AGENT_SEEDS`) leads the files to edit with the code agent's stored
+citations. When the code changes after the analysis, re-validation (#1831) marks a
+citation `moved` or `stale`, and #1832 sets a stale one aside. The staleness slice
+measures that on the held-out corpora, over the same analyses as A7:
+
+| Arm | Staleness | Demotion (#1832) |
+|---|---|---|
+| `A7` | none | on (as shipped) |
+| `A7K` | none | off: the citations' freshness hidden, the stage before #1832 |
+| `A7S` | the item's patch, re-ingested | off |
+| `A7SD` | the item's patch, re-ingested | on |
+
+With no re-ingest no citation is stale, so A7K must read the same as A7: the control
+that demotion costs nothing when nothing is stale.
+
+**The patches are committed**, one file per corpus, in
+`server/scripts/eval-localization-staleness/`, and the script applies them. Each item's
+patch edits the functions of one file, renames one file and deletes one file:
+
+- **edit:** one comment line inside each of the symbols, so each symbol's content hash
+  changes and its location does not. They are in the first ground-truth file that has
+  any:
+  - every multi-line symbol the item's labels name (the table corpus's
+    `expectedCodeSymbols`);
+  - else every multi-line function and method;
+  - else the longest other multi-line symbol.
+
+  Every function is edited, not one, because nobody knows in advance which function the
+  analysis cites. On the first DeepSeek reading, an edit to the single longest function
+  of MF-4483's answer file left none of its 21 citations stale. Editing every function
+  of that file left 13 of 44 stale over two items.
+- **rename:** another ground-truth file, else the edited file's nearest neighbour, to
+  `<name>_renamed<ext>`. A renamed file is scored as the file it was.
+- **delete:** the edited file's nearest neighbour with the most symbols. This is never
+  an answer, a test or a documentation file, so every item stays answerable.
+
+The rule is `STALENESS_RULE` in `server/src/lib/eval/localization/staleness.ts`, and
+`pnpm eval:staleness-patches [--table-guard]` writes the sets. A test pins the held-out
+sets to what the rule generates from the committed rows. The table corpus's set is
+generated from the materialized jpetstore graph.
+
+Which files a model cites is not known when the patch is written, so the targets are
+the files the analysis is most likely to cite. Every staleness reading reports how many
+of the stored citations the patch actually left `stale`, `moved` or `fresh`, and how
+many the stage set aside. Check that line before reading a difference.
+
+**The cycle**, per item and run, shared by A7S and A7SD:
+
+1. apply the item's patch to the materialized clone and commit it;
+2. re-ingest incrementally, which re-validates every stored citation of the repository
+   (#1831);
+3. read impact analysis twice: without demotion (A7S) and with it (A7SD);
+4. reset the clone to its pinned commit, re-ingest, and embed the re-created symbols,
+   so a later analysis searches what A7 searched.
+
+On Miniflux a cycle takes a few seconds. The staleness arms search the patched corpus,
+as a re-ingest would leave it: a renamed file's rows carry the new path and are
+embedded again, and a deleted file's rows are gone. An edited symbol keeps its vector,
+because one comment line is not worth a new one. The stage's graph check reads the same
+patched graph, so a citation of a deleted file is dropped with or without demotion.
+(The first version searched the committed rows. The stage then found a renamed file's
+symbols already taken by the search's hits at the old path, and lost the file. MF-4500
+read Recall@5 0.5 instead of 1.0 for that reason alone.)
+
+A cycle re-validates every citation of the repository, so A7 and A7K must come before
+A7S and A7SD in `--arms`. The arm builder refuses any other order.
+
+```bash
+pnpm eval:materialize localization-01-miniflux-heldout   # and -02, and impact-recall-01-jpetstore
+pnpm eval:localization --arms A0,A7,A7K,A7S,A7SD --reference A7,A7S --embed --items 0:4
+pnpm eval:localization --arms A0,A7,A7K,A7S,A7SD --reference A7,A7S --embed --items 4:8 --resume <dir>
+pnpm eval:localization --merge <dir> --reference A7,A7S --table-guard --embed --guard-steps 5
+```
+
+**It fails before spending.** Before the provider is built, a staleness run checks:
+
+- every corpus is a held-out set (`--in-sample` and the run-7 corpus are refused);
+- each corpus loads and is materialized;
+- each corpus has a committed patch for every item, and every patch fits the graph:
+  the files exist, a rename's target does not, and each edit's line is inside its
+  symbol;
+- with `--table-guard`, the same for the table corpus against its materialized graph.
+
+It also puts back any clone or graph that an earlier, killed run left patched.
+
+The table guard reads A7S and A7SD on `impact-recall-01-jpetstore`, over the same
+analyses as A7, with one cycle per requirement and run. A7S is gated against A7, and
+A7SD against A7S. All are scored as A7 is, on the analysis's first persisted requirement
+(#1848). A moved citation is read as the file it was, because the fixture's
+graph is the unpatched repository's. A deleted file leaves both the fixture's graph and its
+search. Each staleness run record carries the patch sets' digest, and a resume under other
+patches is refused.
+
+**Results** (2026-11-06). The held-out run is on `main` at `07c76a1e` plus this slice,
+with #1831's re-validation in it. #1825, merged later, changed no seeding behaviour. The
+table guard was read again on `main` at `219b5fc8` (#1848's scoring) plus this slice.
+
+The held-out run is on `claude-sonnet-5-5`, one run, both held-out corpora:
+
+| Arm | Miniflux R@5 | Fixture R@5 | Pooled R@5 vs A0 | MRR (Miniflux / fixture) |
+|---|---|---|---|---|
+| A7 | 0.81 | 0.70 | +0.239 [0.12, 0.36] | 0.92 / 0.64 |
+| A7K | 0.81 | 0.70 | +0.239 [0.12, 0.36] | 0.92 / 0.64 |
+| A7S | 0.83 | 0.63 | +0.222 [0.11, 0.33] | 0.92 / 0.64 |
+| A7SD | 0.73 | 0.63 | +0.162 [0.05, 0.27] | 0.68 / 0.54 |
+
+Paired comparisons, pooled over the 39 items:
+
+- **A7K − A7: exactly 0** on every metric. Without staleness, demotion changes nothing.
+- **A7S − A7:** Recall@5 −0.017 [−0.07, +0.03]. No measurable difference.
+- **A7SD − A7S:** Recall@5 **−0.061 [−0.11, −0.02], p = 0.002**, and MRR **−0.189
+  [−0.28, −0.11]**. Under staleness, demotion lowers both.
+
+Over the 39 items the patches left 346 stored citations stale, 167 moved and 803 fresh.
+A7SD set all 346 stale ones aside. On the fixture portfolio, a renamed file's file-level
+citations went stale (`file-missing`) rather than moved: #1831 tracks a rename by symbol
+only. On the two items checked, FX-02 and FX-03, that is what lowered A7S against A7.
+
+**Table guard** (`deepseek-flash`, 3 runs, live #936 filter, 33 analyses). Each reading
+is scored on the analysis's first persisted requirement (#1848), with the union of every
+persisted requirement beside it:
+
+| Reading | First persisted requirement | Unioned |
+|---|---|---|
+| A0, mapper | 0.803 | 0.803 |
+| A0, split | 0.644 | 0.644 |
+| A7O | 0.753 | 0.487 |
+| A7 | 0.702 | 0.459 |
+| A7S | 0.720 | 0.452 |
+| A7SD | 0.692 | 0.485 |
+
+Paired over the 11 requirements, scored on the first persisted requirement:
+
+- A7S − A7: +0.018 [−0.083, +0.118]
+- A7SD − A7S: −0.028 [−0.123, +0.067]
+
+Unioned, the same pairs read −0.007 [−0.087, +0.072] and +0.033 [−0.008, +0.075]. Both
+hold the 0.03 guard on the mean. A7 − A7O on DeepSeek is −0.051 [−0.120, +0.018], as on
+#1848's DeepSeek re-read; on Sonnet it held. The staleness readings were taken after A7's
+on fresh analyses: a patch cycle re-validates every citation of the repository, so a
+reading of A7 after a cycle would see citations the cycle had moved back as `moved`.
+
+**Reading it.** Demotion is free when nothing is stale, so the no-staleness arm gives no
+reason to change #1832's default. Under this patch, though, demotion costs ranking. A
+comment-only edit makes a citation stale while its file is still the answer, which is the
+worst case for demotion. This slice does not model drift that moves the behaviour
+elsewhere.
+
+**Cost.**
+
+- Sonnet, read from the eval database's ledger: $14.30.
+  - $11.59 is in the readings above: Miniflux $4.84, fixture $6.76.
+  - $0.76 went on a first slice whose search had not been patched (fixed, then re-run).
+  - $1.95 went on the analyses of two slices that the shell timeout killed. Their spend
+    is recorded in `spend/` and they were re-run.
+- DeepSeek: about $2.10. The ledger records $1.48 for the analyses. The #936 filter calls,
+  metered by the run, add about $0.60. That covers two table-guard readings: a first
+  reading scored only on the union ($0.96), superseded when #1848 changed the guard's
+  scoring, and the reading above ($0.86).
+
+The records are committed in `server/src/lib/eval/localization/__fixtures__/`, and
+`staleness-results.test.ts` reproduces every figure above from them.
+
 ### The analysis-agent arms (#1755)
 
 `A3`, `A3A` and `A3N` run the Analysis code agent behind "Evaluate new requirements" on

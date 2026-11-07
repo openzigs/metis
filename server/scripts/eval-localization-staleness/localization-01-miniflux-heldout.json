@@ -1,0 +1,3591 @@
+{
+  "corpus": "localization-01-miniflux-heldout",
+  "issue": 1834,
+  "rule": "edit: one comment line inside every multi-line symbol the item's labels name, else inside every multi-line function/method, else inside the longest other multi-line non-module symbol, of the first ground-truth file that has one of that tier; rename: the first other ground-truth file, else the edited file's neighbour with the most symbols, to <name>_renamed<ext>; delete: the edited file's neighbour with the most symbols (same repository, nearest directory, never an answer, a test or a documentation file)",
+  "items": {
+    "MF-4483": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::titlelize",
+        "afterLine": 32,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::addImageTitle",
+        "afterLine": 48,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::addMailtoSubject",
+        "afterLine": 72,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::addDynamicImage",
+        "afterLine": 104,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::addDynamicIframe",
+        "afterLine": 186,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::fixMediumImages",
+        "afterLine": 223,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::useNoScriptImages",
+        "afterLine": 240,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::getYoutubVideoIDFromURL",
+        "afterLine": 262,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::buildVideoPlayerIframe",
+        "afterLine": 289,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::addVideoPlayerIframe",
+        "afterLine": 293,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::addYoutubeVideoRewriteRule",
+        "afterLine": 297,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::addYoutubeVideoUsingInvidiousPlayer",
+        "afterLine": 304,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::addYoutubeVideoFromId",
+        "afterLine": 312,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::addInvidiousVideo",
+        "afterLine": 327,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::addPDFLink",
+        "afterLine": 352,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::addEnclosureLinks",
+        "afterLine": 359,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::replaceTextLinks",
+        "afterLine": 377,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::replaceCustom",
+        "afterLine": 381,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::removeCustom",
+        "afterLine": 389,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::addCastopodEpisode",
+        "afterLine": 401,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::applyFuncOnTextContent",
+        "afterLine": 407,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::decodeBase64Content",
+        "afterLine": 428,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::addHackerNewsLinksUsing",
+        "afterLine": 436,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::removeTables",
+        "afterLine": 488,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::fixGhostCards",
+        "afterLine": 523,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go",
+        "symbol": "internal/reader/rewrite/content_rewrite_functions.go::removeImgBlurParams",
+        "afterLine": 575,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/reader/rewrite/content_rewrite.go",
+        "to": "internal/reader/rewrite/content_rewrite_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/referer_override.go"
+      }
+    ],
+    "MF-4495": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::SanitizeHTML",
+        "afterLine": 165,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::findAllowedIframeSourceDomain",
+        "afterLine": 203,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::filterAndRenderHTML",
+        "afterLine": 221,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::filterAndRenderHTMLChildren",
+        "afterLine": 275,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::hasRequiredAttributes",
+        "afterLine": 284,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::isBlockedResource",
+        "afterLine": 296,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::isBlockedTag",
+        "afterLine": 305,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::isExternalResourceAttribute",
+        "afterLine": 313,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::isHidden",
+        "afterLine": 322,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::isPixelTracker",
+        "afterLine": 331,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::isPositiveInteger",
+        "afterLine": 352,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::isSelfContainedTag",
+        "afterLine": 362,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::isValidDataAttribute",
+        "afterLine": 371,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::isValidDecodingValue",
+        "afterLine": 380,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::isValidFetchPriorityValue",
+        "afterLine": 388,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::rewriteIframeURL",
+        "afterLine": 396,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::trackAttributes",
+        "afterLine": 429,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::sanitizeAttributes",
+        "afterLine": 440,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::sanitizeSrcsetAttr",
+        "afterLine": 587,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/sanitizer.go",
+        "symbol": "internal/reader/sanitizer/sanitizer.go::shouldIgnoreTag",
+        "afterLine": 612,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/reader/sanitizer/srcset.go",
+        "to": "internal/reader/sanitizer/srcset_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/reader/sanitizer/strip_tags.go"
+      }
+    ],
+    "MF-4500": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/ui/static/js/webauthn_handler.js",
+        "symbol": "internal/ui/static/js/webauthn_handler.js::WebAuthnHandler::isWebAuthnSupported",
+        "afterLine": 2,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/ui/static/js/webauthn_handler.js",
+        "symbol": "internal/ui/static/js/webauthn_handler.js::WebAuthnHandler::showErrorMessage",
+        "afterLine": 6,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/ui/static/js/webauthn_handler.js",
+        "symbol": "internal/ui/static/js/webauthn_handler.js::WebAuthnHandler::isConditionalLoginSupported",
+        "afterLine": 25,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/ui/static/js/webauthn_handler.js",
+        "symbol": "internal/ui/static/js/webauthn_handler.js::WebAuthnHandler::conditionalLogin",
+        "afterLine": 31,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/ui/static/js/webauthn_handler.js",
+        "symbol": "internal/ui/static/js/webauthn_handler.js::WebAuthnHandler::decodeBuffer",
+        "afterLine": 37,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/ui/static/js/webauthn_handler.js",
+        "symbol": "internal/ui/static/js/webauthn_handler.js::WebAuthnHandler::encodeBuffer",
+        "afterLine": 41,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/ui/static/js/webauthn_handler.js",
+        "symbol": "internal/ui/static/js/webauthn_handler.js::WebAuthnHandler::post",
+        "afterLine": 48,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/ui/static/js/webauthn_handler.js",
+        "symbol": "internal/ui/static/js/webauthn_handler.js::WebAuthnHandler::get",
+        "afterLine": 53,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/ui/static/js/webauthn_handler.js",
+        "symbol": "internal/ui/static/js/webauthn_handler.js::WebAuthnHandler::removeAllCredentials",
+        "afterLine": 58,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/ui/static/js/webauthn_handler.js",
+        "symbol": "internal/ui/static/js/webauthn_handler.js::WebAuthnHandler::register",
+        "afterLine": 69,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/ui/static/js/webauthn_handler.js",
+        "symbol": "internal/ui/static/js/webauthn_handler.js::WebAuthnHandler::login",
+        "afterLine": 126,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/ui/webauthn.go",
+        "to": "internal/ui/webauthn_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/ui/static/js/app.js"
+      }
+    ],
+    "MF-4510": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::NewConfigOptions",
+        "afterLine": 64,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::AdminPassword",
+        "afterLine": 623,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::AdminUsername",
+        "afterLine": 627,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::AuthProxyHeader",
+        "afterLine": 631,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::AuthProxyUserCreation",
+        "afterLine": 635,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::BasePath",
+        "afterLine": 639,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::BaseURL",
+        "afterLine": 643,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::RootURL",
+        "afterLine": 647,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::BatchSize",
+        "afterLine": 651,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::CertDomain",
+        "afterLine": 655,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::CertFile",
+        "afterLine": 659,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::CleanupArchiveBatchSize",
+        "afterLine": 663,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::CleanupArchiveReadInterval",
+        "afterLine": 667,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::CleanupArchiveUnreadInterval",
+        "afterLine": 671,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::CleanupFrequency",
+        "afterLine": 675,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::CleanupRemoveSessionsInterval",
+        "afterLine": 679,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::CreateAdmin",
+        "afterLine": 683,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::DatabaseConnectionLifetime",
+        "afterLine": 687,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::DatabaseMaxConns",
+        "afterLine": 691,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::DatabaseMinConns",
+        "afterLine": 695,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::DatabaseURL",
+        "afterLine": 699,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::DisableHSTS",
+        "afterLine": 703,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::DisableHTTPService",
+        "afterLine": 707,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::DisableLocalAuth",
+        "afterLine": 711,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::DisableSchedulerService",
+        "afterLine": 715,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::FetchBilibiliWatchTime",
+        "afterLine": 719,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::FetchNebulaWatchTime",
+        "afterLine": 723,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::FetchOdyseeWatchTime",
+        "afterLine": 727,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::FetchYouTubeWatchTime",
+        "afterLine": 731,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::ForceRefreshInterval",
+        "afterLine": 735,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::HasHTTPClientProxiesConfigured",
+        "afterLine": 739,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::HasAPI",
+        "afterLine": 743,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::HasHTTPService",
+        "afterLine": 747,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::HasHSTS",
+        "afterLine": 751,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::HasHTTPClientProxyURLConfigured",
+        "afterLine": 755,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::HasMaintenanceMode",
+        "afterLine": 759,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::HasMetricsCollector",
+        "afterLine": 763,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::HasSchedulerService",
+        "afterLine": 767,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::HasWatchdog",
+        "afterLine": 771,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::HTTPClientMaxBodySize",
+        "afterLine": 775,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::HTTPClientProxies",
+        "afterLine": 779,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::HTTPClientProxyURL",
+        "afterLine": 783,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::HTTPClientTimeout",
+        "afterLine": 787,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::HTTPClientUserAgent",
+        "afterLine": 791,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::HTTPServerTimeout",
+        "afterLine": 798,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::HTTPS",
+        "afterLine": 802,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::FetcherAllowPrivateNetworks",
+        "afterLine": 806,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::IntegrationAllowPrivateNetworks",
+        "afterLine": 810,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::InvidiousInstance",
+        "afterLine": 817,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::IsAuthProxyUserCreationAllowed",
+        "afterLine": 821,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::IsDefaultDatabaseURL",
+        "afterLine": 825,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::IsOAuth2UserCreationAllowed",
+        "afterLine": 829,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::CertKeyFile",
+        "afterLine": 833,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::ListenAddr",
+        "afterLine": 837,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::LogFile",
+        "afterLine": 841,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::LogDateTime",
+        "afterLine": 845,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::LogFormat",
+        "afterLine": 849,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::LogLevel",
+        "afterLine": 853,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::MaintenanceMessage",
+        "afterLine": 857,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::MaintenanceMode",
+        "afterLine": 861,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::MediaCustomProxyURL",
+        "afterLine": 865,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::MediaProxyHTTPClientTimeout",
+        "afterLine": 869,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::MediaProxyMode",
+        "afterLine": 873,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::MediaProxyPrivateKey",
+        "afterLine": 877,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::MediaProxyResourceTypes",
+        "afterLine": 881,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::MetricsAllowedNetworks",
+        "afterLine": 885,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::MetricsCollector",
+        "afterLine": 889,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::MetricsPassword",
+        "afterLine": 893,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::MetricsRefreshInterval",
+        "afterLine": 897,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::MetricsUsername",
+        "afterLine": 901,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::OAuth2ClientID",
+        "afterLine": 905,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::OAuth2ClientSecret",
+        "afterLine": 909,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::OAuth2OIDCDiscoveryEndpoint",
+        "afterLine": 913,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::OAuth2OIDCProviderName",
+        "afterLine": 917,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::OAuth2Provider",
+        "afterLine": 921,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::OAuth2RedirectURL",
+        "afterLine": 925,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::OAuth2UserCreation",
+        "afterLine": 929,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::PollingFrequency",
+        "afterLine": 933,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::PollingLimitPerHost",
+        "afterLine": 937,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::PollingParsingErrorLimit",
+        "afterLine": 941,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::PollingScheduler",
+        "afterLine": 945,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::Port",
+        "afterLine": 949,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::RunMigrations",
+        "afterLine": 953,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::SetLogLevel",
+        "afterLine": 957,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::SetHTTPSValue",
+        "afterLine": 962,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::SchedulerEntryFrequencyFactor",
+        "afterLine": 971,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::SchedulerEntryFrequencyMaxInterval",
+        "afterLine": 975,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::SchedulerEntryFrequencyMinInterval",
+        "afterLine": 979,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::SchedulerRoundRobinMaxInterval",
+        "afterLine": 983,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::SchedulerRoundRobinMinInterval",
+        "afterLine": 987,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::TrustedReverseProxyNetworks",
+        "afterLine": 991,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::Watchdog",
+        "afterLine": 995,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::WebAuthn",
+        "afterLine": 999,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::WorkerPoolSize",
+        "afterLine": 1003,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::YouTubeAPIKey",
+        "afterLine": 1007,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::YouTubeEmbedUrlOverride",
+        "afterLine": 1011,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::YouTubeEmbedDomain",
+        "afterLine": 1015,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::ConfigMap",
+        "afterLine": 1019,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/options.go",
+        "symbol": "internal/config/options.go::configOptions::String",
+        "afterLine": 1033,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/oauth2/oidc.go",
+        "to": "internal/oauth2/oidc_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/config/parser.go"
+      }
+    ],
+    "MF-4516": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/feed_handlers.go",
+        "symbol": "internal/api/feed_handlers.go::handler::createFeedHandler",
+        "afterLine": 21,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/feed_handlers.go",
+        "symbol": "internal/api/feed_handlers.go::handler::refreshFeedHandler",
+        "afterLine": 54,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/feed_handlers.go",
+        "symbol": "internal/api/feed_handlers.go::handler::refreshAllFeedsHandler",
+        "afterLine": 76,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/feed_handlers.go",
+        "symbol": "internal/api/feed_handlers.go::handler::updateFeedHandler",
+        "afterLine": 102,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/feed_handlers.go",
+        "symbol": "internal/api/feed_handlers.go::handler::markFeedAsReadHandler",
+        "afterLine": 148,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/feed_handlers.go",
+        "symbol": "internal/api/feed_handlers.go::handler::getCategoryFeedsHandler",
+        "afterLine": 170,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/feed_handlers.go",
+        "symbol": "internal/api/feed_handlers.go::handler::getFeedsHandler",
+        "afterLine": 199,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/feed_handlers.go",
+        "symbol": "internal/api/feed_handlers.go::handler::fetchCountersHandler",
+        "afterLine": 209,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/feed_handlers.go",
+        "symbol": "internal/api/feed_handlers.go::handler::getFeedHandler",
+        "afterLine": 219,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/feed_handlers.go",
+        "symbol": "internal/api/feed_handlers.go::handler::removeFeedHandler",
+        "afterLine": 240,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/api/opml_handlers.go",
+        "to": "internal/api/opml_handlers_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/api/entry_handlers.go"
+      }
+    ],
+    "MF-4520": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/integration/karakeep/karakeep.go",
+        "symbol": "internal/integration/karakeep/karakeep.go::NewClient",
+        "afterLine": 52,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/integration/karakeep/karakeep.go",
+        "symbol": "internal/integration/karakeep/karakeep.go::Client::attachTags",
+        "afterLine": 56,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/integration/karakeep/karakeep.go",
+        "symbol": "internal/integration/karakeep/karakeep.go::Client::SaveURL",
+        "afterLine": 110,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/integration/integration.go",
+        "to": "internal/integration/integration_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/integration/telegrambot/client.go"
+      }
+    ],
+    "MF-4525": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/googlereader/middleware.go",
+        "symbol": "internal/googlereader/middleware.go::newAuthMiddleware",
+        "afterLine": 25,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/googlereader/middleware.go",
+        "symbol": "internal/googlereader/middleware.go::authMiddleware::validateApiKey",
+        "afterLine": 29,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/googlereader/middleware.go",
+        "symbol": "internal/googlereader/middleware.go::authMiddleware::serveValidated",
+        "afterLine": 35,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/googlereader/middleware.go",
+        "symbol": "internal/googlereader/middleware.go::getAuthToken",
+        "afterLine": 182,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/storage/integration.go",
+        "to": "internal/storage/integration_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/googlereader/handler.go"
+      }
+    ],
+    "MF-4526": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/middleware.go",
+        "symbol": "internal/api/middleware.go::newMiddleware",
+        "afterLine": 20,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/middleware.go",
+        "symbol": "internal/api/middleware.go::middleware::withCORSHeaders",
+        "afterLine": 23,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/middleware.go",
+        "symbol": "internal/api/middleware.go::middleware::validateAPIKeyAuth",
+        "afterLine": 37,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/middleware.go",
+        "symbol": "internal/api/middleware.go::middleware::validateBasicAuth",
+        "afterLine": 90,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/ui/form/settings.go",
+        "to": "internal/ui/form/settings_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/api/entry_handlers.go"
+      }
+    ],
+    "MF-4554": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/integration/integration.go",
+        "symbol": "internal/integration/integration.go::SendEntry",
+        "afterLine": 41,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/integration/integration.go",
+        "symbol": "internal/integration/integration.go::PushEntries",
+        "afterLine": 511,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/database/migrations.go",
+        "to": "internal/database/migrations_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/integration/telegrambot/client.go"
+      }
+    ],
+    "MF-4556": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::New",
+        "afterLine": 27,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::NewClient",
+        "afterLine": 32,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::NewClientWithOptions",
+        "afterLine": 44,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::withDefaultTimeout",
+        "afterLine": 57,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::Healthcheck",
+        "afterLine": 63,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::HealthcheckContext",
+        "afterLine": 70,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::Version",
+        "afterLine": 90,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::VersionContext",
+        "afterLine": 97,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::Me",
+        "afterLine": 113,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::MeContext",
+        "afterLine": 120,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::Users",
+        "afterLine": 136,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UsersContext",
+        "afterLine": 143,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UserByID",
+        "afterLine": 159,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UserByIDContext",
+        "afterLine": 166,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UserByUsername",
+        "afterLine": 182,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UserByUsernameContext",
+        "afterLine": 189,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CreateUser",
+        "afterLine": 205,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CreateUserContext",
+        "afterLine": 212,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UpdateUser",
+        "afterLine": 232,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UpdateUserContext",
+        "afterLine": 239,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::DeleteUser",
+        "afterLine": 255,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::DeleteUserContext",
+        "afterLine": 262,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::APIKeys",
+        "afterLine": 267,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::APIKeysContext",
+        "afterLine": 274,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CreateAPIKey",
+        "afterLine": 290,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CreateAPIKeyContext",
+        "afterLine": 297,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::DeleteAPIKey",
+        "afterLine": 315,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::DeleteAPIKeyContext",
+        "afterLine": 322,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::MarkAllAsRead",
+        "afterLine": 327,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::MarkAllAsReadContext",
+        "afterLine": 334,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::IntegrationsStatus",
+        "afterLine": 340,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::IntegrationsStatusContext",
+        "afterLine": 347,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::Discover",
+        "afterLine": 366,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::DiscoverContext",
+        "afterLine": 373,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::Categories",
+        "afterLine": 389,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CategoriesContext",
+        "afterLine": 396,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CategoriesWithCounters",
+        "afterLine": 412,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CategoriesWithCountersContext",
+        "afterLine": 419,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CreateCategory",
+        "afterLine": 435,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CreateCategoryContext",
+        "afterLine": 442,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CreateCategoryWithOptions",
+        "afterLine": 460,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CreateCategoryWithOptionsContext",
+        "afterLine": 467,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UpdateCategory",
+        "afterLine": 482,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UpdateCategoryContext",
+        "afterLine": 489,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UpdateCategoryWithOptions",
+        "afterLine": 507,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UpdateCategoryWithOptionsContext",
+        "afterLine": 514,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::MarkCategoryAsRead",
+        "afterLine": 530,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::MarkCategoryAsReadContext",
+        "afterLine": 537,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CategoryFeeds",
+        "afterLine": 543,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CategoryFeedsContext",
+        "afterLine": 550,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::DeleteCategory",
+        "afterLine": 566,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::DeleteCategoryContext",
+        "afterLine": 573,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::RefreshCategory",
+        "afterLine": 578,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::RefreshCategoryContext",
+        "afterLine": 585,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::Feeds",
+        "afterLine": 591,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::FeedsContext",
+        "afterLine": 598,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::Export",
+        "afterLine": 614,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::ExportContext",
+        "afterLine": 621,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::Import",
+        "afterLine": 637,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::ImportContext",
+        "afterLine": 644,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::Feed",
+        "afterLine": 650,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::FeedContext",
+        "afterLine": 657,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CreateFeed",
+        "afterLine": 673,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CreateFeedContext",
+        "afterLine": 680,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UpdateFeed",
+        "afterLine": 700,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UpdateFeedContext",
+        "afterLine": 707,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::ImportFeedEntry",
+        "afterLine": 723,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::MarkFeedAsRead",
+        "afterLine": 749,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::MarkFeedAsReadContext",
+        "afterLine": 756,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::RefreshAllFeeds",
+        "afterLine": 762,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::RefreshAllFeedsContext",
+        "afterLine": 769,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::RefreshFeed",
+        "afterLine": 775,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::RefreshFeedContext",
+        "afterLine": 782,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::DeleteFeed",
+        "afterLine": 788,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::DeleteFeedContext",
+        "afterLine": 795,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::FeedIcon",
+        "afterLine": 800,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::FeedIconContext",
+        "afterLine": 807,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::FeedEntry",
+        "afterLine": 823,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::FeedEntryContext",
+        "afterLine": 830,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CategoryEntry",
+        "afterLine": 846,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CategoryEntryContext",
+        "afterLine": 853,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::Entry",
+        "afterLine": 869,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::EntryContext",
+        "afterLine": 876,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::EntryIDs",
+        "afterLine": 892,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::EntryIDsContext",
+        "afterLine": 899,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::buildEntryIDsFilterQueryString",
+        "afterLine": 914,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::Entries",
+        "afterLine": 941,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::EntriesContext",
+        "afterLine": 948,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::FeedEntries",
+        "afterLine": 966,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::FeedEntriesContext",
+        "afterLine": 973,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CategoryEntries",
+        "afterLine": 991,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::CategoryEntriesContext",
+        "afterLine": 998,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UpdateEntries",
+        "afterLine": 1016,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UpdateEntriesContext",
+        "afterLine": 1023,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UpdateEntriesStarred",
+        "afterLine": 1034,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UpdateEntriesStarredContext",
+        "afterLine": 1041,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UpdateEntry",
+        "afterLine": 1052,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UpdateEntryContext",
+        "afterLine": 1059,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::ToggleStarred",
+        "afterLine": 1075,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::ToggleStarredContext",
+        "afterLine": 1082,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::SaveEntry",
+        "afterLine": 1088,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::SaveEntryContext",
+        "afterLine": 1095,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::FetchEntryOriginalContent",
+        "afterLine": 1101,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::FetchEntryOriginalContentContext",
+        "afterLine": 1108,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::FetchCounters",
+        "afterLine": 1127,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::FetchCountersContext",
+        "afterLine": 1134,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::FlushHistory",
+        "afterLine": 1150,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::FlushHistoryContext",
+        "afterLine": 1157,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::Icon",
+        "afterLine": 1163,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::IconContext",
+        "afterLine": 1170,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::Enclosure",
+        "afterLine": 1186,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::EnclosureContext",
+        "afterLine": 1193,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UpdateEnclosure",
+        "afterLine": 1209,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::Client::UpdateEnclosureContext",
+        "afterLine": 1216,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "client/client.go",
+        "symbol": "client/client.go::buildFilterQueryString",
+        "afterLine": 1221,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/api/feed_handlers.go",
+        "to": "internal/api/feed_handlers_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "client/model.go"
+      }
+    ],
+    "MF-4557": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite.go",
+        "symbol": "internal/reader/rewrite/content_rewrite.go::rule::applyRule",
+        "afterLine": 21,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite.go",
+        "symbol": "internal/reader/rewrite/content_rewrite.go::ApplyContentRewriteRules",
+        "afterLine": 104,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite.go",
+        "symbol": "internal/reader/rewrite/content_rewrite.go::parseRules",
+        "afterLine": 123,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite.go",
+        "symbol": "internal/reader/rewrite/content_rewrite.go::getPredefinedRewriteRules",
+        "afterLine": 142,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/ui/form/subscription.go",
+        "to": "internal/ui/form/subscription_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/reader/rewrite/content_rewrite_functions.go"
+      }
+    ],
+    "MF-4563": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/request/client_ip.go",
+        "symbol": "internal/http/request/client_ip.go::IsTrustedIP",
+        "afterLine": 13,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/request/client_ip.go",
+        "symbol": "internal/http/request/client_ip.go::FindClientIP",
+        "afterLine": 38,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/request/client_ip.go",
+        "symbol": "internal/http/request/client_ip.go::FindRemoteIP",
+        "afterLine": 62,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/request/client_ip.go",
+        "symbol": "internal/http/request/client_ip.go::dropIPv6zone",
+        "afterLine": 85,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/http/server/middleware.go",
+        "to": "internal/http/server/middleware_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/http/request/context.go"
+      }
+    ],
+    "MF-4566": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/parser.go",
+        "symbol": "internal/config/parser.go::NewConfigParser",
+        "afterLine": 25,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/parser.go",
+        "symbol": "internal/config/parser.go::configParser::ParseEnvironmentVariables",
+        "afterLine": 31,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/parser.go",
+        "symbol": "internal/config/parser.go::configParser::ParseFile",
+        "afterLine": 39,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/parser.go",
+        "symbol": "internal/config/parser.go::configOptions::Validate",
+        "afterLine": 54,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/parser.go",
+        "symbol": "internal/config/parser.go::configParser::postParsing",
+        "afterLine": 96,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/parser.go",
+        "symbol": "internal/config/parser.go::configParser::parseLines",
+        "afterLine": 143,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/parser.go",
+        "symbol": "internal/config/parser.go::configParser::parseLine",
+        "afterLine": 163,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/parser.go",
+        "symbol": "internal/config/parser.go::parseStringValue",
+        "afterLine": 242,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/parser.go",
+        "symbol": "internal/config/parser.go::parseBoolValue",
+        "afterLine": 249,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/parser.go",
+        "symbol": "internal/config/parser.go::parseIntValue",
+        "afterLine": 265,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/parser.go",
+        "symbol": "internal/config/parser.go::ParsedInt64Value",
+        "afterLine": 278,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/parser.go",
+        "symbol": "internal/config/parser.go::parseStringListValue",
+        "afterLine": 291,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/parser.go",
+        "symbol": "internal/config/parser.go::parseDurationValue",
+        "afterLine": 311,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/parser.go",
+        "symbol": "internal/config/parser.go::parseURLValue",
+        "afterLine": 324,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/parser.go",
+        "symbol": "internal/config/parser.go::readSecretFileValue",
+        "afterLine": 337,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/config/parser.go",
+        "symbol": "internal/config/parser.go::parseFileContent",
+        "afterLine": 351,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/ui/static/js/app.js",
+        "to": "internal/ui/static/js/app_renamed.js"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/config/options.go"
+      }
+    ],
+    "MF-4567": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/json/parser.go",
+        "symbol": "internal/reader/json/parser.go::Parse",
+        "afterLine": 15,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/reader/parser/format.go",
+        "to": "internal/reader/parser/format_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/reader/json/json.go"
+      }
+    ],
+    "MF-4572": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::NewWebSession",
+        "afterLine": 56,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::Rotate",
+        "afterLine": 70,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::VerifySecret",
+        "afterLine": 79,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::hashWebSessionSecret",
+        "afterLine": 87,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::IsDirty",
+        "afterLine": 93,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::IsAuthenticated",
+        "afterLine": 98,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::UserID",
+        "afterLine": 103,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::NullUserID",
+        "afterLine": 111,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::ScanUserID",
+        "afterLine": 119,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::UseTimezone",
+        "afterLine": 129,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::CSRF",
+        "afterLine": 134,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::Language",
+        "afterLine": 139,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::Theme",
+        "afterLine": 147,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::OAuth2State",
+        "afterLine": 155,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::OAuth2CodeVerifier",
+        "afterLine": 163,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::ConsumeWebAuthnSession",
+        "afterLine": 171,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::LastForceRefresh",
+        "afterLine": 183,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::ConsumeMessages",
+        "afterLine": 191,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::SetLanguage",
+        "afterLine": 205,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::SetTheme",
+        "afterLine": 211,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::SetSuccessMessage",
+        "afterLine": 217,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::SetErrorMessage",
+        "afterLine": 223,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::StartOAuth2Flow",
+        "afterLine": 229,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::ClearOAuth2Flow",
+        "afterLine": 238,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::SetUser",
+        "afterLine": 244,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::ClearUser",
+        "afterLine": 257,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::MarkForceRefreshed",
+        "afterLine": 263,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::SetWebAuthn",
+        "afterLine": 270,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::MarshalState",
+        "afterLine": 276,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/model/web_session.go",
+        "symbol": "internal/model/web_session.go::WebSession::UnmarshalState",
+        "afterLine": 281,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/storage/web_session.go",
+        "to": "internal/storage/web_session_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/model/feed.go"
+      }
+    ],
+    "MF-4575": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/date/parser.go",
+        "symbol": "internal/reader/date/parser.go::Parse",
+        "afterLine": 320,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/date/parser.go",
+        "symbol": "internal/reader/date/parser.go::parseLocalTimeDates",
+        "afterLine": 352,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/reader/date/parser.go",
+        "symbol": "internal/reader/date/parser.go::checkTimezoneRange",
+        "afterLine": 368,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/reader/rewrite/content_rewrite_functions.go",
+        "to": "internal/reader/rewrite/content_rewrite_functions_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/reader/media/media.go"
+      }
+    ],
+    "MF-4579": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::NewHandler",
+        "afterLine": 22,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::serve",
+        "afterLine": 31,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::handleGroups",
+        "afterLine": 75,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::handleFeeds",
+        "afterLine": 127,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::handleFavicons",
+        "afterLine": 182,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::handleItems",
+        "afterLine": 236,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::handleUnreadItems",
+        "afterLine": 339,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::handleSavedItems",
+        "afterLine": 372,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::handleWriteItems",
+        "afterLine": 401,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::handleWriteFeeds",
+        "afterLine": 481,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::handleWriteGroups",
+        "afterLine": 510,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::buildFeedGroups",
+        "afterLine": 549,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/fever/response.go",
+        "to": "internal/fever/response_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/fever/middleware.go"
+      }
+    ],
+    "MF-4592": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/subscription_handlers.go",
+        "symbol": "internal/api/subscription_handlers.go::handler::discoverSubscriptionsHandler",
+        "afterLine": 20,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/reader/fetcher/request_builder.go",
+        "to": "internal/reader/fetcher/request_builder_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/api/entry_handlers.go"
+      }
+    ],
+    "MF-4594": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/user_handlers.go",
+        "symbol": "internal/api/user_handlers.go::handler::currentUserHandler",
+        "afterLine": 18,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/user_handlers.go",
+        "symbol": "internal/api/user_handlers.go::handler::createUserHandler",
+        "afterLine": 33,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/user_handlers.go",
+        "symbol": "internal/api/user_handlers.go::handler::updateUserHandler",
+        "afterLine": 59,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/user_handlers.go",
+        "symbol": "internal/api/user_handlers.go::handler::markUserAsReadHandler",
+        "afterLine": 109,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/user_handlers.go",
+        "symbol": "internal/api/user_handlers.go::handler::getIntegrationsStatusHandler",
+        "afterLine": 140,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/user_handlers.go",
+        "symbol": "internal/api/user_handlers.go::handler::usersHandler",
+        "afterLine": 158,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/user_handlers.go",
+        "symbol": "internal/api/user_handlers.go::handler::dispatchUserLookupHandler",
+        "afterLine": 174,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/user_handlers.go",
+        "symbol": "internal/api/user_handlers.go::handler::userByIDHandler",
+        "afterLine": 187,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/user_handlers.go",
+        "symbol": "internal/api/user_handlers.go::handler::userByUsernameHandler",
+        "afterLine": 214,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/api/user_handlers.go",
+        "symbol": "internal/api/user_handlers.go::handler::removeUserHandler",
+        "afterLine": 235,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/cli/reset_password.go",
+        "to": "internal/cli/reset_password_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/api/entry_handlers.go"
+      }
+    ],
+    "MF-4599": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/ui/user_edit.go",
+        "symbol": "internal/ui/user_edit.go::handler::showEditUserPage",
+        "afterLine": 16,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/ui/user_update.go",
+        "to": "internal/ui/user_update_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/ui/webauthn.go"
+      }
+    ],
+    "MF-4605": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/response/builder.go",
+        "symbol": "internal/http/response/builder.go::NewBuilder",
+        "afterLine": 59,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/response/builder.go",
+        "symbol": "internal/http/response/builder.go::Builder::WithStatus",
+        "afterLine": 64,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/response/builder.go",
+        "symbol": "internal/http/response/builder.go::Builder::WithHeader",
+        "afterLine": 70,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/response/builder.go",
+        "symbol": "internal/http/response/builder.go::Builder::WithBodyAsBytes",
+        "afterLine": 76,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/response/builder.go",
+        "symbol": "internal/http/response/builder.go::Builder::WithBodyAsString",
+        "afterLine": 82,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/response/builder.go",
+        "symbol": "internal/http/response/builder.go::Builder::WithBodyAsReader",
+        "afterLine": 88,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/response/builder.go",
+        "symbol": "internal/http/response/builder.go::Builder::WithAttachment",
+        "afterLine": 94,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/response/builder.go",
+        "symbol": "internal/http/response/builder.go::Builder::WithInline",
+        "afterLine": 100,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/response/builder.go",
+        "symbol": "internal/http/response/builder.go::Builder::WithoutCompression",
+        "afterLine": 106,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/response/builder.go",
+        "symbol": "internal/http/response/builder.go::Builder::WithCaching",
+        "afterLine": 112,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/response/builder.go",
+        "symbol": "internal/http/response/builder.go::Builder::Write",
+        "afterLine": 130,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/response/builder.go",
+        "symbol": "internal/http/response/builder.go::Builder::writeHeaders",
+        "afterLine": 151,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/response/builder.go",
+        "symbol": "internal/http/response/builder.go::Builder::compress",
+        "afterLine": 164,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/response/builder.go",
+        "symbol": "internal/http/response/builder.go::normalizeETag",
+        "afterLine": 210,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/response/builder.go",
+        "symbol": "internal/http/response/builder.go::ifNoneMatch",
+        "afterLine": 221,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/http/response/builder.go",
+        "symbol": "internal/http/response/builder.go::formatContentDisposition",
+        "afterLine": 232,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/ui/share.go",
+        "to": "internal/ui/share_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/http/response/json.go"
+      }
+    ],
+    "MF-4606": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/ui/user_update.go",
+        "symbol": "internal/ui/user_update.go::handler::updateUser",
+        "afterLine": 16,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/validator/user.go",
+        "to": "internal/validator/user_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/ui/webauthn.go"
+      }
+    ],
+    "MF-4608": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::NewHandler",
+        "afterLine": 22,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::serve",
+        "afterLine": 31,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::handleGroups",
+        "afterLine": 75,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::handleFeeds",
+        "afterLine": 127,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::handleFavicons",
+        "afterLine": 182,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::handleItems",
+        "afterLine": 236,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::handleUnreadItems",
+        "afterLine": 339,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::handleSavedItems",
+        "afterLine": 372,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::handleWriteItems",
+        "afterLine": 401,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::handleWriteFeeds",
+        "afterLine": 481,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::feverHandler::handleWriteGroups",
+        "afterLine": 510,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/fever/handler.go",
+        "symbol": "internal/fever/handler.go::buildFeedGroups",
+        "afterLine": 549,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/fever/response.go",
+        "to": "internal/fever/response_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/fever/middleware.go"
+      }
+    ],
+    "MF-4610": [
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/googlereader/stream.go",
+        "symbol": "internal/googlereader/stream.go::Stream::String",
+        "afterLine": 42,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/googlereader/stream.go",
+        "symbol": "internal/googlereader/stream.go::StreamType::String",
+        "afterLine": 46,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/googlereader/stream.go",
+        "symbol": "internal/googlereader/stream.go::getStream",
+        "afterLine": 73,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "edit",
+        "repo": "miniflux",
+        "file": "internal/googlereader/stream.go",
+        "symbol": "internal/googlereader/stream.go::getStreams",
+        "afterLine": 109,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "miniflux",
+        "from": "internal/storage/category.go",
+        "to": "internal/storage/category_renamed.go"
+      },
+      {
+        "op": "delete",
+        "repo": "miniflux",
+        "file": "internal/googlereader/handler.go"
+      }
+    ]
+  }
+}

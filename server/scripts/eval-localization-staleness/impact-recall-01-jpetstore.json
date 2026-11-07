@@ -1,0 +1,238 @@
+{
+  "corpus": "impact-recall-01-jpetstore",
+  "issue": 1834,
+  "rule": "edit: one comment line inside every multi-line symbol the item's labels name, else inside every multi-line function/method, else inside the longest other multi-line non-module symbol, of the first ground-truth file that has one of that tier; rename: the first other ground-truth file, else the edited file's neighbour with the most symbols, to <name>_renamed<ext>; delete: the edited file's neighbour with the most symbols (same repository, nearest directory, never an answer, a test or a documentation file)",
+  "items": {
+    "REQ-01": [
+      {
+        "op": "edit",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/mapper/ProductMapper.java",
+        "symbol": "src/main/java/org/mybatis/jpetstore/mapper/ProductMapper.java::ProductMapper",
+        "afterLine": 27,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "jpetstore",
+        "from": "src/main/java/org/mybatis/jpetstore/mapper/AccountMapper.java",
+        "to": "src/main/java/org/mybatis/jpetstore/mapper/AccountMapper_renamed.java"
+      },
+      {
+        "op": "delete",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/mapper/ItemMapper.java"
+      }
+    ],
+    "REQ-02": [
+      {
+        "op": "edit",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/service/OrderService.java",
+        "symbol": "src/main/java/org/mybatis/jpetstore/service/OrderService.java::OrderService::insertOrder",
+        "afterLine": 59,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "jpetstore",
+        "from": "src/main/java/org/mybatis/jpetstore/mapper/OrderMapper.java",
+        "to": "src/main/java/org/mybatis/jpetstore/mapper/OrderMapper_renamed.java"
+      },
+      {
+        "op": "delete",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/service/CatalogService.java"
+      }
+    ],
+    "REQ-03": [
+      {
+        "op": "edit",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/service/AccountService.java",
+        "symbol": "src/main/java/org/mybatis/jpetstore/service/AccountService.java::AccountService::updateAccount",
+        "afterLine": 66,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "jpetstore",
+        "from": "src/main/java/org/mybatis/jpetstore/mapper/AccountMapper.java",
+        "to": "src/main/java/org/mybatis/jpetstore/mapper/AccountMapper_renamed.java"
+      },
+      {
+        "op": "delete",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/service/CatalogService.java"
+      }
+    ],
+    "REQ-04": [
+      {
+        "op": "edit",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/mapper/AccountMapper.java",
+        "symbol": "src/main/java/org/mybatis/jpetstore/mapper/AccountMapper.java::AccountMapper",
+        "afterLine": 25,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "jpetstore",
+        "from": "src/main/java/org/mybatis/jpetstore/mapper/ItemMapper.java",
+        "to": "src/main/java/org/mybatis/jpetstore/mapper/ItemMapper_renamed.java"
+      },
+      {
+        "op": "delete",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/mapper/OrderMapper.java"
+      }
+    ],
+    "REQ-05": [
+      {
+        "op": "edit",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/service/CatalogService.java",
+        "symbol": "src/main/java/org/mybatis/jpetstore/service/CatalogService.java::CatalogService::getItem",
+        "afterLine": 83,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "jpetstore",
+        "from": "src/main/java/org/mybatis/jpetstore/mapper/ItemMapper.java",
+        "to": "src/main/java/org/mybatis/jpetstore/mapper/ItemMapper_renamed.java"
+      },
+      {
+        "op": "delete",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/service/AccountService.java"
+      }
+    ],
+    "REQ-06": [
+      {
+        "op": "edit",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/service/CatalogService.java",
+        "symbol": "src/main/java/org/mybatis/jpetstore/service/CatalogService.java::CatalogService::getCategory",
+        "afterLine": 51,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "jpetstore",
+        "from": "src/main/java/org/mybatis/jpetstore/mapper/CategoryMapper.java",
+        "to": "src/main/java/org/mybatis/jpetstore/mapper/CategoryMapper_renamed.java"
+      },
+      {
+        "op": "delete",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/service/AccountService.java"
+      }
+    ],
+    "REQ-07": [
+      {
+        "op": "edit",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/service/OrderService.java",
+        "symbol": "src/main/java/org/mybatis/jpetstore/service/OrderService.java::OrderService::getOrder",
+        "afterLine": 87,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "jpetstore",
+        "from": "src/main/java/org/mybatis/jpetstore/mapper/OrderMapper.java",
+        "to": "src/main/java/org/mybatis/jpetstore/mapper/OrderMapper_renamed.java"
+      },
+      {
+        "op": "delete",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/service/CatalogService.java"
+      }
+    ],
+    "REQ-08": [
+      {
+        "op": "edit",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/mapper/ProductMapper.java",
+        "symbol": "src/main/java/org/mybatis/jpetstore/mapper/ProductMapper.java::ProductMapper",
+        "afterLine": 27,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "jpetstore",
+        "from": "src/main/java/org/mybatis/jpetstore/mapper/AccountMapper.java",
+        "to": "src/main/java/org/mybatis/jpetstore/mapper/AccountMapper_renamed.java"
+      },
+      {
+        "op": "delete",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/mapper/ItemMapper.java"
+      }
+    ],
+    "REQ-09": [
+      {
+        "op": "edit",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/service/CatalogService.java",
+        "symbol": "src/main/java/org/mybatis/jpetstore/service/CatalogService.java::CatalogService::getItemListByProduct",
+        "afterLine": 79,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "jpetstore",
+        "from": "src/main/java/org/mybatis/jpetstore/mapper/ItemMapper.java",
+        "to": "src/main/java/org/mybatis/jpetstore/mapper/ItemMapper_renamed.java"
+      },
+      {
+        "op": "delete",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/service/AccountService.java"
+      }
+    ],
+    "REQ-10": [
+      {
+        "op": "edit",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/service/OrderService.java",
+        "symbol": "src/main/java/org/mybatis/jpetstore/service/OrderService.java::OrderService::insertOrder",
+        "afterLine": 59,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "jpetstore",
+        "from": "src/main/java/org/mybatis/jpetstore/mapper/OrderMapper.java",
+        "to": "src/main/java/org/mybatis/jpetstore/mapper/OrderMapper_renamed.java"
+      },
+      {
+        "op": "delete",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/service/CatalogService.java"
+      }
+    ],
+    "REQ-11": [
+      {
+        "op": "edit",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/service/AccountService.java",
+        "symbol": "src/main/java/org/mybatis/jpetstore/service/AccountService.java::AccountService::updateAccount",
+        "afterLine": 66,
+        "text": "// metis-eval #1834: synthetic staleness edit"
+      },
+      {
+        "op": "rename",
+        "repo": "jpetstore",
+        "from": "src/main/java/org/mybatis/jpetstore/mapper/AccountMapper.java",
+        "to": "src/main/java/org/mybatis/jpetstore/mapper/AccountMapper_renamed.java"
+      },
+      {
+        "op": "delete",
+        "repo": "jpetstore",
+        "file": "src/main/java/org/mybatis/jpetstore/service/CatalogService.java"
+      }
+    ]
+  }
+}

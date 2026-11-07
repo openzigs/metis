@@ -915,7 +915,14 @@ export function toMarkdownReport(report: LocalizationReport): string {
             t.citedFiles === 0
               ? "n/a (no citation stored)"
               : `${resolved} of ${t.citedFiles} (${f2(resolved / t.citedFiles)})`
-          }.`,
+          }.` +
+          // #1834 — what the staleness patch did to the stored citations.
+          (t.citationFreshness
+            ? ` After the staleness patch's re-ingest (#1831): ${t.citationFreshness.stale} stale, ` +
+              `${t.citationFreshness.moved} moved, ${t.citationFreshness.fresh} fresh, ` +
+              `${t.citationFreshness.unverified} unverified citation(s); ` +
+              `${t.citationFreshness.demoted} set aside by the stage (#1832).`
+            : ""),
       );
       continue;
     }

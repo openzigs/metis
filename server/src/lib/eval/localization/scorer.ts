@@ -36,6 +36,36 @@ export interface AgentRunStats {
   passGroup: string;
   /** The passes read, one id per repository: two arms of a group should read the same ids. */
   passIds: string[];
+  /**
+   * #1834 — a staleness reading's stored citations after the patch's re-ingest
+   * re-validated them (#1831), and how many the stage set aside (#1832).
+   */
+  citationFreshness?: CitationFreshnessCounts;
+}
+
+/** #1834 — stored citations by re-validation state, and the stale ones the stage set aside. */
+export interface CitationFreshnessCounts {
+  fresh: number;
+  moved: number;
+  stale: number;
+  unverified: number;
+  /** Stale citations the stage set aside (`demotedStaleCitations`): 0 without demotion. */
+  demoted: number;
+}
+
+function addFreshness(
+  counts: ReadonlyArray<CitationFreshnessCounts | undefined>,
+): CitationFreshnessCounts | undefined {
+  const present = counts.filter((c): c is CitationFreshnessCounts => c !== undefined);
+  if (present.length === 0) return undefined;
+  const sum = (k: keyof CitationFreshnessCounts) => present.reduce((n, c) => n + c[k], 0);
+  return {
+    fresh: sum("fresh"),
+    moved: sum("moved"),
+    stale: sum("stale"),
+    unverified: sum("unverified"),
+    demoted: sum("demoted"),
+  };
 }
 
 /** #1810 — agent-pass counts summed over readings (an item's runs, or an arm's items). */
@@ -49,6 +79,8 @@ export interface AgentTotals {
   toolCalls: number;
   citedFiles: number;
   unresolvedFiles: number;
+  /** #1834 — summed over the readings that carried them (staleness readings). */
+  citationFreshness?: CitationFreshnessCounts;
 }
 
 function addAgentTotals(totals: readonly AgentTotals[]): AgentTotals | null {
@@ -62,8 +94,12 @@ function addAgentTotals(totals: readonly AgentTotals[]): AgentTotals | null {
     toolCalls: sum((t) => t.toolCalls),
     citedFiles: sum((t) => t.citedFiles),
     unresolvedFiles: sum((t) => t.unresolvedFiles),
+    ...withFreshness(addFreshness(totals.map((t) => t.citationFreshness))),
   };
 }
+
+const withFreshness = (c: CitationFreshnessCounts | undefined) =>
+  c ? { citationFreshness: c } : {};
 
 /** What one arm produced for one requirement on one run. */
 export interface ArmObservation {
@@ -261,6 +297,7 @@ export function averageRuns(id: string, runs: readonly ItemRunScore[]): ItemScor
               toolCalls: r.agent.toolCalls,
               citedFiles: r.agent.citedFiles,
               unresolvedFiles: r.agent.unresolvedFiles,
+              ...withFreshness(r.agent.citationFreshness),
             },
           ]
         : [],

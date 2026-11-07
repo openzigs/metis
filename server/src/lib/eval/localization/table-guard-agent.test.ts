@@ -35,9 +35,11 @@ import {
   type AgentSeedGuardDeps,
   type GuardRecord,
   type GuardRunRecord,
+  type GuardStaleness,
   type GuardStore,
 } from "./table-guard-agent.js";
 import { TABLE_GUARD_CORPUS, TABLE_GUARD_REPO } from "./table-guard-source.js";
+import type { StalenessOp } from "./staleness.js";
 
 const dir = resolveCorpusDir(TABLE_GUARD_CORPUS);
 const fixture = await loadImpactRecallFixture(dir);
@@ -654,6 +656,8 @@ describe("lazyAgentSeedGuard (#1847)", () => {
       A0: async () => ({ measured: false, reason: "A0" }),
       A7: async () => ({ measured: false, reason: "A7" }),
       A7O: async () => ({ measured: false, reason: "A7O" }),
+      A7S: async () => ({ measured: false, reason: "A7S" }),
+      A7SD: async () => ({ measured: false, reason: "A7SD" }),
     };
     const lazy = lazyAgentSeedGuard(async () => {
       builds++;
@@ -661,9 +665,15 @@ describe("lazyAgentSeedGuard (#1847)", () => {
       return guard;
     });
     expect(builds).toBe(0);
-    const readings = await Promise.all([lazy.A7(), lazy.A7O(), lazy.A0()]);
+    const readings = await Promise.all([lazy.A7(), lazy.A7O(), lazy.A0(), lazy.A7S(), lazy.A7SD()]);
     expect(builds).toBe(1);
-    expect(readings.map((r) => (r.measured ? "" : r.reason))).toEqual(["A7", "A7O", "A0"]);
+    expect(readings.map((r) => (r.measured ? "" : r.reason))).toEqual([
+      "A7",
+      "A7O",
+      "A0",
+      "A7S",
+      "A7SD",
+    ]);
   });
 });
 
@@ -1079,5 +1089,200 @@ describe("#1848 — the analysis's first persisted requirement, not the union of
       expect(guardScoringOf([record("A7", pieces), record("A7O")])).toBe("union");
       expect(guardScoringOf([record("A7O")])).toBe("union");
     });
+  });
+});
+
+describe("A7's staleness readings on the table guard (#1834)", () => {
+  const ORDER_XML = "src/main/resources/org/mybatis/jpetstore/mapper/OrderMapper.xml";
+
+  /**
+   * The patch cycle: while a requirement's patch is applied, the product
+   * update's citation of the order INSERT reads as re-validation left it.
+   */
+  function staleFakes(
+    patched: Partial<StoredLinkRow> | null,
+    ops: (requirementId: string) => StalenessOp[] = () => [
+      {
+        op: "edit",
+        repo: "jpetstore",
+        file: ORDER_XML,
+        symbol: "insertOrder",
+        afterLine: 30,
+        text: "<!-- x -->",
+      },
+    ],
+    digest = "patches-1",
+    fakeOpts: Parameters<typeof fakes>[0] = {},
+  ) {
+    const f = fakes(fakeOpts);
+    let applied = false;
+    const cycles: string[] = [];
+    const base = f.deps.loadCitations;
+    const staleness: GuardStaleness = {
+      patchSetDigest: digest,
+      opsFor: ops,
+      withPatch: async (o, read) => {
+        cycles.push(o.map((x) => x.op).join(","));
+        applied = true;
+        try {
+          return await read();
+        } finally {
+          applied = false;
+        }
+      },
+    };
+    const loadCitations = async (requirementId: string): Promise<StoredLinkRow[]> => {
+      const links = await base(requirementId);
+      return applied && patched ? links.map((l) => ({ ...l, ...patched })) : links;
+    };
+    return { deps: { ...f.deps, loadCitations, staleness }, cycles };
+  }
+
+  const tablesOf = (store: { records: GuardRecord[] }, reading: string, run = 1) => {
+    const r = store.records.find((x) => x.kind === "run" && x.reading === reading && x.run === run);
+    return r?.kind === "run" ? r.tables[CITED.id] : undefined;
+  };
+
+  it("A7S still leads with a stale citation; A7SD sets it aside; one cycle per requirement and run, after A7", async () => {
+    const store = memoryStore();
+    const { deps, cycles } = staleFakes({ freshness: "stale" });
+    const guard = createAgentSeedGuard({ ...deps, store });
+    const s = await guard.A7S();
+    const sd = await guard.A7SD();
+    if (!s.measured || !sd.measured) throw new Error("both readings should be measured");
+    expect(cycles).toHaveLength(fixture.requirements.length * 2);
+    expect(tablesOf(store, "A7S")).toContain("orders");
+    expect(tablesOf(store, "A7SD")).not.toContain("orders");
+    expect(sd.tablePrecision).toBeGreaterThan(s.tablePrecision);
+    // A7S is gated against A7 (the same, unpatched: equal here), A7SD against A7S.
+    expect(s.baseline).toMatchObject({ arm: "A7" });
+    expect(s.tablePrecision).toBeCloseTo(s.baseline!.tablePrecision, 10);
+    expect(sd.baseline).toMatchObject({ arm: "A7S", tablePrecision: s.tablePrecision });
+    expect(sd.configuration).toContain(
+      "staleness patches patches-1: after their re-ingest 2 stale, 0 moved",
+    );
+    expect(sd.configuration).toContain("2 set aside by the stage");
+    expect(s.configuration).toContain("0 set aside by the stage");
+    expect(s.seeding).toContain("the stage before #1832");
+    expect(sd.seeding).toContain("stale citations demoted");
+    // A7's runs were measured before any patch cycle; A7S and A7SD together, run by run.
+    const order = store.records.flatMap((r) => (r.kind === "run" ? [`${r.reading} ${r.run}`] : []));
+    expect(order.indexOf("A7 2")).toBeLessThan(order.indexOf("A7S 1"));
+    expect(order.slice(-4)).toEqual(["A7S 1", "A7SD 1", "A7S 2", "A7SD 2"]);
+    const rec = store.records.find((r) => r.kind === "run" && r.reading === "A7SD");
+    expect(rec).toMatchObject({
+      stalenessPatch: "patches-1",
+      citationFreshness: { stale: 1, moved: 0, fresh: 0, unverified: 0, demoted: 1 },
+    });
+    expect(parseGuardRecord(JSON.stringify(rec))).toEqual(rec);
+    // #1848 — read as A7 is: on the analysis's first persisted requirement.
+    expect(sd.configuration).toContain("scored on the analysis's first persisted requirement");
+    if (rec?.kind !== "run") throw new Error("a run record");
+    expect(rec.pieces?.[CITED.id]?.length).toBeGreaterThan(0);
+    expect(guardRunTables(rec, CITED.id, "headline")).toEqual(rec.pieces![CITED.id]![0]!.tables);
+    expect(guardScoringOf([rec])).toBe("headline");
+  });
+
+  it("scores a staleness run on the analysis's first persisted requirement, as A7 is (#1848)", async () => {
+    const store = memoryStore();
+    // The product update's analysis persists a second requirement, about orders.
+    const { deps } = staleFakes({ freshness: "fresh" }, undefined, "patches-1", {
+      alsoFor: { text: CITED.text, also: "Store a shipping method on each order" },
+    });
+    await createAgentSeedGuard({ ...deps, store }).A7SD();
+    const rec = store.records.find((r) => r.kind === "run" && r.reading === "A7SD");
+    if (rec?.kind !== "run") throw new Error("a run record");
+    const own = rec.pieces![CITED.id]!;
+    expect(own).toHaveLength(2);
+    expect(guardRunTables(rec, CITED.id, "headline")).toEqual(own[0]!.tables);
+    expect(guardRunTables(rec, CITED.id, "union")).toEqual(rec.tables[CITED.id]);
+    expect(own[0]!.tables).not.toEqual(rec.tables[CITED.id]);
+  });
+
+  it("reads a moved citation as the file it was, so it still leads with demotion", async () => {
+    const store = memoryStore();
+    const moved = ORDER_XML.replace(".xml", "_renamed.xml");
+    // A file-level citation: it reaches the fixture by its path alone.
+    const { deps } = staleFakes({ freshness: "moved", filePath: moved, codeSymbolId: null }, () => [
+      { op: "rename", repo: "jpetstore", from: ORDER_XML, to: moved },
+    ]);
+    const guard = createAgentSeedGuard({ ...deps, store });
+    await guard.A7SD();
+    expect(tablesOf(store, "A7SD")).toContain("orders");
+    expect(tablesOf(store, "A7S")).toContain("orders");
+  });
+
+  it("drops a citation of a deleted file with or without demotion: the graph no longer holds it", async () => {
+    const store = memoryStore();
+    const { deps } = staleFakes({ freshness: "stale" }, () => [
+      { op: "delete", repo: "jpetstore", file: ORDER_XML },
+    ]);
+    const guard = createAgentSeedGuard({ ...deps, store });
+    await guard.A7S();
+    expect(tablesOf(store, "A7S")).not.toContain("orders");
+    expect(tablesOf(store, "A7")).toContain("orders");
+  });
+
+  it("a deleted file leaves the search too: a requirement no citation names loses its tables", async () => {
+    const PLACE = fixture.requirements.find((r) => r.text.startsWith("Place an order"))!;
+    const store = memoryStore();
+    const { deps } = staleFakes(null, (id) =>
+      id === PLACE.id
+        ? [
+            { op: "delete", repo: "jpetstore", file: ORDER_XML },
+            {
+              op: "delete",
+              repo: "jpetstore",
+              file: "src/main/java/org/mybatis/jpetstore/mapper/OrderMapper.java",
+            },
+            {
+              op: "delete",
+              repo: "jpetstore",
+              file: "src/main/java/org/mybatis/jpetstore/service/OrderService.java",
+            },
+          ]
+        : [],
+    );
+    await createAgentSeedGuard({ ...deps, store }).A7S();
+    const t = (reading: string) => {
+      const r = store.records.find((x) => x.kind === "run" && x.reading === reading && x.run === 1);
+      return r?.kind === "run" ? r.tables[PLACE.id] : undefined;
+    };
+    expect(t("A7")).toEqual(expect.arrayContaining(["orders", "lineitem"]));
+    expect(t("A7S")).not.toContain("lineitem");
+  });
+
+  it("is not measured without the table corpus's patches", async () => {
+    const guard = createAgentSeedGuard({ ...fakes().deps, store: memoryStore() });
+    expect(await guard.A7S()).toEqual({
+      measured: false,
+      reason: expect.stringContaining("A7S needs the staleness patches"),
+    });
+    expect(await lazyAgentSeedGuard(async () => guard).A7SD()).toMatchObject({ measured: false });
+  });
+
+  it("refuses to resume staleness runs read under other patches, and resumes under the same", async () => {
+    const store = memoryStore();
+    const first = staleFakes({ freshness: "stale" });
+    await createAgentSeedGuard({ ...first.deps, store }).A7SD();
+    const other = staleFakes({ freshness: "stale" }, undefined, "patches-2");
+    const refused = await createAgentSeedGuard({ ...other.deps, store })
+      .A7SD()
+      .catch((e: Error) => e);
+    expect(String(refused)).toMatch(/read under staleness patches patches-1, not patches-2/);
+    const same = staleFakes({ freshness: "stale" });
+    const again = await createAgentSeedGuard({ ...same.deps, store }).A7SD();
+    expect(again.measured).toBe(true);
+    expect(same.cycles).toEqual([]);
+  });
+
+  it("pairs A7S with A7 and A7SD with A7S", async () => {
+    const store = memoryStore();
+    await createAgentSeedGuard({ ...staleFakes({ freshness: "stale" }).deps, store }).A7SD();
+    const out = guardPairedDifferences(store.records, fixture, 2).map(
+      (d) => `${d.arm} − ${d.baseline}`,
+    );
+    expect(out).toContain("A7S − A7");
+    expect(out).toContain("A7SD − A7S");
   });
 });
