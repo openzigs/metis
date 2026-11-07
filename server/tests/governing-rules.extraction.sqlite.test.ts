@@ -558,7 +558,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ).toMatchObject({ extractionState: "done", extractionError: null });
     });
 
-    it("#1947 — beginRuleExtraction takes a stale or start-time-less running row, never a fresh one", async () => {
+    it("#1947 — beginRuleExtraction takes a stale or start-time-less running row, never a fresh one; the replaced run is fenced out", async () => {
       const { revisionId } = await uploadPolicy(app(replay([])));
       const set = (extractionStartedAt: Date | null) =>
         db.governingDocumentRevision.update({
@@ -567,9 +567,32 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
       await set(new Date());
       expect(await beginRuleExtraction(ID.wsA, revisionId)).toBeNull();
-      await set(null);
+      const deadStart = new Date(Date.now() - EXTRACTION_STALE_MS - 60_000);
+      await set(deadStart);
       const begun = await beginRuleExtraction(ID.wsA, revisionId);
       expect(begun?.startedAt).toBeInstanceOf(Date);
+      // While the new run is still running, the dead one wakes: both its writes
+      // are fenced out, and the row stays the new run's.
+      const rule = {
+        controlId: "AC-01",
+        summary: "s",
+        clauseRef: "§1",
+        clauseStart: 0,
+        clauseEnd: 1,
+        clauseExcerpt: "#",
+      };
+      expect(await completeRuleExtraction(ID.wsA, revisionId, deadStart, [rule], 0)).toBe(false);
+      await failRuleExtraction(ID.wsA, revisionId, deadStart, "dead run");
+      expect(await db.governingRule.count({ where: { revisionId } })).toBe(0);
+      expect(
+        await db.governingDocumentRevision.findUnique({ where: { id: revisionId } }),
+      ).toMatchObject({ extractionState: "running", extractionError: null });
+      expect(await completeRuleExtraction(ID.wsA, revisionId, begun!.startedAt, [rule], 0)).toBe(
+        true,
+      );
+      expect(await db.governingRule.count({ where: { revisionId } })).toBe(1);
+      await set(null);
+      expect(await beginRuleExtraction(ID.wsA, revisionId)).not.toBeNull();
       // Another workspace's id never reaches the row.
       await set(null);
       expect(await beginRuleExtraction(ID.wsB, revisionId)).toBeNull();

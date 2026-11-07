@@ -846,10 +846,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         v3Id = v3.body.data.revisionId;
         return realStored(ws);
       });
-      // Step 2: while the rebuild writes, search still reads the live table.
+      // Step 2: while A's rebuild writes, A's search still reads the live table.
+      // One search per shadow write of A's: each must find v3.
       const realIndex = sweepIndex.indexRevision.bind(sweepIndex);
       vi.spyOn(sweepIndex, "indexRevision").mockImplementation(async (input, opts) => {
-        if (opts?.shadow && duringRebuild.length === 0) {
+        if (opts?.shadow && input.workspaceId === ID.wsA) {
           const hits = await new GoverningIndex({ embedder: renamed }).search(
             ID.wsA,
             query,
@@ -857,7 +858,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             actor("memberA"),
           );
           duringRebuild.push(
-            ...hits.filter((h) => h.documentId === documentId).map((h) => h.revisionId),
+            hits
+              .filter((h) => h.documentId === documentId)
+              .map((h) => h.revisionId)
+              .join(","),
           );
         }
         return realIndex(input, opts);
@@ -870,7 +874,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(swept.reindexed.map((r) => r.revisionId)).toContain(v3Id);
         // v3 was in the live table while the rebuild ran...
         expect(duringRebuild.length).toBeGreaterThan(0);
-        expect(new Set(duringRebuild)).toEqual(new Set([v3Id]));
+        for (const found of duringRebuild) {
+          expect(new Set(found.split(","))).toEqual(new Set([v3Id]));
+        }
         // ...and is current, indexed and searchable after it.
         const row = await db.governingDocumentRevision.findUnique({ where: { id: v3Id } });
         expect(row?.indexState).toBe("indexed");
