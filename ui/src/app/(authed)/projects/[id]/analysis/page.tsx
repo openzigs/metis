@@ -1439,8 +1439,13 @@ export default function AnalysisPage(): React.ReactElement {
                             requirementId={req.id}
                             workspaceId={project.data?.workspaceId ?? null}
                           />
-                          {/* #1838 — similar requirements and the duplicate warning. */}
-                          <SimilarRequirementsPanel projectId={projectId} requirementId={req.id} />
+                          {/* #1838 — similar requirements and the duplicate warning;
+                            #1840 — "Start from these citations" for an editor. */}
+                          <SimilarRequirementsPanel
+                            projectId={projectId}
+                            requirementId={req.id}
+                            canEdit={canEditRequirements}
+                          />
                           <div className="mt-3 border-t border-border pt-3">
                             <TraceabilityView
                               projectId={projectId}

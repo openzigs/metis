@@ -27,6 +27,11 @@ export const SIMILAR_CODE_LINK_FRESHNESS = ["fresh", "moved", "stale", "unverifi
 export type SimilarCodeLinkFreshness = (typeof SIMILAR_CODE_LINK_FRESHNESS)[number];
 
 export interface SimilarRequirementCodeLink {
+  /**
+   * #1840 — the saved link's id: what "Start from these citations" names in
+   * `mappingIds`, so exactly the links it listed are borrowed.
+   */
+  mappingId: string;
   filePath: string;
   startLine: number | null;
   endLine: number | null;
