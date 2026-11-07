@@ -15,6 +15,7 @@
  * requirements. Prisma is dependency-injected for unit testing.
  */
 import {
+  groundedFiles,
   SIMILAR_REQUIREMENT_SOURCE,
   type CodeCitationFreshness,
   type CodeCitationStaleReason,
@@ -238,6 +239,8 @@ export async function getRequirementChain(
         : {}),
     })),
     testedBy: tested.get(requirement.id) ?? [],
+    // #1969 — read from every stored row: the dedupe above can hide a grounding row.
+    groundedFiles: [...groundedFiles(storedDirectRows)].sort(),
   };
 }
 

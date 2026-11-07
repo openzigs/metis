@@ -213,11 +213,35 @@ describe("durable auth provenance", () => {
     expect(db.userRole.create).not.toHaveBeenCalled();
   });
 
-  it("propagates transaction conflicts instead of issuing provider permissions", async () => {
+  // #1959 — a write conflict was a 500 at sign-in. It rolled the decision back,
+  // so the whole transaction runs again (both shapes of the error).
+  it.each([
+    ["P2034", () => Object.assign(new Error("write conflict"), { code: "P2034" })],
+    [
+      "adapter-pg TransactionWriteConflict",
+      () =>
+        Object.assign(new Error("TransactionWriteConflict"), {
+          cause: { originalCode: "40001", kind: "TransactionWriteConflict" },
+        }),
+    ],
+  ])("runs the decision again after a %s write conflict", async (_, conflict) => {
+    db.$transaction.mockRejectedValueOnce(conflict()).mockRejectedValueOnce(conflict());
+    await expect(reconcileTrustedLoginRole(login)).resolves.toBe("admin");
+    expect(db.$transaction).toHaveBeenCalledTimes(3);
+    expect(db.userRole.create).toHaveBeenCalledOnce();
+  });
+
+  it("fails the login closed with a transient 503 when every attempt loses a conflict", async () => {
     db.$transaction.mockRejectedValue(
       Object.assign(new Error("write conflict"), { code: "P2034" }),
     );
-    await expect(reconcileTrustedLoginRole(login)).rejects.toMatchObject({ code: "P2034" });
+    await expect(reconcileTrustedLoginRole(login)).rejects.toMatchObject({
+      statusCode: 503,
+      code: "SIGN_IN_CONFLICT",
+    });
+    expect(db.$transaction).toHaveBeenCalledTimes(3);
+    expect(db.userRole.create).not.toHaveBeenCalled();
+    expect(reconnect).not.toHaveBeenCalled();
   });
 
   it("does not overwrite a concurrent explicit assignment on unique conflict", async () => {

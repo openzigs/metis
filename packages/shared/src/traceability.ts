@@ -270,6 +270,13 @@ export interface RequirementTraceabilityChain {
   directCode: TraceabilityCodeNode[];
   /** #814 — tests resolved from the mapped code, strongest first. */
   testedBy: TraceabilityTestNode[];
+  /**
+   * #1969 — the files this requirement's own analysis grounded, sorted. Read
+   * before `directCode` lists each code once, so it includes a file whose
+   * grounding row a surer row of another source hid. The borrow preview's
+   * duplicate rule reads it. Absent from a server older than #1969.
+   */
+  groundedFiles?: string[];
 }
 
 // ---- "Tested by" (#814, Epic #812) ----------------------------------------

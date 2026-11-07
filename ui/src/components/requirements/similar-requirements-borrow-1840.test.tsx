@@ -499,6 +499,26 @@ describe("borrowPlan", () => {
   });
 });
 
+describe("borrowPlan — files the requirement's own analysis grounded (#1969)", () => {
+  // The chain shows the surer semantic row on src/fresh.ts and hides the
+  // grounding row on the same code; it names the grounded file apart.
+  const semanticOnly = [
+    held({ filePath: "src/fresh.ts", codeSymbolId: "sym-a", source: "semantic" }),
+  ];
+  const other = { ...link("fresh", "fresh"), codeSymbolId: "sym-b" };
+
+  it("lists a link into a grounded file as already linked, as the server skips it", () => {
+    const plan = borrowPlan([other], semanticOnly, ["src/fresh.ts"]);
+    expect(plan.alreadyLinked.map((l) => l.mappingId)).toEqual(["fresh"]);
+    expect(plan.copy).toEqual([]);
+  });
+
+  it("copies it when no grounding of that file is known", () => {
+    const plan = borrowPlan([other], semanticOnly);
+    expect(plan.copy.map((l) => l.mappingId)).toEqual(["fresh"]);
+  });
+});
+
 describe("borrowResultText", () => {
   const result = {
     copied: 0,

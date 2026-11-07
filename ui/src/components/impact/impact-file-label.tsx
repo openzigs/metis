@@ -19,17 +19,23 @@ export interface ImpactFileLabelProps {
   children?: ReactNode;
 }
 
-/** Without a repository it renders exactly the heading it replaced: `<p>path…</p>`. */
+/**
+ * Without a repository it renders exactly the heading it replaced: `<p>path…</p>`.
+ * #1969 — with one, a space separates it from the path, so the text a screen
+ * reader or a copy gets does not run the two together.
+ */
 export function ImpactFileLabel({ filePath, repo, className, children }: ImpactFileLabelProps) {
   return (
     <p className={className}>
       {repo ? (
-        <span
-          className="mr-1.5 rounded border border-border/60 px-1 font-sans text-muted-foreground"
-          data-testid="impact-file-repo"
-        >
-          {repo.name}
-        </span>
+        <>
+          <span
+            className="rounded border border-border/60 px-1 font-sans text-muted-foreground"
+            data-testid="impact-file-repo"
+          >
+            {repo.name}
+          </span>{" "}
+        </>
       ) : null}
       {filePath}
       {children}

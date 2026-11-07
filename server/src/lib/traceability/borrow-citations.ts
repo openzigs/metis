@@ -56,6 +56,7 @@ import {
   BORROW_FROM_SELF_CODE,
   BORROWABLE_FRESHNESS,
   borrowDuplicateCheck,
+  groundedFiles,
   SIMILAR_REQUIREMENT_SOURCE,
   type BorrowCitationsInput,
   type BorrowCitationsResult,
@@ -64,10 +65,7 @@ import { isSerializationFailure } from "../db/prisma-errors.js";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { createChildLogger } from "../logger.js";
-import {
-  ANALYSIS_GROUNDING_SOURCE,
-  DEFAULT_SEED_CONFIDENCE,
-} from "./seed-code-links-from-findings.js";
+import { DEFAULT_SEED_CONFIDENCE } from "./seed-code-links-from-findings.js";
 
 const log = createChildLogger("borrow-citations");
 
@@ -98,9 +96,7 @@ export interface BorrowCitationsDeps {
 export function hideSupersededBorrowedLinks<T extends { source: string; filePath: string }>(
   rows: readonly T[],
 ): T[] {
-  const grounded = new Set(
-    rows.filter((r) => r.source === ANALYSIS_GROUNDING_SOURCE).map((r) => r.filePath),
-  );
+  const grounded = groundedFiles(rows);
   return rows.filter((r) => r.source !== SIMILAR_REQUIREMENT_SOURCE || !grounded.has(r.filePath));
 }
 

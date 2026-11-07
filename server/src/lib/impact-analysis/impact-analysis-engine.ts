@@ -17,6 +17,7 @@
 import type { PrismaClient } from "@prisma/client";
 import {
   deriveMatchQualityDetailed,
+  impactFileKey,
   impactSeedEvidenceSchema,
   type ImpactAffectedRelation,
   type ImpactNotCheckedReason,
@@ -872,7 +873,17 @@ export async function computeProjectImpact(
     dataModel,
     related,
   });
-  const fileSet = new Set(affectedSymbols.map((s) => s.filePath));
+  // #1969 — a file is (repository, path): one path in two repositories is two files.
+  const repoOf = await symbolRepos(deps.dataSourceFor(projectId), [
+    ...affectedSymbols.map((s) => s.codeSymbolId),
+    ...matches.map((m) => m.codeSymbolId),
+  ]);
+  const fileSet = new Set(
+    affectedSymbols.map((s) => {
+      const repoId = s.codeSymbolId ? repoOf.get(s.codeSymbolId) : undefined;
+      return impactFileKey({ filePath: s.filePath, repo: repoId ? { id: repoId } : null });
+    }),
+  );
   const { quality: matchQuality, reason: matchQualityReason } = deriveMatchQualityDetailed(
     affectedSymbols
       .filter((s) => s.relation === "direct")
@@ -921,7 +932,7 @@ export async function computeProjectImpact(
     optionalColumnProposals,
     uncheckedColumnProposals,
     retrievalMode,
-    ...(seedEvidence ? { seedEvidence } : {}),
+    ...(seedEvidence ? { seedEvidence: withEvidenceRepos(seedEvidence, matches, repoOf) } : {}),
   };
 }
 
@@ -935,6 +946,7 @@ function toGraphSymbol(r: {
   language: string;
   startLine: number;
   endLine: number;
+  graph?: { repoConnectionId: string | null } | null;
 }): GraphSymbol {
   return {
     id: r.id,
@@ -944,6 +956,7 @@ function toGraphSymbol(r: {
     language: r.language,
     startLine: r.startLine,
     endLine: r.endLine,
+    ...(r.graph !== undefined ? { repoConnectionId: r.graph?.repoConnectionId ?? null } : {}),
   };
 }
 
@@ -955,7 +968,50 @@ const SYMBOL_SELECT = {
   language: true,
   startLine: true,
   endLine: true,
+  // #1969 — the symbol's repository: one path in two repositories is two files.
+  graph: { select: { repoConnectionId: true } },
 } as const;
+
+/**
+ * #1969 — the repository of each of these symbols that the graph knows one for.
+ * A symbol with no graph row, or a source that does not read repositories, is
+ * left out: its file is keyed by path alone, as before.
+ */
+async function symbolRepos(
+  graph: CodeGraphDataSource,
+  symbolIds: ReadonlyArray<string | null>,
+): Promise<Map<string, string>> {
+  const ids = [...new Set(symbolIds.filter((id): id is string => id !== null))];
+  const rows = ids.length > 0 ? await graph.getSymbolsByIds(ids) : [];
+  return new Map(rows.flatMap((r) => (r.repoConnectionId ? [[r.id, r.repoConnectionId]] : [])));
+}
+
+/**
+ * #1969 — each edit-candidate entry of the seed evidence names its file's
+ * repository when every seed behind the entry's path is in that one
+ * repository. The seeding pools a path across repositories, so an entry seeded
+ * from the path in two of them (or from a symbol of unknown repository) names
+ * none, and the reader applies it to the path in each.
+ */
+function withEvidenceRepos(
+  evidence: ImpactSeedEvidence,
+  seeds: readonly RequirementCodeMatch[],
+  repoOf: ReadonlyMap<string, string>,
+): ImpactSeedEvidence {
+  const reposByPath = new Map<string, Set<string | null>>();
+  for (const m of seeds) {
+    const repos = reposByPath.get(m.filePath) ?? new Set<string | null>();
+    repos.add((m.codeSymbolId && repoOf.get(m.codeSymbolId)) || null);
+    reposByPath.set(m.filePath, repos);
+  }
+  return {
+    ...evidence,
+    editCandidates: evidence.editCandidates.map((e) => {
+      const repos = [...(reposByPath.get(e.filePath) ?? [])];
+      return repos.length === 1 && repos[0] ? { ...e, repoConnectionId: repos[0] } : e;
+    }),
+  };
+}
 
 /** Code-graph edge kinds — excludes the schema kinds (reads/writes/persists-to). */
 const CODE_EDGE_KINDS = ["calls", "imports", "defines", "references"] as const;

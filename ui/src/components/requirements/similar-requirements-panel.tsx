@@ -166,14 +166,17 @@ export interface BorrowPlan {
 /**
  * #1840 — what borrowing `links` into a requirement holding `held` does, by the
  * server's rules and in its order (`borrow-citations.ts`). #1964 — `held` is
- * the code the requirement already links, under any source.
+ * the code the requirement already links, under any source. #1969 — `grounded`
+ * is the chain's `groundedFiles`: `held` lists each code once, and can hide a
+ * grounding row the server's rule still reads.
  */
 export function borrowPlan(
   links: readonly SimilarRequirementCodeLink[],
   held: readonly HeldCodeLink[] = [],
+  grounded: readonly string[] = [],
 ): BorrowPlan {
   const plan: BorrowPlan = { copy: [], alreadyLinked: [], needsRecheck: [], borrowed: [] };
-  const isDuplicate = borrowDuplicateCheck(held);
+  const isDuplicate = borrowDuplicateCheck(held, grounded);
   for (const link of links) {
     if (link.source === SIMILAR_REQUIREMENT_SOURCE) plan.borrowed.push(link);
     else if (!BORROWABLE_FRESHNESS.has(link.freshness)) plan.needsRecheck.push(link);
@@ -270,7 +273,7 @@ function BorrowAction({
   });
   // A chain that cannot be read leaves duplicates to the borrow, which skips them.
   const heldKnown = chain.data !== undefined;
-  const plan = borrowPlan(item.codeLinks, chain.data?.directCode);
+  const plan = borrowPlan(item.codeLinks, chain.data?.directCode, chain.data?.groundedFiles);
   const name = nameOf(item);
   const borrow = useMutation({
     mutationFn: () =>

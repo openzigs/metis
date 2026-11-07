@@ -397,7 +397,9 @@ describe("traceability router", () => {
       const res = await request(app).get(`${BASE}/requirements/req-1/traceability`);
 
       expect(res.status).toBe(200);
-      const { testedBy, ...rest } = res.body.data;
+      // #1969 — `groundedFiles` is additive too: no row here is analysis-grounded.
+      const { testedBy, groundedFiles, ...rest } = res.body.data;
+      expect(groundedFiles).toEqual([]);
       const strip = (nodes: Array<Record<string, unknown>>) =>
         nodes.map(
           ({
@@ -412,7 +414,7 @@ describe("traceability router", () => {
             ...n
           }) => n,
         );
-      // The #229 shape, byte for byte, once the additive fields (#814, #1830, #1831) are removed.
+      // The #229 shape, byte for byte, once the additive fields (#814, #1830, #1831, #1969) are removed.
       expect(
         JSON.stringify({
           ...rest,
