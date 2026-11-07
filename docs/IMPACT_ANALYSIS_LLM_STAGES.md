@@ -42,6 +42,7 @@ rather than a degraded mode.
 | Edit-candidate check (#1756) | `impact-analysis/edit-candidate-verifier.ts` | `IMPACT_LLM_EDIT_VERIFY` | **off** | integer index into the hybrid FILE pool (about 30 files: the deterministic edit candidates, then the next files of the same ranking); a promotion's line must fall inside a named symbol of that file in the code graph (never the file's whole-file `module` symbol, #1781), checked without a model. Additive only (the #931 rule below): it may append a verified file and mark a candidate doubtful, never remove, move or re-score one; a promoted file carries its own hybrid score. The pool (code identifiers and signatures, which can carry comments) is fenced as untrusted data like the requirement | deterministic edit candidates unchanged |
 | Edit-candidate re-order (#1798) | `impact-analysis/edit-candidate-reranker.ts` | `IMPACT_LLM_EDIT_RERANK` | **off** | integer index into the same hybrid FILE pool, shown without `[EDIT]` marks; up to 10 picks, most likely first, each with a line that must fall inside a named symbol of that file in the code graph (never its `module` symbol), checked without a model; an unchecked pick is dropped and counted. The **bounded exception to the #931 rule** below: the model may move files into the head of the files to edit, never remove one and never score one. The order is a reciprocal-rank fusion (`k = 60`, model weight `RERANK_MODEL_WEIGHT` = 1, fixed on the in-sample set) of the deterministic order and the model's checked order; its top 5 plus every deterministic candidate are the files to edit. Fenced as untrusted data like the #1756 check | deterministic edit candidates and order unchanged |
 | Code-agent citations lead (#1759) | `impact-analysis/agent-seeder.ts` | `IMPACT_AGENT_SEEDS` | **on** (#1823) | no model call in the impact run: it reuses the Analysis code agent's stored citations of the requirement (`analysis-grounding` links), read for the requirement and the project; a citation counts only when the project's code graph still holds its file, else it is dropped and counted. The seeded symbols are the graph's rows. The second **bounded exception to the #931 rule** below: the first 5 cited files lead the files to edit, run after the #1756 check and the #1798 re-order; every other candidate stays one, with its score | seeds unchanged |
+| Stale-citation demotion (#1832) | `impact-analysis/agent-seeder.ts` | `IMPACT_DEMOTE_STALE_CITATIONS` | off (#1939) | no model call: with `IMPACT_AGENT_SEEDS` on, a citation re-validation marked `stale` (#1831) seeds nothing and is counted as set aside, and the rest lead `fresh`, then `moved`, then `unverified`. Off by default: A7SD − A7S cost Recall@5 −0.097 on Sonnet (#1915) | every citation seeds in confidence order; the out-of-date ones are counted (`outOfDateCitations`) |
 | Table-relevance output filter (#936) | `impact-analysis/table-relevance-filter.ts` | `IMPACT_LLM_TABLE_FILTER` | **ON** (#1025) | integer index into the crossing's own candidate rows | unfiltered crossing |
 | Additive column DDL proposal (#1001) | `impact-analysis/additive-column-proposer.ts` | `IMPACT_LLM_ADDITIVE_DDL` | **ON** (#1025) | integer index into the crossing's own tables + a closed type allowlist; a column already in the live schema or the code graph is dropped (#1003). Since #791 it is shown the lineage writers and answers with covering writers, a justification and a `coveredBy` per proposal; a deterministic gate (`column-proposal-gate.ts`) then decides. In a **covered** request (bounded by an age or a date, with a lineage writer that filters on a time column) no field a model chose can make a column core: every proposal is optional or not proposed, and core comes only from what the user wrote in the request (an `ALTER TABLE`, or an add-a-column sentence the #923 fast path reads). Coverage is decided on the writers of every table the crossing reached, looked up before the #936 table filter is applied, so that filter's answer does not change it; the #1029 judge runs only when the proposer does not. The one limit: with `IMPACT_LLM_SEEDING` / `IMPACT_LLM_ENTITY_SEEDS` on, a model shapes the seeds, and so which tables the crossing reaches. The cost: a genuinely new column in a covered request shows as optional. In an uncovered request the gate does not rule: a proposal is core and marked `unchecked` with the reason, except one the proposer itself labels `user-preference`, which is optional (a demotion only). The write-path block is repository text: fenced as untrusted like the requirement, every field capped | no proposals appended |
 | Clause-vs-impact reconciliation (#1005) | `impact-analysis/clause-coverage-reconciler.ts` | `IMPACT_LLM_CLAUSE_RECONCILE` | **ON** (#1025) | integer index into the project's **unsurfaced** tables | no advisories |
@@ -303,9 +304,18 @@ same analyses as A7 four ways. Each item's committed patch edits every function 
 answer file (one comment line each), renames one file and deletes one file. It is then
 re-ingested, which re-validates the stored citations (#1831). The arms:
 
-- **A7K:** no staleness, freshness hidden. This is the stage before #1832.
-- **A7S:** after the patch, without demotion.
-- **A7SD:** after the patch, with demotion.
+- **A7K:** no staleness, demotion off (the shipped default since #1939). With no re-ingest every citation is `unverified`, so it reads the same as A7.
+- **A7S:** after the patch, without demotion. Since #1939 this is the shipped behaviour.
+- **A7SD:** after the patch, with demotion (`IMPACT_DEMOTE_STALE_CITATIONS` forced on).
+
+**Demotion is off by default since #1939.** On the #1915 reading (`claude-sonnet-5-5`, 39
+held-out items) demotion never helped: A7SD − A7S was −0.097 on Recall@5 (p = 0.004) after
+the code changed, and A7RD − A7R was 0.000 after a routine re-ingest that left every
+citation `fresh`. It now runs only with `IMPACT_DEMOTE_STALE_CITATIONS=1`. Off, the
+citations are ordered by confidence and then stored order, stale ones kept, and the run
+summary counts the out-of-date ones (`agentCitations.outOfDateCitations`) without
+calling them set aside. The eval's A7, A7S and A7R run the stage with the flag off;
+A7SD and A7RD force it on.
 
 Pooled on the 39 held-out items, `claude-sonnet-5-5`, one run, 2026-11-06:
 
@@ -323,8 +333,8 @@ Pooled on the 39 held-out items, `claude-sonnet-5-5`, one run, 2026-11-06:
   `fresh`: line drift within a file is `fresh`, and `moved` means the symbol is now in
   another file. A few can still read `stale` (a file-level link past the end of its
   file, or a missing or ambiguous symbol, #1925). Arms A7R and A7RD (a no-op
-  re-ingest at the pinned commit, read without and with demotion) measure that case,
-  and they have not been run yet.
+  re-ingest at the pinned commit, read without and with demotion) measure that case
+  (#1915, below).
 - **Under this staleness, demotion costs ranking.** The patches left 346 citations stale
   and 167 moved (of 1,316 read), and A7SD set all 346 aside.
 - **This patch is the worst case for demotion.** A comment-only edit changes a cited
@@ -339,6 +349,37 @@ The run records are committed (`__fixtures__/staleness-sonnet-2026-11-06.partial
 `__fixtures__/staleness-table-guard-deepseek-2026-11-06.runs.jsonl`), and
 `staleness-results.test.ts` reads these figures from them. How the slice runs:
 eval-data/README.md, "Stale citations".
+
+**Demotion after a routine re-ingest, measured (#1915).** Arms A7R and A7RD re-ingest
+every repository at its pinned commit with no patch, then read without and with
+demotion. They were read beside A7, A7S and A7SD on fresh analyses: pooled on the 39
+held-out items, `claude-sonnet-5-5`, one run, 2026-11-07, on `main` at `a6577a7e`.
+
+| Pair                                           | Recall@5                             | MRR                       |
+| ---------------------------------------------- | ------------------------------------ | ------------------------- |
+| A7R − A7 (no-op re-ingest, against none)       | +0.000 [0.00, 0.00]                  | +0.000 [0.00, 0.00]       |
+| A7RD − A7R (demotion, after a no-op re-ingest) | **+0.000 [0.00, 0.00], p = 1.000**   | **+0.000 [0.00, 0.00]**   |
+| A7S − A7 (staleness, no demotion)              | −0.013 [−0.04, 0.00], p = 0.70, n.s. | +0.000                    |
+| A7SD − A7S (demotion, under staleness)         | **−0.097 [−0.17, −0.03], p = 0.004** | **−0.255 [−0.35, −0.16]** |
+
+- **After a routine re-ingest, demotion shows no cost.** A7RD equals A7R on every item
+  and every metric (Recall@5, Recall@10, edit precision, MRR).
+- **The no-op re-ingest left every citation `fresh`.** All 1,354 citations read
+  (596 Miniflux, 758 fixture) came back `fresh`: none `moved`, none `stale`, none set
+  aside. None of #1925's no-op `stale` cases (a file-level link past the end of its
+  file, a missing or ambiguous symbol) occurred on these items. With every citation in
+  one tier, the tier sort reorders nothing and demotion has nothing to act on. The zero
+  is therefore what this re-ingest had to give. It does not show what demotion costs
+  when the code has changed: a symbol moved to another file, or a stale citation set
+  aside. That cost is A7SD − A7S (176 moved, 338 stale under the patches).
+- **A7R equals A7**, so the re-ingest itself changes no reading.
+- **Under staleness the cost reproduces.** The patches left 338 of the 1,354 citations
+  stale and 176 moved, and A7SD set all 338 aside. A7SD − A7S is −0.097 on Recall@5
+  here, against −0.061 on #1834's analyses. Both readings are significant.
+
+The run records are committed (`__fixtures__/staleness-noop-reingest-sonnet-2026-11-07.partials.jsonl`),
+and `staleness-results.test.ts` reads these figures from them. Cost: $11.32 on Sonnet,
+read from the eval database's ledger.
 
 **#1798 is a deliberate, bounded exception to this rule.** Nothing additive raised
 Recall@5 (an appended file lands after the deterministic picks), so the edit-candidate

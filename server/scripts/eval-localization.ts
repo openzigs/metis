@@ -76,9 +76,11 @@
  * requirements no longer resolve; and once two readings are complete, their
  * paired 95% t-interval over the requirements is printed.
  *
- * #1834 — the staleness slice: A7K (A7 with the citations' freshness hidden),
+ * #1834 — the staleness slice: A7K (A7 with no demotion, no staleness),
  * A7S and A7SD (after each item's committed staleness patch, without and with
- * #1832's demotion), on the HELD-OUT corpora only:
+ * #1832's demotion), on the HELD-OUT corpora only. #1939 — demotion is OFF by
+ * default (`IMPACT_DEMOTE_STALE_CITATIONS`): A7S (and A7R) are the shipped
+ * behaviour, A7SD (and A7RD) force the flag on:
  *
  *   pnpm eval:materialize localization-01-miniflux-heldout   # and -02, and impact-recall-01-jpetstore
  *   pnpm eval:localization --arms A0,A7,A7K,A7S,A7SD --reference A7,A7S --embed --items 0:4

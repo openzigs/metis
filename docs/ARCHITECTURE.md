@@ -2363,8 +2363,8 @@ When a document is uploaded to a project:
 ### 10.3 Governing documents (workspace scope, Epic #1866)
 
 A company's own policies and control frameworks are uploaded **once per workspace**, not per
-project, and later checked against requirements. #1868 adds the store only — no routes, no
-LLM — behind `GOVERNING_DOCS_ENABLED` (`"1"` enables; default off; read at call time by
+project, and later checked against requirements. #1868 adds the store, #1869 the upload
+routes and the workspace index (below), no LLM yet — behind `GOVERNING_DOCS_ENABLED` (`"1"` enables; default off; read at call time by
 `isGoverningDocsEnabled()` in `server/src/lib/governing/flag.ts`, which every later issue
 gates on).
 
@@ -2393,6 +2393,42 @@ gates on).
 - Migration `20261116001868_issue1868_governing_documents`, reverse scripts in
   `server/prisma/{,postgres/}rollbacks/`, up -> reverse -> up tested in
   `server/tests/governing-documents-migration-1868.sqlite.test.ts`.
+
+#### Upload, revisions and the workspace index (#1869)
+
+`server/src/routes/governing-documents.ts`, mounted at
+`/api/workspaces/:workspaceId/governing-documents`:
+
+| Route | Role | Does |
+|---|---|---|
+| `POST /` | workspace `admin`/`owner` | multipart `file`, `title`, `revisionLabel`, `effectiveDate`, `framework?` -> `201 { documentId, revisionId, indexState, chunkCount }` |
+| `POST /:documentId/revisions` | `admin`/`owner` | a new revision, made current; the previous one keeps its row and its chunks. A repeated label is `409 REVISION_LABEL_EXISTS` |
+| `GET /` | any member | live documents, each with its current revision |
+| `GET /:documentId` | any member | one document with every revision (`isCurrent` on each) |
+| `DELETE /:documentId` | `admin`/`owner` | soft delete (`deletedAt`); readers and search stop seeing it |
+
+- **Access.** `requireWorkspaceRole` (no new RBAC key): a non-member gets 404, a member gets
+  403 on a write. A deployment admin bypasses membership as on every workspace route, but a
+  soft-deleted or missing workspace is 404 for everyone. Every by-id query in
+  `lib/governing/governing-store.ts` filters on the path workspace (`document.workspaceId`),
+  so another workspace's id is a 404, not a read.
+- **Flag.** Every route is 404 while `GOVERNING_DOCS_ENABLED` is off, before authentication.
+- **Upload limits** are the project upload's: `MAX_DOCUMENT_BYTES` (an over-size multipart
+  file is `413 FILE_TOO_LARGE`, the code `validateUpload` gives), `UPLOAD_MIME_ALLOWLIST` and
+  the magic-byte check. The file is parsed (`parseDocument`) into the revision's
+  `extractedText`; a file with no text is 422. The blob is stored content-addressed under
+  `governing-<workspaceId>/…`, never under the client's filename.
+- **Index.** `lib/governing/governing-index.ts` chunks and embeds each revision into the
+  workspace's own vector table: `<LANCEDB_PATH>/governing/<workspaceId>` on LanceDB and the
+  local store (`governing` is refused as a project id, so no project table can be that
+  directory), and key `governing/<workspaceId>` in pgvector's shared table
+  (`getGoverningVectorSpace()` in `lib/rag/vector-store.ts`). One table per workspace, never a
+  global one, and no project search reads it: `KnowledgeService.search` is unchanged until
+  #1872 wires governing retrieval in deliberately. Each vector row's `documentId` is the
+  revision id. `GoverningIndex.search(workspaceId, query, k, actor)` checks membership before
+  it reads the table, then filters to the current revision of each live document
+  (`includeSuperseded` for every revision). A failed embed leaves the revision
+  `indexState: "pending"` and out of search.
 
 ---
 
@@ -3270,16 +3306,26 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   check and in the #1798 re-order (`relatedOutsideEditFiles`). A
   cited file the graph no longer holds is dropped and counted. The channel is
   `code-agent` in `seedEvidence`, whose `agentCitations` records used, stale and
-  led; the run summary gains one sentence. **#1832 — freshness:** the order is
-  the freshness tier first (`fresh`, then `moved`, then `unverified`, epic
-  #1827), then the surer, then citation order. A citation re-validation marked
-  `stale` (#1831) seeds nothing, neither in the lead nor in the tail. It is
-  counted as `agentCitations.demotedStaleCitations`, and `unverifiedCitations`
-  counts the seeded citations no re-ingest has checked yet. Both are returned on
-  the item's `seedEvidence` by `GET /api/impact-analyses/:id`, and the summary
-  sentence says how many were set aside. The rule is additive: a stale
-  citation's file that the hybrid search finds on its own stays where search
-  ranked it. With the flag off nothing changes. It REUSES the pass instead of running
+  led; the run summary gains one sentence. **#1832 — freshness, behind
+  `IMPACT_DEMOTE_STALE_CITATIONS` (off by default since #1939):** with the flag
+  on, the order is the freshness tier first (`fresh`, then `moved`, then
+  `unverified`, epic #1827), then the surer, then citation order. A citation
+  re-validation marked `stale` (#1831) seeds nothing, neither in the lead nor in
+  the tail. It is counted as `agentCitations.demotedStaleCitations`, and
+  `unverifiedCitations` counts the seeded citations no re-ingest has checked
+  yet. Both are returned on the item's `seedEvidence` by
+  `GET /api/impact-analyses/:id`, and the summary sentence says how many were
+  set aside. The rule is additive: a stale citation's file that the hybrid
+  search finds on its own stays where search ranked it. With the flag off (the
+  default) freshness neither filters nor reorders: the citations lead in
+  confidence order, then citation order, `demotedStaleCitations` is 0, and
+  `agentCitations.outOfDateCitations` counts the stale ones the run set aside or still used (one whose file left the graph counts only as dropped),
+  which the summary says were still used. The reason: on `claude-sonnet-5-5`,
+  pooled on 39 held-out items (#1915), demotion after the code changed cost
+  Recall@5 −0.097 [−0.17, −0.03] (A7SD − A7S, p = 0.004; MRR −0.255), and after
+  a routine re-ingest it changed nothing (A7RD − A7R = 0.000, every citation
+  `fresh`). The eval's A7, A7S and A7R run the shipped default; A7SD and A7RD
+  force the flag on. With `IMPACT_AGENT_SEEDS` off nothing changes. It REUSES the pass instead of running
   one, so the impact request makes no model call for it: #1755 measured a fresh
   Sonnet pass at a median 52 s on a three-repository project, against the 60 s
   impact deadline. The reason it leads instead of appending: the citations alone
