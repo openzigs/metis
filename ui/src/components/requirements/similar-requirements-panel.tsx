@@ -17,6 +17,9 @@
  * with edit rights only): it lists which of the item's saved code links would
  * be copied and which are skipped (needing a re-check, or borrowed themselves)
  * before the analyst confirms, then borrows exactly the listed links (#1839).
+ * #1964 — and which this requirement already links (read from its chain, by
+ * the borrow's own duplicate rule), so the preview never promises a copy the
+ * borrow would skip.
  * They show in the requirement's code links as "Borrowed from REQ-xx, not yet
  * checked by analysis" (`traceability-view.tsx`).
  *
@@ -29,9 +32,12 @@ import { type Query, useMutation, useQuery, useQueryClient } from "@tanstack/rea
 import { toast } from "sonner";
 import {
   BORROWABLE_FRESHNESS,
+  borrowDuplicateCheck,
   SIMILAR_CODE_LINKS_PER_ITEM,
   SIMILAR_REQUIREMENT_SOURCE,
   type BorrowCitationsResult,
+  type HeldCodeLink,
+  type RequirementTraceabilityChain,
   type SimilarRequirementCodeLink,
   type SimilarRequirementItem,
   type SimilarRequirementLabel,
@@ -39,6 +45,7 @@ import {
 import { ApiError, apiErrorMessage } from "@/lib/api-client";
 import { requirementLinksApi } from "@/lib/requirement-links-api";
 import { similarRequirementsApi } from "@/lib/similar-requirements-api";
+import { traceabilityApi } from "@/lib/traceability-api";
 import { requirementLinksKey } from "@/components/requirements/requirement-links-panel";
 import { traceabilityKey } from "@/components/traceability/traceability-view";
 import { Badge } from "@/components/ui/badge";
@@ -146,21 +153,32 @@ function nameOf(item: SimilarRequirementItem): string {
 }
 
 export interface BorrowPlan {
-  /** Links the borrow copies (unless this requirement already holds the same code). */
+  /** Links the borrow copies. */
   copy: SimilarRequirementCodeLink[];
+  /** #1964 — links to code this requirement already links: the borrow skips them. */
+  alreadyLinked: SimilarRequirementCodeLink[];
   /** Links skipped until they are re-checked: stale, or never checked. */
   needsRecheck: SimilarRequirementCodeLink[];
   /** Links the similar requirement itself borrowed: a hypothesis is not lent on. */
   borrowed: SimilarRequirementCodeLink[];
 }
 
-/** #1840 — what borrowing `links` does, by the server's rules (`borrow-citations.ts`). */
-export function borrowPlan(links: readonly SimilarRequirementCodeLink[]): BorrowPlan {
-  const plan: BorrowPlan = { copy: [], needsRecheck: [], borrowed: [] };
+/**
+ * #1840 — what borrowing `links` into a requirement holding `held` does, by the
+ * server's rules and in its order (`borrow-citations.ts`). #1964 — `held` is
+ * the code the requirement already links, under any source.
+ */
+export function borrowPlan(
+  links: readonly SimilarRequirementCodeLink[],
+  held: readonly HeldCodeLink[] = [],
+): BorrowPlan {
+  const plan: BorrowPlan = { copy: [], alreadyLinked: [], needsRecheck: [], borrowed: [] };
+  const isDuplicate = borrowDuplicateCheck(held);
   for (const link of links) {
     if (link.source === SIMILAR_REQUIREMENT_SOURCE) plan.borrowed.push(link);
-    else if (BORROWABLE_FRESHNESS.has(link.freshness)) plan.copy.push(link);
-    else plan.needsRecheck.push(link);
+    else if (!BORROWABLE_FRESHNESS.has(link.freshness)) plan.needsRecheck.push(link);
+    else if (isDuplicate(link)) plan.alreadyLinked.push(link);
+    else plan.copy.push(link);
   }
   return plan;
 }
@@ -184,6 +202,21 @@ export function borrowResultText(result: BorrowCitationsResult, from: string): s
       ? `Copied ${plural(result.copied, "code link")} from ${from}.`
       : `No code links copied from ${from}.`;
   return skipped.length > 0 ? `${head} Skipped: ${skipped.join(", ")}.` : head;
+}
+
+/**
+ * The preview's opening line. #1964 — `heldKnown`: the requirement's own links
+ * were read, so the code it already links is listed apart; otherwise the borrow
+ * still skips it, and the line says so.
+ */
+function previewText(plan: BorrowPlan, name: string, heldKnown: boolean): string {
+  if (plan.copy.length > 0) {
+    const copy = `Copy ${plural(plan.copy.length, "code link")} from ${name} to this requirement. They are labelled as borrowed and not yet checked by analysis.`;
+    return heldKnown ? copy : `${copy} Code this requirement already links is not copied again.`;
+  }
+  return plan.alreadyLinked.length > 0
+    ? `Nothing to copy from ${name}: this requirement already links every one of its code links known to match the current code.`
+    : `Nothing to copy from ${name}: none of its code links is known to match the current code.`;
 }
 
 function linkLocation(link: SimilarRequirementCodeLink): string {
@@ -228,7 +261,16 @@ function BorrowAction({
 }): React.ReactElement {
   const [confirming, setConfirming] = useState(false);
   const queryClient = useQueryClient();
-  const plan = borrowPlan(item.codeLinks);
+  // #1964 — the code this requirement already links: its chain, the query the
+  // code links list reads and a borrow refreshes. Read once a preview is asked for.
+  const chain = useQuery<RequirementTraceabilityChain>({
+    queryKey: traceabilityKey(projectId, requirementId),
+    queryFn: () => traceabilityApi.chain(projectId, requirementId),
+    enabled: confirming,
+  });
+  // A chain that cannot be read leaves duplicates to the borrow, which skips them.
+  const heldKnown = chain.data !== undefined;
+  const plan = borrowPlan(item.codeLinks, chain.data?.directCode);
   const name = nameOf(item);
   const borrow = useMutation({
     mutationFn: () =>
@@ -276,34 +318,43 @@ function BorrowAction({
       className="basis-full space-y-2 rounded border border-border bg-background p-2"
       data-testid="borrow-citations-confirm"
     >
-      <p>
-        {plan.copy.length > 0
-          ? `Copy ${plural(plan.copy.length, "code link")} from ${name} to this requirement. They are labelled as borrowed and not yet checked by analysis. Code this requirement already links is not copied again.`
-          : `Nothing to copy from ${name}: none of its code links is known to match the current code.`}
-      </p>
-      <LinkList
-        heading={`Will be copied (${plan.copy.length})`}
-        links={plan.copy}
-        testId="borrow-will-copy"
-      />
-      <LinkList
-        heading={`Skipped, stale or not yet checked: needs a re-check first (${plan.needsRecheck.length})`}
-        links={plan.needsRecheck}
-        testId="borrow-skipped-stale"
-      />
-      <LinkList
-        heading={`Skipped, borrowed by ${name} itself (${plan.borrowed.length})`}
-        links={plan.borrowed}
-        testId="borrow-skipped-borrowed"
-      />
+      {chain.isPending ? (
+        <p role="status">Checking the code this requirement already links…</p>
+      ) : (
+        <>
+          <p>{previewText(plan, name, heldKnown)}</p>
+          <LinkList
+            heading={`Will be copied (${plan.copy.length})`}
+            links={plan.copy}
+            testId="borrow-will-copy"
+          />
+          <LinkList
+            heading={`Already linked (${plan.alreadyLinked.length})`}
+            links={plan.alreadyLinked}
+            testId="borrow-already-linked"
+          />
+          <LinkList
+            heading={`Skipped, stale or not yet checked: needs a re-check first (${plan.needsRecheck.length})`}
+            links={plan.needsRecheck}
+            testId="borrow-skipped-stale"
+          />
+          <LinkList
+            heading={`Skipped, borrowed by ${name} itself (${plan.borrowed.length})`}
+            links={plan.borrowed}
+            testId="borrow-skipped-borrowed"
+          />
+        </>
+      )}
       <div className="flex gap-2">
-        <Button
-          size="sm"
-          disabled={plan.copy.length === 0 || borrow.isPending}
-          onClick={() => borrow.mutate()}
-        >
-          {`Copy ${plural(plan.copy.length, "link")}`}
-        </Button>
+        {chain.isPending ? null : (
+          <Button
+            size="sm"
+            disabled={plan.copy.length === 0 || borrow.isPending}
+            onClick={() => borrow.mutate()}
+          >
+            {plan.copy.length > 0 ? `Copy ${plural(plan.copy.length, "link")}` : "Nothing to copy"}
+          </Button>
+        )}
         <Button
           size="sm"
           variant="ghost"

@@ -1,6 +1,6 @@
 /**
  * #1959 — run a SERIALIZABLE transaction again when the database aborts it on a
- * write conflict ({@link isWriteConflict}: Prisma's `P2034`, or adapter-pg's
+ * write conflict ({@link isSerializationFailure}: Prisma's `P2034`, or adapter-pg's
  * `TransactionWriteConflict`).
  *
  * Under Postgres's serializable snapshot isolation a conflict is routine, and
@@ -10,7 +10,7 @@
  * transaction itself and keep no state across attempts that the transaction
  * does not reset.
  */
-import { isWriteConflict } from "./prisma-errors.js";
+import { isSerializationFailure } from "./prisma-errors.js";
 
 /** Attempts at the transaction before a write conflict is surfaced. */
 export const WRITE_CONFLICT_ATTEMPTS = 3;
@@ -38,7 +38,7 @@ export async function retryOnWriteConflict<T>(
     try {
       return await run();
     } catch (error) {
-      if (!isWriteConflict(error)) throw error;
+      if (!isSerializationFailure(error)) throw error;
       if (attempt >= attempts) throw options.exhausted ? options.exhausted(error) : error;
       // Jittered, so transactions that just collided do not retry in step.
       await sleep(WRITE_CONFLICT_BACKOFF_MS * (attempt + Math.random()));

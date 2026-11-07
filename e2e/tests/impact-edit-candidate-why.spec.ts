@@ -27,6 +27,7 @@ const NOTIFY = "src/orders/notify-repo.ts";
 const MAILER = "src/mail/mailer.ts";
 const ORDERS = "src/orders/orders.ts";
 const ROUTES = "src/api/routes.ts";
+const oneRepoFile = (filePath: string) => ({ repoConnectionId: null, filePath });
 
 const json = (data: unknown) => ({
   status: 200,
@@ -113,8 +114,9 @@ function detail(id: string, projectId: string, item: Record<string, unknown>) {
         summary: null,
         affectedSymbols: SYMBOLS,
         affectedTests: [],
-        editCandidateFiles: [ORDERS, NOTIFY, MAILER],
-        blastRadiusFiles: [ORDERS, NOTIFY, MAILER, ROUTES],
+        // #1965 — a file is (repository, path); this fixture's project has one repository.
+        editCandidateFiles: [ORDERS, NOTIFY, MAILER].map(oneRepoFile),
+        blastRadiusFiles: [ORDERS, NOTIFY, MAILER, ROUTES].map(oneRepoFile),
         writePathGaps: [],
         affectedTables: [],
         affectedTablesSecondary: [],

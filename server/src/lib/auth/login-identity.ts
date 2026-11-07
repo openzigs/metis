@@ -32,10 +32,10 @@
  * that can be a false positive between unrelated rows, not an account conflict.
  */
 import { audit } from "../audit/audit-service.js";
-import { prisma } from "../prisma.js";
-import { AppError } from "../../middleware/error-handler.js";
 import { isUniqueViolation } from "../db/prisma-errors.js";
 import { retryOnWriteConflict } from "../db/write-conflict-retry.js";
+import { prisma } from "../prisma.js";
+import { AppError } from "../../middleware/error-handler.js";
 import { foldIdentity, isNfkcStable } from "./bootstrap-admins.js";
 import { directoryNameSubject } from "./identity-subject.js";
 

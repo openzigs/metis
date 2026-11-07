@@ -33,6 +33,9 @@
  * holds, under any source, is counted in `skippedDuplicate`, as is any link
  * into a file the requirement's own analysis has grounded: that grounding wins
  * (see {@link hideSupersededBorrowedLinks}, the read-side twin of this rule).
+ * The rule is `@metis/shared`'s `borrowDuplicateCheck`, which the panel's
+ * preview of a borrow reads too, so the preview lists these as already linked
+ * rather than promising to copy them (#1964).
  *
  * A named `mappingIds` entry that matches none of the origin's links is
  * counted in `notFound` (#1893), so the caller can say why nothing was copied.
@@ -52,14 +55,15 @@ import {
   BORROW_CONFLICT_CODE,
   BORROW_FROM_SELF_CODE,
   BORROWABLE_FRESHNESS,
+  borrowDuplicateCheck,
   SIMILAR_REQUIREMENT_SOURCE,
   type BorrowCitationsInput,
   type BorrowCitationsResult,
 } from "@metis/shared";
+import { isSerializationFailure } from "../db/prisma-errors.js";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { createChildLogger } from "../logger.js";
-import { isWriteConflict } from "../db/prisma-errors.js";
 import {
   ANALYSIS_GROUNDING_SOURCE,
   DEFAULT_SEED_CONFIDENCE,
@@ -85,9 +89,6 @@ export interface BorrowCitationsDeps {
   /** The backoff between attempts (tests); defaults to a timer. */
   sleep?: (ms: number) => Promise<void>;
 }
-
-const codeKey = (filePath: string, codeSymbolId: string | null): string =>
-  `${filePath}\u0000${codeSymbolId ?? ""}`;
 
 /**
  * The read-side rule (#1839): a borrowed link into a file the requirement's own
@@ -138,7 +139,7 @@ export async function borrowCitations(
         { isolationLevel: "Serializable" },
       );
     } catch (error) {
-      if (!isWriteConflict(error)) throw error;
+      if (!isSerializationFailure(error)) throw error;
       if (attempt >= MAX_ATTEMPTS) {
         log.warn("borrow lost every attempt to a concurrent write", {
           projectId,
@@ -184,10 +185,7 @@ async function copyLinks(
     where: { requirementId, projectId },
     select: { filePath: true, codeSymbolId: true, source: true },
   });
-  const heldKeys = new Set(held.map((h) => codeKey(h.filePath, h.codeSymbolId)));
-  const groundedFiles = new Set(
-    held.filter((h) => h.source === ANALYSIS_GROUNDING_SOURCE).map((h) => h.filePath),
-  );
+  const isDuplicate = borrowDuplicateCheck(held);
 
   const originIds = new Set(origin.map((link) => link.id));
   const result: BorrowCitationsResult = {
@@ -207,12 +205,10 @@ async function copyLinks(
       result.skippedStale += 1;
       continue;
     }
-    const key = codeKey(link.filePath, link.codeSymbolId);
-    if (heldKeys.has(key) || groundedFiles.has(link.filePath)) {
+    if (isDuplicate(link)) {
       result.skippedDuplicate += 1;
       continue;
     }
-    heldKeys.add(key);
     data.push({
       requirementId,
       projectId,

@@ -15,6 +15,7 @@ import {
   ACCEPTANCE_CRITERIA_MAX_ITEMS,
   ACCEPTANCE_CRITERION_MAX_LENGTH,
 } from "./acceptance-criteria-fallback.js";
+import type { SpecMappingSource } from "./traceability.js";
 
 export const SIMILAR_REQUIREMENT_LABELS = ["duplicate", "overlap", "related"] as const;
 export type SimilarRequirementLabel = (typeof SIMILAR_REQUIREMENT_LABELS)[number];
@@ -36,6 +37,44 @@ export const BORROWABLE_FRESHNESS: ReadonlySet<string> = new Set<SimilarCodeLink
   "moved",
 ]);
 
+/** The provenance of a link the requirement's own analysis grounded (#1759). */
+const ANALYSIS_GROUNDING: SpecMappingSource = "analysis-grounding";
+
+/** A code link a requirement holds, under any source: what the borrow's duplicate rule reads. */
+export interface HeldCodeLink {
+  filePath: string;
+  codeSymbolId: string | null;
+  source: string;
+}
+
+/**
+ * #1964 — the borrow's duplicate rule (#1839). The server's borrow and the
+ * panel's preview of it (#1840) read this one rule, so the preview never
+ * promises a copy the borrow skips as `skippedDuplicate`.
+ *
+ * A link is a duplicate when the requirement already holds its code (the same
+ * file and symbol, under any source), or when it points into a file the
+ * requirement's own analysis grounded: that grounding wins. The check returned
+ * claims the code of each link it passes, so a second link to the same code is
+ * a duplicate of the copy the first one makes.
+ */
+export function borrowDuplicateCheck(
+  held: readonly HeldCodeLink[],
+): (link: { filePath: string; codeSymbolId: string | null }) => boolean {
+  const key = (filePath: string, codeSymbolId: string | null) =>
+    `${filePath}\u0000${codeSymbolId ?? ""}`;
+  const keys = new Set(held.map((h) => key(h.filePath, h.codeSymbolId)));
+  const grounded = new Set(
+    held.filter((h) => h.source === ANALYSIS_GROUNDING).map((h) => h.filePath),
+  );
+  return (link) => {
+    const k = key(link.filePath, link.codeSymbolId);
+    if (keys.has(k) || grounded.has(link.filePath)) return true;
+    keys.add(k);
+    return false;
+  };
+}
+
 export interface SimilarRequirementCodeLink {
   /**
    * #1840 — the saved link's id: what "Start from these citations" names in
@@ -43,6 +82,11 @@ export interface SimilarRequirementCodeLink {
    */
   mappingId: string;
   filePath: string;
+  /**
+   * #1964 — the code-graph symbol it points at; null for a file-level link.
+   * With `filePath`, what the borrow's duplicate rule compares.
+   */
+  codeSymbolId: string | null;
   startLine: number | null;
   endLine: number | null;
   /** The link's writer, e.g. `semantic`, `manual`, `analysis-grounding`. */

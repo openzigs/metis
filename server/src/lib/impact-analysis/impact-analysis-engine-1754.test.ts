@@ -203,7 +203,7 @@ describe("a run about stored requirements (#1754)", () => {
     const { editCandidateFiles } = impactFileLists(
       affected as { filePath: string; depth: number }[],
     );
-    expect(editCandidateFiles).toContain(LINKED_FILE);
+    expect(editCandidateFiles.map((f) => f.filePath)).toContain(LINKED_FILE);
     const evidence = impactSeedEvidenceSchema.parse(JSON.parse(String(items[0]!.seedEvidence)));
     expect(evidence.storedLinks).toEqual({ used: 1, stale: 1 });
     expect(evidence.editCandidates.at(-1)).toEqual({

@@ -393,6 +393,49 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
     });
 
+    it("#1964 — each code link carries its symbol, for the preview's duplicate rule", async () => {
+      const graph = await db.codeGraph.create({ data: { projectId: A } });
+      await db.codeSymbol.create({
+        data: {
+          id: "sym-lot-recall",
+          codeGraphId: graph.id,
+          projectId: A,
+          kind: "function",
+          name: "recallLot",
+          qualifiedName: "src/inventory/lot-symbol.ts::recallLot",
+          filePath: "src/inventory/lot-symbol.ts",
+          startLine: 1,
+          endLine: 9,
+          language: "ts",
+          contentHash: "h",
+        },
+      });
+      const symbolLink = await db.requirementCodeMapping.create({
+        data: {
+          requirementId: ids.lot,
+          projectId: A,
+          filePath: "src/inventory/lot-symbol.ts",
+          codeSymbolId: "sym-lot-recall",
+          confidence: 0.5,
+        },
+      });
+      try {
+        const [lot] = await findSimilarRequirements(
+          A,
+          { requirementId: ids.batch },
+          { db, limit: 1 },
+        );
+        expect(lot!.codeLinks.map((l) => [l.filePath, l.codeSymbolId])).toEqual([
+          ["src/inventory/lots.ts", null],
+          ["src/inventory/recall.ts", null],
+          ["src/inventory/lot-symbol.ts", "sym-lot-recall"],
+        ]);
+      } finally {
+        await db.requirementCodeMapping.delete({ where: { id: symbolLink.id } });
+        await db.codeGraph.delete({ where: { id: graph.id } });
+      }
+    });
+
     it("#1902 — a link the similar requirement borrowed itself arrives labelled, so the panel counts it apart", async () => {
       const borrowed = await db.requirementCodeMapping.create({
         data: {

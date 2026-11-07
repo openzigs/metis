@@ -1002,6 +1002,46 @@ describe("serializeImpactAnalysisMarkdown (#963)", () => {
     expect(md).toContain("not a claim that each one changes");
   });
 
+  it("#1965 — names each symbol's repository when the item spans more than one", () => {
+    const orders = { id: "rc-orders", name: "metis-fixture-orders" };
+    const billing = { id: "rc-billing", name: "metis-fixture-billing" };
+    const path = "src/types/order.ts";
+    const md = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [
+          impactItem({
+            affectedSymbols: [
+              impactSymbol({ id: "s-1", filePath: path, repo: orders }),
+              impactSymbol({ id: "s-2", filePath: path, repo: billing }),
+            ],
+            affectedTests: [
+              impactSymbol({ id: "t-1", filePath: "test/order.test.ts", repo: orders }),
+              impactSymbol({ id: "t-2", filePath: "test/order.test.ts", repo: billing }),
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(md).toContain("`src/types/order.ts:10-42` in metis-fixture-orders ·");
+    expect(md).toContain("`src/types/order.ts:10-42` in metis-fixture-billing ·");
+    // The same test path in two repositories is two files.
+    expect(md).toContain("#### Tests covering the impacted code (2 across 2 files)");
+  });
+
+  it("#1965 — a single-repository item names no repository", () => {
+    const md = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [
+          impactItem({
+            affectedSymbols: [impactSymbol({ repo: { id: "rc-1", name: "metis" } })],
+          }),
+        ],
+      }),
+    );
+    expect(md).toContain("`src/orders/service.ts:10-42` ·");
+    expect(md).not.toContain(" in metis");
+  });
+
   it("#1036 — a result with only blast-radius symbols has no edit-candidate heading", () => {
     const md = serializeImpactAnalysisMarkdown(
       impactDetail({

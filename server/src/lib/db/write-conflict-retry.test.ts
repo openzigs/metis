@@ -1,11 +1,10 @@
 /**
- * #1959 — the write-conflict predicate and the retry every SERIALIZABLE
- * transaction on the login and SCIM paths now runs through. The paths
- * themselves are proven against real SQLite and Postgres in
- * `tests/helpers/write-conflict-retry-1959-suite.ts`.
+ * #1959 — the retry every SERIALIZABLE transaction on the login and SCIM paths
+ * now runs through. Its predicate, `isSerializationFailure`, is pinned in
+ * `tests/lib/db/prisma-errors.test.ts`; the paths themselves are proven against
+ * real SQLite and Postgres in `tests/helpers/write-conflict-retry-1959-suite.ts`.
  */
 import { describe, expect, it, vi } from "vitest";
-import { isWriteConflict } from "./prisma-errors.js";
 import {
   retryOnWriteConflict,
   WRITE_CONFLICT_ATTEMPTS,
@@ -20,22 +19,6 @@ const adapterConflict = () =>
     name: "DriverAdapterError",
     cause: { originalCode: "40001", kind: "TransactionWriteConflict" },
   });
-
-describe("isWriteConflict", () => {
-  it("matches both shapes of an aborted transaction", () => {
-    expect(isWriteConflict(p2034())).toBe(true);
-    expect(isWriteConflict(adapterConflict())).toBe(true);
-  });
-
-  it("matches nothing else", () => {
-    expect(isWriteConflict(Object.assign(new Error("dup"), { code: "P2002" }))).toBe(false);
-    expect(isWriteConflict(new Error("db down"))).toBe(false);
-    expect(isWriteConflict({ cause: { kind: "UniqueConstraintViolation" } })).toBe(false);
-    expect(isWriteConflict({ cause: null })).toBe(false);
-    expect(isWriteConflict(null)).toBe(false);
-    expect(isWriteConflict(undefined)).toBe(false);
-  });
-});
 
 describe("retryOnWriteConflict", () => {
   const noWait = () => vi.fn(async (_ms: number) => undefined);
