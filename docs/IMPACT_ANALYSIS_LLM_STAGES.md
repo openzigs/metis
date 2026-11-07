@@ -266,9 +266,9 @@ Pooled on the 39 held-out items, `claude-sonnet-5-5`, one run, 2026-11-06:
   symbol's content hash but not what the change must edit, so the answer file stays the
   answer while its citations go stale. Real code drift that moves the behaviour elsewhere
   is the case demotion is for, and this slice does not model it.
-- **Table precision** (`deepseek-flash`, 3 runs, live #936 filter): A7S − A7 is
-  +0.012 [−0.099, +0.123] and A7SD − A7S is −0.013 [−0.095, +0.069]. Neither has a
-  measurable effect.
+- **Table precision** (`deepseek-flash`, 3 runs, live #936 filter, scored on the first
+  persisted requirement, #1848): A7S − A7 is +0.018 [−0.083, +0.118] and A7SD − A7S is
+  −0.028 [−0.123, +0.067]. Neither has a measurable effect.
 
 The run records are committed (`__fixtures__/staleness-sonnet-2026-11-06.partials.jsonl`,
 `__fixtures__/staleness-table-guard-deepseek-2026-11-06.runs.jsonl`), and

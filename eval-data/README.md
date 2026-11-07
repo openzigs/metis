@@ -520,13 +520,15 @@ It also puts back any clone or graph that an earlier, killed run left patched.
 
 The table guard reads A7S and A7SD on `impact-recall-01-jpetstore`, over the same
 analyses as A7, with one cycle per requirement and run. A7S is gated against A7, and
-A7SD against A7S. A moved citation is read as the file it was, because the fixture's
+A7SD against A7S. All are scored as A7 is, on the analysis's first persisted requirement
+(#1848). A moved citation is read as the file it was, because the fixture's
 graph is the unpatched repository's. A deleted file leaves both the fixture's graph and its
 search. Each staleness run record carries the patch sets' digest, and a resume under other
 patches is refused.
 
-**Results** (2026-11-06; `main` at `07c76a1e` plus this slice; #1831's re-validation is
-in it).
+**Results** (2026-11-06). The held-out run is on `main` at `07c76a1e` plus this slice,
+with #1831's re-validation in it. #1825, merged later, changed no seeding behaviour. The
+table guard was read again on `main` at `219b5fc8` (#1848's scoring) plus this slice.
 
 The held-out run is on `claude-sonnet-5-5`, one run, both held-out corpora:
 
@@ -549,22 +551,29 @@ A7SD set all 346 stale ones aside. On the fixture portfolio, a renamed file's fi
 citations went stale (`file-missing`) rather than moved: #1831 tracks a rename by symbol
 only. On the two items checked, FX-02 and FX-03, that is what lowered A7S against A7.
 
-**Table guard** (`deepseek-flash`, 3 runs, live #936 filter, 33 analyses):
+**Table guard** (`deepseek-flash`, 3 runs, live #936 filter, 33 analyses). Each reading
+is scored on the analysis's first persisted requirement (#1848), with the union of every
+persisted requirement beside it:
 
-| Reading | Table precision |
-|---|---|
-| A0, mapper | 0.793 |
-| A0, split | 0.638 |
-| A7O | 0.521 |
-| A7 | 0.477 |
-| A7S | 0.489 |
-| A7SD | 0.476 |
+| Reading | First persisted requirement | Unioned |
+|---|---|---|
+| A0, mapper | 0.803 | 0.803 |
+| A0, split | 0.644 | 0.644 |
+| A7O | 0.753 | 0.487 |
+| A7 | 0.702 | 0.459 |
+| A7S | 0.720 | 0.452 |
+| A7SD | 0.692 | 0.485 |
 
-- A7S − A7: +0.012 [−0.099, +0.123]
-- A7SD − A7S: −0.013 [−0.095, +0.069]
+Paired over the 11 requirements, scored on the first persisted requirement:
 
-Both hold the 0.03 guard on the mean. A7 − A7O on DeepSeek is −0.043 [−0.094, +0.008],
-as on #1823's DeepSeek reading; on Sonnet it held.
+- A7S − A7: +0.018 [−0.083, +0.118]
+- A7SD − A7S: −0.028 [−0.123, +0.067]
+
+Unioned, the same pairs read −0.007 [−0.087, +0.072] and +0.033 [−0.008, +0.075]. Both
+hold the 0.03 guard on the mean. A7 − A7O on DeepSeek is −0.051 [−0.120, +0.018], as on
+#1848's DeepSeek re-read; on Sonnet it held. The staleness readings were taken after A7's
+on fresh analyses: a patch cycle re-validates every citation of the repository, so a
+reading of A7 after a cycle would see citations the cycle had moved back as `moved`.
 
 **Reading it.** Demotion is free when nothing is stale, so the no-staleness arm gives no
 reason to change #1832's default. Under this patch, though, demotion costs ranking. A
@@ -579,7 +588,10 @@ elsewhere.
   - $0.76 went on a first slice whose search had not been patched (fixed, then re-run).
   - $1.95 went on the analyses of two slices that the shell timeout killed. Their spend
     is recorded in `spend/` and they were re-run.
-- DeepSeek: about $1.20 (table guard $0.96, harness iteration $0.22).
+- DeepSeek: about $2.10. The ledger records $1.48 for the analyses. The #936 filter calls,
+  metered by the run, add about $0.60. That covers two table-guard readings: a first
+  reading scored only on the union ($0.96), superseded when #1848 changed the guard's
+  scoring, and the reading above ($0.86).
 
 The records are committed in `server/src/lib/eval/localization/__fixtures__/`, and
 `staleness-results.test.ts` reproduces every figure above from them.

@@ -29,7 +29,13 @@ import {
   type LocalizationReport,
   type PooledComparison,
 } from "./runner.js";
-import { guardPairedDifferences, parseGuardRecord } from "./table-guard-agent.js";
+import {
+  guardPairedDifferences,
+  guardScoringOf,
+  parseGuardRecord,
+  type GuardRunRecord,
+  type GuardScoring,
+} from "./table-guard-agent.js";
 import { TABLE_GUARD_CORPUS } from "./table-guard-source.js";
 
 const fixtures = path.join(import.meta.dirname, "__fixtures__");
@@ -153,16 +159,31 @@ describe("the staleness slice's table guard (#1834, deepseek-flash)", async () =
     parseGuardRecord,
   );
   const fixture = await loadImpactRecallFixture(resolveCorpusDir(TABLE_GUARD_CORPUS));
+  const read = (scoring: GuardScoring, arm: string, baseline: string) => {
+    const d = guardPairedDifferences(records, fixture, 3, scoring).find(
+      (x) => x.arm === arm && x.baseline === baseline,
+    )!;
+    return [d.interval.meanDifference, ...d.interval.ci].map((x) => x.toFixed(3));
+  };
 
-  it("reads A7S against A7 and A7SD against A7S, 3 runs each, within noise", () => {
+  it("recorded every analysis reading's per-requirement tables, on one model", () => {
     expect(new Set(records.map((r) => r.model))).toEqual(new Set(["anthropic/deepseek-flash"]));
-    const out = guardPairedDifferences(records, fixture, 3);
-    const read = (arm: string, baseline: string) => {
-      const d = out.find((x) => x.arm === arm && x.baseline === baseline)!;
-      return [d.interval.meanDifference, ...d.interval.ci].map((x) => x.toFixed(3));
-    };
-    expect(read("A7S", "A7")).toEqual(["0.012", "-0.099", "0.123"]);
-    expect(read("A7SD", "A7S")).toEqual(["-0.013", "-0.095", "0.069"]);
-    expect(read("A7", "A7O")).toEqual(["-0.043", "-0.094", "0.008"]);
+    const analysisRuns = records.filter(
+      (r): r is GuardRunRecord =>
+        r.kind === "run" && ["A7", "A7O", "A7S", "A7SD"].includes(r.reading),
+    );
+    expect(analysisRuns).toHaveLength(12);
+    expect(guardScoringOf(analysisRuns)).toBe("headline");
+  });
+
+  it("on the analysis's first persisted requirement (#1848): A7S against A7 and A7SD against A7S, within noise", () => {
+    expect(read("headline", "A7S", "A7")).toEqual(["0.018", "-0.083", "0.118"]);
+    expect(read("headline", "A7SD", "A7S")).toEqual(["-0.028", "-0.123", "0.067"]);
+    expect(read("headline", "A7", "A7O")).toEqual(["-0.051", "-0.120", "0.018"]);
+  });
+
+  it("unioned over every persisted requirement (#1823's reading), the same", () => {
+    expect(read("union", "A7S", "A7")).toEqual(["-0.007", "-0.087", "0.072"]);
+    expect(read("union", "A7SD", "A7S")).toEqual(["0.033", "-0.008", "0.075"]);
   });
 });
