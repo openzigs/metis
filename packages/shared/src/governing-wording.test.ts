@@ -45,6 +45,12 @@ const NEUTRAL: readonly string[] = [
   "The GDPR compliance team owns this rule.",
   "The system must comply with GDPR Article 17.",
   "No gaps found against 12 of 40 applicable rules in Information Security Policy v3. Not an audit opinion.",
+  // #1901 — "passes" as "goes beyond", and a perfect-tense negation.
+  "The value passes the policy limit.",
+  "The order total passed the retention policy threshold.",
+  "The release has passed the policy review step.",
+  "It hasn't passed SOC 2 yet.",
+  "They haven’t complied with GDPR.",
 ];
 
 describe("findForbiddenComplianceClaims (#1875)", () => {
@@ -116,8 +122,33 @@ describe("neutraliseComplianceClaims (#1875)", () => {
     ["The app passes SOC 2.", "The app was checked against SOC 2."],
     ["The design complies with GDPR.", "The design was checked against GDPR."],
     ["Certified against ISO 27001.", "Checked against ISO 27001."],
+    // #1901 — after a perfect-tense auxiliary, the participle.
+    ["It has passed SOC 2.", "It has been checked against SOC 2."],
+    ["The design has complied with GDPR.", "The design has been checked against GDPR."],
+    ["They have fully complied with the policy.", "They have been checked against the policy."],
+    ["It had already passed SOC 2.", "It had been checked against SOC 2."],
+    ["It’s passed SOC 2.", "It’s been checked against SOC 2."],
+    ["We’ve complied with HIPAA.", "We’ve been checked against HIPAA."],
+    // A "the … policy" phrase that ends after "passes" is still a claim.
+    ["The app passes the policy.", "The app was checked against the policy."],
+    [
+      "The app passes the access policy and ships.",
+      "The app was checked against the access policy and ships.",
+    ],
   ])("rewrites %j as %j", (input, expected) => {
     expect(neutraliseComplianceClaims(input)).toBe(expected);
+  });
+
+  it("never leaves a past tense after an auxiliary (#1901)", () => {
+    for (const aux of ["has", "have", "had", "has fully", "has successfully"]) {
+      for (const claim of ["passed SOC 2", "complied with GDPR", "passed the policy"]) {
+        const text = `It ${aux} ${claim}.`;
+        const out = neutraliseComplianceClaims(text);
+        expect(findForbiddenComplianceClaims(text)).toHaveLength(1);
+        expect(out).toMatch(/^It (?:has|have|had) been checked against /);
+        expect(out).not.toMatch(/\b(?:has|have|had)\s+(?:\w+\s+)?was\b/);
+      }
+    }
   });
 
   it("rewrites every claim in a passage and is idempotent", () => {
@@ -150,6 +181,11 @@ const TITLES = [
   "Non-compliant Vendor List",
   "Not SOC 2 Compliant Systems",
   "Compliant with HIPAA Compliant Hosting Standard",
+  // #1901 — joined forms the bare-word strip once let through.
+  "Noncompliant Rules",
+  "Compliant_x",
+  "GDPRcompliant Data Map",
+  "NONCOMPLIANT-items register",
 ];
 const REVISIONS = ["v3", "2026-01", "", "rev 4 (SOC 2 certified)"];
 
@@ -246,6 +282,29 @@ describe("governingSummarySentence (#1875)", () => {
       "No gaps found against 2 of 3 applicable rules in SOC 2-reviewed Controls rev 4 (SOC 2-reviewed). Not an audit opinion.",
     );
   });
+
+  it.each([
+    ["Noncompliant Rules", "Reviewed Rules"],
+    ["Compliant_x", "Reviewed_x"],
+    ["GDPRcompliant Data Map", "GDPRreviewed Data Map"],
+    ["NONCOMPLIANT-items register", "Reviewed-items register"],
+  ])(
+    "keeps 'compliant' out of the sentence even joined to another word: %j (#1901)",
+    (title, shown) => {
+      const sentence = governingSummarySentence({
+        applicable: 1,
+        total: 2,
+        gaps: 0,
+        needsInput: 0,
+        documentTitle: title,
+        revisionLabel: "",
+      });
+      expect(sentence).toBe(
+        `No gaps found against 1 of 2 applicable rules in ${shown}. Not an audit opinion.`,
+      );
+      expect(sentence).not.toMatch(/compliant/i);
+    },
+  );
 
   it("property: over generated inputs it ends with the disclaimer, never says 'compliant' and states gaps", () => {
     const rand = mulberry32(1875);
