@@ -131,7 +131,7 @@ export function codeLinkSummary(
   if (unchecked > 0) parts.push(`${unchecked} not yet checked`);
   if (borrowed > 0) parts.push(`${borrowed} borrowed`);
   if (truncated) {
-    return `More than ${SIMILAR_CODE_LINKS_PER_ITEM} code links, of the first ${links.length}: ${parts.join(", ")}`;
+    return `More than ${SIMILAR_CODE_LINKS_PER_ITEM} code links, of the ${links.length} most confident: ${parts.join(", ")}`;
   }
   return `${links.length} code link${links.length === 1 ? "" : "s"}: ${parts.join(", ")}`;
 }

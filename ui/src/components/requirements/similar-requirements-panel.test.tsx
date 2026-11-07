@@ -229,7 +229,9 @@ describe("SimilarRequirementsPanel (#1838)", () => {
     mountPanel();
     const [lot] = await screen.findAllByTestId("similar-requirement");
     expect(
-      within(lot!).getByText("More than 20 code links, of the first 20: 20 fresh, 0 stale"),
+      within(lot!).getByText(
+        "More than 20 code links, of the 20 most confident: 20 fresh, 0 stale",
+      ),
     ).toBeInTheDocument();
     expect(screen.getByTestId("duplicate-warning")).toHaveTextContent(
       "looks like the same requirement (it already links to at least 20 files).",
