@@ -58,6 +58,9 @@ const { governingDocumentsRouter, governingRulesRouter } =
   await import("../src/routes/governing-documents.js");
 const { GoverningIndex } = await import("../src/lib/governing/governing-index.js");
 const { runRuleExtraction } = await import("../src/lib/governing/rule-extraction.js");
+const { EXTRACTION_STALE_MS, beginRuleExtraction, completeRuleExtraction, failRuleExtraction } =
+  await import("../src/lib/governing/governing-store.js");
+const { sumLedgerUsage, workspaceLedgerWhere } = await import("../src/lib/finops/ledger-totals.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { DocumentStorage } = await import("../src/lib/documents/storage.js");
 const { audit } = await import("../src/lib/audit/audit-service.js");
@@ -456,6 +459,169 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         .send({ summary: "x" });
       expect(off.status).toBe(404);
       expect((await getRules(ID.wsA, documentId)).status).toBe(404);
+    });
+
+    const retry = (ws: string, documentId: string, revisionId: string, who = "adminA", a = app()) =>
+      request(a)
+        .post(`${docs(ws)}/${documentId}/revisions/${revisionId}/rule-extraction`)
+        .set("x-test-user", who);
+
+    it("#1947 — an admin retries a failed extraction; a done or fresh-running one is 409, a member 403, another workspace 404", async () => {
+      const down = {
+        key: "anthropic",
+        model: "m",
+        offline: false,
+        chat: async () => {
+          throw new Error("provider down");
+        },
+      } as unknown as AIProvider;
+      const { documentId, revisionId } = await uploadPolicy(app(down));
+      expect((await getRules(ID.wsA, documentId)).body.data.revision.extractionState).toBe(
+        "failed",
+      );
+
+      expect((await retry(ID.wsA, documentId, revisionId, "memberA")).status).toBe(403);
+      expect((await retry(ID.wsB, documentId, revisionId, "adminB")).status).toBe(404);
+      expect((await retry(ID.wsA, documentId, "no-such-revision")).status).toBe(404);
+
+      const res = await retry(ID.wsA, documentId, revisionId);
+      expect(res.status, JSON.stringify(res.body)).toBe(202);
+      expect(res.body.data).toEqual({ documentId, revisionId, scheduled: true });
+      await Promise.all(jobs);
+      jobs = [];
+      const after = await getRules(ID.wsA, documentId);
+      expect(after.body.data.revision).toMatchObject({
+        extractionState: "done",
+        extractionError: null,
+      });
+      expect(after.body.data.rules).toHaveLength(RULE_COUNT);
+      expect(audit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "governing_document.extraction_retry",
+          metadata: { workspaceId: ID.wsA, revisionId, previousState: "failed" },
+        }),
+      );
+
+      const done = await retry(ID.wsA, documentId, revisionId);
+      expect(done.status).toBe(409);
+      expect(done.body.error.code).toBe("EXTRACTION_NOT_RETRYABLE");
+
+      await db.governingDocumentRevision.update({
+        where: { id: revisionId },
+        data: { extractionState: "running", extractionStartedAt: new Date() },
+      });
+      expect((await retry(ID.wsA, documentId, revisionId)).status).toBe(409);
+      expect(jobs).toEqual([]);
+    });
+
+    it("#1947 — a revision left running by a dead run is retried after the stale bound, and the dead run cannot store its rules", async () => {
+      const { documentId, revisionId } = await uploadPolicy(app(replay([])));
+      // The state a server restart mid-run leaves: running, rules never stored.
+      await db.governingRule.deleteMany({ where: { revisionId } });
+      const deadStart = new Date(Date.now() - EXTRACTION_STALE_MS - 60_000);
+      await db.governingDocumentRevision.update({
+        where: { id: revisionId },
+        data: { extractionState: "running", extractionStartedAt: deadStart },
+      });
+
+      const res = await retry(ID.wsA, documentId, revisionId);
+      expect(res.status, JSON.stringify(res.body)).toBe(202);
+      await Promise.all(jobs);
+      jobs = [];
+      const row = await db.governingDocumentRevision.findUnique({ where: { id: revisionId } });
+      expect(row?.extractionState).toBe("done");
+      expect(row?.extractionStartedAt?.getTime()).toBeGreaterThan(deadStart.getTime());
+      expect(await db.governingRule.count({ where: { revisionId } })).toBe(RULE_COUNT);
+
+      // The dead run wakes up and tries to commit: it is fenced out.
+      const late = await completeRuleExtraction(
+        ID.wsA,
+        revisionId,
+        deadStart,
+        [
+          {
+            controlId: "LATE-1",
+            summary: "late",
+            clauseRef: "§1",
+            clauseStart: 0,
+            clauseEnd: 1,
+            clauseExcerpt: "#",
+          },
+        ],
+        0,
+      );
+      expect(late).toBe(false);
+      await failRuleExtraction(ID.wsA, revisionId, deadStart, "late failure");
+      expect(await db.governingRule.count({ where: { revisionId } })).toBe(RULE_COUNT);
+      expect(
+        await db.governingDocumentRevision.findUnique({ where: { id: revisionId } }),
+      ).toMatchObject({ extractionState: "done", extractionError: null });
+    });
+
+    it("#1947 — beginRuleExtraction takes a stale or start-time-less running row, never a fresh one; the replaced run is fenced out", async () => {
+      const { revisionId } = await uploadPolicy(app(replay([])));
+      const set = (extractionStartedAt: Date | null) =>
+        db.governingDocumentRevision.update({
+          where: { id: revisionId },
+          data: { extractionState: "running", extractionStartedAt },
+        });
+      await set(new Date());
+      expect(await beginRuleExtraction(ID.wsA, revisionId)).toBeNull();
+      const deadStart = new Date(Date.now() - EXTRACTION_STALE_MS - 60_000);
+      await set(deadStart);
+      const begun = await beginRuleExtraction(ID.wsA, revisionId);
+      expect(begun?.startedAt).toBeInstanceOf(Date);
+      // While the new run is still running, the dead one wakes: both its writes
+      // are fenced out, and the row stays the new run's.
+      const rule = {
+        controlId: "AC-01",
+        summary: "s",
+        clauseRef: "§1",
+        clauseStart: 0,
+        clauseEnd: 1,
+        clauseExcerpt: "#",
+      };
+      expect(await completeRuleExtraction(ID.wsA, revisionId, deadStart, [rule], 0)).toBe(false);
+      await failRuleExtraction(ID.wsA, revisionId, deadStart, "dead run");
+      expect(await db.governingRule.count({ where: { revisionId } })).toBe(0);
+      expect(
+        await db.governingDocumentRevision.findUnique({ where: { id: revisionId } }),
+      ).toMatchObject({ extractionState: "running", extractionError: null });
+      expect(await completeRuleExtraction(ID.wsA, revisionId, begun!.startedAt, [rule], 0)).toBe(
+        true,
+      );
+      expect(await db.governingRule.count({ where: { revisionId } })).toBe(1);
+      await set(null);
+      expect(await beginRuleExtraction(ID.wsA, revisionId)).not.toBeNull();
+      // Another workspace's id never reaches the row.
+      await set(null);
+      expect(await beginRuleExtraction(ID.wsB, revisionId)).toBeNull();
+    });
+
+    it("#1947 — every extraction call is a token_usages row under the workspace, counted in its spend", async () => {
+      const before = await sumLedgerUsage(workspaceLedgerWhere(ID.wsA));
+      const { revisionId } = await uploadPolicy(app());
+      const rows = await db.tokenUsage.findMany({ where: { sessionId: revisionId } });
+      expect(rows).toHaveLength(RECORDED.replies.length);
+      for (const row of rows) {
+        expect(row).toMatchObject({
+          projectId: null,
+          workspaceId: ID.wsA,
+          agentStep: "governing.rule-extraction",
+          provider: "anthropic",
+          model: "deepseek-flash",
+          inputTokens: 1,
+          outputTokens: 1,
+        });
+      }
+      // The workspace's usage reads them (Settings → Usage, the daily rollup)...
+      const after = await sumLedgerUsage(workspaceLedgerWhere(ID.wsA));
+      expect(after.calls - before.calls).toBe(RECORDED.replies.length);
+      // ...and another workspace's does not.
+      const inB = await db.tokenUsage.count({
+        where: { AND: [workspaceLedgerWhere(ID.wsB), { sessionId: revisionId }] },
+      });
+      expect(inB).toBe(0);
     });
   },
 );

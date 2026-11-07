@@ -228,7 +228,7 @@ async function runLedgerFigures(
     ? [...new Set(runs.map((r) => r.projectId as string))]
     : null;
   let rows: Array<
-    LedgerUsageRow & { sessionId: string | null; projectId: string; createdAt: Date }
+    LedgerUsageRow & { sessionId: string | null; projectId: string | null; createdAt: Date }
   >;
   try {
     rows = await prisma.tokenUsage.findMany({

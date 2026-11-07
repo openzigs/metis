@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { isUniqueViolation, uniqueViolationTarget } from "../../../src/lib/db/prisma-errors.js";
+import {
+  isSerializationFailure,
+  isUniqueViolation,
+  uniqueViolationTarget,
+} from "../../../src/lib/db/prisma-errors.js";
 
 describe("isUniqueViolation", () => {
   it("matches an error carrying Prisma's P2002 code", () => {
@@ -13,6 +17,36 @@ describe("isUniqueViolation", () => {
     ["a string", "P2002"],
   ])("rejects %s", (_label, err) => {
     expect(isUniqueViolation(err)).toBe(false);
+  });
+});
+
+describe("isSerializationFailure (#1904)", () => {
+  it("matches Prisma's P2034 (a refused statement inside the transaction)", () => {
+    expect(isSerializationFailure(Object.assign(new Error("conflict"), { code: "P2034" }))).toBe(
+      true,
+    );
+  });
+
+  it.each([["40001"], ["40P01"]])(
+    "matches the pg adapter's TransactionWriteConflict (a refused commit, %s)",
+    (originalCode) => {
+      const err = Object.assign(new Error("TransactionWriteConflict"), {
+        name: "DriverAdapterError",
+        cause: { kind: "TransactionWriteConflict", originalCode },
+      });
+      expect(isSerializationFailure(err)).toBe(true);
+    },
+  );
+
+  it.each([
+    ["a unique violation", { code: "P2002" }],
+    ["another adapter error kind", { cause: { kind: "UniqueConstraintViolation" } }],
+    ["a null cause", { cause: null }],
+    ["an error with no code", new Error("x")],
+    ["null", null],
+    ["a string", "P2034"],
+  ])("rejects %s", (_label, err) => {
+    expect(isSerializationFailure(err)).toBe(false);
   });
 });
 

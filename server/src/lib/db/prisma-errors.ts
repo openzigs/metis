@@ -6,6 +6,21 @@ export function isUniqueViolation(err: unknown): boolean {
   return !!err && typeof err === "object" && (err as { code?: unknown }).code === "P2002";
 }
 
+/**
+ * #1904 — a transaction the database aborted on a write conflict or deadlock,
+ * worth retrying. Two shapes reach the caller on `@prisma/adapter-pg`
+ * (measured on Postgres 16, `tests/login-identity-race-1904-postgres`):
+ * Prisma's `P2034` when a STATEMENT inside the transaction is refused, and a
+ * `DriverAdapterError` with no Prisma code and `cause.kind`
+ * `TransactionWriteConflict` when the COMMIT is refused (a serialization
+ * failure `40001` or a deadlock `40P01`). A check for `P2034` alone misses the
+ * second. Matched on shape, so test doubles work too.
+ */
+export function isSerializationFailure(err: unknown): boolean {
+  const e = err as { code?: unknown; cause?: { kind?: unknown } | null } | null;
+  return e?.code === "P2034" || e?.cause?.kind === "TransactionWriteConflict";
+}
+
 /** The constraint a unique violation names: an index name, or its columns. */
 export interface UniqueViolationTarget {
   index?: string;

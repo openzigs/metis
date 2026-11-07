@@ -28,6 +28,7 @@
  * sign-in is refused with `403 ACCOUNT_DISABLED`.
  */
 import { audit } from "../audit/audit-service.js";
+import { isSerializationFailure, isUniqueViolation } from "../db/prisma-errors.js";
 import { prisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { foldIdentity, isNfkcStable } from "./bootstrap-admins.js";
@@ -206,12 +207,13 @@ export function usernameClaimVerdict(
 }
 
 /**
- * A lost race: a unique violation (P2002) or a serialization failure (P2034).
- * Either way the row changed under this sign-in, so it is judged again.
+ * A lost race: a unique violation (P2002), or a write conflict Postgres aborted
+ * the claim's transaction on (`P2034`, or the pg adapter's
+ * `TransactionWriteConflict`, #1904). Either way the row changed under this
+ * sign-in, so it is judged again.
  */
-function isUniqueViolation(error: unknown): boolean {
-  const code = (error as { code?: unknown } | null)?.code;
-  return code === "P2002" || code === "P2034";
+function isLostRace(error: unknown): boolean {
+  return isUniqueViolation(error) || isSerializationFailure(error);
 }
 
 /** Only an active, undeleted account is ever written on the login path. */
@@ -426,13 +428,13 @@ export async function resolveLoginUser(input: {
   try {
     return await resolveOnce(identity, profile, primaryKind);
   } catch (error) {
-    if (!isUniqueViolation(error)) throw error;
+    if (!isLostRace(error)) throw error;
   }
   // A concurrent first sign-in won the race (or the e-mail is taken): judge again.
   try {
     return await resolveOnce(identity, profile, primaryKind);
   } catch (error) {
-    if (isUniqueViolation(error)) refuse("unique_conflict", identity, profile, null);
+    if (isLostRace(error)) refuse("unique_conflict", identity, profile, null);
     throw error;
   }
 }

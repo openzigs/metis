@@ -9,6 +9,21 @@ import { Skeleton } from "./skeleton";
  */
 export const PAGE_TITLE_CLASS = "text-2xl font-semibold tracking-tight";
 
+/**
+ * #1889 — on wide screens a header with actions is a two-column grid: the title
+ * column never narrower than its longest word, the actions column as wide as its
+ * controls up to the space left, wrapping them beyond that.
+ *
+ * It was a flex row with a `min-w-0` title beside `shrink-0` actions, so actions
+ * wider than the space left (the chat page's agent picker sizes itself to the
+ * longest agent name) squeezed the title to a zero-width box: the `<h1>`'s text
+ * drew under the actions and the heading counted as hidden. A grid keeps the old
+ * shape otherwise: the `auto` actions column reaches its full width before the
+ * `1fr` title column takes what is left, so a long title or description still
+ * wraps beside the actions rather than pushing them onto a new line.
+ */
+export const PAGE_HEADER_WITH_ACTIONS_CLASS = "sm:grid sm:grid-cols-[minmax(min-content,1fr)_auto]";
+
 export interface PageHeaderProps extends Omit<React.HTMLAttributes<HTMLElement>, "title"> {
   /** The page title, rendered as the page's single `<h1>`. */
   title: React.ReactNode;
@@ -43,7 +58,11 @@ export function PageHeader({
   return (
     <header
       data-slot="page-header"
-      className={cn("flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between", className)}
+      className={cn(
+        "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between",
+        actions ? PAGE_HEADER_WITH_ACTIONS_CLASS : null,
+        className,
+      )}
       {...props}
     >
       <div className="min-w-0 space-y-1">
@@ -64,7 +83,7 @@ export function PageHeader({
         {children}
       </div>
       {actions ? (
-        <div data-slot="page-header-actions" className="flex shrink-0 flex-wrap items-center gap-2">
+        <div data-slot="page-header-actions" className="flex min-w-0 flex-wrap items-center gap-2">
           {actions}
         </div>
       ) : null}

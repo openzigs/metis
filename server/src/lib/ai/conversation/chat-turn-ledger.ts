@@ -252,6 +252,11 @@ function newestFirst(
  * `take`, so nothing is missed, and the order is the one a single statement
  * would give. The session subtotals read only the sessions on the page.
  */
+/** A ledger row billed to a project (a workspace-level row has none, #1947). */
+function hasProject<T extends { projectId: string | null }>(r: T): r is T & { projectId: string } {
+  return r.projectId !== null;
+}
+
 export async function listChatTurns(filter: ChatTurnFilter): Promise<ChatTurnPage> {
   const owned = await ownedSessions(filter);
   if (owned.length === 0) return { items: [], sessions: [] };
@@ -287,6 +292,7 @@ export async function listChatTurns(filter: ChatTurnFilter): Promise<ChatTurnPag
   }
   // A ledger row is the session's only under the session's own project.
   const rows = found
+    .filter(hasProject)
     .filter((r) => r.sessionId !== null && sessionProject.get(r.sessionId) === r.projectId)
     .sort(newestFirst)
     .slice(0, take);

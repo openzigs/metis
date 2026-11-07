@@ -12,8 +12,15 @@
  * (`droppedUnverified`), never stored with an invented citation.
  *
  * Control ids are the policy's own where the text has them: a `controlId` the
- * model gives is kept only when it appears in `extractedText`. Every other rule
- * gets `R-001`, `R-002`, ... in clause order, stable within the revision.
+ * model gives is kept only when it appears in or beside the cited clause
+ * (`controlIdRegion`, #1947), so a real id of another clause is not taken.
+ * Every other rule gets `METIS-001`, `METIS-002`, ... in clause order, stable
+ * within the revision, skipping any id the policy itself uses.
+ *
+ * Each model call is metered in `token_usages` under the workspace (#1947).
+ * A run is fenced on its start time: a revision whose run died (a server
+ * restart) is `running` until an admin retries it after
+ * `EXTRACTION_STALE_MS`, and the dead run can no longer store its rules.
  *
  * The rules are stored in one transaction with `extractionState=done`. Any
  * failure (no provider, a provider error, a reply with no rules array) sets
@@ -27,8 +34,9 @@ import { GOVERNING_EXTRACTION_ERROR_MAX } from "@metis/shared";
 import { loadAIConfig } from "../ai/config.js";
 import { AIError, AIProviderError, describeProviderErrorSafely } from "../ai/errors.js";
 import { buildProvider } from "../ai/providers/factory.js";
-import type { AIProvider } from "../ai/types.js";
+import type { AIProvider, ChatResponse } from "../ai/types.js";
 import { extractJsonObject, resolveFinalAnswerMaxOutputTokens } from "../analysis/agent-runner.js";
+import { recordWorkspaceUsage } from "../finops/token-tracker.js";
 import { createChildLogger } from "../logger.js";
 import { clauseLocator, type VerifiedClause } from "./clause-verify.js";
 import { isGoverningDocsEnabled } from "./flag.js";
@@ -89,6 +97,46 @@ function containsToken(text: string, id: string): boolean {
     if (!isWord(text[at - 1]) && !isWord(text[at + id.length])) return true;
   }
   return false;
+}
+
+/**
+ * #1947 — the text a kept control id must appear in: the cited clause with
+ * the start of its first line (where a label such as `**AC-02**` or `4.3.1`
+ * sits), and the section's heading line when the clause sits directly under
+ * it, with only blank lines between. An id found elsewhere in the document
+ * belongs to another clause, so it is not this rule's.
+ */
+export function controlIdRegion(
+  text: string,
+  clause: Pick<VerifiedClause, "clauseStart" | "clauseEnd">,
+  section: Pick<PolicySection, "start">,
+): string {
+  const lineStart = text.lastIndexOf("\n", clause.clauseStart - 1) + 1;
+  const own = text.slice(lineStart, clause.clauseEnd);
+  const headingEnd = text.indexOf("\n", section.start);
+  const headingLine = headingEnd === -1 ? "" : text.slice(section.start, headingEnd);
+  const directlyUnder =
+    /^#{1,6}[ \t]/.test(headingLine) &&
+    headingEnd < lineStart &&
+    text.slice(headingEnd, lineStart).trim() === "";
+  return directlyUnder ? `${headingLine}\n${own}` : own;
+}
+
+/**
+ * #1947 — the prefix of a control id METIS makes up for a rule the policy gave
+ * none. A policy may number its own rules `R-001`, so a generated id is never
+ * a token of the policy's text nor a kept id ({@link generatedControlIds}).
+ */
+export const GENERATED_CONTROL_ID_PREFIX = "METIS-";
+
+/** `count` ids `METIS-001`, `METIS-002`, ... skipping any `text` or `taken` already has. */
+function generatedControlIds(text: string, taken: ReadonlySet<string>, count: number): string[] {
+  const out: string[] = [];
+  for (let n = 1; out.length < count; n++) {
+    const id = `${GENERATED_CONTROL_ID_PREFIX}${String(n).padStart(3, "0")}`;
+    if (!taken.has(id) && !containsToken(text, id)) out.push(id);
+  }
+  return out;
 }
 
 /**
@@ -209,6 +257,8 @@ export interface ExtractRulesInput {
   revisionLabel: string;
   provider: AIProvider;
   signal?: AbortSignal;
+  /** #1947 — told of every model reply, readable or not, before it is parsed: the meter. */
+  onReply?: (reply: ChatResponse) => void;
 }
 
 /** Extract and verify the rules of one revision's text. Throws on a provider error or an unreadable reply. */
@@ -239,6 +289,7 @@ export async function extractRulesFromText(
       maxTokens: resolveFinalAnswerMaxOutputTokens(provider.model, provider.key),
       ...(input.signal ? { signal: input.signal } : {}),
     });
+    input.onReply?.(reply);
     const { candidates, malformed } = parseRuleExtractionReply(reply.content);
     droppedUnverified += malformed;
     for (const c of candidates) {
@@ -250,7 +301,7 @@ export async function extractRulesFromText(
       const controlId =
         c.controlId &&
         c.controlId.length <= MAX_CONTROL_ID_CHARS &&
-        containsToken(text, c.controlId)
+        containsToken(controlIdRegion(text, clause, section), c.controlId)
           ? c.controlId
           : undefined;
       found.push({
@@ -272,11 +323,10 @@ export async function extractRulesFromText(
       seen.add(key);
       return true;
     });
+  const kept = new Set(unique.flatMap((r) => (r.controlId ? [r.controlId] : [])));
+  const fresh = generatedControlIds(text, kept, unique.filter((r) => !r.controlId).length);
   let generated = 0;
-  const rules = unique.map((r) => ({
-    ...r,
-    controlId: r.controlId ?? `R-${String(++generated).padStart(3, "0")}`,
-  }));
+  const rules = unique.map((r) => ({ ...r, controlId: r.controlId ?? fresh[generated++]! }));
   return { rules, droppedUnverified, sections: sections.length };
 }
 
@@ -314,14 +364,34 @@ export async function runRuleExtraction(input: RunRuleExtractionInput): Promise<
   const { workspaceId, revisionId } = input;
   const revision = await beginRuleExtraction(workspaceId, revisionId);
   if (!revision) return;
+  const { startedAt } = revision;
+  const metered: Array<Promise<void>> = [];
   try {
+    const provider = input.provider ?? defaultProvider();
     const result = await extractRulesFromText({
       text: revision.extractedText,
       title: revision.title,
       revisionLabel: revision.revisionLabel,
-      provider: input.provider ?? defaultProvider(),
+      provider,
+      onReply: (reply) => {
+        const persisted = meterExtractionCall(workspaceId, revisionId, provider, reply);
+        if (persisted) metered.push(persisted);
+      },
     });
-    await completeRuleExtraction(workspaceId, revisionId, result.rules, result.droppedUnverified);
+    const stored = await completeRuleExtraction(
+      workspaceId,
+      revisionId,
+      startedAt,
+      result.rules,
+      result.droppedUnverified,
+    );
+    if (!stored) {
+      log.warn("governing rule extraction superseded by a retry; its rules were not stored", {
+        workspaceId,
+        revisionId,
+      });
+      return;
+    }
     log.info("governing rules extracted", {
       workspaceId,
       revisionId,
@@ -337,12 +407,47 @@ export async function runRuleExtraction(input: RunRuleExtractionInput): Promise<
       error: message,
       cause: String(err),
     });
-    await failRuleExtraction(workspaceId, revisionId, message).catch((writeErr: unknown) => {
-      log.error("could not record a failed governing rule extraction", {
-        workspaceId,
-        revisionId,
-        error: String(writeErr),
-      });
-    });
+    await failRuleExtraction(workspaceId, revisionId, startedAt, message).catch(
+      (writeErr: unknown) => {
+        log.error("could not record a failed governing rule extraction", {
+          workspaceId,
+          revisionId,
+          error: String(writeErr),
+        });
+      },
+    );
+  } finally {
+    // The ledger rows settle before the job ends (`persisted` never rejects).
+    await Promise.all(metered);
   }
+}
+
+/** The `token_usages` agent step of a rule-extraction call (#1947). */
+export const RULE_EXTRACTION_AGENT_STEP = "governing.rule-extraction";
+
+/**
+ * #1947 — bill one extraction call like every other model call: a
+ * `token_usages` row, priced by the tracker, carrying the workspace (there is
+ * no project) and the revision as its session. `null` when the provider
+ * reported no usage.
+ */
+function meterExtractionCall(
+  workspaceId: string,
+  revisionId: string,
+  provider: Pick<AIProvider, "key" | "model">,
+  reply: ChatResponse,
+): Promise<void> | null {
+  const usage = reply.usage;
+  if (!usage || (usage.promptTokens <= 0 && usage.completionTokens <= 0)) return null;
+  return recordWorkspaceUsage({
+    workspaceId,
+    sessionId: revisionId,
+    agentStep: RULE_EXTRACTION_AGENT_STEP,
+    provider: provider.key,
+    model: provider.model,
+    inputTokens: usage.promptTokens,
+    outputTokens: usage.completionTokens,
+    cacheReadTokens: usage.cacheReadTokens ?? 0,
+    cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+  }).persisted;
 }

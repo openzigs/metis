@@ -2402,6 +2402,10 @@ gates on).
   `server/tests/governing-documents-migration-1868.sqlite.test.ts`. #1870's
   `20261117001870_issue1870_governing_rule_extraction` adds the revision's two extraction
   columns, tested in `server/tests/governing-rule-extraction-migration-1870.sqlite.test.ts`.
+  #1947's `20261118001947_issue1947_governing_extraction_retry_metering` adds
+  `extractionStartedAt`, makes `token_usages.projectId` nullable and adds
+  `token_usages.workspaceId`, tested in
+  `server/tests/governing-extraction-retry-metering-migration-1947.sqlite.test.ts`.
 
 #### Upload, revisions and the workspace index (#1869)
 
@@ -2445,21 +2449,29 @@ gates on).
 Each stored revision starts `runRuleExtraction` (`lib/governing/rule-extraction.ts`) in the
 background; the upload answers first. The job:
 
-1. sets `extractionState: running`. A revision whose extraction is already `running` or `done`
-   is not started again, so rules are never duplicated or replaced under an admin's edits;
+1. sets `extractionState: running` and `extractionStartedAt` (#1947). A revision whose
+   extraction is `done`, or `running` for less than `EXTRACTION_STALE_MS` (one hour), is not
+   started again, so rules are never duplicated or replaced under an admin's edits. The run's
+   writes are fenced on its start time: a run a retry has replaced stores nothing;
 2. splits `extractedText` at its Markdown headings (a section over 8,000 characters again at
    paragraph breaks);
 3. sends each section to the deployment's configured provider (`loadAIConfig()`; there is no
    project to take an override from) as fenced untrusted data: `fenceToolResult`, which runs
    `scrubFenceLookalikes` first (`lib/governing/prompts.ts`). The title and revision label
-   travel inside the fence too;
+   travel inside the fence too. Each call is a `token_usages` row (#1947) under agent step
+   `governing.rule-extraction`, with `workspaceId` set and no `projectId`
+   (`recordWorkspaceUsage`); the workspace's usage totals and daily rollup count it through
+   `workspaceLedgerWhere` (`lib/finops/ledger-totals.ts`);
 4. checks every returned rule deterministically (`lib/governing/clause-verify.ts`): its
    `clauseExcerpt` must be in `extractedText` verbatim, with whitespace runs compared as one
    space, and at least four words. The stored excerpt and `clauseStart`/`clauseEnd` are the
    source's own, so `clauseExcerpt === extractedText.slice(clauseStart, clauseEnd)` always
    holds. A rule that fails is dropped and counted in `droppedUnverified`;
-5. keeps a `controlId` only when that text appears in `extractedText`, and numbers every other
-   rule `R-001`… in clause order;
+5. keeps a `controlId` only when it appears in or beside the cited clause (#1947,
+   `controlIdRegion`): on the clause's own line, or in the heading the clause sits directly
+   under, so a real id of another clause is not taken. Every other rule is numbered
+   `METIS-001`… in clause order, skipping any id the policy itself uses, so a generated id
+   never collides with the policy's own `R-001`;
 6. stores the rules and `extractionState: done` in one transaction. Any failure sets `failed`,
    and the revision stays stored. `extractionError` is read by every member, so it carries
    only text METIS wrote: `describeProviderErrorSafely` for a provider error (provider,
@@ -2469,6 +2481,7 @@ background; the upload answers first. The job:
 | Route | Role | Does |
 |---|---|---|
 | `GET /api/workspaces/:workspaceId/governing-documents/:documentId/rules` | any member | the current revision's live rules in clause order, or `?revisionId=` another of the document's revisions; with the revision's `extractionState`, `extractionError` and `droppedUnverified` |
+| `POST /api/workspaces/:workspaceId/governing-documents/:documentId/revisions/:revisionId/rule-extraction` | `admin`/`owner` | #1947 — start the revision's extraction again: one that `failed`, never began, or has been `running` past `EXTRACTION_STALE_MS` (a server restart mid-run). `202` and the run in the background; `409 EXTRACTION_NOT_RETRYABLE` for a `done` or fresh-running one |
 | `PATCH /api/workspaces/:workspaceId/governing-rules/:ruleId` | `admin`/`owner` | `{ summary?, controlId? }` or `{ deleted: true }`. It sets `editedById`/`editedAt` on the rule and writes a `GoverningRuleEdit` row with the before and after values, in one transaction. A patch that changes nothing writes nothing |
 
 Rules are usable at once, with no analyst review (owner, 2026-11-06), and a new revision gets
@@ -6944,7 +6957,7 @@ the same `postgres`-scheme check, with a SQLite-safe fallback.
 | Model | Table | Records | Purpose |
 |---|---|---|---|
 | **User** | `users` | User accounts | Stores username, display name, email, role, last login; `authSource` = the provider kind the account belongs to (#1395) |
-| **UserIdentity** | `user_identities` | Sign-in identities (#1395) | (provider, issuer, subject) unique, bound to one user. Every login resolves its account by this key first; a username held by another provider's identity is refused with 409 `ACCOUNT_LINK_REQUIRED` (`server/src/lib/auth/login-identity.ts`) |
+| **UserIdentity** | `user_identities` | Sign-in identities (#1395) | (provider, issuer, subject) unique, bound to one user. Every login resolves its account by this key first; a username held by another provider's identity is refused with 409 `ACCOUNT_LINK_REQUIRED` (`server/src/lib/auth/login-identity.ts`). A lost claim race (`P2002`, or a write conflict matched by `isSerializationFailure` in `server/src/lib/db/prisma-errors.ts`: `P2034` or the pg adapter's `TransactionWriteConflict`, #1904) is judged once more |
 | **TeamsUserIdentity** / **SlackUserIdentity** | `teams_user_identities` / `slack_user_identities` | ChatOps sender bindings | A chat account bound to a METIS user within one workspace, unique on (workspaceId, external key) since #1431. A binding may name only an active member of its workspace (a system-admin member only for a system-admin caller), and resolves only for that workspace's bot while the user is still a member (`server/src/lib/workspaces/chatops-identity-scope.ts`). A command then acts only on a project, draft or thread whose project is in that workspace (#1437, `chatops-project-scope.ts`) |
 | **Session** | `sessions` | Auth sessions | Stores JWT tokens with expiration, linked to user |
 | **Project** | `projects` | Analysis projects | Name, description, status, GitHub repo link, linked to creator |
