@@ -43,7 +43,7 @@ export interface RunFingerprint {
 }
 
 /** One partial file. */
-interface PartialRecord extends RecordedScore {
+export interface PartialRecord extends RecordedScore {
   corpus: string;
   /** {@link fingerprintDigest} of the configuration the score was measured under. */
   fingerprint: string;

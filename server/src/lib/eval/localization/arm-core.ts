@@ -30,10 +30,12 @@ import {
   type GapVerdict,
   type LocalizationCorpus,
   type LocalizationItem,
+  type LocalizationSymbolRow,
 } from "./corpus.js";
 import type { CostMeter } from "./cost.js";
 import type { AgentRunStats } from "./scorer.js";
 import type { CorpusSearch } from "./search.js";
+import type { StalenessOp } from "./staleness.js";
 
 /** Which tools the agent pass gets. */
 export type AgentToolset =
@@ -98,6 +100,29 @@ export interface AnalysisArmIO {
   loadCitations: (requirementId: string, corpus: string, repo: string) => Promise<StoredLinkRow[]>;
 }
 
+/**
+ * #1834 — the staleness cycle the A7 staleness arms read through: the
+ * committed patch of an item, applied to the materialized clones and
+ * re-ingested (which re-validates the stored citations, #1831), then undone.
+ */
+export interface StalenessArmIO {
+  /**
+   * A digest of every committed patch set: in each staleness arm's
+   * configuration, so a resume or merge under another patch set is refused.
+   */
+  patchSetDigest: string;
+  /** The item's committed operations; throws when the corpus's set has none for it. */
+  opsFor(corpus: string, itemId: string): readonly StalenessOp[];
+  /** Apply the operations and re-ingest, run `read`, then restore and re-ingest. */
+  withPatch<T>(corpus: string, ops: readonly StalenessOp[], read: () => Promise<T>): Promise<T>;
+  /**
+   * The corpus search over the patched rows (`patchedSymbolRows`): the
+   * CLI's `buildCorpusSearch` with its embedding cache, so a renamed file's
+   * rows are searched at their new path, as after a re-ingest.
+   */
+  searchFor(rows: readonly LocalizationSymbolRow[]): Promise<CorpusSearch>;
+}
+
 /** What an arm returns for one requirement (cost and time are the runner's). */
 export interface ArmOutput {
   rankedFiles: string[];
@@ -151,6 +176,8 @@ export interface ArmDeps {
   agentPass?: AgentPass;
   /** #1818 — "Evaluate new requirements" over the materialized corpus (the A7 arms). */
   analysis?: AnalysisArmIO;
+  /** #1834 — the staleness cycle over the materialized corpus (the A7 staleness arms). */
+  staleness?: StalenessArmIO;
   /** #1755 — the run's meter, to price an agent pass a second arm reuses. */
   meter?: CostMeter;
   /** Milliseconds; a seam for tests. */

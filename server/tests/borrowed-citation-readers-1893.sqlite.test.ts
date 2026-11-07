@@ -38,6 +38,7 @@ const { loadScopedRequirements, renderRequirementsDocument } =
 const { loadApprovedRequirements } =
   await import("../src/lib/docs-gen/approved-requirements-section.js");
 const { getTraceabilityMatrix } = await import("../src/lib/analysis/traceability-service.js");
+const { loadBackfillData } = await import("../src/lib/traceability/backfill-spec-links.js");
 
 const USER = "u1893";
 const PROJECT = "p1893";
@@ -213,6 +214,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       );
       expect(paths.get(BOTH)).toEqual(["src/own.ts"]);
       expect(paths.get(BORROWER)).toEqual([]);
+    });
+
+    it("the spec-link backfill never links specs from, or derives spec code out of, a borrowed link", async () => {
+      const data = await loadBackfillData(PROJECT, db as never);
+      const code = new Map(data.requirements.map((r) => [r.id, r.code.map((c) => c.filePath)]));
+      expect(code.get(BOTH)).toEqual(["src/own.ts"]);
+      expect(code.get(BORROWER)).toEqual([]);
+      expect(code.get(ORIGIN)).toEqual(["lib/borrowed.ts"]);
     });
   },
 );
