@@ -230,6 +230,12 @@ export interface TraceabilityCodeNode {
    * from; null otherwise. Absent on a spec→code link.
    */
   originRequirementId?: string | null;
+  /**
+   * #1840 — on a `similar-requirement` link, how the origin requirement is
+   * named: its key (`REQ-12`) or, without one, its title. Null when the origin
+   * is gone; absent on a link that was not borrowed.
+   */
+  originRequirementLabel?: string | null;
 }
 
 /**

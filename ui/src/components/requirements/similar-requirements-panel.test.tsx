@@ -57,9 +57,30 @@ const LOT = item({
   label: "duplicate",
   score: 0.88,
   codeLinks: [
-    { filePath: "a.ts", startLine: 1, endLine: 2, source: "semantic", freshness: "fresh" },
-    { filePath: "b.ts", startLine: 1, endLine: 2, source: "semantic", freshness: "moved" },
-    { filePath: "c.ts", startLine: 1, endLine: 2, source: "semantic", freshness: "stale" },
+    {
+      mappingId: "m-a",
+      filePath: "a.ts",
+      startLine: 1,
+      endLine: 2,
+      source: "semantic",
+      freshness: "fresh",
+    },
+    {
+      mappingId: "m-b",
+      filePath: "b.ts",
+      startLine: 1,
+      endLine: 2,
+      source: "semantic",
+      freshness: "moved",
+    },
+    {
+      mappingId: "m-c",
+      filePath: "c.ts",
+      startLine: 1,
+      endLine: 2,
+      source: "semantic",
+      freshness: "stale",
+    },
   ],
 });
 const SERIAL = item({ requirementId: "r-serial", title: "Track serial numbers", label: "related" });
@@ -262,7 +283,14 @@ describe("codeLinkSummary", () => {
     expect(codeLinkSummary([])).toBe("No code links");
     expect(
       codeLinkSummary([
-        { filePath: "a", startLine: null, endLine: null, source: "s", freshness: "unverified" },
+        {
+          mappingId: "m-1",
+          filePath: "a",
+          startLine: null,
+          endLine: null,
+          source: "s",
+          freshness: "unverified",
+        },
       ]),
     ).toBe("1 code link: 0 fresh, 0 stale, 1 not yet checked");
   });
