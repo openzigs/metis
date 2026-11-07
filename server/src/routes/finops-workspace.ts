@@ -16,7 +16,7 @@ import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
 import { getLatestForecast } from "../lib/finops/forecast-service.js";
 import { buildChargebackReport } from "../lib/finops/chargeback-report.js";
-import { sumLedgerUsage } from "../lib/finops/ledger-totals.js";
+import { sumLedgerUsage, workspaceLedgerWhere } from "../lib/finops/ledger-totals.js";
 import { finopsUsagePreAuthRateLimiter } from "../middleware/finops-usage-rate-limit.js";
 
 type Req = Request & { params: Record<string, string> };
@@ -158,8 +158,9 @@ export function finopsWorkspaceRouter(): Router {
       const { workspaceId } = req.params;
       const now = new Date();
       const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+      // #1947 — its projects' rows and its own (governing rule extraction).
       const totals = await sumLedgerUsage({
-        project: { workspaceId },
+        ...workspaceLedgerWhere(workspaceId),
         createdAt: { gte: from, lte: now },
       });
       res.json(ok({ from: from.toISOString(), to: now.toISOString(), ...totals }));

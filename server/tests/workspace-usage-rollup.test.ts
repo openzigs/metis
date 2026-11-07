@@ -75,8 +75,12 @@ describe("rollupWorkspaceUsage", () => {
     ] as never);
 
     vi.mocked(prisma.tokenUsage.aggregate).mockImplementation(
-      prismaImpl(async (args: { where: { project: { workspaceId: string } } }) => {
-        if (args.where.project.workspaceId === "ws-1") {
+      prismaImpl(async (args: { where: { OR: Array<{ workspaceId?: string }> } }) => {
+        // #1947 — the workspace's projects' rows, or its own project-less rows.
+        expect(args.where.OR[0]).toEqual({
+          project: { workspaceId: args.where.OR[1]!.workspaceId },
+        });
+        if (args.where.OR[1]!.workspaceId === "ws-1") {
           return {
             _sum: { totalTokens: 5000, costUsd: 1.004 },
             _count: { sessionId: 3 },

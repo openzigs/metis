@@ -60,6 +60,9 @@ export interface GoverningSearchOptions {
 /** Search results per call: at least one, at most this many. */
 export const MAX_GOVERNING_SEARCH_K = 50;
 
+/** Appended to a workspace id to name the table its rebuild is written into (#1947). */
+export const GOVERNING_SHADOW_SUFFIX = "__reindex";
+
 export class GoverningIndex {
   private readonly space: GoverningVectorSpace;
   private readonly embedder: GoverningEmbedder;
@@ -79,12 +82,15 @@ export class GoverningIndex {
    * Returns the number of chunks written. The caller has already authorised the
    * write and stored the revision row.
    */
-  async indexRevision(input: {
-    workspaceId: string;
-    revisionId: string;
-    filename: string;
-    text: string;
-  }): Promise<number> {
+  async indexRevision(
+    input: {
+      workspaceId: string;
+      revisionId: string;
+      filename: string;
+      text: string;
+    },
+    opts: { shadow?: boolean } = {},
+  ): Promise<number> {
     const chunks = chunkMarkdown(input.text, this.chunkOptions);
     if (chunks.length === 0) return 0;
     const embeddings = await embedInBoundedBatches(
@@ -112,10 +118,21 @@ export class GoverningIndex {
         },
       };
     });
-    const key = this.space.tableKey(input.workspaceId);
+    const key = opts.shadow
+      ? this.shadowTableKey(input.workspaceId)
+      : this.space.tableKey(input.workspaceId);
     await this.space.store.ensureTable(key);
     await this.space.store.upsert(key, rows);
     return rows.length;
+  }
+
+  /**
+   * The table a rebuild of the workspace's table is written into before it
+   * replaces the live one (#1947). A workspace id is a cuid, which never
+   * contains `__`, so no workspace's live key is another's shadow key.
+   */
+  private shadowTableKey(workspaceId: string): string {
+    return this.space.tableKey(`${workspaceId}${GOVERNING_SHADOW_SUFFIX}`);
   }
 
   /**
@@ -144,9 +161,23 @@ export class GoverningIndex {
     return out;
   }
 
-  /** Remove the workspace's governing table, every revision's rows with it (#1918). */
-  async dropWorkspaceTable(workspaceId: string): Promise<void> {
-    await this.space.store.dropTable(this.space.tableKey(workspaceId));
+  /**
+   * Start a rebuild of the workspace's table (#1947): an empty shadow table,
+   * any left by an interrupted rebuild dropped first. The live table, which
+   * search reads, is untouched until {@link swapInShadow}.
+   */
+  async beginShadow(workspaceId: string): Promise<void> {
+    const key = this.shadowTableKey(workspaceId);
+    await this.space.store.dropTable(key);
+    await this.space.store.ensureTable(key);
+  }
+
+  /** Replace the workspace's live table with its rebuilt shadow (#1947; the store's reindex swap). */
+  async swapInShadow(workspaceId: string): Promise<void> {
+    await this.space.store.swapTable(
+      this.space.tableKey(workspaceId),
+      this.shadowTableKey(workspaceId),
+    );
   }
 
   /**

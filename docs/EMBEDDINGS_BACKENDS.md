@@ -922,11 +922,21 @@ governing-document table (`<root>/governing/<workspaceId>`, or the
 `governing/<workspaceId>` key on pgvector), which no project reindex touches. The
 source is each revision's stored text (`GoverningDocumentRevision.extractedText`), so
 a table emptied by `prepare` is rebuilt the same way. A workspace whose table holds
-any row of another model is dropped and rebuilt whole, with no shadow: its governing
-search returns nothing for the seconds that takes. A revision that fails to embed is
-left `pending` and listed, and the command exits 1; re-run it. The same pass embeds
-any revision whose upload-time embed failed. It runs only with
-`GOVERNING_DOCS_ENABLED=1`, and `--project <id>` skips it.
+any row of another model is rebuilt whole into a shadow table and swapped in when the
+shadow is complete (#1947), so its governing search keeps reading the old table until
+then. A revision an admin uploads while the rebuild runs is in neither the sweep's
+snapshot nor the shadow, so after the swap the sweep reads the workspace's revisions
+again and embeds any with no row on the active model. A revision that fails to embed
+is left `pending` and listed on stderr (with the project failures), and the command
+exits 1; re-run it. The same pass embeds any revision whose upload-time embed failed.
+It runs only with `GOVERNING_DOCS_ENABLED=1`, and `--project <id>` skips it.
+
+`status` counts the governing tables too (#1947): a `Governing documents:` line gives
+the live revisions searchable on the active model and lists each workspace with a
+revision that is not (an un-swept model change, a pgvector `prepare`, a failed upload
+embed). Any such workspace makes `status` exit 1 and adds a `reindex --all` step, so a
+model change that leaves only governing rows dark is not "Up to date." and fails the
+deploy gate. With the flag off the line says it was not checked, and counts nothing.
 
 `discard` takes the **same per-project reindex lease the reindex takes**, so it
 refuses (`409`) while a reindex is running — *including one running on another

@@ -64,12 +64,16 @@ export function AgentPicker({ value, onChange, disabled, projectId }: Props) {
   const custom = items.filter((a) => a.kind === "custom");
 
   return (
-    <label className="flex items-center gap-2 text-sm">
+    <label className="flex min-w-0 items-center gap-2 text-sm">
       <span className="text-muted-foreground">Agent:</span>
+      {/* #1889 — a native select is as wide as its longest option, so one long
+          agent name widened the whole chat column and pushed the Skills panel
+          off screen. `min-w-0` lets it narrow to the room it has (the open list
+          still shows every name in full). */}
       <select
         aria-label="Agent"
         data-testid="agent-picker"
-        className="rounded border bg-background px-2 py-1 text-sm disabled:opacity-50"
+        className="min-w-0 rounded border bg-background px-2 py-1 text-sm disabled:opacity-50"
         value={value ?? ""}
         onChange={(e) => onChange(e.target.value || null)}
         disabled={disabled || list.isLoading}

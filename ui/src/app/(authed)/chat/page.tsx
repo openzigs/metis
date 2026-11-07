@@ -658,7 +658,10 @@ export default function ChatPage() {
         <PageHeader
           title="Chat"
           actions={
-            <div className="flex items-center gap-3">
+            // #1889 — wraps, and narrows below its widest control, so a long
+            // agent name moves "New chat" to a second line instead of spilling
+            // past the column into the Skills panel.
+            <div className="flex min-w-0 flex-wrap items-center gap-3">
               {/* #1368 — the selector is normally hidden when a projectId is in
                 the URL, but a stale one degrades the scope and blocks the send;
                 without the picker there would be nothing on screen to pick, so
