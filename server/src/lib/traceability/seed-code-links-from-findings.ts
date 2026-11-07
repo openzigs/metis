@@ -252,8 +252,9 @@ function soleGraph(symbols: GraphSymbol[]): CitationVersion {
 
 /**
  * The innermost symbol whose range encloses `[start, end]`, if any. #1969 — a
- * tie between equal spans (the same file in two graphs) goes to the lowest
- * symbol id, never to whichever row the query returned first.
+ * tie between equal spans goes to the lowest symbol id, never to whichever row
+ * the query returned first. (#1976 — a tie across graphs never reaches here:
+ * {@link enclosedInSeveralGraphs} rules it out first.)
  */
 function enclosingSymbol(
   symbols: GraphSymbol[],
@@ -268,6 +269,21 @@ function enclosingSymbol(
     if (span < bestSpan || (span === bestSpan && sym.id < best!.id)) best = sym;
   }
   return best;
+}
+
+/**
+ * #1976 — whether symbols of more than one graph enclose `[start, end]`: the
+ * same lines exist in several repositories' copies of the file, so which
+ * repository's symbol the citation meant is a guess. Such a span binds no
+ * symbol, because a bound symbol is what the next ingest of its graph
+ * re-validates (`revalidate-code-citations.ts`) and stamps `fresh`.
+ */
+function enclosedInSeveralGraphs(symbols: GraphSymbol[], start: number, end: number): boolean {
+  const graphs = new Set<string>();
+  for (const sym of symbols) {
+    if (sym.startLine <= start && sym.endLine >= end) graphs.add(sym.codeGraphId);
+  }
+  return graphs.size > 1;
 }
 
 /**
@@ -313,7 +329,13 @@ function resolveTarget(
     };
   }
   const own = target.symbolId ? inFile.find((s) => s.id === target.symbolId) : undefined;
-  const sym = own ?? enclosingSymbol(inFile, target.startLine, target.endLine);
+  // #1976 — a span several graphs enclose is kept as a file-level link (its
+  // lines, no symbol, no stamp); it resolves once the citation names its repo.
+  const sym =
+    own ??
+    (enclosedInSeveralGraphs(inFile, target.startLine, target.endLine)
+      ? undefined
+      : enclosingSymbol(inFile, target.startLine, target.endLine));
   if (sym) {
     return {
       codeSymbolId: sym.id,
