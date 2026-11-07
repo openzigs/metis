@@ -730,6 +730,12 @@ export const impactSeedEvidenceSchema = z.object({
     .array(
       z.object({
         filePath: z.string().min(1).max(1024),
+        /**
+         * #1969 — the file's repository, when every seed behind the entry is in
+         * that one repository. Absent when the path was seeded from several (the
+         * entry then speaks for the path in each) and on evidence before #1969.
+         */
+        repoConnectionId: z.string().min(1).max(200).optional(),
         channels: z.array(z.enum(IMPACT_SEED_CHANNELS)).min(1),
         /** #1756 — the file's deterministic (hybrid) score, kept next to any verdict. */
         baseScore: z.number().min(0).optional(),

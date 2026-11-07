@@ -66,8 +66,10 @@ export interface EditFileRow {
  * A file the evidence does not list (a lineage writer or table definition the
  * engine added after seeding) follows, in the order given.
  *
- * #1965 — the evidence names a file by path only (the seeding does not know
- * repositories), so a path in two repositories takes the same entry in each.
+ * #1969 — an entry that names its file's repository (`repoConnectionId`)
+ * speaks for that repository's file only. One that names none (the path was
+ * seeded from several repositories, or the evidence predates #1969) speaks for
+ * the path in each, as in #1965.
  */
 export function orderEditFiles(
   groups: ReadonlyArray<{
@@ -77,13 +79,23 @@ export function orderEditFiles(
   }>,
   evidence: ImpactSeedEvidence,
 ): EditFileRow[] {
-  const entries = new Map(evidence.editCandidates.map((e, i) => [e.filePath, { e, i }]));
-  const rank = (filePath: string) => entries.get(filePath)?.i ?? Number.POSITIVE_INFINITY;
+  const entryOf = (g: (typeof groups)[number]) => {
+    const i = evidence.editCandidates.findIndex(
+      (e) =>
+        e.filePath === g.filePath &&
+        (e.repoConnectionId === undefined || e.repoConnectionId === g.repo?.id),
+    );
+    return i < 0 ? undefined : { e: evidence.editCandidates[i]!, i };
+  };
   return groups
-    .map((g, order) => ({ g, order }))
-    .sort((a, b) => rank(a.g.filePath) - rank(b.g.filePath) || a.order - b.order)
-    .map(({ g }) => {
-      const entry = entries.get(g.filePath)?.e;
+    .map((g, order) => ({ g, order, found: entryOf(g) }))
+    .sort(
+      (a, b) =>
+        (a.found?.i ?? Number.POSITIVE_INFINITY) - (b.found?.i ?? Number.POSITIVE_INFINITY) ||
+        a.order - b.order,
+    )
+    .map(({ g, found }) => {
+      const entry = found?.e;
       const foundBy = entry
         ? [...new Set(entry.channels.map((c) => SEED_CHANNEL_LABEL[c]))]
         : [
