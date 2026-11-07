@@ -301,6 +301,12 @@ export interface PortfolioAssessmentView extends PortfolioAssessment {
   verdict: PortfolioVerdict | null;
   /** Names of the products in the assessment that the reader can read now. */
   productNames: Record<string, string>;
+  /**
+   * #1963 — the products in scope the verdict left out as not in scope of the
+   * change: not checked, and not reached by the impact walk. Empty when none
+   * was, or for a verdict stored before #1963 (which left none out).
+   */
+  notInScope?: string[];
 }
 
 /** One row of `GET /api/portfolio-assessments`. */

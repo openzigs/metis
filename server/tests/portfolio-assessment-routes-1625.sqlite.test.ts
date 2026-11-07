@@ -615,6 +615,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             expect.objectContaining({ coverage: "not-checked", impactKind: "none" }),
           );
           expect(v.verdict).toBe("gap-confirmed");
+          expect(v.notInScope).toEqual([P_OLD]);
           expect(v.summary).toContain(
             "Nothing checked covers this. Old walkthrough was not checked, but this change does not reach it, so it is not in scope.",
           );

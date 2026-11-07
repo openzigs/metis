@@ -561,6 +561,8 @@ export async function viewPortfolioAssessment(
             .join("\n\n")
         : a.summary,
     report,
+    // #1963 — so the page's headline can say which unchecked products were left out.
+    notInScope: [...summaryScope].sort(),
     // #1657 — the stored total includes the calls on what this reader cannot
     // see, which tells them it was assessed: recomputed from what they see.
     // #1668 — from the products' repo calls only, so the run-wide calls that

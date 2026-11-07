@@ -239,24 +239,50 @@ function verdictHeadline(view: PortfolioAssessmentView): CoverageHeadline | null
       };
     case "gap-confirmed": {
       const empty = nothingToCheck(view, rows);
-      return {
-        tone: "gap",
-        text: "Nothing in your portfolio covers this",
+      const outside = notInScopeNote(view, rows);
+      const notes = [
+        ...(outside ? [outside] : []),
         ...(empty.length > 0
-          ? {
+          ? [
               // #1685 — three names, then "and N more"; #1689 — the server's helper.
-              note: `${portfolioNamedInProse(
+              `${portfolioNamedInProse(
                 empty.map((r) => r.name),
                 { sentenceStart: true },
               )} ${empty.length === 1 ? "has" : "have"} no repositories, so there was nothing in ${empty.length === 1 ? "it" : "them"} to check.`,
-            }
-          : {}),
+            ]
+          : []),
+      ];
+      return {
+        tone: "gap",
+        // #1963 — a gap over the products in scope of the change, not the whole portfolio.
+        text: outside
+          ? "Nothing that was checked covers this"
+          : "Nothing in your portfolio covers this",
+        ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
       };
     }
-    default:
+    default: {
+      const outside = notInScopeNote(view, rows);
       return {
         tone: "unknown",
         text: "We could not tell whether anything in your portfolio covers this",
+        ...(outside ? { note: outside } : {}),
       };
+    }
   }
+}
+
+/**
+ * #1963 — the products the verdict left out (`view.notInScope`): not checked,
+ * and not reached by the change, so not what made the answer unknown.
+ */
+function notInScopeNote(view: PortfolioAssessmentView, rows: CoverageRow[]): string | null {
+  const ids = new Set(view.notInScope ?? []);
+  const outside = rows.filter((r) => ids.has(r.productId));
+  if (outside.length === 0) return null;
+  const one = outside.length === 1;
+  return `${portfolioNamedInProse(
+    outside.map((r) => r.name),
+    { sentenceStart: true },
+  )} ${one ? "was" : "were"} not checked, but this change does not reach ${one ? "it" : "them"}, so ${one ? "it is" : "they are"} not in scope.`;
 }

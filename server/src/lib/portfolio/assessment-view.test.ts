@@ -728,6 +728,8 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
       expect(v.summary).toContain(
         "Nothing checked covers this. Unrelated was not checked, but this change does not reach it, so it is not in scope.",
       );
+      // The page's headline reads the same set.
+      expect(v.notInScope).toEqual(["p4"]);
     });
 
     it("one an older run listed none is not known to be unreached: it still stops the gap", async () => {
@@ -776,6 +778,7 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
       expect(v.verdict).toBe("could-not-verify");
       expect(v.summary).toContain("Could not verify across the portfolio: of 3 products,");
       expect(v.summary).not.toContain("not in scope");
+      expect(v.notInScope).toEqual([]);
     });
   });
 });
