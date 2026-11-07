@@ -626,12 +626,15 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
     requirement: ImpactRecallFixture["requirements"][number],
     tracked: readonly ChangedRequirement[],
     options: RunImpactRecallOptions,
-  ): Promise<{ score: RequirementScore; pieces: GuardPiece[] }> {
+  ): Promise<{ score: RequirementScore; pieces: GuardPiece[]; demoted: number }> {
     const tables = new Set<string>();
     const symbols = new Set<string>();
     const pieces: GuardPiece[] = [];
+    let demoted = 0;
     for (const change of tracked.length > 0 ? tracked : [requirementToChange(requirement)]) {
       const found = await observeChange(fixture, change, fixture.searcher, options);
+      // #1899 — the stage's own count of the stale citations it set aside.
+      demoted += found.demotedStaleCitations;
       for (const t of found.foundTables) tables.add(t);
       for (const s of found.foundCodeSymbols) symbols.add(s);
       pieces.push({
@@ -660,7 +663,7 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
             })
           : [],
     });
-    return { score, pieces };
+    return { score, pieces, demoted };
   }
 
   /** One run of A7 or A7O: impact on each analysis's requirements, tables unioned per requirement. */
@@ -798,23 +801,21 @@ export function createAgentSeedGuard(deps: AgentSeedGuardDeps): AgentSeedGuard {
                   return r.demote ? { ...rest, filePath, freshness } : { ...rest, filePath };
                 });
                 const ids = links.flatMap((l) => (l.codeSymbolId ? [l.codeSymbolId] : []));
-                const out = translateCitations(
-                  links,
-                  await deps.qualifiedNames(ids),
-                  fixture,
-                  r.counts,
-                );
-                if (r.demote) r.demoted += out.filter((l) => l.freshness === "stale").length;
-                return out;
+                return translateCitations(links, await deps.qualifiedNames(ids), fixture, r.counts);
               },
               loadFileSymbols,
             },
           };
           const options: RunImpactRecallOptions = { ...deps.options, splitSeeding: seeding };
           r.label = describeConfiguration(options).label;
-          const { score, pieces } = await scoreAgainstFixture(requirement, tracked, options);
+          const { score, pieces, demoted } = await scoreAgainstFixture(
+            requirement,
+            tracked,
+            options,
+          );
           r.scores.push(score);
           r.pieces[requirement.id] = pieces;
+          r.demoted += demoted;
         }
       });
     }

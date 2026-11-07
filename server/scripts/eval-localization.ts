@@ -81,6 +81,12 @@
  *
  *   pnpm eval:materialize localization-01-miniflux-heldout   # and -02, and impact-recall-01-jpetstore
  *   pnpm eval:localization --arms A0,A7,A7K,A7S,A7SD --reference A7,A7S --embed --items 0:4
+ *
+ * #1899 — A7R and A7RD: every repository re-ingested at its pinned commit with
+ * NO patch (a routine re-ingest, which leaves the citations fresh or moved),
+ * read without and with demotion. Read them after A7 and before A7S:
+ *
+ *   pnpm eval:localization --arms A0,A7,A7R,A7RD,A7S,A7SD --reference A7,A7R,A7S --embed --items 0:2
  *   pnpm eval:localization --merge <dir> --reference A7,A7S --table-guard --embed --guard-steps 5
  *
  * The patch sets are committed in `server/scripts/eval-localization-staleness/`
@@ -164,6 +170,7 @@ import {
   loadStalenessPatchSets,
   patchSetsDigest,
   stalenessPatchProblems,
+  withNoopReingest,
   withStalePatch,
   type StalenessCycleDeps,
   type StalenessPatchSet,
@@ -775,9 +782,7 @@ async function stalenessFor(
     try {
       return await run();
     } finally {
-      console.log(
-        `staleness: ${label} patched, read and restored in ${((Date.now() - t0) / 1000).toFixed(1)} s`,
-      );
+      console.log(`staleness: ${label} in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
     }
   };
   console.log(
@@ -792,7 +797,14 @@ async function stalenessFor(
         return ops;
       },
       withPatch: (corpus, ops, read) =>
-        timed(corpus, () => withStalePatch(ops, repoIn(corpus), cycle, read)),
+        timed(`${corpus} patched, read and restored`, () =>
+          withStalePatch(ops, repoIn(corpus), cycle, read),
+        ),
+      // #1899 — A7R, A7RD: every repository of the corpus re-ingested at its pin, no patch.
+      withReingest: (corpus, read) =>
+        timed(`${corpus} re-ingested with no patch and read`, () =>
+          withNoopReingest(states.get(corpus)?.repos ?? [], cycle, read),
+        ),
     },
     guard: withGuard
       ? {
@@ -804,7 +816,7 @@ async function stalenessFor(
             return ops;
           },
           withPatch: (ops, read) =>
-            timed(TABLE_GUARD_CORPUS, () =>
+            timed(`${TABLE_GUARD_CORPUS} patched, read and restored`, () =>
               withStalePatch(ops, repoIn(TABLE_GUARD_CORPUS), cycle, read),
             ),
         }

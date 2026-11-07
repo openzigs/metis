@@ -1212,7 +1212,7 @@ describe("agent-pass counts and split passes in the report (#1810)", () => {
     ).toBeUndefined();
     const md = toMarkdownReport(report);
     expect(md).toContain(
-      "After the staleness patch's re-ingest (#1831): 8 stale, 4 moved, 4 fresh, 0 unverified citation(s); 8 set aside by the stage (#1832).",
+      "After the arm's re-ingest (#1831): 8 stale, 4 moved, 4 fresh, 0 unverified citation(s); 8 set aside by the stage (#1832).",
     );
     expect(md).toContain("0 set aside by the stage");
     expect(md.split("\n").filter((l) => l.startsWith("- A7 analyses"))[0]).not.toContain(

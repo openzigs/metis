@@ -32,4 +32,6 @@ metadata:
 - **Read A7/A7K before any patch cycle.** A cycle re-validates every citation of the repository. Restoring moves a link back as `moved`, which reorders A7's tiers on a later re-read. Re-read a guard on fresh analyses.
 - **Edit every function of the answer file, not one.** One edited function left 0 of 21 citations stale: nobody knows which function the model cites.
 - **#1831 tracks renames by symbol only.** A file-level citation of a renamed file goes `stale` (`file-missing`).
+- **A control equal by construction measures nothing.** A7K = A7 because, with no re-ingest, every citation is `unverified`. Demotion after a routine re-ingest is A7RD − A7R (#1899). Order the arms: A7/A7K, then A7R/A7RD, then A7S/A7SD.
+- **`pnpm typecheck` covers `server/scripts/**` since #1899** (`tsconfig.test.json`). A test-pass error naming a script is real, not noise.
 - **Sonnet A7 slices: at most 2 Miniflux items, or 2 fixture items, per 10-minute call.** 4 Miniflux items got killed twice. A killed slice records no `spend/`: write its A7 partials' `spentUsd` there by hand, and delete its A7/A7K partials so A7S reads the same analysis.
