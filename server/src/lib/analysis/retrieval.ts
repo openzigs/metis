@@ -139,6 +139,17 @@ const toContextChunk = (m: HydratedChunk): RetrievalContextChunk => ({
   source: m.source,
 });
 
+/**
+ * #1867 — what {@link runGroundedRetrieval} reads of the knowledge service:
+ * `search`, and only the hits of its result. A `KnowledgeService` is one; the
+ * governing-rules eval serves committed policy text through the same fusion.
+ */
+export interface GroundedSearchSource {
+  search(
+    ...args: Parameters<KnowledgeService["search"]>
+  ): Promise<Pick<Awaited<ReturnType<KnowledgeService["search"]>>, "hits">>;
+}
+
 export interface GroundedRetrievalOptions {
   projectId: string;
   queries: string[];
@@ -166,7 +177,7 @@ export interface GroundedRetrievalOptions {
  * original ordering. Offline-safe: the no-op reranker returns input unchanged.
  */
 export async function runGroundedRetrieval(
-  knowledge: KnowledgeService,
+  knowledge: GroundedSearchSource,
   opts: GroundedRetrievalOptions,
 ): Promise<RetrievalContextChunk[]> {
   const k = opts.k ?? ANALYSIS_RETRIEVE_K;

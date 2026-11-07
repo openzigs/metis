@@ -5,14 +5,9 @@
  * goes red). The real-DB path, the route and the read-back are in
  * `server/tests/borrow-citations-1839.sqlite.test.ts`.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-const noteRequirementCodeLinksChanged = vi.hoisted(() => vi.fn());
-vi.mock("../docs-gen/approved-requirements-staleness.js", () => ({
-  noteRequirementCodeLinksChanged,
-}));
-
+import { beforeEach, describe, expect, it } from "vitest";
 import {
+  BORROW_RETRY_BACKOFF_MS,
   BORROWED_CONFIDENCE_CAP,
   borrowCitations,
   hideSupersededBorrowedLinks,
@@ -90,8 +85,33 @@ function link(over: Partial<Link> & Pick<Link, "requirementId" | "filePath">): L
   };
 }
 
+/** How many times the next transactions abort as a write conflict before running. */
+let conflicts = 0;
+let conflictCode = "P2034";
+/** The shape the next conflicts are thrown in: Prisma's, or the pg driver adapter's. */
+let conflictShape: "prisma" | "adapter" = "prisma";
+let transactions: Array<{ isolationLevel?: string }> = [];
+/** The backoff waits the borrow asked for, in order (#1902). */
+let sleeps: number[] = [];
+
 function fakePrisma(): BorrowCitationsDeps["prisma"] {
-  return {
+  const client = {
+    $transaction: async (
+      fn: (tx: unknown) => Promise<unknown>,
+      opts: { isolationLevel?: string },
+    ) => {
+      transactions.push(opts);
+      if (conflicts > 0) {
+        conflicts -= 1;
+        throw conflictShape === "prisma"
+          ? Object.assign(new Error("write conflict"), { code: conflictCode })
+          : Object.assign(new Error("TransactionWriteConflict"), {
+              name: "DriverAdapterError",
+              cause: { originalCode: "40001", kind: "TransactionWriteConflict" },
+            });
+      }
+      return fn(client);
+    },
     requirement: {
       findMany: async ({ where }: { where: Where }) =>
         reqs.filter((r) => matches(r as never, where)).map((r) => ({ id: r.id })),
@@ -109,8 +129,19 @@ function fakePrisma(): BorrowCitationsDeps["prisma"] {
         return { count: data.length };
       },
     },
-  } as unknown as BorrowCitationsDeps["prisma"];
+  };
+  return client as unknown as BorrowCitationsDeps["prisma"];
 }
+
+/** A result with every counter at zero but those given. */
+const counts = (over: Partial<Record<string, number>>) => ({
+  copied: 0,
+  skippedStale: 0,
+  skippedDuplicate: 0,
+  skippedBorrowed: 0,
+  notFound: 0,
+  ...over,
+});
 
 const borrow = (to: string, from: string, mappingIds?: string[]) =>
   borrowCitations(
@@ -119,13 +150,20 @@ const borrow = (to: string, from: string, mappingIds?: string[]) =>
     { fromRequirementId: from, ...(mappingIds ? { mappingIds } : {}) },
     {
       prisma: fakePrisma(),
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
     },
   );
 const rowsOf = (requirementId: string) => links.filter((l) => l.requirementId === requirementId);
 
 beforeEach(() => {
-  noteRequirementCodeLinksChanged.mockReset();
   seq = 0;
+  conflicts = 0;
+  conflictCode = "P2034";
+  conflictShape = "prisma";
+  transactions = [];
+  sleeps = [];
   reqs = [
     { id: "to", projectId: P, deletedAt: null },
     { id: "from", projectId: P, deletedAt: null },
@@ -139,7 +177,7 @@ describe("borrowCitations (#1839)", () => {
   it("copies a fresh link as a similar-requirement suggestion naming its origin", async () => {
     links.push(link({ requirementId: "from", filePath: "src/a.ts" }));
     const result = await borrow("to", "from");
-    expect(result).toEqual({ copied: 1, skippedStale: 0, skippedDuplicate: 0 });
+    expect(result).toEqual(counts({ copied: 1 }));
     const [copy] = rowsOf("to");
     expect(copy).toMatchObject({
       projectId: P,
@@ -157,7 +195,6 @@ describe("borrowCitations (#1839)", () => {
       symbolKind: "function",
       symbolContentHash: "h",
     });
-    expect(noteRequirementCodeLinksChanged).toHaveBeenCalledWith(["to"]);
   });
 
   it("caps the copy's confidence below an analysis-seeded link's default", async () => {
@@ -179,7 +216,7 @@ describe("borrowCitations (#1839)", () => {
       link({ requirementId: "from", filePath: "src/never.ts", freshness: "unverified" }),
     );
     const result = await borrow("to", "from");
-    expect(result).toEqual({ copied: 1, skippedStale: 2, skippedDuplicate: 0 });
+    expect(result).toEqual(counts({ copied: 1, skippedStale: 2 }));
     expect(rowsOf("to").map((r) => [r.filePath, r.freshness])).toEqual([["src/moved.ts", "moved"]]);
   });
 
@@ -188,10 +225,9 @@ describe("borrowCitations (#1839)", () => {
       link({ requirementId: "from", filePath: "src/a.ts" }),
       link({ requirementId: "from", filePath: "src/b.ts" }),
     );
-    expect(await borrow("to", "from")).toEqual({ copied: 2, skippedStale: 0, skippedDuplicate: 0 });
-    expect(await borrow("to", "from")).toEqual({ copied: 0, skippedStale: 0, skippedDuplicate: 2 });
+    expect(await borrow("to", "from")).toEqual(counts({ copied: 2 }));
+    expect(await borrow("to", "from")).toEqual(counts({ skippedDuplicate: 2 }));
     expect(rowsOf("to")).toHaveLength(2);
-    expect(noteRequirementCodeLinksChanged).toHaveBeenCalledTimes(1);
   });
 
   it("counts two origin links to the same code once", async () => {
@@ -199,7 +235,7 @@ describe("borrowCitations (#1839)", () => {
       link({ requirementId: "from", filePath: "src/a.ts", source: "manual" }),
       link({ requirementId: "from", filePath: "src/a.ts", source: "analysis-grounding" }),
     );
-    expect(await borrow("to", "from")).toEqual({ copied: 1, skippedStale: 0, skippedDuplicate: 1 });
+    expect(await borrow("to", "from")).toEqual(counts({ copied: 1, skippedDuplicate: 1 }));
   });
 
   it("skips code the requirement already links under any source, and files its analysis grounded", async () => {
@@ -215,7 +251,7 @@ describe("borrowCitations (#1839)", () => {
       link({ requirementId: "from", filePath: "src/grounded.ts" }),
       link({ requirementId: "from", filePath: "src/new.ts" }),
     );
-    expect(await borrow("to", "from")).toEqual({ copied: 1, skippedStale: 0, skippedDuplicate: 2 });
+    expect(await borrow("to", "from")).toEqual(counts({ copied: 1, skippedDuplicate: 2 }));
     expect(
       rowsOf("to")
         .filter((r) => r.source === "similar-requirement")
@@ -223,8 +259,9 @@ describe("borrowCitations (#1839)", () => {
     ).toEqual(["src/new.ts"]);
   });
 
-  it("does not lend on a link that was itself borrowed", async () => {
+  it("does not lend on a link that was itself borrowed, and counts it (#1893)", async () => {
     links.push(
+      link({ requirementId: "from", filePath: "src/own.ts" }),
       link({
         requirementId: "from",
         filePath: "src/hearsay.ts",
@@ -232,27 +269,89 @@ describe("borrowCitations (#1839)", () => {
         originRequirementId: "third",
       }),
     );
-    expect(await borrow("to", "from")).toEqual({ copied: 0, skippedStale: 0, skippedDuplicate: 0 });
-    expect(noteRequirementCodeLinksChanged).not.toHaveBeenCalled();
+    expect(await borrow("to", "from")).toEqual(counts({ copied: 1, skippedBorrowed: 1 }));
+    expect(rowsOf("to").map((r) => r.filePath)).toEqual(["src/own.ts"]);
   });
 
-  it("copies only the named mapping ids, and only the origin's own", async () => {
+  it("copies only the named mapping ids, and counts one that is not the origin's own (#1893)", async () => {
     const a = link({ requirementId: "from", filePath: "src/a.ts" });
     const b = link({ requirementId: "from", filePath: "src/b.ts" });
     const foreign = link({ requirementId: "third", filePath: "src/c.ts" });
     links.push(a, b, foreign);
-    expect(await borrow("to", "from", [b.id, foreign.id])).toEqual({
-      copied: 1,
-      skippedStale: 0,
-      skippedDuplicate: 0,
-    });
+    expect(await borrow("to", "from", [b.id, foreign.id, "m-nope", b.id])).toEqual(
+      counts({ copied: 1, notFound: 2 }),
+    );
     expect(rowsOf("to").map((r) => r.filePath)).toEqual(["src/b.ts"]);
   });
 
   it("never reads a link of the origin requirement held under another project", async () => {
     links.push(link({ requirementId: "from", filePath: "src/x.ts", projectId: OTHER }));
-    expect(await borrow("to", "from")).toEqual({ copied: 0, skippedStale: 0, skippedDuplicate: 0 });
+    expect(await borrow("to", "from")).toEqual(counts({}));
   });
+
+  it("answers 400 BORROW_FROM_SELF for a requirement borrowing from itself (#1893)", async () => {
+    links.push(link({ requirementId: "to", filePath: "src/a.ts" }));
+    await expect(borrow("to", "to")).rejects.toMatchObject({
+      statusCode: 400,
+      code: "BORROW_FROM_SELF",
+    });
+    expect(rowsOf("to")).toHaveLength(1);
+  });
+
+  it("reads and writes in one serializable transaction (#1893)", async () => {
+    links.push(link({ requirementId: "from", filePath: "src/a.ts" }));
+    await borrow("to", "from");
+    expect(transactions).toEqual([{ isolationLevel: "Serializable" }]);
+  });
+
+  it("retries a borrow the database aborted as a write conflict (#1893)", async () => {
+    links.push(link({ requirementId: "from", filePath: "src/a.ts" }));
+    conflicts = 2;
+    expect(await borrow("to", "from")).toEqual(counts({ copied: 1 }));
+    expect(transactions).toHaveLength(3);
+    expect(rowsOf("to")).toHaveLength(1);
+    // #1902 — a jittered wait before each retry, growing with the attempt.
+    expect(sleeps).toHaveLength(2);
+    expect(sleeps[0]).toBeGreaterThanOrEqual(BORROW_RETRY_BACKOFF_MS);
+    expect(sleeps[0]).toBeLessThan(2 * BORROW_RETRY_BACKOFF_MS);
+    expect(sleeps[1]).toBeGreaterThanOrEqual(2 * BORROW_RETRY_BACKOFF_MS);
+    expect(sleeps[1]).toBeLessThan(3 * BORROW_RETRY_BACKOFF_MS);
+  });
+
+  it("retries the pg driver adapter's write conflict, which carries no Prisma code", async () => {
+    links.push(link({ requirementId: "from", filePath: "src/a.ts" }));
+    conflicts = 1;
+    conflictShape = "adapter";
+    expect(await borrow("to", "from")).toEqual(counts({ copied: 1 }));
+    expect(transactions).toHaveLength(2);
+  });
+
+  it("does not retry an error that is not a write conflict", async () => {
+    links.push(link({ requirementId: "from", filePath: "src/a.ts" }));
+    conflicts = 1;
+    conflictCode = "P1001";
+    await expect(borrow("to", "from")).rejects.toMatchObject({ code: "P1001" });
+    expect(transactions).toHaveLength(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it.each(["prisma", "adapter"] as const)(
+    "gives up after three %s write conflicts as a named 409, copying nothing (#1902)",
+    async (shape) => {
+      links.push(link({ requirementId: "from", filePath: "src/a.ts" }));
+      conflicts = 3;
+      conflictShape = shape;
+      await expect(borrow("to", "from")).rejects.toMatchObject({
+        name: "AppError",
+        statusCode: 409,
+        code: "BORROW_CONFLICT",
+      });
+      expect(transactions).toHaveLength(3);
+      // No wait after the last attempt: the caller hears at once.
+      expect(sleeps).toHaveLength(2);
+      expect(rowsOf("to")).toHaveLength(0);
+    },
+  );
 
   it.each([
     ["another project's requirement", "to", "elsewhere"],

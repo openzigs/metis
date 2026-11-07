@@ -37,10 +37,15 @@
  * one of the prefixes, matched segment by segment (`isInPathScope`). A
  * repository document with a path scope needs both.
  *
+ * A code link borrowed from a similar requirement (`similar-requirement`,
+ * #1839) never places a requirement (#1893): it is a hypothesis no analysis
+ * has checked.
+ *
  * Every read is filtered on `projectId`: a mapping recorded under another
  * project, a graph or symbol of another project, or a deleted connection, is
  * never counted.
  */
+import { SIMILAR_REQUIREMENT_SOURCE } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { isInPathScope, readStoredPathScope } from "./path-scope.js";
 import type { ScopedRequirement } from "./requirements-scope.js";
@@ -216,7 +221,12 @@ export async function requirementsInScope(
     await Promise.all(
       chunks(ids).map((chunk) =>
         prisma.requirementCodeMapping.findMany({
-          where: { projectId, requirementId: { in: chunk } },
+          // #1893 — a borrowed link (#1839) places no requirement in a repository.
+          where: {
+            projectId,
+            requirementId: { in: chunk },
+            source: { not: SIMILAR_REQUIREMENT_SOURCE },
+          },
           select: {
             requirementId: true,
             filePath: true,

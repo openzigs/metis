@@ -59,6 +59,8 @@ model Workspace {
   slackInstallations SlackAppInstallation[]
   /// Issue #579 — Slack→METIS identity bindings for this workspace.
   slackUserIdentities SlackUserIdentity[]
+  /// Epic #1866 (#1868) — policies and controls uploaded once per workspace.
+  governingDocuments GoverningDocument[]
 
   @@index([slug])
   @@map("workspaces")
@@ -115,6 +117,128 @@ model WorkspaceUsageDaily {
   @@unique([workspaceId, date])
   @@index([workspaceId, date])
   @@map("workspace_usage_daily")
+}
+
+// ============================================================================
+// Governing documents — Epic #1866 (#1868)
+// ============================================================================
+//
+// A company's own policies and control frameworks, uploaded ONCE per workspace
+// and read by every project in it. Not `Document` (whose `projectId` is
+// required and cascades) and not `RuleSet`/`Rule` (dead scanner tables, #806).
+// Scope is the workspace: every read filters on `workspaceId`, and the
+// revision, rule and edit rows reach it through their document. A project is
+// never on this path, so deleting one leaves every row here. The workspace
+// delete route soft-deletes (`Workspace.deletedAt`) and leaves these rows to
+// be refused by its readers; a hard delete of the workspace row cascades all
+// four tables. User ids (`createdById`, `uploadedById`, `editedById`) carry no
+// foreign key, so the authorship of a policy and of its edit history outlives
+// the user's account. Behind `GOVERNING_DOCS_ENABLED` (`lib/governing/flag.ts`).
+
+/// One governing document (a policy, a customer's SOC 2 copy), as a series of revisions.
+model GoverningDocument {
+  id                String    @id @default(cuid())
+  workspaceId       String
+  title             String
+  /// Free text naming the framework, e.g. "Internal security policy", "SOC 2 (customer copy)".
+  framework         String?
+  /// The revision analysis checks against. Must be one of this document's own
+  /// revisions; set by the writer, which owns that invariant (#1869). Null
+  /// until the first revision is stored, and again if that revision is deleted.
+  currentRevisionId String?   @unique
+  createdById       String
+  createdAt         DateTime  @default(now())
+  deletedAt         DateTime?
+
+  workspace       Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  revisions       GoverningDocumentRevision[] @relation("GoverningDocumentRevisions")
+  currentRevision GoverningDocumentRevision?  @relation("GoverningDocumentCurrentRevision", fields: [currentRevisionId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, deletedAt])
+  @@map("governing_documents")
+}
+
+/// One uploaded revision of a governing document. Earlier revisions stay
+/// readable for the findings that cite their rules.
+model GoverningDocumentRevision {
+  id              String   @id @default(cuid())
+  documentId      String
+  /// The policy's own revision name, e.g. "v3". One per document, so a
+  /// finding's "Policy X v3" names exactly one revision.
+  revisionLabel   String
+  effectiveDate   DateTime
+  storagePath     String
+  contentHash     String
+  mimeType        String
+  sizeBytes       Int
+  /// The parsed text. `GoverningRule.clauseStart`/`clauseEnd` are offsets into it.
+  extractedText   String
+  /// Quarantine lifecycle, the same values as `Document.indexState` (Epic #157,
+  /// `DOCUMENT_INDEX_STATES` in `@metis/shared`).
+  indexState      String   @default("pending")
+  /// Rule extraction (#1870): pending|running|done|failed (`GOVERNING_EXTRACTION_STATES`).
+  extractionState String   @default("pending")
+  uploadedById    String
+  createdAt       DateTime @default(now())
+
+  document  GoverningDocument  @relation("GoverningDocumentRevisions", fields: [documentId], references: [id], onDelete: Cascade)
+  currentOf GoverningDocument? @relation("GoverningDocumentCurrentRevision")
+  rules     GoverningRule[]
+
+  @@unique([documentId, revisionLabel])
+  @@index([documentId, createdAt])
+  @@map("governing_document_revisions")
+}
+
+/// One atomic rule extracted from a revision, cited to its exact clause.
+model GoverningRule {
+  id            String    @id @default(cuid())
+  revisionId    String
+  /// The policy's own control id (`AC-2`, `4.3.1`), or a generated `R-012`.
+  controlId     String
+  /// One line, the text the applicability screen reads for every rule (#1872).
+  summary       String
+  /// The clause's section anchor in the policy, e.g. "§4.3".
+  clauseRef     String
+  /// Character offsets into the revision's `extractedText`: the excerpt is
+  /// `extractedText.slice(clauseStart, clauseEnd)` (verified by #1870).
+  clauseStart   Int
+  clauseEnd     Int
+  clauseExcerpt String
+  category      String?
+  /// The latest edit; the full history is `GoverningRuleEdit`.
+  editedById    String?
+  editedAt      DateTime?
+  deletedAt     DateTime?
+  createdAt     DateTime  @default(now())
+
+  revision GoverningDocumentRevision @relation(fields: [revisionId], references: [id], onDelete: Cascade)
+  edits    GoverningRuleEdit[]
+
+  @@index([revisionId, deletedAt])
+  @@map("governing_rules")
+}
+
+/// The edit history of a rule: one row per edit or soft delete, written in the
+/// same transaction as the change to the rule. A table rather than `AuditLog`
+/// rows because `AuditLog` writes are fire-and-forget (a failed insert is only
+/// logged) and keep hashes rather than values by default, so a rule could be
+/// edited with no record of what it said before.
+model GoverningRuleEdit {
+  id         String   @id @default(cuid())
+  ruleId     String
+  /// edit|delete (`GOVERNING_RULE_EDIT_KINDS`).
+  kind       String
+  editedById String
+  /// JSON object of the edited fields' values before and after the change.
+  before     String
+  after      String
+  createdAt  DateTime @default(now())
+
+  rule GoverningRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@index([ruleId, createdAt])
+  @@map("governing_rule_edits")
 }
 
 // ============================================================================

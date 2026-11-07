@@ -231,6 +231,7 @@ describe("synthesizeHolisticDocument — #1218 approved requirements in a reader
     expect(mockPrisma.requirementCodeMapping.findMany.mock.calls[0][0].where).toEqual({
       projectId: "p1",
       requirementId: { in: ["req-approved", "req-other-repo", "req-unmapped"] },
+      source: { not: "similar-requirement" },
     });
     expect(result.markdown).toContain("### R1. Refunds need a manager's approval");
     expect(result.markdown).not.toContain("Shipping labels print");

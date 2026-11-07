@@ -13,6 +13,13 @@
  *     the same list for the draft text, fetched 500 ms after typing stops, with
  *     the request in flight cancelled as soon as the text changes.
  *
+ * #1840 — "Start from these citations" on a similar requirement (for a viewer
+ * with edit rights only): it lists which of the item's saved code links would
+ * be copied and which are skipped (needing a re-check, or borrowed themselves)
+ * before the analyst confirms, then borrows exactly the listed links (#1839).
+ * They show in the requirement's code links as "Borrowed from REQ-xx, not yet
+ * checked by analysis" (`traceability-view.tsx`).
+ *
  * The analyst decides; METIS never merges or deletes. The label is always
  * written out — never conveyed by colour alone.
  */
@@ -20,11 +27,19 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import type { SimilarRequirementItem, SimilarRequirementLabel } from "@metis/shared";
+import {
+  BORROWABLE_FRESHNESS,
+  SIMILAR_REQUIREMENT_SOURCE,
+  type BorrowCitationsResult,
+  type SimilarRequirementCodeLink,
+  type SimilarRequirementItem,
+  type SimilarRequirementLabel,
+} from "@metis/shared";
 import { ApiError, apiErrorMessage } from "@/lib/api-client";
 import { requirementLinksApi } from "@/lib/requirement-links-api";
 import { similarRequirementsApi } from "@/lib/similar-requirements-api";
 import { requirementLinksKey } from "@/components/requirements/requirement-links-panel";
+import { traceabilityKey } from "@/components/traceability/traceability-view";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
@@ -42,17 +57,36 @@ const LABEL_TEXT: Record<SimilarRequirementLabel, string> = {
 };
 
 export function similarRequirementsKey(projectId: string, requirementId: string) {
-  return ["similar-requirements", projectId, requirementId] as const;
+  return [...similarRequirementsPrefix(projectId), requirementId] as const;
 }
 
-/** "3 code links: 2 fresh, 1 stale" — `moved` links were re-pointed and count as fresh. */
+/** #1903 — the prefix of every similar-requirements list of a project. */
+export function similarRequirementsPrefix(projectId: string) {
+  return ["similar-requirements", projectId] as const;
+}
+
+/**
+ * #1902 — the links the requirement holds of its own: a link it borrowed from
+ * a similar requirement (#1839) is a hypothesis no analysis has checked.
+ */
+function ownCodeLinks(links: SimilarRequirementItem["codeLinks"]) {
+  return links.filter((l) => l.source !== SIMILAR_REQUIREMENT_SOURCE);
+}
+
+/**
+ * "3 code links: 2 fresh, 1 stale" — `moved` links were re-pointed and count as
+ * fresh. A borrowed link is counted apart (#1902), never as fresh or stale.
+ */
 export function codeLinkSummary(links: SimilarRequirementItem["codeLinks"]): string {
   if (links.length === 0) return "No code links";
-  const fresh = links.filter((l) => l.freshness === "fresh" || l.freshness === "moved").length;
-  const stale = links.filter((l) => l.freshness === "stale").length;
-  const unchecked = links.length - fresh - stale;
+  const own = ownCodeLinks(links);
+  const fresh = own.filter((l) => l.freshness === "fresh" || l.freshness === "moved").length;
+  const stale = own.filter((l) => l.freshness === "stale").length;
+  const unchecked = own.length - fresh - stale;
+  const borrowed = links.length - own.length;
   const parts = [`${fresh} fresh`, `${stale} stale`];
   if (unchecked > 0) parts.push(`${unchecked} not yet checked`);
+  if (borrowed > 0) parts.push(`${borrowed} borrowed`);
   return `${links.length} code link${links.length === 1 ? "" : "s"}: ${parts.join(", ")}`;
 }
 
@@ -65,12 +99,178 @@ function nameOf(item: SimilarRequirementItem): string {
   return item.key ? `${item.key} ${item.title}` : item.title;
 }
 
-function SimilarItem({
+export interface BorrowPlan {
+  /** Links the borrow copies (unless this requirement already holds the same code). */
+  copy: SimilarRequirementCodeLink[];
+  /** Links skipped until they are re-checked: stale, or never checked. */
+  needsRecheck: SimilarRequirementCodeLink[];
+  /** Links the similar requirement itself borrowed: a hypothesis is not lent on. */
+  borrowed: SimilarRequirementCodeLink[];
+}
+
+/** #1840 — what borrowing `links` does, by the server's rules (`borrow-citations.ts`). */
+export function borrowPlan(links: readonly SimilarRequirementCodeLink[]): BorrowPlan {
+  const plan: BorrowPlan = { copy: [], needsRecheck: [], borrowed: [] };
+  for (const link of links) {
+    if (link.source === SIMILAR_REQUIREMENT_SOURCE) plan.borrowed.push(link);
+    else if (BORROWABLE_FRESHNESS.has(link.freshness)) plan.copy.push(link);
+    else plan.needsRecheck.push(link);
+  }
+  return plan;
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** #1840 — the toast after a borrow: what was copied and why anything was not. */
+export function borrowResultText(result: BorrowCitationsResult, from: string): string {
+  const skipped = [
+    result.skippedDuplicate > 0 ? `${result.skippedDuplicate} already linked` : null,
+    result.skippedStale > 0
+      ? plural(result.skippedStale, "needs a re-check", "need a re-check")
+      : null,
+    result.skippedBorrowed > 0
+      ? plural(result.skippedBorrowed, "borrowed itself", "borrowed themselves")
+      : null,
+    result.notFound > 0 ? `${result.notFound} no longer found` : null,
+  ].filter((part): part is string => part !== null);
+  const head =
+    result.copied > 0
+      ? `Copied ${plural(result.copied, "code link")} from ${from}.`
+      : `No code links copied from ${from}.`;
+  return skipped.length > 0 ? `${head} Skipped: ${skipped.join(", ")}.` : head;
+}
+
+function linkLocation(link: SimilarRequirementCodeLink): string {
+  if (link.startLine == null) return link.filePath;
+  return link.endLine != null && link.endLine !== link.startLine
+    ? `${link.filePath}:${link.startLine}-${link.endLine}`
+    : `${link.filePath}:${link.startLine}`;
+}
+
+function LinkList({
+  heading,
+  links,
+  testId,
+}: {
+  heading: string;
+  links: SimilarRequirementCodeLink[];
+  testId: string;
+}): React.ReactElement | null {
+  if (links.length === 0) return null;
+  return (
+    <div data-testid={testId}>
+      <p className="font-medium">{heading}</p>
+      <ul className="list-disc pl-5">
+        {links.map((link) => (
+          <li key={link.mappingId}>
+            <code className="font-mono">{linkLocation(link)}</code>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function BorrowAction({
   projectId,
+  requirementId,
   item,
 }: {
   projectId: string;
+  requirementId: string;
   item: SimilarRequirementItem;
+}): React.ReactElement {
+  const [confirming, setConfirming] = useState(false);
+  const queryClient = useQueryClient();
+  const plan = borrowPlan(item.codeLinks);
+  const name = nameOf(item);
+  const borrow = useMutation({
+    mutationFn: () =>
+      similarRequirementsApi.borrowCitations(projectId, requirementId, {
+        fromRequirementId: item.requirementId,
+        mappingIds: plan.copy.map((link) => link.mappingId),
+      }),
+    onSuccess: async (result) => {
+      setConfirming(false);
+      toast.success(borrowResultText(result, item.key ?? item.title));
+      await queryClient.invalidateQueries({ queryKey: traceabilityKey(projectId, requirementId) });
+      // #1903 — every similar list of the project: other cards list this
+      // requirement, with the code links it now holds.
+      await queryClient.invalidateQueries({ queryKey: similarRequirementsPrefix(projectId) });
+    },
+    onError: (err) =>
+      toast.error(apiErrorMessage(err as ApiError, "Could not copy the code links")),
+  });
+  if (!confirming) {
+    return (
+      <Button
+        size="sm"
+        variant="outline"
+        className="h-6 px-2 text-xs"
+        onClick={() => setConfirming(true)}
+        aria-label={`Start from the citations of ${name}`}
+      >
+        Start from these citations
+      </Button>
+    );
+  }
+  return (
+    <div
+      role="group"
+      aria-label={`Copy the code links of ${name}`}
+      className="basis-full space-y-2 rounded border border-border bg-background p-2"
+      data-testid="borrow-citations-confirm"
+    >
+      <p>
+        {plan.copy.length > 0
+          ? `Copy ${plural(plan.copy.length, "code link")} from ${name} to this requirement. They are labelled as borrowed and not yet checked by analysis. Code this requirement already links is not copied again.`
+          : `Nothing to copy from ${name}: none of its code links is known to match the current code.`}
+      </p>
+      <LinkList
+        heading={`Will be copied (${plan.copy.length})`}
+        links={plan.copy}
+        testId="borrow-will-copy"
+      />
+      <LinkList
+        heading={`Skipped, stale or not yet checked: needs a re-check first (${plan.needsRecheck.length})`}
+        links={plan.needsRecheck}
+        testId="borrow-skipped-stale"
+      />
+      <LinkList
+        heading={`Skipped, borrowed by ${name} itself (${plan.borrowed.length})`}
+        links={plan.borrowed}
+        testId="borrow-skipped-borrowed"
+      />
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          disabled={plan.copy.length === 0 || borrow.isPending}
+          onClick={() => borrow.mutate()}
+        >
+          {`Copy ${plural(plan.copy.length, "link")}`}
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={borrow.isPending}
+          onClick={() => setConfirming(false)}
+        >
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function SimilarItem({
+  projectId,
+  item,
+  borrowInto,
+}: {
+  projectId: string;
+  item: SimilarRequirementItem;
+  /** #1840 — the requirement links may be borrowed into; absent, no action is offered. */
+  borrowInto?: string;
 }): React.ReactElement {
   return (
     <li
@@ -85,6 +285,9 @@ function SimilarItem({
       </Link>
       <span className="text-muted-foreground">{item.status}</span>
       <span className="text-muted-foreground">{codeLinkSummary(item.codeLinks)}</span>
+      {borrowInto && item.codeLinks.length > 0 ? (
+        <BorrowAction projectId={projectId} requirementId={borrowInto} item={item} />
+      ) : null}
     </li>
   );
 }
@@ -92,9 +295,11 @@ function SimilarItem({
 function SimilarList({
   projectId,
   items,
+  borrowInto,
 }: {
   projectId: string;
   items: SimilarRequirementItem[];
+  borrowInto?: string;
 }): React.ReactElement {
   if (items.length === 0) {
     return (
@@ -106,7 +311,12 @@ function SimilarList({
   return (
     <ul className="space-y-1">
       {items.map((item) => (
-        <SimilarItem key={item.requirementId} projectId={projectId} item={item} />
+        <SimilarItem
+          key={item.requirementId}
+          projectId={projectId}
+          item={item}
+          borrowInto={borrowInto}
+        />
       ))}
     </ul>
   );
@@ -145,7 +355,8 @@ function DuplicateWarning({
     onError: (err) => toast.error(apiErrorMessage(err as ApiError, "Could not save your answer")),
   });
   const busy = mark.isPending || dismiss.isPending;
-  const links = item.codeLinks.length;
+  // #1902 — the code it links of its own, not what it borrowed.
+  const links = ownCodeLinks(item.codeLinks).length;
   return (
     <div
       role="alert"
@@ -183,9 +394,12 @@ function DuplicateWarning({
 export function SimilarRequirementsPanel({
   projectId,
   requirementId,
+  canEdit = false,
 }: {
   projectId: string;
   requirementId: string;
+  /** #1840 — the viewer may edit the requirement (`project.update`): offers "Start from these citations". */
+  canEdit?: boolean;
 }): React.ReactElement {
   const query = useQuery({
     queryKey: similarRequirementsKey(projectId, requirementId),
@@ -221,7 +435,11 @@ export function SimilarRequirementsPanel({
           Similar requirements could not be loaded.
         </p>
       ) : (
-        <SimilarList projectId={projectId} items={items} />
+        <SimilarList
+          projectId={projectId}
+          items={items}
+          borrowInto={canEdit ? requirementId : undefined}
+        />
       )}
     </section>
   );
@@ -263,6 +481,7 @@ export function DraftSimilarRequirements({
 
   if (items === null) return null;
   const duplicate = items.find((i) => i.label === "duplicate");
+  const duplicateLinks = duplicate ? ownCodeLinks(duplicate.codeLinks).length : 0;
   return (
     <section
       className="mt-2 space-y-2"
@@ -272,8 +491,8 @@ export function DraftSimilarRequirements({
       {duplicate ? (
         <p role="alert" className="rounded border border-warning/40 bg-warning-muted p-2 text-xs">
           <strong>Before you add this:</strong> {nameOf(duplicate)} looks like a duplicate
-          {duplicate.codeLinks.length > 0
-            ? ` (it already links to ${duplicate.codeLinks.length} file${duplicate.codeLinks.length === 1 ? "" : "s"})`
+          {duplicateLinks > 0
+            ? ` (it already links to ${duplicateLinks} file${duplicateLinks === 1 ? "" : "s"})`
             : ""}
           .
         </p>

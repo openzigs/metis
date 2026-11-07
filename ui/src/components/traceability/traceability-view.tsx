@@ -17,14 +17,19 @@
  * was read from (up to date, moved, out of date and why), and a summary counts
  * the out-of-date ones, with a re-run for someone who may run analyses
  * (`code-link-freshness.tsx`).
+ *
+ * #1840 — a link borrowed from a similar requirement (#1839) says so: "Borrowed
+ * from REQ-xx, not yet checked by analysis". It is a suggestion until this
+ * requirement's own analysis grounds the file.
  */
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
-import type {
-  RequirementTraceabilityChain,
-  TraceabilityCodeNode,
-  TraceabilitySpecNode,
-  TraceabilityTestNode,
+import {
+  SIMILAR_REQUIREMENT_SOURCE,
+  type RequirementTraceabilityChain,
+  type TraceabilityCodeNode,
+  type TraceabilitySpecNode,
+  type TraceabilityTestNode,
 } from "@metis/shared";
 import { ApiError } from "@/lib/api-client";
 import { traceabilityApi } from "@/lib/traceability-api";
@@ -67,10 +72,18 @@ function CodeRow({ c }: { c: TraceabilityCodeNode }): React.ReactElement {
         <code className="truncate font-mono text-xs">{codeLocation(c)}</code>
         <span className="flex shrink-0 items-center gap-1">
           <FreshnessBadge link={c} />
+          {c.source === SIMILAR_REQUIREMENT_SOURCE ? (
+            <Badge variant="outline">borrowed</Badge>
+          ) : null}
           {c.isTest ? <Badge variant="outline">test</Badge> : null}
           <ConfidenceBadge confidence={c.confidence} />
         </span>
       </div>
+      {c.source === SIMILAR_REQUIREMENT_SOURCE ? (
+        <p data-testid="traceability-borrowed-note" className="pl-4 text-xs text-muted-foreground">
+          {`Borrowed from ${c.originRequirementLabel ?? "a similar requirement"}, not yet checked by analysis`}
+        </p>
+      ) : null}
       <FreshnessNote link={c} />
     </li>
   );

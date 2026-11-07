@@ -225,9 +225,42 @@ describe("getRequirementChain", () => {
         row("src/grounded.ts", "analysis-grounding"),
         row("src/grounded.ts", "similar-requirement", "req-origin"),
         row("src/borrowed.ts", "similar-requirement", "req-origin"),
+        row("src/untitled.ts", "similar-requirement", "req-unkeyed"),
+        row("src/elsewhere.ts", "similar-requirement", "req-other-project"),
       ]);
+    // #1840 — the origins, as the database holds them: the lookup must apply its project scope.
+    const origins = [
+      {
+        id: "req-origin",
+        projectId: "proj-1",
+        title: "Lot tracking",
+        promotedStructuredId: "REQ-12",
+        externalId: null,
+      },
+      {
+        id: "req-unkeyed",
+        projectId: "proj-1",
+        title: "Serial numbers",
+        promotedStructuredId: null,
+        externalId: null,
+      },
+      {
+        id: "req-other-project",
+        projectId: "proj-2",
+        title: "Theirs",
+        promotedStructuredId: "REQ-99",
+        externalId: null,
+      },
+    ];
+    const findOrigins = vi.fn(
+      async ({ where }: { where: { projectId: string; id: { in: string[] } } }) =>
+        origins.filter((o) => o.projectId === where.projectId && where.id.in.includes(o.id)),
+    );
     const p = {
-      requirement: { findFirst: vi.fn().mockResolvedValue({ id: "req-1", title: "X" }) },
+      requirement: {
+        findFirst: vi.fn().mockResolvedValue({ id: "req-1", title: "X" }),
+        findMany: findOrigins,
+      },
       requirementSpecMapping: { findMany: vi.fn().mockResolvedValue([]) },
       specCodeMapping: { findMany: vi.fn() },
       requirementCodeMapping: { findMany: codeLinks },
@@ -235,11 +268,26 @@ describe("getRequirementChain", () => {
       codeEdge: { findMany: vi.fn().mockResolvedValue([]) },
     };
     const chain = await getRequirementChain("proj-1", "req-1", deps(p));
-    expect(chain.directCode.map((c) => [c.filePath, c.source, c.originRequirementId])).toEqual([
-      ["src/grounded.ts", "analysis-grounding", null],
-      ["src/borrowed.ts", "similar-requirement", "req-origin"],
+    expect(
+      chain.directCode.map((c) => [
+        c.filePath,
+        c.source,
+        c.originRequirementId,
+        c.originRequirementLabel,
+      ]),
+    ).toEqual([
+      ["src/grounded.ts", "analysis-grounding", null, undefined],
+      // #1840 — named by its key, else its title; another project's id names nothing.
+      ["src/borrowed.ts", "similar-requirement", "req-origin", "REQ-12"],
+      ["src/untitled.ts", "similar-requirement", "req-unkeyed", "Serial numbers"],
+      ["src/elsewhere.ts", "similar-requirement", "req-other-project", null],
     ]);
     expect(codeLinks.mock.calls[0][0].select.originRequirementId).toBe(true);
+    expect(findOrigins).toHaveBeenCalledTimes(1);
+    expect(findOrigins.mock.calls[0]![0].where).toMatchObject({
+      projectId: "proj-1",
+      deletedAt: null,
+    });
   });
 
   it("defaults a missing spec title to null", async () => {

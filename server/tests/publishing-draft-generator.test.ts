@@ -1174,10 +1174,12 @@ describe("#1064 — code links, hidden ids and the epic's name", () => {
     const unlinked = feature("req_2").body;
     expect(unlinked).not.toContain("login.ts");
     expect(unlinked).toContain("_METIS recorded no code links for this requirement._");
-    // Scoped to the project and to this run's requirements.
+    // Scoped to the project and to this run's requirements, never a borrowed link (#1893).
     for (const requirementId of ["req_1", "req_2"]) {
       expect(vi.mocked(prisma.requirementCodeMapping.findMany)).toHaveBeenCalledWith(
-        expect.objectContaining({ where: { projectId: "proj_1", requirementId } }),
+        expect.objectContaining({
+          where: { projectId: "proj_1", requirementId, source: { not: "similar-requirement" } },
+        }),
       );
     }
     expect(vi.mocked(prisma.requirementCodeMapping.findMany)).toHaveBeenCalledTimes(2);

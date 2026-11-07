@@ -151,6 +151,29 @@ function toIndexedDoc(doc: BM25Doc): IndexedDoc {
   return { ...doc, path: indexedPath(doc.filename) };
 }
 
+/**
+ * #1867 — a standalone index over the given documents with production's BM25
+ * options (fields, tokenizer, stemming, boosts), for an eval that ranks
+ * committed text without a database. It holds no project state and never
+ * touches the {@link BM25Index} singleton.
+ */
+export function createInMemoryBM25(docs: readonly BM25Doc[]): {
+  search(query: string, k: number): BM25Hit[];
+} {
+  const index = new MiniSearch<IndexedDoc>(INDEX_OPTS);
+  index.addAll(docs.map(toIndexedDoc));
+  return {
+    search(query, k) {
+      const trimmed = query.trim();
+      if (trimmed.length === 0) return [];
+      return index
+        .search(trimmed, SEARCH_OPTS)
+        .slice(0, k)
+        .map((r) => ({ chunkId: String(r.id), score: r.score }));
+    },
+  };
+}
+
 interface ProjectState {
   index: MiniSearch<IndexedDoc>;
   /** documentId → Set of chunkIds currently in the index. */

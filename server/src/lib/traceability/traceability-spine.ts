@@ -14,13 +14,14 @@
  * this file implement?" by walking spec→code and requirement→code back to the
  * requirements. Prisma is dependency-injected for unit testing.
  */
-import type {
-  CodeCitationFreshness,
-  CodeCitationStaleReason,
-  RequirementTraceabilityChain,
-  SpecMappingSource,
-  TraceabilityCodeNode,
-  TraceabilitySpecNode,
+import {
+  SIMILAR_REQUIREMENT_SOURCE,
+  type CodeCitationFreshness,
+  type CodeCitationStaleReason,
+  type RequirementTraceabilityChain,
+  type SpecMappingSource,
+  type TraceabilityCodeNode,
+  type TraceabilitySpecNode,
 } from "@metis/shared";
 import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
@@ -62,7 +63,7 @@ function toCodeNode(row: {
     startLine: row.startLine,
     endLine: row.endLine,
     confidence: row.confidence,
-    source: row.source as SpecMappingSource,
+    source: row.source as TraceabilityCodeNode["source"],
     isTest: classifyTestSymbol({ filePath: row.filePath }).isTestFile,
   };
 }
@@ -96,6 +97,27 @@ function toDirectCodeNode(
     // #1839 — where a borrowed (`similar-requirement`) link was copied from.
     originRequirementId: row.originRequirementId,
   };
+}
+
+/**
+ * #1840 — how each borrowed link's origin requirement is named ("Borrowed from
+ * REQ-12"): its key, else its title. Read within the project, so an origin id
+ * of another project names nothing; a deleted origin names nothing either.
+ */
+async function borrowedOriginLabels(
+  prisma: SpinePrisma,
+  projectId: string,
+  rows: ReadonlyArray<{ originRequirementId: string | null }>,
+): Promise<Map<string, string>> {
+  const ids = [
+    ...new Set(rows.flatMap((r) => (r.originRequirementId ? [r.originRequirementId] : []))),
+  ];
+  if (ids.length === 0) return new Map();
+  const origins = await prisma.requirement.findMany({
+    where: { projectId, id: { in: ids }, deletedAt: null },
+    select: { id: true, title: true, promotedStructuredId: true, externalId: true },
+  });
+  return new Map(origins.map((o) => [o.id, o.promotedStructuredId ?? o.externalId ?? o.title]));
 }
 
 /**
@@ -185,13 +207,20 @@ export async function getRequirementChain(
   // #1825 — then each (filePath, codeSymbolId) once: the code agent's citation and
   // the semantic mapper can both link a file. The surer row (read first) is kept.
   const directRows = uniqueCodeLinks(hideSupersededBorrowedLinks(storedDirectRows));
+  const originLabels = await borrowedOriginLabels(prisma, projectId, directRows);
 
   // #814 — the tests that cover this requirement, resolved from the code rows
-  // just read (the resolver issues only its code-graph queries).
+  // just read (the resolver issues only its code-graph queries). #1902 — not
+  // from a borrowed link: its code node is labelled, a test it reached is not.
+  // Filtered before the dedupe: a borrowed row can outrank this requirement's own
+  // lower-confidence row on the same code, and filtering after would drop both.
+  const ownRows = uniqueCodeLinks(
+    storedDirectRows.filter((row) => row.source !== SIMILAR_REQUIREMENT_SOURCE),
+  );
   const tested = await resolveTestedByForTargets(
     projectId,
     [requirement],
-    new Map([[requirement.id, [...directRows, ...specCodeRows]]]),
+    new Map([[requirement.id, [...ownRows, ...specCodeRows]]]),
     undefined,
     { prisma: prisma as unknown as TestedByPrisma },
   );
@@ -201,7 +230,13 @@ export async function getRequirementChain(
     requirementTitle: requirement.title,
     projectId,
     specs,
-    directCode: directRows.map(toDirectCodeNode),
+    // #1840 — only a borrowed link names its origin; every other node is unchanged.
+    directCode: directRows.map((row) => ({
+      ...toDirectCodeNode(row),
+      ...(row.originRequirementId
+        ? { originRequirementLabel: originLabels.get(row.originRequirementId) ?? null }
+        : {}),
+    })),
     testedBy: tested.get(requirement.id) ?? [],
   };
 }

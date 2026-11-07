@@ -29,6 +29,7 @@
 import type { PrismaClient } from "@prisma/client";
 import {
   MAX_TRACEABILITY_LINK_DEPTH,
+  SIMILAR_REQUIREMENT_SOURCE,
   type CrossProjectLinkEdge,
   type LinkedRequirementChain,
   type RequirementChainWithLinks,
@@ -336,8 +337,10 @@ export async function getWorkspaceTraceabilitySummary(
           select: { requirementId: true },
           distinct: ["requirementId"],
         }),
+        // #1902 — a borrowed link (#1839) maps no code for coverage, and does
+        // not make an imported item analysed.
         prisma.requirementCodeMapping.findMany({
-          where: { projectId: pid },
+          where: { projectId: pid, source: { not: SIMILAR_REQUIREMENT_SOURCE } },
           select: { requirementId: true },
           distinct: ["requirementId"],
         }),
