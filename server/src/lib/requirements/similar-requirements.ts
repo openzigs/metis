@@ -317,6 +317,7 @@ async function hydrate(
     list.push({
       mappingId: m.id,
       filePath: m.filePath,
+      codeSymbolId: m.codeSymbolId,
       startLine: m.startLine,
       endLine: m.endLine,
       source: m.source,
