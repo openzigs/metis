@@ -37,6 +37,7 @@
 10. [Project Management](#10-project-management)
     - 10.1 [Project Lifecycle](#101-project-lifecycle)
     - 10.2 [Document Pipeline](#102-document-pipeline)
+    - 10.3 [Governing documents](#103-governing-documents-workspace-scope-epic-1866)
 11. [Publishing Workflow](#11-publishing-workflow)
     - 11.1 [Draft Generation](#111-draft-generation)
     - 11.2 [Review and Approval](#112-review-and-approval)
@@ -2350,6 +2351,40 @@ When a document is uploaded to a project:
 2. **Status tracking**: The document moves through: `uploading` → `processing` → `indexed` (or `failed`)
 3. **Conversion**: The file is converted to plain text using the appropriate converter
 4. **RAG ingestion**: The converted text is automatically fed into the Knowledge pipeline (chunked, embedded, stored) so it becomes searchable by the AI
+
+### 10.3 Governing documents (workspace scope, Epic #1866)
+
+A company's own policies and control frameworks are uploaded **once per workspace**, not per
+project, and later checked against requirements. #1868 adds the store only — no routes, no
+LLM — behind `GOVERNING_DOCS_ENABLED` (`"1"` enables; default off; read at call time by
+`isGoverningDocsEnabled()` in `server/src/lib/governing/flag.ts`, which every later issue
+gates on).
+
+| Table (Prisma model) | Holds | Scope / delete |
+|---|---|---|
+| `governing_documents` (`GoverningDocument`) | title, free-text `framework`, `currentRevisionId`, `deletedAt` | `workspaceId`, cascades with the workspace row |
+| `governing_document_revisions` (`GoverningDocumentRevision`) | `revisionLabel` (unique per document), `effectiveDate`, file metadata, `extractedText`, `indexState` (the `Document` quarantine values), `extractionState` (`pending\|running\|done\|failed`) | cascades with its document |
+| `governing_rules` (`GoverningRule`) | `controlId`, one-line `summary`, `clauseRef`, `clauseStart`/`clauseEnd` offsets into `extractedText`, `clauseExcerpt`, `category`, latest edit, `deletedAt` | cascades with its revision |
+| `governing_rule_edits` (`GoverningRuleEdit`) | one row per edit or soft delete: `kind`, `editedById`, `before`/`after` JSON | cascades with its rule |
+
+- **Why not `Document` or `RuleSet`/`Rule`:** `Document.projectId` is required and cascades,
+  and `RuleSet`/`Rule` are the dead scanner tables #806 removes.
+- **Scope:** reads filter on `workspaceId`; revisions, rules and edits reach it through their
+  document. There is no foreign key to `projects`, so deleting a project leaves every
+  governing row. The workspace delete route soft-deletes (`Workspace.deletedAt`) and leaves
+  the rows for its readers to refuse; a hard delete of the workspace row cascades all four
+  tables. User ids carry no foreign key, so authorship outlives the account.
+- **`currentRevisionId`** is a unique foreign key that is set null if its revision is
+  deleted; the writer (#1869) keeps it pointing at one of the document's own revisions.
+- **Edit history is a table, not `AuditLog` rows:** an `AuditLog` write is fire-and-forget
+  (a failed insert is only logged) and stores hashes, not values, by default, so a rule could
+  change with no record of what it said. A `GoverningRuleEdit` is written in the same
+  transaction as the change.
+- **Wire shapes:** `packages/shared/src/governing.ts`. A revision's shape leaves out
+  `storagePath` and `extractedText`.
+- Migration `20261116001868_issue1868_governing_documents`, reverse scripts in
+  `server/prisma/{,postgres/}rollbacks/`, up -> reverse -> up tested in
+  `server/tests/governing-documents-migration-1868.sqlite.test.ts`.
 
 ---
 
