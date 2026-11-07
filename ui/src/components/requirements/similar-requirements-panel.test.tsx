@@ -100,6 +100,15 @@ const LOT_WITH_BORROWED = {
   ],
 };
 
+/** #1914 — LOT, holding two links into one file: one file, not two. */
+const LOT_ONE_FILE = {
+  ...LOT,
+  codeLinks: [
+    LOT.codeLinks[0]!,
+    { ...LOT.codeLinks[0]!, mappingId: "m-a2", startLine: 40, endLine: 55 },
+  ],
+};
+
 /** The fake server's routes. */
 function route(path: string, opts: { method?: string; body?: unknown } = {}) {
   if (path === `/projects/${P}/requirements/${SELF}/similar` && !opts.method) {
@@ -189,6 +198,14 @@ describe("SimilarRequirementsPanel (#1838)", () => {
     ).toBeInTheDocument();
     expect(screen.getByTestId("duplicate-warning")).toHaveTextContent(
       "looks like the same requirement (it already links to 3 files)",
+    );
+  });
+
+  it("counts the files the duplicate links, not its links (#1914)", async () => {
+    server.items = [LOT_ONE_FILE];
+    mountPanel();
+    expect(await screen.findByTestId("duplicate-warning")).toHaveTextContent(
+      "looks like the same requirement (it already links to 1 file).",
     );
   });
 
@@ -296,6 +313,17 @@ describe("DraftSimilarRequirements (#1838)", () => {
     });
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Before you add this: REQ-7 Lot tracking for recalls looks like a duplicate (it already links to 3 files).",
+    );
+  });
+
+  it("the draft's duplicate warning counts files, not links (#1914)", async () => {
+    apiFetch.mockResolvedValue({ items: [LOT_ONE_FILE] });
+    render(<DraftSimilarRequirements projectId={P} text="Track batch numbers on receipt" />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Before you add this: REQ-7 Lot tracking for recalls looks like a duplicate (it already links to 1 file).",
     );
   });
 

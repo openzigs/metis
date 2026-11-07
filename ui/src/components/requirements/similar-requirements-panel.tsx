@@ -25,7 +25,7 @@
  */
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type Query, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   BORROWABLE_FRESHNESS,
@@ -71,6 +71,23 @@ export function similarRequirementsPrefix(projectId: string) {
  */
 function ownCodeLinks(links: SimilarRequirementItem["codeLinks"]) {
   return links.filter((l) => l.source !== SIMILAR_REQUIREMENT_SOURCE);
+}
+
+/** #1914 — the files it links of its own: two links into one file are one file. */
+function ownLinkedFiles(links: SimilarRequirementItem["codeLinks"]): number {
+  return new Set(ownCodeLinks(links).map((l) => l.filePath)).size;
+}
+
+/**
+ * #1914 — a cached similar list that lists `requirementId`: the lists a borrow
+ * into it changes. The others are not refetched, since each refetch reads the
+ * project's requirements and may call the verifier model.
+ */
+function listsRequirement(requirementId: string) {
+  return (query: Query): boolean => {
+    const data = query.state.data as { items?: SimilarRequirementItem[] } | undefined;
+    return data?.items?.some((i) => i.requirementId === requirementId) ?? false;
+  };
 }
 
 /**
@@ -194,9 +211,12 @@ function BorrowAction({
       setConfirming(false);
       toast.success(borrowResultText(result, item.key ?? item.title));
       await queryClient.invalidateQueries({ queryKey: traceabilityKey(projectId, requirementId) });
-      // #1903 — every similar list of the project: other cards list this
-      // requirement, with the code links it now holds.
-      await queryClient.invalidateQueries({ queryKey: similarRequirementsPrefix(projectId) });
+      // #1903 — other cards list this requirement, with the code links it now
+      // holds. #1914 — only those: no other list changed.
+      await queryClient.invalidateQueries({
+        queryKey: similarRequirementsPrefix(projectId),
+        predicate: listsRequirement(requirementId),
+      });
     },
     onError: (err) =>
       toast.error(apiErrorMessage(err as ApiError, "Could not copy the code links")),
@@ -355,8 +375,8 @@ function DuplicateWarning({
     onError: (err) => toast.error(apiErrorMessage(err as ApiError, "Could not save your answer")),
   });
   const busy = mark.isPending || dismiss.isPending;
-  // #1902 — the code it links of its own, not what it borrowed.
-  const links = ownCodeLinks(item.codeLinks).length;
+  // #1902 — the code it links of its own, not what it borrowed. #1914 — in files.
+  const links = ownLinkedFiles(item.codeLinks);
   return (
     <div
       role="alert"
@@ -481,7 +501,7 @@ export function DraftSimilarRequirements({
 
   if (items === null) return null;
   const duplicate = items.find((i) => i.label === "duplicate");
-  const duplicateLinks = duplicate ? ownCodeLinks(duplicate.codeLinks).length : 0;
+  const duplicateLinks = duplicate ? ownLinkedFiles(duplicate.codeLinks) : 0;
   return (
     <section
       className="mt-2 space-y-2"
