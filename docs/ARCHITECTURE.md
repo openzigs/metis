@@ -4048,15 +4048,17 @@ eval:verification` runs offline and deterministically; it writes JSON to
 obligations) an arm says apply to each analyst-worded requirement, before any governing
 feature ships. The corpus (`eval-data/corpus/governing-01-sample-policy/`) is synthetic: a
 fictional retailer's 40-obligation policy written for the fixture (no AICPA Trust Services
-Criteria text; the loader fails on a TSC marker or on wording that tells the model it is an
-evaluation), a v2 revision changing four clauses, and 36 requirements labelled with the rules
-that truly apply and a per-rule `compliant | gap | needs-ba-input` verdict. 11 carry a
-**non-resembling** pair, checked to share no word stem with the rule; 6 are negatives.
+Criteria text; the loader fails on a TSC marker, and on wording that tells the model it is
+an evaluation in the policy, its title, a rule summary or a requirement), a v2 revision
+changing four clauses, and 36 requirements labelled with the rules that truly apply and a
+per-rule `compliant | gap | needs-ba-input` verdict. 11 carry a **non-resembling** pair,
+checked to share no word stem with the rule; 6 are negatives.
 `server/src/lib/eval/governing/` holds the loader (`corpus.ts`), the arm-agnostic scorer
 (`scorer.ts`: recall overall and on the non-resembling subset, precision, citation accuracy
 against the stored clause, verdict accuracy, hard errors where silence was scored
 `compliant`, ask rate), the arms (`arms.ts`) and the runner (`runner.ts`: ledger-priced
-spend, a dollar cap, an unpriced call stops the run, paired comparison with A0). **A0** is
+spend, a dollar cap that reserves a per-call estimate for every call in flight from the
+first wave on, an unpriced call stops the run, paired comparison with A0). **A0** is
 today's path: the policy chunked by production's chunker, served through
 `runGroundedRetrieval` (production BM25 options, no vectors, so it runs offline apart from
 the model) and `selectWebAgentEvidence` to `runAgent`'s `web` specialist. **A1** is top-k
@@ -4065,12 +4067,20 @@ change. The pass thresholds are in the manifest, recorded before any arm ran; th
 refuses an edit that is not appended to `thresholds.changes` with its issue and reason.
 
 **Baseline** (`baseline-A0.md`, `deepseek-flash`, 3 runs, 2026-11-06): recall 0.99,
-non-resembling recall 1.00, but precision 0.11, citation accuracy 0.61, verdict accuracy
-0.30, ask rate 0, and no clean negative item. At 40 rules the policy is 8 chunks, under the
-retrieval's k of 10, so A0 sees the whole policy: its recall says nothing about top-k misses.
-The web specialist then names about nine rules per requirement as gaps, the
-colour of a button included. The screen's prompt is measured at 40, 200 and 500 rules (about
-1k, 4.4k and 10.6k tokens) for #1872's batching.
+non-resembling recall 1.00, but precision 0.11, a verified citation on only 0.59 of the
+rules it applies, verdict accuracy 0.30, and no clean negative item. The web specialist's
+findings cite the policy, not a rule, so A0's reader attaches a snippet to a rule only when
+it verifies against that rule's clause (#1900): the first reading handed a finding's first
+snippet to every rule it named, and 281 of its 388 failed citations were a verbatim clause
+of a *different* rule, which made the then-reported citation accuracy of 0.61 a property
+of the reader. A0's citation accuracy, hard errors and ask rate are fixed by construction
+(only verified citations; every rule judged `gap`), so the report prints them, and their
+bars, as `n/a` rather than as passes; an arm declares such metrics in `byConstruction`. A
+requirement an arm fails on is scored as an error, never as a clean negative. At 40 rules
+the policy is 8 chunks, under the retrieval's k of 10, so A0 sees the whole policy: its
+recall says nothing about top-k misses. The web specialist then names about nine rules per
+requirement as gaps, the colour of a button included. The screen's prompt is measured at 40,
+200 and 500 rules (about 1k, 4.4k and 10.6k tokens) for #1872's batching.
 
 #### Online eval — scoring sampled live production runs (#1321, epic #1316)
 

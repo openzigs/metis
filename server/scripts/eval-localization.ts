@@ -10,7 +10,8 @@
  *   pnpm eval:localization --table-guard         # + table precision on impact-recall-01 (live provider)
  *   pnpm eval:localization --arms A0,A4 --table-guard  # + A4 on the split seeding, next to A0 on it (#1786)
  *   pnpm eval:localization --arms A0,A13,A13C,A13S     # #1798 re-order: A0 base, A12 base, shuffled pool
- *   pnpm eval:localization --in-sample --arms A13 --rerank-weight 0.3  # tune the A13 model weight (#1798)
+ *   pnpm eval:localization --corpus localization-00-miniflux-run7-insample --arms A13 --rerank-weight 0.3
+ *                                                # tune the A13 model weight on the run-7 six ALONE (#1798, #1819)
  *   pnpm eval:localization --merge <dir> --reference A12,A13   # + every arm paired with A12, then with A13 (#1806)
  *   pnpm eval:localization --arms A0,A3,A3A,A3N --shard 1/10   # #1755 analysis-agent citations (materialize first)
  *   pnpm eval:localization --arms A0,A3A,A7,A7O --reference A3A --items 0:4   # #1818 the shipped IMPACT_AGENT_SEEDS order
@@ -100,6 +101,7 @@ import { buildArms, MODEL_ARMS, parseArmIds } from "../src/lib/eval/localization
 import { RERANK_MODEL_WEIGHT } from "../src/lib/impact-analysis/edit-candidate-reranker.js";
 import type { AIProvider } from "../src/lib/ai/types.js";
 import {
+  assertReferenceArms,
   flagValue,
   nonNegativeNumber,
   positiveInteger,
@@ -485,11 +487,14 @@ async function materializedStates(
 async function agentPassFor(
   provider: AIProvider,
   corpora: readonly LocalizationCorpusName[],
+  armIds: readonly string[],
 ): Promise<AgentPass> {
   const states = await materializedStates(corpora);
-  const { prisma } = await import("../src/lib/prisma.js");
-  const { createMaterializedAgentPass } =
+  const { assertA3NClones, createMaterializedAgentPass } =
     await import("../src/lib/eval/localization/agent-pass.js");
+  // #1819 — before any pass: A3N's file tools read only the clone.
+  if (armIds.includes("A3N")) await assertA3NClones(states);
+  const { prisma } = await import("../src/lib/prisma.js");
   const { assembleAgenticCodeTools } = await import("../src/lib/analysis/orchestrator.js");
   const { assembleAgenticPassSeeds, resolveDatabaseAwareDecision } =
     await import("../src/lib/analysis/agentic-pass-context.js");
@@ -876,6 +881,8 @@ async function main(): Promise<void> {
   // A merge reports the arms the slices recorded, and runs none: its provider
   // is needed only for A4's table guard.
   const reportedArmIds = mergeDir ? await store.recordedArmIds(corpora) : armIds;
+  // #1819 — a mistyped --reference fails here, before the provider, the table guard or any arm spends.
+  assertReferenceArms(references, reportedArmIds);
   // #1834 — a staleness run fails here, before the provider is built and before any spend,
   // when a held-out set, its materialization or its patches are missing.
   const stalenessRun = reportedArmIds.some((id) => STALENESS_ARM_IDS.has(id));
@@ -895,7 +902,7 @@ async function main(): Promise<void> {
   // #1755 — the agent arms read the materialized corpora; a merge runs no pass.
   const agentPass =
     !mergeDir && provider && armIds.some((id) => AGENT_ARM_IDS.has(id))
-      ? await agentPassFor(provider, corpora)
+      ? await agentPassFor(provider, corpora, armIds)
       : undefined;
   // #1818 — the A7 arms run "Evaluate new requirements" on the materialized corpora.
   const analysis =

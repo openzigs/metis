@@ -17,6 +17,10 @@
  *
  * Ratios are pooled over pairs (micro). The interval is a seeded bootstrap
  * over items, so it reproduces byte for byte.
+ *
+ * A requirement the arm failed on (it threw) is scored as an error, never as
+ * a clean negative (#1900): its truth pairs are misses, and a negative item it
+ * failed on is not counted clean.
  */
 import { seededRandom } from "../localization/stats.js";
 import type { GoverningCorpus, GoverningItem, GoverningVerdict } from "./corpus.js";
@@ -41,6 +45,13 @@ export interface GoverningArmOutput {
   /** What the arm did on the way (chunks retrieved, rules screened…); reported, never scored. */
   diagnostics?: Record<string, number>;
 }
+
+/**
+ * #1900 — the metrics an arm fixes by construction, each with the reason: A0
+ * judges every rule `gap`, so it can make no hard error and never asks. A bar
+ * on such a metric cannot fail, so it is reported `n/a`, never as a pass.
+ */
+export type ByConstruction = Partial<Record<"hardErrors" | "askRate" | "citationAccuracy", string>>;
 
 /** An excerpt shorter than this does not pin a clause, so it never verifies. */
 export const MIN_EXCERPT_WORDS = 4;
@@ -99,6 +110,8 @@ export interface ItemCounts {
   verdictCorrect: number;
   hardErrors: number;
   asked: number;
+  /** 1 when the arm threw on this requirement, else 0. */
+  failures: number;
 }
 
 export interface ItemScore extends ItemCounts {
@@ -108,12 +121,13 @@ export interface ItemScore extends ItemCounts {
 
 /**
  * Score one requirement. A rule judged twice counts once (the first
- * judgement); a rule id the corpus does not have is a false positive.
+ * judgement); a rule id the corpus does not have is a false positive. An
+ * output carrying `error` is a requirement the arm failed on.
  */
 export function scoreItem(
   corpus: Pick<GoverningCorpus, "ruleById">,
   item: Pick<GoverningItem, "id" | "applies">,
-  output: GoverningArmOutput,
+  output: GoverningArmOutput & { error?: string },
 ): ItemScore {
   const truth = new Map(item.applies.map((p) => [p.ruleId, p]));
   const judged = new Map<string, GoverningJudgement>();
@@ -130,6 +144,7 @@ export function scoreItem(
     verdictCorrect: 0,
     hardErrors: 0,
     asked: 0,
+    failures: output.error !== undefined ? 1 : 0,
   };
   for (const [ruleId, j] of judged) {
     const t = truth.get(ruleId);
@@ -184,7 +199,7 @@ export interface GoverningMetrics {
   verdictAccuracy: number | null;
   askRate: number | null;
   hardErrors: number;
-  /** Negative items (no rule applies) on which the arm applied nothing. */
+  /** Negative items (no rule applies) on which the arm ran and applied nothing. */
   cleanNegatives: number;
   negatives: number;
 }
@@ -221,7 +236,8 @@ export function aggregate(scores: readonly ItemCounts[]): GoverningMetrics {
     items: scores.length,
     hardErrors: sum(scores, "hardErrors"),
     negatives: negatives.length,
-    cleanNegatives: negatives.filter((s) => s.applied === 0).length,
+    // A crash applies nothing too, but it is an error, not a clean negative.
+    cleanNegatives: negatives.filter((s) => s.applied === 0 && s.failures === 0).length,
   } as GoverningMetrics;
   for (const m of RATIO_METRICS) {
     const [num, den] = RATIOS[m];
@@ -339,11 +355,27 @@ export interface ThresholdCheck {
   bar: keyof ThresholdBars;
   required: string;
   measured: string;
-  pass: boolean;
+  /** Null when the arm cannot fail the bar by construction (`note` says why). */
+  pass: boolean | null;
+  note?: string;
 }
 
-/** Each bar against the run-mean (hard errors: the most any one run made). A null metric fails. */
-export function checkThresholds(s: MetricsSummary, bars: ThresholdBars): ThresholdCheck[] {
+/** The metric each bar reads, where an arm may fix that metric by construction. */
+const BAR_METRIC: Partial<Record<keyof ThresholdBars, keyof ByConstruction>> = {
+  citationAccuracy: "citationAccuracy",
+  maxNoEvidenceCompliantErrors: "hardErrors",
+};
+
+/**
+ * Each bar against the run-mean (hard errors: the most any one run made). A
+ * null metric fails; a bar on a metric the arm fixes by construction is
+ * neither passed nor failed (`pass: null`).
+ */
+export function checkThresholds(
+  s: MetricsSummary,
+  bars: ThresholdBars,
+  byConstruction: ByConstruction = {},
+): ThresholdCheck[] {
   const fmt = (v: number | null) => (v === null ? "n/a" : v.toFixed(2));
   const atLeast = (bar: keyof ThresholdBars, metric: RatioMetric): ThresholdCheck => {
     const v = s.metrics[metric].mean;
@@ -355,7 +387,7 @@ export function checkThresholds(s: MetricsSummary, bars: ThresholdBars): Thresho
     };
   };
   const worstRun = Math.max(0, ...s.hardErrorsPerRun);
-  return [
+  const checks: ThresholdCheck[] = [
     atLeast("overallRecall", "recall"),
     atLeast("nonResemblingRecall", "nonResemblingRecall"),
     atLeast("precision", "precision"),
@@ -367,4 +399,9 @@ export function checkThresholds(s: MetricsSummary, bars: ThresholdBars): Thresho
       pass: worstRun <= bars.maxNoEvidenceCompliantErrors,
     },
   ];
+  return checks.map((c) => {
+    const metric = BAR_METRIC[c.bar];
+    const reason = metric ? byConstruction[metric] : undefined;
+    return reason === undefined ? c : { ...c, pass: null, note: reason };
+  });
 }

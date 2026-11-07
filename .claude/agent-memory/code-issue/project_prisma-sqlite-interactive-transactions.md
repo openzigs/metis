@@ -22,3 +22,11 @@ interactive `prisma.$transaction`.
   `$transaction` (see `spyOnSwap` in `server/tests/vault-rotation-undo-593.sqlite.test.ts`).
 
 Related: [[prisma-cross-database]], [[repo-connector-proof-and-vault-writes]].
+
+## Postgres differs: a write conflict is not P2034 (2026-11-07)
+
+On Postgres through `@prisma/adapter-pg`, a `Serializable` transaction's write conflict (SQLSTATE `40001`, and deadlock `40P01`) surfaces as a `DriverAdapterError` whose `cause.kind` is `TransactionWriteConflict` — it carries **no** Prisma `P2034` code. A retry loop that checks only `code === "P2034"` retries on SQLite and gives up on the first conflict on Postgres (found on #1893's borrow race; `borrow-citations.ts` checks both; audit of other retry sites is #1904).
+
+**Why:** the SQLite driver path maps the conflict to P2034; the pg adapter does not, so a SQLite-only race test passes while production Postgres fails.
+
+**How to apply:** match both shapes in any write-conflict retry, and prove the retry with a Postgres twin of the race test (`postgres-unit`), not SQLite alone. After the last attempt, answer a named 409, not an unnamed 500.
