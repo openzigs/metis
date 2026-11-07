@@ -453,19 +453,24 @@ projects, which have fixed slugs and connector ids.
 Arm A7 (`IMPACT_AGENT_SEEDS`) leads the files to edit with the code agent's stored
 citations. When the code changes after the analysis, re-validation (#1831) marks a
 citation `moved` or `stale`, and #1832 sets a stale one aside. The staleness slice
-measures that on the held-out corpora, over the same analyses as A7:
+measures that on the held-out corpora, over the same analyses as A7.
+
+**The shipped behaviour is demotion off (#1939).** #1832's demotion runs only with
+`IMPACT_DEMOTE_STALE_CITATIONS=1`, because A7SD − A7S cost Recall@5 −0.097 on Sonnet
+(#1915). So A7 (no re-ingest), A7S (after the code changed) and A7R (after a routine
+re-ingest) read what production ships, and A7SD and A7RD force the flag on:
 
 | Arm | Staleness | Demotion (#1832) |
 |---|---|---|
-| `A7` | none | on (as shipped) |
-| `A7K` | none | off: the citations' freshness hidden, the stage before #1832 |
-| `A7S` | the item's patch, re-ingested | off |
-| `A7SD` | the item's patch, re-ingested | on |
-| `A7R` | none: a no-op re-ingest at the pinned commit (#1899) | off |
-| `A7RD` | none: a no-op re-ingest at the pinned commit (#1899) | on |
+| `A7` | none | off (as shipped since #1939) |
+| `A7K` | none | off: the stage before #1832; since #1939 the same reading as A7 |
+| `A7S` | the item's patch, re-ingested | off (as shipped since #1939) |
+| `A7SD` | the item's patch, re-ingested | on (the flag forced on) |
+| `A7R` | none: a no-op re-ingest at the pinned commit (#1899) | off (as shipped since #1939) |
+| `A7RD` | none: a no-op re-ingest at the pinned commit (#1899) | on (the flag forced on) |
 
 With no re-ingest every citation is still `unverified`, so A7K reads the same as A7
-**by construction**: hiding freshness can neither reorder nor set aside anything. A7K
+**by construction**: with demotion off, nothing is reordered or set aside. A7K
 therefore checks the wiring. It does not measure what demotion costs when nothing is
 stale (#1899). The production case is a routine re-ingest that changes nothing. Its
 re-validation (#1831) gives every citation a verdict, and #1832's freshness tier then

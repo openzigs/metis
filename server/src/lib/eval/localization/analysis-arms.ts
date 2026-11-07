@@ -36,13 +36,15 @@
  *
  * #1834 — the staleness slice, over the same analyses:
  *
- *   - `A7K`  — no staleness, the stage BEFORE #1832 (the citations' freshness
- *     hidden, so nothing is set aside or ordered by tier). With no re-ingest
- *     every citation is still `unverified`, so A7K must equal A7: the control
- *     that demotion costs nothing when nothing is stale.
+ *   - `A7K`  — no staleness, the stage BEFORE #1832 (nothing set aside or
+ *     ordered by tier). With no re-ingest every citation is still
+ *     `unverified`, so A7K must equal A7: the control that demotion costs
+ *     nothing when nothing is stale. Since #1939 both run without demotion.
  *   - `A7S`  — the item's committed staleness patch applied and re-ingested
- *     (re-validating the citations, #1831), read WITHOUT demotion.
- *   - `A7SD` — the same patched state read WITH demotion (#1832, as shipped).
+ *     (re-validating the citations, #1831), read WITHOUT demotion (the
+ *     shipped default since #1939).
+ *   - `A7SD` — the same patched state read WITH demotion (#1832; the flag
+ *     forced on).
  *
  * #1899 — A7K equals A7 by construction (no re-ingest, so every citation is
  * `unverified`), so it cannot show what demotion costs when nothing is stale.
@@ -51,8 +53,18 @@
  * file; `stale` still possible, #1925) and lets the tier sort reorder them:
  *
  *   - `A7R`  — every repository re-ingested at its pinned commit, NO patch,
- *     read with the citations' freshness hidden (the stage before #1832).
- *   - `A7RD` — the same re-ingested state read WITH demotion (#1832).
+ *     read WITHOUT demotion (the stage before #1832, and the shipped default
+ *     since #1939).
+ *   - `A7RD` — the same re-ingested state read WITH demotion (#1832; the flag
+ *     forced on).
+ *
+ * #1939 — which arm is the shipped behaviour: #1832's demotion is behind
+ * `IMPACT_DEMOTE_STALE_CITATIONS`, OFF by default (A7SD − A7S cost Recall@5
+ * −0.097 on Sonnet, #1915). The arms without demotion (A7, A7K, A7S, A7R) run
+ * the stage with the flag off, as production does: stale citations kept, no
+ * freshness tier. They are the shipped behaviour (A7 with no re-ingest, A7S
+ * after the code changed, A7R after a routine re-ingest), and A7K now reads
+ * the same as A7. A7SD and A7RD force the flag on.
  *
  * A7S and A7SD read ONE patch cycle per item and run (apply, re-ingest, read
  * both, restore, re-ingest); A7R and A7RD one re-ingest. The hybrid search reads the patched corpus (a
@@ -98,7 +110,6 @@ import {
   patchedSymbolRows,
   tallyFreshness,
   unrenamedFiles,
-  withoutFreshness,
   type StalenessOp,
 } from "./staleness.js";
 
@@ -109,7 +120,10 @@ export interface AnalysisVariant {
   agentSeeds: boolean;
   /** #1834 — read after the item's committed staleness patch is applied and re-ingested. */
   stale: boolean;
-  /** #1834 — the stage demotes stale citations (#1832, shipped); false hides their freshness. */
+  /**
+   * #1939 — the stage runs with `IMPACT_DEMOTE_STALE_CITATIONS` forced on
+   * (#1832's demotion); false is the shipped default (the flag off).
+   */
   demote: boolean;
   /**
    * #1899 — a staleness variant's cycle applies the item's committed patch;
@@ -119,8 +133,8 @@ export interface AnalysisVariant {
 }
 
 export const ANALYSIS_VARIANTS: Readonly<Record<AnalysisVariant["id"], AnalysisVariant>> = {
-  A7: { id: "A7", agentSeeds: true, stale: false, demote: true, patch: false },
-  A7O: { id: "A7O", agentSeeds: false, stale: false, demote: true, patch: false },
+  A7: { id: "A7", agentSeeds: true, stale: false, demote: false, patch: false },
+  A7O: { id: "A7O", agentSeeds: false, stale: false, demote: false, patch: false },
   A7K: { id: "A7K", agentSeeds: true, stale: false, demote: false, patch: false },
   A7S: { id: "A7S", agentSeeds: true, stale: true, demote: false, patch: true },
   A7SD: { id: "A7SD", agentSeeds: true, stale: true, demote: true, patch: true },
@@ -347,7 +361,7 @@ export function createAnalysisArm(deps: ArmDeps, variant: AnalysisVariant): Loca
     return cited;
   }
 
-  /** The stage's citation reads in one repository, demoting or not. */
+  /** The stage's citation reads in one repository, with the demotion flag forced on or off (#1939). */
   const citationDeps =
     (
       corpus: LocalizationCorpus,
@@ -357,10 +371,7 @@ export function createAnalysisArm(deps: ArmDeps, variant: AnalysisVariant): Loca
     (repo: string): AgentCitationDeps => {
       const load = (requirementId: string): Promise<StoredLinkRow[]> =>
         analysis!.loadCitations(requirementId, corpus.name, repo);
-      return {
-        loadCitations: demote ? (id) => load(id) : withoutFreshness((id) => load(id)),
-        loadFileSymbols,
-      };
+      return { loadCitations: (id) => load(id), loadFileSymbols, demoteStale: demote };
     };
 
   /** The item's committed patch (#1834), or none for a no-op re-ingest (#1899). */
@@ -430,16 +441,14 @@ export function createAnalysisArm(deps: ArmDeps, variant: AnalysisVariant): Loca
       return "computeProjectImpact on the analysis's requirements, IMPACT_AGENT_SEEDS off (#1818 control)";
     }
     const demotion = variant.demote
-      ? "stale citations demoted (#1832, as shipped)"
-      : "the citations' freshness hidden: the stage before #1832 (#1834 control)";
+      ? "IMPACT_DEMOTE_STALE_CITATIONS forced on: stale citations demoted (#1832)"
+      : "IMPACT_DEMOTE_STALE_CITATIONS off, as shipped (#1939): stale citations kept, no freshness tier";
     if (variant.stale && !variant.patch) {
       return `computeProjectImpact on the analysis's requirements, IMPACT_AGENT_SEEDS on, after a no-op re-ingest at the pinned commit (#1899); ${demotion}`;
     }
     return variant.stale
       ? `computeProjectImpact on the analysis's requirements, IMPACT_AGENT_SEEDS on, after the item's staleness patch was re-ingested; ${demotion}`
-      : variant.demote
-        ? "computeProjectImpact on the analysis's requirements, IMPACT_AGENT_SEEDS on (#1759, #1818)"
-        : `computeProjectImpact on the analysis's requirements, IMPACT_AGENT_SEEDS on; ${demotion}`;
+      : `computeProjectImpact on the analysis's requirements, IMPACT_AGENT_SEEDS on (#1759, #1818); ${demotion}`;
   };
 
   return {
@@ -450,7 +459,6 @@ export function createAnalysisArm(deps: ArmDeps, variant: AnalysisVariant): Loca
       (variant.stale
         ? `, after ${variant.patch ? "a staleness patch" : "a no-op re-ingest"}, ${variant.demote ? "demoting" : "not demoting"} stale citations`
         : "") +
-      (variant.agentSeeds && !variant.stale && !variant.demote ? ", freshness hidden" : "") +
       ` (${provider.key}/${provider.model})`,
     configuration: {
       ...a0.configuration,
@@ -465,7 +473,7 @@ export function createAnalysisArm(deps: ArmDeps, variant: AnalysisVariant): Loca
         ? "the hybrid candidates (A0's seeding of the requirement's text)"
         : variant.demote
           ? "leadWithAgentCitations: stale citations set aside; cited files first (freshness tier, then confidence, then citation order), at most 5; then the hybrid candidates; at most 5 more cited files"
-          : "leadWithAgentCitations with freshness hidden: cited files first (confidence, then citation order), at most 5; then the hybrid candidates; at most 5 more cited files",
+          : "leadWithAgentCitations, IMPACT_DEMOTE_STALE_CITATIONS off (#1939): stale citations kept; cited files first (confidence, then citation order), at most 5; then the hybrid candidates; at most 5 more cited files",
       sharedAnalysis: "the A7 variants read one analysis per item, repository and run",
       ...(variant.stale && !variant.patch
         ? {
@@ -566,27 +574,27 @@ export function createA7OArm(deps: ArmDeps): LocalizationArm {
   return createAnalysisArm(deps, ANALYSIS_VARIANTS.A7O);
 }
 
-/** A7K — A7 with the citations' freshness hidden, no staleness: must equal A7 (#1834). */
+/** A7K — no staleness, no demotion: since #1939 the same reading as A7 (#1834). */
 export function createA7KArm(deps: ArmDeps): LocalizationArm {
   return createAnalysisArm(deps, ANALYSIS_VARIANTS.A7K);
 }
 
-/** A7S — after the item's staleness patch, without demotion (#1834). */
+/** A7S — after the item's staleness patch, without demotion: the shipped default (#1834, #1939). */
 export function createA7SArm(deps: ArmDeps): LocalizationArm {
   return createAnalysisArm(deps, ANALYSIS_VARIANTS.A7S);
 }
 
-/** A7SD — after the item's staleness patch, with #1832's demotion (#1834). */
+/** A7SD — after the item's staleness patch, with #1832's demotion forced on (#1834, #1939). */
 export function createA7SDArm(deps: ArmDeps): LocalizationArm {
   return createAnalysisArm(deps, ANALYSIS_VARIANTS.A7SD);
 }
 
-/** A7R — after a no-op re-ingest, freshness hidden: the stage before #1832 (#1899). */
+/** A7R — after a no-op re-ingest, without demotion: the shipped default (#1899, #1939). */
 export function createA7RArm(deps: ArmDeps): LocalizationArm {
   return createAnalysisArm(deps, ANALYSIS_VARIANTS.A7R);
 }
 
-/** A7RD — after a no-op re-ingest, with #1832's demotion (#1899). */
+/** A7RD — after a no-op re-ingest, with #1832's demotion forced on (#1899, #1939). */
 export function createA7RDArm(deps: ArmDeps): LocalizationArm {
   return createAnalysisArm(deps, ANALYSIS_VARIANTS.A7RD);
 }

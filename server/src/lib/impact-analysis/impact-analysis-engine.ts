@@ -1217,6 +1217,11 @@ export interface ImpactServiceDeps {
    */
   agentSeeds?: boolean;
   /**
+   * #1939 — with `agentSeeds`, run #1832's demotion of stale citations
+   * (`IMPACT_DEMOTE_STALE_CITATIONS`, read by the route; off by default).
+   */
+  demoteStaleCitations?: boolean;
+  /**
    * #1756 — the LLM edit-candidate check (`IMPACT_LLM_EDIT_VERIFY`, wired by the
    * route through the impact LLM runtime). When set, the default seeding also
    * returns its file pool ({@link VERIFY_POOL_FILES} files).
@@ -1549,6 +1554,11 @@ export function agentCitationNotice(t: {
   led: number;
   /** #1832 — citations re-validation found out of date, set aside. */
   demoted?: number;
+  /**
+   * #1939 — citations re-validation found out of date, set aside or not. Those
+   * not set aside (the demotion flag off) still seeded, and are said so.
+   */
+  outOfDate?: number;
 }): string {
   const citations = (n: number) => `${n} code-agent citation${n === 1 ? "" : "s"}`;
   const files = (n: number) => `${n} file${n === 1 ? "" : "s"}`;
@@ -1566,7 +1576,12 @@ export function agentCitationNotice(t: {
     demoted === 0
       ? ""
       : ` ${citations(demoted)} ${were(demoted)} set aside: the code ${demoted === 1 ? "it cites" : "they cite"} changed since the analysis.`;
-  return `${head}${dropped}${setAside}`;
+  const kept = Math.max(0, (t.outOfDate ?? 0) - demoted);
+  const keptNote =
+    kept === 0
+      ? ""
+      : ` ${citations(kept)} ${kept === 1 ? "cites" : "cite"} code that changed since the analysis; ${kept === 1 ? "it was" : "they were"} still used.`;
+  return `${head}${dropped}${setAside}${keptNote}`;
 }
 
 /**
@@ -1822,8 +1837,10 @@ async function runImpactAnalysis(
     // #1798 — the edit re-order's totals, for the summary.
     const rerankTotals = { ran: false, moved: 0, promoted: 0, dropped: 0 };
     // #1759 — the code agent's citations' totals, for the summary.
-    const agentTotals = { ran: false, used: 0, stale: 0, led: 0, demoted: 0 };
-    const agentSeeds = deps.agentSeeds ? prismaAgentCitationDeps(prisma) : undefined;
+    const agentTotals = { ran: false, used: 0, stale: 0, led: 0, demoted: 0, outOfDate: 0 };
+    const agentSeeds = deps.agentSeeds
+      ? prismaAgentCitationDeps(prisma, deps.demoteStaleCitations === true)
+      : undefined;
     // #932 — per-item roll-ups fed into the run-level BA overview (best-effort).
     const runItems: RunItemFact[] = [];
 
@@ -1958,6 +1975,7 @@ async function runImpactAnalysis(
           agentTotals.stale += agent.stale;
           agentTotals.led += agent.led;
           agentTotals.demoted += agent.demotedStaleCitations ?? 0;
+          agentTotals.outOfDate += agent.outOfDateCitations ?? 0;
         }
 
         // Skip empty (no code hits) results to keep the report focused: a change

@@ -319,6 +319,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           sumCacheWriteTokens: sum("write"),
         });
       });
+
+      // #1863 — the `anthropic` key also covers DeepSeek's Anthropic-format
+      // endpoint, whose requests must stay as they were before #1842.
+      it(`${route}: on DeepSeek's Anthropic-format endpoint no message block carries a breakpoint`, async () => {
+        setAIProviderForTests(
+          new AnthropicProvider({
+            apiKey: "k",
+            model: SONNET,
+            baseUrl: "https://api.deepseek.com/anthropic",
+          }),
+        );
+        const { sessionId } = await newSession();
+        const res = await post(route, { sessionId, message: "how many rows?" });
+        if (route === "/api/ai/chat") expect(res.status, res.text).toBe(200);
+        else expect(res.text).toContain("event: done");
+        expect(sent).toHaveLength(3);
+        for (const body of sent) {
+          const marked = body.messages.flatMap((m) =>
+            typeof m.content === "string" ? [] : m.content.filter((b) => b.cache_control),
+          );
+          expect(marked).toEqual([]);
+        }
+      });
     }
   },
 );

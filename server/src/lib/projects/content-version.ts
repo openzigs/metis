@@ -18,25 +18,43 @@
  *     `lastIndexedAt` also moves on a finished re-ingest of the same commit (an
  *     extractor upgrade rewrites rows in place). A graph with no `commitSha` has
  *     no finished, labelled ingest: the version is then not {@link
- *     ProjectContentVersion.complete} and callers must not cache under it.
+ *     ProjectContentVersion.complete} and the code tools must not cache under it.
+ *     #1864 — a graph whose repo connection is soft-deleted is left out, so
+ *     removing a repo moves the key and nothing cached from it is served again.
  *   - **Symbol embeddings**: the project's `CodeSymbolEmbedding` count per
  *     model. They are filled in by a background job AFTER the ingest finishes
  *     (#797), and `search_code_symbols` ranks on them, so the key moves while
  *     they fill in.
- *   - **Documents**: a hash over every document row's indexing state (checksum,
- *     status, index state, chunk count, ACL subjects, processed and deleted
- *     times, names). `Document` has no `updatedAt` column, and a hash over the
- *     rows catches an upload (new row), a re-upload or re-index (checksum,
- *     `processedAt`), an ACL edit, a soft delete (`deletedAt`) and a hard delete
- *     (row gone) alike.
- *   - **The active embedder model**: both searches filter on it, so a model
- *     flip moves the key.
+ *   - **Document chunks' embedding models** (#1864): the project's
+ *     `KnowledgeChunk` count per `embeddingModel`. `reindexProject` and
+ *     `retagToActiveModel` re-embed and retag chunks without touching any
+ *     document row, and `search-knowledge` ranks only the chunks tagged with
+ *     the active identity, so a reindex moves the key.
+ *   - **Documents** (#1864): the project's row count, the latest `updatedAt`
+ *     (Prisma sets it on every create and update), and a hash over the indexing
+ *     state of the rows written within {@link RECENT_WRITE_WINDOW_MS} of that
+ *     latest write. The count catches a hard delete; the latest write catches an
+ *     upload, a re-upload, a re-index, an ACL edit and a soft delete; the recent
+ *     rows catch a second write in the same millisecond, which leaves the
+ *     latest write where it was. Two aggregates over the (`projectId`,
+ *     `updatedAt`) index, where #1843 read and hashed every document row
+ *     (repository source files are document rows too) on each call.
+ *   - **The active embedder identity**: both searches filter on it (#792:
+ *     `model`, or `model|pooling|dtype`), so a model or pooling flip moves the
+ *     key.
  *
  * Reads only; every query is scoped by `projectId`.
  */
 import crypto from "node:crypto";
 import { prisma } from "../prisma.js";
 import { getEmbedder } from "../rag/embedder.js";
+
+/**
+ * #1864 — how far before the project's latest document write the rows are
+ * hashed individually. Covers a second write in the same millisecond, and app
+ * servers whose clocks disagree by less than this.
+ */
+export const RECENT_WRITE_WINDOW_MS = 60_000;
 
 export interface ProjectContentVersion {
   /** Commit SHA per code graph, keyed by repo connection id (`graph:<id>` for a graph with none). */
@@ -45,12 +63,31 @@ export interface ProjectContentVersion {
   docsVersion: string;
   /** sha256 of everything above (and the embedding state): the version as one string. */
   key: string;
-  /** False when a code graph has no commit SHA: never cache under this version. */
+  /**
+   * False when a code graph has no commit SHA: the code tools must not cache
+   * under this version. `search-knowledge` reads no code graph and may (#1864).
+   */
   complete: boolean;
+}
+
+/** One document row's indexing state, as the version hashes it. */
+export interface ContentVersionDocument {
+  id: string;
+  filename: string;
+  title: string | null;
+  checksum: string;
+  status: string;
+  indexState: string;
+  chunkCount: number;
+  aclSubjects: string;
+  processedAt: Date | null;
+  deletedAt: Date | null;
+  updatedAt: Date | null;
 }
 
 /** What the version is read from; tests pass their own. */
 export interface ContentVersionSource {
+  /** The project's code graphs, leaving out those of soft-deleted repo connections. */
   codeGraphs(projectId: string): Promise<
     Array<{
       id: string;
@@ -60,27 +97,35 @@ export interface ContentVersionSource {
     }>
   >;
   symbolEmbeddingCounts(projectId: string): Promise<Array<{ model: string; count: number }>>;
-  documents(projectId: string): Promise<
-    Array<{
-      id: string;
-      filename: string;
-      title: string | null;
-      checksum: string;
-      status: string;
-      indexState: string;
-      chunkCount: number;
-      aclSubjects: string;
-      processedAt: Date | null;
-      deletedAt: Date | null;
-    }>
-  >;
-  embedderModel(): string;
+  chunkEmbeddingCounts(projectId: string): Promise<Array<{ model: string; count: number }>>;
+  /** The project's document row count and latest `updatedAt`. */
+  documentSummary(projectId: string): Promise<{ count: number; latestWrite: Date | null }>;
+  /** The project's document rows whose `updatedAt` is at or after `since`. */
+  documentsWrittenSince(projectId: string, since: Date): Promise<ContentVersionDocument[]>;
+  embedderIdentity(): Promise<string> | string;
 }
+
+const DOCUMENT_SELECT = {
+  id: true,
+  filename: true,
+  title: true,
+  checksum: true,
+  status: true,
+  indexState: true,
+  chunkCount: true,
+  aclSubjects: true,
+  processedAt: true,
+  deletedAt: true,
+  updatedAt: true,
+} as const;
 
 export const prismaContentVersionSource: ContentVersionSource = {
   codeGraphs: (projectId) =>
     prisma.codeGraph.findMany({
-      where: { projectId },
+      where: {
+        projectId,
+        OR: [{ repoConnectionId: null }, { repoConnection: { is: { deletedAt: null } } }],
+      },
       select: { id: true, repoConnectionId: true, commitSha: true, lastIndexedAt: true },
     }),
   async symbolEmbeddingCounts(projectId) {
@@ -91,39 +136,77 @@ export const prismaContentVersionSource: ContentVersionSource = {
     });
     return grouped.map((g) => ({ model: g.embeddingModel, count: g._count._all }));
   },
-  documents: (projectId) =>
-    prisma.document.findMany({
+  async chunkEmbeddingCounts(projectId) {
+    const grouped = await prisma.knowledgeChunk.groupBy({
+      by: ["embeddingModel"],
       where: { projectId },
-      select: {
-        id: true,
-        filename: true,
-        title: true,
-        checksum: true,
-        status: true,
-        indexState: true,
-        chunkCount: true,
-        aclSubjects: true,
-        processedAt: true,
-        deletedAt: true,
-      },
+      _count: { _all: true },
+    });
+    return grouped.map((g) => ({ model: g.embeddingModel, count: g._count._all }));
+  },
+  async documentSummary(projectId) {
+    const agg = await prisma.document.aggregate({
+      where: { projectId },
+      _count: { _all: true },
+      _max: { updatedAt: true },
+    });
+    return { count: agg._count._all, latestWrite: agg._max.updatedAt };
+  },
+  documentsWrittenSince: (projectId, since) =>
+    prisma.document.findMany({
+      where: { projectId, updatedAt: { gte: since } },
+      select: DOCUMENT_SELECT,
     }),
-  embedderModel: () => getEmbedder().model,
+  embedderIdentity: () => getEmbedder().currentIdentity(),
 };
 
 const sha256 = (s: string): string => crypto.createHash("sha256").update(s).digest("hex");
 const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
 const byKey = <T>(rows: T[], key: (r: T) => string): T[] =>
   [...rows].sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
+const modelCounts = (rows: Array<{ model: string; count: number }>) =>
+  byKey(rows, (s) => s.model).map((s) => [s.model, s.count]);
+
+async function documentsVersion(projectId: string, source: ContentVersionSource): Promise<string> {
+  const { count, latestWrite } = await source.documentSummary(projectId);
+  const recent = latestWrite
+    ? await source.documentsWrittenSince(
+        projectId,
+        new Date(latestWrite.getTime() - RECENT_WRITE_WINDOW_MS),
+      )
+    : [];
+  return sha256(
+    JSON.stringify([
+      count,
+      iso(latestWrite),
+      byKey(recent, (d) => d.id).map((d) => [
+        d.id,
+        d.filename,
+        d.title,
+        d.checksum,
+        d.status,
+        d.indexState,
+        d.chunkCount,
+        d.aclSubjects,
+        iso(d.processedAt),
+        iso(d.deletedAt),
+        iso(d.updatedAt),
+      ]),
+    ]),
+  );
+}
 
 /** The project's content version, read now. */
 export async function getProjectContentVersion(
   projectId: string,
   source: ContentVersionSource = prismaContentVersionSource,
 ): Promise<ProjectContentVersion> {
-  const [graphs, symbolCounts, documents] = await Promise.all([
+  const [graphs, symbolCounts, chunkCounts, docsVersion, embedder] = await Promise.all([
     source.codeGraphs(projectId),
     source.symbolEmbeddingCounts(projectId),
-    source.documents(projectId),
+    source.chunkEmbeddingCounts(projectId),
+    documentsVersion(projectId, source),
+    source.embedderIdentity(),
   ]);
 
   const codeShas: Record<string, string | null> = {};
@@ -135,30 +218,14 @@ export async function getProjectContentVersion(
   }
   code.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
 
-  const docsVersion = sha256(
-    JSON.stringify(
-      byKey(documents, (d) => d.id).map((d) => [
-        d.id,
-        d.filename,
-        d.title,
-        d.checksum,
-        d.status,
-        d.indexState,
-        d.chunkCount,
-        d.aclSubjects,
-        iso(d.processedAt),
-        iso(d.deletedAt),
-      ]),
-    ),
-  );
-
   const key = sha256(
     JSON.stringify({
       projectId,
       code,
-      symbols: byKey(symbolCounts, (s) => s.model).map((s) => [s.model, s.count]),
+      symbols: modelCounts(symbolCounts),
+      chunks: modelCounts(chunkCounts),
       docsVersion,
-      embedder: source.embedderModel(),
+      embedder,
     }),
   );
 

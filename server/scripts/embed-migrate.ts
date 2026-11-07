@@ -22,6 +22,7 @@
  */
 import {
   defaultMigrationDeps,
+  formatGoverningReindex,
   formatLockStatus,
   formatStatus,
   migrationStatus,
@@ -240,13 +241,16 @@ async function main(): Promise<number> {
         return 2;
       }
 
-      const { results, failures } = await reindexAll(defaultMigrationDeps(), {
-        ...(batchSize !== undefined ? { batchSize } : {}),
-        fresh,
-        onProject: (id, i, total) => process.stdout.write(`\n[${i}/${total}] ${id}\n`),
-        onProgress: (id, processed, total, phase) =>
-          process.stdout.write(`\r  ${id}: ${processed}/${total} ${unitOf(phase)}`),
-      });
+      const { results, failures, governing, governingError } = await reindexAll(
+        defaultMigrationDeps(),
+        {
+          ...(batchSize !== undefined ? { batchSize } : {}),
+          fresh,
+          onProject: (id, i, total) => process.stdout.write(`\n[${i}/${total}] ${id}\n`),
+          onProgress: (id, processed, total, phase) =>
+            process.stdout.write(`\r  ${id}: ${processed}/${total} ${unitOf(phase)}`),
+        },
+      );
 
       process.stdout.write("\n\n");
       const embedded = results.reduce((n, r) => n + r.embeddedChunks, 0);
@@ -255,6 +259,10 @@ async function main(): Promise<number> {
         `Reindexed ${results.length} project(s): ${embedded} chunks embedded, ` +
           `${resumed} resumed from interrupted runs.\n`,
       );
+      // Issue #1918 — the workspaces' governing-document tables.
+      const governingReport = formatGoverningReindex(governing, governingError);
+      if (governingReport) process.stdout.write(`${governingReport}\n`);
+      const governingFailed = governingError !== undefined || (governing?.failures.length ?? 0) > 0;
       if (failures.length > 0) {
         process.stderr.write(`\n${failures.length} project(s) FAILED:\n`);
         for (const f of failures) {
@@ -265,7 +273,7 @@ async function main(): Promise<number> {
         }
         return 1;
       }
-      return 0;
+      return governingFailed ? 1 : 0;
     }
 
     case "retag": {

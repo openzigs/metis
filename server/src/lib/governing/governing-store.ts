@@ -280,9 +280,16 @@ export async function softDeleteDocument(
 }
 
 /**
- * The revisions a search of this workspace may return, keyed by revision id:
- * the current revision of each live document, or with `includeSuperseded`
- * every revision of each live document.
+ * The revisions a search of this workspace may return, keyed by revision id.
+ *
+ * By default, one per live document: its current revision once that is
+ * embedded, and until then (#1918) the newest revision that is. A new revision
+ * becomes current when it is stored, before it is embedded, so without the
+ * fallback a failed embed would drop the whole document out of search while its
+ * previous revision's vectors are still in the table. Each hit names the
+ * revision it came from, so an answer from the previous revision says so. A
+ * document none of whose revisions is embedded returns nothing. With
+ * `includeSuperseded`, every revision of each live document.
  */
 export async function searchableRevisions(
   workspaceId: string,
@@ -294,15 +301,73 @@ export async function searchableRevisions(
       id: true,
       title: true,
       currentRevisionId: true,
-      revisions: { select: { id: true, revisionLabel: true } },
+      revisions: {
+        select: { id: true, revisionLabel: true, indexState: true },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      },
     },
   });
   const out = new Map<string, { documentId: string; revisionLabel: string; title: string }>();
   for (const doc of docs) {
-    for (const rev of doc.revisions) {
-      if (!opts.includeSuperseded && rev.id !== doc.currentRevisionId) continue;
+    const add = (rev: { id: string; revisionLabel: string }) =>
       out.set(rev.id, { documentId: doc.id, revisionLabel: rev.revisionLabel, title: doc.title });
+    if (opts.includeSuperseded) {
+      doc.revisions.forEach(add);
+      continue;
     }
+    const current = doc.revisions.find((rev) => rev.id === doc.currentRevisionId);
+    const serving =
+      current?.indexState === "indexed"
+        ? current
+        : doc.revisions.find((rev) => rev.indexState === "indexed");
+    if (serving) add(serving);
   }
   return out;
+}
+
+/** One workspace's live revisions, as the governing reindex sweep reads them (#1918). */
+export interface GoverningReindexTarget {
+  workspaceId: string;
+  revisions: Array<{ revisionId: string; title: string; indexState: string }>;
+}
+
+/**
+ * Every revision of every live document in every live workspace, grouped by
+ * workspace: what an embedding-model migration must keep searchable (#1918).
+ * No text: the sweep reads it one revision at a time ({@link revisionText}).
+ */
+export async function listReindexTargets(): Promise<GoverningReindexTarget[]> {
+  const docs = await prisma.governingDocument.findMany({
+    where: { deletedAt: null, workspace: { deletedAt: null } },
+    orderBy: [{ workspaceId: "asc" }, { createdAt: "asc" }],
+    select: {
+      workspaceId: true,
+      title: true,
+      revisions: { select: { id: true, indexState: true }, orderBy: { createdAt: "asc" } },
+    },
+  });
+  const byWorkspace = new Map<string, GoverningReindexTarget>();
+  for (const doc of docs) {
+    const target = byWorkspace.get(doc.workspaceId) ?? {
+      workspaceId: doc.workspaceId,
+      revisions: [],
+    };
+    for (const rev of doc.revisions) {
+      target.revisions.push({ revisionId: rev.id, title: doc.title, indexState: rev.indexState });
+    }
+    byWorkspace.set(doc.workspaceId, target);
+  }
+  return [...byWorkspace.values()];
+}
+
+/** A revision's parsed text, when it belongs to this workspace; `null` otherwise. */
+export async function revisionText(
+  workspaceId: string,
+  revisionId: string,
+): Promise<string | null> {
+  const row = await prisma.governingDocumentRevision.findFirst({
+    where: { id: revisionId, document: { workspaceId } },
+    select: { extractedText: true },
+  });
+  return row?.extractedText ?? null;
 }

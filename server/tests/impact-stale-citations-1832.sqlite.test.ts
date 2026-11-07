@@ -1,6 +1,9 @@
 /**
  * #1832 (epic #1827) — impact analysis does not lead with a code citation that
  * re-validation found out of date, and the run says how many it set aside.
+ * #1939 — only with `IMPACT_DEMOTE_STALE_CITATIONS` on; by default the stale
+ * citation still seeds, in confidence order, and the run counts it as out of
+ * date without claiming it was set aside.
  *
  * Real SQLite built from the migration chain. The impact engine runs for real
  * (`executeImpactAnalysis`, `IMPACT_AGENT_SEEDS` on, the production Prisma
@@ -64,6 +67,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     let sqlite: MigratedSqlite;
     let db: PrismaClient;
     let runId = "";
+    let defaultRunId = "";
 
     const user: AuthPayload = {
       userId: USER,
@@ -144,12 +148,23 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           },
         });
       }
-      const run = await db.impactAnalysis.create({
-        data: { status: "pending", startedById: USER, requirementIds: JSON.stringify([REQ]) },
-      });
-      await db.impactAnalysisProject.create({ data: { analysisId: run.id, projectId: PROJ } });
-      runId = run.id;
+      const newRun = async () => {
+        const run = await db.impactAnalysis.create({
+          data: { status: "pending", startedById: USER, requirementIds: JSON.stringify([REQ]) },
+        });
+        await db.impactAnalysisProject.create({ data: { analysisId: run.id, projectId: PROJ } });
+        return run.id;
+      };
+      runId = await newRun();
       await executeImpactAnalysis(runId, [PROJ], {
+        prisma: db,
+        includeSchemaImpact: false,
+        agentSeeds: true,
+        demoteStaleCitations: true,
+      });
+      // #1939 — the route's default: the citations stage on, demotion off.
+      defaultRunId = await newRun();
+      await executeImpactAnalysis(defaultRunId, [PROJ], {
         prisma: db,
         includeSchemaImpact: false,
         agentSeeds: true,
@@ -161,10 +176,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite?.cleanup();
     });
 
-    it("GET /api/impact-analyses/:id returns demotedStaleCitations and unverifiedCitations", async () => {
-      const res = await request(app())
-        .get(`/api/impact-analyses/${runId}`)
+    const get = (id: string) =>
+      request(app())
+        .get(`/api/impact-analyses/${id}`)
         .set("Authorization", `Bearer ${issueTokens(user).accessToken}`);
+
+    it("demotion on: GET /api/impact-analyses/:id returns demotedStaleCitations and unverifiedCitations", async () => {
+      const res = await get(runId);
       expect(res.status).toBe(200);
       expect(res.body.data.status).toBe("completed");
       const evidence = res.body.data.items[0].seedEvidence;
@@ -173,6 +191,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         stale: 0,
         led: 2,
         demotedStaleCitations: 1,
+        outOfDateCitations: 1,
         unverifiedCitations: 1,
       });
       // Fresh first, the never-checked one after it, the stale one nowhere.
@@ -180,6 +199,28 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(editFiles).toEqual([FRESH, LEGACY]);
       expect(res.body.data.summary).toContain(
         "1 code-agent citation was set aside: the code it cites changed since the analysis.",
+      );
+    });
+
+    it("#1939 default: the stale citation still seeds, in confidence order, and is counted, not set aside", async () => {
+      const res = await get(defaultRunId);
+      expect(res.status).toBe(200);
+      expect(res.body.data.status).toBe("completed");
+      const evidence = res.body.data.items[0].seedEvidence;
+      expect(evidence.agentCitations).toEqual({
+        used: 3,
+        stale: 0,
+        led: 3,
+        demotedStaleCitations: 0,
+        outOfDateCitations: 1,
+        unverifiedCitations: 1,
+      });
+      // The surest first, whatever its freshness: no tier sort, no filter.
+      const editFiles = evidence.editCandidates.map((e: { filePath: string }) => e.filePath);
+      expect(editFiles).toEqual([STALE, LEGACY, FRESH]);
+      expect(res.body.data.summary).not.toContain("set aside");
+      expect(res.body.data.summary).toContain(
+        "1 code-agent citation cites code that changed since the analysis; it was still used.",
       );
     });
   },

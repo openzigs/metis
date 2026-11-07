@@ -191,6 +191,7 @@ describe("a run about stored requirements with IMPACT_AGENT_SEEDS (#1759)", () =
       stale: 1,
       led: 1,
       demotedStaleCitations: 0,
+      outOfDateCitations: 0,
       unverifiedCitations: 1,
     });
     expect(evidence.editCandidates[0]).toEqual({ filePath: CITED_FILE, channels: ["code-agent"] });
@@ -243,6 +244,7 @@ describe("a run about stored requirements with IMPACT_AGENT_SEEDS (#1759)", () =
       stale: 0,
       led: 0,
       demotedStaleCitations: 0,
+      outOfDateCitations: 0,
       unverifiedCitations: 0,
     });
   });
@@ -362,6 +364,7 @@ describe("computeProjectImpact: the citations lead after the LLM re-order (#1759
       stale: 0,
       led: 1,
       demotedStaleCitations: 0,
+      outOfDateCitations: 0,
       unverifiedCitations: 1,
     });
   });
@@ -399,6 +402,24 @@ describe("agentCitationNotice (#1759)", () => {
     );
     expect(agentCitationNotice({ used: 1, stale: 1, led: 1, demoted: 2 })).toBe(
       '1 code-agent citation from "Evaluate new requirements" put 1 file at the top of the files to edit; every file the search picked is still listed. 1 code-agent citation was dropped: the cited file is no longer in the code graph. 2 code-agent citations were set aside: the code they cite changed since the analysis.',
+    );
+  });
+
+  it("#1939 — with demotion off, says the out-of-date citations were still used, never set aside", () => {
+    expect(agentCitationNotice({ used: 2, stale: 0, led: 2, demoted: 0, outOfDate: 0 })).toBe(
+      agentCitationNotice({ used: 2, stale: 0, led: 2 }),
+    );
+    const one = agentCitationNotice({ used: 2, stale: 0, led: 2, demoted: 0, outOfDate: 1 });
+    expect(one).toBe(
+      '2 code-agent citations from "Evaluate new requirements" put 2 files at the top of the files to edit; every file the search picked is still listed. 1 code-agent citation cites code that changed since the analysis; it was still used.',
+    );
+    expect(one).not.toContain("set aside");
+    expect(agentCitationNotice({ used: 3, stale: 0, led: 3, outOfDate: 2 })).toContain(
+      "2 code-agent citations cite code that changed since the analysis; they were still used.",
+    );
+    // Demotion on: every out-of-date citation was set aside, so only that sentence.
+    expect(agentCitationNotice({ used: 1, stale: 0, led: 1, demoted: 2, outOfDate: 2 })).toBe(
+      agentCitationNotice({ used: 1, stale: 0, led: 1, demoted: 2 }),
     );
   });
 });
