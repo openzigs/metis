@@ -33,6 +33,8 @@ const PUBLIC_REVISION_SELECT = {
   sizeBytes: true,
   indexState: true,
   extractionState: true,
+  extractionError: true,
+  droppedUnverified: true,
   uploadedById: true,
   createdAt: true,
 } satisfies Prisma.GoverningDocumentRevisionSelect;
@@ -51,6 +53,8 @@ export interface PublicGoverningRevision {
   sizeBytes: number;
   indexState: string;
   extractionState: string;
+  extractionError: string | null;
+  droppedUnverified: number;
   uploadedById: string;
   createdAt: string;
   isCurrent: boolean;
@@ -370,4 +374,282 @@ export async function revisionText(
     select: { extractedText: true },
   });
   return row?.extractedText ?? null;
+}
+
+// ── Rules (#1870) ──────────────────────────────────────────────────────────
+
+/** A rule's fields as they go on the wire. */
+const PUBLIC_RULE_SELECT = {
+  id: true,
+  revisionId: true,
+  controlId: true,
+  summary: true,
+  clauseRef: true,
+  clauseStart: true,
+  clauseEnd: true,
+  clauseExcerpt: true,
+  category: true,
+  editedById: true,
+  editedAt: true,
+  deletedAt: true,
+  createdAt: true,
+} satisfies Prisma.GoverningRuleSelect;
+
+type RuleRow = Prisma.GoverningRuleGetPayload<{
+  select: typeof PUBLIC_RULE_SELECT;
+}>;
+
+export interface PublicGoverningRule {
+  id: string;
+  revisionId: string;
+  controlId: string;
+  summary: string;
+  clauseRef: string;
+  clauseStart: number;
+  clauseEnd: number;
+  clauseExcerpt: string;
+  category: string | null;
+  editedById: string | null;
+  editedAt: string | null;
+  deletedAt: string | null;
+  createdAt: string;
+}
+
+function publicRule(row: RuleRow): PublicGoverningRule {
+  return {
+    ...row,
+    editedAt: row.editedAt ? row.editedAt.toISOString() : null,
+    deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+/** A revision of a live document of this workspace (the revision has no `workspaceId` of its own). */
+function liveRevisionWhere(
+  workspaceId: string,
+  revisionId: string,
+): Prisma.GoverningDocumentRevisionWhereInput {
+  return { id: revisionId, document: liveDocumentWhere(workspaceId) };
+}
+
+/**
+ * Mark a revision of this workspace's live document `running` and return what
+ * extraction reads. `null` when there is no such revision, or its extraction
+ * is already running or done: a revision's rules are extracted once, so a
+ * second run can neither duplicate them nor replace rules an admin has edited.
+ */
+export async function beginRuleExtraction(
+  workspaceId: string,
+  revisionId: string,
+): Promise<{
+  extractedText: string;
+  revisionLabel: string;
+  title: string;
+} | null> {
+  const where = liveRevisionWhere(workspaceId, revisionId);
+  const updated = await prisma.governingDocumentRevision.updateMany({
+    where: { ...where, extractionState: { in: ["pending", "failed"] } },
+    data: { extractionState: "running", extractionError: null },
+  });
+  if (updated.count === 0) return null;
+  const row = await prisma.governingDocumentRevision.findFirst({
+    where,
+    select: {
+      extractedText: true,
+      revisionLabel: true,
+      document: { select: { title: true } },
+    },
+  });
+  if (!row) return null;
+  return {
+    extractedText: row.extractedText,
+    revisionLabel: row.revisionLabel,
+    title: row.document.title,
+  };
+}
+
+/** One rule to store, its citation already verified against the revision's text. */
+export interface RuleInput {
+  controlId: string;
+  summary: string;
+  clauseRef: string;
+  clauseStart: number;
+  clauseEnd: number;
+  clauseExcerpt: string;
+}
+
+/**
+ * Store a revision's extracted rules and mark it `done`, in one transaction, so
+ * a reader sees either no rules and `running`, or every rule and `done`.
+ */
+export async function completeRuleExtraction(
+  workspaceId: string,
+  revisionId: string,
+  rules: RuleInput[],
+  droppedUnverified: number,
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    const revision = await tx.governingDocumentRevision.findFirst({
+      where: { id: revisionId, document: { workspaceId } },
+      select: { id: true },
+    });
+    if (!revision) return;
+    if (rules.length > 0) {
+      await tx.governingRule.createMany({
+        data: rules.map((rule) => ({
+          revisionId: revision.id,
+          controlId: rule.controlId,
+          summary: rule.summary,
+          clauseRef: rule.clauseRef,
+          clauseStart: rule.clauseStart,
+          clauseEnd: rule.clauseEnd,
+          clauseExcerpt: rule.clauseExcerpt,
+        })),
+      });
+    }
+    await tx.governingDocumentRevision.update({
+      where: { id: revision.id },
+      data: {
+        extractionState: "done",
+        extractionError: null,
+        droppedUnverified,
+      },
+    });
+  });
+}
+
+/** Mark a revision's extraction `failed` with the reason a reader is shown. */
+export async function failRuleExtraction(
+  workspaceId: string,
+  revisionId: string,
+  extractionError: string,
+): Promise<void> {
+  await prisma.governingDocumentRevision.updateMany({
+    where: { id: revisionId, document: { workspaceId } },
+    data: { extractionState: "failed", extractionError },
+  });
+}
+
+export interface RuleListing {
+  revision: Pick<
+    PublicGoverningRevision,
+    | "id"
+    | "revisionLabel"
+    | "extractionState"
+    | "extractionError"
+    | "droppedUnverified"
+    | "isCurrent"
+  >;
+  rules: PublicGoverningRule[];
+}
+
+/**
+ * The live rules of one revision of this workspace's live document, in clause
+ * order: the current revision unless `revisionId` names another of the
+ * document's own. `null` when there is no such document or revision, or the
+ * document has no revision yet.
+ */
+export async function listRules(
+  workspaceId: string,
+  documentId: string,
+  revisionId?: string,
+): Promise<RuleListing | null> {
+  const document = await prisma.governingDocument.findFirst({
+    where: { id: documentId, ...liveDocumentWhere(workspaceId) },
+    select: { currentRevisionId: true },
+  });
+  const wanted = revisionId ?? document?.currentRevisionId;
+  if (!document || !wanted) return null;
+  const revision = await prisma.governingDocumentRevision.findFirst({
+    where: { id: wanted, documentId },
+    select: {
+      id: true,
+      revisionLabel: true,
+      extractionState: true,
+      extractionError: true,
+      droppedUnverified: true,
+      rules: {
+        where: { deletedAt: null },
+        select: PUBLIC_RULE_SELECT,
+        orderBy: [{ clauseStart: "asc" }, { clauseEnd: "asc" }, { id: "asc" }],
+      },
+    },
+  });
+  if (!revision) return null;
+  const { rules, ...rest } = revision;
+  return {
+    revision: { ...rest, isCurrent: rest.id === document.currentRevisionId },
+    rules: rules.map(publicRule),
+  };
+}
+
+/** What an admin may change on a rule: its summary and control id, or delete it. */
+export interface RulePatch {
+  summary?: string;
+  controlId?: string;
+  deleted?: true;
+}
+
+/**
+ * Edit or soft-delete a live rule of this workspace's live document, recording
+ * who and when on the rule and the before and after values in a
+ * `GoverningRuleEdit` row, in one transaction. A patch that changes nothing
+ * writes nothing. `null` when there is no such rule.
+ */
+export async function editRule(
+  workspaceId: string,
+  ruleId: string,
+  editedById: string,
+  patch: RulePatch,
+): Promise<{ rule: PublicGoverningRule; changed: boolean } | null> {
+  return prisma.$transaction(async (tx) => {
+    const current = await tx.governingRule.findFirst({
+      where: {
+        id: ruleId,
+        deletedAt: null,
+        revision: { document: liveDocumentWhere(workspaceId) },
+      },
+      select: PUBLIC_RULE_SELECT,
+    });
+    if (!current) return null;
+    const editedAt = new Date();
+    let kind: "edit" | "delete";
+    let before: Record<string, unknown>;
+    let after: Record<string, unknown>;
+    let data: Prisma.GoverningRuleUpdateInput;
+    if (patch.deleted) {
+      kind = "delete";
+      before = { deletedAt: null };
+      after = { deletedAt: editedAt.toISOString() };
+      data = { deletedAt: editedAt };
+    } else {
+      kind = "edit";
+      before = {};
+      after = {};
+      data = {};
+      for (const field of ["summary", "controlId"] as const) {
+        const next = patch[field];
+        if (next === undefined || next === current[field]) continue;
+        before[field] = current[field];
+        after[field] = next;
+        data[field] = next;
+      }
+      if (Object.keys(after).length === 0) return { rule: publicRule(current), changed: false };
+    }
+    const updated = await tx.governingRule.update({
+      where: { id: current.id },
+      data: { ...data, editedById, editedAt },
+      select: PUBLIC_RULE_SELECT,
+    });
+    await tx.governingRuleEdit.create({
+      data: {
+        ruleId: current.id,
+        kind,
+        editedById,
+        before: JSON.stringify(before),
+        after: JSON.stringify(after),
+      },
+    });
+    return { rule: publicRule(updated), changed: true };
+  });
 }
