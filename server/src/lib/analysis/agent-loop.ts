@@ -1952,6 +1952,15 @@ export async function runAgentLoop(
           ? { tools: options.native!.tools, toolChoice: "none" as const }
           : {}),
       };
+      // #1863 — the loop's calls sent `tool_choice: auto`, and on Anthropic a
+      // changed tool_choice invalidates the cached messages. A messages
+      // breakpoint here could read none of the loop's writes back and is the
+      // loop's last call, so it would only re-write the longest transcript at
+      // the write premium. The system breakpoint is unaffected and stays.
+      if (chatOpts.toolChoice === "none" && chatOpts.promptCaching?.messages) {
+        const { messages: _transcript, ...rest } = chatOpts.promptCaching;
+        chatOpts.promptCaching = rest;
+      }
       if (retrySystem) chatOpts.systemMessage = retrySystem;
       // #772 — through the caller's model call, like every turn: chat meters
       // usage and streams text there, so a direct `provider.chat` left the

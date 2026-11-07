@@ -17,21 +17,69 @@ import {
   CHAT_PROMPT_CACHING,
   CHAT_TOOL_LOOP_PROMPT_CACHING,
   chatToolLoopPromptCaching,
+  type ToolLoopCachingProvider,
 } from "./chat-prompt-caching.js";
+import { AnthropicProvider } from "./providers/anthropic-provider.js";
 import { OpenAICompatibleProvider } from "./providers/openai-compatible-provider.js";
+import type { ConfigService } from "../config/config-service.js";
 import { __resetModelCatalogForTests } from "./model-catalog.js";
 import type { ChatMessage, ChatOptions, ChatToolSpec, ProviderKey } from "./types.js";
 
+/** A provider as `chatToolLoopPromptCaching` reads it. */
+function provider(key: ProviderKey, servesRouterModel?: boolean): ToolLoopCachingProvider {
+  return {
+    key,
+    model: "claude-sonnet-5-5",
+    ...(servesRouterModel === undefined ? {} : { servesRouterModel: () => servesRouterModel }),
+  };
+}
+
+/** `ANTHROPIC_BASE_URL_BILLS_AS` as an operator would set it. */
+function billsAs(value: string | undefined): ConfigService {
+  return {
+    get: (k: string) => (k === "ANTHROPIC_BASE_URL_BILLS_AS" ? value : undefined),
+  } as unknown as ConfigService;
+}
+
 describe("chatToolLoopPromptCaching", () => {
-  it("caches the moving transcript on the native Anthropic path", () => {
-    expect(chatToolLoopPromptCaching("anthropic")).toEqual({ system: true, messages: true });
+  it("caches the moving transcript on Anthropic's own API", () => {
+    const p = new AnthropicProvider({ apiKey: "k", model: "claude-sonnet-5-5" });
+    expect(chatToolLoopPromptCaching(p)).toEqual({ system: true, messages: true });
+    expect(
+      chatToolLoopPromptCaching(
+        new AnthropicProvider({ apiKey: "k", baseUrl: "https://api.anthropic.com" }),
+      ),
+    ).toBe(CHAT_TOOL_LOOP_PROMPT_CACHING);
     expect(CHAT_TOOL_LOOP_PROMPT_CACHING).toEqual({ system: true, messages: true });
   });
 
+  it("caches it behind a proxy the operator declared relays to Anthropic", () => {
+    const p = new AnthropicProvider({
+      apiKey: "k",
+      baseUrl: "https://llm-proxy.internal.example",
+      config: billsAs("anthropic"),
+    });
+    expect(chatToolLoopPromptCaching(p)).toBe(CHAT_TOOL_LOOP_PROMPT_CACHING);
+  });
+
+  // #1863 — the `anthropic` key also covers these, whose requests must not change.
+  it.each([
+    ["DeepSeek's Anthropic-format endpoint", "https://api.deepseek.com/anthropic"],
+    ["an undeclared Anthropic-compatible host", "https://llm-proxy.internal.example"],
+  ])("keeps the system-only posture on %s", (_, baseUrl) => {
+    const p = new AnthropicProvider({ apiKey: "k", baseUrl, config: billsAs(undefined) });
+    expect(chatToolLoopPromptCaching(p)).toBe(CHAT_PROMPT_CACHING);
+  });
+
+  it("keeps it on an anthropic-keyed adapter that cannot say where it points", () => {
+    expect(chatToolLoopPromptCaching(provider("anthropic"))).toBe(CHAT_PROMPT_CACHING);
+    expect(chatToolLoopPromptCaching(provider("anthropic", false))).toBe(CHAT_PROMPT_CACHING);
+  });
+
   it.each(["bedrock-gateway", "openai", "azure", "local-gemma", "offline-stub"] as const)(
-    "keeps the system-only posture on %s",
+    "keeps the system-only posture on %s, even where it serves router models",
     (key) => {
-      expect(chatToolLoopPromptCaching(key)).toBe(CHAT_PROMPT_CACHING);
+      expect(chatToolLoopPromptCaching(provider(key, true))).toBe(CHAT_PROMPT_CACHING);
       expect(CHAT_PROMPT_CACHING).toEqual({ system: true });
     },
   );
@@ -71,7 +119,7 @@ const originalFetch = globalThis.fetch;
 /** The raw request bodies a three-call loop sends on `key` under `promptCaching`. */
 async function loopBodies(
   key: Exclude<ProviderKey, "anthropic" | "offline-stub" | "azure">,
-  promptCaching: ChatOptions["promptCaching"],
+  promptCaching: (p: OpenAICompatibleProvider) => ChatOptions["promptCaching"],
 ): Promise<string[]> {
   const sent: string[] = [];
   globalThis.fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
@@ -93,7 +141,7 @@ async function loopBodies(
     sleepFn: async () => undefined,
   });
   for (const messages of transcripts()) {
-    await p.chat(messages, { tools: TOOLS, callType: "chat", promptCaching });
+    await p.chat(messages, { tools: TOOLS, callType: "chat", promptCaching: promptCaching(p) });
   }
   return sent;
 }
@@ -107,8 +155,8 @@ describe("#1842 — OpenAI-compatible requests are byte-identical before and aft
 
   for (const key of ["bedrock-gateway", "openai", "local-gemma"] as const) {
     it(`${key}: the tool loop's three requests are unchanged`, async () => {
-      const before = await loopBodies(key, CHAT_PROMPT_CACHING);
-      const after = await loopBodies(key, chatToolLoopPromptCaching(key));
+      const before = await loopBodies(key, () => CHAT_PROMPT_CACHING);
+      const after = await loopBodies(key, (p) => chatToolLoopPromptCaching(p));
       expect(after).toHaveLength(3);
       expect(after).toEqual(before);
       expect(after).toMatchSnapshot();
