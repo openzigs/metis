@@ -27,17 +27,26 @@ const ISO = String.raw`\biso(?:\s*\/\s*iec)?[\s-]?27001(?::\d{4})?\b`;
 const PCI = String.raw`\bpci(?:[\s-]?dss)?\b`;
 /** A framework that can precede the claim word ("SOC 2 compliant"). */
 const FRAMEWORK = String.raw`(?:${SOC}|${ISO}|\bgdpr\b|\bhipaa\b|${PCI})`;
+/**
+ * FRAMEWORK matched atomically (a lookahead capture plus a backreference), so a
+ * following negative lookahead cannot make it backtrack to a shorter name:
+ * "SOC 2 Type II" must not shrink to "SOC 2" (#1919). `name` is unique per use.
+ */
+const ATOMIC_FRAMEWORK = (name: string): string =>
+  String.raw`(?=(?<${name}>${FRAMEWORK}))\k<${name}>`;
 /** A framework, or "the policy", after a preposition ("compliant with the policy"). */
 const TARGET = String.raw`(?:(?:the\s+)?${FRAMEWORK}|\bthe\s+(?:[\w-]+\s+){0,4}policy\b)`;
 const SEP = String.raw`[\s-]+`;
 /**
  * A negation just before the phrase makes it something other than a claim of
  * compliance, also across a few adverbs ("hasn't successfully passed SOC 2",
- * "not currently SOC 2 compliant"; #1919). "not only" / "not merely" / "not
- * simply" do not negate, so those adverbs do not count. Variable-length
+ * "not currently SOC 2 compliant"; #1919). Only an allowlist of adverbs that
+ * carry the negation counts: an open "any -ly word" pattern would let "not
+ * solely SOC 2 compliant", "not exclusively compliant with GDPR" and verbs such
+ * as "do not apply SOC 2 compliant controls" pass as negations. Variable-length
  * lookbehind (ES2018).
  */
-const NOT_NEGATED = String.raw`(?<!\b(?:not|non|never|isn['’]t|aren['’]t|wasn['’]t|hasn['’]t|haven['’]t|hadn['’]t)[\s-]+(?:(?:yet|already|ever|still|(?!(?:only|merely|simply)\b)[a-z]+ly)[\s-]+){0,3})`;
+const NOT_NEGATED = String.raw`(?<!\b(?:not|non|never|isn['’]t|aren['’]t|wasn['’]t|hasn['’]t|haven['’]t|hadn['’]t)[\s-]+(?:(?:yet|already|ever|still|fully|currently|successfully|formally|officially|actually|really|necessarily|entirely|completely)[\s-]+){0,3})`;
 /**
  * Where a phrase ends: the end of the text, punctuation other than a hyphen or a
  * possessive `'s` (both join on to the next word: "policy-mandated", "policy's
@@ -53,7 +62,7 @@ const PRONOUN_S = String.raw`(?<=\b(?:it|that|this|he|she|who|what|which|there|o
  * against SOC 2". After a noun, `'s` followed by "passed <framework> <noun>" is
  * a possessive ("the vendor's passed SOC 2 report"), not "has" (#1919).
  */
-const PERFECT_AUX = String.raw`(?<aux>\b(?:has|have|had)\s+|['’](?:ve|d)\s+|${PRONOUN_S}|['’]s\s+(?!passed\s+(?:the\s+)?${FRAMEWORK}(?!${PHRASE_ENDS})))(?:(?:[a-z]+ly|already|now|also|since|just|still|ever|once)\s+){0,3}`;
+const PERFECT_AUX = String.raw`(?<aux>\b(?:has|have|had)\s+|['’](?:ve|d)\s+|${PRONOUN_S}|['’]s\s+(?!passed\s+(?:the\s+)?${ATOMIC_FRAMEWORK("auxFw")}(?!${PHRASE_ENDS})))(?:(?:[a-z]+ly|already|now|also|since|just|still|ever|once)\s+){0,3}`;
 /**
  * #1901 — "the … policy" after "passes" is a claim only when the phrase ends
  * there ("passes the policy.", "passes the policy and ships"). Followed by
@@ -115,7 +124,7 @@ const CLAIM_SHAPES: readonly ClaimShape[] = [
     // SOC 2 report" becomes "the vendor's SOC 2-reviewed report". It starts on
     // "passed", as the next shape does, and wins the tie by coming first.
     pattern: new RegExp(
-      String.raw`${NOT_NEGATED}(?<=\w['’]s\s+)passed\s+(?<fw>${FRAMEWORK})(?!${PHRASE_ENDS})`,
+      String.raw`${NOT_NEGATED}(?<=\w['’]s\s+)passed\s+(?<fw>${ATOMIC_FRAMEWORK("possFw")})(?!${PHRASE_ENDS})`,
       "gi",
     ),
     rewrite: ({ fw }) => `${fw}-reviewed`,

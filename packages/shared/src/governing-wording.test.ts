@@ -319,6 +319,27 @@ const VERDICTS: readonly {
     expected: "neutral",
     intended: "#1901: 'passed the … policy threshold' means 'went beyond'",
   },
+  // #1919 review: only adverbs that carry a negation count as one.
+  ...[
+    [
+      "It is not solely SOC 2 compliant but also HIPAA compliant.",
+      "It is not solely SOC 2-reviewed but also HIPAA-reviewed.",
+    ],
+    [
+      "It is not purely HIPAA compliant but also GDPR compliant.",
+      "It is not purely HIPAA-reviewed but also GDPR-reviewed.",
+    ],
+    ["It is not exclusively compliant with GDPR.", "It is not exclusively checked against GDPR."],
+    ["We do not apply SOC 2 compliant controls.", "We do not apply SOC 2-reviewed controls."],
+    ["We do not supply SOC 2 certified hosting.", "We do not supply SOC 2-reviewed hosting."],
+    ["The vendor's passed SOC 2 Type II.", "The vendor's been checked against SOC 2 Type II."],
+    ["The vendor's passed PCI DSS.", "The vendor's been checked against PCI DSS."],
+  ].map(([text, rewrite]) => ({
+    text: text!,
+    main: "claim" as Verdict,
+    expected: "claim" as Verdict,
+    rewrite,
+  })),
   {
     text: "The release has passed the policy review step.",
     main: "claim",
