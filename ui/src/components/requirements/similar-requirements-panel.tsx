@@ -28,6 +28,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
+  BORROWABLE_FRESHNESS,
   SIMILAR_REQUIREMENT_SOURCE,
   type BorrowCitationsResult,
   type SimilarRequirementCodeLink,
@@ -56,7 +57,12 @@ const LABEL_TEXT: Record<SimilarRequirementLabel, string> = {
 };
 
 export function similarRequirementsKey(projectId: string, requirementId: string) {
-  return ["similar-requirements", projectId, requirementId] as const;
+  return [...similarRequirementsPrefix(projectId), requirementId] as const;
+}
+
+/** #1903 — the prefix of every similar-requirements list of a project. */
+export function similarRequirementsPrefix(projectId: string) {
+  return ["similar-requirements", projectId] as const;
 }
 
 /**
@@ -93,9 +99,6 @@ function nameOf(item: SimilarRequirementItem): string {
   return item.key ? `${item.key} ${item.title}` : item.title;
 }
 
-/** The freshness a link must hold to be borrowed (#1839): known to point at current code. */
-const BORROWABLE = new Set(["fresh", "moved"]);
-
 export interface BorrowPlan {
   /** Links the borrow copies (unless this requirement already holds the same code). */
   copy: SimilarRequirementCodeLink[];
@@ -110,7 +113,7 @@ export function borrowPlan(links: readonly SimilarRequirementCodeLink[]): Borrow
   const plan: BorrowPlan = { copy: [], needsRecheck: [], borrowed: [] };
   for (const link of links) {
     if (link.source === SIMILAR_REQUIREMENT_SOURCE) plan.borrowed.push(link);
-    else if (BORROWABLE.has(link.freshness)) plan.copy.push(link);
+    else if (BORROWABLE_FRESHNESS.has(link.freshness)) plan.copy.push(link);
     else plan.needsRecheck.push(link);
   }
   return plan;
@@ -122,8 +125,12 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 export function borrowResultText(result: BorrowCitationsResult, from: string): string {
   const skipped = [
     result.skippedDuplicate > 0 ? `${result.skippedDuplicate} already linked` : null,
-    result.skippedStale > 0 ? `${result.skippedStale} need a re-check` : null,
-    result.skippedBorrowed > 0 ? `${result.skippedBorrowed} borrowed themselves` : null,
+    result.skippedStale > 0
+      ? plural(result.skippedStale, "needs a re-check", "need a re-check")
+      : null,
+    result.skippedBorrowed > 0
+      ? plural(result.skippedBorrowed, "borrowed itself", "borrowed themselves")
+      : null,
     result.notFound > 0 ? `${result.notFound} no longer found` : null,
   ].filter((part): part is string => part !== null);
   const head =
@@ -187,9 +194,9 @@ function BorrowAction({
       setConfirming(false);
       toast.success(borrowResultText(result, item.key ?? item.title));
       await queryClient.invalidateQueries({ queryKey: traceabilityKey(projectId, requirementId) });
-      await queryClient.invalidateQueries({
-        queryKey: similarRequirementsKey(projectId, requirementId),
-      });
+      // #1903 — every similar list of the project: other cards list this
+      // requirement, with the code links it now holds.
+      await queryClient.invalidateQueries({ queryKey: similarRequirementsPrefix(projectId) });
     },
     onError: (err) =>
       toast.error(apiErrorMessage(err as ApiError, "Could not copy the code links")),
