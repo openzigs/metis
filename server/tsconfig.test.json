@@ -12,6 +12,14 @@
     "rootDir": "..",
     "noEmit": true
   },
-  "include": ["src/**/*", "tests/**/*", "vitest.config.ts", "vitest.integration.config.ts"],
+  // #1899 — scripts/** too: the CLIs (scripts/eval-*.ts and the rest) were type-checked by
+  // nothing, so a broken script reached main green.
+  "include": [
+    "src/**/*",
+    "tests/**/*",
+    "scripts/**/*",
+    "vitest.config.ts",
+    "vitest.integration.config.ts"
+  ],
   "exclude": ["dist", "node_modules"]
 }

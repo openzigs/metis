@@ -607,7 +607,9 @@ async function runRerank(corpusId: string, argv: readonly string[]): Promise<voi
           ? "not resolvable"
           : `${(report.modelBytes / 1e6).toFixed(1)} MB (${report.modelBytes} bytes)`
       }.** \`reranker.ts:6\` claims "≈150 MB ONNX"; the measured number is the one above.\n\n` +
-      `**Cold cross-encoder load: ${report.coldModelLoadMs.toFixed(0)} ms**, timed on its own ` +
+      `**Cold cross-encoder load: ${
+        report.coldModelLoadMs === null ? "not measured" : `${report.coldModelLoadMs.toFixed(0)} ms`
+      }**, timed on its own ` +
       `so the per-query figures below are warm steady state.\n\n` +
       `## Quality\n\n${renderRerankSweep(report)}\n\n` +
       `## Decision (the #1157 rule, applied)\n\n${renderRerankDecision(report)}\n\n` +

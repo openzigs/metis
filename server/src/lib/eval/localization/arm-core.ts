@@ -116,6 +116,11 @@ export interface StalenessArmIO {
   /** Apply the operations and re-ingest, run `read`, then restore and re-ingest. */
   withPatch<T>(corpus: string, ops: readonly StalenessOp[], read: () => Promise<T>): Promise<T>;
   /**
+   * #1899 — re-ingest every repository of the corpus at its pinned commit with
+   * no patch (a routine re-ingest: it re-validates the citations), then `read`.
+   */
+  withReingest<T>(corpus: string, read: () => Promise<T>): Promise<T>;
+  /**
    * The corpus search over the patched rows (`patchedSymbolRows`): the
    * CLI's `buildCorpusSearch` with its embedding cache, so a renamed file's
    * rows are searched at their new path, as after a re-ingest.

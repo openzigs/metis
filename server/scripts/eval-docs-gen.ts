@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { RunDocsGenBenchmarkOptions } from "../src/lib/eval/docs-gen/runner.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..", "..");
@@ -13,7 +14,8 @@ function log(message: string): void {
 }
 
 export interface DocsGenCliDeps {
-  mkdtemp: typeof mkdtemp;
+  /** #1899 — the one call shape the CLI makes, so a test can stub it without the overloads. */
+  mkdtemp: (prefix: string) => Promise<string>;
   mkdir: typeof mkdir;
   rm: typeof rm;
   writeFile: typeof writeFile;
@@ -42,6 +44,7 @@ export interface DocsGenCliDeps {
       calibrationSource: string;
       fixtureDir?: string;
       liveModelRun?: boolean;
+      typedSymbolEvidence?: RunDocsGenBenchmarkOptions["typedSymbolEvidence"];
     }): Promise<unknown>;
   }>;
   log: (message: string) => void;
@@ -89,8 +92,7 @@ export function parseDocsGenArgs(argv: readonly string[]): ParsedDocsGenArgs {
 
   const publicationDisposition =
     (readValue("--publication-disposition") as
-      | ParsedDocsGenArgs["publicationDisposition"]
-      | undefined) ?? "pending-1308";
+      ParsedDocsGenArgs["publicationDisposition"] | undefined) ?? "pending-1308";
   if (!["local-only", "pending-1308", "public-approved"].includes(publicationDisposition)) {
     throw new Error(
       `invalid --publication-disposition ${JSON.stringify(publicationDisposition)}. Expected local-only, pending-1308, or public-approved.`,
