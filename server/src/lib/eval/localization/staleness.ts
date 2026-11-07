@@ -579,22 +579,6 @@ export function patchedGraphFiles(
   return out;
 }
 
-/**
- * #1834 — the stage BEFORE #1832, for the "without demotion" readings: the
- * same stored citations with their freshness hidden, so the stage neither sets
- * a stale one aside nor orders by freshness tier (every row reads as never
- * checked, and the order is confidence, then citation order, as #1818 shipped).
- */
-export function withoutFreshness(
-  load: (requirementId: string, projectId: string) => Promise<StoredLinkRow[]>,
-): (requirementId: string, projectId: string) => Promise<StoredLinkRow[]> {
-  return async (requirementId, projectId) =>
-    (await load(requirementId, projectId)).map((link) => {
-      const { freshness: _hidden, ...rest } = link;
-      return rest;
-    });
-}
-
 /** How many of a reading's stored citations re-validation left in each state. */
 export interface FreshnessTally {
   fresh: number;

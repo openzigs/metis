@@ -53,6 +53,10 @@ vi.mock("../src/lib/rag/knowledge-service.js", async (original) => ({
 }));
 
 const { aiRouter, setAIProviderForTests } = await import("../src/routes/ai.js");
+// #1864 — search-knowledge is now cached even while the graph has no commit
+// SHA, so each test starts from an empty tool-result cache.
+const { __resetToolResultCacheForTests } =
+  await import("../src/lib/ai/tool-runtime/tool-result-cache.js");
 const { aiConversationRouter } = await import("../src/routes/ai-conversation.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
@@ -229,6 +233,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     beforeEach(() => {
       delete process.env.CHAT_CODE_SEARCH_TOOLS;
+      __resetToolResultCacheForTests();
       model = new ScriptedProvider();
       setAIProviderForTests(model);
       state.hits = [];
