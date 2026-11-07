@@ -11,6 +11,7 @@ import {
   CHANGE_SEVERITIES,
   portfolioImpactUnderOlderRule,
   portfolioModifierText,
+  portfolioOtherLinkKinds,
   portfolioResourceLists,
   portfolioRestrictedRule,
   type CodeCitation,
@@ -177,6 +178,8 @@ export interface AffectedProduct {
   restricted: boolean;
   impactKind: Exclude<Product["impactKind"], "none">;
   via: string | null;
+  /** #1963 — the other edge kinds the change reaches it by, beyond `via`'s path. */
+  otherVia: string[];
   severity: string | null;
   /** The product's one-paragraph summary: the report's, else the stored sentence. */
   summary: string;
@@ -303,6 +306,7 @@ export function impactGroups(view: PortfolioAssessmentView): {
       restricted,
       impactKind: p.impactKind,
       via: restricted ? null : p.via,
+      otherVia: restricted ? [] : portfolioOtherLinkKinds(p.technicalDetail, p.via),
       severity: restricted ? null : p.severity,
       summary: restricted ? "" : paragraphFor(view, p),
       derivation: hops.map((h) => ({

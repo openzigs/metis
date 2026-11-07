@@ -63,6 +63,7 @@ import {
   type ProductEdgeDirection,
   type ProductEdgeOrigin,
   type ProductIntegrationKind,
+  portfolioOtherLinkKinds,
 } from "@metis/shared";
 import type { ProductEdge as ProductEdgeRow } from "@prisma/client";
 import { prisma } from "../prisma.js";
@@ -89,6 +90,8 @@ export const MAX_IMPACT_DEPTH = 4;
 const MAX_CALL_SITES = 10;
 const MAX_CONTRACT_ITEMS = 20;
 const MAX_SHARED_OBJECTS = 20;
+/** #1963 — links one product keeps, at most, of each edge kind. */
+const MAX_LINKS_PER_KIND = 5;
 
 // ─── Result ─────────────────────────────────────────────────────────────────
 
@@ -144,6 +147,21 @@ export interface ImpactHop {
   severity: HopSeverity;
 }
 
+/**
+ * #1963 — one hop the walk reached a product by: its edge kind, and what a
+ * reader must be able to read to be told of it (the view drops a link through
+ * a repo or product its reader cannot read now). The shown path is the most
+ * severe of them; the others say every edge kind that connects the products.
+ */
+export interface ImpactLink {
+  integrationKind: ProductIntegrationKind;
+  fromProductId: string;
+  /** The products the hop's edges are recorded on. */
+  edgeProductIds: string[];
+  providerRepoId: string;
+  consumerRepoId: string;
+}
+
 export interface ProductImpact {
   productId: string;
   /** Null for a `restricted` product. */
@@ -161,6 +179,8 @@ export interface ProductImpact {
   hops: ImpactHop[];
   /** Edges out of this product the caller cannot read, so not walked. */
   hiddenEdgeCount: number;
+  /** #1963 — every classified hop the walk reached it by, the shown path's included. */
+  links: ImpactLink[];
 }
 
 export interface PortfolioImpactResult {
@@ -841,7 +861,31 @@ function emptyImpact(productId: string, name: string | null, restricted: boolean
     edgeIds: [],
     hops: [],
     hiddenEdgeCount: 0,
+    links: [],
   };
+}
+
+function linkKey(l: ImpactLink): string {
+  return [
+    l.integrationKind,
+    l.fromProductId,
+    l.providerRepoId,
+    l.consumerRepoId,
+    ...l.edgeProductIds,
+  ].join("\u0000");
+}
+
+/** #1963 — record a link on `target`, once, and at most `MAX_LINKS_PER_KIND` of its kind. */
+function addLink(target: ProductImpact, link: ImpactLink): void {
+  const sameKind = target.links.filter((l) => l.integrationKind === link.integrationKind);
+  if (sameKind.length >= MAX_LINKS_PER_KIND) return;
+  if (sameKind.some((l) => linkKey(l) === linkKey(link))) return;
+  target.links.push(link);
+}
+
+/** #1963 — the edge kinds a product is reached by beyond its shown path's. */
+export function otherLinkKinds(p: Pick<ProductImpact, "links" | "via">): string[] {
+  return portfolioOtherLinkKinds({ impact: { links: p.links } }, p.via);
 }
 
 interface WalkOptions {
@@ -1044,6 +1088,15 @@ async function walkFrom(
             stoppedAt.add(productId);
             continue;
           }
+          if (integrationKind !== null) {
+            addLink(target, {
+              integrationKind,
+              fromProductId: from.productId,
+              edgeProductIds: [...new Set(c.edges.map((e) => e.productId))].sort(),
+              providerRepoId: c.provider,
+              consumerRepoId: c.consumer,
+            });
+          }
           const hops = [...from.hops, hopTo(productId)];
           if (
             target.impactKind !== "downstream-consumer" ||
@@ -1234,6 +1287,8 @@ export function impactDetail(
     // that stopped nowhere relabels too. `adjacent` is the older rule (#1680, #1685).
     restrictedRule: "walk",
     hops: p.hops,
+    // #1963 — every edge kind that reaches it; the view keeps only the readable ones.
+    links: p.links,
   };
 }
 
@@ -1279,7 +1334,7 @@ export function withImpact(
       productId: p.productId,
       coverage: p.restricted ? "restricted" : "not-checked",
       ...fields(p),
-      baSummary: p.restricted ? "" : impactSentence(p),
+      baSummary: p.restricted ? "" : impactSentence(p, otherLinkKinds(p)),
       technicalDetail: p.restricted ? {} : { outOfScope: true, impact: impactDetail(p, impact) },
     });
   }

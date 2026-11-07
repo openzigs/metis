@@ -25,6 +25,8 @@
  * `not-checked` product therefore stops a portfolio from reading as a gap,
  * except one with no repos at all (#1677, {@link rollUpPortfolio}): there was
  * nothing in it to check, rather than something that could not be checked.
+ * #1963 — nor does a `not-checked` product the change's impact walk does not
+ * reach ({@link notInScopeOfChange}): it is not in scope of the change.
  */
 import type { FindingVerdict, PortfolioCoverage, RequirementVerdict } from "@metis/shared";
 
@@ -98,10 +100,39 @@ export function hadNothingToCheck(p: {
  * `could-not-verify`, as for an empty scope.
  */
 export function rollUpPortfolio(
-  products: readonly { coverage: PortfolioCoverage; reason: string | null }[],
+  products: readonly { productId?: string; coverage: PortfolioCoverage; reason: string | null }[],
+  notInScope: ReadonlySet<string> = new Set(),
 ): RequirementVerdict {
   return rollUpPortfolioVerdict(
-    products.filter((p) => !hadNothingToCheck(p)).map((p) => p.coverage),
+    products
+      .filter((p) => !hadNothingToCheck(p) && !(p.productId && notInScope.has(p.productId)))
+      .map((p) => p.coverage),
+  );
+}
+
+/**
+ * #1963 — the products the portfolio verdict leaves out as not in scope of the
+ * change: each one not checked (with repos to check: one with none is left out
+ * already, #1677) that the change's impact walk does not reach (`unreached`).
+ * Without them, a gap the walk's products all confirm reads as a gap, not as
+ * "could not verify" because of a product the change has nothing to do with.
+ *
+ * `unreached` holds only what is known to be unreached: the readable products
+ * the walk lists `none` under the current rule (`walk`, #1689), and nothing at
+ * all when no product changes (nothing was walked from, so nothing is known to
+ * be unrelated). A restricted product is never in it: it may be reached through
+ * what its reader cannot see. A product the change reaches, or may reach, stays
+ * in, so a not-checked one of those still reads `could-not-verify`.
+ */
+export function notInScopeOfChange(
+  products: readonly { productId: string; coverage: PortfolioCoverage; reason: string | null }[],
+  unreached: ReadonlySet<string>,
+): Set<string> {
+  return new Set(
+    products
+      .filter((p) => p.coverage === "not-checked" && !hadNothingToCheck(p))
+      .filter((p) => unreached.has(p.productId))
+      .map((p) => p.productId),
   );
 }
 

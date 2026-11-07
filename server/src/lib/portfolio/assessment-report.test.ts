@@ -25,6 +25,7 @@ const CTX: Ctx = {
   criteria: ["A refund posts a ledger entry", "It posts within 2 seconds"],
   verdict: "partial",
   verdictSummary: "Partly covered by Orders (acme/orders-api).",
+  notInScope: 0,
   products: [
     {
       productId: "p1",
@@ -35,6 +36,7 @@ const CTX: Ctx = {
       via: null,
       severity: null,
       path: ["p1"],
+      otherVia: [],
     },
     {
       productId: "p2",
@@ -45,6 +47,7 @@ const CTX: Ctx = {
       via: "api",
       severity: "medium",
       path: ["p1", "p2"],
+      otherVia: [],
     },
     {
       productId: "p3",
@@ -55,6 +58,7 @@ const CTX: Ctx = {
       via: null,
       severity: null,
       path: ["p3"],
+      otherVia: [],
     },
     {
       productId: "p9",
@@ -65,6 +69,7 @@ const CTX: Ctx = {
       via: null,
       severity: null,
       path: [],
+      otherVia: [],
     },
   ],
 };
@@ -276,6 +281,25 @@ describe("generatePortfolioReport — the model path", () => {
     );
     expect(prompt).toMatch(/one entry for each of P1, P2,$/m);
   });
+
+  it("#1963 — a verdict that left products out as not in scope says so, and never 'the portfolio'", () => {
+    const refs = new Map([["p1", "P1"]]);
+    const gap = buildReportPrompt({ ...CTX, verdict: "gap-confirmed", notInScope: 2 }, refs);
+    expect(gap).toContain("Verdict: the requirement is covered by nothing the assessment checked.");
+    expect(gap).toContain(
+      "Not in scope: 2 products were not checked, but the change does not reach them, so the verdict leaves them out.",
+    );
+    expect(gap).not.toContain("covered by nothing in the portfolio");
+    const one = buildReportPrompt({ ...CTX, verdict: "could-not-verify", notInScope: 1 }, refs);
+    expect(one).toContain("Verdict: the requirement is not verifiable across the portfolio.");
+    expect(one).toContain(
+      "Not in scope: 1 product was not checked, but the change does not reach it, so the verdict leaves it out.",
+    );
+    // Nothing left out: the verdict line as before, and no scope line.
+    const all = buildReportPrompt({ ...CTX, verdict: "gap-confirmed" }, refs);
+    expect(all).toContain("Verdict: the requirement is covered by nothing in the portfolio.");
+    expect(all).not.toContain("Not in scope");
+  });
 });
 
 describe("generatePortfolioReport — no silent fallback", () => {
@@ -463,6 +487,75 @@ describe("templateParagraph and impactOverview", () => {
       ),
     ).toBe("Downstream: C. 2 downstream products are restricted, so they are not named.");
   });
+
+  it("#1963 — a downstream entry lists every edge kind that connects the products", () => {
+    const billing = {
+      productId: "p2",
+      coverage: "not-covered" as const,
+      impactKind: "downstream-consumer" as const,
+      via: "database",
+      severity: "high",
+      otherVia: ["event"],
+    };
+    expect(impactOverview([billing], nameOf)).toBe(
+      "Downstream: Storefront (database, high; also event).",
+    );
+    // A path with no kind or severity of its own still names the others.
+    expect(impactOverview([{ ...billing, via: null, severity: null }], nameOf)).toBe(
+      "Downstream: Storefront (also event).",
+    );
+  });
+
+  it("#1963 — the report context carries the other kinds and how many were left out", () => {
+    const ctx = reportContext(
+      {
+        statement: "S",
+        criteria: ["c"],
+        scope: "all-accessible",
+        productIds: ["p1", "p2"],
+        verdict: "gap-confirmed",
+        summary: "Nothing checked covers this.",
+        costUsd: 0,
+        notInScope: ["p7", "p8"],
+        products: [{ productId: "p2", name: "Billing", coverage: "not-covered" }],
+      } as never,
+      {
+        maxDepth: 2,
+        stoppedAtRestricted: 0,
+        products: [
+          {
+            productId: "p2",
+            name: "Billing",
+            restricted: false,
+            impactKind: "downstream-consumer",
+            via: "database",
+            severity: "high",
+            edgeIds: ["e1", "e2"],
+            hops: [{ fromProductId: "p1" } as never],
+            hiddenEdgeCount: 0,
+            links: [
+              {
+                integrationKind: "database",
+                fromProductId: "p1",
+                edgeProductIds: ["p2"],
+                providerRepoId: "rc-1",
+                consumerRepoId: "rc-2",
+              },
+              {
+                integrationKind: "event",
+                fromProductId: "p1",
+                edgeProductIds: ["p2"],
+                providerRepoId: "rc-1",
+                consumerRepoId: "rc-2",
+              },
+            ],
+          },
+        ],
+      },
+    );
+    expect(ctx.notInScope).toBe(2);
+    expect(ctx.products[0].otherVia).toEqual(["event"]);
+  });
 });
 
 describe("reportContext and withReport", () => {
@@ -495,6 +588,7 @@ describe("reportContext and withReport", () => {
             edgeIds: [],
             hops: [],
             hiddenEdgeCount: 0,
+            links: [],
           },
           {
             productId: "p2",
@@ -506,6 +600,7 @@ describe("reportContext and withReport", () => {
             edgeIds: ["e"],
             hops: [{ fromProductId: "p1" } as never],
             hiddenEdgeCount: 0,
+            links: [],
           },
           {
             productId: "p8",
@@ -517,6 +612,7 @@ describe("reportContext and withReport", () => {
             edgeIds: [],
             hops: [],
             hiddenEdgeCount: 0,
+            links: [],
           },
         ],
       },
@@ -544,6 +640,7 @@ describe("reportContext and withReport", () => {
         via: null,
         severity: null,
         path: [],
+        otherVia: [],
       },
       expect.objectContaining({ productId: "p9", restricted: true, impactKind: "none" }),
     ]);

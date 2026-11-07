@@ -6,6 +6,7 @@ import { PORTFOLIO_COVERAGES, REQUIREMENT_VERDICTS, type PortfolioCoverage } fro
 import {
   portfolioVerdictFromStored,
   hadNothingToCheck,
+  notInScopeOfChange,
   rollUpPortfolio,
   rollUpPortfolioVerdict,
   rollUpProductCoverage,
@@ -184,5 +185,47 @@ describe("stored portfolio verdict", () => {
   it("reads a value it never writes as null", () => {
     expect(portfolioVerdictFromStored("restricted")).toBeNull();
     expect(portfolioVerdictFromStored(null)).toBeNull();
+  });
+});
+
+describe("#1963 — the products not in scope of the change", () => {
+  const row = (productId: string, coverage: PortfolioCoverage, reason: string | null = null) => ({
+    productId,
+    coverage,
+    reason,
+  });
+  const products = [
+    row("host", "not-covered"),
+    row("downstream", "not-covered"),
+    row("unrelated", "not-checked", "could-not-verify"),
+    row("hidden-repos", "not-checked", "repos-restricted"),
+    row("empty", "not-checked", "no-repos"),
+    row("unreadable", "restricted"),
+  ];
+
+  it("is each product not checked that the walk does not reach", () => {
+    const unreached = new Set(["unrelated", "hidden-repos", "empty", "unreadable"]);
+    expect([...notInScopeOfChange(products, unreached)].sort()).toEqual([
+      "hidden-repos",
+      "unrelated",
+    ]);
+  });
+
+  it("never a product the walk reaches, however it reads", () => {
+    expect(notInScopeOfChange(products, new Set())).toEqual(new Set());
+    // A checked product the walk does not reach stays in the verdict too.
+    expect(notInScopeOfChange(products, new Set(["downstream"]))).toEqual(new Set());
+  });
+
+  it("leaves them out of the verdict: the changed products' gap is a gap", () => {
+    expect(rollUpPortfolio(products.slice(0, 3))).toBe("could-not-verify");
+    expect(rollUpPortfolio(products.slice(0, 3), new Set(["unrelated"]))).toBe("gap-confirmed");
+    // A reached product not checked still cannot be verified.
+    const reachedUnchecked = [...products.slice(0, 2), row("reached", "not-checked")];
+    expect(rollUpPortfolio(reachedUnchecked, new Set(["unrelated"]))).toBe("could-not-verify");
+    // A restricted one is never left out by the rule, so it still stops the gap.
+    expect(rollUpPortfolio([products[0], products[5]], new Set(["unrelated"]))).toBe(
+      "could-not-verify",
+    );
   });
 });

@@ -22,6 +22,7 @@ import { z } from "zod";
 import {
   FINDING_VERDICTS,
   REQUIREMENT_VERDICTS,
+  portfolioOtherLinkKinds,
   portfolioRestrictedRule,
   type AuthPayload,
   type CodeCitation,
@@ -41,6 +42,7 @@ import {
   type PortfolioRepoResult,
 } from "./gap-engine.js";
 import {
+  notInScopeOfChange,
   portfolioVerdictFromStored,
   rollUpPortfolio,
   rollUpProductCoverage,
@@ -172,6 +174,70 @@ function impactReferences(stored: StoredProduct): { repos: string[]; products: s
   return { repos, products };
 }
 
+/** #1963 — one stored link (`technicalDetail.impact.links`) as the view reads it. */
+interface StoredLink {
+  providerRepoId?: unknown;
+  consumerRepoId?: unknown;
+  fromProductId?: unknown;
+  edgeProductIds?: unknown;
+}
+
+function storedLinks(stored: StoredProduct): StoredLink[] | null {
+  const links = (stored.technicalDetail as { impact?: { links?: unknown } }).impact?.links;
+  return Array.isArray(links) ? (links as StoredLink[]) : null;
+}
+
+/** #1963 — the repos and products one stored link names. */
+function linkReferences(link: StoredLink): { repos: string[]; products: string[] } {
+  const str = (v: unknown) => (typeof v === "string" ? [v] : []);
+  return {
+    repos: [...str(link?.providerRepoId), ...str(link?.consumerRepoId)],
+    products: [
+      ...str(link?.fromProductId),
+      ...(Array.isArray(link?.edgeProductIds) ? link.edgeProductIds.flatMap(str) : []),
+    ],
+  };
+}
+
+/**
+ * #1963 — a row with only the links its reader can read now: a link through a
+ * repo or product they cannot read would tell them an edge kind reaches it
+ * there. A link naming nothing (an unreadable shape) is dropped too. The row is
+ * returned as it was when nothing is dropped, so a reader who sees every link
+ * sees the stored summary.
+ */
+function withReadableLinks(
+  stored: StoredProduct,
+  keepRepo: (repoConnectionId: string) => boolean,
+  readableProduct: (productId: string) => boolean,
+): StoredProduct {
+  const links = storedLinks(stored);
+  if (!links) return stored;
+  const kept = links.filter((l) => {
+    const refs = linkReferences(l);
+    return (
+      refs.repos.length === 2 &&
+      refs.products.length >= 2 &&
+      refs.repos.every(keepRepo) &&
+      refs.products.every(readableProduct)
+    );
+  });
+  if (kept.length === links.length) return stored;
+  const impact = (stored.technicalDetail as { impact: Record<string, unknown> }).impact;
+  const technicalDetail: Record<string, unknown> = {
+    ...stored.technicalDetail,
+    impact: { ...impact, links: kept },
+  };
+  return {
+    ...stored,
+    // An out-of-scope row's summary named every kind: rebuilt from the kept ones.
+    ...(technicalDetail.outOfScope === true
+      ? { baSummary: impactSentence(stored, portfolioOtherLinkKinds(technicalDetail, stored.via)) }
+      : {}),
+    technicalDetail,
+  };
+}
+
 /**
  * #1668 — how many restricted products the run's walk stopped at, as an earlier
  * run stored it on a readable row (`technicalDetail.impact.stoppedAtRestricted`).
@@ -209,9 +275,10 @@ function readableImpact(
 ): StoredProduct {
   const refs = impactReferences(stored);
   if (refs.repos.every(keepRepo) && refs.products.every(readableProduct)) {
-    return stored.impactKind === "none" && stoppedAtRestricted(stored) > 0
-      ? { ...stored, impactKind: "restricted" }
-      : stored;
+    const linked = withReadableLinks(stored, keepRepo, readableProduct);
+    return linked.impactKind === "none" && stoppedAtRestricted(linked) > 0
+      ? { ...linked, impactKind: "restricted" }
+      : linked;
   }
   const detail: Record<string, unknown> = { ...stored.technicalDetail };
   delete detail.impact;
@@ -326,6 +393,10 @@ export async function viewPortfolioAssessment(
               ...new Set([
                 ...a.repos.map((r) => r.repoConnectionId),
                 ...a.products.flatMap((p) => impactReferences(p).repos),
+                // #1963 — and the repos of every other link that reaches it.
+                ...a.products.flatMap(
+                  (p) => storedLinks(p)?.flatMap((l) => linkReferences(l).repos) ?? [],
+                ),
               ]),
             ],
           },
@@ -425,7 +496,28 @@ export async function viewPortfolioAssessment(
   }
 
   const stored = portfolioVerdictFromStored(a.portfolioVerdict);
-  const verdict = changed && a.status === "completed" ? rollUpPortfolio(results) : stored;
+  // #1963 — as the run did (`scopedToChange`): a product not checked that the
+  // change's walk does not reach is not in scope. Only a row the walk itself
+  // listed `none` under the current rule is known to be unreached.
+  const changes = products.some((p) => p.impactKind === "direct-change");
+  const unreached = new Set(
+    changes
+      ? products
+          .filter(
+            (p) =>
+              p.coverage !== "restricted" &&
+              p.impactKind === "none" &&
+              portfolioRestrictedRule(p.technicalDetail) === "walk",
+          )
+          .map((p) => p.productId)
+      : [],
+  );
+  const notInScope = notInScopeOfChange(results, unreached);
+  const scopedVerdict = rollUpPortfolio(results, notInScope);
+  const verdict = changed && a.status === "completed" ? scopedVerdict : stored;
+  // A verdict stored before #1963 was rolled up over every product: its summary
+  // leaves none out, so it never names a product as not in scope.
+  const summaryScope = verdict === scopedVerdict ? notInScope : new Set<string>();
   // #1624 — the model's prose was written about what the run saw. A reader who sees
   // less gets the deterministic summary instead, and no impact paragraphs: either
   // could describe a product, repo or path withheld from them.
@@ -455,7 +547,16 @@ export async function viewPortfolioAssessment(
     portfolioVerdict: verdict === null ? null : storedPortfolioVerdict(verdict),
     summary:
       seesLess && verdict !== null
-        ? [portfolioSummary(verdict, results), impactOverview(products, nameOf)]
+        ? [
+            portfolioSummary(verdict, results, summaryScope),
+            impactOverview(
+              products.map((p) => ({
+                ...p,
+                otherVia: portfolioOtherLinkKinds(p.technicalDetail, p.via),
+              })),
+              nameOf,
+            ),
+          ]
             .filter(Boolean)
             .join("\n\n")
         : a.summary,

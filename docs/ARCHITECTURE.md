@@ -1501,6 +1501,20 @@ product in scope and persists the result as a `PortfolioAssessment`:
    every product `not-covered` → `gap-confirmed`; else `could-not-verify`, over the
    products in scope less those with no repos (`rollUpPortfolio`, #1677). It is stored in
    the `PORTFOLIO_COVERAGES` vocabulary (`storedPortfolioVerdict`, one to one).
+   #1963 — once the impact walk has run (`scopedToChange`), the verdict also leaves out
+   each `not-checked` product the walk lists `none` (not reached by the change, under the
+   `walk` rule), and the summary names them as not in scope ("Nothing checked covers
+   this. … not in scope."). Only when some product changes: with none, nothing is known
+   to be unrelated. A product the change reaches, or may reach (`restricted`), stays in,
+   so an affected product nobody could check still reads `could-not-verify`. The read-time
+   view applies the same rule when it recomputes the verdict.
+
+Every hop the walk reaches a downstream product by is stored as a link
+(`technicalDetail.impact.links`: edge kind, the products and repos it crosses, at most
+five per kind, #1963). The shown path is still the most severe one; the summary, the page
+and the Markdown export name the other edge kinds too (`portfolioOtherLinkKinds`). The view
+drops a link through a repo or product its reader cannot read now, and a reader who loses
+one gets the deterministic summary, as for a withheld path.
 
 A repo with no excerpts, a failed search, an unparseable reply or no budget left is
 `could-not-verify` with its reason in `technicalDetail.repos`, so starvation never reads as

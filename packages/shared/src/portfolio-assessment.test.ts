@@ -15,6 +15,7 @@ import {
   portfolioModifierText,
   portfolioModelErrorText,
   portfolioNamedInProse,
+  portfolioOtherLinkKinds,
   portfolioRestrictedNote,
   portfolioImpactUnderOlderRule,
   portfolioRestrictedRule,
@@ -80,6 +81,32 @@ describe("#1689 — the rule a run relabelled restricted products by", () => {
     for (const rule of ["adjacent", null] as const) {
       expect(portfolioRestrictedNote(rule)).not.toContain("may reach it through");
     }
+  });
+});
+
+describe("#1963 — the other edge kinds a stored impact names", () => {
+  const detail = (links: unknown) => ({ impact: { links } });
+
+  it("is each kind but the shown path's, once, in the integration kinds' order", () => {
+    const links = [
+      { integrationKind: "identity" },
+      { integrationKind: "database" },
+      { integrationKind: "event" },
+      { integrationKind: "database" },
+    ];
+    expect(portfolioOtherLinkKinds(detail(links), "database")).toEqual(["event", "identity"]);
+    expect(portfolioOtherLinkKinds(detail(links), null)).toEqual(["event", "database", "identity"]);
+  });
+
+  it("puts an unknown kind last, and skips what is not a kind", () => {
+    const links = [{ integrationKind: "zz-new" }, { integrationKind: "api" }, null, {}, 7];
+    expect(portfolioOtherLinkKinds(detail(links), null)).toEqual(["api", "zz-new"]);
+  });
+
+  it("is empty with no links stored", () => {
+    expect(portfolioOtherLinkKinds({}, "api")).toEqual([]);
+    expect(portfolioOtherLinkKinds(null, "api")).toEqual([]);
+    expect(portfolioOtherLinkKinds(detail("not an array"), "api")).toEqual([]);
   });
 });
 

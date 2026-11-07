@@ -8,7 +8,7 @@
 import { z } from "zod";
 import { REQUIREMENT_KINDS, REQUIREMENT_VERDICTS } from "./constants.js";
 import { NFR_CATEGORIES } from "./elicitation.js";
-import type { ProductResourceKind } from "./product-docs.js";
+import { PRODUCT_INTEGRATION_KINDS, type ProductResourceKind } from "./product-docs.js";
 
 /** Which products an assessment looked at: one product, or every one the caller can read. */
 export const PORTFOLIO_ASSESSMENT_SCOPES = ["product", "all-accessible"] as const;
@@ -405,6 +405,29 @@ export function portfolioImpactUnderOlderRule(technicalDetail: unknown): boolean
   const impact = (technicalDetail as { impact?: unknown } | null | undefined)?.impact;
   if (typeof impact !== "object" || impact === null || Array.isArray(impact)) return false;
   return portfolioRestrictedRule(technicalDetail) !== "walk";
+}
+
+/**
+ * #1963 — the edge kinds the change reaches a product by, beyond the one its
+ * shown path crosses (`via`): each distinct kind in the stored
+ * `technicalDetail.impact.links`, in `PRODUCT_INTEGRATION_KINDS` order (an
+ * unknown kind last, as stored). The path shows the most severe link; these
+ * are the others, so a product reached by a database and an event says both.
+ */
+export function portfolioOtherLinkKinds(technicalDetail: unknown, via: string | null): string[] {
+  const links = (technicalDetail as { impact?: { links?: unknown } } | null | undefined)?.impact
+    ?.links;
+  if (!Array.isArray(links)) return [];
+  const kinds = new Set<string>();
+  for (const l of links) {
+    const kind = (l as { integrationKind?: unknown } | null)?.integrationKind;
+    if (typeof kind === "string" && kind !== via) kinds.add(kind);
+  }
+  const rank = (k: string) => {
+    const i = (PRODUCT_INTEGRATION_KINDS as readonly string[]).indexOf(k);
+    return i === -1 ? PRODUCT_INTEGRATION_KINDS.length : i;
+  };
+  return [...kinds].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 }
 
 /** Why a `restricted` impact is not known, by the rule its run relabelled it under. */

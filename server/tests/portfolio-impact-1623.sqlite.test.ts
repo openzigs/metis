@@ -11,6 +11,7 @@ import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import {
   getPermissionsForRole,
+  portfolioOtherLinkKinds,
   type AuthPayload,
   type PortfolioAssessmentInput,
 } from "@metis/shared";
@@ -195,6 +196,68 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }
       });
 
+      it("#1963 — Reporting reached by a table and an event: the path is the table's, every kind listed", async () => {
+        // Reporting also consumes an event Orders publishes (the #1940 billing shape).
+        await db.productEdge.create({
+          data: {
+            id: "e-reporting-orders-event-1963",
+            productId: P.reporting,
+            sourceRepoId: R.reporting,
+            targetRepoId: R.ordersApi,
+            edgeType: "calls",
+            confidence: 0.9,
+            evidence: "[]",
+            integrationKind: "event",
+            strength: "contract",
+            direction: "consumes",
+          },
+        });
+        try {
+          const impact = await ordersImpact();
+          const reporting = of(impact, P.reporting);
+          // The most severe path is shown, as before.
+          expect(reporting).toEqual(expect.objectContaining({ via: "database", severity: "high" }));
+          expect(reporting.links.map((l) => l.integrationKind).sort()).toEqual([
+            "database",
+            "event",
+          ]);
+          expect(reporting.links).toContainEqual({
+            integrationKind: "event",
+            fromProductId: P.orders,
+            edgeProductIds: [P.reporting],
+            providerRepoId: R.ordersApi,
+            consumerRepoId: R.reporting,
+          });
+          // Stored on the row and read back by the overview.
+          const stored = withImpact(
+            {
+              statement: "S",
+              scope: "all-accessible",
+              productIds: [P.orders, P.reporting],
+              createdById: "mia",
+              products: [
+                { productId: P.orders, coverage: "partial", technicalDetail: { reason: null } },
+                {
+                  productId: P.reporting,
+                  coverage: "not-covered",
+                  technicalDetail: { reason: null },
+                },
+              ],
+            },
+            impact,
+          ).products!.find((p) => p.productId === P.reporting)!;
+          expect(portfolioOtherLinkKinds(stored.technicalDetail, stored.via ?? null)).toEqual([
+            "event",
+          ]);
+        } finally {
+          await db.productEdge.deleteMany({ where: { id: "e-reporting-orders-event-1963" } });
+        }
+        // Without the event edge, only the table reaches it.
+        expect(of(await ordersImpact(), P.reporting).links.map((l) => l.integrationKind)).toEqual([
+          "database",
+        ]);
+      });
+
       it("two hops out: Notifications, through Reporting, at the weaker hop's severity", async () => {
         const n = of(await ordersImpact(), P.notifications);
         expect(n).toEqual(
@@ -370,6 +433,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           edgeIds: [],
           hops: [],
           hiddenEdgeCount: 0,
+          // #1963 — nor any link: a restricted product says no edge kind reaches it.
+          links: [],
         });
         // Not walked through: Ledger is only reachable via Partner's own edges.
         // #1668 — the walk says it stopped there, and (#1673, the owner's AC3 call) a

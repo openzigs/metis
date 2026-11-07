@@ -559,6 +559,82 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect((await get("ana", `/${id}/export?format=md`)).text).not.toContain("Built by");
       });
 
+      describe("#1963 — a product the change does not reach, that nobody indexed", () => {
+        const P_OLD = "prod-old-1963";
+        const PROJ_OLD = "proj-old-1963";
+        const RC_OLD = "rc-old-1963";
+        beforeAll(async () => {
+          // An older product in ws-a whose repo has nothing indexed: it cannot be checked.
+          await db.project.create({
+            data: {
+              id: PROJ_OLD,
+              workspaceId: WS_A,
+              name: PROJ_OLD,
+              slug: PROJ_OLD,
+              createdById: "mia",
+              status: "active",
+            },
+          });
+          await db.repoConnection.create({
+            data: {
+              id: RC_OLD,
+              projectId: PROJ_OLD,
+              label: "old",
+              ownerOrOrg: "acme",
+              repoName: "old-walkthrough",
+            },
+          });
+          await db.product.create({
+            data: {
+              id: P_OLD,
+              name: "Old walkthrough",
+              slug: P_OLD,
+              workspaceId: WS_A,
+              createdById: "mia",
+            },
+          });
+          await db.productRepo.create({ data: { productId: P_OLD, repoConnectionId: RC_OLD } });
+        });
+        afterAll(async () => {
+          await db.productRepo.deleteMany({ where: { productId: P_OLD } });
+          await db.product.deleteMany({ where: { id: P_OLD } });
+          await db.repoConnection.deleteMany({ where: { id: RC_OLD } });
+          await db.project.deleteMany({ where: { id: PROJ_OLD } });
+        });
+
+        it("a gap every product the change touches confirms reads as a gap, the old one not in scope", async () => {
+          const id = await start("imp-1623", {
+            statement: CRYPTO_STATEMENT,
+            scope: "all-accessible",
+            hostProductId: P3,
+          });
+          const v = await settled(id, "imp-1623");
+          expect(v.status).toBe("completed");
+          const old = v.products.find((p) => p.productId === P_OLD)!;
+          expect(old).toEqual(
+            expect.objectContaining({ coverage: "not-checked", impactKind: "none" }),
+          );
+          expect(v.verdict).toBe("gap-confirmed");
+          expect(v.summary).toContain(
+            "Nothing checked covers this. Old walkthrough was not checked, but this change does not reach it, so it is not in scope.",
+          );
+          // Stored so, not only shown so.
+          expect(
+            (await db.portfolioAssessment.findUnique({ where: { id } }))?.portfolioVerdict,
+          ).toBe("not-covered");
+        });
+
+        it("with no product that changes, the old one still stops the gap", async () => {
+          const id = await start("imp-1623", {
+            statement: CRYPTO_STATEMENT,
+            scope: "all-accessible",
+          });
+          const v = await settled(id, "imp-1623");
+          expect(v.verdict).toBe("could-not-verify");
+          expect(v.summary).not.toContain("not in scope");
+        });
+      });
+
       it("#1725 — a run with no host reads back with none", async () => {
         const id = await start("imp-1623", { statement: RESET_STATEMENT, scope: "all-accessible" });
         expect((await settled(id, "imp-1623")).hostProductId).toBeNull();

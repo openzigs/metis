@@ -603,6 +603,181 @@ describe("viewPortfolioAssessment — impact (#1623)", () => {
     db.product.findMany.mockResolvedValue([{ id: "p3", name: "Three" }]);
     expect(await view()).toBeNull();
   });
+
+  describe("#1963 — every edge kind that reaches a product, as the reader may see it", () => {
+    const link = (integrationKind: string, providerRepoId: string, fromProductId = "p1") => ({
+      integrationKind,
+      fromProductId,
+      edgeProductIds: ["p2"],
+      providerRepoId,
+      consumerRepoId: "rc-two",
+    });
+    /** p2 is reached by its api path, and by an event from rc-hidden. */
+    function withLinks(links: unknown[]): PortfolioAssessment {
+      const a = withImpactRows();
+      const detail = a.products[1].technicalDetail as { impact: Record<string, unknown> };
+      a.products[1].technicalDetail = { ...detail, impact: { ...detail.impact, links } };
+      return a;
+    }
+
+    beforeEach(() => {
+      db.repoConnection.findMany.mockResolvedValue([
+        { id: "rc-api", projectId: "proj-api" },
+        { id: "rc-web", projectId: "proj-web" },
+        { id: "rc-two", projectId: "proj-two" },
+        { id: "rc-three", projectId: "proj-three" },
+        { id: "rc-hidden", projectId: "proj-hidden" },
+      ]);
+    });
+
+    it("a reader who can read every link sees them all, and the stored summary", async () => {
+      readableProjects.add("proj-hidden");
+      const a = withLinks([link("api", "rc-api"), link("event", "rc-hidden")]);
+      store.getPortfolioAssessment.mockResolvedValue(a);
+      const v = (await view())!;
+      expect(v.products[1]).toEqual(a.products[1]);
+      expect(v.summary).toBe(a.summary);
+      // The links' repos are looked up for the reader.
+      expect(db.repoConnection.findMany.mock.calls[0][0].where.id.in).toContain("rc-hidden");
+      expect(renderPortfolioAssessmentMarkdown(v)).toContain(
+        "Downstream consumer (via api, low, also via event)",
+      );
+    });
+
+    it("a link through a repo hidden now is dropped, and the summary is rebuilt without it", async () => {
+      store.getPortfolioAssessment.mockResolvedValue(
+        withLinks([link("api", "rc-api"), link("event", "rc-hidden")]),
+      );
+      const v = (await view())!;
+      const p2 = v.products[1].technicalDetail as { impact: { links: unknown[] } };
+      expect(p2.impact.links).toEqual([link("api", "rc-api")]);
+      expect(JSON.stringify(v)).not.toContain("rc-hidden");
+      expect(JSON.stringify(v)).not.toContain("event");
+      // The path itself is readable: it stays.
+      expect(v.products[1].severity).toBe("low");
+      expect(v.summary).toContain("Downstream: Two (api, low); Three (database, high).");
+    });
+
+    it("a link through a product the reader cannot read, or one naming nothing, is dropped", async () => {
+      readableProjects.add("proj-hidden");
+      store.getPortfolioAssessment.mockResolvedValue(
+        withLinks([link("event", "rc-hidden", "p-unreadable"), { integrationKind: "api" }]),
+      );
+      const p2 = (await view())!.products[1].technicalDetail as { impact: { links: unknown[] } };
+      expect(p2.impact.links).toEqual([]);
+    });
+
+    it("an out-of-scope row's sentence is rebuilt from the links left", async () => {
+      const a = withImpactRows();
+      const p3 = a.products[2];
+      a.products[2] = {
+        ...p3,
+        baSummary: "Downstream consumer via database (high). Also via event.",
+        technicalDetail: {
+          ...p3.technicalDetail,
+          impact: {
+            ...(p3.technicalDetail as { impact: object }).impact,
+            links: [link("database", "rc-api"), link("event", "rc-hidden")],
+          },
+        },
+      };
+      store.getPortfolioAssessment.mockResolvedValue(a);
+      const v = (await view())!;
+      expect(v.products[2].baSummary).toBe("Downstream consumer via database (high).");
+    });
+  });
+
+  describe("#1963 — a recomputed verdict leaves out what the change does not reach", () => {
+    /** Every scoped product the change touches confirms the gap; p4 was not checked. */
+    function withUnreached(restrictedRule: string | null): PortfolioAssessment {
+      const a = withImpactRows();
+      a.products[0] = { ...a.products[0], coverage: "not-covered" };
+      a.portfolioVerdict = "not-checked";
+      a.productIds = ["p1", "p2", "p4"];
+      a.products.push({
+        productId: "p4",
+        coverage: "not-checked",
+        impactKind: "none",
+        via: null,
+        edgeIds: [],
+        severity: null,
+        baSummary: "Not checked (could-not-verify).",
+        technicalDetail: {
+          ...detail([]),
+          reason: "could-not-verify",
+          costUsd: 0,
+          impact: { ...impact([]), ...(restrictedRule ? { restrictedRule } : {}) },
+        },
+      });
+      return a;
+    }
+
+    beforeEach(() => {
+      // p3 (reached outside the scope) is restricted now, so the verdict is recomputed.
+      db.product.findMany.mockResolvedValue([
+        { id: "p1", name: "One" },
+        { id: "p2", name: "Two" },
+        { id: "p4", name: "Unrelated" },
+      ]);
+    });
+
+    it("a product not checked that the walk does not reach is not in scope, and named", async () => {
+      store.getPortfolioAssessment.mockResolvedValue(withUnreached("walk"));
+      const v = (await view())!;
+      expect(v.verdict).toBe("gap-confirmed");
+      expect(v.summary).toContain(
+        "Nothing checked covers this. Unrelated was not checked, but this change does not reach it, so it is not in scope.",
+      );
+    });
+
+    it("one an older run listed none is not known to be unreached: it still stops the gap", async () => {
+      store.getPortfolioAssessment.mockResolvedValue(withUnreached(null));
+      const v = (await view())!;
+      expect(v.verdict).toBe("could-not-verify");
+      expect(v.summary).not.toContain("not in scope");
+    });
+
+    it("with no product that changes, nothing is left out", async () => {
+      const a = withUnreached("walk");
+      a.products[0] = { ...a.products[0], impactKind: "none" };
+      store.getPortfolioAssessment.mockResolvedValue(a);
+      expect((await view())!.verdict).toBe("could-not-verify");
+    });
+
+    it("a verdict stored before #1963 keeps its own wording when it is not recomputed", async () => {
+      // Nothing hidden but one link: the stored verdict stands, and its summary never
+      // names a product as not in scope, which that verdict did not leave out.
+      db.product.findMany.mockResolvedValue([
+        { id: "p1", name: "One" },
+        { id: "p2", name: "Two" },
+        { id: "p3", name: "Three" },
+        { id: "p4", name: "Unrelated" },
+      ]);
+      const a = withUnreached("walk");
+      a.portfolioVerdict = "not-checked";
+      const p2 = a.products[1].technicalDetail as { impact: Record<string, unknown> };
+      a.products[1].technicalDetail = {
+        ...p2,
+        impact: {
+          ...p2.impact,
+          links: [
+            {
+              integrationKind: "event",
+              fromProductId: "p1",
+              edgeProductIds: ["p2"],
+              providerRepoId: "rc-gone",
+              consumerRepoId: "rc-two",
+            },
+          ],
+        },
+      };
+      store.getPortfolioAssessment.mockResolvedValue(a);
+      const v = (await view())!;
+      expect(v.verdict).toBe("could-not-verify");
+      expect(v.summary).toContain("Could not verify across the portfolio: of 3 products,");
+      expect(v.summary).not.toContain("not in scope");
+    });
+  });
 });
 
 describe("viewPortfolioAssessment — the BA report (#1624)", () => {

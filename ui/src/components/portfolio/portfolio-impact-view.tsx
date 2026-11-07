@@ -182,6 +182,8 @@ function DeepDive({ product }: { product: AffectedProduct }) {
 
 function AffectedCard({ product, host }: { product: AffectedProduct; host: boolean }) {
   const via = viaLabel(product.via);
+  // #1963 — the path shown is the most severe link; every other edge kind is named too.
+  const also = product.otherVia.map((k) => viaLabel(k)).join(", ");
   return (
     <li
       className="space-y-2 rounded-lg border border-border p-4"
@@ -200,7 +202,11 @@ function AffectedCard({ product, host }: { product: AffectedProduct; host: boole
             Chosen to build this
           </Badge>
         ) : null}
-        {via ? <span className="text-xs text-muted-foreground">via {via}</span> : null}
+        {via || also ? (
+          <span className="text-xs text-muted-foreground" data-testid="portfolio-impact-via">
+            {[via ? `via ${via}` : null, also ? `also ${also}` : null].filter(Boolean).join(", ")}
+          </span>
+        ) : null}
         {product.severity ? <SeverityBadge severity={product.severity} /> : null}
       </div>
       {product.summary ? <p className="text-sm">{product.summary}</p> : null}
