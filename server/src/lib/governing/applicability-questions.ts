@@ -86,6 +86,21 @@ function words(text: string): string[] {
     .filter(Boolean);
 }
 
+/** Control ids shorter than this (once punctuation is dropped) are matched verbatim only. */
+const MIN_JOINED_ID_LENGTH = 4;
+
+function containsVerbatimToken(text: string, token: string): boolean {
+  const hay = text.toLowerCase();
+  const needle = token.trim().toLowerCase();
+  const wordChar = /[\p{L}\p{N}]/u;
+  for (let at = hay.indexOf(needle); at !== -1; at = hay.indexOf(needle, at + 1)) {
+    const before = at > 0 ? hay[at - 1]! : "";
+    const after = hay[at + needle.length] ?? "";
+    if (!wordChar.test(before) && !wordChar.test(after)) return true;
+  }
+  return false;
+}
+
 /**
  * True when `text` names `controlId`: some run of whole words of `text` reads
  * as the id once case, spacing and punctuation are set aside, as `words()`
@@ -98,6 +113,9 @@ function words(text: string): string[] {
 function namesControl(text: string, controlId: string): boolean {
   const id = words(controlId).join("");
   if (!id) return false;
+  // A short id (`A.1`, `3.4`) joined across words matches ordinary prose
+  // (`a 1-to-1 mapping`, `3 4`), so it must appear verbatim, as a whole token.
+  if (id.length < MIN_JOINED_ID_LENGTH) return containsVerbatimToken(text, controlId);
   const w = words(text);
   for (let i = 0; i < w.length; i++) {
     let run = "";

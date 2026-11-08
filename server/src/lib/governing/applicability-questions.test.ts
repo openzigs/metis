@@ -114,6 +114,15 @@ function expectNoRulebook(question: string, rules: readonly QuestionRule[]) {
 }
 
 describe("questionLeaksRule — the rulebook guard", () => {
+  it("#2009 — a short control id matches verbatim only, not across prose words", () => {
+    const a1 = { controlId: "A.1", clauseExcerpt: "x" };
+    expect(questionLeaksRule("Is there a 1-to-1 mapping?", [a1])).toBeNull();
+    expect(questionLeaksRule("Does A.1 apply?", [a1])).toMatch(/names control/);
+    const r34 = { controlId: "3.4", clauseExcerpt: "x" };
+    expect(questionLeaksRule("Are 3 4 users affected?", [r34])).toBeNull();
+    expect(questionLeaksRule("Does 3.4 apply?", [r34])).toMatch(/names control/);
+  });
+
   it("#2009 — catches a control id written with other spacing or punctuation", () => {
     const pci = { controlId: "PCI-DSS 3.4", clauseExcerpt: "x" };
     expect(questionLeaksRule("Does PCI DSS 3.4 cover this?", [pci])).toMatch(/names control/);

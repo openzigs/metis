@@ -2644,7 +2644,9 @@ the pre-#1873 code).
   `governing-applicability`, which names no real ambiguity. Its own `requirementId` is
   namespaced (`governing:REQ-001`, #2009). The analysis's requirement ids and the reviewed
   list's both number from REQ-001 independently, and every reader of `requirementId` (the CSV
-  export's title, the ticked-items ordering) reads it against the reviewed list.
+  export's title, the ticked-items ordering) reads it against the reviewed list. Clarification
+  enrichment skips governing questions outright (`collectAnsweredQuestions`): their answers
+  settle rule applicability and never refine a requirement.
 - **The guard.** `questionLeaksRule` refuses a question that names a control id (whole words,
   with case, spacing and punctuation set aside, so `PCI DSS 3.4` names `PCI-DSS 3.4` and `CC 6.1`
   names `CC6.1`: #2009) or repeats 8 or more consecutive words of a clause. It is re-asked once in

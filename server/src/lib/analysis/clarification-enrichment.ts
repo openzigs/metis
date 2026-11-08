@@ -154,6 +154,8 @@ export function collectAnsweredQuestions(
   for (const round of state.rounds ?? []) {
     const submitted = new Map((round.answers ?? []).map((a) => [a.questionId, a.answer]));
     for (const q of round.questions ?? []) {
+      // #2009 — a governing question settles rule applicability, not a requirement.
+      if (q.governing) continue;
       const answer = (q.answer ?? submitted.get(q.id) ?? "").trim();
       if (answer.length === 0) continue;
       byQuestionId.set(q.id, {
