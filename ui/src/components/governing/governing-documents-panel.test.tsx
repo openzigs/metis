@@ -5,13 +5,19 @@
  * server's own envelopes, status codes and role rule (a member gets 403 on a
  * write). A "reload" unmounts the panel and mounts it again over a fresh
  * QueryClient, so what it then shows came from the fake server's store, never
- * from the first mount's cache or an optimistic update.
+ * from the first mount's cache or an optimistic update. The QueryClient is the
+ * app's own (`createQueryClient`: 30 s staleTime, no refetch on focus), so a
+ * test sees the caching a user does (#1996); only its retries are off.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, renderHook, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MAX_DOCUMENT_BYTES } from "@metis/shared";
+import {
+  GOVERNING_EXTRACTION_STALE_MS,
+  MAX_DOCUMENT_BYTES,
+  UPLOAD_EXTENSION_ALLOWLIST,
+} from "@metis/shared";
 
 const auth: { user: { id: string; role: string } | null } = {
   user: { id: "u-admin", role: "viewer" },
@@ -19,8 +25,10 @@ const auth: { user: { id: string; role: string } | null } = {
 vi.mock("@/lib/auth-context", () => ({ useAuth: () => auth }));
 
 import {
+  EXTRACTION_POLL_MS,
   GoverningDocumentsPanel,
   formatEffectiveDate,
+  isExtractionStuck,
   isExtractionUnsettled,
 } from "./governing-documents-panel";
 import {
@@ -29,6 +37,7 @@ import {
   useGoverningTabVisible,
 } from "@/lib/governing-api";
 import { ApiError } from "@/lib/api-client";
+import { createQueryClient } from "@/lib/query-client";
 
 const WS = "ws-1";
 
@@ -42,6 +51,7 @@ interface FakeRevision {
   indexState: string;
   extractionState: string;
   extractionError: string | null;
+  extractionStartedAt: string | null;
   droppedUnverified: number;
   createdAt: string;
 }
@@ -76,6 +86,13 @@ class FakeServer {
   revisions: FakeRevision[] = [];
   rules: FakeRule[] = [];
   requests: { method: string; path: string; body: unknown }[] = [];
+  /**
+   * The real route answers 202 and starts the run in the background, so its
+   * `running` can commit after the response. With this on, the start waits in
+   * `pendingStarts` until the test runs it.
+   */
+  deferRetryStart = false;
+  pendingStarts: (() => void)[] = [];
   private seq = 0;
 
   nextId(prefix: string) {
@@ -91,6 +108,8 @@ class FakeServer {
     droppedUnverified?: number;
     rules?: Array<Pick<FakeRule, "controlId" | "summary" | "clauseRef" | "clauseExcerpt">>;
     revisionLabel?: string;
+    extractionStartedAt?: string | null;
+    createdAt?: string;
   }): { doc: FakeDoc; revision: FakeRevision } {
     const doc: FakeDoc = {
       id: this.nextId("doc"),
@@ -107,8 +126,18 @@ class FakeServer {
       extractionState: opts.extractionState ?? "done",
       extractionError: opts.extractionError ?? null,
       droppedUnverified: opts.droppedUnverified ?? 0,
+      extractionStartedAt: opts.extractionStartedAt ?? null,
+      ...(opts.createdAt ? { createdAt: opts.createdAt } : {}),
     });
-    for (const r of opts.rules ?? []) {
+    this.addRules(revision, opts.rules ?? []);
+    return { doc, revision };
+  }
+
+  addRules(
+    revision: FakeRevision,
+    rules: Array<Pick<FakeRule, "controlId" | "summary" | "clauseRef" | "clauseExcerpt">>,
+  ) {
+    for (const r of rules) {
       this.rules.push({
         ...r,
         id: this.nextId("rule"),
@@ -117,7 +146,6 @@ class FakeServer {
         deletedAt: null,
       });
     }
-    return { doc, revision };
   }
 
   addRevision(
@@ -129,7 +157,8 @@ class FakeServer {
       | "extractionState"
       | "extractionError"
       | "droppedUnverified"
-    >,
+    > &
+      Partial<Pick<FakeRevision, "extractionStartedAt" | "createdAt">>,
   ): FakeRevision {
     const revision: FakeRevision = {
       id: this.nextId("rev"),
@@ -137,6 +166,7 @@ class FakeServer {
       mimeType: "text/markdown",
       sizeBytes: 10,
       indexState: "indexed",
+      extractionStartedAt: null,
       createdAt: new Date().toISOString(),
       ...fields,
     };
@@ -261,8 +291,21 @@ class FakeServer {
     if (rest[3] === "rule-extraction" && method === "POST") {
       const rev = this.revisions.find((r) => r.id === rest[2]);
       if (!rev) return err(404, "NOT_FOUND", "Governing revision not found");
-      rev.extractionState = "pending";
-      rev.extractionError = null;
+      // The route's `isExtractionStartable`: pending, failed, or a stale run.
+      const freshRun =
+        rev.extractionState === "running" &&
+        rev.extractionStartedAt !== null &&
+        Date.parse(rev.extractionStartedAt) >= Date.now() - GOVERNING_EXTRACTION_STALE_MS;
+      if (rev.extractionState === "done" || freshRun) {
+        return err(409, "EXTRACTION_NOT_RETRYABLE", "Not retryable");
+      }
+      const start = () => {
+        rev.extractionState = "running";
+        rev.extractionError = null;
+        rev.extractionStartedAt = new Date().toISOString();
+      };
+      if (this.deferRetryStart) this.pendingStarts.push(start);
+      else start();
       return json(202, { documentId: doc.id, revisionId: rev.id, scheduled: true });
     }
     return err(404, "NOT_FOUND", "Not found");
@@ -271,13 +314,17 @@ class FakeServer {
 
 let server: FakeServer;
 
-function mount() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+/** The app's QueryClient, retries off; returned so a test can read its cache. */
+function mount(): QueryClient {
+  const qc = createQueryClient();
+  const defaults = qc.getDefaultOptions();
+  qc.setDefaultOptions({ ...defaults, queries: { ...defaults.queries, retry: false } });
+  render(
     <QueryClientProvider client={qc}>
       <GoverningDocumentsPanel workspaceId={WS} />
     </QueryClientProvider>,
   );
+  return qc;
 }
 
 /** A page reload: nothing survives but the server's store. */
@@ -308,8 +355,16 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
+
+/** Run the list's next poll: the panel re-reads every {@link EXTRACTION_POLL_MS}. */
+async function nextPoll() {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(EXTRACTION_POLL_MS);
+  });
+}
 
 describe("pure helpers", () => {
   it("isExtractionUnsettled is true only for pending and running", () => {
@@ -318,6 +373,21 @@ describe("pure helpers", () => {
     expect(isExtractionUnsettled("done")).toBe(false);
     expect(isExtractionUnsettled("failed")).toBe(false);
     expect(isExtractionUnsettled(undefined)).toBe(false);
+  });
+
+  it("isExtractionStuck: pending or running past the stale bound, or running with no start time", () => {
+    const now = Date.parse("2026-11-07T12:00:00.000Z");
+    const stale = new Date(now - GOVERNING_EXTRACTION_STALE_MS - 1).toISOString();
+    const fresh = new Date(now - GOVERNING_EXTRACTION_STALE_MS + 60_000).toISOString();
+    const rev = (extractionState: string, extractionStartedAt: string | null, createdAt: string) =>
+      isExtractionStuck({ extractionState, extractionStartedAt, createdAt } as never, now);
+    expect(rev("pending", null, stale)).toBe(true);
+    expect(rev("pending", null, fresh)).toBe(false);
+    expect(rev("running", stale, fresh)).toBe(true);
+    expect(rev("running", fresh, stale)).toBe(false);
+    expect(rev("running", null, fresh)).toBe(true);
+    expect(rev("failed", stale, stale)).toBe(false);
+    expect(rev("done", stale, stale)).toBe(false);
   });
 
   it("formatEffectiveDate reads the date in UTC and passes an unreadable value through", () => {
@@ -570,12 +640,10 @@ describe("GoverningDocumentsPanel", () => {
       extractionState: "failed",
       extractionError: "Provider timed out",
     });
-    mount();
+    const qc = mount();
     const table = await screen.findByRole("table", { name: "Governing documents" });
     // The workspace's members have loaded (the role decision is made on them).
-    await waitFor(() =>
-      expect(server.requests.some((r) => r.path === `/api/workspaces/${WS}`)).toBe(true),
-    );
+    await waitFor(() => expect(qc.getQueryState(["workspace", WS])?.status).toBe("success"));
     await user.click(within(table).getByRole("button", { name: "Policy" }));
     const rules = await screen.findByRole("region", { name: "Rules of Policy" });
     expect(within(rules).getByText("Review user access quarterly")).toBeInTheDocument();
@@ -615,9 +683,10 @@ describe("GoverningDocumentsPanel", () => {
         ),
       ).toBe(true),
     );
-    // The list re-reads the server, which now reports the revision pending.
+    // The revision reads running at once, and Retry is gone.
     await waitFor(() => expect(screen.queryByText("Provider timed out")).toBeNull());
-    expect(screen.getByText("pending")).toBeInTheDocument();
+    expect(screen.getByText("running")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Retry extraction / })).toBeNull();
   });
 
   it("a failed retry shows the server's reason", async () => {
@@ -714,6 +783,118 @@ describe("GoverningDocumentsPanel", () => {
     expect(await screen.findByText("Review user access quarterly")).toBeInTheDocument();
     expect(screen.queryByText("New v2 rule")).toBeNull();
     expect(server.requests.some((r) => r.path.endsWith("/rules") && r.method === "GET")).toBe(true);
+  });
+
+  it("#1996 — a poll that sees the extraction finish re-reads the rule count and the open rules table", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const { revision } = server.seedDocument({
+      title: "Policy",
+      extractionState: "running",
+      extractionStartedAt: new Date().toISOString(),
+    });
+    mount();
+    await user.click(await screen.findByRole("button", { name: "Policy" }));
+    const rules = await screen.findByRole("region", { name: "Rules of Policy" });
+    expect(
+      within(rules).getByText("No rules yet — extraction has not finished."),
+    ).toBeInTheDocument();
+
+    // The run finishes on the server; the page learns of it only by its poll.
+    revision.extractionState = "done";
+    server.addRules(revision, POLICY_RULES);
+    await nextPoll();
+
+    const table = screen.getByRole("table", { name: "Governing documents" });
+    const row = within(table).getByRole("button", { name: "Policy" }).closest("tr")!;
+    await waitFor(() => expect(within(row).getByText("done")).toBeInTheDocument());
+    expect(await within(rules).findByText("Review user access quarterly")).toBeInTheDocument();
+    await waitFor(() => expect(within(row).getByText("2")).toBeInTheDocument());
+  });
+
+  it("#1996 — a retry reads running at once even when the server's state change lands after the 202", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const { revision } = server.seedDocument({
+      title: "Broken policy",
+      extractionState: "failed",
+      extractionError: "Provider timed out",
+    });
+    server.deferRetryStart = true;
+    mount();
+    await user.click(
+      await screen.findByRole("button", { name: "Retry extraction of Broken policy" }),
+    );
+    // The 202 is in, the server still says failed: the row says running, so a
+    // second click (which the route would refuse with 409) is not offered.
+    expect(await screen.findByText("running")).toBeInTheDocument();
+    expect(screen.queryByText("Provider timed out")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Retry extraction / })).toBeNull();
+    expect(revision.extractionState).toBe("failed");
+
+    // The run's start commits and then finishes; the poll picks both up.
+    server.pendingStarts.forEach((start) => start());
+    await nextPoll();
+    revision.extractionState = "done";
+    server.addRules(revision, POLICY_RULES);
+    await nextPoll();
+    const row = screen.getByRole("button", { name: "Broken policy" }).closest("tr")!;
+    await waitFor(() => expect(within(row).getByText("done")).toBeInTheDocument());
+    await waitFor(() => expect(within(row).getByText("2")).toBeInTheDocument());
+    expect(server.requests.filter((r) => r.path.endsWith("/rule-extraction"))).toHaveLength(1);
+  });
+
+  it("#1996 — a revision stuck running past the stale bound offers Retry, and the route takes it", async () => {
+    const user = userEvent.setup();
+    const deadStart = new Date(Date.now() - GOVERNING_EXTRACTION_STALE_MS - 60_000).toISOString();
+    const { revision } = server.seedDocument({
+      title: "Stuck policy",
+      extractionState: "running",
+      extractionStartedAt: deadStart,
+    });
+    server.seedDocument({
+      title: "Busy policy",
+      extractionState: "running",
+      extractionStartedAt: new Date().toISOString(),
+    });
+    mount();
+    const retry = await screen.findByRole("button", { name: "Retry extraction of Stuck policy" });
+    expect(screen.getByText(/has not finished in 60 minutes/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry extraction of Busy policy" })).toBeNull();
+    await user.click(retry);
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Retry extraction of Stuck policy" })).toBeNull(),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(revision.extractionStartedAt).not.toBe(deadStart);
+  });
+
+  it("#1996 — a revision left pending past the stale bound offers Retry; a fresh upload does not", async () => {
+    const long = new Date(Date.now() - GOVERNING_EXTRACTION_STALE_MS - 60_000).toISOString();
+    server.seedDocument({ title: "Orphaned policy", extractionState: "pending", createdAt: long });
+    server.seedDocument({ title: "New policy", extractionState: "pending" });
+    mount();
+    expect(
+      await screen.findByRole("button", { name: "Retry extraction of Orphaned policy" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/has not finished in 60 minutes/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry extraction of New policy" })).toBeNull();
+  });
+
+  it("the upload dialog names every accepted extension and offers them to the picker as .ext", async () => {
+    const user = userEvent.setup();
+    mount();
+    await user.click(await screen.findByRole("button", { name: "Upload document" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByText(new RegExp(UPLOAD_EXTENSION_ALLOWLIST.join(", "))),
+    ).toBeTruthy();
+    const accept = within(dialog).getByLabelText("File").getAttribute("accept")!.split(",");
+    expect(accept).toEqual(
+      expect.arrayContaining(UPLOAD_EXTENSION_ALLOWLIST.map((ext) => `.${ext}`)),
+    );
+    expect(accept).not.toContain("md");
   });
 
   it("says so when the server reports the feature off (404)", async () => {

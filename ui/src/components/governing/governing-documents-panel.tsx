@@ -5,13 +5,14 @@
  *
  * Lists the documents with their current revision's extraction state, rule
  * count and dropped-unverified count; a workspace admin uploads documents and
- * revisions, retries a failed extraction, and edits or removes rules. Every
+ * revisions, retries a failed or stuck extraction, and edits or removes rules. Every
  * member sees the list and the rules. The controls follow the caller's
  * workspace role, which the server enforces regardless (#1869).
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FileText, Upload } from "lucide-react";
+import { GOVERNING_EXTRACTION_STALE_MS } from "@metis/shared";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -42,6 +43,25 @@ export function isExtractionUnsettled(state: string | undefined): boolean {
   return state === "pending" || state === "running";
 }
 
+/**
+ * #1996 — an unsettled revision the retry route restarts: `running` past the
+ * server's stale bound (or with no start time, as the route reads it), or
+ * `pending` that long after its upload. A fresh one is left to finish.
+ */
+export function isExtractionStuck(
+  revision: Pick<GoverningRevision, "extractionState" | "extractionStartedAt" | "createdAt">,
+  now: number = Date.now(),
+): boolean {
+  const staleBefore = now - GOVERNING_EXTRACTION_STALE_MS;
+  if (revision.extractionState === "pending") return Date.parse(revision.createdAt) < staleBefore;
+  if (revision.extractionState !== "running") return false;
+  return (
+    revision.extractionStartedAt === null || Date.parse(revision.extractionStartedAt) < staleBefore
+  );
+}
+
+type DocumentList = { documents: GoverningDocumentListItem[] };
+
 /** `YYYY-MM-DD` of an ISO date, read in UTC so a date-only value never shifts a day. */
 export function formatEffectiveDate(iso: string): string {
   const at = new Date(iso);
@@ -62,6 +82,7 @@ function ExtractionBadge({ state }: { state: string }) {
 
 export function GoverningDocumentsPanel({ workspaceId }: { workspaceId: string }) {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
   const [upload, setUpload] = useState<UploadTarget | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -81,6 +102,26 @@ export function GoverningDocumentsPanel({ workspaceId }: { workspaceId: string }
         ? EXTRACTION_POLL_MS
         : false,
   });
+
+  // #1996 — a poll that sees an extraction settle re-reads that document's
+  // rules and revisions; nothing else would until the 30 s staleTime and a remount.
+  const lastState = useRef(new Map<string, string>());
+  useEffect(() => {
+    for (const doc of list.data?.documents ?? []) {
+      const revision = doc.currentRevision;
+      if (!revision) continue;
+      const before = lastState.current.get(revision.id);
+      lastState.current.set(revision.id, revision.extractionState);
+      if (isExtractionUnsettled(before) && !isExtractionUnsettled(revision.extractionState)) {
+        void queryClient.invalidateQueries({
+          queryKey: governingKeys.documentRules(workspaceId, doc.id),
+        });
+        void queryClient.invalidateQueries({
+          queryKey: governingKeys.document(workspaceId, doc.id),
+        });
+      }
+    }
+  }, [list.data, queryClient, workspaceId]);
 
   if (list.isPending) {
     return <p className="text-sm text-muted-foreground">Loading governing documents…</p>;
@@ -263,7 +304,7 @@ function DocumentRow({
   );
 }
 
-/** The state badge; a failed extraction also shows its error and the way out. */
+/** The state badge; a failed or stuck extraction also says why and shows the way out. */
 function ExtractionCell({
   workspaceId,
   doc,
@@ -280,18 +321,51 @@ function ExtractionCell({
   const queryClient = useQueryClient();
   const retry = useMutation({
     mutationFn: () => governingApi.retryExtraction(workspaceId, doc.id, revision.id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: governingKeys.all(workspaceId) }),
+    // #1996 — the 202 can arrive before the run's `running` commits, so a
+    // re-read now could still say `failed`. Show it running, which starts the
+    // list's poll, and let the poll read the server's state.
+    onSuccess: async () => {
+      const listKey = governingKeys.list(workspaceId);
+      await queryClient.cancelQueries({ queryKey: listKey });
+      queryClient.setQueryData<DocumentList>(listKey, (old) =>
+        old
+          ? {
+              documents: old.documents.map((d) =>
+                d.currentRevision?.id === revision.id
+                  ? {
+                      ...d,
+                      currentRevision: {
+                        ...d.currentRevision,
+                        extractionState: "running",
+                        extractionError: null,
+                        extractionStartedAt: new Date().toISOString(),
+                      },
+                    }
+                  : d,
+              ),
+            }
+          : old,
+      );
+    },
   });
 
-  if (revision.extractionState !== "failed") {
+  const failed = revision.extractionState === "failed";
+  if (!failed && !isExtractionStuck(revision)) {
     return <ExtractionBadge state={revision.extractionState} />;
   }
   return (
     <div className="space-y-1">
-      <ExtractionBadge state="failed" />
-      <p className="text-xs text-destructive">
-        {revision.extractionError ?? "Rule extraction failed."}
-      </p>
+      <ExtractionBadge state={revision.extractionState} />
+      {failed ? (
+        <p className="text-xs text-destructive">
+          {revision.extractionError ?? "Rule extraction failed."}
+        </p>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          Extraction has not finished in {GOVERNING_EXTRACTION_STALE_MS / 60_000} minutes; it may
+          have stopped.
+        </p>
+      )}
       {canManage ? (
         <div className="flex flex-wrap gap-1">
           <Button

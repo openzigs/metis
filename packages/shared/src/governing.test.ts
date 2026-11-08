@@ -33,6 +33,7 @@ const revision = {
   indexState: "indexed",
   extractionState: "done",
   extractionError: null,
+  extractionStartedAt: at,
   droppedUnverified: 0,
   uploadedById: "u-1",
   createdAt: at,

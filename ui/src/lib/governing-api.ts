@@ -146,8 +146,11 @@ export const governingKeys = {
   list: (workspaceId: string) => [...governingKeys.all(workspaceId), "list"] as const,
   document: (workspaceId: string, documentId: string) =>
     [...governingKeys.all(workspaceId), "document", documentId] as const,
+  /** Every revision's rules of one document: the prefix a settled extraction invalidates (#1996). */
+  documentRules: (workspaceId: string, documentId: string) =>
+    [...governingKeys.all(workspaceId), "rules", documentId] as const,
   rules: (workspaceId: string, documentId: string, revisionId?: string) =>
-    [...governingKeys.all(workspaceId), "rules", documentId, revisionId ?? "current"] as const,
+    [...governingKeys.documentRules(workspaceId, documentId), revisionId ?? "current"] as const,
 };
 
 /**
