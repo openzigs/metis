@@ -7,7 +7,7 @@
  */
 
 import type { DocumentSource } from "../../documents/document-source.js";
-import type { SharedCriteriaRecord } from "@metis/shared";
+import type { GoverningQuestionLink, SharedCriteriaRecord } from "@metis/shared";
 
 // ── Structured Requirements (#622) ─────────────────────────────────────
 
@@ -159,6 +159,12 @@ export interface ClarifyingQuestion {
    * user instead of showing an unanswered-looking form.
    */
   answer?: string;
+  /**
+   * #1873 — set when the question was asked to settle governing-rule
+   * applicability: the requirement it was decided for and every rule the one
+   * business fact settles. Absent on every ambiguity question.
+   */
+  governing?: GoverningQuestionLink;
 }
 
 export interface ClarificationAnswer {

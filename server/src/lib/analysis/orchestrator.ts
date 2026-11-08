@@ -264,6 +264,10 @@ import {
 } from "./retrieval.js";
 import { governingApplicabilityHookFor } from "../governing/applicability.js";
 import {
+  persistGoverningApplicability,
+  toStoredApplicability,
+} from "../governing/applicability-store.js";
+import {
   retrieveFusedCodeChunks,
   retrieveFusedCodeContext,
   toFusedRagChunkRef,
@@ -4314,6 +4318,17 @@ export class AnalysisOrchestrator {
         requirements: evidence.length,
         undecided: evidence.filter((e) => e.governing?.error).length,
       });
+      // #1873 — stored on the analysis, where the clarification dialog reads
+      // its `uncertain` pairs and a BA answer settles them. Best-effort: a
+      // failed write is logged and never fails the run.
+      await persistGoverningApplicability(analysisId, toStoredApplicability(evidence)).catch(
+        (err: unknown) => {
+          log.warn("governing applicability could not be stored", {
+            analysisId,
+            error: (err as Error).message,
+          });
+        },
+      );
       return evidence;
     } catch (err) {
       log.warn("governing applicability failed as a whole", {
