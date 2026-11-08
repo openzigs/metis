@@ -8,6 +8,7 @@ import type { PortfolioAssessmentInput } from "@metis/shared";
 import {
   directChangeProductIds,
   edgeFlows,
+  otherLinkKinds,
   withImpact,
   type PortfolioImpactResult,
   type ProductImpact,
@@ -99,6 +100,9 @@ const impactOf = (over: Partial<ProductImpact> & { productId: string }): Product
   edgeIds: [],
   hops: [],
   hiddenEdgeCount: 0,
+  links: [],
+  edgesDetected: false,
+  connectedToChange: true,
   ...over,
 });
 
@@ -125,6 +129,58 @@ describe("impactSentence", () => {
     expect(impactSentence(impactOf({ productId: "p", impactKind: "downstream-consumer" }))).toBe(
       "Downstream consumer.",
     );
+  });
+
+  it("#1963 — names every other edge kind the change reaches it by", () => {
+    const p = impactOf({
+      productId: "p",
+      impactKind: "downstream-consumer",
+      via: "database",
+      severity: "high",
+    });
+    expect(impactSentence(p, ["event", "api"])).toBe(
+      "Downstream consumer via database (high). Also via event, api.",
+    );
+    expect(impactSentence(p, [])).toBe("Downstream consumer via database (high).");
+  });
+});
+
+describe("otherLinkKinds (#1963)", () => {
+  const link = (integrationKind: ProductImpact["links"][number]["integrationKind"]) => ({
+    integrationKind,
+    fromProductId: "p1",
+    edgeProductIds: ["p2"],
+    providerRepoId: "rc-1",
+    consumerRepoId: "rc-2",
+  });
+
+  it("is each kind but the shown path's, once, in the integration kinds' order", () => {
+    const links = [link("database"), link("event"), link("api"), link("event")];
+    expect(otherLinkKinds({ via: "database", links })).toEqual(["api", "event"]);
+    expect(otherLinkKinds({ via: null, links })).toEqual(["api", "event", "database"]);
+    expect(otherLinkKinds({ via: "api", links: [link("api")] })).toEqual([]);
+  });
+
+  it("withImpact stores the links, and an out-of-scope row's sentence names every kind", () => {
+    const links = [link("database"), link("event")];
+    const out = withImpact(
+      { statement: "S", scope: "product", productIds: ["p1"], createdById: "u", products: [] },
+      {
+        maxDepth: 2,
+        stoppedAtRestricted: 0,
+        products: [
+          impactOf({
+            productId: "p2",
+            impactKind: "downstream-consumer",
+            via: "database",
+            severity: "high",
+            links,
+          }),
+        ],
+      },
+    ).products![0];
+    expect(out.baSummary).toBe("Downstream consumer via database (high). Also via event.");
+    expect((out.technicalDetail as { impact: { links: unknown } }).impact.links).toEqual(links);
   });
 });
 
@@ -194,6 +250,10 @@ describe("withImpact", () => {
             // #1689 — the rule this run relabelled by; `adjacent` is the older one.
             restrictedRule: "walk",
             hops: [],
+            links: [],
+            // #1963 — whether its edges were ever detected (a completed product analysis).
+            edgesDetected: false,
+            connectedToChange: true,
           },
         },
       }),

@@ -8,7 +8,7 @@
 import { z } from "zod";
 import { REQUIREMENT_KINDS, REQUIREMENT_VERDICTS } from "./constants.js";
 import { NFR_CATEGORIES } from "./elicitation.js";
-import type { ProductResourceKind } from "./product-docs.js";
+import { PRODUCT_INTEGRATION_KINDS, type ProductResourceKind } from "./product-docs.js";
 
 /** Which products an assessment looked at: one product, or every one the caller can read. */
 export const PORTFOLIO_ASSESSMENT_SCOPES = ["product", "all-accessible"] as const;
@@ -301,6 +301,20 @@ export interface PortfolioAssessmentView extends PortfolioAssessment {
   verdict: PortfolioVerdict | null;
   /** Names of the products in the assessment that the reader can read now. */
   productNames: Record<string, string>;
+  /**
+   * #1963 — the products in scope the verdict left out as not in scope of the
+   * change: not checked, and not connected (no path of product edges, either
+   * way, at any depth) to any product the change touches. Empty when none
+   * was, or for a verdict stored before #1963 (which left none out).
+   */
+  notInScope?: string[];
+  /**
+   * #1963 — the products in scope not checked and never analysed (no completed
+   * product analysis, so their integration edges were never detected): the
+   * walk's `none` for them is not evidence the change does not reach them, so
+   * they stay in the verdict. Empty when none was.
+   */
+  neverAnalysed?: string[];
 }
 
 /** One row of `GET /api/portfolio-assessments`. */
@@ -356,6 +370,24 @@ export function portfolioNamedInProse(
 }
 
 /**
+ * #1963 — products the verdict left out as not in scope of the change, in the
+ * words the page's headline and the server's summary share.
+ */
+export function portfolioNotInScopeText(names: readonly (string | null)[]): string {
+  const one = names.length === 1;
+  return `${portfolioNamedInProse(names, { sentenceStart: true })} ${one ? "was" : "were"} not checked, but ${one ? "it is" : "they are"} not connected to any product this change touches, so ${one ? "it is" : "they are"} not in scope.`;
+}
+
+/**
+ * #1963 — products not checked whose integrations were never analysed, so
+ * nothing says whether the change reaches them: they stay in the verdict.
+ */
+export function portfolioNeverAnalysedText(names: readonly (string | null)[]): string {
+  const one = names.length === 1;
+  return `${portfolioNamedInProse(names, { sentenceStart: true })} ${one ? "was" : "were"} not checked and ${one ? "has" : "have"} never been analysed, so whether this change reaches ${one ? "it" : "them"} is not known.`;
+}
+
+/**
  * #1726 — repos whose model call failed (`model-error`), in the words the page
  * and the server's summaries share: what failed and what to do. With
  * `leftOut`, says the answer it follows leaves them out.
@@ -405,6 +437,29 @@ export function portfolioImpactUnderOlderRule(technicalDetail: unknown): boolean
   const impact = (technicalDetail as { impact?: unknown } | null | undefined)?.impact;
   if (typeof impact !== "object" || impact === null || Array.isArray(impact)) return false;
   return portfolioRestrictedRule(technicalDetail) !== "walk";
+}
+
+/**
+ * #1963 — the edge kinds the change reaches a product by, beyond the one its
+ * shown path crosses (`via`): each distinct kind in the stored
+ * `technicalDetail.impact.links`, in `PRODUCT_INTEGRATION_KINDS` order (an
+ * unknown kind last, as stored). The path shows the most severe link; these
+ * are the others, so a product reached by a database and an event says both.
+ */
+export function portfolioOtherLinkKinds(technicalDetail: unknown, via: string | null): string[] {
+  const links = (technicalDetail as { impact?: { links?: unknown } } | null | undefined)?.impact
+    ?.links;
+  if (!Array.isArray(links)) return [];
+  const kinds = new Set<string>();
+  for (const l of links) {
+    const kind = (l as { integrationKind?: unknown } | null)?.integrationKind;
+    if (typeof kind === "string" && kind !== via) kinds.add(kind);
+  }
+  const rank = (k: string) => {
+    const i = (PRODUCT_INTEGRATION_KINDS as readonly string[]).indexOf(k);
+    return i === -1 ? PRODUCT_INTEGRATION_KINDS.length : i;
+  };
+  return [...kinds].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 }
 
 /** Why a `restricted` impact is not known, by the rule its run relabelled it under. */

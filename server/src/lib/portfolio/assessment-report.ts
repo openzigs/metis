@@ -24,6 +24,7 @@ import { z } from "zod";
 import {
   NFR_CATEGORIES,
   REQUIREMENT_KINDS,
+  portfolioOtherLinkKinds,
   type ChangeSeverity,
   type PortfolioAssessmentInput,
   type PortfolioCoverage,
@@ -65,6 +66,8 @@ export interface ReportProduct {
   severity: ChangeSeverity | null;
   /** The ids of the products on its impact path, from the direct change to it. */
   path: string[];
+  /** #1963 — the other edge kinds the change reaches it by; empty when restricted. */
+  otherVia: string[];
 }
 
 export interface ReportContext {
@@ -73,6 +76,8 @@ export interface ReportContext {
   verdict: RequirementVerdict;
   /** The gap engine's deterministic verdict sentence. */
   verdictSummary: string;
+  /** #1963 — how many products the verdict left out as not in scope of the change. */
+  notInScope: number;
   products: ReportProduct[];
 }
 
@@ -97,6 +102,8 @@ export function reportContext(
       via: restricted ? null : (i?.via ?? null),
       severity: restricted ? null : (i?.severity ?? null),
       path: restricted ? [] : [...(i?.hops.map((h) => h.fromProductId) ?? []), productId],
+      otherVia:
+        restricted || !i ? [] : portfolioOtherLinkKinds({ impact: { links: i.links } }, i.via),
     };
   });
   return {
@@ -104,6 +111,7 @@ export function reportContext(
     criteria: gap.criteria,
     verdict: gap.verdict,
     verdictSummary: gap.summary,
+    notInScope: gap.notInScope?.length ?? 0,
     products,
   };
 }
@@ -203,7 +211,15 @@ export function buildReportPrompt(ctx: ReportContext, refs: ReadonlyMap<string, 
   const shown = ctx.products.filter((p) => !p.restricted);
   const restricted = ctx.products.filter((p) => p.restricted && p.impactKind !== "none").length;
   const lines = [
-    `Verdict: the requirement is ${VERDICT_TEXT[ctx.verdict]}.`,
+    // #1963 — a verdict over the products in scope of the change says so.
+    ctx.notInScope > 0 && ctx.verdict === "gap-confirmed"
+      ? "Verdict: the requirement is covered by nothing the assessment checked."
+      : `Verdict: the requirement is ${VERDICT_TEXT[ctx.verdict]}.`,
+    ...(ctx.notInScope > 0
+      ? [
+          `Not in scope: ${ctx.notInScope} ${ctx.notInScope === 1 ? "product was" : "products were"} not checked, but ${ctx.notInScope === 1 ? "it is" : "they are"} not connected to any product the change touches, so the verdict leaves ${ctx.notInScope === 1 ? "it" : "them"} out.`,
+        ]
+      : []),
     ...shown.map(
       (p) =>
         `Product ${refs.get(p.productId)}: ${p.name ?? p.productId}. Coverage: ${COVERAGE_TEXT[p.coverage]}. Impact: ${impactText(p, nameOf)}.`,

@@ -15,6 +15,9 @@ import {
   portfolioModifierText,
   portfolioModelErrorText,
   portfolioNamedInProse,
+  portfolioNeverAnalysedText,
+  portfolioNotInScopeText,
+  portfolioOtherLinkKinds,
   portfolioRestrictedNote,
   portfolioImpactUnderOlderRule,
   portfolioRestrictedRule,
@@ -39,6 +42,26 @@ describe("#1689 — product names in prose", () => {
     expect(portfolioNamedInProse([null], { sentenceStart: true })).toBe("A product");
     expect(portfolioNamedInProse([null, null, null])).toBe("3 products");
     expect(portfolioNamedInProse([null, null], { sentenceStart: true })).toBe("2 products");
+  });
+});
+
+describe("#1963 — products left out of, or kept in, the verdict, in prose", () => {
+  it("names the products not in scope, singular and plural", () => {
+    expect(portfolioNotInScopeText(["A"])).toBe(
+      "A was not checked, but it is not connected to any product this change touches, so it is not in scope.",
+    );
+    expect(portfolioNotInScopeText(["A", "B"])).toBe(
+      "A and B were not checked, but they are not connected to any product this change touches, so they are not in scope.",
+    );
+  });
+
+  it("names the products never analysed, singular and plural", () => {
+    expect(portfolioNeverAnalysedText(["A"])).toBe(
+      "A was not checked and has never been analysed, so whether this change reaches it is not known.",
+    );
+    expect(portfolioNeverAnalysedText([null, null])).toBe(
+      "2 products were not checked and have never been analysed, so whether this change reaches them is not known.",
+    );
   });
 });
 
@@ -80,6 +103,32 @@ describe("#1689 — the rule a run relabelled restricted products by", () => {
     for (const rule of ["adjacent", null] as const) {
       expect(portfolioRestrictedNote(rule)).not.toContain("may reach it through");
     }
+  });
+});
+
+describe("#1963 — the other edge kinds a stored impact names", () => {
+  const detail = (links: unknown) => ({ impact: { links } });
+
+  it("is each kind but the shown path's, once, in the integration kinds' order", () => {
+    const links = [
+      { integrationKind: "identity" },
+      { integrationKind: "database" },
+      { integrationKind: "event" },
+      { integrationKind: "database" },
+    ];
+    expect(portfolioOtherLinkKinds(detail(links), "database")).toEqual(["event", "identity"]);
+    expect(portfolioOtherLinkKinds(detail(links), null)).toEqual(["event", "database", "identity"]);
+  });
+
+  it("puts an unknown kind last, and skips what is not a kind", () => {
+    const links = [{ integrationKind: "zz-new" }, { integrationKind: "api" }, null, {}, 7];
+    expect(portfolioOtherLinkKinds(detail(links), null)).toEqual(["api", "zz-new"]);
+  });
+
+  it("is empty with no links stored", () => {
+    expect(portfolioOtherLinkKinds({}, "api")).toEqual([]);
+    expect(portfolioOtherLinkKinds(null, "api")).toEqual([]);
+    expect(portfolioOtherLinkKinds(detail("not an array"), "api")).toEqual([]);
   });
 });
 

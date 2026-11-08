@@ -46,6 +46,7 @@ const {
   querySearchedFor,
   readPortfolioGapLimits,
   runPortfolioGapAnalysis,
+  scopedToChange,
   toAssessmentInput,
 } = await import("./gap-engine.js");
 const { AppError } = await import("../../middleware/error-handler.js");
@@ -606,6 +607,196 @@ describe("#1685 — naming the products with no repos under a confirmed gap", ()
     expect(portfolioSummary("implemented", [covering])).toBe(
       "Implemented by a product (acme/pay).",
     );
+  });
+});
+
+describe("#1963 — the verdict over the products in scope of the change", () => {
+  type Coverage = "not-covered" | "not-checked" | "restricted" | "partial";
+  const product = (productId: string, name: string | null, coverage: Coverage) => ({
+    productId,
+    name,
+    coverage,
+    reason: coverage === "not-checked" ? ("could-not-verify" as const) : null,
+    repos: [],
+    criteriaCoveredBy: [],
+    inaccessibleRepoCount: 0,
+    costUsd: 0,
+  });
+  /**
+   * `edgesDetected` defaults to true: a product analysed, so its `none` had edges
+   * to reason over. `connectedToChange` defaults to false for a `none` (no path
+   * of edges links it to what changes) and true for anything the walk reached.
+   */
+  const impactOf = (
+    rows: Array<
+      [
+        string,
+        "direct-change" | "downstream-consumer" | "restricted" | "none",
+        boolean?,
+        boolean?,
+        boolean?,
+      ]
+    >,
+  ) => ({
+    products: rows.map(
+      ([
+        productId,
+        impactKind,
+        restricted = false,
+        edgesDetected = true,
+        connectedToChange = impactKind !== "none",
+      ]) => ({
+        productId,
+        impactKind,
+        restricted,
+        edgesDetected,
+        connectedToChange,
+      }),
+    ),
+  });
+  /** The #1940 live check: the host and its downstream products, and old ones nobody indexed. */
+  const products = [
+    product("p-commerce", "LC Commerce", "not-covered"),
+    product("p-orders", "LC orders", "not-covered"),
+    product("p-billing", "LC billing", "not-covered"),
+    product("p-notify", "LC notify", "not-covered"),
+    product("p-old-1", "Walkthrough 1", "not-checked"),
+    product("p-old-2", "Walkthrough 2", "not-checked"),
+  ];
+  const gapOf = (rows: ReturnType<typeof product>[]) => {
+    const verdict = rows.some((p) => p.coverage === "not-checked")
+      ? ("could-not-verify" as const)
+      : ("gap-confirmed" as const);
+    return {
+      statement: "S",
+      criteria: ["c"],
+      scope: "all-accessible" as const,
+      productIds: rows.map((p) => p.productId),
+      products: rows,
+      verdict,
+      summary: portfolioSummary(verdict, rows),
+      costUsd: 0,
+    };
+  };
+  const issueImpact = impactOf([
+    ["p-commerce", "direct-change"],
+    ["p-orders", "direct-change"],
+    ["p-billing", "downstream-consumer"],
+    ["p-notify", "downstream-consumer"],
+    ["p-old-1", "none"],
+    ["p-old-2", "none"],
+  ]);
+
+  it("a gap every product the change touches confirms is a gap; the unrelated ones are named", () => {
+    const gap = gapOf(products);
+    expect(gap.verdict).toBe("could-not-verify");
+    const scoped = scopedToChange(gap, issueImpact);
+    expect(scoped.verdict).toBe("gap-confirmed");
+    expect(scoped.notInScope).toEqual(["p-old-1", "p-old-2"]);
+    expect(scoped.summary).toBe(
+      "Nothing checked covers this. Walkthrough 1 and Walkthrough 2 were not checked, but they are not connected to any product this change touches, so they are not in scope.",
+    );
+    // Stored as the scoped verdict.
+    const record = toAssessmentInput(scoped, {
+      createdById: "u",
+      sourceRequirementId: null,
+      sourceProjectId: null,
+    });
+    expect(record.portfolioVerdict).toBe("not-covered");
+    expect(record.summary).toBe(scoped.summary);
+  });
+
+  it("a product the change reaches that was not checked still reads could-not-verify, told apart", () => {
+    const rows = products.map((p) =>
+      p.productId === "p-notify" ? product("p-notify", "LC notify", "not-checked") : p,
+    );
+    const scoped = scopedToChange(gapOf(rows), issueImpact);
+    expect(scoped.verdict).toBe("could-not-verify");
+    expect(scoped.summary).toBe(
+      "Could not verify across the portfolio: of 4 products in scope, 1 not checked. Walkthrough 1 and Walkthrough 2 were not checked, but they are not connected to any product this change touches, so they are not in scope.",
+    );
+  });
+
+  it("a product never analysed is not called out of scope: it stays in, and says why", () => {
+    // Its edges were never detected, so the walk's `none` for it says nothing.
+    const unanalysed = impactOf([
+      ["p-commerce", "direct-change"],
+      ["p-orders", "direct-change"],
+      ["p-billing", "downstream-consumer"],
+      ["p-notify", "downstream-consumer"],
+      ["p-old-1", "none", false, true],
+      ["p-old-2", "none", false, false],
+    ]);
+    const scoped = scopedToChange(gapOf(products), unanalysed);
+    expect(scoped.verdict).toBe("could-not-verify");
+    expect(scoped.notInScope).toEqual(["p-old-1"]);
+    expect(scoped.neverAnalysed).toEqual(["p-old-2"]);
+    expect(scoped.summary).toBe(
+      "Could not verify across the portfolio: of 5 products in scope, 1 not checked. Walkthrough 2 was not checked and has never been analysed, so whether this change reaches it is not known. Walkthrough 1 was not checked, but it is not connected to any product this change touches, so it is not in scope.",
+    );
+    const record = toAssessmentInput(scoped, {
+      createdById: "u",
+      sourceRequirementId: null,
+      sourceProjectId: null,
+    });
+    expect(record.portfolioVerdict).toBe("not-checked");
+  });
+
+  it("none of them analysed: nothing is left out, the verdict is as it was, and they are named", () => {
+    const gap = gapOf(products);
+    const unanalysed = impactOf([
+      ["p-commerce", "direct-change"],
+      ["p-old-1", "none", false, false],
+      ["p-old-2", "none", false, false],
+    ]);
+    const scoped = scopedToChange(gap, unanalysed);
+    expect(scoped.verdict).toBe(gap.verdict);
+    expect(scoped.notInScope).toEqual([]);
+    expect(scoped.summary).toBe(
+      "Could not verify across the portfolio: of 6 products, 2 not checked. Walkthrough 1 and Walkthrough 2 were not checked and have never been analysed, so whether this change reaches them is not known.",
+    );
+  });
+
+  it("a product the walk lists none but that is connected to the change stays in the verdict", () => {
+    // #1963 — further out than the walk's depth, or upstream of a changed product:
+    // the walk reads `none`, but a path of edges links it, so it is not unrelated.
+    const connected = impactOf([
+      ["p-commerce", "direct-change"],
+      ["p-orders", "direct-change"],
+      ["p-billing", "downstream-consumer"],
+      ["p-notify", "downstream-consumer"],
+      ["p-old-1", "none", false, true, true],
+      ["p-old-2", "none"],
+    ]);
+    const scoped = scopedToChange(gapOf(products), connected);
+    expect(scoped.verdict).toBe("could-not-verify");
+    expect(scoped.notInScope).toEqual(["p-old-2"]);
+    expect(scoped.summary).toBe(
+      "Could not verify across the portfolio: of 5 products in scope, 1 not checked. Walkthrough 2 was not checked, but it is not connected to any product this change touches, so it is not in scope.",
+    );
+  });
+
+  it("one unrelated product reads in the singular", () => {
+    const scoped = scopedToChange(gapOf(products.slice(0, 5)), issueImpact);
+    expect(scoped.summary).toBe(
+      "Nothing checked covers this. Walkthrough 1 was not checked, but it is not connected to any product this change touches, so it is not in scope.",
+    );
+  });
+
+  it("with no product that changes, nothing is known to be unrelated: the result is as it was", () => {
+    const gap = gapOf(products);
+    const none = impactOf(products.map((p) => [p.productId, "none"]));
+    expect(scopedToChange(gap, none)).toBe(gap);
+  });
+
+  it("a product the change may reach through a restricted one, or one restricted, stays in", () => {
+    const gap = gapOf(products);
+    const maybe = impactOf([
+      ["p-commerce", "direct-change"],
+      ["p-old-1", "restricted"],
+      ["p-old-2", "none", true],
+    ]);
+    expect(scopedToChange(gap, maybe)).toBe(gap);
   });
 });
 

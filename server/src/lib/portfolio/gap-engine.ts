@@ -45,6 +45,8 @@ import {
   PORTFOLIO_ASSESSMENT_SCOPES,
   portfolioModelErrorText,
   portfolioNamedInProse,
+  portfolioNeverAnalysedText,
+  portfolioNotInScopeText,
   type AuthPayload,
   type CodeCitation,
   type FindingVerdict,
@@ -77,11 +79,13 @@ import { gateFindingVerdict, rollUpCriterionVerdicts } from "../analysis/require
 import { MIN_SHARED_TERMS, extractTerms } from "../analysis/retrieval-health.js";
 import { canAccessProjectDiscussions } from "../discussions/access.js";
 import { createPortfolioAssessment } from "./assessment-store.js";
+import type { ProductImpact } from "./impact-engine.js";
 import { callJsonLlmRetryingCutOff, resolvePortfolioMaxOutputTokens } from "./output-cap.js";
 import {
   hadNothingToCheck,
   rollUpPortfolio,
   rollUpProductCoverage,
+  scopeOfChange,
   storedPortfolioVerdict,
   type ProductNotCheckedReason,
 } from "./gap-rollup.js";
@@ -224,6 +228,16 @@ export interface PortfolioGapResult {
   verdict: RequirementVerdict;
   summary: string;
   costUsd: number;
+  /**
+   * #1963 — the products the verdict leaves out as not in scope of the change
+   * (`notInScopeOfChange`); set once the impact is known (`scopedToChange`).
+   */
+  notInScope?: string[];
+  /**
+   * #1963 — the products not checked that read `none` but were never analysed
+   * (`scopeOfChange`): kept in the verdict, and named after it.
+   */
+  neverAnalysed?: string[];
 }
 
 export interface PortfolioGapDeps {
@@ -788,18 +802,37 @@ function failedRepoLabels(products: readonly Pick<PortfolioProductResult, "repos
 export function portfolioSummary(
   verdict: RequirementVerdict,
   products: readonly PortfolioProductResult[],
+  scope: ChangeScope = {},
 ): string {
   const failed = failedRepoLabels(products);
-  const answer = verdictSummary(verdict, products);
+  const answer = verdictSummary(verdict, products, scope);
   return failed.length > 0
     ? `${answer} ${portfolioModelErrorText(failed, { leftOut: true })}`
     : answer;
 }
 
+/** #1963 — how the change scoped a verdict (`scopeOfChange`). */
+export interface ChangeScope {
+  /** Left out of the verdict: not checked, and not connected to what changes. */
+  notInScope?: ReadonlySet<string>;
+  /** Kept in: not checked, and never analysed, so its reach is not known. */
+  neverAnalysed?: ReadonlySet<string>;
+}
+
 function verdictSummary(
   verdict: RequirementVerdict,
-  products: readonly PortfolioProductResult[],
+  allProducts: readonly PortfolioProductResult[],
+  { notInScope = new Set(), neverAnalysed = new Set() }: ChangeScope,
 ): string {
+  // #1963 — the verdict was rolled up without these; they are named after it.
+  const outside = allProducts.filter((p) => notInScope.has(p.productId));
+  const products = allProducts.filter((p) => !notInScope.has(p.productId));
+  const outsideSentence =
+    outside.length > 0 ? [portfolioNotInScopeText(outside.map((p) => p.name))] : [];
+  // #1963 — kept in the verdict: why they were not left out with the others.
+  const unanalysed = products.filter((p) => neverAnalysed.has(p.productId));
+  const unanalysedSentence =
+    unanalysed.length > 0 ? [portfolioNeverAnalysedText(unanalysed.map((p) => p.name))] : [];
   const with_ = (c: PortfolioCoverage) => products.filter((p) => p.coverage === c);
   switch (verdict) {
     case "implemented": {
@@ -817,7 +850,11 @@ function verdictSummary(
       // #1677 — left out of the verdict, but still named.
       const empty = products.filter(hadNothingToCheck);
       return [
-        "Nothing in the portfolio covers this.",
+        // #1963 — a gap over the products in scope, not the whole portfolio.
+        outside.length > 0
+          ? "Nothing checked covers this."
+          : "Nothing in the portfolio covers this.",
+        ...outsideSentence,
         ...(empty.length > 0
           ? [
               // #1685 — never a raw id in analyst prose; #1689 — nor "a product" twice.
@@ -836,9 +873,15 @@ function verdictSummary(
         ...(unchecked > 0 ? [`${unchecked} not checked`] : []),
         ...(restricted > 0 ? [`${restricted} restricted`] : []),
       ];
-      return parts.length > 0
-        ? `Could not verify across the portfolio: of ${products.length} products, ${parts.join(" and ")}.`
-        : "Could not verify: no product was in scope.";
+      return [
+        parts.length > 0
+          ? `Could not verify across the portfolio: of ${products.length} products${
+              outside.length > 0 ? " in scope" : ""
+            }, ${parts.join(" and ")}.`
+          : "Could not verify: no product was in scope.",
+        ...unanalysedSentence,
+        ...outsideSentence,
+      ].join(" ");
     }
   }
 }
@@ -967,6 +1010,42 @@ async function evaluateParsed(
     verdict,
     summary: portfolioSummary(verdict, products),
     costUsd: ctx.budget.total,
+  };
+}
+
+/**
+ * #1963 — the gap result with its verdict and summary rolled up over the
+ * products in scope of the change: a product not checked that is not connected
+ * to any product the change touches (no path of edges, either way, at any
+ * depth: `connectedToChange`), and whose edges were detected, is left out of
+ * the verdict and named after it (`scopeOfChange`). An `all-accessible` check reaches every
+ * product its starter can see, so without this one unrelated product turns a
+ * gap the changed products all confirm into "could not verify". One never
+ * analysed stays in, named as such: its `none` says nothing. With no product
+ * that changes, nothing is known to be unrelated, and the result is as it was.
+ */
+export function scopedToChange(
+  gap: PortfolioGapResult,
+  impact: {
+    products: readonly Pick<
+      ProductImpact,
+      "productId" | "restricted" | "impactKind" | "edgesDetected" | "connectedToChange"
+    >[];
+  },
+): PortfolioGapResult {
+  // A restricted product may be reached through what its reader cannot see.
+  const scope = scopeOfChange(
+    gap.products,
+    impact.products.filter((p) => !p.restricted),
+  );
+  if (scope.notInScope.size === 0 && scope.neverAnalysed.size === 0) return gap;
+  const verdict = rollUpPortfolio(gap.products, scope.notInScope);
+  return {
+    ...gap,
+    verdict,
+    summary: portfolioSummary(verdict, gap.products, scope),
+    notInScope: [...scope.notInScope].sort(),
+    neverAnalysed: [...scope.neverAnalysed].sort(),
   };
 }
 

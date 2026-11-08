@@ -158,6 +158,66 @@ describe("coverageHeadline", () => {
     });
   });
 
+  it("#1963 — a gap over the products the change reaches says so, naming the ones left out", () => {
+    const v = view({
+      verdict: "gap-confirmed",
+      productIds: ["p", "old1", "old2", "e1"],
+      productNames: { p: "Payments", old1: "Walkthrough 1", old2: "Walkthrough 2", e1: "Empty" },
+      notInScope: ["old1", "old2"],
+      products: [
+        product("p", "not-covered"),
+        product("old1", "not-checked"),
+        product("old2", "not-checked"),
+        product("e1", "not-checked", repoDetail([], "no-repos")),
+      ],
+    });
+    expect(coverageHeadline(v)).toEqual({
+      tone: "gap",
+      text: "Nothing that was checked covers this",
+      note: "Walkthrough 1 and Walkthrough 2 were not checked, but they are not connected to any product this change touches, so they are not in scope. Empty has no repositories, so there was nothing in it to check.",
+    });
+  });
+
+  it("#1963 — an unknown answer tells the unrelated unchecked products apart", () => {
+    const v = view({
+      verdict: "could-not-verify",
+      productIds: ["p", "old1"],
+      productNames: { p: "Payments", old1: "Walkthrough 1" },
+      notInScope: ["old1"],
+      products: [product("p", "not-checked"), product("old1", "not-checked")],
+    });
+    expect(coverageHeadline(v)).toEqual({
+      tone: "unknown",
+      text: "We could not tell whether anything in your portfolio covers this",
+      note: "Walkthrough 1 was not checked, but it is not connected to any product this change touches, so it is not in scope.",
+    });
+    // Nothing left out: the answer as before.
+    expect(coverageHeadline({ ...v, notInScope: [] })).toEqual({
+      tone: "unknown",
+      text: "We could not tell whether anything in your portfolio covers this",
+    });
+  });
+
+  it("#1963 — an unknown answer says which unchecked products were never analysed", () => {
+    const v = view({
+      verdict: "could-not-verify",
+      productIds: ["p", "old1", "old2"],
+      productNames: { p: "Payments", old1: "Walkthrough 1", old2: "Walkthrough 2" },
+      notInScope: ["old1"],
+      neverAnalysed: ["old2"],
+      products: [
+        product("p", "not-covered"),
+        product("old1", "not-checked"),
+        product("old2", "not-checked"),
+      ],
+    });
+    expect(coverageHeadline(v)).toEqual({
+      tone: "unknown",
+      text: "We could not tell whether anything in your portfolio covers this",
+      note: "Walkthrough 2 was not checked and has never been analysed, so whether this change reaches it is not known. Walkthrough 1 was not checked, but it is not connected to any product this change touches, so it is not in scope.",
+    });
+  });
+
   it("names the products with no repositories under a confirmed gap (#1677)", () => {
     const v = view({
       verdict: "gap-confirmed",

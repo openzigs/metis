@@ -57,6 +57,7 @@ import {
   loadReadableSourceRequirement,
   mapWithConcurrency,
   portfolioGapInputSchema,
+  scopedToChange,
   toAssessmentInput,
   type PortfolioGapDeps,
   type PortfolioGapInput,
@@ -194,7 +195,7 @@ async function runAssessment(
     // #1668 — only from `pending`: a row that ended already is not run.
     if (!(await setPortfolioAssessmentStatus(id, "running"))) return;
     jobEvents.started(KIND, id, null, "Portfolio assessment started");
-    const result = await evaluatePortfolioGap(user, input, {
+    const gap = await evaluatePortfolioGap(user, input, {
       ...deps.gap,
       onProgress: ({ done, total }) =>
         jobEvents.progress(
@@ -209,12 +210,14 @@ async function runAssessment(
     const impact = await evaluatePortfolioImpact(
       user,
       {
-        directChangeProductIds: directChangeProductIds(result, hostProductId),
-        listedProductIds: result.productIds,
+        directChangeProductIds: directChangeProductIds(gap, hostProductId),
+        listedProductIds: gap.productIds,
         hostProductId,
       },
       deps.impact,
     );
+    // #1963 — the verdict over the products in scope of the change.
+    const result = scopedToChange(gap, impact);
     // #1624 — the BA summary, impact paragraphs and restated requirements.
     const report = await generatePortfolioReport(reportContext(result, impact), {
       provider: deps.report?.provider ?? deps.gap?.provider,

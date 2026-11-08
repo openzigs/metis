@@ -25,8 +25,17 @@
  * `not-checked` product therefore stops a portfolio from reading as a gap,
  * except one with no repos at all (#1677, {@link rollUpPortfolio}): there was
  * nothing in it to check, rather than something that could not be checked.
+ * #1963 — nor does a `not-checked` product not connected to any product the
+ * change touches ({@link notInScopeOfChange}): it is not in scope of the
+ * change, when its edges were detected ({@link scopeOfChange}); one never
+ * analysed stays in.
  */
-import type { FindingVerdict, PortfolioCoverage, RequirementVerdict } from "@metis/shared";
+import type {
+  FindingVerdict,
+  PortfolioCoverage,
+  PortfolioImpactKind,
+  RequirementVerdict,
+} from "@metis/shared";
 
 /** A repo's verdict as the product roll-up reads it. */
 export interface RepoVerdictInput {
@@ -98,10 +107,41 @@ export function hadNothingToCheck(p: {
  * `could-not-verify`, as for an empty scope.
  */
 export function rollUpPortfolio(
-  products: readonly { coverage: PortfolioCoverage; reason: string | null }[],
+  products: readonly { productId?: string; coverage: PortfolioCoverage; reason: string | null }[],
+  notInScope: ReadonlySet<string> = new Set(),
 ): RequirementVerdict {
   return rollUpPortfolioVerdict(
-    products.filter((p) => !hadNothingToCheck(p)).map((p) => p.coverage),
+    products
+      .filter((p) => !hadNothingToCheck(p) && !(p.productId && notInScope.has(p.productId)))
+      .map((p) => p.coverage),
+  );
+}
+
+/**
+ * #1963 — the products the portfolio verdict leaves out as not in scope of the
+ * change: each one not checked (with repos to check: one with none is left out
+ * already, #1677) in `unreached`: not connected to any product the change
+ * touches. Without them, a gap the changed products all confirm reads as a
+ * gap, not as "could not verify" because of a product the change has nothing
+ * to do with.
+ *
+ * `unreached` holds only what is known to be unconnected ({@link scopeOfChange}):
+ * readable products the walk lists `none` under the current rule (`walk`,
+ * #1689) that no path of edges, either way and at any depth, links to a
+ * changed product, and nothing at all when no product changes. A restricted
+ * product is never in it: it may be reached through what its reader cannot
+ * see. A product the change reaches, or may reach, stays in, so a not-checked
+ * one of those still reads `could-not-verify`.
+ */
+export function notInScopeOfChange(
+  products: readonly { productId: string; coverage: PortfolioCoverage; reason: string | null }[],
+  unreached: ReadonlySet<string>,
+): Set<string> {
+  return new Set(
+    products
+      .filter((p) => p.coverage === "not-checked" && !hadNothingToCheck(p))
+      .filter((p) => unreached.has(p.productId))
+      .map((p) => p.productId),
   );
 }
 
@@ -128,4 +168,55 @@ export function portfolioVerdictFromStored(
     (v) => STORED_VERDICT[v] === stored,
   );
   return hit ?? null;
+}
+
+/**
+ * #1963 — how the change scopes the verdict: the products left out as not in
+ * scope (`notInScope`), and the ones not checked that read `none` but were
+ * never analysed (`neverAnalysed`), which stay in. Edges come from a product
+ * analysis, so a product whose edges were never detected can only ever read
+ * `none`: that is not evidence the change does not reach it, and calling it
+ * "not in scope" would be an assurance nobody checked.
+ *
+ * A `none` alone is not enough either: the walk runs from provider to consumer
+ * and stops at its `maxDepth`, so a product upstream of a change, or further
+ * out, reads `none` too. Only one proven not connected at all
+ * (`connectedToChange: false`, no path of edges either way at any depth) is
+ * left out.
+ *
+ * Each signal is read only when it is there: a row stored before #1963 carries
+ * neither, and is neither left out nor named never analysed (it reads as it
+ * did then).
+ *
+ * `walked` holds only the rows the walk listed for a reader who can read them
+ * under the current rule (`walk`, #1689): a restricted product is never in it.
+ * With no product that changes, nothing was walked from, and both are empty.
+ */
+export function scopeOfChange(
+  products: readonly { productId: string; coverage: PortfolioCoverage; reason: string | null }[],
+  walked: readonly {
+    productId: string;
+    impactKind: PortfolioImpactKind;
+    edgesDetected?: boolean;
+    connectedToChange?: boolean;
+  }[],
+): { notInScope: Set<string>; neverAnalysed: Set<string> } {
+  if (!walked.some((p) => p.impactKind === "direct-change")) {
+    return { notInScope: new Set(), neverAnalysed: new Set() };
+  }
+  const none = walked.filter((p) => p.impactKind === "none");
+  return {
+    notInScope: notInScopeOfChange(
+      products,
+      new Set(
+        none
+          .filter((p) => p.edgesDetected === true && p.connectedToChange === false)
+          .map((p) => p.productId),
+      ),
+    ),
+    neverAnalysed: notInScopeOfChange(
+      products,
+      new Set(none.filter((p) => p.edgesDetected === false).map((p) => p.productId)),
+    ),
+  };
 }
