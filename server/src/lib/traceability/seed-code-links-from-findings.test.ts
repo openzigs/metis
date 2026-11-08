@@ -61,6 +61,8 @@ interface SymbolRow {
 /** #1830 — the default code graph every fake symbol belongs to. */
 const GRAPH_1 = { id: "graph-1", repoConnectionId: "conn-1", commitSha: "sha-1" };
 interface MappingRow {
+  /** #1981 — set on a pre-existing row the seeder may rewrite in place. */
+  id?: string;
   requirementId: string;
   projectId: string;
   codeSymbolId: string | null;
@@ -74,6 +76,11 @@ interface MappingRow {
   commitSha?: string | null;
   freshness?: string;
   validatedAt?: Date | null;
+  /** #1831 / #1981 — the validation record a rewrite of a guessed link clears. */
+  staleReason?: string | null;
+  symbolQualifiedName?: string | null;
+  symbolKind?: string | null;
+  symbolContentHash?: string | null;
 }
 
 /** A whole-file symbol in `proj-1` for each path, so a repo citation resolves. */
@@ -167,6 +174,24 @@ function makeFakePrisma(opts: {
         mappings.push(data);
         created.push(data);
         return data;
+      },
+      // #1981 — the in-place rewrite of a guessed link, scoped like the reads.
+      updateMany: async ({
+        where,
+        data,
+      }: {
+        where: { id: string; requirementId: string; projectId: string; source: string };
+        data: Partial<MappingRow>;
+      }) => {
+        const rows = mappings.filter(
+          (m) =>
+            m.id === where.id &&
+            m.requirementId === where.requirementId &&
+            m.projectId === where.projectId &&
+            m.source === where.source,
+        );
+        for (const row of rows) Object.assign(row, data);
+        return { count: rows.length };
       },
     },
   } as unknown as SeedDeps["prisma"];
@@ -1214,6 +1239,123 @@ describe("seedRequirementCodeLinksFromFindings — code-graph version stamp (#18
   it("keeps a code citation's server-stamped repo on its target", () => {
     expect(parseCitationTargets(codeCitation({ repoConnectionId: "conn-A" }))).toEqual([
       { filePath: "src/auth.ts", startLine: 8, endLine: 12, repoConnectionId: "conn-A" },
+    ]);
+  });
+
+  /** Code citations of `src/auth.ts`, one per `[start, end]`. */
+  const spans = (...lines: Array<[number, number, Record<string, unknown>?]>) =>
+    JSON.stringify({
+      citations: lines.map(([startLine, endLine, extra]) => ({
+        filePath: "src/auth.ts",
+        startLine,
+        endLine,
+        ...extra,
+      })),
+    });
+
+  // #1981 item 1 — every file-level row of a file shared one key, so only the
+  // surest of several ambiguous spans survived and the others' lines were lost.
+  it("keeps one file-level row per ambiguous span of a file, and re-runs without duplicating (#1981)", async () => {
+    const { prisma, created, all } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1", "f2"]) }],
+      findings: [
+        { id: "f1", evidence: spans([8, 12]), confidence: 0.6 },
+        { id: "f2", evidence: spans([14, 18], [8, 12]), confidence: 0.9 },
+      ],
+      symbols: twoRepos,
+    });
+    expect(await run(prisma)).toEqual({ requirementsSeeded: 1, linksCreated: 2, linksSkipped: 0 });
+    expect(created.map((c) => [c.codeSymbolId, c.startLine, c.endLine, c.confidence])).toEqual([
+      [null, 8, 12, 0.9],
+      [null, 14, 18, 0.9],
+    ]);
+    expect(await run(prisma)).toEqual({ requirementsSeeded: 0, linksCreated: 0, linksSkipped: 2 });
+    expect(all).toHaveLength(2);
+  });
+
+  /** A link the seeder wrote before #1976: the ambiguous span bound to graph A's symbol. */
+  const guessedRow = (extra: Partial<MappingRow> = {}): MappingRow => ({
+    id: "m-guess",
+    requirementId: "req-1",
+    projectId,
+    codeSymbolId: "login-A",
+    filePath: "src/auth.ts",
+    startLine: 5,
+    endLine: 20,
+    confidence: 0.6,
+    source: ANALYSIS_GROUNDING_SOURCE,
+    codeGraphId: null,
+    commitSha: null,
+    freshness: "unverified",
+    validatedAt: null,
+    ...extra,
+  });
+
+  // #1981 item 2 — the guessed row keyed apart from the file-level candidate,
+  // so a re-seed added a row beside it and the guess stayed bound.
+  it("rewrites a pre-#1976 guessed link in place as the file-level link, instead of adding one beside it (#1981)", async () => {
+    const { prisma, created, all } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [{ id: "f1", evidence: codeCitation(), confidence: 0.7 }],
+      symbols: twoRepos,
+      mappings: [
+        guessedRow({
+          freshness: "stale",
+          staleReason: "content-changed",
+          symbolQualifiedName: "src/auth.ts::login",
+          symbolKind: "function",
+          symbolContentHash: "h",
+        }),
+      ],
+    });
+    const summary = await run(prisma);
+    expect(created).toHaveLength(0);
+    expect(summary).toEqual({ requirementsSeeded: 0, linksCreated: 0, linksSkipped: 0 });
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({
+      id: "m-guess",
+      codeSymbolId: null,
+      startLine: 8,
+      endLine: 12,
+      confidence: 0.7,
+      symbolQualifiedName: null,
+      symbolKind: null,
+      symbolContentHash: null,
+      codeGraphId: null,
+      commitSha: null,
+      freshness: "unverified",
+      validatedAt: null,
+      staleReason: null,
+    });
+    // The link changed, so a scoped reader BRD is asked to look again.
+    expect(noteRequirementCodeLinksChanged).toHaveBeenCalledWith(["req-1"]);
+    // And a second re-seed finds it, not another guess.
+    expect(await run(prisma)).toEqual({ requirementsSeeded: 0, linksCreated: 0, linksSkipped: 1 });
+  });
+
+  it("leaves a bound link alone when a current citation binds it, or the span never enclosed its symbol (#1981)", async () => {
+    const { prisma, created, all } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        {
+          id: "f1",
+          // Ambiguous 8-12, and a citation naming login-A by its own id.
+          evidence: spans([8, 12], [8, 12, { symbolId: "login-A" }]),
+          confidence: 0.7,
+        },
+      ],
+      symbols: [
+        ...twoRepos,
+        { ...twoRepos[0], id: "logout-A", startLine: 30, endLine: 40 },
+        { ...twoRepos[1], id: "logout-B", startLine: 30, endLine: 40 },
+      ],
+      mappings: [guessedRow(), guessedRow({ id: "m-logout", codeSymbolId: "logout-B" })],
+    });
+    await run(prisma);
+    expect(all.find((m) => m.id === "m-guess")).toMatchObject({ codeSymbolId: "login-A" });
+    expect(all.find((m) => m.id === "m-logout")).toMatchObject({ codeSymbolId: "logout-B" });
+    expect(created).toEqual([
+      expect.objectContaining({ codeSymbolId: null, startLine: 8, endLine: 12 }),
     ]);
   });
 });

@@ -5664,7 +5664,7 @@ Click **View** to jump to the suggested connectors section and review/confirm th
 
 ### 36.4 Multi-Repository Analysis
 
-When your project has multiple repository connectors, analysis runs against each repo sequentially with a split token budget. A minimum of 50,000 tokens is guaranteed per repository — if you have more repos than can be served at this minimum, only the first N repos (that fit within budget) are analyzed per run.
+When your project has multiple repository connectors, analysis runs against each repo sequentially with a split token budget. A minimum of 50,000 tokens is guaranteed per repository — if you have more repos than can be served at this minimum, only as many repos as fit within the budget are analyzed per run: the primary repository first, then the oldest connected. Regenerating the code pass updates which repositories the analysis records as skipped.
 
 ---
 

@@ -16,7 +16,8 @@
  *   - a code citation (`filePath` + `startLine`/`endLine`) whose file is in the
  *     graph — bound to the citation's own symbol when that symbol is in the
  *     file, else the innermost symbol enclosing the span, else file-level with
- *     the cited lines;
+ *     the cited lines (#1981 — two such rows in one file are told apart by
+ *     their lines, so each cited span keeps its own row);
  *   - a repository source document (`connector:repo:<id>:src/<relPath>`) whose
  *     `<relPath>` is a graph file — a file-level link (a chunk has no lines).
  * Anything else is evidence, not code, and writes nothing.
@@ -31,7 +32,8 @@
  *   - Conservative: a path is never invented, and never stored unless the
  *     project's code graph contains it.
  *   - Idempotent: deduped within a run and against the requirement's existing
- *     `analysis-grounding` rows by (requirementId, filePath, codeSymbolId).
+ *     `analysis-grounding` rows by (requirementId, filePath, codeSymbolId), and
+ *     a file-level row also by its lines (#1981).
  *     Re-running synthesis creates no duplicates. #1818 — a link of another
  *     source (`manual`, `semantic`) does NOT suppress the agent's citation of
  *     the same code: a file a person linked that the agent also cited counts as
@@ -279,12 +281,36 @@ function enclosingSymbol(
  * re-validates (`revalidate-code-citations.ts`) and stamps `fresh`.
  */
 function enclosedInSeveralGraphs(symbols: GraphSymbol[], start: number, end: number): boolean {
-  const graphs = new Set<string>();
-  for (const sym of symbols) {
-    if (sym.startLine <= start && sym.endLine >= end) graphs.add(sym.codeGraphId);
-  }
-  return graphs.size > 1;
+  return new Set(enclosingSymbols(symbols, start, end).map((s) => s.codeGraphId)).size > 1;
 }
+
+/** Every symbol whose range encloses `[start, end]`. */
+function enclosingSymbols(symbols: GraphSymbol[], start: number, end: number): GraphSymbol[] {
+  return symbols.filter((sym) => sym.startLine <= start && sym.endLine >= end);
+}
+
+/**
+ * #1981 — the key a seeded row is deduped on: the link's identity, and for a
+ * file-level row its lines too. Several ambiguous (#1976) or symbol-less spans
+ * of one file each keep a row, instead of collapsing onto the surest one.
+ */
+function seedKey(row: {
+  filePath: string;
+  codeSymbolId: string | null;
+  startLine: number | null;
+  endLine: number | null;
+}): string {
+  const key = mappingKey(row.filePath, row.codeSymbolId);
+  return row.codeSymbolId ? key : `${key}\u0000${row.startLine ?? ""}-${row.endLine ?? ""}`;
+}
+
+/**
+ * A resolved citation. #1981 — `guessedSymbolIds`, on an ambiguous span
+ * (#1976), are the symbols a seeder before #1976 could have bound it to.
+ */
+type ResolvedTarget = Omit<SeedCandidate, "requirementId" | "projectId" | "confidence"> & {
+  guessedSymbolIds?: string[];
+};
 
 /**
  * Resolve a citation against the graph symbols of its file; `null` when
@@ -297,7 +323,7 @@ function resolveTarget(
   target: CitationTarget,
   symbolsByFile: Map<string, GraphSymbol[]>,
   repoConnectionId: string | undefined,
-): Omit<SeedCandidate, "requirementId" | "projectId" | "confidence"> | null {
+): ResolvedTarget | null {
   const allInFile = symbolsByFile.get(target.filePath);
   if (!allInFile || allInFile.length === 0) return null; // not code the graph knows
   const inRepo = repoConnectionId
@@ -331,11 +357,10 @@ function resolveTarget(
   const own = target.symbolId ? inFile.find((s) => s.id === target.symbolId) : undefined;
   // #1976 — a span several graphs enclose is kept as a file-level link (its
   // lines, no symbol, no stamp); it resolves once the citation names its repo.
+  const ambiguous =
+    own === undefined && enclosedInSeveralGraphs(inFile, target.startLine, target.endLine);
   const sym =
-    own ??
-    (enclosedInSeveralGraphs(inFile, target.startLine, target.endLine)
-      ? undefined
-      : enclosingSymbol(inFile, target.startLine, target.endLine));
+    own ?? (ambiguous ? undefined : enclosingSymbol(inFile, target.startLine, target.endLine));
   if (sym) {
     return {
       codeSymbolId: sym.id,
@@ -357,6 +382,13 @@ function resolveTarget(
     endLine: target.endLine,
     ...versionOf(soleGraph(inFile)),
     ...NO_SYMBOL,
+    ...(ambiguous
+      ? {
+          guessedSymbolIds: enclosingSymbols(inFile, target.startLine, target.endLine).map(
+            (s) => s.id,
+          ),
+        }
+      : {}),
   };
 }
 
@@ -391,8 +423,9 @@ export async function seedRequirementCodeLinksFromFindings(
   const prisma = pickPrisma(deps);
   let linksCreated = 0;
   let linksSkipped = 0;
+  let linksUnbound = 0;
   let requirementsSeeded = 0;
-  const seededIds: string[] = [];
+  const changedIds: string[] = [];
 
   for (const requirementId of input.requirementIds) {
     const requirement = await prisma.requirement.findFirst({
@@ -478,17 +511,24 @@ export async function seedRequirementCodeLinksFromFindings(
       symbolsByFile.set(row.filePath, list);
     }
 
-    // One candidate per (filePath, codeSymbolId), keeping the highest confidence.
-    // A Map keeps first-cited order: a later, surer citation updates the value
-    // in place.
+    // One candidate per (filePath, codeSymbolId), keeping the highest confidence
+    // (#1981 — and per lines, for a file-level one). A Map keeps first-cited
+    // order: a later, surer citation updates the value in place.
     const candidates = new Map<string, SeedCandidate>();
+    const guessesByKey = new Map<string, Set<string>>();
     for (const { target, confidence, repoConnectionId } of cited) {
       const resolved = resolveTarget(target, symbolsByFile, repoConnectionId);
       if (!resolved) continue;
-      const key = mappingKey(resolved.filePath, resolved.codeSymbolId);
+      const { guessedSymbolIds, ...link } = resolved;
+      const key = seedKey(link);
+      if (guessedSymbolIds) {
+        const guesses = guessesByKey.get(key) ?? new Set<string>();
+        for (const id of guessedSymbolIds) guesses.add(id);
+        guessesByKey.set(key, guesses);
+      }
       const prev = candidates.get(key);
       if (!prev || confidence > prev.confidence) {
-        candidates.set(key, { requirementId, projectId: input.projectId, ...resolved, confidence });
+        candidates.set(key, { requirementId, projectId: input.projectId, ...link, confidence });
       }
     }
     if (candidates.size === 0) continue;
@@ -498,57 +538,94 @@ export async function seedRequirementCodeLinksFromFindings(
     // semantic link to the same code would otherwise hide the citation.
     const existing = await prisma.requirementCodeMapping.findMany({
       where: { requirementId, projectId: input.projectId, source: ANALYSIS_GROUNDING_SOURCE },
-      select: { filePath: true, codeSymbolId: true },
+      select: { id: true, filePath: true, codeSymbolId: true, startLine: true, endLine: true },
     });
-    const existingKeys = new Set(existing.map((e) => mappingKey(e.filePath, e.codeSymbolId)));
+    const existingKeys = new Set(existing.map(seedKey));
+    // #1981 — a seeder before #1976 bound an ambiguous span to one graph's
+    // symbol by guess. That row keys apart from the file-level link the span
+    // now resolves to, so it would survive beside it, and the next re-ingest
+    // could stamp the guess `fresh`. A bound row no current citation binds,
+    // naming a symbol the span was ambiguous between, is rewritten in place
+    // as that file-level link (keeping its id and its stored order, #1818).
+    const unclaimedBound = existing.filter((e) => e.codeSymbolId && !candidates.has(seedKey(e)));
 
     let seededAny = false;
+    let unboundAny = false;
     const validatedAt = new Date();
     for (const [key, candidate] of candidates) {
       if (existingKeys.has(key)) {
         linksSkipped += 1;
         continue;
       }
-      await prisma.requirementCodeMapping.create({
-        data: {
-          requirementId,
-          projectId: input.projectId,
-          codeSymbolId: candidate.codeSymbolId,
-          filePath: candidate.filePath,
-          startLine: candidate.startLine,
-          endLine: candidate.endLine,
-          confidence: candidate.confidence,
-          source: ANALYSIS_GROUNDING_SOURCE,
-          // #1830 — just checked against this graph; a row whose graph could
-          // not be told apart stays `unverified`, as every pre-#1830 row is.
-          codeGraphId: candidate.codeGraphId,
-          commitSha: candidate.commitSha,
-          // #1831 — what re-validation finds the symbol by after a re-ingest.
-          symbolQualifiedName: candidate.symbolQualifiedName,
-          symbolKind: candidate.symbolKind,
-          symbolContentHash: candidate.symbolContentHash,
-          freshness: candidate.codeGraphId ? "fresh" : "unverified",
-          validatedAt: candidate.codeGraphId ? validatedAt : null,
-        },
-      });
+      const link = {
+        codeSymbolId: candidate.codeSymbolId,
+        filePath: candidate.filePath,
+        startLine: candidate.startLine,
+        endLine: candidate.endLine,
+        confidence: candidate.confidence,
+        // #1830 — just checked against this graph; a row whose graph could
+        // not be told apart stays `unverified`, as every pre-#1830 row is.
+        codeGraphId: candidate.codeGraphId,
+        commitSha: candidate.commitSha,
+        // #1831 — what re-validation finds the symbol by after a re-ingest.
+        symbolQualifiedName: candidate.symbolQualifiedName,
+        symbolKind: candidate.symbolKind,
+        symbolContentHash: candidate.symbolContentHash,
+        freshness: candidate.codeGraphId ? "fresh" : "unverified",
+        validatedAt: candidate.codeGraphId ? validatedAt : null,
+      };
+      const guesses = guessesByKey.get(key);
+      const guessed = guesses
+        ? unclaimedBound.find((e) => e.filePath === link.filePath && guesses.has(e.codeSymbolId!))
+        : undefined;
+      if (guessed) {
+        unclaimedBound.splice(unclaimedBound.indexOf(guessed), 1);
+        await prisma.requirementCodeMapping.updateMany({
+          where: {
+            id: guessed.id,
+            requirementId,
+            projectId: input.projectId,
+            source: ANALYSIS_GROUNDING_SOURCE,
+          },
+          data: {
+            ...link,
+            // The guess's validation history does not describe this link.
+            staleReason: null,
+            previousFilePath: null,
+            previousStartLine: null,
+            previousEndLine: null,
+          },
+        });
+        linksUnbound += 1;
+        unboundAny = true;
+      } else {
+        await prisma.requirementCodeMapping.create({
+          data: {
+            requirementId,
+            projectId: input.projectId,
+            source: ANALYSIS_GROUNDING_SOURCE,
+            ...link,
+          },
+        });
+        linksCreated += 1;
+        seededAny = true;
+      }
       existingKeys.add(key);
-      linksCreated += 1;
-      seededAny = true;
     }
-    if (seededAny) {
-      requirementsSeeded += 1;
-      seededIds.push(requirementId);
-    }
+    if (seededAny) requirementsSeeded += 1;
+    if (seededAny || unboundAny) changedIds.push(requirementId);
   }
   // #1246 — a new code link can bring an approved requirement into a
   // repository- or path-scoped reader BRD's list: ask the check to look again.
-  if (seededIds.length > 0) void noteRequirementCodeLinksChanged(seededIds);
+  // #1981 — so can a guessed link losing its symbol and graph.
+  if (changedIds.length > 0) void noteRequirementCodeLinksChanged(changedIds);
 
   const summary: SeedSummary = { requirementsSeeded, linksCreated, linksSkipped };
   log.info("seeded requirement→code links from analysis grounding", {
     analysisId: input.analysisId,
     projectId: input.projectId,
     ...summary,
+    linksUnbound,
   });
   return summary;
 }
