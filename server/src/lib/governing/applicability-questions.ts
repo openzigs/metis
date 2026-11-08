@@ -86,28 +86,33 @@ function words(text: string): string[] {
     .filter(Boolean);
 }
 
-const WORD_CHAR = /[\p{L}\p{N}]/u;
-
 /**
- * True when `token` occurs in `text` as a whole token (no letter or digit on
- * either side), case aside. A plain scan rather than a RegExp built from the
- * admin-written control id, so no stored text is ever compiled as a pattern.
+ * True when `text` names `controlId`: some run of whole words of `text` reads
+ * as the id once case, spacing and punctuation are set aside, as `words()`
+ * sets them aside for clauses. #2009 — so `PCI DSS 3.4` names `PCI-DSS 3.4`,
+ * and `CC 6.1` names `CC6.1`; a verbatim match let those through. A word that
+ * merely contains the id (`OPEN-03X` for `EN-03`) does not name it. A plain
+ * scan rather than a RegExp built from the admin-written control id, so no
+ * stored text is ever compiled as a pattern.
  */
-function containsToken(text: string, token: string): boolean {
-  const hay = text.toLowerCase();
-  const needle = token.toLowerCase();
-  for (let at = hay.indexOf(needle); at !== -1; at = hay.indexOf(needle, at + 1)) {
-    const before = at > 0 ? hay[at - 1]! : "";
-    const after = hay[at + needle.length] ?? "";
-    if (!WORD_CHAR.test(before) && !WORD_CHAR.test(after)) return true;
+function namesControl(text: string, controlId: string): boolean {
+  const id = words(controlId).join("");
+  if (!id) return false;
+  const w = words(text);
+  for (let i = 0; i < w.length; i++) {
+    let run = "";
+    for (let j = i; j < w.length && run.length < id.length; j++) {
+      run += w[j]!;
+      if (run === id) return true;
+    }
   }
   return false;
 }
 
 /**
  * Why `question` would put the rulebook in front of the analyst, or `null`
- * when it does not: it names one of `rules`' control ids (case-insensitive, as
- * a whole token), or repeats {@link MIN_QUOTED_CLAUSE_WORDS} or more
+ * when it does not: it names one of `rules`' control ids (whole words, case,
+ * spacing and punctuation aside: {@link namesControl}), or repeats {@link MIN_QUOTED_CLAUSE_WORDS} or more
  * consecutive words of one of their clauses (case and punctuation ignored).
  */
 export function questionLeaksRule(
@@ -117,7 +122,7 @@ export function questionLeaksRule(
   for (const r of rules) {
     const id = r.controlId.trim();
     if (!id) continue;
-    if (containsToken(question, id)) return `names control ${id}`;
+    if (namesControl(question, id)) return `names control ${id}`;
   }
   const q = words(question);
   if (q.length < MIN_QUOTED_CLAUSE_WORDS) return null;
@@ -191,6 +196,19 @@ export function openGoverningPairs(
     }
   }
   return out;
+}
+
+/**
+ * #2009 — the `ClarifyingQuestion.requirementId` of a governing question about
+ * the analysis's requirement `requirementId`. The analysis's own requirement
+ * ids (the code agent's set) and the reviewed list's both number from REQ-001
+ * independently, and every reader of `requirementId` (the CSV export's title,
+ * the ticked-items ordering) reads it against the reviewed list, so the bare
+ * id named a different requirement there. Namespaced, it names none; the
+ * analysis's id stays on `governing.requirementId`, which settling reads.
+ */
+export function governingQuestionRequirementId(requirementId: string): string {
+  return `governing:${requirementId}`;
 }
 
 /** Facts that differ only in case, spacing or punctuation are the same fact. */
@@ -379,7 +397,7 @@ export async function buildGoverningQuestions(
       const { question } = await guarded(g.text, requirementText, guardRules, deps);
       out.push({
         id: randomUUID(),
-        requirementId,
+        requirementId: governingQuestionRequirementId(requirementId),
         ambiguityField: GOVERNING_QUESTION_FIELD,
         question,
         context: `Asked to check this requirement against company policy: "${clip(
@@ -397,7 +415,10 @@ export async function buildGoverningQuestions(
  * Re-judge the rules each answered governing question links, with the question
  * and the BA's answer added to the requirement. One judging call per question;
  * a rule the reply leaves undecided stays `uncertain` (and is not asked
- * again). A call that fails settles nothing for that question.
+ * again). A call that fails settles nothing for that question. #2009 — nor
+ * does a reply that cannot be read, after one re-ask: an empty read used to
+ * settle every linked rule `uncertain`, losing the answer for good. Settling
+ * nothing leaves the pair answered but open, which the next settle retries.
  */
 export async function rejudgeAnswered(
   answered: readonly ClarifyingQuestion[],
@@ -424,9 +445,8 @@ export async function rejudgeAnswered(
     if (linked.length === 0) continue;
     const entries = applicabilityEntries(linked);
     const text = `${requirement.text}\n\nA business analyst was asked: ${q.question}\nTheir answer: ${answer}`;
-    const prompt = buildApplicabilityJudgePrompt(text, entries);
-    let decided: ReturnType<typeof parseApplicabilityJudgeReply>["decisions"];
-    try {
+    const judge = async (reask: boolean) => {
+      const prompt = buildApplicabilityJudgePrompt(text, entries, { reask });
       const reply = await deps.provider.chat([{ role: "user", content: prompt.userMessage }], {
         systemMessage: prompt.systemMessage,
         disableTools: true,
@@ -434,7 +454,19 @@ export async function rejudgeAnswered(
         ...(deps.model ? { model: deps.model } : {}),
         ...(deps.signal ? { signal: deps.signal } : {}),
       });
-      decided = parseApplicabilityJudgeReply(reply.content, entries).decisions;
+      return parseApplicabilityJudgeReply(reply.content, entries);
+    };
+    let decided: ReturnType<typeof parseApplicabilityJudgeReply>["decisions"];
+    try {
+      let reply = await judge(false);
+      if (!reply.readable) reply = await judge(true);
+      if (!reply.readable) {
+        log.warn("governing answer's judging reply unreadable twice; its rules stay open", {
+          questionId: q.id,
+        });
+        continue;
+      }
+      decided = reply.decisions;
     } catch (err) {
       if (deps.signal?.aborted) throw err;
       log.warn("governing answer could not be judged; its rules stay uncertain", {
@@ -463,8 +495,25 @@ export async function rejudgeAnswered(
 export interface GoverningQuestionSource {
   /** The governing questions for the next round. */
   open(state: ClarificationState | undefined, signal?: AbortSignal): Promise<ClarifyingQuestion[]>;
-  /** Judge the answered governing questions of a round back onto their pairs. */
-  settle(round: readonly ClarifyingQuestion[], signal?: AbortSignal): Promise<void>;
+  /**
+   * Judge answered governing questions back onto their pairs. #2009 — given
+   * any questions, of any round: one whose linked pairs are all settled costs
+   * nothing, and one whose earlier settle failed (an answered pair left open)
+   * is judged again.
+   */
+  settle(questions: readonly ClarifyingQuestion[], signal?: AbortSignal): Promise<void>;
+}
+
+/** True when a rule `q` links is still `uncertain` and unsettled for its requirement. */
+function hasOpenLinkedPair(stored: GoverningAnalysisApplicability, q: ClarifyingQuestion): boolean {
+  const link = q.governing;
+  if (!link) return false;
+  const requirement = stored.requirements.find((r) => r.requirementId === link.requirementId);
+  return (
+    requirement?.decisions.some(
+      (d) => d.verdict === "uncertain" && !d.settled && link.ruleIds.includes(d.ruleId),
+    ) ?? false
+  );
 }
 
 async function projectRules(projectId: string, ruleIds: readonly string[]) {
@@ -514,11 +563,14 @@ export function governingQuestionSourceFor(input: {
       });
       return questions;
     },
-    async settle(round, signal) {
-      const answered = round.filter((q) => q.governing && q.answer?.trim());
-      if (answered.length === 0 || input.provider.offline) return;
+    async settle(questions, signal) {
+      const withAnswer = questions.filter((q) => q.governing && q.answer?.trim());
+      if (withAnswer.length === 0 || input.provider.offline) return;
       const stored = await readGoverningApplicability(input.analysisId);
       if (!stored) return;
+      // #2009 — only questions that still have a linked pair to settle.
+      const answered = withAnswer.filter((q) => hasOpenLinkedPair(stored, q));
+      if (answered.length === 0) return;
       const rows = await projectRules(
         input.projectId,
         answered.flatMap((q) => q.governing!.ruleIds),

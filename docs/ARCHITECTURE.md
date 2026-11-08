@@ -2641,9 +2641,13 @@ the pre-#1873 code).
   thing. A merge reply that cannot be read, or that drops a fact, never drops a question. A
   question carries `governing: { kind: "governing", ruleIds, requirementId }`
   (`GoverningQuestionLink` in `@metis/shared`) and the `ambiguityField`
-  `governing-applicability`, which names no real ambiguity.
-- **The guard.** `questionLeaksRule` refuses a question that names a control id (as a whole
-  token, any case) or repeats 8 or more consecutive words of a clause. It is re-asked once in
+  `governing-applicability`, which names no real ambiguity. Its own `requirementId` is
+  namespaced (`governing:REQ-001`, #2009). The analysis's requirement ids and the reviewed
+  list's both number from REQ-001 independently, and every reader of `requirementId` (the CSV
+  export's title, the ticked-items ordering) reads it against the reviewed list.
+- **The guard.** `questionLeaksRule` refuses a question that names a control id (whole words,
+  with case, spacing and punctuation set aside, so `PCI DSS 3.4` names `PCI-DSS 3.4` and `CC 6.1`
+  names `CC6.1`: #2009) or repeats 8 or more consecutive words of a clause. It is re-asked once in
   plain words, then replaced by `templateGoverningQuestion`.
 - **Self-resolve.** Governing questions go through the dialog's grounding pass, which searches
   only the project's knowledge index. #1869 keeps governing chunks out of it, so the rulebook can
@@ -2652,8 +2656,13 @@ the pre-#1873 code).
   re-judged with #1872's judging prompt, with the question and answer added to the requirement.
   The new verdicts are written with `settled: { questionId, answer, previousVerdict, at }` under
   the analysis row lock (`settleGoverningPairs`). Only an unsettled `uncertain` pair can move.
+  A judging reply that cannot be read is re-asked once, and then settles nothing (#2009).
+  An answered pair is never asked again, so a pair whose settle failed (an unreadable reply, a
+  provider error or outage, an aborted request) would otherwise be orphaned. Instead, every
+  later submit and every dialog start judges it again from the BA's stored answer. That
+  includes a completed dialog. A refused (409) submit settles nothing.
   Governing questions are kept out of the resolution pass: their answers never rewrite a
-  requirement's description. Their requirement id is the analysis's own, not the reviewed list's.
+  requirement's description.
 - **Read path.** `GET /api/projects/:projectId/analyses/:id/governing-applicability` returns the
   stored sets. It is 404 while the flag is off and scoped by `ensureAnalysisVisible`. No UI reads
   it yet; the findings (#1874) and their UI do.

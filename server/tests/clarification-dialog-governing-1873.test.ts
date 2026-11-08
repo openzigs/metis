@@ -319,6 +319,65 @@ describe("#1873 — governing questions in the clarification dialog", () => {
     expect(next.rounds[1]!.questions.map((q) => q.governing?.ruleIds)).toEqual([["rule_card"]]);
   });
 
+  it("#2009 — a refused submit (beforeCommit throws, the 409 path) settles nothing", async () => {
+    const { provider, sent } = model();
+    const dialog = dialogWith(provider);
+    const state = await dialog.startOrContinue(ANALYSIS, REQS);
+    const q = state.rounds[0]!.questions[0]!;
+    await expect(
+      dialog.submitAnswers(
+        ANALYSIS,
+        [{ questionId: q.id, answer: "Yes — the whole number." }],
+        REQS,
+        undefined,
+        async () => {
+          throw new Error("REQUIREMENTS_REPLACED");
+        },
+      ),
+    ).rejects.toThrow("REQUIREMENTS_REPLACED");
+    expect(sent.filter((s) => s.system.includes("You decide which"))).toHaveLength(0);
+    const read = await readGoverningApplicability(ANALYSIS);
+    expect(read!.requirements[0]!.decisions[0]).toMatchObject({ verdict: "uncertain" });
+    expect(read!.requirements[0]!.decisions[0]!.settled).toBeUndefined();
+  });
+
+  it("#2009 — an answer whose settle failed is judged again on the next start, even once the dialog is complete", async () => {
+    const { provider, sent, chat } = model();
+    const dialog = dialogWith(provider);
+    const state = await dialog.startOrContinue(ANALYSIS, REQS);
+    const q = state.rounds[0]!.questions[0]!;
+    // The judging call fails on submit: the answer is committed, the pair is not settled.
+    const judging = () => sent.filter((s) => s.system.includes("You decide which"));
+    const real = chat.getMockImplementation()!;
+    chat.mockImplementationOnce(async () => {
+      throw new Error("provider unavailable");
+    });
+    const { state: after } = await dialog.submitAnswers(
+      ANALYSIS,
+      [{ questionId: q.id, answer: "Yes — the whole number, so it can be reused." }],
+      REQS,
+    );
+    expect(after.completed).toBe(true);
+    const orphan = await readGoverningApplicability(ANALYSIS);
+    expect(orphan!.requirements[0]!.decisions[0]!.settled).toBeUndefined();
+    expect(judging()).toHaveLength(0);
+    chat.mockImplementation(real);
+
+    // The next start retries it with the BA's answer, without asking again.
+    const next = await dialog.startOrContinue(ANALYSIS, REQS);
+    expect(next.completed).toBe(true);
+    expect(judging()).toHaveLength(1);
+    expect(judging()[0]!.user).toContain("Their answer: Yes — the whole number");
+    const read = await readGoverningApplicability(ANALYSIS);
+    expect(read!.requirements[0]!.decisions[0]).toMatchObject({
+      verdict: "applies",
+      settled: { questionId: q.id, previousVerdict: "uncertain" },
+    });
+    // Settled now: a further start judges nothing more.
+    await dialog.startOrContinue(ANALYSIS, REQS);
+    expect(judging()).toHaveLength(1);
+  });
+
   it("a failing governing source asks no governing question and never stops the round", async () => {
     const { provider } = model();
     vi.mocked(prisma.analysis.findFirst).mockRejectedValueOnce(new Error("database is locked"));
