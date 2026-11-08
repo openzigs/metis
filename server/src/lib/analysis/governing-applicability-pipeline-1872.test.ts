@@ -19,7 +19,11 @@ const PROJECT_ID = "pr_1872";
 const state = vi.hoisted(() => ({
   workspaceId: null as string | null,
   rules: [] as Array<Record<string, unknown>>,
+  /** #1997 — governing replies finished when the analysis was marked completed. */
+  governingDoneAtCompletion: -1,
 }));
+/** #1997 — how many governing replies have been returned so far. */
+const progress = vi.hoisted(() => ({ governingDone: 0 }));
 
 vi.mock("../prisma.js", () => ({
   prisma: {
@@ -63,7 +67,9 @@ vi.mock("./analysis-service.js", () => ({
   getAnalysisCapability: vi.fn(async () => null),
   getStructuredRequirements: vi.fn(async () => null),
   markAnalysisCancelled: vi.fn(async () => undefined),
-  markAnalysisCompleted: vi.fn(async () => undefined),
+  markAnalysisCompleted: vi.fn(async () => {
+    state.governingDoneAtCompletion = progress.governingDone;
+  }),
   markAnalysisFailed: vi.fn(async () => undefined),
   persistAgentResult: vi.fn(async () => ({ id: "ar_1", findingIds: [] })),
   persistAnalysisEnhancement: vi.fn(async () => undefined),
@@ -90,6 +96,9 @@ vi.mock("./custom-agent-phase.js", () => ({
     results: [],
     usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
   })),
+  // #1997 — the orchestrator persists the phase's results; without this every
+  // run logged a failed custom-agent phase.
+  persistAgentPhaseResults: vi.fn(async () => undefined),
 }));
 vi.mock("../teams/notification-hooks.js", () => ({
   notifyAnalysisComplete: vi.fn(async () => undefined),
@@ -137,14 +146,42 @@ function userOf(c: Call): string {
 
 const isGoverning = (c: Call) => userOf(c).includes("governing_rule");
 
+/**
+ * #1997 — every governing call waits for the code agent's call to have been
+ * made (giving up after `GATE_MS`, which `timeline.waitedOut` records): when
+ * applicability runs ahead of the code agent instead of beside it, the gate
+ * can never open. Each governing reply is also a little slow, so a run that
+ * did not join the work would be marked completed before it finished.
+ */
+const GATE_MS = 1_500;
 function makeProvider() {
   const calls: Call[] = [];
+  const timeline = { waitedOut: false };
+  let openGate!: () => void;
+  const codeCalled = new Promise<void>((resolve) => {
+    openGate = resolve;
+  });
   const chat = vi.fn(async (messages: ChatMessage[], o: ChatOptions = {}) => {
     const call: Call = {
       system: String((o as { systemMessage?: unknown }).systemMessage ?? ""),
       messages: messages.map((m) => ({ role: m.role, content: String(m.content) })),
     };
     calls.push(call);
+    if (isGoverning(call)) {
+      await Promise.race([
+        codeCalled,
+        new Promise<void>((resolve) =>
+          setTimeout(() => {
+            timeline.waitedOut = true;
+            resolve();
+          }, GATE_MS),
+        ),
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      progress.governingDone++;
+    } else if (call.system.includes("requirementId")) {
+      openGate();
+    }
     const text = (content: string) => ({
       content,
       usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20 },
@@ -161,11 +198,11 @@ function makeProvider() {
     if (call.system.includes("requirementId")) return text(CODE_ANSWER);
     return text(JSON.stringify({ summary: "ok", findings: [], notes: [] }));
   });
-  return { provider: { key: "bedrock", model: "test-model", chat } as never, calls };
+  return { provider: { key: "bedrock", model: "test-model", chat } as never, calls, timeline };
 }
 
 async function runPipeline() {
-  const { provider, calls } = makeProvider();
+  const { provider, calls, timeline } = makeProvider();
   const orch = new AnalysisOrchestrator({
     provider,
     retrieve: async () => [],
@@ -209,7 +246,7 @@ async function runPipeline() {
     .map((c) => c[0])
     .filter((a) => a.agentKey === "code")
     .map((a) => a.output);
-  return { calls, persisted };
+  return { calls, persisted, timeline };
 }
 
 /** What the analysis produced: every model call and the persisted code result. */
@@ -225,6 +262,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.workspaceId = null;
   state.rules = [];
+  state.governingDoneAtCompletion = -1;
+  progress.governingDone = 0;
   delete process.env.GOVERNING_DOCS_ENABLED;
   process.env.ANALYSIS_FUSED_CODE_RETRIEVAL = "false";
   __resetConfigSingleton();
@@ -282,9 +321,35 @@ describe("#1872 — governing applicability in the analysis pipeline", () => {
       true,
     );
     expect(analysisOutput(on)).toBe(off);
+    // #1997 — beside the code agent, not ahead of it: no governing call had to
+    // give up waiting for the code agent's call…
+    expect(on.timeline.waitedOut).toBe(false);
+    // …and joined before the run was recorded: every governing reply was in
+    // when the analysis was marked completed.
+    expect(state.governingDoneAtCompletion).toBe(4);
+    expect(vi.mocked(analysisService.markAnalysisCompleted)).toHaveBeenCalledTimes(1);
     const where = vi.mocked(prisma.governingRule.findMany).mock.calls[0]![0] as {
       where: { revision: { currentOf: { is: { workspaceId: string } } } };
     };
     expect(where.where.revision.currentOf.is.workspaceId).toBe("ws_1872");
+  });
+
+  it("#1997 — flag on, the rules cannot be loaded: the analysis completes unchanged and asks no governing question", async () => {
+    const off = analysisOutput(await runPipeline());
+    vi.clearAllMocks();
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    state.workspaceId = "ws_1872";
+    vi.mocked(prisma.governingRule.findMany).mockRejectedValueOnce(new Error("database is locked"));
+    const on = await runPipeline();
+    expect(analysisOutput(on)).toBe(off);
+    expect(on.calls.some(isGoverning)).toBe(false);
+    expect(vi.mocked(prisma.governingRule.findMany)).toHaveBeenCalled();
+    expect(vi.mocked(analysisService.markAnalysisCompleted)).toHaveBeenCalledTimes(1);
+  });
+
+  it("#1997 — the custom-agent phase's results are persisted (the mock carries persistAgentPhaseResults)", async () => {
+    const phase = await import("./custom-agent-phase.js");
+    await runPipeline();
+    expect(vi.mocked(phase.persistAgentPhaseResults)).toHaveBeenCalledWith(ANALYSIS_ID, []);
   });
 });
