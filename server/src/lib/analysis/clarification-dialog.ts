@@ -305,7 +305,7 @@ export class ClarificationDialog {
     if (backoff && Date.now() < backoff.nextAt) return;
     const leftOpen = await this.settleGoverning(analysisId, state, signal);
     // #2022 — an aborted retry neither counts as an attempt nor clears one.
-    // #2029 — the one place an abort is read: `settleGoverning` does not.
+    // #2029 / #2033 — the one place an abort decides the backoff.
     if (signal?.aborted) return;
     orphanRetries.delete(analysisId);
     if (!leftOpen) return;
