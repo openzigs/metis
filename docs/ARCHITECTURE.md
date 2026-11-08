@@ -2483,8 +2483,8 @@ gates on).
   local store (`governing` is refused as a project id, so no project table can be that
   directory), and key `governing/<workspaceId>` in pgvector's shared table
   (`getGoverningVectorSpace()` in `lib/rag/vector-store.ts`). One table per workspace, never a
-  global one, and no project search reads it: `KnowledgeService.search` is unchanged until
-  #1872 wires governing retrieval in deliberately. Each vector row's `documentId` is the
+  global one, and no project search reads it: `KnowledgeService.search` is unchanged; #1872
+  reads the index through its own retriever (`governingIndexRetriever`, below). Each vector row's `documentId` is the
   revision id. `GoverningIndex.search(workspaceId, query, k, actor)` checks membership before
   it reads the table, then filters to the current revision of each live document
   (`includeSuperseded` for every revision). A failed embed leaves the revision
@@ -2554,6 +2554,46 @@ for a workspace `owner`/`admin` or a deployment admin (`canManageGoverning`, fro
 `GET /api/workspaces/:id`'s members), which is the server's `requireWorkspaceRole("admin")`
 rule; a member sees the same list and rules without them. The upload dialog runs the project
 uploader's `clientValidate`, so a file is refused with the same size and type messages.
+
+#### Applicability per requirement (#1872)
+
+`lib/governing/applicability.ts` decides, per requirement, which governing rules apply. The
+model decides, never the analyst (owner, 2026-11-06). `decideApplicability` finds candidates
+in two passes and unions them:
+
+1. **Top-k:** `governingIndexRetriever` searches the workspace's index (#1869) as
+   `GOVERNING_ANALYSIS_ACTOR` (the workspace comes from the project row, never a request) and
+   maps each chunk to the current rules of the same revision whose clause it holds.
+2. **The screen:** the one-line summary of **every** current rule goes to the model, which
+   flags any that might apply. Top-k similarity misses a rule that applies without resembling
+   the requirement (audit logging, retention); the screen is the recall safety net. The
+   summaries are split into batches of at most `SCREEN_BATCH_MAX_TOKENS` (8,000 estimated
+   tokens, about 350 rules at #1867's measured 21 tokens a rule), or half the model's context
+   window when that is smaller. Every rule is in exactly one batch and none is truncated; the
+   count screened is logged. A failed top-k search is survivable while the screen runs.
+
+Each candidate is then judged `applies | does-not-apply | uncertain` with a one-line reason.
+An `uncertain` decision always carries a business question: a reply that leaves a candidate
+undecided or marks it `uncertain` without the question is re-asked once, and then recorded
+`uncertain` with `fallbackBusinessQuestion`, which names the rule. The model names rules by
+handles (`R1`, `R2`, …) assigned per decision, so a reply can only name a rule it was shown,
+and the requirement, summaries, clauses, control ids and titles travel fenced
+(`fenceToolResult`, as #1870).
+
+**The hook.** `governingApplicabilityForProject` returns `null`, with no database read, while
+`GOVERNING_DOCS_ENABLED` is off; it is also `null` for a project with no workspace or a
+workspace with no current rules. `currentWorkspaceRules` (`governing-store.ts`) reads only the
+live rules of each live document's current revision, scoped on the workspace through the
+document. The orchestrator's requirement-grounded code pass calls it beside
+`retrievePerRequirement`, and `attachGoverningApplicability` (`analysis/retrieval.ts`) puts
+each requirement's `ApplicabilitySet` on its evidence as `governing` (a failed requirement
+gets one carrying `error`, never a silently empty set). Nothing reads `governing` yet: the BA
+questions (#1873) and the cited findings (#1874) do. A flag-off analysis is byte-identical to
+before (`governing-applicability-pipeline-1872.test.ts`, a snapshot).
+
+`pnpm --filter server eval:governing --arms A0,A3` measures it: arm A3 runs
+`decideApplicability` over the #1867 corpus (lexical top-k standing in for the vector
+index), reading `applies` as `gap` and `uncertain` as `needs-ba-input`.
 
 ---
 

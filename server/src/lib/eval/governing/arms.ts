@@ -15,6 +15,9 @@
  *     over those rules' clauses.
  *   - **A2 — A1 plus the full-summary screen:** every rule's one-line summary in
  *     one prompt, the rules it flags added to A1's top-k before judging.
+ *   - **A3 — production applicability (#1872):** `decideApplicability`, the
+ *     code an analysis runs — A1's top-k plus the batched screen, each
+ *     candidate judged applies / does-not-apply / uncertain.
  *
  * Retrieval is lexical (production's BM25 options over the committed text), so
  * every arm runs offline apart from its model calls. Arms are chosen only by
@@ -35,6 +38,11 @@ import {
   runGroundedRetrieval,
   type GroundedSearchSource,
 } from "../../analysis/retrieval.js";
+import {
+  decideApplicability,
+  type ApplicabilityRule,
+  type ApplicabilitySet,
+} from "../../governing/applicability.js";
 import { createInMemoryBM25 } from "../../rag/bm25-index.js";
 import { chunkMarkdown } from "../../rag/chunker.js";
 import {
@@ -86,7 +94,7 @@ export interface GoverningArmDeps {
 }
 
 /** The registered arms, in report order. */
-export const GOVERNING_ARM_IDS = ["A0", "A1", "A2"] as const;
+export const GOVERNING_ARM_IDS = ["A0", "A1", "A2", "A3"] as const;
 export type GoverningArmId = (typeof GOVERNING_ARM_IDS)[number];
 
 /** A1 / A2's default top-k over 40 rule summaries. */
@@ -497,10 +505,96 @@ export function createA2Arm(deps: GoverningArmDeps): GoverningArm {
   return createRuleArm("A2", deps);
 }
 
+// ── A3 ─────────────────────────────────────────────────────────────────────
+
+/** #1872 — what A3's reading fixes: it decides applicability, not compliance, and quotes no clause. */
+export const A3_BY_CONSTRUCTION: Readonly<ByConstruction> = Object.freeze({
+  hardErrors: "A3 decides applicability only, so it never says compliant",
+  citationAccuracy:
+    "A3 decides applicability only and quotes no clause (the findings issue #1874 does)",
+});
+
+/** The corpus's rules as production applicability reads stored ones. */
+export function corpusApplicabilityRules(
+  corpus: Pick<GoverningCorpus, "name" | "rules">,
+): ApplicabilityRule[] {
+  return corpus.rules.map((r) => ({
+    id: r.id,
+    revisionId: corpus.name,
+    controlId: r.id,
+    summary: r.summary,
+    clauseExcerpt: r.clause,
+  }));
+}
+
+/**
+ * Read an applicability set as governing judgements: `applies` is judged
+ * `gap` (A3 says nothing of compliance, so like A0 it never says `compliant`),
+ * `uncertain` is `needs-ba-input` with its business question, and
+ * `does-not-apply` is not applied.
+ */
+export function readApplicabilitySet(set: Pick<ApplicabilitySet, "decisions">): GoverningArmOutput {
+  const judgements: GoverningJudgement[] = [];
+  for (const d of set.decisions) {
+    if (d.verdict === "applies") judgements.push({ ruleId: d.ruleId, verdict: "gap" });
+    else if (d.verdict === "uncertain") {
+      judgements.push({
+        ruleId: d.ruleId,
+        verdict: "needs-ba-input",
+        ...(d.businessFact ? { businessFact: d.businessFact } : {}),
+      });
+    }
+  }
+  return { judgements };
+}
+
+/**
+ * A3 — production applicability (`governing/applicability.ts`, #1872): A1's
+ * top-k plus the full-summary screen, batched as production batches it, each
+ * candidate judged `applies | does-not-apply | uncertain`. Top-k is the same
+ * lexical search A1 and A2 use, standing in for the workspace's vector index.
+ */
+export function createA3Arm(deps: GoverningArmDeps): GoverningArm {
+  const topK = deps.topK ?? DEFAULT_RULE_TOP_K;
+  return {
+    id: "A3",
+    label: "A3 — production applicability: top-k plus the batched rule-summary screen",
+    byConstruction: A3_BY_CONSTRUCTION,
+    configuration: {
+      searcher: "production BM25 options (createInMemoryBM25) over rule id + summary",
+      topK,
+      screen: "decideApplicability: every rule summary, batched to the prompt budget",
+      judge: "decideApplicability: applies / does-not-apply / uncertain, re-asked once",
+      reading: "readApplicabilitySet: applies → gap, uncertain → needs-ba-input",
+      model: deps.model,
+    },
+    async assess(item, corpus, { provider }) {
+      const set = await decideApplicability({
+        requirement: { id: item.id, text: requirementText(item) },
+        rules: corpusApplicabilityRules(corpus),
+        provider,
+        retrieve: async (query, k) => topKRules(corpus, query, k).map((r) => r.id),
+        topK,
+      });
+      return {
+        ...readApplicabilitySet(set),
+        diagnostics: {
+          candidates: set.candidates,
+          screened: set.rulesScreened,
+          screenBatches: set.screenBatches,
+          reasked: set.reasked,
+          screenOnly: set.decisions.filter((d) => !d.foundBy.includes("top-k")).length,
+        },
+      };
+    },
+  };
+}
+
 const FACTORIES: Record<GoverningArmId, (deps: GoverningArmDeps) => GoverningArm> = {
   A0: createA0Arm,
   A1: createA1Arm,
   A2: createA2Arm,
+  A3: createA3Arm,
 };
 
 /** `--arms A0,A2` → the ids, upper-cased, deduplicated, in report order. Default: A0. */
