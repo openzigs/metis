@@ -13,6 +13,10 @@
  *     under another analysis.
  *   - After a policy v2 changes the clause, the findings produced against v1
  *     still show v1's excerpt and revision label.
+ *
+ * #2010 — every test starts from the same database: no findings, policy v1
+ * current. A test that needs a decided finding makes one itself
+ * (`produceAndReject`), so each one passes run alone or in any order.
  */
 import express from "express";
 import request from "supertest";
@@ -234,9 +238,49 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       }
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
-    beforeEach(() => {
+    beforeEach(async () => {
       process.env.GOVERNING_DOCS_ENABLED = "1";
+      await db.governingFinding.deleteMany({ where: { analysisId: { in: [ANA, ANB] } } });
+      await db.auditLog.deleteMany({ where: { targetType: "governing_finding" } });
+      await db.governingDocument.update({
+        where: { id: docId },
+        data: { currentRevisionId: v1Id },
+      });
     });
+
+    /** #2010 — findings produced against v1, and the card finding rejected by A's member. */
+    async function produceAndReject() {
+      await produceGoverningFindingsForAnalysis({
+        analysisId: ANA,
+        projectId: PA,
+        provider: findingsModel(),
+      });
+      const card = await db.governingFinding.findFirstOrThrow({
+        where: { analysisId: ANA, controlId: "EN-03" },
+      });
+      const res = await decide(PA, ANA, card.id, {
+        decision: "rejected",
+        note: "Security says tokens, not digits.",
+      });
+      expect(res.status).toBe(200);
+      return card;
+    }
+
+    /** Policy v2 made current, created once however many tests ask for it. */
+    async function makeV2Current() {
+      const existing = await db.governingDocumentRevision.findFirst({
+        where: { documentId: docId, revisionLabel: "v2" },
+      });
+      if (existing) {
+        await db.governingDocument.update({
+          where: { id: docId },
+          data: { currentRevisionId: existing.id },
+        });
+        return;
+      }
+      const v2Id = await revision("v2", V2_TEXT);
+      await rule(v2Id, V2_TEXT, "EN-03", CARD_V2);
+    }
     afterEach(() => {
       delete process.env.GOVERNING_DOCS_ENABLED;
     });
@@ -311,9 +355,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("the decider is the session user, never the body: a body naming one is a 400 and changes nothing", async () => {
-      const card = (await db.governingFinding.findFirstOrThrow({
-        where: { analysisId: ANA, controlId: "EN-03" },
-      }))!;
+      const card = await produceAndReject();
       const before = await db.auditLog.count();
       const res = await decide(PA, ANA, card.id, {
         decision: "accepted",
@@ -326,9 +368,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("a member of another workspace's project gets 404 for both routes, through either path", async () => {
-      const card = await db.governingFinding.findFirstOrThrow({
-        where: { analysisId: ANA, controlId: "EN-03" },
-      });
+      const card = await produceAndReject();
       const before = await db.governingFinding.findUniqueOrThrow({ where: { id: card.id } });
       expect((await getFindings(PA, ANA, MEMBER_B, WS_B)).status).toBe(404);
       expect((await getFindings(PB, ANA, MEMBER_B, WS_B)).status).toBe(404);
@@ -352,8 +392,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("after policy v2 changes the clause, findings produced against v1 still show v1's excerpt and label", async () => {
-      const v2Id = await revision("v2", V2_TEXT);
-      await rule(v2Id, V2_TEXT, "EN-03", CARD_V2);
+      await produceAndReject();
+      await makeV2Current();
       const res = await getFindings(PA, ANA);
       const card = (res.body.data.findings as Array<Record<string, unknown>>).find(
         (f) => f.controlId === "EN-03",
@@ -383,6 +423,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("a re-produced finding that changed loses the decision made on the old one", async () => {
+      await produceAndReject();
       const card = await db.governingFinding.findFirstOrThrow({
         where: { analysisId: ANA, controlId: "EN-03" },
       });
@@ -410,6 +451,24 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       const after = await db.governingFinding.findUniqueOrThrow({ where: { id: card.id } });
       expect(after).toMatchObject({ status: "gap", decision: null, decidedById: null });
+      // #2010 — A09: the erasure is in the audit trail beside the decision it
+      // erased, read back from the database.
+      const trail = await db.auditLog.findMany({
+        where: { targetType: "governing_finding", targetId: card.id },
+      });
+      expect(trail.map((r) => r.action).sort()).toEqual([
+        "governing.finding.decision",
+        "governing.finding.decision-cleared",
+      ]);
+      const cleared = trail.find((r) => r.action === "governing.finding.decision-cleared")!;
+      expect(cleared).toMatchObject({ actorId: null });
+      expect(JSON.parse(cleared.metadata!)).toMatchObject({
+        analysisId: ANA,
+        previousDecision: "rejected",
+        previousDecidedById: MEMBER_A,
+        previousStatus: "compliant",
+        status: "gap",
+      });
     });
 
     it("flag off: both routes are 404", async () => {

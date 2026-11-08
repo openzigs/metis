@@ -2968,6 +2968,15 @@ export class AnalysisOrchestrator {
         sourceRequirements: opts.sourceRequirements,
       });
 
+      // #2010 — a cancel that landed during synthesis ends the run here, before
+      // the join: the findings would otherwise be produced under a controller
+      // created after the cancel, which nothing aborts, and written to a run
+      // that ends cancelled. The cancel aborted the applicability work itself.
+      if (run.cancelled) {
+        await endCancelled();
+        return;
+      }
+
       // #1997 — the join: applicability ran beside the code agent, enhancement
       // and synthesis, and is awaited only here, before the run is recorded.
       // #1874 — and the cited findings produced from it, cancellable with the run.

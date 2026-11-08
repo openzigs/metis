@@ -2666,8 +2666,11 @@ control id and a clause excerpt, and three rules are **enforced in code**, not o
 the prompt:
 
 - **No evidence is never Compliant.** `compliant` stands only when the model quotes, in
-  `satisfiedBy`, at least three words that really are in the requirement or a BA answer
-  (`evidenceIsPresent`). Otherwise it becomes `needs-ba-input` if the model gave the question,
+  `satisfiedBy`, a run of whole words that really is in the requirement or a BA answer and holds
+  at least three words that are not function words or requirement boilerplate (`shall`,
+  `system`, `user`, `allow`, …: `EVIDENCE_STOP_WORDS`), so "the system shall" is not evidence
+  (`evidenceIsPresent`, #2010). This is a floor on the quote, not proof that it says how the rule
+  is met. Otherwise it becomes `needs-ba-input` if the model gave the question,
   else `gap`. This follows CTRAG's No-Evidence → Non-Compliant (one study; a pattern, not proof).
 - **Every citation is verified** against the **cited revision's** stored `extractedText`
   (`locateClause`, #1870) and must lie inside the rule's own clause. An excerpt that does not
@@ -2687,14 +2690,20 @@ id, clause ref and verified clause are **copied** onto the row. A later revision
 what a finding cited.
 
 **When findings are produced.** `produceGoverningFindingsForAnalysis` (`findings-store.ts`)
-produces them in three places:
+produces them in two places:
 
 - In the run's join, from the applicability just stored. This is cancellable with the run and
-  best-effort.
+  best-effort. A cancel that lands during synthesis ends the run before the join (#2010).
 - After a BA answer settles pairs: the questions source re-evaluates the requirements whose pairs
-  the answer settled.
-- Under that refresh, a finding whose status, revision and clause are unchanged keeps its
-  decision. One that changed loses it.
+  the answer settled. This runs off the request path, after the settlement is committed (#2010).
+
+Each production writes in one transaction with a 60 s timeout
+(`GOVERNING_FINDINGS_WRITE_TIMEOUT_MS`, as `persistRequirements` sets). A finding whose status,
+revision and clause are unchanged keeps its BA decision. One that changed loses it, and the
+clearing is written to `AuditLog` (`governing.finding.decision-cleared`, by the system, with the
+previous decision and decider) in the same transaction. A pair whose rule is no longer citable (the
+rule soft-deleted, or its document deleted) gets no new finding, and its earlier row is kept
+with its decision. Only a pair that no longer applies loses its row.
 
 **API** (404 while the flag is off; `ensureAnalysisVisible` on both routes):
 
