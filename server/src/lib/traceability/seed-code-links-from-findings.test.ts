@@ -193,6 +193,26 @@ function makeFakePrisma(opts: {
         for (const row of rows) Object.assign(row, data);
         return { count: rows.length };
       },
+      // #1989 — the delete of a guess the file-level link already stands beside.
+      deleteMany: async ({
+        where,
+      }: {
+        where: { id: string; requirementId: string; projectId: string; source: string };
+      }) => {
+        const before = mappings.length;
+        for (let i = mappings.length - 1; i >= 0; i -= 1) {
+          const m = mappings[i];
+          if (
+            m.id === where.id &&
+            m.requirementId === where.requirementId &&
+            m.projectId === where.projectId &&
+            m.source === where.source
+          ) {
+            mappings.splice(i, 1);
+          }
+        }
+        return { count: before - mappings.length };
+      },
     },
   } as unknown as SeedDeps["prisma"];
 
@@ -1331,6 +1351,29 @@ describe("seedRequirementCodeLinksFromFindings — code-graph version stamp (#18
     expect(noteRequirementCodeLinksChanged).toHaveBeenCalledWith(["req-1"]);
     // And a second re-seed finds it, not another guess.
     expect(await run(prisma)).toEqual({ requirementsSeeded: 0, linksCreated: 0, linksSkipped: 1 });
+  });
+
+  // #1989 item 1 — the file-level row already existed beside the guess, so the
+  // existing-key branch skipped before the guess lookup and the guess stayed bound.
+  it("deletes a guessed link that the file-level link already stands beside (#1989)", async () => {
+    noteRequirementCodeLinksChanged.mockClear();
+    const fileLevel = guessedRow({ id: "m-file", codeSymbolId: null, startLine: 8, endLine: 12 });
+    const { prisma, created, all } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [{ id: "f1", evidence: codeCitation(), confidence: 0.7 }],
+      symbols: twoRepos,
+      mappings: [guessedRow(), fileLevel, guessedRow({ id: "m-other", requirementId: "req-2" })],
+    });
+    expect(await run(prisma)).toEqual({
+      requirementsSeeded: 0,
+      linksCreated: 0,
+      linksSkipped: 1,
+    });
+    expect(created).toHaveLength(0);
+    // Only this requirement's guess goes; another requirement's row is untouched.
+    expect(all.map((m) => m.id)).toEqual(["m-file", "m-other"]);
+    expect(all[0]).toMatchObject({ codeSymbolId: null, startLine: 8, endLine: 12 });
+    expect(noteRequirementCodeLinksChanged).toHaveBeenCalledWith(["req-1"]);
   });
 
   it("leaves a bound link alone when a current citation binds it, or the span never enclosed its symbol (#1981)", async () => {
