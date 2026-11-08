@@ -9,12 +9,15 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { prismaMock } = vi.hoisted(() => ({
+const { prismaMock, logMock } = vi.hoisted(() => ({
   prismaMock: {
     repoConnection: { findMany: vi.fn() },
     agentResult: { deleteMany: vi.fn(async () => ({ count: 0 })) },
   },
+  logMock: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
+
+vi.mock("../logger.js", () => ({ createChildLogger: () => logMock }));
 
 vi.mock("../prisma.js", () => ({ prisma: prismaMock }));
 vi.mock("./analysis-service.js", () => ({
@@ -171,6 +174,23 @@ describe("regenerate the code agent through its pipeline mode (#766)", () => {
     await regenerate(orch, "document");
     expect(orch.extractRequirementsFromDocAgent).not.toHaveBeenCalled();
     expect(orch.runOneAgent).toHaveBeenCalledTimes(1);
+  });
+
+  // #2011 — the passes have already landed their rows when this delete runs,
+  // so a failed delete leaves the stale rows beside them; it must be visible.
+  it("warns, naming the run, when the post-loop delete of superseded rows fails", async () => {
+    prismaMock.repoConnection.findMany.mockResolvedValue([{ id: "repo_1", label: "miniflux" }]);
+    prismaMock.agentResult.deleteMany.mockRejectedValueOnce(new Error("database is locked"));
+    const orch = makeOrchestrator("agentic");
+    await regenerate(orch);
+
+    expect(logMock.warn).toHaveBeenCalledWith("Regenerate could not delete superseded code rows", {
+      analysisId: "an_1",
+      ranConnectorIds: ["repo_1"],
+      error: "database is locked",
+    });
+    // The failure still fails the regenerate: nothing is synthesised over it.
+    expect(orch.runSynthesisAndPersist).not.toHaveBeenCalled();
   });
 
   it("does not purge prior rows when there is no repo connection", async () => {
