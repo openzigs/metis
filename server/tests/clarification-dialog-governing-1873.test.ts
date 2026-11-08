@@ -65,7 +65,8 @@ vi.mock("../src/lib/governing/findings-store.js", () => ({
   ),
 }));
 
-const { ClarificationDialog } = await import("../src/lib/analysis/clarification-dialog.js");
+const { ClarificationDialog, ORPHAN_RETRY_BASE_MS } =
+  await import("../src/lib/analysis/clarification-dialog.js");
 const findingsStore = await import("../src/lib/governing/findings-store.js");
 const { governingQuestionSourceFor } =
   await import("../src/lib/governing/applicability-questions.js");
@@ -388,6 +389,65 @@ describe("#1873 — governing questions in the clarification dialog", () => {
     // Settled now: a further start judges nothing more.
     await dialog.startOrContinue(ANALYSIS, REQS);
     expect(judging()).toHaveLength(1);
+  });
+
+  it("#2016 — with the provider down, the start-path retry is backed off per analysis, doubling, and a submit resets it", async () => {
+    // Fake only the clock, in the past, so the backoff left behind has expired for later tests.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2001-01-01T00:00:00.000Z"));
+    try {
+      const { provider, sent, chat } = model();
+      const dialog = dialogWith(provider);
+      const state = await dialog.startOrContinue(ANALYSIS, REQS);
+      const q = state.rounds[0]!.questions[0]!;
+      const judging = () => sent.filter((s) => s.system.includes("You decide which")).length;
+      const real = chat.getMockImplementation()!;
+      chat.mockImplementation(async (messages, o) => {
+        if (String(o?.systemMessage ?? "").includes("You decide which")) {
+          sent.push({ system: String(o?.systemMessage), user: "" });
+          throw new Error("provider unavailable");
+        }
+        return real(messages, o);
+      });
+      await dialog.submitAnswers(
+        ANALYSIS,
+        [{ questionId: q.id, answer: "Yes, the whole number." }],
+        REQS,
+      );
+      expect(judging()).toBe(1);
+
+      const start = () => dialog.startOrContinue(ANALYSIS, REQS);
+      const later = (ms: number) => vi.setSystemTime(new Date(Date.now() + ms));
+      await start(); // the first retry runs at once
+      expect(judging()).toBe(2);
+      await start(); // inside the first backoff: no judging call
+      await start();
+      expect(judging()).toBe(2);
+      later(ORPHAN_RETRY_BASE_MS + 1);
+      await start(); // the backoff has passed: one more attempt
+      expect(judging()).toBe(3);
+      later(ORPHAN_RETRY_BASE_MS + 1);
+      await start(); // the backoff doubled: still waiting
+      expect(judging()).toBe(3);
+      later(ORPHAN_RETRY_BASE_MS);
+      await start();
+      expect(judging()).toBe(4);
+
+      // A submit settles itself and resets the backoff: the next start retries at once.
+      await dialog.submitAnswers(
+        ANALYSIS,
+        [{ questionId: q.id, answer: "Yes, the whole number." }],
+        REQS,
+      );
+      expect(judging()).toBe(5);
+      chat.mockImplementation(real);
+      await start();
+      expect(judging()).toBe(6);
+      const read = await readGoverningApplicability(ANALYSIS);
+      expect(read!.requirements[0]!.decisions[0]).toMatchObject({ verdict: "applies" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a failing governing source asks no governing question and never stops the round", async () => {

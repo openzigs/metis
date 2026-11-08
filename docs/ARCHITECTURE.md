@@ -2585,8 +2585,11 @@ in two passes and unions them:
    window when that is smaller. Every rule is in exactly one batch and none is truncated; the
    count screened is logged. A failed top-k search is survivable while the screen runs. The
    summaries lead the screen prompt, ahead of the requirement, and are sent as the cached
-   `promptCaching.userPrefix`: every requirement of an analysis shares that prefix (#1997). A
-   screen reply that cannot be read is re-asked once before the requirement fails.
+   `promptCaching.userPrefix`: every requirement of an analysis shares that prefix (#1997).
+   The batches are planned with a fixed 500-token allowance for the requirement, so they are the
+   same for every requirement (#2008). A requirement longer than that is planned at its own
+   length, so its prompt never overshoots the budget (#2016). A screen reply that cannot be read
+   is re-asked once before the requirement fails.
 
 Each candidate is then judged `applies | does-not-apply | uncertain` with a one-line reason.
 An `uncertain` decision always carries a business question: a reply that leaves a candidate
@@ -2612,6 +2615,8 @@ gets one carrying `error`, never a silently empty set). It is started, not await
 runs beside the code agent, enhancement and synthesis, and `runPipeline` joins it after
 synthesis (`joinGoverningApplicability`), before the run is recorded. Awaiting it first had put
 about 8 minutes of screens and judging ahead of the code agent on a 24-requirement analysis.
+It runs under the hook's signal: once that is aborted (a cancel, or a run that ends before the
+join), its workers stop, so no further requirement is retrieved, embedded or judged (#2016).
 The join stores the sets on the analysis as `metadata.governingApplicability`
 (`governing/applicability-store.ts`, the shared `governingAnalysisApplicabilitySchema`, #1873),
 where the BA questions below read them. A flag-off analysis is byte-identical to
@@ -2644,7 +2649,9 @@ the pre-#1873 code).
   `governing-applicability`, which names no real ambiguity. Its own `requirementId` is
   namespaced (`governing:REQ-001`, #2009). The analysis's requirement ids and the reviewed
   list's both number from REQ-001 independently, and every reader of `requirementId` (the CSV
-  export's title, the ticked-items ordering) reads it against the reviewed list. Clarification
+  export's title, the ticked-items ordering) reads it against the reviewed list. The CSV export
+  labels a governing question's `requirement` "Company policy check: <the requirement's text>"
+  from the stored applicability (`governingQuestionRequirementLabel`, #2016). Clarification
   enrichment skips governing questions outright (`collectAnsweredQuestions`): their answers
   settle rule applicability and never refine a requirement.
 - **The guard.** `questionLeaksRule` refuses a question that names a control id (whole words,
@@ -2662,7 +2669,11 @@ the pre-#1873 code).
   An answered pair is never asked again, so a pair whose settle failed (an unreadable reply, a
   provider error or outage, an aborted request) would otherwise be orphaned. Instead, every
   later submit and every dialog start judges it again from the BA's stored answer. That
-  includes a completed dialog. A refused (409) submit settles nothing.
+  includes a completed dialog. A refused (409) submit settles nothing. A question whose pairs
+  are all settled costs no model call, but still costs one `readGoverningApplicability`. The
+  start-path retry is backed off per analysis (#2016): after a retry that judged something, the
+  next one waits `ORPHAN_RETRY_BASE_MS` (1 minute), doubling up to an hour. A retry that judged
+  nothing, or a submit, resets it.
   Governing questions are kept out of the resolution pass: their answers never rewrite a
   requirement's description.
 - **Read path.** `GET /api/projects/:projectId/analyses/:id/governing-applicability` returns the

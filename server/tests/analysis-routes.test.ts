@@ -1531,6 +1531,50 @@ describe("Clarify CSV export/import", () => {
       expect(res.body.data.rows[0].requirement).toBe("req-1");
     });
 
+    it("#2016 — a governing question exports under a readable label, never its internal id", async () => {
+      const governingQuestion = (id: string, requirementId: string) => ({
+        id,
+        requirementId: `governing:${requirementId}`,
+        ambiguityField: "governing-applicability",
+        question: "Will the saved card keep the whole card number?",
+        context: "",
+        governing: { kind: "governing", ruleIds: ["rule_card"], requirementId },
+      });
+      const aId = seedAnalysis({
+        agentKeys: ["document"],
+        structuredRequirements: structuredReqs,
+        governingApplicability: {
+          decidedAt: "2026-11-08T00:00:00.000Z",
+          requirements: [
+            {
+              requirementId: "REQ-001",
+              text: "Let returning customers check out with a saved card.",
+              decisions: [],
+            },
+          ],
+        },
+      });
+      seedDialog(aId, [
+        questions[0]!,
+        governingQuestion("q-g1", "REQ-001"),
+        // A requirement the store no longer holds: still the label, never the id.
+        governingQuestion("q-g2", "REQ-009"),
+      ]);
+      const res = await request(app)
+        .get(`/api/projects/proj-abcdefghij/analyses/${aId}/clarify/export?format=json`)
+        .set("Authorization", `Bearer ${adminToken}`);
+      expect(res.status).toBe(200);
+      const labels = (res.body.data.rows as Array<{ requirement: string }>).map(
+        (r) => r.requirement,
+      );
+      expect(labels).toEqual([
+        "Audit logging",
+        "Company policy check: Let returning customers check out with a saved card.",
+        "Company policy check",
+      ]);
+      expect(JSON.stringify(res.body.data.rows)).not.toContain("governing:");
+    });
+
     it("404s on IDOR (wrong projectId)", async () => {
       const aId = seedAnalysis({ agentKeys: ["document"], structuredRequirements: structuredReqs });
       seedDialog(aId, questions);

@@ -62,6 +62,22 @@ export const MAX_ROUNDS = 3;
  * in `runStart` covers any start that arrives after the first was written.
  */
 const startsInFlight = new Map<string, Promise<ClarificationState>>();
+
+/**
+ * #2016 — the backoff of the start path's retry of governing answers whose
+ * settle failed. That retry runs inline in a start, before the #937 early
+ * return, and costs up to two judging calls per question it judges; with the
+ * provider down, every start (each Questions-tab mount) paid them again. After
+ * a retry that judged something, the next start-path retry of the analysis
+ * waits {@link ORPHAN_RETRY_BASE_MS}, doubling per attempt up to
+ * {@link ORPHAN_RETRY_MAX_MS}. A retry that judged nothing (nothing left
+ * open) clears it, and so does a submit, which settles itself. Process local,
+ * as `startsInFlight` is.
+ */
+export const ORPHAN_RETRY_BASE_MS = 60_000;
+export const ORPHAN_RETRY_MAX_MS = 60 * 60_000;
+const orphanRetries = new Map<string, { attempts: number; nextAt: number }>();
+
 const ESCALATION_THRESHOLD = 0.6; // >60% unresolved → escalate to Sonnet
 
 // ── Prompts ────────────────────────────────────────────────────────────
@@ -244,22 +260,47 @@ export class ClarificationDialog {
    * settle failed (the provider threw or was offline, the reply could not be
    * read, the request was aborted). Such a pair is never asked again, so this
    * retry is the only way its answer is ever used. A failure is logged: the
-   * answers are kept, and the next settle tries again.
+   * answers are kept, and the next settle tries again. #2016 — true when the
+   * settle may have cost a model call: it judged a question, or it threw.
    */
   private async settleGoverning(
     analysisId: string,
     state: ClarificationState,
     signal: AbortSignal | undefined,
-  ): Promise<void> {
-    if (!this.governing) return;
+  ): Promise<boolean> {
+    if (!this.governing) return false;
     const questions = state.rounds.flatMap((r) => r.questions);
-    if (!questions.some((q) => q.governing && q.answer?.trim())) return;
-    await this.governing.settle(questions, signal).catch((err: unknown) => {
-      log.warn("Governing answers could not be settled — their rules stay uncertain", {
-        analysisId,
-        error: (err as Error).message,
-      });
-    });
+    if (!questions.some((q) => q.governing && q.answer?.trim())) return false;
+    return this.governing.settle(questions, signal).then(
+      (judged) => judged > 0,
+      (err: unknown) => {
+        log.warn("Governing answers could not be settled — their rules stay uncertain", {
+          analysisId,
+          error: (err as Error).message,
+        });
+        return true;
+      },
+    );
+  }
+
+  /**
+   * #2016 — the start path's retry of answers whose settle failed, with the
+   * per-analysis backoff of {@link orphanRetries}.
+   */
+  private async retryOrphanedGoverning(
+    analysisId: string,
+    state: ClarificationState,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    const backoff = orphanRetries.get(analysisId);
+    if (backoff && Date.now() < backoff.nextAt) return;
+    if (!(await this.settleGoverning(analysisId, state, signal))) {
+      orphanRetries.delete(analysisId);
+      return;
+    }
+    const attempts = (backoff?.attempts ?? 0) + 1;
+    const wait = Math.min(ORPHAN_RETRY_BASE_MS * 2 ** (attempts - 1), ORPHAN_RETRY_MAX_MS);
+    orphanRetries.set(analysisId, { attempts, nextAt: Date.now() + wait });
   }
 
   /**
@@ -308,8 +349,9 @@ export class ClarificationDialog {
     }
 
     // #2009 — an answer whose settle failed is retried here, before anything
-    // is asked: also on a completed dialog, which asks nothing more.
-    await this.settleGoverning(analysisId, state, signal);
+    // is asked: also on a completed dialog, which asks nothing more. #2016 —
+    // backed off per analysis, so a provider outage is not paid per start.
+    await this.retryOrphanedGoverning(analysisId, state, signal);
 
     if (state.completed || state.currentRound > MAX_ROUNDS) {
       state.completed = true;
@@ -469,6 +511,9 @@ export class ClarificationDialog {
     // #1873 — judge the answered governing questions back onto the rules they
     // settle, after the round is committed so a refused submit settles nothing.
     // #2009 — every round's, so an earlier round's failed settle is retried.
+    // #2016 — a submit's settle is its own attempt: the next start retries
+    // whatever it left open straight away, with a fresh backoff.
+    orphanRetries.delete(analysisId);
     await this.settleGoverning(analysisId, state, signal);
 
     return { state, updatedRequirements };
