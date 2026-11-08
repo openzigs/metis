@@ -485,3 +485,65 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
   },
 );
+
+/**
+ * #1958, #1985 — chargeback's workspace-level branch (`projectId: null,
+ * workspaceId`) against the real query engine: the unit suite's `groupBy`
+ * double only re-implements it. Governing rule extraction bills the workspace
+ * with no project; a row of another workspace's, and a soft-deleted project's,
+ * stay out.
+ */
+describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
+  "#1958 — chargeback counts the workspace's own spend (real SQLite)",
+  () => {
+    let sqlite: MigratedSqlite;
+    let db: PrismaClient;
+    const NOW = new Date(Date.UTC(2026, 6, 1, 6));
+    const JUNE = new Date(Date.UTC(2026, 5, 10, 12));
+
+    beforeAll(async () => {
+      sqlite = createMigratedSqlite("1958-workspace-level");
+      db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
+      state.db = db;
+      await db.user.create({
+        data: { id: USER, username: USER, displayName: "Policy owner", email: `${USER}@x.test` },
+      });
+      for (const id of ["ws-1958", "ws-1958-other"]) {
+        await db.workspace.create({ data: { id, name: id, slug: id } });
+      }
+      await seedProject(db, "p-1958", "ws-1958");
+      await seedProject(db, "p-1958-gone", "ws-1958");
+      await db.project.update({ where: { id: "p-1958-gone" }, data: { deletedAt: JUNE } });
+      const row = { provider: "openai", model: "gpt-4o", totalTokens: 100, createdAt: JUNE };
+      await db.tokenUsage.createMany({
+        data: [
+          // Workspace-level: governing rule extraction, billed to a user.
+          { ...row, projectId: null, workspaceId: "ws-1958", userId: USER, costUsd: 2 },
+          // A live project's, unattributed.
+          { ...row, projectId: "p-1958", userId: null, costUsd: 1 },
+          // Another workspace's own spend, and a soft-deleted project's.
+          { ...row, projectId: null, workspaceId: "ws-1958-other", userId: USER, costUsd: 7 },
+          { ...row, projectId: "p-1958-gone", userId: USER, costUsd: 3 },
+        ],
+      });
+    }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
+
+    afterAll(async () => {
+      await db?.$disconnect();
+      sqlite?.cleanup();
+    });
+
+    it("reports the workspace's own row as its own line and under its user, and only this workspace's", async () => {
+      const data = await gatherChargebackData("ws-1958", NOW);
+      expect(data?.byProject).toEqual([
+        { id: "workspace", name: "Workspace (no project)", costCents: 200 },
+        { id: "p-1958", name: "p-1958", costCents: 100 },
+      ]);
+      expect(data?.byUser).toEqual([
+        { id: USER, name: "Policy owner", costCents: 200 },
+        { id: "unattributed", name: "Unattributed", costCents: 100 },
+      ]);
+      expect(data?.totalCurrentCents).toBe(300);
+    });
+  },
+);

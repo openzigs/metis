@@ -32,6 +32,15 @@ async function api(token: string): Promise<APIRequestContext> {
   });
 }
 
+/** DELETE `path`, failing the test softly on a non-204 or a throw, never throwing. */
+async function softDelete(client: APIRequestContext, path: string): Promise<void> {
+  const status = await client
+    .delete(path)
+    .then((res) => res.status())
+    .catch((err: unknown) => `threw: ${String(err)}`);
+  expect.soft(status, `DELETE ${path}`).toBe(204);
+}
+
 async function box(locator: Locator) {
   const b = await locator.boundingBox();
   expect(b, "element has a layout box").not.toBeNull();
@@ -107,14 +116,11 @@ test.describe("#1889 — page header title beside wide actions", () => {
       }
     } finally {
       // Soft, so a failed cleanup still fails the test without hiding why the
-      // body failed.
-      if (agentId) {
-        expect.soft((await client.delete(`/api/agents/${agentId}`)).status()).toBe(204);
-      }
-      if (projectId) {
-        expect.soft((await client.delete(`/api/projects/${projectId}`)).status()).toBe(204);
-      }
-      await client.dispose();
+      // body failed; a delete that throws (a dropped connection) is caught for
+      // the same reason (#1985): a throw here would replace the body's error.
+      if (agentId) await softDelete(client, `/api/agents/${agentId}`);
+      if (projectId) await softDelete(client, `/api/projects/${projectId}`);
+      await client.dispose().catch(() => undefined);
     }
   });
 });

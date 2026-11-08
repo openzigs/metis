@@ -35,6 +35,14 @@ export const PAGE_HEADER_WITH_ACTIONS_CLASS = "sm:grid sm:grid-cols-[minmax(min-
  */
 export const PAGE_HEADER_UNFLOORED_CLASS = "sm:contain-inline-size";
 
+/**
+ * #1985 — containment lays a long unbreakable token out at the column's width,
+ * but the token itself still overflowed its `<p>` and painted over the actions.
+ * `overflow-wrap: break-word` breaks it at the column's edge; unlike `anywhere`
+ * it leaves `min-content` alone, so the title row still sets the column's floor.
+ */
+export const PAGE_HEADER_TEXT_COLUMN_CLASS = "min-w-0 space-y-1 break-words";
+
 export interface PageHeaderProps extends Omit<React.HTMLAttributes<HTMLElement>, "title"> {
   /** The page title, rendered as the page's single `<h1>`. */
   title: React.ReactNode;
@@ -77,7 +85,7 @@ export function PageHeader({
       )}
       {...props}
     >
-      <div className="min-w-0 space-y-1">
+      <div className={PAGE_HEADER_TEXT_COLUMN_CLASS}>
         {eyebrow ? (
           <div className={cn("text-xs text-muted-foreground", unfloored)}>{eyebrow}</div>
         ) : null}
@@ -96,9 +104,11 @@ export function PageHeader({
         {description ? (
           <p className={cn("text-sm text-muted-foreground", unfloored)}>{description}</p>
         ) : null}
-        {/* One wrapper, so an inline child (which containment skips) is covered too. */}
+        {/* One wrapper, so an inline child (which containment skips) is covered too.
+            `empty:hidden` for a child element that renders nothing (#1985), which
+            no check before render can see. */}
         {React.Children.toArray(children).length > 0 ? (
-          <div className={cn("space-y-1", unfloored)}>{children}</div>
+          <div className={cn("space-y-1 empty:hidden", unfloored)}>{children}</div>
         ) : null}
       </div>
       {actions ? (

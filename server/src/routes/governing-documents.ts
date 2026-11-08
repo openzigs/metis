@@ -16,7 +16,7 @@
  *   POST   /:documentId/revisions/:revisionId/rule-extraction
  *                                     admin+  retry a failed, unstarted or stale-running
  *                                             extraction: 202, or 409 when done/running (#1947);
- *                                             the upload rate limit applies (#1958)
+ *                                             rate limited in its own bucket (#1958, #1985)
  *
  * /api/workspaces/:workspaceId/governing-rules — #1870.
  *
@@ -45,7 +45,7 @@ import type { ApiResponse } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requireWorkspaceRole } from "../middleware/require-workspace-role.js";
 import { AppError } from "../middleware/error-handler.js";
-import { uploadRateLimiter } from "../middleware/upload-rate-limit.js";
+import { extractionRetryRateLimiter, uploadRateLimiter } from "../middleware/upload-rate-limit.js";
 import { documentFile } from "../middleware/document-file-upload.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { getDocumentStorage, type StorageBackend } from "../lib/documents/storage.js";
@@ -370,13 +370,13 @@ export function governingDocumentsRouter(deps: GoverningDocumentsRouterDeps = {}
    * began, or has been `running` past `EXTRACTION_STALE_MS` (a server restart
    * mid-run). 409 for one that is done or still fresh-running; the run itself
    * is in the background, as at upload. Each 202 can start up to
-   * `MAX_SECTIONS` billed model calls, so the route takes the upload limiter
-   * (#1958).
+   * `MAX_SECTIONS` billed model calls, so the route is rate limited (#1958),
+   * in a bucket of its own so a retry burst cannot block uploads (#1985).
    */
   r.post(
     "/:documentId/revisions/:revisionId/rule-extraction",
     ...admin,
-    uploadRateLimiter,
+    extractionRetryRateLimiter,
     async (req: Request, res: Response) => {
       const workspaceId = String(req.params.workspaceId);
       const documentId = String(req.params.documentId);

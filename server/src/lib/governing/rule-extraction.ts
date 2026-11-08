@@ -110,18 +110,39 @@ function lineAbove(text: string, lineStart: number): string | null {
   return null;
 }
 
-const LIST_OR_TABLE_ROW = /^(?:[-*+]|\d+[.)])[ \t]|^\|/;
+const BULLET_OR_TABLE_ROW = /^[-*+][ \t]|^\|/;
+/** A numbered list item, capturing its indent. */
+const NUMBERED_ITEM = /^([ \t]*)\d+[.)][ \t]/;
 const SENTENCE_END = /[.!?;]$/;
+/** Closing emphasis and quote marks that may follow a line's last word (#1985). */
+const CLOSING_MARKS = new Set(["*", "_", "~", "`", '"', "'", "\u2019", "\u201D", "\u00BB"]);
+
+/** `s` without its trailing {@link CLOSING_MARKS}, in one linear pass (as `stripHeadingTail`). */
+function stripClosingMarks(s: string): string {
+  let end = s.length;
+  while (end > 0 && CLOSING_MARKS.has(s[end - 1])) end--;
+  return s.slice(0, end);
+}
 
 /**
- * #1958 — a line that labels the clause under it rather than being a clause
- * of its own: a Markdown heading, or a line such as `**AC-02**`, `4.3.1` or
- * `AC-02 Account sharing` that ends no sentence and is no list item or table
- * row (each of those is a clause, and an id on it is its own).
+ * #1958, #1985 — a line that labels the clause under it rather than being a
+ * clause of its own: a Markdown heading; a single token with a digit, such
+ * as `**AC-02**`, `4.3.1` or `AC-02.` (a one-word sentence such as
+ * `Preamble.` has none); or a line such as `AC-02 Account sharing` or
+ * `4. Access` that ends no sentence once closing emphasis and quotes are
+ * stripped (`**Accounts are never shared.**` and `"I agree."` end one). A
+ * bullet or table row is a clause, and an id on it is its own; so is a
+ * numbered item when the clause under it (`ownLine`) is a numbered item at the
+ * same indent, its sibling in one list.
  */
-function isLabelLine(line: string): boolean {
+function isLabelLine(line: string, ownLine: string): boolean {
   const t = line.trim();
-  return /^#{1,6}[ \t]/.test(t) || (!LIST_OR_TABLE_ROW.test(t) && !SENTENCE_END.test(t));
+  if (/^#{1,6}[ \t]/.test(t)) return true;
+  if (BULLET_OR_TABLE_ROW.test(t)) return false;
+  const item = NUMBERED_ITEM.exec(line);
+  if (item && NUMBERED_ITEM.exec(ownLine)?.[1] === item[1]) return false;
+  const core = stripClosingMarks(t);
+  return (!/\s/.test(core) && /\d/.test(core)) || !SENTENCE_END.test(core);
 }
 
 /**
@@ -139,7 +160,7 @@ export function controlIdRegion(
   const lineStart = text.lastIndexOf("\n", clause.clauseStart - 1) + 1;
   const own = text.slice(lineStart, clause.clauseEnd);
   const above = lineAbove(text, lineStart);
-  return above !== null && isLabelLine(above) ? `${above}\n${own}` : own;
+  return above !== null && isLabelLine(above, own) ? `${above}\n${own}` : own;
 }
 
 /**
