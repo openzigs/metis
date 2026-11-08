@@ -4556,11 +4556,13 @@ describe("AnalysisOrchestrator capability record (#733)", () => {
 
   // #1974 — the cap keeps the first connectors in the list, and the list came
   // back from the database in no stated order, so the #1940 run dropped its
-  // primary repository. The rows here come back primary LAST and newest first.
+  // primary repository. The rows here come back primary LAST. #1981 — and the
+  // primary is the NEWEST, so oldest-first alone would drop it: only the
+  // primary-first rule keeps it.
   const primaryLastRows = () => [
-    connectorRow("c-notify", "notify", "2026-01-03T00:00:00Z"),
+    connectorRow("c-notify", "notify", "2026-01-01T00:00:00Z"),
     connectorRow("c-billing", "billing", "2026-01-02T00:00:00Z"),
-    connectorRow("c-primary", "primary", "2026-01-01T00:00:00Z", true),
+    connectorRow("c-primary", "primary", "2026-01-03T00:00:00Z", true),
   ];
   /** The `[repo: <label>]` each agentic code pass was prompted with, in order. */
   const codePassRepos = (provider: AIProvider): string[] => {
@@ -4596,11 +4598,11 @@ describe("AnalysisOrchestrator capability record (#733)", () => {
     });
     await drain(analysisId);
     expect(analyses.get(analysisId)!.status).toBe("completed");
-    // Primary first, then the oldest of the rest; the newest is the one dropped.
+    // Primary first, then the oldest of the rest; the newest of those is dropped.
     expect(readCapability(analysisId)!.skippedRepos).toEqual([
-      { connectorId: "c-notify", label: "notify" },
+      { connectorId: "c-billing", label: "billing" },
     ]);
-    expect(ran).toEqual(["primary", "billing"]);
+    expect(ran).toEqual(["primary", "notify"]);
   });
 
   it("#1974 — a code regenerate orders its connectors the same way", async () => {
@@ -4623,7 +4625,65 @@ describe("AnalysisOrchestrator capability record (#733)", () => {
       agentKey: "code",
       actorId: "user-1234567890",
     });
-    expect(ran).toEqual(["primary", "billing"]);
+    expect(ran).toEqual(["primary", "notify"]);
+  });
+
+  /** Overwrite the stored capability's skipped list, as a record from an earlier run left it. */
+  const recordSkipped = (
+    analysisId: string,
+    skippedRepos: Array<{ connectorId: string; label: string }>,
+  ) => {
+    const row = analyses.get(analysisId)!;
+    const meta = JSON.parse(row.metadata ?? "{}") as { capability: Record<string, unknown> };
+    meta.capability = {
+      ...meta.capability,
+      skippedRepos,
+      reasons: [...new Set([...(meta.capability.reasons as string[]), "repos-skipped-budget"])],
+    };
+    row.metadata = JSON.stringify(meta);
+  };
+
+  // #1981 — a record written before #1974 says the primary was skipped; a
+  // regenerate that analyses it must stop saying so.
+  it("#1981 — a code regenerate rewrites skippedRepos to what its own budget cap left out", async () => {
+    codeGraphExists = true;
+    repoSourceExists = true;
+    uploadedDocs = ["doc-1"];
+    repoConnectors = primaryLastRows();
+    const orch = new AnalysisOrchestrator({ provider: makeReqProvider(), retrieve: retrieveStub });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["document", "code"],
+    });
+    await drain(analysisId);
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+    recordSkipped(analysisId, [{ connectorId: "c-primary", label: "primary" }]);
+    await orch.regenerateAgent({ analysisId, agentKey: "code", actorId: "user-1234567890" });
+    const cap = readCapability(analysisId)!;
+    expect(cap.skippedRepos).toEqual([{ connectorId: "c-billing", label: "billing" }]);
+    expect(cap.reasons).toContain("repos-skipped-budget");
+  });
+
+  it("#1981 — a code regenerate that runs every repository clears skippedRepos and its reason", async () => {
+    codeGraphExists = true;
+    repoSourceExists = true;
+    uploadedDocs = ["doc-1"];
+    repoConnectors = primaryLastRows();
+    const orch = new AnalysisOrchestrator({ provider: makeReqProvider(), retrieve: retrieveStub });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["document", "code"],
+    });
+    await drain(analysisId);
+    expect(readCapability(analysisId)!.skippedRepos).toHaveLength(1);
+    // billing has since been removed, so the two left both fit the budget.
+    repoConnectors = primaryLastRows().filter((c) => c.id !== "c-billing");
+    await orch.regenerateAgent({ analysisId, agentKey: "code", actorId: "user-1234567890" });
+    const cap = readCapability(analysisId)!;
+    expect(cap.skippedRepos).toEqual([]);
+    expect(cap.reasons).not.toContain("repos-skipped-budget");
   });
 });
 

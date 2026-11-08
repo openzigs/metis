@@ -1642,6 +1642,7 @@ export class AnalysisOrchestrator {
       continueWith ? (continueWith.get(connectorId) ?? []) : requirements;
 
     const startedAt = new Date();
+    // #1974 — primary first, so the budget cap never drops it (as the pipeline does).
     const connectors = orderConnectorsForBudgetCap(
       await prisma.repoConnection.findMany({
         where: { projectId: input.projectId, deletedAt: null },
@@ -1689,6 +1690,7 @@ export class AnalysisOrchestrator {
     const persistMode = continuing ? ("append" as const) : undefined;
     const results: AgentRunResult[] = [];
     const ranConnectorIds: string[] = [];
+    let cappedOut: typeof connectors = [];
     if (connectors.length <= 1) {
       // A continuation whose repository changed since its scope was read has
       // nothing to continue here.
@@ -1717,10 +1719,11 @@ export class AnalysisOrchestrator {
     } else {
       // Repos the budget cannot fit keep whatever rows they already have.
       // #1131 — a continuation re-runs only the repositories with something unreached.
-      const { effectiveConnectors, effectiveBudget } = capConnectorsForBudget(
+      const { effectiveConnectors, effectiveBudget, skipped } = capConnectorsForBudget(
         connectors.filter((c) => scopeFor(c.id).length > 0),
         totalBudget,
       );
+      cappedOut = skipped;
       for (const connector of effectiveConnectors) {
         if (input.signal.aborted) break;
         ranConnectorIds.push(connector.id);
@@ -1760,6 +1763,9 @@ export class AnalysisOrchestrator {
           OR: [{ connectorId: null }, { connectorId: { in: ranConnectorIds } }],
         },
       });
+    }
+    if (!input.signal.aborted && connectors.length > 0) {
+      await this.refreshSkippedRepos(input.analysisId, connectors, ranConnectorIds, cappedOut);
     }
 
     const last = results[results.length - 1];
@@ -2059,6 +2065,48 @@ export class AnalysisOrchestrator {
       ...capability,
       skippedRepos: remaining,
       reasons: deriveCapabilityReasons({ ...capability, skippedRepos: remaining }),
+    });
+  }
+
+  /**
+   * #1981 — after a code regenerate, `skippedRepos` names the repositories the
+   * analysis still has no code pass for: the ones this pass's budget cap left
+   * out, and the ones an earlier run skipped that this pass did not run (a
+   * continuation re-runs only those with something unreached). One it ran, or
+   * one since deleted, is no longer skipped. Before, an analysis recorded
+   * before #1974 with `skippedRepos=[primary]` still said the primary was
+   * skipped after a regenerate analysed it. Best-effort, like every
+   * capability write; no write when nothing changed.
+   */
+  private async refreshSkippedRepos(
+    analysisId: string,
+    connectors: ReadonlyArray<{ id: string; label: string }>,
+    ranConnectorIds: readonly string[],
+    cappedOut: ReadonlyArray<{ id: string }>,
+  ): Promise<void> {
+    let capability: AnalysisCapability | null;
+    try {
+      capability = await getAnalysisCapability(analysisId);
+    } catch (err) {
+      log.warn("Capability read failed", { analysisId, error: (err as Error).message });
+      return;
+    }
+    if (!capability) return;
+    // A stored record is JSON, read unchecked; the resume pre-flight reads it the same way.
+    const prev = capability.skippedRepos ?? [];
+    const ran = new Set(ranConnectorIds);
+    const skipped = new Set([...prev.map((r) => r.connectorId), ...cappedOut.map((c) => c.id)]);
+    const next: AnalysisSkippedRepo[] = connectors
+      .filter((c) => skipped.has(c.id) && !ran.has(c.id))
+      .map((c) => ({ connectorId: c.id, label: c.label }));
+    const same =
+      next.length === prev.length &&
+      next.every((r, i) => r.connectorId === prev[i].connectorId && r.label === prev[i].label);
+    if (same) return;
+    await this.persistAndEmitCapability(analysisId, {
+      ...capability,
+      skippedRepos: next,
+      reasons: deriveCapabilityReasons({ ...capability, skippedRepos: next }),
     });
   }
 
