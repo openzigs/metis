@@ -548,6 +548,25 @@ describe("toMarkdownReport", () => {
     );
   });
 
+  it("marks a pass cell ‡ from the broken-claim flag, not from the presence of a note (#2032)", async () => {
+    const report = await runGoverningEval(corpus, {
+      arms: [fakeArm("A0", resemblingOnly)],
+      runs: 1,
+      budget: new EvalBudget(100),
+      provider: fakeProvider(),
+    });
+    const thresholds = report.arms[0]!.thresholds;
+    const recall = thresholds.find((t) => t.bar === "overallRecall")!;
+    const precision = thresholds.find((t) => t.bar === "precision")!;
+    // A judged bar may carry an explanatory note without any claim behind it.
+    recall.note = "measured on one run only";
+    delete recall.brokenClaim;
+    precision.brokenClaim = true;
+    const md = toMarkdownReport(report);
+    expect(md).toMatch(/\| A0 \| overallRecall \| ≥ 0\.90 \| [\d.]+ \| (?:yes|\*\*no\*\*) \|/);
+    expect(md).toMatch(/\| A0 \| precision \| ≥ 0\.60 \| [\d.]+ \| (?:yes|\*\*no\*\*)‡ \|/);
+  });
+
   it("states the metrics, the bars, the review status, the screen size and each arm's configuration", async () => {
     const report = await runGoverningEval(corpus, {
       arms: [fakeArm("A0", resemblingOnly)],

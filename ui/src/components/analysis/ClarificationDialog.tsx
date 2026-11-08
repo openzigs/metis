@@ -23,16 +23,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 /**
- * Issue #1104 (finding C) — read-only Q&A transcript of every answered round.
- * Answers come from the question's own `answer` field, falling back to the
- * round's `answers[]` for rounds persisted before the server stamped them.
+ * Issue #1104 (finding C) — every answered round's answered questions, as
+ * {@link AnsweredRounds} shows them. Answers come from the question's own
+ * `answer` field, falling back to the round's `answers[]` for rounds persisted
+ * before the server stamped them.
  */
-export function AnsweredRounds({
-  state,
-}: {
-  state: ClarificationStatePayload;
-}): React.ReactElement | null {
-  const rounds = state.rounds
+function answeredRounds(state: ClarificationStatePayload) {
+  return state.rounds
     .map((round) => {
       // Rounds persisted by older builds may carry neither array.
       const byId = new Map((round.answers ?? []).map((a) => [a.questionId, a.answer]));
@@ -42,6 +39,28 @@ export function AnsweredRounds({
       return { round: round.round, answered };
     })
     .filter((r) => r.answered.length > 0);
+}
+
+/**
+ * #2032 — the ids of the questions {@link ClarificationDialogPanel} renders
+ * with a `#clarify-question-<id>` anchor: the current round's questions while
+ * clarification is open, and every answered question once it is complete.
+ * An earlier round's question is not on the page while a later round is open.
+ */
+export function renderedClarifyingQuestionIds(state: ClarificationStatePayload): Set<string> {
+  const questions = state.completed
+    ? answeredRounds(state).flatMap((r) => r.answered)
+    : (state.rounds[state.rounds.length - 1]?.questions ?? []);
+  return new Set(questions.map((q) => q.id));
+}
+
+/** Issue #1104 (finding C) — read-only Q&A transcript of every answered round. */
+export function AnsweredRounds({
+  state,
+}: {
+  state: ClarificationStatePayload;
+}): React.ReactElement | null {
+  const rounds = answeredRounds(state);
 
   if (rounds.length === 0) return null;
 

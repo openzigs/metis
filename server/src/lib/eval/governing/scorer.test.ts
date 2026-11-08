@@ -329,6 +329,8 @@ describe("checkThresholds", () => {
       note: "never says compliant",
     });
     expect(byBar.citationAccuracy).toMatchObject({ pass: null, note: "only verified citations" });
+    // A claim that holds is not a broken one (#2032).
+    expect(fixed.some((c) => c.brokenClaim)).toBe(false);
     // A bar the arm can fail is still judged.
     expect(byBar.overallRecall).toMatchObject({ pass: true });
     expect(byBar.overallRecall).not.toHaveProperty("note");
@@ -367,6 +369,9 @@ describe("checkThresholds", () => {
     expect(byBar.maxNoEvidenceCompliantErrors!.note).toMatch(
       /^claimed fixed by construction \(never says compliant\), but measured otherwise$/,
     );
+    // #2032 — the report's ‡ reads this flag, not the note.
+    expect(byBar.maxNoEvidenceCompliantErrors!.brokenClaim).toBe(true);
+    expect(byBar.overallRecall).not.toHaveProperty("brokenClaim");
     expect(byBar.citationAccuracy).toMatchObject({ pass: false, measured: "0.50" });
 
     // Each claim is checked on its own, in every run.
