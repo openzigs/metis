@@ -279,6 +279,10 @@ export async function chatProviderForSession(session: {
  * #1842 — a TOOL LOOP re-sends its transcript on every call, so there the
  * native Anthropic path also caches the messages: see
  * {@link chatToolLoopPromptCaching}, applied by the tool-loop branches below.
+ * #1863 — except on the loop's native tool-free final-answer retry, which drops the
+ * messages breakpoint again (`runAgentLoop`, `analysis/agent-loop.ts`): it is
+ * sent with `tool_choice: none`, which invalidates the cached messages, so the
+ * breakpoint could only re-write the transcript at the write premium.
  */
 export const CHAT_CACHE_OPTS = {
   callType: "chat",
@@ -1828,6 +1832,11 @@ export function aiRouter(): Router {
           // uses. The served id (an alias, a profile ARN, a gateway rewrite) can
           // differ, and an entry keyed on it could never be found again.
           // #1865 — only the content version can have moved during the turn.
+          // #1944 — the check compares the version at the end of the turn with
+          // the one at its start, so a version that moves and moves back within
+          // the turn (a change and its undo) passes it: the answer is stored
+          // under a version it may have read through. Accepted while the cache
+          // is off by default.
           if (await contentVersionUnchanged(cacheScope)) {
             await semanticCache.store(cacheQuery, cacheScope, outContent);
           }

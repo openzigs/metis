@@ -4,5 +4,6 @@ section: Fixed
 ---
 
 - The semantic answer cache (off by default) reads the project's content version before it retrieves
-  context, so an answer retrieved from content that changed during the turn is never stored. It now
-  tries an exact repeat before embedding the question.
+  context, and does not store an answer when the content version at the end of the turn differs
+  from the one at its start. Content that changes and changes back during a turn is not detected.
+  It now tries an exact repeat before embedding the question.
