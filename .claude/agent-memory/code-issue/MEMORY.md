@@ -4,7 +4,6 @@ Entries are capped at 150 bytes and the whole file at 17,500 (`pnpm agents:verif
 Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never loaded.
 
 - [Module wiring needs the smoke](project_module-wiring-needs-the-image-smoke.md) — import-order bugs pass unit tests (#55, #60)
-- [A run outruns its service](project_coverage-run-spans-more-phases-than-the-service.md) — bill from `task-runner.ts` phases (#72)
 - [vi.mock + double traps](project_whole-module-vi-mock-stubs-500-at-runtime.md) — importOriginal; default params; beforeEach return; honour select
 - [Row matchers drop scope](project_row-matchers-drop-scope-assertions.md) — the columns the matcher omits stop being asserted (#94)
 - [Scratch, stash, worktree hygiene](project_parallel-agents-share-scratch-and-browser.md) — issue-named files; script files for git; no symlinks
@@ -129,4 +128,4 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Lance filters after top-k](project_lance-filters-after-topk.md) — filtered search returns <k; test on real Lance (#1917)
 - [Stacked PR squash conflicts](project_stacked-pr-squash-conflicts.md) — keep HEAD; union scripts/exports
 - [Borrow/governing lessons](project_review-lessons-borrowed-and-governing.md) — filter before dedupe; regex FNs; sibling merged?
-
+- [Time keys, re-seed, CI misreads](project_time-window-keys-reseed-states-ci-signals.md) — now-window key reverts; test mid states; neutral CodeQL
