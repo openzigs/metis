@@ -18,6 +18,7 @@ import {
   policyKnowledge,
   projectNameOf,
   readWebFindings,
+  replayAnswers,
   topKRules,
 } from "./arms.js";
 import { resolveFinalAnswerMaxOutputTokens } from "../../analysis/agent-runner.js";
@@ -550,6 +551,214 @@ describe("A4 — production findings (#1874)", () => {
     );
     expect(out.judgements.find((j) => j.ruleId === top[1])).toBeUndefined();
     expect(out.diagnostics).toMatchObject({ applicable: 2, unverifiedCitations: 0 });
+    // GR-01 has no short-answer pair: nothing is replayed (#2033).
+    expect(out.answered).toBeUndefined();
+    expect(out.diagnostics).not.toHaveProperty("answersReplayed");
+  });
+
+  describe("replaying a short BA answer (#2033)", () => {
+    // GR-11: "Are any of those emails part of a dispute or lawsuit the legal
+    // team has asked us to preserve?" — "No.", which MEETS DR-06.
+    const item = () => itemById("GR-11");
+    const QUESTION =
+      "Are any of those emails part of a dispute or lawsuit the legal team has asked us to preserve?";
+    const excerpt = () => corpus.ruleById.get("DR-06")!.clause.split(/\s+/).slice(0, 8).join(" ");
+    /** A3 for GR-11: the screen flags DR-06, the judge says it is uncertain, every top-k rule does not apply. */
+    const applicability = () => {
+      const i = item();
+      const top = topKRules(corpus, `${i.title}\n\n${i.text}`, 2)
+        .map((r) => r.id)
+        .filter((id) => id !== "DR-06");
+      return [
+        JSON.stringify({ rules: [handle("DR-06")] }),
+        JSON.stringify({
+          decisions: [
+            ...top.map((id) => ({ rule: handle(id), verdict: "does-not-apply", reason: "No." })),
+            {
+              rule: handle("DR-06"),
+              verdict: "uncertain",
+              reason: "Depends on a hold.",
+              businessFact: "Is any of it under a legal hold?",
+            },
+          ],
+        }),
+      ];
+    };
+    const compliantReply = (satisfiedBy: string) =>
+      JSON.stringify({
+        findings: [
+          {
+            rule: "R1",
+            status: "compliant",
+            reasoning: "None is held.",
+            excerpt: excerpt(),
+            satisfiedBy,
+          },
+        ],
+      });
+
+    it("settles the uncertain rule with the answer, then judges its finding on the question and answer", async () => {
+      const { provider, calls } = stubProvider([
+        ...applicability(),
+        // Production's settle: the answered rule re-judged with the question and answer.
+        JSON.stringify({
+          decisions: [{ rule: "R1", verdict: "applies", reason: "Purges records." }],
+        }),
+        compliantReply("the legal team has asked us to preserve? No."),
+      ]);
+      const [a4] = buildGoverningArms(["A4"], { model: "m", topK: 2 });
+      expect(a4!.replaysAnswers).toBe(true);
+      expect(a4!.configuration.answerReplay).toMatch(/rejudgeAnswered/);
+      const out = await a4!.assess(item(), corpus, { provider });
+      // Screen, judge, settle, findings: no findings call before the answer (DR-06 is uncertain).
+      expect(calls).toHaveLength(4);
+      const settle = String(calls[2]!.messages[0]!.content);
+      expect(settle).toContain(`A business analyst was asked: ${QUESTION}\nTheir answer: No.`);
+      const findings = String(calls[3]!.messages[0]!.content);
+      expect(findings).toContain(`A business analyst was asked: ${QUESTION}\nTheir answer: No.`);
+      // The reading before the answer is unchanged: DR-06 still asks.
+      expect(out.judgements).toEqual([
+        expect.objectContaining({ ruleId: "DR-06", verdict: "needs-ba-input" }),
+      ]);
+      // After it, the short answer quoted with its question is evidence, so compliant stands.
+      expect(out.answered).toEqual({
+        judgements: [
+          {
+            ruleId: "DR-06",
+            verdict: "compliant",
+            citation: { ruleId: "DR-06", excerpt: expect.stringContaining("legal hold") },
+          },
+        ],
+      });
+      expect(out.diagnostics).toMatchObject({
+        answersReplayed: 1,
+        answersSettled: 1,
+        answeredNoEvidenceDemoted: 0,
+      });
+    });
+
+    it("lets the evidence rule demote a compliant that quotes only the question", async () => {
+      const { provider } = stubProvider([
+        ...applicability(),
+        JSON.stringify({
+          decisions: [{ rule: "R1", verdict: "applies", reason: "Purges records." }],
+        }),
+        compliantReply("the legal team has asked us to preserve"),
+      ]);
+      const [a4] = buildGoverningArms(["A4"], { model: "m", topK: 2 });
+      const out = await a4!.assess(item(), corpus, { provider });
+      expect(out.answered!.judgements.map((j) => j.verdict)).toEqual(["gap"]);
+      expect(out.diagnostics).toMatchObject({ answeredNoEvidenceDemoted: 1 });
+    });
+
+    it("gives no finding when the answer settles the rule as not applying", async () => {
+      const { provider, calls } = stubProvider([
+        ...applicability(),
+        JSON.stringify({
+          decisions: [{ rule: "R1", verdict: "does-not-apply", reason: "No hold." }],
+        }),
+      ]);
+      const [a4] = buildGoverningArms(["A4"], { model: "m", topK: 2 });
+      const out = await a4!.assess(item(), corpus, { provider });
+      expect(calls).toHaveLength(3);
+      expect(out.answered).toEqual({ judgements: [] });
+      expect(out.diagnostics).toMatchObject({ answersReplayed: 1, answersSettled: 1 });
+    });
+
+    it("keeps the reading before the answer when the replay throws, and says why", async () => {
+      const replies = [...applicability(), "{}"];
+      let n = 0;
+      const provider = {
+        key: "anthropic",
+        model: "stub-model",
+        offline: false,
+        async chat(): Promise<ChatResponse> {
+          n++;
+          // The settle swallows a failed call; the findings call after it does not.
+          if (n === 4) throw new Error("provider down\n  at the findings call");
+          const content =
+            n === 3
+              ? JSON.stringify({ decisions: [{ rule: "R1", verdict: "applies", reason: "r" }] })
+              : replies[n - 1]!;
+          return {
+            content,
+            model: "stub-model",
+            provider: "anthropic",
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          };
+        },
+      } as unknown as AIProvider;
+      const [a4] = buildGoverningArms(["A4"], { model: "m", topK: 2 });
+      const out = await a4!.assess(item(), corpus, { provider });
+      expect(out.judgements.map((j) => j.ruleId)).toEqual(["DR-06"]);
+      expect(out.answered).toEqual({ judgements: [], error: "provider down at the findings call" });
+    });
+
+    it("judges an answered rule applicability already applies with the answer, without a settle", async () => {
+      const { provider, calls } = stubProvider([
+        compliantReply("the legal team has asked us to preserve? No."),
+      ]);
+      const applicabilityRules = corpusApplicabilityRules(corpus);
+      const res = await replayAnswers({
+        item: item(),
+        corpus,
+        decisions: [
+          {
+            ruleId: "DR-06",
+            controlId: "DR-06",
+            verdict: "applies",
+            reason: "r",
+            foundBy: ["screen"],
+          },
+          {
+            ruleId: "DR-01",
+            controlId: "DR-01",
+            verdict: "applies",
+            reason: "r",
+            foundBy: ["top-k"],
+          },
+        ],
+        applicabilityRules,
+        findingRules: corpusFindingRules(corpus),
+        provider,
+      });
+      // One findings call, over the answered rule only: DR-01 has no answer to replay.
+      expect(calls).toHaveLength(1);
+      const prompt = String(calls[0]!.messages[0]!.content);
+      expect(prompt).toContain("Their answer: No.");
+      expect(prompt).toContain("[DR-06]");
+      expect(prompt).not.toContain("[DR-01]");
+      expect(res.answered.judgements.map((j) => [j.ruleId, j.verdict])).toEqual([
+        ["DR-06", "compliant"],
+      ]);
+      expect(res.diagnostics).toEqual({
+        answersReplayed: 1,
+        answersSettled: 0,
+        answeredNoEvidenceDemoted: 0,
+      });
+    });
+
+    it("replays nothing an arm did not find: a rule applicability dropped is a miss", async () => {
+      const { provider, calls } = stubProvider(["{}"]);
+      const res = await replayAnswers({
+        item: item(),
+        corpus,
+        decisions: [
+          {
+            ruleId: "DR-06",
+            controlId: "DR-06",
+            verdict: "does-not-apply",
+            reason: "r",
+            foundBy: ["top-k"],
+          },
+        ],
+        applicabilityRules: corpusApplicabilityRules(corpus),
+        findingRules: corpusFindingRules(corpus),
+        provider,
+      });
+      expect(calls).toHaveLength(0);
+      expect(res.answered).toEqual({ judgements: [] });
+    });
   });
 
   it("readFindings: a dropped citation is no citation", () => {

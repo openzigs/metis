@@ -21,13 +21,20 @@
  *   - **A4 — production findings (#1874):** A3, then
  *     `evaluateRequirementFindings` over every pair that applies or may apply:
  *     Compliant / Gap / Needs BA input, cited to a clause verified against the
- *     policy text, with the no-evidence rule enforced in code.
+ *     policy text, with the no-evidence rule enforced in code. #2033 — then,
+ *     on a requirement with short-answer pairs, the BA's answers replayed
+ *     ({@link replayAnswers}) and the findings after them returned apart.
  *
  * Retrieval is lexical (production's BM25 options over the committed text), so
  * every arm runs offline apart from its model calls. Arms are chosen only by
  * `--arms`, never by an environment flag.
  */
-import { ANALYSIS_RETRIEVE_K, type AgentOutput, type RetrievedChunk } from "@metis/shared";
+import {
+  ANALYSIS_RETRIEVE_K,
+  type AgentOutput,
+  type GoverningAnalysisApplicability,
+  type RetrievedChunk,
+} from "@metis/shared";
 import type { AIProvider, ChatMessage } from "../../ai/types.js";
 import {
   extractJsonObject,
@@ -42,11 +49,14 @@ import {
   runGroundedRetrieval,
   type GroundedSearchSource,
 } from "../../analysis/retrieval.js";
+import type { ClarifyingQuestion } from "../../analysis/types/requirements.js";
 import {
   decideApplicability,
   type ApplicabilityRule,
   type ApplicabilitySet,
+  type RuleApplicability,
 } from "../../governing/applicability.js";
+import { rejudgeAnswered } from "../../governing/applicability-questions.js";
 import { locateClause } from "../../governing/clause-verify.js";
 import {
   evaluateRequirementFindings,
@@ -59,6 +69,7 @@ import { chunkMarkdown } from "../../rag/chunker.js";
 import {
   GOVERNING_VERDICTS,
   ruleIdsIn,
+  shortAnswerPairs,
   type GoverningCorpus,
   type GoverningItem,
   type GoverningRule,
@@ -68,6 +79,7 @@ import {
   MIN_EXCERPT_WORDS,
   citationVerified,
   stripRuleMarker,
+  type AnsweredOutput,
   type ByConstruction,
   type GoverningArmOutput,
   type GoverningJudgement,
@@ -81,6 +93,11 @@ export interface GoverningArm {
   configuration: Record<string, string | number | boolean>;
   /** The metrics this arm fixes by construction; their bars are reported `n/a`. */
   byConstruction?: ByConstruction;
+  /**
+   * #2033 — the arm replays each short-answer pair's BA answer and returns its
+   * findings after it (`answered`), so the report gives those pairs their own row.
+   */
+  replaysAnswers?: boolean;
   assess(
     item: GoverningItem,
     corpus: GoverningCorpus,
@@ -645,18 +662,149 @@ export function readFindings(report: Pick<FindingsReport, "findings">): Governin
   };
 }
 
+/** The finding pairs of `decisions`: every rule that applies or may apply, and is citable. */
+function findingPairs(
+  decisions: readonly RuleApplicability[],
+  rules: ReadonlyMap<string, FindingRule>,
+): FindingPair[] {
+  const pairs: FindingPair[] = [];
+  for (const d of decisions) {
+    const rule = rules.get(d.ruleId);
+    if (d.verdict === "does-not-apply" || !rule) continue;
+    pairs.push({
+      rule,
+      applicability: d.verdict,
+      ...(d.businessFact ? { businessFact: d.businessFact } : {}),
+    });
+  }
+  return pairs;
+}
+
+/** What {@link replayAnswers} reads: A4's applicability for one requirement. */
+export interface ReplayAnswersInput {
+  item: GoverningItem;
+  corpus: GoverningCorpus;
+  /** A3's decisions for the requirement, before any answer. */
+  decisions: readonly RuleApplicability[];
+  applicabilityRules: readonly ApplicabilityRule[];
+  findingRules: ReadonlyMap<string, FindingRule>;
+  provider: AIProvider;
+}
+
+/**
+ * #2033 — replay a requirement's short-answer pairs as a BA answering them
+ * would: each pair's `businessFact` is the question and its `baAnswer` the
+ * answer. Only the BA's side is read from the labels, never a verdict.
+ *
+ *   1. An answered rule applicability left `uncertain` is re-judged by
+ *      production's settle (`rejudgeAnswered`, #1873), with the question and
+ *      answer added to the requirement, as an analysis re-judges it once the
+ *      BA answers. Without this its finding would stay Needs BA input whatever
+ *      the answer said (`evaluateRequirementFindings` judges no `uncertain` pair).
+ *   2. `evaluateRequirementFindings` then runs over the answered rules that
+ *      still apply or may apply, with every answer, so the evidence rule
+ *      (`evidenceIsPresent`) reads the short answers with their questions.
+ *
+ * An answered rule applicability did not find, or the settle dropped, gets no
+ * finding: a miss. A throw is returned as `error`, so the reading before the
+ * answers is kept.
+ */
+export async function replayAnswers(
+  input: ReplayAnswersInput,
+): Promise<{ answered: AnsweredOutput; diagnostics: Record<string, number> }> {
+  const { item, corpus, provider } = input;
+  const replay = shortAnswerPairs(item);
+  const text = requirementText(item);
+  const decisions = new Map(input.decisions.map((d) => [d.ruleId, d]));
+  let settled = 0;
+  let demoted = 0;
+  try {
+    const open = replay.filter((p) => decisions.get(p.ruleId)?.verdict === "uncertain");
+    if (open.length > 0) {
+      const questions: ClarifyingQuestion[] = open.map((p, i) => ({
+        id: `${item.id}:answer-${i + 1}`,
+        requirementId: item.id,
+        ambiguityField: "governing",
+        question: p.question,
+        context: "",
+        answer: p.answer,
+        governing: { kind: "governing", requirementId: item.id, ruleIds: [p.ruleId] },
+      }));
+      const stored: GoverningAnalysisApplicability = {
+        decidedAt: new Date(0).toISOString(),
+        requirements: [{ requirementId: item.id, text, decisions: [...decisions.values()] }],
+      };
+      const settlements = await rejudgeAnswered(
+        questions,
+        stored,
+        new Map(input.applicabilityRules.map((r) => [r.id, r])),
+        { provider },
+      );
+      for (const s of settlements) {
+        const d = decisions.get(s.ruleId);
+        if (!d) continue;
+        decisions.set(s.ruleId, { ...d, verdict: s.verdict, reason: s.reason });
+        if (s.verdict !== "uncertain") settled++;
+      }
+    }
+    const answeredRules = new Set(replay.map((p) => p.ruleId));
+    const pairs = findingPairs(
+      [...decisions.values()].filter((d) => answeredRules.has(d.ruleId)),
+      input.findingRules,
+    );
+    let judgements: GoverningJudgement[] = [];
+    if (pairs.length > 0) {
+      const report = await evaluateRequirementFindings({
+        requirement: { id: item.id, text },
+        answers: replay.map((p) => ({ question: p.question, answer: p.answer })),
+        pairs,
+        revisionText: () => corpus.policyText,
+        provider,
+      });
+      judgements = readFindings(report).judgements;
+      demoted = report.noEvidenceDemoted;
+    }
+    return {
+      answered: { judgements },
+      diagnostics: {
+        answersReplayed: replay.length,
+        answersSettled: settled,
+        answeredNoEvidenceDemoted: demoted,
+      },
+    };
+  } catch (err) {
+    return {
+      answered: {
+        judgements: [],
+        // One line, bounded, as the runner keeps an arm's own failure.
+        error: (err instanceof Error ? err.message : String(err))
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 300),
+      },
+      diagnostics: {
+        answersReplayed: replay.length,
+        answersSettled: settled,
+        answeredNoEvidenceDemoted: 0,
+      },
+    };
+  }
+}
+
 /**
  * A4 — production findings (#1874): A3's applicability, then
  * `evaluateRequirementFindings` over every pair that applies or may apply —
  * Compliant / Gap / Needs BA input, the no-evidence rule and the citation
  * check enforced in code. Its hard errors are the no-evidence → compliant
- * count (#1874's bar: 0).
+ * count (#1874's bar: 0). #2033 — on a requirement with short-answer pairs,
+ * the BA's answers are then replayed ({@link replayAnswers}).
  */
 export function createA4Arm(deps: GoverningArmDeps): GoverningArm {
   const topK = deps.topK ?? DEFAULT_RULE_TOP_K;
   return {
     id: "A4",
     label: "A4 — production findings: A3's applicability, then cited per-rule findings",
+    replaysAnswers: true,
     configuration: {
       searcher: "production BM25 options (createInMemoryBM25) over rule id + summary",
       topK,
@@ -664,35 +812,29 @@ export function createA4Arm(deps: GoverningArmDeps): GoverningArm {
       findings:
         "evaluateRequirementFindings: compliant only with quoted evidence; excerpt verified inside the rule's clause",
       reading: "readFindings: status as verdict, the verified clause as citation",
+      answerReplay:
+        "short-answer pairs: businessFact asked, baAnswer given; an uncertain rule settled by rejudgeAnswered, then evaluateRequirementFindings over the answered rules with the answers",
       model: deps.model,
     },
     async assess(item, corpus, { provider }) {
       const text = requirementText(item);
+      const applicabilityRules = corpusApplicabilityRules(corpus);
       const set = await decideApplicability({
         requirement: { id: item.id, text },
-        rules: corpusApplicabilityRules(corpus),
+        rules: applicabilityRules,
         provider,
         retrieve: async (query, k) => topKRules(corpus, query, k).map((r) => r.id),
         topK,
       });
-      const rules = corpusFindingRules(corpus);
-      const pairs: FindingPair[] = [];
-      for (const d of set.decisions) {
-        const rule = rules.get(d.ruleId);
-        if (d.verdict === "does-not-apply" || !rule) continue;
-        pairs.push({
-          rule,
-          applicability: d.verdict,
-          ...(d.businessFact ? { businessFact: d.businessFact } : {}),
-        });
-      }
+      const findingRules = corpusFindingRules(corpus);
+      const pairs = findingPairs(set.decisions, findingRules);
       const report = await evaluateRequirementFindings({
         requirement: { id: item.id, text },
         pairs,
         revisionText: () => corpus.policyText,
         provider,
       });
-      return {
+      const out: GoverningArmOutput = {
         ...readFindings(report),
         diagnostics: {
           candidates: set.candidates,
@@ -700,6 +842,20 @@ export function createA4Arm(deps: GoverningArmDeps): GoverningArm {
           unverifiedCitations: report.unverifiedCitations,
           noEvidenceDemoted: report.noEvidenceDemoted,
         },
+      };
+      if (shortAnswerPairs(item).length === 0) return out;
+      const replay = await replayAnswers({
+        item,
+        corpus,
+        decisions: set.decisions,
+        applicabilityRules,
+        findingRules,
+        provider,
+      });
+      return {
+        ...out,
+        answered: replay.answered,
+        diagnostics: { ...out.diagnostics, ...replay.diagnostics },
       };
     },
   };

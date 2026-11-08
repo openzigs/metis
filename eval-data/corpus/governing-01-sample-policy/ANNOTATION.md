@@ -74,6 +74,31 @@ Silence is never `compliant`. The scorer counts a `compliant` answer on a `gap` 
   information it shows. None touches personal, payment or financial data, access, or a
   production change process.
 
+## Short-answer pairs (#2033)
+
+Seven `needs-ba-input` pairs carry the short answer a BA would give to their
+`businessFact` (`baAnswer`) and the verdict that answer leads to (`answeredVerdict`).
+`pnpm eval:governing` replays each answer into the findings arm and scores the finding
+after it against `answeredVerdict`, in its own row of the report. The pair's own verdict
+stays `needs-ba-input`: the answer is what a BA would supply, not what the requirement says.
+
+| Pair | Answer | Verdict once answered |
+|---|---|---|
+| GR-06 → VM-01 | "Yes, it has." | `compliant` |
+| GR-08 → PR-05 | "No." | `gap` |
+| GR-09 → EN-01 | "Yes, it is." | `compliant` |
+| GR-11 → DR-06 | "No." | `compliant` |
+| GR-14 → AL-06 | "No." | `gap` |
+| GR-20 → CM-02 | "No." | `gap` |
+| GR-21 → CM-03 | "Yes, there is." | `compliant` |
+
+**GR-11 is the polarity case.** Its question asks whether any of the emails is under a
+legal hold, so "No." *meets* DR-06. Every other question here asks whether the rule is
+met, so "Yes" meets it. A prompt line about answer polarity is to be iterated against
+this row, on this set only, never on `governing-02` (#2033). The answers and their verdicts were written in #2033 by
+a `claude-opus-5-5` session that had read the findings prompt, so they are not blind to
+it. This set is the tuning set, so that matters less here than it would on `governing-02`.
+
 ## The non-resembling subset
 
 A pair labelled `nonResembling` is one where the rule applies although the requirement

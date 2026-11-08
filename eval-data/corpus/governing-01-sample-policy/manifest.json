@@ -312,7 +312,9 @@
           "ruleId": "VM-01",
           "verdict": "needs-ba-input",
           "nonResembling": true,
-          "businessFact": "Has SurveyCo passed the supplier security review and signed the data protection agreement?"
+          "businessFact": "Has SurveyCo passed the supplier security review and signed the data protection agreement?",
+          "baAnswer": "Yes, it has.",
+          "answeredVerdict": "compliant"
         },
         {
           "ruleId": "VM-03",
@@ -350,7 +352,9 @@
           "ruleId": "PR-05",
           "verdict": "needs-ba-input",
           "nonResembling": true,
-          "businessFact": "Will a mum, dad or carer confirm each junior sign-up before it is accepted?"
+          "businessFact": "Will a mum, dad or carer confirm each junior sign-up before it is accepted?",
+          "baAnswer": "No.",
+          "answeredVerdict": "gap"
         }
       ]
     },
@@ -375,7 +379,9 @@
           "ruleId": "EN-01",
           "verdict": "needs-ba-input",
           "nonResembling": true,
-          "businessFact": "Is the connection to FastShip's booking system secured end to end?"
+          "businessFact": "Is the connection to FastShip's booking system secured end to end?",
+          "baAnswer": "Yes, it is.",
+          "answeredVerdict": "compliant"
         }
       ]
     },
@@ -394,7 +400,9 @@
           "ruleId": "DR-06",
           "verdict": "needs-ba-input",
           "nonResembling": true,
-          "businessFact": "Are any of those emails part of a dispute or lawsuit the legal team has asked us to preserve?"
+          "businessFact": "Are any of those emails part of a dispute or lawsuit the legal team has asked us to preserve?",
+          "baAnswer": "No.",
+          "answeredVerdict": "compliant"
         }
       ]
     },
@@ -425,7 +433,9 @@
         {
           "ruleId": "AL-06",
           "verdict": "needs-ba-input",
-          "businessFact": "Will the till keep the original price, the overridden price and the supervisor's name for each override?"
+          "businessFact": "Will the till keep the original price, the overridden price and the supervisor's name for each override?",
+          "baAnswer": "No.",
+          "answeredVerdict": "gap"
         }
       ]
     },
@@ -474,7 +484,9 @@
         {
           "ruleId": "CM-02",
           "verdict": "needs-ba-input",
-          "businessFact": "Are the Friday fixes tried anywhere other than the live site before they go out?"
+          "businessFact": "Are the Friday fixes tried anywhere other than the live site before they go out?",
+          "baAnswer": "No.",
+          "answeredVerdict": "gap"
         }
       ]
     },
@@ -487,7 +499,9 @@
         {
           "ruleId": "CM-03",
           "verdict": "needs-ba-input",
-          "businessFact": "Is there a written way to roll back an emergency fix if it makes things worse?"
+          "businessFact": "Is there a written way to roll back an emergency fix if it makes things worse?",
+          "baAnswer": "Yes, there is.",
+          "answeredVerdict": "compliant"
         }
       ]
     },
