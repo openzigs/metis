@@ -649,6 +649,68 @@ describe("listGoverningFindings — the wire shape", () => {
   });
 });
 
+describe("decideGoverningFinding — the decider is read inside its transaction (#2032)", () => {
+  it("looks the decider's name up through the transaction client, never the global one", async () => {
+    const { decideGoverningFinding } = await import("./findings-store.js");
+    const at = new Date("2026-11-08T00:00:00.000Z");
+    const stored = {
+      id: "gf1",
+      analysisId: "a",
+      requirementId: "REQ-001",
+      ruleId: "r1",
+      revisionId: "rev",
+      revisionLabel: "v1",
+      documentTitle: "Doc",
+      controlId: "C-1",
+      clauseRef: "§1",
+      status: "gap",
+      reasoning: "r",
+      clauseStart: null,
+      clauseEnd: null,
+      clauseExcerpt: null,
+      citationDropped: false,
+      modelStatus: null,
+      businessQuestion: null,
+      decision: null,
+      decisionNote: null,
+      decidedById: null,
+      decidedAt: null,
+      createdAt: at,
+      updatedAt: at,
+    };
+    const tx = {
+      governingFinding: {
+        findFirst: vi.fn().mockResolvedValue(stored),
+        update: vi.fn(async ({ data }: { data: object }) => ({ ...stored, ...data })),
+      },
+      auditLog: { create: vi.fn() },
+      user: {
+        findMany: vi.fn().mockResolvedValue([{ id: "u1", displayName: "Ada", username: "ada" }]),
+      },
+    };
+    db.$transaction.mockImplementationOnce(async (fn: (t: unknown) => unknown) => fn(tx));
+    const out = await decideGoverningFinding({
+      analysisId: "a",
+      findingId: "gf1",
+      decision: "rejected",
+      note: "  out of scope  ",
+      decidedById: "u1",
+      now: at,
+    });
+    expect(out).toMatchObject({
+      decision: "rejected",
+      decisionNote: "out of scope",
+      decidedByName: "Ada",
+    });
+    expect(tx.user.findMany).toHaveBeenCalledWith({
+      where: { id: { in: ["u1"] } },
+      select: { id: true, displayName: true, username: true },
+    });
+    // The global client would take a second pooled connection mid-transaction.
+    expect(db.user.findMany).not.toHaveBeenCalled();
+  });
+});
+
 describe("governingFindingRevisions (#1876)", () => {
   const f = (over: Partial<GoverningFinding>): GoverningFinding =>
     ({

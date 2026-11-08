@@ -358,6 +358,11 @@ export interface ThresholdCheck {
   /** Null when the arm cannot fail the bar by construction (`note` says why). */
   pass: boolean | null;
   note?: string;
+  /**
+   * #2032 — the arm claims this bar's metric fixed by construction, but the
+   * run measured otherwise, so the bar is judged. The report marks it ‡.
+   */
+  brokenClaim?: true;
 }
 
 /** The metric each bar reads, where an arm may fix that metric by construction. */
@@ -438,6 +443,7 @@ export function checkThresholds(
     return {
       ...c,
       note: `claimed fixed by construction (${byConstruction[metric]}), but measured otherwise`,
+      brokenClaim: true,
     };
   });
 }

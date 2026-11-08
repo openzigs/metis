@@ -21,6 +21,7 @@ import {
   type GoverningFindingDecision,
   type GoverningFindingStatus,
 } from "@metis/shared";
+import type { Prisma } from "@prisma/client";
 import type { AIProvider } from "../ai/types.js";
 import { buildAuditLogData, SYSTEM_ACTOR_ID } from "../audit/audit-service.js";
 import { createChildLogger } from "../logger.js";
@@ -376,11 +377,20 @@ function oneOf<T extends string>(list: readonly T[], v: string | null): T | null
  * analysis view shows who rejected a finding. The display name, or the
  * username when it is blank; a user who no longer exists is left out, so the
  * finding reads `decidedByName: null` and keeps its `decidedById`.
+ *
+ * #2032 — inside a transaction, pass its client as `db`. The global client
+ * would ask the pool for a second connection while the transaction holds one,
+ * and concurrent decisions on Postgres then wait on each other until the pool
+ * is exhausted and the transactions time out (P2028). See `rag/reindex-lease.ts`,
+ * "NEVER touch the pool from inside someone else's transaction".
  */
-async function deciderNames(rows: readonly Row[]): Promise<Map<string, string>> {
+async function deciderNames(
+  rows: readonly Row[],
+  db: Pick<Prisma.TransactionClient, "user"> = prisma,
+): Promise<Map<string, string>> {
   const ids = [...new Set(rows.flatMap((r) => (r.decidedById ? [r.decidedById] : [])))];
   if (ids.length === 0) return new Map();
-  const users = await prisma.user.findMany({
+  const users = await db.user.findMany({
     where: { id: { in: ids } },
     select: { id: true, displayName: true, username: true },
   });
@@ -531,6 +541,6 @@ export async function decideGoverningFinding(input: {
         },
       }),
     });
-    return toWire(updated, await deciderNames([updated]));
+    return toWire(updated, await deciderNames([updated], tx));
   });
 }
