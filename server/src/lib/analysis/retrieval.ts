@@ -340,8 +340,10 @@ export const GOVERNING_APPLICABILITY_UNDECIDED =
  * #2016 — once `signal` (the one the hook's calls run under) is aborted, the
  * workers stop: no further requirement is retrieved, embedded or judged, and
  * the requirement whose call the abort failed is not logged as undecided.
- * Requirements never reached carry no `governing` set; an aborted run's result
- * is never joined, so nothing reads them.
+ * Requirements never reached carry no `governing` set, so an aborted result is
+ * partial: it is never stored. #2022 — a run that ends before the join never
+ * reads it, and the join skips the store when the cancel landed while it was
+ * waiting for it.
  */
 export async function attachGoverningApplicability(
   evidence: RequirementEvidence[],

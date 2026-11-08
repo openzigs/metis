@@ -444,6 +444,63 @@ describe("produceGoverningFindingsForAnalysis — edges", () => {
     expect(governingFindingsRefreshing("a_other")).toBe(false);
   });
 
+  it("#2022 — a run cancelled while queued rejects at once and evaluates nothing; the run behind it still waits its turn", async () => {
+    const order: string[] = [];
+    const release: Array<() => void> = [];
+    evaluateRequirementFindings.mockImplementation(async (i: { requirement: { id: string } }) => {
+      order.push(`start ${i.requirement.id}`);
+      await new Promise<void>((r) => release.push(r));
+      order.push(`end ${i.requirement.id}`);
+      return { findings: [], unverifiedCitations: 0, noEvidenceDemoted: 0 };
+    });
+    const run = (requirementIds: string[], signal?: AbortSignal) =>
+      produceGoverningFindingsForAnalysis({
+        analysisId: "a_queued_abort",
+        projectId: "p",
+        provider,
+        applicability: STORED,
+        requirementIds,
+        ...(signal ? { signal } : {}),
+      });
+    const controller = new AbortController();
+    const first = run(["REQ-001"]);
+    const cancelled = run(["REQ-003"], controller.signal);
+    const third = run(["REQ-003"]);
+    await vi.waitFor(() => expect(release).toHaveLength(1));
+    controller.abort(Object.assign(new Error("aborted"), { name: "AbortError" }));
+    // Rejected while the first run is still in flight, not after it.
+    await expect(cancelled).rejects.toThrow("aborted");
+    expect(order).toEqual(["start REQ-001"]);
+    // The run behind the cancelled one did not jump ahead of the first.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(order).toEqual(["start REQ-001"]);
+    expect(governingFindingsRefreshing("a_queued_abort")).toBe(true);
+    release.shift()!();
+    await first;
+    await vi.waitFor(() => expect(release).toHaveLength(1));
+    release.shift()!();
+    await third;
+    expect(order).toEqual(["start REQ-001", "end REQ-001", "start REQ-003", "end REQ-003"]);
+    expect(evaluateRequirementFindings).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(governingFindingsRefreshing("a_queued_abort")).toBe(false));
+  });
+
+  it("#2022 — a run whose signal is already aborted evaluates nothing", async () => {
+    const controller = new AbortController();
+    controller.abort(Object.assign(new Error("aborted"), { name: "AbortError" }));
+    await expect(
+      produceGoverningFindingsForAnalysis({
+        analysisId: "a_pre_aborted",
+        projectId: "p",
+        provider,
+        applicability: STORED,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("aborted");
+    expect(evaluateRequirementFindings).not.toHaveBeenCalled();
+    expect(readGoverningApplicability).not.toHaveBeenCalled();
+  });
+
   it("#2017 — a failed run does not stop the next one queued behind it", async () => {
     evaluateRequirementFindings.mockResolvedValue({
       findings: [],
