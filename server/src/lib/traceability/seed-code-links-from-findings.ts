@@ -547,7 +547,24 @@ export async function seedRequirementCodeLinksFromFindings(
     // could stamp the guess `fresh`. A bound row no current citation binds,
     // naming a symbol the span was ambiguous between, is rewritten in place
     // as that file-level link (keeping its id and its stored order, #1818).
+    // #1989 — a heuristic, not proof: a row an earlier run bound to its own
+    // symbol, whose citation has since left the evidence, matches every
+    // criterion too, so a rewrite does not show the row was a guess.
     const unclaimedBound = existing.filter((e) => e.codeSymbolId && !candidates.has(seedKey(e)));
+    /** Take the unclaimed bound row a candidate's ambiguous span could have been guessed as. */
+    const takeGuess = (key: string, filePath: string) => {
+      const guesses = guessesByKey.get(key);
+      const guessed = guesses
+        ? unclaimedBound.find((e) => e.filePath === filePath && guesses.has(e.codeSymbolId!))
+        : undefined;
+      if (guessed) unclaimedBound.splice(unclaimedBound.indexOf(guessed), 1);
+      return guessed;
+    };
+    const rowScope = {
+      requirementId,
+      projectId: input.projectId,
+      source: ANALYSIS_GROUNDING_SOURCE,
+    };
 
     let seededAny = false;
     let unboundAny = false;
@@ -555,6 +572,17 @@ export async function seedRequirementCodeLinksFromFindings(
     for (const [key, candidate] of candidates) {
       if (existingKeys.has(key)) {
         linksSkipped += 1;
+        // #1989 — the file-level link is already there beside the guess (the
+        // state #1981 describes): a rewrite would duplicate it, so the guess
+        // goes, and the next re-ingest cannot stamp it `fresh`.
+        const guessed = takeGuess(key, candidate.filePath);
+        if (guessed) {
+          await prisma.requirementCodeMapping.deleteMany({
+            where: { id: guessed.id, ...rowScope },
+          });
+          linksUnbound += 1;
+          unboundAny = true;
+        }
         continue;
       }
       const link = {
@@ -574,19 +602,10 @@ export async function seedRequirementCodeLinksFromFindings(
         freshness: candidate.codeGraphId ? "fresh" : "unverified",
         validatedAt: candidate.codeGraphId ? validatedAt : null,
       };
-      const guesses = guessesByKey.get(key);
-      const guessed = guesses
-        ? unclaimedBound.find((e) => e.filePath === link.filePath && guesses.has(e.codeSymbolId!))
-        : undefined;
+      const guessed = takeGuess(key, link.filePath);
       if (guessed) {
-        unclaimedBound.splice(unclaimedBound.indexOf(guessed), 1);
         await prisma.requirementCodeMapping.updateMany({
-          where: {
-            id: guessed.id,
-            requirementId,
-            projectId: input.projectId,
-            source: ANALYSIS_GROUNDING_SOURCE,
-          },
+          where: { id: guessed.id, ...rowScope },
           data: {
             ...link,
             // The guess's validation history does not describe this link.
