@@ -239,3 +239,18 @@ describe("#1117 D — answers stay on screen across a submit", () => {
     );
   });
 });
+
+describe("#1876 — each question is an in-page anchor", () => {
+  it("an open question and an answered one both carry clarify-question-<id>, the governing panel's link target", () => {
+    const { unmount } = renderPanel(state());
+    expect(document.getElementById("clarify-question-q_dsa")).toHaveTextContent("About dsa?");
+    unmount();
+    renderPanel(
+      state({
+        completed: true,
+        rounds: [{ round: 1, questions: [question("dsa", "Yes.")], answers: [] }],
+      }),
+    );
+    expect(document.getElementById("clarify-question-q_dsa")).toHaveTextContent("About dsa?");
+  });
+});

@@ -54,9 +54,18 @@ const ANCHOR_TABS: Record<string, AnalysisTab> = {
   "#clarifying-questions": "questions",
 };
 
+/** #1876 — one clarifying question's anchor (`#clarify-question-<id>`), in the Questions tab. */
+const CLARIFY_QUESTION_ANCHOR_PREFIX = "#clarify-question-";
+
 /** The tab an in-page `href` points into, or null when it is not one of ours. */
 export function tabForAnchor(href: string | null | undefined): AnalysisTab | null {
   if (!href) return null;
+  if (
+    href.startsWith(CLARIFY_QUESTION_ANCHOR_PREFIX) &&
+    href.length > CLARIFY_QUESTION_ANCHOR_PREFIX.length
+  ) {
+    return "questions";
+  }
   return ANCHOR_TABS[href] ?? null;
 }
 

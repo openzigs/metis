@@ -2754,13 +2754,23 @@ decision on that row is audited the same way before the delete (#2017).
 - `GET /api/projects/:projectId/analyses/:id/governing-findings` returns the findings and their
   counts, and `refreshing`: true while a findings run of the analysis is in flight or queued (the
   run's own production at its join as well as a refresh a BA answer started), so a client fetches
-  again once it reads false (#2017).
+  again once it reads false (#2017). `revisions` lists each policy revision the findings cite with
+  its rule count (live rules, plus any cited rule deleted since), for the summary sentence (#1876).
 - `POST …/governing-findings/:findingId/decision` takes `{ decision: accepted|rejected, note }`
   (`governingFindingDecisionInputSchema`, strict) and needs `analysis.run`.
-- The decider is the session user. A body that names one is a 400.
+- The decider is the session user. A body that names one is a 400. Each finding carries
+  `decidedByName` (the decider's display name, or null) beside `decidedById` (#1876).
 - A finding is looked up **with** its analysis id, so another analysis's finding is a 404.
 - An `AuditLog` row (`governing.finding.decision`, target `governing_finding`) is written in the
   same transaction as the decision.
+
+**Analysis view** (#1876): `GoverningFindingsPanel`
+(`ui/src/components/analysis/governing-findings-panel.tsx`), at the foot of the Findings tab,
+groups the findings by requirement and heads them with one `governingSummarySentence` (#1875) per
+cited revision. A 404 or an empty list renders nothing. Accept / Reject re-reads the findings
+rather than updating them optimistically. A `needs-ba-input` finding links to
+`#clarify-question-<id>`, the clarifying question whose `governing` link (#1873) names its
+requirement and rule, or to the Questions tab when there is none.
 
 Eval arm **A4** (`pnpm eval:governing --arm A4`) runs A3's applicability and then these findings
 over the #1867 corpus.
