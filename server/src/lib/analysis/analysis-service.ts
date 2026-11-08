@@ -940,6 +940,17 @@ export function resolveFindingProvenance(finding: { derivation?: unknown; confid
   return { derivation, confidence };
 }
 
+/**
+ * Issue #2018 — the deadline on the `"supersede"` transaction. Prisma's
+ * interactive-transaction defaults (5 s `timeout`, 2 s `maxWait`) are an OLTP
+ * budget, and this one inserts a large code pass's findings one row at a time,
+ * possibly behind another SQLite writer. Rolling it back fails the resume and
+ * throws away a completed, already-paid pass, so it gets the same order of
+ * budget as `replaceRequirements` (60 s), and room to wait for a busy writer.
+ * A backstop against a hung transaction, not a performance target.
+ */
+export const SUPERSEDE_TRANSACTION_OPTIONS = { timeout: 60_000, maxWait: 30_000 } as const;
+
 export async function persistAgentResult(
   input: PersistAgentResultInput,
 ): Promise<PersistedAgentResult> {
@@ -960,14 +971,14 @@ export async function persistAgentResult(
   // one of them left the other's findings doubled beside the new ones.
   //
   // Issue #2011 — `mode: "supersede"` runs that delete and the write below in
-  // one transaction.
+  // one transaction. #2018 — under an explicit deadline, not Prisma's default.
   const mode = input.mode ?? "replace";
   const { persisted, refusedMetrics } =
     mode === "supersede"
       ? await prisma.$transaction(async (tx) => {
           await deleteAgentResultsInScope(tx, input);
           return writeAgentResult(tx, input);
-        })
+        }, SUPERSEDE_TRANSACTION_OPTIONS)
       : await (async () => {
           if (mode === "replace") await deleteAgentResultsInScope(prisma, input);
           return writeAgentResult(prisma, input);
