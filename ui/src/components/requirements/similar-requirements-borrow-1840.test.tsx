@@ -387,9 +387,11 @@ describe("Start from these citations (#1840)", () => {
 
   /**
    * #1990 — a list still on its first fetch as the borrow answers, which then
-   * settles while the borrow's refresh of the code links is held open.
+   * settles while the borrow's refresh of the code links is held open. `answers` and
+   * `fails` race a list that does not list this requirement; `answersListingSelf` races
+   * one that does, which the borrow must still refetch.
    */
-  async function raceSettlingDuringRefresh(settle: "answers" | "fails") {
+  async function raceSettlingDuringRefresh(settle: "answers" | "answersListingSelf" | "fails") {
     let answerChain!: () => void;
     server.chainAfterBorrow = new Promise((resolve) => (answerChain = resolve));
     let answerRacing!: (v: { items: SimilarRequirementItem[] }) => void;
@@ -398,12 +400,12 @@ describe("Start from these citations (#1840)", () => {
       answerRacing = resolve;
       failRacing = reject;
     });
-    // The racing card lists other requirements only: a borrow into this one changes nothing in it.
+    // Unless it settles as `answersListingSelf`, the racing card lists other requirements
+    // only: a borrow into this one changes nothing in it.
+    const listsSelf = { ...LOT, requirementId: SELF, key: "REQ-1", title: "Recall a batch" };
     const unrelated = [{ ...LOT, requirementId: "r-lot" }];
-    server.otherLists = {
-      "r-other": [{ ...LOT, requirementId: SELF, key: "REQ-1", title: "Recall a batch" }],
-      "r-racing": unrelated,
-    };
+    const racingItems = settle === "answersListingSelf" ? [listsSelf] : unrelated;
+    server.otherLists = { "r-other": [listsSelf], "r-racing": racingItems };
     const fetches = (id: string) =>
       apiFetch.mock.calls.filter(([path]) => path === `/projects/${P}/requirements/${id}/similar`)
         .length;
@@ -422,9 +424,13 @@ describe("Start from these citations (#1840)", () => {
     await waitFor(() => expect(toast.success).toHaveBeenCalled());
 
     const racing = screen.getAllByTestId("similar-requirements")[2]!;
-    if (settle === "answers") {
-      answerRacing({ items: unrelated });
-      expect(await within(racing).findByText(/Lot tracking for recalls/)).toBeInTheDocument();
+    if (settle !== "fails") {
+      answerRacing({ items: racingItems });
+      expect(
+        await within(racing).findByText(
+          settle === "answers" ? /Lot tracking for recalls/ : /Recall a batch/,
+        ),
+      ).toBeInTheDocument();
     } else {
       failRacing(new Error("Similar requirements are down"));
       expect(
@@ -439,6 +445,11 @@ describe("Start from these citations (#1840)", () => {
   it("does not refetch a raced list whose first fetch answered during the refresh (#1990)", async () => {
     const { fetches } = await raceSettlingDuringRefresh("answers");
     expect(fetches("r-racing")).toBe(1);
+  });
+
+  it("still refetches a raced list that answered during the refresh and lists the requirement (#1990)", async () => {
+    const { fetches } = await raceSettlingDuringRefresh("answersListingSelf");
+    await waitFor(() => expect(fetches("r-racing")).toBe(2));
   });
 
   it("does not refetch a raced list whose first fetch failed during the refresh (#1990)", async () => {
