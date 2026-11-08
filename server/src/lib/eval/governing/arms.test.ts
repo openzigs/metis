@@ -5,6 +5,8 @@ import {
   GOVERNING_ARM_IDS,
   buildGoverningArms,
   buildJudgePrompt,
+  corpusApplicabilityRules,
+  readApplicabilitySet,
   buildScreenPrompt,
   measureScreenPromptSizes,
   parseGoverningArmIds,
@@ -74,11 +76,13 @@ describe("parseGoverningArmIds", () => {
   it("defaults to A0, upper-cases, deduplicates and orders", () => {
     expect(parseGoverningArmIds(undefined)).toEqual(["A0"]);
     expect(parseGoverningArmIds("a2, a0,A2")).toEqual(["A0", "A2"]);
-    expect(GOVERNING_ARM_IDS).toEqual(["A0", "A1", "A2"]);
+    expect(GOVERNING_ARM_IDS).toEqual(["A0", "A1", "A2", "A3"]);
   });
 
   it("refuses an unknown or empty arm list", () => {
-    expect(() => parseGoverningArmIds("A0,A9")).toThrow(/unknown arm\(s\) A9; known: A0, A1, A2/);
+    expect(() => parseGoverningArmIds("A0,A9")).toThrow(
+      /unknown arm\(s\) A9; known: A0, A1, A2, A3/,
+    );
     expect(() => parseGoverningArmIds(" , ")).toThrow(/needs an arm id/);
   });
 });
@@ -399,14 +403,94 @@ describe("prompts and the screen's size", () => {
 
 describe("the arms do not read an environment flag", () => {
   it("builds the same configuration whatever GOVERNING_* says", () => {
-    const before = buildGoverningArms(["A0", "A1", "A2"], { model: "m" }).map(
+    const before = buildGoverningArms(["A0", "A1", "A2", "A3"], { model: "m" }).map(
       (a) => a.configuration,
     );
     vi.stubEnv("GOVERNING_DOCS_ENABLED", "true");
-    const after = buildGoverningArms(["A0", "A1", "A2"], { model: "m" }).map(
+    const after = buildGoverningArms(["A0", "A1", "A2", "A3"], { model: "m" }).map(
       (a) => a.configuration,
     );
     vi.unstubAllEnvs();
     expect(after).toEqual(before);
+  });
+});
+
+describe("A3 — production applicability (#1872)", () => {
+  const handle = (id: string) => `R${corpus.rules.findIndex((r) => r.id === id) + 1}`;
+
+  it("runs decideApplicability: top-k plus the screen, reading applies as gap and uncertain as needs-ba-input", async () => {
+    const item = itemById("GR-01");
+    const top = topKRules(corpus, `${item.title}\n\n${item.text}`, 2).map((r) => r.id);
+    expect(top).not.toContain("AL-02"); // top-k alone misses the non-resembling rule
+    const { provider, calls } = stubProvider([
+      JSON.stringify({ rules: [handle("AL-02")] }),
+      JSON.stringify({
+        decisions: [
+          { rule: handle(top[0]!), verdict: "applies", reason: "Reads it." },
+          { rule: handle(top[1]!), verdict: "does-not-apply", reason: "Unrelated." },
+          {
+            rule: handle("AL-02"),
+            verdict: "uncertain",
+            reason: "Depends.",
+            businessFact: "Is each download attributed?",
+          },
+        ],
+      }),
+    ]);
+    const [a3] = buildGoverningArms(["A3"], { model: "m", topK: 2 });
+    const out = await a3!.assess(item, corpus, { provider });
+    expect(calls).toHaveLength(2);
+    const screen = String(calls[0]!.messages[0]!.content);
+    for (const r of corpus.rules) expect(screen).toContain(`[${r.id}]: ${r.summary}`);
+    expect(new Set(out.judgements.map((j) => j.ruleId))).toEqual(new Set([top[0]!, "AL-02"]));
+    expect(out.judgements.find((j) => j.ruleId === top[0])).toEqual({
+      ruleId: top[0],
+      verdict: "gap",
+    });
+    expect(out.judgements.find((j) => j.ruleId === "AL-02")).toEqual({
+      ruleId: "AL-02",
+      verdict: "needs-ba-input",
+      businessFact: "Is each download attributed?",
+    });
+    expect(out.diagnostics).toEqual({
+      candidates: 3,
+      screened: corpus.rules.length,
+      screenBatches: 1,
+      reasked: 0,
+      screenOnly: 1,
+    });
+  });
+
+  it("declares the metrics an applicability-only reading fixes", () => {
+    const [a3] = buildGoverningArms(["A3"], { model: "anthropic/stub-model" });
+    expect(Object.keys(a3!.byConstruction ?? {}).sort()).toEqual([
+      "citationAccuracy",
+      "hardErrors",
+    ]);
+    expect(a3!.configuration.model).toBe("anthropic/stub-model");
+  });
+
+  it("readApplicabilitySet drops does-not-apply; corpus rules map one to one", () => {
+    expect(
+      readApplicabilitySet({
+        decisions: [
+          {
+            ruleId: "A",
+            controlId: "A",
+            verdict: "does-not-apply",
+            reason: "",
+            foundBy: ["top-k"],
+          },
+          { ruleId: "B", controlId: "B", verdict: "uncertain", reason: "", foundBy: ["screen"] },
+        ],
+      }).judgements,
+    ).toEqual([{ ruleId: "B", verdict: "needs-ba-input" }]);
+    expect(corpusApplicabilityRules(corpus)[0]).toEqual({
+      id: corpus.rules[0]!.id,
+      revisionId: corpus.name,
+      controlId: corpus.rules[0]!.id,
+      summary: corpus.rules[0]!.summary,
+      clauseExcerpt: corpus.rules[0]!.clause,
+    });
   });
 });
