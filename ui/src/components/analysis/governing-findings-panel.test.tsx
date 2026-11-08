@@ -273,6 +273,98 @@ describe("GoverningFindingsPanel (#1876)", () => {
     ).toBeNull();
   });
 
+  it("#2032 — another BA's decision, read on a refetch, replaces an untouched note", async () => {
+    const user = userEvent.setup();
+    server.findings[1] = {
+      ...server.findings[1]!,
+      decision: "accepted",
+      decisionNote: "Grace's first note.",
+      decidedByName: "Grace",
+    };
+    const qc = mount();
+    const gap = await screen.findByRole("article", { name: "RT-01: Gap" });
+    const note = within(gap).getByLabelText("Note for RT-01 (optional)");
+    expect(note).toHaveValue("Grace's first note.");
+
+    // Grace decides again from her own session; this panel refetches.
+    server.findings[1] = {
+      ...server.findings[1]!,
+      decision: "rejected",
+      decisionNote: "Grace's second note.",
+    };
+    await act(async () => {
+      await qc.invalidateQueries();
+    });
+    await waitFor(() => expect(note).toHaveValue("Grace's second note."));
+
+    // Rejecting now sends her current note, not the copy seeded at mount.
+    await user.click(within(gap).getByRole("button", { name: "Reject" }));
+    await waitFor(() =>
+      expect(server.requests.filter((r) => r.method === "POST").map((r) => r.body)).toEqual([
+        { decision: "rejected", note: "Grace's second note." },
+      ]),
+    );
+  });
+
+  it("#2032 — a note the BA is typing survives a refetch, and after their decision the server's copy shows", async () => {
+    const user = userEvent.setup();
+    const qc = mount();
+    const gap = await screen.findByRole("article", { name: "RT-01: Gap" });
+    const note = within(gap).getByLabelText("Note for RT-01 (optional)");
+    await user.type(note, "Mine.");
+
+    server.findings[1] = {
+      ...server.findings[1]!,
+      decision: "accepted",
+      decisionNote: "Theirs.",
+      decidedByName: "Grace",
+    };
+    await act(async () => {
+      await qc.invalidateQueries();
+    });
+    await within(gap).findByText(/by Grace/);
+    expect(note).toHaveValue("Mine.");
+
+    await user.click(within(gap).getByRole("button", { name: "Reject" }));
+    await within(gap).findByText(/by Ada Lovelace/);
+    expect(note).toHaveValue("Mine.");
+    // No longer typed over: the next decision from elsewhere shows again.
+    server.findings[1] = { ...server.findings[1]!, decisionNote: "Theirs again." };
+    await act(async () => {
+      await qc.invalidateQueries();
+    });
+    await waitFor(() => expect(note).toHaveValue("Theirs again."));
+  });
+
+  it("#2032 — two revisions whose sentences read the same are both shown, keyed by revision", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    server.findings = [
+      finding({ id: "gf-a", ruleId: "rule-a", revisionId: "rev-1", status: "compliant" }),
+      finding({ id: "gf-b", ruleId: "rule-b", revisionId: "rev-2", status: "compliant" }),
+    ];
+    server.revisions = [
+      {
+        revisionId: "rev-1",
+        documentTitle: "Information Handling Policy",
+        revisionLabel: "v3",
+        rules: 5,
+      },
+      {
+        revisionId: "rev-2",
+        documentTitle: "Information Handling Policy",
+        revisionLabel: "v3",
+        rules: 5,
+      },
+    ];
+    mount();
+    expect(await screen.findAllByRole("article", { name: "X-1: Compliant" })).toHaveLength(2);
+    const sentences = screen.getAllByTestId("governing-summary-sentence");
+    expect(sentences).toHaveLength(2);
+    expect(sentences[0]!.textContent).toBe(sentences[1]!.textContent);
+    expect(errors.mock.calls.flat().join(" ")).not.toMatch(/same key/);
+    errors.mockRestore();
+  });
+
   it("an accept with no note sends no note, and the panel shows the server's state once it answers", async () => {
     const user = userEvent.setup();
     mount();
@@ -501,8 +593,16 @@ describe("governingSummarySentences", () => {
         },
       ]),
     ).toEqual([
-      "1 gap found against 2 of 12 applicable rules in Information Handling Policy v3; 1 rule needs BA input. Not an audit opinion.",
-      "No gaps found against 1 of 1 applicable rule in Retention Standard v1. Not an audit opinion.",
+      {
+        revisionId: "rev-1",
+        sentence:
+          "1 gap found against 2 of 12 applicable rules in Information Handling Policy v3; 1 rule needs BA input. Not an audit opinion.",
+      },
+      {
+        revisionId: "rev-9",
+        sentence:
+          "No gaps found against 1 of 1 applicable rule in Retention Standard v1. Not an audit opinion.",
+      },
     ]);
   });
 
@@ -515,7 +615,12 @@ describe("governingSummarySentences", () => {
         ],
         [{ revisionId: "rev-1", documentTitle: "P", revisionLabel: "v3", rules: 1 }],
       ),
-    ).toEqual(["No gaps found against 2 of 2 applicable rules in P v3. Not an audit opinion."]);
+    ).toEqual([
+      {
+        revisionId: "rev-1",
+        sentence: "No gaps found against 2 of 2 applicable rules in P v3. Not an audit opinion.",
+      },
+    ]);
   });
 });
 
@@ -554,6 +659,25 @@ describe("clarifyingQuestionHref", () => {
     const s = state([[link("q-old", ["r1"])], [link("q-new", ["r0", "r1"])]]);
     expect(clarifyingQuestionHref({ requirementId: "REQ-001", ruleId: "r1" }, s)).toBe(
       clarifyQuestionAnchor("q-new"),
+    );
+  });
+
+  it("#2032 — an earlier round's question is not rendered while a later round is open: the Questions tab", () => {
+    const s = state([[link("q-old", ["r1"])], [link("q-other", ["r9"])]]);
+    expect(clarifyingQuestionHref({ requirementId: "REQ-001", ruleId: "r1" }, s)).toBe(
+      CLARIFYING_QUESTIONS_ANCHOR,
+    );
+  });
+
+  it("#2032 — once complete, an answered question of any round is rendered; an unanswered one is not", () => {
+    const answered = { ...link("q-old", ["r1"]), answer: "Yes, monthly." };
+    const done = { ...state([[answered], [link("q-new", ["r2"])]]), completed: true };
+    expect(clarifyingQuestionHref({ requirementId: "REQ-001", ruleId: "r1" }, done)).toBe(
+      clarifyQuestionAnchor("q-old"),
+    );
+    // q-new was never answered, so the complete view does not show it.
+    expect(clarifyingQuestionHref({ requirementId: "REQ-001", ruleId: "r2" }, done)).toBe(
+      CLARIFYING_QUESTIONS_ANCHOR,
     );
   });
 

@@ -5,11 +5,13 @@
  * `helpers/write-conflict-retry-1959-suite.ts` for what it proves and how the
  * conflicts are injected.
  *
- * Here the last case is a real race: two first sign-ins of one user run their
- * role reconciliation on separate pooled connections, both reading "no roles"
- * before either writes. Postgres aborts one (40001, which the pg adapter
- * surfaces as `TransactionWriteConflict`); before #1959 that was a 500 at
- * sign-in, and now its retry sees the winner's grant.
+ * Here the last case is a real race: the first sign-ins of two DIFFERENT users
+ * run their role reconciliation on separate pooled connections, both reading
+ * "no roles" before either writes. They share only `user_roles` index pages,
+ * yet Postgres's SSI can abort one (40001, which the pg adapter surfaces as
+ * `TransactionWriteConflict`); before #1959 that was a 500 at sign-in, and now
+ * its retry lands, so both users end with their provider grant. (Two first
+ * sign-ins of the SAME user collide on the unique key instead — a P2002, #1971.)
  *
  * Gated like the other `*-postgres.integration.test.ts` suites: runs only when
  * `RUN_INTEGRATION_TESTS=1` AND `DATABASE_URL` is Postgres-shaped.

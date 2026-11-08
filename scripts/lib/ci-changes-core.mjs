@@ -82,6 +82,8 @@ export const POSTGRES_PATTERNS = Object.freeze([
   "server/src/lib/connectors/connector-secret-binding.ts",
   "server/src/lib/connectors/network-allowlist.ts",
   "server/src/lib/connectors/repo/repo-service.ts",
+  // #2032 — governing-decision-pool-2032-postgres runs the real decision transaction.
+  "server/src/lib/governing/findings-store.ts",
   "server/src/lib/mcp/secret-binding.ts",
   "server/src/lib/mcp/status-rooms.ts",
   // #1703 — product-edge-sync-1703-postgres runs the real edge sync.

@@ -715,9 +715,9 @@ export function toMarkdownReport(report: GoverningReport): string {
   lines.push("| Arm | Bar | Required | Measured | Pass |", "|---|---|---|---|---|");
   for (const a of report.arms) {
     for (const t of a.thresholds) {
-      // A judged bar carries a note only when it broke a by-construction claim (#1932).
+      // ‡ marks a judged bar whose by-construction claim broke (#1932, #2032).
       const pass =
-        t.pass === null ? "n/a†" : `${t.pass ? "yes" : "**no**"}${t.note === undefined ? "" : "‡"}`;
+        t.pass === null ? "n/a†" : `${t.pass ? "yes" : "**no**"}${t.brokenClaim ? "‡" : ""}`;
       lines.push(`| ${a.id} | ${t.bar} | ${t.required} | ${t.measured} | ${pass} |`);
     }
   }

@@ -38,6 +38,7 @@ import { prisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { foldIdentity, isNfkcStable } from "./bootstrap-admins.js";
 import { directoryNameSubject } from "./identity-subject.js";
+import { signInConflict } from "./sign-in-errors.js";
 
 /** The provider kinds that sign users in. */
 export type LoginProviderKind = "mock" | "ldap" | "oidc" | "saml";
@@ -77,7 +78,6 @@ export interface LoginUserRow {
 
 export const ACCOUNT_LINK_REQUIRED = "ACCOUNT_LINK_REQUIRED";
 export const ACCOUNT_DISABLED = "ACCOUNT_DISABLED";
-export const SIGN_IN_CONFLICT = "SIGN_IN_CONFLICT";
 
 /** Why a username match was refused. */
 export type IdentityConflict = "other_provider" | "other_subject" | "unverified_email";
@@ -276,19 +276,6 @@ function refuse(
   throw new AppError(409, ACCOUNT_LINK_REQUIRED, message, { reason });
 }
 
-/**
- * #1959 — every attempt lost a write conflict. Transient, and no account
- * conflict, so it is not audited as one.
- */
-export function signInConflict(): AppError {
-  return new AppError(
-    503,
-    SIGN_IN_CONFLICT,
-    "This sign-in collided with others made at the same moment and was not completed. " +
-      "Try signing in again.",
-  );
-}
-
 function refuseInactive(identity: ExternalIdentity, profile: LoginProfile, userId: string): never {
   auditRefusal("account_inactive", identity, profile, userId);
   throw new AppError(403, ACCOUNT_DISABLED, "This account is disabled.");
@@ -436,6 +423,14 @@ export async function resolveLoginUser(input: {
   const { identity, profile, primaryKind } = input;
   // A write conflict rolled the claim back: run the whole resolution again. It
   // re-reads the rows, so a racer that won is judged like any other existing row.
+  //
+  // The real bound (#1977): `attempt()` runs `resolveOnce` up to
+  // WRITE_CONFLICT_ATTEMPTS (3) times, and is itself called a second time only
+  // when the first ends in a unique violation — so one sign-in runs
+  // `resolveOnce` at most 6 times, each opening at most one serializable claim
+  // transaction. The caller then runs `reconcileTrustedLoginRole`, its own
+  // retry loop of up to 3 transactions: at most 9 serializable transactions and
+  // three backoff loops (each under 100 ms of jittered waiting) per sign-in.
   const attempt = () =>
     retryOnWriteConflict(() => resolveOnce(identity, profile, primaryKind), {
       exhausted: signInConflict,

@@ -319,16 +319,31 @@ export const SHORT_SUBJECT_WORDS: ReadonlySet<string> = new Set([
 /**
  * The endings folded onto a short subject word: plural, past, -ing and -ation
  * (#1920), so `logs`, `logged`, `logging`, `taxation` and `keyed` meet `log`,
- * `tax` and `key`; and the derived -ment, -er and -able (#1932), so `payment`,
- * `payer`, `logger` and `taxable` meet `pay`, `log` and `tax`.
+ * `tax` and `key`; the derived -ment, -er and -able (#1932), so `payment`,
+ * `payer`, `logger` and `taxable` meet `pay`, `log` and `tax`; and the plural
+ * -ables and the -ee (#2032), so `payables`, `taxables` and `payee` do too.
  */
-const SHORT_WORD_INFLECTION = /(?:ations?|ings?|ments?|ers?|able|ed|e?s)$/;
+const SHORT_WORD_INFLECTION = /(?:ations?|ings?|ments?|ers?|ables?|ees?|ed|e?s)$/;
 
 /** #1932 — irregular forms no ending reaches. */
 const SHORT_WORD_IRREGULAR: ReadonlyMap<string, string> = new Map([["paid", "pay"]]);
 
+/**
+ * #2032 — prefixes cut before a short subject word is looked for, so `unpaid`,
+ * `prepaid`, `repayment`, `overtaxed` and `nonpayment` meet `pay` and `tax`.
+ */
+const SHORT_WORD_PREFIX = /^(?:non|over|pre|re|under|un)/;
+
+/**
+ * #2032 — the second halves of a compound that starts with a short subject
+ * word: `payroll`, `payslip`, `paycheck`, `logbook`, `logfile`, `keystore`,
+ * `keychain`, `keypair`. Listed, not guessed: `logistics` and `taxonomy` also
+ * start with a short word, and are not about it.
+ */
+const SHORT_WORD_TAIL = /^(?:books?|chains?|checks?|cheques?|files?|pairs?|rolls?|slips?|stores?)$/;
+
 /** A short subject word `raw` is, or is an inflection of; undefined when none. */
-function shortSubjectWord(raw: string): string | undefined {
+function inflectedShortWord(raw: string): string | undefined {
   const irregular = SHORT_WORD_IRREGULAR.get(raw);
   if (irregular !== undefined) return irregular;
   const stem = raw.replace(SHORT_WORD_INFLECTION, "");
@@ -337,6 +352,30 @@ function shortSubjectWord(raw: string): string | undefined {
     if (SHORT_SUBJECT_WORDS.has(base)) return base;
   }
   return undefined;
+}
+
+/**
+ * The short subject words `raw` carries: as a word or its inflection, behind a
+ * prefix (`unpaid`), or as a compound of a short word and either another one
+ * (`taxpayer` carries `tax` and `pay`) or a listed tail (`payroll`).
+ */
+function shortSubjectWords(raw: string): string[] {
+  const found = new Set<string>();
+  for (const word of new Set([raw, raw.replace(SHORT_WORD_PREFIX, "")])) {
+    const whole = inflectedShortWord(word);
+    if (whole !== undefined) {
+      found.add(whole);
+      continue;
+    }
+    for (const base of SHORT_SUBJECT_WORDS) {
+      if (!word.startsWith(base) || word.length === base.length) continue;
+      const rest = word.slice(base.length);
+      const other = inflectedShortWord(rest);
+      if (other !== undefined) found.add(base).add(other);
+      else if (SHORT_WORD_TAIL.test(rest)) found.add(base);
+    }
+  }
+  return [...found];
 }
 
 /**
@@ -349,8 +388,7 @@ function shortSubjectWord(raw: string): string | undefined {
 export function contentStems(text: string): Set<string> {
   const out = new Set<string>();
   for (const raw of text.toLowerCase().split(/[^a-z0-9]+/)) {
-    const short = shortSubjectWord(raw);
-    if (short !== undefined) out.add(short);
+    for (const short of shortSubjectWords(raw)) out.add(short);
     if (raw.length < 4 || STOP_WORDS.has(raw)) continue;
     out.add(raw.slice(0, 5));
   }
