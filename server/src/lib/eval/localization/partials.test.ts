@@ -386,6 +386,15 @@ describe("configuration checks (#1800)", () => {
       "A0",
       "A4",
     ]);
+    // #1933 — per corpus, not their union: a corpus that recorded nothing lists no arm.
+    expect(
+      await store.recordedArmIdsByCorpus([corpus.name, "localization-01-miniflux-heldout"]),
+    ).toEqual(
+      new Map([
+        [corpus.name, ["A0", "A4"]],
+        ["localization-01-miniflux-heldout", []],
+      ]),
+    );
     const { fingerprint, checkpoint } = await store.openForMerge(corpus);
     await expect(
       recordedArms(fingerprint)[0]!.localize(corpus.manifest.items[0]!, corpus),

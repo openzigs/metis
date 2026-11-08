@@ -196,6 +196,17 @@ export async function loadStalenessPatchSets(
   return out;
 }
 
+/**
+ * #1933 — the patch sets a run reads: none, and no directory read, when no arm
+ * applies a patch (A7R, A7RD alone re-ingest at the pin).
+ */
+export async function stalenessPatchSetsFor(
+  patches: boolean,
+  dir: string = stalenessPatchDir(),
+): Promise<Map<string, StalenessPatchSet>> {
+  return patches ? loadStalenessPatchSets(dir) : new Map();
+}
+
 /** One digest over every patch set: a resume or merge under other patches is refused. */
 export function patchSetsDigest(sets: ReadonlyMap<string, StalenessPatchSet>): string {
   return stableDigest([...sets.entries()].sort(([a], [b]) => a.localeCompare(b)));
@@ -772,6 +783,20 @@ export async function withStalePatch<R, T>(
   }
   if (failures.length > 0) throw new StalenessRestoreError(failures);
   return outcome.value;
+}
+
+/**
+ * #1925, #1933 — every repository a corpus materialized, for the no-op
+ * re-ingest; a corpus with none is refused: re-ingesting nothing would read
+ * A7R/A7RD as A7K.
+ */
+export function materializedReposOf<R>(
+  states: ReadonlyMap<string, { repos: readonly R[] }>,
+  corpus: string,
+): readonly R[] {
+  const repos = states.get(corpus)?.repos;
+  if (!repos || repos.length === 0) throw new Error(`${corpus} is not materialized`);
+  return repos;
 }
 
 /**

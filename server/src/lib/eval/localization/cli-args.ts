@@ -61,35 +61,43 @@ export function referenceArmIds(argv: readonly string[]): string[] {
   return ids;
 }
 
-/**
- * #1819 — the `--reference` ids checked against the arms the run reports,
- * BEFORE the provider is built and the table guard runs: the runner checks them
- * too, but only after a corpus's arms have spent; #1925 — with this function,
- * so the two refusals cannot drift apart. `corpus` names the corpus whose
- * recorded arms `armIds` are, when a merge checks each apart.
- */
-export function assertReferenceArms(
-  references: readonly string[],
-  armIds: readonly string[],
-  corpus?: string,
-): void {
-  for (const ref of references) {
-    if (ref === "A0") throw new Error("--reference A0: every arm is already compared with A0");
-    if (!armIds.includes(ref)) {
-      const whose = corpus === undefined ? "this run's arms" : `the arms ${corpus} recorded`;
-      throw new Error(`--reference ${ref} is not one of ${whose} (${armIds.join(", ")})`);
-    }
-  }
+/** #1933 — what the CLI's staleness preflight checks before the provider is built. */
+export interface StalenessPreflight<C extends string> {
+  /** The corpora whose held-out purpose, materialization and patches are checked (a merge: none). */
+  corpora: readonly C[];
+  /** `--table-guard` reads a patch arm on the table corpus: its patches are checked too. */
+  withGuard: boolean;
+  /** A patch arm (A7S, A7SD) is reported: the patch sets are loaded. A7R and A7RD need none. */
+  patches: boolean;
 }
 
 /**
- * #1925 — a merge reports each corpus apart, and each report pairs with every
- * reference: a reference recorded in one corpus only would pass a check on the
- * union of their arms, then be refused by the runner after `--table-guard` spent.
+ * #1834, #1925 — the staleness preflight, decided before any spend: nothing to
+ * check when no staleness arm is reported, or a merge whose `--table-guard`
+ * reads no patch arm; otherwise which corpora, whether the table corpus too,
+ * and whether the patch sets are needed at all. A merge's `--table-guard` over
+ * a patch arm without `--arms` is refused: the eval database would be unbound.
+ * The arm sets are passed in so this module stays free of the arm definitions.
  */
-export function assertReferenceArmsInEachCorpus(
-  references: readonly string[],
-  armIdsByCorpus: ReadonlyMap<string, readonly string[]>,
-): void {
-  for (const [corpus, armIds] of armIdsByCorpus) assertReferenceArms(references, armIds, corpus);
+export function stalenessPreflight<C extends string>(opts: {
+  reportedArmIds: readonly string[];
+  corpora: readonly C[];
+  merge: boolean;
+  tableGuard: boolean;
+  /** `--arms` names a materialized arm (`agentArmsRequested`). */
+  armsRequested: boolean;
+  stalenessArmIds: ReadonlySet<string>;
+  patchArmIds: ReadonlySet<string>;
+}): StalenessPreflight<C> | undefined {
+  const { reportedArmIds, merge } = opts;
+  const patchArms = reportedArmIds.filter((id) => opts.patchArmIds.has(id));
+  const withGuard = patchArms.length > 0 && opts.tableGuard;
+  if (withGuard && merge && !opts.armsRequested) {
+    throw new Error(
+      `--table-guard reads ${patchArms.join(",")} on the materialized table corpus: pass --arms ${reportedArmIds.join(",")} (the recorded arms) so the eval database is bound`,
+    );
+  }
+  if (!reportedArmIds.some((id) => opts.stalenessArmIds.has(id))) return undefined;
+  if (merge && !withGuard) return undefined;
+  return { corpora: merge ? [] : opts.corpora, withGuard, patches: patchArms.length > 0 };
 }

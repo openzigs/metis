@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { PATCH_ARM_IDS, STALENESS_ARM_IDS } from "./analysis-arms.js";
 import {
-  assertReferenceArms,
-  assertReferenceArmsInEachCorpus,
   flagValue,
   nonNegativeNumber,
   positiveInteger,
   referenceArmIds,
+  stalenessPreflight,
 } from "./cli-args.js";
 
 describe("flagValue", () => {
@@ -60,31 +60,60 @@ describe("referenceArmIds (#1806)", () => {
   });
 });
 
-describe("assertReferenceArms (#1819)", () => {
-  it("accepts references among the run's arms", () => {
-    expect(() => assertReferenceArms([], ["A0"])).not.toThrow();
-    expect(() => assertReferenceArms(["A12", "A13"], ["A0", "A12", "A13"])).not.toThrow();
+describe("stalenessPreflight (#1933)", () => {
+  const corpora = ["localization-01-miniflux-heldout", "localization-02-fixture-portfolio"];
+  const plan = (
+    reportedArmIds: string[],
+    o: { merge?: boolean; tableGuard?: boolean; armsRequested?: boolean } = {},
+  ) =>
+    stalenessPreflight({
+      reportedArmIds,
+      corpora,
+      merge: o.merge ?? false,
+      tableGuard: o.tableGuard ?? false,
+      armsRequested: o.armsRequested ?? false,
+      stalenessArmIds: STALENESS_ARM_IDS,
+      patchArmIds: PATCH_ARM_IDS,
+    });
+
+  it("checks nothing when no staleness arm is reported", () => {
+    expect(plan(["A0", "A7", "A7K"])).toBeUndefined();
+    expect(plan(["A0", "A7"], { tableGuard: true })).toBeUndefined();
   });
 
-  it("refuses a reference the run does not report, naming the arms", () => {
-    expect(() => assertReferenceArms(["A12", "A31"], ["A0", "A12", "A13"])).toThrow(
-      "--reference A31 is not one of this run's arms (A0, A12, A13)",
-    );
-    expect(() => assertReferenceArms(["A0"], ["A0", "A12"])).toThrow(/--reference A0/);
+  it("needs no patch set for a re-ingest-only run (A7R, A7RD), with or without --table-guard", () => {
+    expect(plan(["A0", "A7R", "A7RD"])).toEqual({ corpora, withGuard: false, patches: false });
+    expect(plan(["A0", "A7R"], { tableGuard: true })).toEqual({
+      corpora,
+      withGuard: false,
+      patches: false,
+    });
   });
-});
 
-describe("assertReferenceArmsInEachCorpus (#1925)", () => {
-  it("refuses a reference one corpus did not record, though the union of arms holds it", () => {
-    const recorded = new Map([
-      ["localization-01-miniflux-heldout", ["A0", "A7", "A7S"]],
-      ["localization-02-fixture-portfolio", ["A0", "A7"]],
-    ]);
-    expect(() => assertReferenceArmsInEachCorpus(["A7"], recorded)).not.toThrow();
-    expect(() => assertReferenceArmsInEachCorpus(["A7", "A7S"], recorded)).toThrow(
-      "--reference A7S is not one of the arms localization-02-fixture-portfolio recorded (A0, A7)",
+  it("needs the patch sets for a patch arm, and the table corpus's only with --table-guard", () => {
+    expect(plan(["A0", "A7R", "A7S"])).toEqual({ corpora, withGuard: false, patches: true });
+    expect(plan(["A0", "A7SD"], { tableGuard: true })).toEqual({
+      corpora,
+      withGuard: true,
+      patches: true,
+    });
+  });
+
+  it("a merge checks no corpus of its own: only the table guard's patches, when it reads one", () => {
+    expect(plan(["A0", "A7S"], { merge: true })).toBeUndefined();
+    expect(plan(["A0", "A7R"], { merge: true, tableGuard: true })).toBeUndefined();
+    expect(plan(["A0", "A7S"], { merge: true, tableGuard: true, armsRequested: true })).toEqual({
+      corpora: [],
+      withGuard: true,
+      patches: true,
+    });
+  });
+
+  it("refuses a merge's --table-guard over a patch arm without --arms, naming the recorded arms", () => {
+    expect(() => plan(["A0", "A7R", "A7S"], { merge: true, tableGuard: true })).toThrow(
+      "--table-guard reads A7S on the materialized table corpus: pass --arms A0,A7R,A7S (the recorded arms) so the eval database is bound",
     );
-    expect(() => assertReferenceArmsInEachCorpus(["A0"], recorded)).toThrow(/--reference A0/);
-    expect(() => assertReferenceArmsInEachCorpus([], new Map())).not.toThrow();
+    // A run (not a merge) binds the database from its own --arms.
+    expect(() => plan(["A0", "A7S"], { tableGuard: true })).not.toThrow();
   });
 });
