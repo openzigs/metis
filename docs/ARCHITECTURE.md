@@ -2784,6 +2784,13 @@ then `evaluateRequirementFindings` runs over the answered rules with the answers
 evidence rule reads each short answer with its question. Those findings are scored apart,
 against each pair's `answeredVerdict`, in their own row of the report ("Short-answer pairs,
 with the BA's answer replayed"). The main results still read the findings before any answer.
+#2041 — an open rule that the settle could not re-judge counts as a **settle failure**, not
+as "still asking". The settle fails when its call throws or its reply cannot be read twice;
+`rejudgeAnswered` swallows both. A requirement on which the arm threw counts under
+"Requirements failed". The replay is not production's path. Production's `pairsOf` judges
+every applying rule and passes only the answers that a settle stored. The replay passes
+every short answer and judges only the answered rules. A4's cost and time now include the
+replay, and the report says so.
 
 #### Governing rules in the requirements BRD (#1877)
 
@@ -4550,8 +4557,11 @@ and (#2033) the verdict that answer leads to (`answeredVerdict`), which arm A4's
 the answers is scored against. The loader requires `answeredVerdict` with every `baAnswer`
 and refuses it without one. `governing-01` carries seven such pairs too, among them the
 polarity case GR-11, where "No." meets the rule, so a prompt change about answer polarity
-can be iterated on the tuning set. The `answeredVerdict` labels were added after the
-findings prompt was read, so unlike the rest of `governing-02` they are not blind to it.
+can be iterated on the tuning set. (#2041 reworded GR-11's question to cover every January
+purge. The present-tense wording had left its `compliant` label contestable.) `governing-02`'s
+`answeredVerdict` labels were first written after the findings prompt was read. #2041
+re-derived them with two tool-less blind labellers. These agreed on all seven pairs and
+matched the earlier labels, so no label changed and the hash stands.
 `governing-02` was labelled blind to every arm and prompt by two AI labellers, the same model as the
 author (so not independent human judgement). The second ran with no tools and saw only the
 policy and the requirements. They agreed on 31 of the 40 pairs either listed (0.78); Cohen's

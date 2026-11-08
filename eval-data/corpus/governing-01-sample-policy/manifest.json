@@ -400,7 +400,7 @@
           "ruleId": "DR-06",
           "verdict": "needs-ba-input",
           "nonResembling": true,
-          "businessFact": "Are any of those emails part of a dispute or lawsuit the legal team has asked us to preserve?",
+          "businessFact": "Will the January purge ever delete an email that is part of a dispute or lawsuit the legal team has asked us to preserve?",
           "baAnswer": "No.",
           "answeredVerdict": "compliant"
         }

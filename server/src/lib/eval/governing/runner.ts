@@ -423,6 +423,8 @@ export async function runGoverningEval(
   }
 
   const scored = new Map<string, ItemScore[][]>();
+  // #2041 — the set's own count, so a run-less arm does not read as a set without them.
+  const shortPairs = items.reduce((n, item) => n + shortAnswerPairs(item).length, 0);
   const arms: GoverningArmReport[] = opts.arms.map((arm) => {
     const recs = records.get(arm.id)!;
     const runsScored: ItemScore[][] = [];
@@ -451,7 +453,7 @@ export async function runGoverningEval(
       thresholds: checkThresholds(summary, corpus.manifest.thresholds, byConstruction),
       cost: costOf(recs),
       failures: recs.filter((r) => r.error !== undefined).length,
-      shortAnswers: arm.replaysAnswers ? summarizeAnswered(answeredRuns) : null,
+      shortAnswers: arm.replaysAnswers ? summarizeAnswered(answeredRuns, {}, shortPairs) : null,
       records: recs,
     };
   });
@@ -552,23 +554,31 @@ export function shortAnswerSection(report: Pick<GoverningReport, "arms">): strin
     "Each pair's `businessFact` is asked and its `baAnswer` given; the finding after the answer " +
       "is scored against the pair's `answeredVerdict`. The results above read the findings before any answer.",
     "",
-    "| Arm | Runs | Pairs | Verdict accuracy after the answer | Given a verdict | Compliant against the label | Still asking | Replay failures |",
-    "|---|---|---|---|---|---|---|---|",
+    "| Arm | Runs | Pairs | Verdict accuracy after the answer | Given a verdict | Compliant against the label | Still asking | Settle failures | Requirements failed |",
+    "|---|---|---|---|---|---|---|---|---|",
   );
   const perRun = (xs: readonly number[]) => (xs.length === 0 ? "n/a" : xs.join("/"));
   for (const a of arms) {
     const s = a.shortAnswers;
     lines.push(
       `| ${a.id} | ${s.runs} | ${s.pairs} | ${ci(s.verdictAccuracy)} | ${perRun(s.foundPerRun)} | ` +
-        `${s.hardErrors} | ${perRun(s.askedPerRun)} | ${s.failures} |`,
+        `${s.hardErrors} | ${perRun(s.askedPerRun)} | ${s.settleFailures} | ${s.failures} |`,
     );
   }
   lines.push(
     "",
     "Per-run counts are joined with `/`. Compliant against the label: `compliant` after an answer " +
-      "whose labelled verdict is not, summed over runs (a short answer read the wrong way round).",
+      "whose labelled verdict is not, summed over runs (a short answer read the wrong way round). " +
+      "Settle failures: pairs whose open rule the settle could not re-judge (its call threw, or its " +
+      "reply could not be read twice), summed over runs; each is a miss, never still asking. " +
+      "Requirements failed: requirements with short-answer pairs on which the arm threw, before or " +
+      "during the replay, summed over runs; their pairs are misses.",
     "",
   );
+  const runless = arms.filter((a) => a.shortAnswers.runs === 0).map((a) => a.id);
+  if (runless.length > 0) {
+    lines.push(`No run completed for ${runless.join(", ")}, so no answer was scored there.`, "");
+  }
   for (const a of arms) {
     const byPair = new Map<string, { answer: string; truth: string; verdicts: string[] }>();
     for (const r of a.records) {
@@ -576,7 +586,7 @@ export function shortAnswerSection(report: Pick<GoverningReport, "arms">): strin
       for (const p of r.answeredPairs ?? []) {
         const key = `${r.itemId} → ${p.ruleId}`;
         const held = byPair.get(key) ?? { answer: p.answer, truth: p.truth, verdicts: [] };
-        held.verdicts.push(p.verdict ?? "missed");
+        held.verdicts.push(p.settleFailed ? "settle failed" : (p.verdict ?? "missed"));
         byPair.set(key, held);
       }
     }
@@ -667,6 +677,16 @@ export function toMarkdownReport(report: GoverningReport): string {
       "(a failure is an error, never a clean negative).",
     "",
   );
+  // #2041 — the replay's calls are metered with the arm's own, so its cost moved.
+  const replayed = report.arms.filter((a) => (a.shortAnswers?.pairs ?? 0) > 0).map((a) => a.id);
+  if (replayed.length > 0) {
+    lines.push(
+      `${replayed.join(", ")}: $ / req, tokens, s / req and the cap's per-requirement estimate include ` +
+        "the replay of the BA's answers (#2033), " +
+        "so they are not comparable with readings of the same arm from before #2033.",
+      "",
+    );
+  }
   const fixedNotes = report.arms.flatMap((a) =>
     Object.entries(heldBy.get(a)!).map(([metric, why]) => `${a.id} ${metric}: ${why}`),
   );
