@@ -462,4 +462,34 @@ describe("attachGoverningApplicability", () => {
     expect(out[0]!.governing?.error).not.toContain("provider down");
     expect(out[1]!.governing).toEqual(set("R2"));
   });
+
+  it("#2016 — once the signal is aborted, no further requirement is decided and the aborted one is not recorded undecided", async () => {
+    const controller = new AbortController();
+    const three = [...evidence, { requirementId: "R3", text: "Archive invoices.", chunks: [] }];
+    const decide = vi.fn(async () => {
+      // The run is cancelled while R1's calls are in flight; they fail with the abort.
+      controller.abort();
+      throw Object.assign(new Error("aborted"), { name: "AbortError" });
+    });
+    const out = await attachGoverningApplicability(
+      three,
+      { decide },
+      { concurrency: 1, signal: controller.signal },
+    );
+    expect(decide).toHaveBeenCalledTimes(1);
+    expect(out.map((e) => e.governing)).toEqual([undefined, undefined, undefined]);
+  });
+
+  it("#2016 — an already-aborted signal decides nothing", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const decide = vi.fn(async (r: { id: string }) => set(r.id));
+    const out = await attachGoverningApplicability(
+      evidence,
+      { decide },
+      { signal: controller.signal },
+    );
+    expect(decide).not.toHaveBeenCalled();
+    expect(out).toHaveLength(2);
+  });
 });

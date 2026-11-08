@@ -65,7 +65,8 @@ vi.mock("../src/lib/governing/findings-store.js", () => ({
   ),
 }));
 
-const { ClarificationDialog } = await import("../src/lib/analysis/clarification-dialog.js");
+const { ClarificationDialog, ORPHAN_RETRY_BASE_MS, ORPHAN_RETRY_MAX_ENTRIES } =
+  await import("../src/lib/analysis/clarification-dialog.js");
 const findingsStore = await import("../src/lib/governing/findings-store.js");
 const { governingQuestionSourceFor } =
   await import("../src/lib/governing/applicability-questions.js");
@@ -388,6 +389,179 @@ describe("#1873 — governing questions in the clarification dialog", () => {
     // Settled now: a further start judges nothing more.
     await dialog.startOrContinue(ANALYSIS, REQS);
     expect(judging()).toHaveLength(1);
+  });
+
+  it("#2016 — with the provider down, the start-path retry is backed off per analysis, doubling, and a submit resets it", async () => {
+    // Fake only the clock, in the past, so the backoff left behind has expired for later tests.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2001-01-01T00:00:00.000Z"));
+    try {
+      const { provider, sent, chat } = model();
+      const dialog = dialogWith(provider);
+      const state = await dialog.startOrContinue(ANALYSIS, REQS);
+      const q = state.rounds[0]!.questions[0]!;
+      const judging = () => sent.filter((s) => s.system.includes("You decide which")).length;
+      const real = chat.getMockImplementation()!;
+      chat.mockImplementation(async (messages, o) => {
+        if (String(o?.systemMessage ?? "").includes("You decide which")) {
+          sent.push({ system: String(o?.systemMessage), user: "" });
+          throw new Error("provider unavailable");
+        }
+        return real(messages, o);
+      });
+      await dialog.submitAnswers(
+        ANALYSIS,
+        [{ questionId: q.id, answer: "Yes, the whole number." }],
+        REQS,
+      );
+      expect(judging()).toBe(1);
+
+      const start = () => dialog.startOrContinue(ANALYSIS, REQS);
+      const later = (ms: number) => vi.setSystemTime(new Date(Date.now() + ms));
+      await start(); // the first retry runs at once
+      expect(judging()).toBe(2);
+      await start(); // inside the first backoff: no judging call
+      await start();
+      expect(judging()).toBe(2);
+      later(ORPHAN_RETRY_BASE_MS + 1);
+      await start(); // the backoff has passed: one more attempt
+      expect(judging()).toBe(3);
+      later(ORPHAN_RETRY_BASE_MS + 1);
+      await start(); // the backoff doubled: still waiting
+      expect(judging()).toBe(3);
+      later(ORPHAN_RETRY_BASE_MS);
+      await start();
+      expect(judging()).toBe(4);
+
+      // A submit settles itself and resets the backoff: the next start retries at once.
+      await dialog.submitAnswers(
+        ANALYSIS,
+        [{ questionId: q.id, answer: "Yes, the whole number." }],
+        REQS,
+      );
+      expect(judging()).toBe(5);
+      chat.mockImplementation(real);
+      await start();
+      expect(judging()).toBe(6);
+      const read = await readGoverningApplicability(ANALYSIS);
+      expect(read!.requirements[0]!.decisions[0]).toMatchObject({ verdict: "applies" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** #2022 — a dialog with one answered governing question whose settle failed. */
+  async function orphaned() {
+    const { provider, sent, chat } = model();
+    const dialog = dialogWith(provider);
+    const state = await dialog.startOrContinue(ANALYSIS, REQS);
+    const q = state.rounds[0]!.questions[0]!;
+    const judging = () => sent.filter((s) => s.system.includes("You decide which")).length;
+    const real = chat.getMockImplementation()!;
+    const failJudging = () =>
+      chat.mockImplementation(async (messages, o) => {
+        if (String(o?.systemMessage ?? "").includes("You decide which")) {
+          sent.push({ system: String(o?.systemMessage), user: "" });
+          throw new Error("provider unavailable");
+        }
+        return real(messages, o);
+      });
+    failJudging();
+    // A submit clears any backoff an earlier test left for the analysis.
+    await dialog.submitAnswers(
+      ANALYSIS,
+      [{ questionId: q.id, answer: "Yes, the whole number." }],
+      REQS,
+    );
+    expect(judging()).toBe(1);
+    const unsettled = mem.metadata;
+    return {
+      dialog,
+      chat,
+      judging,
+      failJudging,
+      restore: () => chat.mockImplementation(real),
+      /** The pair open again, as a new orphan of the same analysis would leave it. */
+      reopen: () => {
+        mem.metadata = unsettled;
+      },
+      start: (signal?: AbortSignal) => dialog.startOrContinue(ANALYSIS, REQS, signal),
+      later: (ms: number) => vi.setSystemTime(new Date(Date.now() + ms)),
+    };
+  }
+
+  it("#2022 — a retry that settles its answer clears the backoff: the next orphan is retried at once", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2001-02-01T00:00:00.000Z"));
+    try {
+      const o = await orphaned();
+      await o.start(); // the first retry fails: backed off
+      expect(o.judging()).toBe(2);
+      o.restore();
+      o.later(ORPHAN_RETRY_BASE_MS + 1);
+      await o.start(); // past the backoff, and the provider is back: settled
+      expect(o.judging()).toBe(3);
+      const read = await readGoverningApplicability(ANALYSIS);
+      expect(read!.requirements[0]!.decisions[0]).toMatchObject({ verdict: "applies" });
+      // Nothing is backed off any more: an answer left open again is retried now.
+      o.reopen();
+      await o.start();
+      expect(o.judging()).toBe(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("#2022 — a retry the client aborted is no failed attempt: the next start retries at once", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2001-03-01T00:00:00.000Z"));
+    try {
+      const o = await orphaned();
+      const controller = new AbortController();
+      const real = o.chat.getMockImplementation()!;
+      o.chat.mockImplementation(async (messages, opts) => {
+        if (String(opts?.systemMessage ?? "").includes("You decide which")) {
+          // The client goes away while the judging call is in flight.
+          controller.abort();
+          await real(messages, opts);
+          throw Object.assign(new Error("aborted"), { name: "AbortError" });
+        }
+        return real(messages, opts);
+      });
+      await o.start(controller.signal).catch(() => undefined);
+      expect(o.judging()).toBe(2);
+      o.restore();
+      await o.start();
+      expect(o.judging()).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("#2022 — the backoff map is bounded: past ORPHAN_RETRY_MAX_ENTRIES analyses, the oldest is evicted", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2001-04-01T00:00:00.000Z"));
+    try {
+      const o = await orphaned();
+      await o.start(); // ANALYSIS backed off first, so evicted first
+      expect(o.judging()).toBe(2);
+      await o.start();
+      expect(o.judging()).toBe(2);
+      // As many other analyses again, each with the same orphaned answer, each backed off.
+      const dialogState = fakeStore.get(ANALYSIS);
+      for (let i = 0; i < ORPHAN_RETRY_MAX_ENTRIES; i++) {
+        fakeStore.set(`an_2022_${i}`, dialogState);
+        await o.dialog.startOrContinue(`an_2022_${i}`, REQS);
+      }
+      expect(o.judging()).toBe(2 + ORPHAN_RETRY_MAX_ENTRIES);
+      // The newest is still backed off; ANALYSIS's entry went, so it retries at once.
+      await o.dialog.startOrContinue(`an_2022_${ORPHAN_RETRY_MAX_ENTRIES - 1}`, REQS);
+      expect(o.judging()).toBe(2 + ORPHAN_RETRY_MAX_ENTRIES);
+      await o.start();
+      expect(o.judging()).toBe(3 + ORPHAN_RETRY_MAX_ENTRIES);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a failing governing source asks no governing question and never stops the round", async () => {

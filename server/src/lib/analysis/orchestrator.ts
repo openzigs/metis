@@ -4372,6 +4372,14 @@ export class AnalysisOrchestrator {
     if (!work) return undefined;
     try {
       const evidence = await work;
+      // #2022 — a cancel that landed during this await stopped the work part
+      // way (#2016): the requirements it never reached carry no set. Storing
+      // that would drop them silently, where they used to read UNDECIDED, so
+      // nothing is stored or produced; the run then ends cancelled.
+      if (findings?.signal?.aborted) {
+        log.info("governing applicability not stored: the run was cancelled", { analysisId });
+        return undefined;
+      }
       log.info("governing applicability joined", {
         analysisId,
         requirements: evidence.length,
@@ -4510,9 +4518,12 @@ export class AnalysisOrchestrator {
         // minutes of a 24-requirement analysis on DeepSeek. The code agent's
         // prompt is built from `perRequirement`, which it never changes.
         if (governing) {
+          // #2016 — under the hook's own signal, so an abort stops the loop too.
+          const governingSignal = input.governingSignal ?? input.signal;
           input.onGoverningApplicability?.(
             attachGoverningApplicability(perRequirement, governing, {
               concurrency: REQUIREMENT_RETRIEVAL_CONCURRENCY,
+              ...(governingSignal ? { signal: governingSignal } : {}),
             }),
           );
         }

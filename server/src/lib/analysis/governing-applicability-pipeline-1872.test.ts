@@ -11,6 +11,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatMessage, ChatOptions } from "../ai/types.js";
+import { REQUIREMENT_RETRIEVAL_CONCURRENCY } from "@metis/shared";
 import { __resetConfigSingleton } from "../config/config-service.js";
 
 const ANALYSIS_ID = "an_1872";
@@ -21,7 +22,11 @@ const state = vi.hoisted(() => ({
   rules: [] as Array<Record<string, unknown>>,
   /** #1997 — governing replies finished when the analysis was marked completed. */
   governingDoneAtCompletion: -1,
+  /** #2022 — the document agent's requirements; two unless a test sets more. */
+  requirements: null as Array<{ id: string; text: string }> | null,
 }));
+/** #2022 — every requirement the applicability hook was asked to decide. */
+const decided = vi.hoisted(() => ({ ids: [] as string[] }));
 /** #1997 — how many governing replies have been returned so far. */
 const progress = vi.hoisted(() => ({ governingDone: 0 }));
 
@@ -40,7 +45,7 @@ vi.mock("../prisma.js", () => ({
         where.agentKey === "document"
           ? {
               output: JSON.stringify({
-                requirements: [
+                requirements: state.requirements ?? [
                   { id: "REQ-001", text: "Export every customer's order history as a CSV." },
                   { id: "REQ-002", text: "Remove the legacy coupon screen." },
                 ],
@@ -84,6 +89,28 @@ vi.mock("./analysis-service.js", () => ({
   updateGoverningApplicabilityMetadata: vi.fn(async () => undefined),
   readGoverningApplicabilityMetadata: vi.fn(async () => undefined),
 }));
+
+// #2022 — the real hook, with every `decide` call recorded.
+vi.mock("../governing/applicability.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../governing/applicability.js")>();
+  return {
+    ...real,
+    governingApplicabilityHookFor: async (
+      input: Parameters<typeof real.governingApplicabilityHookFor>[0],
+    ) => {
+      const hook = await real.governingApplicabilityHookFor(input);
+      return (
+        hook && {
+          ...hook,
+          decide: (requirement: { id: string; text: string }) => {
+            decided.ids.push(requirement.id);
+            return hook.decide(requirement);
+          },
+        }
+      );
+    },
+  };
+});
 
 vi.mock("./cost-cap.js", () => ({ assertCanStartAnalysis: vi.fn(async () => undefined) }));
 // #1874 — the findings the join produces from the stored applicability.
@@ -133,6 +160,7 @@ const { AnalysisOrchestrator } = await import("./orchestrator.js");
 const analysisService = await import("./analysis-service.js");
 const { prisma } = await import("../prisma.js");
 const findingsStore = await import("../governing/findings-store.js");
+const { GOVERNING_RULES_UNAVAILABLE } = await import("../governing/applicability.js");
 /** #2010 — the orchestrator of the run in progress, for a test that cancels it. */
 const orchestrator: { current?: InstanceType<typeof AnalysisOrchestrator> } = {};
 
@@ -281,6 +309,8 @@ beforeEach(() => {
   state.workspaceId = null;
   state.rules = [];
   state.governingDoneAtCompletion = -1;
+  state.requirements = null;
+  decided.ids = [];
   progress.governingDone = 0;
   delete process.env.GOVERNING_DOCS_ENABLED;
   process.env.ANALYSIS_FUSED_CODE_RETRIEVAL = "false";
@@ -393,15 +423,16 @@ describe("#1872 — governing applicability in the analysis pipeline", () => {
       requirements: Array<{ requirementId: string; decisions: unknown[]; error?: string }>;
     };
     expect(stored.requirements).toEqual([
+      // #2016 — the load-failure constant itself, not any string.
       expect.objectContaining({
         requirementId: "REQ-001",
         decisions: [],
-        error: expect.any(String),
+        error: GOVERNING_RULES_UNAVAILABLE,
       }),
       expect.objectContaining({
         requirementId: "REQ-002",
         decisions: [],
-        error: expect.any(String),
+        error: GOVERNING_RULES_UNAVAILABLE,
       }),
     ]);
   });
@@ -472,21 +503,46 @@ describe("#1872 — governing applicability in the analysis pipeline", () => {
   });
 });
 
+const AUDIT_RULE = {
+  id: "rule_audit",
+  revisionId: "rev_1",
+  controlId: "LG-03",
+  summary: "Log every read of customer records to the audit log.",
+  clauseRef: "§3",
+  clauseExcerpt: "Every read of customer records is written to the audit log.",
+  revision: { revisionLabel: "v1", document: { title: "Info Policy" } },
+};
+
+/** #2022 — a governing model call that waits for its signal to abort, then fails with it. */
+function untilAborted(signal: AbortSignal): Promise<never> {
+  return new Promise((_, reject) => {
+    const fail = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+    if (signal.aborted) return fail();
+    signal.addEventListener("abort", fail, { once: true });
+  });
+}
+
 describe("#2010 — a cancel during synthesis", () => {
   it("ends the run cancelled before the join: no findings are produced or stored", async () => {
     process.env.GOVERNING_DOCS_ENABLED = "1";
     state.workspaceId = "ws_1872";
-    state.rules = [
-      {
-        id: "rule_audit",
-        revisionId: "rev_1",
-        controlId: "LG-03",
-        summary: "Log every read of customer records to the audit log.",
-        clauseRef: "§3",
-        clauseExcerpt: "Every read of customer records is written to the audit log.",
-        revision: { revisionLabel: "v1", document: { title: "Info Policy" } },
-      },
-    ];
+    state.rules = [AUDIT_RULE];
+    // #2022 — more requirements than run at once, every governing call held
+    // until the cancel: the requirements no worker reached are never decided.
+    state.requirements = Array.from({ length: REQUIREMENT_RETRIEVAL_CONCURRENCY + 2 }, (_, i) => ({
+      id: `REQ-${String(i + 1).padStart(3, "0")}`,
+      text: `Export customer report number ${i + 1} as a CSV.`,
+    }));
+    const made = makeProvider();
+    const chat = vi.mocked(
+      (made.provider as unknown as { chat: (m: ChatMessage[], o?: ChatOptions) => unknown }).chat,
+    );
+    const specialists = chat.getMockImplementation()!;
+    chat.mockImplementation(async (messages: ChatMessage[], o: ChatOptions = {}) => {
+      const user = messages.map((m) => String(m.content)).join("\n");
+      if (!user.includes("governing_rule")) return specialists(messages, o);
+      return untilAborted(o.signal!);
+    });
     const synthesis = await import("./synthesis.js");
     vi.mocked(synthesis.runSynthesis).mockImplementationOnce(async () => {
       // The user presses Cancel while synthesis runs; its fallback never throws.
@@ -496,11 +552,57 @@ describe("#2010 — a cancel during synthesis", () => {
         usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
       } as never;
     });
-    await runPipeline();
+    await runPipeline(made);
     expect(vi.mocked(synthesis.runSynthesis)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(analysisService.markAnalysisCancelled)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(analysisService.markAnalysisCompleted)).not.toHaveBeenCalled();
     expect(vi.mocked(findingsStore.produceGoverningFindingsForAnalysis)).not.toHaveBeenCalled();
     expect(vi.mocked(analysisService.updateGoverningApplicabilityMetadata)).not.toHaveBeenCalled();
+    // #2022 — the orchestrator hands the loop its signal: after the cancel no
+    // worker takes another requirement, so only those already in flight were
+    // ever decided. The work outlives the run, so give it time to go on.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(decided.ids).toEqual(
+      state.requirements.slice(0, REQUIREMENT_RETRIEVAL_CONCURRENCY).map((r) => r.id),
+    );
+  });
+});
+
+describe("#2022 — a cancel during the governing join", () => {
+  it("stores no partial applicability and produces no findings: the run ends cancelled", async () => {
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    state.workspaceId = "ws_1872";
+    state.rules = [AUDIT_RULE];
+    const made = makeProvider();
+    const chat = vi.mocked(
+      (made.provider as unknown as { chat: (m: ChatMessage[], o?: ChatOptions) => unknown }).chat,
+    );
+    const specialists = chat.getMockImplementation()!;
+    const active = () =>
+      (
+        orchestrator.current as unknown as {
+          active: Map<string, { controllers: Map<string, AbortController> }>;
+        }
+      ).active.get(ANALYSIS_ID);
+    chat.mockImplementation(async (messages: ChatMessage[], o: ChatOptions = {}) => {
+      const user = messages.map((m) => String(m.content)).join("\n");
+      // REQ-001 is decided at once; REQ-002 is still being decided at the join.
+      if (!user.includes("governing_rule") || !user.includes("legacy coupon")) {
+        return specialists(messages, o);
+      }
+      // The user presses Cancel once the run is waiting for this work in the join.
+      await vi.waitFor(() => expect(active()?.controllers.has("governing")).toBe(true), {
+        timeout: 5_000,
+      });
+      expect(await orchestrator.current!.cancel(ANALYSIS_ID, "u1")).toBe(true);
+      return untilAborted(o.signal!);
+    });
+    await runPipeline(made);
+    expect(decided.ids).toEqual(["REQ-001", "REQ-002"]);
+    expect(vi.mocked(analysisService.markAnalysisCancelled)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(analysisService.markAnalysisCompleted)).not.toHaveBeenCalled();
+    // REQ-002 was never decided: storing the set would drop it silently.
+    expect(vi.mocked(analysisService.updateGoverningApplicabilityMetadata)).not.toHaveBeenCalled();
+    expect(vi.mocked(findingsStore.produceGoverningFindingsForAnalysis)).not.toHaveBeenCalled();
   });
 });
