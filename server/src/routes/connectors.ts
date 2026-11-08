@@ -29,7 +29,6 @@
  */
 import { randomUUID } from "node:crypto";
 import { Router, type Request } from "express";
-import multer from "multer";
 import { z } from "zod";
 import {
   type ApiResponse,
@@ -53,6 +52,8 @@ import {
   connectorWriteRateLimiter,
 } from "../middleware/connector-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
+import { singleFileUpload } from "../middleware/document-file-upload.js";
+import { fileTooLargeMessage } from "../lib/documents/upload.js";
 import { ConnectorError } from "../lib/connectors/types.js";
 import {
   INGEST_IN_PROGRESS,
@@ -131,11 +132,13 @@ const logger = createChildLogger("connector-ingest");
  * Issue #288 — multer instance for .zip folder uploads. In-memory storage with
  * a hard single-file + size cap; the buffer is handed to the extractor which
  * enforces zip-slip / zip-bomb guards. We never persist the raw multipart body
- * to disk before validation.
+ * to disk before validation. #1985 — built by the shared `singleFileUpload`,
+ * so an archive over the cap is 413 FILE_TOO_LARGE (it was the global 500) and
+ * a malformed body is 400 UPLOAD_ERROR, as on the document upload routes.
  */
-const uploadArchive = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_UPLOAD_ARCHIVE_BYTES, files: 1 },
+const uploadArchive = singleFileUpload({
+  maxBytes: MAX_UPLOAD_ARCHIVE_BYTES,
+  tooLargeMessage: fileTooLargeMessage(MAX_UPLOAD_ARCHIVE_BYTES, "archive"),
 });
 
 function ok<T>(data: T): ApiResponse<T> {
@@ -546,7 +549,7 @@ export function connectorsRouter(): Router {
     "/repos/upload",
     requireAuth,
     requirePermission("connector.write"),
-    uploadArchive.single("file"),
+    uploadArchive,
     async (req, res) => {
       try {
         const projectId = projectIdOf(req);
