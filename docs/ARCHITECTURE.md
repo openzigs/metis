@@ -2568,30 +2568,45 @@ in two passes and unions them:
    summaries are split into batches of at most `SCREEN_BATCH_MAX_TOKENS` (8,000 estimated
    tokens, about 350 rules at #1867's measured 21 tokens a rule), or half the model's context
    window when that is smaller. Every rule is in exactly one batch and none is truncated; the
-   count screened is logged. A failed top-k search is survivable while the screen runs.
+   count screened is logged. A failed top-k search is survivable while the screen runs. The
+   summaries lead the screen prompt, ahead of the requirement, and are sent as the cached
+   `promptCaching.userPrefix`: every requirement of an analysis shares that prefix (#1997). A
+   screen reply that cannot be read is re-asked once before the requirement fails.
 
 Each candidate is then judged `applies | does-not-apply | uncertain` with a one-line reason.
 An `uncertain` decision always carries a business question: a reply that leaves a candidate
 undecided or marks it `uncertain` without the question is re-asked once, and then recorded
-`uncertain` with `fallbackBusinessQuestion`, which names the rule. The model names rules by
+`uncertain` with `fallbackBusinessQuestion`, which names the rule. A judging reply that cannot
+be read at all, twice running, fails the requirement instead (#1997): recording every candidate
+`uncertain` asked the analyst a fallback question per rule. The model names rules by
 handles (`R1`, `R2`, …) assigned per decision, so a reply can only name a rule it was shown,
 and the requirement, summaries, clauses, control ids and titles travel fenced
 (`fenceToolResult`, as #1870).
 
 **The hook.** `governingApplicabilityForProject` returns `null`, with no database read, while
 `GOVERNING_DOCS_ENABLED` is off; it is also `null` for a project with no workspace or a
-workspace with no current rules. `currentWorkspaceRules` (`governing-store.ts`) reads only the
+workspace with no current rules. The orchestrator calls it through
+`governingApplicabilityHookFor`, which turns a failure to load the rules into a hook whose
+every requirement gets a set carrying `GOVERNING_RULES_UNAVAILABLE`, so "the rules could not be
+read" never looks like "nothing to check" (#1997). `currentWorkspaceRules` (`governing-store.ts`) reads only the
 live rules of each live document's current revision, scoped on the workspace through the
-document. The orchestrator's requirement-grounded code pass calls it beside
-`retrievePerRequirement`, and `attachGoverningApplicability` (`analysis/retrieval.ts`) puts
-each requirement's `ApplicabilitySet` on its evidence as `governing` (a failed requirement
-gets one carrying `error`, never a silently empty set). Nothing reads `governing` yet: the BA
+document. The orchestrator's requirement-grounded code pass starts
+`attachGoverningApplicability` (`analysis/retrieval.ts`) after `retrievePerRequirement`, which
+puts each requirement's `ApplicabilitySet` on its evidence as `governing` (a failed requirement
+gets one carrying `error`, never a silently empty set). It is started, not awaited (#1997): it
+runs beside the code agent, enhancement and synthesis, and `runPipeline` joins it after
+synthesis (`joinGoverningApplicability`), before the run is recorded. Awaiting it first had put
+about 8 minutes of screens and judging ahead of the code agent on a 24-requirement analysis.
+Nothing reads `governing` yet: the BA
 questions (#1873) and the cited findings (#1874) do. A flag-off analysis is byte-identical to
 before (`governing-applicability-pipeline-1872.test.ts`, a snapshot).
 
 `pnpm --filter server eval:governing --arms A0,A3` measures it: arm A3 runs
 `decideApplicability` over the #1867 corpus (lexical top-k standing in for the vector
-index), reading `applies` as `gap` and `uncertain` as `needs-ba-input`.
+index), reading `applies` as `gap` and `uncertain` as `needs-ba-input`. #1997's reading of
+the tuned judging prompt, two runs each: Sonnet (`claude-sonnet-5-5`) recall 0.92,
+non-resembling recall 0.93, precision 0.57 (0.30 on #1995's prompt); DeepSeek precision 0.57.
+Precision is still short of #1867's 0.60 bar, so the flag stays off (#1878).
 
 ---
 

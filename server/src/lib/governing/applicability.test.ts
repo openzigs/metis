@@ -32,6 +32,10 @@ const {
   planBatches,
   screenBatchTokenBudget,
   GOVERNING_ANALYSIS_ACTOR,
+  GOVERNING_RULES_UNAVAILABLE,
+  buildApplicabilityJudgePrompt,
+  governingApplicabilityHookFor,
+  judgeReplyReadable,
 } = await import("./applicability.js");
 type ApplicabilityRule = import("./applicability.js").ApplicabilityRule;
 
@@ -48,9 +52,14 @@ interface Sent {
 function stubModel(opts: {
   screen?: (user: string) => string[];
   judge?: (user: string, reask: boolean) => unknown[];
-  raw?: { screen?: string };
+  raw?: { screen?: string | string[]; judge?: string | string[] };
   model?: string;
 }) {
+  // A list of raw screen replies is served in order, the last one repeated.
+  const rawScreens = opts.raw?.screen;
+  let screenCall = 0;
+  const rawJudges = opts.raw?.judge;
+  let judgeCall = 0;
   const sent: Sent[] = [];
   const chat = vi.fn(async (messages: ChatMessage[], o: ChatOptions = {}) => {
     const user = messages.map((m) => String(m.content)).join("\n");
@@ -58,11 +67,18 @@ function stubModel(opts: {
     const reply = (content: string) => ({ content, model: "m", provider: "anthropic" as const });
     if (user.includes("governing_rule_summaries")) {
       sent.push({ kind: "screen", system, user });
-      if (opts.raw?.screen !== undefined) return reply(opts.raw.screen);
+      if (rawScreens !== undefined) {
+        const list = Array.isArray(rawScreens) ? rawScreens : [rawScreens];
+        return reply(list[Math.min(screenCall++, list.length - 1)]!);
+      }
       return reply(JSON.stringify({ rules: opts.screen?.(user) ?? [] }));
     }
     const reask = system.includes("Your previous answer");
     sent.push({ kind: reask ? "reask" : "judge", system, user });
+    if (rawJudges !== undefined) {
+      const list = Array.isArray(rawJudges) ? rawJudges : [rawJudges];
+      return reply(list[Math.min(judgeCall++, list.length - 1)]!);
+    }
     return reply(JSON.stringify({ decisions: opts.judge?.(user, reask) ?? [] }));
   });
   const provider = {
@@ -216,11 +232,13 @@ describe("decideApplicability — the screen is the recall safety net", () => {
     ).rejects.toThrow("vector store down");
   });
 
-  it("throws on a screen reply it cannot read rather than skipping that batch", async () => {
-    const { provider } = stubModel({ raw: { screen: "I think LG-03 might apply." } });
+  it("throws on a screen reply it cannot read twice running, rather than skipping that batch", async () => {
+    const { provider, sent } = stubModel({ raw: { screen: "I think LG-03 might apply." } });
     await expect(
       decideApplicability({ requirement: REQUIREMENT, rules: [AUDIT], provider, retrieve }),
     ).rejects.toBeInstanceOf(ApplicabilityReplyError);
+    // #1997 — asked, then re-asked once, then given up on.
+    expect(sent.map((s) => s.kind)).toEqual(["screen", "screen"]);
     const other = stubModel({ raw: { screen: '{"verdict":"none"}' } });
     await expect(
       decideApplicability({
@@ -230,6 +248,37 @@ describe("decideApplicability — the screen is the recall safety net", () => {
         retrieve,
       }),
     ).rejects.toThrow(/no rules list/);
+  });
+
+  it("#1997 — re-asks an unreadable screen reply once, and keeps the candidates the second reply flags", async () => {
+    const { provider, sent } = stubModel({
+      raw: { screen: ["I think LG-03 might apply.", '{"rules":["R1"]}'] },
+      judge,
+    });
+    const set = await decideApplicability({
+      requirement: REQUIREMENT,
+      rules: [AUDIT, ENCRYPT],
+      provider,
+      retrieve,
+    });
+    expect(set.decisions.find((d) => d.ruleId === AUDIT.id)?.foundBy).toEqual(["screen"]);
+    expect(set).toMatchObject({ screenBatches: 1, screenReasked: 1, candidates: 2 });
+    expect(sent.map((s) => s.kind)).toEqual(["screen", "screen", "judge"]);
+    expect(sent[0]!.system).not.toContain("could not be read");
+    expect(sent[1]!.system).toContain("Your previous answer could not be read");
+    expect(sent[1]!.user).toBe(sent[0]!.user);
+  });
+
+  it("#1997 — a readable first screen reply is not re-asked", async () => {
+    const { provider, sent } = stubModel({ screen: () => ["R1"], judge });
+    const set = await decideApplicability({
+      requirement: REQUIREMENT,
+      rules: [AUDIT],
+      provider,
+      retrieve,
+    });
+    expect(set.screenReasked).toBe(0);
+    expect(sent.filter((s) => s.kind === "screen")).toHaveLength(1);
   });
 });
 
@@ -370,6 +419,51 @@ describe("decideApplicability — uncertain always carries a business question",
     });
   });
 
+  it("#1997 — a judging reply unreadable twice running fails the requirement instead of asking a fallback question per rule", async () => {
+    const { provider, sent } = stubModel({ raw: { judge: "Sorry, I cannot help with that." } });
+    await expect(
+      decideApplicability({
+        requirement: REQUIREMENT,
+        rules: [AUDIT, ENCRYPT],
+        provider,
+        retrieve: async () => [AUDIT.id, ENCRYPT.id],
+        screen: false,
+      }),
+    ).rejects.toThrow(/judging reply could not be read twice running for 2 candidate/);
+    expect(sent.map((s) => s.kind)).toEqual(["judge", "reask"]);
+  });
+
+  it("#1997 — an unreadable first judging reply is re-asked, and a readable second one is used", async () => {
+    const { provider } = stubModel({
+      raw: {
+        judge: [
+          "not json",
+          JSON.stringify({ decisions: [{ rule: "R1", verdict: "applies", reason: "Reads." }] }),
+        ],
+      },
+    });
+    const set = await decideApplicability({
+      requirement: REQUIREMENT,
+      rules: [AUDIT, ENCRYPT],
+      provider,
+      retrieve: async () => [AUDIT.id, ENCRYPT.id],
+      screen: false,
+    });
+    // R2 was left out of a READABLE reply: the #1872 fallback still applies to it.
+    expect(set.decisions.map((d) => [d.ruleId, d.verdict])).toEqual([
+      [AUDIT.id, "applies"],
+      [ENCRYPT.id, "uncertain"],
+    ]);
+    expect(set.decisions[1]!.businessFact).toBe(fallbackBusinessQuestion(ENCRYPT));
+  });
+
+  it("#1997 — judgeReplyReadable: a decisions list, even empty, is readable; anything else is not", () => {
+    expect(judgeReplyReadable('{"decisions":[]}')).toBe(true);
+    expect(judgeReplyReadable('Here: {"decisions":[{"rule":"R1"}]}')).toBe(true);
+    expect(judgeReplyReadable('{"rules":["R1"]}')).toBe(false);
+    expect(judgeReplyReadable("no json")).toBe(false);
+  });
+
   it("a complete first answer is not re-asked", async () => {
     const complete = stubModel({
       judge: () => [{ rule: "R1", verdict: "applies", reason: "It reads customer records." }],
@@ -432,6 +526,63 @@ describe("prompts: governing text is fenced", () => {
     expect(sent[0]!.user).toContain("Tool result for governing_rule_summaries:");
     expect(sent[1]!.user).toContain("Tool result for governing_rules:");
     expect(sent[1]!.user).toContain(`clause: ${hostile.clauseExcerpt}`);
+  });
+});
+
+describe("#1997 — the rule summaries lead the screen prompt and are cached across requirements", () => {
+  it("puts the summaries before the requirement, and sends them as the cached user prefix", async () => {
+    const { provider, sent, chat } = stubModel({ screen: () => [] });
+    const second = { id: "REQ-2", text: "Remove the legacy coupon screen." };
+    for (const requirement of [REQUIREMENT, second]) {
+      await decideApplicability({
+        requirement,
+        rules: [AUDIT, ENCRYPT],
+        provider,
+        retrieve: async () => [],
+      });
+    }
+    const [a, b] = sent;
+    expect(a!.user.indexOf("governing_rule_summaries")).toBeLessThan(
+      a!.user.indexOf("Tool result for requirement:"),
+    );
+    const prefixes = chat.mock.calls.map(
+      (c) => (c[1] as ChatOptions).promptCaching?.userPrefix ?? "",
+    );
+    // The same prefix for both requirements, a strict prefix of each prompt,
+    // holding every summary and no requirement text.
+    expect(prefixes[0]).toBe(prefixes[1]);
+    expect(prefixes[0]).toContain(AUDIT.summary);
+    expect(prefixes[0]).toContain(ENCRYPT.summary);
+    expect(prefixes[0]).not.toContain(REQUIREMENT.text);
+    expect(a!.user.startsWith(prefixes[0]!)).toBe(true);
+    expect(b!.user.startsWith(prefixes[0]!)).toBe(true);
+    expect(a!.user.length).toBeGreaterThan(prefixes[0]!.length);
+    expect(chat.mock.calls[0]![1]).toMatchObject({ promptCaching: { system: true } });
+  });
+
+  it("the judging prompt sets no cache prefix: its rule list differs per requirement", async () => {
+    const { provider, chat } = stubModel({
+      screen: () => ["R1"],
+      judge: () => [{ rule: "R1", verdict: "applies", reason: "y" }],
+    });
+    await decideApplicability({
+      requirement: REQUIREMENT,
+      rules: [AUDIT],
+      provider,
+      retrieve: async () => [],
+    });
+    expect((chat.mock.calls[1]![1] as ChatOptions).promptCaching).toBeUndefined();
+  });
+});
+
+describe("#1997 — the judging prompt's precision guidance", () => {
+  it("tells the judge to leave platform-wide rules out and to expect few rules, and no longer calls the release process a stretch", () => {
+    const { systemMessage } = buildApplicabilityJudgePrompt(REQUIREMENT.text, []);
+    expect(systemMessage).toContain("not the systems it runs on");
+    expect(systemMessage).toContain("encryption of data in transit or at rest");
+    expect(systemMessage).toContain("Expect one to three rules to apply");
+    // #1995's example read change management as a stretch and cost CM-02/CM-03 recall.
+    expect(systemMessage).not.toMatch(/releasing every change/);
   });
 });
 
@@ -598,5 +749,49 @@ describe("governingApplicabilityForProject — the analysis hook", () => {
     });
     expect(sent[1]!.user).toContain("R1 [LG-03] (Info Policy v2 §3)");
     expect(chat.mock.calls[0]![1]).toMatchObject({ model: "pinned-model", disableTools: true });
+  });
+});
+
+describe("#1997 — governingApplicabilityHookFor: rules unavailable is not no rules", () => {
+  beforeEach(() => {
+    db.project.findFirst.mockReset();
+    currentWorkspaceRules.mockReset();
+  });
+  afterEach(() => {
+    delete process.env.GOVERNING_DOCS_ENABLED;
+  });
+
+  it("flag off: null, as before, with nothing read", async () => {
+    const { provider } = stubModel({});
+    expect(await governingApplicabilityHookFor({ projectId: "p", provider })).toBeNull();
+    expect(db.project.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("a load failure is a hook whose every requirement records the error and no decision", async () => {
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    db.project.findFirst.mockResolvedValueOnce({ workspaceId: "ws_a" });
+    currentWorkspaceRules.mockRejectedValueOnce(new Error("database is locked"));
+    const { provider, chat } = stubModel({});
+    const hook = await governingApplicabilityHookFor({ projectId: "p", provider });
+    expect(hook).not.toBeNull();
+    const set = await hook!.decide(REQUIREMENT);
+    expect(set).toEqual({
+      requirementId: REQUIREMENT.id,
+      decisions: [],
+      rulesScreened: 0,
+      screenBatches: 0,
+      candidates: 0,
+      reasked: 0,
+      screenReasked: 0,
+      error: GOVERNING_RULES_UNAVAILABLE,
+    });
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  it("a workspace with rules gives the real hook", async () => {
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    db.project.findFirst.mockResolvedValueOnce({ workspaceId: null });
+    const { provider } = stubModel({});
+    expect(await governingApplicabilityHookFor({ projectId: "p", provider })).toBeNull();
   });
 });

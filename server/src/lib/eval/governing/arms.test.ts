@@ -457,6 +457,7 @@ describe("A3 — production applicability (#1872)", () => {
       screened: corpus.rules.length,
       screenBatches: 1,
       reasked: 0,
+      screenReasked: 0,
       screenOnly: 1,
     });
   });

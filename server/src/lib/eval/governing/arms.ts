@@ -583,6 +583,7 @@ export function createA3Arm(deps: GoverningArmDeps): GoverningArm {
           screened: set.rulesScreened,
           screenBatches: set.screenBatches,
           reasked: set.reasked,
+          screenReasked: set.screenReasked,
           screenOnly: set.decisions.filter((d) => !d.foundBy.includes("top-k")).length,
         },
       };

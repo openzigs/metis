@@ -260,8 +260,9 @@ import {
   RETRIEVAL_QUERIES,
   retrievePerRequirement,
   runGroundedRetrieval,
+  type RequirementEvidence,
 } from "./retrieval.js";
-import { governingApplicabilityForProject } from "../governing/applicability.js";
+import { governingApplicabilityHookFor } from "../governing/applicability.js";
 import {
   retrieveFusedCodeChunks,
   retrieveFusedCodeContext,
@@ -2324,6 +2325,9 @@ export class AnalysisOrchestrator {
       cancelled: false,
     };
     this.active.set(analysisId, run);
+    // #1997 — governing applicability, running beside the code agent and the
+    // phases after it; joined after synthesis (`joinGoverningApplicability`).
+    let governingWork: Promise<RequirementEvidence[]> | undefined;
 
     // #239 — unified job-lifecycle start, broadcast on both `job:{analysisId}`
     // and `project:{projectId}` so the analysis page gets push-driven status.
@@ -2731,6 +2735,12 @@ export class AnalysisOrchestrator {
               signal: codeController.signal,
               affectedCode,
               affectedSchema,
+              onGoverningApplicability: (work) => {
+                governingWork = work;
+                // Handled here so a run that ends before the join (a cancel, or
+                // every specialist failing) leaves no unhandled rejection.
+                work.catch(() => undefined);
+              },
             });
             totals.promptTokens += codeResult.usage.promptTokens;
             totals.completionTokens += codeResult.usage.completionTokens;
@@ -2933,6 +2943,10 @@ export class AnalysisOrchestrator {
         affectedSchema: runAffectedSchemaBlock,
         sourceRequirements: opts.sourceRequirements,
       });
+
+      // #1997 — the join: applicability ran beside the code agent, enhancement
+      // and synthesis, and is awaited only here, before the run is recorded.
+      await this.joinGoverningApplicability(analysisId, governingWork);
 
       // #1142 — a cancel that landed during synthesis (whose fallback never
       // throws) must not end the run `completed`. Past this check the result is
@@ -4281,6 +4295,36 @@ export class AnalysisOrchestrator {
   }
 
   /**
+   * #1997 — wait for the governing-applicability work started beside the code
+   * agent. `undefined` when none was started (flag off, no workspace or no
+   * current rule, or the code agent did not run in requirement-grounded mode).
+   * Never throws: a requirement that could not be decided already carries an
+   * `error` set, and a failure of the work as a whole is logged and read as
+   * nothing decided, so it can never fail the analysis.
+   */
+  private async joinGoverningApplicability(
+    analysisId: string,
+    work: Promise<RequirementEvidence[]> | undefined,
+  ): Promise<RequirementEvidence[] | undefined> {
+    if (!work) return undefined;
+    try {
+      const evidence = await work;
+      log.info("governing applicability joined", {
+        analysisId,
+        requirements: evidence.length,
+        undecided: evidence.filter((e) => e.governing?.error).length,
+      });
+      return evidence;
+    } catch (err) {
+      log.warn("governing applicability failed as a whole", {
+        analysisId,
+        error: (err as Error).message,
+      });
+      return undefined;
+    }
+  }
+
+  /**
    * Run the code agent in requirement-grounded mode (Epic #912 / #916).
    *
    * Unlike the agentic path this needs no code graph: evidence is retrieved
@@ -4309,6 +4353,11 @@ export class AnalysisOrchestrator {
     affectedCode?: AffectedCodeContext;
     /** #824 (Epic #820 Phase 1) — deterministic AFFECTED SCHEMA block seeded into the gap prompt. */
     affectedSchema?: AffectedSchemaContext;
+    /**
+     * #1997 — handed the governing-applicability work, started beside the code
+     * agent, for the caller to join. Without it, applicability does not run.
+     */
+    onGoverningApplicability?: (work: Promise<RequirementEvidence[]>) => void;
   }): Promise<AgentRunResult> {
     const startedAt = new Date();
     const agentKey = "code" as const;
@@ -4337,31 +4386,37 @@ export class AnalysisOrchestrator {
         // #1872 — beside it, governing-rule applicability per requirement:
         // null (and no database read) unless GOVERNING_DOCS_ENABLED is on and
         // the project's workspace has current rules, so a flag-off analysis is
-        // unchanged. Read by the governing findings (#1873, #1874).
-        const governing = await governingApplicabilityForProject({
+        // unchanged. #1997 — a load failure is a hook that records the error
+        // on every requirement, never the flag-off null.
+        const governing = input.onGoverningApplicability
+          ? await governingApplicabilityHookFor({
+              projectId: input.projectId,
+              provider: this.deps.provider,
+              ...(input.model ? { model: input.model } : {}),
+              signal: input.signal,
+            })
+          : null;
+        const perRequirement = await retrievePerRequirement(knowledge, {
           projectId: input.projectId,
-          provider: this.deps.provider,
-          ...(input.model ? { model: input.model } : {}),
-          signal: input.signal,
-        }).catch((err: unknown) => {
-          log.warn("governing applicability skipped: its rules could not be loaded", {
-            analysisId: input.analysisId,
-            error: (err as Error).message,
-          });
-          return null;
+          requirements: input.requirements,
+          documentIds: documentIds.length > 0 ? documentIds : undefined,
+          k: ANALYSIS_RETRIEVE_K,
+          maxRequirements: MAX_REQUIREMENTS_FOR_RETRIEVAL,
+          concurrency: REQUIREMENT_RETRIEVAL_CONCURRENCY,
         });
-        const perRequirement = await attachGoverningApplicability(
-          await retrievePerRequirement(knowledge, {
-            projectId: input.projectId,
-            requirements: input.requirements,
-            documentIds: documentIds.length > 0 ? documentIds : undefined,
-            k: ANALYSIS_RETRIEVE_K,
-            maxRequirements: MAX_REQUIREMENTS_FOR_RETRIEVAL,
-            concurrency: REQUIREMENT_RETRIEVAL_CONCURRENCY,
-          }),
-          governing,
-          { concurrency: REQUIREMENT_RETRIEVAL_CONCURRENCY },
-        );
+        // #1997 — applicability is STARTED here and not awaited: it runs beside
+        // the code agent (and the phases after it) and is joined where it is
+        // consumed (`joinGoverningApplicability`). Awaiting it here put every
+        // requirement's screen and judge ahead of the code agent — about 8
+        // minutes of a 24-requirement analysis on DeepSeek. The code agent's
+        // prompt is built from `perRequirement`, which it never changes.
+        if (governing) {
+          input.onGoverningApplicability?.(
+            attachGoverningApplicability(perRequirement, governing, {
+              concurrency: REQUIREMENT_RETRIEVAL_CONCURRENCY,
+            }),
+          );
+        }
 
         // #729 (Epic #725) — fold fused code-graph symbol context into the
         // grounded evidence. This mode runs when NO code graph exists, so fused

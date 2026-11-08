@@ -433,6 +433,7 @@ describe("attachGoverningApplicability", () => {
     screenBatches: 1,
     candidates: 0,
     reasked: 0,
+    screenReasked: 0,
   });
 
   it("returns the input array itself, untouched, with no hook", async () => {
