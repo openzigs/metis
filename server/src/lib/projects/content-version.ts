@@ -33,7 +33,7 @@
  *   - **Documents** (#1864): the project's row count, the latest `updatedAt`
  *     (Prisma sets it on every create and update), and a hash over the indexing
  *     state of the rows written within {@link RECENT_WRITE_WINDOW_MS} before
- *     NOW. The count catches a hard delete; the latest write catches an upload,
+ *     the latest write. The count catches a hard delete; the latest write catches an upload,
  *     a re-upload, a re-index, an ACL edit and a soft delete; the recent rows
  *     catch a write that leaves the latest write where it was: a second write in
  *     the same millisecond, or one from an app server whose clock is behind the
@@ -41,9 +41,16 @@
  *     `updatedAt`) index, plus a read of the recent rows only when the latest
  *     write is itself recent, where #1843 read and hashed every document row
  *     (repository source files are document rows too) on each call.
- *     #1944 — the window is anchored to now, not to the latest write: anchored
- *     to the latest write, every call after a bulk write (a repo sync) re-read
- *     that write's last minute of rows until the next document write came.
+ *     #1944 — the read is skipped once the latest write is more than twice the
+ *     window old: every call after a bulk write (a repo sync) otherwise re-read
+ *     that write's last minute of rows until the next document write came. The
+ *     window stays anchored to the latest write, not to now: anchored to now, a
+ *     below-max write from a lagging replica left the key once its stamp aged
+ *     out of the window, and the pre-write key (and its cache entries) came
+ *     back. Cost: the key changes once, when the read is first skipped, so a
+ *     version read within two minutes of a write differs from one read after
+ *     it even if nothing changed: one extra cache miss per entry, and a
+ *     semantic-cache turn that straddles that moment is not stored.
  *   - **The active embedder identity**: both searches filter on it (#792:
  *     `model`, or `model|pooling|dtype`), so a model or pooling flip moves the
  *     key. #1944 — read without I/O (`Embedder.knownIdentity`): the
@@ -60,9 +67,10 @@ import { prisma } from "../prisma.js";
 import { getEmbedder } from "../rag/embedder.js";
 
 /**
- * #1864 — how far before now the document rows are hashed individually
- * (#1944: before now, not before the latest write). Covers a second write in
- * the same millisecond, and app servers whose clocks disagree by less than this.
+ * #1864 — how far before the latest write the document rows are hashed
+ * individually. Covers a second write in the same millisecond, and app servers
+ * whose clocks are behind the one that wrote the latest row by less than this.
+ * #1944: the read is skipped once the latest write is over twice this old.
  */
 export const RECENT_WRITE_WINDOW_MS = 60_000;
 
@@ -183,10 +191,16 @@ async function documentsVersion(
   now: Date,
 ): Promise<string> {
   const { count, latestWrite } = await source.documentSummary(projectId);
-  const since = new Date(now.getTime() - RECENT_WRITE_WINDOW_MS);
-  // #1944 — no row is that recent when the latest write is not: skip the read.
+  // #1944 — anchored to the latest write (a lagging replica's below-max write
+  // must stay hashed), and skipped once that write is over two windows old: a
+  // write stamped below it could only come from a clock more than a window behind.
   const recent =
-    latestWrite && latestWrite >= since ? await source.documentsWrittenSince(projectId, since) : [];
+    latestWrite && now.getTime() - latestWrite.getTime() <= 2 * RECENT_WRITE_WINDOW_MS
+      ? await source.documentsWrittenSince(
+          projectId,
+          new Date(latestWrite.getTime() - RECENT_WRITE_WINDOW_MS),
+        )
+      : [];
   return sha256(
     JSON.stringify([
       count,

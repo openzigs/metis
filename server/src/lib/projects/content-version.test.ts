@@ -179,11 +179,11 @@ describe("getProjectContentVersion", () => {
     expect(a.docsVersion).toBe(b.docsVersion);
   });
 
-  it("#1864 hashes only the rows written within the window before now", async () => {
-    const old = new Date(AT.getTime() - RECENT_WRITE_WINDOW_MS - 1);
+  it("#1864 hashes only the rows written within the window before the latest write", async () => {
+    const old = new Date(WRITTEN.getTime() - RECENT_WRITE_WINDOW_MS - 1);
     const s = source({ docs: [doc("d1"), doc("d0", { updatedAt: old })] });
     const a = await version("p", s);
-    expect(s.since).toEqual([new Date(AT.getTime() - RECENT_WRITE_WINDOW_MS)]);
+    expect(s.since).toEqual([new Date(WRITTEN.getTime() - RECENT_WRITE_WINDOW_MS)]);
     // A row older than the window is covered by the count and the latest write
     // alone: its state is not read, so a change the database never stamped
     // (impossible through Prisma) would not show.
@@ -194,31 +194,43 @@ describe("getProjectContentVersion", () => {
     expect(b.key).toBe(a.key);
   });
 
-  it("#1944 reads no row once the latest write is older than the window", async () => {
+  it("#1944 reads no row once the latest write is over two windows old", async () => {
     // A bulk write (a repo sync): many rows in the same minute, then nothing.
     const docs = Array.from({ length: 50 }, (_, i) =>
       doc(`d${i}`, { updatedAt: new Date(WRITTEN.getTime() - i * 100) }),
     );
-    const later = new Date(WRITTEN.getTime() + RECENT_WRITE_WINDOW_MS + 1);
+    const later = new Date(WRITTEN.getTime() + 2 * RECENT_WRITE_WINDOW_MS + 1);
     const s = source({ docs });
     const v = await version("p", s, later);
     expect(s.since).toEqual([]);
     // The count and the latest write still stand for the set.
     const fewer = await version("p", source({ docs: docs.slice(1) }), later);
     expect(fewer.key).not.toBe(v.key);
+    // Exactly two windows old is still read.
+    const edge = source({ docs });
+    await version("p", edge, new Date(WRITTEN.getTime() + 2 * RECENT_WRITE_WINDOW_MS));
+    expect(edge.since).toHaveLength(1);
   });
 
-  it("#1944 a minute after a bulk write, rows from the minute before it are not read", async () => {
-    const lastMinute = (over: Partial<Doc> = {}) =>
-      doc("d0", { updatedAt: new Date(WRITTEN.getTime() - 30_000), ...over });
-    const now = new Date(WRITTEN.getTime() + 45_000);
-    const s = source({ docs: [doc("d1"), lastMinute()] });
-    await version("p", s, now);
-    expect(s.since).toEqual([new Date(now.getTime() - RECENT_WRITE_WINDOW_MS)]);
-    // d0 was within a minute of the latest write but is 75 s old now: not read.
-    const a = await version("p", source({ docs: [doc("d1"), lastMinute()] }), now);
-    const b = await version("p", source({ docs: [doc("d1"), lastMinute({ status: "x" })] }), now);
-    expect(b.key).toBe(a.key);
+  it("#1944 a below-max write from a lagging replica still moves the key after the window passes", async () => {
+    const before = [doc("d1"), doc("d0", { updatedAt: new Date(WRITTEN.getTime() - 30_000) })];
+    // d0 rewritten by a replica whose clock is 20 s behind: stamped below the
+    // max, so neither the count nor the latest write change.
+    const after = [
+      doc("d1"),
+      doc("d0", {
+        updatedAt: new Date(WRITTEN.getTime() - 20_000),
+        status: "failed",
+        aclSubjects: '["x"]',
+      }),
+    ];
+    const k1 = await version("p", source({ docs: before }), AT);
+    // Read 70 s after the latest write: that stamp is 90 s old, outside a
+    // now-anchored window, yet the key must not fall back to k1.
+    const later = new Date(WRITTEN.getTime() + 70_000);
+    const k4 = await version("p", source({ docs: after }), later);
+    expect(k4.key).not.toBe(k1.key);
+    expect(k4.key).not.toBe((await version("p", source({ docs: before }), later)).key);
   });
 
   it("#1944 the real source reads the embedder identity without probing the sidecar", async () => {
