@@ -557,11 +557,12 @@ describe("A4 — production findings (#1874)", () => {
   });
 
   describe("replaying a short BA answer (#2033)", () => {
-    // GR-11: "Are any of those emails part of a dispute or lawsuit the legal
-    // team has asked us to preserve?" — "No.", which MEETS DR-06.
+    // GR-11: "Will the January purge ever delete an email that is part of a
+    // dispute or lawsuit the legal team has asked us to preserve?" — "No.",
+    // which MEETS DR-06 (reworded in #2041).
     const item = () => itemById("GR-11");
     const QUESTION =
-      "Are any of those emails part of a dispute or lawsuit the legal team has asked us to preserve?";
+      "Will the January purge ever delete an email that is part of a dispute or lawsuit the legal team has asked us to preserve?";
     const excerpt = () => corpus.ruleById.get("DR-06")!.clause.split(/\s+/).slice(0, 8).join(" ");
     /** A3 for GR-11: the screen flags DR-06, the judge says it is uncertain, every top-k rule does not apply. */
     const applicability = () => {
@@ -681,7 +682,54 @@ describe("A4 — production findings (#1874)", () => {
       expect(out.answered!.judgements.map((j) => [j.ruleId, j.verdict])).toEqual([
         ["DR-06", "needs-ba-input"],
       ]);
-      expect(out.diagnostics).toMatchObject({ answersReplayed: 1, answersSettled: 0 });
+      // A readable reply that leaves the rule uncertain is a settlement, not a failure (#2041).
+      expect(out.answered).not.toHaveProperty("settleFailures");
+      expect(out.diagnostics).toMatchObject({
+        answersReplayed: 1,
+        answersSettled: 0,
+        answersSettleFailed: 0,
+      });
+    });
+
+    it("counts an open rule the settle could not re-judge as a settle failure: a provider throw (#2041)", async () => {
+      const replies = applicability();
+      let n = 0;
+      const provider = {
+        key: "anthropic",
+        model: "stub-model",
+        offline: false,
+        async chat(): Promise<ChatResponse> {
+          n++;
+          // rejudgeAnswered swallows this throw and settles nothing.
+          if (n === 3) throw new Error("provider down during the settle");
+          return {
+            content: replies[n - 1]!,
+            model: "stub-model",
+            provider: "anthropic",
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          };
+        },
+      } as unknown as AIProvider;
+      const [a4] = buildGoverningArms(["A4"], { model: "m", topK: 2 });
+      const out = await a4!.assess(item(), corpus, { provider });
+      // Screen, judge, the failed settle; no findings call, as DR-06 stays uncertain.
+      expect(n).toBe(3);
+      expect(out.answered).toEqual({
+        judgements: [expect.objectContaining({ ruleId: "DR-06", verdict: "needs-ba-input" })],
+        settleFailures: ["DR-06"],
+      });
+      expect(out.answered).not.toHaveProperty("error");
+      expect(out.diagnostics).toMatchObject({ answersSettled: 0, answersSettleFailed: 1 });
+    });
+
+    it("counts a settle whose reply cannot be read twice as a settle failure (#2041)", async () => {
+      const { provider, calls } = stubProvider([...applicability(), "not json", "still not json"]);
+      const [a4] = buildGoverningArms(["A4"], { model: "m", topK: 2 });
+      const out = await a4!.assess(item(), corpus, { provider });
+      // Screen, judge, settle, its re-ask.
+      expect(calls).toHaveLength(4);
+      expect(out.answered!.settleFailures).toEqual(["DR-06"]);
+      expect(out.diagnostics).toMatchObject({ answersSettleFailed: 1 });
     });
 
     it("keeps the reading before the answer when the replay throws, and says why", async () => {
@@ -753,6 +801,7 @@ describe("A4 — production findings (#1874)", () => {
       expect(res.diagnostics).toEqual({
         answersReplayed: 1,
         answersSettled: 0,
+        answersSettleFailed: 0,
         answeredNoEvidenceDemoted: 0,
       });
     });

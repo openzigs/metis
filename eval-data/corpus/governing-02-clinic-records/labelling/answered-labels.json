@@ -1,0 +1,186 @@
+{
+  "issue": "#2041",
+  "labellers": "two claude-opus-5-5 sessions through `claude -p` with every tool switched off (`--tools \"\"`), no MCP server (`--strict-mcp-config` with an empty config), no settings sources and no session persistence, each run from an empty directory; each was given only answered-labeller-<n>-prompt.txt: policy-v1, and for each of the 7 short-answer pairs the requirement, the rule id, the business question and the BA's answer. Neither saw a label (before or after #2033), a rule summary, an arm, a prompt of the product, or the other's labels. The two prompts differ only in the order of the cases (seeds 20411 and 20412).",
+  "labeller1": {
+    "costUsd": 0.067,
+    "labels": [
+      {
+        "n": 1,
+        "item": "KV-02",
+        "rule": "TP-01",
+        "verdict": "compliant",
+        "reason": "TP-01 requires the company to sign 'a data processing agreement before it receives any' patient information, and the BA confirms a signed agreement exists with the hosting supplier. The overseas location is a matter for TP-02, not this rule."
+      },
+      {
+        "n": 2,
+        "item": "KV-28",
+        "rule": "TP-05",
+        "verdict": "gap",
+        "reason": "TP-05 bars carrying patient information on removable media 'except encrypted drives issued by the IT service desk'. The BA says the stick is not such a drive, yet it would carry names, addresses and conditions."
+      },
+      {
+        "n": 3,
+        "item": "KV-14",
+        "rule": "CM-01",
+        "verdict": "compliant",
+        "reason": "CM-01 releases a result 'only once the clinician who ordered it has reviewed it'. The BA confirms results appear in the family account only after that review."
+      },
+      {
+        "n": 4,
+        "item": "KV-05",
+        "rule": "MS-04",
+        "verdict": "gap",
+        "reason": "MS-04 requires children's doses to be 'worked out from a weight measured within the previous thirty days'. The calculator uses the latest growth-chart figure and, per the BA, will not refuse one older than thirty days."
+      },
+      {
+        "n": 5,
+        "item": "KV-33",
+        "rule": "CM-04",
+        "verdict": "gap",
+        "reason": "CM-04 requires 'a copy of every letter and message sent to a patient' to be kept on their chart. The BA says copies of the emailed letters are not saved there."
+      },
+      {
+        "n": 6,
+        "item": "KV-31",
+        "rule": "IR-04",
+        "verdict": "compliant",
+        "reason": "Moving the allergies panel alters what clinicians see on screen, so IR-04 requires a clinical safety officer assessment before release, filed in the hazard log. The BA confirms this is in place before go-live."
+      },
+      {
+        "n": 7,
+        "item": "KV-26",
+        "rule": "TP-03",
+        "verdict": "compliant",
+        "reason": "TP-03 requires a device to be 'entered in the device inventory, with its owner and software version, before it is connected'. The BA confirms exactly this."
+      }
+    ]
+  },
+  "labeller2": {
+    "costUsd": 0.054,
+    "labels": [
+      {
+        "n": 1,
+        "item": "KV-02",
+        "rule": "TP-01",
+        "verdict": "compliant",
+        "reason": "TP-01 requires a supplier handling patient information to have signed a data processing agreement before it receives any. The BA confirms one is signed with the hosting supplier. The overseas region is a TP-02 matter, not this rule."
+      },
+      {
+        "n": 2,
+        "item": "KV-28",
+        "rule": "TP-05",
+        "verdict": "gap",
+        "reason": "TP-05 bars carrying patient information on removable media 'except encrypted drives issued by the IT service desk'. The BA says the stick is not one, yet it would carry names, addresses and conditions."
+      },
+      {
+        "n": 3,
+        "item": "KV-33",
+        "rule": "CM-04",
+        "verdict": "gap",
+        "reason": "CM-04 requires 'a copy of every letter and message sent to a patient is kept on their chart'. The BA confirms emailed referral letters are not saved to the chart."
+      },
+      {
+        "n": 4,
+        "item": "KV-26",
+        "rule": "TP-03",
+        "verdict": "compliant",
+        "reason": "TP-03 requires the device to be entered in the inventory 'with its owner and software version, before it is connected'. The BA confirms exactly this."
+      },
+      {
+        "n": 5,
+        "item": "KV-31",
+        "rule": "IR-04",
+        "verdict": "compliant",
+        "reason": "IR-04 requires the clinical safety officer to assess a change to what clinicians see before release, with the assessment filed in the hazard log. The BA confirms this is done before go-live."
+      },
+      {
+        "n": 6,
+        "item": "KV-14",
+        "rule": "CM-01",
+        "verdict": "compliant",
+        "reason": "CM-01 allows release to the portal 'only once the clinician who ordered it has reviewed it'. The BA confirms results appear in the family account only after that review, which meets or exceeds the rule."
+      },
+      {
+        "n": 7,
+        "item": "KV-05",
+        "rule": "MS-04",
+        "verdict": "gap",
+        "reason": "MS-04 requires children's doses to be 'worked out from a weight measured within the previous thirty days'. The BA says the calculator will not refuse an older growth-chart figure, so it would suggest doses from a stale weight."
+      }
+    ]
+  },
+  "agreement": {
+    "pairs": 7,
+    "sameVerdict": 7,
+    "observed": 1.0,
+    "chance": 0.5102,
+    "kappa": 1.0
+  },
+  "adjudication": "none needed: the two labellers agreed on every pair",
+  "pairs": [
+    {
+      "item": "KV-02",
+      "rule": "TP-01",
+      "labeller1": "compliant",
+      "labeller2": "compliant",
+      "agreed": true,
+      "decision": "compliant",
+      "before2041": "compliant"
+    },
+    {
+      "item": "KV-05",
+      "rule": "MS-04",
+      "labeller1": "gap",
+      "labeller2": "gap",
+      "agreed": true,
+      "decision": "gap",
+      "before2041": "gap"
+    },
+    {
+      "item": "KV-14",
+      "rule": "CM-01",
+      "labeller1": "compliant",
+      "labeller2": "compliant",
+      "agreed": true,
+      "decision": "compliant",
+      "before2041": "compliant"
+    },
+    {
+      "item": "KV-26",
+      "rule": "TP-03",
+      "labeller1": "compliant",
+      "labeller2": "compliant",
+      "agreed": true,
+      "decision": "compliant",
+      "before2041": "compliant"
+    },
+    {
+      "item": "KV-28",
+      "rule": "TP-05",
+      "labeller1": "gap",
+      "labeller2": "gap",
+      "agreed": true,
+      "decision": "gap",
+      "before2041": "gap"
+    },
+    {
+      "item": "KV-31",
+      "rule": "IR-04",
+      "labeller1": "compliant",
+      "labeller2": "compliant",
+      "agreed": true,
+      "decision": "compliant",
+      "before2041": "compliant"
+    },
+    {
+      "item": "KV-33",
+      "rule": "CM-04",
+      "labeller1": "gap",
+      "labeller2": "gap",
+      "agreed": true,
+      "decision": "gap",
+      "before2041": "gap"
+    }
+  ],
+  "changedFromBefore2041": []
+}

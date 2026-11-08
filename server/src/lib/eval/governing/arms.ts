@@ -708,6 +708,27 @@ export interface ReplayAnswersInput {
  * An answered rule applicability did not find, or the settle dropped, gets no
  * finding: a miss. A throw is returned as `error`, so the reading before the
  * answers is kept.
+ *
+ * #2041 — `rejudgeAnswered` swallows a provider throw and a reply it cannot
+ * read twice, and returns no settlement for that question, so its rule stays
+ * `uncertain` and would read as still asking. Each open rule that comes back
+ * with no settlement is returned in `settleFailures` instead, and scored as a
+ * settle failure. A readable reply that leaves the rule `uncertain` is a
+ * settlement, and still asks.
+ *
+ * #2041 — how this differs from production's findings pass (`pairsOf`,
+ * `governing/findings-store.ts`), which judges every rule the requirement
+ * applies or may apply to, and passes only the answers a settle stored on a
+ * decision (`settled`):
+ *   - the replay passes every short answer, including one on a rule that
+ *     already applied before the answer (production never settles that rule,
+ *     so its answer would not reach the findings call) and one whose settle
+ *     failed (production stores nothing, so the answer would be lost until a
+ *     later settle);
+ *   - it judges only the answered rules, not the requirement's other pairs,
+ *     whose findings the reading before the answers already holds.
+ * So it measures how the findings call reads a short answer with its question,
+ * not production's end-to-end path after an answer.
  */
 export async function replayAnswers(
   input: ReplayAnswersInput,
@@ -718,6 +739,7 @@ export async function replayAnswers(
   const decisions = new Map(input.decisions.map((d) => [d.ruleId, d]));
   let settled = 0;
   let demoted = 0;
+  const settleFailures: string[] = [];
   try {
     const open = replay.filter((p) => decisions.get(p.ruleId)?.verdict === "uncertain");
     if (open.length > 0) {
@@ -746,6 +768,8 @@ export async function replayAnswers(
         decisions.set(s.ruleId, { ...d, verdict: s.verdict, reason: s.reason });
         if (s.verdict !== "uncertain") settled++;
       }
+      const answeredBack = new Set(settlements.map((s) => s.ruleId));
+      for (const p of open) if (!answeredBack.has(p.ruleId)) settleFailures.push(p.ruleId);
     }
     const answeredRules = new Set(replay.map((p) => p.ruleId));
     const pairs = findingPairs(
@@ -765,10 +789,11 @@ export async function replayAnswers(
       demoted = report.noEvidenceDemoted;
     }
     return {
-      answered: { judgements },
+      answered: { judgements, ...(settleFailures.length > 0 ? { settleFailures } : {}) },
       diagnostics: {
         answersReplayed: replay.length,
         answersSettled: settled,
+        answersSettleFailed: settleFailures.length,
         answeredNoEvidenceDemoted: demoted,
       },
     };
@@ -785,6 +810,7 @@ export async function replayAnswers(
       diagnostics: {
         answersReplayed: replay.length,
         answersSettled: settled,
+        answersSettleFailed: settleFailures.length,
         answeredNoEvidenceDemoted: 0,
       },
     };
