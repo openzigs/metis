@@ -321,6 +321,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         businessQuestion: "Will anyone export the saved cards in bulk?",
         clauseExcerpt: AUDIT_V1,
       });
+      // #2017 — the run has settled, so nothing is about to change.
+      expect(first.body.data.refreshing).toBe(false);
       expect(first.body.data.summary).toMatchObject({
         total: 2,
         compliant: 1,

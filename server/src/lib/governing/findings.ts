@@ -149,7 +149,7 @@ const FENCE_NOTE =
 const SYSTEM = [
   "You check one business requirement against governing rules (internal policy obligations) that apply to it.",
   "Give EVERY rule listed exactly one status:",
-  '- compliant: the requirement, or one of the business analyst\'s answers, affirmatively provides what the rule asks. Copy the words that do so, exactly, into "satisfiedBy".',
+  '- compliant: the requirement, or one of the business analyst\'s answers, affirmatively provides what the rule asks. Copy the words that do so, exactly, into "satisfiedBy": one contiguous run of words from a single source, holding at least three words that say what is done (filler such as "the system shall" does not count). The source is the requirement or one answer; quote a short answer ("Yes, we do.") together with the end of the question it answers, leaving out the "Their answer:" label.',
   "- gap: building the requirement as written would breach the rule, or it leaves out something the rule requires.",
   '- needs-ba-input: whether it meets the rule turns on a business fact the requirement does not state. Give that fact as one plain question in "businessQuestion".',
   "Silence is never compliant: a requirement that says nothing about what a rule asks is gap or needs-ba-input.",
@@ -264,9 +264,12 @@ function evidenceWords(text: string): string[] {
     .filter(Boolean);
 }
 
-/** True when `needle` occurs in `hay` as a run of whole words. */
-function containsWordRun(hay: readonly string[], needle: readonly string[]): boolean {
-  for (let i = 0; i + needle.length <= hay.length; i++) {
+/**
+ * True when `needle` occurs in `hay` as a run of whole words that ends at or
+ * after word `from` (default 0): a run lying wholly before `from` is not found.
+ */
+function containsWordRun(hay: readonly string[], needle: readonly string[], from = 0): boolean {
+  for (let i = Math.max(0, from - needle.length + 1); i + needle.length <= hay.length; i++) {
     if (needle.every((w, j) => hay[i + j] === w)) return true;
   }
   return false;
@@ -281,6 +284,12 @@ function containsWordRun(hay: readonly string[], needle: readonly string[]): boo
  * fragment that crosses word boundaries ("em shall all" inside "system shall
  * allow") is not found; and not counting boilerplate, so "the system shall"
  * is not evidence of anything.
+ *
+ * #2017 — an answer is searched together with the question it answers, so a
+ * short answer ("Yes, we do.") is evidence when quoted with the end of its
+ * question ("will every export be logged? yes, we do"). The run must reach
+ * into the answer: the question is METIS's own words, and quoting it alone is
+ * no evidence of what the business does.
  */
 export function evidenceIsPresent(
   satisfiedBy: string,
@@ -290,9 +299,11 @@ export function evidenceIsPresent(
   const needle = evidenceWords(satisfiedBy);
   const counted = needle.filter((w) => !EVIDENCE_STOP_WORDS.has(w)).length;
   if (counted < MIN_EVIDENCE_WORDS) return false;
-  return [requirementText, ...answers.map((a) => a.answer)].some((t) =>
-    containsWordRun(evidenceWords(t), needle),
-  );
+  if (containsWordRun(evidenceWords(requirementText), needle)) return true;
+  return answers.some((a) => {
+    const question = evidenceWords(a.question ?? "");
+    return containsWordRun([...question, ...evidenceWords(a.answer)], needle, question.length);
+  });
 }
 
 /**
