@@ -338,9 +338,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         verdict: "applies",
       });
       // #1874 — the answer fed the findings too: the rule that now applies has
-      // one, the rule that does not apply has none.
-      const findings = await db.governingFinding.findMany({ where: { analysisId: id } });
-      expect(findings.map((f) => f.ruleId)).toEqual([rules["EN-03"]!]);
+      // one, the rule that does not apply has none. #2010 — written off the
+      // request path, after the response, so read until it lands.
+      await vi.waitFor(
+        async () => {
+          const findings = await db.governingFinding.findMany({ where: { analysisId: id } });
+          expect(findings.map((f) => f.ruleId)).toEqual([rules["EN-03"]!]);
+        },
+        { timeout: 5_000, interval: 25 },
+      );
     });
 
     it("the CSV import answers it the same way", async () => {

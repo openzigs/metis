@@ -22,7 +22,7 @@ import {
   type GoverningFindingStatus,
 } from "@metis/shared";
 import type { AIProvider } from "../ai/types.js";
-import { buildAuditLogData } from "../audit/audit-service.js";
+import { buildAuditLogData, SYSTEM_ACTOR_ID } from "../audit/audit-service.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { readGoverningApplicability } from "./applicability-store.js";
@@ -40,11 +40,23 @@ const log = createChildLogger("governing-findings-store");
 /** How many requirements are evaluated at once. */
 const FINDINGS_CONCURRENCY = 4;
 
+/**
+ * #2010 — the findings write's interactive-transaction timeout. One read per
+ * requirement plus one upsert per (requirement, rule) outgrows Prisma's 5 s
+ * default on Postgres for a large analysis, and a timed-out write rolls back
+ * whole and is only logged, so the run silently had no findings. 60 s, as
+ * `persistRequirements` (`REPLACE_REQUIREMENTS_TIMEOUT_MS`) sets for the same
+ * shape of work.
+ */
+export const GOVERNING_FINDINGS_WRITE_TIMEOUT_MS = 60_000;
+
 /** What one production run did. */
 export interface GoverningFindingsRun {
   requirements: number;
   written: number;
   removed: number;
+  /** #2010 — BA decisions cleared because the finding they were made on changed. */
+  decisionsCleared: number;
   unverifiedCitations: number;
   noEvidenceDemoted: number;
   /** Requirements whose evaluation failed; their earlier findings are left as they were. */
@@ -63,17 +75,27 @@ export interface ProduceGoverningFindingsInput {
   applicability?: GoverningAnalysisApplicability | null;
 }
 
-/** The pairs of one requirement a finding is produced for, with the BA's answers. */
+/**
+ * The pairs of one requirement a finding is produced for, with the BA's
+ * answers. #2010 — and `ruleGone`: rules the pair still applies to that are no
+ * longer citable (soft-deleted, or their document deleted). No finding is
+ * produced for those, and their earlier rows are left as they were: "a deleted
+ * rule leaves its findings", BA decision included.
+ */
 function pairsOf(
   requirement: GoverningAnalysisApplicability["requirements"][number],
   rules: ReadonlyMap<string, FindingRule>,
-): { pairs: FindingPair[]; answers: FindingAnswer[] } {
+): { pairs: FindingPair[]; answers: FindingAnswer[]; ruleGone: Set<string> } {
   const pairs: FindingPair[] = [];
   const answers: FindingAnswer[] = [];
+  const ruleGone = new Set<string>();
   for (const d of requirement.decisions) {
     if (d.verdict === "does-not-apply") continue;
     const rule = rules.get(d.ruleId);
-    if (!rule) continue;
+    if (!rule) {
+      ruleGone.add(d.ruleId);
+      continue;
+    }
     pairs.push({
       rule,
       applicability: d.verdict,
@@ -87,7 +109,7 @@ function pairsOf(
       if (!answers.some((x) => x.answer === a.answer && x.question === a.question)) answers.push(a);
     }
   }
-  return { pairs, answers };
+  return { pairs, answers, ruleGone };
 }
 
 async function workspaceOf(projectId: string): Promise<string | null> {
@@ -129,6 +151,7 @@ export async function produceGoverningFindingsForAnalysis(
     requirements: 0,
     written: 0,
     removed: 0,
+    decisionsCleared: 0,
     unverifiedCitations: 0,
     noEvidenceDemoted: 0,
     failed: 0,
@@ -151,13 +174,13 @@ export async function produceGoverningFindingsForAnalysis(
   const { rules, revisionText } = await citableWorkspaceRules(workspaceId, [...new Set(ids)]);
   const byId = new Map<string, FindingRule>(rules.map((r) => [r.id, r]));
 
-  const evaluated = new Map<string, EvaluatedFinding[]>();
+  const evaluated = new Map<string, { findings: EvaluatedFinding[]; ruleGone: Set<string> }>();
   let cursor = 0;
   const worker = async () => {
     for (;;) {
       const r = requirements[cursor++];
       if (!r) return;
-      const { pairs, answers } = pairsOf(r, byId);
+      const { pairs, answers, ruleGone } = pairsOf(r, byId);
       try {
         const report = await evaluateRequirementFindings({
           requirement: { id: r.requirementId, text: r.text },
@@ -168,7 +191,7 @@ export async function produceGoverningFindingsForAnalysis(
           ...(input.model ? { model: input.model } : {}),
           ...(input.signal ? { signal: input.signal } : {}),
         });
-        evaluated.set(r.requirementId, report.findings);
+        evaluated.set(r.requirementId, { findings: report.findings, ruleGone });
         run.unverifiedCitations += report.unverifiedCitations;
         run.noEvidenceDemoted += report.noEvidenceDemoted;
       } catch (err) {
@@ -187,45 +210,72 @@ export async function produceGoverningFindingsForAnalysis(
   );
   run.requirements = evaluated.size;
 
-  await prisma.$transaction(async (tx) => {
-    for (const [requirementId, findings] of evaluated) {
-      const existing = await tx.governingFinding.findMany({
-        where: { analysisId: input.analysisId, requirementId },
-      });
-      const keep = new Set(findings.map((f) => f.rule.id));
-      const stale = existing.filter((e) => !keep.has(e.ruleId)).map((e) => e.id);
-      if (stale.length > 0) {
-        await tx.governingFinding.deleteMany({
-          where: { analysisId: input.analysisId, id: { in: stale } },
+  await prisma.$transaction(
+    async (tx) => {
+      for (const [requirementId, { findings, ruleGone }] of evaluated) {
+        const existing = await tx.governingFinding.findMany({
+          where: { analysisId: input.analysisId, requirementId },
         });
-        run.removed += stale.length;
-      }
-      for (const f of findings) {
-        const data = rowData(f);
-        const prior = existing.find((e) => e.ruleId === f.rule.id);
-        const unchanged =
-          prior !== undefined &&
-          prior.status === data.status &&
-          prior.clauseExcerpt === data.clauseExcerpt &&
-          prior.revisionId === data.revisionId;
-        const clearDecision = unchanged
-          ? {}
-          : { decision: null, decisionNote: null, decidedById: null, decidedAt: null };
-        await tx.governingFinding.upsert({
-          where: {
-            analysisId_requirementId_ruleId: {
-              analysisId: input.analysisId,
-              requirementId,
-              ruleId: f.rule.id,
+        const keep = new Set([...findings.map((f) => f.rule.id), ...ruleGone]);
+        const stale = existing.filter((e) => !keep.has(e.ruleId)).map((e) => e.id);
+        if (stale.length > 0) {
+          await tx.governingFinding.deleteMany({
+            where: { analysisId: input.analysisId, id: { in: stale } },
+          });
+          run.removed += stale.length;
+        }
+        for (const f of findings) {
+          const data = rowData(f);
+          const prior = existing.find((e) => e.ruleId === f.rule.id);
+          const unchanged =
+            prior !== undefined &&
+            prior.status === data.status &&
+            prior.clauseExcerpt === data.clauseExcerpt &&
+            prior.revisionId === data.revisionId;
+          const clearDecision = unchanged
+            ? {}
+            : { decision: null, decisionNote: null, decidedById: null, decidedAt: null };
+          // #2010 — A09: erasing a BA's decision is recorded like making one, by
+          // the system, in the same transaction, so the trail never says
+          // "accepted" over a row that reads null with nothing saying why.
+          if (!unchanged && prior?.decision) {
+            await tx.auditLog.create({
+              data: buildAuditLogData({
+                actorId: SYSTEM_ACTOR_ID,
+                action: "governing.finding.decision-cleared",
+                targetType: "governing_finding",
+                targetId: prior.id,
+                metadata: {
+                  analysisId: input.analysisId,
+                  requirementId,
+                  controlId: prior.controlId,
+                  previousDecision: prior.decision,
+                  previousDecidedById: prior.decidedById,
+                  previousStatus: prior.status,
+                  status: data.status,
+                  reason: "the finding changed when it was produced again",
+                },
+              }),
+            });
+            run.decisionsCleared++;
+          }
+          await tx.governingFinding.upsert({
+            where: {
+              analysisId_requirementId_ruleId: {
+                analysisId: input.analysisId,
+                requirementId,
+                ruleId: f.rule.id,
+              },
             },
-          },
-          create: { analysisId: input.analysisId, requirementId, ruleId: f.rule.id, ...data },
-          update: { ...data, ...clearDecision },
-        });
-        run.written++;
+            create: { analysisId: input.analysisId, requirementId, ruleId: f.rule.id, ...data },
+            update: { ...data, ...clearDecision },
+          });
+          run.written++;
+        }
       }
-    }
-  });
+    },
+    { timeout: GOVERNING_FINDINGS_WRITE_TIMEOUT_MS },
+  );
   log.info("governing findings stored", { analysisId: input.analysisId, ...run });
   return run;
 }

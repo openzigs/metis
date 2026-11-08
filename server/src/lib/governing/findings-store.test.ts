@@ -10,6 +10,7 @@ import type { GoverningAnalysisApplicability, GoverningFinding } from "@metis/sh
 const db = vi.hoisted(() => ({
   project: { findFirst: vi.fn() },
   governingFinding: { findMany: vi.fn(), deleteMany: vi.fn(), upsert: vi.fn() },
+  auditLog: { create: vi.fn() },
   $transaction: vi.fn(),
 }));
 vi.mock("../prisma.js", () => ({ prisma: db }));
@@ -26,8 +27,11 @@ vi.mock("./findings.js", () => ({
   evaluateRequirementFindings: (...a: unknown[]) => evaluateRequirementFindings(...a),
 }));
 
-const { produceGoverningFindingsForAnalysis, summariseFindings } =
-  await import("./findings-store.js");
+const {
+  GOVERNING_FINDINGS_WRITE_TIMEOUT_MS,
+  produceGoverningFindingsForAnalysis,
+  summariseFindings,
+} = await import("./findings-store.js");
 
 const provider = { key: "anthropic", model: "m", offline: false, chat: vi.fn() } as never;
 const STORED: GoverningAnalysisApplicability = {
@@ -182,6 +186,171 @@ describe("produceGoverningFindingsForAnalysis — edges", () => {
       where: { analysisId: "a", id: { in: ["gf_old"] } },
     });
     expect(run.removed).toBe(1);
+  });
+
+  /** One evaluated finding of REQ-001's rule r1, with `status`. */
+  const finding = (status: string) => ({
+    requirementId: "REQ-001",
+    rule: RULE,
+    status,
+    reasoning: "r",
+    citation: { clauseStart: 0, clauseEnd: 6, clauseExcerpt: "clause" },
+    citationDropped: false,
+    modelStatus: null,
+    businessQuestion: null,
+  });
+  const prior = (over: Record<string, unknown> = {}) => ({
+    id: "gf_r1",
+    ruleId: "r1",
+    controlId: "C-1",
+    status: "compliant",
+    clauseExcerpt: "clause",
+    revisionId: "rev",
+    decision: "accepted",
+    decidedById: "u_ba",
+    ...over,
+  });
+
+  it("#2010 — the write is one transaction with the 60 s timeout, not Prisma's 5 s default", async () => {
+    evaluateRequirementFindings.mockResolvedValue({
+      findings: [],
+      unverifiedCitations: 0,
+      noEvidenceDemoted: 0,
+    });
+    await produceGoverningFindingsForAnalysis({
+      analysisId: "a",
+      projectId: "p",
+      provider,
+      applicability: STORED,
+    });
+    expect(db.$transaction).toHaveBeenCalledTimes(1);
+    expect(db.$transaction.mock.calls[0]![1]).toEqual({ timeout: 60_000 });
+    expect(GOVERNING_FINDINGS_WRITE_TIMEOUT_MS).toBe(60_000);
+  });
+
+  it("#2010 — a changed finding's cleared BA decision is audited in the same transaction; an unchanged one's is kept, unaudited", async () => {
+    evaluateRequirementFindings.mockResolvedValue({
+      findings: [finding("gap")],
+      unverifiedCitations: 0,
+      noEvidenceDemoted: 0,
+    });
+    db.governingFinding.findMany.mockResolvedValue([prior()]);
+    const run = await produceGoverningFindingsForAnalysis({
+      analysisId: "a",
+      projectId: "p",
+      provider,
+      applicability: STORED,
+      requirementIds: ["REQ-001"],
+    });
+    expect(run.decisionsCleared).toBe(1);
+    expect(db.auditLog.create).toHaveBeenCalledTimes(1);
+    const row = (db.auditLog.create.mock.calls[0]![0] as { data: Record<string, unknown> }).data;
+    expect(row).toMatchObject({
+      actorId: null,
+      action: "governing.finding.decision-cleared",
+      targetType: "governing_finding",
+      targetId: "gf_r1",
+    });
+    expect(JSON.parse(row.metadata as string)).toMatchObject({
+      analysisId: "a",
+      requirementId: "REQ-001",
+      previousDecision: "accepted",
+      previousDecidedById: "u_ba",
+      previousStatus: "compliant",
+      status: "gap",
+    });
+    const update = (
+      db.governingFinding.upsert.mock.calls[0]![0] as { update: Record<string, unknown> }
+    ).update;
+    expect(update).toMatchObject({ decision: null, decidedById: null });
+
+    // Unchanged: the decision stands, and nothing is audited.
+    vi.clearAllMocks();
+    db.$transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn(db));
+    db.project.findFirst.mockResolvedValue({ workspaceId: "ws" });
+    evaluateRequirementFindings.mockResolvedValue({
+      findings: [finding("compliant")],
+      unverifiedCitations: 0,
+      noEvidenceDemoted: 0,
+    });
+    db.governingFinding.findMany.mockResolvedValue([prior()]);
+    const kept = await produceGoverningFindingsForAnalysis({
+      analysisId: "a",
+      projectId: "p",
+      provider,
+      applicability: STORED,
+      requirementIds: ["REQ-001"],
+    });
+    expect(kept.decisionsCleared).toBe(0);
+    expect(db.auditLog.create).not.toHaveBeenCalled();
+    expect(
+      (db.governingFinding.upsert.mock.calls[0]![0] as { update: Record<string, unknown> }).update,
+    ).not.toHaveProperty("decision");
+  });
+
+  it("#2010 — a changed finding that had no decision clears nothing worth auditing", async () => {
+    evaluateRequirementFindings.mockResolvedValue({
+      findings: [finding("gap")],
+      unverifiedCitations: 0,
+      noEvidenceDemoted: 0,
+    });
+    db.governingFinding.findMany.mockResolvedValue([prior({ decision: null, decidedById: null })]);
+    const run = await produceGoverningFindingsForAnalysis({
+      analysisId: "a",
+      projectId: "p",
+      provider,
+      applicability: STORED,
+      requirementIds: ["REQ-001"],
+    });
+    expect(run.decisionsCleared).toBe(0);
+    expect(db.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("#2010 — a still-applying pair whose rule is no longer citable keeps its row and decision", async () => {
+    // r1 applies to REQ-001, but the workspace no longer returns it (soft-deleted).
+    citableWorkspaceRules.mockResolvedValue({ rules: [], revisionText: new Map() });
+    evaluateRequirementFindings.mockResolvedValue({
+      findings: [],
+      unverifiedCitations: 0,
+      noEvidenceDemoted: 0,
+    });
+    db.governingFinding.findMany.mockResolvedValue([
+      prior(),
+      // r2 is does-not-apply now: its row is stale and goes.
+      prior({ id: "gf_r2", ruleId: "r2" }),
+    ]);
+    const run = await produceGoverningFindingsForAnalysis({
+      analysisId: "a",
+      projectId: "p",
+      provider,
+      applicability: STORED,
+      requirementIds: ["REQ-001"],
+    });
+    expect(db.governingFinding.deleteMany).toHaveBeenCalledWith({
+      where: { analysisId: "a", id: { in: ["gf_r2"] } },
+    });
+    expect(run.removed).toBe(1);
+    expect(db.governingFinding.upsert).not.toHaveBeenCalled();
+    expect(db.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("#2010 — a cancelled run stops: it throws, counts nothing as failed, and writes nothing", async () => {
+    const controller = new AbortController();
+    evaluateRequirementFindings.mockImplementation(async () => {
+      controller.abort();
+      throw Object.assign(new Error("aborted"), { name: "AbortError" });
+    });
+    await expect(
+      produceGoverningFindingsForAnalysis({
+        analysisId: "a",
+        projectId: "p",
+        provider,
+        applicability: STORED,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("aborted");
+    expect(db.$transaction).not.toHaveBeenCalled();
+    expect(db.governingFinding.upsert).not.toHaveBeenCalled();
   });
 });
 

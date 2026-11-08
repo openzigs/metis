@@ -133,6 +133,8 @@ const { AnalysisOrchestrator } = await import("./orchestrator.js");
 const analysisService = await import("./analysis-service.js");
 const { prisma } = await import("../prisma.js");
 const findingsStore = await import("../governing/findings-store.js");
+/** #2010 — the orchestrator of the run in progress, for a test that cancels it. */
+const orchestrator: { current?: InstanceType<typeof AnalysisOrchestrator> } = {};
 
 const CODE_ANSWER = JSON.stringify({
   summary: "ok",
@@ -238,6 +240,7 @@ async function runPipeline(made: ReturnType<typeof makeProvider> = makeProvider(
       }),
     } as never,
   });
+  orchestrator.current = orch;
   await (
     orch as unknown as {
       runPipeline: (
@@ -466,5 +469,38 @@ describe("#1872 — governing applicability in the analysis pipeline", () => {
     const phase = await import("./custom-agent-phase.js");
     await runPipeline();
     expect(vi.mocked(phase.persistAgentPhaseResults)).toHaveBeenCalledWith(ANALYSIS_ID, []);
+  });
+});
+
+describe("#2010 — a cancel during synthesis", () => {
+  it("ends the run cancelled before the join: no findings are produced or stored", async () => {
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    state.workspaceId = "ws_1872";
+    state.rules = [
+      {
+        id: "rule_audit",
+        revisionId: "rev_1",
+        controlId: "LG-03",
+        summary: "Log every read of customer records to the audit log.",
+        clauseRef: "§3",
+        clauseExcerpt: "Every read of customer records is written to the audit log.",
+        revision: { revisionLabel: "v1", document: { title: "Info Policy" } },
+      },
+    ];
+    const synthesis = await import("./synthesis.js");
+    vi.mocked(synthesis.runSynthesis).mockImplementationOnce(async () => {
+      // The user presses Cancel while synthesis runs; its fallback never throws.
+      expect(await orchestrator.current!.cancel(ANALYSIS_ID, "u1")).toBe(true);
+      return {
+        output: { summary: "s", requirements: [], risks: [], recommendations: [] },
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      } as never;
+    });
+    await runPipeline();
+    expect(vi.mocked(synthesis.runSynthesis)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(analysisService.markAnalysisCancelled)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(analysisService.markAnalysisCompleted)).not.toHaveBeenCalled();
+    expect(vi.mocked(findingsStore.produceGoverningFindingsForAnalysis)).not.toHaveBeenCalled();
+    expect(vi.mocked(analysisService.updateGoverningApplicabilityMetadata)).not.toHaveBeenCalled();
   });
 });

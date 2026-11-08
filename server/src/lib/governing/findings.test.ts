@@ -354,10 +354,39 @@ describe("parsing and evidence", () => {
     ).toBe(true);
     expect(evidenceIsPresent("last four", "keep only the last four digits", [])).toBe(false);
     expect(
-      evidenceIsPresent("logged with who", "nothing", [
-        { answer: "It is logged with who ran it." },
+      evidenceIsPresent("every export is logged", "nothing", [
+        { answer: "Every export is logged with who ran it." },
       ]),
     ).toBe(true);
     expect(evidenceIsPresent("", "anything", [])).toBe(false);
+  });
+
+  it("#2010 — a boilerplate-only quote is not evidence, however long", () => {
+    const requirement = "The system shall allow users to download their order history.";
+    expect(evidenceIsPresent("the system shall", requirement, [])).toBe(false);
+    expect(evidenceIsPresent("The system shall allow users to", requirement, [])).toBe(false);
+    // Function words and boilerplate do not count: two content words are not three.
+    expect(evidenceIsPresent("users to download their order", requirement, [])).toBe(false);
+    // Three content words do, among any number of boilerplate ones.
+    expect(evidenceIsPresent("download their order history", requirement, [])).toBe(true);
+  });
+
+  it("#2010 — evidence is matched on whole words, never across a word boundary", () => {
+    const requirement = "The system shall allow every export to be logged.";
+    // "em shall all" sits inside "system shall allow" as characters, not as words.
+    expect(evidenceIsPresent("em shall all", requirement, [])).toBe(false);
+    expect(evidenceIsPresent("stem shall allow every", requirement, [])).toBe(false);
+    // Three content words, each cut at a word boundary: still not in the text as words.
+    expect(evidenceIsPresent("porter logs download", "Every exporter logs downloads.", [])).toBe(
+      false,
+    );
+    expect(evidenceIsPresent("exporter logs downloads", "Every exporter logs downloads.", [])).toBe(
+      true,
+    );
+    expect(evidenceIsPresent("allow every export to be logged", requirement, [])).toBe(true);
+    // Punctuation is set aside on both sides, as case and spacing are.
+    expect(evidenceIsPresent("every export, to be logged!", requirement, [])).toBe(true);
+    // A negation is content: it changes what the quote says.
+    expect(evidenceIsPresent("never export cards", "We never export cards.", [])).toBe(true);
   });
 });

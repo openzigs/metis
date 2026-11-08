@@ -54,7 +54,19 @@ vi.mock("../src/lib/prisma.js", () => {
   return { prisma, resolveDatabaseProvider: () => "sqlite" };
 });
 
+// #2010 — the findings refresh an answer triggers: held open until a test releases it.
+const refresh = vi.hoisted(() => ({ release: () => {} }));
+vi.mock("../src/lib/governing/findings-store.js", () => ({
+  produceGoverningFindingsForAnalysis: vi.fn(
+    () =>
+      new Promise((resolve) => {
+        refresh.release = () => resolve({ requirements: 0, written: 0 });
+      }),
+  ),
+}));
+
 const { ClarificationDialog } = await import("../src/lib/analysis/clarification-dialog.js");
+const findingsStore = await import("../src/lib/governing/findings-store.js");
 const { governingQuestionSourceFor } =
   await import("../src/lib/governing/applicability-questions.js");
 const { readGoverningApplicability } = await import("../src/lib/governing/applicability-store.js");
@@ -433,5 +445,40 @@ describe("#1873 — flag off: question generation is unchanged", () => {
       questions: r.questions.map(({ id: _id, ...q }) => q),
     }));
     expect(JSON.stringify({ round, calls: chat.mock.calls }, null, 2)).toMatchSnapshot();
+  });
+});
+
+describe("#2010 — the findings refresh after an answer is off the request path", () => {
+  it("the submit returns while the refresh is still running, and the refresh is not under the request's signal", async () => {
+    const { provider } = model();
+    const dialog = dialogWith(provider);
+    const state = await dialog.startOrContinue(ANALYSIS, REQS);
+    const q = state.rounds[0]!.questions[0]!;
+    const request = new AbortController();
+    // The refresh never finishes unless released: a submit that awaited it would hang.
+    const submitted = await Promise.race([
+      dialog
+        .submitAnswers(
+          ANALYSIS,
+          [{ questionId: q.id, answer: "Yes — the whole number." }],
+          REQS,
+          request.signal,
+        )
+        .then(() => "returned"),
+      new Promise((resolve) => setTimeout(() => resolve("waited for the refresh"), 1_000)),
+    ]);
+    expect(submitted).toBe("returned");
+    const produce = vi.mocked(findingsStore.produceGoverningFindingsForAnalysis);
+    expect(produce).toHaveBeenCalledTimes(1);
+    expect(produce.mock.calls[0]![0]).toMatchObject({
+      analysisId: ANALYSIS,
+      projectId: PROJECT,
+      requirementIds: ["REQ-001"],
+    });
+    expect(produce.mock.calls[0]![0]).not.toHaveProperty("signal");
+    // The settlement itself was committed before the submit returned.
+    const read = await readGoverningApplicability(ANALYSIS);
+    expect(read!.requirements[0]!.decisions[0]).toMatchObject({ verdict: "applies" });
+    refresh.release();
   });
 });

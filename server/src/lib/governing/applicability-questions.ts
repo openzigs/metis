@@ -616,14 +616,17 @@ export function governingQuestionSourceFor(input: {
       });
       // #1874 — the answer feeds the findings too: re-evaluate the requirements
       // it settled pairs of. A failure is logged; the settlement stands.
+      // #2010 — off the request path: the settlement is committed by now, so
+      // the BA's submit no longer waits for one model call per affected
+      // requirement. Not under the request's signal either: a client that
+      // goes away after the commit must not leave the findings stale.
       if (applied.length > 0) {
-        await produceGoverningFindingsForAnalysis({
+        void produceGoverningFindingsForAnalysis({
           analysisId: input.analysisId,
           projectId: input.projectId,
           provider: input.provider,
           requirementIds: [...new Set(applied.map((s) => s.requirementId))],
           ...(input.model ? { model: input.model } : {}),
-          ...(signal ? { signal } : {}),
         }).catch((err: unknown) => {
           log.warn("governing findings could not be refreshed after an answer", {
             analysisId: input.analysisId,
