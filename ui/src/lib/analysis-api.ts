@@ -39,6 +39,7 @@ import type {
   RequirementSourceDivergence,
   RequirementCriteriaProposal,
   SharedCriteriaRecord,
+  GoverningQuestionLink,
 } from "@metis/shared";
 
 export type {
@@ -974,6 +975,12 @@ export interface ClarifyingQuestion {
   groundingFailed?: boolean;
   /** Suggested answer text to pre-fill (grounded/partial only). */
   groundedAnswer?: string;
+  /**
+   * #1873 — set on a business question asked to settle governing-rule
+   * applicability: the analysis requirement and rules it settles. The
+   * governing findings panel links a "Needs BA input" finding to it (#1876).
+   */
+  governing?: GoverningQuestionLink;
   /** Supporting citations for the suggested answer. */
   groundingCitations?: GroundingCitation[];
   /**

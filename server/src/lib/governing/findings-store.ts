@@ -189,23 +189,42 @@ export function governingFindingsRefreshing(analysisId: string): boolean {
 }
 
 /**
+ * #2022 — resolves when `previous` settles; rejects with the abort reason as
+ * soon as `signal` aborts, so a run cancelled while it waits in the queue
+ * stops then rather than after every run ahead of it.
+ */
+function turnOf(previous: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+  if (!signal) return previous;
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    if (signal.aborted) return onAbort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    void previous.then(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    });
+  });
+}
+
+/**
  * Evaluate and store the analysis's governing findings. Rows of the
  * requirements evaluated are upserted, and those of pairs that no longer apply
  * are removed. A BA decision is kept when the finding it was made on is
  * unchanged (status and citation), and cleared when the finding changed.
  * #2017 — queued behind any earlier run of the same analysis (see
- * {@link findingsRuns}); the stored applicability is read when the run starts,
- * not when it was asked for, so a queued run sees every settlement before it.
+ * {@link findingsRuns}). A run given no `applicability` reads the stored one
+ * when it starts, not when it was asked for, so it sees every settlement
+ * committed before it; a run given one (the orchestrator's join passes the
+ * snapshot it just stored) evaluates that snapshot. #2022 — a run whose
+ * `signal` aborts while it is queued rejects at once and evaluates nothing;
+ * the runs queued behind it still wait for the ones ahead of it.
  */
 export function produceGoverningFindingsForAnalysis(
   input: ProduceGoverningFindingsInput,
 ): Promise<GoverningFindingsRun> {
   const previous = findingsRuns.get(input.analysisId) ?? Promise.resolve();
-  const result = previous.then(() => produceNow(input));
-  const tail = result.then(
-    () => undefined,
-    () => undefined,
-  );
+  const result = turnOf(previous, input.signal).then(() => produceNow(input));
+  const tail = Promise.allSettled([previous, result]).then(() => undefined);
   findingsRuns.set(input.analysisId, tail);
   void tail.then(() => {
     if (findingsRuns.get(input.analysisId) === tail) findingsRuns.delete(input.analysisId);
@@ -352,7 +371,23 @@ function oneOf<T extends string>(list: readonly T[], v: string | null): T | null
   return v !== null && (list as readonly string[]).includes(v) ? (v as T) : null;
 }
 
-function toWire(row: Row): GoverningFinding {
+/**
+ * #1876 — the display names of the users who decided `rows`, by id: the
+ * analysis view shows who rejected a finding. The display name, or the
+ * username when it is blank; a user who no longer exists is left out, so the
+ * finding reads `decidedByName: null` and keeps its `decidedById`.
+ */
+async function deciderNames(rows: readonly Row[]): Promise<Map<string, string>> {
+  const ids = [...new Set(rows.flatMap((r) => (r.decidedById ? [r.decidedById] : [])))];
+  if (ids.length === 0) return new Map();
+  const users = await prisma.user.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, displayName: true, username: true },
+  });
+  return new Map(users.map((u) => [u.id, u.displayName.trim() || u.username]));
+}
+
+function toWire(row: Row, names: ReadonlyMap<string, string>): GoverningFinding {
   return {
     id: row.id,
     analysisId: row.analysisId,
@@ -374,6 +409,7 @@ function toWire(row: Row): GoverningFinding {
     decision: oneOf(GOVERNING_FINDING_DECISIONS, row.decision),
     decisionNote: row.decisionNote,
     decidedById: row.decidedById,
+    decidedByName: row.decidedById ? (names.get(row.decidedById) ?? null) : null,
     decidedAt: row.decidedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -410,7 +446,44 @@ export async function listGoverningFindings(analysisId: string): Promise<Governi
     where: { analysisId },
     orderBy: [{ requirementId: "asc" }, { controlId: "asc" }, { id: "asc" }],
   });
-  return rows.map(toWire);
+  const names = await deciderNames(rows);
+  return rows.map((row) => toWire(row, names));
+}
+
+/** #1876 — one policy revision the findings cite, and how many rules it has. */
+export interface GoverningFindingRevision {
+  revisionId: string;
+  documentTitle: string;
+  revisionLabel: string;
+  /** The revision's live rules, plus any rule a finding cites that was deleted since. */
+  rules: number;
+}
+
+/**
+ * #1876 — every revision `findings` cite, in first-cited order, with its rule
+ * count: the "M" of the analysis view's "N of M applicable rules in <title>
+ * <label>" (`governingSummarySentence`). Counted on the cited revision, not
+ * the document's current one, as the findings themselves are (#1874).
+ */
+export async function governingFindingRevisions(
+  findings: readonly GoverningFinding[],
+): Promise<GoverningFindingRevision[]> {
+  const byRevision = new Map<string, { first: GoverningFinding; ruleIds: Set<string> }>();
+  for (const f of findings) {
+    const entry = byRevision.get(f.revisionId) ?? { first: f, ruleIds: new Set<string>() };
+    entry.ruleIds.add(f.ruleId);
+    byRevision.set(f.revisionId, entry);
+  }
+  return Promise.all(
+    [...byRevision].map(async ([revisionId, { first, ruleIds }]) => ({
+      revisionId,
+      documentTitle: first.documentTitle,
+      revisionLabel: first.revisionLabel,
+      rules: await prisma.governingRule.count({
+        where: { revisionId, OR: [{ deletedAt: null }, { id: { in: [...ruleIds] } }] },
+      }),
+    })),
+  );
 }
 
 /**
@@ -458,6 +531,6 @@ export async function decideGoverningFinding(input: {
         },
       }),
     });
-    return toWire(updated);
+    return toWire(updated, await deciderNames([updated]));
   });
 }

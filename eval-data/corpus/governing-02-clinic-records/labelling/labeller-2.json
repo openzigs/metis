@@ -1,0 +1,366 @@
+{
+  "labeller": "labeller 2: claude-opus-5-5 through `claude -p` with every tool and MCP server switched off, given only policy-v1 and the 36 requirements (labeller-2-prompt.txt); it saw no label, no rule summary, no code and no arm",
+  "labelledAgainst": "policy-v1.md",
+  "costUsd": 0.1299,
+  "items": [
+    {
+      "id": "KV-01",
+      "applies": [
+        {
+          "ruleId": "RA-01",
+          "verdict": "gap",
+          "reason": "Covering doctors could open the notes of any registered patient, not only patients they are caring for."
+        },
+        {
+          "ruleId": "RA-02",
+          "verdict": "gap",
+          "reason": "Opening charts outside a care relationship has no typed reason and no privacy officer review."
+        }
+      ]
+    },
+    {
+      "id": "KV-02",
+      "applies": [
+        {
+          "ruleId": "TP-02",
+          "verdict": "gap",
+          "reason": "The cheapest region is overseas, so patient data would be stored outside the country."
+        },
+        {
+          "ruleId": "TP-01",
+          "verdict": "needs-ba-input",
+          "reason": "It does not say whether the hosting supplier has signed a data processing agreement."
+        }
+      ]
+    },
+    {
+      "id": "KV-03",
+      "applies": []
+    },
+    {
+      "id": "KV-04",
+      "applies": [
+        {
+          "ruleId": "ID-01",
+          "verdict": "compliant",
+          "reason": "Full name and date of birth are confirmed before the chart is opened."
+        }
+      ]
+    },
+    {
+      "id": "KV-05",
+      "applies": [
+        {
+          "ruleId": "MS-04",
+          "verdict": "needs-ba-input",
+          "reason": "The latest growth chart figure may be older than thirty days."
+        },
+        {
+          "ruleId": "IR-04",
+          "verdict": "needs-ba-input",
+          "reason": "It changes what prescribers see, and it does not say a clinical safety assessment will be done before release."
+        }
+      ]
+    },
+    {
+      "id": "KV-06",
+      "applies": [
+        {
+          "ruleId": "CM-01",
+          "verdict": "gap",
+          "reason": "Results are released before the ordering clinician has reviewed them."
+        }
+      ]
+    },
+    {
+      "id": "KV-07",
+      "applies": [
+        {
+          "ruleId": "ID-02",
+          "verdict": "gap",
+          "reason": "Charts are merged by one user with no second staff confirmation."
+        }
+      ]
+    },
+    {
+      "id": "KV-08",
+      "applies": [
+        {
+          "ruleId": "CS-05",
+          "verdict": "gap",
+          "reason": "Names and addresses stay in the research data when it leaves the clinical system."
+        },
+        {
+          "ruleId": "CS-01",
+          "verdict": "needs-ba-input",
+          "reason": "It does not say whether patients consented to the disclosure."
+        }
+      ]
+    },
+    {
+      "id": "KV-09",
+      "applies": [
+        {
+          "ruleId": "RA-05",
+          "verdict": "gap",
+          "reason": "Consulting room desktops would stay open for a whole session instead of locking after five minutes idle."
+        }
+      ]
+    },
+    {
+      "id": "KV-10",
+      "applies": []
+    },
+    {
+      "id": "KV-11",
+      "applies": [
+        {
+          "ruleId": "ID-03",
+          "verdict": "needs-ba-input",
+          "reason": "It does not say whether identity is confirmed with a one-time code at the start of the call."
+        }
+      ]
+    },
+    {
+      "id": "KV-12",
+      "applies": [
+        {
+          "ruleId": "MS-05",
+          "verdict": "gap",
+          "reason": "Interaction warnings could be switched off for later prescriptions."
+        }
+      ]
+    },
+    {
+      "id": "KV-13",
+      "applies": [
+        {
+          "ruleId": "CS-03",
+          "verdict": "gap",
+          "reason": "Contact consent is bundled with consent to treatment."
+        }
+      ]
+    },
+    {
+      "id": "KV-14",
+      "applies": [
+        {
+          "ruleId": "CS-04",
+          "verdict": "gap",
+          "reason": "Parents would see data on 16 and 17 year olds without the young person's agreement."
+        }
+      ]
+    },
+    {
+      "id": "KV-15",
+      "applies": [
+        {
+          "ruleId": "MS-01",
+          "verdict": "gap",
+          "reason": "The allergy check can be skipped with no reason entered."
+        }
+      ]
+    },
+    {
+      "id": "KV-16",
+      "applies": [
+        {
+          "ruleId": "RK-05",
+          "verdict": "gap",
+          "reason": "Originals are binned the same day instead of kept for three months, and no legibility check is stated."
+        }
+      ]
+    },
+    {
+      "id": "KV-17",
+      "applies": []
+    },
+    {
+      "id": "KV-18",
+      "applies": [
+        {
+          "ruleId": "RA-02",
+          "verdict": "compliant",
+          "reason": "A reason is typed before the chart opens, and the privacy officer reviews each case within five working days."
+        }
+      ]
+    },
+    {
+      "id": "KV-19",
+      "applies": [
+        {
+          "ruleId": "CM-02",
+          "verdict": "gap",
+          "reason": "The SMS includes clinical content and is not limited to patients who chose detailed messages."
+        },
+        {
+          "ruleId": "CM-03",
+          "verdict": "gap",
+          "reason": "A reminder the day before is less than forty-eight hours ahead."
+        }
+      ]
+    },
+    {
+      "id": "KV-20",
+      "applies": [
+        {
+          "ruleId": "MS-03",
+          "verdict": "gap",
+          "reason": "Repeats would run for two years, beyond the twelve-month review limit."
+        }
+      ]
+    },
+    {
+      "id": "KV-21",
+      "applies": [
+        {
+          "ruleId": "ID-04",
+          "verdict": "gap",
+          "reason": "Prescriptions and referral letters must carry the legal name, not the preferred name."
+        }
+      ]
+    },
+    {
+      "id": "KV-22",
+      "applies": [
+        {
+          "ruleId": "IR-05",
+          "verdict": "gap",
+          "reason": "Reporting on the next working day misses the four-hour limit, and the report goes to IT rather than the privacy officer."
+        }
+      ]
+    },
+    {
+      "id": "KV-23",
+      "applies": [
+        {
+          "ruleId": "CM-05",
+          "verdict": "gap",
+          "reason": "A relative interprets a consent conversation instead of a qualified interpreter."
+        }
+      ]
+    },
+    {
+      "id": "KV-24",
+      "applies": []
+    },
+    {
+      "id": "KV-25",
+      "applies": [
+        {
+          "ruleId": "RK-03",
+          "verdict": "compliant",
+          "reason": "The original text, who made the correction and the reason are all kept."
+        }
+      ]
+    },
+    {
+      "id": "KV-26",
+      "applies": [
+        {
+          "ruleId": "TP-03",
+          "verdict": "needs-ba-input",
+          "reason": "It does not say whether the device is in the inventory, with owner and software version, before it is connected."
+        }
+      ]
+    },
+    {
+      "id": "KV-27",
+      "applies": [
+        {
+          "ruleId": "RK-01",
+          "verdict": "gap",
+          "reason": "Five years is shorter than the required eight-year retention."
+        }
+      ]
+    },
+    {
+      "id": "KV-28",
+      "applies": [
+        {
+          "ruleId": "TP-05",
+          "verdict": "needs-ba-input",
+          "reason": "It does not say whether the memory stick is an encrypted drive issued by the IT service desk."
+        }
+      ]
+    },
+    {
+      "id": "KV-29",
+      "applies": [
+        {
+          "ruleId": "RA-03",
+          "verdict": "gap",
+          "reason": "Reception would see diagnoses."
+        }
+      ]
+    },
+    {
+      "id": "KV-30",
+      "applies": []
+    },
+    {
+      "id": "KV-31",
+      "applies": [
+        {
+          "ruleId": "IR-04",
+          "verdict": "needs-ba-input",
+          "reason": "It changes the clinical screen, and it does not say a clinical safety assessment will be done before release."
+        }
+      ]
+    },
+    {
+      "id": "KV-32",
+      "applies": [
+        {
+          "ruleId": "RK-04",
+          "verdict": "gap",
+          "reason": "Six weeks exceeds the thirty-day response limit."
+        }
+      ]
+    },
+    {
+      "id": "KV-33",
+      "applies": [
+        {
+          "ruleId": "CM-02",
+          "verdict": "gap",
+          "reason": "The email carries clinical referral details without checking that the patient opted into detailed messages."
+        },
+        {
+          "ruleId": "CM-04",
+          "verdict": "needs-ba-input",
+          "reason": "It does not say whether a copy of the emailed letter is kept on the chart."
+        }
+      ]
+    },
+    {
+      "id": "KV-34",
+      "applies": [
+        {
+          "ruleId": "IR-01",
+          "verdict": "gap",
+          "reason": "Weekly submission misses the twenty-four-hour reporting limit."
+        },
+        {
+          "ruleId": "IR-04",
+          "verdict": "needs-ba-input",
+          "reason": "It changes the prescribing screen, and it does not say a clinical safety assessment will be done before release."
+        }
+      ]
+    },
+    {
+      "id": "KV-35",
+      "applies": [
+        {
+          "ruleId": "TP-04",
+          "verdict": "compliant",
+          "reason": "The laptops have encrypted disks and can be wiped remotely."
+        }
+      ]
+    },
+    {
+      "id": "KV-36",
+      "applies": []
+    }
+  ]
+}

@@ -52,6 +52,7 @@ import {
 import { readGoverningApplicability } from "../lib/governing/applicability-store.js";
 import {
   decideGoverningFinding,
+  governingFindingRevisions,
   governingFindingsRefreshing,
   listGoverningFindings,
   summariseFindings,
@@ -965,8 +966,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
    * #1874 — the analysis's cited governing findings (Compliant / Gap / Needs BA
    * input, each citing its rule's control id and a clause of the revision it
    * was checked against), with their BA decisions, and the counts. #2017 —
-   * `refreshing` is true while a findings run of the analysis (one a BA answer
-   * started) is in flight or queued: fetch again once it reads false. 404 while
+   * `refreshing` is true while a findings run of the analysis is in flight or
+   * queued (#2022: the run's own production at its join, or a refresh a BA
+   * answer started): fetch again once it reads false. 404 while
    * `GOVERNING_DOCS_ENABLED` is off. Scoped with `ensureAnalysisVisible`; rows
    * are read by the analysis id alone, which that check binds to the project.
    */
@@ -984,6 +986,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         ok({
           findings,
           summary: summariseFindings(findings),
+          // #1876 — each cited revision's rule count, for the analysis view's summary sentence.
+          revisions: await governingFindingRevisions(findings),
           refreshing: governingFindingsRefreshing(analysisId),
         }),
       );
@@ -1176,7 +1180,14 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // round has such a question. An unreadable store still labels it.
       const governingText = new Map<string, string>();
       if (questions.some((q) => q.governing)) {
-        const stored = await readGoverningApplicability(analysisId).catch(() => null);
+        const stored = await readGoverningApplicability(analysisId).catch((err: unknown) => {
+          // #2022 — still labelled (by the raw id), but not silently.
+          log.warn("governing applicability unreadable for the clarification export", {
+            analysisId,
+            error: (err as Error).message,
+          });
+          return null;
+        });
         for (const r of stored?.requirements ?? []) governingText.set(r.requirementId, r.text);
       }
 

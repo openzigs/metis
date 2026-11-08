@@ -225,6 +225,25 @@ describe("no evidence is never Compliant — enforced in code", () => {
     expect(report.findings[0]!.status).toBe("compliant");
     expect(sent[0]!.user).toContain("Their answer: Yes, every export is logged");
   });
+
+  it("#2029 — a bare one-word answer, quoted with the end of its question, keeps a compliant finding", async () => {
+    const { provider } = stubModel([
+      [
+        {
+          rule: "R1",
+          status: "compliant",
+          reasoning: "The analyst confirmed it.",
+          excerpt: "is written to the audit log with the person who ran it",
+          satisfiedBy: "every customer export be logged? Yes.",
+        },
+      ],
+    ]);
+    const report = await evaluate(provider, [applies(AUDIT)], {
+      answers: [{ question: "Will every customer export be logged?", answer: "Yes." }],
+    });
+    expect(report.findings[0]).toMatchObject({ status: "compliant", modelStatus: null });
+    expect(report.noEvidenceDemoted).toBe(0);
+  });
 });
 
 describe("every citation is verified against the cited revision's stored text", () => {
@@ -415,11 +434,73 @@ describe("parsing and evidence", () => {
     ).toBe(true);
   });
 
+  it("#2022 — a quote that crosses into the answer by a word or two is not evidence", () => {
+    const question = "Will every customer export be logged?";
+    const no = [{ question, answer: "No, we do not." }];
+    // The reviewer's probe: every counted word but "no" is METIS's own question.
+    expect(evidenceIsPresent("every customer export be logged? No", "x", no)).toBe(false);
+    // By a stop-word: no counted word of the answer at all.
+    expect(
+      evidenceIsPresent("every customer export be logged? We", "x", [
+        { question, answer: "We log some of them." },
+      ]),
+    ).toBe(false);
+    // Two counted words of a longer answer are still not enough.
+    const partial = [{ question, answer: "Yes, every export goes to the audit log." }];
+    expect(evidenceIsPresent("customer export be logged? Yes, every", "x", partial)).toBe(false);
+    // The whole answer, with the end of the question, is evidence…
+    expect(evidenceIsPresent("customer export be logged? No, we do not.", "x", no)).toBe(true);
+    // …and so is a run holding three counted words of the answer itself.
+    expect(evidenceIsPresent("be logged? Yes, every export goes to the audit", "x", partial)).toBe(
+      true,
+    );
+  });
+
+  it("#2029 — a bare yes or no is a short answer like any other: the guard checks where the words are, not which way they point", () => {
+    const logged = "Will every customer export be logged?";
+    const leaves = "Will card numbers leave the EU?";
+    // A bare "Yes." to a question whose safe answer is yes.
+    expect(
+      evidenceIsPresent("every customer export be logged? Yes", "x", [
+        { question: logged, answer: "Yes." },
+      ]),
+    ).toBe(true);
+    // A bare "No." to a question whose safe answer is no: compliant must be able to stand.
+    expect(
+      evidenceIsPresent("card numbers leave the EU? No", "x", [
+        { question: leaves, answer: "No." },
+      ]),
+    ).toBe(true);
+    // The #2029 probe has the same shape. Whether "No" meets the rule turns on the
+    // question's wording, which only the model reads; the padded "No, we do not."
+    // has always been accepted in the same place (#2022), so rejecting the bare word
+    // would turn on how many words the BA typed, not on what the business does.
+    expect(
+      evidenceIsPresent("every customer export be logged? No", "x", [
+        { question: logged, answer: "No." },
+      ]),
+    ).toBe(true);
+    // The floor still holds: the quote needs three counted words…
+    expect(evidenceIsPresent("be logged? No", "x", [{ question: logged, answer: "No." }])).toBe(
+      false,
+    );
+    // …it must reach the answer, not stop at the question…
+    expect(
+      evidenceIsPresent("every customer export be logged", "x", [
+        { question: logged, answer: "No." },
+      ]),
+    ).toBe(false);
+    // …and the bare word alone is no evidence.
+    expect(evidenceIsPresent("No", "x", [{ question: logged, answer: "No." }])).toBe(false);
+  });
+
   it("#2017 — the prompt asks for one contiguous quote from one source, with 3+ content words", () => {
     const { systemMessage } = buildFindingsPrompt("r", [], []);
     expect(systemMessage).toContain("one contiguous run of words from a single source");
     expect(systemMessage).toContain("at least three words that say what is done");
     expect(systemMessage).toContain("together with the end of the question it answers");
+    // #2022 — the short answer is quoted whole.
+    expect(systemMessage).toContain('("Yes, we do.") whole,');
   });
 
   it("#2017 — a quote of the question alone, or across two answers, is not evidence", () => {

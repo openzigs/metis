@@ -221,6 +221,13 @@ This is the same set CI runs, in the same order. Three notes that save real time
   to npm and why. `pnpm licenses:verify` fails on a manifest nobody has reviewed —
   that is deliberate, and the fix is to make the decision rather than to silence the
   gate.
+- **Never tune a prompt against a held-out eval set.** An eval corpus whose manifest says
+  `purpose: "held-out"` (today `eval-data/corpus/governing-02-clinic-records`) is read
+  only to make a decision. Iterate on the tuning set (`governing-01-sample-policy`, with
+  DeepSeek), then read the held-out set once and record that reading in its
+  `ANNOTATION.md`. The loader refuses a held-out set whose policy, rules or labels no
+  longer match the content hash in its manifest. If you must change one, record why and
+  re-hash. Never edit it to fit an arm (#2024).
 
 ### Licence headers in source files
 

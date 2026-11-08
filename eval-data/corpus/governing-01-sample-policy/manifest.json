@@ -1,7 +1,7 @@
 {
   "id": "governing-01-sample-policy",
-  "description": "Held-out governing-rules set (#1867): a synthetic retailer's information handling policy (40 atomic obligations) and analyst-worded requirements labelled with the rules that truly apply to each, a per-rule verdict, and the business fact a BA would supply when the verdict is needs-ba-input.",
-  "purpose": "held-out",
+  "description": "Tuning governing-rules set (#1867; held out until the applicability judge prompt was tuned on it in #1997 and #2005, so the tuning set since #2024): a synthetic retailer's information handling policy (40 atomic obligations) and analyst-worded requirements labelled with the rules that truly apply to each, a per-rule verdict, and the business fact a BA would supply when the verdict is needs-ba-input.",
+  "purpose": "tuning",
   "license": "CC0-1.0",
   "synthetic": true,
   "files": ["ANNOTATION.md", "baseline-A0.json", "baseline-A0.md", "policy-v1.md", "policy-v2.md"],

@@ -27,7 +27,7 @@ import {
   type PairedDifference,
 } from "../localization/stats.js";
 import { measureScreenPromptSizes, type GoverningArm, type ScreenPromptSize } from "./arms.js";
-import type { GoverningCorpus, GoverningItem } from "./corpus.js";
+import type { GoverningCorpus, GoverningItem, GoverningPurpose } from "./corpus.js";
 import {
   checkThresholds,
   heldByConstruction,
@@ -207,6 +207,10 @@ export interface ArmComparison {
 export interface GoverningReport {
   corpus: {
     id: string;
+    /** #2024 — which set the reading came from: the tuning set, or the held-out one. */
+    purpose: GoverningPurpose;
+    /** The held-out set's recorded content hash; null on a set without one. */
+    contentHash: string | null;
     items: number;
     rules: number;
     policy: string;
@@ -422,6 +426,8 @@ export async function runGoverningEval(
   return {
     corpus: {
       id: corpus.name,
+      purpose: corpus.manifest.purpose,
+      contentHash: corpus.manifest.contentHash?.value ?? null,
       items: items.length,
       rules: corpus.rules.length,
       policy: corpus.policyFile,
@@ -489,10 +495,27 @@ function misses(arm: GoverningArmReport): { missed: string[]; hardErrors: string
   return { missed, hardErrors };
 }
 
+/**
+ * #2024 — which set a reading came from, in words: a tuning reading says
+ * nothing held out, and a held-out reading names the hash it was read against.
+ */
+export function setStatement(
+  c: Pick<GoverningReport["corpus"], "purpose" | "contentHash">,
+): string {
+  if (c.purpose === "held-out") {
+    return (
+      `**held-out** (read for a decision, never tuned on; content hash \`${c.contentHash ?? "none"}\`). ` +
+      "Record this reading in the set's ANNOTATION.md."
+    );
+  }
+  return "**tuning** (prompts are iterated on this set, so its numbers are not held-out evidence).";
+}
+
 export function toMarkdownReport(report: GoverningReport): string {
   const lines: string[] = [];
   const c = report.corpus;
   lines.push(`# Governing-rules eval — \`${c.id}\``, "");
+  lines.push(`Set: ${setStatement(c)}`, "");
   lines.push(
     `Requirements: **${c.items}** · Rules: **${c.rules}** (\`${c.policy}\`, revision ${c.revision}) · ` +
       `Runs requested: **${report.runsRequested}** · Budget: **$${report.budgetUsd}** · ` +
@@ -515,14 +538,21 @@ export function toMarkdownReport(report: GoverningReport): string {
     "| Arm | Runs | Recall | Non-resembling recall | Precision | Citation accuracy | Citation coverage | Verdict accuracy | Hard errors | Ask rate | Clean negatives | Failures | $ / req | Tokens in / out per req | s / req |",
     "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
   );
+  // Each arm's claims the run bore out, computed once (#1932).
+  const heldBy = new Map(
+    report.arms.map((a) => [a, heldByConstruction(a.summary, a.byConstruction)]),
+  );
   for (const a of report.arms) {
     const m = a.summary.metrics;
     const usd = a.cost.usdPerRequirement;
     // A metric the arm fixes by construction says nothing about it (#1900),
-    // unless the run measured otherwise (#1920).
-    const held = heldByConstruction(a.summary, a.byConstruction);
-    const fixed = (metric: keyof ByConstruction, value: string) =>
-      held[metric] === undefined ? value : "n/a†";
+    // unless the run measured otherwise (#1920): then its value is printed,
+    // marked ‡ in the cell itself (#1932).
+    const held = heldBy.get(a)!;
+    const fixed = (metric: keyof ByConstruction, value: string) => {
+      if (held[metric] !== undefined) return "n/a†";
+      return a.byConstruction[metric] === undefined ? value : `${value}‡`;
+    };
     lines.push(
       `| ${a.id} | ${a.completedRuns} | ${ci(m.recall)} | ${ci(m.nonResemblingRecall)} | ${ci(m.precision)} | ` +
         `${fixed("citationAccuracy", ci(m.citationAccuracy))} | ${ci(m.citationCoverage)} | ${ci(m.verdictAccuracy)} | ` +
@@ -541,9 +571,7 @@ export function toMarkdownReport(report: GoverningReport): string {
     "",
   );
   const fixedNotes = report.arms.flatMap((a) =>
-    Object.entries(heldByConstruction(a.summary, a.byConstruction)).map(
-      ([metric, why]) => `${a.id} ${metric}: ${why}`,
-    ),
+    Object.entries(heldBy.get(a)!).map(([metric, why]) => `${a.id} ${metric}: ${why}`),
   );
   if (fixedNotes.length > 0) {
     lines.push(
@@ -552,7 +580,7 @@ export function toMarkdownReport(report: GoverningReport): string {
     );
   }
   const brokenClaims = report.arms.flatMap((a) => {
-    const held = heldByConstruction(a.summary, a.byConstruction);
+    const held = heldBy.get(a)!;
     return Object.keys(a.byConstruction)
       .filter((metric) => !(metric in held))
       .map((metric) => `${a.id} ${metric}`);
@@ -570,9 +598,10 @@ export function toMarkdownReport(report: GoverningReport): string {
   lines.push("| Arm | Bar | Required | Measured | Pass |", "|---|---|---|---|---|");
   for (const a of report.arms) {
     for (const t of a.thresholds) {
-      lines.push(
-        `| ${a.id} | ${t.bar} | ${t.required} | ${t.measured} | ${t.pass === null ? "n/a†" : t.pass ? "yes" : "**no**"} |`,
-      );
+      // A judged bar carries a note only when it broke a by-construction claim (#1932).
+      const pass =
+        t.pass === null ? "n/a†" : `${t.pass ? "yes" : "**no**"}${t.note === undefined ? "" : "‡"}`;
+      lines.push(`| ${a.id} | ${t.bar} | ${t.required} | ${t.measured} | ${pass} |`);
     }
   }
   lines.push("");

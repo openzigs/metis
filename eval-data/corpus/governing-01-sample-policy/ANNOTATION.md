@@ -1,5 +1,11 @@
 # How the governing-rules set was written and labelled (#1867)
 
+> **This is the tuning set (since #2024).** The applicability judge prompt was tuned on it in
+> #1997 and #2005, so it is no longer held out (`purpose: "tuning"`). Iterate prompts here,
+> with DeepSeek. Decisions are read on the held-out set,
+> `governing-02-clinic-records`, which no prompt has been tuned on. Its `ANNOTATION.md`
+> holds the rule and the log of its readings.
+
 ## Who wrote it, and in what order
 
 **The policy, the requirements and the labels were all written by an AI coding agent

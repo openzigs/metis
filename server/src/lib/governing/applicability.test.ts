@@ -17,6 +17,10 @@ vi.mock("../prisma.js", () => ({ prisma: db }));
 vi.mock("./governing-store.js", () => ({
   currentWorkspaceRules: (...a: unknown[]) => currentWorkspaceRules(...a),
 }));
+const logWarn = vi.hoisted(() => vi.fn());
+vi.mock("../logger.js", () => ({
+  createChildLogger: () => ({ info: vi.fn(), warn: logWarn, error: vi.fn(), debug: vi.fn() }),
+}));
 
 const {
   ApplicabilityReplyError,
@@ -37,6 +41,8 @@ const {
   buildApplicabilityJudgePrompt,
   governingApplicabilityHookFor,
   planScreenBatches,
+  SCREEN_ROOM_MAX_SHRINK,
+  screenRoom,
 } = await import("./applicability.js");
 type ApplicabilityRule = import("./applicability.js").ApplicabilityRule;
 
@@ -628,7 +634,9 @@ describe("#1997 — the rule summaries lead the screen prompt and are cached acr
     expect(plan.flat()).toEqual(entries);
     expect(planScreenBatches(entries, 1_500)).toEqual(plan);
     // A requirement within the allowance plans exactly as no requirement does.
-    expect(planScreenBatches(entries, 1_500, "Export orders.")).toEqual(plan);
+    expect(planScreenBatches(entries, 1_500, screenRoom(1_500, "Export orders.").room)).toEqual(
+      plan,
+    );
   });
 
   it("#2016 — a requirement longer than the allowance is planned at its length: no screen prompt overshoots the budget", async () => {
@@ -650,6 +658,34 @@ describe("#1997 — the rule summaries lead the screen prompt and are cached acr
     );
     expect(prompts.length).toBeGreaterThan(1);
     for (const p of prompts) expect(estimateTokens(p)).toBeLessThanOrEqual(1_500);
+    // #2022 — long, but not past the floor: planned at its length, nothing logged.
+    expect(logWarn).not.toHaveBeenCalledWith(
+      expect.stringContaining("batches capped"),
+      expect.anything(),
+    );
+  });
+
+  it("#2022 — a requirement longer than the budget is capped: every rule screened, in a bounded number of calls, and logged", async () => {
+    const rules = Array.from({ length: 120 }, (_, i) => rule(i + 1));
+    const { provider, chat } = stubModel({ screen: () => [] });
+    const text = `Store managers can download every order. ${"Each row carries the order's lines, totals, discounts and the customer's delivery notes. ".repeat(120)}`;
+    expect(estimateTokens(text)).toBeGreaterThan(1_500);
+    const usual = planScreenBatches(applicabilityEntries(rules), 1_500).length;
+    const set = await decideApplicability({
+      requirement: { id: "REQ-XL", text },
+      rules,
+      provider,
+      retrieve: async () => [],
+      batchTokenBudget: 1_500,
+    });
+    expect(set.rulesScreened).toBe(rules.length);
+    // Planned at its length alone, it was one rule per call: 120 calls.
+    expect(chat.mock.calls.length).toBeLessThanOrEqual(SCREEN_ROOM_MAX_SHRINK * usual + 1);
+    expect(chat.mock.calls.length).toBeGreaterThan(usual);
+    expect(logWarn).toHaveBeenCalledWith(
+      expect.stringContaining("batches capped"),
+      expect.objectContaining({ requirementId: "REQ-XL", budget: 1_500 }),
+    );
   });
 
   it("the judging prompt sets no cache prefix: its rule list differs per requirement", async () => {

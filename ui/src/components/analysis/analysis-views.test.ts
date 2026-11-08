@@ -91,6 +91,12 @@ describe("tabForAnchor", () => {
     expect(tabForAnchor("#clarifying-questions")).toBe("questions");
   });
 
+  it("#1876 — one clarifying question's anchor opens the Questions tab", () => {
+    expect(tabForAnchor("#clarify-question-q-123")).toBe("questions");
+    // The bare prefix names no question.
+    expect(tabForAnchor("#clarify-question-")).toBeNull();
+  });
+
   it("ignores any other href", () => {
     expect(tabForAnchor(null)).toBeNull();
     expect(tabForAnchor(undefined)).toBeNull();
