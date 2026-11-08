@@ -33,6 +33,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { renderedClarifyingQuestionIds } from "@/components/analysis/ClarificationDialog";
 import { analysisApi, type ClarificationStatePayload } from "@/lib/analysis-api";
 import {
   governingFindingsApi,
@@ -78,14 +79,14 @@ const DECISION_LABELS: Record<GoverningFindingDecision, string> = {
 export function governingSummarySentences(
   findings: readonly GoverningFinding[],
   revisions: readonly GoverningFindingRevision[],
-): string[] {
+): { revisionId: string; sentence: string }[] {
   const byRevision = new Map<string, GoverningFinding[]>();
   for (const f of findings)
     byRevision.set(f.revisionId, [...(byRevision.get(f.revisionId) ?? []), f]);
   return [...byRevision].map(([revisionId, list]) => {
     const revision = revisions.find((r) => r.revisionId === revisionId);
     const applicable = new Set(list.map((f) => f.ruleId)).size;
-    return governingSummarySentence({
+    const sentence = governingSummarySentence({
       applicable,
       total: Math.max(applicable, revision?.rules ?? 0),
       gaps: list.filter((f) => f.status === "gap").length,
@@ -94,6 +95,7 @@ export function governingSummarySentences(
       documentTitle: revision?.documentTitle ?? list[0]!.documentTitle,
       revisionLabel: revision?.revisionLabel ?? list[0]!.revisionLabel,
     });
+    return { revisionId, sentence };
   });
 }
 
@@ -125,15 +127,21 @@ export function groupFindingsByRequirement(
 /**
  * The anchor of the clarifying question a `needs-ba-input` finding waits on:
  * the question whose governing link (#1873) names this finding's requirement
- * and rule, latest round first. Without one, the Questions tab itself.
+ * and rule, latest round first. Only a question the Questions tab renders
+ * counts (#2032): an earlier round's question is not on the page while a later
+ * round is open, so its anchor would lead nowhere. Without one, the Questions
+ * tab itself.
  */
 export function clarifyingQuestionHref(
   finding: Pick<GoverningFinding, "requirementId" | "ruleId">,
   state: ClarificationStatePayload | null | undefined,
 ): string {
-  for (const round of [...(state?.rounds ?? [])].reverse()) {
+  if (!state) return CLARIFYING_QUESTIONS_ANCHOR;
+  const rendered = renderedClarifyingQuestionIds(state);
+  for (const round of [...state.rounds].reverse()) {
     const question = (round.questions ?? []).find(
       (q) =>
+        rendered.has(q.id) &&
         q.governing?.requirementId === finding.requirementId &&
         q.governing.ruleIds.includes(finding.ruleId),
     );
@@ -210,9 +218,9 @@ export function GoverningFindingsPanel({
         >
           Governing rules
         </h4>
-        {sentences.map((sentence) => (
+        {sentences.map(({ revisionId, sentence }) => (
           <p
-            key={sentence}
+            key={revisionId}
             className="mt-1 text-sm text-foreground"
             data-testid="governing-summary-sentence"
           >
@@ -273,7 +281,18 @@ function GoverningFindingItem({
   questionHref: string | null;
 }): React.ReactElement {
   const label = GOVERNING_STATUS_LABELS[finding.status];
-  const [note, setNote] = useState(finding.decisionNote ?? "");
+  // #2032 — the note follows the server's: a refetch that brings another BA's
+  // decision replaces it, unless this BA has typed since, so the next Accept or
+  // Reject never sends a stale copy over theirs. Adjusted during render, not in
+  // an effect, so the stale note is never painted.
+  const serverNote = finding.decisionNote ?? "";
+  const [note, setNote] = useState(serverNote);
+  const [seededFrom, setSeededFrom] = useState(serverNote);
+  const [dirty, setDirty] = useState(false);
+  if (serverNote !== seededFrom) {
+    setSeededFrom(serverNote);
+    if (!dirty) setNote(serverNote);
+  }
   const decide = useAppMutation({
     mutationFn: (decision: GoverningFindingDecision) =>
       governingFindingsApi.decide(projectId, analysisId, finding.id, {
@@ -284,6 +303,8 @@ function GoverningFindingItem({
       `Finding ${finding.controlId} ${DECISION_LABELS[decision].toLowerCase()}`,
     errorMessage: "Could not record the decision",
     invalidateKeys: [governingFindingsKeys.findings(analysisId)],
+    // The note was sent: from here the server's copy is the one to show.
+    onSuccess: () => setDirty(false),
   });
   const noteId = `governing-note-${finding.id}`;
   const decidedOn = formatDecidedAt(finding.decidedAt);
@@ -366,7 +387,10 @@ function GoverningFindingItem({
             value={note}
             maxLength={GOVERNING_FINDING_NOTE_MAX}
             rows={2}
-            onChange={(e) => setNote(e.target.value)}
+            onChange={(e) => {
+              setNote(e.target.value);
+              setDirty(true);
+            }}
           />
           <div className="flex gap-2">
             <Button

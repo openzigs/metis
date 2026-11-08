@@ -166,10 +166,48 @@ standing labels on every requirement.
   the `baAnswer` as the answer, and scores the finding after it against this label. Every
   `businessFact` here asks whether the rule is met, so "Yes" leads to `compliant` (KV-02,
   KV-14, KV-26, KV-31) and "No" to `gap` (KV-05, KV-28, KV-33). These seven labels were
-  added in #2033 by a `claude-opus-5-5` session from each pair's rule clause, question and
-  answer alone. That session had read the findings prompt (`governing/findings.ts`), so,
-  unlike the rest of the set, these labels are not blind to it. Each follows from the
-  question's wording, and no arm has run on the set.
+  first written in #2033 by a `claude-opus-5-5` session that had read the findings prompt
+  (`governing/findings.ts`), so they were not blind to it. **#2041 re-derived them blind**
+  (see "Blind relabel of the answered verdicts" below). The blind labels agree with the
+  #2033 labels on all seven pairs, so the set's labels did not change. They now rest on the
+  blind derivation, not on #2033's.
+
+## Blind relabel of the answered verdicts (#2041)
+
+#2024's blind rule says no labeller may see a prompt of the product. #2033 broke that rule
+for the seven `answeredVerdict` labels, and these are the labels that measure the
+short-answer rule. #2041 re-derived them by the #2024 procedure. The stated rule was that
+if the blind labels differed, the blind ones would win.
+
+1. **Two blind labellers.** Each was a separate `claude-opus-5-5` session run through
+   `claude -p`. Every tool was switched off (`--tools ""`), and no MCP server, settings
+   source or session persistence was loaded. Each ran from an empty directory, so no
+   project instructions were found. Each prompt
+   (`labelling/answered-labeller-1-prompt.txt`, `labelling/answered-labeller-2-prompt.txt`)
+   held `policy-v1.md` and the seven pairs. For each pair it gave the requirement's title
+   and text, the rule id, the business question (`businessFact`) and the BA's answer
+   (`baAnswer`). It also stated the three verdicts. Neither labeller saw:
+   - a label, from before or after #2033;
+   - a rule summary;
+   - an arm or a product prompt;
+   - the other labeller's labels.
+
+   The two prompts differ only in the order of the cases (seeds 20411 and 20412). Cost:
+   $0.067 and $0.054.
+2. **Agreement.** The two labellers gave the same verdict on 7 of 7 pairs (Cohen's κ 1.0;
+   chance agreement 0.51 with 4 `compliant` and 3 `gap` on each side). Both cited the
+   clause's wording for each pair.
+3. **Adjudication.** None was needed: the two labellers did not disagree on any pair.
+4. **Result.** The blind labels match the #2033 labels on every pair: `compliant` for KV-02 →
+   TP-01, KV-14 → CM-01, KV-26 → TP-03 and KV-31 → IR-04, and `gap` for KV-05 → MS-04,
+   KV-28 → TP-05 and KV-33 → CM-04. So no label changed, and neither did the content hash.
+   Both labellers noted that KV-02's overseas region falls under TP-02, which is not paired
+   on KV-02. The answer to TP-01 does not settle TP-02.
+
+Each labeller's labels, with their reasons, the agreement figures and a pair-by-pair
+comparison with the #2033 labels, are in `labelling/answered-labels.json`. The agent that
+ran this relabel had read #2037's description and the #2033 labels, but not the findings
+prompt. Neither labeller saw anything except its prompt.
 
 Verdicts and conventions follow `governing-01`'s `ANNOTATION.md`. Silence is never
 `compliant`, and a rule is listed only when an independent reader would agree it applies.
@@ -192,7 +230,7 @@ recorded hash is missing from this file, so a re-hash cannot be made without a n
 |---|---|---|
 | 2026-11-08 | `0fef56be8454b3b54e04237f9bc4547f88c251ff38fcd87fb8dfa760d7002672` | First recording (#2024), before any arm ran. Superseded. |
 | 2026-11-08 | `c18f31b2539ae742e21c788b3b3c09cd5caacd7e6cd66a8b1faeece6bc39c60d` | The consistency pass (#2028 review): eight `needs-ba-input` pairs added under IR-04, CM-04 and TP-04. Still before any arm ran. Superseded. |
-| 2026-11-08 | `9fc02e66cfa37e312b27aa06a1292183ebabea8847c92146055069ac80afe1c9` | #2033: `answeredVerdict` added to the seven short-answer pairs, so the replay of BA answers has a label to score against (see "What the set holds"). No other label changed. Still before any arm ran. |
+| 2026-11-08 | `9fc02e66cfa37e312b27aa06a1292183ebabea8847c92146055069ac80afe1c9` | #2033: `answeredVerdict` added to the seven short-answer pairs, so the replay of BA answers has a label to score against (see "What the set holds"). No other label changed. Still before any arm ran. #2041 re-derived the seven labels blind (see "Blind relabel of the answered verdicts"). They matched, so this hash was re-computed and stands unchanged. |
 
 ## Readings
 

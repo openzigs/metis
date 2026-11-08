@@ -548,6 +548,25 @@ describe("toMarkdownReport", () => {
     );
   });
 
+  it("marks a pass cell ‡ from the broken-claim flag, not from the presence of a note (#2032)", async () => {
+    const report = await runGoverningEval(corpus, {
+      arms: [fakeArm("A0", resemblingOnly)],
+      runs: 1,
+      budget: new EvalBudget(100),
+      provider: fakeProvider(),
+    });
+    const thresholds = report.arms[0]!.thresholds;
+    const recall = thresholds.find((t) => t.bar === "overallRecall")!;
+    const precision = thresholds.find((t) => t.bar === "precision")!;
+    // A judged bar may carry an explanatory note without any claim behind it.
+    recall.note = "measured on one run only";
+    delete recall.brokenClaim;
+    precision.brokenClaim = true;
+    const md = toMarkdownReport(report);
+    expect(md).toMatch(/\| A0 \| overallRecall \| ≥ 0\.90 \| [\d.]+ \| (?:yes|\*\*no\*\*) \|/);
+    expect(md).toMatch(/\| A0 \| precision \| ≥ 0\.60 \| [\d.]+ \| (?:yes|\*\*no\*\*)‡ \|/);
+  });
+
   it("states the metrics, the bars, the review status, the screen size and each arm's configuration", async () => {
     const report = await runGoverningEval(corpus, {
       arms: [fakeArm("A0", resemblingOnly)],
@@ -674,7 +693,19 @@ describe("the short-answer pairs' own row (#2033)", () => {
 
     const md = toMarkdownReport(report);
     expect(md).toContain("## Short-answer pairs, with the BA's answer replayed (#2033)");
-    expect(md).toMatch(/\| A4 \| 2 \| 7 \| 0\.57 \[[\d.]+, [\d.]+\] \| 7\/7 \| 6 \| 0\/0 \| 0 \|/);
+    expect(md).toMatch(
+      /\| A4 \| 2 \| 7 \| 0\.57 \[[\d.]+, [\d.]+\] \| 7\/7 \| 6 \| 0\/0 \| 0 \| 0 \|/,
+    );
+    // #2041 — the failure column says what it counts, and the replay's cost is flagged.
+    expect(md).toContain("| Still asking | Settle failures | Requirements failed |");
+    expect(md).toContain(
+      "Requirements failed: requirements with short-answer pairs on which the arm threw, before or during the replay",
+    );
+    expect(md).toContain(
+      "A4: $ / req, tokens, s / req and the cap's per-requirement estimate include the replay of the BA's answers (#2033), " +
+        "so they are not comparable with readings of the same arm from before #2033.",
+    );
+    expect(md).not.toContain("No run completed");
     expect(md).toContain('- GR-08 → PR-05 ("No.", labelled gap): compliant, compliant');
     expect(md).toContain('- GR-11 → DR-06 ("No.", labelled compliant): compliant, compliant');
     // The row sits before the comparison with A0.
@@ -701,6 +732,48 @@ describe("the short-answer pairs' own row (#2033)", () => {
     expect(toMarkdownReport(report)).toContain(
       '- GR-11 → DR-06 ("No.", labelled compliant): missed',
     );
+  });
+
+  it("scores a pair the settle failed on as a settle failure, not as still asking (#2041)", async () => {
+    // GR-11's settle failed: the finding left for DR-06 is the reading before the answer.
+    const settleFailedOnGr11 = (item: GoverningItem): GoverningArmOutput => {
+      const out = readsEveryAnswerAsMet(item);
+      if (item.id !== "GR-11") return out;
+      return {
+        ...out,
+        answered: {
+          judgements: [{ ruleId: "DR-06", verdict: "needs-ba-input" }],
+          settleFailures: ["DR-06"],
+        },
+      };
+    };
+    const report = await runGoverningEval(corpus, {
+      arms: [{ ...fakeArm("A4", settleFailedOnGr11), replaysAnswers: true }],
+      runs: 1,
+      budget: new EvalBudget(100),
+      provider: fakeProvider(),
+    });
+    const s = report.arms[0]!.shortAnswers!;
+    expect(s).toMatchObject({ askedPerRun: [0], settleFailures: 1, failures: 0, foundPerRun: [6] });
+    expect(s.verdictAccuracy.perRun).toEqual([3 / 7]);
+    const md = toMarkdownReport(report);
+    expect(md).toMatch(/\| A4 \| 1 \| 7 \| 0\.43 \[[\d.]+, [\d.]+\] \| 6 \| 3 \| 0 \| 1 \| 0 \|/);
+    expect(md).toContain('- GR-11 → DR-06 ("No.", labelled compliant): settle failed');
+  });
+
+  it("does not call a set without short answers when no run completed (#2041)", async () => {
+    const report = await runGoverningEval(corpus, {
+      arms: [replaying()],
+      runs: 1,
+      budget: new EvalBudget(PER_CALL_USD * 3.5),
+      provider: fakeProvider(),
+      callEstimateUsd: PER_CALL_USD,
+    });
+    expect(report.arms[0]!.completedRuns).toBe(0);
+    expect(report.arms[0]!.shortAnswers).toMatchObject({ runs: 0, pairs: 7 });
+    const md = toMarkdownReport(report);
+    expect(md).not.toContain("This set has no short-answer pairs");
+    expect(md).toContain("No run completed for A4, so no answer was scored there.");
   });
 
   it("lists each pair's verdicts from the scored runs only, not from a run the cap cut short", async () => {
@@ -730,6 +803,7 @@ describe("the short-answer pairs' own row (#2033)", () => {
     });
     expect(plain.arms[0]!.shortAnswers).toBeNull();
     expect(toMarkdownReport(plain)).not.toContain("Short-answer pairs");
+    expect(toMarkdownReport(plain)).not.toContain("include the replay");
 
     const bare: GoverningCorpus = {
       ...corpus,
@@ -751,5 +825,7 @@ describe("the short-answer pairs' own row (#2033)", () => {
     expect(toMarkdownReport(none)).toContain(
       "This set has no short-answer pairs (`baAnswer`), so no answer was replayed.",
     );
+    // Nothing was replayed, so the cost carries no replay.
+    expect(toMarkdownReport(none)).not.toContain("include the replay");
   });
 });

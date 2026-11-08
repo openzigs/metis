@@ -329,6 +329,8 @@ describe("checkThresholds", () => {
       note: "never says compliant",
     });
     expect(byBar.citationAccuracy).toMatchObject({ pass: null, note: "only verified citations" });
+    // A claim that holds is not a broken one (#2032).
+    expect(fixed.some((c) => c.brokenClaim)).toBe(false);
     // A bar the arm can fail is still judged.
     expect(byBar.overallRecall).toMatchObject({ pass: true });
     expect(byBar.overallRecall).not.toHaveProperty("note");
@@ -367,6 +369,9 @@ describe("checkThresholds", () => {
     expect(byBar.maxNoEvidenceCompliantErrors!.note).toMatch(
       /^claimed fixed by construction \(never says compliant\), but measured otherwise$/,
     );
+    // #2032 — the report's ‡ reads this flag, not the note.
+    expect(byBar.maxNoEvidenceCompliantErrors!.brokenClaim).toBe(true);
+    expect(byBar.overallRecall).not.toHaveProperty("brokenClaim");
     expect(byBar.citationAccuracy).toMatchObject({ pass: false, measured: "0.50" });
 
     // Each claim is checked on its own, in every run.
@@ -451,6 +456,7 @@ describe("short-answer pairs, answered (#2033)", () => {
       hardErrors: 1,
       asked: 0,
       failures: 0,
+      settleFailures: 0,
     });
     expect(pairs).toEqual([
       {
@@ -478,6 +484,7 @@ describe("short-answer pairs, answered (#2033)", () => {
       hardErrors: 0,
       asked: 0,
       failures: 1,
+      settleFailures: 0,
     });
     expect(scoreAnswered(answeredItem, { ...right, error: "boom" }).counts).toMatchObject({
       correct: 0,
@@ -487,15 +494,31 @@ describe("short-answer pairs, answered (#2033)", () => {
     const plain = item("P", [{ ruleId: "AL-02", verdict: "gap" }]);
     expect(scoreAnswered(plain, undefined, true)).toEqual({
       pairs: [],
-      counts: { pairs: 0, found: 0, correct: 0, hardErrors: 0, asked: 0, failures: 0 },
+      counts: {
+        pairs: 0,
+        found: 0,
+        correct: 0,
+        hardErrors: 0,
+        asked: 0,
+        failures: 0,
+        settleFailures: 0,
+      },
     });
   });
 
   it("summarizeAnswered averages accuracy over runs and resamples only requirements with short answers", () => {
-    const none = { pairs: 0, found: 0, correct: 0, hardErrors: 0, asked: 0, failures: 0 };
-    const a = { pairs: 2, found: 2, correct: 2, hardErrors: 0, asked: 0, failures: 0 };
-    const b = { pairs: 1, found: 1, correct: 0, hardErrors: 1, asked: 0, failures: 0 };
-    const c = { pairs: 1, found: 0, correct: 0, hardErrors: 0, asked: 0, failures: 1 };
+    const none = {
+      pairs: 0,
+      found: 0,
+      correct: 0,
+      hardErrors: 0,
+      asked: 0,
+      failures: 0,
+      settleFailures: 0,
+    };
+    const a = { ...none, pairs: 2, found: 2, correct: 2 };
+    const b = { ...none, pairs: 1, found: 1, hardErrors: 1 };
+    const c = { ...none, pairs: 1, failures: 1 };
     const s = summarizeAnswered([
       [a, none, b],
       [a, none, c],
@@ -521,5 +544,66 @@ describe("short-answer pairs, answered (#2033)", () => {
     const empty = summarizeAnswered([[none], [none]]);
     expect(empty).toMatchObject({ pairs: 0, verdictAccuracy: { mean: null, ci: null } });
     expect(summarizeAnswered([])).toMatchObject({ runs: 0, pairs: 0 });
+  });
+
+  it("scores a pair whose open rule the settle failed on as a miss and a settle failure, never as still asking (#2041)", () => {
+    // The settle failed on DR-01, so the finding left for it is the reading before the answer.
+    const { pairs, counts } = scoreAnswered(answeredItem, {
+      judgements: [
+        { ruleId: "AL-02", verdict: "compliant" },
+        { ruleId: "DR-01", verdict: "needs-ba-input" },
+      ],
+      settleFailures: ["DR-01"],
+    });
+    expect(counts).toEqual({
+      pairs: 3,
+      found: 1,
+      correct: 1,
+      hardErrors: 0,
+      asked: 0,
+      failures: 0,
+      settleFailures: 1,
+    });
+    expect(pairs[2]).toEqual({
+      ruleId: "DR-01",
+      answer: "No.",
+      truth: "gap",
+      verdict: null,
+      hardError: false,
+      settleFailed: true,
+    });
+    expect(pairs[0]).not.toHaveProperty("settleFailed");
+    // A requirement the arm failed on counts the failure, not the settle failures under it.
+    const failed = scoreAnswered(answeredItem, { judgements: [], settleFailures: ["DR-01"] }, true);
+    expect(failed.counts).toMatchObject({ failures: 1, settleFailures: 0 });
+    expect(failed.pairs[2]).not.toHaveProperty("settleFailed");
+  });
+
+  it("summarizeAnswered sums settle failures, and takes the set's pair count when no run completed (#2041)", () => {
+    const none = {
+      pairs: 0,
+      found: 0,
+      correct: 0,
+      hardErrors: 0,
+      asked: 0,
+      failures: 0,
+      settleFailures: 0,
+    };
+    const a = { ...none, pairs: 2, found: 2, correct: 2 };
+    const d = { ...none, pairs: 2, found: 1, correct: 1, settleFailures: 1 };
+    expect(
+      summarizeAnswered([
+        [a, d],
+        [d, d],
+      ]).settleFailures,
+    ).toBe(3);
+    // No completed run: there is no runs[0] to count pairs from, so the set's own count stands.
+    expect(summarizeAnswered([], {}, 7)).toMatchObject({
+      runs: 0,
+      pairs: 7,
+      failures: 0,
+      settleFailures: 0,
+      verdictAccuracy: { mean: null },
+    });
   });
 });

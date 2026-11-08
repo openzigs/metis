@@ -34,10 +34,24 @@ function param(value: string | string[] | undefined): string {
 /**
  * #1959 — every SCIM write is one SERIALIZABLE transaction, so it serialises
  * with the login path's role reconciliation. A write conflict rolled it back:
- * run it again rather than answer the IdP with a 500.
+ * run it again rather than answer the IdP with a 500. A write that loses every
+ * attempt rolled back and is transient, so it is answered
+ * `503 SCIM_WRITE_CONFLICT` — a status an IdP retries — not a 500 (#1977).
  */
 function serializable<T>(work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
-  return retryOnWriteConflict(() => prisma.$transaction(work, { isolationLevel: "Serializable" }));
+  return retryOnWriteConflict(() => prisma.$transaction(work, { isolationLevel: "Serializable" }), {
+    exhausted: scimWriteConflict,
+  });
+}
+
+const SCIM_WRITE_CONFLICT = "SCIM_WRITE_CONFLICT";
+
+function scimWriteConflict(): AppError {
+  return new AppError(
+    503,
+    SCIM_WRITE_CONFLICT,
+    "This SCIM write collided with concurrent changes and was not applied. Retry the request.",
+  );
 }
 
 /** SCIM schema URNs. */

@@ -57,6 +57,13 @@ export interface GoverningJudgement {
 export interface AnsweredOutput {
   judgements: GoverningJudgement[];
   error?: string;
+  /**
+   * #2041 — answered rules that were open (`uncertain`) and that the settle
+   * returned nothing for: its call threw, or its reply could not be read
+   * twice. Their pairs are settle failures, scored as misses, never as still
+   * asking: the finding left behind is the reading before the answer.
+   */
+  settleFailures?: string[];
 }
 
 /** What an arm returns for one requirement. */
@@ -380,6 +387,8 @@ export interface AnsweredPairOutcome {
   verdict: GoverningVerdict | null;
   /** `compliant` after an answer whose labelled verdict is not `compliant`. */
   hardError: boolean;
+  /** #2041 — set when the settle failed on this pair's rule; `verdict` is then null. */
+  settleFailed?: true;
 }
 
 /** The answered counts of one requirement under one arm and run. */
@@ -394,13 +403,17 @@ export interface AnsweredCounts {
   asked: number;
   /** 1 when the requirement has short-answer pairs and the arm or its replay threw. */
   failures: number;
+  /** #2041 — pairs whose open rule the settle failed on (`AnsweredOutput.settleFailures`): misses, not asked. */
+  settleFailures: number;
 }
 
 /**
  * #2033 — score the findings an arm gave once the requirement's short-answer
  * pairs were answered, against each pair's `answeredVerdict`. A requirement
  * with none scores zero pairs; one the arm failed on (`failed`, or a replay
- * `error`) scores its pairs as misses and counts one failure.
+ * `error`) scores its pairs as misses and counts one failure. #2041 — a pair
+ * whose rule the settle failed on (`settleFailures`) is a miss and a settle
+ * failure, whatever finding was left behind for it.
  */
 export function scoreAnswered(
   item: Pick<GoverningItem, "applies">,
@@ -415,19 +428,31 @@ export function scoreAnswered(
     hardErrors: 0,
     asked: 0,
     failures: short.length > 0 && (failed || answered?.error !== undefined) ? 1 : 0,
+    settleFailures: 0,
   };
   const judged = new Map<string, GoverningJudgement>();
+  const unsettled = new Set<string>();
   if (counts.failures === 0) {
     for (const j of answered?.judgements ?? []) if (!judged.has(j.ruleId)) judged.set(j.ruleId, j);
+    for (const id of answered?.settleFailures ?? []) unsettled.add(id);
   }
   const pairs = short.map((p): AnsweredPairOutcome => {
-    const verdict = judged.get(p.ruleId)?.verdict ?? null;
+    const settleFailed = unsettled.has(p.ruleId);
+    const verdict = settleFailed ? null : (judged.get(p.ruleId)?.verdict ?? null);
     const hardError = verdict === "compliant" && p.answeredVerdict !== "compliant";
     if (verdict !== null) counts.found++;
     if (verdict === p.answeredVerdict) counts.correct++;
     if (hardError) counts.hardErrors++;
     if (verdict === "needs-ba-input") counts.asked++;
-    return { ruleId: p.ruleId, answer: p.answer, truth: p.answeredVerdict, verdict, hardError };
+    if (settleFailed) counts.settleFailures++;
+    return {
+      ruleId: p.ruleId,
+      answer: p.answer,
+      truth: p.answeredVerdict,
+      verdict,
+      hardError,
+      ...(settleFailed ? { settleFailed: true as const } : {}),
+    };
   });
   return { pairs, counts };
 }
@@ -444,17 +469,24 @@ export interface AnsweredSummary {
   hardErrors: number;
   hardErrorsPerRun: number[];
   askedPerRun: number[];
+  /** Requirements with short-answer pairs on which the arm or its replay threw, summed over runs. */
   failures: number;
+  /** #2041 — pairs whose open rule the settle failed on, summed over runs. */
+  settleFailures: number;
 }
 
 /**
  * #2033 — summarise an arm's answered counts over its runs. `runs[r]` holds
  * every requirement's counts in run r, in item order; the interval resamples
- * only the requirements that have short-answer pairs.
+ * only the requirements that have short-answer pairs. #2041 — `setPairs` is
+ * the set's own count of short-answer pairs: with no completed run there is no
+ * `runs[0]` to count them from, and a set that has them must not read as one
+ * that has none.
  */
 export function summarizeAnswered(
   runs: ReadonlyArray<readonly AnsweredCounts[]>,
   opts: BootstrapOptions = {},
+  setPairs?: number,
 ): AnsweredSummary {
   const total = (counts: readonly AnsweredCounts[], key: keyof AnsweredCounts) =>
     counts.reduce((n, c) => n + c[key], 0);
@@ -467,7 +499,7 @@ export function summarizeAnswered(
   const only = (xs: number[]) => xs.filter((_, i) => keep[i]);
   return {
     runs: runs.length,
-    pairs: runs[0] ? total(runs[0], "pairs") : 0,
+    pairs: setPairs ?? (runs[0] ? total(runs[0], "pairs") : 0),
     verdictAccuracy: {
       mean: defined.length === 0 ? null : defined.reduce((a, b) => a + b, 0) / defined.length,
       ci: bootstrapRatioCi(only(pooled("correct")), only(pooled("pairs")), opts),
@@ -478,6 +510,7 @@ export function summarizeAnswered(
     hardErrorsPerRun: runs.map((counts) => total(counts, "hardErrors")),
     askedPerRun: runs.map((counts) => total(counts, "asked")),
     failures: runs.reduce((n, counts) => n + total(counts, "failures"), 0),
+    settleFailures: runs.reduce((n, counts) => n + total(counts, "settleFailures"), 0),
   };
 }
 
@@ -497,6 +530,11 @@ export interface ThresholdCheck {
   /** Null when the arm cannot fail the bar by construction (`note` says why). */
   pass: boolean | null;
   note?: string;
+  /**
+   * #2032 — the arm claims this bar's metric fixed by construction, but the
+   * run measured otherwise, so the bar is judged. The report marks it ‡.
+   */
+  brokenClaim?: true;
 }
 
 /** The metric each bar reads, where an arm may fix that metric by construction. */
@@ -577,6 +615,7 @@ export function checkThresholds(
     return {
       ...c,
       note: `claimed fixed by construction (${byConstruction[metric]}), but measured otherwise`,
+      brokenClaim: true,
     };
   });
 }

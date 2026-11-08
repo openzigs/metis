@@ -92,8 +92,21 @@ stays `needs-ba-input`: the answer is what a BA would supply, not what the requi
 | GR-20 → CM-02 | "No." | `gap` |
 | GR-21 → CM-03 | "Yes, there is." | `compliant` |
 
-**GR-11 is the polarity case.** Its question asks whether any of the emails is under a
-legal hold, so "No." *meets* DR-06. Every other question here asks whether the rule is
+**GR-11 is the polarity case.** Its question asks whether the purge will ever delete an
+email under a legal hold, so "No." *meets* DR-06.
+
+#2041 reworded the question. It used to read "Are any of those emails part of a dispute or
+lawsuit the legal team has asked us to preserve?". Against that wording the `compliant`
+label was contestable. GR-11 is a purge that recurs every January, and DR-06 binds
+whenever a hold exists, "until the hold is lifted". A "No." in the present tense says only
+that nothing is held today. So two readings were open:
+- `compliant`: nothing is held, so this purge destroys nothing DR-06 protects;
+- `gap` or `needs-ba-input`: the requirement purges *every* email older than two years,
+  with no check for a hold, so a hold raised before a later January would be breached.
+
+The new wording asks about every purge, and "No." now rules out the second reading.
+Polarity stays as before: "No." meets the rule. This is the only polarity case that #2038
+tunes on, so the label had to be settled before #2038 iterates. Every other question here asks whether the rule is
 met, so "Yes" meets it. A prompt line about answer polarity is to be iterated against
 this row, on this set only, never on `governing-02` (#2033). The answers and their verdicts were written in #2033 by
 a `claude-opus-5-5` session that had read the findings prompt, so they are not blind to

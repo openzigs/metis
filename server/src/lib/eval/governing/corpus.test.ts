@@ -670,6 +670,38 @@ describe("the text checks", () => {
     expect([...contentStems("paper tables")].sort()).toEqual(["paper", "table"]);
   });
 
+  it("contentStems folds -ables, -ee, prefixed forms and compounds of a short subject word (#2032)", () => {
+    for (const [word, bases] of [
+      ["payables", ["pay"]],
+      ["taxables", ["tax"]],
+      ["payee", ["pay"]],
+      ["payees", ["pay"]],
+      ["unpaid", ["pay"]],
+      ["prepaid", ["pay"]],
+      ["repayment", ["pay"]],
+      ["overtaxed", ["tax"]],
+      ["nonpayment", ["pay"]],
+      ["payroll", ["pay"]],
+      ["payrolls", ["pay"]],
+      ["taxpayer", ["pay", "tax"]],
+      ["taxpayers", ["pay", "tax"]],
+      ["keystore", ["key"]],
+      ["logfiles", ["log"]],
+    ] as const) {
+      const stems = contentStems(word);
+      for (const base of bases) expect(stems.has(base), `${word} → ${base}`).toBe(true);
+    }
+    expect(sharedVocabulary("run the payroll", "who may pay a supplier")).toEqual(["pay"]);
+    expect(sharedVocabulary("list unpaid invoices", "pay suppliers on time")).toEqual(["pay"]);
+    expect(sharedVocabulary("register each taxpayer", "charge VAT and tax")).toEqual(["tax"]);
+    // A word that only starts like one, prefixed or not, is still not folded onto it.
+    expect([...contentStems("logistics taxonomy relogic")].sort()).toEqual([
+      "logis",
+      "relog",
+      "taxon",
+    ]);
+  });
+
   it("sharedVocabulary is empty for the GR-01 pair and not for a resembling one", () => {
     expect(
       sharedVocabulary("download last month's invoices", "bulk extraction of financial records"),
