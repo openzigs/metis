@@ -34,6 +34,15 @@ interface Props {
   onUploaded?: (doc: DocumentRow) => void;
 }
 
+/**
+ * The file picker's `accept`: the MIME allowlist plus each fallback extension
+ * as `.ext` — a browser ignores a bare `md` (#1996). Shared with the governing upload.
+ */
+export const UPLOAD_ACCEPT = [
+  ...(UPLOAD_MIME_ALLOWLIST as readonly string[]),
+  ...(UPLOAD_EXTENSION_ALLOWLIST as readonly string[]).map((ext) => `.${ext}`),
+].join(",");
+
 /** The upload checks the server repeats; #1871 reuses them for governing documents. */
 export function clientValidate(file: File): string | null {
   if (file.size === 0) return "File is empty";
@@ -152,10 +161,7 @@ export function DocumentUploader({ projectId, onUploaded }: Props) {
           type="file"
           multiple
           className="hidden"
-          accept={[
-            ...(UPLOAD_MIME_ALLOWLIST as readonly string[]),
-            ...(UPLOAD_EXTENSION_ALLOWLIST as readonly string[]),
-          ].join(",")}
+          accept={UPLOAD_ACCEPT}
           onChange={(e) => {
             if (e.target.files) enqueue(e.target.files);
             if (inputRef.current) inputRef.current.value = "";

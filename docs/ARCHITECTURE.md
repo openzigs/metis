@@ -2548,6 +2548,13 @@ workspace nav shows its **Governing documents** tab only once the list route ans
 current revision: label, effective date, extraction state (a `failed` one with its
 `extractionError`, plus Retry extraction and Re-upload for an admin), rule count and
 `droppedUnverified`, and re-reads every 5 s while an extraction is `pending` or `running`.
+The same controls appear on a revision stuck `running` past `GOVERNING_EXTRACTION_STALE_MS`
+(`@metis/shared`, which the server's `EXTRACTION_STALE_MS` is, read from the revision's
+`extractionStartedAt`) or `pending` that long after upload (`isExtractionStuck`, #1996): the
+retry route's own rule. A retry's `202` can precede the run's `running` write, so the panel
+writes the revision `running` into the list cache and lets the poll read the server, never an
+immediate re-read. A poll that sees an extraction settle invalidates that document's rules
+(`governingKeys.documentRules`) and detail, which the 30 s `staleTime` would otherwise hold.
 Selecting a document shows its rules (a revision picker once it has more than one); a row
 expands to the verbatim `clauseExcerpt`. Upload, New revision, Retry, Edit and Remove render
 for a workspace `owner`/`admin` or a deployment admin (`canManageGoverning`, from

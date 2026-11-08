@@ -10,11 +10,7 @@
  */
 import { useState, type FormEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  MAX_DOCUMENT_BYTES,
-  UPLOAD_EXTENSION_ALLOWLIST,
-  UPLOAD_MIME_ALLOWLIST,
-} from "@metis/shared";
+import { MAX_DOCUMENT_BYTES, UPLOAD_EXTENSION_ALLOWLIST } from "@metis/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -26,7 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { clientValidate } from "@/components/projects/document-uploader";
+import { UPLOAD_ACCEPT, clientValidate } from "@/components/projects/document-uploader";
 import { resolveErrorMessage } from "@/lib/use-app-mutation";
 import { governingApi, governingKeys } from "@/lib/governing-api";
 
@@ -117,8 +113,8 @@ function UploadForm({
           {isRevision ? `New revision of ${target.title}` : "Upload a governing document"}
         </DialogTitle>
         <DialogDescription>
-          Up to {(MAX_DOCUMENT_BYTES / 1024 / 1024).toFixed(0)} MB · md, txt, json, html, pdf, docx,
-          xlsx, pptx. Its rules are extracted after the upload.
+          Up to {(MAX_DOCUMENT_BYTES / 1024 / 1024).toFixed(0)} MB ·{" "}
+          {UPLOAD_EXTENSION_ALLOWLIST.join(", ")}. Its rules are extracted after the upload.
         </DialogDescription>
       </DialogHeader>
 
@@ -129,10 +125,7 @@ function UploadForm({
           type="file"
           aria-invalid={fileError !== null}
           aria-describedby={fileError ? "governing-file-error" : undefined}
-          accept={[
-            ...(UPLOAD_MIME_ALLOWLIST as readonly string[]),
-            ...(UPLOAD_EXTENSION_ALLOWLIST as readonly string[]).map((ext) => `.${ext}`),
-          ].join(",")}
+          accept={UPLOAD_ACCEPT}
           onChange={(e) => {
             const chosen = e.target.files?.[0] ?? null;
             setFile(chosen);
