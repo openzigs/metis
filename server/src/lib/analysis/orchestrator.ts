@@ -3002,9 +3002,10 @@ export class AnalysisOrchestrator {
         signal: governingController.signal,
       });
 
-      // #1142 — a cancel that landed during synthesis (whose fallback never
-      // throws) must not end the run `completed`. Past this check the result is
-      // being recorded, so a later cancel answers false rather than lying.
+      // #1142 — a cancel that landed during the governing join (which logs its
+      // failures and never throws) must not end the run `completed`. Past this
+      // check the result is being recorded, so a later cancel answers false
+      // rather than lying.
       if (run.cancelled) {
         await endCancelled();
         return;

@@ -29,6 +29,7 @@ vi.mock("./findings.js", () => ({
 
 const {
   GOVERNING_FINDINGS_WRITE_TIMEOUT_MS,
+  governingFindingsRefreshing,
   produceGoverningFindingsForAnalysis,
   summariseFindings,
 } = await import("./findings-store.js");
@@ -201,13 +202,16 @@ describe("produceGoverningFindingsForAnalysis — edges", () => {
   });
   const prior = (over: Record<string, unknown> = {}) => ({
     id: "gf_r1",
+    requirementId: "REQ-001",
     ruleId: "r1",
     controlId: "C-1",
     status: "compliant",
     clauseExcerpt: "clause",
     revisionId: "rev",
     decision: "accepted",
+    decisionNote: "Legal signed this off.",
     decidedById: "u_ba",
+    decidedAt: new Date("2026-11-07T09:30:00.000Z"),
     ...over,
   });
 
@@ -258,6 +262,9 @@ describe("produceGoverningFindingsForAnalysis — edges", () => {
       previousDecidedById: "u_ba",
       previousStatus: "compliant",
       status: "gap",
+      // #2017 — the note and when it was made survive in the trail.
+      previousDecisionNote: "Legal signed this off.",
+      previousDecidedAt: "2026-11-07T09:30:00.000Z",
     });
     const update = (
       db.governingFinding.upsert.mock.calls[0]![0] as { update: Record<string, unknown> }
@@ -331,7 +338,134 @@ describe("produceGoverningFindingsForAnalysis — edges", () => {
     });
     expect(run.removed).toBe(1);
     expect(db.governingFinding.upsert).not.toHaveBeenCalled();
-    expect(db.auditLog.create).not.toHaveBeenCalled();
+    // gf_r1 is kept with its decision; gf_r2's decision is erased with its row.
+    expect(db.auditLog.create).toHaveBeenCalledTimes(1);
+    expect(
+      (db.auditLog.create.mock.calls[0]![0] as { data: { targetId: string } }).data.targetId,
+    ).toBe("gf_r2");
+  });
+
+  it("#2017 — a stale row deleted with a BA decision is audited in the same transaction; one without is not", async () => {
+    evaluateRequirementFindings.mockResolvedValue({
+      findings: [],
+      unverifiedCitations: 0,
+      noEvidenceDemoted: 0,
+    });
+    // r2 is does-not-apply for REQ-001 now: both its rows are stale.
+    db.governingFinding.findMany.mockResolvedValue([
+      prior({ id: "gf_r2", ruleId: "r2", controlId: "C-2", decision: "rejected" }),
+      prior({ id: "gf_r3", ruleId: "r3", decision: null, decisionNote: null, decidedAt: null }),
+    ]);
+    citableWorkspaceRules.mockResolvedValue({ rules: [], revisionText: new Map() });
+    const run = await produceGoverningFindingsForAnalysis({
+      analysisId: "a",
+      projectId: "p",
+      provider,
+      applicability: STORED,
+      requirementIds: ["REQ-001"],
+    });
+    expect(run).toMatchObject({ removed: 2, decisionsCleared: 1 });
+    expect(db.auditLog.create).toHaveBeenCalledTimes(1);
+    const row = (db.auditLog.create.mock.calls[0]![0] as { data: Record<string, unknown> }).data;
+    expect(row).toMatchObject({
+      actorId: null,
+      action: "governing.finding.decision-cleared",
+      targetType: "governing_finding",
+      targetId: "gf_r2",
+    });
+    expect(JSON.parse(row.metadata as string)).toMatchObject({
+      analysisId: "a",
+      requirementId: "REQ-001",
+      controlId: "C-2",
+      previousDecision: "rejected",
+      previousDecisionNote: "Legal signed this off.",
+      previousDecidedById: "u_ba",
+      previousDecidedAt: "2026-11-07T09:30:00.000Z",
+      previousStatus: "compliant",
+      status: null,
+      reason: "the rule no longer applies to the requirement",
+    });
+    // Audited before the delete, in the same transaction.
+    expect(db.auditLog.create.mock.invocationCallOrder[0]!).toBeLessThan(
+      db.governingFinding.deleteMany.mock.invocationCallOrder[0]!,
+    );
+    expect(db.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("#2017 — runs of one analysis are serialised in call order; refreshing reads true until the last settles", async () => {
+    const order: string[] = [];
+    const release: Array<() => void> = [];
+    evaluateRequirementFindings.mockImplementation(async (i: { requirement: { id: string } }) => {
+      order.push(`start ${i.requirement.id}`);
+      await new Promise<void>((r) => release.push(r));
+      order.push(`end ${i.requirement.id}`);
+      return { findings: [], unverifiedCitations: 0, noEvidenceDemoted: 0 };
+    });
+    const run = (requirementIds: string[]) =>
+      produceGoverningFindingsForAnalysis({
+        analysisId: "a_serial",
+        projectId: "p",
+        provider,
+        applicability: STORED,
+        requirementIds,
+      });
+    expect(governingFindingsRefreshing("a_serial")).toBe(false);
+    const first = run(["REQ-001"]);
+    const second = run(["REQ-003"]);
+    // Another analysis is not queued behind this one.
+    const other = produceGoverningFindingsForAnalysis({
+      analysisId: "a_other",
+      projectId: "p",
+      provider,
+      applicability: STORED,
+      requirementIds: ["REQ-003"],
+    });
+    expect(governingFindingsRefreshing("a_serial")).toBe(true);
+    await vi.waitFor(() => expect(release).toHaveLength(2));
+    // The first run and the other analysis's run started; the second waits.
+    expect(order).toEqual(["start REQ-001", "start REQ-003"]);
+    release.shift()!();
+    release.shift()!();
+    await first;
+    await other;
+    await vi.waitFor(() => expect(release).toHaveLength(1));
+    expect(governingFindingsRefreshing("a_serial")).toBe(true);
+    release.shift()!();
+    await second;
+    expect(order).toEqual([
+      "start REQ-001",
+      "start REQ-003",
+      "end REQ-001",
+      "end REQ-003",
+      "start REQ-003",
+      "end REQ-003",
+    ]);
+    await vi.waitFor(() => expect(governingFindingsRefreshing("a_serial")).toBe(false));
+    expect(governingFindingsRefreshing("a_other")).toBe(false);
+  });
+
+  it("#2017 — a failed run does not stop the next one queued behind it", async () => {
+    evaluateRequirementFindings.mockResolvedValue({
+      findings: [],
+      unverifiedCitations: 0,
+      noEvidenceDemoted: 0,
+    });
+    db.$transaction.mockRejectedValueOnce(new Error("write failed"));
+    const failing = produceGoverningFindingsForAnalysis({
+      analysisId: "a_fail",
+      projectId: "p",
+      provider,
+      applicability: STORED,
+    });
+    const next = produceGoverningFindingsForAnalysis({
+      analysisId: "a_fail",
+      projectId: "p",
+      provider,
+      applicability: STORED,
+    });
+    await expect(failing).rejects.toThrow("write failed");
+    await expect(next).resolves.toMatchObject({ requirements: 2 });
+    await vi.waitFor(() => expect(governingFindingsRefreshing("a_fail")).toBe(false));
   });
 
   it("#2010 — a cancelled run stops: it throws, counts nothing as failed, and writes nothing", async () => {

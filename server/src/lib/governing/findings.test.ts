@@ -8,6 +8,7 @@ import type { AIProvider, ChatMessage, ChatOptions } from "../ai/types.js";
 import { TOOL_RESULT_FENCE } from "../ai/tool-runtime/fence.js";
 import {
   FALLBACK_FINDING_QUESTION,
+  buildFindingsPrompt,
   evaluateRequirementFindings,
   evidenceIsPresent,
   parseFindingsReply,
@@ -388,5 +389,51 @@ describe("parsing and evidence", () => {
     expect(evidenceIsPresent("every export, to be logged!", requirement, [])).toBe(true);
     // A negation is content: it changes what the quote says.
     expect(evidenceIsPresent("never export cards", "We never export cards.", [])).toBe(true);
+  });
+
+  it("#2017 — a short answer is evidence when quoted with the end of its question", () => {
+    const answers = [{ question: "Will every customer export be logged?", answer: "Yes, we do." }];
+    // On its own, "Yes, we do." holds one content word: not evidence, as before.
+    expect(evidenceIsPresent("Yes, we do.", "Customers download reports.", answers)).toBe(false);
+    // With the end of the question it answers, it is.
+    expect(
+      evidenceIsPresent(
+        "customer export be logged? Yes, we do.",
+        "Customers download reports.",
+        answers,
+      ),
+    ).toBe(true);
+    expect(
+      evidenceIsPresent("No, they will not.", "x", [
+        { question: "Will card numbers leave the EU?", answer: "No, they will not." },
+      ]),
+    ).toBe(false);
+    expect(
+      evidenceIsPresent("card numbers leave the EU? No, they will not.", "x", [
+        { question: "Will card numbers leave the EU?", answer: "No, they will not." },
+      ]),
+    ).toBe(true);
+  });
+
+  it("#2017 — the prompt asks for one contiguous quote from one source, with 3+ content words", () => {
+    const { systemMessage } = buildFindingsPrompt("r", [], []);
+    expect(systemMessage).toContain("one contiguous run of words from a single source");
+    expect(systemMessage).toContain("at least three words that say what is done");
+    expect(systemMessage).toContain("together with the end of the question it answers");
+  });
+
+  it("#2017 — a quote of the question alone, or across two answers, is not evidence", () => {
+    const answers = [
+      { question: "Will every customer export be logged?", answer: "Yes, we do." },
+      { question: "Who reviews the export logs?", answer: "The security team weekly." },
+    ];
+    // The question is METIS's words: quoting it is no evidence of what the business does.
+    expect(evidenceIsPresent("every customer export be logged", "x", answers)).toBe(false);
+    // One source only: a run joining one answer to the next question is not found.
+    expect(evidenceIsPresent("yes we do who reviews the export logs", "x", answers)).toBe(false);
+    // An answer without a question is still searched on its own.
+    expect(
+      evidenceIsPresent("security team weekly", "x", [{ answer: "The security team weekly." }]),
+    ).toBe(true);
   });
 });
