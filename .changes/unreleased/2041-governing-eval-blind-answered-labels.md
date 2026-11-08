@@ -3,15 +3,9 @@ issue: 2041
 section: Fixed
 ---
 
-- `eval:governing`: a BA answer whose settle failed now counts as a **settle failure**, not
-  as "still asking". The settle fails when its call throws or its reply cannot be read
-  twice. Before this, one provider outage on the seven-pair short-answer row could move its
-  accuracy by about 14 points with no trace. The row's "Replay failures" column is now
-  "Requirements failed", and a legend explains both columns. When no run completed, the
-  report no longer says the set has no short-answer pairs. It also notes that A4's cost and
-  time include the replay, so they cannot be compared with A4 readings from before #2033.
-  `governing-02`'s seven `answeredVerdict` labels were re-derived by two blind, tool-less
-  labellers. They agreed on all seven and matched the earlier labels, so no label changed.
-  The labellers' prompts, labels and agreement are in its `labelling/` folder.
-  `governing-01`'s GR-11 question is reworded to cover every January purge, so its
-  `compliant` label is no longer contestable.
+- `eval:governing`: a BA answer whose settle failed (a throw, or a reply unreadable twice)
+  now counts as a **settle failure**, not as "still asking". "Replay failures" is renamed
+  "Requirements failed". A run with no completed runs no longer claims the set has no
+  short-answer pairs. The report notes that A4's cost includes the replay. `governing-02`'s
+  seven `answeredVerdict` labels were re-derived blind: 7 of 7 agreed, and none changed.
+  `governing-01`'s GR-11 question now covers every January purge.
