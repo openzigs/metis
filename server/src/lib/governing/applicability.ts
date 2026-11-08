@@ -67,11 +67,23 @@ export const SCREEN_BATCH_MAX_TOKENS = 8_000;
 /**
  * #2008 — the estimated tokens a screen batch plan sets aside for the
  * requirement, whatever its length: the plan, and so every batch's cache
- * prefix, is then the same for every requirement of one rule set. A
- * requirement longer than this runs its prompt past the budget by the excess,
- * which the half of the window left for the reply absorbs.
+ * prefix, is then the same for every requirement of one rule set. #2016 — a
+ * requirement longer than this is planned at its own length instead, so its
+ * prompt stays inside the budget (window/2 on a small-context model); only such
+ * a requirement's batches differ, and they only cache among their own kind.
  */
 export const SCREEN_REQUIREMENT_ALLOWANCE_TOKENS = 500;
+
+/**
+ * #2022 — the most a long requirement may shrink a screen batch: its room for
+ * rules is never less than this fraction of what a requirement within
+ * {@link SCREEN_REQUIREMENT_ALLOWANCE_TOKENS} leaves. Planned at its own
+ * length alone, a requirement longer than the budget left room for one rule,
+ * so every rule got its own screen call (120 for 120 rules). Past the floor
+ * the screen takes at most about this many times the calls of a short
+ * requirement, and its prompts go over the budget instead (logged).
+ */
+export const SCREEN_ROOM_MAX_SHRINK = 4;
 
 const MAX_REASON_CHARS = 500;
 const MAX_BUSINESS_FACT_CHARS = 500;
@@ -442,16 +454,37 @@ export function fallbackBusinessQuestion(
  * for the requirement rather than its actual length. Planned from the
  * requirement's own text, the batch boundaries — and with them each batch's
  * cache prefix — moved with its length, so past one batch the cache missed
- * between requirements at exactly the scale where it pays.
+ * between requirements at exactly the scale where it pays. #2016 — the
+ * requirement's text is read only for its length: one longer than the
+ * allowance is planned at that length, so its prompt never overshoots `budget`.
  */
 export function planScreenBatches(
   entries: readonly ApplicabilityEntry[],
   budget: number,
+  requirementText = "",
 ): ApplicabilityEntry[][] {
-  const fixed =
-    estimateTokens(promptText(buildApplicabilityScreenPrompt("", []))) +
-    SCREEN_REQUIREMENT_ALLOWANCE_TOKENS;
-  return planBatches(entries, (e) => estimateTokens(`${screenLine(e)}\n`), fixed, budget);
+  const { room } = screenRoom(budget, requirementText);
+  return planBatches(entries, (e) => estimateTokens(`${screenLine(e)}\n`), budget - room, budget);
+}
+
+/**
+ * The estimated tokens a screen batch has for rule lines, and whether
+ * {@link SCREEN_ROOM_MAX_SHRINK} floored it (#2022): the requirement is so long
+ * that, planned at its own length, the batches would have had less.
+ */
+export function screenRoom(
+  budget: number,
+  requirementText = "",
+): { room: number; capped: boolean } {
+  const template = estimateTokens(promptText(buildApplicabilityScreenPrompt("", [])));
+  const usual = budget - template - SCREEN_REQUIREMENT_ALLOWANCE_TOKENS;
+  const requirement = estimateTokens(requirementText);
+  if (requirement <= SCREEN_REQUIREMENT_ALLOWANCE_TOKENS) {
+    return { room: Math.max(1, usual), capped: false };
+  }
+  const floor = Math.max(1, Math.ceil(usual / SCREEN_ROOM_MAX_SHRINK));
+  const room = budget - template - requirement;
+  return room < floor ? { room: floor, capped: true } : { room, capped: false };
 }
 
 /**
@@ -540,7 +573,14 @@ export async function decideApplicability(
     }
   };
   if (screen) {
-    for (const batch of planScreenBatches(entries, budget)) {
+    if (screenRoom(budget, requirement.text).capped) {
+      log.warn("governing screen: requirement too long for the batch budget; batches capped", {
+        requirementId: requirement.id,
+        estimatedTokens: estimateTokens(requirement.text),
+        budget,
+      });
+    }
+    for (const batch of planScreenBatches(entries, budget, requirement.text)) {
       screenBatches++;
       for (const e of await screenBatch(batch)) found(e.index, "screen");
     }

@@ -2585,8 +2585,15 @@ in two passes and unions them:
    window when that is smaller. Every rule is in exactly one batch and none is truncated; the
    count screened is logged. A failed top-k search is survivable while the screen runs. The
    summaries lead the screen prompt, ahead of the requirement, and are sent as the cached
-   `promptCaching.userPrefix`: every requirement of an analysis shares that prefix (#1997). A
-   screen reply that cannot be read is re-asked once before the requirement fails.
+   `promptCaching.userPrefix`: every requirement of an analysis shares that prefix (#1997).
+   The batches are planned with a fixed 500-token allowance for the requirement, so they are the
+   same for every requirement (#2008). A requirement longer than that is planned at its own
+   length, so its prompt never overshoots the budget (#2016), down to a floor: a batch's room
+   for rules never falls below a quarter of what a requirement within the allowance leaves
+   (`SCREEN_ROOM_MAX_SHRINK`). A requirement longer than the whole budget used to leave room for
+   one rule, so every rule got its own call (120 calls for 120 rules); past the floor its screen
+   prompts go over the budget instead, and the cap is logged (#2022). A screen reply that cannot be read
+   is re-asked once before the requirement fails.
 
 Each candidate is then judged `applies | does-not-apply | uncertain` with a one-line reason.
 An `uncertain` decision always carries a business question: a reply that leaves a candidate
@@ -2612,6 +2619,8 @@ gets one carrying `error`, never a silently empty set). It is started, not await
 runs beside the code agent, enhancement and synthesis, and `runPipeline` joins it after
 synthesis (`joinGoverningApplicability`), before the run is recorded. Awaiting it first had put
 about 8 minutes of screens and judging ahead of the code agent on a 24-requirement analysis.
+It runs under the hook's signal: once that is aborted (a cancel, or a run that ends before the
+join), its workers stop, so no further requirement is retrieved, embedded or judged (#2016).
 The join stores the sets on the analysis as `metadata.governingApplicability`
 (`governing/applicability-store.ts`, the shared `governingAnalysisApplicabilitySchema`, #1873),
 where the BA questions below read them. A flag-off analysis is byte-identical to
@@ -2644,7 +2653,9 @@ the pre-#1873 code).
   `governing-applicability`, which names no real ambiguity. Its own `requirementId` is
   namespaced (`governing:REQ-001`, #2009). The analysis's requirement ids and the reviewed
   list's both number from REQ-001 independently, and every reader of `requirementId` (the CSV
-  export's title, the ticked-items ordering) reads it against the reviewed list. Clarification
+  export's title, the ticked-items ordering) reads it against the reviewed list. The CSV export
+  labels a governing question's `requirement` "Company policy check: <the requirement's text>"
+  from the stored applicability (`governingQuestionRequirementLabel`, #2016). Clarification
   enrichment skips governing questions outright (`collectAnsweredQuestions`): their answers
   settle rule applicability and never refine a requirement.
 - **The guard.** `questionLeaksRule` refuses a question that names a control id (whole words,
@@ -2662,7 +2673,13 @@ the pre-#1873 code).
   An answered pair is never asked again, so a pair whose settle failed (an unreadable reply, a
   provider error or outage, an aborted request) would otherwise be orphaned. Instead, every
   later submit and every dialog start judges it again from the BA's stored answer. That
-  includes a completed dialog. A refused (409) submit settles nothing.
+  includes a completed dialog. A refused (409) submit settles nothing. A question whose pairs
+  are all settled costs no model call, but still costs one `readGoverningApplicability`. The
+  start-path retry is backed off per analysis (#2016): after a retry that left an answer open (a
+  judging call failed or its reply could not be read), the next one waits `ORPHAN_RETRY_BASE_MS`
+  (1 minute), doubling up to an hour. A retry that settled every answer or judged nothing, or a
+  submit, resets it; one the client aborted leaves it as it was (#2022). The backoff map holds at
+  most `ORPHAN_RETRY_MAX_ENTRIES` (1,000) analyses, the least recently backed off evicted first.
   Governing questions are kept out of the resolution pass: their answers never rewrite a
   requirement's description.
 - **Read path.** `GET /api/projects/:projectId/analyses/:id/governing-applicability` returns the
@@ -2682,7 +2699,9 @@ the prompt:
   `system`, `user`, `allow`, …: `EVIDENCE_STOP_WORDS`), so "the system shall" is not evidence
   (`evidenceIsPresent`, #2010). An answer is searched together with the question it answers, so a
   short answer ("Yes, we do.") counts when quoted with the end of its question; the run must reach
-  into the answer, since the question is METIS's own words (#2017). This is a floor on the quote,
+  into the answer, since the question is METIS's own words (#2017). What it quotes of the answer
+  must be the whole answer, or hold three counted words itself: "every customer export be logged?
+  No" of the answer "No, we do not." drew every counted word but one from the question (#2022). This is a floor on the quote,
   not proof that it says how the rule is met. Otherwise it becomes `needs-ba-input` if the model gave the question,
   else `gap`. This follows CTRAG's No-Evidence → Non-Compliant (one study; a pattern, not proof).
 - **Every citation is verified** against the **cited revision's** stored `extractedText`
@@ -2706,14 +2725,20 @@ what a finding cited.
 produces them in two places:
 
 - In the run's join, from the applicability just stored. This is cancellable with the run and
-  best-effort. A cancel that lands during synthesis ends the run before the join (#2010).
+  best-effort. A cancel that lands during synthesis ends the run before the join (#2010). One
+  that lands while the join waits for the applicability work stops that work part way, so the join
+  stores nothing and produces nothing, rather than store a set missing the requirements never
+  reached (#2022).
 - After a BA answer settles pairs: the questions source re-evaluates the requirements whose pairs
   the answer settled. This runs off the request path, after the settlement is committed (#2010).
 
 Runs of one analysis are **serialised in call order** (#2017): each is queued behind the last, so
 an earlier refresh never commits over a newer one and two first creates never race on the unique
-key. A queued run reads the stored applicability when it starts. The queue is in-process, so it
-orders the runs of one server, not of several replicas.
+key. A refresh after a BA answer passes no applicability, so it reads the stored one when it
+starts and sees every settlement committed before it; the run's join passes the snapshot it has
+just stored and evaluates that (#2022). A run cancelled while queued rejects at once and evaluates
+nothing, and the runs behind it still wait for those ahead of it (#2022). The queue is in-process,
+so it orders the runs of one server, not of several replicas.
 
 Each production writes in one transaction with a 60 s timeout
 (`GOVERNING_FINDINGS_WRITE_TIMEOUT_MS`, as `persistRequirements` sets). A finding whose status,
@@ -2727,10 +2752,10 @@ decision on that row is audited the same way before the delete (#2017).
 **API** (404 while the flag is off; `ensureAnalysisVisible` on both routes):
 
 - `GET /api/projects/:projectId/analyses/:id/governing-findings` returns the findings and their
-  counts, and `refreshing`: true while a findings run of the analysis is in flight or queued, so a
-  client fetches again once it reads false (#2017). `revisions` lists each policy revision the
-  findings cite with its rule count (live rules, plus any cited rule deleted since), for the
-  summary sentence (#1876).
+  counts, and `refreshing`: true while a findings run of the analysis is in flight or queued (the
+  run's own production at its join as well as a refresh a BA answer started), so a client fetches
+  again once it reads false (#2017). `revisions` lists each policy revision the findings cite with
+  its rule count (live rules, plus any cited rule deleted since), for the summary sentence (#1876).
 - `POST …/governing-findings/:findingId/decision` takes `{ decision: accepted|rejected, note }`
   (`governingFindingDecisionInputSchema`, strict) and needs `analysis.run`.
 - The decider is the session user. A body that names one is a 400. Each finding carries
@@ -4475,6 +4500,33 @@ the policy is 8 chunks, under the retrieval's k of 10, so A0 sees the whole poli
 recall says nothing about top-k misses. The web specialist then names about nine rules per
 requirement as gaps, the colour of a button included. The screen's prompt is measured at 40,
 200 and 500 rules (about 1k, 4.4k and 10.6k tokens) for #1872's batching.
+
+**Tuning set and held-out set (#2024).** The applicability judge prompt was tuned on
+`governing-01` in #1997 and #2005, so that set is now `purpose: "tuning"`. It remains the
+`eval:governing` default, and prompts are iterated there with DeepSeek. Decisions, starting
+with #1878's flag decision, are read on **`governing-02-clinic-records`**
+(`purpose: "held-out"`). It is a fictional clinic network's patient records and clinical
+safety standard: 40 obligations, a v2 changing four clauses, and 36 requirements (30
+positive, 6 negative, 10 with a non-resembling pair). Seven of its `needs-ba-input` pairs
+carry the short `baAnswer` a BA would give ("Yes, we do.", "No.") for #2017 and #2022.
+It was labelled blind to every arm and prompt by two AI labellers, the same model as the
+author (so not independent human judgement). The second ran with no tools and saw only the
+policy and the requirements. They agreed on 31 of the 40 pairs either listed (0.78); Cohen's
+κ is 0.93, but over 1,440 cells of which about 97% are "does not apply" for both. A third
+pass settled each of the nine disagreements with a written reason. Because adjudication
+sees only disagreements, a blind consistency pass then asked about each cross-cutting rule
+(IR-04, TP-04, CM-04, CM-02, CM-01, RA-02) on every requirement, twice where it differed,
+and changed a label only when both passes agreed (eight `needs-ba-input` pairs added).
+`labelling/` holds all the records. No person has reviewed the labels. Its manifest records
+`contentHash`, the sha256 of its policy revisions, rules and items. The loader
+(`validateGoverningCorpus`) refuses a held-out set that has no hash, or whose content no
+longer matches it, or whose recorded hash does not appear in `ANNOTATION.md` (a re-hash is
+a written change; pasting the new hash into the manifest alone fails). `ANNOTATION.md` sits
+outside the hash, so recording a reading there does not change it. `eval:governing
+--baseline` refuses a held-out set (`assertBaselineAllowed`) before any model is called. Every report states its set (`report.corpus.purpose`, a `Set:` line in
+the Markdown, and the CLI's first line). **Never iterate a prompt against `governing-02`.**
+Read it only for a decision, and record each reading in its `ANNOTATION.md`
+(`CONTRIBUTING.md` > "What a pull request needs").
 
 #### Online eval — scoring sampled live production runs (#1321, epic #1316)
 

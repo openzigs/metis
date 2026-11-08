@@ -189,23 +189,42 @@ export function governingFindingsRefreshing(analysisId: string): boolean {
 }
 
 /**
+ * #2022 — resolves when `previous` settles; rejects with the abort reason as
+ * soon as `signal` aborts, so a run cancelled while it waits in the queue
+ * stops then rather than after every run ahead of it.
+ */
+function turnOf(previous: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
+  if (!signal) return previous;
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    if (signal.aborted) return onAbort();
+    signal.addEventListener("abort", onAbort, { once: true });
+    void previous.then(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    });
+  });
+}
+
+/**
  * Evaluate and store the analysis's governing findings. Rows of the
  * requirements evaluated are upserted, and those of pairs that no longer apply
  * are removed. A BA decision is kept when the finding it was made on is
  * unchanged (status and citation), and cleared when the finding changed.
  * #2017 — queued behind any earlier run of the same analysis (see
- * {@link findingsRuns}); the stored applicability is read when the run starts,
- * not when it was asked for, so a queued run sees every settlement before it.
+ * {@link findingsRuns}). A run given no `applicability` reads the stored one
+ * when it starts, not when it was asked for, so it sees every settlement
+ * committed before it; a run given one (the orchestrator's join passes the
+ * snapshot it just stored) evaluates that snapshot. #2022 — a run whose
+ * `signal` aborts while it is queued rejects at once and evaluates nothing;
+ * the runs queued behind it still wait for the ones ahead of it.
  */
 export function produceGoverningFindingsForAnalysis(
   input: ProduceGoverningFindingsInput,
 ): Promise<GoverningFindingsRun> {
   const previous = findingsRuns.get(input.analysisId) ?? Promise.resolve();
-  const result = previous.then(() => produceNow(input));
-  const tail = result.then(
-    () => undefined,
-    () => undefined,
-  );
+  const result = turnOf(previous, input.signal).then(() => produceNow(input));
+  const tail = Promise.allSettled([previous, result]).then(() => undefined);
   findingsRuns.set(input.analysisId, tail);
   void tail.then(() => {
     if (findingsRuns.get(input.analysisId) === tail) findingsRuns.delete(input.analysisId);

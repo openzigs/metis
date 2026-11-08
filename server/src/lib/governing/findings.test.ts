@@ -415,11 +415,35 @@ describe("parsing and evidence", () => {
     ).toBe(true);
   });
 
+  it("#2022 — a quote that crosses into the answer by a word or two is not evidence", () => {
+    const question = "Will every customer export be logged?";
+    const no = [{ question, answer: "No, we do not." }];
+    // The reviewer's probe: every counted word but "no" is METIS's own question.
+    expect(evidenceIsPresent("every customer export be logged? No", "x", no)).toBe(false);
+    // By a stop-word: no counted word of the answer at all.
+    expect(
+      evidenceIsPresent("every customer export be logged? We", "x", [
+        { question, answer: "We log some of them." },
+      ]),
+    ).toBe(false);
+    // Two counted words of a longer answer are still not enough.
+    const partial = [{ question, answer: "Yes, every export goes to the audit log." }];
+    expect(evidenceIsPresent("customer export be logged? Yes, every", "x", partial)).toBe(false);
+    // The whole answer, with the end of the question, is evidence…
+    expect(evidenceIsPresent("customer export be logged? No, we do not.", "x", no)).toBe(true);
+    // …and so is a run holding three counted words of the answer itself.
+    expect(evidenceIsPresent("be logged? Yes, every export goes to the audit", "x", partial)).toBe(
+      true,
+    );
+  });
+
   it("#2017 — the prompt asks for one contiguous quote from one source, with 3+ content words", () => {
     const { systemMessage } = buildFindingsPrompt("r", [], []);
     expect(systemMessage).toContain("one contiguous run of words from a single source");
     expect(systemMessage).toContain("at least three words that say what is done");
     expect(systemMessage).toContain("together with the end of the question it answers");
+    // #2022 — the short answer is quoted whole.
+    expect(systemMessage).toContain('("Yes, we do.") whole,');
   });
 
   it("#2017 — a quote of the question alone, or across two answers, is not evidence", () => {

@@ -229,6 +229,23 @@ export function governingQuestionRequirementId(requirementId: string): string {
   return `governing:${requirementId}`;
 }
 
+/** #2016 — what a governing question's requirement is called where no text is to hand. */
+export const GOVERNING_QUESTION_REQUIREMENT_LABEL = "Company policy check";
+
+/**
+ * #2016 — the readable `requirement` a governing question is exported under:
+ * the label, and the analysis's requirement text when known (clipped as the
+ * question's own context quotes it). Never the namespaced internal id, which
+ * means nothing to a BA, nor the bare analysis id, which names a different
+ * requirement in the reviewed list (#2009).
+ */
+export function governingQuestionRequirementLabel(requirementText: string | undefined): string {
+  const text = requirementText?.trim();
+  return text
+    ? `${GOVERNING_QUESTION_REQUIREMENT_LABEL}: ${clip(text, MAX_REQUIREMENT_QUOTE_CHARS)}`
+    : GOVERNING_QUESTION_REQUIREMENT_LABEL;
+}
+
 /** Facts that differ only in case, spacing or punctuation are the same fact. */
 function factKey(fact: string): string {
   return words(fact).join(" ");
@@ -516,10 +533,13 @@ export interface GoverningQuestionSource {
   /**
    * Judge answered governing questions back onto their pairs. #2009 — given
    * any questions, of any round: one whose linked pairs are all settled costs
-   * nothing, and one whose earlier settle failed (an answered pair left open)
-   * is judged again.
+   * no model call (one `readGoverningApplicability` to see that it is), and
+   * one whose earlier settle failed (an answered pair left open) is judged
+   * again. #2016 / #2022 — resolves to the number of questions it sent to the
+   * model and left open: a judging call failed, or its reply could not be
+   * read. 0 when it settled every one, or had none to judge.
    */
-  settle(questions: readonly ClarifyingQuestion[], signal?: AbortSignal): Promise<void>;
+  settle(questions: readonly ClarifyingQuestion[], signal?: AbortSignal): Promise<number>;
 }
 
 /** True when a rule `q` links is still `uncertain` and unsettled for its requirement. */
@@ -583,12 +603,12 @@ export function governingQuestionSourceFor(input: {
     },
     async settle(questions, signal) {
       const withAnswer = questions.filter((q) => q.governing && q.answer?.trim());
-      if (withAnswer.length === 0 || input.provider.offline) return;
+      if (withAnswer.length === 0 || input.provider.offline) return 0;
       const stored = await readGoverningApplicability(input.analysisId);
-      if (!stored) return;
+      if (!stored) return 0;
       // #2009 — only questions that still have a linked pair to settle.
       const answered = withAnswer.filter((q) => hasOpenLinkedPair(stored, q));
-      if (answered.length === 0) return;
+      if (answered.length === 0) return 0;
       const rows = await projectRules(
         input.projectId,
         answered.flatMap((q) => q.governing!.ruleIds),
@@ -634,6 +654,8 @@ export function governingQuestionSourceFor(input: {
           });
         });
       }
+      const settledBy = new Set(applied.map((s) => s.questionId));
+      return answered.filter((q) => !settledBy.has(q.id)).length;
     },
   };
 }
