@@ -15,9 +15,11 @@
  * whose next N transactions run their work for real, inside a real transaction,
  * and are then refused, so the database rolls every write back exactly as it
  * does when Postgres refuses a commit. Every outcome is read back from the rows.
- * A last case races two first sign-ins of one user for real (forced to read
- * before either writes): on Postgres one of them is aborted (40001), and must
- * land on its retry.
+ * A last case races the first sign-ins of two DIFFERENT users for real (forced
+ * to read before either writes): they share nothing but index pages, yet on
+ * Postgres SSI can abort one of them (40001), and it must land on its retry.
+ * Two first sign-ins of the SAME user are not a write conflict: the loser hits
+ * the `(userId, roleId)` unique key, a P2002 (#1971).
  *
  * The calling file must `vi.mock` `lib/prisma.js` (so `prisma` returns
  * `state.db`), `lib/audit/audit-service.js` (handing its `audit` mock in as
@@ -362,6 +364,39 @@ export function describeWriteConflictRetry(opts: {
           status: "disabled",
           deletedAt: expect.any(Date),
         });
+      });
+    });
+
+    describe.each(SHAPES)("a %s write conflict on every attempt", (shape) => {
+      // #1977 — a SCIM write that loses all three attempts is transient, like a
+      // sign-in's: the IdP gets a status it retries (503), not a 500.
+      it("a SCIM write answers a retryable 503 and writes nothing", async () => {
+        const auth = `Bearer ${TOKEN}`;
+        seq += 1;
+        const userName = `${PREFIX}-${seq}`;
+
+        let c = refuseNext(Number.MAX_SAFE_INTEGER, shape);
+        const created = await request(app)
+          .post("/scim/v2/Users")
+          .set("Authorization", auth)
+          .send({ userName, emails: [{ value: `${userName}@corp.test` }] });
+        expect(created.status).toBe(503);
+        expect(created.body.error).toMatchObject({ code: "SCIM_WRITE_CONFLICT" });
+        expect(c.opened()).toBe(3);
+        expect(await db.user.findUnique({ where: { username: userName } })).toBeNull();
+
+        const row = await user({ authSource: "scim" });
+        c = refuseNext(Number.MAX_SAFE_INTEGER, shape);
+        const patched = await request(app)
+          .patch(`/scim/v2/Users/${row.id}`)
+          .set("Authorization", auth)
+          .send({ Operations: [{ op: "replace", path: "displayName", value: "Renamed" }] });
+        expect(patched.status).toBe(503);
+        expect(c.opened()).toBe(3);
+        expect((await db.user.findUniqueOrThrow({ where: { id: row.id } })).displayName).toBe(
+          row.displayName,
+        );
+        expect(audited).not.toHaveBeenCalled();
       });
     });
 

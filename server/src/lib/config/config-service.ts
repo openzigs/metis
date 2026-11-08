@@ -22,6 +22,7 @@ import { getVaultService, type SecretSummary, type VaultService } from "../vault
 import { ConfigBootstrapError, ConfigUnknownKeyError, ConfigValidationError } from "./errors.js";
 import { CONFIG_KEYS, type ConfigKeyDef, getKeyDef, listKeysByTier } from "./key-registry.js";
 import { ConfigCache } from "./cache.js";
+import { isTruthyConfigValue } from "./truthy.js";
 
 const log = createChildLogger("config-service");
 
@@ -187,13 +188,14 @@ export class ConfigService extends EventEmitter {
   }
 
   /**
-   * Coerce-to-bool helper. Truthy values: `1`, `true`, `yes`, `on` (case-insensitive).
+   * Coerce-to-bool helper. Truthy values: `1`, `true`, `yes`, `on` (case-insensitive,
+   * trimmed) — {@link isTruthyConfigValue}, shared with the env-only flags (#1977).
    * Anything else is falsy. Returns `defaultValue` when unset.
    */
   getBool(key: string, defaultValue = false): boolean {
     const raw = this.get(key);
     if (raw === undefined) return defaultValue;
-    return /^(1|true|yes|on)$/i.test(raw.trim());
+    return isTruthyConfigValue(raw);
   }
 
   /** Returns whether a key is registered. */
@@ -631,7 +633,7 @@ export function __resetConfigSingleton(): void {
 }
 
 // Re-export the registry so callers can `import { ConfigService, CONFIG_KEYS }`.
-export { CONFIG_KEYS };
+export { CONFIG_KEYS, isTruthyConfigValue };
 
 /**
  * Convert a typed Zod-parsed value into the canonical string form persisted

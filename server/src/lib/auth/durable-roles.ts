@@ -4,7 +4,7 @@ import { reconnectUserSockets } from "../socket/user-disconnect.js";
 import { audit } from "../audit/audit-service.js";
 import { retryOnWriteConflict } from "../db/write-conflict-retry.js";
 import { isBootstrapAdminCandidate } from "./bootstrap-admins.js";
-import { signInConflict } from "./login-identity.js";
+import { signInConflict } from "./sign-in-errors.js";
 
 export const EXPLICIT_ROLE_SOURCES = ["local", "scim", "unknown"] as const;
 export const DURABLE_ROLE_SOURCES = ["local", "scim", "provider", "unknown"] as const;
