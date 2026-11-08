@@ -11,7 +11,11 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { VECTOR_ANN_THRESHOLD } from "@metis/shared";
-import { LanceVectorStore, type VectorRow } from "../src/lib/rag/vector-store.js";
+import {
+  LanceVectorStore,
+  type SearchFilter,
+  type VectorRow,
+} from "../src/lib/rag/vector-store.js";
 
 let lanceLoadable = true;
 
@@ -210,6 +214,41 @@ describeIfLance("LanceVectorStore", () => {
       expect(hits).toHaveLength(K);
       expect(new Set(hits.map((h) => h.row.metadata.documentId))).toEqual(new Set(["current"]));
     });
+
+    // #1922 — prefiltering restricts the candidates, but the IVF index still probes
+    // only `vectordb`'s default 20 of its 256 partitions. Every excluded row sits at
+    // cosine 0.99 to the query and every match at 0.5, so the probed partitions hold
+    // excluded rows only: measured on `vectordb` 0.21.2, nprobes 20, 64 and 128 all
+    // returned 0 hits here, and 256 returned k.
+    it.each<[string, SearchFilter, Partial<VectorRow["metadata"]>]>([
+      ["documentIds", { documentIds: ["current"] }, { documentId: "superseded" }],
+      ["embeddingModel", { embeddingModel: "new-model" }, { embeddingModel: "old-model" }],
+    ])(
+      "%s: an IVF-indexed table returns k matches that sit outside the default probed partitions (#1922)",
+      async (_label, filter, excludedMeta) => {
+        const matched = { documentId: "current", embeddingModel: "new-model" };
+        const live = Array.from({ length: K + 2 }, (_, i) =>
+          row(`live-${i}`, nearZero(0.5, 310 + i), matched),
+        );
+        const excluded = Array.from({ length: VECTOR_ANN_THRESHOLD + 100 }, (_, i) =>
+          row(`stale-${i}`, nearZero(0.99, 1 + (i % 300)), { ...matched, ...excludedMeta }),
+        );
+        // One write past the threshold, so the index is trained over the matches too.
+        await store.upsert("narrow", [...live, ...excluded]);
+        const table = await (
+          store as unknown as {
+            openOrCreateTable(
+              p: string,
+            ): Promise<{ listIndices(): Promise<Array<{ columns: string[] }>> }>;
+          }
+        ).openOrCreateTable("narrow");
+        expect((await table.listIndices()).some((ix) => ix.columns.includes("vector"))).toBe(true);
+
+        const hits = await store.search("narrow", vec(0), K, filter);
+        expect(hits).toHaveLength(K);
+        expect(hits.every((h) => h.row.id.startsWith("live-"))).toBe(true);
+      },
+    );
   });
 
   it("upsert is idempotent — same id replaces", async () => {
