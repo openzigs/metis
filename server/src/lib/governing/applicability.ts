@@ -459,6 +459,11 @@ export function fallbackBusinessQuestion(
  * prompt never overshoots `budget`. #2029 — `room` is {@link screenRoom}'s, for
  * the requirement being screened; its default is a requirement within the
  * allowance.
+ *
+ * #2033 — precondition: `room` is `screenRoom(budget, text).room` for that
+ * requirement's `text` and this same `budget`. It is trusted, not re-checked:
+ * a `room` from another budget or another requirement plans batches that can
+ * overshoot `budget`.
  */
 export function planScreenBatches(
   entries: readonly ApplicabilityEntry[],

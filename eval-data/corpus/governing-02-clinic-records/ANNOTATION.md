@@ -161,6 +161,15 @@ standing labels on every requirement.
   They exercise #2017 and #2022, where a short answer has to be quoted with its question.
   The verdict stays `needs-ba-input` whatever the answer. The answer is what a BA would
   supply, not what the requirement already says.
+- **Each short-answer pair records the verdict its answer leads to** (`answeredVerdict`,
+  #2033). `pnpm eval:governing` replays the answer, the `businessFact` as the question and
+  the `baAnswer` as the answer, and scores the finding after it against this label. Every
+  `businessFact` here asks whether the rule is met, so "Yes" leads to `compliant` (KV-02,
+  KV-14, KV-26, KV-31) and "No" to `gap` (KV-05, KV-28, KV-33). These seven labels were
+  added in #2033 by a `claude-opus-5-5` session from each pair's rule clause, question and
+  answer alone. That session had read the findings prompt (`governing/findings.ts`), so,
+  unlike the rest of the set, these labels are not blind to it. Each follows from the
+  question's wording, and no arm has run on the set.
 
 Verdicts and conventions follow `governing-01`'s `ANNOTATION.md`. Silence is never
 `compliant`, and a rule is listed only when an independent reader would agree it applies.
@@ -182,7 +191,8 @@ recorded hash is missing from this file, so a re-hash cannot be made without a n
 | Date | Hash | Why |
 |---|---|---|
 | 2026-11-08 | `0fef56be8454b3b54e04237f9bc4547f88c251ff38fcd87fb8dfa760d7002672` | First recording (#2024), before any arm ran. Superseded. |
-| 2026-11-08 | `c18f31b2539ae742e21c788b3b3c09cd5caacd7e6cd66a8b1faeece6bc39c60d` | The consistency pass (#2028 review): eight `needs-ba-input` pairs added under IR-04, CM-04 and TP-04. Still before any arm ran. |
+| 2026-11-08 | `c18f31b2539ae742e21c788b3b3c09cd5caacd7e6cd66a8b1faeece6bc39c60d` | The consistency pass (#2028 review): eight `needs-ba-input` pairs added under IR-04, CM-04 and TP-04. Still before any arm ran. Superseded. |
+| 2026-11-08 | `9fc02e66cfa37e312b27aa06a1292183ebabea8847c92146055069ac80afe1c9` | #2033: `answeredVerdict` added to the seven short-answer pairs, so the replay of BA answers has a label to score against (see "What the set holds"). No other label changed. Still before any arm ran. |
 
 ## Readings
 
