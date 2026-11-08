@@ -17,11 +17,9 @@
  * via `setOrchestratorForTests`.
  */
 import { Router, type Request, type Response, type NextFunction } from "express";
-import multer from "multer";
 import {
   type ApiResponse,
   ANALYSIS_SPECIALIST_AGENT_KEYS,
-  MAX_DOCUMENT_BYTES,
   specKitHandoffLabelsNotInContext,
   startAnalysisSchema,
   regenerateAgentSchema,
@@ -70,6 +68,7 @@ import {
   analysisApprovalReopenRateLimiter,
 } from "../middleware/analysis-approval-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
+import { documentFile } from "../middleware/document-file-upload.js";
 import {
   AnalysisOrchestrator,
   AnalysisNotRegeneratableError,
@@ -230,35 +229,12 @@ function ok<T>(data: T): ApiResponse<T> {
 }
 
 // ── Clarify CSV import (Business Analyst round-trip) ───────────────────────
-// Reuse the documents.ts memory-storage pattern: a single in-memory file capped
-// at MAX_DOCUMENT_BYTES so the bytes never touch disk before validation. Row +
-// cell bounds further cap parser memory (DoS guard).
+// The file is read by `documentFile`, the multipart reader the document upload
+// routes share (#1948): one in-memory file capped at MAX_DOCUMENT_BYTES, so the
+// bytes never touch disk before validation, and the same 413 / 400 errors.
+// Row + cell bounds further cap parser memory (DoS guard).
 const MAX_IMPORT_ROWS = 5000;
 const MAX_CELL_CHARS = 10000;
-const clarifyUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_DOCUMENT_BYTES, files: 1 },
-});
-
-/**
- * Wrap `multer.single` so a Multer error (notably `LIMIT_FILE_SIZE`) surfaces as
- * a 400 AppError instead of the global handler's generic 500. Mirrors the
- * documents upload contract while keeping the size cap an explicit 400.
- */
-function clarifyFileMiddleware(req: Request, res: Response, next: NextFunction): void {
-  clarifyUpload.single("file")(req, res, (err: unknown) => {
-    if (err instanceof multer.MulterError) {
-      const code = err.code === "LIMIT_FILE_SIZE" ? "FILE_TOO_LARGE" : "UPLOAD_ERROR";
-      const message =
-        err.code === "LIMIT_FILE_SIZE"
-          ? "Uploaded CSV exceeds the maximum allowed size"
-          : `Upload failed: ${err.message}`;
-      next(new AppError(400, code, message));
-      return;
-    }
-    next(err);
-  });
-}
 
 function actorFromReq(req: Request) {
   if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
@@ -1349,7 +1325,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
     "/:id/clarify/import",
     requireAuth,
     requirePermission("analysis.run"),
-    clarifyFileMiddleware,
+    documentFile,
     async (req: Request, res: Response) => {
       const analysisId = String(req.params.id);
       const projectId = String(req.params.projectId);

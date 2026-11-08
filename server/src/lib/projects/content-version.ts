@@ -32,16 +32,33 @@
  *     the active identity, so a reindex moves the key.
  *   - **Documents** (#1864): the project's row count, the latest `updatedAt`
  *     (Prisma sets it on every create and update), and a hash over the indexing
- *     state of the rows written within {@link RECENT_WRITE_WINDOW_MS} of that
- *     latest write. The count catches a hard delete; the latest write catches an
- *     upload, a re-upload, a re-index, an ACL edit and a soft delete; the recent
- *     rows catch a second write in the same millisecond, which leaves the
- *     latest write where it was. Two aggregates over the (`projectId`,
- *     `updatedAt`) index, where #1843 read and hashed every document row
+ *     state of the rows written within {@link RECENT_WRITE_WINDOW_MS} before
+ *     the latest write. The count catches a hard delete; the latest write catches an upload,
+ *     a re-upload, a re-index, an ACL edit and a soft delete; the recent rows
+ *     catch a write that leaves the latest write where it was: a second write in
+ *     the same millisecond, or one from an app server whose clock is behind the
+ *     one that wrote the latest row. An aggregate over the (`projectId`,
+ *     `updatedAt`) index, plus a read of the recent rows only when the latest
+ *     write is itself recent, where #1843 read and hashed every document row
  *     (repository source files are document rows too) on each call.
+ *     #1944 — the read is skipped once the latest write is more than twice the
+ *     window old: every call after a bulk write (a repo sync) otherwise re-read
+ *     that write's last minute of rows until the next document write came. The
+ *     window stays anchored to the latest write, not to now: anchored to now, a
+ *     below-max write from a lagging replica left the key once its stamp aged
+ *     out of the window, and the pre-write key (and its cache entries) came
+ *     back. Cost: the key changes once, when the read is first skipped, so a
+ *     version read within two minutes of a write differs from one read after
+ *     it even if nothing changed: one extra cache miss per entry, and a
+ *     semantic-cache turn that straddles that moment is not stored.
  *   - **The active embedder identity**: both searches filter on it (#792:
  *     `model`, or `model|pooling|dtype`), so a model or pooling flip moves the
- *     key.
+ *     key. #1944 — read without I/O (`Embedder.knownIdentity`): the
+ *     sidecar's identity is known only from its last embed, and probing for it
+ *     here sent an embed on every call while the sidecar was down. Before the
+ *     first embed the bare model id stands in; the caches keyed on this version
+ *     are in-process, so the switch to the wire identity at that first embed
+ *     only costs a miss.
  *
  * Reads only; every query is scoped by `projectId`.
  */
@@ -50,9 +67,10 @@ import { prisma } from "../prisma.js";
 import { getEmbedder } from "../rag/embedder.js";
 
 /**
- * #1864 — how far before the project's latest document write the rows are
- * hashed individually. Covers a second write in the same millisecond, and app
- * servers whose clocks disagree by less than this.
+ * #1864 — how far before the latest write the document rows are hashed
+ * individually. Covers a second write in the same millisecond, and app servers
+ * whose clocks are behind the one that wrote the latest row by less than this.
+ * #1944: the read is skipped once the latest write is over twice this old.
  */
 export const RECENT_WRITE_WINDOW_MS = 60_000;
 
@@ -157,7 +175,7 @@ export const prismaContentVersionSource: ContentVersionSource = {
       where: { projectId, updatedAt: { gte: since } },
       select: DOCUMENT_SELECT,
     }),
-  embedderIdentity: () => getEmbedder().currentIdentity(),
+  embedderIdentity: () => getEmbedder().knownIdentity(),
 };
 
 const sha256 = (s: string): string => crypto.createHash("sha256").update(s).digest("hex");
@@ -167,14 +185,22 @@ const byKey = <T>(rows: T[], key: (r: T) => string): T[] =>
 const modelCounts = (rows: Array<{ model: string; count: number }>) =>
   byKey(rows, (s) => s.model).map((s) => [s.model, s.count]);
 
-async function documentsVersion(projectId: string, source: ContentVersionSource): Promise<string> {
+async function documentsVersion(
+  projectId: string,
+  source: ContentVersionSource,
+  now: Date,
+): Promise<string> {
   const { count, latestWrite } = await source.documentSummary(projectId);
-  const recent = latestWrite
-    ? await source.documentsWrittenSince(
-        projectId,
-        new Date(latestWrite.getTime() - RECENT_WRITE_WINDOW_MS),
-      )
-    : [];
+  // #1944 — anchored to the latest write (a lagging replica's below-max write
+  // must stay hashed), and skipped once that write is over two windows old: a
+  // write stamped below it could only come from a clock more than a window behind.
+  const recent =
+    latestWrite && now.getTime() - latestWrite.getTime() <= 2 * RECENT_WRITE_WINDOW_MS
+      ? await source.documentsWrittenSince(
+          projectId,
+          new Date(latestWrite.getTime() - RECENT_WRITE_WINDOW_MS),
+        )
+      : [];
   return sha256(
     JSON.stringify([
       count,
@@ -196,16 +222,17 @@ async function documentsVersion(projectId: string, source: ContentVersionSource)
   );
 }
 
-/** The project's content version, read now. */
+/** The project's content version, read now (`now` is for tests). */
 export async function getProjectContentVersion(
   projectId: string,
   source: ContentVersionSource = prismaContentVersionSource,
+  now: Date = new Date(),
 ): Promise<ProjectContentVersion> {
   const [graphs, symbolCounts, chunkCounts, docsVersion, embedder] = await Promise.all([
     source.codeGraphs(projectId),
     source.symbolEmbeddingCounts(projectId),
     source.chunkEmbeddingCounts(projectId),
-    documentsVersion(projectId, source),
+    documentsVersion(projectId, source, now),
     source.embedderIdentity(),
   ]);
 

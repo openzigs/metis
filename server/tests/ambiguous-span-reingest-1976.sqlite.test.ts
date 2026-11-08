@@ -15,6 +15,11 @@
  *
  * The same span resolves when the citation names its repository: that link is
  * bound to the named repo's symbol and re-validated at the new commit.
+ *
+ * #1981 — a link the seeder wrote before #1976 (the same span bound to one
+ * graph's `login` by guess) is rewritten in place by the re-seed as the
+ * file-level link, rather than left bound beside a new one for the re-ingest
+ * to stamp.
  */
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -84,7 +89,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     let reader: PrismaClient;
     let scratch: string;
     const repo = { A: "conn-A-1976", B: "conn-B-1976" };
-    const req = { ambiguous: "", named: "" };
+    const req = { ambiguous: "", named: "", guessed: "" };
+    let guessedId = "";
 
     const ingest = async (key: "A" | "B", commitSha: string) => {
       const rootDir = path.join(scratch, `repo-${key}`);
@@ -152,10 +158,37 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const span = { filePath: AUTH, startLine: 2, endLine: 4 };
       req.ambiguous = await requirementCiting("Ambiguous", span);
       req.named = await requirementCiting("Named", { ...span, repoConnectionId: repo.B });
+      // #1981 — what the seeder wrote before #1976: graph A's `login`, bound by guess.
+      req.guessed = await requirementCiting("Guessed", span);
+      const guess = await db.codeSymbol.findFirstOrThrow({
+        where: {
+          projectId: PROJ,
+          filePath: AUTH,
+          kind: "function",
+          graph: { repoConnectionId: repo.A },
+        },
+      });
+      guessedId = (
+        await db.requirementCodeMapping.create({
+          data: {
+            requirementId: req.guessed,
+            projectId: PROJ,
+            codeSymbolId: guess.id,
+            filePath: AUTH,
+            startLine: guess.startLine,
+            endLine: guess.endLine,
+            confidence: 0.8,
+            source: "analysis-grounding",
+            symbolQualifiedName: guess.qualifiedName,
+            symbolKind: guess.kind,
+            symbolContentHash: guess.contentHash,
+          },
+        })
+      ).id;
       await seedRequirementCodeLinksFromFindings({
         analysisId: "an-1976",
         projectId: PROJ,
-        requirementIds: [req.ambiguous, req.named],
+        requirementIds: [req.ambiguous, req.named, req.guessed],
       });
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
@@ -191,32 +224,59 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
-    it("after both repositories are re-ingested, the ambiguous link is still unstamped", async () => {
-      await ingest("A", SHA.after);
-      await ingest("B", SHA.after);
-      expect(await linkOf(req.ambiguous)).toMatchObject({
+    it("rewrites the guessed link in place as the file-level link, adding none beside it (#1981)", async () => {
+      const rows = await reader.requirementCodeMapping.findMany({
+        where: { projectId: PROJ, requirementId: req.guessed },
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        id: guessedId,
         codeSymbolId: null,
+        startLine: 2,
+        endLine: 4,
+        symbolQualifiedName: null,
         codeGraphId: null,
-        commitSha: null,
         freshness: "unverified",
-        validatedAt: null,
       });
     });
 
-    it("the link whose citation names its repository is bound there and re-validated at the new commit", async () => {
-      const graphB = await reader.codeGraph.findFirstOrThrow({
-        where: { repoConnectionId: repo.B },
-        orderBy: { createdAt: "desc" },
+    // #1981 — this phase re-ingests in its own hook, so no test depends on
+    // another having run first.
+    describe("after both repositories are re-ingested at a new commit", () => {
+      beforeAll(async () => {
+        await ingest("A", SHA.after);
+        await ingest("B", SHA.after);
+      }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
+
+      it("the ambiguous link, and the one that was a guess, are still unstamped", async () => {
+        for (const requirementId of [req.ambiguous, req.guessed]) {
+          expect(await linkOf(requirementId)).toMatchObject({
+            codeSymbolId: null,
+            codeGraphId: null,
+            commitSha: null,
+            freshness: "unverified",
+            validatedAt: null,
+          });
+        }
       });
-      const row = await linkOf(req.named);
-      expect(row).toMatchObject({
-        symbolQualifiedName: `${AUTH}::login`,
-        codeGraphId: graphB.id,
-        commitSha: SHA.after,
-        freshness: "fresh",
+
+      it("the link whose citation names its repository is bound there and re-validated at the new commit", async () => {
+        const graphB = await reader.codeGraph.findFirstOrThrow({
+          where: { repoConnectionId: repo.B },
+          orderBy: { createdAt: "desc" },
+        });
+        const row = await linkOf(req.named);
+        expect(row).toMatchObject({
+          symbolQualifiedName: `${AUTH}::login`,
+          codeGraphId: graphB.id,
+          commitSha: SHA.after,
+          freshness: "fresh",
+        });
+        const bound = await reader.codeSymbol.findUniqueOrThrow({
+          where: { id: row.codeSymbolId! },
+        });
+        expect(bound.codeGraphId).toBe(graphB.id);
       });
-      const bound = await reader.codeSymbol.findUniqueOrThrow({ where: { id: row.codeSymbolId! } });
-      expect(bound.codeGraphId).toBe(graphB.id);
     });
   },
 );

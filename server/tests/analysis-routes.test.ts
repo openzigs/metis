@@ -300,6 +300,8 @@ import {
   setOrchestratorForTests,
 } from "../src/lib/analysis/index.js";
 import { ModelNotServedError } from "../src/lib/ai/model-router.js";
+import { validateUpload } from "../src/lib/documents/upload.js";
+import { MAX_DOCUMENT_BYTES } from "@metis/shared";
 
 let app: ReturnType<typeof createApp>;
 let adminToken: string;
@@ -1665,17 +1667,37 @@ describe("Clarify CSV export/import", () => {
       expect(res.status).toBe(404);
     });
 
-    it("400s (FILE_TOO_LARGE) when the upload exceeds the size cap", async () => {
+    // #1948 — the same 413 FILE_TOO_LARGE, code and message, as the document
+    // and governing upload routes: one Multer mapping serves all three.
+    it("413s (FILE_TOO_LARGE) with validateUpload's message when the upload exceeds the size cap", async () => {
       const aId = seedAnalysis({ agentKeys: ["document"], structuredRequirements: structuredReqs });
       seedDialog(aId, questions);
-      // 10MB + 1 byte exceeds MAX_DOCUMENT_BYTES → multer LIMIT_FILE_SIZE → 400.
-      const tooBig = Buffer.alloc(10 * 1024 * 1024 + 1, 0x61);
+      const tooBig = Buffer.alloc(MAX_DOCUMENT_BYTES + 1, 0x61);
+      const verdict = validateUpload({
+        filename: "answers.csv",
+        mimeType: "text/csv",
+        buffer: tooBig,
+      });
+      expect(verdict.ok).toBe(false);
+      if (verdict.ok) return;
       const res = await request(app)
         .post(`/api/projects/proj-abcdefghij/analyses/${aId}/clarify/import`)
         .set("Authorization", `Bearer ${adminToken}`)
         .attach("file", tooBig, "answers.csv");
+      expect(res.status).toBe(413);
+      expect(res.body.error).toMatchObject({ code: "FILE_TOO_LARGE", message: verdict.message });
+    });
+
+    it("400s (UPLOAD_ERROR) on a body truncated mid-part, not 500", async () => {
+      const aId = seedAnalysis({ agentKeys: ["document"], structuredRequirements: structuredReqs });
+      seedDialog(aId, questions);
+      const res = await request(app)
+        .post(`/api/projects/proj-abcdefghij/analyses/${aId}/clarify/import`)
+        .set("Authorization", `Bearer ${adminToken}`)
+        .set("Content-Type", "multipart/form-data; boundary=x")
+        .send('--x\r\nContent-Disposition: form-data; name="file"; filename="a.csv"\r\n\r\nq-1,');
       expect(res.status).toBe(400);
-      expect(res.body.error.code).toBe("FILE_TOO_LARGE");
+      expect(res.body.error.code).toBe("UPLOAD_ERROR");
     });
   });
 });

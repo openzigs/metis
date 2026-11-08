@@ -67,6 +67,13 @@ export interface EmbedBackend {
    * reindex to decide "does the persisted corpus match what we'd produce now?".
    */
   currentIdentity?(): Promise<string> | string;
+  /**
+   * Issue #1944 — the identity the backend already knows, with no I/O: what
+   * `currentIdentity` would return without probing, or `null` when only a probe
+   * could tell (the sidecar before its first embed). Implemented by every
+   * backend that implements `currentIdentity`.
+   */
+  knownIdentity?(): string | null;
 }
 
 export interface EmbedderConfig {
