@@ -9,7 +9,7 @@
  * member sees the list and the rules. The controls follow the caller's
  * workspace role, which the server enforces regardless (#1869).
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FileText, Upload } from "lucide-react";
 import { GOVERNING_EXTRACTION_STALE_MS } from "@metis/shared";
@@ -43,21 +43,36 @@ export function isExtractionUnsettled(state: string | undefined): boolean {
   return state === "pending" || state === "running";
 }
 
+type StuckInput = Pick<GoverningRevision, "extractionState" | "extractionStartedAt" | "createdAt">;
+
+/**
+ * #2002 — the moment an unsettled revision becomes stuck: its run's start (or,
+ * for `pending`, its upload) plus the server's stale bound; `-Infinity` for a
+ * `running` one with no start time, which the route already treats as stale.
+ * `null` for a settled revision, which never becomes stuck.
+ */
+export function extractionStuckAt(revision: StuckInput): number | null {
+  if (revision.extractionState === "pending") {
+    return Date.parse(revision.createdAt) + GOVERNING_EXTRACTION_STALE_MS;
+  }
+  if (revision.extractionState !== "running") return null;
+  if (revision.extractionStartedAt === null) return -Infinity;
+  return Date.parse(revision.extractionStartedAt) + GOVERNING_EXTRACTION_STALE_MS;
+}
+
 /**
  * #1996 — an unsettled revision the retry route restarts: `running` past the
  * server's stale bound (or with no start time, as the route reads it), or
  * `pending` that long after its upload. A fresh one is left to finish.
+ *
+ * `now` is the browser's clock and the timestamps are the server's, so a skew
+ * between them moves the moment Retry appears by that much: a browser clock
+ * running ahead offers Retry early, and the route answers a still-fresh run's
+ * retry with 409, which the cell shows; one running behind offers it late.
  */
-export function isExtractionStuck(
-  revision: Pick<GoverningRevision, "extractionState" | "extractionStartedAt" | "createdAt">,
-  now: number = Date.now(),
-): boolean {
-  const staleBefore = now - GOVERNING_EXTRACTION_STALE_MS;
-  if (revision.extractionState === "pending") return Date.parse(revision.createdAt) < staleBefore;
-  if (revision.extractionState !== "running") return false;
-  return (
-    revision.extractionStartedAt === null || Date.parse(revision.extractionStartedAt) < staleBefore
-  );
+export function isExtractionStuck(revision: StuckInput, now: number = Date.now()): boolean {
+  const at = extractionStuckAt(revision);
+  return at !== null && at < now;
 }
 
 type DocumentList = { documents: GoverningDocumentListItem[] };
@@ -104,7 +119,8 @@ export function GoverningDocumentsPanel({ workspaceId }: { workspaceId: string }
   });
 
   // #1996 — a poll that sees an extraction settle re-reads that document's
-  // rules and revisions; nothing else would until the 30 s staleTime and a remount.
+  // rules; nothing else would until the 30 s staleTime and a remount. (The
+  // detail query feeds only the revision picker, which reads no extraction state.)
   const lastState = useRef(new Map<string, string>());
   useEffect(() => {
     for (const doc of list.data?.documents ?? []) {
@@ -116,12 +132,26 @@ export function GoverningDocumentsPanel({ workspaceId }: { workspaceId: string }
         void queryClient.invalidateQueries({
           queryKey: governingKeys.documentRules(workspaceId, doc.id),
         });
-        void queryClient.invalidateQueries({
-          queryKey: governingKeys.document(workspaceId, doc.id),
-        });
       }
     }
   }, [list.data, queryClient, workspaceId]);
+
+  // #2002 — a poll of a stuck revision returns the same data, so nothing would
+  // re-render the row when the clock crosses the stale bound. Re-render then,
+  // once per crossing, so its Retry appears while the page is open.
+  const [clockTick, rerender] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    const now = Date.now();
+    let next = Infinity;
+    for (const doc of list.data?.documents ?? []) {
+      const at = doc.currentRevision ? extractionStuckAt(doc.currentRevision) : null;
+      if (at !== null && at >= now && at < next) next = at;
+    }
+    if (next === Infinity) return;
+    // `isExtractionStuck` is strict (`at < now`), so wake just past the bound.
+    const timer = setTimeout(rerender, next - now + 1);
+    return () => clearTimeout(timer);
+  }, [list.data, clockTick]);
 
   if (list.isPending) {
     return <p className="text-sm text-muted-foreground">Loading governing documents…</p>;
