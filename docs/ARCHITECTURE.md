@@ -2785,6 +2785,33 @@ evidence rule reads each short answer with its question. Those findings are scor
 against each pair's `answeredVerdict`, in their own row of the report ("Short-answer pairs,
 with the BA's answer replayed"). The main results still read the findings before any answer.
 
+#### Governing rules in the requirements BRD (#1877)
+
+A requirements-scoped BRD (`docs-gen/requirements-scope.ts`, #991) gets a `## Governing rules`
+section after its requirements and before the code-links appendix
+(`docs-gen/governing-section.ts`). It is built from the stored rows, never by asking a model
+again. The runs are the distinct `analysisId`s of the document's requirements, read through
+`requirementsScopeWhere`, and then `analysis.findMany` filtered on `projectId`. Their findings
+come from `listGoverningFindings`, the read the analysis route serves, so the document's statuses
+and decisions are the route's (`server/tests/governing-brd-section-1877.sqlite.test.ts` reads
+both).
+
+- A rejected finding is listed and marked **Rejected**, with who decided it and when
+  (`decidedByName`, as the analysis view shows it).
+- Each document revision gets one `governingSummarySentence`, counted as the analysis view's
+  findings panel (#1876) counts it: the rule count comes from `governingFindingRevisions`, the
+  gaps are counted per finding, and the BA-input count is per rule.
+- Every stored text shown passes through `neutraliseComplianceClaims`, and so does each composed
+  line as a backstop. An excerpt whose wording was changed says it is no longer verbatim.
+- A finding is keyed on the requirement as the run analysed it (`REQ-001`), which is not joined
+  to the stored requirement rows. So the section lists every finding of each run, and says so.
+- With the flag off nothing is read. With no findings the section is absent. Either way the
+  document and its source fingerprint are byte-identical to before. When the section is present,
+  the fingerprint also covers each finding's status, excerpt, revision and decision.
+
+The reader-layout BRD generated from code (#1175, whose approved-requirements section lists the
+default run's requirements) does not carry the section yet (#2035).
+
 ---
 
 ## 11. Publishing Workflow
