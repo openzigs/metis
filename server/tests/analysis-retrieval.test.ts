@@ -15,6 +15,7 @@ import type {
 import type { RetrievedChunk } from "@metis/shared";
 import type { Reranker, RerankCandidate } from "../src/lib/rag/reranker.js";
 import {
+  attachGoverningApplicability,
   buildRetrievalQueries,
   CODE_REQUIREMENTS_QUERY,
   deriveRetrievalQuery,
@@ -415,5 +416,49 @@ describe("maybeGenerateHydeQuery", () => {
     const out = await maybeGenerateHydeQuery(provider, "   ");
     expect(out).toBeNull();
     expect(provider.chat).not.toHaveBeenCalled();
+  });
+});
+
+// ── attachGoverningApplicability (#1872) ─────────────────────────────────────
+
+describe("attachGoverningApplicability", () => {
+  const evidence = [
+    { requirementId: "R1", text: "Export orders.", chunks: [] },
+    { requirementId: "R2", text: "Remove coupons.", chunks: [] },
+  ];
+  const set = (requirementId: string) => ({
+    requirementId,
+    decisions: [],
+    rulesScreened: 3,
+    screenBatches: 1,
+    candidates: 0,
+    reasked: 0,
+  });
+
+  it("returns the input array itself, untouched, with no hook", async () => {
+    const before = JSON.stringify(evidence);
+    const out = await attachGoverningApplicability(evidence, null);
+    expect(out).toBe(evidence);
+    expect(JSON.stringify(out)).toBe(before);
+  });
+
+  it("attaches each requirement's set, in order, without mutating the input", async () => {
+    const decide = vi.fn(async (r: { id: string; text: string }) => set(r.id));
+    const out = await attachGoverningApplicability(evidence, { decide }, { concurrency: 1 });
+    expect(out.map((e) => e.governing?.requirementId)).toEqual(["R1", "R2"]);
+    expect(decide).toHaveBeenCalledWith({ id: "R1", text: "Export orders." });
+    expect(evidence[0]).not.toHaveProperty("governing");
+  });
+
+  it("records a failed requirement as an error set, never as an empty decision, and carries on", async () => {
+    const decide = vi.fn(async (r: { id: string }) => {
+      if (r.id === "R1") throw new Error("provider down");
+      return set(r.id);
+    });
+    const out = await attachGoverningApplicability(evidence, { decide });
+    expect(out[0]!.governing).toMatchObject({ requirementId: "R1", decisions: [] });
+    expect(out[0]!.governing?.error).toMatch(/could not be decided/);
+    expect(out[0]!.governing?.error).not.toContain("provider down");
+    expect(out[1]!.governing).toEqual(set("R2"));
   });
 });
