@@ -245,14 +245,20 @@ export const SHORT_SUBJECT_WORDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The endings folded onto a short subject word (#1920): plural, past, -ing
- * and -ation, so `logs`, `logged`, `logging`, `taxation` and `keyed` meet
- * `log`, `tax` and `key`.
+ * The endings folded onto a short subject word: plural, past, -ing and -ation
+ * (#1920), so `logs`, `logged`, `logging`, `taxation` and `keyed` meet `log`,
+ * `tax` and `key`; and the derived -ment, -er and -able (#1932), so `payment`,
+ * `payer`, `logger` and `taxable` meet `pay`, `log` and `tax`.
  */
-const SHORT_WORD_INFLECTION = /(?:ations?|ings?|ed|e?s)$/;
+const SHORT_WORD_INFLECTION = /(?:ations?|ings?|ments?|ers?|able|ed|e?s)$/;
+
+/** #1932 — irregular forms no ending reaches. */
+const SHORT_WORD_IRREGULAR: ReadonlyMap<string, string> = new Map([["paid", "pay"]]);
 
 /** A short subject word `raw` is, or is an inflection of; undefined when none. */
 function shortSubjectWord(raw: string): string | undefined {
+  const irregular = SHORT_WORD_IRREGULAR.get(raw);
+  if (irregular !== undefined) return irregular;
   const stem = raw.replace(SHORT_WORD_INFLECTION, "");
   // `logged` and `logging` double the consonant before the ending.
   for (const base of [raw, stem, stem.replace(/(.)\1$/, "$1")]) {
@@ -265,7 +271,7 @@ function shortSubjectWord(raw: string): string | undefined {
  * The subject-matter stems of a text: lower-cased words of four letters or
  * more that are not stop words, each cut to its first five letters, so
  * `records` meets `recorded` and `finance` meets `financial`; plus every
- * {@link SHORT_SUBJECT_WORDS} word, inflected or not. Deliberately eager to
+ * {@link SHORT_SUBJECT_WORDS} word, inflected, derived or not. Deliberately eager to
  * match: a `nonResembling` label must survive the strictest reading.
  */
 export function contentStems(text: string): Set<string> {
