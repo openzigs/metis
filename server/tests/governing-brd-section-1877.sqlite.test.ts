@@ -11,7 +11,15 @@
  *   - The BRD generated through `POST …/docs/generate` lists all three
  *     findings, the rejected one marked, and its statuses and decisions are
  *     exactly those `GET …/analyses/:id/governing-findings` returns.
- *   - It carries no compliance claim, and no finding of PB.
+ *   - It carries no compliance claim.
+ *   - #2042: a selection of the statement requirement lists only the finding
+ *     on the requirement as analysed it was written from (REQ-002), says how
+ *     many it left out, and — though it names PB's requirement too — shows no
+ *     requirement or finding of PB. Measured by mutation: dropping
+ *     `requirementsScopeWhere`'s project filter puts PB's requirement in the
+ *     document (red); PB's finding then also needs `loadGoverningSection`'s
+ *     project-scoped analysis read dropped (red with both, green with either
+ *     alone — the unit test pins that read's `where`).
  *   - With the flag off, the same document has no governing section.
  */
 import express from "express";
@@ -99,11 +107,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     };
     const findingsPath = `/api/projects/${PA}/analyses/${RUN_A}/governing-findings`;
 
-    async function generateBrd(): Promise<string> {
+    async function generateBrd(
+      scopeFilter: Record<string, unknown> = { analysisId: RUN_A },
+    ): Promise<string> {
       const res = await request(app())
         .post(`/api/projects/${PA}/docs/generate`)
         .set("Authorization", `Bearer ${token(ALICE, WS_A)}`)
-        .send({ title: "Checkout BRD", scope: "requirements", scopeFilter: { analysisId: RUN_A } });
+        .send({ title: "Checkout BRD", scope: "requirements", scopeFilter });
       expect(res.status, JSON.stringify(res.body)).toBe(202);
       const docId = res.body.data.id as string;
       // Generation runs in the background; a requirements document calls no model.
@@ -170,17 +180,43 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           },
         });
       }
+      // #2042 — the code agent's findings each requirement was written from,
+      // each recording the requirement as the run analysed it.
+      for (const [run, findingId, analysed] of [
+        [RUN_A, "f-1877-card", "REQ-001"],
+        [RUN_A, "f-1877-statement", "REQ-002"],
+        [RUN_B, "f-1877-b", "REQ-001"],
+      ] as const) {
+        await db.agentResult.create({
+          data: {
+            id: `ar-${findingId}`,
+            analysisId: run,
+            agentKey: "code",
+            status: "completed",
+            findings: {
+              create: {
+                id: findingId,
+                category: "architecture",
+                title: `Finding on ${analysed}`,
+                body: "Evidence.",
+                evidence: JSON.stringify({ citations: [], tags: [], requirementId: analysed }),
+              },
+            },
+          },
+        });
+      }
       let created = Date.parse("2026-10-01T00:00:00Z");
-      for (const [id, project, run, title] of [
-        ["req-1877-card", PA, RUN_A, "Save a card"],
-        ["req-1877-statement", PA, RUN_A, "Monthly statement"],
-        ["req-1877-b", PB, RUN_B, "Mallory's requirement"],
+      for (const [id, project, run, title, evidence] of [
+        ["req-1877-card", PA, RUN_A, "Save a card", "f-1877-card"],
+        ["req-1877-statement", PA, RUN_A, "Monthly statement", "f-1877-statement"],
+        ["req-1877-b", PB, RUN_B, "Mallory's requirement", "f-1877-b"],
       ] as const) {
         await db.requirement.create({
           data: {
             id,
             projectId: project,
             analysisId: run,
+            labels: JSON.stringify([`finding:${evidence}`]),
             title,
             body: `Body of ${title}.`,
             priority: "high",
@@ -329,7 +365,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(section).toContain(`Decision: **Rejected** by ${ALICE} on `);
       expect(section).toContain("- **Analyst's note:** Exports are out of scope.");
       expect(findForbiddenComplianceClaims(markdown)).toEqual([]);
+    });
+
+    it("#2042 — a selection lists only the findings of the requirements it covers, and none of PB", async () => {
+      process.env.GOVERNING_DOCS_ENABLED = "1";
+      const markdown = await generateBrd({ requirementIds: ["req-1877-statement", "req-1877-b"] });
+      expect(markdown).toContain("### R1. Monthly statement");
+      expect(markdown).not.toContain("Mallory's requirement");
+      const section = markdown.slice(markdown.indexOf(GOVERNING_SECTION_HEADING));
+      expect(section.split("\n").filter((l) => /^\| REQ-/.test(l))).toEqual([
+        "| REQ-002 | RT-01 | Needs BA input | Not decided | Information Handling Policy v1 |",
+      ]);
+      expect(section).not.toContain("EN-03");
+      expect(section).not.toContain("AL-02");
+      expect(section).toContain(
+        "_2 of the run's 3 governing findings are on requirements as analysed",
+      );
+      // Counted from the one listed finding; the revision holds 4 rules (the
+      // fixture's PB finding cites a rule of its own on the same revision).
+      expect(section).toContain(
+        "- 0 gaps found against 1 of 4 applicable rules in Information Handling Policy v1; 1 rule needs BA input.",
+      );
       expect(markdown).not.toContain("Mallory's finding.");
+      expect(findForbiddenComplianceClaims(markdown)).toEqual([]);
     });
 
     it("with the flag off the BRD has no governing section", async () => {
