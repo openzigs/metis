@@ -11,6 +11,7 @@ import {
   directoryDistance,
   emptyTally,
   generateStalenessPatchSet,
+  materializedReposOf,
   parseStalenessPatchSet,
   patchedFileSymbols,
   patchedGraphFiles,
@@ -752,5 +753,21 @@ describe("withStalePatch", () => {
       "ingest s pin-s",
       "embed s",
     ]);
+  });
+});
+
+describe("materializedReposOf (#1933)", () => {
+  const states = new Map([
+    ["c1", { repos: [{ name: "r1" }, { name: "r2" }] }],
+    ["c2", { repos: [] as { name: string }[] }],
+  ]);
+
+  it("lists every repository of a materialized corpus", () => {
+    expect(materializedReposOf(states, "c1").map((r) => r.name)).toEqual(["r1", "r2"]);
+  });
+
+  it("refuses a corpus with no materialized repository: a re-ingest of none would read A7R as A7K", () => {
+    expect(() => materializedReposOf(states, "c2")).toThrow(/^c2 is not materialized$/);
+    expect(() => materializedReposOf(states, "c3")).toThrow(/^c3 is not materialized$/);
   });
 });

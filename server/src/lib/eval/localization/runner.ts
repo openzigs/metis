@@ -29,10 +29,10 @@
  * reads, no network of its own.
  */
 import { ANALYSIS_PASS_GROUP } from "./agent-env.js";
-import { assertReferenceArms } from "./cli-args.js";
 import type { LocalizationArm } from "./arms.js";
 import type { LocalizationCorpus, LocalizationItem } from "./corpus.js";
 import type { CostMeter } from "./cost.js";
+import { assertReferenceArms } from "./reference-arms.js";
 import {
   PAIRED_METRICS,
   aggregateItems,
@@ -578,7 +578,10 @@ export async function runLocalizationEval(
     referenceComparisons,
     // #1925 — sized, as the reference and pooled tables are, on the fewest items paired with A0.
     detectableGap: minimumDetectableGapStatement(
-      Math.min(baseline.items.length, ...comparisons.map((c) => c.items)),
+      fewestPairedItems(
+        baseline.items.length,
+        comparisons.map((c) => c.items),
+      ),
     ),
     notes: corpusNotes(corpus),
     splitAgentPasses: splitAgentPassesOf(
@@ -811,7 +814,10 @@ export function poolHeldOutReports(
     armIds.filter((id) => id !== ref).map((id) => pooledComparison(ref, id)),
   );
   const items = heldOut.reduce((sum, r) => sum + r.arms[0]!.items.length, 0);
-  const pairedItems = Math.min(items, ...comparisons.map((c) => c.items));
+  const pairedItems = fewestPairedItems(
+    items,
+    comparisons.map((c) => c.items),
+  );
   return {
     kind: "localization-eval-pooled",
     corpora: heldOut.map((r) => ({
@@ -831,6 +837,16 @@ export function poolHeldOutReports(
     referenceComparisons,
     detectableGap: minimumDetectableGapStatement(pairedItems),
   };
+}
+
+/**
+ * #1925 — the items a table's headline gap is sized on: the fewest any arm
+ * paired with its baseline, at most the baseline's own. #1933 — an arm that
+ * paired none (a budget stop before it ran) is left out: it would size every
+ * headline at 0 items. Its own coverage line still names it.
+ */
+function fewestPairedItems(baselineItems: number, paired: readonly number[]): number {
+  return Math.min(baselineItems, ...paired.filter((n) => n > 0));
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────────
@@ -1165,7 +1181,12 @@ function referenceSections(
       continue;
     }
     lines.push(
-      `> ${minimumDetectableGapStatement(Math.min(items, ...rows.map((c) => c.items)))}`,
+      `> ${minimumDetectableGapStatement(
+        fewestPairedItems(
+          items,
+          rows.map((c) => c.items),
+        ),
+      )}`,
       "",
     );
     for (const cmp of rows) {

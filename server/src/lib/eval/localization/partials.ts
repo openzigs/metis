@@ -218,6 +218,16 @@ export class PartialStore {
     return ids;
   }
 
+  /**
+   * #1925, #1933 — each corpus's recorded arm ids apart: a merge reports each
+   * corpus apart, so a reference must be among every one's arms, not the union's.
+   */
+  async recordedArmIdsByCorpus(corpora: readonly string[]): Promise<Map<string, string[]>> {
+    const out = new Map<string, string[]>();
+    for (const c of corpora) out.set(c, await this.recordedArmIds([c]));
+    return out;
+  }
+
   async readFingerprint(corpus: string): Promise<RunFingerprint | null> {
     return readJson<RunFingerprint>(this.configFile(corpus));
   }

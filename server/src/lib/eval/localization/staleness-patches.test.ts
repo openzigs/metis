@@ -15,6 +15,7 @@ import {
   patchSetsDigest,
   STALENESS_ISSUE,
   stalenessPatchProblems,
+  stalenessPatchSetsFor,
 } from "./staleness.js";
 import { guardPatchTargets, TABLE_GUARD_CORPUS, toFixturePath } from "./table-guard-source.js";
 
@@ -76,6 +77,18 @@ describe("the committed staleness patch sets (#1834)", () => {
     const reversed = new Map([...sets.entries()].reverse());
     expect(patchSetsDigest(reversed)).toBe(patchSetsDigest(sets));
     expect(patchSetsDigest(new Map([...sets.entries()].slice(1)))).not.toBe(patchSetsDigest(sets));
+  });
+
+  it("#1933 — reads no patch directory when no arm applies a patch (A7R, A7RD alone)", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "patches-"));
+    const missing = path.join(dir, "absent");
+    try {
+      expect((await stalenessPatchSetsFor(false, missing)).size).toBe(0);
+      await expect(stalenessPatchSetsFor(true, missing)).rejects.toThrow(/ENOENT/);
+      expect([...(await stalenessPatchSetsFor(true)).keys()]).toEqual([...sets.keys()]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("refuses a file named for another corpus", async () => {

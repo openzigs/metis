@@ -696,8 +696,10 @@ describe("toMarkdownReport", () => {
     expect(md).toContain("### A0 test arm");
     expect(md).toContain("| llm | false |");
     expect(md).toContain("> **Stopped early** (budget");
-    // #1925 — sized on the items paired with A0 (none: A4 never ran), not the corpus's 3.
-    expect(md).toContain("> At 0 items and a hit rate near 0.5");
+    // #1925 — sized on the items paired with A0, not the corpus's 3; #1933 — and A4,
+    // which never ran, pairs none: the gap is sized on the arms that paired any.
+    expect(md).toContain("> At 2 items and a hit rate near 0.5");
+    expect(md).not.toContain("> At 0 items");
     expect(md).toContain("> A4 pairs 0 of A0's 2 items.");
     expect(md).toContain("| A4 | recallAt5 |");
     expect(md).toContain("hit@5 (McNemar");
@@ -1177,6 +1179,49 @@ describe("--reference: pairing with an arm other than A0 (#1806)", () => {
     expect(a0Section).toContain("> At 2 items and a hit rate near 0.5");
     expect(a0Section).toContain("> A13 pairs 2 of A0's 6 items. At 2 items");
     expect(a0Section).not.toContain("> A12 pairs");
+  });
+
+  it("#1933 — an arm that paired no item after a budget stop does not size any headline gap at 0", async () => {
+    // A13 charges $1 per item; the $2.5 cap stops it after 2 items and A14 runs none.
+    const run = (id: LocalizationCorpus["name"], n: number) => {
+      const m = new FakeMeter();
+      return runLocalizationEval(corpus(n, "held-out", id), {
+        arms: [
+          arm("A0", () => 1),
+          arm("A12", () => 2),
+          arm(
+            "A13",
+            () => 1,
+            () => (m.spent += 1),
+          ),
+          arm("A14", () => 1),
+        ],
+        runs: 1,
+        meter: m,
+        budgetUsd: 2.5,
+        references: ["A12"],
+      });
+    };
+    const report = await run("localization-01-miniflux-heldout", 6);
+    expect(report.comparisons.map((c) => [c.arm, c.items])).toEqual([
+      ["A12", 6],
+      ["A13", 2],
+      ["A14", 0],
+    ]);
+    expect(report.detectableGap).toMatch(/^At 2 items/);
+    const md = toMarkdownReport(report);
+    const a12Section = md.slice(md.indexOf("## Paired comparison with A12"));
+    expect(a12Section).toContain("> At 2 items and a hit rate near 0.5");
+    expect(a12Section).toContain("> A14 pairs 0 of A12's 6 items.");
+    expect(md).not.toContain("> At 0 items");
+
+    const pooled = poolHeldOutReports([report, await run("localization-02-fixture-portfolio", 4)]);
+    expect(pooled.detectableGap).toMatch(/^At 4 items/);
+    const pooledMd = toPooledMarkdownReport(pooled);
+    expect(pooledMd.slice(pooledMd.indexOf("## Paired comparison with A12"))).toContain(
+      "> At 4 items and a hit rate near 0.5",
+    );
+    expect(pooledMd).not.toContain("> At 0 items");
   });
 
   it("prints no coverage warning when every arm pairs all of the reference's items (#1819)", async () => {
