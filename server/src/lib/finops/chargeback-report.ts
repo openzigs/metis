@@ -13,12 +13,18 @@
  *     with no user (written before #792, or by a caller that knew none) is an
  *     "Unattributed" line rather than dropped spend.
  *   Both sum the unrounded `costUsd` and round once to integer cents (#761).
+ *   - Workspace-level cost (#1958): rows billed to the workspace with no
+ *     project (governing rule extraction, #1947) are a "Workspace (no
+ *     project)" line, and having no user, part of "Unattributed" — so the
+ *     total, the sum of the project lines, counts them as the usage-totals
+ *     route does.
  *
  * SECURITY: every user-controlled value (workspace/project name, username,
  * email) is HTML-escaped before it reaches the PDF renderer to prevent
  * injection into the generated HTML/PDF. `escapeMarkdownCell` also neutralises
  * markdown table-breaking characters.
  */
+import type { Prisma } from "@prisma/client";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 import { exportDocument } from "../docs-gen/exporters.js";
@@ -68,7 +74,7 @@ export interface ChargebackData {
  */
 async function groupedLedgerCents(
   key: "projectId" | "userId",
-  where: { projectId: { in: string[] }; createdAt: { gte: Date; lt: Date } },
+  where: Prisma.TokenUsageWhereInput,
 ): Promise<Map<string | null, number>> {
   const [priced, legacy] = await Promise.all([
     prisma.tokenUsage.groupBy({ by: [key], where, _sum: { costUsd: true } }),
@@ -93,45 +99,62 @@ async function groupedLedgerCents(
   return out;
 }
 
+/** The project line of a workspace's own spend: never a project id (a cuid). */
+export const WORKSPACE_LEVEL_LINE_ID = "workspace";
+
+/**
+ * #1958 — the ledger rows a workspace's report counts over a window: its live
+ * projects' rows, and its workspace-level rows (no project). A row carries
+ * `workspaceId` only when it has no project, so no row matches both.
+ */
+function chargebackWhere(
+  workspaceId: string,
+  projectIds: string[],
+  range: MonthRange,
+): Prisma.TokenUsageWhereInput {
+  return {
+    OR: [{ projectId: { in: projectIds } }, { projectId: null, workspaceId }],
+    createdAt: { gte: range.start, lt: range.end },
+  };
+}
+
 /** Aggregate per-project cost (cents) for a workspace over a window. */
 async function projectCosts(workspaceId: string, range: MonthRange): Promise<CostLine[]> {
   const projects = await prisma.project.findMany({
     where: { workspaceId, deletedAt: null },
     select: { id: true, name: true },
   });
-  if (projects.length === 0) return [];
   const nameById = new Map(projects.map((p) => [p.id, p.name]));
 
   // N1: single grouped aggregate instead of one query per project — mirrors
-  // the `userCosts` pattern below.
-  const grouped = await groupedLedgerCents("projectId", {
-    projectId: { in: projects.map((p) => p.id) },
-    createdAt: { gte: range.start, lt: range.end },
-  });
+  // the `userCosts` pattern below. The `null` group is the workspace's own rows.
+  const projectIds = projects.map((p) => p.id);
+  const grouped = await groupedLedgerCents(
+    "projectId",
+    chargebackWhere(workspaceId, projectIds, range),
+  );
 
   return [...grouped]
-    .flatMap(([projectId, costCents]) =>
+    .map(([projectId, costCents]) =>
       projectId === null
-        ? []
-        : [{ id: projectId, name: nameById.get(projectId) ?? projectId, costCents }],
+        ? { id: WORKSPACE_LEVEL_LINE_ID, name: "Workspace (no project)", costCents }
+        : { id: projectId, name: nameById.get(projectId) ?? projectId, costCents },
     )
     .filter((l) => l.costCents > 0)
     .sort((a, b) => b.costCents - a.costCents);
 }
 
-/** Aggregate per-user cost (cents) for a workspace's projects over a window. */
+/** Aggregate per-user cost (cents) for a workspace's projects and its own rows over a window. */
 async function userCosts(workspaceId: string, range: MonthRange): Promise<CostLine[]> {
   const projects = await prisma.project.findMany({
     where: { workspaceId, deletedAt: null },
     select: { id: true },
   });
   const projectIds = projects.map((p) => p.id);
-  if (projectIds.length === 0) return [];
-
-  const grouped = await groupedLedgerCents("userId", {
-    projectId: { in: projectIds },
-    createdAt: { gte: range.start, lt: range.end },
-  });
+  const grouped = await groupedLedgerCents(
+    "userId",
+    chargebackWhere(workspaceId, projectIds, range),
+  );
   const userIds = [...grouped.keys()].flatMap((id) => (id === null ? [] : [id]));
   const users = await prisma.user.findMany({
     where: { id: { in: userIds } },
