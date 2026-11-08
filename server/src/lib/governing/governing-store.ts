@@ -14,6 +14,7 @@
  * pointer, so the current revision is always one of the document's own.
  */
 import type { Prisma } from "@prisma/client";
+import { GOVERNING_EXTRACTION_STALE_MS } from "@metis/shared";
 import { prisma } from "../prisma.js";
 
 /** Who is asking: the user id and their deployment role (`admin` reads every workspace). */
@@ -34,6 +35,7 @@ const PUBLIC_REVISION_SELECT = {
   indexState: true,
   extractionState: true,
   extractionError: true,
+  extractionStartedAt: true,
   droppedUnverified: true,
   uploadedById: true,
   createdAt: true,
@@ -54,6 +56,7 @@ export interface PublicGoverningRevision {
   indexState: string;
   extractionState: string;
   extractionError: string | null;
+  extractionStartedAt: string | null;
   droppedUnverified: number;
   uploadedById: string;
   createdAt: string;
@@ -92,6 +95,7 @@ function publicRevision(row: RevisionRow, currentRevisionId: string | null) {
   return {
     ...row,
     effectiveDate: row.effectiveDate.toISOString(),
+    extractionStartedAt: row.extractionStartedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     isCurrent: row.id === currentRevisionId,
   } satisfies PublicGoverningRevision;
@@ -384,13 +388,8 @@ function liveRevisionWhere(
   return { id: revisionId, document: liveDocumentWhere(workspaceId) };
 }
 
-/**
- * #1947 — a `running` extraction that began longer ago than this is presumed
- * dead (the job is in-process, so a server restart mid-run leaves the row
- * `running` with nothing behind it) and may be started again. Generous: a
- * revision of up to `MAX_SECTIONS` sections (`rule-extraction.ts`) is that many model calls.
- */
-export const EXTRACTION_STALE_MS = 60 * 60 * 1000;
+/** #1947 — see `GOVERNING_EXTRACTION_STALE_MS` in `@metis/shared`, which the page reads too (#1996). */
+export const EXTRACTION_STALE_MS = GOVERNING_EXTRACTION_STALE_MS;
 
 /** The extraction states a run may start from at `now` (#1947); see {@link EXTRACTION_STALE_MS}. */
 function startableExtractionWhere(now: Date): Prisma.GoverningDocumentRevisionWhereInput {

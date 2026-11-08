@@ -17,6 +17,14 @@ export const GOVERNING_EXTRACTION_STATES = ["pending", "running", "done", "faile
 export type GoverningExtractionState = (typeof GOVERNING_EXTRACTION_STATES)[number];
 /** The longest extraction error a revision carries; longer messages are cut. */
 export const GOVERNING_EXTRACTION_ERROR_MAX = 500;
+/**
+ * #1947 — a `running` extraction that began longer ago than this is presumed
+ * dead (the job is in-process, so a server restart mid-run leaves the row
+ * `running` with nothing behind it) and may be started again. Generous: a
+ * revision of up to `MAX_SECTIONS` sections (`rule-extraction.ts`) is that many
+ * model calls. Shared so the page offers a retry exactly when the route takes one (#1996).
+ */
+export const GOVERNING_EXTRACTION_STALE_MS = 60 * 60 * 1000;
 
 /** One row of a rule's edit history: a change to its fields, or its soft delete. */
 export const GOVERNING_RULE_EDIT_KINDS = ["edit", "delete"] as const;
@@ -52,6 +60,11 @@ export const governingDocumentRevisionSchema = z.object({
   extractionState: z.enum(GOVERNING_EXTRACTION_STATES),
   /** Why rule extraction failed (#1870); null unless `extractionState` is `failed`. */
   extractionError: z.string().min(1).max(GOVERNING_EXTRACTION_ERROR_MAX).nullable(),
+  /**
+   * When the latest extraction run began (#1947); null before any run. A
+   * `running` revision past {@link GOVERNING_EXTRACTION_STALE_MS} may be retried.
+   */
+  extractionStartedAt: timestamp.nullable(),
   /**
    * Rules the model returned whose clause excerpt is not in the revision's text
    * verbatim (whitespace aside), dropped rather than stored with an invented citation.

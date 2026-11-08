@@ -1009,7 +1009,9 @@ since React Query joins an in-flight fetch of a query with no data rather than r
 the panel cancels that fetch (`cancelQueries`) before invalidating. Only those (#1945): the set
 is taken when the borrow's response arrives, so a first fetch a card starts afterwards (it read
 the committed links) is left alone, and a list whose fetch failed is not retried by a borrow,
-since it shows no links the borrow could change. The client preview
+since it shows no links the borrow could change. A raced list whose first fetch settles while
+the code links are refreshing is refetched only if it lists the borrowing requirement, and
+never when that fetch failed (#1990). The client preview
 (`borrowPlan`) and the server's borrow read the one `BORROWABLE_FRESHNESS` set from
 `@metis/shared`, so the preview cannot list a link the borrow would skip; and the one
 duplicate rule, `borrowDuplicateCheck` (same file and symbol under any source, or a file the
@@ -2546,6 +2548,19 @@ workspace nav shows its **Governing documents** tab only once the list route ans
 current revision: label, effective date, extraction state (a `failed` one with its
 `extractionError`, plus Retry extraction and Re-upload for an admin), rule count and
 `droppedUnverified`, and re-reads every 5 s while an extraction is `pending` or `running`.
+The same controls appear on a stuck revision (`isExtractionStuck`, #1996), by the retry
+route's own rule: `running` for longer than `GOVERNING_EXTRACTION_STALE_MS` since its
+`extractionStartedAt` (or with no start time), or `pending` that long since upload. The bound
+lives in `@metis/shared`, and the server's `EXTRACTION_STALE_MS` is set to it, so the page and
+the route use one number. The page compares the browser's clock with the server's timestamps,
+so clock skew moves the moment Retry appears; an early retry of a fresh run gets the route's
+`409`. A poll of a stuck revision returns unchanged data and so re-renders nothing, so the
+panel also sets a timer for the next moment a revision crosses the bound, and Retry appears
+while the page is open (#2002). A retry's `202` can arrive before the run's `running` write, so
+the panel cancels any list read in flight, writes the revision `running` into the list cache
+and lets the next poll read the server. It never re-reads at once. A poll that sees an
+extraction settle invalidates that document's rules (`governingKeys.documentRules`), which the
+30 s `staleTime` would otherwise hold.
 Selecting a document shows its rules (a revision picker once it has more than one); a row
 expands to the verbatim `clauseExcerpt`. Upload, New revision, Retry, Edit and Remove render
 for a workspace `owner`/`admin` or a deployment admin (`canManageGoverning`, from
