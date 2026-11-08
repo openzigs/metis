@@ -183,6 +183,37 @@ describe("collectAnsweredQuestions", () => {
     expect(collectAnsweredQuestions(null)).toEqual([]);
   });
 
+  it("#2009 — skips answered governing questions: they refine no requirement", () => {
+    const out = collectAnsweredQuestions(
+      state([
+        {
+          round: 1,
+          questions: [
+            {
+              id: "g",
+              requirementId: "governing:REQ-001",
+              ambiguityField: "governing-applicability",
+              question: "?",
+              context: "",
+              answer: "Yes, we store card data",
+              governing: { kind: "governing", ruleIds: ["r1"], requirementId: "REQ-001" },
+            },
+            {
+              id: "a",
+              requirementId: "R1",
+              ambiguityField: "f",
+              question: "?",
+              context: "",
+              answer: "Daily",
+            },
+          ],
+          answers: [],
+        },
+      ]),
+    );
+    expect(out.map((a) => a.questionId)).toEqual(["a"]);
+  });
+
   it("ignores blank and whitespace-only answers — a blank is not an answer", () => {
     const out = collectAnsweredQuestions(
       state([
