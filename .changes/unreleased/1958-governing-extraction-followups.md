@@ -11,5 +11,5 @@ section: Fixed
   billed model call per section.
 - The monthly chargeback report's total spend now includes spend billed to the workspace
   rather than a project (governing rule extraction), shown as a "Workspace (no project)" line
-  and under its user. It still leaves out deleted projects' spend, which the workspace usage
+  and, since extraction records no user, on the "Unattributed" line. It still leaves out deleted projects' spend, which the workspace usage
   totals include.
