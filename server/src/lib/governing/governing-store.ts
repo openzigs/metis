@@ -681,6 +681,56 @@ export async function workspaceRulesByIds(
   }));
 }
 
+/** #1874 — a rule as a finding cites it, with its offsets into the revision's text. */
+export interface CitableGoverningRule extends CurrentGoverningRule {
+  clauseStart: number;
+  clauseEnd: number;
+}
+
+/**
+ * #1874 — the live rules among `ruleIds` of this workspace's live documents,
+ * with the stored text of every revision they belong to, so a finding's
+ * citation is verified against the CITED revision's text. Scoped on the
+ * workspace through the document, as {@link workspaceRulesByIds} is.
+ */
+export async function citableWorkspaceRules(
+  workspaceId: string,
+  ruleIds: readonly string[],
+): Promise<{ rules: CitableGoverningRule[]; revisionText: Map<string, string> }> {
+  if (ruleIds.length === 0) return { rules: [], revisionText: new Map() };
+  const rows = await prisma.governingRule.findMany({
+    where: {
+      id: { in: [...ruleIds] },
+      deletedAt: null,
+      revision: { document: liveDocumentWhere(workspaceId) },
+    },
+    orderBy: [{ revisionId: "asc" }, { clauseStart: "asc" }, { id: "asc" }],
+    select: {
+      id: true,
+      revisionId: true,
+      controlId: true,
+      summary: true,
+      clauseRef: true,
+      clauseExcerpt: true,
+      clauseStart: true,
+      clauseEnd: true,
+      revision: {
+        select: { revisionLabel: true, extractedText: true, document: { select: { title: true } } },
+      },
+    },
+  });
+  const revisionText = new Map<string, string>();
+  const rules = rows.map(({ revision, ...rule }) => {
+    revisionText.set(rule.revisionId, revision.extractedText);
+    return {
+      ...rule,
+      revisionLabel: revision.revisionLabel,
+      documentTitle: revision.document.title,
+    };
+  });
+  return { rules, revisionText };
+}
+
 /** What an admin may change on a rule: its summary and control id, or delete it. */
 export interface RulePatch {
   summary?: string;

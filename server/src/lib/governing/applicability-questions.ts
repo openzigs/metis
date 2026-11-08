@@ -47,6 +47,7 @@ import {
   settleGoverningPairs,
   type GoverningSettlementInput,
 } from "./applicability-store.js";
+import { produceGoverningFindingsForAnalysis } from "./findings-store.js";
 import { isGoverningDocsEnabled } from "./flag.js";
 import { workspaceRulesByIds } from "./governing-store.js";
 
@@ -450,6 +451,7 @@ export async function rejudgeAnswered(
         verdict: d?.verdict ?? "uncertain",
         reason: d?.reason || "The answer did not settle whether this rule applies.",
         questionId: q.id,
+        question: q.question,
         answer,
       });
     }
@@ -542,6 +544,23 @@ export function governingQuestionSourceFor(input: {
         settled: applied.length,
         stillUncertain: applied.filter((s) => s.verdict === "uncertain").length,
       });
+      // #1874 — the answer feeds the findings too: re-evaluate the requirements
+      // it settled pairs of. A failure is logged; the settlement stands.
+      if (applied.length > 0) {
+        await produceGoverningFindingsForAnalysis({
+          analysisId: input.analysisId,
+          projectId: input.projectId,
+          provider: input.provider,
+          requirementIds: [...new Set(applied.map((s) => s.requirementId))],
+          ...(input.model ? { model: input.model } : {}),
+          ...(signal ? { signal } : {}),
+        }).catch((err: unknown) => {
+          log.warn("governing findings could not be refreshed after an answer", {
+            analysisId: input.analysisId,
+            error: (err as Error).message,
+          });
+        });
+      }
     },
   };
 }

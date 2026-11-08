@@ -30,6 +30,7 @@ import {
   type AnalysisSpecialistAgentKey,
   MAX_IMPORTED_REQUIREMENTS_PER_ANALYSIS,
   hasPermission,
+  governingFindingDecisionInputSchema,
 } from "@metis/shared";
 import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
@@ -46,6 +47,11 @@ import {
 import { dismissAllCriteriaProposals } from "../lib/analysis/analysis-service.js";
 import { governingQuestionSourceFor } from "../lib/governing/applicability-questions.js";
 import { readGoverningApplicability } from "../lib/governing/applicability-store.js";
+import {
+  decideGoverningFinding,
+  listGoverningFindings,
+  summariseFindings,
+} from "../lib/governing/findings-store.js";
 import { isGoverningDocsEnabled } from "../lib/governing/flag.js";
 import { requirementsWithoutCodeEvidence } from "../lib/analysis/code-evidence.js";
 import { inSynthesisOrder } from "../lib/analysis/synthesis-finding-order.js";
@@ -947,6 +953,62 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       const projectId = String(req.params.projectId);
       await ensureAnalysisVisible(analysisId, projectId);
       res.json(ok({ applicability: await readGoverningApplicability(analysisId) }));
+    },
+  );
+
+  /**
+   * GET /api/projects/:projectId/analyses/:id/governing-findings
+   * #1874 — the analysis's cited governing findings (Compliant / Gap / Needs BA
+   * input, each citing its rule's control id and a clause of the revision it
+   * was checked against), with their BA decisions, and the counts. 404 while
+   * `GOVERNING_DOCS_ENABLED` is off. Scoped with `ensureAnalysisVisible`; rows
+   * are read by the analysis id alone, which that check binds to the project.
+   */
+  projectScoped.get(
+    "/:id/governing-findings",
+    requireAuth,
+    requirePermission("analysis.read"),
+    async (req: Request, res: Response) => {
+      if (!isGoverningDocsEnabled()) throw new AppError(404, "NOT_FOUND", "Not found");
+      const analysisId = String(req.params.id);
+      const projectId = String(req.params.projectId);
+      await ensureAnalysisVisible(analysisId, projectId);
+      const findings = await listGoverningFindings(analysisId);
+      res.json(ok({ findings, summary: summariseFindings(findings) }));
+    },
+  );
+
+  /**
+   * POST /api/projects/:projectId/analyses/:id/governing-findings/:findingId/decision
+   * #1874 — a BA accepts or rejects one finding, with an optional note. The
+   * decider is the session user, never the body (an unknown key is a 400). A
+   * finding of another analysis is 404: it is looked up with this analysis's
+   * id. An `AuditLog` row is written in the same transaction as the decision.
+   */
+  projectScoped.post(
+    "/:id/governing-findings/:findingId/decision",
+    requireAuth,
+    requirePermission("analysis.run"),
+    async (req: Request, res: Response) => {
+      if (!isGoverningDocsEnabled()) throw new AppError(404, "NOT_FOUND", "Not found");
+      const analysisId = String(req.params.id);
+      const projectId = String(req.params.projectId);
+      await ensureAnalysisVisible(analysisId, projectId);
+      const parsed = governingFindingDecisionInputSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid decision payload", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      const updated = await decideGoverningFinding({
+        analysisId,
+        findingId: String(req.params.findingId),
+        decision: parsed.data.decision,
+        ...(parsed.data.note !== undefined ? { note: parsed.data.note } : {}),
+        decidedById: actorFromReq(req).id,
+      });
+      if (!updated) throw new AppError(404, "NOT_FOUND", "Governing finding not found");
+      res.json(ok({ finding: updated }));
     },
   );
 

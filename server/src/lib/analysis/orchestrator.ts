@@ -267,6 +267,7 @@ import {
   persistGoverningApplicability,
   toStoredApplicability,
 } from "../governing/applicability-store.js";
+import { produceGoverningFindingsForAnalysis } from "../governing/findings-store.js";
 import {
   retrieveFusedCodeChunks,
   retrieveFusedCodeContext,
@@ -2950,7 +2951,14 @@ export class AnalysisOrchestrator {
 
       // #1997 — the join: applicability ran beside the code agent, enhancement
       // and synthesis, and is awaited only here, before the run is recorded.
-      await this.joinGoverningApplicability(analysisId, governingWork);
+      // #1874 — and the cited findings produced from it, cancellable with the run.
+      const governingController = new AbortController();
+      run.controllers.set("governing", governingController);
+      await this.joinGoverningApplicability(analysisId, governingWork, {
+        projectId: opts.projectId,
+        ...(opts.model ? { model: opts.model } : {}),
+        signal: governingController.signal,
+      });
 
       // #1142 — a cancel that landed during synthesis (whose fallback never
       // throws) must not end the run `completed`. Past this check the result is
@@ -4309,6 +4317,8 @@ export class AnalysisOrchestrator {
   private async joinGoverningApplicability(
     analysisId: string,
     work: Promise<RequirementEvidence[]> | undefined,
+    /** #1874 — where the cited findings are produced from the stored applicability. */
+    findings?: { projectId: string; model?: string; signal?: AbortSignal },
   ): Promise<RequirementEvidence[] | undefined> {
     if (!work) return undefined;
     try {
@@ -4321,14 +4331,34 @@ export class AnalysisOrchestrator {
       // #1873 — stored on the analysis, where the clarification dialog reads
       // its `uncertain` pairs and a BA answer settles them. Best-effort: a
       // failed write is logged and never fails the run.
-      await persistGoverningApplicability(analysisId, toStoredApplicability(evidence)).catch(
+      const stored = toStoredApplicability(evidence);
+      const persisted = await persistGoverningApplicability(analysisId, stored).then(
+        () => true,
         (err: unknown) => {
           log.warn("governing applicability could not be stored", {
             analysisId,
             error: (err as Error).message,
           });
+          return false;
         },
       );
+      // #1874 — the cited findings, from the applicability just stored. Also
+      // best-effort: a failure is logged, and the analysis completes.
+      if (persisted && findings) {
+        await produceGoverningFindingsForAnalysis({
+          analysisId,
+          projectId: findings.projectId,
+          provider: this.deps.provider,
+          applicability: stored,
+          ...(findings.model ? { model: findings.model } : {}),
+          ...(findings.signal ? { signal: findings.signal } : {}),
+        }).catch((err: unknown) => {
+          log.warn("governing findings could not be produced", {
+            analysisId,
+            error: (err as Error).message,
+          });
+        });
+      }
       return evidence;
     } catch (err) {
       log.warn("governing applicability failed as a whole", {
