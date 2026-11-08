@@ -968,7 +968,8 @@ describe("GoverningDocumentsPanel", () => {
     const retry = await screen.findByRole("button", { name: "Retry extraction of Broken policy" });
 
     holdList = true;
-    const listReads = () => server.requests.filter((r) => isListRead(`http://localhost${r.path}`));
+    const listReads = () =>
+      server.requests.filter((r) => isListRead(`http://localhost${r.path}`, { method: r.method }));
     const readsBefore = listReads().length;
     await nextPoll();
     expect(listReads()).toHaveLength(readsBefore + 1);

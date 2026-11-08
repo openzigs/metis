@@ -149,7 +149,9 @@ export function GoverningDocumentsPanel({ workspaceId }: { workspaceId: string }
     }
     if (next === Infinity) return;
     // `isExtractionStuck` is strict (`at < now`), so wake just past the bound.
-    const timer = setTimeout(rerender, next - now + 1);
+    // Clamped: a delay past 2^31-1 ms fires at once in browsers, which would
+    // loop if a server timestamp sat far ahead of this clock.
+    const timer = setTimeout(rerender, Math.min(next - now + 1, GOVERNING_EXTRACTION_STALE_MS + 1));
     return () => clearTimeout(timer);
   }, [list.data, clockTick]);
 
