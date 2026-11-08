@@ -139,14 +139,81 @@ function rowData(f: EvaluatedFinding) {
 }
 
 /**
+ * #2010 / #2017 — the `AuditLog` row for a BA decision the system erased: by
+ * the system, carrying everything the row held about the decision (who, what,
+ * when, and the note), since the row no longer does. `status` is the finding's
+ * new status, or null when the row itself was removed.
+ */
+function decisionClearedAudit(
+  analysisId: string,
+  prior: Row,
+  change: { status: string | null; reason: string },
+) {
+  return buildAuditLogData({
+    actorId: SYSTEM_ACTOR_ID,
+    action: "governing.finding.decision-cleared",
+    targetType: "governing_finding",
+    targetId: prior.id,
+    metadata: {
+      analysisId,
+      requirementId: prior.requirementId,
+      controlId: prior.controlId,
+      previousDecision: prior.decision,
+      previousDecisionNote: prior.decisionNote,
+      previousDecidedById: prior.decidedById,
+      previousDecidedAt: prior.decidedAt?.toISOString() ?? null,
+      previousStatus: prior.status,
+      status: change.status,
+      reason: change.reason,
+    },
+  });
+}
+
+/**
+ * #2017 — the findings run of each analysis still in flight (or queued), as
+ * the tail of its chain. Runs of one analysis go one after another, in the
+ * order they were asked for, so a refresh started earlier can never commit
+ * over a newer one, and two first creates never race on the unique key. The
+ * entry is dropped when its last run settles. In-process only: it orders the
+ * runs of one server.
+ */
+const findingsRuns = new Map<string, Promise<void>>();
+
+/**
+ * True while a findings run of `analysisId` is in flight or queued, so a
+ * reader (the findings route) can say the findings are about to change and a
+ * client can fetch them again once it reads false.
+ */
+export function governingFindingsRefreshing(analysisId: string): boolean {
+  return findingsRuns.has(analysisId);
+}
+
+/**
  * Evaluate and store the analysis's governing findings. Rows of the
  * requirements evaluated are upserted, and those of pairs that no longer apply
  * are removed. A BA decision is kept when the finding it was made on is
  * unchanged (status and citation), and cleared when the finding changed.
+ * #2017 — queued behind any earlier run of the same analysis (see
+ * {@link findingsRuns}); the stored applicability is read when the run starts,
+ * not when it was asked for, so a queued run sees every settlement before it.
  */
-export async function produceGoverningFindingsForAnalysis(
+export function produceGoverningFindingsForAnalysis(
   input: ProduceGoverningFindingsInput,
 ): Promise<GoverningFindingsRun> {
+  const previous = findingsRuns.get(input.analysisId) ?? Promise.resolve();
+  const result = previous.then(() => produceNow(input));
+  const tail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  findingsRuns.set(input.analysisId, tail);
+  void tail.then(() => {
+    if (findingsRuns.get(input.analysisId) === tail) findingsRuns.delete(input.analysisId);
+  });
+  return result;
+}
+
+async function produceNow(input: ProduceGoverningFindingsInput): Promise<GoverningFindingsRun> {
   const run: GoverningFindingsRun = {
     requirements: 0,
     written: 0,
@@ -217,10 +284,21 @@ export async function produceGoverningFindingsForAnalysis(
           where: { analysisId: input.analysisId, requirementId },
         });
         const keep = new Set([...findings.map((f) => f.rule.id), ...ruleGone]);
-        const stale = existing.filter((e) => !keep.has(e.ruleId)).map((e) => e.id);
+        const stale = existing.filter((e) => !keep.has(e.ruleId));
         if (stale.length > 0) {
+          // #2017 — A09: a stale row's BA decision goes with the row, so it is
+          // audited like one cleared on a changed finding.
+          for (const e of stale.filter((x) => x.decision)) {
+            await tx.auditLog.create({
+              data: decisionClearedAudit(input.analysisId, e, {
+                status: null,
+                reason: "the rule no longer applies to the requirement",
+              }),
+            });
+            run.decisionsCleared++;
+          }
           await tx.governingFinding.deleteMany({
-            where: { analysisId: input.analysisId, id: { in: stale } },
+            where: { analysisId: input.analysisId, id: { in: stale.map((e) => e.id) } },
           });
           run.removed += stale.length;
         }
@@ -240,21 +318,9 @@ export async function produceGoverningFindingsForAnalysis(
           // "accepted" over a row that reads null with nothing saying why.
           if (!unchanged && prior?.decision) {
             await tx.auditLog.create({
-              data: buildAuditLogData({
-                actorId: SYSTEM_ACTOR_ID,
-                action: "governing.finding.decision-cleared",
-                targetType: "governing_finding",
-                targetId: prior.id,
-                metadata: {
-                  analysisId: input.analysisId,
-                  requirementId,
-                  controlId: prior.controlId,
-                  previousDecision: prior.decision,
-                  previousDecidedById: prior.decidedById,
-                  previousStatus: prior.status,
-                  status: data.status,
-                  reason: "the finding changed when it was produced again",
-                },
+              data: decisionClearedAudit(input.analysisId, prior, {
+                status: data.status,
+                reason: "the finding changed when it was produced again",
               }),
             });
             run.decisionsCleared++;

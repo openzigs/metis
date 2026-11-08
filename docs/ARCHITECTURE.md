@@ -2691,8 +2691,10 @@ the prompt:
   `satisfiedBy`, a run of whole words that really is in the requirement or a BA answer and holds
   at least three words that are not function words or requirement boilerplate (`shall`,
   `system`, `user`, `allow`, …: `EVIDENCE_STOP_WORDS`), so "the system shall" is not evidence
-  (`evidenceIsPresent`, #2010). This is a floor on the quote, not proof that it says how the rule
-  is met. Otherwise it becomes `needs-ba-input` if the model gave the question,
+  (`evidenceIsPresent`, #2010). An answer is searched together with the question it answers, so a
+  short answer ("Yes, we do.") counts when quoted with the end of its question; the run must reach
+  into the answer, since the question is METIS's own words (#2017). This is a floor on the quote,
+  not proof that it says how the rule is met. Otherwise it becomes `needs-ba-input` if the model gave the question,
   else `gap`. This follows CTRAG's No-Evidence → Non-Compliant (one study; a pattern, not proof).
 - **Every citation is verified** against the **cited revision's** stored `extractedText`
   (`locateClause`, #1870) and must lie inside the rule's own clause. An excerpt that does not
@@ -2719,18 +2721,25 @@ produces them in two places:
 - After a BA answer settles pairs: the questions source re-evaluates the requirements whose pairs
   the answer settled. This runs off the request path, after the settlement is committed (#2010).
 
+Runs of one analysis are **serialised in call order** (#2017): each is queued behind the last, so
+an earlier refresh never commits over a newer one and two first creates never race on the unique
+key. A queued run reads the stored applicability when it starts. The queue is in-process, so it
+orders the runs of one server, not of several replicas.
+
 Each production writes in one transaction with a 60 s timeout
 (`GOVERNING_FINDINGS_WRITE_TIMEOUT_MS`, as `persistRequirements` sets). A finding whose status,
 revision and clause are unchanged keeps its BA decision. One that changed loses it, and the
 clearing is written to `AuditLog` (`governing.finding.decision-cleared`, by the system, with the
-previous decision and decider) in the same transaction. A pair whose rule is no longer citable (the
-rule soft-deleted, or its document deleted) gets no new finding, and its earlier row is kept
-with its decision. Only a pair that no longer applies loses its row.
+previous decision, note, decider and decision time) in the same transaction. A pair whose rule is
+no longer citable (the rule soft-deleted, or its document deleted) gets no new finding, and its
+earlier row is kept with its decision. Only a pair that no longer applies loses its row, and a
+decision on that row is audited the same way before the delete (#2017).
 
 **API** (404 while the flag is off; `ensureAnalysisVisible` on both routes):
 
 - `GET /api/projects/:projectId/analyses/:id/governing-findings` returns the findings and their
-  counts.
+  counts, and `refreshing`: true while a findings run of the analysis is in flight or queued, so a
+  client fetches again once it reads false (#2017).
 - `POST …/governing-findings/:findingId/decision` takes `{ decision: accepted|rejected, note }`
   (`governingFindingDecisionInputSchema`, strict) and needs `analysis.run`.
 - The decider is the session user. A body that names one is a 400.

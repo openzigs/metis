@@ -3002,9 +3002,10 @@ export class AnalysisOrchestrator {
         signal: governingController.signal,
       });
 
-      // #1142 — a cancel that landed during synthesis (whose fallback never
-      // throws) must not end the run `completed`. Past this check the result is
-      // being recorded, so a later cancel answers false rather than lying.
+      // #1142 — a cancel that landed during the governing join (which logs its
+      // failures and never throws) must not end the run `completed`. Past this
+      // check the result is being recorded, so a later cancel answers false
+      // rather than lying.
       if (run.cancelled) {
         await endCancelled();
         return;
@@ -3512,9 +3513,8 @@ export class AnalysisOrchestrator {
     escalation?: RunEscalation;
     /**
      * #741 (Epic #727) — how to persist this pass's `code` AgentResult. Defaults
-     * to `"replace"` (today's behaviour). The resume endpoint passes `"append"`
-     * so a resumed connector's findings MERGE alongside the original run's code
-     * findings instead of clobbering them. #1998/#2011 — it passes
+     * to `"replace"`. A continuation (#1131) passes `"append"`, so its row lands
+     * beside the rows it continues. The resume endpoint (#1998/#2011) passes
      * `"supersede"`: a completed pass replaces that connector's own earlier rows
      * in one transaction, and a failed or cancelled one is appended.
      */

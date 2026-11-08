@@ -52,6 +52,7 @@ import {
 import { readGoverningApplicability } from "../lib/governing/applicability-store.js";
 import {
   decideGoverningFinding,
+  governingFindingsRefreshing,
   listGoverningFindings,
   summariseFindings,
 } from "../lib/governing/findings-store.js";
@@ -963,7 +964,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
    * GET /api/projects/:projectId/analyses/:id/governing-findings
    * #1874 — the analysis's cited governing findings (Compliant / Gap / Needs BA
    * input, each citing its rule's control id and a clause of the revision it
-   * was checked against), with their BA decisions, and the counts. 404 while
+   * was checked against), with their BA decisions, and the counts. #2017 —
+   * `refreshing` is true while a findings run of the analysis (one a BA answer
+   * started) is in flight or queued: fetch again once it reads false. 404 while
    * `GOVERNING_DOCS_ENABLED` is off. Scoped with `ensureAnalysisVisible`; rows
    * are read by the analysis id alone, which that check binds to the project.
    */
@@ -977,7 +980,13 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       const projectId = String(req.params.projectId);
       await ensureAnalysisVisible(analysisId, projectId);
       const findings = await listGoverningFindings(analysisId);
-      res.json(ok({ findings, summary: summariseFindings(findings) }));
+      res.json(
+        ok({
+          findings,
+          summary: summariseFindings(findings),
+          refreshing: governingFindingsRefreshing(analysisId),
+        }),
+      );
     },
   );
 
