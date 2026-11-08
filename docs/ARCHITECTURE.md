@@ -2789,9 +2789,11 @@ come from `listGoverningFindings`, the read the analysis route serves, so the do
 and decisions are the route's (`server/tests/governing-brd-section-1877.sqlite.test.ts` reads
 both).
 
-- A rejected finding is listed and marked **Rejected**.
-- Each document revision gets one `governingSummarySentence`. Its rule count is the revision's
-  live rules plus any rule a finding cites since deleted, read within the project's workspace.
+- A rejected finding is listed and marked **Rejected**, with who decided it and when
+  (`decidedByName`, as the analysis view shows it).
+- Each document revision gets one `governingSummarySentence`, counted as the analysis view's
+  findings panel (#1876) counts it: the rule count comes from `governingFindingRevisions`, the
+  gaps are counted per finding, and the BA-input count is per rule.
 - Every stored text shown passes through `neutraliseComplianceClaims`, and so does each composed
   line as a backstop. An excerpt whose wording was changed says it is no longer verbatim.
 - A finding is keyed on the requirement as the run analysed it (`REQ-001`), which is not joined

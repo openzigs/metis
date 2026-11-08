@@ -326,7 +326,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(section).toContain(`**${controlId} — `);
       }
       expect(section).toContain("Rule of Information Handling Policy, revision v1, clause §5.1.");
-      expect(section).toContain("Decision: **Rejected** on ");
+      expect(section).toContain(`Decision: **Rejected** by ${ALICE} on `);
       expect(section).toContain("- **Analyst's note:** Exports are out of scope.");
       expect(findForbiddenComplianceClaims(markdown)).toEqual([]);
       expect(markdown).not.toContain("Mallory's finding.");

@@ -10,7 +10,7 @@ const db = vi.hoisted(() => ({
   analysisFindMany: vi.fn(),
   analysisFindFirst: vi.fn(),
   findingFindMany: vi.fn(),
-  projectFindFirst: vi.fn(),
+  userFindMany: vi.fn(),
   ruleCount: vi.fn(),
 }));
 vi.mock("../prisma.js", () => ({
@@ -18,7 +18,7 @@ vi.mock("../prisma.js", () => ({
     requirement: { findMany: db.requirementFindMany },
     analysis: { findMany: db.analysisFindMany, findFirst: db.analysisFindFirst },
     governingFinding: { findMany: db.findingFindMany },
-    project: { findFirst: db.projectFindFirst },
+    user: { findMany: db.userFindMany },
     governingRule: { count: db.ruleCount },
     reviewRequest: { findFirst: vi.fn() },
   },
@@ -150,7 +150,9 @@ function withFindings(rows: ReturnType<typeof row>[], metadata: unknown = APPLIC
 beforeEach(() => {
   process.env.GOVERNING_DOCS_ENABLED = "1";
   for (const fn of Object.values(db)) fn.mockReset();
-  db.projectFindFirst.mockResolvedValue({ workspaceId: "ws-1" });
+  db.userFindMany.mockResolvedValue([
+    { id: "u1", displayName: "Alice Analyst", username: "alice" },
+  ]);
   db.ruleCount.mockResolvedValue(12);
   db.analysisFindFirst.mockResolvedValue(null);
 });
@@ -200,7 +202,7 @@ describe("the governing-rules section in a requirements BRD — #1877", () => {
     ]);
     // Each finding's own entry: control id, status, decision, revision and verified excerpt.
     expect(markdown).toContain(
-      "**AL-02 — Gap.** Decision: **Rejected** on 2026-11-08. Rule of Information Handling Policy, revision v1, clause §5.1.",
+      "**AL-02 — Gap.** Decision: **Rejected** by Alice Analyst on 2026-11-08. Rule of Information Handling Policy, revision v1, clause §5.1.",
     );
     expect(markdown).toContain(
       "> “Every bulk export of customer records is written to the audit log”",
@@ -238,6 +240,67 @@ describe("the governing-rules section in a requirements BRD — #1877", () => {
     expect(markdown).toContain(
       "- 0 gaps found against 1 of 5 applicable rules in Records Retention Standard 2026.1; 1 rule needs BA input. Not an audit opinion.",
     );
+  });
+
+  it("counts BA input per rule and gaps per finding, as the analysis view does", () => {
+    const wire = (o: Record<string, unknown>): GoverningFinding => ({
+      ...(row(o) as unknown as GoverningFinding),
+      createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+    });
+    // One rule waiting on BA input for two requirements, one rule a gap for two.
+    const md = renderGoverningSection({
+      runs: [
+        {
+          analysisId: "run-1",
+          startedAt: NOW,
+          findings: [
+            wire({ id: "a", status: "needs-ba-input" }),
+            wire({ id: "b", requirementId: "REQ-002", status: "needs-ba-input" }),
+            wire({ id: "c", ruleId: "rule-audit", status: "gap" }),
+            wire({ id: "d", requirementId: "REQ-002", ruleId: "rule-audit", status: "gap" }),
+          ],
+          requirementText: new Map(),
+          revisions: [
+            {
+              revisionId: "rev-1",
+              documentTitle: "Information Handling Policy",
+              revisionLabel: "v1",
+              rules: 9,
+            },
+          ],
+        },
+      ],
+    }).join("\n");
+    expect(md).toContain(
+      "- 2 gaps found against 2 of 9 applicable rules in Information Handling Policy v1; 1 rule needs BA input. Not an audit opinion.",
+    );
+  });
+
+  it("names a decider who is gone as a former user", () => {
+    const md = renderGoverningSection({
+      runs: [
+        {
+          analysisId: "run-1",
+          startedAt: NOW,
+          findings: [
+            {
+              ...(row({
+                decision: "accepted",
+                decidedById: "gone",
+              }) as unknown as GoverningFinding),
+              decidedByName: null,
+              decidedAt: null,
+              createdAt: NOW.toISOString(),
+              updatedAt: NOW.toISOString(),
+            },
+          ],
+          requirementText: new Map(),
+          revisions: [],
+        },
+      ],
+    }).join("\n");
+    expect(md).toContain("Decision: **Accepted** by a former user. Rule of");
   });
 
   it("contains no compliance or certification claim, even when the stored text makes one", async () => {
@@ -291,7 +354,7 @@ describe("the governing-rules section in a requirements BRD — #1877", () => {
           startedAt: NOW,
           findings,
           requirementText: new Map(),
-          rulesPerRevision: new Map([["rev-1", 3]]),
+          revisions: [],
         },
       ],
     });
@@ -339,7 +402,7 @@ describe("the governing-rules section in a requirements BRD — #1877", () => {
         },
       ],
       requirementText: new Map([["REQ-001", "Saved cards."]]),
-      rulesPerRevision: new Map(),
+      revisions: [],
     });
     const md = renderGoverningSection({ runs: [one("a", NOW), one("b", null)] }).join("\n");
     expect(md).toContain("the 2 analysis runs these requirements came from");
@@ -350,7 +413,7 @@ describe("the governing-rules section in a requirements BRD — #1877", () => {
     expect(md).toContain("against 1 of 1 applicable rule in");
   });
 
-  it("reads the runs within the project, and the rule counts within its workspace", async () => {
+  it("reads the runs within the project, then the findings and rule counts as the route does", async () => {
     withFindings(THREE);
     await synthesizeRequirementsDocument("p1", { requirementIds: ["req-1"] }, "BRD");
     expect(db.requirementFindMany).toHaveBeenCalledWith(
@@ -368,7 +431,6 @@ describe("the governing-rules section in a requirements BRD — #1877", () => {
     expect(db.ruleCount).toHaveBeenCalledWith({
       where: {
         revisionId: "rev-1",
-        revision: { document: { workspaceId: "ws-1" } },
         OR: [{ deletedAt: null }, { id: { in: ["rule-card", "rule-audit"] } }],
       },
     });
@@ -464,7 +526,7 @@ describe("the BRD without governing findings is unchanged — #1877", () => {
             },
           ],
           requirementText: new Map(),
-          rulesPerRevision: new Map(),
+          revisions: [],
         },
       ],
     };

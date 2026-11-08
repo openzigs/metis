@@ -24,9 +24,16 @@
  * document lists, and the two are not joined by id. So the section lists every
  * finding of each run the document's requirements came from, and says so.
  *
+ * SUMMARY. One `governingSummarySentence` per cited revision, counted as the
+ * analysis view counts it (`governingSummarySentences` in the UI's findings
+ * panel, #1876): N the distinct rules with a finding, M the revision's rule
+ * count from `governingFindingRevisions` (the route's), gaps the Gap
+ * findings, and the distinct rules still waiting on BA input.
+ *
  * TENANCY. The runs are read with the project id as well as their ids, so a
- * run of another project is never read; the rule counts are read within the
- * project's workspace.
+ * run of another project is never read. Findings, decider names and rule
+ * counts are then read through the findings store, by the run's id and the
+ * revisions its own rows cite, exactly as the analysis route reads them.
  */
 import {
   governingSummarySentence,
@@ -37,7 +44,11 @@ import {
 } from "@metis/shared";
 import { formatStartedAt } from "../analysis/run-start-label.js";
 import { readGoverningApplicability } from "../governing/applicability-store.js";
-import { listGoverningFindings, summariseFindings } from "../governing/findings-store.js";
+import {
+  governingFindingRevisions,
+  listGoverningFindings,
+  type GoverningFindingRevision,
+} from "../governing/findings-store.js";
 import { prisma } from "../prisma.js";
 import { cell } from "./markdown-cell.js";
 
@@ -52,8 +63,8 @@ export interface GoverningSectionRun {
   findings: readonly GoverningFinding[];
   /** The analysed requirement's text, by its id in the run (`REQ-001`). */
   requirementText: ReadonlyMap<string, string>;
-  /** How many rules each cited revision holds, for the summary sentence. */
-  rulesPerRevision: ReadonlyMap<string, number>;
+  /** Each cited revision with its rule count (`governingFindingRevisions`). */
+  revisions: readonly GoverningFindingRevision[];
 }
 
 /** The runs with at least one finding, oldest first. */
@@ -82,21 +93,6 @@ function text(value: string): string {
   return cell(neutraliseComplianceClaims(value));
 }
 
-/** How many rules `revisionId` holds: its live rules, and any a finding cites since deleted. */
-async function ruleCount(
-  workspaceId: string,
-  revisionId: string,
-  citedRuleIds: readonly string[],
-): Promise<number> {
-  return prisma.governingRule.count({
-    where: {
-      revisionId,
-      revision: { document: { workspaceId } },
-      OR: [{ deletedAt: null }, { id: { in: [...citedRuleIds] } }],
-    },
-  });
-}
-
 /**
  * The governing findings of the analysis runs `analysisIds` names, read within
  * `projectId`. Null when none of them has a finding — no governing document,
@@ -113,42 +109,22 @@ export async function loadGoverningSection(
     select: { id: true, startedAt: true },
     orderBy: [{ startedAt: "asc" }, { id: "asc" }],
   });
-  const withFindings: Array<{ id: string; startedAt: Date | null; findings: GoverningFinding[] }> =
-    [];
+  const runs: GoverningSectionRun[] = [];
   for (const a of analyses) {
     const findings = await listGoverningFindings(a.id);
-    if (findings.length > 0) withFindings.push({ ...a, findings });
-  }
-  if (withFindings.length === 0) return null;
-
-  const project = await prisma.project.findFirst({
-    where: { id: projectId },
-    select: { workspaceId: true },
-  });
-  const workspaceId = project?.workspaceId ?? null;
-  const runs: GoverningSectionRun[] = [];
-  for (const a of withFindings) {
+    if (findings.length === 0) continue;
     const applicability = await readGoverningApplicability(a.id);
-    const requirementText = new Map(
-      (applicability?.requirements ?? []).map((r) => [r.requirementId, r.text] as const),
-    );
-    const rulesPerRevision = new Map<string, number>();
-    for (const revisionId of new Set(a.findings.map((f) => f.revisionId))) {
-      const cited = a.findings.filter((f) => f.revisionId === revisionId).map((f) => f.ruleId);
-      rulesPerRevision.set(
-        revisionId,
-        workspaceId ? await ruleCount(workspaceId, revisionId, [...new Set(cited)]) : 0,
-      );
-    }
     runs.push({
       analysisId: a.id,
       startedAt: a.startedAt,
-      findings: a.findings,
-      requirementText,
-      rulesPerRevision,
+      findings,
+      requirementText: new Map(
+        (applicability?.requirements ?? []).map((r) => [r.requirementId, r.text] as const),
+      ),
+      revisions: await governingFindingRevisions(findings),
     });
   }
-  return { runs };
+  return runs.length > 0 ? { runs } : null;
 }
 
 /** One sentence per document revision the run's findings cite, in first-cited order. */
@@ -160,20 +136,18 @@ function summaryLines(run: GoverningSectionRun): string[] {
     byRevision.set(f.revisionId, list);
   }
   return [...byRevision.entries()].map(([revisionId, findings]) => {
-    const counts = summariseFindings(findings);
+    const revision = run.revisions.find((r) => r.revisionId === revisionId);
     const applicable = new Set(findings.map((f) => f.ruleId)).size;
-    // A revision's rules are only ever hard-deleted with the revision itself,
-    // so the count holds every rule a finding cites; the floor keeps the
-    // sentence from reading "3 of 2" if one is gone all the same.
-    const total = Math.max(run.rulesPerRevision.get(revisionId) ?? 0, applicable);
-    const first = findings[0]!;
+    const waiting = findings.filter((f) => f.status === "needs-ba-input").map((f) => f.ruleId);
     return `- ${governingSummarySentence({
       applicable,
-      total,
-      gaps: counts.gap,
-      needsInput: counts.needsBaInput,
-      documentTitle: first.documentTitle,
-      revisionLabel: first.revisionLabel,
+      // Never below N, as in the analysis view: a revision missing from
+      // `revisions` counts only its cited rules.
+      total: Math.max(applicable, revision?.rules ?? 0),
+      gaps: findings.filter((f) => f.status === "gap").length,
+      needsInput: new Set(waiting).size,
+      documentTitle: revision?.documentTitle ?? findings[0]!.documentTitle,
+      revisionLabel: revision?.revisionLabel ?? findings[0]!.revisionLabel,
     })}`;
   });
 }
@@ -213,7 +187,12 @@ function excerptLines(f: GoverningFinding): string[] {
 }
 
 function findingEntry(f: GoverningFinding): string[] {
-  const decided = f.decision && f.decidedAt ? ` on ${f.decidedAt.slice(0, 10)}` : "";
+  // Who and when, as the analysis view says it (#1876).
+  const decided = f.decision
+    ? ` by ${f.decidedByName?.trim() ? text(f.decidedByName) : "a former user"}${
+        f.decidedAt ? ` on ${f.decidedAt.slice(0, 10)}` : ""
+      }`
+    : "";
   const clause = f.clauseRef.trim() ? `, clause ${text(f.clauseRef)}` : "";
   const revision = f.revisionLabel.trim() ? `, revision ${text(f.revisionLabel)}` : "";
   const out: string[] = [
