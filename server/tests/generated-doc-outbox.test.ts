@@ -145,7 +145,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
       // #1960 — a file, not `:memory:`: "dispatch observes committed source and
       // task rows from a separate database connection" opens a second client on
       // it, and an in-memory database is private to the connection that made it.
-      // At four fsyncs per autocommit statement (#1949), this hook's 26 would
+      // At four fsyncs per autocommit statement (#1960), this hook's 26 would
       // cost about 104, so this client skips them; the observer still reads
       // every commit.
       db = new PrismaClient({

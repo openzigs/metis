@@ -6,15 +6,35 @@
  */
 import express, { type Request, type Response } from "express";
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_DOCUMENT_BYTES } from "@metis/shared";
-import { validateUpload } from "../lib/documents/upload.js";
-import { documentFile, MALFORMED_UPLOAD_MESSAGE } from "./document-file-upload.js";
-import { errorHandler } from "./error-handler.js";
 
-function appWith() {
+// #1985 — the truncation log line, read off this module's own logger.
+const uploadLog = vi.hoisted(() => ({ warn: vi.fn() }));
+vi.mock("../lib/logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/logger.js")>();
+  return {
+    ...actual,
+    createChildLogger: (module: string) =>
+      module === "document-file-upload"
+        ? (uploadLog as unknown as ReturnType<typeof actual.createChildLogger>)
+        : actual.createChildLogger(module),
+  };
+});
+
+const { FILE_TOO_LARGE_MESSAGE, ONE_FILE_MESSAGE, validateUpload } =
+  await import("../lib/documents/upload.js");
+const { documentFile, MALFORMED_UPLOAD_MESSAGE, singleFileUpload } =
+  await import("./document-file-upload.js");
+const { errorHandler } = await import("./error-handler.js");
+
+beforeEach(() => {
+  uploadLog.warn.mockReset();
+});
+
+function appWith(middleware = documentFile) {
   const app = express();
-  app.post("/upload", documentFile, (req: Request, res: Response) => {
+  app.post("/upload", middleware, (req: Request, res: Response) => {
     const file = (req as Request & { file?: Express.Multer.File }).file;
     res.status(200).json({ size: file?.buffer.length ?? null });
   });
@@ -53,7 +73,7 @@ describe("documentFile", () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toMatchObject({
       code: "UPLOAD_ERROR",
-      message: "Upload failed: one file in the 'file' field",
+      message: ONE_FILE_MESSAGE,
     });
   });
 
@@ -65,7 +85,7 @@ describe("documentFile", () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toMatchObject({
       code: "UPLOAD_ERROR",
-      message: "Upload failed: one file in the 'file' field",
+      message: ONE_FILE_MESSAGE,
     });
   });
 
@@ -81,6 +101,30 @@ describe("documentFile", () => {
       code: "UPLOAD_ERROR",
       message: MALFORMED_UPLOAD_MESSAGE,
     });
+  });
+
+  it("#1985 — logs a truncated body with the bytes declared and the bytes received", async () => {
+    // A proxy body cap cuts the body off like this too; the 400 alone would
+    // hide it, so the log line says how much of the body arrived.
+    const body = '--x\r\nContent-Disposition: form-data; name="file"; filename="a.txt"\r\n\r\nabc';
+    const res = await request(appWith())
+      .post("/upload")
+      .set("Content-Type", "multipart/form-data; boundary=x")
+      .send(body);
+    expect(res.status).toBe(400);
+    expect(uploadLog.warn).toHaveBeenCalledTimes(1);
+    expect(uploadLog.warn).toHaveBeenCalledWith("upload body ended before its closing boundary", {
+      declaredBytes: Buffer.byteLength(body),
+      receivedBytes: Buffer.byteLength(body),
+    });
+  });
+
+  it("#1985 — logs nothing for a malformed body that was not cut off", async () => {
+    await request(appWith())
+      .post("/upload")
+      .set("Content-Type", "multipart/form-data; boundary=x")
+      .send("--x\r\nno-colon-here\r\n\r\nabc\r\n--x--\r\n");
+    expect(uploadLog.warn).not.toHaveBeenCalled();
   });
 
   it("answers a part with a malformed header with 400 UPLOAD_ERROR", async () => {
@@ -117,6 +161,27 @@ describe("documentFile", () => {
     expect(res.body.error).toMatchObject({
       code: "UPLOAD_ERROR",
       message: "Upload failed: Field value too long",
+    });
+  });
+
+  it("#1985 — the size message reads in megabytes", () => {
+    expect(FILE_TOO_LARGE_MESSAGE).toBe("The file is larger than 10 MB");
+  });
+
+  it("#1985 — singleFileUpload answers its own cap with its own message", async () => {
+    const small = singleFileUpload({ maxBytes: 4, tooLargeMessage: "The archive is too big" });
+    const at = await request(appWith(small))
+      .post("/upload")
+      .attach("file", Buffer.from("abcd"), "a.zip");
+    expect(at.status).toBe(200);
+    expect(at.body.size).toBe(4);
+    const over = await request(appWith(small))
+      .post("/upload")
+      .attach("file", Buffer.from("abcde"), "a.zip");
+    expect(over.status).toBe(413);
+    expect(over.body.error).toMatchObject({
+      code: "FILE_TOO_LARGE",
+      message: "The archive is too big",
     });
   });
 

@@ -419,6 +419,50 @@ describe("extractRulesFromText — limits and ids", () => {
     expect(region("AC-1 Accounts are personal!\nPasswords rotate.", "Passwords")).toBe("Passwords");
   });
 
+  it("#1985 — a whole clause in emphasis or quotes is a sentence, not a label", () => {
+    const region = (text: string, excerpt: string) => {
+      const at = text.indexOf(excerpt);
+      return controlIdRegion(text, { clauseStart: at, clauseEnd: at + excerpt.length });
+    };
+    expect(region("**AC-1 Accounts are never shared.**\nPasswords rotate.", "Passwords")).toBe(
+      "Passwords",
+    );
+    expect(region("_AC-1 Accounts are never shared._\n\nPasswords rotate.", "Passwords")).toBe(
+      "Passwords",
+    );
+    expect(region('"AC-1 I agree."\nPasswords rotate.', "Passwords")).toBe("Passwords");
+    expect(region("\u201CAC-1 I agree!\u201D\nPasswords rotate.", "Passwords")).toBe("Passwords");
+    // A long run of closing marks is stripped in linear time.
+    const run = "*".repeat(200_000);
+    const started = performance.now();
+    expect(region(`AC-1 ${run}x ${run}\nPasswords rotate.`, "Passwords")).toBe(
+      `AC-1 ${run}x ${run}\nPasswords`,
+    );
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
+  it("#1985 — an id with a full stop, or a numbered title over a paragraph, is a label", () => {
+    const region = (text: string, excerpt: string) => {
+      const at = text.indexOf(excerpt);
+      return controlIdRegion(text, { clauseStart: at, clauseEnd: at + excerpt.length });
+    };
+    expect(region("4.3.1.\nRecords are shredded.", "Records")).toBe("4.3.1.\nRecords");
+    expect(region("AC-02.\n\nRecords are shredded.", "Records")).toBe("AC-02.\nRecords");
+    expect(region("**AC-02.**\nRecords are shredded.", "Records")).toBe("**AC-02.**\nRecords");
+    expect(region("4. Access\nAccounts are personal.", "Accounts")).toBe("4. Access\nAccounts");
+    // A numbered title over the bullets or a nested list it heads.
+    expect(region("4) AC-4 Access\n- Accounts are personal.", "Accounts")).toBe(
+      "4) AC-4 Access\n- Accounts",
+    );
+    expect(region("4. AC-4 Access\n   1. Accounts are personal.", "Accounts")).toBe(
+      "4. AC-4 Access\n   1. Accounts",
+    );
+    // A sibling item in the same list is still a clause of its own.
+    expect(region("  1. AC-1 Accounts\n  2. Passwords rotate", "Passwords")).toBe("  2. Passwords");
+    // A numbered sentence over a paragraph is a clause too.
+    expect(region("4. Accounts are personal.\nPasswords rotate.", "Passwords")).toBe("Passwords");
+  });
+
   it("#1958 — keeps a policy's own id from the label line above its clause", async () => {
     const text = [
       "# Access control",

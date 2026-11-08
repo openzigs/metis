@@ -30,6 +30,23 @@ export const uploadRateLimiter: RequestHandler = rateLimit({
   message: denied("RATE_LIMITED", "Too many uploads — please slow down"),
 }) as unknown as RequestHandler;
 
+/**
+ * #1985 — the governing rule-extraction retry (`POST …/rule-extraction`,
+ * #1947, #1958), each 202 of which can start up to `MAX_SECTIONS` billed model
+ * calls. Tuned by the upload limiter's `UPLOAD_RATE_LIMIT_*` settings, with
+ * its own bucket and message: a burst of retries does not block uploads, and a
+ * refused retry does not read "Too many uploads".
+ */
+// `as unknown as RequestHandler` bridges the Express 4↔5 type split.
+export const extractionRetryRateLimiter: RequestHandler = rateLimit({
+  store: clusterRateLimitStore("extraction-retry"),
+  windowMs: intEnv(process.env.UPLOAD_RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000),
+  max: intEnv(process.env.UPLOAD_RATE_LIMIT_MAX, 30),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: denied("RATE_LIMITED", "Too many rule-extraction retries — please slow down"),
+}) as unknown as RequestHandler;
+
 // `as unknown as RequestHandler` bridges the Express 4↔5 type split.
 export const retrieveRateLimiter: RequestHandler = rateLimit({
   store: clusterRateLimitStore("retrieve"),

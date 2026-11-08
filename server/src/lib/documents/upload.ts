@@ -23,11 +23,27 @@ export interface UploadCandidate {
 }
 
 /**
+ * #1985 — the 413 message for a file over `maxBytes`, in the megabytes a
+ * reader thinks in ("The file is larger than 10 MB"): the clarify dialog and
+ * the upload pages show it as it is.
+ */
+export function fileTooLargeMessage(maxBytes: number, what = "file"): string {
+  const mb = Number((maxBytes / (1024 * 1024)).toFixed(1));
+  return `The ${what} is larger than ${mb} MB`;
+}
+
+/**
  * The message for a file over `MAX_DOCUMENT_BYTES`, shared with the multipart
  * reader (`middleware/document-file-upload.ts`), which answers the same 413
  * when Multer stops reading at the cap (#1948).
  */
-export const FILE_TOO_LARGE_MESSAGE = `File exceeds ${MAX_DOCUMENT_BYTES} byte limit`;
+export const FILE_TOO_LARGE_MESSAGE = fileTooLargeMessage(MAX_DOCUMENT_BYTES);
+
+/**
+ * #1985 — the multipart reader's answer to a second file, or to a file in a
+ * field other than `file` (`middleware/document-file-upload.ts`).
+ */
+export const ONE_FILE_MESSAGE = "Upload failed: one file in the 'file' field";
 
 export type UploadValidation =
   | { ok: true; mimeType: string; filename: string }

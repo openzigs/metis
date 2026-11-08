@@ -1,8 +1,8 @@
 /**
  * #1958 — the admin retry route (`POST …/rule-extraction`, #1947) starts up to
- * `MAX_SECTIONS` billed model calls per 202, so it sits behind the upload
- * limiter, as the upload routes do, after the admin guards. The limiter is a
- * double here: the test asserts the route consults it, that a refusal starts
+ * `MAX_SECTIONS` billed model calls per 202, so it sits behind a rate limiter
+ * after the admin guards: its own (#1985), not the upload one. The limiters are
+ * doubles here: the test asserts the route consults it, that a refusal starts
  * no run, and that a member or non-member is refused before it counts.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,15 +11,20 @@ import request from "supertest";
 
 const limiter = vi.hoisted(() => {
   process.env.GOVERNING_DOCS_ENABLED = "1";
-  return { refuse: false, calls: 0 };
+  return { refuse: false, calls: 0, uploadCalls: 0 };
 });
 // A deployment admin passes `requireWorkspaceRole` without a membership row; the
 // non-admin callers below are checked against `workspaceMember`.
 const ADMIN = { userId: "admin-1", role: "admin" };
 const caller = vi.hoisted(() => ({ user: {} as Record<string, unknown> }));
 const memberships = vi.hoisted(() => new Map<string, string>());
+// #1985 — the retry has its own limiter; the upload limiter must not be the one it takes.
 vi.mock("../middleware/upload-rate-limit.js", () => ({
-  uploadRateLimiter: (_req: express.Request, res: express.Response, next: () => void) => {
+  uploadRateLimiter: (_req: express.Request, _res: express.Response, next: () => void) => {
+    limiter.uploadCalls += 1;
+    next();
+  },
+  extractionRetryRateLimiter: (_req: express.Request, res: express.Response, next: () => void) => {
     limiter.calls += 1;
     if (limiter.refuse) {
       res.status(429).json({ success: false, error: { code: "RATE_LIMITED", message: "slow" } });
@@ -76,6 +81,7 @@ describe("#1958 — the rule-extraction retry route is rate limited", () => {
   beforeEach(() => {
     limiter.refuse = false;
     limiter.calls = 0;
+    limiter.uploadCalls = 0;
     caller.user = ADMIN;
     memberships.clear();
     revisionFindFirst.mockReset();
@@ -87,6 +93,7 @@ describe("#1958 — the rule-extraction retry route is rate limited", () => {
     const res = await request(app(extractRules)).post(RETRY);
     expect(res.status).toBe(202);
     expect(limiter.calls).toBe(1);
+    expect(limiter.uploadCalls).toBe(0);
     expect(extractRules).toHaveBeenCalledWith({ workspaceId: "ws-1", revisionId: "rev-1" });
   });
 

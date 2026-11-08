@@ -301,6 +301,7 @@ import {
 } from "../src/lib/analysis/index.js";
 import { ModelNotServedError } from "../src/lib/ai/model-router.js";
 import { validateUpload } from "../src/lib/documents/upload.js";
+import { MALFORMED_UPLOAD_MESSAGE } from "../src/middleware/document-file-upload.js";
 import { MAX_DOCUMENT_BYTES } from "@metis/shared";
 
 let app: ReturnType<typeof createApp>;
@@ -1741,7 +1742,10 @@ describe("Clarify CSV export/import", () => {
         .set("Content-Type", "multipart/form-data; boundary=x")
         .send('--x\r\nContent-Disposition: form-data; name="file"; filename="a.csv"\r\n\r\nq-1,');
       expect(res.status).toBe(400);
-      expect(res.body.error.code).toBe("UPLOAD_ERROR");
+      expect(res.body.error).toMatchObject({
+        code: "UPLOAD_ERROR",
+        message: MALFORMED_UPLOAD_MESSAGE,
+      });
     });
   });
 });

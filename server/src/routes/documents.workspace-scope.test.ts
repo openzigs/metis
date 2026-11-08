@@ -49,7 +49,11 @@ vi.mock("../lib/rag/knowledge-service.js", () => ({
 }));
 vi.mock("../lib/rag/ingest-queue.js", () => ({ getIngestQueue: () => null }));
 vi.mock("../lib/documents/storage.js", () => ({ getDocumentStorage: () => ({ write: vi.fn() }) }));
-vi.mock("../lib/documents/upload.js", () => ({ validateUpload: vi.fn() }));
+// The real module's other exports: the multipart reader reads its size message at import.
+vi.mock("../lib/documents/upload.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/documents/upload.js")>()),
+  validateUpload: vi.fn(),
+}));
 vi.mock("../lib/documents/url-fetcher.js", () => ({
   fetchUrlForIngest: vi.fn(),
   UrlFetchError: class extends Error {},
