@@ -665,6 +665,25 @@ describe("A4 — production findings (#1874)", () => {
       expect(out.diagnostics).toMatchObject({ answersReplayed: 1, answersSettled: 1 });
     });
 
+    it("still asks when the answer settles nothing: the rule stays uncertain", async () => {
+      const { provider, calls } = stubProvider([
+        ...applicability(),
+        JSON.stringify({
+          decisions: [
+            { rule: "R1", verdict: "uncertain", reason: "Unclear.", businessFact: "Which emails?" },
+          ],
+        }),
+      ]);
+      const [a4] = buildGoverningArms(["A4"], { model: "m", topK: 2 });
+      const out = await a4!.assess(item(), corpus, { provider });
+      // No findings call: an uncertain pair is Needs BA input without a model.
+      expect(calls).toHaveLength(3);
+      expect(out.answered!.judgements.map((j) => [j.ruleId, j.verdict])).toEqual([
+        ["DR-06", "needs-ba-input"],
+      ]);
+      expect(out.diagnostics).toMatchObject({ answersReplayed: 1, answersSettled: 0 });
+    });
+
     it("keeps the reading before the answer when the replay throws, and says why", async () => {
       const replies = [...applicability(), "{}"];
       let n = 0;

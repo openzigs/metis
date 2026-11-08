@@ -740,9 +740,9 @@ export async function replayAnswers(
         new Map(input.applicabilityRules.map((r) => [r.id, r])),
         { provider },
       );
+      // A settlement is only ever for a rule of `stored`, so of `decisions`.
       for (const s of settlements) {
-        const d = decisions.get(s.ruleId);
-        if (!d) continue;
+        const d = decisions.get(s.ruleId)!;
         decisions.set(s.ruleId, { ...d, verdict: s.verdict, reason: s.reason });
         if (s.verdict !== "uncertain") settled++;
       }
