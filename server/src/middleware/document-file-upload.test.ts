@@ -22,8 +22,9 @@ vi.mock("../lib/logger.js", async (importOriginal) => {
   };
 });
 
-const { FILE_TOO_LARGE_MESSAGE, validateUpload } = await import("../lib/documents/upload.js");
-const { documentFile, MALFORMED_UPLOAD_MESSAGE, ONE_FILE_MESSAGE, singleFileUpload } =
+const { FILE_TOO_LARGE_MESSAGE, ONE_FILE_MESSAGE, validateUpload } =
+  await import("../lib/documents/upload.js");
+const { documentFile, MALFORMED_UPLOAD_MESSAGE, singleFileUpload } =
   await import("./document-file-upload.js");
 const { errorHandler } = await import("./error-handler.js");
 

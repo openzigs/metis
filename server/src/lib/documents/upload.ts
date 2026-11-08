@@ -39,6 +39,12 @@ export function fileTooLargeMessage(maxBytes: number, what = "file"): string {
  */
 export const FILE_TOO_LARGE_MESSAGE = fileTooLargeMessage(MAX_DOCUMENT_BYTES);
 
+/**
+ * #1985 — the multipart reader's answer to a second file, or to a file in a
+ * field other than `file` (`middleware/document-file-upload.ts`).
+ */
+export const ONE_FILE_MESSAGE = "Upload failed: one file in the 'file' field";
+
 export type UploadValidation =
   | { ok: true; mimeType: string; filename: string }
   | { ok: false; status: 413 | 415 | 400; code: string; message: string };

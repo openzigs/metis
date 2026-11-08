@@ -30,10 +30,10 @@
  * builds its own with {@link singleFileUpload} at the archive cap. One mapping
  * serves all four, so they cannot drift.
  */
-import type { NextFunction, Request, Response } from "express";
+import type { RequestHandler } from "express";
 import multer from "multer";
 import { MAX_DOCUMENT_BYTES } from "@metis/shared";
-import { FILE_TOO_LARGE_MESSAGE } from "../lib/documents/upload.js";
+import { FILE_TOO_LARGE_MESSAGE, ONE_FILE_MESSAGE } from "../lib/documents/upload.js";
 import { createChildLogger } from "../lib/logger.js";
 import { AppError } from "./error-handler.js";
 
@@ -41,9 +41,6 @@ const logger = createChildLogger("document-file-upload");
 
 export const MALFORMED_UPLOAD_MESSAGE =
   "Upload failed: the multipart body is malformed or incomplete";
-
-/** The answer to a second file, or to a file in a field other than `file`. */
-export const ONE_FILE_MESSAGE = "Upload failed: one file in the 'file' field";
 
 /** Multer codes whose fix is "send exactly one file, in the `file` field". */
 const ONE_FILE_CODES = new Set(["LIMIT_FILE_COUNT", "LIMIT_UNEXPECTED_FILE"]);
@@ -70,13 +67,11 @@ export interface SingleFileUploadOptions {
   tooLargeMessage: string;
 }
 
-type Middleware = (req: Request, res: Response, next: NextFunction) => void;
-
 /** `multer(...).single("file")` at `maxBytes`, with the upload contract's error codes. */
 export function singleFileUpload({
   maxBytes,
   tooLargeMessage,
-}: SingleFileUploadOptions): Middleware {
+}: SingleFileUploadOptions): RequestHandler {
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: maxBytes, files: 1 },
@@ -122,7 +117,7 @@ export function singleFileUpload({
 }
 
 /** A document upload: {@link singleFileUpload} at `MAX_DOCUMENT_BYTES`. */
-export const documentFile: Middleware = singleFileUpload({
+export const documentFile: RequestHandler = singleFileUpload({
   maxBytes: MAX_DOCUMENT_BYTES,
   tooLargeMessage: FILE_TOO_LARGE_MESSAGE,
 });
