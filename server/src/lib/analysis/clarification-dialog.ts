@@ -239,6 +239,30 @@ export class ClarificationDialog {
   }
 
   /**
+   * #2009 — judge every answered governing question of the dialog whose pairs
+   * are still open back onto them: the current round's, and any whose earlier
+   * settle failed (the provider threw or was offline, the reply could not be
+   * read, the request was aborted). Such a pair is never asked again, so this
+   * retry is the only way its answer is ever used. A failure is logged: the
+   * answers are kept, and the next settle tries again.
+   */
+  private async settleGoverning(
+    analysisId: string,
+    state: ClarificationState,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    if (!this.governing) return;
+    const questions = state.rounds.flatMap((r) => r.questions);
+    if (!questions.some((q) => q.governing && q.answer?.trim())) return;
+    await this.governing.settle(questions, signal).catch((err: unknown) => {
+      log.warn("Governing answers could not be settled — their rules stay uncertain", {
+        analysisId,
+        error: (err as Error).message,
+      });
+    });
+  }
+
+  /**
    * Start or continue a clarification dialog for an analysis.
    * Returns questions for the current round.
    */
@@ -282,6 +306,10 @@ export class ClarificationDialog {
         completed: false,
       };
     }
+
+    // #2009 — an answer whose settle failed is retried here, before anything
+    // is asked: also on a completed dialog, which asks nothing more.
+    await this.settleGoverning(analysisId, state, signal);
 
     if (state.completed || state.currentRound > MAX_ROUNDS) {
       state.completed = true;
@@ -440,15 +468,8 @@ export class ClarificationDialog {
 
     // #1873 — judge the answered governing questions back onto the rules they
     // settle, after the round is committed so a refused submit settles nothing.
-    // A failure is logged: the answers are kept, and the rules stay uncertain.
-    if (this.governing) {
-      await this.governing.settle(currentRound.questions, signal).catch((err: unknown) => {
-        log.warn("Governing answers could not be settled — their rules stay uncertain", {
-          analysisId,
-          error: (err as Error).message,
-        });
-      });
-    }
+    // #2009 — every round's, so an earlier round's failed settle is retried.
+    await this.settleGoverning(analysisId, state, signal);
 
     return { state, updatedRequirements };
   }

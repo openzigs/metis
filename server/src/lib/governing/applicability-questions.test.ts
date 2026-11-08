@@ -18,6 +18,7 @@ vi.mock("../prisma.js", () => ({ prisma: db, resolveDatabaseProvider: () => "sql
 const {
   GOVERNING_QUESTION_FIELD,
   buildGoverningQuestions,
+  governingQuestionRequirementId,
   governingQuestionSourceFor,
   openGoverningPairs,
   questionLeaksRule,
@@ -113,6 +114,31 @@ function expectNoRulebook(question: string, rules: readonly QuestionRule[]) {
 }
 
 describe("questionLeaksRule — the rulebook guard", () => {
+  it("#2009 — a short control id matches verbatim only, not across prose words", () => {
+    const a1 = { controlId: "A.1", clauseExcerpt: "x" };
+    expect(questionLeaksRule("Is there a 1-to-1 mapping?", [a1])).toBeNull();
+    expect(questionLeaksRule("Does A.1 apply?", [a1])).toMatch(/names control/);
+    const r34 = { controlId: "3.4", clauseExcerpt: "x" };
+    expect(questionLeaksRule("Are 3 4 users affected?", [r34])).toBeNull();
+    expect(questionLeaksRule("Does 3.4 apply?", [r34])).toMatch(/names control/);
+  });
+
+  it("#2009 — catches a control id written with other spacing or punctuation", () => {
+    const pci = { controlId: "PCI-DSS 3.4", clauseExcerpt: "x" };
+    expect(questionLeaksRule("Does PCI DSS 3.4 cover this?", [pci])).toMatch(/names control/);
+    expect(questionLeaksRule("Is pci_dss-3.4 met?", [pci])).toMatch(/names control/);
+    const cc = { controlId: "CC6.1", clauseExcerpt: "x" };
+    expect(questionLeaksRule("Does CC 6.1 apply?", [cc])).toMatch(/names control/);
+    expect(questionLeaksRule("Does CC-6-1 apply?", [cc])).toMatch(/names control/);
+    expect(questionLeaksRule("Does cc61 apply?", [cc])).toMatch(/names control/);
+    // Still whole words: a longer word holding the id is not the id.
+    expect(questionLeaksRule("Is ACC 6.1 involved?", [cc])).toBeNull();
+    expect(questionLeaksRule("Is CC 6.12 involved?", [cc])).toBeNull();
+    expect(
+      questionLeaksRule("Is anything involved?", [{ controlId: "--", clauseExcerpt: "x" }]),
+    ).toBeNull();
+  });
+
   it("catches a control id as a whole token, in any case", () => {
     expect(questionLeaksRule("Does control EN-03 apply here?", [CARD])).toMatch(/names control/);
     expect(questionLeaksRule("does en-03 apply?", [CARD])).toMatch(/names control/);
@@ -154,7 +180,8 @@ describe("buildGoverningQuestions", () => {
     expect(questions).toHaveLength(1);
     const q = questions[0]!;
     expect(q).toMatchObject({
-      requirementId: REQ.id,
+      // #2009 — namespaced: the bare id would name the reviewed list's REQ-001.
+      requirementId: `governing:${REQ.id}`,
       ambiguityField: GOVERNING_QUESTION_FIELD,
       question: "Will the saved card keep the customer's full card number?",
       governing: { kind: "governing", ruleIds: [CARD.id], requirementId: REQ.id },
@@ -266,10 +293,30 @@ describe("buildGoverningQuestions", () => {
       RULES,
       { provider },
     );
-    expect(questions.map((q) => [q.requirementId, q.governing?.ruleIds])).toEqual([
+    expect(questions.map((q) => [q.governing?.requirementId, q.governing?.ruleIds])).toEqual([
       ["REQ-001", [CARD.id]],
       ["REQ-002", [AUDIT.id]],
     ]);
+    expect(questions.map((q) => q.requirementId)).toEqual([
+      governingQuestionRequirementId("REQ-001"),
+      governingQuestionRequirementId("REQ-002"),
+    ]);
+  });
+
+  it("#2009 — a governing question's requirementId never matches a reviewed requirement's id", async () => {
+    const { orderQuestionsAskFirst } = await import("../analysis/clarification-dialog.js");
+    const { provider } = stubModel({});
+    const [q] = await buildGoverningQuestions([pair(CARD.id, "Will the card be kept?")], RULES, {
+      provider,
+    });
+    // The reviewed list has its own REQ-001: ticking it must not promote the
+    // question about the analysis's REQ-001, a different requirement.
+    const ambiguity = { ...q!, id: "a1", requirementId: "REQ-002", governing: undefined };
+    expect(orderQuestionsAskFirst([ambiguity, q!], new Set(["REQ-001"])).map((x) => x.id)).toEqual([
+      "a1",
+      q!.id,
+    ]);
+    expect(q!.requirementId).not.toBe(REQ.id);
   });
 });
 
@@ -409,6 +456,31 @@ describe("rejudgeAnswered — the answer is judged back onto the rules it settle
     ).toEqual([]);
     expect(none.chat).not.toHaveBeenCalled();
   });
+
+  it("#2009 — an unreadable reply is re-asked once; unreadable again, it settles nothing", async () => {
+    const unreadable = stubModel({ judge: () => "I cannot answer that." });
+    expect(
+      await rejudgeAnswered([answered], STORED, rules, { provider: unreadable.provider }),
+    ).toEqual([]);
+    expect(unreadable.sent.map((x) => x.kind)).toEqual(["judge", "judge"]);
+    expect(unreadable.sent[1]!.system).toContain("Your previous answer");
+  });
+
+  it("#2009 — an unreadable first reply is re-asked, and the readable second one settles", async () => {
+    let call = 0;
+    const second = stubModel({
+      judge: () =>
+        call++ === 0
+          ? "not json"
+          : { decisions: [{ rule: "R1", verdict: "applies", reason: "Kept whole." }] },
+    });
+    const got = await rejudgeAnswered([answered], STORED, rules, { provider: second.provider });
+    expect(got.map((x) => [x.ruleId, x.verdict])).toEqual([
+      [CARD.id, "applies"],
+      [ENCRYPT.id, "uncertain"],
+    ]);
+    expect(second.sent).toHaveLength(2);
+  });
 });
 
 describe("governingQuestionSourceFor — the flag gate", () => {
@@ -470,6 +542,25 @@ describe("governingQuestionSourceFor — the flag gate", () => {
     });
     expect(await source.open(undefined)).toEqual([]);
     await source.settle([{ ...answeredQ, answer: "" }]);
+    expect(db.project.findFirst).not.toHaveBeenCalled();
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  it("#2009 — settle skips a question whose linked pairs are all settled, with no rule read or model call", async () => {
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    const { provider, chat } = stubModel({});
+    const source = governingQuestionSourceFor({ analysisId: "a", projectId: "p", provider })!;
+    const settled = structuredClone(STORED);
+    settled.requirements[0]!.decisions[0]!.settled = {
+      questionId: "q1",
+      answer: "Yes.",
+      previousVerdict: "uncertain",
+      at: "2026-11-08T00:00:00.000Z",
+    };
+    db.analysis.findFirst.mockResolvedValue({
+      metadata: JSON.stringify({ governingApplicability: settled }),
+    });
+    await source.settle([answeredQ, { ...answeredQ, governing: undefined }]);
     expect(db.project.findFirst).not.toHaveBeenCalled();
     expect(chat).not.toHaveBeenCalled();
   });
