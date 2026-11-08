@@ -538,6 +538,39 @@ describe("#1873 — governing questions in the clarification dialog", () => {
     }
   });
 
+  it("#2029 — a retry the client aborted keeps an existing backoff: the next failure doubles it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2001-05-01T00:00:00.000Z"));
+    try {
+      const o = await orphaned();
+      await o.start(); // the first retry fails: backed off once
+      expect(o.judging()).toBe(2);
+      o.later(ORPHAN_RETRY_BASE_MS + 1);
+      // Past that backoff, the client goes away while the next retry's judging call fails.
+      const controller = new AbortController();
+      const failing = o.chat.getMockImplementation()!;
+      o.chat.mockImplementation(async (messages, opts) => {
+        if (String(opts?.systemMessage ?? "").includes("You decide which")) controller.abort();
+        return failing(messages, opts);
+      });
+      await o.start(controller.signal).catch(() => undefined);
+      expect(o.judging()).toBe(3);
+      o.failJudging();
+      await o.start(); // the kept backoff has expired: retried at once, and it fails again
+      expect(o.judging()).toBe(4);
+      o.later(ORPHAN_RETRY_BASE_MS + 1);
+      // Second failed attempt: the backoff doubled. Had the abort cleared the first,
+      // this would be a first attempt again, and its one-step wait would have passed.
+      await o.start();
+      expect(o.judging()).toBe(4);
+      o.later(ORPHAN_RETRY_BASE_MS);
+      await o.start();
+      expect(o.judging()).toBe(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("#2022 — the backoff map is bounded: past ORPHAN_RETRY_MAX_ENTRIES analyses, the oldest is evicted", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2001-04-01T00:00:00.000Z"));

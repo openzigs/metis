@@ -42,6 +42,7 @@ const {
   governingApplicabilityHookFor,
   planScreenBatches,
   SCREEN_ROOM_MAX_SHRINK,
+  screenRoom,
 } = await import("./applicability.js");
 type ApplicabilityRule = import("./applicability.js").ApplicabilityRule;
 
@@ -633,7 +634,9 @@ describe("#1997 — the rule summaries lead the screen prompt and are cached acr
     expect(plan.flat()).toEqual(entries);
     expect(planScreenBatches(entries, 1_500)).toEqual(plan);
     // A requirement within the allowance plans exactly as no requirement does.
-    expect(planScreenBatches(entries, 1_500, "Export orders.")).toEqual(plan);
+    expect(planScreenBatches(entries, 1_500, screenRoom(1_500, "Export orders.").room)).toEqual(
+      plan,
+    );
   });
 
   it("#2016 — a requirement longer than the allowance is planned at its length: no screen prompt overshoots the budget", async () => {

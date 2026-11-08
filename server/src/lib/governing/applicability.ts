@@ -454,16 +454,17 @@ export function fallbackBusinessQuestion(
  * for the requirement rather than its actual length. Planned from the
  * requirement's own text, the batch boundaries — and with them each batch's
  * cache prefix — moved with its length, so past one batch the cache missed
- * between requirements at exactly the scale where it pays. #2016 — the
- * requirement's text is read only for its length: one longer than the
- * allowance is planned at that length, so its prompt never overshoots `budget`.
+ * between requirements at exactly the scale where it pays. #2016 — a
+ * requirement longer than the allowance is planned at its length, so its
+ * prompt never overshoots `budget`. #2029 — `room` is {@link screenRoom}'s, for
+ * the requirement being screened; its default is a requirement within the
+ * allowance.
  */
 export function planScreenBatches(
   entries: readonly ApplicabilityEntry[],
   budget: number,
-  requirementText = "",
+  room: number = screenRoom(budget).room,
 ): ApplicabilityEntry[][] {
-  const { room } = screenRoom(budget, requirementText);
   return planBatches(entries, (e) => estimateTokens(`${screenLine(e)}\n`), budget - room, budget);
 }
 
@@ -573,14 +574,15 @@ export async function decideApplicability(
     }
   };
   if (screen) {
-    if (screenRoom(budget, requirement.text).capped) {
+    const { room, capped } = screenRoom(budget, requirement.text);
+    if (capped) {
       log.warn("governing screen: requirement too long for the batch budget; batches capped", {
         requirementId: requirement.id,
         estimatedTokens: estimateTokens(requirement.text),
         budget,
       });
     }
-    for (const batch of planScreenBatches(entries, budget, requirement.text)) {
+    for (const batch of planScreenBatches(entries, budget, room)) {
       screenBatches++;
       for (const e of await screenBatch(batch)) found(e.index, "screen");
     }

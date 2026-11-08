@@ -266,8 +266,9 @@ export class ClarificationDialog {
    * retry is the only way its answer is ever used. A failure is logged: the
    * answers are kept, and the next settle tries again. #2016 / #2022 — true
    * when the settle left an answered pair open: a judging call failed, its
-   * reply could not be read, or the settle threw. False when the request was
-   * aborted: a client that went away is no failed attempt.
+   * reply could not be read, or the settle threw. #2029 — whether the request
+   * was aborted is the caller's to read from the signal (a client that went
+   * away is no failed attempt); here an abort only goes unlogged.
    */
   private async settleGoverning(
     analysisId: string,
@@ -278,13 +279,14 @@ export class ClarificationDialog {
     const questions = state.rounds.flatMap((r) => r.questions);
     if (!questions.some((q) => q.governing && q.answer?.trim())) return false;
     return this.governing.settle(questions, signal).then(
-      (leftOpen) => leftOpen > 0 && !signal?.aborted,
+      (leftOpen) => leftOpen > 0,
       (err: unknown) => {
-        if (signal?.aborted) return false;
-        log.warn("Governing answers could not be settled — their rules stay uncertain", {
-          analysisId,
-          error: (err as Error).message,
-        });
+        if (!signal?.aborted) {
+          log.warn("Governing answers could not be settled — their rules stay uncertain", {
+            analysisId,
+            error: (err as Error).message,
+          });
+        }
         return true;
       },
     );
@@ -303,6 +305,7 @@ export class ClarificationDialog {
     if (backoff && Date.now() < backoff.nextAt) return;
     const leftOpen = await this.settleGoverning(analysisId, state, signal);
     // #2022 — an aborted retry neither counts as an attempt nor clears one.
+    // #2029 — the one place an abort is read: `settleGoverning` does not.
     if (signal?.aborted) return;
     orphanRetries.delete(analysisId);
     if (!leftOpen) return;

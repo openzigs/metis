@@ -2701,7 +2701,10 @@ the prompt:
   short answer ("Yes, we do.") counts when quoted with the end of its question; the run must reach
   into the answer, since the question is METIS's own words (#2017). What it quotes of the answer
   must be the whole answer, or hold three counted words itself: "every customer export be logged?
-  No" of the answer "No, we do not." drew every counted word but one from the question (#2022). This is a floor on the quote,
+  No" of the answer "No, we do not." drew every counted word but one from the question (#2022). A
+  bare "Yes." or "No." is a whole answer, so it carries `compliant` the same way (#2029): the
+  guard checks where the quoted words are, not which way they point, since "No" meets a rule for
+  one question and breaches it for another and only the model reads the question. This is a floor on the quote,
   not proof that it says how the rule is met. Otherwise it becomes `needs-ba-input` if the model gave the question,
   else `gap`. This follows CTRAG's No-Evidence → Non-Compliant (one study; a pattern, not proof).
 - **Every citation is verified** against the **cited revision's** stored `extractedText`
