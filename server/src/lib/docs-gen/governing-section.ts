@@ -19,10 +19,17 @@
  * more as a backstop. An excerpt whose wording was changed says so, since it
  * is then no longer the clause verbatim.
  *
- * FINDINGS ARE PER RUN. A finding is recorded against a requirement as the run
- * analysed it (`REQ-001`), before synthesis wrote the stored requirements the
- * document lists, and the two are not joined by id. So the section lists every
- * finding of each run the document's requirements came from, and says so.
+ * FINDINGS ARE PER ANALYSED REQUIREMENT. A finding is recorded against a
+ * requirement as the run analysed it (`REQ-001`, the code agent's id), before
+ * synthesis wrote the stored requirements the document lists, and the two are
+ * not joined by id. (`promotedStructuredId`, #1202, is no join either: it is the
+ * structured extractor's id, which renumbers from a model's re-read.) A document
+ * that covers every live requirement of a run lists every finding of the run.
+ * One that covers only some (#2042: a selection, a review, approved only) lists
+ * the findings on the analysed requirements its own requirements draw their
+ * evidence from — each stored requirement's `finding:<id>` labels name the
+ * analysis findings it was written from, and each of those records the analysed
+ * requirement it was produced for — and says how many it left out.
  *
  * SUMMARY. One `governingSummarySentence` per cited revision, counted as the
  * analysis view counts it (`governingSummarySentences` in the UI's findings
@@ -30,10 +37,12 @@
  * count from `governingFindingRevisions` (the route's), gaps the Gap
  * findings, and the distinct rules still waiting on BA input.
  *
- * TENANCY. The runs are read with the project id as well as their ids, so a
- * run of another project is never read. Findings, decider names and rule
- * counts are then read through the findings store, by the run's id and the
- * revisions its own rows cite, exactly as the analysis route reads them.
+ * TENANCY. The runs, their live requirements and the evidence findings are read
+ * with the project id as well as their ids, so another project's run or
+ * finding is never read, and an evidence finding counts only for the run its
+ * requirement came from. Governing findings, decider names and rule counts are
+ * then read through the findings store, by the run's id and the revisions its
+ * own rows cite, exactly as the analysis route reads them.
  */
 import {
   governingSummarySentence,
@@ -42,6 +51,7 @@ import {
   type GoverningFindingDecision,
   type GoverningFindingStatus,
 } from "@metis/shared";
+import { parseRequirementLabels } from "../analysis/requirement-labels.js";
 import { formatStartedAt } from "../analysis/run-start-label.js";
 import { readGoverningApplicability } from "../governing/applicability-store.js";
 import {
@@ -65,6 +75,20 @@ export interface GoverningSectionRun {
   requirementText: ReadonlyMap<string, string>;
   /** Each cited revision with its rule count (`governingFindingRevisions`). */
   revisions: readonly GoverningFindingRevision[];
+  /**
+   * #2042 — how many of the run's findings are not listed: they are on analysed
+   * requirements none of the document's requirements draws evidence from. 0
+   * when the document covers every live requirement of the run.
+   */
+  omitted: number;
+}
+
+/** What the section needs of each requirement in the document. */
+export interface GoverningScopeRequirement {
+  id: string;
+  analysisId: string;
+  /** The stored `labels` JSON; its `finding:<id>` entries are the requirement's evidence. */
+  labels: string;
 }
 
 /** The runs with at least one finding, oldest first. */
@@ -93,38 +117,124 @@ function text(value: string): string {
   return cell(neutraliseComplianceClaims(value));
 }
 
+/** The analysed requirement a stored analysis finding was produced for, from its evidence blob. */
+function evidenceRequirementId(evidence: string | null): string | null {
+  if (!evidence) return null;
+  try {
+    const parsed: unknown = JSON.parse(evidence);
+    const id = (parsed as { requirementId?: unknown } | null)?.requirementId;
+    return typeof id === "string" && id ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * The governing findings of the analysis runs `analysisIds` names, read within
- * `projectId`. Null when none of them has a finding — no governing document,
- * or none applied — so the document is then exactly as it was without this
- * section. The caller checks the feature flag.
+ * #2042 — per run, the analysed requirement ids the document covers, or `"all"`
+ * when it holds every live requirement of the run. A run covered in part maps
+ * to the analysed ids its requirements' evidence findings were produced for.
+ */
+async function coveredAnalysedRequirements(
+  projectId: string,
+  runIds: readonly string[],
+  requirements: readonly GoverningScopeRequirement[],
+): Promise<Map<string, Set<string> | "all">> {
+  const inDocument = new Set(requirements.map((r) => r.id));
+  const live = await prisma.requirement.findMany({
+    where: { projectId, analysisId: { in: [...runIds] }, deletedAt: null },
+    select: { id: true, analysisId: true },
+  });
+  const partial = new Set(live.filter((r) => !inDocument.has(r.id)).map((r) => r.analysisId));
+  const covered = new Map<string, Set<string> | "all">(
+    runIds.map((id) => [id, partial.has(id) ? new Set<string>() : "all"]),
+  );
+  const evidence = new Map<string, string[]>();
+  for (const r of requirements) {
+    if (!partial.has(r.analysisId)) continue;
+    for (const label of parseRequirementLabels(r.labels)) {
+      if (!label.startsWith("finding:")) continue;
+      const list = evidence.get(r.analysisId) ?? [];
+      list.push(label.slice("finding:".length));
+      evidence.set(r.analysisId, list);
+    }
+  }
+  const findingIds = [...new Set([...evidence.values()].flat())];
+  if (findingIds.length === 0) return covered;
+  const rows = await prisma.finding.findMany({
+    where: {
+      id: { in: findingIds },
+      agentResult: { analysisId: { in: [...partial] }, analysis: { projectId } },
+    },
+    select: { id: true, evidence: true, agentResult: { select: { analysisId: true } } },
+  });
+  const byId = new Map(rows.map((f) => [f.id, f]));
+  for (const [runId, ids] of evidence) {
+    const set = covered.get(runId);
+    if (set === "all" || !set) continue;
+    for (const id of ids) {
+      const f = byId.get(id);
+      // A finding of another run is not this requirement's evidence.
+      if (f?.agentResult?.analysisId !== runId) continue;
+      const analysed = evidenceRequirementId(f.evidence);
+      if (analysed) set.add(analysed);
+    }
+  }
+  return covered;
+}
+
+/**
+ * The governing findings of the analysis runs `requirements` came from, read
+ * within `projectId` and scoped to the requirements (see FINDINGS ARE PER
+ * ANALYSED REQUIREMENT). Null when no run has a finding to list — no governing
+ * document, none applied, or none on a covered requirement — so the document
+ * is then exactly as it was without this section. The caller checks the
+ * feature flag.
  */
 export async function loadGoverningSection(
   projectId: string,
-  analysisIds: readonly string[],
+  requirements: readonly GoverningScopeRequirement[],
 ): Promise<GoverningSection | null> {
-  if (analysisIds.length === 0) return null;
+  if (requirements.length === 0) return null;
   const analyses = await prisma.analysis.findMany({
-    where: { id: { in: [...new Set(analysisIds)] }, projectId },
+    where: { id: { in: [...new Set(requirements.map((r) => r.analysisId))] }, projectId },
     select: { id: true, startedAt: true },
     orderBy: [{ startedAt: "asc" }, { id: "asc" }],
   });
-  const runs: GoverningSectionRun[] = [];
-  for (const a of analyses) {
-    const findings = await listGoverningFindings(a.id);
-    if (findings.length === 0) continue;
-    const applicability = await readGoverningApplicability(a.id);
-    runs.push({
-      analysisId: a.id,
-      startedAt: a.startedAt,
-      findings,
-      requirementText: new Map(
-        (applicability?.requirements ?? []).map((r) => [r.requirementId, r.text] as const),
-      ),
-      revisions: await governingFindingRevisions(findings),
-    });
-  }
-  return runs.length > 0 ? { runs } : null;
+  if (analyses.length === 0) return null;
+  const covered = await coveredAnalysedRequirements(
+    projectId,
+    analyses.map((a) => a.id),
+    requirements,
+  );
+  const runs = await Promise.all(
+    analyses.map(async (a): Promise<GoverningSectionRun | null> => {
+      const all = await listGoverningFindings(a.id);
+      const scope = covered.get(a.id) ?? "all";
+      const findings = scope === "all" ? all : all.filter((f) => scope.has(f.requirementId));
+      if (findings.length === 0) return null;
+      const [applicability, revisions] = await Promise.all([
+        readGoverningApplicability(a.id),
+        governingFindingRevisions(findings),
+      ]);
+      return {
+        analysisId: a.id,
+        startedAt: a.startedAt,
+        findings,
+        requirementText: new Map(
+          (applicability?.requirements ?? []).map((r) => [r.requirementId, r.text] as const),
+        ),
+        revisions,
+        omitted: all.length - findings.length,
+      };
+    }),
+  );
+  const listed = runs.filter((r): r is GoverningSectionRun => r !== null);
+  return listed.length > 0 ? { runs: listed } : null;
+}
+
+/** A document title or revision label as one Markdown-safe line; empty stays empty. */
+function line(value: string): string {
+  return value.trim() ? cell(value) : "";
 }
 
 /** One sentence per document revision the run's findings cite, in first-cited order. */
@@ -146,8 +256,8 @@ function summaryLines(run: GoverningSectionRun): string[] {
       total: Math.max(applicable, revision?.rules ?? 0),
       gaps: findings.filter((f) => f.status === "gap").length,
       needsInput: new Set(waiting).size,
-      documentTitle: revision?.documentTitle ?? findings[0]!.documentTitle,
-      revisionLabel: revision?.revisionLabel ?? findings[0]!.revisionLabel,
+      documentTitle: line(revision?.documentTitle ?? findings[0]!.documentTitle),
+      revisionLabel: line(revision?.revisionLabel ?? findings[0]!.revisionLabel),
     })}`;
   });
 }
@@ -214,8 +324,19 @@ function findingEntry(f: GoverningFinding): string[] {
   return out;
 }
 
+/** #2042 — the run's findings this document leaves out, counted. */
+function omittedLine(run: GoverningSectionRun): string[] {
+  if (run.omitted === 0) return [];
+  const total = run.findings.length + run.omitted;
+  const one = run.omitted === 1;
+  return [
+    "",
+    `_${run.omitted} of the run's ${total} governing findings ${one ? "is" : "are"} on requirements as analysed that no requirement in this document draws its evidence from, so ${one ? "it is" : "they are"} not listed or counted here._`,
+  ];
+}
+
 function runLines(run: GoverningSectionRun, requirementLevel: string): string[] {
-  const out: string[] = [...summaryLines(run), "", ...findingTable(run)];
+  const out: string[] = [...summaryLines(run), ...omittedLine(run), "", ...findingTable(run)];
   let current: string | null = null;
   for (const f of run.findings) {
     if (f.requirementId !== current) {
@@ -229,18 +350,23 @@ function runLines(run: GoverningSectionRun, requirementLevel: string): string[] 
   return out;
 }
 
-function leadIn(runs: number): string {
+function leadIn(section: GoverningSection): string {
+  const runs = section.runs.length;
   const source =
     runs === 1
       ? "the analysis run these requirements came from"
       : `the ${runs} analysis runs these requirements came from`;
-  return `> **Checked against the workspace's governing documents.** Each finding below is copied from the governing findings METIS stored for ${source}, as the analysis view shows them: its status, the rule's control id, the clause METIS verified against the cited revision, and the analyst's decision. No model was asked again to write this section. Findings are recorded against each requirement as the run analysed it, so every finding of the run is listed. A rejected finding is listed and marked **Rejected**, not left out. Not an audit opinion.`;
+  // #2042 — say which findings are listed, as `omittedLine` counts them.
+  const recorded = section.runs.some((r) => r.omitted > 0)
+    ? `Findings are recorded against each requirement as the run analysed it. This document covers only some of ${runs === 1 ? "the run's" : "a run's"} requirements, so only the findings on the requirements as analysed that its own requirements draw their evidence from are listed.`
+    : "Findings are recorded against each requirement as the run analysed it, so every finding of the run is listed.";
+  return `> **Checked against the workspace's governing documents.** Each finding below is copied from the governing findings METIS stored for ${source}, as the analysis view shows them: its status, the rule's control id, the clause METIS verified against the cited revision, and the analyst's decision. No model was asked again to write this section. ${recorded} A rejected finding is listed and marked **Rejected**, not left out. Not an audit opinion.`;
 }
 
 /** The section as Markdown lines, starting with its heading. */
 export function renderGoverningSection(section: GoverningSection): string[] {
   const multiple = section.runs.length > 1;
-  const out: string[] = [GOVERNING_SECTION_HEADING, "", leadIn(section.runs.length)];
+  const out: string[] = [GOVERNING_SECTION_HEADING, "", leadIn(section)];
   for (const run of section.runs) {
     if (multiple) {
       const when = formatStartedAt(run.startedAt);
@@ -254,13 +380,16 @@ export function renderGoverningSection(section: GoverningSection): string[] {
 }
 
 /**
- * What of the findings the section depends on, for the document's source
- * fingerprint: a finding re-produced or decided changes it.
+ * What the section depends on, for the document's source fingerprint: a
+ * finding re-produced or decided, a decider renamed, a revision's rule count,
+ * the analysed requirement text, and which findings the document's scope
+ * leaves out (#2042) each change it.
  */
 export function governingSectionFacts(section: GoverningSection): string {
   return JSON.stringify(
     section.runs.map((run) => [
       run.analysisId,
+      run.omitted,
       run.findings.map((f) => [
         f.id,
         f.status,
@@ -268,8 +397,12 @@ export function governingSectionFacts(section: GoverningSection): string {
         f.clauseExcerpt,
         f.decision,
         f.decisionNote,
+        f.decidedByName,
+        f.decidedAt,
         f.updatedAt,
+        run.requirementText.get(f.requirementId) ?? null,
       ]),
+      run.revisions.map((r) => [r.revisionId, r.rules, r.documentTitle, r.revisionLabel]),
     ]),
   );
 }

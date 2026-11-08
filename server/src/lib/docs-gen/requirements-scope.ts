@@ -128,18 +128,29 @@ export interface ScopedRequirement {
   }>;
 }
 
+/**
+ * A scoped requirement as read: also the run it came from and its stored
+ * labels, which the governing section scopes its findings on (#2042).
+ */
+export interface LoadedScopedRequirement extends ScopedRequirement {
+  analysisId: string;
+  labels: string;
+}
+
 const PRIORITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
 /** The selected requirements with their code links, highest priority first. */
 export async function loadScopedRequirements(
   projectId: string,
   filter: RequirementsScopeFilter,
-): Promise<ScopedRequirement[]> {
+): Promise<LoadedScopedRequirement[]> {
   const rows = await prisma.requirement.findMany({
     where: requirementsScopeWhere(projectId, filter),
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     select: {
       id: true,
+      analysisId: true,
+      labels: true,
       title: true,
       body: true,
       type: true,
@@ -191,8 +202,8 @@ function versionedText(value: unknown): string {
 async function atReviewPins(
   projectId: string,
   reviewRequestId: string,
-  rows: ScopedRequirement[],
-): Promise<ScopedRequirement[]> {
+  rows: LoadedScopedRequirement[],
+): Promise<LoadedScopedRequirement[]> {
   if (rows.length === 0) return rows;
   const items = await prisma.reviewRequestItem.findMany({
     where: {
@@ -627,22 +638,6 @@ async function loadSourceNames(
   return { analysisStartedAt: analysis?.startedAt ?? null, reviewTitle: review?.title ?? null };
 }
 
-/**
- * #1877 — the analysis runs the selected requirements came from, read through
- * the same project-scoped `where` that selects them.
- */
-async function scopedAnalysisIds(
-  projectId: string,
-  filter: RequirementsScopeFilter,
-): Promise<string[]> {
-  const rows = await prisma.requirement.findMany({
-    where: requirementsScopeWhere(projectId, filter),
-    select: { analysisId: true },
-    distinct: ["analysisId"],
-  });
-  return rows.map((r) => r.analysisId);
-}
-
 /** Load, render and fingerprint the requirements a document is scoped to. */
 export async function synthesizeRequirementsDocument(
   projectId: string,
@@ -653,10 +648,11 @@ export async function synthesizeRequirementsDocument(
   if (requirements.length === 0) {
     throw new Error("No requirements match this document's scope");
   }
-  // #1877 — the governing findings of the runs the requirements came from;
-  // nothing is read while the governing-documents flag is off.
+  // #1877 — the governing findings of the runs the requirements came from,
+  // scoped to these requirements (#2042); nothing is read while the
+  // governing-documents flag is off.
   const governing = isGoverningDocsEnabled()
-    ? await loadGoverningSection(projectId, await scopedAnalysisIds(projectId, filter))
+    ? await loadGoverningSection(projectId, requirements)
     : null;
   const fingerprint = requirementsSourceFingerprint(requirements);
   return {

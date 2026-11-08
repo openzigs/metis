@@ -10,6 +10,7 @@ const db = vi.hoisted(() => ({
   analysisFindMany: vi.fn(),
   analysisFindFirst: vi.fn(),
   findingFindMany: vi.fn(),
+  evidenceFindMany: vi.fn(),
   userFindMany: vi.fn(),
   ruleCount: vi.fn(),
 }));
@@ -18,6 +19,7 @@ vi.mock("../prisma.js", () => ({
     requirement: { findMany: db.requirementFindMany },
     analysis: { findMany: db.analysisFindMany, findFirst: db.analysisFindFirst },
     governingFinding: { findMany: db.findingFindMany },
+    finding: { findMany: db.evidenceFindMany },
     user: { findMany: db.userFindMany },
     governingRule: { count: db.ruleCount },
     reviewRequest: { findFirst: vi.fn() },
@@ -37,7 +39,7 @@ import {
   renderRequirementsDocument,
   requirementsSourceFingerprint,
   synthesizeRequirementsDocument,
-  type ScopedRequirement,
+  type LoadedScopedRequirement,
 } from "./requirements-scope.js";
 
 const NOW = new Date("2026-11-08T10:00:00.000Z");
@@ -116,9 +118,11 @@ const APPLICABILITY = {
   ],
 };
 
-function req(overrides: Partial<ScopedRequirement> = {}): ScopedRequirement {
+function req(overrides: Partial<LoadedScopedRequirement> = {}): LoadedScopedRequirement {
   return {
     id: "req-1",
+    analysisId: "run-1",
+    labels: "[]",
     title: "Save a card",
     body: "A customer can save a card for later.",
     type: "feature",
@@ -134,10 +138,28 @@ function req(overrides: Partial<ScopedRequirement> = {}): ScopedRequirement {
   };
 }
 
-function withFindings(rows: ReturnType<typeof row>[], metadata: unknown = APPLICABILITY) {
-  db.requirementFindMany.mockImplementation(async (args: { select?: { analysisId?: true } }) =>
-    args.select?.analysisId ? [{ analysisId: "run-1" }] : [req()],
+/** An analysis finding row, as the evidence read selects it. */
+function evidenceRow(id: string, requirementId: string | null, analysisId = "run-1") {
+  return { id, evidence: JSON.stringify({ requirementId }), agentResult: { analysisId } };
+}
+
+function withFindings(
+  rows: ReturnType<typeof row>[],
+  metadata: unknown = APPLICABILITY,
+  scope: {
+    /** The requirements the document selects; default `[req()]`. */
+    scoped?: LoadedScopedRequirement[];
+    /** The run's live requirements; default: exactly the scoped ones. */
+    live?: Array<{ id: string; analysisId: string }>;
+    evidence?: Array<{ id: string; evidence: string | null; agentResult: { analysisId: string } }>;
+  } = {},
+) {
+  const scoped = scope.scoped ?? [req()];
+  const live = scope.live ?? scoped.map((r) => ({ id: r.id, analysisId: r.analysisId }));
+  db.requirementFindMany.mockImplementation(async (args: { select?: { title?: true } }) =>
+    args.select?.title ? scoped : live,
   );
+  db.evidenceFindMany.mockResolvedValue(scope.evidence ?? []);
   db.analysisFindMany.mockResolvedValue([{ id: "run-1", startedAt: NOW }]);
   db.analysisFindFirst.mockImplementation(async (args: { select?: { metadata?: true } }) =>
     args.select?.metadata
@@ -269,6 +291,7 @@ describe("the governing-rules section in a requirements BRD — #1877", () => {
               rules: 9,
             },
           ],
+          omitted: 0,
         },
       ],
     }).join("\n");
@@ -297,6 +320,7 @@ describe("the governing-rules section in a requirements BRD — #1877", () => {
           ],
           requirementText: new Map(),
           revisions: [],
+          omitted: 0,
         },
       ],
     }).join("\n");
@@ -355,6 +379,7 @@ describe("the governing-rules section in a requirements BRD — #1877", () => {
           findings,
           requirementText: new Map(),
           revisions: [],
+          omitted: 0,
         },
       ],
     });
@@ -403,6 +428,7 @@ describe("the governing-rules section in a requirements BRD — #1877", () => {
       ],
       requirementText: new Map([["REQ-001", "Saved cards."]]),
       revisions: [],
+      omitted: 0,
     });
     const md = renderGoverningSection({ runs: [one("a", NOW), one("b", null)] }).join("\n");
     expect(md).toContain("the 2 analysis runs these requirements came from");
@@ -416,12 +442,18 @@ describe("the governing-rules section in a requirements BRD — #1877", () => {
   it("reads the runs within the project, then the findings and rule counts as the route does", async () => {
     withFindings(THREE);
     await synthesizeRequirementsDocument("p1", { requirementIds: ["req-1"] }, "BRD");
-    expect(db.requirementFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ projectId: "p1", id: { in: ["req-1"] } }),
-        select: { analysisId: true },
-      }),
-    );
+    // #2042 — one read of the selected requirements serves the document and the section.
+    expect(
+      db.requirementFindMany.mock.calls.filter(
+        ([args]) => (args as { select: { title?: true } }).select.title,
+      ),
+    ).toHaveLength(1);
+    expect(db.requirementFindMany).toHaveBeenCalledWith({
+      where: { projectId: "p1", analysisId: { in: ["run-1"] }, deletedAt: null },
+      select: { id: true, analysisId: true },
+    });
+    // The document holds every live requirement of the run: no evidence is read.
+    expect(db.evidenceFindMany).not.toHaveBeenCalled();
     expect(db.analysisFindMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: { in: ["run-1"] }, projectId: "p1" } }),
     );
@@ -443,6 +475,151 @@ describe("the governing-rules section in a requirements BRD — #1877", () => {
     withFindings([THREE[0]!, THREE[1]!, { ...THREE[2]!, decision: "accepted", decidedAt: NOW }]);
     const after = await synthesizeRequirementsDocument("p1", { analysisId: "run-1" }, "BRD");
     expect(after.sourceFingerprint).not.toBe(before.sourceFingerprint);
+  });
+});
+
+describe("a BRD covering some of a run's requirements lists only their findings — #2042", () => {
+  // The run analysed REQ-001 (cards) and REQ-002 (statements); synthesis wrote
+  // req-1 from code finding f-1 (on REQ-001) and req-2 from f-2 (on REQ-002).
+  const CARD = req({ labels: JSON.stringify(["finding:f-1"]) });
+  const STATEMENT = req({
+    id: "req-2",
+    title: "Monthly statement",
+    labels: JSON.stringify(["triage", "finding:f-2"]),
+  });
+  const LIVE = [
+    { id: "req-1", analysisId: "run-1" },
+    { id: "req-2", analysisId: "run-1" },
+  ];
+  const EVIDENCE = [evidenceRow("f-1", "REQ-001"), evidenceRow("f-2", "REQ-002")];
+
+  it("a selection of one requirement lists, and counts, only the findings on the requirement it was written from", async () => {
+    withFindings(THREE, APPLICABILITY, { scoped: [STATEMENT], live: LIVE, evidence: EVIDENCE });
+    const { markdown } = await synthesizeRequirementsDocument(
+      "p1",
+      { requirementIds: ["req-2"] },
+      "BRD",
+    );
+
+    expect([...tableRows(markdown).keys()]).toEqual(["RT-01"]);
+    expect(markdown).not.toContain("EN-03");
+    expect(markdown).not.toContain("_As analysed:_ Saved cards");
+    // The summary counts the listed findings only: no sentence for a revision none of them cites.
+    expect(markdown).toContain(
+      "- 0 gaps found against 1 of 12 applicable rules in Records Retention Standard 2026.1; 1 rule needs BA input. Not an audit opinion.",
+    );
+    expect(markdown).not.toContain("in Information Handling Policy v1.");
+    expect(markdown).toContain(
+      "_2 of the run's 3 governing findings are on requirements as analysed that no requirement in this document draws its evidence from, so they are not listed or counted here._",
+    );
+    expect(markdown).toContain("This document covers only some of the run's requirements");
+    expect(markdown).not.toContain("so every finding of the run is listed");
+    // The rule count is read for the listed findings' revision only.
+    expect(db.ruleCount).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads the evidence findings by id, within the project and the partly covered run", async () => {
+    withFindings(THREE, APPLICABILITY, { scoped: [STATEMENT], live: LIVE, evidence: EVIDENCE });
+    await synthesizeRequirementsDocument("p1", { requirementIds: ["req-2"] }, "BRD");
+    expect(db.evidenceFindMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ["f-2"] },
+        agentResult: { analysisId: { in: ["run-1"] }, analysis: { projectId: "p1" } },
+      },
+      select: { id: true, evidence: true, agentResult: { select: { analysisId: true } } },
+    });
+  });
+
+  it("says one finding is left out in the singular", async () => {
+    withFindings(THREE, APPLICABILITY, { scoped: [CARD], live: LIVE, evidence: EVIDENCE });
+    const { markdown } = await synthesizeRequirementsDocument(
+      "p1",
+      { requirementIds: ["req-1"] },
+      "BRD",
+    );
+    expect([...tableRows(markdown).keys()]).toEqual(["EN-03", "AL-02"]);
+    expect(markdown).toContain(
+      "_1 of the run's 3 governing findings is on requirements as analysed that no requirement in this document draws its evidence from, so it is not listed or counted here._",
+    );
+  });
+
+  it("a selection of every live requirement of the run lists every finding", async () => {
+    withFindings(THREE, APPLICABILITY, {
+      scoped: [CARD, STATEMENT],
+      live: LIVE,
+      evidence: EVIDENCE,
+    });
+    const { markdown } = await synthesizeRequirementsDocument(
+      "p1",
+      { requirementIds: ["req-1", "req-2"] },
+      "BRD",
+    );
+    expect([...tableRows(markdown).keys()]).toEqual(["EN-03", "AL-02", "RT-01"]);
+    expect(markdown).toContain("so every finding of the run is listed");
+    expect(markdown).not.toContain("not listed or counted here");
+  });
+
+  it("an evidence finding of another run, or one recording no analysed requirement, covers nothing", async () => {
+    withFindings(THREE, APPLICABILITY, {
+      scoped: [req({ id: "req-2", labels: JSON.stringify(["finding:f-2", "finding:f-3"]) })],
+      live: LIVE,
+      evidence: [
+        evidenceRow("f-2", "REQ-002", "run-other"),
+        { id: "f-3", evidence: "not json", agentResult: { analysisId: "run-1" } },
+      ],
+    });
+    const { markdown } = await synthesizeRequirementsDocument(
+      "p1",
+      { requirementIds: ["req-2"] },
+      "BRD",
+    );
+    expect(markdown).not.toContain(GOVERNING_SECTION_HEADING);
+  });
+
+  it("a requirement with no evidence reads no finding row and lists nothing", async () => {
+    withFindings(THREE, APPLICABILITY, {
+      scoped: [req({ id: "req-2", labels: JSON.stringify(["triage"]) })],
+      live: LIVE,
+    });
+    const out = await synthesizeRequirementsDocument("p1", { requirementIds: ["req-2"] }, "BRD");
+    expect(db.evidenceFindMany).not.toHaveBeenCalled();
+    expect(out.markdown).not.toContain(GOVERNING_SECTION_HEADING);
+    expect(out.sourceFingerprint).toBe(
+      requirementsSourceFingerprint([req({ id: "req-2", labels: JSON.stringify(["triage"]) })]),
+    );
+  });
+
+  it("escapes a document title and revision label in the summary sentence", () => {
+    const title = 'Policy <img src=x onerror="alert(1)">\n## Injected heading';
+    const md = renderGoverningSection({
+      runs: [
+        {
+          analysisId: "run-1",
+          startedAt: NOW,
+          findings: [
+            {
+              ...(row({
+                documentTitle: title,
+                revisionLabel: "v1|x",
+              }) as unknown as GoverningFinding),
+              createdAt: NOW.toISOString(),
+              updatedAt: NOW.toISOString(),
+            },
+          ],
+          requirementText: new Map(),
+          revisions: [
+            { revisionId: "rev-1", documentTitle: title, revisionLabel: "v1|x", rules: 3 },
+          ],
+          omitted: 0,
+        },
+      ],
+    });
+    const summary = md.find((l) => l.startsWith("- "))!;
+    expect(summary).toContain(
+      'in Policy &lt;img src=x onerror="alert(1)"> ## Injected heading v1\\|x.',
+    );
+    expect(md.join("\n")).not.toContain("<img");
+    expect(md.some((l) => l.startsWith("## Injected"))).toBe(false);
   });
 });
 
@@ -508,7 +685,9 @@ describe("the BRD without governing findings is unchanged — #1877", () => {
     expect(await loadGoverningSection("p1", [])).toBeNull();
     expect(db.analysisFindMany).not.toHaveBeenCalled();
     db.analysisFindMany.mockResolvedValue([]);
-    expect(await loadGoverningSection("p1", ["run-of-p2"])).toBeNull();
+    expect(
+      await loadGoverningSection("p1", [{ id: "r", analysisId: "run-of-p2", labels: "[]" }]),
+    ).toBeNull();
     expect(db.findingFindMany).not.toHaveBeenCalled();
   });
 
@@ -527,6 +706,7 @@ describe("the BRD without governing findings is unchanged — #1877", () => {
           ],
           requirementText: new Map(),
           revisions: [],
+          omitted: 0,
         },
       ],
     };
@@ -540,5 +720,23 @@ describe("the BRD without governing findings is unchanged — #1877", () => {
       ],
     });
     expect(noted).not.toBe(base);
+    // #2042 — and what else the section renders under the same finding rows.
+    const run = section.runs[0]!;
+    const variants: GoverningSection[] = [
+      { runs: [{ ...run, findings: [{ ...run.findings[0]!, decidedByName: "Renamed" }] }] },
+      {
+        runs: [
+          {
+            ...run,
+            revisions: [
+              { revisionId: "rev-1", documentTitle: "Policy", revisionLabel: "v1", rules: 7 },
+            ],
+          },
+        ],
+      },
+      { runs: [{ ...run, requirementText: new Map([["REQ-001", "Edited text."]]) }] },
+      { runs: [{ ...run, omitted: 2 }] },
+    ];
+    for (const v of variants) expect(governingSectionFacts(v)).not.toBe(base);
   });
 });

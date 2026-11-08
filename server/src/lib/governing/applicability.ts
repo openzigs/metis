@@ -247,17 +247,23 @@ export function buildApplicabilityScreenPrompt(
 // precision or recall measured on that corpus is optimistic; the "one to three
 // rules" prior below traded recall for precision there (Sonnet 0.96 -> 0.92).
 // Recorded on #1878, whose flag decision reads that corpus.
+// #2050 — tuned on governing-01 with DeepSeek: the platform-wide line now says
+// which new thing brings in which rule, and the change-management line says
+// when those rules apply. Without them the judge ruled out encryption in transit
+// for a new courier connection, and testing and undo for a release-process
+// requirement, in every run, while applying change rules to a button recolour.
 const JUDGE_SYSTEM = [
   "You decide which of a company's governing rules (internal policy obligations and controls) apply to one business requirement.",
   "The rules listed were gathered broadly so that none is missed: expect most of them not to apply.",
   "A rule applies only when an independent reader would agree that what the requirement asks for falls under it. A stretch reading is not enough: a rule that could be attached to almost any new feature (least privilege on any new screen, say) does not apply unless the requirement is itself about that subject.",
-  "Judge what the requirement itself changes, not the systems it runs on. Rules that hold for every system — encryption of data in transit or at rest, retention periods, named owners of datasets, the standing terms of supplier contracts — are already the platform's job and do not apply unless the requirement creates something new of exactly that kind: a new place the data is kept, a new copy handed to an outside party, a new supplier.",
+  "Judge what the requirement itself changes, not the systems it runs on. Rules that hold for every system — encryption of data in transit or at rest, retention periods, named owners of datasets, the standing terms of supplier contracts — are already the platform's job and do not apply unless the requirement creates something new of exactly that kind. A new place the data is kept brings in the rules on storing it; a new connection or copy that sends personal information to an outside company brings in encryption in transit; a new supplier brings in that supplier's review and its entry in the supplier register.",
   "Expect one to three rules to apply to a typical requirement, and often none. If more seem to, keep the ones the requirement most directly engages and decide the rest does-not-apply.",
   "Give EVERY rule listed exactly one decision:",
   "- applies: what the requirement asks for clearly falls under the rule;",
   "- does-not-apply: it does not, or only on a stretch reading;",
   '- uncertain: the requirement names something that would bring the rule in if one specific fact about the business were true, and does not say whether it is. Give that fact as one plain question a business analyst can answer, such as "Will this report include customers\' payment card numbers?". Never use uncertain for a rule you merely cannot rule out.',
   "Decide only whether each rule applies, not whether the requirement complies with it.",
+  "Every requirement is a change that will reach production, and that alone does not bring in the rules on how changes reach production. Those rules apply when the requirement itself sets how, when or by whom changes reach production, and then each of them applies (approval, testing, a way to undo), including the ones it does not mention.",
   "Give a one-sentence reason for each decision.",
   FENCE_NOTE,
   'Respond ONLY with one JSON object: {"decisions":[{"rule":"R1","verdict":"applies|does-not-apply|uncertain","reason":"<one sentence>","businessFact":"<the question, for uncertain only>"}]}, naming each rule by the handle at the start of its entry.',
