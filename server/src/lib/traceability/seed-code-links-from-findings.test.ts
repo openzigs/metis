@@ -15,6 +15,14 @@ const noteRequirementCodeLinksChanged = vi.hoisted(() => vi.fn());
 vi.mock("../docs-gen/approved-requirements-staleness.js", () => ({
   noteRequirementCodeLinksChanged,
 }));
+// #1998 — the summary log is the only place rewrites and deletes are told apart.
+const logInfo = vi.hoisted(() => vi.fn());
+vi.mock("../logger.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../logger.js")>()),
+  createChildLogger: () => ({ debug: vi.fn(), info: logInfo, warn: vi.fn(), error: vi.fn() }),
+}));
+/** The counts the last seed run logged. */
+const loggedCounts = () => logInfo.mock.calls.at(-1)?.[1] as Record<string, unknown>;
 
 import {
   ANALYSIS_GROUNDING_SOURCE,
@@ -1349,6 +1357,8 @@ describe("seedRequirementCodeLinksFromFindings — code-graph version stamp (#18
     });
     // The link changed, so a scoped reader BRD is asked to look again.
     expect(noteRequirementCodeLinksChanged).toHaveBeenCalledWith(["req-1"]);
+    // #1998 — logged as a rewrite, not a delete.
+    expect(loggedCounts()).toMatchObject({ linksRewritten: 1, linksDeleted: 0 });
     // And a second re-seed finds it, not another guess.
     expect(await run(prisma)).toEqual({ requirementsSeeded: 0, linksCreated: 0, linksSkipped: 1 });
   });
@@ -1374,6 +1384,28 @@ describe("seedRequirementCodeLinksFromFindings — code-graph version stamp (#18
     expect(all.map((m) => m.id)).toEqual(["m-file", "m-other"]);
     expect(all[0]).toMatchObject({ codeSymbolId: null, startLine: 8, endLine: 12 });
     expect(noteRequirementCodeLinksChanged).toHaveBeenCalledWith(["req-1"]);
+    // #1998 — logged as a delete, not a rewrite.
+    expect(loggedCounts()).toMatchObject({ linksRewritten: 0, linksDeleted: 1 });
+  });
+
+  // #1998 item 4 — the delete's count was not read, so a guess another writer
+  // had already removed was still counted, and still reported as a change.
+  it("counts only a guess the delete actually removed (#1998)", async () => {
+    noteRequirementCodeLinksChanged.mockClear();
+    const fileLevel = guessedRow({ id: "m-file", codeSymbolId: null, startLine: 8, endLine: 12 });
+    const { prisma } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [{ id: "f1", evidence: codeCitation(), confidence: 0.7 }],
+      symbols: twoRepos,
+      mappings: [guessedRow(), fileLevel],
+    });
+    // The guess is gone by the time the delete runs.
+    (
+      prisma!.requirementCodeMapping as unknown as { deleteMany: () => Promise<{ count: number }> }
+    ).deleteMany = async () => ({ count: 0 });
+    expect(await run(prisma)).toEqual({ requirementsSeeded: 0, linksCreated: 0, linksSkipped: 1 });
+    expect(loggedCounts()).toMatchObject({ linksRewritten: 0, linksDeleted: 0 });
+    expect(noteRequirementCodeLinksChanged).not.toHaveBeenCalled();
   });
 
   it("leaves a bound link alone when a current citation binds it, or the span never enclosed its symbol (#1981)", async () => {

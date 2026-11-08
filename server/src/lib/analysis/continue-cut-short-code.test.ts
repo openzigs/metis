@@ -1285,7 +1285,11 @@ describe("#1989 the skipped list after a code regenerate", () => {
     expect(refreshed!.reasons).not.toContain("repos-skipped-budget");
   });
 
-  it("a failed single-shot regenerate keeps the skipped list", async () => {
+  // #1998 — the list is left as it was; that is not proof it is still right. The
+  // failed pass already persisted a connector-less failed row in replace mode,
+  // deleting every `code` row, so no repository has code findings while the list
+  // names only those an earlier run skipped. Keeping it is a choice, not a fact.
+  it("a failed single-shot regenerate does not rewrite the skipped list", async () => {
     serviceMock.getAnalysisCapability.mockResolvedValue({
       ...CUT_SHORT,
       skippedRepos: [WEB],
