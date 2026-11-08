@@ -94,8 +94,45 @@ export interface TruthPair {
    * "No."), for a fact that is settled in a word or two; `needs-ba-input` only.
    */
   baAnswer?: string;
+  /**
+   * #2033 — the verdict once `baAnswer` is known: what the pair becomes when
+   * the BA's answer to `businessFact` is added to the requirement. Required
+   * with `baAnswer`, and only with it. The arms never read it; the replay of
+   * BA answers is scored against it.
+   */
+  answeredVerdict?: GoverningVerdict;
   /** The rule applies though the requirement shares no vocabulary with it. */
   nonResembling?: boolean;
+}
+
+/** #2033 — a pair a BA answers in a word or two, as {@link shortAnswerPairs} returns it. */
+export interface ShortAnswerPair {
+  ruleId: string;
+  /** The pair's `businessFact`: the question the BA is asked. */
+  question: string;
+  /** The pair's `baAnswer`. */
+  answer: string;
+  /** The verdict once the answer is known. */
+  answeredVerdict: GoverningVerdict;
+}
+
+/**
+ * #2033 — the item's short-answer pairs: those carrying a `baAnswer`. The
+ * loader has checked that each has its business fact and `answeredVerdict`.
+ */
+export function shortAnswerPairs(item: Pick<GoverningItem, "applies">): ShortAnswerPair[] {
+  return item.applies.flatMap((p) =>
+    p.baAnswer !== undefined && p.businessFact && p.answeredVerdict
+      ? [
+          {
+            ruleId: p.ruleId,
+            question: p.businessFact,
+            answer: p.baAnswer,
+            answeredVerdict: p.answeredVerdict,
+          },
+        ]
+      : [],
+  );
 }
 
 /** One analyst-worded requirement. An empty `applies` is a negative item. */
@@ -514,6 +551,17 @@ function validateItems(
           problems.push(`${at}: a BA answer on a ${pair.verdict} pair`);
         } else if (!pair.baAnswer.trim()) {
           problems.push(`${at}: an empty BA answer`);
+        }
+        if (pair.answeredVerdict === undefined) {
+          problems.push(`${at}: a BA answer without the verdict it leads to (answeredVerdict)`);
+        }
+      }
+      if (pair.answeredVerdict !== undefined) {
+        if (pair.baAnswer === undefined) {
+          problems.push(`${at}: an answeredVerdict without the BA answer it follows from`);
+        }
+        if (!(GOVERNING_VERDICTS as readonly string[]).includes(pair.answeredVerdict)) {
+          problems.push(`${at}: unknown answeredVerdict ${JSON.stringify(pair.answeredVerdict)}`);
         }
       }
       if (pair.nonResembling) {
