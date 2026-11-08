@@ -5,7 +5,7 @@
   "contentHash": {
     "algorithm": "sha256",
     "covers": "sha256 of the JSON of [policy, rules, items, each revision's text with LF line endings]; ANNOTATION.md, the labelling files and the thresholds are outside it",
-    "value": "0fef56be8454b3b54e04237f9bc4547f88c251ff38fcd87fb8dfa760d7002672"
+    "value": "c18f31b2539ae742e21c788b3b3c09cd5caacd7e6cd66a8b1faeece6bc39c60d"
   },
   "license": "CC0-1.0",
   "synthetic": true,
@@ -13,6 +13,7 @@
     "ANNOTATION.md",
     "labelling/adjudication-prompt.txt",
     "labelling/adjudication.json",
+    "labelling/consistency-prompt.txt",
     "labelling/labeller-1.json",
     "labelling/labeller-2-prompt.txt",
     "labelling/labeller-2.json",
@@ -397,6 +398,11 @@
           "ruleId": "ID-03",
           "verdict": "needs-ba-input",
           "businessFact": "Will the GP confirm who they are speaking to at the start of each call, with a one-time code sent to the mobile number on the chart?"
+        },
+        {
+          "ruleId": "CM-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Is a copy of each booking confirmation sent to the patient saved on their chart?"
         }
       ]
     },
@@ -409,6 +415,11 @@
           "ruleId": "MS-05",
           "verdict": "gap",
           "nonResembling": true
+        },
+        {
+          "ruleId": "IR-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Has the clinical safety officer assessed the 'don't remind me again' option before release, with the assessment filed in the hazard log?"
         }
       ]
     },
@@ -449,6 +460,11 @@
         {
           "ruleId": "MS-01",
           "verdict": "gap"
+        },
+        {
+          "ruleId": "IR-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Has the clinical safety officer assessed the one-click skip of the allergy screen before release, with the assessment filed in the hazard log?"
         }
       ]
     },
@@ -478,6 +494,11 @@
         {
           "ruleId": "RA-02",
           "verdict": "compliant"
+        },
+        {
+          "ruleId": "IR-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Has the clinical safety officer assessed the new reason prompt and review step before release, with the assessment filed in the hazard log?"
         }
       ]
     },
@@ -495,6 +516,11 @@
           "ruleId": "CM-03",
           "verdict": "gap",
           "nonResembling": true
+        },
+        {
+          "ruleId": "CM-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Is a copy of each SMS reminder sent to patients saved on their chart?"
         }
       ]
     },
@@ -528,6 +554,11 @@
         {
           "ruleId": "IR-05",
           "verdict": "gap"
+        },
+        {
+          "ruleId": "TP-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Do the network's work phones encrypt their storage and can the IT desk wipe a lost one remotely?"
         }
       ]
     },
@@ -557,6 +588,11 @@
         {
           "ruleId": "RK-03",
           "verdict": "compliant"
+        },
+        {
+          "ruleId": "IR-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Has the clinical safety officer assessed the new correction flow before release, with the assessment filed in the hazard log?"
         }
       ]
     },
@@ -570,6 +606,11 @@
           "verdict": "needs-ba-input",
           "businessFact": "Do we enter the ECG machine in the device inventory, with its owner and software version, before it is connected?",
           "baAnswer": "Yes, we do."
+        },
+        {
+          "ruleId": "IR-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Has the clinical safety officer assessed the ECG traces appearing on the chart before release, with the assessment filed in the hazard log?"
         }
       ]
     },

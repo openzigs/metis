@@ -148,5 +148,203 @@
       "decision": "needs-ba-input",
       "reason": "Adding a 'report a near miss' button to the prescribing screen changes what clinicians see on screen, so IR-04 applies. The requirement says nothing about a clinical safety officer assessment or a hazard log entry."
     }
-  ]
+  ],
+  "consistencyPass": {
+    "why": "Adjudication saw only the cells the two labellers disagreed on, so a rule both labellers skipped on the same requirement was never checked. A rule that cuts across many requirements (IR-04, TP-04, CM-04, CM-02, CM-01, RA-02) was therefore applied unevenly: IR-04 sat on KV-05, KV-31 and KV-34 but not on KV-15 or KV-12. For each such rule one tool-less claude-opus-5-5 session was given the policy and all 36 requirements and asked about that one rule alone, on every requirement (consistency-prompt.txt). It saw no label, no rule summary and no arm. IR-04, CM-04 and TP-04, where the first pass disagreed with a standing label, were run a second time.",
+    "decisionRule": "A standing label changes only when both blind passes agree on the new label. A cell the passes split on keeps its standing label.",
+    "costUsd": 0.6918,
+    "rules": ["IR-04", "TP-04", "CM-04", "CM-02", "CM-01", "RA-02"],
+    "passesPerRule": {
+      "IR-04": 2,
+      "TP-04": 2,
+      "CM-04": 2,
+      "CM-02": 1,
+      "CM-01": 1,
+      "RA-02": 1
+    },
+    "blindLabels": {
+      "IR-04": [
+        {
+          "item": "KV-05",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-12",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-15",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-18",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-25",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-26",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-31",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-33",
+          "labels": ["needs-ba-input", "does not apply"]
+        },
+        {
+          "item": "KV-34",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        }
+      ],
+      "TP-04": [
+        {
+          "item": "KV-22",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-28",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-35",
+          "labels": ["compliant", "compliant"]
+        }
+      ],
+      "CM-04": [
+        {
+          "item": "KV-11",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-19",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-32",
+          "labels": ["does not apply", "needs-ba-input"]
+        },
+        {
+          "item": "KV-33",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        }
+      ],
+      "CM-02": [
+        {
+          "item": "KV-19",
+          "labels": ["gap"]
+        },
+        {
+          "item": "KV-33",
+          "labels": ["gap"]
+        }
+      ],
+      "CM-01": [
+        {
+          "item": "KV-06",
+          "labels": ["gap"]
+        },
+        {
+          "item": "KV-14",
+          "labels": ["needs-ba-input"]
+        }
+      ],
+      "RA-02": [
+        {
+          "item": "KV-01",
+          "labels": ["needs-ba-input"]
+        },
+        {
+          "item": "KV-18",
+          "labels": ["compliant"]
+        }
+      ]
+    },
+    "changes": [
+      {
+        "item": "KV-12",
+        "rule": "IR-04",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "Suppressing interaction pop-ups changes what prescribers see, but the requirement is silent on a clinical safety officer assessment and hazard log entry."
+      },
+      {
+        "item": "KV-15",
+        "rule": "IR-04",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "Letting prescribers skip the allergy screen changes the order of steps in prescribing, but the requirement is silent on a clinical safety officer assessment before release."
+      },
+      {
+        "item": "KV-18",
+        "rule": "IR-04",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "Adding a mandatory reason prompt before a chart opens changes clinician screens and steps, but the requirement is silent on a clinical safety officer assessment and hazard log entry."
+      },
+      {
+        "item": "KV-25",
+        "rule": "IR-04",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "The note-correction workflow adds a reason prompt and shows version history, but the requirement is silent on a clinical safety officer assessment and hazard log entry."
+      },
+      {
+        "item": "KV-26",
+        "rule": "IR-04",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "ECG traces appearing on the chart change what clinicians see, but the requirement does not say whether the clinical safety officer assesses it before release."
+      },
+      {
+        "item": "KV-22",
+        "rule": "TP-04",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "Covers a lost clinical work phone but does not say whether the phone's storage is encrypted and can be wiped remotely."
+      },
+      {
+        "item": "KV-11",
+        "rule": "CM-04",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "A booking confirmation is sent to the patient, but it is not stated whether a copy is kept on the chart."
+      },
+      {
+        "item": "KV-19",
+        "rule": "CM-04",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "An SMS reminder is sent to the patient, but it is not stated whether a copy is kept on the chart."
+      }
+    ],
+    "keptAsStanding": [
+      {
+        "item": "KV-33",
+        "rule": "IR-04",
+        "standing": "does not apply",
+        "blindPasses": ["needs-ba-input", "does not apply"],
+        "decision": "kept: the passes did not agree"
+      },
+      {
+        "item": "KV-32",
+        "rule": "CM-04",
+        "standing": "does not apply",
+        "blindPasses": ["does not apply", "needs-ba-input"],
+        "decision": "kept: the passes did not agree"
+      }
+    ]
+  }
 }

@@ -349,6 +349,11 @@ export interface CorpusFiles {
   present: readonly string[];
   /** The text of each policy revision's file, by revision. */
   policies: ReadonlyMap<string, string>;
+  /**
+   * The text of ANNOTATION.md. A held-out set's recorded content hash must
+   * appear in it (#2024), so a re-hash is also a recorded change.
+   */
+  annotation?: string;
 }
 
 function validateFiles(m: GoverningCorpusManifest, files: CorpusFiles, problems: string[]): void {
@@ -567,6 +572,26 @@ function validatePurpose(m: GoverningCorpusManifest, files: CorpusFiles, problem
         "a held-out set is not edited to fit a prompt: record the change and why in ANNOTATION.md, then re-hash",
     );
   }
+  // The hash alone is not a record: the annotation must carry it, so a re-hash
+  // pasted from the message above cannot pass without ANNOTATION.md changing.
+  if (m.purpose === "held-out" && !(files.annotation ?? "").includes(recorded.value)) {
+    problems.push(
+      `content hash: ANNOTATION.md does not record the hash ${recorded.value}; write the change, why, and this hash under "Content hash history" there`,
+    );
+  }
+}
+
+/**
+ * #2024 — a held-out set holds ground truth only: an arm's answers are never
+ * written beside it, which would also stop the set loading (the files are not
+ * in its manifest). Called before any model is.
+ */
+export function assertBaselineAllowed(purpose: GoverningPurpose, corpus: string): void {
+  if (purpose === "held-out") {
+    throw new Error(
+      `${corpus} is a held-out set and never gets a baseline written into it; --baseline is for the tuning set`,
+    );
+  }
 }
 
 /**
@@ -648,6 +673,7 @@ export async function loadGoverningCorpus(
   const problems = validateGoverningCorpus(manifest, {
     present: await listCorpusFiles(dir),
     policies,
+    annotation: await fs.readFile(path.join(dir, "ANNOTATION.md"), "utf8").catch(() => undefined),
   });
   if (problems.length > 0) {
     throw new Error(`corpus ${name} is not sound:\n  - ${problems.join("\n  - ")}`);

@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   CONTENT_HASH_COVERS,
+  assertBaselineAllowed,
   MIN_NEGATIVE_ITEMS,
   MIN_NON_RESEMBLING_ITEMS,
   PROPOSED_THRESHOLDS,
@@ -311,7 +312,11 @@ async function heldOut(): Promise<{ manifest: GoverningCorpusManifest; files: Co
   for (const rev of manifest.policy.revisions) {
     policies.set(rev.revision, await fs.readFile(path.join(HELD_OUT_DIR, rev.file), "utf8"));
   }
-  return { manifest, files: { present: await listCorpusFiles(HELD_OUT_DIR), policies } };
+  const annotation = await fs.readFile(path.join(HELD_OUT_DIR, "ANNOTATION.md"), "utf8");
+  return {
+    manifest,
+    files: { present: await listCorpusFiles(HELD_OUT_DIR), policies, annotation },
+  };
 }
 
 interface LabelFile {
@@ -320,6 +325,18 @@ interface LabelFile {
 interface AdjudicationFile {
   agreement: { applicability: { kappa: number }; fourWay: { kappa: number } };
   disagreements: Array<{ item: string; rule: string; decision: string; reason: string }>;
+  consistencyPass: {
+    rules: string[];
+    changes: Array<{
+      item: string;
+      rule: string;
+      from: string;
+      to: string;
+      blindPasses: string[];
+      reason: string;
+    }>;
+    keptAsStanding: Array<{ item: string; rule: string; standing: string }>;
+  };
 }
 const readJson = async <T>(rel: string): Promise<T> =>
   JSON.parse(await fs.readFile(path.join(HELD_OUT_DIR, rel), "utf8")) as T;
@@ -402,6 +419,9 @@ describe("the held-out governing corpus (#2024)", () => {
     const second = labelGrid(await readJson<LabelFile>("labelling/labeller-2.json"));
     const adjudication = await readJson<AdjudicationFile>("labelling/adjudication.json");
     const decided = new Map(adjudication.disagreements.map((d) => [`${d.item} ${d.rule}`, d]));
+    const consistent = new Map(
+      adjudication.consistencyPass.changes.map((c) => [`${c.item} ${c.rule}`, c]),
+    );
     const none = "does not apply";
     const cells: Array<readonly [string, string]> = [];
     for (const item of manifest.items) {
@@ -411,20 +431,66 @@ describe("the held-out governing corpus (#2024)", () => {
         const b = second.get(item.id)?.get(rule.id) ?? none;
         cells.push([a, b]);
         const d = decided.get(`${item.id} ${rule.id}`);
+        const c = consistent.get(`${item.id} ${rule.id}`);
+        // The label the two labellers and the adjudicator settled on...
+        let standing: string;
         if (a === b) {
           expect(d, `${item.id} → ${rule.id}`).toBeUndefined();
-          expect(truth.get(rule.id) ?? none, `${item.id} → ${rule.id}`).toBe(a);
+          standing = a;
         } else {
           expect(d?.reason.trim(), `${item.id} → ${rule.id} has a written decision`).toBeTruthy();
-          expect(truth.get(rule.id) ?? none, `${item.id} → ${rule.id}`).toBe(d!.decision);
+          standing = d!.decision;
         }
+        // ...then the cross-cutting consistency pass, which moves it only when both blind passes agree.
+        if (c) {
+          expect(c.from, `${item.id} → ${rule.id} changes from the standing label`).toBe(standing);
+          expect(c.blindPasses.length).toBeGreaterThanOrEqual(2);
+          expect(new Set(c.blindPasses), `${item.id} → ${rule.id}: passes agree`).toEqual(
+            new Set([c.to]),
+          );
+          expect(c.reason.trim()).toBeTruthy();
+          standing = c.to;
+        }
+        expect(truth.get(rule.id) ?? none, `${item.id} → ${rule.id}`).toBe(standing);
       }
     }
     expect(decided.size).toBe(cells.filter(([a, b]) => a !== b).length);
+    expect(consistent.size).toBe(adjudication.consistencyPass.changes.length);
     // The agreement figures recorded beside the decisions are the labels' own.
     const applies = cells.map(([a, b]) => [String(a !== none), String(b !== none)] as const);
     expect(cohensKappa(applies)).toBeCloseTo(adjudication.agreement.applicability.kappa, 3);
     expect(cohensKappa(cells)).toBeCloseTo(adjudication.agreement.fourWay.kappa, 3);
+  });
+
+  it("applies each cross-cutting rule the same way to every requirement it fits (consistency pass)", async () => {
+    const { manifest } = await heldOut();
+    const adjudication = await readJson<AdjudicationFile>("labelling/adjudication.json");
+    const verdict = (item: string, rule: string) =>
+      manifest.items.find((i) => i.id === item)!.applies.find((p) => p.ruleId === rule)?.verdict;
+    // IR-04: a change to what clinicians see or the order of steps. The two items the
+    // review named (the allergy-screen skip and the interaction pop-up) now carry it.
+    for (const item of ["KV-05", "KV-12", "KV-15", "KV-18", "KV-25", "KV-26", "KV-31", "KV-34"]) {
+      expect(verdict(item, "IR-04"), `${item} → IR-04`).toBe("needs-ba-input");
+    }
+    // TP-04: a lost clinical phone is silent on encryption and wipe, so a question, not "does not apply".
+    expect(verdict("KV-22", "TP-04")).toBe("needs-ba-input");
+    expect(verdict("KV-11", "CM-04")).toBe("needs-ba-input");
+    expect(verdict("KV-19", "CM-04")).toBe("needs-ba-input");
+    // A cell the blind passes split on keeps its standing label, and the record says so.
+    expect(verdict("KV-33", "IR-04")).toBeUndefined();
+    expect(adjudication.consistencyPass.keptAsStanding.map((k) => `${k.item} ${k.rule}`)).toEqual(
+      expect.arrayContaining(["KV-33 IR-04", "KV-32 CM-04"]),
+    );
+    expect(adjudication.consistencyPass.rules).toEqual(
+      expect.arrayContaining(["IR-04", "TP-04", "CM-04"]),
+    );
+    // Every added pair carries the one business fact that settles it.
+    for (const c of adjudication.consistencyPass.changes) {
+      const pair = manifest.items
+        .find((i) => i.id === c.item)!
+        .applies.find((p) => p.ruleId === c.rule)!;
+      expect(pair.businessFact?.trim(), `${c.item} → ${c.rule}`).toBeTruthy();
+    }
   });
 
   it("records the blind procedure, both labellers, the agreement, each adjudication and the tuning rule", async () => {
@@ -436,6 +502,10 @@ describe("the held-out governing corpus (#2024)", () => {
     expect(annotation).toContain(`**${adjudication.agreement.applicability.kappa.toFixed(2)}**`);
     for (const d of adjudication.disagreements) {
       expect(annotation).toContain(`| ${d.item} → ${d.rule} |`);
+    }
+    expect(annotation).toMatch(/consistency pass/i);
+    for (const c of adjudication.consistencyPass.changes) {
+      expect(annotation).toContain(`| ${c.item} → ${c.rule} |`);
     }
     expect(annotation).toMatch(/No arm has run on this set/);
     expect(annotation).toMatch(/never iterate a prompt against this set/i);
@@ -475,6 +545,37 @@ describe("the sets' purposes and the content hash (#2024)", () => {
     const reviewed = clone(manifest);
     reviewed.annotation.reviewedBy = "a person";
     expect(governingContentHash(reviewed, files.policies)).toBe(manifest.contentHash!.value);
+  });
+
+  it("FAILS on a re-hash that did not also record the new hash in ANNOTATION.md", async () => {
+    const { manifest, files } = await heldOut();
+    // The annotation records the hash the manifest holds.
+    expect(files.annotation).toContain(manifest.contentHash!.value);
+    // Pasting the hash the error message prints, without touching ANNOTATION.md, is refused.
+    const edited = clone(manifest);
+    edited.items[0]!.title = `${edited.items[0]!.title} (reworded)`;
+    edited.contentHash!.value = governingContentHash(edited, files.policies);
+    expect(validateGoverningCorpus(edited, files).join("\n")).toMatch(
+      /content hash: ANNOTATION\.md does not record the hash/,
+    );
+    // Recording it there too lets the re-hash through.
+    const recorded = {
+      ...files,
+      annotation: `${files.annotation}\n${edited.contentHash!.value}\n`,
+    };
+    expect(validateGoverningCorpus(edited, recorded)).toEqual([]);
+    // A held-out set whose annotation was not supplied cannot pass either.
+    const noAnnotation = { present: files.present, policies: files.policies };
+    expect(validateGoverningCorpus(manifest, noAnnotation).join("\n")).toMatch(
+      /ANNOTATION\.md does not record the hash/,
+    );
+  });
+
+  it("refuses to write a baseline into a held-out set, and allows it for the tuning set", async () => {
+    expect(() => assertBaselineAllowed("held-out", "governing-02-clinic-records")).toThrow(
+      /held-out.*never gets a baseline/s,
+    );
+    expect(() => assertBaselineAllowed("tuning", "governing-01-sample-policy")).not.toThrow();
   });
 
   it("FAILS on a held-out set with no hash or an unknown algorithm, and on an unknown purpose", async () => {

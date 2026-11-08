@@ -44,6 +44,7 @@ import {
 } from "../src/lib/eval/governing/arms.js";
 import {
   GOVERNING_CORPORA,
+  assertBaselineAllowed,
   loadGoverningCorpus,
   type GoverningCorpusName,
 } from "../src/lib/eval/governing/corpus.js";
@@ -82,6 +83,8 @@ async function main(): Promise<void> {
     throw new Error(`unknown corpus ${name}; known: ${GOVERNING_CORPORA.join(", ")}`);
   }
   const corpus = await loadGoverningCorpus(name as GoverningCorpusName);
+  // #2024 — refuse before any model is called: a baseline written into a held-out set breaks it.
+  if (writeBaseline) assertBaselineAllowed(corpus.manifest.purpose, name);
   // #2024 — say which set this reading comes from before any model is called.
   console.log(`corpus ${name}: ${corpus.manifest.purpose} set`);
   if (corpus.manifest.purpose === "held-out") {

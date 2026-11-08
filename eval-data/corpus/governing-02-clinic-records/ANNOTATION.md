@@ -62,12 +62,26 @@ The steps ran in this order, in one session on 2026-11-08:
    not told who wrote which. It was told to favour neither and to answer "unsettled" rather
    than guess. It settled all nine pairs, each with a written reason, so none was dropped.
    Cost: $0.11.
-9. **The business facts for the two pairs the adjudication added** (KV-05 and KV-34 under
-   IR-04) were written after it decided.
-10. **The pass thresholds were copied unchanged from `governing-01`**
+9. **A consistency pass ran for each cross-cutting rule** (added after #2028's review). The
+   adjudication only saw cells where the two labellers disagreed, so a rule both of them
+   skipped on the same requirement was never checked. IR-04 is the clear case: it sat on
+   KV-05, KV-31 and KV-34, whose adjudication reason is that the change alters what
+   clinicians see, yet not on KV-15 (a one-click skip of the allergy screen) or KV-12 (a
+   suppressed interaction pop-up), which fit the same wording. For each of IR-04, TP-04,
+   CM-04, CM-02, CM-01 and RA-02, a tool-less `claude-opus-5-5` session was given the policy
+   and all 36 requirements and asked about that one rule alone, on every requirement
+   (`labelling/consistency-prompt.txt`). It saw no label, no rule summary and no arm.
+   IR-04, CM-04 and TP-04, where the first pass disagreed with a standing label, were run
+   twice. **A standing label changes only when both passes agree on the new one**; a cell
+   the passes split on keeps its label. Cost: $0.69 for 9 sessions. Details, with each
+   pass's labels, are in `adjudication.json` under `consistencyPass`.
+10. **The business facts for the pairs added after the adjudication** (KV-05 and KV-34 under
+    IR-04, and the eight pairs of the consistency pass) were written after each was decided.
+11. **The pass thresholds were copied unchanged from `governing-01`**
     (`proposedIn: "#1867"`, `changes: []`) and fixed with `recordedBeforeAnyArmRan: true`.
-    The content hash was then recorded.
-11. **No arm has run on this set.** The labels and the thresholds were fixed first. The
+    The content hash was then recorded, and re-recorded after the consistency pass (see
+    "Content hash history").
+12. **No arm has run on this set.** The labels and the thresholds were fixed first. The
     first reading belongs to #1878.
 
 ## Agreement between the two labellers
@@ -80,13 +94,16 @@ The two labellers were compared pair by pair, over every (requirement, rule) cel
 | Pairs listed by labeller 1 / labeller 2 | 38 / 37 |
 | Pairs either listed (the union) | 40 |
 | Listed by both | 35, of which 31 had the same verdict |
-| Applies / does not apply, Cohen's κ | **0.93** (observed 0.9965, chance 0.9493) |
+| Applies / does not apply, Cohen's κ (before the consistency pass) | **0.93** (observed 0.9965, chance 0.9493) |
 | Four-way label (none, compliant, gap, needs-ba-input), Cohen's κ | **0.88** (observed 0.9938, chance 0.9489) |
 | Same label on the union of listed pairs | 31 of 40 (0.78) |
 | Negative items both left empty | 6 of 6 |
 
-κ is high partly because most cells are "does not apply" for both labellers. The union
-figure, 31 of 40, is the stricter reading.
+κ is high partly because about 97% of the 1,440 cells are "does not apply" for both
+labellers. **The union figure, 31 of 40 listed pairs (0.78), is the stricter reading, and
+the one to quote.** Both labellers are the same model as the author, so neither figure is
+independent human agreement. The figures describe the two labellers before the consistency
+pass; the adjudication and that pass then changed the labels (below).
 
 ## Adjudications
 
@@ -102,15 +119,40 @@ figure, 31 of 40, is the stricter reading.
 | KV-33 → CM-02 | needs-ba-input | gap | gap | An emailed referral letter carries clinical detail, with no opt-in condition. |
 | KV-34 → IR-04 | does not apply | needs-ba-input | needs-ba-input | A new button on the prescribing screen changes what clinicians see. |
 
+KV-22 → TP-04 was settled as "does not apply" because the requirement says nothing about
+encryption or wipe. The adjudication prompt treats silence as `needs-ba-input`, and the
+consistency pass reversed this decision (below).
+
 The decisions went 4 to labeller 1 and 5 to labeller 2. Each decision rests on the policy's
 wording and the requirement's wording. No arm's answer was known to any pass, so none of
 them could lean toward one.
 
+## Consistency pass changes
+
+Each row is a pair the blind passes added. Both passes agreed, the standing label was "does
+not apply", and the new label is `needs-ba-input`. The wording each rule turns on:
+
+| Pair | Standing | Decision | Reason (from the second blind pass) |
+|---|---|---|---|
+| KV-12 → IR-04 | does not apply | needs-ba-input | Suppressing interaction pop-ups changes what prescribers see, but the requirement is silent on a clinical safety officer assessment and hazard log entry. |
+| KV-15 → IR-04 | does not apply | needs-ba-input | Letting prescribers skip the allergy screen changes the order of steps in prescribing, but the requirement is silent on a clinical safety officer assessment before release. |
+| KV-18 → IR-04 | does not apply | needs-ba-input | Adding a mandatory reason prompt before a chart opens changes clinician screens and steps, but the requirement is silent on a clinical safety officer assessment and hazard log entry. |
+| KV-25 → IR-04 | does not apply | needs-ba-input | The note-correction workflow adds a reason prompt and shows version history, but the requirement is silent on a clinical safety officer assessment and hazard log entry. |
+| KV-26 → IR-04 | does not apply | needs-ba-input | ECG traces appearing on the chart change what clinicians see, but the requirement does not say whether the clinical safety officer assesses it before release. |
+| KV-22 → TP-04 | does not apply | needs-ba-input | Covers a lost clinical work phone but does not say whether the phone's storage is encrypted and can be wiped remotely. |
+| KV-11 → CM-04 | does not apply | needs-ba-input | A booking confirmation is sent to the patient, but it is not stated whether a copy is kept on the chart. |
+| KV-19 → CM-04 | does not apply | needs-ba-input | An SMS reminder is sent to the patient, but it is not stated whether a copy is kept on the chart. |
+
+Two cells were split between the passes and **keep "does not apply"**: KV-33 → IR-04 (one pass
+called the emailed letter a change to the referral steps, the other a communication change
+only) and KV-32 → CM-04. CM-02, CM-01 and RA-02 were run once each and matched the
+standing labels on every requirement.
+
 ## What the set holds
 
 - 40 rules. 33 apply to at least one requirement; the other 7 are there to test precision.
-- 36 requirements: 30 positive and 6 negative. They hold 39 truth pairs: 21 `gap`,
-  14 `needs-ba-input` and 4 `compliant`.
+- 36 requirements: 30 positive and 6 negative. They hold 47 truth pairs: 21 `gap`,
+  22 `needs-ba-input` and 4 `compliant`.
 - **10 items carry a non-resembling pair** (12 pairs in all). The loader checks that each
   one shares no word stem with its rule's clause or summary.
 - **7 short-answer pairs.** These are `needs-ba-input` pairs whose `businessFact` a BA
@@ -131,6 +173,16 @@ Verdicts and conventions follow `governing-01`'s `ANNOTATION.md`. Silence is nev
 - 36 items is small. At this size, two arms must differ by roughly 20 points before the
   difference is significant.
 - Only 4 pairs are `compliant`, so verdict accuracy on `compliant` rests on few pairs.
+
+## Content hash history
+
+The manifest's `contentHash` must appear here: the loader refuses a held-out set whose
+recorded hash is missing from this file, so a re-hash cannot be made without a note.
+
+| Date | Hash | Why |
+|---|---|---|
+| 2026-11-08 | `0fef56be8454b3b54e04237f9bc4547f88c251ff38fcd87fb8dfa760d7002672` | First recording (#2024), before any arm ran. Superseded. |
+| 2026-11-08 | `c18f31b2539ae742e21c788b3b3c09cd5caacd7e6cd66a8b1faeece6bc39c60d` | The consistency pass (#2028 review): eight `needs-ba-input` pairs added under IR-04, CM-04 and TP-04. Still before any arm ran. |
 
 ## Readings
 
