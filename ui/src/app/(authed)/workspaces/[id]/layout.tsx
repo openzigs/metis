@@ -9,11 +9,14 @@
  */
 import { useParams, usePathname } from "next/navigation";
 import Link from "next/link";
+import { useGoverningTabVisible } from "@/lib/governing-api";
 
 export default function WorkspaceLayout({ children }: { children: React.ReactNode }) {
   const params = useParams<{ id: string }>();
   const pathname = usePathname();
   const id = params?.id ?? "";
+  // #1871 — the tab shows only once the list route answers (404 = flag off).
+  const governingVisible = useGoverningTabVisible(id);
 
   if (!id) return <div className="p-6">Invalid workspace id.</div>;
 
@@ -24,6 +27,9 @@ export default function WorkspaceLayout({ children }: { children: React.ReactNod
       label: "Usage & cost",
     },
     { href: `/workspaces/${id}/traceability`, label: "Traceability" },
+    ...(governingVisible
+      ? [{ href: `/workspaces/${id}/governing`, label: "Governing documents" }]
+      : []),
     { href: `/workspaces/${id}/agents/new`, label: "New Agent" },
   ];
 
