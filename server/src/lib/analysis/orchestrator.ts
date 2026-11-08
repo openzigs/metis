@@ -3513,9 +3513,8 @@ export class AnalysisOrchestrator {
     escalation?: RunEscalation;
     /**
      * #741 (Epic #727) — how to persist this pass's `code` AgentResult. Defaults
-     * to `"replace"` (today's behaviour). The resume endpoint passes `"append"`
-     * so a resumed connector's findings MERGE alongside the original run's code
-     * findings instead of clobbering them. #1998/#2011 — it passes
+     * to `"replace"`. A continuation (#1131) passes `"append"`, so its row lands
+     * beside the rows it continues. The resume endpoint (#1998/#2011) passes
      * `"supersede"`: a completed pass replaces that connector's own earlier rows
      * in one transaction, and a failed or cancelled one is appended.
      */

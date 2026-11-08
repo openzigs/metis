@@ -12,7 +12,7 @@
  * object the write returned.
  */
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
-import { PrismaClient } from "@prisma/client";
+import { type Prisma, PrismaClient } from "@prisma/client";
 import type { AgentOutput } from "@metis/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
@@ -36,7 +36,7 @@ vi.mock("../src/lib/prisma.js", async () => {
 });
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
-const { persistAgentResult, readFlattenedFindings } =
+const { persistAgentResult, readFlattenedFindings, SUPERSEDE_TRANSACTION_OPTIONS } =
   await import("../src/lib/analysis/analysis-service.js");
 
 const ANALYSIS = "an-2011";
@@ -89,6 +89,25 @@ function failingFindingWrites(db: PrismaClient): PrismaClient {
   });
 }
 
+/**
+ * #2018 — the real client, recording the options each `$transaction` is
+ * opened with and passing them through, so the transaction still runs.
+ */
+function recordingTransactions(db: PrismaClient, calls: unknown[]): PrismaClient {
+  return new Proxy(db, {
+    get(target, prop) {
+      if (prop === "$transaction") {
+        return (fn: (tx: Prisma.TransactionClient) => Promise<unknown>, options?: unknown) => {
+          calls.push(options);
+          return target.$transaction(fn, options as Parameters<typeof target.$transaction>[1]);
+        };
+      }
+      const value = Reflect.get(target, prop);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   "#2011 — a resumed pass replaces its repository's earlier code rows atomically (real SQLite)",
   () => {
@@ -131,6 +150,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await earlier("c2 continuation", ANALYSIS, "c2");
       await earlier("c1 pass", ANALYSIS, "c1");
       await earlier("other analysis c2", OTHER_ANALYSIS, "c2");
+      // #2018 — a pre-#763 row persisted with no connector (`connectorId: null`).
+      await earlier("legacy no-connector pass", ANALYSIS);
     });
 
     const resumedPass = () =>
@@ -152,8 +173,31 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     it("replaces only the resumed connector's own earlier rows", async () => {
       await resumedPass();
 
-      expect(await titles(ANALYSIS)).toEqual(["c1 pass", "c2 resumed"]);
+      expect(await titles(ANALYSIS)).toEqual(["c1 pass", "c2 resumed", "legacy no-connector pass"]);
       expect(await titles(OTHER_ANALYSIS)).toEqual(["other analysis c2"]);
+    });
+
+    it("keeps a legacy row persisted with no connector (#2018)", async () => {
+      await resumedPass();
+
+      const legacy = await db.agentResult.findMany({
+        where: { analysisId: ANALYSIS, connectorId: null },
+        select: { findings: { select: { title: true } } },
+      });
+      expect(legacy.map((r) => r.findings.map((f) => f.title))).toEqual([
+        ["legacy no-connector pass"],
+      ]);
+    });
+
+    it("opens the transaction under an explicit deadline, not Prisma's 5 s / 2 s default (#2018)", async () => {
+      const calls: unknown[] = [];
+      state.db = recordingTransactions(db, calls);
+
+      await resumedPass();
+
+      expect(calls).toEqual([{ timeout: 60_000, maxWait: 30_000 }]);
+      expect(calls[0]).toBe(SUPERSEDE_TRANSACTION_OPTIONS);
+      expect(await titles(ANALYSIS)).toEqual(["c1 pass", "c2 resumed", "legacy no-connector pass"]);
     });
 
     it("a write that fails inside the transaction leaves the earlier rows, and no new one", async () => {
@@ -162,8 +206,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await expect(resumedPass()).rejects.toThrow("disk I/O error");
 
       state.db = db;
-      expect(await titles(ANALYSIS)).toEqual(["c1 pass", "c2 continuation", "c2 first pass"]);
-      expect(await db.agentResult.count({ where: { analysisId: ANALYSIS } })).toBe(3);
+      expect(await titles(ANALYSIS)).toEqual([
+        "c1 pass",
+        "c2 continuation",
+        "c2 first pass",
+        "legacy no-connector pass",
+      ]);
+      expect(await db.agentResult.count({ where: { analysisId: ANALYSIS } })).toBe(4);
     });
   },
 );
