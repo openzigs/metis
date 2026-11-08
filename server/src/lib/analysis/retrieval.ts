@@ -26,6 +26,8 @@ import {
 } from "@metis/shared";
 import type { AIProvider } from "../ai/types.js";
 import type { DocumentSource } from "../documents/document-source.js";
+import type { ApplicabilitySet, GoverningApplicabilityHook } from "../governing/applicability.js";
+import { createChildLogger } from "../logger.js";
 import { reciprocalRankFusion } from "../rag/bm25-index.js";
 import type { KnowledgeService } from "../rag/knowledge-service.js";
 import { getReranker, isRerankEnabled, type Reranker } from "../rag/reranker.js";
@@ -244,11 +246,19 @@ export async function runGroundedRetrieval(
   return out;
 }
 
+const log = createChildLogger("analysis-retrieval");
+
 /** Evidence retrieved for a single extracted requirement (#916). */
 export interface RequirementEvidence {
   requirementId: string;
   text: string;
   chunks: RetrievalContextChunk[];
+  /**
+   * #1872 — the governing rules decided for this requirement. Absent unless
+   * {@link attachGoverningApplicability} ran with a hook: the flag is on and
+   * the project's workspace has current rules.
+   */
+  governing?: ApplicabilitySet;
 }
 
 /**
@@ -309,6 +319,51 @@ export async function retrievePerRequirement(
 
   await Promise.all(Array.from({ length: Math.min(concurrency, reqs.length) }, () => worker()));
   return results;
+}
+
+/**
+ * #1872 — decide governing-rule applicability for each requirement's evidence,
+ * beside {@link retrievePerRequirement}. With no hook (`GOVERNING_DOCS_ENABLED`
+ * off, a project with no workspace, or a workspace with no current rules) the
+ * input array itself is returned, untouched. A requirement whose decision
+ * fails gets a set carrying `error` and no decisions — never a silently empty
+ * one — and the rest of the analysis carries on.
+ */
+export async function attachGoverningApplicability(
+  evidence: RequirementEvidence[],
+  hook: Pick<GoverningApplicabilityHook, "decide"> | null,
+  opts: { concurrency?: number } = {},
+): Promise<RequirementEvidence[]> {
+  if (!hook) return evidence;
+  const concurrency = Math.max(1, opts.concurrency ?? REQUIREMENT_RETRIEVAL_CONCURRENCY);
+  const out = evidence.map((e) => ({ ...e }));
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = cursor++;
+      if (i >= out.length) return;
+      const e = out[i]!;
+      try {
+        e.governing = await hook.decide({ id: e.requirementId, text: e.text });
+      } catch (err) {
+        log.warn("governing applicability could not be decided", {
+          requirementId: e.requirementId,
+          error: (err as Error).message,
+        });
+        e.governing = {
+          requirementId: e.requirementId,
+          decisions: [],
+          rulesScreened: 0,
+          screenBatches: 0,
+          candidates: 0,
+          reasked: 0,
+          error: "Governing-rule applicability could not be decided for this requirement.",
+        };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, out.length) }, () => worker()));
+  return out;
 }
 
 /**

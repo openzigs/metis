@@ -253,6 +253,7 @@ import {
 import { buildRequirementGroundedPrompt, normalizeAgentContext } from "./prompts.js";
 import { clearUnknownRequirementIds } from "./requirement-id-guard.js";
 import {
+  attachGoverningApplicability,
   buildRetrievalQueries,
   CODE_REQUIREMENTS_QUERY,
   deriveRetrievalQuery,
@@ -260,6 +261,7 @@ import {
   retrievePerRequirement,
   runGroundedRetrieval,
 } from "./retrieval.js";
+import { governingApplicabilityForProject } from "../governing/applicability.js";
 import {
   retrieveFusedCodeChunks,
   retrieveFusedCodeContext,
@@ -1624,10 +1626,15 @@ export class AnalysisOrchestrator {
       ).requirements;
     const mode = await this.detectAgentMode(input.projectId, "code", allRequirements);
     if (mode !== "agentic") {
-      return this.runOneAgent({
+      const result = await this.runOneAgent({
         ...input,
         knownRequirementIds: allRequirements.map((r) => r.id),
       });
+      // #1989 — the single-shot pass replaced every `code` row with one over the
+      // whole project, so no repository is left without a code pass: none is
+      // skipped. (It throws on failure, so a failed pass keeps the list.)
+      await this.refreshSkippedRepos(input.analysisId, [], [], []);
+      return result;
     }
     const continueWith = opts.continueWith;
     const continuing = continueWith !== undefined;
@@ -2069,14 +2076,19 @@ export class AnalysisOrchestrator {
   }
 
   /**
-   * #1981 — after a code regenerate, `skippedRepos` names the repositories the
-   * analysis still has no code pass for: the ones this pass's budget cap left
-   * out, and the ones an earlier run skipped that this pass did not run (a
-   * continuation re-runs only those with something unreached). One it ran, or
-   * one since deleted, is no longer skipped. Before, an analysis recorded
-   * before #1974 with `skippedRepos=[primary]` still said the primary was
-   * skipped after a regenerate analysed it. Best-effort, like every
-   * capability write; no write when nothing changed.
+   * #1981 — after a code regenerate, `skippedRepos` names the repositories of
+   * `connectors` this pass did not run: the ones its budget cap left out, and
+   * the ones an earlier run skipped (a continuation re-runs only those with
+   * something unreached). One it ran, or one not in `connectors` (since
+   * deleted, or with none listed after a single-shot pass, #1989), is no
+   * longer skipped. Before, an analysis recorded before #1974 with
+   * `skippedRepos=[primary]` still said the primary was skipped after a
+   * regenerate analysed it. Best-effort, like every capability write; no write
+   * when nothing changed.
+   *
+   * #1989 — "not run by this pass" is not "no code pass": a repository an
+   * earlier pass ran and this pass's cap left out keeps that pass's `code`
+   * rows, and a resume appends beside them, so its findings are read twice.
    */
   private async refreshSkippedRepos(
     analysisId: string,
@@ -4322,14 +4334,34 @@ export class AnalysisOrchestrator {
         }
 
         // Per-requirement retrieval — bounded fan-out, concurrency-capped.
-        const perRequirement = await retrievePerRequirement(knowledge, {
+        // #1872 — beside it, governing-rule applicability per requirement:
+        // null (and no database read) unless GOVERNING_DOCS_ENABLED is on and
+        // the project's workspace has current rules, so a flag-off analysis is
+        // unchanged. Read by the governing findings (#1873, #1874).
+        const governing = await governingApplicabilityForProject({
           projectId: input.projectId,
-          requirements: input.requirements,
-          documentIds: documentIds.length > 0 ? documentIds : undefined,
-          k: ANALYSIS_RETRIEVE_K,
-          maxRequirements: MAX_REQUIREMENTS_FOR_RETRIEVAL,
-          concurrency: REQUIREMENT_RETRIEVAL_CONCURRENCY,
+          provider: this.deps.provider,
+          ...(input.model ? { model: input.model } : {}),
+          signal: input.signal,
+        }).catch((err: unknown) => {
+          log.warn("governing applicability skipped: its rules could not be loaded", {
+            analysisId: input.analysisId,
+            error: (err as Error).message,
+          });
+          return null;
         });
+        const perRequirement = await attachGoverningApplicability(
+          await retrievePerRequirement(knowledge, {
+            projectId: input.projectId,
+            requirements: input.requirements,
+            documentIds: documentIds.length > 0 ? documentIds : undefined,
+            k: ANALYSIS_RETRIEVE_K,
+            maxRequirements: MAX_REQUIREMENTS_FOR_RETRIEVAL,
+            concurrency: REQUIREMENT_RETRIEVAL_CONCURRENCY,
+          }),
+          governing,
+          { concurrency: REQUIREMENT_RETRIEVAL_CONCURRENCY },
+        );
 
         // #729 (Epic #725) — fold fused code-graph symbol context into the
         // grounded evidence. This mode runs when NO code graph exists, so fused

@@ -1219,3 +1219,82 @@ describe("#1131 a resume leaves no per-pass records behind", () => {
     expect(orch.retrievalHealths.has("an_1")).toBe(false);
   });
 });
+
+/**
+ * #1989 — what `skippedRepos` says after a code regenerate (review of #1987).
+ */
+describe("#1989 the skipped list after a code regenerate", () => {
+  const TWO = [
+    { id: "REQ-1", text: "A user cannot subscribe to the same feed URL twice." },
+    { id: "REQ-2", text: "Publishing goes only to the openzigs/flux-v2 repository." },
+  ];
+  const WEB = { connectorId: "repo_2", label: "web" };
+  const DOCS = { connectorId: "repo_3", label: "docs" };
+  const persistedSkips = () =>
+    serviceMock.persistAnalysisCapability.mock.calls.map(
+      (c) => (c[1] as AnalysisCapability).skippedRepos,
+    );
+
+  // Item 3 — the earlier run's skips are unioned in: a repository it skipped
+  // that this continuation did not run (nothing of it to continue) and did not
+  // cap out is still skipped.
+  it("keeps a repository an earlier run skipped that a continuation did not run", async () => {
+    prismaMock.repoConnection.findMany.mockResolvedValue([
+      { id: "repo_1", label: "api", isPrimary: true, createdAt: new Date("2026-01-05") },
+      { id: "repo_2", label: "web", isPrimary: false, createdAt: new Date("2026-01-06") },
+      { id: "repo_3", label: "docs", isPrimary: false, createdAt: new Date("2026-01-07") },
+    ]);
+    // repo_2 is listed as skipped too, but this continuation runs it: the
+    // recorded scope (the passes that ran) names it and not repo_3.
+    serviceMock.getAnalysisCapability.mockResolvedValue({
+      ...CUT_SHORT,
+      skippedRepos: [WEB, DOCS],
+      codeInvestigationScope: { repo_2: ["REQ-2"] },
+      reasons: [...CUT_SHORT.reasons, "repos-skipped-budget"],
+    });
+    const orch = makeOrchestrator();
+    orch.extractRequirementsFromDocAgent = vi.fn(async () => TWO);
+    orch.readCodeFindingVerdicts = vi.fn(async () => [
+      { connectorId: "repo_1", requirementId: "REQ-1", verdict: "implemented", codeCited: true },
+      { connectorId: "repo_1", requirementId: "REQ-2", verdict: "implemented", codeCited: true },
+      { connectorId: "repo_2", requirementId: "REQ-1", verdict: "implemented", codeCited: true },
+      { connectorId: "repo_2", requirementId: "REQ-2", verdict: "could-not-verify" },
+    ]);
+    await regenerate(orch, { extendBudget: true });
+    expect(orch.runAgenticCodeAgent.mock.calls.map((c) => c[0].connectorId)).toEqual(["repo_2"]);
+    expect(persistedSkips()).toContainEqual([DOCS]);
+    expect(persistedSkips()).not.toContainEqual([]);
+  });
+
+  // Item 5 — the single-shot early return never reached the refresh.
+  it("a single-shot regenerate, which replaces every code row, leaves no repository skipped", async () => {
+    serviceMock.getAnalysisCapability.mockResolvedValue({
+      ...CUT_SHORT,
+      codeInvestigationCutShort: false,
+      skippedRepos: [WEB],
+      reasons: ["repos-skipped-budget"],
+    });
+    const orch = makeOrchestrator();
+    orch.detectAgentMode = vi.fn(async () => "single-shot");
+    await regenerate(orch);
+    expect(orch.runOneAgent).toHaveBeenCalledTimes(1);
+    const refreshed = serviceMock.persistAnalysisCapability.mock.calls
+      .map((c) => c[1] as AnalysisCapability)
+      .find((c) => c.skippedRepos.length === 0);
+    expect(refreshed).toBeDefined();
+    expect(refreshed!.reasons).not.toContain("repos-skipped-budget");
+  });
+
+  it("a failed single-shot regenerate keeps the skipped list", async () => {
+    serviceMock.getAnalysisCapability.mockResolvedValue({
+      ...CUT_SHORT,
+      skippedRepos: [WEB],
+      reasons: ["repos-skipped-budget"],
+    });
+    const orch = makeOrchestrator();
+    orch.detectAgentMode = vi.fn(async () => "single-shot");
+    orch.runOneAgent.mockRejectedValue(new Error("provider down"));
+    await regenerate(orch).catch(() => undefined);
+    expect(persistedSkips()).not.toContainEqual([]);
+  });
+});

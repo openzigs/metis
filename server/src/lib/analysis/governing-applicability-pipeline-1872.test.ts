@@ -1,0 +1,290 @@
+/**
+ * #1872 (epic #1866) — the applicability hook in the REAL analysis pipeline.
+ *
+ * Drives `AnalysisOrchestrator.runPipeline` down the requirement-grounded code
+ * path (no code graph), where `retrievePerRequirement` runs and the hook sits
+ * beside it. With `GOVERNING_DOCS_ENABLED` off, every model call and the
+ * persisted code result must be byte-identical to the snapshot taken before
+ * the hook existed, and the database is never asked for a project's workspace
+ * or its rules. With it on, the hook screens the workspace's rules — and still
+ * changes nothing the code agent is sent.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ChatMessage, ChatOptions } from "../ai/types.js";
+import { __resetConfigSingleton } from "../config/config-service.js";
+
+const ANALYSIS_ID = "an_1872";
+const PROJECT_ID = "pr_1872";
+
+const state = vi.hoisted(() => ({
+  workspaceId: null as string | null,
+  rules: [] as Array<Record<string, unknown>>,
+}));
+
+vi.mock("../prisma.js", () => ({
+  prisma: {
+    codeGraph: { findFirst: vi.fn(async () => null) },
+    databaseConnection: { count: vi.fn(async () => 0) },
+    codeSymbol: {
+      findMany: vi.fn(async () => []),
+      findFirst: vi.fn(async () => null),
+      count: vi.fn(async () => 0),
+    },
+    codeEdge: { findMany: vi.fn(async () => []), count: vi.fn(async () => 0) },
+    agentResult: {
+      findFirst: vi.fn(async ({ where }: { where: { agentKey: string } }) =>
+        where.agentKey === "document"
+          ? {
+              output: JSON.stringify({
+                requirements: [
+                  { id: "REQ-001", text: "Export every customer's order history as a CSV." },
+                  { id: "REQ-002", text: "Remove the legacy coupon screen." },
+                ],
+              }),
+            }
+          : { status: "completed" },
+      ),
+    },
+    document: { findFirst: vi.fn(async () => null), findMany: vi.fn(async () => []) },
+    repoConnection: { findMany: vi.fn(async () => []) },
+    project: {
+      findFirst: vi.fn(async () => ({ workspaceId: state.workspaceId })),
+    },
+    governingRule: { findMany: vi.fn(async () => state.rules) },
+    // The governing index's own reads: a live workspace with no embedded revision.
+    workspace: { findFirst: vi.fn(async () => ({ id: state.workspaceId })) },
+    governingDocument: { findMany: vi.fn(async () => []) },
+  },
+}));
+
+vi.mock("./analysis-service.js", () => ({
+  createAnalysis: vi.fn(async () => ({ id: ANALYSIS_ID })),
+  finalizeAnalysisDelta: vi.fn(async () => undefined),
+  getAnalysisCapability: vi.fn(async () => null),
+  getStructuredRequirements: vi.fn(async () => null),
+  markAnalysisCancelled: vi.fn(async () => undefined),
+  markAnalysisCompleted: vi.fn(async () => undefined),
+  markAnalysisFailed: vi.fn(async () => undefined),
+  persistAgentResult: vi.fn(async () => ({ id: "ar_1", findingIds: [] })),
+  persistAnalysisEnhancement: vi.fn(async () => undefined),
+  persistAnalysisCapability: vi.fn(async () => undefined),
+  persistAnalysisAffectedCode: vi.fn(async () => undefined),
+  persistAnalysisDatabaseAware: vi.fn(async () => undefined),
+  persistAnalysisEscalation: vi.fn(async () => undefined),
+  persistRequirements: vi.fn(async () => []),
+  persistCrossDocFindings: vi.fn(async () => undefined),
+  readFlattenedFindings: vi.fn(async () => []),
+}));
+
+vi.mock("./cost-cap.js", () => ({ assertCanStartAnalysis: vi.fn(async () => undefined) }));
+vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
+vi.mock("./synthesis.js", () => ({
+  runSynthesis: vi.fn(async () => ({
+    output: { summary: "s", requirements: [], risks: [], recommendations: [] },
+    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+  })),
+}));
+vi.mock("./cross-doc-detection.js", () => ({ runCrossDocDetection: vi.fn(async () => null) }));
+vi.mock("./custom-agent-phase.js", () => ({
+  runEnabledCustomAgents: vi.fn(async () => ({
+    results: [],
+    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+  })),
+}));
+vi.mock("../teams/notification-hooks.js", () => ({
+  notifyAnalysisComplete: vi.fn(async () => undefined),
+}));
+vi.mock("../traceability/seed-code-links-from-findings.js", () => ({
+  seedRequirementCodeLinksFromFindings: vi.fn(async () => undefined),
+}));
+vi.mock("./approval-checkpoint.js", () => ({
+  createApprovalRequests: vi.fn(async () => undefined),
+  canCreateTickets: vi.fn(async () => false),
+}));
+vi.mock("../socket/job-events.js", () => ({
+  jobEvents: { started: vi.fn(), completed: vi.fn(), failed: vi.fn() },
+  genericFailureMessage: (kind: string) => `${kind} failed`,
+}));
+
+const { AnalysisOrchestrator } = await import("./orchestrator.js");
+const analysisService = await import("./analysis-service.js");
+const { prisma } = await import("../prisma.js");
+
+const CODE_ANSWER = JSON.stringify({
+  summary: "ok",
+  findings: [
+    {
+      requirementId: "REQ-001",
+      category: "other",
+      severity: "medium",
+      title: "The export has no row cap",
+      body: "The order history can be large.",
+      tags: [],
+      citations: [],
+    },
+  ],
+  notes: [],
+});
+
+interface Call {
+  system: string;
+  messages: Array<{ role: string; content: string }>;
+}
+
+function userOf(c: Call): string {
+  return c.messages.map((m) => m.content).join("\n");
+}
+
+const isGoverning = (c: Call) => userOf(c).includes("governing_rule");
+
+function makeProvider() {
+  const calls: Call[] = [];
+  const chat = vi.fn(async (messages: ChatMessage[], o: ChatOptions = {}) => {
+    const call: Call = {
+      system: String((o as { systemMessage?: unknown }).systemMessage ?? ""),
+      messages: messages.map((m) => ({ role: m.role, content: String(m.content) })),
+    };
+    calls.push(call);
+    const text = (content: string) => ({
+      content,
+      usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20 },
+      model: "test-model",
+      provider: "bedrock" as const,
+    });
+    const user = call.messages.map((m) => m.content).join("\n");
+    if (user.includes("governing_rule_summaries")) return text('{"rules":["R1"]}');
+    if (user.includes("governing_rules")) {
+      return text(
+        '{"decisions":[{"rule":"R1","verdict":"applies","reason":"The export reads customer records."}]}',
+      );
+    }
+    if (call.system.includes("requirementId")) return text(CODE_ANSWER);
+    return text(JSON.stringify({ summary: "ok", findings: [], notes: [] }));
+  });
+  return { provider: { key: "bedrock", model: "test-model", chat } as never, calls };
+}
+
+async function runPipeline() {
+  const { provider, calls } = makeProvider();
+  const orch = new AnalysisOrchestrator({
+    provider,
+    retrieve: async () => [],
+    knowledge: {
+      search: async (_projectId: string, query: string) => ({
+        hits: [
+          {
+            chunkId: "doc_1#0",
+            documentId: "doc_1",
+            filename: "brief.md",
+            position: 0,
+            text: `Brief: ${query.slice(0, 40)}`,
+            score: 1,
+            embeddingModel: "test",
+            source: "upload",
+          },
+        ],
+      }),
+    } as never,
+  });
+  await (
+    orch as unknown as {
+      runPipeline: (
+        a: string,
+        b: string,
+        c: string,
+        d: string[],
+        e: Record<string, unknown>,
+      ) => Promise<void>;
+    }
+  ).runPipeline(ANALYSIS_ID, "Metis", "A test project", ["document", "code"], {
+    projectId: PROJECT_ID,
+    startedById: "u1",
+    model: "test-model",
+  });
+  const persisted = (
+    vi.mocked(analysisService.persistAgentResult).mock.calls as unknown as Array<
+      [{ agentKey: string; output: unknown }]
+    >
+  )
+    .map((c) => c[0])
+    .filter((a) => a.agentKey === "code")
+    .map((a) => a.output);
+  return { calls, persisted };
+}
+
+/** What the analysis produced: every model call and the persisted code result. */
+function analysisOutput(run: Awaited<ReturnType<typeof runPipeline>>, governing = false): string {
+  return JSON.stringify(
+    { calls: run.calls.filter((c) => isGoverning(c) === governing), persisted: run.persisted },
+    null,
+    2,
+  );
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  state.workspaceId = null;
+  state.rules = [];
+  delete process.env.GOVERNING_DOCS_ENABLED;
+  process.env.ANALYSIS_FUSED_CODE_RETRIEVAL = "false";
+  __resetConfigSingleton();
+});
+
+afterEach(() => {
+  delete process.env.ANALYSIS_FUSED_CODE_RETRIEVAL;
+  delete process.env.GOVERNING_DOCS_ENABLED;
+  __resetConfigSingleton();
+});
+
+describe("#1872 — governing applicability in the analysis pipeline", () => {
+  it("flag off: the analysis output is byte-identical to the pre-#1872 snapshot, and no workspace or rule is read", async () => {
+    const run = await runPipeline();
+    expect(run.persisted).toHaveLength(1);
+    expect(analysisOutput(run)).toMatchSnapshot();
+    expect(run.calls.some(isGoverning)).toBe(false);
+    expect(vi.mocked(prisma.project.findFirst)).not.toHaveBeenCalled();
+    expect(vi.mocked(prisma.governingRule.findMany)).not.toHaveBeenCalled();
+  });
+
+  it("flag on, project with no workspace: skipped, the output is the flag-off output", async () => {
+    const off = analysisOutput(await runPipeline());
+    vi.clearAllMocks();
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    const on = await runPipeline();
+    expect(analysisOutput(on)).toBe(off);
+    expect(on.calls.some(isGoverning)).toBe(false);
+    expect(vi.mocked(prisma.project.findFirst)).toHaveBeenCalled();
+    expect(vi.mocked(prisma.governingRule.findMany)).not.toHaveBeenCalled();
+  });
+
+  it("flag on, workspace with current rules: every requirement is screened and judged; the code agent is sent the same prompt", async () => {
+    const off = analysisOutput(await runPipeline());
+    vi.clearAllMocks();
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    state.workspaceId = "ws_1872";
+    state.rules = [
+      {
+        id: "rule_audit",
+        revisionId: "rev_1",
+        controlId: "LG-03",
+        summary: "Log every read of customer records to the audit log.",
+        clauseRef: "§3",
+        clauseExcerpt: "Every read of customer records is written to the audit log.",
+        revision: { revisionLabel: "v1", document: { title: "Info Policy" } },
+      },
+    ];
+    const on = await runPipeline();
+    const governing = on.calls.filter(isGoverning);
+    // Per requirement: one screen batch, one judging call.
+    expect(governing).toHaveLength(4);
+    expect(governing.every((c) => userOf(c).includes("LG-03"))).toBe(true);
+    expect(governing.some((c) => userOf(c).includes("Export every customer's order history"))).toBe(
+      true,
+    );
+    expect(analysisOutput(on)).toBe(off);
+    const where = vi.mocked(prisma.governingRule.findMany).mock.calls[0]![0] as {
+      where: { revision: { currentOf: { is: { workspaceId: string } } } };
+    };
+    expect(where.where.revision.currentOf.is.workspaceId).toBe("ws_1872");
+  });
+});

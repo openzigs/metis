@@ -606,6 +606,46 @@ export async function listRules(
   };
 }
 
+/** A rule as the applicability screen reads it (#1872), with where it comes from. */
+export interface CurrentGoverningRule {
+  id: string;
+  revisionId: string;
+  controlId: string;
+  summary: string;
+  clauseRef: string;
+  clauseExcerpt: string;
+  revisionLabel: string;
+  documentTitle: string;
+}
+
+/**
+ * #1872 — every live rule of the CURRENT revision of each live document of this
+ * workspace: what applicability screens a requirement against. Scoped on the
+ * workspace through the document the revision is current of, so a rule of
+ * another workspace, of a superseded revision or of a deleted document is never
+ * returned.
+ */
+export async function currentWorkspaceRules(workspaceId: string): Promise<CurrentGoverningRule[]> {
+  const rows = await prisma.governingRule.findMany({
+    where: { deletedAt: null, revision: { currentOf: { is: liveDocumentWhere(workspaceId) } } },
+    orderBy: [{ revisionId: "asc" }, { clauseStart: "asc" }, { clauseEnd: "asc" }, { id: "asc" }],
+    select: {
+      id: true,
+      revisionId: true,
+      controlId: true,
+      summary: true,
+      clauseRef: true,
+      clauseExcerpt: true,
+      revision: { select: { revisionLabel: true, document: { select: { title: true } } } },
+    },
+  });
+  return rows.map(({ revision, ...rule }) => ({
+    ...rule,
+    revisionLabel: revision.revisionLabel,
+    documentTitle: revision.document.title,
+  }));
+}
+
 /** What an admin may change on a rule: its summary and control id, or delete it. */
 export interface RulePatch {
   summary?: string;
