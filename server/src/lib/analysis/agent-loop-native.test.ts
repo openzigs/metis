@@ -24,7 +24,13 @@ import {
   type OfflineScriptTurn,
 } from "../ai/providers/offline-stub-provider.js";
 import type { AgentTool } from "./tools/types.js";
-import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../ai/types.js";
+import {
+  messageText,
+  type AIProvider,
+  type ChatMessage,
+  type ChatOptions,
+  type ChatResponse,
+} from "../ai/types.js";
 
 const order: string[] = [];
 function tool(name: string): AgentTool {
@@ -206,9 +212,17 @@ describe("#141 native tool calls in runAgentLoop", () => {
     expect(retry!.opts.promptCaching).toEqual({ system: true });
   });
 
-  it("#1863 a text-protocol retry keeps the messages breakpoint: its tool_choice did not change", async () => {
+  // #1944 — what this does and does not show. The text protocol sends no
+  // tool_choice, so the strip does not apply and the option passes through. It
+  // does NOT show that the retry reads the loop's last write back: the
+  // instruction joins the transcript's last user turn (the tool results), so
+  // the block the loop's last call put its breakpoint on changes on the wire.
+  // Only an earlier call's write, on a block before that one, can be read.
+  it("#1863 a text-protocol retry passes the messages breakpoint through, and edits the last user turn", async () => {
     const p = stub([
-      { content: '<tool_call>{"name":"search_code_graph","args":{"q":"x"}}</tool_call>' },
+      // The text protocol's call shape (a `<tool_call>` tag is not one: the
+      // loop read it as prose, so this test once exercised no tool turn).
+      { content: '{"tool": "search_code_graph", "args": {"q": "x"}}' },
       { content: '{"findings":[]}' },
     ]);
     await runAgentLoop(p, input, {
@@ -219,6 +233,14 @@ describe("#141 native tool calls in runAgentLoop", () => {
     const retry = p.requests.at(-1)!;
     expect(retry.opts.toolChoice).toBeUndefined();
     expect(retry.opts.promptCaching).toEqual({ system: true, messages: true });
+    // The retry ends on a user turn the loop never sent: the tool results with
+    // the instruction appended, not a new turn after them.
+    const last = retry.messages.at(-1)!;
+    expect(last.role).toBe("user");
+    expect(retry.messages.at(-2)!.role).toBe("assistant");
+    const text = messageText(last);
+    expect(text).toContain("RESULT search_code_graph:x");
+    expect(text.endsWith("\n\nANSWER NOW")).toBe(true);
   });
 
   it("#214 a retry answer that repeats the last tool-calling reply's text is accepted", async () => {

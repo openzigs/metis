@@ -23,9 +23,13 @@ const server = vi.hoisted(() => ({
   otherLists: {} as Record<string, SimilarRequirementItem[]>,
   /** #1931 — a list's next fetch, held open until the test resolves it. */
   pending: {} as Partial<Record<string, Promise<{ items: SimilarRequirementItem[] }>>>,
+  /** #1945 — the similar lists whose fetch fails, by requirement id. */
+  failLists: [] as string[],
   directCode: [] as TraceabilityCodeNode[],
   /** #1964 — the chain's next fetch, held open until the test resolves it. */
   chainPending: null as Promise<void> | null,
+  /** #1945 — held open as the chain's first fetch after a borrow. */
+  chainAfterBorrow: null as Promise<void> | null,
   failChain: false,
   borrowBodies: [] as unknown[],
   failBorrow: false,
@@ -96,6 +100,9 @@ function route(path: string, opts: { method?: string; body?: unknown } = {}): un
     return { items: server.items };
   }
   const other = SIMILAR_PATH.exec(path)?.[1];
+  if (other && !opts.method && server.failLists.includes(other)) {
+    throw new Error("Similar requirements are down");
+  }
   if (other && !opts.method && server.pending[other]) {
     // #1931 — a list whose first fetch answers only when the test says so.
     const answer = server.pending[other];
@@ -125,6 +132,7 @@ function route(path: string, opts: { method?: string; body?: unknown } = {}): un
   if (path === `/projects/${P}/requirements/${SELF}/borrow-citations` && opts.method === "POST") {
     server.borrowBodies.push(opts.body);
     if (server.failBorrow) throw new Error("Borrowing is down");
+    server.chainPending = server.chainAfterBorrow;
     const body = opts.body as BorrowCitationsInput;
     const origin = server.items.find((i) => i.requirementId === body.fromRequirementId)!;
     const named = origin.codeLinks.filter((l) => body.mappingIds?.includes(l.mappingId));
@@ -168,8 +176,10 @@ beforeEach(() => {
   server.items = [LOT];
   server.otherLists = {};
   server.pending = {};
+  server.failLists = [];
   server.directCode = [];
   server.chainPending = null;
+  server.chainAfterBorrow = null;
   server.failChain = false;
   server.borrowBodies = [];
   server.failBorrow = false;
@@ -297,6 +307,82 @@ describe("Start from these citations (#1840)", () => {
     const loading = screen.getAllByTestId("similar-requirements")[1]!;
     expect(await within(loading).findByText("2 code links: 2 fresh, 0 stale")).toBeInTheDocument();
     expect(within(loading).queryByText("No code links")).toBeNull();
+  });
+
+  it("does not refetch a list whose fetch failed: it shows no links a borrow could change (#1945)", async () => {
+    server.failLists = ["r-broken"];
+    // Another card names this requirement: its refetch marks the borrow's refresh as done.
+    server.otherLists = {
+      "r-other": [{ ...LOT, requirementId: SELF, key: "REQ-1", title: "Recall a batch" }],
+    };
+    const fetches = (id: string) =>
+      apiFetch.mock.calls.filter(([path]) => path === `/projects/${P}/requirements/${id}/similar`)
+        .length;
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={newClient()}>
+        <SimilarRequirementsPanel projectId={P} requirementId={SELF} canEdit />
+        <SimilarRequirementsPanel projectId={P} requirementId="r-other" />
+        <SimilarRequirementsPanel projectId={P} requirementId="r-broken" />
+      </QueryClientProvider>,
+    );
+    const broken = screen.getAllByTestId("similar-requirements")[2]!;
+    expect(
+      await within(broken).findByText("Similar requirements could not be loaded."),
+    ).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: ACTION }));
+    await user.click(await screen.findByRole("button", { name: "Copy 2 links" }));
+
+    await waitFor(() => expect(fetches("r-other")).toBe(2));
+    expect(fetches("r-broken")).toBe(1);
+    expect(
+      within(broken).getByText("Similar requirements could not be loaded."),
+    ).toBeInTheDocument();
+  });
+
+  it("leaves alone a list whose first fetch started after the borrow answered (#1945)", async () => {
+    // The borrow's refresh of the code links is held open; a card opened meanwhile
+    // fetches after the borrow committed, so its answer already holds the links.
+    let answerChain!: () => void;
+    server.chainAfterBorrow = new Promise((resolve) => (answerChain = resolve));
+    let answerLate!: (v: { items: SimilarRequirementItem[] }) => void;
+    server.pending["r-late"] = new Promise((resolve) => (answerLate = resolve));
+    const after = {
+      ...LOT,
+      requirementId: SELF,
+      key: "REQ-1",
+      title: "Recall a batch",
+      codeLinks: [link("fresh", "fresh")],
+    };
+    server.otherLists = { "r-other": [after], "r-late": [after] };
+    const fetches = (id: string) =>
+      apiFetch.mock.calls.filter(([path]) => path === `/projects/${P}/requirements/${id}/similar`)
+        .length;
+    const user = userEvent.setup();
+    const qc = newClient();
+    const panels = (late: boolean) => (
+      <QueryClientProvider client={qc}>
+        <SimilarRequirementsPanel projectId={P} requirementId={SELF} canEdit />
+        <SimilarRequirementsPanel projectId={P} requirementId="r-other" />
+        <TraceabilityView projectId={P} requirementId={SELF} />
+        {late ? <SimilarRequirementsPanel projectId={P} requirementId="r-late" /> : null}
+      </QueryClientProvider>
+    );
+    const view = render(panels(false));
+    await user.click(await screen.findByRole("button", { name: ACTION }));
+    await user.click(await screen.findByRole("button", { name: "Copy 2 links" }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
+
+    view.rerender(panels(true));
+    await waitFor(() => expect(fetches("r-late")).toBe(1));
+    answerChain();
+    await waitFor(() => expect(fetches("r-other")).toBe(2));
+    expect(fetches("r-late")).toBe(1);
+
+    answerLate({ items: [after] });
+    const late = screen.getAllByTestId("similar-requirements")[2]!;
+    expect(await within(late).findByText("1 code link: 1 fresh, 0 stale")).toBeInTheDocument();
+    expect(fetches("r-late")).toBe(1);
   });
 
   it("is hidden from a viewer without edit rights, and shown to an editor", async () => {

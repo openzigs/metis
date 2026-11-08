@@ -314,6 +314,11 @@ export class XenovaEmbedder implements EmbedBackend {
     return this.identity;
   }
 
+  /** Issue #1944 — the same value: it never needs I/O. */
+  knownIdentity(): string {
+    return this.identity;
+  }
+
   async warm(): Promise<void> {
     if (this.pipeline) return;
     if (!this.loader) this.loader = this.load();
@@ -645,6 +650,14 @@ class RemoteEmbedder implements EmbedBackend {
     return this.wireIdentity;
   }
 
+  /**
+   * Issue #1944 — the identity from the last wire response, or `null` before
+   * the first embed. Never probes, so it costs nothing while the sidecar is down.
+   */
+  knownIdentity(): string | null {
+    return this.wireIdentity;
+  }
+
   async healthy(): Promise<boolean> {
     try {
       await this.client.healthz();
@@ -887,6 +900,16 @@ export class Embedder {
       return this.backend.currentIdentity();
     }
     return this.backend.model;
+  }
+
+  /**
+   * Issue #1944 — {@link currentIdentity} without the probe: the identity the
+   * active backend already knows, else its bare model id. For a read on every
+   * request (the project content version) that must not send an embed to the
+   * sidecar before its first real one, or on each call while it is down.
+   */
+  knownIdentity(): string {
+    return this.backend.knownIdentity?.() ?? this.backend.model;
   }
 
   capabilities(): EmbedBackendCapabilities {
