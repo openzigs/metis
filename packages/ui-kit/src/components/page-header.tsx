@@ -24,6 +24,17 @@ export const PAGE_TITLE_CLASS = "text-2xl font-semibold tracking-tight";
  */
 export const PAGE_HEADER_WITH_ACTIONS_CLASS = "sm:grid sm:grid-cols-[minmax(min-content,1fr)_auto]";
 
+/**
+ * #1960 — `min-content` in that grid is measured over the whole title column, so
+ * a long unbreakable token in the description (or a child, or the eyebrow) set
+ * the floor and pushed the actions past the header's right edge. Inline-size
+ * containment gives each of those an intrinsic width of zero, so only the title
+ * row sets the floor; the contained parts still lay out at the column's width.
+ * Only in a header with actions: in the flex row a header without them keeps,
+ * the description's own width is what sizes the title column.
+ */
+export const PAGE_HEADER_UNFLOORED_CLASS = "sm:contain-inline-size";
+
 export interface PageHeaderProps extends Omit<React.HTMLAttributes<HTMLElement>, "title"> {
   /** The page title, rendered as the page's single `<h1>`. */
   title: React.ReactNode;
@@ -55,18 +66,21 @@ export function PageHeader({
   children,
   ...props
 }: PageHeaderProps) {
+  const unfloored = actions ? PAGE_HEADER_UNFLOORED_CLASS : null;
   return (
     <header
       data-slot="page-header"
       className={cn(
-        "flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between",
-        actions ? PAGE_HEADER_WITH_ACTIONS_CLASS : null,
+        "flex flex-col gap-3 sm:items-start",
+        actions ? PAGE_HEADER_WITH_ACTIONS_CLASS : "sm:flex-row sm:justify-between",
         className,
       )}
       {...props}
     >
       <div className="min-w-0 space-y-1">
-        {eyebrow ? <div className="text-xs text-muted-foreground">{eyebrow}</div> : null}
+        {eyebrow ? (
+          <div className={cn("text-xs text-muted-foreground", unfloored)}>{eyebrow}</div>
+        ) : null}
         {titleExtra ? (
           <div className="flex flex-wrap items-center gap-3">
             <h1 id={titleId} className={PAGE_TITLE_CLASS}>
@@ -79,8 +93,13 @@ export function PageHeader({
             {title}
           </h1>
         )}
-        {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
-        {children}
+        {description ? (
+          <p className={cn("text-sm text-muted-foreground", unfloored)}>{description}</p>
+        ) : null}
+        {/* One wrapper, so an inline child (which containment skips) is covered too. */}
+        {React.Children.toArray(children).length > 0 ? (
+          <div className={cn("space-y-1", unfloored)}>{children}</div>
+        ) : null}
       </div>
       {actions ? (
         <div data-slot="page-header-actions" className="flex min-w-0 flex-wrap items-center gap-2">
