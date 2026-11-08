@@ -94,8 +94,45 @@ export interface TruthPair {
    * "No."), for a fact that is settled in a word or two; `needs-ba-input` only.
    */
   baAnswer?: string;
+  /**
+   * #2033 — the verdict once `baAnswer` is known: what the pair becomes when
+   * the BA's answer to `businessFact` is added to the requirement. Required
+   * with `baAnswer`, and only with it. The arms never read it; the replay of
+   * BA answers is scored against it.
+   */
+  answeredVerdict?: GoverningVerdict;
   /** The rule applies though the requirement shares no vocabulary with it. */
   nonResembling?: boolean;
+}
+
+/** #2033 — a pair a BA answers in a word or two, as {@link shortAnswerPairs} returns it. */
+export interface ShortAnswerPair {
+  ruleId: string;
+  /** The pair's `businessFact`: the question the BA is asked. */
+  question: string;
+  /** The pair's `baAnswer`. */
+  answer: string;
+  /** The verdict once the answer is known. */
+  answeredVerdict: GoverningVerdict;
+}
+
+/**
+ * #2033 — the item's short-answer pairs: those carrying a `baAnswer`. The
+ * loader has checked that each has its business fact and `answeredVerdict`.
+ */
+export function shortAnswerPairs(item: Pick<GoverningItem, "applies">): ShortAnswerPair[] {
+  return item.applies.flatMap((p) =>
+    p.baAnswer !== undefined && p.businessFact && p.answeredVerdict
+      ? [
+          {
+            ruleId: p.ruleId,
+            question: p.businessFact,
+            answer: p.baAnswer,
+            answeredVerdict: p.answeredVerdict,
+          },
+        ]
+      : [],
+  );
 }
 
 /** One analyst-worded requirement. An empty `applies` is a negative item. */
@@ -282,16 +319,31 @@ export const SHORT_SUBJECT_WORDS: ReadonlySet<string> = new Set([
 /**
  * The endings folded onto a short subject word: plural, past, -ing and -ation
  * (#1920), so `logs`, `logged`, `logging`, `taxation` and `keyed` meet `log`,
- * `tax` and `key`; and the derived -ment, -er and -able (#1932), so `payment`,
- * `payer`, `logger` and `taxable` meet `pay`, `log` and `tax`.
+ * `tax` and `key`; the derived -ment, -er and -able (#1932), so `payment`,
+ * `payer`, `logger` and `taxable` meet `pay`, `log` and `tax`; and the plural
+ * -ables and the -ee (#2032), so `payables`, `taxables` and `payee` do too.
  */
-const SHORT_WORD_INFLECTION = /(?:ations?|ings?|ments?|ers?|able|ed|e?s)$/;
+const SHORT_WORD_INFLECTION = /(?:ations?|ings?|ments?|ers?|ables?|ees?|ed|e?s)$/;
 
 /** #1932 — irregular forms no ending reaches. */
 const SHORT_WORD_IRREGULAR: ReadonlyMap<string, string> = new Map([["paid", "pay"]]);
 
+/**
+ * #2032 — prefixes cut before a short subject word is looked for, so `unpaid`,
+ * `prepaid`, `repayment`, `overtaxed` and `nonpayment` meet `pay` and `tax`.
+ */
+const SHORT_WORD_PREFIX = /^(?:non|over|pre|re|under|un)/;
+
+/**
+ * #2032 — the second halves of a compound that starts with a short subject
+ * word: `payroll`, `payslip`, `paycheck`, `logbook`, `logfile`, `keystore`,
+ * `keychain`, `keypair`. Listed, not guessed: `logistics` and `taxonomy` also
+ * start with a short word, and are not about it.
+ */
+const SHORT_WORD_TAIL = /^(?:books?|chains?|checks?|cheques?|files?|pairs?|rolls?|slips?|stores?)$/;
+
 /** A short subject word `raw` is, or is an inflection of; undefined when none. */
-function shortSubjectWord(raw: string): string | undefined {
+function inflectedShortWord(raw: string): string | undefined {
   const irregular = SHORT_WORD_IRREGULAR.get(raw);
   if (irregular !== undefined) return irregular;
   const stem = raw.replace(SHORT_WORD_INFLECTION, "");
@@ -300,6 +352,30 @@ function shortSubjectWord(raw: string): string | undefined {
     if (SHORT_SUBJECT_WORDS.has(base)) return base;
   }
   return undefined;
+}
+
+/**
+ * The short subject words `raw` carries: as a word or its inflection, behind a
+ * prefix (`unpaid`), or as a compound of a short word and either another one
+ * (`taxpayer` carries `tax` and `pay`) or a listed tail (`payroll`).
+ */
+function shortSubjectWords(raw: string): string[] {
+  const found = new Set<string>();
+  for (const word of new Set([raw, raw.replace(SHORT_WORD_PREFIX, "")])) {
+    const whole = inflectedShortWord(word);
+    if (whole !== undefined) {
+      found.add(whole);
+      continue;
+    }
+    for (const base of SHORT_SUBJECT_WORDS) {
+      if (!word.startsWith(base) || word.length === base.length) continue;
+      const rest = word.slice(base.length);
+      const other = inflectedShortWord(rest);
+      if (other !== undefined) found.add(base).add(other);
+      else if (SHORT_WORD_TAIL.test(rest)) found.add(base);
+    }
+  }
+  return [...found];
 }
 
 /**
@@ -312,8 +388,7 @@ function shortSubjectWord(raw: string): string | undefined {
 export function contentStems(text: string): Set<string> {
   const out = new Set<string>();
   for (const raw of text.toLowerCase().split(/[^a-z0-9]+/)) {
-    const short = shortSubjectWord(raw);
-    if (short !== undefined) out.add(short);
+    for (const short of shortSubjectWords(raw)) out.add(short);
     if (raw.length < 4 || STOP_WORDS.has(raw)) continue;
     out.add(raw.slice(0, 5));
   }
@@ -476,6 +551,17 @@ function validateItems(
           problems.push(`${at}: a BA answer on a ${pair.verdict} pair`);
         } else if (!pair.baAnswer.trim()) {
           problems.push(`${at}: an empty BA answer`);
+        }
+        if (pair.answeredVerdict === undefined) {
+          problems.push(`${at}: a BA answer without the verdict it leads to (answeredVerdict)`);
+        }
+      }
+      if (pair.answeredVerdict !== undefined) {
+        if (pair.baAnswer === undefined) {
+          problems.push(`${at}: an answeredVerdict without the BA answer it follows from`);
+        }
+        if (!(GOVERNING_VERDICTS as readonly string[]).includes(pair.answeredVerdict)) {
+          problems.push(`${at}: unknown answeredVerdict ${JSON.stringify(pair.answeredVerdict)}`);
         }
       }
       if (pair.nonResembling) {

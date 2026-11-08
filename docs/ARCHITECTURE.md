@@ -2776,7 +2776,41 @@ rather than updating them optimistically. A `needs-ba-input` finding links to
 requirement and rule, or to the Questions tab when there is none.
 
 Eval arm **A4** (`pnpm eval:governing --arm A4`) runs A3's applicability and then these findings
-over the #1867 corpus.
+over the #1867 corpus. #2033 — on a requirement with short-answer pairs, A4 then replays the
+BA's answers (`replayAnswers`, `server/src/lib/eval/governing/arms.ts`): each pair's
+`businessFact` is the question and its `baAnswer` the answer. An answered rule that
+applicability left `uncertain` is first re-judged by production's settle (`rejudgeAnswered`),
+then `evaluateRequirementFindings` runs over the answered rules with the answers, so the
+evidence rule reads each short answer with its question. Those findings are scored apart,
+against each pair's `answeredVerdict`, in their own row of the report ("Short-answer pairs,
+with the BA's answer replayed"). The main results still read the findings before any answer.
+
+#### Governing rules in the requirements BRD (#1877)
+
+A requirements-scoped BRD (`docs-gen/requirements-scope.ts`, #991) gets a `## Governing rules`
+section after its requirements and before the code-links appendix
+(`docs-gen/governing-section.ts`). It is built from the stored rows, never by asking a model
+again. The runs are the distinct `analysisId`s of the document's requirements, read through
+`requirementsScopeWhere`, and then `analysis.findMany` filtered on `projectId`. Their findings
+come from `listGoverningFindings`, the read the analysis route serves, so the document's statuses
+and decisions are the route's (`server/tests/governing-brd-section-1877.sqlite.test.ts` reads
+both).
+
+- A rejected finding is listed and marked **Rejected**, with who decided it and when
+  (`decidedByName`, as the analysis view shows it).
+- Each document revision gets one `governingSummarySentence`, counted as the analysis view's
+  findings panel (#1876) counts it: the rule count comes from `governingFindingRevisions`, the
+  gaps are counted per finding, and the BA-input count is per rule.
+- Every stored text shown passes through `neutraliseComplianceClaims`, and so does each composed
+  line as a backstop. An excerpt whose wording was changed says it is no longer verbatim.
+- A finding is keyed on the requirement as the run analysed it (`REQ-001`), which is not joined
+  to the stored requirement rows. So the section lists every finding of each run, and says so.
+- With the flag off nothing is read. With no findings the section is absent. Either way the
+  document and its source fingerprint are byte-identical to before. When the section is present,
+  the fingerprint also covers each finding's status, excerpt, revision and decision.
+
+The reader-layout BRD generated from code (#1175, whose approved-requirements section lists the
+default run's requirements) does not carry the section yet (#2035).
 
 ---
 
@@ -4511,8 +4545,14 @@ with #1878's flag decision, are read on **`governing-02-clinic-records`**
 (`purpose: "held-out"`). It is a fictional clinic network's patient records and clinical
 safety standard: 40 obligations, a v2 changing four clauses, and 36 requirements (30
 positive, 6 negative, 10 with a non-resembling pair). Seven of its `needs-ba-input` pairs
-carry the short `baAnswer` a BA would give ("Yes, we do.", "No.") for #2017 and #2022.
-It was labelled blind to every arm and prompt by two AI labellers, the same model as the
+carry the short `baAnswer` a BA would give ("Yes, we do.", "No.") for #2017 and #2022,
+and (#2033) the verdict that answer leads to (`answeredVerdict`), which arm A4's replay of
+the answers is scored against. The loader requires `answeredVerdict` with every `baAnswer`
+and refuses it without one. `governing-01` carries seven such pairs too, among them the
+polarity case GR-11, where "No." meets the rule, so a prompt change about answer polarity
+can be iterated on the tuning set. The `answeredVerdict` labels were added after the
+findings prompt was read, so unlike the rest of `governing-02` they are not blind to it.
+`governing-02` was labelled blind to every arm and prompt by two AI labellers, the same model as the
 author (so not independent human judgement). The second ran with no tools and saw only the
 policy and the requirements. They agreed on 31 of the 40 pairs either listed (0.78); Cohen's
 κ is 0.93, but over 1,440 cells of which about 97% are "does not apply" for both. A third

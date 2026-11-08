@@ -20,6 +20,7 @@ import {
   ruleIdsIn,
   sharedPhrases,
   sharedVocabulary,
+  shortAnswerPairs,
   trustServicesCriteriaMarkers,
   validateGoverningCorpus,
   type CorpusFiles,
@@ -669,6 +670,38 @@ describe("the text checks", () => {
     expect([...contentStems("paper tables")].sort()).toEqual(["paper", "table"]);
   });
 
+  it("contentStems folds -ables, -ee, prefixed forms and compounds of a short subject word (#2032)", () => {
+    for (const [word, bases] of [
+      ["payables", ["pay"]],
+      ["taxables", ["tax"]],
+      ["payee", ["pay"]],
+      ["payees", ["pay"]],
+      ["unpaid", ["pay"]],
+      ["prepaid", ["pay"]],
+      ["repayment", ["pay"]],
+      ["overtaxed", ["tax"]],
+      ["nonpayment", ["pay"]],
+      ["payroll", ["pay"]],
+      ["payrolls", ["pay"]],
+      ["taxpayer", ["pay", "tax"]],
+      ["taxpayers", ["pay", "tax"]],
+      ["keystore", ["key"]],
+      ["logfiles", ["log"]],
+    ] as const) {
+      const stems = contentStems(word);
+      for (const base of bases) expect(stems.has(base), `${word} → ${base}`).toBe(true);
+    }
+    expect(sharedVocabulary("run the payroll", "who may pay a supplier")).toEqual(["pay"]);
+    expect(sharedVocabulary("list unpaid invoices", "pay suppliers on time")).toEqual(["pay"]);
+    expect(sharedVocabulary("register each taxpayer", "charge VAT and tax")).toEqual(["tax"]);
+    // A word that only starts like one, prefixed or not, is still not folded onto it.
+    expect([...contentStems("logistics taxonomy relogic")].sort()).toEqual([
+      "logis",
+      "relog",
+      "taxon",
+    ]);
+  });
+
   it("sharedVocabulary is empty for the GR-01 pair and not for a resembling one", () => {
     expect(
       sharedVocabulary("download last month's invoices", "bulk extraction of financial records"),
@@ -752,5 +785,77 @@ describe("loading", () => {
     await expect(loadGoverningCorpus(NAME, dir)).rejects.toThrow(
       /is not sound:\n {2}- stray\.txt is in the corpus directory[\s\S]*names rule ids \(AC-01\)/,
     );
+  });
+});
+
+describe("short-answer pairs and the verdict their answer leads to (#2033)", () => {
+  const answered = (c: { manifest: GoverningCorpusManifest }) =>
+    Object.fromEntries(
+      c.manifest.items.flatMap((i) =>
+        shortAnswerPairs(i).map((p) => [
+          `${i.id} → ${p.ruleId}`,
+          `${p.answer} ${p.answeredVerdict}`,
+        ]),
+      ),
+    );
+
+  it("records answeredVerdict on every short-answer pair of the held-out set: Yes meets, No breaches", async () => {
+    // governing-02's business facts all ask whether the rule is met.
+    expect(answered(await loadGoverningCorpus(HELD_OUT))).toEqual({
+      "KV-02 → TP-01": "Yes, we do. compliant",
+      "KV-05 → MS-04": "No. gap",
+      "KV-14 → CM-01": "Yes, they are. compliant",
+      "KV-26 → TP-03": "Yes, we do. compliant",
+      "KV-28 → TP-05": "No. gap",
+      "KV-31 → IR-04": "Yes, we do. compliant",
+      "KV-33 → CM-04": "No. gap",
+    });
+  });
+
+  it("gives the tuning set short-answer pairs too, with the polarity case: on GR-11, No meets the rule", async () => {
+    const g01 = answered(await loadGoverningCorpus(NAME));
+    expect(Object.keys(g01)).toHaveLength(7);
+    expect(g01["GR-11 → DR-06"]).toBe("No. compliant");
+    expect(g01["GR-08 → PR-05"]).toBe("No. gap");
+    expect(g01["GR-21 → CM-03"]).toBe("Yes, there is. compliant");
+  });
+
+  it("shortAnswerPairs gives the business fact as the question and the BA answer, and nothing else", () => {
+    expect(
+      shortAnswerPairs({
+        applies: [
+          { ruleId: "AA-01", verdict: "gap" },
+          { ruleId: "AA-02", verdict: "needs-ba-input", businessFact: "Q?" },
+          {
+            ruleId: "AA-03",
+            verdict: "needs-ba-input",
+            businessFact: "Is it logged?",
+            baAnswer: "No.",
+            answeredVerdict: "gap",
+          },
+        ],
+      }),
+    ).toEqual([
+      { ruleId: "AA-03", question: "Is it logged?", answer: "No.", answeredVerdict: "gap" },
+    ]);
+  });
+
+  it("FAILS on a BA answer without answeredVerdict, an answeredVerdict without an answer, or an unknown one", async () => {
+    const { manifest, files } = await committed();
+    expect(validateGoverningCorpus(manifest, files)).toEqual([]);
+    const m = clone(manifest);
+    const asks = m.items.flatMap((i) => i.applies).filter((p) => p.verdict === "needs-ba-input");
+    const short = asks.filter((p) => p.baAnswer !== undefined);
+    delete short[0]!.answeredVerdict;
+    (short[1] as { answeredVerdict: string }).answeredVerdict = "maybe";
+    const unanswered = asks.find((p) => p.baAnswer === undefined)!;
+    unanswered.answeredVerdict = "gap";
+    const problems = validateGoverningCorpus(m, files);
+    // In item order: GR-01's unanswered pair, then GR-06's and GR-08's answered ones.
+    expect(problems).toEqual([
+      `item GR-01 → ${unanswered.ruleId}: an answeredVerdict without the BA answer it follows from`,
+      `item GR-06 → ${short[0]!.ruleId}: a BA answer without the verdict it leads to (answeredVerdict)`,
+      `item GR-08 → ${short[1]!.ruleId}: unknown answeredVerdict "maybe"`,
+    ]);
   });
 });

@@ -27,12 +27,22 @@ import {
   type PairedDifference,
 } from "../localization/stats.js";
 import { measureScreenPromptSizes, type GoverningArm, type ScreenPromptSize } from "./arms.js";
-import type { GoverningCorpus, GoverningItem, GoverningPurpose } from "./corpus.js";
+import {
+  shortAnswerPairs,
+  type GoverningCorpus,
+  type GoverningItem,
+  type GoverningPurpose,
+} from "./corpus.js";
 import {
   checkThresholds,
   heldByConstruction,
+  scoreAnswered,
   scoreItem,
+  summarizeAnswered,
   summarizeRuns,
+  type AnsweredOutput,
+  type AnsweredPairOutcome,
+  type AnsweredSummary,
   type ByConstruction,
   type GoverningJudgement,
   type ItemScore,
@@ -162,6 +172,10 @@ export interface ItemRunRecord {
   completionTokens: number;
   seconds: number;
   pairs: PairOutcome[];
+  /** #2033 — the arm's findings after the short-answer pairs were answered, when it replays them. */
+  answered?: AnsweredOutput;
+  /** #2033 — those findings scored against each pair's `answeredVerdict`. */
+  answeredPairs?: AnsweredPairOutcome[];
 }
 
 export interface ArmCost {
@@ -184,6 +198,11 @@ export interface GoverningArmReport {
   thresholds: ThresholdCheck[];
   cost: ArmCost;
   failures: number;
+  /**
+   * #2033 — the short-answer pairs' own row: the findings after each BA answer
+   * was replayed, over the scored runs. Null for an arm that does not replay them.
+   */
+  shortAnswers: AnsweredSummary | null;
   records: ItemRunRecord[];
 }
 
@@ -338,6 +357,7 @@ export async function runGoverningEval(
     const t0 = now();
     let judgements: GoverningJudgement[] = [];
     let diagnostics: Record<string, number> | undefined;
+    let answered: AnsweredOutput | undefined;
     let error: string | undefined;
     ledger.begin();
     try {
@@ -346,6 +366,7 @@ export async function runGoverningEval(
       });
       judgements = out.judgements;
       diagnostics = out.diagnostics;
+      answered = out.answered;
     } catch (err) {
       // One line, bounded: a schema error message is a multi-line JSON dump.
       error = (err instanceof Error ? err.message : String(err))
@@ -369,6 +390,10 @@ export async function runGoverningEval(
       completionTokens: callMeter.completionTokens(),
       seconds: (now() - t0) / 1000,
       pairs: scoreItem(corpus, item, { judgements }).pairs,
+      ...(answered ? { answered } : {}),
+      ...(arm.replaysAnswers && shortAnswerPairs(item).length > 0
+        ? { answeredPairs: scoreAnswered(item, answered, error !== undefined).pairs }
+        : {}),
     });
   };
 
@@ -401,10 +426,17 @@ export async function runGoverningEval(
   const arms: GoverningArmReport[] = opts.arms.map((arm) => {
     const recs = records.get(arm.id)!;
     const runsScored: ItemScore[][] = [];
+    const answeredRuns: ReturnType<typeof scoreAnswered>["counts"][][] = [];
     for (let run = 1; run <= opts.runs; run++) {
       const inRun = recs.filter((r) => r.run === run);
       if (inRun.length !== items.length) break;
       runsScored.push(items.map((item, i) => scoreItem(corpus, item, inRun[i]!)));
+      answeredRuns.push(
+        items.map(
+          (item, i) =>
+            scoreAnswered(item, inRun[i]!.answered, inRun[i]!.error !== undefined).counts,
+        ),
+      );
     }
     scored.set(arm.id, runsScored);
     const summary = summarizeRuns(runsScored);
@@ -419,6 +451,7 @@ export async function runGoverningEval(
       thresholds: checkThresholds(summary, corpus.manifest.thresholds, byConstruction),
       cost: costOf(recs),
       failures: recs.filter((r) => r.error !== undefined).length,
+      shortAnswers: arm.replaysAnswers ? summarizeAnswered(answeredRuns) : null,
       records: recs,
     };
   });
@@ -450,8 +483,9 @@ export async function runGoverningEval(
 /**
  * The report as committed JSON: indented, but one line per arm record so a
  * baseline of 36 requirements × 3 runs stays readable in a diff. A record's
- * `pairs` are left out: `scoreItem` recomputes them from its judgements and
- * the corpus, and they would more than double the file.
+ * `pairs` and `answeredPairs` are left out: `scoreItem` and `scoreAnswered`
+ * recompute them from its judgements and the corpus, and they would more than
+ * double the file.
  */
 export function toJsonReport(report: GoverningReport, extra: Record<string, unknown> = {}): string {
   const records = report.arms.map((a) => a.records);
@@ -462,7 +496,9 @@ export function toJsonReport(report: GoverningReport, extra: Record<string, unkn
     2,
   );
   const withRecords = records.reduce((text, recs, i) => {
-    const lines = recs.map(({ pairs: _pairs, ...r }) => `      ${JSON.stringify(r)}`);
+    const lines = recs.map(
+      ({ pairs: _pairs, answeredPairs: _answered, ...r }) => `      ${JSON.stringify(r)}`,
+    );
     const block = lines.length === 0 ? "[]" : `[\n${lines.join(",\n")}\n    ]`;
     return text.replace(`"${marker(i)}"`, () => block);
   }, body);
@@ -493,6 +529,67 @@ function misses(arm: GoverningArmReport): { missed: string[]; hardErrors: string
     .map(([k]) => k)
     .sort();
   return { missed, hardErrors };
+}
+
+/**
+ * #2033 — the short-answer pairs' own row, for each arm that replays BA
+ * answers: the findings once each pair's `businessFact` was asked and its
+ * `baAnswer` given, scored against the pair's `answeredVerdict`. Then, per
+ * pair, the verdict of each scored run, so a reading of seven pairs can be
+ * read pair by pair. Nothing when no arm replays answers.
+ */
+export function shortAnswerSection(report: Pick<GoverningReport, "arms">): string[] {
+  const arms = report.arms.filter(
+    (a): a is GoverningArmReport & { shortAnswers: AnsweredSummary } => a.shortAnswers !== null,
+  );
+  if (arms.length === 0) return [];
+  const lines = ["## Short-answer pairs, with the BA's answer replayed (#2033)", ""];
+  if (arms.every((a) => a.shortAnswers.pairs === 0)) {
+    lines.push("This set has no short-answer pairs (`baAnswer`), so no answer was replayed.", "");
+    return lines;
+  }
+  lines.push(
+    "Each pair's `businessFact` is asked and its `baAnswer` given; the finding after the answer " +
+      "is scored against the pair's `answeredVerdict`. The results above read the findings before any answer.",
+    "",
+    "| Arm | Runs | Pairs | Verdict accuracy after the answer | Given a verdict | Compliant against the label | Still asking | Replay failures |",
+    "|---|---|---|---|---|---|---|---|",
+  );
+  const perRun = (xs: readonly number[]) => (xs.length === 0 ? "n/a" : xs.join("/"));
+  for (const a of arms) {
+    const s = a.shortAnswers;
+    lines.push(
+      `| ${a.id} | ${s.runs} | ${s.pairs} | ${ci(s.verdictAccuracy)} | ${perRun(s.foundPerRun)} | ` +
+        `${s.hardErrors} | ${perRun(s.askedPerRun)} | ${s.failures} |`,
+    );
+  }
+  lines.push(
+    "",
+    "Per-run counts are joined with `/`. Compliant against the label: `compliant` after an answer " +
+      "whose labelled verdict is not, summed over runs (a short answer read the wrong way round).",
+    "",
+  );
+  for (const a of arms) {
+    const byPair = new Map<string, { answer: string; truth: string; verdicts: string[] }>();
+    for (const r of a.records) {
+      if (r.run > a.completedRuns) continue;
+      for (const p of r.answeredPairs ?? []) {
+        const key = `${r.itemId} → ${p.ruleId}`;
+        const held = byPair.get(key) ?? { answer: p.answer, truth: p.truth, verdicts: [] };
+        held.verdicts.push(p.verdict ?? "missed");
+        byPair.set(key, held);
+      }
+    }
+    if (byPair.size === 0) continue;
+    lines.push(`${a.id}, pair by pair (each scored run's verdict after the answer):`, "");
+    for (const [key, p] of byPair) {
+      lines.push(
+        `- ${key} (${JSON.stringify(p.answer)}, labelled ${p.truth}): ${p.verdicts.join(", ")}`,
+      );
+    }
+    lines.push("");
+  }
+  return lines;
 }
 
 /**
@@ -598,13 +695,14 @@ export function toMarkdownReport(report: GoverningReport): string {
   lines.push("| Arm | Bar | Required | Measured | Pass |", "|---|---|---|---|---|");
   for (const a of report.arms) {
     for (const t of a.thresholds) {
-      // A judged bar carries a note only when it broke a by-construction claim (#1932).
+      // ‡ marks a judged bar whose by-construction claim broke (#1932, #2032).
       const pass =
-        t.pass === null ? "n/a†" : `${t.pass ? "yes" : "**no**"}${t.note === undefined ? "" : "‡"}`;
+        t.pass === null ? "n/a†" : `${t.pass ? "yes" : "**no**"}${t.brokenClaim ? "‡" : ""}`;
       lines.push(`| ${a.id} | ${t.bar} | ${t.required} | ${t.measured} | ${pass} |`);
     }
   }
   lines.push("");
+  lines.push(...shortAnswerSection(report));
   lines.push("## Paired comparison with A0", "", `> ${report.detectableGap}`, "");
   if (report.comparisons.length === 0) {
     lines.push("No other arm was run: this report is A0's baseline.", "");

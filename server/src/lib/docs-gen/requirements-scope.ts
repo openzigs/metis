@@ -7,6 +7,9 @@
  * own title, body, priority, review status, verdict and acceptance criteria,
  * and the requirement→code mappings and merged-PR implementations recorded
  * against it. Nothing is written by a model, so nothing in it is ungrounded.
+ * #1877 — with governing documents on, the governing findings stored for the
+ * runs the requirements came from follow them (`governing-section.ts`): stored
+ * rows too, read as the analysis view reads them, never asked of a model again.
  *
  * Every read is filtered on `projectId` as well as the selector, so another
  * project's analysis, review or requirement id selects nothing.
@@ -22,6 +25,14 @@ import { prisma } from "../prisma.js";
 import { formatStartedAt } from "../analysis/run-start-label.js";
 import { snapshotAtVersion } from "../reviews/baseline-service.js";
 import { pickTracked, type VersionRow } from "../requirements/requirement-version-service.js";
+import { isGoverningDocsEnabled } from "../governing/flag.js";
+import {
+  governingSectionFacts,
+  loadGoverningSection,
+  renderGoverningSection,
+  type GoverningSection,
+} from "./governing-section.js";
+import { cell } from "./markdown-cell.js";
 
 /** Upper bound on an explicit selection, so one request cannot name the whole table. */
 export const MAX_SELECTED_REQUIREMENTS = 500;
@@ -268,22 +279,6 @@ export function neutralizeHtml(markdown: string): string {
             .join(""),
     )
     .join("");
-}
-
-/**
- * One line of text safe inside a Markdown table cell or heading. Backslashes
- * are escaped first, so a stored `\|` cannot turn the added escape into a
- * literal backslash followed by a live column separator.
- */
-function cell(value: string): string {
-  return (
-    value
-      .replace(/\s+/g, " ")
-      .replace(/\\/g, "\\\\")
-      .replace(/\|/g, "\\|")
-      .replace(/</g, "&lt;")
-      .trim() || "—"
-  );
 }
 
 /** A repository path shown as inline code; backticks would break out of it. */
@@ -570,12 +565,17 @@ function codeLinksAppendix(requirements: readonly ScopedRequirement[]): string[]
   return out;
 }
 
-/** The Markdown document for a set of requirements. */
+/**
+ * The Markdown document for a set of requirements. #1877 — with `governing`,
+ * the governing-rules section follows the requirements, before the code-links
+ * appendix; without it the document is exactly as before.
+ */
 export function renderRequirementsDocument(
   title: string,
   filter: RequirementsScopeFilter,
   requirements: readonly ScopedRequirement[],
   names: RequirementsSourceNames = {},
+  governing: GoverningSection | null = null,
 ): string {
   const linked = requirements.filter(
     (r) => r.codeMappings.length > 0 || r.implementations.length > 0,
@@ -600,6 +600,7 @@ export function renderRequirementsDocument(
   });
   out.push("", "## Requirements");
   requirements.forEach((r, i) => out.push("", ...renderRequirementEntry(r, i + 1)));
+  if (governing) out.push("", ...renderGoverningSection(governing));
   out.push(...codeLinksAppendix(requirements));
   return `${out.join("\n")}\n`;
 }
@@ -626,6 +627,22 @@ async function loadSourceNames(
   return { analysisStartedAt: analysis?.startedAt ?? null, reviewTitle: review?.title ?? null };
 }
 
+/**
+ * #1877 — the analysis runs the selected requirements came from, read through
+ * the same project-scoped `where` that selects them.
+ */
+async function scopedAnalysisIds(
+  projectId: string,
+  filter: RequirementsScopeFilter,
+): Promise<string[]> {
+  const rows = await prisma.requirement.findMany({
+    where: requirementsScopeWhere(projectId, filter),
+    select: { analysisId: true },
+    distinct: ["analysisId"],
+  });
+  return rows.map((r) => r.analysisId);
+}
+
 /** Load, render and fingerprint the requirements a document is scoped to. */
 export async function synthesizeRequirementsDocument(
   projectId: string,
@@ -636,14 +653,26 @@ export async function synthesizeRequirementsDocument(
   if (requirements.length === 0) {
     throw new Error("No requirements match this document's scope");
   }
+  // #1877 — the governing findings of the runs the requirements came from;
+  // nothing is read while the governing-documents flag is off.
+  const governing = isGoverningDocsEnabled()
+    ? await loadGoverningSection(projectId, await scopedAnalysisIds(projectId, filter))
+    : null;
+  const fingerprint = requirementsSourceFingerprint(requirements);
   return {
     markdown: renderRequirementsDocument(
       title,
       filter,
       requirements,
       await loadSourceNames(projectId, filter),
+      governing,
     ),
-    sourceFingerprint: requirementsSourceFingerprint(requirements),
+    sourceFingerprint: governing
+      ? createHash("sha256")
+          .update(fingerprint)
+          .update(governingSectionFacts(governing))
+          .digest("hex")
+      : fingerprint,
     requirementCount: requirements.length,
   };
 }

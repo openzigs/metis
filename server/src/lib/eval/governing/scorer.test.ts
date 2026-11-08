@@ -6,8 +6,10 @@ import {
   checkThresholds,
   citationVerified,
   heldByConstruction,
+  scoreAnswered,
   scoreItem,
   stripRuleMarker,
+  summarizeAnswered,
   summarizeRuns,
   type GoverningArmOutput,
 } from "./scorer.js";
@@ -327,6 +329,8 @@ describe("checkThresholds", () => {
       note: "never says compliant",
     });
     expect(byBar.citationAccuracy).toMatchObject({ pass: null, note: "only verified citations" });
+    // A claim that holds is not a broken one (#2032).
+    expect(fixed.some((c) => c.brokenClaim)).toBe(false);
     // A bar the arm can fail is still judged.
     expect(byBar.overallRecall).toMatchObject({ pass: true });
     expect(byBar.overallRecall).not.toHaveProperty("note");
@@ -365,6 +369,9 @@ describe("checkThresholds", () => {
     expect(byBar.maxNoEvidenceCompliantErrors!.note).toMatch(
       /^claimed fixed by construction \(never says compliant\), but measured otherwise$/,
     );
+    // #2032 — the report's ‡ reads this flag, not the note.
+    expect(byBar.maxNoEvidenceCompliantErrors!.brokenClaim).toBe(true);
+    expect(byBar.overallRecall).not.toHaveProperty("brokenClaim");
     expect(byBar.citationAccuracy).toMatchObject({ pass: false, measured: "0.50" });
 
     // Each claim is checked on its own, in every run.
@@ -409,5 +416,115 @@ describe("checkThresholds", () => {
     expect(s.metrics.precision.mean).toBe(1);
     expect(s.runs).toBe(2);
     expect(summarizeRuns([]).metrics.recall.mean).toBeNull();
+  });
+});
+
+describe("short-answer pairs, answered (#2033)", () => {
+  const ask = (
+    ruleId: string,
+    answer: string,
+    answeredVerdict: "compliant" | "gap" | "needs-ba-input",
+  ): GoverningItem["applies"][number] => ({
+    ruleId,
+    verdict: "needs-ba-input",
+    businessFact: `Is ${ruleId} met?`,
+    baAnswer: answer,
+    answeredVerdict,
+  });
+  const answeredItem = item("R", [
+    ask("AL-02", "Yes, we do.", "compliant"),
+    ask("EN-03", "No.", "gap"),
+    ask("DR-01", "No.", "gap"),
+    { ruleId: "AC-01", verdict: "gap" },
+  ]);
+
+  it("scores the findings after the answer against answeredVerdict: right, wrong way round, still asking, missed", () => {
+    const { pairs, counts } = scoreAnswered(answeredItem, {
+      judgements: [
+        { ruleId: "AL-02", verdict: "compliant" },
+        // "No." read as meeting the rule: compliant against a gap label.
+        { ruleId: "EN-03", verdict: "compliant" },
+        { ruleId: "EN-03", verdict: "gap" },
+        // A rule with no short answer is not scored here.
+        { ruleId: "AC-01", verdict: "compliant" },
+      ],
+    });
+    expect(counts).toEqual({
+      pairs: 3,
+      found: 2,
+      correct: 1,
+      hardErrors: 1,
+      asked: 0,
+      failures: 0,
+    });
+    expect(pairs).toEqual([
+      {
+        ruleId: "AL-02",
+        answer: "Yes, we do.",
+        truth: "compliant",
+        verdict: "compliant",
+        hardError: false,
+      },
+      { ruleId: "EN-03", answer: "No.", truth: "gap", verdict: "compliant", hardError: true },
+      { ruleId: "DR-01", answer: "No.", truth: "gap", verdict: null, hardError: false },
+    ]);
+    const asking = scoreAnswered(answeredItem, {
+      judgements: [{ ruleId: "DR-01", verdict: "needs-ba-input" }],
+    });
+    expect(asking.counts).toMatchObject({ found: 1, correct: 0, asked: 1, hardErrors: 0 });
+  });
+
+  it("scores a failed arm or replay as misses and one failure; a requirement without short answers as nothing", () => {
+    const right = { judgements: [{ ruleId: "AL-02", verdict: "compliant" as const }] };
+    expect(scoreAnswered(answeredItem, right, true).counts).toEqual({
+      pairs: 3,
+      found: 0,
+      correct: 0,
+      hardErrors: 0,
+      asked: 0,
+      failures: 1,
+    });
+    expect(scoreAnswered(answeredItem, { ...right, error: "boom" }).counts).toMatchObject({
+      correct: 0,
+      failures: 1,
+    });
+    expect(scoreAnswered(answeredItem, undefined).counts).toMatchObject({ found: 0, failures: 0 });
+    const plain = item("P", [{ ruleId: "AL-02", verdict: "gap" }]);
+    expect(scoreAnswered(plain, undefined, true)).toEqual({
+      pairs: [],
+      counts: { pairs: 0, found: 0, correct: 0, hardErrors: 0, asked: 0, failures: 0 },
+    });
+  });
+
+  it("summarizeAnswered averages accuracy over runs and resamples only requirements with short answers", () => {
+    const none = { pairs: 0, found: 0, correct: 0, hardErrors: 0, asked: 0, failures: 0 };
+    const a = { pairs: 2, found: 2, correct: 2, hardErrors: 0, asked: 0, failures: 0 };
+    const b = { pairs: 1, found: 1, correct: 0, hardErrors: 1, asked: 0, failures: 0 };
+    const c = { pairs: 1, found: 0, correct: 0, hardErrors: 0, asked: 0, failures: 1 };
+    const s = summarizeAnswered([
+      [a, none, b],
+      [a, none, c],
+    ]);
+    expect(s.runs).toBe(2);
+    expect(s.pairs).toBe(3);
+    expect(s.verdictAccuracy.perRun).toEqual([2 / 3, 2 / 3]);
+    expect(s.verdictAccuracy.mean).toBeCloseTo(2 / 3, 10);
+    expect(s.foundPerRun).toEqual([3, 2]);
+    expect(s.hardErrors).toBe(1);
+    expect(s.hardErrorsPerRun).toEqual([1, 0]);
+    expect(s.askedPerRun).toEqual([0, 0]);
+    expect(s.failures).toBe(1);
+    // A requirement with no short answer is not resampled: the interval is the
+    // same without it. Enough items that the interval is not just [0, 1].
+    const pair = (n: number, right: number) => ({ ...none, pairs: n, found: n, correct: right });
+    const varied = [pair(2, 2), pair(1, 0), pair(2, 1), pair(1, 1), pair(2, 0), pair(1, 1)];
+    const padded = varied.flatMap((x) => [x, none]);
+    const ci = summarizeAnswered([varied]).verdictAccuracy.ci!;
+    expect(ci[0]).toBeGreaterThan(0);
+    expect(ci[1]).toBeLessThan(1);
+    expect(summarizeAnswered([padded]).verdictAccuracy.ci).toEqual(ci);
+    const empty = summarizeAnswered([[none], [none]]);
+    expect(empty).toMatchObject({ pairs: 0, verdictAccuracy: { mean: null, ci: null } });
+    expect(summarizeAnswered([])).toMatchObject({ runs: 0, pairs: 0 });
   });
 });

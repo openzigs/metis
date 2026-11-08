@@ -21,9 +21,19 @@
  * A requirement the arm failed on (it threw) is scored as an error, never as
  * a clean negative (#1900): its truth pairs are misses, and a negative item it
  * failed on is not counted clean.
+ *
+ * #2033 — an arm that replays BA answers also returns its findings after the
+ * short-answer pairs were answered (`answered`). Those are scored apart
+ * ({@link scoreAnswered}) against each pair's `answeredVerdict`, in their own
+ * row; the metrics above read only the findings before any answer.
  */
 import { seededRandom } from "../localization/stats.js";
-import type { GoverningCorpus, GoverningItem, GoverningVerdict } from "./corpus.js";
+import {
+  shortAnswerPairs,
+  type GoverningCorpus,
+  type GoverningItem,
+  type GoverningVerdict,
+} from "./corpus.js";
 
 /** A citation: a clause excerpt and the rule it claims to come from. */
 export interface GoverningCitation {
@@ -39,11 +49,27 @@ export interface GoverningJudgement {
   businessFact?: string;
 }
 
+/**
+ * #2033 — an arm's findings once the requirement's short-answer pairs were
+ * answered: one judgement per answered rule the arm still applies. `error` is
+ * set when the replay threw; its pairs are then misses.
+ */
+export interface AnsweredOutput {
+  judgements: GoverningJudgement[];
+  error?: string;
+}
+
 /** What an arm returns for one requirement. */
 export interface GoverningArmOutput {
   judgements: GoverningJudgement[];
   /** What the arm did on the way (chunks retrieved, rules screened…); reported, never scored. */
   diagnostics?: Record<string, number>;
+  /**
+   * #2033 — set by an arm that replays BA answers, on a requirement with
+   * short-answer pairs. Scored apart ({@link scoreAnswered}): `judgements`
+   * stays the reading before any answer.
+   */
+  answered?: AnsweredOutput;
 }
 
 /**
@@ -342,6 +368,119 @@ export function summarizeRuns(
   };
 }
 
+// ── Short-answer pairs, answered (#2033) ──────────────────────────────────
+
+/** One short-answer pair after its answer was replayed. */
+export interface AnsweredPairOutcome {
+  ruleId: string;
+  answer: string;
+  /** The pair's `answeredVerdict`. */
+  truth: GoverningVerdict;
+  /** The arm's verdict after the answer; null when it gave none (a miss). */
+  verdict: GoverningVerdict | null;
+  /** `compliant` after an answer whose labelled verdict is not `compliant`. */
+  hardError: boolean;
+}
+
+/** The answered counts of one requirement under one arm and run. */
+export interface AnsweredCounts {
+  /** Short-answer pairs of the requirement. */
+  pairs: number;
+  /** Of them, those the arm gave a verdict after the answer. */
+  found: number;
+  correct: number;
+  hardErrors: number;
+  /** Still `needs-ba-input` after the answer. */
+  asked: number;
+  /** 1 when the requirement has short-answer pairs and the arm or its replay threw. */
+  failures: number;
+}
+
+/**
+ * #2033 — score the findings an arm gave once the requirement's short-answer
+ * pairs were answered, against each pair's `answeredVerdict`. A requirement
+ * with none scores zero pairs; one the arm failed on (`failed`, or a replay
+ * `error`) scores its pairs as misses and counts one failure.
+ */
+export function scoreAnswered(
+  item: Pick<GoverningItem, "applies">,
+  answered: AnsweredOutput | undefined,
+  failed = false,
+): { pairs: AnsweredPairOutcome[]; counts: AnsweredCounts } {
+  const short = shortAnswerPairs(item);
+  const counts: AnsweredCounts = {
+    pairs: short.length,
+    found: 0,
+    correct: 0,
+    hardErrors: 0,
+    asked: 0,
+    failures: short.length > 0 && (failed || answered?.error !== undefined) ? 1 : 0,
+  };
+  const judged = new Map<string, GoverningJudgement>();
+  if (counts.failures === 0) {
+    for (const j of answered?.judgements ?? []) if (!judged.has(j.ruleId)) judged.set(j.ruleId, j);
+  }
+  const pairs = short.map((p): AnsweredPairOutcome => {
+    const verdict = judged.get(p.ruleId)?.verdict ?? null;
+    const hardError = verdict === "compliant" && p.answeredVerdict !== "compliant";
+    if (verdict !== null) counts.found++;
+    if (verdict === p.answeredVerdict) counts.correct++;
+    if (hardError) counts.hardErrors++;
+    if (verdict === "needs-ba-input") counts.asked++;
+    return { ruleId: p.ruleId, answer: p.answer, truth: p.answeredVerdict, verdict, hardError };
+  });
+  return { pairs, counts };
+}
+
+/** The short-answer row of an arm, over its scored runs. */
+export interface AnsweredSummary {
+  runs: number;
+  /** Short-answer pairs in the set (the same in every run). */
+  pairs: number;
+  /** Correct verdicts after the answer / pairs: mean over runs, interval over requirements. */
+  verdictAccuracy: MetricSummary;
+  /** Pairs given a verdict after the answer, per run. */
+  foundPerRun: number[];
+  hardErrors: number;
+  hardErrorsPerRun: number[];
+  askedPerRun: number[];
+  failures: number;
+}
+
+/**
+ * #2033 — summarise an arm's answered counts over its runs. `runs[r]` holds
+ * every requirement's counts in run r, in item order; the interval resamples
+ * only the requirements that have short-answer pairs.
+ */
+export function summarizeAnswered(
+  runs: ReadonlyArray<readonly AnsweredCounts[]>,
+  opts: BootstrapOptions = {},
+): AnsweredSummary {
+  const total = (counts: readonly AnsweredCounts[], key: keyof AnsweredCounts) =>
+    counts.reduce((n, c) => n + c[key], 0);
+  const perRun = runs.map((counts) => ratio(total(counts, "correct"), total(counts, "pairs")));
+  const defined = perRun.filter((v): v is number => v !== null);
+  const items = runs[0]?.length ?? 0;
+  const pooled = (key: keyof AnsweredCounts) =>
+    Array.from({ length: items }, (_, i) => runs.reduce((n, counts) => n + counts[i]![key], 0));
+  const keep = pooled("pairs").map((n) => n > 0);
+  const only = (xs: number[]) => xs.filter((_, i) => keep[i]);
+  return {
+    runs: runs.length,
+    pairs: runs[0] ? total(runs[0], "pairs") : 0,
+    verdictAccuracy: {
+      mean: defined.length === 0 ? null : defined.reduce((a, b) => a + b, 0) / defined.length,
+      ci: bootstrapRatioCi(only(pooled("correct")), only(pooled("pairs")), opts),
+      perRun,
+    },
+    foundPerRun: runs.map((counts) => total(counts, "found")),
+    hardErrors: runs.reduce((n, counts) => n + total(counts, "hardErrors"), 0),
+    hardErrorsPerRun: runs.map((counts) => total(counts, "hardErrors")),
+    askedPerRun: runs.map((counts) => total(counts, "asked")),
+    failures: runs.reduce((n, counts) => n + total(counts, "failures"), 0),
+  };
+}
+
 /** The bars a summary is checked against (the manifest's thresholds). */
 export interface ThresholdBars {
   overallRecall: number;
@@ -358,6 +497,11 @@ export interface ThresholdCheck {
   /** Null when the arm cannot fail the bar by construction (`note` says why). */
   pass: boolean | null;
   note?: string;
+  /**
+   * #2032 — the arm claims this bar's metric fixed by construction, but the
+   * run measured otherwise, so the bar is judged. The report marks it ‡.
+   */
+  brokenClaim?: true;
 }
 
 /** The metric each bar reads, where an arm may fix that metric by construction. */
@@ -438,6 +582,7 @@ export function checkThresholds(
     return {
       ...c,
       note: `claimed fixed by construction (${byConstruction[metric]}), but measured otherwise`,
+      brokenClaim: true,
     };
   });
 }

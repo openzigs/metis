@@ -2,7 +2,12 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { EvalBudget } from "../localization/runner.js";
 import type { AIProvider, ChatResponse } from "../../ai/types.js";
 import type { AssessContext, GoverningArm } from "./arms.js";
-import { loadGoverningCorpus, type GoverningCorpus, type GoverningItem } from "./corpus.js";
+import {
+  loadGoverningCorpus,
+  shortAnswerPairs,
+  type GoverningCorpus,
+  type GoverningItem,
+} from "./corpus.js";
 import { A0_BY_CONSTRUCTION } from "./arms.js";
 import {
   ESTIMATED_CALL_TOKENS,
@@ -543,6 +548,25 @@ describe("toMarkdownReport", () => {
     );
   });
 
+  it("marks a pass cell ‡ from the broken-claim flag, not from the presence of a note (#2032)", async () => {
+    const report = await runGoverningEval(corpus, {
+      arms: [fakeArm("A0", resemblingOnly)],
+      runs: 1,
+      budget: new EvalBudget(100),
+      provider: fakeProvider(),
+    });
+    const thresholds = report.arms[0]!.thresholds;
+    const recall = thresholds.find((t) => t.bar === "overallRecall")!;
+    const precision = thresholds.find((t) => t.bar === "precision")!;
+    // A judged bar may carry an explanatory note without any claim behind it.
+    recall.note = "measured on one run only";
+    delete recall.brokenClaim;
+    precision.brokenClaim = true;
+    const md = toMarkdownReport(report);
+    expect(md).toMatch(/\| A0 \| overallRecall \| ≥ 0\.90 \| [\d.]+ \| (?:yes|\*\*no\*\*) \|/);
+    expect(md).toMatch(/\| A0 \| precision \| ≥ 0\.60 \| [\d.]+ \| (?:yes|\*\*no\*\*)‡ \|/);
+  });
+
   it("states the metrics, the bars, the review status, the screen size and each arm's configuration", async () => {
     const report = await runGoverningEval(corpus, {
       arms: [fakeArm("A0", resemblingOnly)],
@@ -606,6 +630,145 @@ describe("toMarkdownReport", () => {
     expect(plainMd).not.toContain("‡");
     expect(plainMd).toContain(
       "| A0 | maxNoEvidenceCompliantErrors | ≤ 0 per run | 0 (worst run) | yes |",
+    );
+  });
+});
+
+describe("the short-answer pairs' own row (#2033)", () => {
+  /**
+   * A fake replaying arm: before any answer it asks on every truth pair; after
+   * the answers it reads every short answer as meeting its rule — right on a
+   * "Yes", and on GR-11's "No.", wrong on every other "No.".
+   */
+  const readsEveryAnswerAsMet = (item: GoverningItem): GoverningArmOutput => ({
+    judgements: item.applies.map((p) => ({ ruleId: p.ruleId, verdict: "needs-ba-input" as const })),
+    ...(shortAnswerPairs(item).length > 0
+      ? {
+          answered: {
+            judgements: shortAnswerPairs(item).map((p) => ({
+              ruleId: p.ruleId,
+              verdict: "compliant" as const,
+            })),
+          },
+        }
+      : {}),
+  });
+  const replaying = (opts: Parameters<typeof fakeArm>[2] = {}) => ({
+    ...fakeArm("A4", readsEveryAnswerAsMet, opts),
+    replaysAnswers: true,
+  });
+
+  it("scores the findings after each answer against answeredVerdict, apart from the main results", async () => {
+    const report = await runGoverningEval(corpus, {
+      arms: [replaying()],
+      runs: 2,
+      budget: new EvalBudget(100),
+      provider: fakeProvider(),
+    });
+    const arm = report.arms[0]!;
+    // 7 pairs; 4 are labelled compliant once answered (GR-11's "No." among them).
+    expect(arm.shortAnswers).toMatchObject({
+      runs: 2,
+      pairs: 7,
+      foundPerRun: [7, 7],
+      hardErrors: 6,
+      hardErrorsPerRun: [3, 3],
+      askedPerRun: [0, 0],
+      failures: 0,
+    });
+    expect(arm.shortAnswers!.verdictAccuracy.perRun).toEqual([4 / 7, 4 / 7]);
+    // The main results read the findings before any answer: no compliant, so no hard error.
+    expect(arm.summary.hardErrors).toBe(0);
+    const gr11 = arm.records.find((r) => r.itemId === "GR-11" && r.run === 1)!;
+    expect(gr11.answeredPairs).toEqual([
+      {
+        ruleId: "DR-06",
+        answer: "No.",
+        truth: "compliant",
+        verdict: "compliant",
+        hardError: false,
+      },
+    ]);
+    expect(arm.records.find((r) => r.itemId === "GR-01")!.answeredPairs).toBeUndefined();
+
+    const md = toMarkdownReport(report);
+    expect(md).toContain("## Short-answer pairs, with the BA's answer replayed (#2033)");
+    expect(md).toMatch(/\| A4 \| 2 \| 7 \| 0\.57 \[[\d.]+, [\d.]+\] \| 7\/7 \| 6 \| 0\/0 \| 0 \|/);
+    expect(md).toContain('- GR-08 → PR-05 ("No.", labelled gap): compliant, compliant');
+    expect(md).toContain('- GR-11 → DR-06 ("No.", labelled compliant): compliant, compliant');
+    // The row sits before the comparison with A0.
+    expect(md.indexOf("## Short-answer pairs")).toBeLessThan(md.indexOf("## Paired comparison"));
+
+    // The JSON keeps each record's answered findings and leaves the derived outcomes out.
+    const parsed = JSON.parse(toJsonReport(report)) as typeof report;
+    const back = parsed.arms[0]!.records.find((r) => r.itemId === "GR-11")!;
+    expect(back.answered).toEqual(gr11.answered);
+    expect(back).not.toHaveProperty("answeredPairs");
+    expect(parsed.arms[0]!.shortAnswers).toEqual(arm.shortAnswers);
+  });
+
+  it("scores the short-answer pairs of a requirement the arm failed on as misses and a failure", async () => {
+    const report = await runGoverningEval(corpus, {
+      arms: [replaying({ throwOn: "GR-11" })],
+      runs: 1,
+      budget: new EvalBudget(100),
+      provider: fakeProvider(),
+    });
+    const s = report.arms[0]!.shortAnswers!;
+    expect(s).toMatchObject({ pairs: 7, foundPerRun: [6], failures: 1, hardErrorsPerRun: [3] });
+    expect(s.verdictAccuracy.perRun).toEqual([3 / 7]);
+    expect(toMarkdownReport(report)).toContain(
+      '- GR-11 → DR-06 ("No.", labelled compliant): missed',
+    );
+  });
+
+  it("lists each pair's verdicts from the scored runs only, not from a run the cap cut short", async () => {
+    const items = corpus.manifest.items.length;
+    // One full run, then run 2 stops after GR-08: GR-06 and GR-08 were answered in it too.
+    const report = await runGoverningEval(corpus, {
+      arms: [replaying()],
+      runs: 2,
+      budget: new EvalBudget(PER_CALL_USD * (items + 8.5)),
+      provider: fakeProvider(),
+      callEstimateUsd: PER_CALL_USD,
+    });
+    expect(report.arms[0]!.completedRuns).toBe(1);
+    expect(report.arms[0]!.records.filter((r) => r.run === 2 && r.answeredPairs)).toHaveLength(2);
+    expect(report.arms[0]!.shortAnswers).toMatchObject({ runs: 1, foundPerRun: [7] });
+    const md = toMarkdownReport(report);
+    expect(md).toContain('- GR-06 → VM-01 ("Yes, it has.", labelled compliant): compliant\n');
+    expect(md).toContain('- GR-08 → PR-05 ("No.", labelled gap): compliant\n');
+  });
+
+  it("prints no row for an arm that does not replay answers, and says so on a set without short answers", async () => {
+    const plain = await runGoverningEval(corpus, {
+      arms: [fakeArm("A0", readsEveryAnswerAsMet)],
+      runs: 1,
+      budget: new EvalBudget(100),
+      provider: fakeProvider(),
+    });
+    expect(plain.arms[0]!.shortAnswers).toBeNull();
+    expect(toMarkdownReport(plain)).not.toContain("Short-answer pairs");
+
+    const bare: GoverningCorpus = {
+      ...corpus,
+      manifest: {
+        ...corpus.manifest,
+        items: corpus.manifest.items.map((i) => ({
+          ...i,
+          applies: i.applies.map(({ baAnswer: _a, answeredVerdict: _v, ...p }) => p),
+        })),
+      },
+    };
+    const none = await runGoverningEval(bare, {
+      arms: [replaying()],
+      runs: 1,
+      budget: new EvalBudget(100),
+      provider: fakeProvider(),
+    });
+    expect(none.arms[0]!.shortAnswers).toMatchObject({ pairs: 0, failures: 0 });
+    expect(toMarkdownReport(none)).toContain(
+      "This set has no short-answer pairs (`baAnswer`), so no answer was replayed.",
     );
   });
 });
