@@ -1,7 +1,9 @@
 /**
- * #1867 — the held-out governing-rules corpus: a synthetic policy of atomic
+ * #1867 — the governing-rules corpora: a synthetic policy of atomic
  * obligations, analyst-worded requirements, and the ground truth of which rules
- * truly apply to each, with a per-rule verdict.
+ * truly apply to each, with a per-rule verdict. Since #2024 each corpus states
+ * its purpose: `governing-01` is the tuning set prompts are iterated on, and
+ * `governing-02` is the held-out set a decision is read on.
  *
  * Every model-facing issue of epic #1866 is judged on this set, so its shape is
  * checked here before anything is measured ({@link validateGoverningCorpus}):
@@ -21,17 +23,43 @@
  *     rule that applies without resembling the requirement;
  *   - the pass thresholds were recorded before any arm ran, and any later
  *     change to them carries the issue and the reason
- *     ({@link expectedThresholds}).
+ *     ({@link expectedThresholds});
+ *   - a held-out set's policy, rules and items still match the content hash
+ *     its manifest recorded ({@link governingContentHash}, #2024).
  *
  * The loader is pure over the committed files: no network, no database.
  */
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** The registered corpora (`eval-data/corpus/<name>`). */
-export const GOVERNING_CORPORA = ["governing-01-sample-policy"] as const;
+/**
+ * The registered corpora (`eval-data/corpus/<name>`). The first is the default
+ * of `pnpm eval:governing`, so a run reads the tuning set unless it names
+ * the held-out one (#2024).
+ */
+export const GOVERNING_CORPORA = [
+  "governing-01-sample-policy",
+  "governing-02-clinic-records",
+] as const;
 export type GoverningCorpusName = (typeof GOVERNING_CORPORA)[number];
+
+/**
+ * #2024 — what a corpus is for. A `tuning` set is where prompts are iterated;
+ * a `held-out` set is read only for a decision, never to tune against, and
+ * carries a {@link GoverningContentHash} so an edit to it cannot pass unseen.
+ */
+export const GOVERNING_PURPOSES = ["tuning", "held-out"] as const;
+export type GoverningPurpose = (typeof GOVERNING_PURPOSES)[number];
+
+/** #2024 — a digest of what a held-out set scores against ({@link governingContentHash}). */
+export interface GoverningContentHash {
+  algorithm: "sha256";
+  /** What the digest covers, in words, for a reader of the manifest. */
+  covers: string;
+  value: string;
+}
 
 /** What a (requirement, rule) pair is judged to be. */
 export const GOVERNING_VERDICTS = ["compliant", "gap", "needs-ba-input"] as const;
@@ -61,6 +89,11 @@ export interface TruthPair {
   verdict: GoverningVerdict;
   /** The business fact a BA would have to supply; required for `needs-ba-input` only. */
   businessFact?: string;
+  /**
+   * #2024 — the short answer a BA would give to `businessFact` ("Yes, we do.",
+   * "No."), for a fact that is settled in a word or two; `needs-ba-input` only.
+   */
+  baAnswer?: string;
   /** The rule applies though the requirement shares no vocabulary with it. */
   nonResembling?: boolean;
 }
@@ -118,7 +151,9 @@ export interface GoverningAnnotation {
 export interface GoverningCorpusManifest {
   id: GoverningCorpusName;
   description: string;
-  purpose: "held-out";
+  purpose: GoverningPurpose;
+  /** Required on a held-out set, and checked against the committed files. */
+  contentHash?: GoverningContentHash;
   license: string;
   synthetic: true;
   /** Every file of the corpus directory except `manifest.json`. */
@@ -320,6 +355,11 @@ export interface CorpusFiles {
   present: readonly string[];
   /** The text of each policy revision's file, by revision. */
   policies: ReadonlyMap<string, string>;
+  /**
+   * The text of ANNOTATION.md. A held-out set's recorded content hash must
+   * appear in it (#2024), so a re-hash is also a recorded change.
+   */
+  annotation?: string;
 }
 
 function validateFiles(m: GoverningCorpusManifest, files: CorpusFiles, problems: string[]): void {
@@ -431,6 +471,13 @@ function validateItems(
       if (pair.verdict !== "needs-ba-input" && fact) {
         problems.push(`${at}: a business fact on a ${pair.verdict} pair`);
       }
+      if (pair.baAnswer !== undefined) {
+        if (pair.verdict !== "needs-ba-input") {
+          problems.push(`${at}: a BA answer on a ${pair.verdict} pair`);
+        } else if (!pair.baAnswer.trim()) {
+          problems.push(`${at}: an empty BA answer`);
+        }
+      }
       if (pair.nonResembling) {
         hasNonResembling = true;
         const shared = sharedVocabulary(wording, `${clause}\n${summaries.get(pair.ruleId) ?? ""}`);
@@ -486,6 +533,73 @@ function validateThresholds(t: PassThresholds, problems: string[]): void {
   }
 }
 
+/** What {@link governingContentHash} covers, as the manifest states it. */
+export const CONTENT_HASH_COVERS =
+  "sha256 of the JSON of [policy, rules, items, each revision's text with LF line endings]; ANNOTATION.md, the labelling files and the thresholds are outside it";
+
+/**
+ * #2024 — the digest of everything a held-out set scores against: the policy
+ * revisions (metadata and text), the rules and the labelled requirements.
+ * ANNOTATION.md stays outside it, so a recorded re-read does not change it;
+ * the thresholds have their own guard ({@link expectedThresholds}). Line
+ * endings are normalised, so a CRLF checkout hashes the same.
+ */
+export function governingContentHash(
+  manifest: Pick<GoverningCorpusManifest, "policy" | "rules" | "items">,
+  policies: ReadonlyMap<string, string>,
+): string {
+  const texts = manifest.policy.revisions.map((r) => [
+    r.revision,
+    (policies.get(r.revision) ?? "").replace(/\r\n/g, "\n"),
+  ]);
+  const body = JSON.stringify([manifest.policy, manifest.rules, manifest.items, texts]);
+  return createHash("sha256").update(body, "utf8").digest("hex");
+}
+
+function validatePurpose(m: GoverningCorpusManifest, files: CorpusFiles, problems: string[]): void {
+  if (!(GOVERNING_PURPOSES as readonly string[]).includes(m.purpose)) {
+    problems.push(
+      `purpose ${JSON.stringify(m.purpose)} is not one of ${GOVERNING_PURPOSES.join(", ")}`,
+    );
+  }
+  const recorded = m.contentHash;
+  if (recorded === undefined) {
+    if (m.purpose === "held-out") problems.push("a held-out set must record its content hash");
+    return;
+  }
+  if (recorded.algorithm !== "sha256") {
+    problems.push(`content hash: unknown algorithm ${JSON.stringify(recorded.algorithm)}`);
+    return;
+  }
+  const actual = governingContentHash(m, files.policies);
+  if (recorded.value !== actual) {
+    problems.push(
+      `content hash: the policy, rules or items no longer match the recorded hash (recorded ${recorded.value}, now ${actual}); ` +
+        "a held-out set is not edited to fit a prompt: record the change and why in ANNOTATION.md, then re-hash",
+    );
+  }
+  // The hash alone is not a record: the annotation must carry it, so a re-hash
+  // pasted from the message above cannot pass without ANNOTATION.md changing.
+  if (m.purpose === "held-out" && !(files.annotation ?? "").includes(recorded.value)) {
+    problems.push(
+      `content hash: ANNOTATION.md does not record the hash ${recorded.value}; write the change, why, and this hash under "Content hash history" there`,
+    );
+  }
+}
+
+/**
+ * #2024 — a held-out set holds ground truth only: an arm's answers are never
+ * written beside it, which would also stop the set loading (the files are not
+ * in its manifest). Called before any model is.
+ */
+export function assertBaselineAllowed(purpose: GoverningPurpose, corpus: string): void {
+  if (purpose === "held-out") {
+    throw new Error(
+      `${corpus} is a held-out set and never gets a baseline written into it; --baseline is for the tuning set`,
+    );
+  }
+}
+
 /**
  * Check a manifest against the corpus's files. Returns every problem found
  * (empty when the corpus is sound) so one run lists them all.
@@ -496,6 +610,7 @@ export function validateGoverningCorpus(
 ): string[] {
   const problems: string[] = [];
   if (manifest.synthetic !== true) problems.push("the corpus must be marked synthetic");
+  validatePurpose(manifest, files, problems);
   validateFiles(manifest, files, problems);
   validatePolicy(manifest, files, problems);
   const scored = files.policies.get(manifest.policy.scored);
@@ -564,6 +679,7 @@ export async function loadGoverningCorpus(
   const problems = validateGoverningCorpus(manifest, {
     present: await listCorpusFiles(dir),
     policies,
+    annotation: await fs.readFile(path.join(dir, "ANNOTATION.md"), "utf8").catch(() => undefined),
   });
   if (problems.length > 0) {
     throw new Error(`corpus ${name} is not sound:\n  - ${problems.join("\n  - ")}`);

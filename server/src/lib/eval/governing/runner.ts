@@ -27,7 +27,7 @@ import {
   type PairedDifference,
 } from "../localization/stats.js";
 import { measureScreenPromptSizes, type GoverningArm, type ScreenPromptSize } from "./arms.js";
-import type { GoverningCorpus, GoverningItem } from "./corpus.js";
+import type { GoverningCorpus, GoverningItem, GoverningPurpose } from "./corpus.js";
 import {
   checkThresholds,
   heldByConstruction,
@@ -207,6 +207,10 @@ export interface ArmComparison {
 export interface GoverningReport {
   corpus: {
     id: string;
+    /** #2024 — which set the reading came from: the tuning set, or the held-out one. */
+    purpose: GoverningPurpose;
+    /** The held-out set's recorded content hash; null on a set without one. */
+    contentHash: string | null;
     items: number;
     rules: number;
     policy: string;
@@ -422,6 +426,8 @@ export async function runGoverningEval(
   return {
     corpus: {
       id: corpus.name,
+      purpose: corpus.manifest.purpose,
+      contentHash: corpus.manifest.contentHash?.value ?? null,
       items: items.length,
       rules: corpus.rules.length,
       policy: corpus.policyFile,
@@ -489,10 +495,27 @@ function misses(arm: GoverningArmReport): { missed: string[]; hardErrors: string
   return { missed, hardErrors };
 }
 
+/**
+ * #2024 — which set a reading came from, in words: a tuning reading says
+ * nothing held out, and a held-out reading names the hash it was read against.
+ */
+export function setStatement(
+  c: Pick<GoverningReport["corpus"], "purpose" | "contentHash">,
+): string {
+  if (c.purpose === "held-out") {
+    return (
+      `**held-out** (read for a decision, never tuned on; content hash \`${c.contentHash ?? "none"}\`). ` +
+      "Record this reading in the set's ANNOTATION.md."
+    );
+  }
+  return "**tuning** (prompts are iterated on this set, so its numbers are not held-out evidence).";
+}
+
 export function toMarkdownReport(report: GoverningReport): string {
   const lines: string[] = [];
   const c = report.corpus;
   lines.push(`# Governing-rules eval — \`${c.id}\``, "");
+  lines.push(`Set: ${setStatement(c)}`, "");
   lines.push(
     `Requirements: **${c.items}** · Rules: **${c.rules}** (\`${c.policy}\`, revision ${c.revision}) · ` +
       `Runs requested: **${report.runsRequested}** · Budget: **$${report.budgetUsd}** · ` +
