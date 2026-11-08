@@ -575,6 +575,8 @@ interface LanceQuery {
   limit(value: number): LanceQuery;
   /** `vectordb` 0.21.2 `Query.prefilter` (`node_modules/vectordb/dist/query.d.ts`). */
   prefilter(value: boolean): LanceQuery;
+  /** `vectordb` 0.21.2 `Query.nprobes`: IVF partitions an indexed search probes (default 20). */
+  nprobes(value: number): LanceQuery;
   filter(value: string): LanceQuery;
   where(value: string): LanceQuery;
   metricType(value: string): LanceQuery;
@@ -613,6 +615,12 @@ export const LANCE_INDEX_REBUILD_GROWTH_FACTOR = 2;
  * query asked for cosine.
  */
 export const LANCE_INDEX_METRIC = "cosine";
+
+/**
+ * The number of IVF partitions the ANN index is trained with. A filtered
+ * {@link LanceVectorStore.search} probes all of them (#1922), so the two must move together.
+ */
+export const LANCE_INDEX_PARTITIONS = 256;
 
 /** Issue #207 — reclaim old table versions after this many writes to one table. */
 export const LANCE_CLEANUP_EVERY_WRITES = 100;
@@ -1163,7 +1171,7 @@ export class LanceVectorStore implements VectorStore {
             type: "ivf_pq",
             column: "vector",
             metric_type: LANCE_INDEX_METRIC,
-            num_partitions: 256,
+            num_partitions: LANCE_INDEX_PARTITIONS,
             num_sub_vectors: 16,
             replace: true,
           });
@@ -1298,7 +1306,17 @@ export class LanceVectorStore implements VectorStore {
     // documents or models (a superseded revision, a stale model tag) nearer the query
     // took the top-k slots and a filtered search returned fewer than k hits, or none.
     // Prefilter restricts the candidates first, then ranks them.
-    if (where) q = q.where(where).prefilter(true);
+    //
+    // #1922 — but on an indexed table the prefiltered candidates are still only the
+    // rows in the partitions the query probes: `vectordb`'s default 20 of
+    // LANCE_INDEX_PARTITIONS. Matches that all sit in other partitions were never
+    // seen — measured 0 of 5 hits on a 1,107-row table at nprobes 20, 64 and 128, and
+    // 2 of 20 for a two-document filter on 50,000 seeded random rows. A filtered query
+    // probes every partition: on 50,000 rows that costs ~2 ms (model filter 4.5 →
+    // 6.1 ms, two-document filter 2.0 → 4.3 ms), against 15–70 ms for an exact scan
+    // of 1,000–5,000 matching rows. An unfiltered query keeps the default, so the
+    // ANN index still saves the scan on the path nothing excludes rows from.
+    if (where) q = q.where(where).prefilter(true).nprobes(LANCE_INDEX_PARTITIONS);
     const results = await q.execute<LanceRow>();
     // Issue #277 — score from the returned vectors, never from `_distance`. On an
     // exhaustively searched table `_distance` is the exact cosine distance, but once
