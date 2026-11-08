@@ -99,27 +99,47 @@ function containsToken(text: string, id: string): boolean {
   return false;
 }
 
+/** The nearest non-blank line ending before `lineStart`, or `null` when there is none. */
+function lineAbove(text: string, lineStart: number): string | null {
+  for (let end = lineStart - 1; end > 0;) {
+    const start = text.lastIndexOf("\n", end - 1) + 1;
+    const line = text.slice(start, end);
+    if (line.trim() !== "") return line;
+    end = start - 1;
+  }
+  return null;
+}
+
+const LIST_OR_TABLE_ROW = /^(?:[-*+]|\d+[.)])[ \t]|^\|/;
+const SENTENCE_END = /[.!?;]$/;
+
 /**
- * #1947 — the text a kept control id must appear in: the cited clause with
- * the start of its first line (where a label such as `**AC-02**` or `4.3.1`
- * sits), and the section's heading line when the clause sits directly under
- * it, with only blank lines between. An id found elsewhere in the document
- * belongs to another clause, so it is not this rule's.
+ * #1958 — a line that labels the clause under it rather than being a clause
+ * of its own: a Markdown heading, or a line such as `**AC-02**`, `4.3.1` or
+ * `AC-02 Account sharing` that ends no sentence and is no list item or table
+ * row (each of those is a clause, and an id on it is its own).
+ */
+function isLabelLine(line: string): boolean {
+  const t = line.trim();
+  return /^#{1,6}[ \t]/.test(t) || (!LIST_OR_TABLE_ROW.test(t) && !SENTENCE_END.test(t));
+}
+
+/**
+ * #1947, #1958 — the text a kept control id must appear in: the cited clause
+ * with the start of its first line (where a label such as `**AC-02**` or
+ * `4.3.1` sits), and the nearest non-blank line above it when that line is a
+ * heading or a label ({@link isLabelLine}). An id found elsewhere in the
+ * document — the clause above included — belongs to another clause, so it is
+ * not this rule's.
  */
 export function controlIdRegion(
   text: string,
   clause: Pick<VerifiedClause, "clauseStart" | "clauseEnd">,
-  section: Pick<PolicySection, "start">,
 ): string {
   const lineStart = text.lastIndexOf("\n", clause.clauseStart - 1) + 1;
   const own = text.slice(lineStart, clause.clauseEnd);
-  const headingEnd = text.indexOf("\n", section.start);
-  const headingLine = headingEnd === -1 ? "" : text.slice(section.start, headingEnd);
-  const directlyUnder =
-    /^#{1,6}[ \t]/.test(headingLine) &&
-    headingEnd < lineStart &&
-    text.slice(headingEnd, lineStart).trim() === "";
-  return directlyUnder ? `${headingLine}\n${own}` : own;
+  const above = lineAbove(text, lineStart);
+  return above !== null && isLabelLine(above) ? `${above}\n${own}` : own;
 }
 
 /**
@@ -301,7 +321,7 @@ export async function extractRulesFromText(
       const controlId =
         c.controlId &&
         c.controlId.length <= MAX_CONTROL_ID_CHARS &&
-        containsToken(controlIdRegion(text, clause, section), c.controlId)
+        containsToken(controlIdRegion(text, clause), c.controlId)
           ? c.controlId
           : undefined;
       found.push({

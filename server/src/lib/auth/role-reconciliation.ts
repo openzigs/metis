@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
+import { retryOnWriteConflict } from "../db/write-conflict-retry.js";
 import { reconnectUserSockets } from "../socket/user-disconnect.js";
 import { resolveEffectiveRoleFromRows } from "./durable-roles.js";
 
@@ -73,19 +74,37 @@ async function snapshot(tx: Tx, target: ReconciliationTarget) {
   return { state, fingerprint: hash(state) };
 }
 
+/**
+ * #1959 — a write conflict rolled the transaction back, so it runs again; one
+ * that every attempt loses is the same 409 as a state change: inspect again.
+ */
+const RETRY = { exhausted: conflict } as const;
+
 /** Internal transaction boundary shared by the API and the separately imported offline wrapper. */
 export async function inspectRoleState(actor: ReconciliationActor, target: ReconciliationTarget) {
-  return prisma.$transaction(
-    async (tx) => {
-      await authorize(tx, actor, target.targetId);
-      return snapshot(tx, target);
-    },
-    { isolationLevel: "Serializable" },
+  return retryOnWriteConflict(
+    () =>
+      prisma.$transaction(
+        async (tx) => {
+          await authorize(tx, actor, target.targetId);
+          return snapshot(tx, target);
+        },
+        { isolationLevel: "Serializable" },
+      ),
+    RETRY,
   );
 }
 
 export async function confirmRoleState(actor: ReconciliationActor, input: ReconciliationInput) {
-  const result = await prisma.$transaction(
+  const result = await retryOnWriteConflict(() => confirmOnce(actor, input), RETRY);
+  // #633 — the target's open sockets keep their connect-time role; after the
+  // commit, make them re-handshake. A replay changed nothing.
+  if (!result.replayed) reconnectUserSockets(input.targetId);
+  return result;
+}
+
+function confirmOnce(actor: ReconciliationActor, input: ReconciliationInput) {
+  return prisma.$transaction(
     async (tx) => {
       await authorize(tx, actor, input.targetId);
       const before = await snapshot(tx, input);
@@ -173,10 +192,6 @@ export async function confirmRoleState(actor: ReconciliationActor, input: Reconc
     },
     { isolationLevel: "Serializable" },
   );
-  // #633 — the target's open sockets keep their connect-time role; after the
-  // commit, make them re-handshake. A replay changed nothing.
-  if (!result.replayed) reconnectUserSockets(input.targetId);
-  return result;
 }
 
 // The HTTP adapter only calls these wrappers: caller input cannot select host mode.

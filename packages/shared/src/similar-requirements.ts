@@ -15,6 +15,7 @@ import {
   ACCEPTANCE_CRITERIA_MAX_ITEMS,
   ACCEPTANCE_CRITERION_MAX_LENGTH,
 } from "./acceptance-criteria-fallback.js";
+import type { SpecMappingSource } from "./traceability.js";
 
 export const SIMILAR_REQUIREMENT_LABELS = ["duplicate", "overlap", "related"] as const;
 export type SimilarRequirementLabel = (typeof SIMILAR_REQUIREMENT_LABELS)[number];
@@ -36,6 +37,65 @@ export const BORROWABLE_FRESHNESS: ReadonlySet<string> = new Set<SimilarCodeLink
   "moved",
 ]);
 
+/** The provenance of a link the requirement's own analysis grounded (#1759). */
+const ANALYSIS_GROUNDING: SpecMappingSource = "analysis-grounding";
+
+/** A code link a requirement holds, under any source: what the borrow's duplicate rule reads. */
+export interface HeldCodeLink {
+  filePath: string;
+  codeSymbolId: string | null;
+  source: string;
+}
+
+/**
+ * #1825 / #1969 — the identity of one requirement-to-code link: its file and
+ * code symbol (a file-level link has none). Every reader that lists a
+ * requirement's links, and the borrow's duplicate rule, compare links on it.
+ */
+export const codeLinkKey = (filePath: string, codeSymbolId: string | null): string =>
+  `${filePath}\u0000${codeSymbolId ?? ""}`;
+
+/**
+ * #1839 / #1969 — the files a requirement's own analysis grounded: a borrowed
+ * link into one of them gives way to that grounding. Read from EVERY row the
+ * requirement holds, before any dedupe, so a surer row of another source on
+ * the same code does not hide the grounding.
+ */
+export function groundedFiles(
+  rows: ReadonlyArray<{ source: string; filePath: string }>,
+): Set<string> {
+  return new Set(rows.filter((r) => r.source === ANALYSIS_GROUNDING).map((r) => r.filePath));
+}
+
+/**
+ * #1964 — the borrow's duplicate rule (#1839). The server's borrow and the
+ * panel's preview of it (#1840) read this one rule, so the preview never
+ * promises a copy the borrow skips as `skippedDuplicate`.
+ *
+ * A link is a duplicate when the requirement already holds its code (the same
+ * file and symbol, under any source), or when it points into a file the
+ * requirement's own analysis grounded: that grounding wins. The check returned
+ * claims the code of each link it passes, so a second link to the same code is
+ * a duplicate of the copy the first one makes.
+ *
+ * #1969 — `grounded` adds files known to be grounded that `held` may not show:
+ * the preview reads `held` from the chain, which lists each code once and so
+ * can hide a grounding row behind a surer one (the chain's `groundedFiles`).
+ */
+export function borrowDuplicateCheck(
+  held: readonly HeldCodeLink[],
+  grounded: Iterable<string> = [],
+): (link: { filePath: string; codeSymbolId: string | null }) => boolean {
+  const keys = new Set(held.map((h) => codeLinkKey(h.filePath, h.codeSymbolId)));
+  const groundedSet = new Set([...groundedFiles(held), ...grounded]);
+  return (link) => {
+    const k = codeLinkKey(link.filePath, link.codeSymbolId);
+    if (keys.has(k) || groundedSet.has(link.filePath)) return true;
+    keys.add(k);
+    return false;
+  };
+}
+
 export interface SimilarRequirementCodeLink {
   /**
    * #1840 — the saved link's id: what "Start from these citations" names in
@@ -43,6 +103,11 @@ export interface SimilarRequirementCodeLink {
    */
   mappingId: string;
   filePath: string;
+  /**
+   * #1964 — the code-graph symbol it points at; null for a file-level link.
+   * With `filePath`, what the borrow's duplicate rule compares.
+   */
+  codeSymbolId: string | null;
   startLine: number | null;
   endLine: number | null;
   /** The link's writer, e.g. `semantic`, `manual`, `analysis-grounding`. */

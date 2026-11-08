@@ -358,6 +358,78 @@ describe("resolveLoginUser — races and account state", () => {
     });
   });
 
+  // #1959 — a second lost write conflict (either shape) was refused as
+  // `unique_conflict` (409) and audited as an identity conflict.
+  const p2034 = () => Object.assign(new Error("40001"), { code: "P2034" });
+  const adapterConflict = () =>
+    Object.assign(new Error("TransactionWriteConflict"), {
+      cause: { originalCode: "40001", kind: "TransactionWriteConflict" },
+    });
+
+  it.each([
+    ["P2034", p2034],
+    ["adapter-pg TransactionWriteConflict", adapterConflict],
+  ])(
+    "a claim that loses two %s write conflicts runs again and lands, unaudited",
+    async (_, make) => {
+      db.userIdentity.findUnique.mockResolvedValue(null);
+      db.user.findUnique.mockResolvedValue(legacy());
+      db.$transaction.mockRejectedValueOnce(make()).mockRejectedValueOnce(make());
+      db.user.updateMany.mockResolvedValue({ count: 1 });
+      db.userIdentity.create.mockResolvedValue({});
+      db.user.findUniqueOrThrow.mockResolvedValue(ROW);
+
+      await expect(
+        resolveLoginUser({ identity: OIDC, profile: PROFILE, primaryKind: "ldap" }),
+      ).resolves.toEqual(ROW);
+      expect(db.$transaction).toHaveBeenCalledTimes(3);
+      expect(db.userIdentity.create).toHaveBeenCalledOnce();
+      expect(audited).not.toHaveBeenCalled();
+    },
+  );
+
+  it("a claim that loses every write conflict is a transient 503, not an account conflict", async () => {
+    db.userIdentity.findUnique.mockResolvedValue(null);
+    db.user.findUnique.mockResolvedValue(legacy());
+    db.$transaction.mockRejectedValue(adapterConflict());
+
+    await expect(
+      resolveLoginUser({ identity: OIDC, profile: PROFILE, primaryKind: "ldap" }),
+    ).rejects.toMatchObject({ statusCode: 503, code: "SIGN_IN_CONFLICT" });
+    expect(db.$transaction).toHaveBeenCalledTimes(3);
+    expect(audited).not.toHaveBeenCalled();
+  });
+
+  it("a refused commit on the pg adapter (TransactionWriteConflict, no P2034) is judged again (#1904)", async () => {
+    db.userIdentity.findUnique.mockResolvedValue(null);
+    db.user.findUnique
+      .mockResolvedValueOnce(legacy())
+      .mockResolvedValueOnce(legacy({ identities: [{ provider: "oidc", issuer: OIDC.issuer }] }));
+    db.$transaction.mockRejectedValueOnce(
+      Object.assign(new Error("TransactionWriteConflict"), {
+        name: "DriverAdapterError",
+        cause: { kind: "TransactionWriteConflict", originalCode: "40001" },
+      }),
+    );
+    await expect(
+      resolveLoginUser({ identity: OIDC, profile: PROFILE, primaryKind: "ldap" }),
+    ).rejects.toMatchObject({
+      code: "ACCOUNT_LINK_REQUIRED",
+      details: { reason: "other_subject" },
+    });
+    expect(db.user.findUnique).toHaveBeenCalledTimes(2);
+  });
+
+  it("any other transaction failure is not retried", async () => {
+    db.userIdentity.findUnique.mockResolvedValue(null);
+    db.user.findUnique.mockResolvedValue(legacy());
+    db.$transaction.mockRejectedValueOnce(new Error("connection reset"));
+    await expect(
+      resolveLoginUser({ identity: OIDC, profile: PROFILE, primaryKind: "ldap" }),
+    ).rejects.toThrow("connection reset");
+    expect(db.$transaction).toHaveBeenCalledTimes(1);
+  });
+
   it("a unique conflict that persists (the e-mail is another user's) is a 409, audited", async () => {
     db.userIdentity.findUnique.mockResolvedValue(null);
     db.user.findUnique.mockResolvedValue(null);

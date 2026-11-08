@@ -68,9 +68,12 @@ export const POSTGRES_PATTERNS = Object.freeze([
   "server/src/lib/analysis/orchestrator.ts",
   "server/src/lib/ai/types.ts",
   "server/src/lib/scheduler/handler-overrides.ts",
+  // #1959 — write-conflict-retry-1959-postgres runs the real login and SCIM transactions.
+  "server/src/lib/auth/durable-roles.ts",
   "server/src/lib/auth/jwt.ts",
   "server/src/lib/auth/live-auth-payload.ts",
   "server/src/lib/auth/login-identity.ts",
+  "server/src/lib/auth/role-reconciliation.ts",
   "server/src/lib/auth/sso-state-store.ts",
   "server/src/lib/audit/audit-service.ts",
   "server/src/lib/ai/conversation/transcript-store.ts",

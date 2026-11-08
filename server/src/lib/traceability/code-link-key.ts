@@ -6,9 +6,13 @@
  * requirement's links shows each (filePath, codeSymbolId) once.
  */
 
-/** The key a requirement's code links are deduped on (a file-level link has no symbol). */
-export const codeLinkKey = (filePath: string, codeSymbolId: string | null): string =>
-  `${filePath}\u0000${codeSymbolId ?? ""}`;
+import { codeLinkKey } from "@metis/shared";
+
+/**
+ * The key a requirement's code links are deduped on (a file-level link has no
+ * symbol). #1969 — `@metis/shared`'s, which the borrow's duplicate rule reads too.
+ */
+export { codeLinkKey };
 
 /**
  * Each (filePath, codeSymbolId) once, keeping the first row: the caller's

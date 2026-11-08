@@ -32,7 +32,8 @@ export interface ProductRepo {
   id: string;
   productId: string;
   repoConnectionId: string;
-  role: string;
+  /** #1965 — `product_repos.role` is nullable: a repo attached without one has none. */
+  role: string | null;
   createdAt: string;
   repoConnection?: {
     id: string;

@@ -1026,6 +1026,191 @@ describe("seedRequirementCodeLinksFromFindings — code-graph version stamp (#18
     });
   });
 
+  // #1961 — the pass's repo is a hint, not a claim: a secondary repo's pass
+  // that cites the primary repo's code is stamped with the primary graph.
+  it("stamps the graph that holds the file when the pass's own repo does not (#1961)", async () => {
+    const onlyA = twoRepos.filter((s) => s.id === "login-A");
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [{ id: "f1", evidence: codeCitation(), confidence: 0.6, connectorId: "conn-B" }],
+      symbols: onlyA,
+    });
+    await run(prisma);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      codeSymbolId: "login-A",
+      codeGraphId: "graph-A",
+      commitSha: "aaaaaaa",
+      freshness: "fresh",
+    });
+    expect(created[0].validatedAt).toBeInstanceOf(Date);
+  });
+
+  // #1969 — the pass's repo lacks the file and SEVERAL other graphs hold it:
+  // which one the citation meant cannot be told apart, so no stamp.
+  it("stamps no graph when the pass's repo lacks the file and several other graphs hold it (#1969)", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [{ id: "f1", evidence: codeCitation(), confidence: 0.6, connectorId: "conn-C" }],
+      symbols: twoRepos,
+    });
+    await run(prisma);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      filePath: "src/auth.ts",
+      codeGraphId: null,
+      commitSha: null,
+      freshness: "unverified",
+      validatedAt: null,
+    });
+  });
+
+  it("stamps the symbol's graph when the citation's own symbol id tells the graphs apart (#1969)", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        {
+          id: "f1",
+          evidence: codeCitation({ symbolId: "login-B" }),
+          confidence: 0.6,
+          connectorId: "conn-C",
+        },
+      ],
+      symbols: twoRepos,
+    });
+    await run(prisma);
+    expect(created[0]).toMatchObject({
+      codeSymbolId: "login-B",
+      codeGraphId: "graph-B",
+      commitSha: "bbbbbbb",
+      freshness: "fresh",
+    });
+  });
+
+  // #1969 — two graphs hold identical spans and no repo is named: nothing is
+  // stamped, whatever order the rows come back in. #1976 — and no symbol is
+  // bound either: a bound symbol is what the next re-ingest of its graph
+  // re-validates and stamps `fresh`, so binding the lowest id was a guess
+  // that only waited one ingest to be written as verified.
+  it("binds no symbol and stamps no graph on an identical-span tie, whatever the row order (#1969, #1976)", async () => {
+    const bound = async (symbols: SymbolRow[]) => {
+      const { prisma, created } = makeFakePrisma({
+        requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+        findings: [{ id: "f1", evidence: codeCitation(), confidence: 0.6 }],
+        symbols,
+      });
+      await run(prisma);
+      expect(created).toHaveLength(1);
+      return created[0];
+    };
+    for (const row of [await bound(twoRepos), await bound([...twoRepos].reverse())]) {
+      expect(row).toMatchObject({
+        codeSymbolId: null,
+        filePath: "src/auth.ts",
+        startLine: 8,
+        endLine: 12,
+        symbolQualifiedName: null,
+        symbolKind: null,
+        symbolContentHash: null,
+        codeGraphId: null,
+        commitSha: null,
+        freshness: "unverified",
+      });
+    }
+  });
+
+  // #1976 — not only an identical span: when symbols of two graphs both
+  // enclose the lines, the innermost one is no less a guess at the repository.
+  it("binds no symbol when symbols of two graphs enclose the span with different extents (#1976)", async () => {
+    const nested: SymbolRow[] = [
+      { ...twoRepos[0], startLine: 7, endLine: 14 },
+      { ...twoRepos[1], startLine: 1, endLine: 40 },
+    ];
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [{ id: "f1", evidence: codeCitation(), confidence: 0.6 }],
+      symbols: nested,
+    });
+    await run(prisma);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ codeSymbolId: null, codeGraphId: null });
+  });
+
+  // #1976 — one graph only reaches the cited lines: that is evidence, not a
+  // guess, so its symbol is bound (the stamp still waits, as #1969 left it).
+  it("binds the symbol when only one graph's symbols enclose the span (#1976)", async () => {
+    // Graph B's symbols each overlap the cited lines 8-12 without enclosing them.
+    const oneEncloses: SymbolRow[] = [
+      twoRepos[0],
+      { ...twoRepos[1], startLine: 1, endLine: 10 },
+      { ...twoRepos[1], id: "late-B", startLine: 10, endLine: 30 },
+    ];
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [{ id: "f1", evidence: codeCitation(), confidence: 0.6 }],
+      symbols: oneEncloses,
+    });
+    await run(prisma);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ codeSymbolId: "login-A", codeGraphId: null });
+  });
+
+  // #1976 — the same span resolves the moment the citation names its repo.
+  it("binds and stamps the named repo's symbol on an identical span (#1976)", async () => {
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [
+        { id: "f1", evidence: codeCitation({ repoConnectionId: "conn-A" }), confidence: 0.6 },
+      ],
+      symbols: [...twoRepos].reverse(),
+    });
+    await run(prisma);
+    expect(created[0]).toMatchObject({
+      codeSymbolId: "login-A",
+      codeGraphId: "graph-A",
+      freshness: "fresh",
+    });
+  });
+
+  // #1969 item 3 — the span-no-symbol-encloses branch with only a pass repo.
+  describe("a span no symbol encloses, with only the pass's repo named", () => {
+    const outside = JSON.stringify({
+      citations: [{ filePath: "src/auth.ts", startLine: 40, endLine: 44 }],
+    });
+
+    it("is stamped with the one other graph that holds the file", async () => {
+      const { prisma, created } = makeFakePrisma({
+        requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+        findings: [{ id: "f1", evidence: outside, confidence: 0.6, connectorId: "conn-C" }],
+        symbols: twoRepos.filter((s) => s.id === "login-A"),
+      });
+      await run(prisma);
+      expect(created[0]).toMatchObject({
+        codeSymbolId: null,
+        startLine: 40,
+        endLine: 44,
+        codeGraphId: "graph-A",
+        freshness: "fresh",
+      });
+    });
+
+    it("is not stamped when several other graphs hold the file", async () => {
+      const { prisma, created } = makeFakePrisma({
+        requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+        findings: [{ id: "f1", evidence: outside, confidence: 0.6, connectorId: "conn-C" }],
+        symbols: twoRepos,
+      });
+      await run(prisma);
+      expect(created[0]).toMatchObject({
+        codeSymbolId: null,
+        startLine: 40,
+        endLine: 44,
+        codeGraphId: null,
+        freshness: "unverified",
+      });
+    });
+  });
+
   it("keeps a code citation's server-stamped repo on its target", () => {
     expect(parseCitationTargets(codeCitation({ repoConnectionId: "conn-A" }))).toEqual([
       { filePath: "src/auth.ts", startLine: 8, endLine: 12, repoConnectionId: "conn-A" },

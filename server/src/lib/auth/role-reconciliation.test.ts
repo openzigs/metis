@@ -169,6 +169,17 @@ async function inputFor(decision: ReconciliationInput["decision"] = "provider-ma
   } satisfies ReconciliationInput;
 }
 
+/** Make the confirmation's `step` throw `failure`, once. */
+function failAt(step: string, failure: Error, saved: State) {
+  if (step === "audit-read") tx.auditLog.findUnique.mockRejectedValueOnce(failure);
+  if (step === "CAS") tx.user.updateMany.mockRejectedValueOnce(failure);
+  if (step === "delete") tx.userRole.deleteMany.mockRejectedValueOnce(failure);
+  if (step === "create") tx.userRole.create.mockRejectedValueOnce(failure);
+  if (step === "after-snapshot")
+    tx.user.findUnique.mockResolvedValueOnce(saved.users[1]).mockRejectedValueOnce(failure);
+  if (step === "audit-write") tx.auditLog.create.mockRejectedValueOnce(failure);
+}
+
 function expectNoWrites() {
   expect(tx.user.updateMany).not.toHaveBeenCalled();
   expect(tx.userRole.deleteMany).not.toHaveBeenCalled();
@@ -610,27 +621,79 @@ describe("role reconciliation conflicts, replay and failure", () => {
     async (step) => {
       const input = await inputFor();
       const saved = structuredClone(committed);
-      const failure = Object.assign(new Error(`${step} failed`), { code: "P2034" });
-      if (step === "audit-read") tx.auditLog.findUnique.mockRejectedValueOnce(failure);
-      if (step === "CAS") tx.user.updateMany.mockRejectedValueOnce(failure);
-      if (step === "delete") tx.userRole.deleteMany.mockRejectedValueOnce(failure);
-      if (step === "create") tx.userRole.create.mockRejectedValueOnce(failure);
-      if (step === "after-snapshot")
-        tx.user.findUnique.mockResolvedValueOnce(saved.users[1]).mockRejectedValueOnce(failure);
-      if (step === "audit-write") tx.auditLog.create.mockRejectedValueOnce(failure);
+      // Not a write conflict (#1959 retries those): a statement the database refused.
+      const failure = Object.assign(new Error(`${step} failed`), { code: "P2004" });
+      failAt(step, failure, saved);
       await expect(confirmRolesForAdmin(admin.id, input)).rejects.toBe(failure);
       expect(committed).toEqual(saved);
       if (step !== "audit-write") expect(tx.auditLog.create).not.toHaveBeenCalled();
     },
   );
 
-  it("propagates a transaction/commit conflict without retrying", async () => {
+  // #1959 — a write conflict rolled the transaction back; it runs again and
+  // lands exactly once.
+  const p2034 = () => Object.assign(new Error("serialization failure"), { code: "P2034" });
+  const adapterConflict = () =>
+    Object.assign(new Error("TransactionWriteConflict"), {
+      cause: { originalCode: "40001", kind: "TransactionWriteConflict" },
+    });
+
+  it.each(["audit-read", "CAS", "delete", "create", "after-snapshot", "audit-write"])(
+    "runs again after a write conflict at the %s step and records one decision",
+    async (step) => {
+      const input = await inputFor();
+      const saved = structuredClone(committed);
+      failAt(step, adapterConflict(), saved);
+      await expect(confirmRolesForAdmin(admin.id, input)).resolves.toMatchObject({
+        replayed: false,
+        state: { authority: "provider" },
+      });
+      expect(committed.audits).toHaveLength(1);
+      expect(committed.roles.filter((r) => r.userId === target.targetId)).toEqual([
+        expect.objectContaining({ roleId: "role-reader", source: "provider" }),
+      ]);
+      expect(reconnect).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    ["P2034", p2034],
+    ["adapter-pg TransactionWriteConflict", adapterConflict],
+  ])("runs again after a %s at commit", async (_, conflict) => {
     const input = await inputFor();
-    const failure = Object.assign(new Error("serialization failure"), { code: "P2034" });
-    db.$transaction.mockClear().mockRejectedValueOnce(failure);
-    await expect(confirmRolesForAdmin(admin.id, input)).rejects.toBe(failure);
-    expect(db.$transaction).toHaveBeenCalledOnce();
-    expectNoWrites();
+    const commit = db.$transaction.getMockImplementation()!;
+    db.$transaction.mockClear().mockImplementationOnce(async (callback) => {
+      working = structuredClone(committed);
+      await callback(tx); // every write lands in `working`, then the commit is refused
+      throw conflict();
+    });
+    db.$transaction.mockImplementation(commit);
+    await expect(confirmRolesForAdmin(admin.id, input)).resolves.toMatchObject({
+      replayed: false,
+    });
+    expect(db.$transaction).toHaveBeenCalledTimes(2);
+    expect(committed.audits).toHaveLength(1);
+  });
+
+  it("answers 409 RECONCILIATION_CONFLICT, with nothing written, when every attempt conflicts", async () => {
+    const input = await inputFor();
+    const saved = structuredClone(committed);
+    db.$transaction.mockClear().mockRejectedValue(p2034());
+    await expect(confirmRolesForAdmin(admin.id, input)).rejects.toMatchObject({
+      statusCode: 409,
+      code: "RECONCILIATION_CONFLICT",
+    });
+    expect(db.$transaction).toHaveBeenCalledTimes(3);
+    expect(committed).toEqual(saved);
+    expect(reconnect).not.toHaveBeenCalled();
+  });
+
+  it("inspection runs again after a write conflict", async () => {
+    db.$transaction.mockRejectedValueOnce(adapterConflict());
+    await expect(inspectRolesForAdmin(admin.id, target)).resolves.toMatchObject({
+      state: { id: target.targetId },
+    });
+    expect(db.$transaction).toHaveBeenCalledTimes(2);
   });
 
   it("validates strict admin wrapper input before opening a transaction", () => {

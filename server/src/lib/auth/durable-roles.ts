@@ -2,7 +2,9 @@ import type { RoleKey } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { reconnectUserSockets } from "../socket/user-disconnect.js";
 import { audit } from "../audit/audit-service.js";
+import { retryOnWriteConflict } from "../db/write-conflict-retry.js";
 import { isBootstrapAdminCandidate } from "./bootstrap-admins.js";
+import { signInConflict } from "./login-identity.js";
 
 export const EXPLICIT_ROLE_SOURCES = ["local", "scim", "unknown"] as const;
 export const DURABLE_ROLE_SOURCES = ["local", "scim", "provider", "unknown"] as const;
@@ -95,90 +97,96 @@ export async function reconcileTrustedLoginRole(input: {
 }): Promise<RoleKey> {
   // The caller's marker is only a login-time snapshot. Read the authoritative
   // marker AND roles together; a redundant pre-transaction guard hides races.
-  // Serializable conflicts fail the login closed rather than overwrite grants.
+  // A serializable conflict rolls the whole decision back, so it is run again
+  // (#1959) and never half-applied; one that every attempt loses fails the
+  // login closed with 503 SIGN_IN_CONFLICT rather than overwrite grants.
   let bootstrappedAdmin = false;
-  const outcome = await prisma.$transaction(
-    async (tx): Promise<{ role: RoleKey; providerRoleChanged: boolean }> => {
-      bootstrappedAdmin = false;
-      const user = await tx.user.findFirst({
-        where: { id: input.userId, status: "active", deletedAt: null },
-        select: { authRolesInitializedAt: true, authRoleAuthority: true },
-      });
-      if (!user) throw new Error("Login user is unavailable");
-      // #1376 — first-admin bootstrap. Inside this serializable transaction so
-      // "no admin exists" and the grant are one decision: a second listed user
-      // signing in concurrently either sees this grant or fails closed.
-      if (isBootstrapAdminCandidate(input.bootstrapIdentities ?? [])) {
-        const anyAdmin = await tx.userRole.findFirst({
-          where: { role: { key: "admin" } },
-          select: { userId: true },
-        });
-        if (!anyAdmin) {
-          const adminRole = await tx.role.upsert({
-            where: { key: "admin" },
+  const outcome = await retryOnWriteConflict(
+    () =>
+      prisma.$transaction(
+        async (tx): Promise<{ role: RoleKey; providerRoleChanged: boolean }> => {
+          bootstrappedAdmin = false;
+          const user = await tx.user.findFirst({
+            where: { id: input.userId, status: "active", deletedAt: null },
+            select: { authRolesInitializedAt: true, authRoleAuthority: true },
+          });
+          if (!user) throw new Error("Login user is unavailable");
+          // #1376 — first-admin bootstrap. Inside this serializable transaction so
+          // "no admin exists" and the grant are one decision: a second listed user
+          // signing in concurrently either sees this grant or fails closed.
+          if (isBootstrapAdminCandidate(input.bootstrapIdentities ?? [])) {
+            const anyAdmin = await tx.userRole.findFirst({
+              where: { role: { key: "admin" } },
+              select: { userId: true },
+            });
+            if (!anyAdmin) {
+              const adminRole = await tx.role.upsert({
+                where: { key: "admin" },
+                update: {},
+                create: { key: "admin", name: "admin", isSystem: true },
+                select: { id: true },
+              });
+              // `local`: an explicit grant, exactly as an admin would make it, so a
+              // later provider downgrade does not take it away.
+              await tx.userRole.create({
+                data: { userId: input.userId, roleId: adminRole.id, source: "local" },
+              });
+              bootstrappedAdmin = true;
+            }
+          }
+          const roles = await tx.userRole.findMany({
+            where: { userId: input.userId },
+            include: { role: true },
+          });
+          const effective = resolveEffectiveRoleFromRows(roles, user.authRoleAuthority);
+          if (effective.hasExplicitOverride) {
+            if (!user.authRolesInitializedAt && roles.some((row) => row.source !== "provider")) {
+              await tx.user.update({
+                where: { id: input.userId },
+                data: { authRolesInitializedAt: new Date() },
+              });
+            }
+            return { role: effective.role, providerRoleChanged: false };
+          }
+          if (user.authRolesInitializedAt && roles.length === 0) {
+            return { role: "reader", providerRoleChanged: false };
+          }
+
+          // The role vocabulary is the fixed RoleKey set, but nothing seeds `roles`
+          // on a fresh database — throwing here 500s the very first login.
+          const roleRow = await tx.role.upsert({
+            where: { key: input.providerRole },
             update: {},
-            create: { key: "admin", name: "admin", isSystem: true },
+            create: { key: input.providerRole, name: input.providerRole, isSystem: true },
             select: { id: true },
           });
-          // `local`: an explicit grant, exactly as an admin would make it, so a
-          // later provider downgrade does not take it away.
-          await tx.userRole.create({
-            data: { userId: input.userId, roleId: adminRole.id, source: "local" },
+          await tx.userRole.deleteMany({
+            where: {
+              userId: input.userId,
+              source: "provider",
+            },
           });
-          bootstrappedAdmin = true;
-        }
-      }
-      const roles = await tx.userRole.findMany({
-        where: { userId: input.userId },
-        include: { role: true },
-      });
-      const effective = resolveEffectiveRoleFromRows(roles, user.authRoleAuthority);
-      if (effective.hasExplicitOverride) {
-        if (!user.authRolesInitializedAt && roles.some((row) => row.source !== "provider")) {
+          // A unique conflict must abort, never convert a concurrent explicit row.
+          await tx.userRole.create({
+            data: {
+              userId: input.userId,
+              roleId: roleRow.id,
+              source: "provider",
+            },
+          });
           await tx.user.update({
             where: { id: input.userId },
             data: { authRolesInitializedAt: new Date() },
           });
-        }
-        return { role: effective.role, providerRoleChanged: false };
-      }
-      if (user.authRolesInitializedAt && roles.length === 0) {
-        return { role: "reader", providerRoleChanged: false };
-      }
-
-      // The role vocabulary is the fixed RoleKey set, but nothing seeds `roles`
-      // on a fresh database — throwing here 500s the very first login.
-      const roleRow = await tx.role.upsert({
-        where: { key: input.providerRole },
-        update: {},
-        create: { key: input.providerRole, name: input.providerRole, isSystem: true },
-        select: { id: true },
-      });
-      await tx.userRole.deleteMany({
-        where: {
-          userId: input.userId,
-          source: "provider",
+          // A first grant (no rows yet) is no change: there is no older role to drop.
+          return {
+            role: input.providerRole,
+            providerRoleChanged: roles.length > 0 && effective.role !== input.providerRole,
+          };
         },
-      });
-      // A unique conflict must abort, never convert a concurrent explicit row.
-      await tx.userRole.create({
-        data: {
-          userId: input.userId,
-          roleId: roleRow.id,
-          source: "provider",
-        },
-      });
-      await tx.user.update({
-        where: { id: input.userId },
-        data: { authRolesInitializedAt: new Date() },
-      });
-      // A first grant (no rows yet) is no change: there is no older role to drop.
-      return {
-        role: input.providerRole,
-        providerRoleChanged: roles.length > 0 && effective.role !== input.providerRole,
-      };
-    },
-    { isolationLevel: "Serializable" },
+        { isolationLevel: "Serializable" },
+      ),
+    { exhausted: signInConflict },
   );
   // #633 — the user's other open sockets still carry the previous provider
   // role; after the commit, make them re-handshake.
