@@ -133,6 +133,7 @@ const { AnalysisOrchestrator } = await import("./orchestrator.js");
 const analysisService = await import("./analysis-service.js");
 const { prisma } = await import("../prisma.js");
 const findingsStore = await import("../governing/findings-store.js");
+const { GOVERNING_RULES_UNAVAILABLE } = await import("../governing/applicability.js");
 /** #2010 — the orchestrator of the run in progress, for a test that cancels it. */
 const orchestrator: { current?: InstanceType<typeof AnalysisOrchestrator> } = {};
 
@@ -393,15 +394,16 @@ describe("#1872 — governing applicability in the analysis pipeline", () => {
       requirements: Array<{ requirementId: string; decisions: unknown[]; error?: string }>;
     };
     expect(stored.requirements).toEqual([
+      // #2016 — the load-failure constant itself, not any string.
       expect.objectContaining({
         requirementId: "REQ-001",
         decisions: [],
-        error: expect.any(String),
+        error: GOVERNING_RULES_UNAVAILABLE,
       }),
       expect.objectContaining({
         requirementId: "REQ-002",
         decisions: [],
-        error: expect.any(String),
+        error: GOVERNING_RULES_UNAVAILABLE,
       }),
     ]);
   });

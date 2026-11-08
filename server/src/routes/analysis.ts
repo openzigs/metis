@@ -45,7 +45,10 @@ import {
   criteriaProposalUserRateLimiter,
 } from "../middleware/criteria-proposal-rate-limit.js";
 import { dismissAllCriteriaProposals } from "../lib/analysis/analysis-service.js";
-import { governingQuestionSourceFor } from "../lib/governing/applicability-questions.js";
+import {
+  governingQuestionRequirementLabel,
+  governingQuestionSourceFor,
+} from "../lib/governing/applicability-questions.js";
 import { readGoverningApplicability } from "../lib/governing/applicability-store.js";
 import {
   decideGoverningFinding,
@@ -1167,10 +1170,21 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       for (const r of structured?.requirements ?? []) {
         titleById.set(r.id, r.title);
       }
+      // #2016 — a governing question's requirement is one of the analysis's
+      // own (its id is namespaced and in no reviewed list): labelled with that
+      // requirement's text from the stored applicability, read only when the
+      // round has such a question. An unreadable store still labels it.
+      const governingText = new Map<string, string>();
+      if (questions.some((q) => q.governing)) {
+        const stored = await readGoverningApplicability(analysisId).catch(() => null);
+        for (const r of stored?.requirements ?? []) governingText.set(r.requirementId, r.text);
+      }
 
       const rows: ClarifyExportRow[] = questions.map((q) => ({
         questionId: q.id,
-        requirement: titleById.get(q.requirementId) ?? q.requirementId,
+        requirement: q.governing
+          ? governingQuestionRequirementLabel(governingText.get(q.governing.requirementId))
+          : (titleById.get(q.requirementId) ?? q.requirementId),
         ambiguityField: q.ambiguityField,
         question: q.question,
         suggestedAnswer: q.groundedAnswer ?? "",

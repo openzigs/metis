@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AIProvider, ChatMessage, ChatOptions } from "../ai/types.js";
 import { TOOL_RESULT_FENCE } from "../ai/tool-runtime/fence.js";
+import { estimateTokens } from "../analysis/context-window-manager.js";
 
 const db = vi.hoisted(() => ({
   project: { findFirst: vi.fn() },
@@ -594,7 +595,7 @@ describe("#1997 — the rule summaries lead the screen prompt and are cached acr
     expect(chat.mock.calls[0]![1]).toMatchObject({ promptCaching: { system: true } });
   });
 
-  it("#2008 — past one screen batch, requirements of very different lengths get the same batches and cache prefixes", async () => {
+  it("#2008 — past one screen batch, requirements of very different lengths within the allowance get the same batches and cache prefixes", async () => {
     const rules = Array.from({ length: 120 }, (_, i) => rule(i + 1));
     const { provider, chat } = stubModel({ screen: () => [] });
     const short = { id: "REQ-S", text: "Export orders." };
@@ -620,12 +621,35 @@ describe("#1997 — the rule summaries lead the screen prompt and are cached acr
     expect(b).toEqual(a);
   });
 
-  it("#2008 — planScreenBatches does not read the requirement: one plan per rule set and budget", () => {
+  it("#2008 — planScreenBatches is deterministic and partitions the rules: every rule once, in order", () => {
     const entries = applicabilityEntries(Array.from({ length: 120 }, (_, i) => rule(i + 1)));
     const plan = planScreenBatches(entries, 1_500);
     expect(plan.length).toBeGreaterThan(1);
     expect(plan.flat()).toEqual(entries);
     expect(planScreenBatches(entries, 1_500)).toEqual(plan);
+    // A requirement within the allowance plans exactly as no requirement does.
+    expect(planScreenBatches(entries, 1_500, "Export orders.")).toEqual(plan);
+  });
+
+  it("#2016 — a requirement longer than the allowance is planned at its length: no screen prompt overshoots the budget", async () => {
+    const rules = Array.from({ length: 120 }, (_, i) => rule(i + 1));
+    const { provider, chat } = stubModel({ screen: () => [] });
+    const text = `Store managers can download every order. ${"Each row carries the order's lines, totals, discounts and the customer's delivery notes. ".repeat(40)}`;
+    // Well past SCREEN_REQUIREMENT_ALLOWANCE_TOKENS (500), well inside the budget.
+    expect(estimateTokens(text)).toBeGreaterThan(800);
+    const set = await decideApplicability({
+      requirement: { id: "REQ-L", text },
+      rules,
+      provider,
+      retrieve: async () => [],
+      batchTokenBudget: 1_500,
+    });
+    expect(set.rulesScreened).toBe(rules.length);
+    const prompts = chat.mock.calls.map(
+      (c) => `${(c[1] as ChatOptions).systemMessage}\n${(c[0] as ChatMessage[])[0]!.content}`,
+    );
+    expect(prompts.length).toBeGreaterThan(1);
+    for (const p of prompts) expect(estimateTokens(p)).toBeLessThanOrEqual(1_500);
   });
 
   it("the judging prompt sets no cache prefix: its rule list differs per requirement", async () => {

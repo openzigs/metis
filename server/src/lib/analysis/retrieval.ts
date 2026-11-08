@@ -336,11 +336,17 @@ export const GOVERNING_APPLICABILITY_UNDECIDED =
  * input array itself is returned, untouched. A requirement whose decision
  * fails gets a set carrying `error` and no decisions — never a silently empty
  * one — and the rest of the analysis carries on.
+ *
+ * #2016 — once `signal` (the one the hook's calls run under) is aborted, the
+ * workers stop: no further requirement is retrieved, embedded or judged, and
+ * the requirement whose call the abort failed is not logged as undecided.
+ * Requirements never reached carry no `governing` set; an aborted run's result
+ * is never joined, so nothing reads them.
  */
 export async function attachGoverningApplicability(
   evidence: RequirementEvidence[],
   hook: Pick<GoverningApplicabilityHook, "decide"> | null,
-  opts: { concurrency?: number } = {},
+  opts: { concurrency?: number; signal?: AbortSignal } = {},
 ): Promise<RequirementEvidence[]> {
   if (!hook) return evidence;
   const concurrency = Math.max(1, opts.concurrency ?? REQUIREMENT_RETRIEVAL_CONCURRENCY);
@@ -348,12 +354,14 @@ export async function attachGoverningApplicability(
   let cursor = 0;
   const worker = async (): Promise<void> => {
     for (;;) {
+      if (opts.signal?.aborted) return;
       const i = cursor++;
       if (i >= out.length) return;
       const e = out[i]!;
       try {
         e.governing = await hook.decide({ id: e.requirementId, text: e.text });
       } catch (err) {
+        if (opts.signal?.aborted) return;
         log.warn("governing applicability could not be decided", {
           requirementId: e.requirementId,
           error: (err as Error).message,

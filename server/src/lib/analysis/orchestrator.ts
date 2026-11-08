@@ -4510,9 +4510,12 @@ export class AnalysisOrchestrator {
         // minutes of a 24-requirement analysis on DeepSeek. The code agent's
         // prompt is built from `perRequirement`, which it never changes.
         if (governing) {
+          // #2016 — under the hook's own signal, so an abort stops the loop too.
+          const governingSignal = input.governingSignal ?? input.signal;
           input.onGoverningApplicability?.(
             attachGoverningApplicability(perRequirement, governing, {
               concurrency: REQUIREMENT_RETRIEVAL_CONCURRENCY,
+              ...(governingSignal ? { signal: governingSignal } : {}),
             }),
           );
         }
