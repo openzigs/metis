@@ -1775,14 +1775,26 @@ export class AnalysisOrchestrator {
     // continuation appended for a repository this pass re-ran. A continuation
     // itself deletes nothing: the rows before it hold the findings it keeps.
     if (!continuing && connectors.length > 0 && results.length > 0) {
-      await prisma.agentResult.deleteMany({
-        where: {
+      try {
+        await prisma.agentResult.deleteMany({
+          where: {
+            analysisId: input.analysisId,
+            agentKey: "code",
+            createdAt: { lt: startedAt },
+            OR: [{ connectorId: null }, { connectorId: { in: ranConnectorIds } }],
+          },
+        });
+      } catch (err) {
+        // #2011 — the passes above have already landed their rows, so the stale
+        // ones survive beside them until the next regenerate deletes both.
+        // Across several passes this cannot be one transaction; say so.
+        log.warn("Regenerate could not delete superseded code rows", {
           analysisId: input.analysisId,
-          agentKey: "code",
-          createdAt: { lt: startedAt },
-          OR: [{ connectorId: null }, { connectorId: { in: ranConnectorIds } }],
-        },
-      });
+          ranConnectorIds,
+          error: (err as Error).message,
+        });
+        throw err;
+      }
     }
     if (!input.signal.aborted && connectors.length > 0) {
       await this.refreshSkippedRepos(input.analysisId, connectors, ranConnectorIds, cappedOut);
@@ -1977,7 +1989,6 @@ export class AnalysisOrchestrator {
         );
         for (const connector of effectiveConnectors) {
           if (active.cancelled) break;
-          const passStartedAt = new Date();
           const result = await this.runAgenticCodeAgent({
             analysisId: opts.analysisId,
             projectId: analysis.projectId,
@@ -1992,21 +2003,14 @@ export class AnalysisOrchestrator {
             tokenBudget: effectiveBudget,
             affectedCode,
             escalation,
-            // Merge — never clobber the original run's persisted code findings.
-            // A failed or cancelled pass throws, and its append deletes nothing.
-            persistMode: "append",
-          });
-          // #1998 — a connector-scoped replace, once the pass has completed: a
-          // repository a regenerate's cap left out keeps the `code` rows of the
-          // pass before it, and this pass's rows beside them would read its
-          // findings twice. Only this connector's earlier rows go.
-          await prisma.agentResult.deleteMany({
-            where: {
-              analysisId: opts.analysisId,
-              agentKey: "code",
-              connectorId: connector.id,
-              createdAt: { lt: passStartedAt },
-            },
+            // Never clobber another repository's persisted code findings.
+            // #1998 — a completed pass replaces only this connector's earlier
+            // rows: a repository a regenerate's cap left out keeps the `code`
+            // rows of the pass before it, and this pass's rows beside them
+            // would read its findings twice. #2011 — the delete and the write
+            // are one transaction. A failed or cancelled pass throws, and its
+            // row is appended, deleting nothing.
+            persistMode: "supersede",
           });
           delta.promptTokens += result.usage.promptTokens;
           delta.completionTokens += result.usage.completionTokens;
@@ -2115,8 +2119,8 @@ export class AnalysisOrchestrator {
    *
    * #1989 — "not run by this pass" is not "no code pass": a repository an
    * earlier pass ran and this pass's cap left out keeps that pass's `code`
-   * rows. #1998 — a resume of it deletes them once its own pass completes, so
-   * its findings are not read twice.
+   * rows. #1998 — a resume of it replaces them once its own pass completes
+   * (#2011: in one transaction), so its findings are not read twice.
    */
   private async refreshSkippedRepos(
     analysisId: string,
@@ -3501,10 +3505,11 @@ export class AnalysisOrchestrator {
      * #741 (Epic #727) — how to persist this pass's `code` AgentResult. Defaults
      * to `"replace"` (today's behaviour). The resume endpoint passes `"append"`
      * so a resumed connector's findings MERGE alongside the original run's code
-     * findings instead of clobbering them (#1998: it then deletes that
-     * connector's own earlier rows, once the pass has completed).
+     * findings instead of clobbering them. #1998/#2011 — it passes
+     * `"supersede"`: a completed pass replaces that connector's own earlier rows
+     * in one transaction, and a failed or cancelled one is appended.
      */
-    persistMode?: "replace" | "append";
+    persistMode?: "replace" | "append" | "supersede";
   }): Promise<AgentRunResult> {
     const startedAt = new Date();
     const agentKey = "code" as const;
@@ -4322,8 +4327,9 @@ export class AnalysisOrchestrator {
           // connector's row replaces only its own prior attempt.
           connectorId: input.connectorId,
           // #1131 — a failed or cancelled APPEND (a resume or a continuation)
-          // must not delete the row whose findings it was adding to.
-          mode: input.persistMode ?? "replace",
+          // must not delete the row whose findings it was adding to. #2011 — nor
+          // may a failed supersede: only a completed pass replaces.
+          mode: input.persistMode === "supersede" ? "append" : (input.persistMode ?? "replace"),
         });
         this.emit({
           analysisId: input.analysisId,

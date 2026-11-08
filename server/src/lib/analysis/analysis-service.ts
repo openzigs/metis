@@ -201,8 +201,14 @@ export interface PersistAgentResultInput {
    * resume endpoint MERGES a resumed connector's findings alongside the original
    * run's findings (both are read back by {@link readFlattenedFindings}) instead
    * of clobbering them.
+   *
+   * Issue #2011 — `"supersede"` is `"replace"` in ONE transaction: the scope's
+   * earlier rows go and this row (with its findings) lands together, or neither
+   * does. A resumed repository's completed pass uses it, so a failed delete can
+   * no longer leave that repository's findings doubled, and no read between the
+   * two writes sees both sets.
    */
-  mode?: "replace" | "append";
+  mode?: "replace" | "append" | "supersede";
   /**
    * Issue #763 (Epic #727) — the RepoConnection this result was produced for, on
    * the multi-repo agentic `code` path. When set, `replace` mode scopes its
@@ -952,16 +958,51 @@ export async function persistAgentResult(
   // a "Continue with a larger budget" appends a second `code` row beside the
   // first, and a later replace (a single-shot regenerate) that deleted only
   // one of them left the other's findings doubled beside the new ones.
-  if ((input.mode ?? "replace") === "replace") {
-    await prisma.agentResult.deleteMany({
-      where: {
-        analysisId: input.analysisId,
-        agentKey: input.agentKey,
-        ...(input.connectorId ? { connectorId: input.connectorId } : {}),
-      },
+  //
+  // Issue #2011 — `mode: "supersede"` runs that delete and the write below in
+  // one transaction.
+  const mode = input.mode ?? "replace";
+  const { persisted, refusedMetrics } =
+    mode === "supersede"
+      ? await prisma.$transaction(async (tx) => {
+          await deleteAgentResultsInScope(tx, input);
+          return writeAgentResult(tx, input);
+        })
+      : await (async () => {
+          if (mode === "replace") await deleteAgentResultsInScope(prisma, input);
+          return writeAgentResult(prisma, input);
+        })();
+  if (refusedMetrics > 0) {
+    // Counts and the run identity only — never the finding text.
+    log.warn("Refused faithfulness metrics the server did not author", {
+      analysisId: input.analysisId,
+      agentKey: input.agentKey,
+      refusedMetrics,
+      findings: persisted.findingIds.length,
     });
   }
+  return persisted;
+}
 
+/** The prior rows a replace removes: the pair, scoped to the connector when one is set. */
+async function deleteAgentResultsInScope(
+  db: Prisma.TransactionClient,
+  input: PersistAgentResultInput,
+): Promise<void> {
+  await db.agentResult.deleteMany({
+    where: {
+      analysisId: input.analysisId,
+      agentKey: input.agentKey,
+      ...(input.connectorId ? { connectorId: input.connectorId } : {}),
+    },
+  });
+}
+
+/** The row and its findings, through `db` (the client, or a transaction). */
+async function writeAgentResult(
+  db: Prisma.TransactionClient,
+  input: PersistAgentResultInput,
+): Promise<{ persisted: PersistedAgentResult; refusedMetrics: number }> {
   // #774 — the loop's tool-call summary rides in the existing output JSON column
   // (no migration): a `toolTelemetry` sibling of the agent output's own keys.
   const outputJson = input.output
@@ -971,7 +1012,7 @@ export async function persistAgentResult(
           : input.output,
       )
     : null;
-  const created = await prisma.agentResult.create({
+  const created = await db.agentResult.create({
     data: {
       analysisId: input.analysisId,
       agentKey: input.agentKey,
@@ -995,7 +1036,7 @@ export async function persistAgentResult(
       // COPIES the metric it would be a real measurement going missing, which
       // reads identically from the database and would otherwise be invisible.
       if (f.faithfulness != null && !isServerAuthored(f.faithfulness)) refusedMetrics += 1;
-      const row = await prisma.finding.create({
+      const row = await db.finding.create({
         data: {
           agentResultId: created.id,
           category: f.category,
@@ -1043,16 +1084,7 @@ export async function persistAgentResult(
       findingIds.push(row.id);
     }
   }
-  if (refusedMetrics > 0) {
-    // Counts and the run identity only — never the finding text.
-    log.warn("Refused faithfulness metrics the server did not author", {
-      analysisId: input.analysisId,
-      agentKey: input.agentKey,
-      refusedMetrics,
-      findings: findingIds.length,
-    });
-  }
-  return { id: created.id, agentKey: input.agentKey, findingIds };
+  return { persisted: { id: created.id, agentKey: input.agentKey, findingIds }, refusedMetrics };
 }
 
 export interface PersistRequirementsInput {
