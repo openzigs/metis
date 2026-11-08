@@ -6,6 +6,8 @@ import {
   buildGoverningArms,
   buildJudgePrompt,
   corpusApplicabilityRules,
+  corpusFindingRules,
+  readFindings,
   readApplicabilitySet,
   buildScreenPrompt,
   measureScreenPromptSizes,
@@ -76,12 +78,12 @@ describe("parseGoverningArmIds", () => {
   it("defaults to A0, upper-cases, deduplicates and orders", () => {
     expect(parseGoverningArmIds(undefined)).toEqual(["A0"]);
     expect(parseGoverningArmIds("a2, a0,A2")).toEqual(["A0", "A2"]);
-    expect(GOVERNING_ARM_IDS).toEqual(["A0", "A1", "A2", "A3"]);
+    expect(GOVERNING_ARM_IDS).toEqual(["A0", "A1", "A2", "A3", "A4"]);
   });
 
   it("refuses an unknown or empty arm list", () => {
     expect(() => parseGoverningArmIds("A0,A9")).toThrow(
-      /unknown arm\(s\) A9; known: A0, A1, A2, A3/,
+      /unknown arm\(s\) A9; known: A0, A1, A2, A3, A4/,
     );
     expect(() => parseGoverningArmIds(" , ")).toThrow(/needs an arm id/);
   });
@@ -457,6 +459,7 @@ describe("A3 — production applicability (#1872)", () => {
       screened: corpus.rules.length,
       screenBatches: 1,
       reasked: 0,
+      screenReasked: 0,
       screenOnly: 1,
     });
   });
@@ -492,5 +495,80 @@ describe("A3 — production applicability (#1872)", () => {
       summary: corpus.rules[0]!.summary,
       clauseExcerpt: corpus.rules[0]!.clause,
     });
+  });
+});
+
+describe("A4 — production findings (#1874)", () => {
+  const handle = (id: string) => `R${corpus.rules.findIndex((r) => r.id === id) + 1}`;
+
+  it("every corpus rule's clause is located in the scored policy text", () => {
+    const rules = corpusFindingRules(corpus);
+    expect(rules.size).toBe(corpus.rules.length);
+    for (const r of rules.values()) {
+      expect(corpus.policyText.slice(r.clauseStart, r.clauseEnd)).toBe(r.clauseExcerpt);
+    }
+  });
+
+  it("applies A3, then a finding per applying rule: a verified clause is cited, an uncertain one asks", async () => {
+    const item = itemById("GR-01");
+    const top = topKRules(corpus, `${item.title}\n\n${item.text}`, 2).map((r) => r.id);
+    const clause = corpus.ruleById.get(top[0]!)!.clause;
+    const excerpt = clause.split(/\s+/).slice(0, 8).join(" ");
+    const { provider, calls } = stubProvider([
+      JSON.stringify({ rules: [handle("AL-02")] }),
+      JSON.stringify({
+        decisions: [
+          { rule: handle(top[0]!), verdict: "applies", reason: "Reads it." },
+          { rule: handle(top[1]!), verdict: "does-not-apply", reason: "No." },
+          {
+            rule: handle("AL-02"),
+            verdict: "uncertain",
+            reason: "Depends.",
+            businessFact: "Is each download attributed?",
+          },
+        ],
+      }),
+      // The findings call: the one applying rule (R1 in its own prompt) is a gap.
+      JSON.stringify({ findings: [{ rule: "R1", status: "gap", reasoning: "Missing.", excerpt }] }),
+    ]);
+    const [a4] = buildGoverningArms(["A4"], { model: "m", topK: 2 });
+    const out = await a4!.assess(item, corpus, { provider });
+    expect(calls).toHaveLength(3);
+    expect(out.judgements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleId: top[0],
+          verdict: "gap",
+          citation: { ruleId: top[0], excerpt: expect.stringContaining(excerpt.split(" ")[0]!) },
+        }),
+        expect.objectContaining({
+          ruleId: "AL-02",
+          verdict: "needs-ba-input",
+          businessFact: "Is each download attributed?",
+        }),
+      ]),
+    );
+    expect(out.judgements.find((j) => j.ruleId === top[1])).toBeUndefined();
+    expect(out.diagnostics).toMatchObject({ applicable: 2, unverifiedCitations: 0 });
+  });
+
+  it("readFindings: a dropped citation is no citation", () => {
+    const rule = [...corpusFindingRules(corpus).values()][0]!;
+    expect(
+      readFindings({
+        findings: [
+          {
+            requirementId: "GR-01",
+            rule,
+            status: "needs-ba-input",
+            reasoning: "r",
+            citation: null,
+            citationDropped: true,
+            modelStatus: "gap",
+            businessQuestion: "q?",
+          },
+        ],
+      }).judgements,
+    ).toEqual([{ ruleId: rule.id, verdict: "needs-ba-input", businessFact: "q?" }]);
   });
 });

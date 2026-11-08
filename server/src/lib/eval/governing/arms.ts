@@ -18,6 +18,10 @@
  *   - **A3 — production applicability (#1872):** `decideApplicability`, the
  *     code an analysis runs — A1's top-k plus the batched screen, each
  *     candidate judged applies / does-not-apply / uncertain.
+ *   - **A4 — production findings (#1874):** A3, then
+ *     `evaluateRequirementFindings` over every pair that applies or may apply:
+ *     Compliant / Gap / Needs BA input, cited to a clause verified against the
+ *     policy text, with the no-evidence rule enforced in code.
  *
  * Retrieval is lexical (production's BM25 options over the committed text), so
  * every arm runs offline apart from its model calls. Arms are chosen only by
@@ -43,6 +47,13 @@ import {
   type ApplicabilityRule,
   type ApplicabilitySet,
 } from "../../governing/applicability.js";
+import { locateClause } from "../../governing/clause-verify.js";
+import {
+  evaluateRequirementFindings,
+  type FindingPair,
+  type FindingRule,
+  type FindingsReport,
+} from "../../governing/findings.js";
 import { createInMemoryBM25 } from "../../rag/bm25-index.js";
 import { chunkMarkdown } from "../../rag/chunker.js";
 import {
@@ -94,7 +105,7 @@ export interface GoverningArmDeps {
 }
 
 /** The registered arms, in report order. */
-export const GOVERNING_ARM_IDS = ["A0", "A1", "A2", "A3"] as const;
+export const GOVERNING_ARM_IDS = ["A0", "A1", "A2", "A3", "A4"] as const;
 export type GoverningArmId = (typeof GOVERNING_ARM_IDS)[number];
 
 /** A1 / A2's default top-k over 40 rule summaries. */
@@ -583,7 +594,111 @@ export function createA3Arm(deps: GoverningArmDeps): GoverningArm {
           screened: set.rulesScreened,
           screenBatches: set.screenBatches,
           reasked: set.reasked,
+          screenReasked: set.screenReasked,
           screenOnly: set.decisions.filter((d) => !d.foundBy.includes("top-k")).length,
+        },
+      };
+    },
+  };
+}
+
+// ── A4 ─────────────────────────────────────────────────────────────────────
+
+/**
+ * #1874 — the corpus's rules as production findings cite stored ones: each
+ * clause located in the scored revision's text (it is there by the corpus's
+ * own check), so a finding's excerpt is verified against that text and inside
+ * that clause, as an analysis verifies it.
+ */
+export function corpusFindingRules(
+  corpus: Pick<GoverningCorpus, "name" | "rules" | "policyText" | "manifest">,
+): Map<string, FindingRule> {
+  const out = new Map<string, FindingRule>();
+  for (const r of corpus.rules) {
+    const at = locateClause(corpus.policyText, r.clause);
+    if (!at) continue;
+    out.set(r.id, {
+      id: r.id,
+      revisionId: corpus.name,
+      revisionLabel: corpus.manifest.policy.scored,
+      documentTitle: corpus.manifest.policy.title,
+      controlId: r.id,
+      clauseRef: r.id,
+      summary: r.summary,
+      clauseExcerpt: at.clauseExcerpt,
+      clauseStart: at.clauseStart,
+      clauseEnd: at.clauseEnd,
+    });
+  }
+  return out;
+}
+
+/** Read production findings as governing judgements: status as verdict, the verified clause as citation. */
+export function readFindings(report: Pick<FindingsReport, "findings">): GoverningArmOutput {
+  return {
+    judgements: report.findings.map((f) => ({
+      ruleId: f.rule.id,
+      verdict: f.status,
+      ...(f.citation ? { citation: { ruleId: f.rule.id, excerpt: f.citation.clauseExcerpt } } : {}),
+      ...(f.businessQuestion ? { businessFact: f.businessQuestion } : {}),
+    })),
+  };
+}
+
+/**
+ * A4 — production findings (#1874): A3's applicability, then
+ * `evaluateRequirementFindings` over every pair that applies or may apply —
+ * Compliant / Gap / Needs BA input, the no-evidence rule and the citation
+ * check enforced in code. Its hard errors are the no-evidence → compliant
+ * count (#1874's bar: 0).
+ */
+export function createA4Arm(deps: GoverningArmDeps): GoverningArm {
+  const topK = deps.topK ?? DEFAULT_RULE_TOP_K;
+  return {
+    id: "A4",
+    label: "A4 — production findings: A3's applicability, then cited per-rule findings",
+    configuration: {
+      searcher: "production BM25 options (createInMemoryBM25) over rule id + summary",
+      topK,
+      applicability: "decideApplicability (A3)",
+      findings:
+        "evaluateRequirementFindings: compliant only with quoted evidence; excerpt verified inside the rule's clause",
+      reading: "readFindings: status as verdict, the verified clause as citation",
+      model: deps.model,
+    },
+    async assess(item, corpus, { provider }) {
+      const text = requirementText(item);
+      const set = await decideApplicability({
+        requirement: { id: item.id, text },
+        rules: corpusApplicabilityRules(corpus),
+        provider,
+        retrieve: async (query, k) => topKRules(corpus, query, k).map((r) => r.id),
+        topK,
+      });
+      const rules = corpusFindingRules(corpus);
+      const pairs: FindingPair[] = [];
+      for (const d of set.decisions) {
+        const rule = rules.get(d.ruleId);
+        if (d.verdict === "does-not-apply" || !rule) continue;
+        pairs.push({
+          rule,
+          applicability: d.verdict,
+          ...(d.businessFact ? { businessFact: d.businessFact } : {}),
+        });
+      }
+      const report = await evaluateRequirementFindings({
+        requirement: { id: item.id, text },
+        pairs,
+        revisionText: () => corpus.policyText,
+        provider,
+      });
+      return {
+        ...readFindings(report),
+        diagnostics: {
+          candidates: set.candidates,
+          applicable: pairs.length,
+          unverifiedCitations: report.unverifiedCitations,
+          noEvidenceDemoted: report.noEvidenceDemoted,
         },
       };
     },
@@ -595,6 +710,7 @@ const FACTORIES: Record<GoverningArmId, (deps: GoverningArmDeps) => GoverningArm
   A1: createA1Arm,
   A2: createA2Arm,
   A3: createA3Arm,
+  A4: createA4Arm,
 };
 
 /** `--arms A0,A2` → the ids, upper-cased, deduplicated, in report order. Default: A0. */

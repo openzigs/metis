@@ -1009,7 +1009,9 @@ since React Query joins an in-flight fetch of a query with no data rather than r
 the panel cancels that fetch (`cancelQueries`) before invalidating. Only those (#1945): the set
 is taken when the borrow's response arrives, so a first fetch a card starts afterwards (it read
 the committed links) is left alone, and a list whose fetch failed is not retried by a borrow,
-since it shows no links the borrow could change. The client preview
+since it shows no links the borrow could change. A raced list whose first fetch settles while
+the code links are refreshing is refetched only if it lists the borrowing requirement, and
+never when that fetch failed (#1990). The client preview
 (`borrowPlan`) and the server's borrow read the one `BORROWABLE_FRESHNESS` set from
 `@metis/shared`, so the preview cannot list a link the borrow would skip; and the one
 duplicate rule, `borrowDuplicateCheck` (same file and symbol under any source, or a file the
@@ -2546,6 +2548,19 @@ workspace nav shows its **Governing documents** tab only once the list route ans
 current revision: label, effective date, extraction state (a `failed` one with its
 `extractionError`, plus Retry extraction and Re-upload for an admin), rule count and
 `droppedUnverified`, and re-reads every 5 s while an extraction is `pending` or `running`.
+The same controls appear on a stuck revision (`isExtractionStuck`, #1996), by the retry
+route's own rule: `running` for longer than `GOVERNING_EXTRACTION_STALE_MS` since its
+`extractionStartedAt` (or with no start time), or `pending` that long since upload. The bound
+lives in `@metis/shared`, and the server's `EXTRACTION_STALE_MS` is set to it, so the page and
+the route use one number. The page compares the browser's clock with the server's timestamps,
+so clock skew moves the moment Retry appears; an early retry of a fresh run gets the route's
+`409`. A poll of a stuck revision returns unchanged data and so re-renders nothing, so the
+panel also sets a timer for the next moment a revision crosses the bound, and Retry appears
+while the page is open (#2002). A retry's `202` can arrive before the run's `running` write, so
+the panel cancels any list read in flight, writes the revision `running` into the list cache
+and lets the next poll read the server. It never re-reads at once. A poll that sees an
+extraction settle invalidates that document's rules (`governingKeys.documentRules`), which the
+30 s `staleTime` would otherwise hold.
 Selecting a document shows its rules (a revision picker once it has more than one); a row
 expands to the verbatim `clauseExcerpt`. Upload, New revision, Retry, Edit and Remove render
 for a workspace `owner`/`admin` or a deployment admin (`canManageGoverning`, from
@@ -2568,30 +2583,132 @@ in two passes and unions them:
    summaries are split into batches of at most `SCREEN_BATCH_MAX_TOKENS` (8,000 estimated
    tokens, about 350 rules at #1867's measured 21 tokens a rule), or half the model's context
    window when that is smaller. Every rule is in exactly one batch and none is truncated; the
-   count screened is logged. A failed top-k search is survivable while the screen runs.
+   count screened is logged. A failed top-k search is survivable while the screen runs. The
+   summaries lead the screen prompt, ahead of the requirement, and are sent as the cached
+   `promptCaching.userPrefix`: every requirement of an analysis shares that prefix (#1997). A
+   screen reply that cannot be read is re-asked once before the requirement fails.
 
 Each candidate is then judged `applies | does-not-apply | uncertain` with a one-line reason.
 An `uncertain` decision always carries a business question: a reply that leaves a candidate
 undecided or marks it `uncertain` without the question is re-asked once, and then recorded
-`uncertain` with `fallbackBusinessQuestion`, which names the rule. The model names rules by
+`uncertain` with `fallbackBusinessQuestion`, which names the rule. A judging reply that cannot
+be read at all, twice running, fails the requirement instead (#1997): recording every candidate
+`uncertain` asked the analyst a fallback question per rule. The model names rules by
 handles (`R1`, `R2`, …) assigned per decision, so a reply can only name a rule it was shown,
 and the requirement, summaries, clauses, control ids and titles travel fenced
 (`fenceToolResult`, as #1870).
 
 **The hook.** `governingApplicabilityForProject` returns `null`, with no database read, while
 `GOVERNING_DOCS_ENABLED` is off; it is also `null` for a project with no workspace or a
-workspace with no current rules. `currentWorkspaceRules` (`governing-store.ts`) reads only the
+workspace with no current rules. The orchestrator calls it through
+`governingApplicabilityHookFor`, which turns a failure to load the rules into a hook whose
+every requirement gets a set carrying `GOVERNING_RULES_UNAVAILABLE`, so "the rules could not be
+read" never looks like "nothing to check" (#1997). `currentWorkspaceRules` (`governing-store.ts`) reads only the
 live rules of each live document's current revision, scoped on the workspace through the
-document. The orchestrator's requirement-grounded code pass calls it beside
-`retrievePerRequirement`, and `attachGoverningApplicability` (`analysis/retrieval.ts`) puts
-each requirement's `ApplicabilitySet` on its evidence as `governing` (a failed requirement
-gets one carrying `error`, never a silently empty set). Nothing reads `governing` yet: the BA
-questions (#1873) and the cited findings (#1874) do. A flag-off analysis is byte-identical to
-before (`governing-applicability-pipeline-1872.test.ts`, a snapshot).
+document. The orchestrator's requirement-grounded code pass starts
+`attachGoverningApplicability` (`analysis/retrieval.ts`) after `retrievePerRequirement`, which
+puts each requirement's `ApplicabilitySet` on its evidence as `governing` (a failed requirement
+gets one carrying `error`, never a silently empty set). It is started, not awaited (#1997): it
+runs beside the code agent, enhancement and synthesis, and `runPipeline` joins it after
+synthesis (`joinGoverningApplicability`), before the run is recorded. Awaiting it first had put
+about 8 minutes of screens and judging ahead of the code agent on a 24-requirement analysis.
+The join stores the sets on the analysis as `metadata.governingApplicability`
+(`governing/applicability-store.ts`, the shared `governingAnalysisApplicabilitySchema`, #1873),
+where the BA questions below read them. A flag-off analysis is byte-identical to
+before (`governing-applicability-pipeline-1872.test.ts`, a snapshot) and stores nothing.
 
 `pnpm --filter server eval:governing --arms A0,A3` measures it: arm A3 runs
 `decideApplicability` over the #1867 corpus (lexical top-k standing in for the vector
-index), reading `applies` as `gap` and `uncertain` as `needs-ba-input`.
+index), reading `applies` as `gap` and `uncertain` as `needs-ba-input`. #1997's reading of
+the tuned judging prompt, two runs each: Sonnet (`claude-sonnet-5-5`) recall 0.92,
+non-resembling recall 0.93, precision 0.57 (0.30 on #1995's prompt); DeepSeek precision 0.57.
+Precision is still short of #1867's 0.60 bar, so the flag stays off (#1878).
+
+#### Business questions for uncertain rules (#1873)
+
+An `uncertain` pair is put to the BA as a **plain business question** through the existing
+clarification dialog ("Will the saved card keep the customer's whole card number?"), never a
+question about the rulebook. `governingQuestionSourceFor` (`governing/applicability-questions.ts`)
+gives `ClarificationDialog` its governing questions. It is `undefined`, with no database read,
+while `GOVERNING_DOCS_ENABLED` is off, so a flag-off dialog is unchanged (a snapshot taken from
+the pre-#1873 code).
+
+- **Which pairs.** Every `uncertain`, unsettled pair of the stored applicability whose question
+  has not been answered in an earlier round. An unanswered governing question keeps the dialog
+  open and is asked again.
+- **One question per fact.** A requirement's facts that differ only in case or punctuation merge
+  without a model. Several distinct facts go to the model once to merge those that ask the same
+  thing. A merge reply that cannot be read, or that drops a fact, never drops a question. A
+  question carries `governing: { kind: "governing", ruleIds, requirementId }`
+  (`GoverningQuestionLink` in `@metis/shared`) and the `ambiguityField`
+  `governing-applicability`, which names no real ambiguity.
+- **The guard.** `questionLeaksRule` refuses a question that names a control id (as a whole
+  token, any case) or repeats 8 or more consecutive words of a clause. It is re-asked once in
+  plain words, then replaced by `templateGoverningQuestion`.
+- **Self-resolve.** Governing questions go through the dialog's grounding pass, which searches
+  only the project's knowledge index. #1869 keeps governing chunks out of it, so the rulebook can
+  never answer its own question (tested with the policy held only by the governing index).
+- **Settle.** After the round is committed, each answered governing question's rules are
+  re-judged with #1872's judging prompt, with the question and answer added to the requirement.
+  The new verdicts are written with `settled: { questionId, answer, previousVerdict, at }` under
+  the analysis row lock (`settleGoverningPairs`). Only an unsettled `uncertain` pair can move.
+  Governing questions are kept out of the resolution pass: their answers never rewrite a
+  requirement's description. Their requirement id is the analysis's own, not the reviewed list's.
+- **Read path.** `GET /api/projects/:projectId/analyses/:id/governing-applicability` returns the
+  stored sets. It is 404 while the flag is off and scoped by `ensureAnalysisVisible`. No UI reads
+  it yet; the findings (#1874) and their UI do.
+
+#### Cited governing findings (#1874)
+
+For every pair that `applies` or is still `uncertain`, `governing/findings.ts` produces a finding
+of status `Compliant | Gap | Needs BA input` (`GOVERNING_FINDING_STATUSES`). It cites the rule's
+control id and a clause excerpt, and three rules are **enforced in code**, not only asked for in
+the prompt:
+
+- **No evidence is never Compliant.** `compliant` stands only when the model quotes, in
+  `satisfiedBy`, at least three words that really are in the requirement or a BA answer
+  (`evidenceIsPresent`). Otherwise it becomes `needs-ba-input` if the model gave the question,
+  else `gap`. This follows CTRAG's No-Evidence → Non-Compliant (one study; a pattern, not proof).
+- **Every citation is verified** against the **cited revision's** stored `extractedText`
+  (`locateClause`, #1870) and must lie inside the rule's own clause. An excerpt that does not
+  verify is dropped. The finding then becomes `needs-ba-input` with `citationDropped` set, and the
+  run counts it (`unverifiedCitations`).
+- **No compliance claims.** Model prose goes through #1875's `neutraliseComplianceClaims`.
+
+An `uncertain` pair needs no model call. It becomes `needs-ba-input`, asks applicability's
+business fact, and cites the rule's own clause.
+
+**Storage.** Findings live in their own table, `governing_findings` (migration
+`20261119001874_issue1874_governing_findings`, with SQLite and Postgres rollbacks), with one row
+per analysis, requirement and rule. `Finding` was not reused: these rows are a distinct, cited
+stream with a BA decision and an audit trail, and are not an agent's output, so the
+finding-provenance ratchet is untouched. The rule's revision id, label, document title, control
+id, clause ref and verified clause are **copied** onto the row. A later revision never rewrites
+what a finding cited.
+
+**When findings are produced.** `produceGoverningFindingsForAnalysis` (`findings-store.ts`)
+produces them in three places:
+
+- In the run's join, from the applicability just stored. This is cancellable with the run and
+  best-effort.
+- After a BA answer settles pairs: the questions source re-evaluates the requirements whose pairs
+  the answer settled.
+- Under that refresh, a finding whose status, revision and clause are unchanged keeps its
+  decision. One that changed loses it.
+
+**API** (404 while the flag is off; `ensureAnalysisVisible` on both routes):
+
+- `GET /api/projects/:projectId/analyses/:id/governing-findings` returns the findings and their
+  counts.
+- `POST …/governing-findings/:findingId/decision` takes `{ decision: accepted|rejected, note }`
+  (`governingFindingDecisionInputSchema`, strict) and needs `analysis.run`.
+- The decider is the session user. A body that names one is a 400.
+- A finding is looked up **with** its analysis id, so another analysis's finding is a 404.
+- An `AuditLog` row (`governing.finding.decision`, target `governing_finding`) is written in the
+  same transaction as the decision.
+
+Eval arm **A4** (`pnpm eval:governing --arm A4`) runs A3's applicability and then these findings
+over the #1867 corpus.
 
 ---
 

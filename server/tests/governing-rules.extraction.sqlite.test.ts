@@ -523,6 +523,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         where: { id: revisionId },
         data: { extractionState: "running", extractionStartedAt: deadStart },
       });
+      // #1996 — the list carries the start time, so the page can offer the retry.
+      const listed = await request(app()).get(docs(ID.wsA)).set("x-test-user", "memberA");
+      expect(
+        listed.body.data.documents.find((d: { id: string }) => d.id === documentId)
+          ?.currentRevision,
+      ).toMatchObject({ extractionState: "running", extractionStartedAt: deadStart.toISOString() });
 
       const res = await retry(ID.wsA, documentId, revisionId);
       expect(res.status, JSON.stringify(res.body)).toBe(202);

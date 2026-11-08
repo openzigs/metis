@@ -430,6 +430,33 @@ async function mergeAnalysisMetadata(
   });
 }
 
+/** #1873 — where an analysis keeps its governing-rule applicability (#1872). */
+export const GOVERNING_APPLICABILITY_METADATA_KEY = "governingApplicability";
+
+/**
+ * #1873 — read-modify-write `metadata.governingApplicability` under the
+ * analysis row lock, so a BA answer settling one pair cannot overwrite another
+ * answer's settlement. `update` gets the stored value (`undefined` when none)
+ * and returns the value to store, or `undefined` to leave the blob untouched.
+ */
+export async function updateGoverningApplicabilityMetadata(
+  id: string,
+  update: (current: unknown) => unknown,
+): Promise<void> {
+  await mergeAnalysisMetadata(id, (current) => {
+    const next = update(current[GOVERNING_APPLICABILITY_METADATA_KEY]);
+    return next === undefined
+      ? current
+      : { ...current, [GOVERNING_APPLICABILITY_METADATA_KEY]: next };
+  });
+}
+
+/** #1873 — the stored `metadata.governingApplicability`, raw (`undefined` when none). */
+export async function readGoverningApplicabilityMetadata(id: string): Promise<unknown> {
+  const row = await prisma.analysis.findFirst({ where: { id }, select: { metadata: true } });
+  return parseMetadata(row?.metadata ?? null)[GOVERNING_APPLICABILITY_METADATA_KEY];
+}
+
 export async function persistAnalysisEnhancement(
   id: string,
   patch: AnalysisEnhancementPatch,

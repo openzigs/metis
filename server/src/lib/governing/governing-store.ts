@@ -14,6 +14,7 @@
  * pointer, so the current revision is always one of the document's own.
  */
 import type { Prisma } from "@prisma/client";
+import { GOVERNING_EXTRACTION_STALE_MS } from "@metis/shared";
 import { prisma } from "../prisma.js";
 
 /** Who is asking: the user id and their deployment role (`admin` reads every workspace). */
@@ -34,6 +35,7 @@ const PUBLIC_REVISION_SELECT = {
   indexState: true,
   extractionState: true,
   extractionError: true,
+  extractionStartedAt: true,
   droppedUnverified: true,
   uploadedById: true,
   createdAt: true,
@@ -54,6 +56,7 @@ export interface PublicGoverningRevision {
   indexState: string;
   extractionState: string;
   extractionError: string | null;
+  extractionStartedAt: string | null;
   droppedUnverified: number;
   uploadedById: string;
   createdAt: string;
@@ -92,6 +95,7 @@ function publicRevision(row: RevisionRow, currentRevisionId: string | null) {
   return {
     ...row,
     effectiveDate: row.effectiveDate.toISOString(),
+    extractionStartedAt: row.extractionStartedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     isCurrent: row.id === currentRevisionId,
   } satisfies PublicGoverningRevision;
@@ -384,13 +388,8 @@ function liveRevisionWhere(
   return { id: revisionId, document: liveDocumentWhere(workspaceId) };
 }
 
-/**
- * #1947 — a `running` extraction that began longer ago than this is presumed
- * dead (the job is in-process, so a server restart mid-run leaves the row
- * `running` with nothing behind it) and may be started again. Generous: a
- * revision of up to `MAX_SECTIONS` sections (`rule-extraction.ts`) is that many model calls.
- */
-export const EXTRACTION_STALE_MS = 60 * 60 * 1000;
+/** #1947 — see `GOVERNING_EXTRACTION_STALE_MS` in `@metis/shared`, which the page reads too (#1996). */
+export const EXTRACTION_STALE_MS = GOVERNING_EXTRACTION_STALE_MS;
 
 /** The extraction states a run may start from at `now` (#1947); see {@link EXTRACTION_STALE_MS}. */
 function startableExtractionWhere(now: Date): Prisma.GoverningDocumentRevisionWhereInput {
@@ -645,6 +644,91 @@ export async function currentWorkspaceRules(workspaceId: string): Promise<Curren
     revisionLabel: revision.revisionLabel,
     documentTitle: revision.document.title,
   }));
+}
+
+/**
+ * #1873 — the live rules among `ruleIds` of a live document of this workspace,
+ * whatever revision they belong to (an analysis may have been decided against
+ * a revision since superseded). Scoped on the workspace through the document,
+ * so an id of another workspace's rule returns nothing.
+ */
+export async function workspaceRulesByIds(
+  workspaceId: string,
+  ruleIds: readonly string[],
+): Promise<CurrentGoverningRule[]> {
+  if (ruleIds.length === 0) return [];
+  const rows = await prisma.governingRule.findMany({
+    where: {
+      id: { in: [...ruleIds] },
+      deletedAt: null,
+      revision: { document: liveDocumentWhere(workspaceId) },
+    },
+    orderBy: [{ revisionId: "asc" }, { clauseStart: "asc" }, { id: "asc" }],
+    select: {
+      id: true,
+      revisionId: true,
+      controlId: true,
+      summary: true,
+      clauseRef: true,
+      clauseExcerpt: true,
+      revision: { select: { revisionLabel: true, document: { select: { title: true } } } },
+    },
+  });
+  return rows.map(({ revision, ...rule }) => ({
+    ...rule,
+    revisionLabel: revision.revisionLabel,
+    documentTitle: revision.document.title,
+  }));
+}
+
+/** #1874 — a rule as a finding cites it, with its offsets into the revision's text. */
+export interface CitableGoverningRule extends CurrentGoverningRule {
+  clauseStart: number;
+  clauseEnd: number;
+}
+
+/**
+ * #1874 — the live rules among `ruleIds` of this workspace's live documents,
+ * with the stored text of every revision they belong to, so a finding's
+ * citation is verified against the CITED revision's text. Scoped on the
+ * workspace through the document, as {@link workspaceRulesByIds} is.
+ */
+export async function citableWorkspaceRules(
+  workspaceId: string,
+  ruleIds: readonly string[],
+): Promise<{ rules: CitableGoverningRule[]; revisionText: Map<string, string> }> {
+  if (ruleIds.length === 0) return { rules: [], revisionText: new Map() };
+  const rows = await prisma.governingRule.findMany({
+    where: {
+      id: { in: [...ruleIds] },
+      deletedAt: null,
+      revision: { document: liveDocumentWhere(workspaceId) },
+    },
+    orderBy: [{ revisionId: "asc" }, { clauseStart: "asc" }, { id: "asc" }],
+    select: {
+      id: true,
+      revisionId: true,
+      controlId: true,
+      summary: true,
+      clauseRef: true,
+      clauseExcerpt: true,
+      clauseStart: true,
+      clauseEnd: true,
+      revision: {
+        select: { revisionLabel: true, extractedText: true, document: { select: { title: true } } },
+      },
+    },
+  });
+  const revisionText = new Map<string, string>();
+  const rules = rows.map(({ revision, ...rule }) => {
+    revisionText.set(rule.revisionId, revision.extractedText);
+    return {
+      ...rule,
+      revisionLabel: revision.revisionLabel,
+      documentTitle: revision.document.title,
+    };
+  });
+  return { rules, revisionText };
 }
 
 /** What an admin may change on a rule: its summary and control id, or delete it. */

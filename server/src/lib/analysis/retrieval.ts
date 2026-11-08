@@ -357,6 +357,7 @@ export async function attachGoverningApplicability(
           screenBatches: 0,
           candidates: 0,
           reasked: 0,
+          screenReasked: 0,
           error: "Governing-rule applicability could not be decided for this requirement.",
         };
       }

@@ -20,7 +20,9 @@
  * it, as a question a business analyst can answer. A reply that marks a rule
  * `uncertain` without the question, or leaves a candidate out, is re-asked
  * once; after that the rule is recorded `uncertain` with a fallback question
- * naming the rule ({@link fallbackBusinessQuestion}).
+ * naming the rule ({@link fallbackBusinessQuestion}). A judging or screening
+ * reply that cannot be read at all, twice running, fails the requirement
+ * instead (#1997).
  *
  * Governing text (rule summaries, clauses, the admin-written control ids and
  * titles) and the requirement reach the model fenced as untrusted data
@@ -107,6 +109,8 @@ export interface ApplicabilitySet {
   candidates: number;
   /** Candidates re-asked once for a missing decision or a missing business question. */
   reasked: number;
+  /** #1997 — screen batches re-asked once because their first reply could not be read. */
+  screenReasked: number;
   /** Set when applicability could not be decided for this requirement; `decisions` is then empty. */
   error?: string;
 }
@@ -140,6 +144,12 @@ export class ApplicabilityReplyError extends Error {
 interface Prompt {
   systemMessage: string;
   userMessage: string;
+  /**
+   * #1997 — the leading part of `userMessage` that is the same for every
+   * requirement (the rule summaries), cached across calls on a provider that
+   * honours `promptCaching.userPrefix`.
+   */
+  cachePrefix?: string;
 }
 
 /** One rule in a prompt: the handle it is named by and its index in the rule list. */
@@ -180,34 +190,44 @@ function judgeBlock(e: Pick<ApplicabilityEntry, "handle" | "rule">): string {
 }
 
 const SCREEN_SYSTEM = [
-  "You screen a company's governing rules (internal policy obligations and controls) for one business requirement.",
+  "You screen a company's governing rules (internal policy obligations and controls) for one business requirement. The rule summaries come first, then the requirement.",
   "A rule can apply even when it shares no words with the requirement: think about what building the requirement involves — the data it touches, who can do what, the records it creates or removes, outside companies it involves, and changes to live systems.",
   "Return every rule that might apply. When unsure, include it: a later step judges each one.",
   FENCE_NOTE,
   'Respond ONLY with one JSON object: {"rules":["R1", ...]}, naming each rule by the handle at the start of its line. An empty list means no rule might apply.',
 ].join("\n");
 
-/** The screen prompt: one requirement against the one-line summaries of `entries`. */
+const SCREEN_REASK_NOTE =
+  'Your previous answer could not be read. Answer again with only the JSON object {"rules":[...]}.';
+
+/**
+ * The screen prompt: one requirement against the one-line summaries of
+ * `entries`. #1997 — the summaries come FIRST: they are the same for every
+ * requirement of an analysis, so the prompt up to the end of them is a prefix
+ * every requirement's screen shares, and is marked as the cache prefix.
+ */
 export function buildApplicabilityScreenPrompt(
   requirementText: string,
   entries: readonly Pick<ApplicabilityEntry, "handle" | "rule">[],
+  opts: { reask?: boolean } = {},
 ): Prompt {
+  const cachePrefix = `${fenceToolResult(
+    APPLICABILITY_SUMMARIES_FENCE_LABEL,
+    entries.map((e) => screenLine(e)).join("\n"),
+  )}\n\n`;
   return {
-    systemMessage: SCREEN_SYSTEM,
-    userMessage: [
-      requirementBlock(requirementText),
-      fenceToolResult(
-        APPLICABILITY_SUMMARIES_FENCE_LABEL,
-        entries.map((e) => screenLine(e)).join("\n"),
-      ),
-    ].join("\n\n"),
+    systemMessage: opts.reask ? `${SCREEN_SYSTEM}\n${SCREEN_REASK_NOTE}` : SCREEN_SYSTEM,
+    userMessage: `${cachePrefix}${requirementBlock(requirementText)}`,
+    cachePrefix,
   };
 }
 
 const JUDGE_SYSTEM = [
   "You decide which of a company's governing rules (internal policy obligations and controls) apply to one business requirement.",
   "The rules listed were gathered broadly so that none is missed: expect most of them not to apply.",
-  "A rule applies only when an independent reader would agree that what the requirement asks for falls under it. A stretch reading is not enough: a rule that could be attached to almost any new feature (least privilege on any new screen, or the company's process for developing, reviewing and releasing every change) does not apply unless the requirement is itself about that subject.",
+  "A rule applies only when an independent reader would agree that what the requirement asks for falls under it. A stretch reading is not enough: a rule that could be attached to almost any new feature (least privilege on any new screen, say) does not apply unless the requirement is itself about that subject.",
+  "Judge what the requirement itself changes, not the systems it runs on. Rules that hold for every system — encryption of data in transit or at rest, retention periods, named owners of datasets, the standing terms of supplier contracts — are already the platform's job and do not apply unless the requirement creates something new of exactly that kind: a new place the data is kept, a new copy handed to an outside party, a new supplier.",
+  "Expect one to three rules to apply to a typical requirement, and often none. If more seem to, keep the ones the requirement most directly engages and decide the rest does-not-apply.",
   "Give EVERY rule listed exactly one decision:",
   "- applies: what the requirement asks for clearly falls under the rule;",
   "- does-not-apply: it does not, or only on a stretch reading;",
@@ -340,6 +360,21 @@ export interface ApplicabilityDecision {
 }
 
 /**
+ * #1997 — true when a judging reply holds a JSON object with a `decisions`
+ * list, whatever the list says. A reply that is not is unreadable, not "no
+ * decision": read twice running, it fails the requirement rather than
+ * recording every candidate `uncertain` with a fallback question.
+ */
+export function judgeReplyReadable(raw: string): boolean {
+  try {
+    const parsed = extractJsonObject(raw);
+    return isRecord(parsed) && Array.isArray(parsed.decisions);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The decisions a judging reply gives the entries of `batch`, by rule index;
  * the first decision of a rule wins. An entry with an unknown rule or verdict
  * is skipped, and an unreadable reply gives none — the re-ask covers both.
@@ -385,7 +420,10 @@ export function fallbackBusinessQuestion(
   return `Does this requirement involve what rule ${rule.controlId} covers: ${rule.summary}?`;
 }
 
-/** Decide which of `rules` apply to one requirement. Throws on a provider error or an unreadable screen reply. */
+/**
+ * Decide which of `rules` apply to one requirement. Throws on a provider error,
+ * or on a screen reply that cannot be read twice running.
+ */
 export async function decideApplicability(
   input: DecideApplicabilityInput,
 ): Promise<ApplicabilitySet> {
@@ -408,6 +446,10 @@ export async function decideApplicability(
       maxTokens: resolveFinalAnswerMaxOutputTokens(provider.model, provider.key),
       ...(input.model ? { model: input.model } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
+      // #1997 — cache the rule summaries every requirement's screen shares.
+      ...(prompt.cachePrefix
+        ? { promptCaching: { system: true, userPrefix: prompt.cachePrefix } }
+        : {}),
     });
     input.onReply?.(reply);
     return reply.content;
@@ -432,8 +474,30 @@ export async function decideApplicability(
     if (index !== undefined) found(index, "top-k");
   }
 
-  // The screen over every rule's summary, in batches.
+  // The screen over every rule's summary, in batches. #1997 — a reply that
+  // cannot be read is re-asked once before the requirement is given up on: one
+  // bad reply used to throw away every candidate of the requirement.
   let screenBatches = 0;
+  let screenReasked = 0;
+  const screenBatch = async (batch: readonly ApplicabilityEntry[]) => {
+    try {
+      return parseApplicabilityScreenReply(
+        await ask(buildApplicabilityScreenPrompt(requirement.text, batch)),
+        batch,
+      );
+    } catch (err) {
+      if (!(err instanceof ApplicabilityReplyError)) throw err;
+      screenReasked++;
+      log.warn("governing screen reply unreadable; re-asking once", {
+        requirementId: requirement.id,
+        error: err.message,
+      });
+      return parseApplicabilityScreenReply(
+        await ask(buildApplicabilityScreenPrompt(requirement.text, batch, { reask: true })),
+        batch,
+      );
+    }
+  };
   if (screen) {
     const fixed = estimateTokens(promptText(buildApplicabilityScreenPrompt(requirement.text, [])));
     const batches = planBatches(
@@ -444,17 +508,15 @@ export async function decideApplicability(
     );
     for (const batch of batches) {
       screenBatches++;
-      const flagged = parseApplicabilityScreenReply(
-        await ask(buildApplicabilityScreenPrompt(requirement.text, batch)),
-        batch,
-      );
-      for (const e of flagged) found(e.index, "screen");
+      for (const e of await screenBatch(batch)) found(e.index, "screen");
     }
   }
 
   // Judge every candidate, re-asking once for any left undecided or without its question.
   const candidates = [...foundBy.keys()].sort((a, b) => a - b).map((i) => entries[i]!);
   const decisions = new Map<number, ApplicabilityDecision>();
+  // #1997 — candidates whose judging reply could not be read at all, by pass.
+  const unread: [Set<number>, Set<number>] = [new Set(), new Set()];
   const judge = async (batchOf: readonly ApplicabilityEntry[], reask: boolean) => {
     const fixed = estimateTokens(
       promptText(buildApplicabilityJudgePrompt(requirement.text, [], { reask })),
@@ -465,10 +527,9 @@ export async function decideApplicability(
       fixed,
       budget,
     )) {
-      const got = parseApplicabilityJudgeReply(
-        await ask(buildApplicabilityJudgePrompt(requirement.text, batch, { reask })),
-        batch,
-      );
+      const raw = await ask(buildApplicabilityJudgePrompt(requirement.text, batch, { reask }));
+      if (!judgeReplyReadable(raw)) for (const e of batch) unread[reask ? 1 : 0].add(e.index);
+      const got = parseApplicabilityJudgeReply(raw, batch);
       for (const [index, d] of got) {
         if (!decisions.has(index) || complete(d)) decisions.set(index, d);
       }
@@ -477,6 +538,14 @@ export async function decideApplicability(
   if (candidates.length > 0) await judge(candidates, false);
   const reask = candidates.filter((e) => !complete(decisions.get(e.index)));
   if (reask.length > 0) await judge(reask, true);
+  const neverRead = [...unread[1]].filter((i) => unread[0].has(i));
+  if (neverRead.length > 0) {
+    // Recording these as `uncertain` would ask the analyst a fallback question
+    // about every one of them (35 for one requirement in a #1997 reading).
+    throw new ApplicabilityReplyError(
+      `the judging reply could not be read twice running for ${neverRead.length} candidate rule(s)`,
+    );
+  }
 
   const out: RuleApplicability[] = candidates.map((e) => {
     const d = decisions.get(e.index) ?? {
@@ -501,11 +570,13 @@ export async function decideApplicability(
     screenBatches,
     candidates: candidates.length,
     reasked: reask.length,
+    screenReasked,
   };
   log.info("governing applicability decided", {
     requirementId: requirement.id,
     rulesScreened: result.rulesScreened,
     screenBatches,
+    screenReasked,
     candidates: result.candidates,
     reasked: result.reasked,
     applies: out.filter((d) => d.verdict === "applies").length,
@@ -646,4 +717,49 @@ export async function governingApplicabilityForProject(
         ...(input.signal ? { signal: input.signal } : {}),
       }),
   };
+}
+
+/** #1997 — what a requirement's set says when the workspace's rules could not be loaded. */
+export const GOVERNING_RULES_UNAVAILABLE =
+  "Governing rules could not be loaded for this analysis, so no rule was checked.";
+
+/** A set with no decisions that says why: never read as "no rule applies". */
+export function unavailableApplicabilitySet(
+  requirementId: string,
+  error: string,
+): ApplicabilitySet {
+  return {
+    requirementId,
+    decisions: [],
+    rulesScreened: 0,
+    screenBatches: 0,
+    candidates: 0,
+    reasked: 0,
+    screenReasked: 0,
+    error,
+  };
+}
+
+/**
+ * #1997 — {@link governingApplicabilityForProject} as the analysis calls it.
+ * `null` exactly when that returns `null` (the flag is off, no workspace, no
+ * current rule). When loading the rules THROWS, the result is a hook whose
+ * every requirement gets {@link unavailableApplicabilitySet}: "the rules could
+ * not be read" must not look like the flag-off "nothing to check".
+ */
+export async function governingApplicabilityHookFor(
+  input: GoverningApplicabilityForProjectInput,
+): Promise<Pick<GoverningApplicabilityHook, "decide"> | null> {
+  try {
+    return await governingApplicabilityForProject(input);
+  } catch (err) {
+    log.warn("governing rules could not be loaded; every requirement records the error", {
+      projectId: input.projectId,
+      error: (err as Error).message,
+    });
+    return {
+      decide: async (requirement) =>
+        unavailableApplicabilitySet(requirement.id, GOVERNING_RULES_UNAVAILABLE),
+    };
+  }
 }
