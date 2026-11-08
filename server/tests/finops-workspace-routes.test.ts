@@ -116,7 +116,8 @@ vi.mock("../src/lib/prisma.js", async () => {
     project: { findMany: vi.fn(async () => []) },
     aITokenUsage: { findMany: vi.fn(async () => []) },
     // #977 — the three grouped reads of `sumLedgerUsage`, told apart by `where`.
-    tokenUsage: { aggregate: ledgerAggregate },
+    // #1958 — the chargeback groups the workspace's own rows even with no project.
+    tokenUsage: { aggregate: ledgerAggregate, groupBy: vi.fn(async () => []) },
   });
   return { prisma };
 });

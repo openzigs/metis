@@ -10,6 +10,7 @@ import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import { isolateSupertestLoopback } from "./helpers/supertest-loopback.js";
+import { skipSqliteFsync, sqliteSynchronous } from "./helpers/in-memory-sqlite.js";
 import { getPermissionsForRole, type RoleKey } from "@metis/shared";
 import { issueTokens } from "../src/lib/auth/jwt.js";
 
@@ -141,9 +142,16 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
 
     beforeAll(async () => {
       directory = await mkdtemp(join(tmpdir(), "metis-outbox-"));
+      // #1960 — a file, not `:memory:`: "dispatch observes committed source and
+      // task rows from a separate database connection" opens a second client on
+      // it, and an in-memory database is private to the connection that made it.
+      // At four fsyncs per autocommit statement (#1949), this hook's 26 would
+      // cost about 104, so this client skips them; the observer still reads
+      // every commit.
       db = new PrismaClient({
         adapter: new PrismaBetterSqlite3({ url: `file:${join(directory, "test.db")}` }),
       });
+      await skipSqliteFsync(db);
       state.db = db;
       // Minimal real schema, including SQL constraints and defaults used by Prisma.
       for (const sql of [
@@ -251,6 +259,10 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
       ).toEqual([]);
       return observed;
     }
+
+    it("keeps its file but skips fsync, so no hook waits on a contended disk (#1960)", async () => {
+      expect(await sqliteSynchronous(db)).toBe(0);
+    });
 
     it.each(["manual", "regeneration"])(
       "%s commits a recoverable task with the version before dispatch",

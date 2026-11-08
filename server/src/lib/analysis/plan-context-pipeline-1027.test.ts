@@ -18,7 +18,7 @@ const PROJECT_ID = "pr_1027";
 
 const state = {
   codeGraphPresent: true,
-  connectors: [] as Array<{ id: string; label: string }>,
+  connectors: [] as Array<{ id: string; label: string; isPrimary: boolean; createdAt: Date }>,
 };
 const persisted = {
   capability: [] as AnalysisCapability[],
@@ -357,8 +357,8 @@ describe("#1027 — plan context through the pipeline", () => {
 
   it("reaches every repo's agentic pass on a multi-repo project", async () => {
     state.connectors = [
-      { id: "c1", label: "api" },
-      { id: "c2", label: "web" },
+      { id: "c1", label: "api", isPrimary: false, createdAt: new Date("2026-01-01") },
+      { id: "c2", label: "web", isPrimary: false, createdAt: new Date("2026-01-02") },
     ];
     const run = await runPipeline({ extraInstructions: REQUIREMENTS, agentContext: CONTEXT });
 

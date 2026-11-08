@@ -46,6 +46,10 @@ test.describe("#1889 — page header title beside wide actions", () => {
     const agentKey = `e2e-long-name-${stamp}`;
     // Wider than the whole chat column on its own (an agent name may run to 120).
     const agentName = `Requirements analyst for the payments, settlements and reconciliation team in finance ${stamp}`;
+    // #1960 — deleted in `finally`, so the long name does not stay in the admin's
+    // agent picker for the chat specs that run after this one on the shard.
+    let agentId: string | undefined;
+    let projectId: string | undefined;
     try {
       const agent = await client.post("/api/agents", {
         data: {
@@ -60,7 +64,8 @@ test.describe("#1889 — page header title beside wide actions", () => {
         },
       });
       expect(agent.status(), await agent.text()).toBe(201);
-      const projectId = (await createProjectViaApi(API_BASE, primed.accessToken, "e2e-header")).id;
+      agentId = ((await agent.json()) as { data: { id: string } }).data.id;
+      projectId = (await createProjectViaApi(API_BASE, primed.accessToken, "e2e-header")).id;
 
       const login = new LoginPage(page);
       await login.goto();
@@ -101,6 +106,14 @@ test.describe("#1889 — page header title beside wide actions", () => {
         expect(b.x + b.width).toBeLessThanOrEqual(skills.x);
       }
     } finally {
+      // Soft, so a failed cleanup still fails the test without hiding why the
+      // body failed.
+      if (agentId) {
+        expect.soft((await client.delete(`/api/agents/${agentId}`)).status()).toBe(204);
+      }
+      if (projectId) {
+        expect.soft((await client.delete(`/api/projects/${projectId}`)).status()).toBe(204);
+      }
       await client.dispose();
     }
   });

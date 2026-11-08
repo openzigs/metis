@@ -6,9 +6,11 @@ import { PORTFOLIO_COVERAGES, REQUIREMENT_VERDICTS, type PortfolioCoverage } fro
 import {
   portfolioVerdictFromStored,
   hadNothingToCheck,
+  notInScopeOfChange,
   rollUpPortfolio,
   rollUpPortfolioVerdict,
   rollUpProductCoverage,
+  scopeOfChange,
   storedPortfolioVerdict,
   type RepoVerdictInput,
 } from "./gap-rollup.js";
@@ -184,5 +186,97 @@ describe("stored portfolio verdict", () => {
   it("reads a value it never writes as null", () => {
     expect(portfolioVerdictFromStored("restricted")).toBeNull();
     expect(portfolioVerdictFromStored(null)).toBeNull();
+  });
+});
+
+describe("#1963 — the products not in scope of the change", () => {
+  const row = (productId: string, coverage: PortfolioCoverage, reason: string | null = null) => ({
+    productId,
+    coverage,
+    reason,
+  });
+  const products = [
+    row("host", "not-covered"),
+    row("downstream", "not-covered"),
+    row("unrelated", "not-checked", "could-not-verify"),
+    row("hidden-repos", "not-checked", "repos-restricted"),
+    row("empty", "not-checked", "no-repos"),
+    row("unreadable", "restricted"),
+  ];
+
+  it("is each product not checked that is known to be unconnected", () => {
+    const unreached = new Set(["unrelated", "hidden-repos", "empty", "unreadable"]);
+    expect([...notInScopeOfChange(products, unreached)].sort()).toEqual([
+      "hidden-repos",
+      "unrelated",
+    ]);
+  });
+
+  it("only one whose edges were detected; one never analysed is kept in, and named so", () => {
+    const walked = [
+      { productId: "host", impactKind: "direct-change" as const, edgesDetected: false },
+      {
+        productId: "unrelated",
+        impactKind: "none" as const,
+        edgesDetected: true,
+        connectedToChange: false,
+      },
+      { productId: "hidden-repos", impactKind: "none" as const, edgesDetected: false },
+    ];
+    const scope = scopeOfChange(products, walked);
+    expect([...scope.notInScope]).toEqual(["unrelated"]);
+    expect([...scope.neverAnalysed]).toEqual(["hidden-repos"]);
+    // Nothing that changes: nothing was walked from, so neither is known.
+    const still = walked.map((p) => ({ ...p, impactKind: "none" as const }));
+    expect(scopeOfChange(products, still)).toEqual({
+      notInScope: new Set(),
+      neverAnalysed: new Set(),
+    });
+  });
+
+  it("never one connected to the change, beyond the walk's depth or upstream of it", () => {
+    // #1963 — the walk runs provider to consumer, to its depth: a `none` from it
+    // is not "unrelated" unless no path of edges links the product at all.
+    const walked = [
+      { productId: "host", impactKind: "direct-change" as const },
+      {
+        productId: "unrelated",
+        impactKind: "none" as const,
+        edgesDetected: true,
+        connectedToChange: true,
+      },
+    ];
+    expect(scopeOfChange(products, walked).notInScope).toEqual(new Set());
+  });
+
+  it("infers nothing from a row stored without the signals (before #1963)", () => {
+    const walked = [
+      { productId: "host", impactKind: "direct-change" as const },
+      { productId: "unrelated", impactKind: "none" as const },
+      // Detected, but nothing says whether it is connected: not left out either.
+      { productId: "hidden-repos", impactKind: "none" as const, edgesDetected: true },
+    ];
+    expect(scopeOfChange(products, walked)).toEqual({
+      notInScope: new Set(),
+      neverAnalysed: new Set(),
+    });
+  });
+
+  it("never a product the walk reaches, however it reads", () => {
+    expect(notInScopeOfChange(products, new Set())).toEqual(new Set());
+    // A checked product the walk does not reach stays in the verdict too.
+    expect(notInScopeOfChange(products, new Set(["downstream"]))).toEqual(new Set());
+  });
+
+  it("leaves them out of the verdict: the changed products' gap is a gap", () => {
+    expect(rollUpPortfolio(products.slice(0, 3))).toBe("could-not-verify");
+    expect(rollUpPortfolio(products.slice(0, 3), new Set(["unrelated"]))).toBe("gap-confirmed");
+    // A reached product not checked still cannot be verified.
+    const reachedUnchecked = [...products.slice(0, 2), row("reached", "not-checked")];
+    expect(rollUpPortfolio(reachedUnchecked, new Set(["unrelated"]))).toBe("could-not-verify");
+    // A restricted one is never left out by the rule, so it still stops the gap.
+    expect(rollUpPortfolio([products[0], products[5]], new Set(["unrelated"]))).toBe(
+      "could-not-verify",
+    );
   });
 });

@@ -63,6 +63,7 @@ import {
   type ProductEdgeDirection,
   type ProductEdgeOrigin,
   type ProductIntegrationKind,
+  portfolioOtherLinkKinds,
 } from "@metis/shared";
 import type { ProductEdge as ProductEdgeRow } from "@prisma/client";
 import { prisma } from "../prisma.js";
@@ -89,6 +90,8 @@ export const MAX_IMPACT_DEPTH = 4;
 const MAX_CALL_SITES = 10;
 const MAX_CONTRACT_ITEMS = 20;
 const MAX_SHARED_OBJECTS = 20;
+/** #1963 — links one product keeps, at most, of each edge kind. */
+const MAX_LINKS_PER_KIND = 5;
 
 // ─── Result ─────────────────────────────────────────────────────────────────
 
@@ -144,6 +147,21 @@ export interface ImpactHop {
   severity: HopSeverity;
 }
 
+/**
+ * #1963 — one hop the walk reached a product by: its edge kind, and what a
+ * reader must be able to read to be told of it (the view drops a link through
+ * a repo or product its reader cannot read now). The shown path is the most
+ * severe of them; the others say every edge kind that connects the products.
+ */
+export interface ImpactLink {
+  integrationKind: ProductIntegrationKind;
+  fromProductId: string;
+  /** The products the hop's edges are recorded on. */
+  edgeProductIds: string[];
+  providerRepoId: string;
+  consumerRepoId: string;
+}
+
 export interface ProductImpact {
   productId: string;
   /** Null for a `restricted` product. */
@@ -161,6 +179,27 @@ export interface ProductImpact {
   hops: ImpactHop[];
   /** Edges out of this product the caller cannot read, so not walked. */
   hiddenEdgeCount: number;
+  /** #1963 — every classified hop the walk reached it by, the shown path's included. */
+  links: ImpactLink[];
+  /**
+   * #1963 — whether this product's integration edges were ever detected: it
+   * has a completed product analysis (`ProductAnalysis.status = "completed"`,
+   * written only by the relationship detector's run, `products-multi.ts`). A
+   * `none` is evidence the change does not reach a product only when this is
+   * true: one never analysed has no detected edges to be reached by. Always
+   * false for a `restricted` product, which is not looked up.
+   */
+  edgesDetected: boolean;
+  /**
+   * #1963 — whether the product may be connected to a direct-change product:
+   * false only when it is proven not to be — no path of product edges, in
+   * either direction and at any depth (the walk's `maxDepth` does not apply),
+   * links it to one, through what its reader can read or through anything
+   * hidden from them ({@link markUnconnected}). Only then is a `none` grounds
+   * to leave it out of the verdict. True by default, and for every product the
+   * walk reaches or that changes.
+   */
+  connectedToChange: boolean;
 }
 
 export interface PortfolioImpactResult {
@@ -454,6 +493,11 @@ class ImpactWalk {
 
   repo(id: string): RepoInfo | null {
     return this.repos.get(id) ?? null;
+  }
+
+  /** #1963 — whether the edges recorded on `productId` are walked (the caller can read it). */
+  readableProduct(productId: string): boolean {
+    return this.readableProducts.has(productId);
   }
 
   readableRepo(id: string): boolean {
@@ -841,7 +885,33 @@ function emptyImpact(productId: string, name: string | null, restricted: boolean
     edgeIds: [],
     hops: [],
     hiddenEdgeCount: 0,
+    links: [],
+    edgesDetected: false,
+    connectedToChange: true,
   };
+}
+
+function linkKey(l: ImpactLink): string {
+  return [
+    l.integrationKind,
+    l.fromProductId,
+    l.providerRepoId,
+    l.consumerRepoId,
+    ...l.edgeProductIds,
+  ].join("\u0000");
+}
+
+/** #1963 — record a link on `target`, once, and at most `MAX_LINKS_PER_KIND` of its kind. */
+function addLink(target: ProductImpact, link: ImpactLink): void {
+  const sameKind = target.links.filter((l) => l.integrationKind === link.integrationKind);
+  if (sameKind.length >= MAX_LINKS_PER_KIND) return;
+  if (sameKind.some((l) => linkKey(l) === linkKey(link))) return;
+  target.links.push(link);
+}
+
+/** #1963 — the edge kinds a product is reached by beyond its shown path's. */
+export function otherLinkKinds(p: Pick<ProductImpact, "links" | "via">): string[] {
+  return portfolioOtherLinkKinds({ impact: { links: p.links } }, p.via);
 }
 
 interface WalkOptions {
@@ -1044,6 +1114,15 @@ async function walkFrom(
             stoppedAt.add(productId);
             continue;
           }
+          if (integrationKind !== null) {
+            addLink(target, {
+              integrationKind,
+              fromProductId: from.productId,
+              edgeProductIds: [...new Set(c.edges.map((e) => e.productId))].sort(),
+              providerRepoId: c.provider,
+              consumerRepoId: c.consumer,
+            });
+          }
           const hops = [...from.hops, hopTo(productId)];
           if (
             target.impactKind !== "downstream-consumer" ||
@@ -1129,6 +1208,124 @@ async function reachedReadingEverything(
 }
 
 /**
+ * #1963 — the products of `wanted` connected to one of `start` by a path of
+ * product edges, ignoring each edge's direction and with no depth limit: the
+ * connected component the impact walk's edge loader (`edgesTouching`, scoped
+ * to the repos reached so far) builds out from `start`'s live repos. Products
+ * are nodes: reaching one repo of a product reaches all of its repos, so a
+ * path may leave a product by any repo. `leftOut` is true when the search met
+ * anything its walk cannot follow — a restricted product holding a repo it
+ * reached, a repo it cannot read, an edge on a product it cannot read — past
+ * which the component may go on. It stops once every one of `wanted` is found.
+ */
+async function connectedProducts(
+  walk: ImpactWalk,
+  start: readonly string[],
+  wanted: ReadonlySet<string>,
+): Promise<{ connected: Set<string>; leftOut: boolean }> {
+  const products = new Set<string>(start);
+  const repos = new Set<string>();
+  let leftOut = false;
+  let pendingProducts = [...start];
+  let pendingRepos: string[] = [];
+  const done = () => [...wanted].every((id) => products.has(id));
+  /** Reach each repo of `ids` not reached yet, and every product holding it. */
+  const reachRepos = async (ids: Iterable<string>) => {
+    const fresh = [...new Set(ids)].filter((id) => !repos.has(id));
+    for (const id of fresh) repos.add(id);
+    await walk.loadRepos(fresh);
+    const readable = fresh.filter((id) => {
+      if (walk.readableRepo(id)) return true;
+      // A deleted repo leads nowhere; a live one the walk cannot read may lead on.
+      if (walk.repo(id) !== null) leftOut = true;
+      return false;
+    });
+    await walk.loadProductsOf(readable);
+    for (const id of readable) {
+      pendingRepos.push(id);
+      for (const productId of walk.productsOf(id)) {
+        if (products.has(productId)) continue;
+        if (!walk.readableProduct(productId)) {
+          // Restricted: never walked through, so the component may go on past it.
+          leftOut = true;
+          continue;
+        }
+        products.add(productId);
+        pendingProducts.push(productId);
+      }
+    }
+  };
+  while ((pendingProducts.length > 0 || pendingRepos.length > 0) && !done()) {
+    if (pendingProducts.length > 0) {
+      // The live repos of the products just reached.
+      const rows = await prisma.productRepo.findMany({
+        where: { productId: { in: pendingProducts }, repoConnection: { deletedAt: null } },
+        select: { repoConnectionId: true },
+      });
+      pendingProducts = [];
+      await reachRepos(rows.map((r) => r.repoConnectionId));
+      continue;
+    }
+    const level = pendingRepos;
+    pendingRepos = [];
+    const { edges, withheld } = await walk.edgesTouching(level);
+    if (withheld > 0) leftOut = true;
+    await walk.loadRepos(edges.flatMap((e) => [e.sourceRepoId, e.targetRepoId ?? e.sourceRepoId]));
+    const neighbours: string[] = [];
+    const atResource = new Map<string, string[]>();
+    for (const e of edges) {
+      const ends = [e.sourceRepoId, ...(e.targetRepoId ? [e.targetRepoId] : [])];
+      if (!ends.every((id) => walk.readableRepo(id))) {
+        if (ends.every((id) => walk.repo(id) !== null)) leftOut = true;
+        continue;
+      }
+      if (e.targetRepoId) {
+        neighbours.push(...ends);
+      } else if (e.resourceId) {
+        // Every repo using a resource where the edges meet (#1724) is linked.
+        const key = walk.meetKey(e) ?? e.id;
+        atResource.set(key, [...(atResource.get(key) ?? []), e.sourceRepoId]);
+      }
+    }
+    for (const users of atResource.values()) {
+      if (users.some((id) => repos.has(id))) neighbours.push(...users);
+    }
+    await reachRepos(neighbours);
+  }
+  return { connected: new Set([...wanted].filter((id) => products.has(id))), leftOut };
+}
+
+/**
+ * #1963 — mark each readable product in `out` that reads `none` and had its
+ * edges detected `connectedToChange: false` when no path of product edges, in
+ * either direction and at any depth, links it to a direct-change product
+ * (`start`). As for the restricted relabel (#1689): when the reader's search
+ * met anything hidden, a search able to read everything decides, so a path
+ * through a restricted product or a hidden edge keeps the product connected;
+ * only the set of product ids leaves it.
+ */
+async function markUnconnected(
+  walk: ImpactWalk,
+  start: readonly string[],
+  out: ReadonlyMap<string, ProductImpact>,
+): Promise<void> {
+  if (start.length === 0) return;
+  const candidates = [...out.values()].filter(
+    (p) => !p.restricted && p.impactKind === "none" && p.edgesDetected,
+  );
+  if (candidates.length === 0) return;
+  const wanted = new Set(candidates.map((p) => p.productId));
+  const reader = await connectedProducts(walk, start, wanted);
+  let connected = reader.connected;
+  const unfound = [...wanted].filter((id) => !connected.has(id));
+  if (reader.leftOut && unfound.length > 0) {
+    const everything = await connectedProducts(walk.readingEverything(), start, new Set(unfound));
+    connected = new Set([...connected, ...everything.connected]);
+  }
+  for (const p of candidates) p.connectedToChange = connected.has(p.productId);
+}
+
+/**
  * Walk the product graph from the direct-change products and classify every
  * product reached, and every product listed, by how the change reaches it.
  */
@@ -1207,6 +1404,27 @@ export async function evaluatePortfolioImpact(
     for (const p of unreached) if (reached.has(p.productId)) p.impactKind = "restricted";
   }
 
+  // #1963 — which readable products had their edges detected; a restricted one
+  // is never looked up, so it never reads as analysed.
+  const readableIds = [...out.values()].filter((p) => !p.restricted).map((p) => p.productId);
+  if (readableIds.length > 0) {
+    const analysed = await prisma.productAnalysis.findMany({
+      // No `orderBy`/`take`: Prisma splits a long `IN` list itself (#1346).
+      where: { productId: { in: readableIds }, status: "completed" },
+      select: { productId: true },
+      distinct: ["productId"],
+    });
+    for (const a of analysed) {
+      const p = out.get(a.productId);
+      if (p) p.edgesDetected = true;
+    }
+  }
+
+  // #1963 — a `none` says only that the walk, from provider to consumer and to
+  // `maxDepth`, did not reach a product: whether it is connected at all to what
+  // changes, upstream or further out, is a search of its own.
+  await markUnconnected(walk, [...direct, ...sharing], out);
+
   return {
     maxDepth,
     stoppedAtRestricted: stoppedAt.size,
@@ -1234,6 +1452,12 @@ export function impactDetail(
     // that stopped nowhere relabels too. `adjacent` is the older rule (#1680, #1685).
     restrictedRule: "walk",
     hops: p.hops,
+    // #1963 — every edge kind that reaches it; the view keeps only the readable ones.
+    links: p.links,
+    // #1963 — whether a `none` here had detected edges to reason over.
+    edgesDetected: p.edgesDetected,
+    // #1963 — false only when no path of edges, either way and any depth, links it.
+    connectedToChange: p.connectedToChange,
   };
 }
 
@@ -1279,7 +1503,7 @@ export function withImpact(
       productId: p.productId,
       coverage: p.restricted ? "restricted" : "not-checked",
       ...fields(p),
-      baSummary: p.restricted ? "" : impactSentence(p),
+      baSummary: p.restricted ? "" : impactSentence(p, otherLinkKinds(p)),
       technicalDetail: p.restricted ? {} : { outOfScope: true, impact: impactDetail(p, impact) },
     });
   }

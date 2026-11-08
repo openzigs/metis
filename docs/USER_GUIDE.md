@@ -1894,6 +1894,15 @@ The page opens with the answer in one sentence:
   could not be checked, so METIS will not claim a gap.
 - **This check failed before it reached an answer.**
 
+When the change has products that must change, an unchecked product that is not connected
+to any of them — no integration links it, in either direction, however many products away —
+is left out of the answer and named as *not in scope* underneath. One linked to the change,
+even upstream of it or several products out, stays in. And only if its
+integrations have been analysed (**Generate Documentation** on the product page has
+completed at least once). An unchecked product
+that has never been analysed stays in, so the answer is *could not tell*, and the note says
+it was never analysed: METIS has not looked at what connects to it.
+
 Next comes a summary for business analysts. When the AI model could not write it, the
 summary says *"Written from a template because …"*, and the business and stakeholder
 impact are not assessed.

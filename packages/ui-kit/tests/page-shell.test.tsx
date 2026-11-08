@@ -16,6 +16,7 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
   EmptyState,
+  PAGE_HEADER_UNFLOORED_CLASS,
   PAGE_HEADER_WITH_ACTIONS_CLASS,
   PAGE_TITLE_CLASS,
   PageHeader,
@@ -67,7 +68,86 @@ describe("PageHeader (#270)", () => {
 
   it("keeps a header with no actions a plain flex row", () => {
     render(<PageHeader title="Only a title" />);
-    expect(screen.getByRole("banner", { hidden: true })).not.toHaveClass("sm:grid");
+    const header = screen.getByRole("banner", { hidden: true });
+    expect(header).not.toHaveClass("sm:grid");
+    expect(header).toHaveClass("sm:flex-row", "sm:justify-between");
+  });
+
+  // #1960 — the grid's `min-content` floor is measured over the whole title
+  // column, so a long unbreakable token in the description (or a child, or the
+  // eyebrow) widened the title track and pushed the actions past the header's
+  // right edge. Everything but the title row is left out of that measurement.
+  // jsdom has no layout (Chromium's measurements are in the PR); this pins the
+  // classes, and the DOM shape they rely on.
+  describe("a long description token beside actions (#1960)", () => {
+    const TOKEN = "x".repeat(200);
+
+    function renderWithActions() {
+      return render(
+        <PageHeader
+          eyebrow={<a href="/back">Back</a>}
+          title="Chat"
+          titleExtra={<span>beta</span>}
+          description={`Description ${TOKEN}`}
+          actions={<button type="button">New chat</button>}
+        >
+          <p>First child {TOKEN}</p>
+          <a href="/more">Inline child</a>
+        </PageHeader>,
+      );
+    }
+
+    it("floors the title column on the title row alone, so the actions keep their place", () => {
+      renderWithActions();
+      const header = screen.getByRole("banner", { hidden: true });
+      const description = within(header).getByText(`Description ${TOKEN}`);
+      expect(description).toHaveClass(PAGE_HEADER_UNFLOORED_CLASS);
+      expect(within(header).getByRole("link", { name: "Back" }).parentElement).toHaveClass(
+        PAGE_HEADER_UNFLOORED_CLASS,
+      );
+      // One wrapper holds the children, so an inline child (which containment
+      // does not apply to on its own) is left out of the floor as well.
+      const first = within(header).getByText(`First child ${TOKEN}`);
+      const inline = within(header).getByRole("link", { name: "Inline child" });
+      expect(first.parentElement).toBe(inline.parentElement);
+      expect(first.parentElement).toHaveClass(PAGE_HEADER_UNFLOORED_CLASS, "space-y-1");
+      // The title row still sets the floor: neither the h1 nor its row is contained.
+      const h1 = screen.getByRole("heading", { level: 1, name: "Chat" });
+      expect(h1).not.toHaveClass(PAGE_HEADER_UNFLOORED_CLASS);
+      expect(h1.parentElement).not.toHaveClass(PAGE_HEADER_UNFLOORED_CLASS);
+      expect(PAGE_HEADER_UNFLOORED_CLASS).toBe("sm:contain-inline-size");
+      // The actions keep their own column, after the title column.
+      const actions = header.querySelector('[data-slot="page-header-actions"]');
+      expect(actions?.previousElementSibling).toBe(description.parentElement);
+    });
+
+    it("drops the flex-row classes the grid makes dead", () => {
+      renderWithActions();
+      const header = screen.getByRole("banner", { hidden: true });
+      expect(header).not.toHaveClass("sm:flex-row");
+      expect(header).not.toHaveClass("sm:justify-between");
+    });
+
+    it("contains nothing in a header with no actions, whose width the description still sets", () => {
+      const { container } = render(
+        <PageHeader eyebrow={<a href="/back">Back</a>} title="Projects" description={TOKEN}>
+          <p>Child</p>
+        </PageHeader>,
+      );
+      expect(container.getElementsByClassName(PAGE_HEADER_UNFLOORED_CLASS)).toHaveLength(0);
+    });
+
+    it("renders no children wrapper when the children are empty", () => {
+      const { container } = render(
+        <PageHeader title="Chat" actions={<button type="button">New chat</button>}>
+          {null}
+          {false}
+        </PageHeader>,
+      );
+      const column = screen.getByRole("heading", { level: 1 }).parentElement;
+      expect(column?.children).toHaveLength(1);
+      expect(container.getElementsByClassName(PAGE_HEADER_UNFLOORED_CLASS)).toHaveLength(0);
+    });
   });
 
   it("omits the description and actions containers when not given", () => {

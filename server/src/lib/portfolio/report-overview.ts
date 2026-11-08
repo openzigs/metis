@@ -12,6 +12,8 @@ export interface OverviewRow {
   impactKind: PortfolioImpactKind;
   via: string | null;
   severity: string | null;
+  /** #1963 — the other edge kinds the change reaches it by (`portfolioOtherLinkKinds`). */
+  otherVia?: readonly string[];
 }
 
 /**
@@ -38,7 +40,10 @@ export function impactOverview(
   if (shown.length > 0) {
     const detail = (r: OverviewRow) => {
       const tags = [r.via, r.severity].filter(Boolean).join(", ");
-      return tags ? `${named(r)} (${tags})` : named(r);
+      // #1963 — the path shown is the most severe link; every other edge kind is named too.
+      const also = r.otherVia && r.otherVia.length > 0 ? `also ${r.otherVia.join(", ")}` : "";
+      const all = [tags, also].filter(Boolean).join("; ");
+      return all ? `${named(r)} (${all})` : named(r);
     };
     parts.push(`Downstream: ${shown.map(detail).join("; ")}.`);
   }
@@ -62,10 +67,15 @@ export function impactOverview(
  * scope (#1623). Built from the row's own fields, so a row whose path is
  * withheld from a reader (#1668: `via` and `severity` null) says no more.
  */
-export function impactSentence(p: Pick<OverviewRow, "impactKind" | "via" | "severity">): string {
+export function impactSentence(
+  p: Pick<OverviewRow, "impactKind" | "via" | "severity">,
+  otherVia: readonly string[] = [],
+): string {
   if (p.impactKind === "direct-change") return "Must change to deliver this requirement.";
   if (p.impactKind === "none") return "Not affected.";
   // #1673 — reached, or maybe reached, through a product the reader cannot read.
   if (p.impactKind === "restricted") return "May be reached through a restricted product.";
-  return `Downstream consumer${p.via ? ` via ${p.via}` : ""}${p.severity ? ` (${p.severity})` : ""}.`;
+  // #1963 — every other edge kind the change reaches it by.
+  const also = otherVia.length > 0 ? ` Also via ${otherVia.join(", ")}.` : "";
+  return `Downstream consumer${p.via ? ` via ${p.via}` : ""}${p.severity ? ` (${p.severity})` : ""}.${also}`;
 }

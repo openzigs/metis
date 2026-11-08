@@ -392,8 +392,9 @@ test.describe.serial("Portfolio gap and impact analysis (#1629)", () => {
     expect(markdown).toContain("# Portfolio assessment");
     expect(markdown).toContain(STATEMENTS.partial);
     expect(markdown).toMatch(
-      /\| Reporting \| Does not cover it \|.*\| Downstream consumer via database \| high \|/,
+      /\| Reporting \| Does not cover it \|.*\| Downstream consumer via database \(also api\) \| high \|/,
     );
+    expect(markdown).toContain("Downstream: Reporting (database, high; also api).");
   });
 
   test("Journey 4 — a user outside Reporting's workspace sees it restricted, with no detail", async ({

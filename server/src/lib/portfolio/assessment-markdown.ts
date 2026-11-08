@@ -17,6 +17,7 @@ import {
   PORTFOLIO_NOT_AFFECTED_OLDER_RULE,
   portfolioImpactUnderOlderRule,
   portfolioModifierText,
+  portfolioOtherLinkKinds,
   portfolioRestrictedNote,
   portfolioRestrictedRule,
   portfolioResourceLists,
@@ -113,11 +114,22 @@ function reposOf(p: Row): z.output<typeof reposSchema> {
  * this reader, not from what the run stored.
  */
 function impactCell(p: Row): string {
-  return `${IMPACT_LABEL[p.impactKind]}${p.via ? ` via ${cell(p.via)}` : ""}`;
+  // #1963 — every edge kind the change reaches it by, the shown path's first.
+  const also = portfolioOtherLinkKinds(p.technicalDetail, p.via);
+  return `${IMPACT_LABEL[p.impactKind]}${p.via ? ` via ${cell(p.via)}` : ""}${
+    also.length > 0 ? ` (also ${cell(also.join(", "))})` : ""
+  }`;
 }
 
 function impactHeading(p: Row): string {
-  const tags = [p.via ? `via ${p.via}` : null, p.severity].filter(Boolean).join(", ");
+  const also = portfolioOtherLinkKinds(p.technicalDetail, p.via);
+  const tags = [
+    p.via ? `via ${p.via}` : null,
+    p.severity,
+    also.length > 0 ? `also via ${also.join(", ")}` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
   return `${IMPACT_LABEL[p.impactKind]}${tags ? ` (${mdInline(tags)})` : ""}`;
 }
 

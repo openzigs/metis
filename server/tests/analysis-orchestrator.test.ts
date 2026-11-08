@@ -75,7 +75,15 @@ let uploadedDocs: string[] = [];
 // Issue #733 — toggle for repo-source-ingested detection (connector:repo:* docs).
 let repoSourceExists = false;
 // Issue #733 — repo connectors returned by prisma.repoConnection.findMany.
-let repoConnectors: Array<{ id: string; label: string }> = [];
+// #1974 — the orchestrator orders them primary first, then oldest first.
+type RepoConnectorRow = { id: string; label: string; isPrimary: boolean; createdAt: Date };
+let repoConnectors: RepoConnectorRow[] = [];
+const connectorRow = (
+  id: string,
+  label: string,
+  createdAt: string,
+  isPrimary = false,
+): RepoConnectorRow => ({ id, label, isPrimary, createdAt: new Date(createdAt) });
 // #573 — raw quarantine chunks served to the orchestrator's quarantine fallback.
 let quarantineRows: Array<{
   documentId: string;
@@ -1243,8 +1251,8 @@ describe("AnalysisOrchestrator.start", () => {
     uploadedDocs = ["doc-1"];
     // Two connected repos — each yields a DISTINCT code finding keyed on its label.
     repoConnectors = [
-      { id: "repo-backend", label: "backend" },
-      { id: "repo-frontend", label: "frontend" },
+      connectorRow("repo-backend", "backend", "2026-01-01T00:00:00Z", true),
+      connectorRow("repo-frontend", "frontend", "2026-01-02T00:00:00Z"),
     ];
     const provider = makeProvider({
       codeFindingPerRepo: true,
@@ -4526,9 +4534,9 @@ describe("AnalysisOrchestrator capability record (#733)", () => {
     uploadedDocs = ["doc-1"];
     // 3 repos with a 100k budget and a 50k per-repo floor ⇒ cap to 2, skip 1.
     repoConnectors = [
-      { id: "c1", label: "web" },
-      { id: "c2", label: "api" },
-      { id: "c3", label: "worker" },
+      connectorRow("c1", "web", "2026-01-01T00:00:00Z", true),
+      connectorRow("c2", "api", "2026-01-02T00:00:00Z"),
+      connectorRow("c3", "worker", "2026-01-03T00:00:00Z"),
     ];
     const orch = new AnalysisOrchestrator({
       provider: makeReqProvider(),
@@ -4544,6 +4552,78 @@ describe("AnalysisOrchestrator capability record (#733)", () => {
     const cap = readCapability(analysisId);
     expect(cap!.skippedRepos).toEqual([{ connectorId: "c3", label: "worker" }]);
     expect(cap!.reasons).toContain("repos-skipped-budget");
+  });
+
+  // #1974 — the cap keeps the first connectors in the list, and the list came
+  // back from the database in no stated order, so the #1940 run dropped its
+  // primary repository. The rows here come back primary LAST and newest first.
+  const primaryLastRows = () => [
+    connectorRow("c-notify", "notify", "2026-01-03T00:00:00Z"),
+    connectorRow("c-billing", "billing", "2026-01-02T00:00:00Z"),
+    connectorRow("c-primary", "primary", "2026-01-01T00:00:00Z", true),
+  ];
+  /** The `[repo: <label>]` each agentic code pass was prompted with, in order. */
+  const codePassRepos = (provider: AIProvider): string[] => {
+    const seen: string[] = [];
+    const base = provider.chat.bind(provider);
+    provider.chat = (async (messages: ChatMessage[], chatOpts?: { systemMessage?: string }) => {
+      const sys =
+        chatOpts?.systemMessage ?? messages.find((m) => m.role === "system")?.content ?? "";
+      if (typeof sys === "string" && sys.includes("Winston")) {
+        const joined = messages
+          .map((m) => (typeof m.content === "string" ? m.content : ""))
+          .join("\n");
+        const repo = joined.match(/\[repo:\s*([^\]]+)\]/)?.[1]?.trim();
+        if (repo && seen.at(-1) !== repo) seen.push(repo);
+      }
+      return base(messages, chatOpts);
+    }) as AIProvider["chat"];
+    return seen;
+  };
+
+  it("#1974 — the budget cap never skips the primary repository, whatever order the rows arrive in", async () => {
+    codeGraphExists = true;
+    repoSourceExists = true;
+    uploadedDocs = ["doc-1"];
+    repoConnectors = primaryLastRows();
+    const provider = makeReqProvider();
+    const ran = codePassRepos(provider);
+    const orch = new AnalysisOrchestrator({ provider, retrieve: retrieveStub });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["document", "code"],
+    });
+    await drain(analysisId);
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+    // Primary first, then the oldest of the rest; the newest is the one dropped.
+    expect(readCapability(analysisId)!.skippedRepos).toEqual([
+      { connectorId: "c-notify", label: "notify" },
+    ]);
+    expect(ran).toEqual(["primary", "billing"]);
+  });
+
+  it("#1974 — a code regenerate orders its connectors the same way", async () => {
+    codeGraphExists = true;
+    repoSourceExists = true;
+    uploadedDocs = ["doc-1"];
+    repoConnectors = primaryLastRows();
+    const provider = makeReqProvider();
+    const orch = new AnalysisOrchestrator({ provider, retrieve: retrieveStub });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["document", "code"],
+    });
+    await drain(analysisId);
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+    const ran = codePassRepos(provider);
+    await orch.regenerateAgent({
+      analysisId,
+      agentKey: "code",
+      actorId: "user-1234567890",
+    });
+    expect(ran).toEqual(["primary", "billing"]);
   });
 });
 

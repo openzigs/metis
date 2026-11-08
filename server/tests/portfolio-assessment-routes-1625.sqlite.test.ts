@@ -106,6 +106,8 @@ const USERS: Record<string, string[]> = {
   "imp-1623": [WS_A, WS_B],
   // #1668 — the stalled run, on its own start budget too.
   "stall-1668": [WS_A, WS_B],
+  // #1963 — the connectivity runs, on their own start budget.
+  "scope-1963": [WS_A, WS_B],
 };
 type Who = keyof typeof USERS;
 
@@ -557,6 +559,225 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(ana.body.data.hostProductId).toBeNull();
         expect(ana.body.data.productNames).not.toHaveProperty(P3);
         expect((await get("ana", `/${id}/export?format=md`)).text).not.toContain("Built by");
+      });
+
+      describe("#1963 — a product the change does not reach, that nobody indexed", () => {
+        const P_OLD = "prod-old-1963";
+        const PROJ_OLD = "proj-old-1963";
+        const RC_OLD = "rc-old-1963";
+        beforeAll(async () => {
+          // An older product in ws-a whose repo has nothing indexed: it cannot be checked.
+          await db.project.create({
+            data: {
+              id: PROJ_OLD,
+              workspaceId: WS_A,
+              name: PROJ_OLD,
+              slug: PROJ_OLD,
+              createdById: "mia",
+              status: "active",
+            },
+          });
+          await db.repoConnection.create({
+            data: {
+              id: RC_OLD,
+              projectId: PROJ_OLD,
+              label: "old",
+              ownerOrOrg: "acme",
+              repoName: "old-walkthrough",
+            },
+          });
+          await db.product.create({
+            data: {
+              id: P_OLD,
+              name: "Old walkthrough",
+              slug: P_OLD,
+              workspaceId: WS_A,
+              createdById: "mia",
+            },
+          });
+          await db.productRepo.create({ data: { productId: P_OLD, repoConnectionId: RC_OLD } });
+        });
+        afterAll(async () => {
+          await db.productAnalysis.deleteMany({ where: { productId: P_OLD } });
+          await db.productRepo.deleteMany({ where: { productId: P_OLD } });
+          await db.product.deleteMany({ where: { id: P_OLD } });
+          await db.repoConnection.deleteMany({ where: { id: RC_OLD } });
+          await db.project.deleteMany({ where: { id: PROJ_OLD } });
+        });
+
+        it("never analysed, the old one is not called out of scope: it stops the gap, and says why", async () => {
+          // No product analysis ever detected its edges, so its `none` says nothing.
+          const id = await start("imp-1623", {
+            statement: CRYPTO_STATEMENT,
+            scope: "all-accessible",
+            hostProductId: P3,
+          });
+          const v = await settled(id, "imp-1623");
+          expect(v.status).toBe("completed");
+          expect(v.products.find((p) => p.productId === P_OLD)).toEqual(
+            expect.objectContaining({ coverage: "not-checked", impactKind: "none" }),
+          );
+          expect(v.verdict).toBe("could-not-verify");
+          expect(v.notInScope).toEqual([]);
+          expect(v.neverAnalysed).toEqual([P_OLD]);
+          expect(v.summary).toContain(
+            "Old walkthrough was not checked and has never been analysed, so whether this change reaches it is not known.",
+          );
+          expect(v.summary).not.toContain("not in scope");
+          expect(
+            (await db.portfolioAssessment.findUnique({ where: { id } }))?.portfolioVerdict,
+          ).toBe("not-checked");
+        });
+
+        it("a gap every product the change touches confirms reads as a gap, the old one not in scope", async () => {
+          // A completed product analysis detected its edges: the walk's `none` is evidence.
+          await db.productAnalysis.create({
+            data: { productId: P_OLD, status: "completed", completedAt: new Date(), edgeCount: 0 },
+          });
+          const id = await start("imp-1623", {
+            statement: CRYPTO_STATEMENT,
+            scope: "all-accessible",
+            hostProductId: P3,
+          });
+          const v = await settled(id, "imp-1623");
+          expect(v.status).toBe("completed");
+          const old = v.products.find((p) => p.productId === P_OLD)!;
+          expect(old).toEqual(
+            expect.objectContaining({ coverage: "not-checked", impactKind: "none" }),
+          );
+          expect(v.verdict).toBe("gap-confirmed");
+          expect(v.notInScope).toEqual([P_OLD]);
+          expect(v.summary).toContain(
+            "Nothing checked covers this. Old walkthrough was not checked, but it is not connected to any product this change touches, so it is not in scope.",
+          );
+          // Stored so, not only shown so.
+          expect(
+            (await db.portfolioAssessment.findUnique({ where: { id } }))?.portfolioVerdict,
+          ).toBe("not-covered");
+        });
+
+        /**
+         * #1963 — run `body` with extra analysed products in ws-a (each with one
+         * unindexed repo, `rc-<id>`) and `edges` (`[consumer repo, provider repo]`,
+         * recorded on the consumer's product), removing them whatever happens.
+         */
+        const withGraph = async (
+          products: string[],
+          edges: Array<[string, string, string]>,
+          body: () => Promise<void>,
+        ) => {
+          for (const id of products) {
+            await db.repoConnection.create({
+              data: {
+                id: `rc-${id}`,
+                projectId: PROJ_OLD,
+                label: id,
+                ownerOrOrg: "acme",
+                repoName: id,
+              },
+            });
+            await db.product.create({
+              data: { id, name: id, slug: id, workspaceId: WS_A, createdById: "mia" },
+            });
+            await db.productRepo.create({ data: { productId: id, repoConnectionId: `rc-${id}` } });
+            await db.productAnalysis.create({
+              data: { productId: id, status: "completed", completedAt: new Date() },
+            });
+          }
+          for (const [productId, source, target] of edges) {
+            await db.productEdge.create({
+              data: {
+                id: `e-${source}-${target}`,
+                productId,
+                sourceRepoId: source,
+                targetRepoId: target,
+                edgeType: "calls",
+                confidence: 0.9,
+                integrationKind: "api",
+                strength: "contract",
+                direction: "consumes",
+              },
+            });
+          }
+          try {
+            await body();
+          } finally {
+            await db.productEdge.deleteMany({
+              where: { id: { in: edges.map(([, a, b]) => `e-${a}-${b}`) } },
+            });
+            await db.productAnalysis.deleteMany({ where: { productId: { in: products } } });
+            await db.productRepo.deleteMany({ where: { productId: { in: products } } });
+            await db.product.deleteMany({ where: { id: { in: products } } });
+            await db.repoConnection.deleteMany({
+              where: { id: { in: products.map((id) => `rc-${id}`) } },
+            });
+          }
+        };
+        const run = async () => {
+          const id = await start("scope-1963", {
+            statement: CRYPTO_STATEMENT,
+            scope: "all-accessible",
+            hostProductId: P3,
+          });
+          const v = await settled(id, "scope-1963");
+          expect(v.status).toBe("completed");
+          return v;
+        };
+
+        it("upstream of the host, the old one reads none but is connected: it stays in the verdict", async () => {
+          // The host's billing repo consumes the old one: a change to the host does
+          // not reach it, but the two are linked, so it is not unrelated.
+          await withGraph([], [[P3, RC_P3, RC_OLD]], async () => {
+            const v = await run();
+            expect(v.products.find((p) => p.productId === P_OLD)).toEqual(
+              expect.objectContaining({ coverage: "not-checked", impactKind: "none" }),
+            );
+            expect(v.verdict).toBe("could-not-verify");
+            expect(v.notInScope).toEqual([]);
+            expect(v.summary).not.toContain("not in scope");
+          });
+        });
+
+        it("three hops downstream of the host, past the walk's depth, it stays in the verdict", async () => {
+          const M1 = "prod-mid1-1963";
+          const M2 = "prod-mid2-1963";
+          await withGraph(
+            [M1, M2],
+            [
+              [M1, `rc-${M1}`, RC_P3],
+              [M2, `rc-${M2}`, `rc-${M1}`],
+              [P_OLD, RC_OLD, `rc-${M2}`],
+            ],
+            async () => {
+              const v = await run();
+              const kind = (pid: string) => v.products.find((p) => p.productId === pid)?.impactKind;
+              expect(kind(M1)).toBe("downstream-consumer");
+              expect(kind(M2)).toBe("downstream-consumer");
+              expect(kind(P_OLD)).toBe("none");
+              expect(v.verdict).toBe("could-not-verify");
+              expect(v.notInScope).not.toContain(P_OLD);
+            },
+          );
+        });
+
+        it("in a component of its own, with an edge to another unrelated product, both are not in scope", async () => {
+          const SIDE = "prod-side-1963";
+          await withGraph([SIDE], [[SIDE, `rc-${SIDE}`, RC_OLD]], async () => {
+            const v = await run();
+            expect(v.verdict).toBe("gap-confirmed");
+            expect(v.notInScope).toEqual([P_OLD, SIDE].sort());
+          });
+        });
+
+        it("with no product that changes, the old one still stops the gap", async () => {
+          const id = await start("imp-1623", {
+            statement: CRYPTO_STATEMENT,
+            scope: "all-accessible",
+          });
+          const v = await settled(id, "imp-1623");
+          expect(v.verdict).toBe("could-not-verify");
+          expect(v.summary).not.toContain("not in scope");
+        });
       });
 
       it("#1725 — a run with no host reads back with none", async () => {

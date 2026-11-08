@@ -11,6 +11,7 @@ import { PrismaClient } from "@prisma/client";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
+import { IN_MEMORY_SQLITE, sqliteMainFile } from "./helpers/in-memory-sqlite.js";
 import type { Embedder } from "../src/lib/rag/embedder.js";
 import type { SymbolEmbeddingsPort } from "../src/lib/code-graph/symbol-embedding-service.js";
 import type { ProjectVectorWrite } from "../src/lib/rag/project-vector-write.js";
@@ -145,8 +146,10 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
     beforeEach(async () => {
       directory = await mkdtemp(join(tmpdir(), "metis-approval-reindex-"));
       root = join(directory, "vectors");
+      // #1960 — in memory: one client per test, never reopened, so a file only
+      // cost fsyncs. The vector store, which a test does reopen, stays on disk.
       db = new PrismaClient({
-        adapter: new PrismaBetterSqlite3({ url: `file:${join(directory, "db.sqlite")}` }),
+        adapter: new PrismaBetterSqlite3({ url: IN_MEMORY_SQLITE }),
       });
       state.db = db;
       // Scalar schema copied from the ownership harness and checked against the
@@ -317,6 +320,10 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
       });
       return { gate, candidates: () => candidates };
     }
+
+    it("builds its tables in memory, so no hook waits on a contended disk's fsync (#1960)", async () => {
+      expect(await sqliteMainFile(db)).toBe("");
+    });
 
     it("replays approval vectors after real reindex swaps them away before the SQL selection", async () => {
       const original = await seed();

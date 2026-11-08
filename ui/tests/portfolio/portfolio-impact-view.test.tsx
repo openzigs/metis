@@ -44,6 +44,28 @@ describe("PortfolioImpactView", () => {
     expect(within(billing).queryByRole("button", { name: "Why this severity?" })).toBeNull();
   });
 
+  it("#1963 — names every edge kind that connects the products, the shown path's first", () => {
+    const v = impactView();
+    const ledger = v.products.find((p) => p.productId === "p-ledger")!;
+    const detail = ledger.technicalDetail as { impact: Record<string, unknown> };
+    detail.impact = {
+      ...detail.impact,
+      links: [
+        { integrationKind: "api" },
+        { integrationKind: "database" },
+        { integrationKind: "event" },
+      ],
+    };
+    renderView(v);
+    expect(within(card("Ledger")).getByTestId("portfolio-impact-via")).toHaveTextContent(
+      "via an API, also an event, a shared database",
+    );
+    // A product reached by one kind only says that one.
+    expect(within(card("Warehouse")).getByTestId("portfolio-impact-via")).toHaveTextContent(
+      /^via a shared database$/,
+    );
+  });
+
   it("discloses the stored derivation on 'Why this severity?'", async () => {
     const user = userEvent.setup();
     renderView();
