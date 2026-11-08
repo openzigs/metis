@@ -101,15 +101,14 @@ export function alreadyLinksText(item: SimilarRequirementItem): string {
 /**
  * #1914 — a cached similar list that lists `requirementId`: the lists a borrow
  * into it changes. The others are not refetched, since each refetch reads the
- * project's requirements and may call the verifier model. #1931 — and a list
- * with no answer yet: its fetch may have read the links before the borrow
- * committed, so it is refetched rather than trusted for `staleTime`.
+ * project's requirements and may call the verifier model. #1945 — a list with
+ * no answer (its fetch failed, or never ran) shows no links, so it is not one:
+ * a failed list is retried the usual way, not by every borrow.
  */
 function listsRequirement(requirementId: string) {
   return (query: Query): boolean => {
     const data = query.state.data as { items?: SimilarRequirementItem[] } | undefined;
-    if (data === undefined) return true;
-    return data.items?.some((i) => i.requirementId === requirementId) ?? false;
+    return data?.items?.some((i) => i.requirementId === requirementId) ?? false;
   };
 }
 
@@ -284,18 +283,29 @@ function BorrowAction({
     onSuccess: async (result) => {
       setConfirming(false);
       toast.success(borrowResultText(result, item.key ?? item.title));
-      await queryClient.invalidateQueries({ queryKey: traceabilityKey(projectId, requirementId) });
       const lists = similarRequirementsPrefix(projectId);
       // #1931 — a list still on its first fetch may have read the links before
-      // the borrow committed. Invalidating it alone joins that fetch (React
-      // Query restarts a fetch in flight only once the query has data), so
-      // cancel it first: the refetch below then starts afresh.
-      await queryClient.cancelQueries({ queryKey: lists, predicate: firstFetchInFlight });
+      // the borrow committed. #1945 — only a fetch already in flight as the
+      // borrow answers: one a card starts after it (while the code links below
+      // refresh) reads the committed links. Taken before any await.
+      const racing = new Set(
+        queryClient
+          .getQueryCache()
+          .findAll({ queryKey: lists, predicate: firstFetchInFlight })
+          .map((query) => query.queryHash),
+      );
+      const raced = (query: Query) => racing.has(query.queryHash);
+      await queryClient.invalidateQueries({ queryKey: traceabilityKey(projectId, requirementId) });
+      // Invalidating a raced list alone joins its fetch (React Query restarts a
+      // fetch in flight only once the query has data), so cancel it first: the
+      // refetch below then starts afresh.
+      await queryClient.cancelQueries({ queryKey: lists, predicate: raced });
       // #1903 — other cards list this requirement, with the code links it now
-      // holds. #1914 — only those: no other list changed.
+      // holds. #1914 — only those, and the raced lists: no other list changed.
+      const lister = listsRequirement(requirementId);
       await queryClient.invalidateQueries({
         queryKey: lists,
-        predicate: listsRequirement(requirementId),
+        predicate: (query) => raced(query) || lister(query),
       });
     },
     onError: (err) =>
