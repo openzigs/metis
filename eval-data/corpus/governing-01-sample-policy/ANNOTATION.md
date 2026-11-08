@@ -107,10 +107,41 @@ that nothing is held today. So two readings were open:
 The new wording asks about every purge, and "No." now rules out the second reading.
 Polarity stays as before: "No." meets the rule. This is the only polarity case that #2038
 tunes on, so the label had to be settled before #2038 iterates. Every other question here asks whether the rule is
-met, so "Yes" meets it. A prompt line about answer polarity is to be iterated against
+met, so "Yes" meets it. A prompt line about answer polarity is iterated against
 this row, on this set only, never on `governing-02` (#2033). The answers and their verdicts were written in #2033 by
 a `claude-opus-5-5` session that had read the findings prompt, so they are not blind to
 it. This set is the tuning set, so that matters less here than it would on `governing-02`.
+
+### #2038: a polarity line, tried and dropped
+
+Read on 2026-11-08 with arm A4 on `anthropic/deepseek-flash` (DeepSeek's
+Anthropic-compatible endpoint), after #2041's GR-11 rewording. Each condition is three
+`--runs 1` invocations at `--concurrency 14`: one three-run invocation takes longer than a
+ten-minute command allows.
+
+The candidate line, added to the findings prompt (`SYSTEM` in
+`server/src/lib/governing/findings.ts`) after "Silence is never compliant":
+
+> A short answer means what it says about its question: read the question first. "No." to
+> a question about a risk the rule forbids can show the rule is met, and "Yes." can show
+> it is not.
+
+| Reading | Short-answer accuracy | Given a verdict | Compliant against the label | Main verdict accuracy | Main hard errors | Precision | Recall | Failures | Spend |
+|---|---|---|---|---|---|---|---|---|---|
+| Baseline (no line) | 4/7, 4/7, 4/7 | 4/4/4 | 0 | 0.54 / 0.51 / 0.49 | 0/0/0 | 0.50 / 0.54 / 0.51 | 0.90 / 0.90 / 0.90 | 0/0/0 | $1.45 |
+| With the line | 4/7, 4/7, 4/7 | 4/4/4 | 0 | 0.56 / 0.56 / 0.46 | 0/0/1 | 0.59 / 0.54 / 0.56 | 0.90 / 0.90 / 0.85 | 0/0/1 | $1.53 |
+
+**Dropped.** The short-answer row did not move, and one run gained a hard error in the
+main row (GR-06 → VM-03 `compliant`). The run that failed GR-30 failed in applicability
+("the judging reply could not be read twice"), which the line does not reach.
+
+The row could not move on this set through the findings prompt. Every pair that reaches
+the findings call was already right in all six runs, GR-11's "No." → `compliant`
+included: 12 of 12 per condition, none read the wrong way round. The three misses
+(GR-09 → EN-01, GR-20 → CM-02, GR-21 → CM-03) were misses in every run of both
+conditions because applicability never listed the rule as applying or possibly applying.
+So no question was asked and no answer reached the findings call. Raising this row
+is an applicability-recall problem, not a polarity one.
 
 ## The non-resembling subset
 
