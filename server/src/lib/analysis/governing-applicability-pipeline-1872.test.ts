@@ -605,4 +605,27 @@ describe("#2022 — a cancel during the governing join", () => {
     expect(vi.mocked(analysisService.updateGoverningApplicabilityMetadata)).not.toHaveBeenCalled();
     expect(vi.mocked(findingsStore.produceGoverningFindingsForAnalysis)).not.toHaveBeenCalled();
   });
+
+  it("#2029 — the guard reads the run's cancel, not the findings' signal: a join given no findings stores nothing either", async () => {
+    const orch = new AnalysisOrchestrator({
+      provider: makeProvider().provider,
+      retrieve: async () => [],
+    } as never);
+    const join = (
+      orch as unknown as {
+        joinGoverningApplicability: (
+          analysisId: string,
+          work: Promise<unknown[]>,
+          cancelled: () => boolean,
+        ) => Promise<unknown>;
+      }
+    ).joinGoverningApplicability.bind(orch);
+    const store = vi.mocked(analysisService.updateGoverningApplicabilityMetadata);
+    await expect(join(ANALYSIS_ID, Promise.resolve([]), () => true)).resolves.toBeUndefined();
+    expect(store).not.toHaveBeenCalled();
+    // The same join of a run still going stores the set.
+    await expect(join(ANALYSIS_ID, Promise.resolve([]), () => false)).resolves.toEqual([]);
+    expect(store).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(findingsStore.produceGoverningFindingsForAnalysis)).not.toHaveBeenCalled();
+  });
 });

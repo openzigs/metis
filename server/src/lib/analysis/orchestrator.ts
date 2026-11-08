@@ -2996,7 +2996,7 @@ export class AnalysisOrchestrator {
       // #1874 — and the cited findings produced from it, cancellable with the run.
       const governingController = new AbortController();
       run.controllers.set("governing", governingController);
-      await this.joinGoverningApplicability(analysisId, governingWork, {
+      await this.joinGoverningApplicability(analysisId, governingWork, () => run.cancelled, {
         projectId: opts.projectId,
         ...(opts.model ? { model: opts.model } : {}),
         signal: governingController.signal,
@@ -4366,6 +4366,11 @@ export class AnalysisOrchestrator {
   private async joinGoverningApplicability(
     analysisId: string,
     work: Promise<RequirementEvidence[]> | undefined,
+    /**
+     * #2029 — whether the run was cancelled. Read from the run itself, not from
+     * `findings`, so the guard below holds for a caller that omits `findings`.
+     */
+    cancelled: () => boolean,
     /** #1874 — where the cited findings are produced from the stored applicability. */
     findings?: { projectId: string; model?: string; signal?: AbortSignal },
   ): Promise<RequirementEvidence[] | undefined> {
@@ -4376,7 +4381,7 @@ export class AnalysisOrchestrator {
       // way (#2016): the requirements it never reached carry no set. Storing
       // that would drop them silently, where they used to read UNDECIDED, so
       // nothing is stored or produced; the run then ends cancelled.
-      if (findings?.signal?.aborted) {
+      if (cancelled()) {
         log.info("governing applicability not stored: the run was cancelled", { analysisId });
         return undefined;
       }

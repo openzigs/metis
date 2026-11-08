@@ -321,6 +321,14 @@ function containsAnsweredRun(
  * words itself: a run that crossed into the answer by its first word ("every
  * customer export be logged? No" of "No, we do not.") drew every counted word
  * but one from the question.
+ *
+ * #2029 — a bare "Yes." or "No." is a whole answer too, so it carries
+ * `compliant` exactly as "No, we do not." does. This checks where the quoted
+ * words are, not which way they point: "No" meets a rule when asked "Will card
+ * numbers leave the EU?" and breaches one when asked "Will every export be
+ * logged?", and only the model reads the question. Rejecting the one-word form
+ * would turn on how many words the BA typed, not on what the business does,
+ * and bring back #2017's false gaps for a terse BA.
  */
 export function evidenceIsPresent(
   satisfiedBy: string,
