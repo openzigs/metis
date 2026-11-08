@@ -2776,7 +2776,14 @@ rather than updating them optimistically. A `needs-ba-input` finding links to
 requirement and rule, or to the Questions tab when there is none.
 
 Eval arm **A4** (`pnpm eval:governing --arm A4`) runs A3's applicability and then these findings
-over the #1867 corpus.
+over the #1867 corpus. #2033 — on a requirement with short-answer pairs, A4 then replays the
+BA's answers (`replayAnswers`, `server/src/lib/eval/governing/arms.ts`): each pair's
+`businessFact` is the question and its `baAnswer` the answer. An answered rule that
+applicability left `uncertain` is first re-judged by production's settle (`rejudgeAnswered`),
+then `evaluateRequirementFindings` runs over the answered rules with the answers, so the
+evidence rule reads each short answer with its question. Those findings are scored apart,
+against each pair's `answeredVerdict`, in their own row of the report ("Short-answer pairs,
+with the BA's answer replayed"). The main results still read the findings before any answer.
 
 ---
 
@@ -4511,8 +4518,14 @@ with #1878's flag decision, are read on **`governing-02-clinic-records`**
 (`purpose: "held-out"`). It is a fictional clinic network's patient records and clinical
 safety standard: 40 obligations, a v2 changing four clauses, and 36 requirements (30
 positive, 6 negative, 10 with a non-resembling pair). Seven of its `needs-ba-input` pairs
-carry the short `baAnswer` a BA would give ("Yes, we do.", "No.") for #2017 and #2022.
-It was labelled blind to every arm and prompt by two AI labellers, the same model as the
+carry the short `baAnswer` a BA would give ("Yes, we do.", "No.") for #2017 and #2022,
+and (#2033) the verdict that answer leads to (`answeredVerdict`), which arm A4's replay of
+the answers is scored against. The loader requires `answeredVerdict` with every `baAnswer`
+and refuses it without one. `governing-01` carries seven such pairs too, among them the
+polarity case GR-11, where "No." meets the rule, so a prompt change about answer polarity
+can be iterated on the tuning set. The `answeredVerdict` labels were added after the
+findings prompt was read, so unlike the rest of `governing-02` they are not blind to it.
+`governing-02` was labelled blind to every arm and prompt by two AI labellers, the same model as the
 author (so not independent human judgement). The second ran with no tools and saw only the
 policy and the requirements. They agreed on 31 of the 40 pairs either listed (0.78); Cohen's
 κ is 0.93, but over 1,440 cells of which about 97% are "does not apply" for both. A third

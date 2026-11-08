@@ -5,7 +5,7 @@
   "contentHash": {
     "algorithm": "sha256",
     "covers": "sha256 of the JSON of [policy, rules, items, each revision's text with LF line endings]; ANNOTATION.md, the labelling files and the thresholds are outside it",
-    "value": "c18f31b2539ae742e21c788b3b3c09cd5caacd7e6cd66a8b1faeece6bc39c60d"
+    "value": "9fc02e66cfa37e312b27aa06a1292183ebabea8847c92146055069ac80afe1c9"
   },
   "license": "CC0-1.0",
   "synthetic": true,
@@ -292,7 +292,8 @@
           "ruleId": "TP-01",
           "verdict": "needs-ba-input",
           "businessFact": "Do we have a signed data processing agreement with the hosting supplier?",
-          "baAnswer": "Yes, we do."
+          "baAnswer": "Yes, we do.",
+          "answeredVerdict": "compliant"
         }
       ]
     },
@@ -323,7 +324,8 @@
           "verdict": "needs-ba-input",
           "nonResembling": true,
           "businessFact": "Will the calculator refuse a growth-chart figure that is more than thirty days old?",
-          "baAnswer": "No."
+          "baAnswer": "No.",
+          "answeredVerdict": "gap"
         },
         {
           "ruleId": "IR-04",
@@ -448,7 +450,8 @@
           "ruleId": "CM-01",
           "verdict": "needs-ba-input",
           "businessFact": "Are results shown in the family account only after the clinician who ordered them has reviewed them?",
-          "baAnswer": "Yes, they are."
+          "baAnswer": "Yes, they are.",
+          "answeredVerdict": "compliant"
         }
       ]
     },
@@ -605,7 +608,8 @@
           "ruleId": "TP-03",
           "verdict": "needs-ba-input",
           "businessFact": "Do we enter the ECG machine in the device inventory, with its owner and software version, before it is connected?",
-          "baAnswer": "Yes, we do."
+          "baAnswer": "Yes, we do.",
+          "answeredVerdict": "compliant"
         },
         {
           "ruleId": "IR-04",
@@ -635,7 +639,8 @@
           "verdict": "needs-ba-input",
           "nonResembling": true,
           "businessFact": "Is the memory stick an encrypted drive issued by the IT service desk?",
-          "baAnswer": "No."
+          "baAnswer": "No.",
+          "answeredVerdict": "gap"
         },
         {
           "ruleId": "TP-04",
@@ -670,7 +675,8 @@
           "ruleId": "IR-04",
           "verdict": "needs-ba-input",
           "businessFact": "Do we have the clinical safety officer's assessment of this change filed in the hazard log before it goes live?",
-          "baAnswer": "Yes, we do."
+          "baAnswer": "Yes, we do.",
+          "answeredVerdict": "compliant"
         }
       ]
     },
@@ -694,7 +700,8 @@
           "ruleId": "CM-04",
           "verdict": "needs-ba-input",
           "businessFact": "Is a copy of each emailed letter saved on the patient's chart?",
-          "baAnswer": "No."
+          "baAnswer": "No.",
+          "answeredVerdict": "gap"
         },
         {
           "ruleId": "CM-02",
