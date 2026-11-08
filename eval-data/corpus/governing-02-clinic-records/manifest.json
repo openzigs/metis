@@ -1,0 +1,698 @@
+{
+  "id": "governing-02-clinic-records",
+  "description": "Held-out governing-rules set (#2024): a fictional clinic network's patient records and clinical safety standard (40 atomic obligations) and analyst-worded requirements, labelled blind to every arm's prompt by two independent labellers with adjudicated disagreements. Read it only for a decision, never to tune a prompt.",
+  "purpose": "held-out",
+  "contentHash": {
+    "algorithm": "sha256",
+    "covers": "sha256 of the JSON of [policy, rules, items, each revision's text with LF line endings]; ANNOTATION.md, the labelling files and the thresholds are outside it",
+    "value": "0fef56be8454b3b54e04237f9bc4547f88c251ff38fcd87fb8dfa760d7002672"
+  },
+  "license": "CC0-1.0",
+  "synthetic": true,
+  "files": [
+    "ANNOTATION.md",
+    "labelling/adjudication-prompt.txt",
+    "labelling/adjudication.json",
+    "labelling/labeller-1.json",
+    "labelling/labeller-2-prompt.txt",
+    "labelling/labeller-2.json",
+    "policy-v1.md",
+    "policy-v2.md"
+  ],
+  "policy": {
+    "title": "Kestrel Vale Health Partners — Patient Records and Clinical Safety Standard",
+    "scored": "v1",
+    "revisions": [
+      {
+        "revision": "v1",
+        "file": "policy-v1.md",
+        "effective": "2026-02-01",
+        "changedRules": []
+      },
+      {
+        "revision": "v2",
+        "file": "policy-v2.md",
+        "effective": "2026-08-01",
+        "changedRules": ["CM-03", "IR-05", "MS-03", "RK-04"]
+      }
+    ]
+  },
+  "annotation": {
+    "labelledBy": "two independent AI labellers (claude-opus-5-5), adjudicated by a third pass; not a person",
+    "labelledAt": "2026-11-08",
+    "groundTruthFixedBeforeAnyArmRan": true,
+    "procedure": "Written for this set in original wording by an agent that read no governing prompt, arm or baseline; labelled against policy-v1 by that agent and, blind to its labels, by a second agent given only the policy and the requirements; each disagreement settled by a third pass with a written reason. No arm has run on it. See ANNOTATION.md and labelling/.",
+    "reviewedBy": null
+  },
+  "thresholds": {
+    "status": "proposed",
+    "proposedIn": "#1867",
+    "proposedAt": "2026-11-06",
+    "recordedBeforeAnyArmRan": true,
+    "overallRecall": 0.9,
+    "nonResemblingRecall": 0.85,
+    "precision": 0.6,
+    "citationAccuracy": 0.95,
+    "maxNoEvidenceCompliantErrors": 0,
+    "changes": []
+  },
+  "rules": [
+    {
+      "id": "ID-01",
+      "area": "patient-identity",
+      "summary": "Confirm full name and date of birth before opening a present patient's chart."
+    },
+    {
+      "id": "ID-02",
+      "area": "patient-identity",
+      "summary": "Merging two charts needs two staff confirmations and stays reversible for ninety days."
+    },
+    {
+      "id": "ID-03",
+      "area": "patient-identity",
+      "summary": "Video and phone consultations start with a one-time code to the mobile on file."
+    },
+    {
+      "id": "ID-04",
+      "area": "patient-identity",
+      "summary": "Preferred names are allowed, but the legal name stays and goes on prescriptions and referrals."
+    },
+    {
+      "id": "ID-05",
+      "area": "patient-identity",
+      "summary": "Newborn charts get a temporary identifier, replaced by the national number within fourteen days."
+    },
+    {
+      "id": "RA-01",
+      "area": "chart-access",
+      "summary": "Clinicians open a chart only when involved in the patient's care, apart from recorded emergency access."
+    },
+    {
+      "id": "RA-02",
+      "area": "chart-access",
+      "summary": "Access without a care relationship needs a typed reason first and privacy-officer review within five working days."
+    },
+    {
+      "id": "RA-03",
+      "area": "chart-access",
+      "summary": "Reception and billing see contact, appointment and payment details, never clinical content."
+    },
+    {
+      "id": "RA-04",
+      "area": "chart-access",
+      "summary": "Staff-patient and public-figure charts are restricted; each opening is reported the same day."
+    },
+    {
+      "id": "RA-05",
+      "area": "chart-access",
+      "summary": "Consulting-room computers lock after five idle minutes."
+    },
+    {
+      "id": "CS-01",
+      "area": "consent-sharing",
+      "summary": "Patient information leaves the network only with recorded consent or a legal requirement."
+    },
+    {
+      "id": "CS-02",
+      "area": "consent-sharing",
+      "summary": "Consent withdrawal takes effect for disclosures from one working day after receipt."
+    },
+    {
+      "id": "CS-03",
+      "area": "consent-sharing",
+      "summary": "Consent to text or email contact is recorded separately from consent to treatment."
+    },
+    {
+      "id": "CS-04",
+      "area": "consent-sharing",
+      "summary": "No disclosure to parents about 16- and 17-year-olds without their agreement, barring safeguarding."
+    },
+    {
+      "id": "CS-05",
+      "area": "consent-sharing",
+      "summary": "Research use needs ethics approval and removal of names, addresses and health numbers."
+    },
+    {
+      "id": "MS-01",
+      "area": "medicines",
+      "summary": "Prescriptions are checked against recorded allergies; an override needs the prescriber's reason."
+    },
+    {
+      "id": "MS-02",
+      "area": "medicines",
+      "summary": "Controlled drugs need matching prescribing authority and a register entry."
+    },
+    {
+      "id": "MS-03",
+      "area": "medicines",
+      "summary": "Repeat prescriptions are reviewed by a clinician at least every twelve months."
+    },
+    {
+      "id": "MS-04",
+      "area": "medicines",
+      "summary": "Children's doses use a weight taken within thirty days."
+    },
+    {
+      "id": "MS-05",
+      "area": "medicines",
+      "summary": "Medicine warnings can be acknowledged per prescription, never turned off."
+    },
+    {
+      "id": "CM-01",
+      "area": "patient-communication",
+      "summary": "Results reach the portal only after the ordering clinician's review, unless routine and normal."
+    },
+    {
+      "id": "CM-02",
+      "area": "patient-communication",
+      "summary": "Messages to patients carry only time and place unless they opted into detail."
+    },
+    {
+      "id": "CM-03",
+      "area": "patient-communication",
+      "summary": "Appointment reminders go at least forty-eight hours ahead."
+    },
+    {
+      "id": "CM-04",
+      "area": "patient-communication",
+      "summary": "Every letter and message sent to a patient is copied to their chart."
+    },
+    {
+      "id": "CM-05",
+      "area": "patient-communication",
+      "summary": "Consent talks in another language need a qualified interpreter, never relatives."
+    },
+    {
+      "id": "RK-01",
+      "area": "record-keeping",
+      "summary": "Adult charts are kept eight years after last contact."
+    },
+    {
+      "id": "RK-02",
+      "area": "record-keeping",
+      "summary": "Children's charts are kept to age twenty-five, or eight years after death if sooner."
+    },
+    {
+      "id": "RK-03",
+      "area": "record-keeping",
+      "summary": "Clinical entries are never deleted; corrections are new entries showing the original, who and why."
+    },
+    {
+      "id": "RK-04",
+      "area": "record-keeping",
+      "summary": "Requests for a copy of one's own chart are answered within thirty days."
+    },
+    {
+      "id": "RK-05",
+      "area": "record-keeping",
+      "summary": "Scanned paper is checked for legibility and kept three months before shredding."
+    },
+    {
+      "id": "IR-01",
+      "area": "incidents",
+      "summary": "Harm and near-miss events are reported within twenty-four hours."
+    },
+    {
+      "id": "IR-02",
+      "area": "incidents",
+      "summary": "A harmed patient is told what happened by a senior clinician within ten working days."
+    },
+    {
+      "id": "IR-03",
+      "area": "incidents",
+      "summary": "Clinical software faults that affected care are reported to the clinical safety officer."
+    },
+    {
+      "id": "IR-04",
+      "area": "incidents",
+      "summary": "Changes to what clinicians see or the order of clinical steps are safety-assessed and logged before release."
+    },
+    {
+      "id": "IR-05",
+      "area": "incidents",
+      "summary": "Suspected loss or disclosure of patient information is reported to the privacy officer within four hours."
+    },
+    {
+      "id": "TP-01",
+      "area": "suppliers-devices",
+      "summary": "A supplier signs a data processing agreement before receiving patient information."
+    },
+    {
+      "id": "TP-02",
+      "area": "suppliers-devices",
+      "summary": "Patient information is stored only in in-country data centres."
+    },
+    {
+      "id": "TP-03",
+      "area": "suppliers-devices",
+      "summary": "Medical devices are inventoried with owner and software version before connecting."
+    },
+    {
+      "id": "TP-04",
+      "area": "suppliers-devices",
+      "summary": "Clinical laptops, tablets and phones are encrypted and remotely wipeable."
+    },
+    {
+      "id": "TP-05",
+      "area": "suppliers-devices",
+      "summary": "No removable media for patient information, except desk-issued encrypted drives."
+    }
+  ],
+  "items": [
+    {
+      "id": "KV-01",
+      "title": "Give covering doctors the full list",
+      "text": "Doctors covering a shift should be able to pull up the notes of anyone registered at the practice, not just today's bookings, in case someone rings in.",
+      "applies": [
+        {
+          "ruleId": "RA-01",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Will covering doctors open only the notes of people they are seeing or acting for, apart from a recorded emergency access?"
+        },
+        {
+          "ruleId": "RA-02",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Will a covering doctor have to type a reason before opening the notes of someone not booked today, with each such opening reviewed by the privacy officer within five working days?"
+        }
+      ]
+    },
+    {
+      "id": "KV-02",
+      "title": "Move bookings to the cheapest cloud region",
+      "text": "Move the appointment system to our hosting supplier's cheapest cloud region, which is currently overseas.",
+      "applies": [
+        {
+          "ruleId": "TP-02",
+          "verdict": "gap"
+        },
+        {
+          "ruleId": "TP-01",
+          "verdict": "needs-ba-input",
+          "businessFact": "Do we have a signed data processing agreement with the hosting supplier?",
+          "baAnswer": "Yes, we do."
+        }
+      ]
+    },
+    {
+      "id": "KV-03",
+      "title": "Dark mode for the staff intranet",
+      "text": "Add a dark colour scheme to the staff intranet, switchable from the page header.",
+      "applies": []
+    },
+    {
+      "id": "KV-04",
+      "title": "Check two details before opening someone's file",
+      "text": "When someone arrives at the minor injuries unit, the triage nurse asks for their full name and their date of birth, and opens the chart only once both match.",
+      "applies": [
+        {
+          "ruleId": "ID-01",
+          "verdict": "compliant"
+        }
+      ]
+    },
+    {
+      "id": "KV-05",
+      "title": "Paediatric syrup calculator",
+      "text": "When a GP prescribes a syrup for a toddler, the screen suggests the millilitres per kilo from the latest figure on the growth chart.",
+      "applies": [
+        {
+          "ruleId": "MS-04",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Will the calculator refuse a growth-chart figure that is more than thirty days old?",
+          "baAnswer": "No."
+        },
+        {
+          "ruleId": "IR-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Has the clinical safety officer assessed the calculator before release, with the assessment filed in the hazard log?"
+        }
+      ]
+    },
+    {
+      "id": "KV-06",
+      "title": "Results straight to the app",
+      "text": "Lab results appear in the patient app the moment the laboratory sends them, so people are not left waiting for a call.",
+      "applies": [
+        {
+          "ruleId": "CM-01",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-07",
+      "title": "Tidy up duplicate registrations",
+      "text": "A single front-desk user can fold two registrations for one individual into a single entry when they notice a duplicate while searching, with no second check.",
+      "applies": [
+        {
+          "ruleId": "ID-02",
+          "verdict": "gap",
+          "nonResembling": true
+        }
+      ]
+    },
+    {
+      "id": "KV-08",
+      "title": "Asthma extract for the university study",
+      "text": "Send the university's respiratory team a spreadsheet of every asthma patient with their name, home address, age and inhaler use, for a study our ethics committee approved last month.",
+      "applies": [
+        {
+          "ruleId": "CS-05",
+          "verdict": "gap"
+        },
+        {
+          "ruleId": "CS-01",
+          "verdict": "needs-ba-input",
+          "businessFact": "Have the patients in the extract consented to their details going to the university?"
+        }
+      ]
+    },
+    {
+      "id": "KV-09",
+      "title": "Keep GPs signed in for the whole surgery",
+      "text": "GPs find it slow to sign back in between each person they see, so the desktop should stay open and ready for the entire morning or afternoon session.",
+      "applies": [
+        {
+          "ruleId": "RA-05",
+          "verdict": "gap",
+          "nonResembling": true
+        }
+      ]
+    },
+    {
+      "id": "KV-10",
+      "title": "Parking details on the clinic finder",
+      "text": "Show the nearest car park and its charges on each clinic's page of the public website.",
+      "applies": []
+    },
+    {
+      "id": "KV-11",
+      "title": "Video appointments from home",
+      "text": "Let people book a video appointment with their GP and join it from the link in their booking confirmation, without travelling to the clinic.",
+      "applies": [
+        {
+          "ruleId": "ID-03",
+          "verdict": "needs-ba-input",
+          "businessFact": "Will the GP confirm who they are speaking to at the start of each call, with a one-time code sent to the mobile number on the chart?"
+        }
+      ]
+    },
+    {
+      "id": "KV-12",
+      "title": "Stop nagging GPs about combinations they already know",
+      "text": "A GP who keeps seeing the same interaction pop-up for a long-standing combination can tick 'don't remind me again' for that person.",
+      "applies": [
+        {
+          "ruleId": "MS-05",
+          "verdict": "gap",
+          "nonResembling": true
+        }
+      ]
+    },
+    {
+      "id": "KV-13",
+      "title": "One tick box at registration",
+      "text": "The new registration form has a single tick box reading 'I agree to treatment and to be contacted by email and text'.",
+      "applies": [
+        {
+          "ruleId": "CS-03",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-14",
+      "title": "Mums and dads can follow their kids' bookings",
+      "text": "The family account in the app lists every booking and test outcome for each child linked to it, up to the age of eighteen.",
+      "applies": [
+        {
+          "ruleId": "CS-04",
+          "verdict": "gap",
+          "nonResembling": true
+        },
+        {
+          "ruleId": "CM-01",
+          "verdict": "needs-ba-input",
+          "businessFact": "Are results shown in the family account only after the clinician who ordered them has reviewed them?",
+          "baAnswer": "Yes, they are."
+        }
+      ]
+    },
+    {
+      "id": "KV-15",
+      "title": "Faster prescribing in the minor injuries unit",
+      "text": "Nurse prescribers in the minor injuries unit can skip the allergy screen with one click when the queue is long.",
+      "applies": [
+        {
+          "ruleId": "MS-01",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-16",
+      "title": "Clear the post room the same day",
+      "text": "Once incoming hospital letters have been photographed into the system, the admin team bin the originals that afternoon to free up space.",
+      "applies": [
+        {
+          "ruleId": "RK-05",
+          "verdict": "gap",
+          "nonResembling": true
+        }
+      ]
+    },
+    {
+      "id": "KV-17",
+      "title": "New brand colours on the website",
+      "text": "Update the public website's buttons, fonts and logo to the network's new brand guidelines.",
+      "applies": []
+    },
+    {
+      "id": "KV-18",
+      "title": "Emergency access to notes outside your list",
+      "text": "A clinician who opens the notes of someone they are not treating must first type why; the privacy officer then gets each such case to review, and must close it within five working days.",
+      "applies": [
+        {
+          "ruleId": "RA-02",
+          "verdict": "compliant"
+        }
+      ]
+    },
+    {
+      "id": "KV-19",
+      "title": "Say why they are coming in the SMS nudge",
+      "text": "The SMS sent the day before should say what the visit is for, such as 'your diabetes review' or 'your smear test', so fewer people forget.",
+      "applies": [
+        {
+          "ruleId": "CM-02",
+          "verdict": "gap",
+          "nonResembling": true
+        },
+        {
+          "ruleId": "CM-03",
+          "verdict": "gap",
+          "nonResembling": true
+        }
+      ]
+    },
+    {
+      "id": "KV-20",
+      "title": "Two-year repeats for blood pressure tablets",
+      "text": "People on long-term blood pressure tablets get a repeat that runs for two years, so they do not have to book a medication review every year.",
+      "applies": [
+        {
+          "ruleId": "MS-03",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-21",
+      "title": "Use the name people prefer everywhere",
+      "text": "Print the name a patient likes to be called on everything we produce for them, prescriptions and hospital referral letters included.",
+      "applies": [
+        {
+          "ruleId": "ID-04",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-22",
+      "title": "Replacing a lost work phone",
+      "text": "If a clinician loses their work phone, they tell the IT desk on the next working day so a replacement can be ordered.",
+      "applies": [
+        {
+          "ruleId": "IR-05",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-23",
+      "title": "A son or daughter translates before a minor operation",
+      "text": "When the person only speaks Polish, their son or daughter can translate the risks of a minor operation and sign the form alongside them.",
+      "applies": [
+        {
+          "ruleId": "CM-05",
+          "verdict": "gap",
+          "nonResembling": true
+        }
+      ]
+    },
+    {
+      "id": "KV-24",
+      "title": "Bank holiday opening hours",
+      "text": "Let clinic managers enter bank holiday opening hours, which then appear on the public website's clinic pages.",
+      "applies": []
+    },
+    {
+      "id": "KV-25",
+      "title": "Keep the history when a note is corrected",
+      "text": "When a clinician corrects a consultation note, the system keeps the original wording alongside the new version, records who made the change and asks them for a reason.",
+      "applies": [
+        {
+          "ruleId": "RK-03",
+          "verdict": "compliant"
+        }
+      ]
+    },
+    {
+      "id": "KV-26",
+      "title": "Connect the new ECG machine",
+      "text": "Plug the new ECG machine in the treatment room into the network so traces go straight onto the chart.",
+      "applies": [
+        {
+          "ruleId": "TP-03",
+          "verdict": "needs-ba-input",
+          "businessFact": "Do we enter the ECG machine in the device inventory, with its owner and software version, before it is connected?",
+          "baAnswer": "Yes, we do."
+        }
+      ]
+    },
+    {
+      "id": "KV-27",
+      "title": "Clear out old adult charts",
+      "text": "Delete adult charts automatically five years after the person's last visit, to cut storage costs.",
+      "applies": [
+        {
+          "ruleId": "RK-01",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-28",
+      "title": "Day list on a memory stick for the outreach van",
+      "text": "The outreach nurses want to copy the day's visit list, with names, addresses and conditions, onto a memory stick so they can open it on the van's laptop where signal is poor.",
+      "applies": [
+        {
+          "ruleId": "TP-05",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Is the memory stick an encrypted drive issued by the IT service desk?",
+          "baAnswer": "No."
+        },
+        {
+          "ruleId": "TP-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Is the van's laptop encrypted, and can it be wiped remotely?"
+        }
+      ]
+    },
+    {
+      "id": "KV-29",
+      "title": "Show reception the reason for the last visits",
+      "text": "When someone checks in, show the receptionist their last three diagnoses so they can book the right length of follow-up appointment.",
+      "applies": [
+        {
+          "ruleId": "RA-03",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-30",
+      "title": "Canteen menu on the intranet",
+      "text": "Publish the weekly staff canteen menu on the intranet home page.",
+      "applies": []
+    },
+    {
+      "id": "KV-31",
+      "title": "Move the allergies panel to a tab",
+      "text": "Move the allergies panel from the top of the consultation screen into a tab, to give clinicians more room for their notes.",
+      "applies": [
+        {
+          "ruleId": "IR-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Do we have the clinical safety officer's assessment of this change filed in the hazard log before it goes live?",
+          "baAnswer": "Yes, we do."
+        }
+      ]
+    },
+    {
+      "id": "KV-32",
+      "title": "Ask for your notes online",
+      "text": "Patients can request their notes through the website, and the records team will post a printed copy within six weeks.",
+      "applies": [
+        {
+          "ruleId": "RK-04",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-33",
+      "title": "Email referral letters straight to patients",
+      "text": "Letters made with the new referral template are emailed to the patient directly from the template tool, so they have the details of their referral before the hospital calls.",
+      "applies": [
+        {
+          "ruleId": "CM-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Is a copy of each emailed letter saved on the patient's chart?",
+          "baAnswer": "No."
+        },
+        {
+          "ruleId": "CM-02",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-34",
+      "title": "Near-miss button on the prescribing screen",
+      "text": "Add a 'report a near miss' button to the prescribing screen that saves a draft the pharmacist submits to the incident system at the end of each week.",
+      "applies": [
+        {
+          "ruleId": "IR-01",
+          "verdict": "gap"
+        },
+        {
+          "ruleId": "IR-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Has the clinical safety officer assessed the new button before release, with the assessment filed in the hazard log?"
+        }
+      ]
+    },
+    {
+      "id": "KV-35",
+      "title": "Laptops for community nurses",
+      "text": "Issue each community nurse a laptop whose disk is encrypted and which IT can erase remotely if it goes missing.",
+      "applies": [
+        {
+          "ruleId": "TP-04",
+          "verdict": "compliant"
+        }
+      ]
+    },
+    {
+      "id": "KV-36",
+      "title": "Reorder the website's frequently asked questions",
+      "text": "Group the public website's frequently asked questions by topic and put the most-read ones first.",
+      "applies": []
+    }
+  ]
+}

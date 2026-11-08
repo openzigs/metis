@@ -9,6 +9,7 @@ import {
   SCREEN_SIZE_RULE_COUNTS,
   SpendLedger,
   estimateCallUsd,
+  setStatement,
   TokenLedgerMeter,
   compareWithA0,
   runGoverningEval,
@@ -465,6 +466,36 @@ describe("toJsonReport", () => {
   });
 });
 
+describe("the set a reading came from (#2024)", () => {
+  it("labels a reading of the held-out set as held out, with its content hash", async () => {
+    const heldOut = await loadGoverningCorpus("governing-02-clinic-records");
+    const report = await runGoverningEval(heldOut, {
+      arms: [fakeArm("A0", resemblingOnly)],
+      runs: 1,
+      budget: new EvalBudget(100),
+      provider: fakeProvider(),
+    });
+    const hash = heldOut.manifest.contentHash!.value;
+    expect(report.corpus).toMatchObject({
+      id: "governing-02-clinic-records",
+      purpose: "held-out",
+      contentHash: hash,
+    });
+    const md = toMarkdownReport(report);
+    expect(md).toContain(
+      `Set: **held-out** (read for a decision, never tuned on; content hash \`${hash}\`).`,
+    );
+    expect(md).not.toContain("**tuning**");
+    expect(JSON.parse(toJsonReport(report)).corpus.purpose).toBe("held-out");
+  });
+
+  it("states a held-out set without a hash as such, rather than printing nothing", () => {
+    expect(setStatement({ purpose: "held-out", contentHash: null })).toContain(
+      "content hash `none`",
+    );
+  });
+});
+
 describe("toMarkdownReport", () => {
   it("prints the measured value, not n/a, when a by-construction claim does not hold (#1920)", async () => {
     // Claims A0's construction, but says compliant on every truth pair.
@@ -500,6 +531,9 @@ describe("toMarkdownReport", () => {
     });
     const md = toMarkdownReport(report);
     expect(md).toContain("# Governing-rules eval — `governing-01-sample-policy`");
+    // #2024 — the report says which set the reading came from.
+    expect(report.corpus).toMatchObject({ purpose: "tuning", contentHash: null });
+    expect(md).toContain("Set: **tuning** (prompts are iterated on this set");
     expect(md).toContain("**not yet reviewed by a person**");
     expect(md).toContain("| Arm | Runs | Recall | Non-resembling recall | Precision |");
     expect(md).toMatch(

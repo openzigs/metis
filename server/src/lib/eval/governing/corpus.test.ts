@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
+  CONTENT_HASH_COVERS,
   MIN_NEGATIVE_ITEMS,
   MIN_NON_RESEMBLING_ITEMS,
   PROPOSED_THRESHOLDS,
@@ -10,6 +11,7 @@ import {
   contentStems,
   evaluationLeaks,
   expectedThresholds,
+  governingContentHash,
   listCorpusFiles,
   loadGoverningCorpus,
   parsePolicyClauses,
@@ -295,6 +297,213 @@ describe("validateGoverningCorpus — the drift it must catch", () => {
     const problems = validateGoverningCorpus(m, files);
     expect(problems).toContain("the corpus must be marked synthetic");
     expect(problems).toContain("the scored revision v9 is not one of the policy's revisions");
+  });
+});
+
+const HELD_OUT = "governing-02-clinic-records";
+const HELD_OUT_DIR = resolveGoverningCorpusDir(HELD_OUT);
+
+async function heldOut(): Promise<{ manifest: GoverningCorpusManifest; files: CorpusFiles }> {
+  const manifest = JSON.parse(
+    await fs.readFile(path.join(HELD_OUT_DIR, "manifest.json"), "utf8"),
+  ) as GoverningCorpusManifest;
+  const policies = new Map<string, string>();
+  for (const rev of manifest.policy.revisions) {
+    policies.set(rev.revision, await fs.readFile(path.join(HELD_OUT_DIR, rev.file), "utf8"));
+  }
+  return { manifest, files: { present: await listCorpusFiles(HELD_OUT_DIR), policies } };
+}
+
+interface LabelFile {
+  items: Array<{ id: string; applies: Array<{ ruleId: string; verdict: string }> }>;
+}
+interface AdjudicationFile {
+  agreement: { applicability: { kappa: number }; fourWay: { kappa: number } };
+  disagreements: Array<{ item: string; rule: string; decision: string; reason: string }>;
+}
+const readJson = async <T>(rel: string): Promise<T> =>
+  JSON.parse(await fs.readFile(path.join(HELD_OUT_DIR, rel), "utf8")) as T;
+
+/** item → rule → label, with "does not apply" for a rule the labeller left off. */
+function labelGrid(f: LabelFile): Map<string, Map<string, string>> {
+  return new Map(f.items.map((i) => [i.id, new Map(i.applies.map((p) => [p.ruleId, p.verdict]))]));
+}
+
+function cohensKappa(pairs: ReadonlyArray<readonly [string, string]>): number {
+  const n = pairs.length;
+  const cats = [...new Set(pairs.flat())];
+  const observed = pairs.filter(([a, b]) => a === b).length / n;
+  const chance = cats.reduce(
+    (s, c) =>
+      s +
+      (pairs.filter(([a]) => a === c).length / n) * (pairs.filter(([, b]) => b === c).length / n),
+    0,
+  );
+  return (observed - chance) / (1 - chance);
+}
+
+describe("the held-out governing corpus (#2024)", () => {
+  it("loads under the existing loader, every guard passing, with the shape the issue asks for", async () => {
+    const corpus = await loadGoverningCorpus(HELD_OUT);
+    const { manifest, files } = await heldOut();
+    expect(validateGoverningCorpus(manifest, files)).toEqual([]);
+    expect(corpus.manifest.purpose).toBe("held-out");
+    expect(corpus.rules).toHaveLength(40);
+    const items = corpus.manifest.items;
+    expect(items).toHaveLength(36);
+    expect(items.filter((i) => i.applies.length === 0)).toHaveLength(6);
+    expect(
+      items.filter((i) => i.applies.some((p) => p.nonResembling)).length,
+    ).toBeGreaterThanOrEqual(MIN_NON_RESEMBLING_ITEMS);
+    for (const text of files.policies.values()) {
+      expect(trustServicesCriteriaMarkers(text)).toEqual([]);
+      expect(evaluationLeaks(text)).toEqual([]);
+    }
+    const v2 = manifest.policy.revisions.find((r) => r.revision === "v2")!;
+    expect(v2.changedRules.length).toBeGreaterThanOrEqual(3);
+    expect(v2.changedRules.length).toBeLessThanOrEqual(5);
+  });
+
+  it("carries at least four short-answer business facts", async () => {
+    const { manifest } = await heldOut();
+    const short = manifest.items.flatMap((i) => i.applies.filter((p) => p.baAnswer !== undefined));
+    expect(short.length).toBeGreaterThanOrEqual(4);
+    for (const p of short) {
+      expect(p.verdict).toBe("needs-ba-input");
+      expect(p.baAnswer).toMatch(/^(?:Yes|No)\b.{0,20}$/);
+    }
+    expect(short.map((p) => p.baAnswer)).toEqual(expect.arrayContaining(["Yes, we do.", "No."]));
+  });
+
+  it("fixed governing-01's thresholds, unchanged, before any arm ran", async () => {
+    const { manifest } = await heldOut();
+    const tuning = (await committed()).manifest;
+    expect(manifest.thresholds).toEqual(tuning.thresholds);
+    expect(manifest.thresholds.recordedBeforeAnyArmRan).toBe(true);
+    expect(manifest.annotation.groundTruthFixedBeforeAnyArmRan).toBe(true);
+    expect(manifest.annotation.reviewedBy).toBeNull();
+    // No arm has run on it: no baseline sits in the set.
+    expect(manifest.files.some((f) => f.startsWith("baseline"))).toBe(false);
+  });
+
+  it("records the content hash of what it scores against", async () => {
+    const { manifest, files } = await heldOut();
+    expect(manifest.contentHash).toEqual({
+      algorithm: "sha256",
+      covers: CONTENT_HASH_COVERS,
+      value: governingContentHash(manifest, files.policies),
+    });
+    expect(manifest.contentHash!.value).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("holds the adjudicated labels: both labellers where they agreed, the third pass where they did not", async () => {
+    const { manifest } = await heldOut();
+    const first = labelGrid(await readJson<LabelFile>("labelling/labeller-1.json"));
+    const second = labelGrid(await readJson<LabelFile>("labelling/labeller-2.json"));
+    const adjudication = await readJson<AdjudicationFile>("labelling/adjudication.json");
+    const decided = new Map(adjudication.disagreements.map((d) => [`${d.item} ${d.rule}`, d]));
+    const none = "does not apply";
+    const cells: Array<readonly [string, string]> = [];
+    for (const item of manifest.items) {
+      const truth = new Map(item.applies.map((p) => [p.ruleId, p.verdict as string]));
+      for (const rule of manifest.rules) {
+        const a = first.get(item.id)?.get(rule.id) ?? none;
+        const b = second.get(item.id)?.get(rule.id) ?? none;
+        cells.push([a, b]);
+        const d = decided.get(`${item.id} ${rule.id}`);
+        if (a === b) {
+          expect(d, `${item.id} → ${rule.id}`).toBeUndefined();
+          expect(truth.get(rule.id) ?? none, `${item.id} → ${rule.id}`).toBe(a);
+        } else {
+          expect(d?.reason.trim(), `${item.id} → ${rule.id} has a written decision`).toBeTruthy();
+          expect(truth.get(rule.id) ?? none, `${item.id} → ${rule.id}`).toBe(d!.decision);
+        }
+      }
+    }
+    expect(decided.size).toBe(cells.filter(([a, b]) => a !== b).length);
+    // The agreement figures recorded beside the decisions are the labels' own.
+    const applies = cells.map(([a, b]) => [String(a !== none), String(b !== none)] as const);
+    expect(cohensKappa(applies)).toBeCloseTo(adjudication.agreement.applicability.kappa, 3);
+    expect(cohensKappa(cells)).toBeCloseTo(adjudication.agreement.fourWay.kappa, 3);
+  });
+
+  it("records the blind procedure, both labellers, the agreement, each adjudication and the tuning rule", async () => {
+    const annotation = await fs.readFile(path.join(HELD_OUT_DIR, "ANNOTATION.md"), "utf8");
+    const adjudication = await readJson<AdjudicationFile>("labelling/adjudication.json");
+    expect(annotation).toMatch(/did not open\s+`server\/src\/lib\/governing\/\*\*`/);
+    expect(annotation).toMatch(/Labeller 1 \(the author\)/);
+    expect(annotation).toMatch(/Labeller 2 labelled them blind/);
+    expect(annotation).toContain(`**${adjudication.agreement.applicability.kappa.toFixed(2)}**`);
+    for (const d of adjudication.disagreements) {
+      expect(annotation).toContain(`| ${d.item} → ${d.rule} |`);
+    }
+    expect(annotation).toMatch(/No arm has run on this set/);
+    expect(annotation).toMatch(/never iterate a prompt against this set/i);
+    expect(annotation).toMatch(/## Readings/);
+  });
+});
+
+describe("the sets' purposes and the content hash (#2024)", () => {
+  it("marks governing-01 as the tuning set, which needs no hash", async () => {
+    const { manifest, files } = await committed();
+    expect(manifest.purpose).toBe("tuning");
+    expect(manifest.contentHash).toBeUndefined();
+    expect(validateGoverningCorpus(manifest, files)).toEqual([]);
+  });
+
+  it("FAILS on a held-out set whose items, rules or policy changed after the hash was recorded", async () => {
+    const { manifest, files } = await heldOut();
+    const edited = clone(manifest);
+    edited.items[0]!.applies[0]!.verdict = "gap";
+    expect(validateGoverningCorpus(edited, files).join("\n")).toMatch(
+      /content hash: the policy, rules or items no longer match the recorded hash/,
+    );
+    const summary = clone(manifest);
+    summary.rules[0]!.summary = `${summary.rules[0]!.summary} Always.`;
+    expect(validateGoverningCorpus(summary, files).join("\n")).toMatch(/content hash/);
+    const policies = new Map(files.policies);
+    policies.set("v2", `${policies.get("v2")}\nA new closing line.\n`);
+    expect(validateGoverningCorpus(manifest, { ...files, policies }).join("\n")).toMatch(
+      /content hash/,
+    );
+  });
+
+  it("hashes a CRLF checkout the same, and leaves the annotation and thresholds outside the hash", async () => {
+    const { manifest, files } = await heldOut();
+    const crlf = new Map([...files.policies].map(([k, v]) => [k, v.replace(/\n/g, "\r\n")]));
+    expect(governingContentHash(manifest, crlf)).toBe(manifest.contentHash!.value);
+    const reviewed = clone(manifest);
+    reviewed.annotation.reviewedBy = "a person";
+    expect(governingContentHash(reviewed, files.policies)).toBe(manifest.contentHash!.value);
+  });
+
+  it("FAILS on a held-out set with no hash or an unknown algorithm, and on an unknown purpose", async () => {
+    const { manifest, files } = await heldOut();
+    const bare = clone(manifest);
+    delete bare.contentHash;
+    expect(validateGoverningCorpus(bare, files)).toEqual([
+      "a held-out set must record its content hash",
+    ]);
+    const md5 = clone(manifest);
+    (md5.contentHash as { algorithm: string }).algorithm = "md5";
+    expect(validateGoverningCorpus(md5, files)).toEqual(['content hash: unknown algorithm "md5"']);
+    const odd = clone(manifest);
+    (odd as { purpose: string }).purpose = "scratch";
+    expect(validateGoverningCorpus(odd, files)).toContain(
+      'purpose "scratch" is not one of tuning, held-out',
+    );
+  });
+
+  it("FAILS on a BA answer on a pair that is not needs-ba-input, or an empty one", async () => {
+    const { manifest, files } = await committed();
+    const m = clone(manifest);
+    const gap = m.items.flatMap((i) => i.applies).find((p) => p.verdict === "gap")!;
+    gap.baAnswer = "Yes, we do.";
+    const ask = m.items.flatMap((i) => i.applies).find((p) => p.verdict === "needs-ba-input")!;
+    ask.baAnswer = "  ";
+    const problems = validateGoverningCorpus(m, files);
+    expect(problems.some((p) => p.endsWith(`${gap.ruleId}: a BA answer on a gap pair`))).toBe(true);
+    expect(problems.some((p) => p.endsWith(`${ask.ruleId}: an empty BA answer`))).toBe(true);
   });
 });
 

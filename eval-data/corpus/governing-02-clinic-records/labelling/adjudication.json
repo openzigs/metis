@@ -1,0 +1,152 @@
+{
+  "adjudicator": "third pass: claude-opus-5-5 through `claude -p`, no tools, given policy-v1 and each disagreement with the two labels in a seeded random A/B order (adjudication-prompt.txt); it was not told which labeller wrote which label, and saw no arm",
+  "costUsd": 0.1133,
+  "agreement": {
+    "cells": 1440,
+    "labeller1Pairs": 38,
+    "labeller2Pairs": 37,
+    "unionPairs": 40,
+    "bothListed": 35,
+    "sameVerdict": 31,
+    "applicability": {
+      "observed": 0.9965,
+      "chance": 0.9493,
+      "kappa": 0.932
+    },
+    "fourWay": {
+      "observed": 0.9938,
+      "chance": 0.9489,
+      "kappa": 0.878
+    },
+    "pairAgreementOnUnion": 0.775,
+    "negativeItemsAgreed": 6
+  },
+  "disagreements": [
+    {
+      "item": "KV-01",
+      "rule": "RA-01",
+      "labeller1": "needs-ba-input",
+      "labeller2": "gap",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "A": "gap",
+      "B": "needs-ba-input",
+      "decision": "needs-ba-input",
+      "reason": "A patient who 'rings in' creates a care relationship, because the doctor is 'acting on a... message about them', so the stated use fits RA-01. The requirement does not say whether opening charts outside 'today's bookings' is limited to that case or gated by RA-02 emergency access."
+    },
+    {
+      "item": "KV-01",
+      "rule": "RA-02",
+      "labeller1": "needs-ba-input",
+      "labeller2": "gap",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "A": "needs-ba-input",
+      "B": "gap",
+      "decision": "needs-ba-input",
+      "reason": "The requirement opens 'anyone registered' to covering doctors but says nothing about requiring a typed reason or privacy-officer review when there is no current care relationship. One fact settles it: whether the access path includes the RA-02 reason prompt."
+    },
+    {
+      "item": "KV-05",
+      "rule": "IR-04",
+      "labeller1": "does not apply",
+      "labeller2": "needs-ba-input",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "A": "needs-ba-input",
+      "B": "does not apply",
+      "decision": "needs-ba-input",
+      "reason": "A screen that 'suggests the millilitres per kilo' changes what clinicians see on screen, so IR-04 applies. The requirement says nothing about a clinical safety officer assessment before release."
+    },
+    {
+      "item": "KV-14",
+      "rule": "CM-01",
+      "labeller1": "needs-ba-input",
+      "labeller2": "does not apply",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "A": "needs-ba-input",
+      "B": "does not apply",
+      "decision": "needs-ba-input",
+      "reason": "The app lists 'every... test outcome for each child', so CM-01 applies. The requirement does not say whether results appear only after the ordering clinician has reviewed them, apart from routine normal results."
+    },
+    {
+      "item": "KV-19",
+      "rule": "CM-02",
+      "labeller1": "needs-ba-input",
+      "labeller2": "gap",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "A": "gap",
+      "B": "needs-ba-input",
+      "decision": "gap",
+      "reason": "The SMS 'should say what the visit is for, such as your diabetes review', which is clinical content beyond time and place. It goes to everyone, with no condition that the patient chose detailed messages."
+    },
+    {
+      "item": "KV-22",
+      "rule": "TP-04",
+      "labeller1": "needs-ba-input",
+      "labeller2": "does not apply",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "A": "needs-ba-input",
+      "B": "does not apply",
+      "decision": "does not apply",
+      "reason": "The requirement covers telling the IT desk so 'a replacement can be ordered'. It specifies nothing about device encryption or remote-wipe capability, so linking it to TP-04 is a stretch."
+    },
+    {
+      "item": "KV-28",
+      "rule": "TP-04",
+      "labeller1": "needs-ba-input",
+      "labeller2": "does not apply",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "A": "does not apply",
+      "B": "needs-ba-input",
+      "decision": "needs-ba-input",
+      "reason": "Visit lists with 'names, addresses and conditions' would be opened on 'the van's laptop', which is a laptop used for clinical work, so TP-04 applies. The requirement does not say whether that laptop encrypts its storage and can be wiped remotely."
+    },
+    {
+      "item": "KV-33",
+      "rule": "CM-02",
+      "labeller1": "needs-ba-input",
+      "labeller2": "gap",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "A": "gap",
+      "B": "needs-ba-input",
+      "decision": "gap",
+      "reason": "Referral letters are 'emailed to the patient directly' so patients 'have the details of their referral', which is clinical content. There is no condition that the patient opted into detailed messages."
+    },
+    {
+      "item": "KV-34",
+      "rule": "IR-04",
+      "labeller1": "does not apply",
+      "labeller2": "needs-ba-input",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "A": "does not apply",
+      "B": "needs-ba-input",
+      "decision": "needs-ba-input",
+      "reason": "Adding a 'report a near miss' button to the prescribing screen changes what clinicians see on screen, so IR-04 applies. The requirement says nothing about a clinical safety officer assessment or a hazard log entry."
+    }
+  ]
+}
