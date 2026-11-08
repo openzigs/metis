@@ -2537,6 +2537,22 @@ governing:extract-recall` runs the same extraction over the #1867 policy and rep
 against its obligation list. `--record` saves the replies as the fixture the unit tests
 replay (`lib/governing/__fixtures__/`).
 
+#### Workspace page (#1871)
+
+`ui/src/app/(authed)/workspaces/[id]/governing/` renders
+`components/governing/governing-documents-panel.tsx` over `ui/src/lib/governing-api.ts`. The
+workspace nav shows its **Governing documents** tab only once the list route answers
+(`useGoverningTabVisible`), so a 404 (flag off) hides it. The list shows each document's
+current revision: label, effective date, extraction state (a `failed` one with its
+`extractionError`, plus Retry extraction and Re-upload for an admin), rule count and
+`droppedUnverified`, and re-reads every 5 s while an extraction is `pending` or `running`.
+Selecting a document shows its rules (a revision picker once it has more than one); a row
+expands to the verbatim `clauseExcerpt`. Upload, New revision, Retry, Edit and Remove render
+for a workspace `owner`/`admin` or a deployment admin (`canManageGoverning`, from
+`GET /api/workspaces/:id`'s members), which is the server's `requireWorkspaceRole("admin")`
+rule; a member sees the same list and rules without them. The upload dialog runs the project
+uploader's `clientValidate`, so a file is refused with the same size and type messages.
+
 ---
 
 ## 11. Publishing Workflow
