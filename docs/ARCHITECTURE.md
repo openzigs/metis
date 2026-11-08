@@ -1003,10 +1003,13 @@ invalidates the cached lists under `['similar-requirements', projectId]` whose i
 the borrowing requirement, because those cards list it with its code links (#1903), and only
 those (#1914, a `predicate` on the prefix): every other list, its own card's included, is
 unchanged by the borrow, and each refetch reads the project's requirements and may call the
-`REQ_SIMILARITY_VERIFIER` model. A list with no answer yet is refetched too (#1931): its first
-fetch may have read the links before the borrow committed, and since React Query joins an
-in-flight fetch of a query with no data rather than restarting it, the panel cancels that fetch
-(`cancelQueries`) before invalidating. The client preview
+`REQ_SIMILARITY_VERIFIER` model. A list whose first fetch is in flight as the borrow answers is
+refetched too (#1931): that fetch may have read the links before the borrow committed, and
+since React Query joins an in-flight fetch of a query with no data rather than restarting it,
+the panel cancels that fetch (`cancelQueries`) before invalidating. Only those (#1945): the set
+is taken when the borrow's response arrives, so a first fetch a card starts afterwards (it read
+the committed links) is left alone, and a list whose fetch failed is not retried by a borrow,
+since it shows no links the borrow could change. The client preview
 (`borrowPlan`) and the server's borrow read the one `BORROWABLE_FRESHNESS` set from
 `@metis/shared`, so the preview cannot list a link the borrow would skip; and the one
 duplicate rule, `borrowDuplicateCheck` (same file and symbol under any source, or a file the

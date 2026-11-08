@@ -48,7 +48,11 @@ vi.mock("../src/lib/rag/embedder.js", async (original) => ({
   getEmbedder: () => ({
     model: state.embedModel,
     // The full identity (`model|pooling`, #792) differs from the bare model.
-    currentIdentity: async () => `${state.embedModel}|${state.embedPooling}`,
+    knownIdentity: () => `${state.embedModel}|${state.embedPooling}`,
+    // #1944 — the version must not probe the sidecar for its identity.
+    currentIdentity: async () => {
+      throw new Error("content version probed the embedder");
+    },
   }),
 }));
 

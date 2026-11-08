@@ -1059,10 +1059,12 @@ model Document {
   /// Issue #1864 — set by Prisma on every create and update (null on rows
   /// written before the column existed, until their next update). The
   /// project content version (`projects/content-version.ts`) reads the
-  /// project's row count, the latest value and the rows written just before
-  /// it, instead of hashing every document row on each cached tool call. The
-  /// row-lock touches (`updateMany({ data: { id } })`) stamp it too; that only
-  /// costs an extra cache miss, never a stale hit.
+  /// project's row count, the latest value and the rows written in the last
+  /// minute (#1944), instead of hashing every document row on each cached tool
+  /// call. The row-lock touches (`updateMany({ data: { id } })` in
+  /// `rag/quarantine.ts` and `rag/knowledge-service.ts`) stamp it too, so they
+  /// move the content version: that only costs an extra cache miss, never a
+  /// stale hit.
   updatedAt          DateTime? @updatedAt
 
   project    Project @relation(fields: [projectId], references: [id], onDelete: Cascade)

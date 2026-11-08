@@ -158,6 +158,24 @@ describe("RemoteEmbedder identity (#792) — the WIRE value, not a guess", () =>
     expect(calls).toHaveLength(2);
   });
 
+  it("#1944 knownIdentity() never probes: null before the first embed, the wire value after", async () => {
+    process.env.EMBEDDINGS_TOKEN = "t";
+    const { createBackend } = await import("../src/lib/rag/embedder-registry.js");
+    await import("../src/lib/rag/embedder.js");
+    const { client, calls } = fakeClient({ pooling: "mean", dtype: "fp32" });
+    const backend = createBackend({
+      backend: "sidecar",
+      model: GTE,
+      dimension: 3,
+      client: client as never,
+    });
+    expect(backend.knownIdentity?.()).toBeNull();
+    expect(calls).toHaveLength(0);
+    await backend.embed(["q"]);
+    expect(backend.knownIdentity?.()).toBe(`${GTE}|mean|fp32`);
+    expect(calls).toHaveLength(1);
+  });
+
   it("falls back to the bare model id when the sidecar echoes nothing (pre-#782)", async () => {
     process.env.EMBEDDINGS_TOKEN = "t";
     const { createBackend } = await import("../src/lib/rag/embedder-registry.js");
@@ -187,5 +205,32 @@ describe("Embedder.currentIdentity() façade (#792)", () => {
     const { Embedder } = await import("../src/lib/rag/embedder.js");
     const embedder = new Embedder({ backend: "offline" });
     expect(await embedder.currentIdentity()).toBe(embedder.model);
+  });
+
+  it("#1944 knownIdentity() is the backend's identity without I/O, else the bare model id", async () => {
+    process.env.EMBED_POOLING_MAP = `${GTE}=mean`;
+    mockRuntime();
+    const { Embedder } = await import("../src/lib/rag/embedder.js");
+    expect(new Embedder({ backend: "xenova", model: GTE, dimension: 768 }).knownIdentity()).toBe(
+      `${GTE}|mean|q8`,
+    );
+    const offline = new Embedder({ backend: "offline" });
+    expect(offline.knownIdentity()).toBe(offline.model);
+  });
+
+  it("#1944 knownIdentity() on the sidecar: the bare model before the first embed, sending nothing", async () => {
+    process.env.EMBEDDINGS_TOKEN = "t";
+    const { Embedder } = await import("../src/lib/rag/embedder.js");
+    const { client, calls } = fakeClient({ pooling: "mean", dtype: "fp32" });
+    const embedder = new Embedder({
+      backend: "sidecar",
+      model: GTE,
+      dimension: 3,
+      client: client as never,
+    });
+    expect(embedder.knownIdentity()).toBe(GTE);
+    expect(calls).toHaveLength(0);
+    await embedder.embed(["q"]);
+    expect(embedder.knownIdentity()).toBe(`${GTE}|mean|fp32`);
   });
 });
