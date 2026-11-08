@@ -16,6 +16,7 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
   EmptyState,
+  PAGE_HEADER_TEXT_COLUMN_CLASS,
   PAGE_HEADER_UNFLOORED_CLASS,
   PAGE_HEADER_WITH_ACTIONS_CLASS,
   PAGE_TITLE_CLASS,
@@ -147,6 +148,35 @@ describe("PageHeader (#270)", () => {
       const column = screen.getByRole("heading", { level: 1 }).parentElement;
       expect(column?.children).toHaveLength(1);
       expect(container.getElementsByClassName(PAGE_HEADER_UNFLOORED_CLASS)).toHaveLength(0);
+    });
+
+    // #1985 — contained, the description lays out at the column's width, but
+    // an unbreakable token still overflowed its `<p>` and painted over the
+    // actions. The column breaks it (`break-word`, which leaves min-content,
+    // and so the title row's floor, as it was).
+    it("breaks a long token inside the text column, not over the actions", () => {
+      renderWithActions();
+      const description = screen.getByText(`Description ${TOKEN}`);
+      const column = description.parentElement;
+      expect(column).toHaveClass(...PAGE_HEADER_TEXT_COLUMN_CLASS.split(" "));
+      expect(PAGE_HEADER_TEXT_COLUMN_CLASS.split(" ")).toEqual(
+        expect.arrayContaining(["min-w-0", "break-words"]),
+      );
+      expect(column).toBe(screen.getByRole("heading", { level: 1 }).parentElement?.parentElement);
+    });
+
+    it("hides the children wrapper when a child element renders nothing", () => {
+      function Nothing() {
+        return null;
+      }
+      const { container } = render(
+        <PageHeader title="Chat" actions={<button type="button">New chat</button>}>
+          <Nothing />
+        </PageHeader>,
+      );
+      const wrapper = container.querySelector(`.${CSS.escape(PAGE_HEADER_UNFLOORED_CLASS)}`);
+      expect(wrapper).toBeEmptyDOMElement();
+      expect(wrapper).toHaveClass("empty:hidden");
     });
   });
 

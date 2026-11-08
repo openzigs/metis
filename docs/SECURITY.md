@@ -74,6 +74,7 @@ IdP-verified e-mail equal to the account's; a disabled or deleted account is ref
 | AI chat / stream | 60 / 15min / user | `AI_RATE_LIMIT_*` |
 | Connector mutations | 30 / 5min / user | `CONNECTOR_RATE_LIMIT_*` |
 | Document upload | 10 / 1min / user | `UPLOAD_RATE_LIMIT_*` |
+| Governing rule-extraction retry (#1985) | the document upload limit, counted apart from uploads | `UPLOAD_RATE_LIMIT_*` |
 | Scheduler `runNow` | 10 / 5min / user | `SCHEDULER_RUN_RATE_LIMIT_*` |
 | Project code search | 300 / 15min / user | `CODE_SEARCH_RATE_LIMIT_*` |
 | Traceability test gaps / workspace summary | 300 / 15min / user | `TRACEABILITY_GAPS_RATE_LIMIT_*` |

@@ -51,7 +51,9 @@ vi.mock("../lib/documents/storage.js", () => ({
     write: vi.fn(async () => ({ storagePath: "p/a.md", checksum: "c", sizeBytes: 5 })),
   }),
 }));
-vi.mock("../lib/documents/upload.js", () => ({
+// The real module's other exports: the multipart reader reads its size message at import.
+vi.mock("../lib/documents/upload.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/documents/upload.js")>()),
   validateUpload: vi.fn(() => ({ ok: true, filename: "a.md", mimeType: "text/markdown" })),
 }));
 const fetchUrlForIngest = vi.hoisted(() => vi.fn());

@@ -223,6 +223,8 @@ const recordJobScope = vi.hoisted(() =>
 vi.mock("../src/lib/socket/job-scope-store.js", () => ({ recordJobScope }));
 
 import request from "supertest";
+import { MAX_UPLOAD_ARCHIVE_BYTES } from "@metis/shared";
+import { MALFORMED_UPLOAD_MESSAGE } from "../src/middleware/document-file-upload.js";
 import { ingestCodeGraph } from "../src/lib/code-graph/ingest.js";
 import { createApp } from "../src/app.js";
 import { prisma } from "../src/lib/prisma.js";
@@ -353,6 +355,41 @@ describe("POST /repos/upload — write authZ + .zip enforcement", () => {
         contentType: "application/zip",
       });
     expect(res.status).toBe(400);
+    expect(createUploadRepoConnector).not.toHaveBeenCalled();
+  });
+
+  // #1985 — the archive route's Multer had no error mapping, so an archive over
+  // the cap reached the global handler as a 500.
+  it("answers an archive over the cap with 413 FILE_TOO_LARGE, not 500", async () => {
+    const token = await login("coordinator");
+    const res = await request(app)
+      .post("/api/projects/proj_1/connectors/repos/upload")
+      .set("Authorization", `Bearer ${token}`)
+      .field("label", "dropzone")
+      .attach("file", Buffer.alloc(MAX_UPLOAD_ARCHIVE_BYTES + 1), {
+        filename: "code.zip",
+        contentType: "application/zip",
+      });
+    expect(res.status).toBe(413);
+    expect(res.body.error).toMatchObject({
+      code: "FILE_TOO_LARGE",
+      message: "The archive is larger than 50 MB",
+    });
+    expect(createUploadRepoConnector).not.toHaveBeenCalled();
+  });
+
+  it("answers a truncated body with 400 UPLOAD_ERROR, not 500", async () => {
+    const token = await login("coordinator");
+    const res = await request(app)
+      .post("/api/projects/proj_1/connectors/repos/upload")
+      .set("Authorization", `Bearer ${token}`)
+      .set("Content-Type", "multipart/form-data; boundary=x")
+      .send('--x\r\nContent-Disposition: form-data; name="file"; filename="code.zip"\r\n\r\nPK');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatchObject({
+      code: "UPLOAD_ERROR",
+      message: MALFORMED_UPLOAD_MESSAGE,
+    });
     expect(createUploadRepoConnector).not.toHaveBeenCalled();
   });
 
