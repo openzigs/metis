@@ -712,6 +712,26 @@ describe("#1997 — the judging prompt's precision guidance", () => {
     // #1995's example read change management as a stretch and cost CM-02/CM-03 recall.
     expect(systemMessage).not.toMatch(/releasing every change/);
   });
+
+  // #2050 — on governing-01 the screen found EN-01 (GR-09), CM-02 (GR-20) and CM-03 (GR-21) in
+  // every run and the judge ruled each does-not-apply: a courier connection read as "platform
+  // encryption", and a release-process requirement as not "about" testing or undo. Cosmetic
+  // changes meanwhile drew CM-01 to CM-03 as "changes going live".
+  it("says which new thing brings in which platform-wide rule, and when the change rules apply", () => {
+    const { systemMessage } = buildApplicabilityJudgePrompt(REQUIREMENT.text, []);
+    expect(systemMessage).toContain(
+      "a new connection or copy that sends personal information to an outside company brings in encryption in transit",
+    );
+    expect(systemMessage).toContain(
+      "a new supplier brings in that supplier's review and its entry in the supplier register",
+    );
+    expect(systemMessage).toContain(
+      "Every requirement is a change that will reach production, and that alone does not bring in the rules on how changes reach production.",
+    );
+    expect(systemMessage).toContain(
+      "each of them applies (approval, testing, a way to undo), including the ones it does not mention",
+    );
+  });
 });
 
 describe("reply parsing", () => {
