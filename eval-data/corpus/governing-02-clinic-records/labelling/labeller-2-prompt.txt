@@ -1,0 +1,186 @@
+You are labelling requirements against a company policy, as a careful compliance analyst would.
+
+Below is a healthcare network's policy. Each numbered obligation is one rule; its reference
+is the bold text at the start of the paragraph (for example ID-01). After it come 36
+requirements written by business analysts for new or changed software.
+
+For EVERY requirement, list each rule that truly applies to it, with one verdict per rule:
+
+- "compliant": the requirement, as written, explicitly provides what the rule asks.
+- "gap": the requirement, built as written, would breach the rule.
+- "needs-ba-input": the rule applies, but the requirement is silent or ambiguous on it, and
+  one business fact would settle it.
+
+Rules for labelling:
+- Silence is never "compliant". If the requirement does not say it meets the rule, the
+  verdict is "gap" (if it would breach it as written) or "needs-ba-input" (if one fact settles it).
+- List a rule only when an independent reader would agree that it applies. Leave off rules
+  that only a stretch reading could attach.
+- A requirement may have no applicable rule at all; then its list is empty.
+- Judge against this policy only, as written. Do not assume anything the text does not say.
+
+Reply with ONE JSON object and nothing else, in exactly this shape:
+{"items": [{"id": "KV-01", "applies": [{"ruleId": "XX-00", "verdict": "gap", "reason": "one short sentence"}]}]}
+Include all 36 requirement ids, in the order given.
+
+=== POLICY ===
+# Kestrel Vale Health Partners — Patient Records and Clinical Safety Standard
+
+Standard KV-STD-3 · Revision: v1 · Effective: 2026-02-01 · Owner: Caldicott Guardian, with the Clinical Safety Officer
+
+## Purpose and scope
+
+Kestrel Vale Health Partners runs eleven community clinics, a minor injuries unit and a
+home-visiting nursing service. This standard applies to everyone who works for the network,
+including locum and agency staff, and to every system that holds or shows patient
+information, on paper or on screen.
+
+Each obligation below is binding. Its reference is the text in bold at the start of the
+paragraph; quote that reference when you raise a question about it.
+
+## Definitions
+
+- *Chart*: everything the network holds about one patient, in any system.
+- *Care relationship*: a clinician is in one while they are treating the patient, are booked
+  to see them, or are acting on a referral, result or message about them.
+- *Privacy officer*: the person the Caldicott Guardian names to oversee access to charts.
+- *Clinical safety officer*: the clinician accountable for the safety of clinical systems.
+
+## Part A — Knowing who the patient is
+
+**ID-01** Before a chart is opened for a patient who is present, staff confirm two identifiers with the patient: full name and date of birth.
+
+**ID-02** Two charts are combined into one only after two members of staff have each confirmed that they belong to the same person, and a combination can be undone for ninety days afterwards.
+
+**ID-03** At the start of every video or telephone consultation, the clinician confirms who they are speaking to with a one-time code sent to the mobile number held on the chart.
+
+**ID-04** A patient may be known by a preferred name, but their legal name remains on the chart and is the name printed on prescriptions and referral letters.
+
+**ID-05** A chart opened for a newborn carries a temporary identifier, which is replaced by the permanent national health number within fourteen days of birth.
+
+## Part B — Who may read a chart
+
+**RA-01** A clinician opens a patient's chart only while they are taking part in that patient's care, apart from the recorded emergency access that RA-02 allows.
+
+**RA-02** Opening the chart of a patient with whom the user has no current care relationship requires a reason typed before the chart opens, and every such opening is reviewed by the privacy officer within five working days.
+
+**RA-03** Reception and billing roles see contact, appointment and payment details only; they never see clinical notes, results or diagnoses.
+
+**RA-04** The charts of employees who are also patients, and of anyone the privacy officer marks as a public figure, are restricted, and each opening of a restricted chart is reported to the privacy officer on the same day.
+
+**RA-05** Computers in consulting rooms lock their screen after five minutes without keyboard or mouse input.
+
+## Part C — Consent and sharing
+
+**CS-01** Information about a patient leaves the network only with the patient's recorded consent, unless a law compels the disclosure.
+
+**CS-02** A patient may withdraw consent at any time, and the withdrawal applies to every disclosure made from one working day after it is received.
+
+**CS-03** Agreement to be contacted by text message or email is recorded on its own, apart from agreement to treatment.
+
+**CS-04** Nothing about a patient aged sixteen or seventeen is disclosed to a parent or guardian without the young person's agreement, unless the treating clinician records a safeguarding reason.
+
+**CS-05** Chart data used for research needs the approval of the ethics committee, and names, addresses and health numbers are removed before the data leaves the clinical system.
+
+## Part D — Medicines
+
+**MS-01** Every prescription is checked against the allergies recorded on the chart before it is issued, and overriding an allergy warning needs a reason entered by the prescriber.
+
+**MS-02** Controlled drugs are prescribed only by a clinician who holds the matching prescribing authority, and every controlled drug issued is entered in the controlled drugs register.
+
+**MS-03** A repeat prescription runs for at most twelve months before a clinician must review it.
+
+**MS-04** Doses for children are worked out from a weight measured within the previous thirty days.
+
+**MS-05** A medicine warning shown to a prescriber can be acknowledged for the prescription in hand only; it can never be switched off for later prescriptions.
+
+## Part E — Talking to patients
+
+**CM-01** A test result is released to the patient portal only once the clinician who ordered it has reviewed it, except results the laboratory marks as routine and normal.
+
+**CM-02** A text message or email to a patient says nothing clinical beyond the time and place of an appointment, unless the patient has chosen to receive detailed messages.
+
+**CM-03** Appointment reminders go out at least forty-eight hours before the appointment.
+
+**CM-04** A copy of every letter and message sent to a patient is kept on their chart.
+
+**CM-05** Any conversation that seeks consent from a patient who prefers a language other than English uses a qualified interpreter, never a relative or friend.
+
+## Part F — Keeping records
+
+**RK-01** An adult's chart is kept for eight years after the last contact with the network.
+
+**RK-02** A child's chart is kept until the patient's twenty-fifth birthday, or for eight years after their death if that comes first.
+
+**RK-03** A clinical entry is never deleted or overwritten; a correction is added as a new entry showing the original text, who corrected it and why.
+
+**RK-04** A patient's request for a copy of their own chart is answered within thirty calendar days.
+
+**RK-05** Paper documents scanned onto a chart are checked for legibility, and the paper is kept for three months before it is shredded.
+
+## Part G — When something goes wrong
+
+**IR-01** Any event that harmed a patient, or could have, is reported in the incident system within twenty-four hours of someone noticing it.
+
+**IR-02** A patient harmed by their care is told what happened by a senior clinician within ten working days.
+
+**IR-03** A fault in clinical software that affected care is reported to the clinical safety officer as an incident.
+
+**IR-04** Any change to a clinical system that alters what clinicians see on screen, or the order of steps in a clinical task, is assessed by the clinical safety officer before release, and the assessment is filed in the hazard log.
+
+**IR-05** A suspected loss or disclosure of patient information is reported to the privacy officer within four hours.
+
+## Part H — Suppliers and devices
+
+**TP-01** A company that will handle patient information for the network signs a data processing agreement before it receives any.
+
+**TP-02** Patient information is stored only in data centres located inside the country.
+
+**TP-03** A medical device is entered in the device inventory, with its owner and software version, before it is connected to the network.
+
+**TP-04** Laptops, tablets and phones used for clinical work encrypt their storage and can be wiped remotely.
+
+**TP-05** Patient information is not carried on USB drives or other removable media, except encrypted drives issued by the IT service desk.
+
+## Questions and exceptions
+
+An exception to any obligation is granted only in writing by the Caldicott Guardian, for a
+named system and a stated period. Raise questions with the privacy officer.
+
+=== REQUIREMENTS ===
+- KV-01 — Give covering doctors the full list: Doctors covering a shift should be able to pull up the notes of anyone registered at the practice, not just today's bookings, in case someone rings in.
+- KV-02 — Move bookings to the cheapest cloud region: Move the appointment system to our hosting supplier's cheapest cloud region, which is currently overseas.
+- KV-03 — Dark mode for the staff intranet: Add a dark colour scheme to the staff intranet, switchable from the page header.
+- KV-04 — Check two details before opening someone's file: When someone arrives at the minor injuries unit, the triage nurse asks for their full name and their date of birth, and opens the chart only once both match.
+- KV-05 — Paediatric syrup calculator: When a GP prescribes a syrup for a toddler, the screen suggests the millilitres per kilo from the latest figure on the growth chart.
+- KV-06 — Results straight to the app: Lab results appear in the patient app the moment the laboratory sends them, so people are not left waiting for a call.
+- KV-07 — Tidy up duplicate registrations: A single front-desk user can fold two registrations for one individual into a single entry when they notice a duplicate while searching, with no second check.
+- KV-08 — Asthma extract for the university study: Send the university's respiratory team a spreadsheet of every asthma patient with their name, home address, age and inhaler use, for a study our ethics committee approved last month.
+- KV-09 — Keep GPs signed in for the whole surgery: GPs find it slow to sign back in between each person they see, so the desktop should stay open and ready for the entire morning or afternoon session.
+- KV-10 — Parking details on the clinic finder: Show the nearest car park and its charges on each clinic's page of the public website.
+- KV-11 — Video appointments from home: Let people book a video appointment with their GP and join it from the link in their booking confirmation, without travelling to the clinic.
+- KV-12 — Stop nagging GPs about combinations they already know: A GP who keeps seeing the same interaction pop-up for a long-standing combination can tick 'don't remind me again' for that person.
+- KV-13 — One tick box at registration: The new registration form has a single tick box reading 'I agree to treatment and to be contacted by email and text'.
+- KV-14 — Mums and dads can follow their kids' bookings: The family account in the app lists every booking and test outcome for each child linked to it, up to the age of eighteen.
+- KV-15 — Faster prescribing in the minor injuries unit: Nurse prescribers in the minor injuries unit can skip the allergy screen with one click when the queue is long.
+- KV-16 — Clear the post room the same day: Once incoming hospital letters have been photographed into the system, the admin team bin the originals that afternoon to free up space.
+- KV-17 — New brand colours on the website: Update the public website's buttons, fonts and logo to the network's new brand guidelines.
+- KV-18 — Emergency access to notes outside your list: A clinician who opens the notes of someone they are not treating must first type why; the privacy officer then gets each such case to review, and must close it within five working days.
+- KV-19 — Say why they are coming in the SMS nudge: The SMS sent the day before should say what the visit is for, such as 'your diabetes review' or 'your smear test', so fewer people forget.
+- KV-20 — Two-year repeats for blood pressure tablets: People on long-term blood pressure tablets get a repeat that runs for two years, so they do not have to book a medication review every year.
+- KV-21 — Use the name people prefer everywhere: Print the name a patient likes to be called on everything we produce for them, prescriptions and hospital referral letters included.
+- KV-22 — Replacing a lost work phone: If a clinician loses their work phone, they tell the IT desk on the next working day so a replacement can be ordered.
+- KV-23 — A son or daughter translates before a minor operation: When the person only speaks Polish, their son or daughter can translate the risks of a minor operation and sign the form alongside them.
+- KV-24 — Bank holiday opening hours: Let clinic managers enter bank holiday opening hours, which then appear on the public website's clinic pages.
+- KV-25 — Keep the history when a note is corrected: When a clinician corrects a consultation note, the system keeps the original wording alongside the new version, records who made the change and asks them for a reason.
+- KV-26 — Connect the new ECG machine: Plug the new ECG machine in the treatment room into the network so traces go straight onto the chart.
+- KV-27 — Clear out old adult charts: Delete adult charts automatically five years after the person's last visit, to cut storage costs.
+- KV-28 — Day list on a memory stick for the outreach van: The outreach nurses want to copy the day's visit list, with names, addresses and conditions, onto a memory stick so they can open it on the van's laptop where signal is poor.
+- KV-29 — Show reception the reason for the last visits: When someone checks in, show the receptionist their last three diagnoses so they can book the right length of follow-up appointment.
+- KV-30 — Canteen menu on the intranet: Publish the weekly staff canteen menu on the intranet home page.
+- KV-31 — Move the allergies panel to a tab: Move the allergies panel from the top of the consultation screen into a tab, to give clinicians more room for their notes.
+- KV-32 — Ask for your notes online: Patients can request their notes through the website, and the records team will post a printed copy within six weeks.
+- KV-33 — Email referral letters straight to patients: Letters made with the new referral template are emailed to the patient directly from the template tool, so they have the details of their referral before the hospital calls.
+- KV-34 — Near-miss button on the prescribing screen: Add a 'report a near miss' button to the prescribing screen that saves a draft the pharmacist submits to the incident system at the end of each week.
+- KV-35 — Laptops for community nurses: Issue each community nurse a laptop whose disk is encrypted and which IT can erase remotely if it goes missing.
+- KV-36 — Reorder the website's frequently asked questions: Group the public website's frequently asked questions by topic and put the most-read ones first.

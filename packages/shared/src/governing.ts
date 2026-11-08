@@ -223,6 +223,8 @@ export const governingFindingSchema = z.object({
   decision: z.enum(GOVERNING_FINDING_DECISIONS).nullable(),
   decisionNote: z.string().nullable(),
   decidedById: id.nullable(),
+  /** #1876 — the decider's display name; null when undecided or the user is gone. */
+  decidedByName: z.string().nullable(),
   decidedAt: timestamp.nullable(),
   createdAt: timestamp,
   updatedAt: timestamp,

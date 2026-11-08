@@ -10,6 +10,8 @@ import type { GoverningAnalysisApplicability, GoverningFinding } from "@metis/sh
 const db = vi.hoisted(() => ({
   project: { findFirst: vi.fn() },
   governingFinding: { findMany: vi.fn(), deleteMany: vi.fn(), upsert: vi.fn() },
+  governingRule: { count: vi.fn() },
+  user: { findMany: vi.fn() },
   auditLog: { create: vi.fn() },
   $transaction: vi.fn(),
 }));
@@ -29,6 +31,7 @@ vi.mock("./findings.js", () => ({
 
 const {
   GOVERNING_FINDINGS_WRITE_TIMEOUT_MS,
+  governingFindingRevisions,
   governingFindingsRefreshing,
   produceGoverningFindingsForAnalysis,
   summariseFindings,
@@ -585,8 +588,100 @@ describe("listGoverningFindings — the wire shape", () => {
       modelStatus: null,
       decision: null,
       decidedAt: null,
+      decidedByName: null,
       createdAt: at.toISOString(),
     });
+    // No finding was decided, so no user was looked up.
+    expect(db.user.findMany).not.toHaveBeenCalled();
+  });
+
+  it("#1876 — a decided finding carries its decider's display name, or the username without one; a gone user reads null", async () => {
+    const { listGoverningFindings } = await import("./findings-store.js");
+    const at = new Date("2026-11-08T00:00:00.000Z");
+    const row = (id: string, decidedById: string | null) => ({
+      id,
+      analysisId: "a",
+      requirementId: "REQ-001",
+      ruleId: `r-${id}`,
+      revisionId: "rev",
+      revisionLabel: "v1",
+      documentTitle: "Doc",
+      controlId: "C-1",
+      clauseRef: "§1",
+      status: "gap",
+      reasoning: "r",
+      clauseStart: null,
+      clauseEnd: null,
+      clauseExcerpt: null,
+      citationDropped: false,
+      modelStatus: null,
+      businessQuestion: null,
+      decision: decidedById ? "rejected" : null,
+      decisionNote: null,
+      decidedById,
+      decidedAt: decidedById ? at : null,
+      createdAt: at,
+      updatedAt: at,
+    });
+    db.governingFinding.findMany.mockResolvedValueOnce([
+      row("f1", "u1"),
+      row("f2", "u2"),
+      row("f3", "u1"),
+      row("f4", "gone"),
+      row("f5", null),
+    ]);
+    db.user.findMany.mockResolvedValueOnce([
+      { id: "u1", displayName: "Ada Lovelace", username: "ada" },
+      { id: "u2", displayName: "  ", username: "grace" },
+    ]);
+    const out = await listGoverningFindings("a");
+    expect(db.user.findMany).toHaveBeenCalledWith({
+      where: { id: { in: ["u1", "u2", "gone"] } },
+      select: { id: true, displayName: true, username: true },
+    });
+    expect(out.map((f) => f.decidedByName)).toEqual([
+      "Ada Lovelace",
+      "grace",
+      "Ada Lovelace",
+      null,
+      null,
+    ]);
+  });
+});
+
+describe("governingFindingRevisions (#1876)", () => {
+  const f = (over: Partial<GoverningFinding>): GoverningFinding =>
+    ({
+      revisionId: "rev-1",
+      documentTitle: "Policy",
+      revisionLabel: "v1",
+      ruleId: "r1",
+      ...over,
+    }) as GoverningFinding;
+
+  it("one entry per cited revision, in first-cited order, with its live rules plus any cited rule since deleted", async () => {
+    db.governingRule.count.mockResolvedValueOnce(12).mockResolvedValueOnce(3);
+    const out = await governingFindingRevisions([
+      f({ ruleId: "r1" }),
+      f({ ruleId: "r2" }),
+      f({ ruleId: "r1", requirementId: "REQ-002" }),
+      f({ revisionId: "rev-2", documentTitle: "Retention", revisionLabel: "v4", ruleId: "r9" }),
+    ]);
+    expect(out).toEqual([
+      { revisionId: "rev-1", documentTitle: "Policy", revisionLabel: "v1", rules: 12 },
+      { revisionId: "rev-2", documentTitle: "Retention", revisionLabel: "v4", rules: 3 },
+    ]);
+    expect(db.governingRule.count).toHaveBeenNthCalledWith(1, {
+      where: { revisionId: "rev-1", OR: [{ deletedAt: null }, { id: { in: ["r1", "r2"] } }] },
+    });
+    expect(db.governingRule.count).toHaveBeenNthCalledWith(2, {
+      where: { revisionId: "rev-2", OR: [{ deletedAt: null }, { id: { in: ["r9"] } }] },
+    });
+  });
+
+  it("no findings: no revisions and no query", async () => {
+    expect(await governingFindingRevisions([])).toEqual([]);
+    expect(db.governingRule.count).not.toHaveBeenCalled();
   });
 });
 

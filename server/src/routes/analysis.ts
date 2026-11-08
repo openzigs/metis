@@ -52,6 +52,7 @@ import {
 import { readGoverningApplicability } from "../lib/governing/applicability-store.js";
 import {
   decideGoverningFinding,
+  governingFindingRevisions,
   governingFindingsRefreshing,
   listGoverningFindings,
   summariseFindings,
@@ -985,6 +986,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         ok({
           findings,
           summary: summariseFindings(findings),
+          // #1876 — each cited revision's rule count, for the analysis view's summary sentence.
+          revisions: await governingFindingRevisions(findings),
           refreshing: governingFindingsRefreshing(analysisId),
         }),
       );

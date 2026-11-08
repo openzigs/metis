@@ -1,0 +1,350 @@
+{
+  "adjudicator": "third pass: claude-opus-5-5 through `claude -p`, no tools, given policy-v1 and each disagreement with the two labels in a seeded random A/B order (adjudication-prompt.txt); it was not told which labeller wrote which label, and saw no arm",
+  "costUsd": 0.1133,
+  "agreement": {
+    "cells": 1440,
+    "labeller1Pairs": 38,
+    "labeller2Pairs": 37,
+    "unionPairs": 40,
+    "bothListed": 35,
+    "sameVerdict": 31,
+    "applicability": {
+      "observed": 0.9965,
+      "chance": 0.9493,
+      "kappa": 0.932
+    },
+    "fourWay": {
+      "observed": 0.9938,
+      "chance": 0.9489,
+      "kappa": 0.878
+    },
+    "pairAgreementOnUnion": 0.775,
+    "negativeItemsAgreed": 6
+  },
+  "disagreements": [
+    {
+      "item": "KV-01",
+      "rule": "RA-01",
+      "labeller1": "needs-ba-input",
+      "labeller2": "gap",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "A": "gap",
+      "B": "needs-ba-input",
+      "decision": "needs-ba-input",
+      "reason": "A patient who 'rings in' creates a care relationship, because the doctor is 'acting on a... message about them', so the stated use fits RA-01. The requirement does not say whether opening charts outside 'today's bookings' is limited to that case or gated by RA-02 emergency access."
+    },
+    {
+      "item": "KV-01",
+      "rule": "RA-02",
+      "labeller1": "needs-ba-input",
+      "labeller2": "gap",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "A": "needs-ba-input",
+      "B": "gap",
+      "decision": "needs-ba-input",
+      "reason": "The requirement opens 'anyone registered' to covering doctors but says nothing about requiring a typed reason or privacy-officer review when there is no current care relationship. One fact settles it: whether the access path includes the RA-02 reason prompt."
+    },
+    {
+      "item": "KV-05",
+      "rule": "IR-04",
+      "labeller1": "does not apply",
+      "labeller2": "needs-ba-input",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "A": "needs-ba-input",
+      "B": "does not apply",
+      "decision": "needs-ba-input",
+      "reason": "A screen that 'suggests the millilitres per kilo' changes what clinicians see on screen, so IR-04 applies. The requirement says nothing about a clinical safety officer assessment before release."
+    },
+    {
+      "item": "KV-14",
+      "rule": "CM-01",
+      "labeller1": "needs-ba-input",
+      "labeller2": "does not apply",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "A": "needs-ba-input",
+      "B": "does not apply",
+      "decision": "needs-ba-input",
+      "reason": "The app lists 'every... test outcome for each child', so CM-01 applies. The requirement does not say whether results appear only after the ordering clinician has reviewed them, apart from routine normal results."
+    },
+    {
+      "item": "KV-19",
+      "rule": "CM-02",
+      "labeller1": "needs-ba-input",
+      "labeller2": "gap",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "A": "gap",
+      "B": "needs-ba-input",
+      "decision": "gap",
+      "reason": "The SMS 'should say what the visit is for, such as your diabetes review', which is clinical content beyond time and place. It goes to everyone, with no condition that the patient chose detailed messages."
+    },
+    {
+      "item": "KV-22",
+      "rule": "TP-04",
+      "labeller1": "needs-ba-input",
+      "labeller2": "does not apply",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "A": "needs-ba-input",
+      "B": "does not apply",
+      "decision": "does not apply",
+      "reason": "The requirement covers telling the IT desk so 'a replacement can be ordered'. It specifies nothing about device encryption or remote-wipe capability, so linking it to TP-04 is a stretch."
+    },
+    {
+      "item": "KV-28",
+      "rule": "TP-04",
+      "labeller1": "needs-ba-input",
+      "labeller2": "does not apply",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "A": "does not apply",
+      "B": "needs-ba-input",
+      "decision": "needs-ba-input",
+      "reason": "Visit lists with 'names, addresses and conditions' would be opened on 'the van's laptop', which is a laptop used for clinical work, so TP-04 applies. The requirement does not say whether that laptop encrypts its storage and can be wiped remotely."
+    },
+    {
+      "item": "KV-33",
+      "rule": "CM-02",
+      "labeller1": "needs-ba-input",
+      "labeller2": "gap",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "A": "gap",
+      "B": "needs-ba-input",
+      "decision": "gap",
+      "reason": "Referral letters are 'emailed to the patient directly' so patients 'have the details of their referral', which is clinical content. There is no condition that the patient opted into detailed messages."
+    },
+    {
+      "item": "KV-34",
+      "rule": "IR-04",
+      "labeller1": "does not apply",
+      "labeller2": "needs-ba-input",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "A": "does not apply",
+      "B": "needs-ba-input",
+      "decision": "needs-ba-input",
+      "reason": "Adding a 'report a near miss' button to the prescribing screen changes what clinicians see on screen, so IR-04 applies. The requirement says nothing about a clinical safety officer assessment or a hazard log entry."
+    }
+  ],
+  "consistencyPass": {
+    "why": "Adjudication saw only the cells the two labellers disagreed on, so a rule both labellers skipped on the same requirement was never checked. A rule that cuts across many requirements (IR-04, TP-04, CM-04, CM-02, CM-01, RA-02) was therefore applied unevenly: IR-04 sat on KV-05, KV-31 and KV-34 but not on KV-15 or KV-12. For each such rule one tool-less claude-opus-5-5 session was given the policy and all 36 requirements and asked about that one rule alone, on every requirement (consistency-prompt.txt). It saw no label, no rule summary and no arm. IR-04, CM-04 and TP-04, where the first pass disagreed with a standing label, were run a second time.",
+    "decisionRule": "A standing label changes only when both blind passes agree on the new label. A cell the passes split on keeps its standing label.",
+    "costUsd": 0.6918,
+    "rules": ["IR-04", "TP-04", "CM-04", "CM-02", "CM-01", "RA-02"],
+    "passesPerRule": {
+      "IR-04": 2,
+      "TP-04": 2,
+      "CM-04": 2,
+      "CM-02": 1,
+      "CM-01": 1,
+      "RA-02": 1
+    },
+    "blindLabels": {
+      "IR-04": [
+        {
+          "item": "KV-05",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-12",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-15",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-18",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-25",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-26",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-31",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-33",
+          "labels": ["needs-ba-input", "does not apply"]
+        },
+        {
+          "item": "KV-34",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        }
+      ],
+      "TP-04": [
+        {
+          "item": "KV-22",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-28",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-35",
+          "labels": ["compliant", "compliant"]
+        }
+      ],
+      "CM-04": [
+        {
+          "item": "KV-11",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-19",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        },
+        {
+          "item": "KV-32",
+          "labels": ["does not apply", "needs-ba-input"]
+        },
+        {
+          "item": "KV-33",
+          "labels": ["needs-ba-input", "needs-ba-input"]
+        }
+      ],
+      "CM-02": [
+        {
+          "item": "KV-19",
+          "labels": ["gap"]
+        },
+        {
+          "item": "KV-33",
+          "labels": ["gap"]
+        }
+      ],
+      "CM-01": [
+        {
+          "item": "KV-06",
+          "labels": ["gap"]
+        },
+        {
+          "item": "KV-14",
+          "labels": ["needs-ba-input"]
+        }
+      ],
+      "RA-02": [
+        {
+          "item": "KV-01",
+          "labels": ["needs-ba-input"]
+        },
+        {
+          "item": "KV-18",
+          "labels": ["compliant"]
+        }
+      ]
+    },
+    "changes": [
+      {
+        "item": "KV-12",
+        "rule": "IR-04",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "Suppressing interaction pop-ups changes what prescribers see, but the requirement is silent on a clinical safety officer assessment and hazard log entry."
+      },
+      {
+        "item": "KV-15",
+        "rule": "IR-04",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "Letting prescribers skip the allergy screen changes the order of steps in prescribing, but the requirement is silent on a clinical safety officer assessment before release."
+      },
+      {
+        "item": "KV-18",
+        "rule": "IR-04",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "Adding a mandatory reason prompt before a chart opens changes clinician screens and steps, but the requirement is silent on a clinical safety officer assessment and hazard log entry."
+      },
+      {
+        "item": "KV-25",
+        "rule": "IR-04",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "The note-correction workflow adds a reason prompt and shows version history, but the requirement is silent on a clinical safety officer assessment and hazard log entry."
+      },
+      {
+        "item": "KV-26",
+        "rule": "IR-04",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "ECG traces appearing on the chart change what clinicians see, but the requirement does not say whether the clinical safety officer assesses it before release."
+      },
+      {
+        "item": "KV-22",
+        "rule": "TP-04",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "Covers a lost clinical work phone but does not say whether the phone's storage is encrypted and can be wiped remotely."
+      },
+      {
+        "item": "KV-11",
+        "rule": "CM-04",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "A booking confirmation is sent to the patient, but it is not stated whether a copy is kept on the chart."
+      },
+      {
+        "item": "KV-19",
+        "rule": "CM-04",
+        "from": "does not apply",
+        "to": "needs-ba-input",
+        "blindPasses": ["needs-ba-input", "needs-ba-input"],
+        "reason": "An SMS reminder is sent to the patient, but it is not stated whether a copy is kept on the chart."
+      }
+    ],
+    "keptAsStanding": [
+      {
+        "item": "KV-33",
+        "rule": "IR-04",
+        "standing": "does not apply",
+        "blindPasses": ["needs-ba-input", "does not apply"],
+        "decision": "kept: the passes did not agree"
+      },
+      {
+        "item": "KV-32",
+        "rule": "CM-04",
+        "standing": "does not apply",
+        "blindPasses": ["does not apply", "needs-ba-input"],
+        "decision": "kept: the passes did not agree"
+      }
+    ]
+  }
+}

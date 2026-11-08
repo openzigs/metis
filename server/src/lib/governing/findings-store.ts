@@ -371,7 +371,23 @@ function oneOf<T extends string>(list: readonly T[], v: string | null): T | null
   return v !== null && (list as readonly string[]).includes(v) ? (v as T) : null;
 }
 
-function toWire(row: Row): GoverningFinding {
+/**
+ * #1876 — the display names of the users who decided `rows`, by id: the
+ * analysis view shows who rejected a finding. The display name, or the
+ * username when it is blank; a user who no longer exists is left out, so the
+ * finding reads `decidedByName: null` and keeps its `decidedById`.
+ */
+async function deciderNames(rows: readonly Row[]): Promise<Map<string, string>> {
+  const ids = [...new Set(rows.flatMap((r) => (r.decidedById ? [r.decidedById] : [])))];
+  if (ids.length === 0) return new Map();
+  const users = await prisma.user.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, displayName: true, username: true },
+  });
+  return new Map(users.map((u) => [u.id, u.displayName.trim() || u.username]));
+}
+
+function toWire(row: Row, names: ReadonlyMap<string, string>): GoverningFinding {
   return {
     id: row.id,
     analysisId: row.analysisId,
@@ -393,6 +409,7 @@ function toWire(row: Row): GoverningFinding {
     decision: oneOf(GOVERNING_FINDING_DECISIONS, row.decision),
     decisionNote: row.decisionNote,
     decidedById: row.decidedById,
+    decidedByName: row.decidedById ? (names.get(row.decidedById) ?? null) : null,
     decidedAt: row.decidedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -429,7 +446,44 @@ export async function listGoverningFindings(analysisId: string): Promise<Governi
     where: { analysisId },
     orderBy: [{ requirementId: "asc" }, { controlId: "asc" }, { id: "asc" }],
   });
-  return rows.map(toWire);
+  const names = await deciderNames(rows);
+  return rows.map((row) => toWire(row, names));
+}
+
+/** #1876 — one policy revision the findings cite, and how many rules it has. */
+export interface GoverningFindingRevision {
+  revisionId: string;
+  documentTitle: string;
+  revisionLabel: string;
+  /** The revision's live rules, plus any rule a finding cites that was deleted since. */
+  rules: number;
+}
+
+/**
+ * #1876 — every revision `findings` cite, in first-cited order, with its rule
+ * count: the "M" of the analysis view's "N of M applicable rules in <title>
+ * <label>" (`governingSummarySentence`). Counted on the cited revision, not
+ * the document's current one, as the findings themselves are (#1874).
+ */
+export async function governingFindingRevisions(
+  findings: readonly GoverningFinding[],
+): Promise<GoverningFindingRevision[]> {
+  const byRevision = new Map<string, { first: GoverningFinding; ruleIds: Set<string> }>();
+  for (const f of findings) {
+    const entry = byRevision.get(f.revisionId) ?? { first: f, ruleIds: new Set<string>() };
+    entry.ruleIds.add(f.ruleId);
+    byRevision.set(f.revisionId, entry);
+  }
+  return Promise.all(
+    [...byRevision].map(async ([revisionId, { first, ruleIds }]) => ({
+      revisionId,
+      documentTitle: first.documentTitle,
+      revisionLabel: first.revisionLabel,
+      rules: await prisma.governingRule.count({
+        where: { revisionId, OR: [{ deletedAt: null }, { id: { in: [...ruleIds] } }] },
+      }),
+    })),
+  );
 }
 
 /**
@@ -477,6 +531,6 @@ export async function decideGoverningFinding(input: {
         },
       }),
     });
-    return toWire(updated);
+    return toWire(updated, await deciderNames([updated]));
   });
 }

@@ -1,0 +1,368 @@
+{
+  "labeller": "labeller 1: claude-opus-5-5, the author of the policy and the requirements",
+  "labelledAgainst": "policy-v1.md",
+  "items": [
+    {
+      "id": "KV-01",
+      "applies": [
+        {
+          "ruleId": "RA-01",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Will covering doctors open only the notes of people they are seeing or acting for, apart from a recorded emergency access?"
+        },
+        {
+          "ruleId": "RA-02",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Will a covering doctor have to type a reason before opening the notes of someone not booked today, with each such opening reviewed by the privacy officer within five working days?"
+        }
+      ]
+    },
+    {
+      "id": "KV-02",
+      "applies": [
+        {
+          "ruleId": "TP-02",
+          "verdict": "gap"
+        },
+        {
+          "ruleId": "TP-01",
+          "verdict": "needs-ba-input",
+          "businessFact": "Do we have a signed data processing agreement with the hosting supplier?",
+          "baAnswer": "Yes, we do."
+        }
+      ]
+    },
+    {
+      "id": "KV-03",
+      "applies": []
+    },
+    {
+      "id": "KV-04",
+      "applies": [
+        {
+          "ruleId": "ID-01",
+          "verdict": "compliant"
+        }
+      ]
+    },
+    {
+      "id": "KV-05",
+      "applies": [
+        {
+          "ruleId": "MS-04",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Will the calculator refuse a growth-chart figure that is more than thirty days old?",
+          "baAnswer": "No."
+        }
+      ]
+    },
+    {
+      "id": "KV-06",
+      "applies": [
+        {
+          "ruleId": "CM-01",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-07",
+      "applies": [
+        {
+          "ruleId": "ID-02",
+          "verdict": "gap",
+          "nonResembling": true
+        }
+      ]
+    },
+    {
+      "id": "KV-08",
+      "applies": [
+        {
+          "ruleId": "CS-05",
+          "verdict": "gap"
+        },
+        {
+          "ruleId": "CS-01",
+          "verdict": "needs-ba-input",
+          "businessFact": "Have the patients in the extract consented to their details going to the university?"
+        }
+      ]
+    },
+    {
+      "id": "KV-09",
+      "applies": [
+        {
+          "ruleId": "RA-05",
+          "verdict": "gap",
+          "nonResembling": true
+        }
+      ]
+    },
+    {
+      "id": "KV-10",
+      "applies": []
+    },
+    {
+      "id": "KV-11",
+      "applies": [
+        {
+          "ruleId": "ID-03",
+          "verdict": "needs-ba-input",
+          "businessFact": "Will the GP confirm who they are speaking to at the start of each call, with a one-time code sent to the mobile number on the chart?"
+        }
+      ]
+    },
+    {
+      "id": "KV-12",
+      "applies": [
+        {
+          "ruleId": "MS-05",
+          "verdict": "gap",
+          "nonResembling": true
+        }
+      ]
+    },
+    {
+      "id": "KV-13",
+      "applies": [
+        {
+          "ruleId": "CS-03",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-14",
+      "applies": [
+        {
+          "ruleId": "CS-04",
+          "verdict": "gap",
+          "nonResembling": true
+        },
+        {
+          "ruleId": "CM-01",
+          "verdict": "needs-ba-input",
+          "businessFact": "Are results shown in the family account only after the clinician who ordered them has reviewed them?",
+          "baAnswer": "Yes, they are."
+        }
+      ]
+    },
+    {
+      "id": "KV-15",
+      "applies": [
+        {
+          "ruleId": "MS-01",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-16",
+      "applies": [
+        {
+          "ruleId": "RK-05",
+          "verdict": "gap",
+          "nonResembling": true
+        }
+      ]
+    },
+    {
+      "id": "KV-17",
+      "applies": []
+    },
+    {
+      "id": "KV-18",
+      "applies": [
+        {
+          "ruleId": "RA-02",
+          "verdict": "compliant"
+        }
+      ]
+    },
+    {
+      "id": "KV-19",
+      "applies": [
+        {
+          "ruleId": "CM-02",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Will the reason for the visit go only to people who chose to receive detailed messages?",
+          "baAnswer": "No."
+        },
+        {
+          "ruleId": "CM-03",
+          "verdict": "gap",
+          "nonResembling": true
+        }
+      ]
+    },
+    {
+      "id": "KV-20",
+      "applies": [
+        {
+          "ruleId": "MS-03",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-21",
+      "applies": [
+        {
+          "ruleId": "ID-04",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-22",
+      "applies": [
+        {
+          "ruleId": "IR-05",
+          "verdict": "gap"
+        },
+        {
+          "ruleId": "TP-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Do we encrypt work phones and enrol them so they can be wiped remotely?",
+          "baAnswer": "Yes, we do."
+        }
+      ]
+    },
+    {
+      "id": "KV-23",
+      "applies": [
+        {
+          "ruleId": "CM-05",
+          "verdict": "gap",
+          "nonResembling": true
+        }
+      ]
+    },
+    {
+      "id": "KV-24",
+      "applies": []
+    },
+    {
+      "id": "KV-25",
+      "applies": [
+        {
+          "ruleId": "RK-03",
+          "verdict": "compliant"
+        }
+      ]
+    },
+    {
+      "id": "KV-26",
+      "applies": [
+        {
+          "ruleId": "TP-03",
+          "verdict": "needs-ba-input",
+          "businessFact": "Do we enter the ECG machine in the device inventory, with its owner and software version, before it is connected?",
+          "baAnswer": "Yes, we do."
+        }
+      ]
+    },
+    {
+      "id": "KV-27",
+      "applies": [
+        {
+          "ruleId": "RK-01",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-28",
+      "applies": [
+        {
+          "ruleId": "TP-05",
+          "verdict": "needs-ba-input",
+          "nonResembling": true,
+          "businessFact": "Is the memory stick an encrypted drive issued by the IT service desk?",
+          "baAnswer": "No."
+        },
+        {
+          "ruleId": "TP-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Is the van's laptop encrypted, and can it be wiped remotely?"
+        }
+      ]
+    },
+    {
+      "id": "KV-29",
+      "applies": [
+        {
+          "ruleId": "RA-03",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-30",
+      "applies": []
+    },
+    {
+      "id": "KV-31",
+      "applies": [
+        {
+          "ruleId": "IR-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Do we have the clinical safety officer's assessment of this change filed in the hazard log before it goes live?",
+          "baAnswer": "Yes, we do."
+        }
+      ]
+    },
+    {
+      "id": "KV-32",
+      "applies": [
+        {
+          "ruleId": "RK-04",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-33",
+      "applies": [
+        {
+          "ruleId": "CM-04",
+          "verdict": "needs-ba-input",
+          "businessFact": "Is a copy of each emailed letter saved on the patient's chart?",
+          "baAnswer": "No."
+        },
+        {
+          "ruleId": "CM-02",
+          "verdict": "needs-ba-input",
+          "businessFact": "Has each patient chosen to receive detailed messages, since the letter carries clinical details?"
+        }
+      ]
+    },
+    {
+      "id": "KV-34",
+      "applies": [
+        {
+          "ruleId": "IR-01",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "KV-35",
+      "applies": [
+        {
+          "ruleId": "TP-04",
+          "verdict": "compliant"
+        }
+      ]
+    },
+    {
+      "id": "KV-36",
+      "applies": []
+    }
+  ]
+}

@@ -79,6 +79,7 @@ import { EvaluateRequirementsPanel } from "@/components/analysis/evaluate-requir
 import { ImportedRequirementsPicker } from "@/components/analysis/imported-requirements-picker";
 import { SourceRequirementsPanel } from "@/components/analysis/source-requirements-panel";
 import { CrossDocFindingsPanel } from "@/components/analysis/CrossDocFindingsPanel";
+import { GoverningFindingsPanel } from "@/components/analysis/governing-findings-panel";
 import { StakeholdersPanel } from "@/components/analysis/StakeholdersPanel";
 import { stakeholderApi } from "@/lib/stakeholder-api";
 import { AnalysisRunSummary } from "@/components/analysis/analysis-run-summary";
@@ -1664,6 +1665,14 @@ export default function AnalysisPage(): React.ReactElement {
                   <CrossDocFindingsPanel
                     crossDocFindings={detail.data.crossDocFindings}
                     metadata={detail.data.metadata}
+                  />
+
+                  {/* Epic #1866 (#1876) — cited findings against the workspace's
+                    governing documents. Renders nothing while the flag is off. */}
+                  <GoverningFindingsPanel
+                    projectId={projectId}
+                    analysisId={detail.data.id}
+                    canDecide={canRunAnalysis}
                   />
                 </TabsContent>
 
