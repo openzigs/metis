@@ -538,14 +538,21 @@ export function toMarkdownReport(report: GoverningReport): string {
     "| Arm | Runs | Recall | Non-resembling recall | Precision | Citation accuracy | Citation coverage | Verdict accuracy | Hard errors | Ask rate | Clean negatives | Failures | $ / req | Tokens in / out per req | s / req |",
     "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
   );
+  // Each arm's claims the run bore out, computed once (#1932).
+  const heldBy = new Map(
+    report.arms.map((a) => [a, heldByConstruction(a.summary, a.byConstruction)]),
+  );
   for (const a of report.arms) {
     const m = a.summary.metrics;
     const usd = a.cost.usdPerRequirement;
     // A metric the arm fixes by construction says nothing about it (#1900),
-    // unless the run measured otherwise (#1920).
-    const held = heldByConstruction(a.summary, a.byConstruction);
-    const fixed = (metric: keyof ByConstruction, value: string) =>
-      held[metric] === undefined ? value : "n/a†";
+    // unless the run measured otherwise (#1920): then its value is printed,
+    // marked ‡ in the cell itself (#1932).
+    const held = heldBy.get(a)!;
+    const fixed = (metric: keyof ByConstruction, value: string) => {
+      if (held[metric] !== undefined) return "n/a†";
+      return a.byConstruction[metric] === undefined ? value : `${value}‡`;
+    };
     lines.push(
       `| ${a.id} | ${a.completedRuns} | ${ci(m.recall)} | ${ci(m.nonResemblingRecall)} | ${ci(m.precision)} | ` +
         `${fixed("citationAccuracy", ci(m.citationAccuracy))} | ${ci(m.citationCoverage)} | ${ci(m.verdictAccuracy)} | ` +
@@ -564,9 +571,7 @@ export function toMarkdownReport(report: GoverningReport): string {
     "",
   );
   const fixedNotes = report.arms.flatMap((a) =>
-    Object.entries(heldByConstruction(a.summary, a.byConstruction)).map(
-      ([metric, why]) => `${a.id} ${metric}: ${why}`,
-    ),
+    Object.entries(heldBy.get(a)!).map(([metric, why]) => `${a.id} ${metric}: ${why}`),
   );
   if (fixedNotes.length > 0) {
     lines.push(
@@ -575,7 +580,7 @@ export function toMarkdownReport(report: GoverningReport): string {
     );
   }
   const brokenClaims = report.arms.flatMap((a) => {
-    const held = heldByConstruction(a.summary, a.byConstruction);
+    const held = heldBy.get(a)!;
     return Object.keys(a.byConstruction)
       .filter((metric) => !(metric in held))
       .map((metric) => `${a.id} ${metric}`);
@@ -593,9 +598,10 @@ export function toMarkdownReport(report: GoverningReport): string {
   lines.push("| Arm | Bar | Required | Measured | Pass |", "|---|---|---|---|---|");
   for (const a of report.arms) {
     for (const t of a.thresholds) {
-      lines.push(
-        `| ${a.id} | ${t.bar} | ${t.required} | ${t.measured} | ${t.pass === null ? "n/a†" : t.pass ? "yes" : "**no**"} |`,
-      );
+      // A judged bar carries a note only when it broke a by-construction claim (#1932).
+      const pass =
+        t.pass === null ? "n/a†" : `${t.pass ? "yes" : "**no**"}${t.note === undefined ? "" : "‡"}`;
+      lines.push(`| ${a.id} | ${t.bar} | ${t.required} | ${t.measured} | ${pass} |`);
     }
   }
   lines.push("");

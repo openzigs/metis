@@ -68,14 +68,18 @@ const startsInFlight = new Map<string, Promise<ClarificationState>>();
  * settle failed. That retry runs inline in a start, before the #937 early
  * return, and costs up to two judging calls per question it judges; with the
  * provider down, every start (each Questions-tab mount) paid them again. After
- * a retry that judged something, the next start-path retry of the analysis
+ * a retry that left an answer open, the next start-path retry of the analysis
  * waits {@link ORPHAN_RETRY_BASE_MS}, doubling per attempt up to
- * {@link ORPHAN_RETRY_MAX_MS}. A retry that judged nothing (nothing left
- * open) clears it, and so does a submit, which settles itself. Process local,
- * as `startsInFlight` is.
+ * {@link ORPHAN_RETRY_MAX_MS}. A retry that left nothing open (#2022: it
+ * settled every answer, or had none to judge) clears it, and so does a
+ * submit, which settles itself; a retry the client aborted leaves it as it
+ * was. Process local, as `startsInFlight` is, and bounded at
+ * {@link ORPHAN_RETRY_MAX_ENTRIES} analyses, the least recently backed off
+ * evicted first.
  */
 export const ORPHAN_RETRY_BASE_MS = 60_000;
 export const ORPHAN_RETRY_MAX_MS = 60 * 60_000;
+export const ORPHAN_RETRY_MAX_ENTRIES = 1_000;
 const orphanRetries = new Map<string, { attempts: number; nextAt: number }>();
 
 const ESCALATION_THRESHOLD = 0.6; // >60% unresolved → escalate to Sonnet
@@ -260,8 +264,10 @@ export class ClarificationDialog {
    * settle failed (the provider threw or was offline, the reply could not be
    * read, the request was aborted). Such a pair is never asked again, so this
    * retry is the only way its answer is ever used. A failure is logged: the
-   * answers are kept, and the next settle tries again. #2016 — true when the
-   * settle may have cost a model call: it judged a question, or it threw.
+   * answers are kept, and the next settle tries again. #2016 / #2022 — true
+   * when the settle left an answered pair open: a judging call failed, its
+   * reply could not be read, or the settle threw. False when the request was
+   * aborted: a client that went away is no failed attempt.
    */
   private async settleGoverning(
     analysisId: string,
@@ -272,8 +278,9 @@ export class ClarificationDialog {
     const questions = state.rounds.flatMap((r) => r.questions);
     if (!questions.some((q) => q.governing && q.answer?.trim())) return false;
     return this.governing.settle(questions, signal).then(
-      (judged) => judged > 0,
+      (leftOpen) => leftOpen > 0 && !signal?.aborted,
       (err: unknown) => {
+        if (signal?.aborted) return false;
         log.warn("Governing answers could not be settled — their rules stay uncertain", {
           analysisId,
           error: (err as Error).message,
@@ -294,13 +301,18 @@ export class ClarificationDialog {
   ): Promise<void> {
     const backoff = orphanRetries.get(analysisId);
     if (backoff && Date.now() < backoff.nextAt) return;
-    if (!(await this.settleGoverning(analysisId, state, signal))) {
-      orphanRetries.delete(analysisId);
-      return;
-    }
+    const leftOpen = await this.settleGoverning(analysisId, state, signal);
+    // #2022 — an aborted retry neither counts as an attempt nor clears one.
+    if (signal?.aborted) return;
+    orphanRetries.delete(analysisId);
+    if (!leftOpen) return;
     const attempts = (backoff?.attempts ?? 0) + 1;
     const wait = Math.min(ORPHAN_RETRY_BASE_MS * 2 ** (attempts - 1), ORPHAN_RETRY_MAX_MS);
+    // Re-inserted, so the map's order is the order of the latest backoff.
     orphanRetries.set(analysisId, { attempts, nextAt: Date.now() + wait });
+    if (orphanRetries.size > ORPHAN_RETRY_MAX_ENTRIES) {
+      orphanRetries.delete(orphanRetries.keys().next().value!);
+    }
   }
 
   /**

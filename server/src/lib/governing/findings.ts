@@ -149,7 +149,7 @@ const FENCE_NOTE =
 const SYSTEM = [
   "You check one business requirement against governing rules (internal policy obligations) that apply to it.",
   "Give EVERY rule listed exactly one status:",
-  '- compliant: the requirement, or one of the business analyst\'s answers, affirmatively provides what the rule asks. Copy the words that do so, exactly, into "satisfiedBy": one contiguous run of words from a single source, holding at least three words that say what is done (filler such as "the system shall" does not count). The source is the requirement or one answer; quote a short answer ("Yes, we do.") together with the end of the question it answers, leaving out the "Their answer:" label.',
+  '- compliant: the requirement, or one of the business analyst\'s answers, affirmatively provides what the rule asks. Copy the words that do so, exactly, into "satisfiedBy": one contiguous run of words from a single source, holding at least three words that say what is done (filler such as "the system shall" does not count). The source is the requirement or one answer; quote a short answer ("Yes, we do.") whole, together with the end of the question it answers, leaving out the "Their answer:" label.',
   "- gap: building the requirement as written would breach the rule, or it leaves out something the rule requires.",
   '- needs-ba-input: whether it meets the rule turns on a business fact the requirement does not state. Give that fact as one plain question in "businessQuestion".',
   "Silence is never compliant: a requirement that says nothing about what a rule asks is gap or needs-ba-input.",
@@ -264,13 +264,40 @@ function evidenceWords(text: string): string[] {
     .filter(Boolean);
 }
 
-/**
- * True when `needle` occurs in `hay` as a run of whole words that ends at or
- * after word `from` (default 0): a run lying wholly before `from` is not found.
- */
-function containsWordRun(hay: readonly string[], needle: readonly string[], from = 0): boolean {
-  for (let i = Math.max(0, from - needle.length + 1); i + needle.length <= hay.length; i++) {
+/** True when `needle` occurs in `hay` as a run of whole words. */
+function containsWordRun(hay: readonly string[], needle: readonly string[]): boolean {
+  for (let i = 0; i + needle.length <= hay.length; i++) {
     if (needle.every((w, j) => hay[i + j] === w)) return true;
+  }
+  return false;
+}
+
+/** How many of `words` are not {@link EVIDENCE_STOP_WORDS}. */
+function countedWords(words: readonly string[]): number {
+  return words.filter((w) => !EVIDENCE_STOP_WORDS.has(w)).length;
+}
+
+/**
+ * #2017 / #2022 — true when `needle` occurs as a run of whole words in the
+ * question followed by its answer, and the part of the run inside the answer is
+ * evidence of its own: the WHOLE answer, or at least
+ * {@link MIN_EVIDENCE_WORDS} counted words of it. A run that ends in the
+ * question is not found, and neither is one that reaches into the answer by a
+ * word or two ("…be logged? No" of "No, we do not."): its counted words would
+ * all, or nearly all, be METIS's own.
+ */
+function containsAnsweredRun(
+  question: readonly string[],
+  answer: readonly string[],
+  needle: readonly string[],
+): boolean {
+  const hay = [...question, ...answer];
+  for (let i = 0; i + needle.length <= hay.length; i++) {
+    if (!needle.every((w, j) => hay[i + j] === w)) continue;
+    const inAnswer = needle.slice(Math.max(0, question.length - i));
+    if (inAnswer.length === 0) continue;
+    const wholeAnswer = i <= question.length && i + needle.length === hay.length;
+    if (wholeAnswer || countedWords(inAnswer) >= MIN_EVIDENCE_WORDS) return true;
   }
   return false;
 }
@@ -289,7 +316,11 @@ function containsWordRun(hay: readonly string[], needle: readonly string[], from
  * short answer ("Yes, we do.") is evidence when quoted with the end of its
  * question ("will every export be logged? yes, we do"). The run must reach
  * into the answer: the question is METIS's own words, and quoting it alone is
- * no evidence of what the business does.
+ * no evidence of what the business does. #2022 — and what it quotes of the
+ * answer must be the whole answer, or hold {@link MIN_EVIDENCE_WORDS} counted
+ * words itself: a run that crossed into the answer by its first word ("every
+ * customer export be logged? No" of "No, we do not.") drew every counted word
+ * but one from the question.
  */
 export function evidenceIsPresent(
   satisfiedBy: string,
@@ -297,13 +328,11 @@ export function evidenceIsPresent(
   answers: readonly FindingAnswer[],
 ): boolean {
   const needle = evidenceWords(satisfiedBy);
-  const counted = needle.filter((w) => !EVIDENCE_STOP_WORDS.has(w)).length;
-  if (counted < MIN_EVIDENCE_WORDS) return false;
+  if (countedWords(needle) < MIN_EVIDENCE_WORDS) return false;
   if (containsWordRun(evidenceWords(requirementText), needle)) return true;
-  return answers.some((a) => {
-    const question = evidenceWords(a.question ?? "");
-    return containsWordRun([...question, ...evidenceWords(a.answer)], needle, question.length);
-  });
+  return answers.some((a) =>
+    containsAnsweredRun(evidenceWords(a.question ?? ""), evidenceWords(a.answer), needle),
+  );
 }
 
 /**

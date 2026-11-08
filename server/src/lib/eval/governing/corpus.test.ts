@@ -648,6 +648,27 @@ describe("the text checks", () => {
     expect([...contentStems("logic taxi")].sort()).toEqual(["logic", "taxi"]);
   });
 
+  it("contentStems folds the derived forms of a short subject word, and the irregular paid (#1932)", () => {
+    for (const [derived, base] of [
+      ["payment", "pay"],
+      ["payments", "pay"],
+      ["payer", "pay"],
+      ["payers", "pay"],
+      ["payable", "pay"],
+      ["paid", "pay"],
+      ["logger", "log"],
+      ["loggers", "log"],
+      ["taxable", "tax"],
+    ] as const) {
+      expect(contentStems(derived).has(base), derived).toBe(true);
+    }
+    // A pay/payment pair resembles: it can never pass as non-resembling.
+    expect(sharedVocabulary("record each payment", "who may pay a supplier")).toEqual(["pay"]);
+    expect(sharedVocabulary("invoices already paid", "pay suppliers on time")).toEqual(["pay"]);
+    // A word that only ends like one is not folded onto a short base.
+    expect([...contentStems("paper tables")].sort()).toEqual(["paper", "table"]);
+  });
+
   it("sharedVocabulary is empty for the GR-01 pair and not for a resembling one", () => {
     expect(
       sharedVocabulary("download last month's invoices", "bulk extraction of financial records"),
