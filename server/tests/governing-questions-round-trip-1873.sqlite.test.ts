@@ -337,6 +337,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ).toMatchObject({
         verdict: "applies",
       });
+      // #1874 — the answer fed the findings too: the rule that now applies has
+      // one, the rule that does not apply has none.
+      const findings = await db.governingFinding.findMany({ where: { analysisId: id } });
+      expect(findings.map((f) => f.ruleId)).toEqual([rules["EN-03"]!]);
     });
 
     it("the CSV import answers it the same way", async () => {

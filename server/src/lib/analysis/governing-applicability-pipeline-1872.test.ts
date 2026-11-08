@@ -86,6 +86,17 @@ vi.mock("./analysis-service.js", () => ({
 }));
 
 vi.mock("./cost-cap.js", () => ({ assertCanStartAnalysis: vi.fn(async () => undefined) }));
+// #1874 — the findings the join produces from the stored applicability.
+vi.mock("../governing/findings-store.js", () => ({
+  produceGoverningFindingsForAnalysis: vi.fn(async () => ({
+    requirements: 0,
+    written: 0,
+    removed: 0,
+    unverifiedCitations: 0,
+    noEvidenceDemoted: 0,
+    failed: 0,
+  })),
+}));
 vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
 vi.mock("./synthesis.js", () => ({
   runSynthesis: vi.fn(async () => ({
@@ -121,6 +132,7 @@ vi.mock("../socket/job-events.js", () => ({
 const { AnalysisOrchestrator } = await import("./orchestrator.js");
 const analysisService = await import("./analysis-service.js");
 const { prisma } = await import("../prisma.js");
+const findingsStore = await import("../governing/findings-store.js");
 
 const CODE_ANSWER = JSON.stringify({
   summary: "ok",
@@ -288,6 +300,7 @@ describe("#1872 — governing applicability in the analysis pipeline", () => {
     expect(vi.mocked(prisma.governingRule.findMany)).not.toHaveBeenCalled();
     // #1873 — nothing decided, nothing stored on the analysis.
     expect(vi.mocked(analysisService.updateGoverningApplicabilityMetadata)).not.toHaveBeenCalled();
+    expect(vi.mocked(findingsStore.produceGoverningFindingsForAnalysis)).not.toHaveBeenCalled();
   });
 
   it("flag on, project with no workspace: skipped, the output is the flag-off output", async () => {
@@ -343,6 +356,14 @@ describe("#1872 — governing applicability in the analysis pipeline", () => {
     expect(stored.requirements[0]!.decisions).toEqual([
       expect.objectContaining({ ruleId: "rule_audit", controlId: "LG-03", verdict: "applies" }),
     ]);
+    // #1874 — and the cited findings are produced from exactly that applicability.
+    const produce = vi.mocked(findingsStore.produceGoverningFindingsForAnalysis);
+    expect(produce).toHaveBeenCalledTimes(1);
+    expect(produce.mock.calls[0]![0]).toMatchObject({
+      analysisId: ANALYSIS_ID,
+      projectId: PROJECT_ID,
+      applicability: stored,
+    });
     expect(vi.mocked(analysisService.markAnalysisCompleted)).toHaveBeenCalledTimes(1);
     const where = vi.mocked(prisma.governingRule.findMany).mock.calls[0]![0] as {
       where: { revision: { currentOf: { is: { workspaceId: string } } } };

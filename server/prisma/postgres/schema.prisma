@@ -1416,10 +1416,63 @@ model Analysis {
   crossDocFindings     CrossDocFinding[]
   /// Epic #475 — discussion threads anchored to this analysis run (nullable anchor).
   discussionThreads    DiscussionThread[]
+  /// Epic #1866 (#1874) — cited governing findings, one per (requirement, rule).
+  governingFindings    GoverningFinding[]
 
   @@index([projectId, status])
   @@index([status])
   @@map("analyses")
+}
+
+/// Epic #1866 (#1874) — one governing rule checked against one requirement of
+/// an analysis: Compliant, Gap or Needs BA input, cited to the clause of the
+/// revision it was checked against. A table of its own rather than `Finding`
+/// rows: these are a distinct, cited stream with a BA decision and an audit
+/// trail, scoped to the analysis, and not an agent's output. The rule's
+/// revision, label, title, control id and clause are COPIED here, so a later
+/// revision of the policy never rewrites what a finding cited. No foreign key
+/// to the rule or the revision (a deleted rule leaves the finding), nor to
+/// `users` (the decider outlives the account). Cascades with the analysis.
+model GoverningFinding {
+  id               String    @id @default(cuid())
+  analysisId       String
+  /// The analysis's requirement id applicability was decided for (#1872).
+  requirementId    String
+  ruleId           String
+  revisionId       String
+  revisionLabel    String
+  documentTitle    String
+  controlId        String
+  clauseRef        String
+  /// compliant|gap|needs-ba-input (`GOVERNING_FINDING_STATUSES` in `@metis/shared`).
+  status           String
+  reasoning        String
+  /// The cited clause: offsets into the revision's `extractedText`, and the
+  /// source's own slice. All three null when the citation was dropped.
+  clauseStart      Int?
+  clauseEnd        Int?
+  clauseExcerpt    String?
+  /// True when the model's citation could not be verified against the
+  /// revision's text, so it was dropped and the status is needs-ba-input.
+  citationDropped  Boolean   @default(false)
+  /// The status the model gave, when code overrode it (a compliant with no
+  /// evidence, or an unverifiable citation); null when the model's stands.
+  modelStatus      String?
+  /// For needs-ba-input: the business fact that would settle it.
+  businessQuestion String?
+  /// accepted|rejected; null until a BA decides (`GOVERNING_FINDING_DECISIONS`).
+  decision         String?
+  decisionNote     String?
+  decidedById      String?
+  decidedAt        DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  analysis Analysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+
+  @@unique([analysisId, requirementId, ruleId])
+  @@index([analysisId, status])
+  @@map("governing_findings")
 }
 
 /// Epic #203 (#221) — first-class cross-document conflict / contradiction /

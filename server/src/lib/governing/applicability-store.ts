@@ -91,6 +91,8 @@ export interface GoverningSettlementInput {
   verdict: GoverningApplicabilityVerdict;
   reason: string;
   questionId: string;
+  /** #1874 — the question's text, kept so a finding is judged on the question and answer. */
+  question?: string;
   answer: string;
 }
 
@@ -124,6 +126,7 @@ export function applySettlements(
           ...(s.verdict === "uncertain" && d.businessFact ? { businessFact: d.businessFact } : {}),
           settled: {
             questionId: s.questionId,
+            ...(s.question ? { question: s.question } : {}),
             answer: s.answer,
             previousVerdict: "uncertain",
             at: at.toISOString(),

@@ -136,6 +136,8 @@ export type GoverningQuestionLink = z.infer<typeof governingQuestionLinkSchema>;
 /** How a BA's answer re-decided an `uncertain` pair (#1873). */
 export const governingSettlementSchema = z.object({
   questionId: z.string().min(1),
+  /** #1874 — the question the BA answered, so a finding can be judged on both. */
+  question: z.string().optional(),
   answer: z.string(),
   /** The verdict before the answer: always `uncertain`. */
   previousVerdict: z.enum(GOVERNING_APPLICABILITY_VERDICTS),
@@ -169,6 +171,63 @@ export const governingRequirementApplicabilitySchema = z.object({
 export type GoverningRequirementApplicability = z.infer<
   typeof governingRequirementApplicabilitySchema
 >;
+
+// ── Cited governing findings (#1874) ─────────────────────────────────────
+
+/**
+ * What checking one applicable rule against one requirement found. `compliant`
+ * only when the requirement (or a BA answer) affirmatively satisfies the rule
+ * and says where; silence is never `compliant`.
+ */
+export const GOVERNING_FINDING_STATUSES = ["compliant", "gap", "needs-ba-input"] as const;
+export type GoverningFindingStatus = (typeof GOVERNING_FINDING_STATUSES)[number];
+
+/** A BA's decision on a finding. */
+export const GOVERNING_FINDING_DECISIONS = ["accepted", "rejected"] as const;
+export type GoverningFindingDecision = (typeof GOVERNING_FINDING_DECISIONS)[number];
+
+/** The longest note a decision carries. */
+export const GOVERNING_FINDING_NOTE_MAX = 2000;
+
+/** The body of `POST …/governing-findings/:findingId/decision`. The decider is the session user. */
+export const governingFindingDecisionInputSchema = z
+  .object({
+    decision: z.enum(GOVERNING_FINDING_DECISIONS),
+    note: z.string().max(GOVERNING_FINDING_NOTE_MAX).optional(),
+  })
+  .strict();
+export type GoverningFindingDecisionInput = z.infer<typeof governingFindingDecisionInputSchema>;
+
+/** One cited governing finding, as the API returns it. */
+export const governingFindingSchema = z.object({
+  id,
+  analysisId: id,
+  requirementId: z.string().min(1).max(200),
+  ruleId: id,
+  revisionId: id,
+  revisionLabel: z.string(),
+  documentTitle: z.string(),
+  controlId: z.string(),
+  clauseRef: z.string(),
+  status: z.enum(GOVERNING_FINDING_STATUSES),
+  reasoning: z.string(),
+  /** The cited clause of `revisionId`, verified against its stored text; null when dropped. */
+  clauseStart: z.number().int().min(0).nullable(),
+  clauseEnd: z.number().int().min(1).nullable(),
+  clauseExcerpt: z.string().nullable(),
+  /** True when the model's citation could not be verified, so it was dropped. */
+  citationDropped: z.boolean(),
+  /** The model's own status, when code overrode it; null when it stands. */
+  modelStatus: z.enum(GOVERNING_FINDING_STATUSES).nullable(),
+  businessQuestion: z.string().nullable(),
+  decision: z.enum(GOVERNING_FINDING_DECISIONS).nullable(),
+  decisionNote: z.string().nullable(),
+  decidedById: id.nullable(),
+  decidedAt: timestamp.nullable(),
+  createdAt: timestamp,
+  updatedAt: timestamp,
+});
+export type GoverningFinding = z.infer<typeof governingFindingSchema>;
 
 /** An analysis's stored applicability (`Analysis.metadata.governingApplicability`). */
 export const governingAnalysisApplicabilitySchema = z.object({

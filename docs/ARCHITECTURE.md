@@ -2658,6 +2658,58 @@ the pre-#1873 code).
   stored sets. It is 404 while the flag is off and scoped by `ensureAnalysisVisible`. No UI reads
   it yet; the findings (#1874) and their UI do.
 
+#### Cited governing findings (#1874)
+
+For every pair that `applies` or is still `uncertain`, `governing/findings.ts` produces a finding
+of status `Compliant | Gap | Needs BA input` (`GOVERNING_FINDING_STATUSES`). It cites the rule's
+control id and a clause excerpt, and three rules are **enforced in code**, not only asked for in
+the prompt:
+
+- **No evidence is never Compliant.** `compliant` stands only when the model quotes, in
+  `satisfiedBy`, at least three words that really are in the requirement or a BA answer
+  (`evidenceIsPresent`). Otherwise it becomes `needs-ba-input` if the model gave the question,
+  else `gap`. This follows CTRAG's No-Evidence → Non-Compliant (one study; a pattern, not proof).
+- **Every citation is verified** against the **cited revision's** stored `extractedText`
+  (`locateClause`, #1870) and must lie inside the rule's own clause. An excerpt that does not
+  verify is dropped. The finding then becomes `needs-ba-input` with `citationDropped` set, and the
+  run counts it (`unverifiedCitations`).
+- **No compliance claims.** Model prose goes through #1875's `neutraliseComplianceClaims`.
+
+An `uncertain` pair needs no model call. It becomes `needs-ba-input`, asks applicability's
+business fact, and cites the rule's own clause.
+
+**Storage.** Findings live in their own table, `governing_findings` (migration
+`20261119001874_issue1874_governing_findings`, with SQLite and Postgres rollbacks), with one row
+per analysis, requirement and rule. `Finding` was not reused: these rows are a distinct, cited
+stream with a BA decision and an audit trail, and are not an agent's output, so the
+finding-provenance ratchet is untouched. The rule's revision id, label, document title, control
+id, clause ref and verified clause are **copied** onto the row. A later revision never rewrites
+what a finding cited.
+
+**When findings are produced.** `produceGoverningFindingsForAnalysis` (`findings-store.ts`)
+produces them in three places:
+
+- In the run's join, from the applicability just stored. This is cancellable with the run and
+  best-effort.
+- After a BA answer settles pairs: the questions source re-evaluates the requirements whose pairs
+  the answer settled.
+- Under that refresh, a finding whose status, revision and clause are unchanged keeps its
+  decision. One that changed loses it.
+
+**API** (404 while the flag is off; `ensureAnalysisVisible` on both routes):
+
+- `GET /api/projects/:projectId/analyses/:id/governing-findings` returns the findings and their
+  counts.
+- `POST …/governing-findings/:findingId/decision` takes `{ decision: accepted|rejected, note }`
+  (`governingFindingDecisionInputSchema`, strict) and needs `analysis.run`.
+- The decider is the session user. A body that names one is a 400.
+- A finding is looked up **with** its analysis id, so another analysis's finding is a 404.
+- An `AuditLog` row (`governing.finding.decision`, target `governing_finding`) is written in the
+  same transaction as the decision.
+
+Eval arm **A4** (`pnpm eval:governing --arm A4`) runs A3's applicability and then these findings
+over the #1867 corpus.
+
 ---
 
 ## 11. Publishing Workflow
