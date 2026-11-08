@@ -2470,15 +2470,18 @@ background; the upload answers first. The job:
    travel inside the fence too. Each call is a `token_usages` row (#1947) under agent step
    `governing.rule-extraction`, with `workspaceId` set and no `projectId`
    (`recordWorkspaceUsage`); the workspace's usage totals and daily rollup count it through
-   `workspaceLedgerWhere` (`lib/finops/ledger-totals.ts`);
+   `workspaceLedgerWhere` (`lib/finops/ledger-totals.ts`), and the monthly chargeback shows it
+   as a "Workspace (no project)" line inside its total spend (#1958);
 4. checks every returned rule deterministically (`lib/governing/clause-verify.ts`): its
    `clauseExcerpt` must be in `extractedText` verbatim, with whitespace runs compared as one
    space, and at least four words. The stored excerpt and `clauseStart`/`clauseEnd` are the
    source's own, so `clauseExcerpt === extractedText.slice(clauseStart, clauseEnd)` always
    holds. A rule that fails is dropped and counted in `droppedUnverified`;
 5. keeps a `controlId` only when it appears in or beside the cited clause (#1947,
-   `controlIdRegion`): on the clause's own line, or in the heading the clause sits directly
-   under, so a real id of another clause is not taken. Every other rule is numbered
+   `controlIdRegion`): on the clause's own line, or on the nearest non-blank line above it
+   when that line is a heading or a label such as `**AC-02**` or `4.3.1` (#1958) rather than
+   a clause of its own (a line ending a sentence, a list item or a table row), so a real id
+   of another clause is not taken. Every other rule is numbered
    `METIS-001`… in clause order, skipping any id the policy itself uses, so a generated id
    never collides with the policy's own `R-001`;
 6. stores the rules and `extractionState: done` in one transaction. Any failure sets `failed`,
@@ -2490,7 +2493,7 @@ background; the upload answers first. The job:
 | Route | Role | Does |
 |---|---|---|
 | `GET /api/workspaces/:workspaceId/governing-documents/:documentId/rules` | any member | the current revision's live rules in clause order, or `?revisionId=` another of the document's revisions; with the revision's `extractionState`, `extractionError` and `droppedUnverified` |
-| `POST /api/workspaces/:workspaceId/governing-documents/:documentId/revisions/:revisionId/rule-extraction` | `admin`/`owner` | #1947 — start the revision's extraction again: one that `failed`, never began, or has been `running` past `EXTRACTION_STALE_MS` (a server restart mid-run). `202` and the run in the background; `409 EXTRACTION_NOT_RETRYABLE` for a `done` or fresh-running one |
+| `POST /api/workspaces/:workspaceId/governing-documents/:documentId/revisions/:revisionId/rule-extraction` | `admin`/`owner` | #1947 — start the revision's extraction again: one that `failed`, never began, or has been `running` past `EXTRACTION_STALE_MS` (a server restart mid-run). `202` and the run in the background; `409 EXTRACTION_NOT_RETRYABLE` for a `done` or fresh-running one. Behind the upload rate limiter (`UPLOAD_RATE_LIMIT_*`, `429 RATE_LIMITED`, #1958): each `202` can start up to `MAX_SECTIONS` billed model calls |
 | `PATCH /api/workspaces/:workspaceId/governing-rules/:ruleId` | `admin`/`owner` | `{ summary?, controlId? }` or `{ deleted: true }`. It sets `editedById`/`editedAt` on the rule and writes a `GoverningRuleEdit` row with the before and after values, in one transaction. A patch that changes nothing writes nothing |
 
 Rules are usable at once, with no analyst review (owner, 2026-11-06), and a new revision gets
