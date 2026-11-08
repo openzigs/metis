@@ -85,8 +85,22 @@ function words(text: string): string[] {
     .filter(Boolean);
 }
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const WORD_CHAR = /[\p{L}\p{N}]/u;
+
+/**
+ * True when `token` occurs in `text` as a whole token (no letter or digit on
+ * either side), case aside. A plain scan rather than a RegExp built from the
+ * admin-written control id, so no stored text is ever compiled as a pattern.
+ */
+function containsToken(text: string, token: string): boolean {
+  const hay = text.toLowerCase();
+  const needle = token.toLowerCase();
+  for (let at = hay.indexOf(needle); at !== -1; at = hay.indexOf(needle, at + 1)) {
+    const before = at > 0 ? hay[at - 1]! : "";
+    const after = hay[at + needle.length] ?? "";
+    if (!WORD_CHAR.test(before) && !WORD_CHAR.test(after)) return true;
+  }
+  return false;
 }
 
 /**
@@ -102,8 +116,7 @@ export function questionLeaksRule(
   for (const r of rules) {
     const id = r.controlId.trim();
     if (!id) continue;
-    const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(id)}(?![\\p{L}\\p{N}])`, "iu");
-    if (pattern.test(question)) return `names control ${id}`;
+    if (containsToken(question, id)) return `names control ${id}`;
   }
   const q = words(question);
   if (q.length < MIN_QUOTED_CLAUSE_WORDS) return null;

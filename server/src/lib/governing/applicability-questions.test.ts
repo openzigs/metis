@@ -118,6 +118,13 @@ describe("questionLeaksRule — the rulebook guard", () => {
     expect(questionLeaksRule("does en-03 apply?", [CARD])).toMatch(/names control/);
     // Part of a longer token is not the id.
     expect(questionLeaksRule("Is OPEN-03X involved?", [CARD])).toBeNull();
+    // An id with pattern characters is matched literally, never as a pattern.
+    const dotted = { controlId: "4.3.1", clauseExcerpt: "x" };
+    expect(questionLeaksRule("Is clause 4.3.1 met?", [dotted])).toMatch(/names control 4\.3\.1/);
+    expect(questionLeaksRule("Is 4x3y1 met?", [dotted])).toBeNull();
+    expect(questionLeaksRule("Is (A+) met?", [{ controlId: "(A+)", clauseExcerpt: "x" }])).toMatch(
+      /names control/,
+    );
   });
 
   it("catches 8 or more consecutive clause words, ignoring case and punctuation; 7 is allowed", () => {
