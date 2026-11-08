@@ -216,8 +216,8 @@ function makeProvider() {
   return { provider: { key: "bedrock", model: "test-model", chat } as never, calls, timeline };
 }
 
-async function runPipeline() {
-  const { provider, calls, timeline } = makeProvider();
+async function runPipeline(made: ReturnType<typeof makeProvider> = makeProvider()) {
+  const { provider, calls, timeline } = made;
   const orch = new AnalysisOrchestrator({
     provider,
     retrieve: async () => [],
@@ -382,6 +382,84 @@ describe("#1872 — governing applicability in the analysis pipeline", () => {
     expect(on.calls.some(isGoverning)).toBe(false);
     expect(vi.mocked(prisma.governingRule.findMany)).toHaveBeenCalled();
     expect(vi.mocked(analysisService.markAnalysisCompleted)).toHaveBeenCalledTimes(1);
+    // #2008 — and the joined evidence says why: every requirement is undecided
+    // with the error, not the flag-off "nothing to check" (which stores nothing).
+    const store = vi.mocked(analysisService.updateGoverningApplicabilityMetadata);
+    expect(store).toHaveBeenCalledTimes(1);
+    const stored = (store.mock.calls[0]![1] as (c: unknown) => unknown)(undefined) as {
+      requirements: Array<{ requirementId: string; decisions: unknown[]; error?: string }>;
+    };
+    expect(stored.requirements).toEqual([
+      expect.objectContaining({
+        requirementId: "REQ-001",
+        decisions: [],
+        error: expect.any(String),
+      }),
+      expect.objectContaining({
+        requirementId: "REQ-002",
+        decisions: [],
+        error: expect.any(String),
+      }),
+    ]);
+  });
+
+  it("#2008 — a run that fails before the join ends with the unjoined applicability work aborted", async () => {
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    state.workspaceId = "ws_1872";
+    state.rules = [
+      {
+        id: "rule_audit",
+        revisionId: "rev_1",
+        controlId: "LG-03",
+        summary: "Log every read of customer records to the audit log.",
+        clauseRef: "§3",
+        clauseExcerpt: "Every read of customer records is written to the audit log.",
+        revision: { revisionLabel: "v1", document: { title: "Info Policy" } },
+      },
+    ];
+    const signals: AbortSignal[] = [];
+    let returned = false;
+    /** Governing calls started after the run returned, with a signal not aborted. */
+    let liveAfterReturn = 0;
+    const made = makeProvider();
+    const chat = vi.mocked(
+      (made.provider as unknown as { chat: (m: ChatMessage[], o?: ChatOptions) => unknown }).chat,
+    );
+    const specialists = chat.getMockImplementation()!;
+    chat.mockImplementation(async (messages: ChatMessage[], o: ChatOptions = {}) => {
+      const user = messages.map((m) => String(m.content)).join("\n");
+      if (!user.includes("governing_rule")) return specialists(messages, o);
+      const signal = o.signal!;
+      signals.push(signal);
+      if (returned && !signal.aborted) liveAfterReturn++;
+      // Slow enough that the work is still running when the run is marked failed.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      if (signal.aborted) throw Object.assign(new Error("aborted"), { name: "AbortError" });
+      return {
+        content: user.includes("governing_rule_summaries")
+          ? '{"rules":["R1"]}'
+          : '{"decisions":[{"rule":"R1","verdict":"applies","reason":"Reads records."}]}',
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        provider: "bedrock" as const,
+      };
+    });
+    // Synthesis throws: the generic-catch exit, which skips the join.
+    vi.mocked(analysisService.readFlattenedFindings).mockRejectedValueOnce(
+      new Error("database is locked"),
+    );
+    await runPipeline(made);
+    returned = true;
+    expect(vi.mocked(analysisService.markAnalysisFailed)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(analysisService.markAnalysisCompleted)).not.toHaveBeenCalled();
+    // The work outlives the run: let what it still does reach the model…
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(signals.length).toBeGreaterThan(0);
+    // …and every call it made after the run returned carried an aborted signal.
+    expect(liveAfterReturn).toBe(0);
+    expect(signals.every((s) => s.aborted)).toBe(true);
+    // It was never joined: nothing was stored or produced from it.
+    expect(vi.mocked(analysisService.updateGoverningApplicabilityMetadata)).not.toHaveBeenCalled();
   });
 
   it("#1997 — the custom-agent phase's results are persisted (the mock carries persistAgentPhaseResults)", async () => {

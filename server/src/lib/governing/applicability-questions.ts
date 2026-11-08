@@ -425,7 +425,7 @@ export async function rejudgeAnswered(
     const entries = applicabilityEntries(linked);
     const text = `${requirement.text}\n\nA business analyst was asked: ${q.question}\nTheir answer: ${answer}`;
     const prompt = buildApplicabilityJudgePrompt(text, entries);
-    let decided: ReturnType<typeof parseApplicabilityJudgeReply>;
+    let decided: ReturnType<typeof parseApplicabilityJudgeReply>["decisions"];
     try {
       const reply = await deps.provider.chat([{ role: "user", content: prompt.userMessage }], {
         systemMessage: prompt.systemMessage,
@@ -434,7 +434,7 @@ export async function rejudgeAnswered(
         ...(deps.model ? { model: deps.model } : {}),
         ...(deps.signal ? { signal: deps.signal } : {}),
       });
-      decided = parseApplicabilityJudgeReply(reply.content, entries);
+      decided = parseApplicabilityJudgeReply(reply.content, entries).decisions;
     } catch (err) {
       if (deps.signal?.aborted) throw err;
       log.warn("governing answer could not be judged; its rules stay uncertain", {

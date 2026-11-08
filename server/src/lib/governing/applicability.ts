@@ -64,6 +64,15 @@ export const DEFAULT_APPLICABILITY_TOP_K = 8;
  */
 export const SCREEN_BATCH_MAX_TOKENS = 8_000;
 
+/**
+ * #2008 — the estimated tokens a screen batch plan sets aside for the
+ * requirement, whatever its length: the plan, and so every batch's cache
+ * prefix, is then the same for every requirement of one rule set. A
+ * requirement longer than this runs its prompt past the budget by the excess,
+ * which the half of the window left for the reply absorbs.
+ */
+export const SCREEN_REQUIREMENT_ALLOWANCE_TOKENS = 500;
+
 const MAX_REASON_CHARS = 500;
 const MAX_BUSINESS_FACT_CHARS = 500;
 
@@ -222,6 +231,10 @@ export function buildApplicabilityScreenPrompt(
   };
 }
 
+// #2008 — this prompt was tuned on the #1867 held-out corpus (#1997), so a
+// precision or recall measured on that corpus is optimistic; the "one to three
+// rules" prior below traded recall for precision there (Sonnet 0.96 -> 0.92).
+// Recorded on #1878, whose flag decision reads that corpus.
 const JUDGE_SYSTEM = [
   "You decide which of a company's governing rules (internal policy obligations and controls) apply to one business requirement.",
   "The rules listed were gathered broadly so that none is missed: expect most of them not to apply.",
@@ -359,38 +372,41 @@ export interface ApplicabilityDecision {
   businessFact?: string;
 }
 
-/**
- * #1997 — true when a judging reply holds a JSON object with a `decisions`
- * list, whatever the list says. A reply that is not is unreadable, not "no
- * decision": read twice running, it fails the requirement rather than
- * recording every candidate `uncertain` with a fallback question.
- */
-export function judgeReplyReadable(raw: string): boolean {
-  try {
-    const parsed = extractJsonObject(raw);
-    return isRecord(parsed) && Array.isArray(parsed.decisions);
-  } catch {
-    return false;
-  }
+/** What a judging reply says: whether it could be read, and its decisions. */
+export interface ApplicabilityJudgeReply {
+  /**
+   * #1997 — true when the reply holds a JSON object with a `decisions` list,
+   * whatever the list says. A reply that is not is unreadable, not "no
+   * decision": read twice running, it fails the requirement rather than
+   * recording every candidate `uncertain` with a fallback question.
+   */
+  readable: boolean;
+  /** By rule index; empty for an unreadable reply. */
+  decisions: Map<number, ApplicabilityDecision>;
 }
 
 /**
  * The decisions a judging reply gives the entries of `batch`, by rule index;
  * the first decision of a rule wins. An entry with an unknown rule or verdict
  * is skipped, and an unreadable reply gives none — the re-ask covers both.
+ * #2008 — the reply is parsed once, and `readable` is the one definition of a
+ * readable judging reply.
  */
 export function parseApplicabilityJudgeReply(
   raw: string,
   batch: readonly ApplicabilityEntry[],
-): Map<number, ApplicabilityDecision> {
+): ApplicabilityJudgeReply {
   const out = new Map<number, ApplicabilityDecision>();
   let parsed: unknown;
   try {
     parsed = extractJsonObject(raw);
   } catch {
-    return out;
+    return { readable: false, decisions: out };
   }
-  const list = isRecord(parsed) && Array.isArray(parsed.decisions) ? parsed.decisions : [];
+  if (!isRecord(parsed) || !Array.isArray(parsed.decisions)) {
+    return { readable: false, decisions: out };
+  }
+  const list: unknown[] = parsed.decisions;
   const resolve = resolver(batch);
   for (const entry of list) {
     if (!isRecord(entry)) continue;
@@ -405,7 +421,7 @@ export function parseApplicabilityJudgeReply(
       ...(verdict === "uncertain" && fact ? { businessFact: fact } : {}),
     });
   }
-  return out;
+  return { readable: true, decisions: out };
 }
 
 /** A decision that needs no re-ask: an `uncertain` one carries its question. */
@@ -421,8 +437,33 @@ export function fallbackBusinessQuestion(
 }
 
 /**
+ * #2008 — the screen batches of one rule set: every entry in exactly one
+ * batch, in order, planned with {@link SCREEN_REQUIREMENT_ALLOWANCE_TOKENS}
+ * for the requirement rather than its actual length. Planned from the
+ * requirement's own text, the batch boundaries — and with them each batch's
+ * cache prefix — moved with its length, so past one batch the cache missed
+ * between requirements at exactly the scale where it pays.
+ */
+export function planScreenBatches(
+  entries: readonly ApplicabilityEntry[],
+  budget: number,
+): ApplicabilityEntry[][] {
+  const fixed =
+    estimateTokens(promptText(buildApplicabilityScreenPrompt("", []))) +
+    SCREEN_REQUIREMENT_ALLOWANCE_TOKENS;
+  return planBatches(entries, (e) => estimateTokens(`${screenLine(e)}\n`), fixed, budget);
+}
+
+/**
  * Decide which of `rules` apply to one requirement. Throws on a provider error,
- * or on a screen reply that cannot be read twice running.
+ * on a screen reply that cannot be read twice running, or on a judging batch
+ * whose reply cannot be read twice running. #2008 — that last throw is
+ * requirement-wide: it discards the decisions of every other batch of the
+ * requirement, judged cleanly or not. Dropping only the never-read candidates
+ * would be cheaper with several batches, but a dropped candidate reads
+ * downstream exactly as a rule that does not apply — the silent miss the
+ * screen exists to prevent — while a failed requirement says it was not
+ * decided.
  */
 export async function decideApplicability(
   input: DecideApplicabilityInput,
@@ -499,14 +540,7 @@ export async function decideApplicability(
     }
   };
   if (screen) {
-    const fixed = estimateTokens(promptText(buildApplicabilityScreenPrompt(requirement.text, [])));
-    const batches = planBatches(
-      entries,
-      (e) => estimateTokens(`${screenLine(e)}\n`),
-      fixed,
-      budget,
-    );
-    for (const batch of batches) {
+    for (const batch of planScreenBatches(entries, budget)) {
       screenBatches++;
       for (const e of await screenBatch(batch)) found(e.index, "screen");
     }
@@ -528,9 +562,9 @@ export async function decideApplicability(
       budget,
     )) {
       const raw = await ask(buildApplicabilityJudgePrompt(requirement.text, batch, { reask }));
-      if (!judgeReplyReadable(raw)) for (const e of batch) unread[reask ? 1 : 0].add(e.index);
       const got = parseApplicabilityJudgeReply(raw, batch);
-      for (const [index, d] of got) {
+      if (!got.readable) for (const e of batch) unread[reask ? 1 : 0].add(e.index);
+      for (const [index, d] of got.decisions) {
         if (!decisions.has(index) || complete(d)) decisions.set(index, d);
       }
     }
@@ -542,6 +576,7 @@ export async function decideApplicability(
   if (neverRead.length > 0) {
     // Recording these as `uncertain` would ask the analyst a fallback question
     // about every one of them (35 for one requirement in a #1997 reading).
+    // #2008 — requirement-wide on purpose: see this function's comment.
     throw new ApplicabilityReplyError(
       `the judging reply could not be read twice running for ${neverRead.length} candidate rule(s)`,
     );

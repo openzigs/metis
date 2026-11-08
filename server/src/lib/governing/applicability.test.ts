@@ -35,7 +35,7 @@ const {
   GOVERNING_RULES_UNAVAILABLE,
   buildApplicabilityJudgePrompt,
   governingApplicabilityHookFor,
-  judgeReplyReadable,
+  planScreenBatches,
 } = await import("./applicability.js");
 type ApplicabilityRule = import("./applicability.js").ApplicabilityRule;
 
@@ -457,11 +457,45 @@ describe("decideApplicability — uncertain always carries a business question",
     expect(set.decisions[1]!.businessFact).toBe(fallbackBusinessQuestion(ENCRYPT));
   });
 
-  it("#1997 — judgeReplyReadable: a decisions list, even empty, is readable; anything else is not", () => {
-    expect(judgeReplyReadable('{"decisions":[]}')).toBe(true);
-    expect(judgeReplyReadable('Here: {"decisions":[{"rule":"R1"}]}')).toBe(true);
-    expect(judgeReplyReadable('{"rules":["R1"]}')).toBe(false);
-    expect(judgeReplyReadable("no json")).toBe(false);
+  it("#1997 — a judging reply with a decisions list, even empty, is readable; anything else is not", () => {
+    const entries = applicabilityEntries([AUDIT]);
+    const readable = (raw: string) => parseApplicabilityJudgeReply(raw, entries).readable;
+    expect(readable('{"decisions":[]}')).toBe(true);
+    expect(readable('Here: {"decisions":[{"rule":"R1"}]}')).toBe(true);
+    expect(readable('{"rules":["R1"]}')).toBe(false);
+    expect(readable('{"decisions":{"rule":"R1"}}')).toBe(false);
+    expect(readable("no json")).toBe(false);
+  });
+
+  it("#2008 — with several judging batches, one unreadable twice running fails the whole requirement (documented as requirement-wide)", async () => {
+    const rules = Array.from({ length: 30 }, (_, i) => rule(i + 1));
+    // Every batch is answered cleanly except the one holding R1, on both passes.
+    const { provider, sent } = stubModel({
+      judge: (user) =>
+        handlesIn(user).includes("R1")
+          ? []
+          : handlesIn(user).map((h) => ({ rule: h, verdict: "applies", reason: "Yes." })),
+    });
+    const bad = vi.mocked(provider.chat);
+    const chat = bad.getMockImplementation()!;
+    bad.mockImplementation(async (messages, o) => {
+      const user = messages.map((m) => String(m.content)).join("\n");
+      const reply = await chat(messages, o);
+      return handlesIn(user).includes("R1") ? { ...reply, content: "unreadable" } : reply;
+    });
+    await expect(
+      decideApplicability({
+        requirement: REQUIREMENT,
+        rules,
+        provider,
+        retrieve: async () => rules.map((r) => r.id),
+        topK: rules.length,
+        screen: false,
+        batchTokenBudget: 700,
+      }),
+    ).rejects.toThrow(/could not be read twice running/);
+    // More than one batch was judged, and the others were read cleanly.
+    expect(sent.filter((s) => s.kind === "judge").length).toBeGreaterThan(1);
   });
 
   it("a complete first answer is not re-asked", async () => {
@@ -560,6 +594,40 @@ describe("#1997 — the rule summaries lead the screen prompt and are cached acr
     expect(chat.mock.calls[0]![1]).toMatchObject({ promptCaching: { system: true } });
   });
 
+  it("#2008 — past one screen batch, requirements of very different lengths get the same batches and cache prefixes", async () => {
+    const rules = Array.from({ length: 120 }, (_, i) => rule(i + 1));
+    const { provider, chat } = stubModel({ screen: () => [] });
+    const short = { id: "REQ-S", text: "Export orders." };
+    const long = {
+      id: "REQ-L",
+      text: `Store managers can download every order of the last quarter. ${"Each row carries the order's lines, totals, discounts and the customer's delivery notes. ".repeat(12)}`,
+    };
+    const prefixesOf = async (requirement: { id: string; text: string }) => {
+      chat.mockClear();
+      const set = await decideApplicability({
+        requirement,
+        rules,
+        provider,
+        retrieve: async () => [],
+        batchTokenBudget: 1_500,
+      });
+      expect(set.rulesScreened).toBe(rules.length);
+      return chat.mock.calls.map((c) => (c[1] as ChatOptions).promptCaching?.userPrefix ?? "");
+    };
+    const a = await prefixesOf(short);
+    const b = await prefixesOf(long);
+    expect(a.length).toBeGreaterThan(1);
+    expect(b).toEqual(a);
+  });
+
+  it("#2008 — planScreenBatches does not read the requirement: one plan per rule set and budget", () => {
+    const entries = applicabilityEntries(Array.from({ length: 120 }, (_, i) => rule(i + 1)));
+    const plan = planScreenBatches(entries, 1_500);
+    expect(plan.length).toBeGreaterThan(1);
+    expect(plan.flat()).toEqual(entries);
+    expect(planScreenBatches(entries, 1_500)).toEqual(plan);
+  });
+
   it("the judging prompt sets no cache prefix: its rule list differs per requirement", async () => {
     const { provider, chat } = stubModel({
       screen: () => ["R1"],
@@ -612,14 +680,21 @@ describe("reply parsing", () => {
       }),
       entries,
     );
-    expect([...got.keys()]).toEqual([0, 1]);
-    expect(got.get(0)).toEqual({ verdict: "applies", reason: "first" });
-    expect(got.get(1)?.reason).toBe("by control id");
+    expect(got.readable).toBe(true);
+    expect([...got.decisions.keys()]).toEqual([0, 1]);
+    expect(got.decisions.get(0)).toEqual({ verdict: "applies", reason: "first" });
+    expect(got.decisions.get(1)?.reason).toBe("by control id");
   });
 
   it("an unreadable judging reply yields no decisions (the re-ask covers it)", () => {
-    expect(parseApplicabilityJudgeReply("no json here", entries).size).toBe(0);
-    expect(parseApplicabilityJudgeReply('{"other":1}', entries).size).toBe(0);
+    expect(parseApplicabilityJudgeReply("no json here", entries)).toEqual({
+      readable: false,
+      decisions: new Map(),
+    });
+    expect(parseApplicabilityJudgeReply('{"other":1}', entries)).toEqual({
+      readable: false,
+      decisions: new Map(),
+    });
   });
 });
 
@@ -788,10 +863,44 @@ describe("#1997 — governingApplicabilityHookFor: rules unavailable is not no r
     expect(chat).not.toHaveBeenCalled();
   });
 
-  it("a workspace with rules gives the real hook", async () => {
+  it("a project with no workspace: null, as the flag-off hook is", async () => {
     process.env.GOVERNING_DOCS_ENABLED = "1";
     db.project.findFirst.mockResolvedValueOnce({ workspaceId: null });
     const { provider } = stubModel({});
     expect(await governingApplicabilityHookFor({ projectId: "p", provider })).toBeNull();
+    expect(currentWorkspaceRules).not.toHaveBeenCalled();
+  });
+
+  it("#2008 — a workspace with rules gives the real hook, which asks the model", async () => {
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    db.project.findFirst.mockResolvedValueOnce({ workspaceId: "ws_a" });
+    currentWorkspaceRules.mockResolvedValueOnce([
+      {
+        id: "rule_audit",
+        revisionId: "rev_1",
+        controlId: "LG-03",
+        summary: AUDIT.summary,
+        clauseRef: "§3",
+        clauseExcerpt: AUDIT.clauseExcerpt,
+        revisionLabel: "v2",
+        documentTitle: "Info Policy",
+      },
+    ]);
+    const { provider, sent } = stubModel({
+      screen: () => ["R1"],
+      judge: () => [{ rule: "R1", verdict: "applies", reason: "Reads records." }],
+    });
+    const hook = await governingApplicabilityHookFor({
+      projectId: "p",
+      provider,
+      retrieve: async () => [],
+    });
+    expect(hook).toMatchObject({ workspaceId: "ws_a", rules: 1 });
+    const set = await hook!.decide(REQUIREMENT);
+    expect(set.error).toBeUndefined();
+    expect(set.decisions).toEqual([
+      expect.objectContaining({ ruleId: "rule_audit", verdict: "applies" }),
+    ]);
+    expect(sent.map((s) => s.kind)).toEqual(["screen", "judge"]);
   });
 });
