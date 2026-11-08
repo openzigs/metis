@@ -27,12 +27,14 @@ vi.mock("@/lib/auth-context", () => ({ useAuth: () => auth }));
 import {
   EXTRACTION_POLL_MS,
   GoverningDocumentsPanel,
+  extractionStuckAt,
   formatEffectiveDate,
   isExtractionStuck,
   isExtractionUnsettled,
 } from "./governing-documents-panel";
 import {
   canManageGoverning,
+  governingKeys,
   isGoverningUnavailable,
   useGoverningTabVisible,
 } from "@/lib/governing-api";
@@ -388,6 +390,18 @@ describe("pure helpers", () => {
     expect(rev("running", null, fresh)).toBe(true);
     expect(rev("failed", stale, stale)).toBe(false);
     expect(rev("done", stale, stale)).toBe(false);
+  });
+
+  it("extractionStuckAt: when an unsettled revision becomes stuck; null for a settled one", () => {
+    const at = "2026-11-07T12:00:00.000Z";
+    const later = "2026-11-07T12:30:00.000Z";
+    const rev = (extractionState: string, extractionStartedAt: string | null) =>
+      extractionStuckAt({ extractionState, extractionStartedAt, createdAt: at } as never);
+    expect(rev("pending", later)).toBe(Date.parse(at) + GOVERNING_EXTRACTION_STALE_MS);
+    expect(rev("running", later)).toBe(Date.parse(later) + GOVERNING_EXTRACTION_STALE_MS);
+    expect(rev("running", null)).toBe(-Infinity);
+    expect(rev("done", later)).toBeNull();
+    expect(rev("failed", later)).toBeNull();
   });
 
   it("formatEffectiveDate reads the date in UTC and passes an unreadable value through", () => {
@@ -880,6 +894,101 @@ describe("GoverningDocumentsPanel", () => {
     ).toBeInTheDocument();
     expect(screen.getByText(/has not finished in 60 minutes/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry extraction of New policy" })).toBeNull();
+  });
+
+  it("#2002 — a revision that becomes stuck while the page is open gets Retry without a reload", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // 8 s short of the bound: every poll of it returns the same data, so only
+    // the clock crossing the bound can change what the row shows.
+    server.seedDocument({
+      title: "Slow policy",
+      extractionState: "running",
+      extractionStartedAt: new Date(
+        Date.now() - GOVERNING_EXTRACTION_STALE_MS + 8_000,
+      ).toISOString(),
+    });
+    // A second one crosses later, after the first crossing's re-render.
+    server.seedDocument({
+      title: "Slower policy",
+      extractionState: "pending",
+      createdAt: new Date(Date.now() - GOVERNING_EXTRACTION_STALE_MS + 28_000).toISOString(),
+    });
+    mount();
+    await screen.findByRole("table", { name: "Governing documents" });
+    expect(screen.queryByRole("button", { name: /^Retry extraction / })).toBeNull();
+
+    for (let i = 0; i < 4; i += 1) await nextPoll();
+    expect(
+      await screen.findByRole("button", { name: "Retry extraction of Slow policy" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/has not finished in 60 minutes/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry extraction of Slower policy" })).toBeNull();
+
+    for (let i = 0; i < 2; i += 1) await nextPoll();
+    expect(
+      await screen.findByRole("button", { name: "Retry extraction of Slower policy" }),
+    ).toBeInTheDocument();
+  });
+
+  it("#2002 — a list poll in flight when a retry's 202 lands cannot put back failed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const { revision } = server.seedDocument({
+      title: "Broken policy",
+      extractionState: "failed",
+      extractionError: "Provider timed out",
+    });
+    // Another document's run keeps the list polling.
+    server.seedDocument({
+      title: "Busy policy",
+      extractionState: "running",
+      extractionStartedAt: new Date().toISOString(),
+    });
+    server.deferRetryStart = true;
+    // The next list read is answered at once (Broken policy still failed) but
+    // delivered only when the test releases it.
+    let holdList = false;
+    let release: () => void = () => {};
+    const isListRead = (input: RequestInfo | URL, init?: RequestInit) =>
+      (init?.method ?? "GET") === "GET" &&
+      new URL(String(input), "http://localhost").pathname ===
+        `/api/workspaces/${WS}/governing-documents`;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const res = await server.handle(input, init);
+        if (holdList && isListRead(input, init)) {
+          holdList = false;
+          await new Promise<void>((resolve) => (release = resolve));
+        }
+        return res;
+      }),
+    );
+    const qc = mount();
+    const retry = await screen.findByRole("button", { name: "Retry extraction of Broken policy" });
+
+    holdList = true;
+    const listReads = () =>
+      server.requests.filter((r) => isListRead(`http://localhost${r.path}`, { method: r.method }));
+    const readsBefore = listReads().length;
+    await nextPoll();
+    expect(listReads()).toHaveLength(readsBefore + 1);
+    expect(holdList).toBe(false);
+
+    await user.click(retry);
+    const row = screen.getByRole("button", { name: "Broken policy" }).closest("tr")!;
+    expect(await within(row).findByText("running")).toBeInTheDocument();
+
+    // The poll that read `failed` before the 202 now answers.
+    await act(async () => {
+      release();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await waitFor(() => expect(qc.isFetching({ queryKey: governingKeys.list(WS) })).toBe(0));
+    expect(within(row).getByText("running")).toBeInTheDocument();
+    expect(within(row).queryByText("Provider timed out")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry extraction of Broken policy" })).toBeNull();
+    expect(revision.extractionState).toBe("failed");
   });
 
   it("the upload dialog names every accepted extension and offers them to the picker as .ext", async () => {

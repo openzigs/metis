@@ -2548,13 +2548,19 @@ workspace nav shows its **Governing documents** tab only once the list route ans
 current revision: label, effective date, extraction state (a `failed` one with its
 `extractionError`, plus Retry extraction and Re-upload for an admin), rule count and
 `droppedUnverified`, and re-reads every 5 s while an extraction is `pending` or `running`.
-The same controls appear on a revision stuck `running` past `GOVERNING_EXTRACTION_STALE_MS`
-(`@metis/shared`, which the server's `EXTRACTION_STALE_MS` is, read from the revision's
-`extractionStartedAt`) or `pending` that long after upload (`isExtractionStuck`, #1996): the
-retry route's own rule. A retry's `202` can precede the run's `running` write, so the panel
-writes the revision `running` into the list cache and lets the poll read the server, never an
-immediate re-read. A poll that sees an extraction settle invalidates that document's rules
-(`governingKeys.documentRules`) and detail, which the 30 s `staleTime` would otherwise hold.
+The same controls appear on a stuck revision (`isExtractionStuck`, #1996), by the retry
+route's own rule: `running` for longer than `GOVERNING_EXTRACTION_STALE_MS` since its
+`extractionStartedAt` (or with no start time), or `pending` that long since upload. The bound
+lives in `@metis/shared`, and the server's `EXTRACTION_STALE_MS` is set to it, so the page and
+the route use one number. The page compares the browser's clock with the server's timestamps,
+so clock skew moves the moment Retry appears; an early retry of a fresh run gets the route's
+`409`. A poll of a stuck revision returns unchanged data and so re-renders nothing, so the
+panel also sets a timer for the next moment a revision crosses the bound, and Retry appears
+while the page is open (#2002). A retry's `202` can arrive before the run's `running` write, so
+the panel cancels any list read in flight, writes the revision `running` into the list cache
+and lets the next poll read the server. It never re-reads at once. A poll that sees an
+extraction settle invalidates that document's rules (`governingKeys.documentRules`), which the
+30 s `staleTime` would otherwise hold.
 Selecting a document shows its rules (a revision picker once it has more than one); a row
 expands to the verbatim `clauseExcerpt`. Upload, New revision, Retry, Edit and Remove render
 for a workspace `owner`/`admin` or a deployment admin (`canManageGoverning`, from
