@@ -253,6 +253,7 @@ import {
 import { buildRequirementGroundedPrompt, normalizeAgentContext } from "./prompts.js";
 import { clearUnknownRequirementIds } from "./requirement-id-guard.js";
 import {
+  attachGoverningApplicability,
   buildRetrievalQueries,
   CODE_REQUIREMENTS_QUERY,
   deriveRetrievalQuery,
@@ -260,6 +261,7 @@ import {
   retrievePerRequirement,
   runGroundedRetrieval,
 } from "./retrieval.js";
+import { governingApplicabilityForProject } from "../governing/applicability.js";
 import {
   retrieveFusedCodeChunks,
   retrieveFusedCodeContext,
@@ -4332,14 +4334,34 @@ export class AnalysisOrchestrator {
         }
 
         // Per-requirement retrieval — bounded fan-out, concurrency-capped.
-        const perRequirement = await retrievePerRequirement(knowledge, {
+        // #1872 — beside it, governing-rule applicability per requirement:
+        // null (and no database read) unless GOVERNING_DOCS_ENABLED is on and
+        // the project's workspace has current rules, so a flag-off analysis is
+        // unchanged. Read by the governing findings (#1873, #1874).
+        const governing = await governingApplicabilityForProject({
           projectId: input.projectId,
-          requirements: input.requirements,
-          documentIds: documentIds.length > 0 ? documentIds : undefined,
-          k: ANALYSIS_RETRIEVE_K,
-          maxRequirements: MAX_REQUIREMENTS_FOR_RETRIEVAL,
-          concurrency: REQUIREMENT_RETRIEVAL_CONCURRENCY,
+          provider: this.deps.provider,
+          ...(input.model ? { model: input.model } : {}),
+          signal: input.signal,
+        }).catch((err: unknown) => {
+          log.warn("governing applicability skipped: its rules could not be loaded", {
+            analysisId: input.analysisId,
+            error: (err as Error).message,
+          });
+          return null;
         });
+        const perRequirement = await attachGoverningApplicability(
+          await retrievePerRequirement(knowledge, {
+            projectId: input.projectId,
+            requirements: input.requirements,
+            documentIds: documentIds.length > 0 ? documentIds : undefined,
+            k: ANALYSIS_RETRIEVE_K,
+            maxRequirements: MAX_REQUIREMENTS_FOR_RETRIEVAL,
+            concurrency: REQUIREMENT_RETRIEVAL_CONCURRENCY,
+          }),
+          governing,
+          { concurrency: REQUIREMENT_RETRIEVAL_CONCURRENCY },
+        );
 
         // #729 (Epic #725) — fold fused code-graph symbol context into the
         // grounded evidence. This mode runs when NO code graph exists, so fused

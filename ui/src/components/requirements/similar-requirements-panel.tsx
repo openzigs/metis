@@ -118,6 +118,15 @@ function firstFetchInFlight(query: Query): boolean {
 }
 
 /**
+ * #1990 — how many fetches of `query` have settled, with an answer or an error.
+ * Unchanged while a fetch is in flight, and after one is cancelled, which puts
+ * back the state it started from.
+ */
+function settledCount(query: Query): number {
+  return query.state.dataUpdateCount + query.state.errorUpdateCount;
+}
+
+/**
  * "3 code links: 2 fresh, 1 stale" — `moved` links were re-pointed and count as
  * fresh. A borrowed link is counted apart (#1902), never as fresh or stale.
  * #1931 — `truncated`: it holds more than the links given, which the server
@@ -287,14 +296,17 @@ function BorrowAction({
       // #1931 — a list still on its first fetch may have read the links before
       // the borrow committed. #1945 — only a fetch already in flight as the
       // borrow answers: one a card starts after it (while the code links below
-      // refresh) reads the committed links. Taken before any await.
-      const racing = new Set(
+      // refresh) reads the committed links. Taken before any await. #1990 — and
+      // only while that fetch is unsettled: one that answers during the refresh
+      // is refetched only if it lists this requirement, and one that fails is
+      // retried the usual way.
+      const racing = new Map(
         queryClient
           .getQueryCache()
           .findAll({ queryKey: lists, predicate: firstFetchInFlight })
-          .map((query) => query.queryHash),
+          .map((query) => [query.queryHash, settledCount(query)]),
       );
-      const raced = (query: Query) => racing.has(query.queryHash);
+      const raced = (query: Query) => racing.get(query.queryHash) === settledCount(query);
       await queryClient.invalidateQueries({ queryKey: traceabilityKey(projectId, requirementId) });
       // Invalidating a raced list alone joins its fetch (React Query restarts a
       // fetch in flight only once the query has data), so cancel it first: the

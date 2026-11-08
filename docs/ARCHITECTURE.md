@@ -1979,7 +1979,7 @@ The Phase 5 implementation grounds the conceptual pipeline above in concrete mod
 | `middleware/ai-rate-limit.ts` | Module-scope `aiRateLimiter` (was per-request before #241 fix). Per-user keyed, 60 req / 15 min default, tunable via `AI_RATE_LIMIT_MAX` / `AI_RATE_LIMIT_WINDOW_MS`. Returns 429 with `AI_RATE_LIMITED`. |
 | `middleware/project-workspace-rate-limit.ts` | Per-user `projectWorkspaceRateLimiter` for `PUT /api/projects/:id/workspace` (#731); default 30 / 15 min, tunable via `PROJECT_WORKSPACE_LIMIT_MAX` / `PROJECT_WORKSPACE_RATE_LIMIT_WINDOW_MS`; cluster store (#679). |
 | `middleware/upload-rate-limit.ts` | Per-user `uploadRateLimiter` (default 30 / 15 min) and `retrieveRateLimiter` (default 60 / 1 min). |
-| `middleware/document-file-upload.ts` | `documentFile` (#1921): the multipart `file` field for the project and governing upload routes — Multer memory storage capped at `MAX_DOCUMENT_BYTES` and one file. Multer's `LIMIT_FILE_SIZE` is `413 FILE_TOO_LARGE` (the code and message `validateUpload` gives), any other Multer error `400 UPLOAD_ERROR`. |
+| `middleware/document-file-upload.ts` | `documentFile` (#1921, #1948): the multipart `file` field for the project document, governing document and analysis clarify CSV import (`POST …/clarify/import`) routes — Multer memory storage capped at `MAX_DOCUMENT_BYTES` and one file. Multer's `LIMIT_FILE_SIZE` is `413 FILE_TOO_LARGE` (the code and `FILE_TOO_LARGE_MESSAGE` `validateUpload` gives), any other Multer error `400 UPLOAD_ERROR` (a second file or another field asks for one file in `file`; other limits carry Multer's reason), and a body busboy cannot parse (cut off mid-part, a malformed part header, no boundary) `400 UPLOAD_ERROR`. Any other error is forwarded. |
 | `middleware/generated-docs-rate-limit.ts` | #632 — router-level limiters on `/api/projects/:projectId/docs`: `generatedDocsPreAuthRateLimiter` (per IP, default 3,600 / 15 min, ahead of `requireAuth`) and `generatedDocsRateLimiter` (per user with IP fallback, default 900 / 15 min, ahead of the DB-reading `refreshAuthenticatedUser`). Tunable via `GENERATED_DOCS_RATE_LIMIT_MAX` / `GENERATED_DOCS_PREAUTH_RATE_LIMIT_MAX` / `GENERATED_DOCS_RATE_LIMIT_WINDOW_MS`; 429 with `GENERATED_DOCS_RATE_LIMITED`. The stricter per-route `/generate` limiter (5 / 15 min) still applies. |
 | `routes/projects.ts` | `GET/POST/PATCH/DELETE /api/projects`, `POST /api/projects/:id/archive`, `PUT /api/projects/:id/workspace` (`{ workspaceId }` — puts a project with no workspace into one the caller owns or administers; `409 PROJECT_ALREADY_IN_WORKSPACE` if it already has one, #731). POST accepts an optional `primaryRepo` and answers `201` with the project plus `primaryRepo` (the linked connector, or `null`) and `primaryRepoError` (`{ code, message }` when the link failed — the project is still created — else `null`) (#428, #448). PATCH accepts `aiProviderId` and `aiModel` for per-project provider/model overrides (#134, #234). |
 | `routes/documents.ts` | `POST/GET/DELETE /api/projects/:projectId/documents`, plus v1.0.1 (#132) `POST /documents/url` and `POST /documents/text`. v1.0.1 (#133): when an `IngestQueue` is wired (production), uploads return `202` with `{document, ingest: {status: "queued", queued: true}}` instead of blocking on the embedding pipeline. `POST /api/projects/:projectId/retrieve` accepts `mode: "dense" \| "hybrid"` and echoes `{mode, reranked}`. Multer memory storage with `MAX_DOCUMENT_BYTES` cap through `documentFile`, so an over-size file is `413 FILE_TOO_LARGE` (#1921). List (#440): `GET ?limit=` (1–100, default 25) returns `{items, total, limit, offset, nextCursor}`, newest first by `(uploadedAt, id)`; pass `?cursor=<nextCursor>` for the next page, which returns `{items, limit, nextCursor}` without re-counting (`nextCursor: null` on the last page). A malformed cursor is `400 INVALID_CURSOR`. Each row carries `source` (`upload` \| `generated` \| `repo` \| `db` \| `confluence` \| `jira`, #474) and a nullable `title` (a Confluence page title); the Workbench document tree, the analysis capability probe, the analysis default document set and the docs-generation evidence gate and inputs classify on `source`, not the filename (#525). Search hits carry the row's `source` too (`RetrievedChunk.source`, #547), so grounding's evidence class, repository identity and path scope, schema-mapping suggestions, Spec Kit document expansion, chat, Spec Kit and analysis code-symbol dedup (`FusedRagChunkRef.source`; analysis threads it through `RetrievalContextChunk.source`, #573) and the UI's document lists (`formatDocumentName`, `formatDocLabel`) classify on it. Citation labels do too (#573): the analysis snapshot stamps each document citation with its row's `source` and cross-doc evidence refs carry it, both read project-scoped at read time, and a clarifying question's grounding citation carries `documentSource` from its search hit; `formatSourceLabel` parses a `connector:repo:` name only for a `repo` row, and falls back to the name only when the row no longer resolves — so uploads may no longer carry a reserved prefix; `pnpm --filter @metis/server documents:reserved-uploads` reports uploads stored before #540 under one, read-only. Every upload path (`POST /`, `/url`, `/text`) answers `400 RESERVED_FILENAME` for a sanitised filename starting with `connector:`, `repo:`, `jira:`, `confluence:`, `generated-doc-` or `live-schema:` (`RESERVED_FILENAME_PREFIXES`, `lib/documents/upload.ts`). Each prefix is matched with the case its readers use: exact case, except `generated-doc-`, which `ui/src/lib/doc-label.ts` matches case-insensitively — so a pasted title like `Jira: sprint 12 retro.md` is an ordinary upload. A generated row is one whose id starts `gendoc-` (migration `20261006000525`). |
@@ -2481,8 +2481,8 @@ gates on).
   local store (`governing` is refused as a project id, so no project table can be that
   directory), and key `governing/<workspaceId>` in pgvector's shared table
   (`getGoverningVectorSpace()` in `lib/rag/vector-store.ts`). One table per workspace, never a
-  global one, and no project search reads it: `KnowledgeService.search` is unchanged until
-  #1872 wires governing retrieval in deliberately. Each vector row's `documentId` is the
+  global one, and no project search reads it: `KnowledgeService.search` is unchanged; #1872
+  reads the index through its own retriever (`governingIndexRetriever`, below). Each vector row's `documentId` is the
   revision id. `GoverningIndex.search(workspaceId, query, k, actor)` checks membership before
   it reads the table, then filters to the current revision of each live document
   (`includeSuperseded` for every revision). A failed embed leaves the revision
@@ -2536,6 +2536,62 @@ its own run while the previous revision's rules stay. `pnpm --filter server
 governing:extract-recall` runs the same extraction over the #1867 policy and reports recall
 against its obligation list. `--record` saves the replies as the fixture the unit tests
 replay (`lib/governing/__fixtures__/`).
+
+#### Workspace page (#1871)
+
+`ui/src/app/(authed)/workspaces/[id]/governing/` renders
+`components/governing/governing-documents-panel.tsx` over `ui/src/lib/governing-api.ts`. The
+workspace nav shows its **Governing documents** tab only once the list route answers
+(`useGoverningTabVisible`), so a 404 (flag off) hides it. The list shows each document's
+current revision: label, effective date, extraction state (a `failed` one with its
+`extractionError`, plus Retry extraction and Re-upload for an admin), rule count and
+`droppedUnverified`, and re-reads every 5 s while an extraction is `pending` or `running`.
+Selecting a document shows its rules (a revision picker once it has more than one); a row
+expands to the verbatim `clauseExcerpt`. Upload, New revision, Retry, Edit and Remove render
+for a workspace `owner`/`admin` or a deployment admin (`canManageGoverning`, from
+`GET /api/workspaces/:id`'s members), which is the server's `requireWorkspaceRole("admin")`
+rule; a member sees the same list and rules without them. The upload dialog runs the project
+uploader's `clientValidate`, so a file is refused with the same size and type messages.
+
+#### Applicability per requirement (#1872)
+
+`lib/governing/applicability.ts` decides, per requirement, which governing rules apply. The
+model decides, never the analyst (owner, 2026-11-06). `decideApplicability` finds candidates
+in two passes and unions them:
+
+1. **Top-k:** `governingIndexRetriever` searches the workspace's index (#1869) as
+   `GOVERNING_ANALYSIS_ACTOR` (the workspace comes from the project row, never a request) and
+   maps each chunk to the current rules of the same revision whose clause it holds.
+2. **The screen:** the one-line summary of **every** current rule goes to the model, which
+   flags any that might apply. Top-k similarity misses a rule that applies without resembling
+   the requirement (audit logging, retention); the screen is the recall safety net. The
+   summaries are split into batches of at most `SCREEN_BATCH_MAX_TOKENS` (8,000 estimated
+   tokens, about 350 rules at #1867's measured 21 tokens a rule), or half the model's context
+   window when that is smaller. Every rule is in exactly one batch and none is truncated; the
+   count screened is logged. A failed top-k search is survivable while the screen runs.
+
+Each candidate is then judged `applies | does-not-apply | uncertain` with a one-line reason.
+An `uncertain` decision always carries a business question: a reply that leaves a candidate
+undecided or marks it `uncertain` without the question is re-asked once, and then recorded
+`uncertain` with `fallbackBusinessQuestion`, which names the rule. The model names rules by
+handles (`R1`, `R2`, …) assigned per decision, so a reply can only name a rule it was shown,
+and the requirement, summaries, clauses, control ids and titles travel fenced
+(`fenceToolResult`, as #1870).
+
+**The hook.** `governingApplicabilityForProject` returns `null`, with no database read, while
+`GOVERNING_DOCS_ENABLED` is off; it is also `null` for a project with no workspace or a
+workspace with no current rules. `currentWorkspaceRules` (`governing-store.ts`) reads only the
+live rules of each live document's current revision, scoped on the workspace through the
+document. The orchestrator's requirement-grounded code pass calls it beside
+`retrievePerRequirement`, and `attachGoverningApplicability` (`analysis/retrieval.ts`) puts
+each requirement's `ApplicabilitySet` on its evidence as `governing` (a failed requirement
+gets one carrying `error`, never a silently empty set). Nothing reads `governing` yet: the BA
+questions (#1873) and the cited findings (#1874) do. A flag-off analysis is byte-identical to
+before (`governing-applicability-pipeline-1872.test.ts`, a snapshot).
+
+`pnpm --filter server eval:governing --arms A0,A3` measures it: arm A3 runs
+`decideApplicability` over the #1867 corpus (lexical top-k standing in for the vector
+index), reading `applies` as `gap` and `uncertain` as `needs-ba-input`.
 
 ---
 

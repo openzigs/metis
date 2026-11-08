@@ -22,6 +22,13 @@ export interface UploadCandidate {
   buffer: Buffer;
 }
 
+/**
+ * The message for a file over `MAX_DOCUMENT_BYTES`, shared with the multipart
+ * reader (`middleware/document-file-upload.ts`), which answers the same 413
+ * when Multer stops reading at the cap (#1948).
+ */
+export const FILE_TOO_LARGE_MESSAGE = `File exceeds ${MAX_DOCUMENT_BYTES} byte limit`;
+
 export type UploadValidation =
   | { ok: true; mimeType: string; filename: string }
   | { ok: false; status: 413 | 415 | 400; code: string; message: string };
@@ -35,7 +42,7 @@ export function validateUpload(input: UploadCandidate): UploadValidation {
       ok: false,
       status: 413,
       code: "FILE_TOO_LARGE",
-      message: `File exceeds ${MAX_DOCUMENT_BYTES} byte limit`,
+      message: FILE_TOO_LARGE_MESSAGE,
     };
   }
   const filename = sanitiseFilename(input.filename);

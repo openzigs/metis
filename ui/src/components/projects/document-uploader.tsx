@@ -34,7 +34,8 @@ interface Props {
   onUploaded?: (doc: DocumentRow) => void;
 }
 
-function clientValidate(file: File): string | null {
+/** The upload checks the server repeats; #1871 reuses them for governing documents. */
+export function clientValidate(file: File): string | null {
   if (file.size === 0) return "File is empty";
   if (file.size > MAX_DOCUMENT_BYTES) {
     return `File exceeds the ${(MAX_DOCUMENT_BYTES / 1024 / 1024).toFixed(0)} MB cap`;
