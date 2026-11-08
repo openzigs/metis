@@ -251,10 +251,21 @@ IdP account cannot sign in as them.
 A sign-in's claim of an account and its role reconciliation each run in one
 serializable transaction. When the database aborts one on a write conflict
 (Postgres does so under load, sometimes between unrelated users), it runs
-again, up to three times. A sign-in that loses all three is answered
-`503 SIGN_IN_CONFLICT`: try again. It is not an account conflict, so it is not
-audited as `identity_conflict:*` (#1959). SCIM provisioning and role
-reconciliation retry in the same way.
+again, up to three times. It is not an account conflict, so it is never
+audited as `identity_conflict:*` (#1959). Each path that retries answers a
+write that loses all three attempts as follows; nothing it wrote is kept:
+
+| Path | Outcome after three lost attempts |
+| --- | --- |
+| Sign-in: claiming or creating the account | `503 SIGN_IN_CONFLICT`: sign in again |
+| Sign-in: reconciling the provider's role | `503 SIGN_IN_CONFLICT`: sign in again |
+| SCIM provisioning (every user and group write) | `503 SCIM_WRITE_CONFLICT`: the IdP retries it (#1977) |
+| Administrator role reconciliation (`/api/admin/auth/role-reconciliation` and `role-reconciliation-cli.ts`, inspect and confirm) | `409 RECONCILIATION_CONFLICT`: inspect again |
+
+One sign-in runs at most nine serializable transactions: claiming the account
+retries up to three times, and runs once more (three more attempts) only when
+the first round ends on a unique-key race with another first sign-in; role
+reconciliation is a further three (#1977).
 
 The upgrade migration fills `users.authSource` from the audit log: an account
 whose every recorded login came through OIDC is marked `oidc`, through SAML
