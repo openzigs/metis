@@ -180,7 +180,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ] as const) {
         await db.workspace.create({ data: { id: ws, name: ws, slug: ws } });
         await db.user.create({
-          data: { id: user, username: user, displayName: user, email: `${user}@example.test` },
+          data: {
+            id: user,
+            username: user,
+            displayName: `Name of ${user}`,
+            email: `${user}@example.test`,
+          },
         });
         await db.workspaceMember.create({
           data: { workspaceId: ws, userId: user, role: "member" },
@@ -329,12 +334,24 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         needsBaInput: 1,
         unverifiedCitations: 0,
       });
+      // #1876 — the revision the findings cite, with its rule count: the
+      // analysis view's "N of M applicable rules in <title> <label>".
+      expect(first.body.data.revisions).toEqual([
+        {
+          revisionId: v1Id,
+          documentTitle: "Information Handling Policy",
+          revisionLabel: "v1",
+          rules: 2,
+        },
+      ]);
+      expect(card).toMatchObject({ decidedByName: null });
 
       const res = await decide(PA, ANA, card.id as string, {
         decision: "rejected",
         note: "Security says tokens, not digits.",
       });
       expect(res.status).toBe(200);
+      expect(res.body.data.finding).toMatchObject({ decidedByName: `Name of ${MEMBER_A}` });
       const fresh = await getFindings(PA, ANA);
       expect(
         (fresh.body.data.findings as Array<Record<string, unknown>>).find((f) => f.id === card.id),
@@ -342,6 +359,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         decision: "rejected",
         decisionNote: "Security says tokens, not digits.",
         decidedById: MEMBER_A,
+        // #1876 — the decider's name, read back, for the analysis view.
+        decidedByName: `Name of ${MEMBER_A}`,
         decidedAt: expect.any(String),
       });
       const rows = await db.auditLog.findMany({
@@ -406,6 +425,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         clauseExcerpt: "never stores a full payment card number in any system",
       });
       expect(String(card.clauseExcerpt)).not.toContain("vault token");
+      // #1876 — the rule count is v1's, the revision the findings cite, not v2's.
+      expect(res.body.data.revisions).toEqual([
+        expect.objectContaining({ revisionId: v1Id, revisionLabel: "v1", rules: 2 }),
+      ]);
       // Re-producing against the SAME v1 rules keeps citing v1, not the current v2.
       await produceGoverningFindingsForAnalysis({
         analysisId: ANA,

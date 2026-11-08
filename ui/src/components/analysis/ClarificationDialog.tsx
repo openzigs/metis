@@ -53,7 +53,11 @@ export function AnsweredRounds({
             Round {r.round} — {r.answered.length} answered
           </p>
           {r.answered.map((q) => (
-            <div key={q.id} className="rounded border border-border p-3">
+            <div
+              key={q.id}
+              id={`clarify-question-${q.id}`}
+              className="scroll-mt-4 rounded border border-border p-3"
+            >
               <p className="text-sm font-medium text-foreground">{q.question}</p>
               <p className="mt-1 text-sm text-muted-foreground">{q.submitted}</p>
             </div>
@@ -362,7 +366,9 @@ export function ClarificationDialogPanel({
           return (
             <div
               key={q.id}
-              className="rounded border border-border p-3"
+              // #1876 — a governing finding's "Answer the clarifying question" link.
+              id={`clarify-question-${q.id}`}
+              className="scroll-mt-4 rounded border border-border p-3"
               data-testid={isSelfResolved ? "grounded-question" : "open-question"}
             >
               <Label htmlFor={`clarify-answer-${q.id}`} className="mb-1 block text-sm font-medium">
