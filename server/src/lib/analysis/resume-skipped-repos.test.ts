@@ -6,8 +6,8 @@
  * collaborators (`runAgenticCodeAgent`, `runSynthesisAndPersist`) and the
  * degradation helpers (`computeAffectedCode` / `computeEscalations` /
  * `extractRequirementsFromDocAgent`) are spied so the RESUME ORCHESTRATION is
- * the unit under test: which connectors run, at what budget, with append-merge
- * persistence, the capability update, the concurrency guard, and the no-op path.
+ * the unit under test: which connectors run, at what budget, with connector-scoped
+ * supersede persistence, the capability update, the concurrency guard, and the no-op path.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveCapabilityReasons, type AnalysisCapability } from "@metis/shared";
@@ -31,18 +31,8 @@ function capabilityMeta(skipped: AnalysisCapability["skippedRepos"]): string {
   return JSON.stringify({ capability });
 }
 
-/** #1998 — the `code` AgentResult rows, as far as the resume's own delete sees them. */
-interface CodeRow {
-  id: string;
-  analysisId: string;
-  agentKey: string;
-  connectorId: string | null;
-  createdAt: Date;
-}
-
 const state = {
   status: "completed" as string,
-  agentResults: [] as CodeRow[],
   metadata: capabilityMeta([]) as string | null,
   connectors: [] as Array<{ id: string; label: string }>,
   updates: [] as Array<Record<string, unknown>>,
@@ -87,33 +77,6 @@ vi.mock("../prisma.js", () => ({
           state.updates.push(data);
           if (typeof data.status === "string") state.status = data.status as string;
           return { count: 1 };
-        },
-      ),
-    },
-    // #1998 — the resume's connector-scoped delete of a repository's earlier rows.
-    agentResult: {
-      deleteMany: vi.fn(
-        async ({
-          where,
-        }: {
-          where: {
-            analysisId: string;
-            agentKey: string;
-            connectorId: string;
-            createdAt: { lt: Date };
-          };
-        }) => {
-          const before = state.agentResults.length;
-          state.agentResults = state.agentResults.filter(
-            (r) =>
-              !(
-                r.analysisId === where.analysisId &&
-                r.agentKey === where.agentKey &&
-                r.connectorId === where.connectorId &&
-                r.createdAt < where.createdAt.lt
-              ),
-          );
-          return { count: before - state.agentResults.length };
         },
       ),
     },
@@ -177,75 +140,6 @@ describe("AnalysisOrchestrator.resumeSkippedRepos (#741)", () => {
     state.connectors = [];
     state.updates = [];
     state.aiModel = null;
-    state.agentResults = [];
-  });
-
-  // #1998 item 5 — a repository a regenerate's cap left out keeps the rows of
-  // the pass before it; a resume appended beside them, so its findings were
-  // read twice. Its earlier rows now go once its resumed pass completes.
-  describe("a resumed repository's earlier code rows (#1998)", () => {
-    const earlier = new Date("2026-01-01T00:00:00Z");
-    const row = (id: string, connectorId: string | null, analysisId = ANALYSIS_ID): CodeRow => ({
-      id,
-      analysisId,
-      agentKey: "code",
-      connectorId,
-      createdAt: earlier,
-    });
-    /** The resumed pass appends its own row, as `runAgenticCodeAgent` does. */
-    const appendOnRun = (spy: ReturnType<typeof makeOrch>["runAgenticCodeAgent"], fail?: string) =>
-      spy.mockImplementation((async (input: { connectorId: string }) => {
-        state.agentResults.push({
-          id: `new-${input.connectorId}`,
-          analysisId: ANALYSIS_ID,
-          agentKey: "code",
-          connectorId: input.connectorId,
-          createdAt: new Date(),
-        });
-        if (input.connectorId === fail) throw new Error("provider down");
-        return {
-          agentKey: "code",
-          output: { agentKey: "code", summary: "", notes: [], findings: [] },
-          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-          durationMs: 1,
-        };
-      }) as never);
-
-    it("replaces only the resumed repository's own earlier rows", async () => {
-      state.metadata = capabilityMeta([{ connectorId: "c2", label: "worker" }]);
-      state.connectors = [{ id: "c2", label: "worker" }];
-      state.agentResults = [
-        row("old-c2", "c2"),
-        row("old-c2-continued", "c2"),
-        row("old-c1", "c1"),
-        row("legacy", null),
-        row("other-analysis-c2", "c2", "an_2"),
-      ];
-      const { orch, runAgenticCodeAgent } = makeOrch();
-      appendOnRun(runAgenticCodeAgent);
-
-      await orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" });
-
-      expect(state.agentResults.map((r) => r.id).sort()).toEqual([
-        "legacy",
-        "new-c2",
-        "old-c1",
-        "other-analysis-c2",
-      ]);
-    });
-
-    it("keeps a repository's earlier rows when its resumed pass fails", async () => {
-      state.metadata = capabilityMeta([{ connectorId: "c2", label: "worker" }]);
-      state.connectors = [{ id: "c2", label: "worker" }];
-      state.agentResults = [row("old-c2", "c2")];
-      const { orch, runAgenticCodeAgent } = makeOrch();
-      appendOnRun(runAgenticCodeAgent, "c2");
-
-      await orch.resumeSkippedRepos({ analysisId: ANALYSIS_ID, actorId: "u1" });
-
-      expect(state.agentResults.map((r) => r.id)).toContain("old-c2");
-      expect(state.status).toBe("failed");
-    });
   });
 
   // #1145 adversarial review — the resume path resolved Auto through the same
@@ -268,7 +162,7 @@ describe("AnalysisOrchestrator.resumeSkippedRepos (#741)", () => {
     );
   });
 
-  it("re-runs each skipped connector with append-mode + a full budget, then re-synthesizes", async () => {
+  it("re-runs each skipped connector with supersede-mode + a full budget, then re-synthesizes", async () => {
     state.metadata = capabilityMeta([
       { connectorId: "c2", label: "worker" },
       { connectorId: "c3", label: "api" },
@@ -285,12 +179,14 @@ describe("AnalysisOrchestrator.resumeSkippedRepos (#741)", () => {
     expect(result.resumed.map((r) => r.connectorId).sort()).toEqual(["c2", "c3"]);
     expect(result.remaining).toEqual([]);
 
-    // One agentic pass per skipped connector, each append-mode, each with a full
-    // per-repo budget (100k / 2 = 50k, the floor — not the starved sub-floor slice).
+    // One agentic pass per skipped connector, each with a full per-repo budget
+    // (100k / 2 = 50k, the floor — not the starved sub-floor slice). #1998/#2011 —
+    // each in supersede mode: a completed pass replaces only its own connector's
+    // earlier rows, in one transaction (resume-supersede-2011.sqlite.test.ts).
     expect(runAgenticCodeAgent).toHaveBeenCalledTimes(2);
     for (const call of runAgenticCodeAgent.mock.calls) {
       const arg = call[0] as { persistMode: string; tokenBudget: number; connectorId: string };
-      expect(arg.persistMode).toBe("append");
+      expect(arg.persistMode).toBe("supersede");
       expect(arg.tokenBudget).toBe(50_000);
     }
     expect(

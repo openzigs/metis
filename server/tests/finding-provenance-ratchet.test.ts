@@ -95,8 +95,9 @@ const WRITE_METHODS = new Set(["create", "createMany", "upsert", "update", "upda
 const GUARDED_FINDING_WRITERS: readonly { site: string; count: number; guard: string }[] = [
   {
     // #1234 — coerces a model-authored `extracted` down to `inferred`, so the
-    // mandatory-1.0 branch is unreachable from model output.
-    site: "src/lib/analysis/analysis-service.ts :: persistAgentResult :: prisma.finding.create",
+    // mandatory-1.0 branch is unreachable from model output. #2011 — the write
+    // moved out of `persistAgentResult` so it can run inside a transaction.
+    site: "src/lib/analysis/analysis-service.ts :: writeAgentResult :: db.finding.create",
     count: 1,
     guard: "resolveFindingProvenance",
   },

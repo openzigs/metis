@@ -1123,7 +1123,8 @@ describe("#1131 a multi-repository continuation is scoped per repository", () =>
 
 /**
  * PR panel (#1131, test-falsifiability advisory) — a failed or cancelled
- * APPEND must not delete the row whose findings it was adding to.
+ * APPEND must not delete the row whose findings it was adding to. #2011 — nor
+ * may a failed SUPERSEDE (a resume): only a completed pass replaces.
  */
 describe("#1131 a failed appended pass keeps the rows it was adding to", () => {
   it("records the failure row in append mode", async () => {
@@ -1138,7 +1139,7 @@ describe("#1131 a failed appended pass keeps the rows it was adding to", () => {
     orch.deps.prepareRepoClone = vi.fn(async () => {
       throw new Error("clone failed");
     });
-    for (const persistMode of ["append", undefined] as const) {
+    for (const persistMode of ["append", "supersede", undefined] as const) {
       await expect(
         orch.runAgenticCodeAgent({
           analysisId: "an_1",
@@ -1154,6 +1155,7 @@ describe("#1131 a failed appended pass keeps the rows it was adding to", () => {
     }
     const modes = serviceMock.persistAgentResult.mock.calls.map((c) => c[0]);
     expect(modes).toEqual([
+      expect.objectContaining({ status: "failed", mode: "append" }),
       expect.objectContaining({ status: "failed", mode: "append" }),
       expect.objectContaining({ status: "failed", mode: "replace" }),
     ]);
