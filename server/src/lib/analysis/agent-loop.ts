@@ -1957,6 +1957,11 @@ export async function runAgentLoop(
       // breakpoint here could read none of the loop's writes back and is the
       // loop's last call, so it would only re-write the longest transcript at
       // the write premium. The system breakpoint is unaffected and stays.
+      // #1944 — this is not chat-only: the analysis code pass (`orchestrator.ts`,
+      // `messages: true`) runs this loop too, and on native tools its retry is
+      // the same call — the loop's last, sent with a changed tool_choice — so
+      // the write would be the same waste there. On the text protocol no
+      // tool_choice is sent and the breakpoint stays, for both callers.
       if (chatOpts.toolChoice === "none" && chatOpts.promptCaching?.messages) {
         const { messages: _transcript, ...rest } = chatOpts.promptCaching;
         chatOpts.promptCaching = rest;

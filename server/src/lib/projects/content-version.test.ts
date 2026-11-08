@@ -3,16 +3,32 @@
  * on, and what it must not. The real queries run in
  * `tests/tool-result-cache-1843.sqlite.test.ts`.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// #1944 — the embedder the real source reads its identity from.
+const embedder = vi.hoisted(() => ({
+  model: "m",
+  knownIdentity: vi.fn((): string => "m|cls|fp32"),
+  currentIdentity: vi.fn(async (): Promise<string> => {
+    throw new Error("probed the sidecar");
+  }),
+}));
+vi.mock("../rag/embedder.js", () => ({ getEmbedder: () => embedder }));
+
 import {
   RECENT_WRITE_WINDOW_MS,
   getProjectContentVersion,
+  prismaContentVersionSource,
   type ContentVersionDocument as Doc,
   type ContentVersionSource,
 } from "./content-version.js";
 
 type Graph = Awaited<ReturnType<ContentVersionSource["codeGraphs"]>>[number];
 const WRITTEN = new Date("2026-11-01T00:00:00Z");
+/** The clock the versions below are read at: a second after the latest write. */
+const AT = new Date(WRITTEN.getTime() + 1_000);
+const version = (projectId: string, s: ContentVersionSource, now: Date = AT) =>
+  getProjectContentVersion(projectId, s, now);
 
 const graph = (id: string, repo: string | null, sha: string | null): Graph => ({
   id,
@@ -72,7 +88,7 @@ function source(input: {
 describe("getProjectContentVersion", () => {
   it("asks only for the project it was given", async () => {
     const s = source({});
-    await getProjectContentVersion("p1", s);
+    await version("p1", s);
     expect(new Set(s.asked)).toEqual(new Set(["p1"]));
   });
 
@@ -87,8 +103,8 @@ describe("getProjectContentVersion", () => {
       { model: "c1", count: 5 },
       { model: "c2", count: 6 },
     ];
-    const a = await getProjectContentVersion("p", source({ graphs, docs, symbols, chunks }));
-    const b = await getProjectContentVersion(
+    const a = await version("p", source({ graphs, docs, symbols, chunks }));
+    const b = await version(
       "p",
       source({
         graphs: [...graphs].reverse(),
@@ -101,7 +117,7 @@ describe("getProjectContentVersion", () => {
   });
 
   it("maps each graph to its repo connection, or graph:<id> when it has none", async () => {
-    const v = await getProjectContentVersion(
+    const v = await version(
       "p",
       source({ graphs: [graph("g1", "r1", "a"), graph("g2", null, "b")] }),
     );
@@ -110,8 +126,8 @@ describe("getProjectContentVersion", () => {
   });
 
   it("an empty project is complete; a graph with no SHA is not", async () => {
-    expect((await getProjectContentVersion("p", source({}))).complete).toBe(true);
-    const v = await getProjectContentVersion(
+    expect((await version("p", source({}))).complete).toBe(true);
+    const v = await version(
       "p",
       source({ graphs: [graph("g1", "r1", "a"), graph("g2", "r2", null)] }),
     );
@@ -150,15 +166,15 @@ describe("getProjectContentVersion", () => {
       chunks: [{ model: "m", count: 4 }],
       model: "m",
     };
-    const a = await getProjectContentVersion("p", source(base));
-    const b = await getProjectContentVersion("p", source({ ...base, ...change }));
+    const a = await version("p", source(base));
+    const b = await version("p", source({ ...base, ...change }));
     expect(b.key).not.toBe(a.key);
   });
 
   it("two projects with identical content get different keys", async () => {
     const s = { graphs: [graph("g1", "r1", "a")] };
-    const a = await getProjectContentVersion("p1", source(s));
-    const b = await getProjectContentVersion("p2", source(s));
+    const a = await version("p1", source(s));
+    const b = await version("p2", source(s));
     expect(a.key).not.toBe(b.key);
     expect(a.docsVersion).toBe(b.docsVersion);
   });
@@ -166,23 +182,69 @@ describe("getProjectContentVersion", () => {
   it("#1864 hashes only the rows written within the window before the latest write", async () => {
     const old = new Date(WRITTEN.getTime() - RECENT_WRITE_WINDOW_MS - 1);
     const s = source({ docs: [doc("d1"), doc("d0", { updatedAt: old })] });
-    const a = await getProjectContentVersion("p", s);
+    const a = await version("p", s);
     expect(s.since).toEqual([new Date(WRITTEN.getTime() - RECENT_WRITE_WINDOW_MS)]);
     // A row older than the window is covered by the count and the latest write
     // alone: its state is not read, so a change the database never stamped
     // (impossible through Prisma) would not show.
-    const b = await getProjectContentVersion(
+    const b = await version(
       "p",
       source({ docs: [doc("d1"), doc("d0", { updatedAt: old, status: "failed" })] }),
     );
     expect(b.key).toBe(a.key);
   });
 
+  it("#1944 reads no row once the latest write is over two windows old", async () => {
+    // A bulk write (a repo sync): many rows in the same minute, then nothing.
+    const docs = Array.from({ length: 50 }, (_, i) =>
+      doc(`d${i}`, { updatedAt: new Date(WRITTEN.getTime() - i * 100) }),
+    );
+    const later = new Date(WRITTEN.getTime() + 2 * RECENT_WRITE_WINDOW_MS + 1);
+    const s = source({ docs });
+    const v = await version("p", s, later);
+    expect(s.since).toEqual([]);
+    // The count and the latest write still stand for the set.
+    const fewer = await version("p", source({ docs: docs.slice(1) }), later);
+    expect(fewer.key).not.toBe(v.key);
+    // Exactly two windows old is still read.
+    const edge = source({ docs });
+    await version("p", edge, new Date(WRITTEN.getTime() + 2 * RECENT_WRITE_WINDOW_MS));
+    expect(edge.since).toHaveLength(1);
+  });
+
+  it("#1944 a below-max write from a lagging replica still moves the key after the window passes", async () => {
+    const before = [doc("d1"), doc("d0", { updatedAt: new Date(WRITTEN.getTime() - 30_000) })];
+    // d0 rewritten by a replica whose clock is 20 s behind: stamped below the
+    // max, so neither the count nor the latest write change.
+    const after = [
+      doc("d1"),
+      doc("d0", {
+        updatedAt: new Date(WRITTEN.getTime() - 20_000),
+        status: "failed",
+        aclSubjects: '["x"]',
+      }),
+    ];
+    const k1 = await version("p", source({ docs: before }), AT);
+    // Read 70 s after the latest write: that stamp is 90 s old, outside a
+    // now-anchored window, yet the key must not fall back to k1.
+    const later = new Date(WRITTEN.getTime() + 70_000);
+    const k4 = await version("p", source({ docs: after }), later);
+    expect(k4.key).not.toBe(k1.key);
+    expect(k4.key).not.toBe((await version("p", source({ docs: before }), later)).key);
+  });
+
+  it("#1944 the real source reads the embedder identity without probing the sidecar", async () => {
+    embedder.currentIdentity.mockClear();
+    // The composite identity, not the bare model: a pooling flip must move the key.
+    expect(await prismaContentVersionSource.embedderIdentity()).toBe("m|cls|fp32");
+    expect(embedder.currentIdentity).not.toHaveBeenCalled();
+  });
+
   it("#1864 rows written before the column existed (null) are counted, and no rows are read", async () => {
     const s = source({ docs: [doc("d1", { updatedAt: null })] });
-    const a = await getProjectContentVersion("p", s);
+    const a = await version("p", s);
     expect(s.since).toEqual([]);
-    const none = await getProjectContentVersion("p", source({}));
+    const none = await version("p", source({}));
     expect(a.docsVersion).not.toBe(none.docsVersion);
   });
 });

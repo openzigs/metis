@@ -1609,9 +1609,13 @@ canonical arguments, the project, the caller and the project's **content version
 - the project's document-chunk counts per `embeddingModel`, which a reindex or retag moves
   without touching any document row (#1864);
 - the documents: the row count, the latest `documents.updatedAt`, and the indexing state of
-  the rows written in the minute before it (#1864). These are indexed queries (a count over the project's index entries, a max and a range). Before
-  #1864 every document row was read and hashed on each call;
-- the active embedder identity (`model`, or `model|pooling|dtype`, #792).
+  the rows written in the last minute (#1864). These are indexed queries (a count over the project's index entries, a max and a range). Before
+  #1864 every document row was read and hashed on each call. The minute is counted back from
+  now, not from the latest write (#1944): when no document was written in the last minute, no
+  row is read at all;
+- the active embedder identity (`model`, or `model|pooling|dtype`, #792). It is read without
+  calling the embeddings sidecar (#1944). Until the sidecar has answered its first embed, the
+  bare model id stands in.
 
 A re-ingest, a reindex, a document upload, edit or delete, a removed repo, or an embedder
 model or pooling change therefore makes every older entry unreachable. While a code graph
@@ -1636,6 +1640,8 @@ measured trial (#1845). When it is on:
   cosine ≥ 0.97 (`SEMANTIC_CACHE_THRESHOLD`; it was 0.92 before #1844).
 - A turn that called any tool is never stored, and neither is a project whose content
   version is incomplete.
+- A turn is stored only when the project's content version at its end is the one it started
+  with. A version that changes and changes back during the turn passes that check (#1944).
 
 Chat questions and answers are never written to the vector store
 ([ADR 0022](decisions/0022-no-chat-answers-in-the-vector-store.md)).
