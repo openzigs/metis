@@ -289,6 +289,37 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite?.cleanup();
     });
 
+    it("#2022 — refreshing reads true while a findings run is in flight, and false once it settles", async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const model = findingsModel();
+      const answer = vi.mocked(model.chat).getMockImplementation()!;
+      vi.mocked(model.chat).mockImplementation(async (messages, o) => {
+        await gate;
+        return answer(messages, o);
+      });
+      const running = produceGoverningFindingsForAnalysis({
+        analysisId: ANA,
+        projectId: PA,
+        provider: model,
+      });
+      try {
+        await vi.waitFor(() => expect(model.chat).toHaveBeenCalled());
+        const during = await getFindings(PA, ANA);
+        expect(during.status).toBe(200);
+        expect(during.body.data.refreshing).toBe(true);
+      } finally {
+        // Released either way: a run left waiting would queue every later test's run.
+        release();
+        await running;
+      }
+      await vi.waitFor(async () =>
+        expect((await getFindings(PA, ANA)).body.data.refreshing).toBe(false),
+      );
+    });
+
     it("round trip: written by the analysis step, read by a fresh GET; a decision is read back with its decider and audited", async () => {
       const run = await produceGoverningFindingsForAnalysis({
         analysisId: ANA,

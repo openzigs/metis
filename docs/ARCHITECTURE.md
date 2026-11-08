@@ -2588,7 +2588,11 @@ in two passes and unions them:
    `promptCaching.userPrefix`: every requirement of an analysis shares that prefix (#1997).
    The batches are planned with a fixed 500-token allowance for the requirement, so they are the
    same for every requirement (#2008). A requirement longer than that is planned at its own
-   length, so its prompt never overshoots the budget (#2016). A screen reply that cannot be read
+   length, so its prompt never overshoots the budget (#2016), down to a floor: a batch's room
+   for rules never falls below a quarter of what a requirement within the allowance leaves
+   (`SCREEN_ROOM_MAX_SHRINK`). A requirement longer than the whole budget used to leave room for
+   one rule, so every rule got its own call (120 calls for 120 rules); past the floor its screen
+   prompts go over the budget instead, and the cap is logged (#2022). A screen reply that cannot be read
    is re-asked once before the requirement fails.
 
 Each candidate is then judged `applies | does-not-apply | uncertain` with a one-line reason.
@@ -2671,9 +2675,11 @@ the pre-#1873 code).
   later submit and every dialog start judges it again from the BA's stored answer. That
   includes a completed dialog. A refused (409) submit settles nothing. A question whose pairs
   are all settled costs no model call, but still costs one `readGoverningApplicability`. The
-  start-path retry is backed off per analysis (#2016): after a retry that judged something, the
-  next one waits `ORPHAN_RETRY_BASE_MS` (1 minute), doubling up to an hour. A retry that judged
-  nothing, or a submit, resets it.
+  start-path retry is backed off per analysis (#2016): after a retry that left an answer open (a
+  judging call failed or its reply could not be read), the next one waits `ORPHAN_RETRY_BASE_MS`
+  (1 minute), doubling up to an hour. A retry that settled every answer or judged nothing, or a
+  submit, resets it; one the client aborted leaves it as it was (#2022). The backoff map holds at
+  most `ORPHAN_RETRY_MAX_ENTRIES` (1,000) analyses, the least recently backed off evicted first.
   Governing questions are kept out of the resolution pass: their answers never rewrite a
   requirement's description.
 - **Read path.** `GET /api/projects/:projectId/analyses/:id/governing-applicability` returns the
@@ -2693,7 +2699,9 @@ the prompt:
   `system`, `user`, `allow`, …: `EVIDENCE_STOP_WORDS`), so "the system shall" is not evidence
   (`evidenceIsPresent`, #2010). An answer is searched together with the question it answers, so a
   short answer ("Yes, we do.") counts when quoted with the end of its question; the run must reach
-  into the answer, since the question is METIS's own words (#2017). This is a floor on the quote,
+  into the answer, since the question is METIS's own words (#2017). What it quotes of the answer
+  must be the whole answer, or hold three counted words itself: "every customer export be logged?
+  No" of the answer "No, we do not." drew every counted word but one from the question (#2022). This is a floor on the quote,
   not proof that it says how the rule is met. Otherwise it becomes `needs-ba-input` if the model gave the question,
   else `gap`. This follows CTRAG's No-Evidence → Non-Compliant (one study; a pattern, not proof).
 - **Every citation is verified** against the **cited revision's** stored `extractedText`
@@ -2717,14 +2725,20 @@ what a finding cited.
 produces them in two places:
 
 - In the run's join, from the applicability just stored. This is cancellable with the run and
-  best-effort. A cancel that lands during synthesis ends the run before the join (#2010).
+  best-effort. A cancel that lands during synthesis ends the run before the join (#2010). One
+  that lands while the join waits for the applicability work stops that work part way, so the join
+  stores nothing and produces nothing, rather than store a set missing the requirements never
+  reached (#2022).
 - After a BA answer settles pairs: the questions source re-evaluates the requirements whose pairs
   the answer settled. This runs off the request path, after the settlement is committed (#2010).
 
 Runs of one analysis are **serialised in call order** (#2017): each is queued behind the last, so
 an earlier refresh never commits over a newer one and two first creates never race on the unique
-key. A queued run reads the stored applicability when it starts. The queue is in-process, so it
-orders the runs of one server, not of several replicas.
+key. A refresh after a BA answer passes no applicability, so it reads the stored one when it
+starts and sees every settlement committed before it; the run's join passes the snapshot it has
+just stored and evaluates that (#2022). A run cancelled while queued rejects at once and evaluates
+nothing, and the runs behind it still wait for those ahead of it (#2022). The queue is in-process,
+so it orders the runs of one server, not of several replicas.
 
 Each production writes in one transaction with a 60 s timeout
 (`GOVERNING_FINDINGS_WRITE_TIMEOUT_MS`, as `persistRequirements` sets). A finding whose status,
@@ -2738,8 +2752,9 @@ decision on that row is audited the same way before the delete (#2017).
 **API** (404 while the flag is off; `ensureAnalysisVisible` on both routes):
 
 - `GET /api/projects/:projectId/analyses/:id/governing-findings` returns the findings and their
-  counts, and `refreshing`: true while a findings run of the analysis is in flight or queued, so a
-  client fetches again once it reads false (#2017).
+  counts, and `refreshing`: true while a findings run of the analysis is in flight or queued (the
+  run's own production at its join as well as a refresh a BA answer started), so a client fetches
+  again once it reads false (#2017).
 - `POST …/governing-findings/:findingId/decision` takes `{ decision: accepted|rejected, note }`
   (`governingFindingDecisionInputSchema`, strict) and needs `analysis.run`.
 - The decider is the session user. A body that names one is a 400.

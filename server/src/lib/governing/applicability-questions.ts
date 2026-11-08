@@ -535,7 +535,9 @@ export interface GoverningQuestionSource {
    * any questions, of any round: one whose linked pairs are all settled costs
    * no model call (one `readGoverningApplicability` to see that it is), and
    * one whose earlier settle failed (an answered pair left open) is judged
-   * again. #2016 — resolves to the number of questions sent to the model.
+   * again. #2016 / #2022 — resolves to the number of questions it sent to the
+   * model and left open: a judging call failed, or its reply could not be
+   * read. 0 when it settled every one, or had none to judge.
    */
   settle(questions: readonly ClarifyingQuestion[], signal?: AbortSignal): Promise<number>;
 }
@@ -652,7 +654,8 @@ export function governingQuestionSourceFor(input: {
           });
         });
       }
-      return answered.length;
+      const settledBy = new Set(applied.map((s) => s.questionId));
+      return answered.filter((q) => !settledBy.has(q.id)).length;
     },
   };
 }
