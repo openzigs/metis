@@ -24,6 +24,7 @@ import {
   readDialogState,
   writeDialogState,
 } from "./clarification-dialog-store.js";
+import type { GoverningQuestionSource } from "../governing/applicability-questions.js";
 import { addressedAmbiguities } from "./types/requirements.js";
 import type {
   ClarificationAnswer,
@@ -180,6 +181,12 @@ export interface ClarificationDialogDeps {
    * are never buried under 29 questions about features nobody asked for.
    */
   askFirst?: ReadonlySet<string>;
+  /**
+   * #1873 — the plain business questions that settle `uncertain` governing
+   * rules, and where their answers go. Absent while `GOVERNING_DOCS_ENABLED`
+   * is off (`governingQuestionSourceFor`), which leaves the dialog unchanged.
+   */
+  governingQuestions?: GoverningQuestionSource;
 }
 
 /** Stable partition: questions about `askFirst` requirements, then the rest. */
@@ -200,6 +207,7 @@ export class ClarificationDialog {
   private readonly retriever: GroundingRetriever | undefined;
   private readonly projectId: string | undefined;
   private readonly askFirst: ReadonlySet<string> | undefined;
+  private readonly governing: GoverningQuestionSource | undefined;
 
   constructor(deps: ClarificationDialogDeps) {
     this.provider = deps.provider;
@@ -207,6 +215,27 @@ export class ClarificationDialog {
     this.retriever = deps.retriever;
     this.projectId = deps.projectId;
     this.askFirst = deps.askFirst;
+    this.governing = deps.governingQuestions;
+  }
+
+  /**
+   * #1873 — the governing questions for the round being generated. A failure
+   * here never stops the ambiguity questions: it is logged and asks none.
+   */
+  private async governingQuestionsFor(
+    state: ClarificationState,
+    signal: AbortSignal | undefined,
+  ): Promise<ClarifyingQuestion[]> {
+    if (!this.governing) return [];
+    try {
+      return await this.governing.open(state, signal);
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      log.warn("Governing questions could not be generated — asking none this round", {
+        error: (err as Error).message,
+      });
+      return [];
+    }
   }
 
   /**
@@ -278,21 +307,32 @@ export class ClarificationDialog {
       r.ambiguities.some((a) => !addressed.has(`${r.id}:${a.field}`)),
     );
 
-    if (unresolvedReqs.length === 0) {
+    // #1873 — the plain business questions for `uncertain` governing rules
+    // join the round. None while the flag is off (no source).
+    const governingQuestions = await this.governingQuestionsFor(state, signal);
+
+    if (unresolvedReqs.length === 0 && governingQuestions.length === 0) {
       state.completed = true;
       await writeDialogState(analysisId, state);
       return state;
     }
 
-    const questions = await this.generateQuestions(unresolvedReqs, state, addressed, signal);
+    const questions =
+      unresolvedReqs.length > 0
+        ? await this.generateQuestions(unresolvedReqs, state, addressed, signal)
+        : [];
 
     // Self-resolution pass (clarify-self-resolve): before surfacing questions,
     // try to ANSWER each from the project's own ingested knowledge. Only runs
     // when a retriever + projectId are configured and the provider is online.
     // A grounding failure must never break question generation, so the whole
     // pass is wrapped — on error we fall back to the ungrounded questions
-    // (each implicitly "open").
-    const groundedQuestions = await this.groundQuestions(questions, signal);
+    // (each implicitly "open"). #1873 — governing questions go through the same
+    // pass: it reads only the project's index, never the governing one.
+    const groundedQuestions = await this.groundQuestions(
+      [...questions, ...governingQuestions],
+      signal,
+    );
 
     const round: ClarificationRound = {
       round: state.currentRound,
@@ -385,13 +425,30 @@ export class ClarificationDialog {
     state.currentRound++;
     // Issue #1117 (finding A) — complete on what has been ADDRESSED. Gating
     // completion on the resolution model's own tally is what kept re-opening a
-    // fully-answered dialog for another round.
-    if (state.currentRound > MAX_ROUNDS || addressedAmbiguities(state).size >= totalAmbiguities) {
+    // fully-answered dialog for another round. #1873 — a governing question
+    // left unanswered keeps the dialog open: the next round asks it again.
+    const governingOpen = currentRound.questions.some((q) => q.governing && !q.answer?.trim());
+    if (
+      state.currentRound > MAX_ROUNDS ||
+      (addressedAmbiguities(state).size >= totalAmbiguities && !governingOpen)
+    ) {
       state.completed = true;
     }
 
     await beforeCommit?.({ state, updatedRequirements });
     await writeDialogState(analysisId, state);
+
+    // #1873 — judge the answered governing questions back onto the rules they
+    // settle, after the round is committed so a refused submit settles nothing.
+    // A failure is logged: the answers are kept, and the rules stay uncertain.
+    if (this.governing) {
+      await this.governing.settle(currentRound.questions, signal).catch((err: unknown) => {
+        log.warn("Governing answers could not be settled — their rules stay uncertain", {
+          analysisId,
+          error: (err as Error).message,
+        });
+      });
+    }
 
     return { state, updatedRequirements };
   }
@@ -498,8 +555,15 @@ export class ClarificationDialog {
     requirements: StructuredRequirements,
     signal?: AbortSignal,
   ): Promise<StructuredRequirements> {
-    const currentRound = state.rounds[state.rounds.length - 1];
-    if (!currentRound) return requirements;
+    const lastRound = state.rounds[state.rounds.length - 1];
+    if (!lastRound) return requirements;
+    // #1873 — a governing question is about the rulebook's reach, not the
+    // requirement's wording, and its requirement id is the analysis's, not this
+    // list's: its answer is settled by `governing.settle`, never folded into a
+    // requirement description here.
+    const currentRound = lastRound.questions.some((q) => q.governing)
+      ? { ...lastRound, questions: lastRound.questions.filter((q) => !q.governing) }
+      : lastRound;
 
     // Issue #1104 (finding C) — a blank answer is NOT an answer: it must not
     // buy a resolution call, and it must never mark an ambiguity resolved.
@@ -606,8 +670,9 @@ export class ClarificationDialog {
     }
 
     state.resolvedAmbiguities = [...resolved];
-    if (unreadResolutions.length > 0) currentRound.unreadResolutions = unreadResolutions;
-    else delete currentRound.unreadResolutions;
+    // On the stored round, not the governing-free view of it.
+    if (unreadResolutions.length > 0) lastRound.unreadResolutions = unreadResolutions;
+    else delete lastRound.unreadResolutions;
 
     // Issue #1104 (finding C) — count what is STILL unresolved on the
     // requirements themselves. The old `total - resolved.length` subtraction

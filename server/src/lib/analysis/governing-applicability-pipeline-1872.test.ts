@@ -80,6 +80,9 @@ vi.mock("./analysis-service.js", () => ({
   persistRequirements: vi.fn(async () => []),
   persistCrossDocFindings: vi.fn(async () => undefined),
   readFlattenedFindings: vi.fn(async () => []),
+  // #1873 — the join stores the applicability on the analysis.
+  updateGoverningApplicabilityMetadata: vi.fn(async () => undefined),
+  readGoverningApplicabilityMetadata: vi.fn(async () => undefined),
 }));
 
 vi.mock("./cost-cap.js", () => ({ assertCanStartAnalysis: vi.fn(async () => undefined) }));
@@ -283,6 +286,8 @@ describe("#1872 — governing applicability in the analysis pipeline", () => {
     expect(run.calls.some(isGoverning)).toBe(false);
     expect(vi.mocked(prisma.project.findFirst)).not.toHaveBeenCalled();
     expect(vi.mocked(prisma.governingRule.findMany)).not.toHaveBeenCalled();
+    // #1873 — nothing decided, nothing stored on the analysis.
+    expect(vi.mocked(analysisService.updateGoverningApplicabilityMetadata)).not.toHaveBeenCalled();
   });
 
   it("flag on, project with no workspace: skipped, the output is the flag-off output", async () => {
@@ -327,6 +332,17 @@ describe("#1872 — governing applicability in the analysis pipeline", () => {
     // …and joined before the run was recorded: every governing reply was in
     // when the analysis was marked completed.
     expect(state.governingDoneAtCompletion).toBe(4);
+    // #1873 — and stored on the analysis: both requirements, the rule applying.
+    const store = vi.mocked(analysisService.updateGoverningApplicabilityMetadata);
+    expect(store).toHaveBeenCalledTimes(1);
+    expect(store.mock.calls[0]![0]).toBe(ANALYSIS_ID);
+    const stored = (store.mock.calls[0]![1] as (c: unknown) => unknown)(undefined) as {
+      requirements: Array<{ requirementId: string; decisions: Array<Record<string, unknown>> }>;
+    };
+    expect(stored.requirements.map((r) => r.requirementId)).toEqual(["REQ-001", "REQ-002"]);
+    expect(stored.requirements[0]!.decisions).toEqual([
+      expect.objectContaining({ ruleId: "rule_audit", controlId: "LG-03", verdict: "applies" }),
+    ]);
     expect(vi.mocked(analysisService.markAnalysisCompleted)).toHaveBeenCalledTimes(1);
     const where = vi.mocked(prisma.governingRule.findMany).mock.calls[0]![0] as {
       where: { revision: { currentOf: { is: { workspaceId: string } } } };

@@ -9,4 +9,5 @@ Measured on PR #1308 (2026-10-16): `server` `tsconfig.test.json` typecheck peake
 
 - An OOM there is **capacity**, not a type error. Do not hunt for a type bug.
 - To check whether a change made typechecking heavier, compare the `Types` and `Instantiations` counts from `tsc --extendedDiagnostics`, not `Memory used`, which varies from run to run.
-- The cap is now **12,288 MB**, pinned in `server/tests/typecheck-covers-tests.test.ts`. Raise it there when needed, not only in the script.
+- The cap is now **14,336 MB**, pinned in `server/tests/typecheck-covers-tests.test.ts`. Raise it there when needed, not only in the script.
+- #1873 (2026-11-08): `main` used 12.96 GB at the 12,288 cap and a +0.3% types change OOMed. On a 16 GB runner, little headroom is left above 14 GB.

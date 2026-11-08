@@ -2612,9 +2612,10 @@ gets one carrying `error`, never a silently empty set). It is started, not await
 runs beside the code agent, enhancement and synthesis, and `runPipeline` joins it after
 synthesis (`joinGoverningApplicability`), before the run is recorded. Awaiting it first had put
 about 8 minutes of screens and judging ahead of the code agent on a 24-requirement analysis.
-Nothing reads `governing` yet: the BA
-questions (#1873) and the cited findings (#1874) do. A flag-off analysis is byte-identical to
-before (`governing-applicability-pipeline-1872.test.ts`, a snapshot).
+The join stores the sets on the analysis as `metadata.governingApplicability`
+(`governing/applicability-store.ts`, the shared `governingAnalysisApplicabilitySchema`, #1873),
+where the BA questions below read them. A flag-off analysis is byte-identical to
+before (`governing-applicability-pipeline-1872.test.ts`, a snapshot) and stores nothing.
 
 `pnpm --filter server eval:governing --arms A0,A3` measures it: arm A3 runs
 `decideApplicability` over the #1867 corpus (lexical top-k standing in for the vector
@@ -2622,6 +2623,40 @@ index), reading `applies` as `gap` and `uncertain` as `needs-ba-input`. #1997's 
 the tuned judging prompt, two runs each: Sonnet (`claude-sonnet-5-5`) recall 0.92,
 non-resembling recall 0.93, precision 0.57 (0.30 on #1995's prompt); DeepSeek precision 0.57.
 Precision is still short of #1867's 0.60 bar, so the flag stays off (#1878).
+
+#### Business questions for uncertain rules (#1873)
+
+An `uncertain` pair is put to the BA as a **plain business question** through the existing
+clarification dialog ("Will the saved card keep the customer's whole card number?"), never a
+question about the rulebook. `governingQuestionSourceFor` (`governing/applicability-questions.ts`)
+gives `ClarificationDialog` its governing questions. It is `undefined`, with no database read,
+while `GOVERNING_DOCS_ENABLED` is off, so a flag-off dialog is unchanged (a snapshot taken from
+the pre-#1873 code).
+
+- **Which pairs.** Every `uncertain`, unsettled pair of the stored applicability whose question
+  has not been answered in an earlier round. An unanswered governing question keeps the dialog
+  open and is asked again.
+- **One question per fact.** A requirement's facts that differ only in case or punctuation merge
+  without a model. Several distinct facts go to the model once to merge those that ask the same
+  thing. A merge reply that cannot be read, or that drops a fact, never drops a question. A
+  question carries `governing: { kind: "governing", ruleIds, requirementId }`
+  (`GoverningQuestionLink` in `@metis/shared`) and the `ambiguityField`
+  `governing-applicability`, which names no real ambiguity.
+- **The guard.** `questionLeaksRule` refuses a question that names a control id (as a whole
+  token, any case) or repeats 8 or more consecutive words of a clause. It is re-asked once in
+  plain words, then replaced by `templateGoverningQuestion`.
+- **Self-resolve.** Governing questions go through the dialog's grounding pass, which searches
+  only the project's knowledge index. #1869 keeps governing chunks out of it, so the rulebook can
+  never answer its own question (tested with the policy held only by the governing index).
+- **Settle.** After the round is committed, each answered governing question's rules are
+  re-judged with #1872's judging prompt, with the question and answer added to the requirement.
+  The new verdicts are written with `settled: { questionId, answer, previousVerdict, at }` under
+  the analysis row lock (`settleGoverningPairs`). Only an unsettled `uncertain` pair can move.
+  Governing questions are kept out of the resolution pass: their answers never rewrite a
+  requirement's description. Their requirement id is the analysis's own, not the reviewed list's.
+- **Read path.** `GET /api/projects/:projectId/analyses/:id/governing-applicability` returns the
+  stored sets. It is 404 while the flag is off and scoped by `ensureAnalysisVisible`. No UI reads
+  it yet; the findings (#1874) and their UI do.
 
 ---
 

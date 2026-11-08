@@ -46,11 +46,13 @@ describe("pnpm typecheck covers @metis/server tests (#698)", () => {
     //    cannot, so it is not a full superset.
     //  - The test config OOMs at Node's default heap. It peaked at ~6.7 GB when this was
     //    written and at ~8.43 GB by 2026-10 (PR #1308), past the original 8192 MB cap, so
-    //    CI's `api` typecheck died (exit 134); 12288 MB fits the 16 GB hosted runner.
+    //    CI's `api` typecheck died (exit 134). 12288 MB held until #1873 (2026-11-08):
+    //    main peaked at 12.96 GB used, and #1873's tests (+0.3% types) took it past the
+    //    cap. 14336 MB still leaves the 16 GB hosted runner about 2 GB.
     //    `node --max-...` rather than a POSIX `NODE_OPTIONS=` prefix, so the script also
     //    runs on Windows.
     expect(scripts().typecheck).toBe(
-      "tsc --noEmit -p tsconfig.json && node --max-old-space-size=12288 node_modules/typescript/bin/tsc -p tsconfig.test.json",
+      "tsc --noEmit -p tsconfig.json && node --max-old-space-size=14336 node_modules/typescript/bin/tsc -p tsconfig.test.json",
     );
   });
 

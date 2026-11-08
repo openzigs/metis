@@ -646,6 +646,41 @@ export async function currentWorkspaceRules(workspaceId: string): Promise<Curren
   }));
 }
 
+/**
+ * #1873 — the live rules among `ruleIds` of a live document of this workspace,
+ * whatever revision they belong to (an analysis may have been decided against
+ * a revision since superseded). Scoped on the workspace through the document,
+ * so an id of another workspace's rule returns nothing.
+ */
+export async function workspaceRulesByIds(
+  workspaceId: string,
+  ruleIds: readonly string[],
+): Promise<CurrentGoverningRule[]> {
+  if (ruleIds.length === 0) return [];
+  const rows = await prisma.governingRule.findMany({
+    where: {
+      id: { in: [...ruleIds] },
+      deletedAt: null,
+      revision: { document: liveDocumentWhere(workspaceId) },
+    },
+    orderBy: [{ revisionId: "asc" }, { clauseStart: "asc" }, { id: "asc" }],
+    select: {
+      id: true,
+      revisionId: true,
+      controlId: true,
+      summary: true,
+      clauseRef: true,
+      clauseExcerpt: true,
+      revision: { select: { revisionLabel: true, document: { select: { title: true } } } },
+    },
+  });
+  return rows.map(({ revision, ...rule }) => ({
+    ...rule,
+    revisionLabel: revision.revisionLabel,
+    documentTitle: revision.document.title,
+  }));
+}
+
 /** What an admin may change on a rule: its summary and control id, or delete it. */
 export interface RulePatch {
   summary?: string;

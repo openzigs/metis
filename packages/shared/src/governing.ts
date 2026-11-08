@@ -112,3 +112,67 @@ export const governingRuleEditSchema = z.object({
   createdAt: timestamp,
 });
 export type GoverningRuleEdit = z.infer<typeof governingRuleEditSchema>;
+
+// ── Applicability and the BA's business questions (#1872, #1873) ──────────
+
+/** What a (requirement, governing rule) pair is decided to be (#1872). */
+export const GOVERNING_APPLICABILITY_VERDICTS = ["applies", "does-not-apply", "uncertain"] as const;
+export type GoverningApplicabilityVerdict = (typeof GOVERNING_APPLICABILITY_VERDICTS)[number];
+
+/**
+ * #1873 — the optional link a clarifying question carries when it was asked to
+ * settle governing-rule applicability. `requirementId` is the requirement the
+ * applicability was decided for; `ruleIds` are every rule the one business
+ * fact settles (one question can settle several). The question's own text
+ * never names a rule: it is a plain business question.
+ */
+export const governingQuestionLinkSchema = z.object({
+  kind: z.literal("governing"),
+  ruleIds: z.array(id).min(1),
+  requirementId: z.string().min(1).max(200),
+});
+export type GoverningQuestionLink = z.infer<typeof governingQuestionLinkSchema>;
+
+/** How a BA's answer re-decided an `uncertain` pair (#1873). */
+export const governingSettlementSchema = z.object({
+  questionId: z.string().min(1),
+  answer: z.string(),
+  /** The verdict before the answer: always `uncertain`. */
+  previousVerdict: z.enum(GOVERNING_APPLICABILITY_VERDICTS),
+  at: timestamp,
+});
+export type GoverningSettlement = z.infer<typeof governingSettlementSchema>;
+
+/** One judged (requirement, rule) pair as an analysis stores it (#1872, #1873). */
+export const governingApplicabilityDecisionSchema = z.object({
+  ruleId: id,
+  controlId: z.string().min(1).max(64),
+  verdict: z.enum(GOVERNING_APPLICABILITY_VERDICTS),
+  reason: z.string(),
+  /** For `uncertain`: the business fact that would settle it. */
+  businessFact: z.string().optional(),
+  foundBy: z.array(z.enum(["top-k", "screen"])),
+  /** Set once a BA answer re-decided the pair. */
+  settled: governingSettlementSchema.optional(),
+});
+export type GoverningApplicabilityDecision = z.infer<typeof governingApplicabilityDecisionSchema>;
+
+/** Every candidate rule of one requirement of an analysis, judged. */
+export const governingRequirementApplicabilitySchema = z.object({
+  requirementId: z.string().min(1).max(200),
+  /** The requirement text applicability was decided on, as the analysis read it. */
+  text: z.string(),
+  decisions: z.array(governingApplicabilityDecisionSchema),
+  /** Set when applicability could not be decided; `decisions` is then empty. */
+  error: z.string().optional(),
+});
+export type GoverningRequirementApplicability = z.infer<
+  typeof governingRequirementApplicabilitySchema
+>;
+
+/** An analysis's stored applicability (`Analysis.metadata.governingApplicability`). */
+export const governingAnalysisApplicabilitySchema = z.object({
+  decidedAt: timestamp,
+  requirements: z.array(governingRequirementApplicabilitySchema),
+});
+export type GoverningAnalysisApplicability = z.infer<typeof governingAnalysisApplicabilitySchema>;
