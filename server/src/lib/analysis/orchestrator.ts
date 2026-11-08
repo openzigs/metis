@@ -844,6 +844,9 @@ export function readAgentContext(metadata: Record<string, unknown>): string | un
   return normalizeAgentContext(metadata.agentContext);
 }
 
+/** #2008 — the `ActiveRun.controllers` key of the governing-applicability work. */
+const GOVERNING_APPLICABILITY_CONTROLLER = "governing-applicability";
+
 interface ActiveRun {
   analysisId: string;
   controllers: Map<string, AbortController>;
@@ -2745,6 +2748,12 @@ export class AnalysisOrchestrator {
         if (hasCodeAgent && codeAgentMode === "requirement-grounded" && !run.cancelled) {
           const codeController = new AbortController();
           run.controllers.set("code", codeController);
+          // #2008 — applicability outlives the code agent (it is joined after
+          // synthesis), so it has a controller of its own: a cancel aborts it
+          // with the rest, and `finally` aborts it on every exit that skipped
+          // the join (every specialist failing, or a phase throwing).
+          const applicabilityController = new AbortController();
+          run.controllers.set(GOVERNING_APPLICABILITY_CONTROLLER, applicabilityController);
           try {
             const codeResult = await this.runRequirementGroundedCodeAgent({
               analysisId,
@@ -2759,6 +2768,7 @@ export class AnalysisOrchestrator {
               signal: codeController.signal,
               affectedCode,
               affectedSchema,
+              governingSignal: applicabilityController.signal,
               onGoverningApplicability: (work) => {
                 governingWork = work;
                 // Handled here so a run that ends before the join (a cancel, or
@@ -3074,6 +3084,10 @@ export class AnalysisOrchestrator {
         }).catch(() => undefined);
       }
     } finally {
+      // #2008 — work no exit joined stops here, before the stop gate lifts:
+      // left running, its model calls were billed to this analysis after it
+      // was recorded failed. After a join it has settled, and this is a no-op.
+      run.controllers.get(GOVERNING_APPLICABILITY_CONTROLLER)?.abort();
       this.releaseClaim(analysisId);
       this.capabilities.delete(analysisId);
       // #1131 — a run that failed before finalize leaves its per-pass records;
@@ -4423,6 +4437,11 @@ export class AnalysisOrchestrator {
      * agent, for the caller to join. Without it, applicability does not run.
      */
     onGoverningApplicability?: (work: Promise<RequirementEvidence[]>) => void;
+    /**
+     * #2008 — the signal the applicability work runs under; default `signal`.
+     * The work outlives the code agent, so the caller gives it its own.
+     */
+    governingSignal?: AbortSignal;
   }): Promise<AgentRunResult> {
     const startedAt = new Date();
     const agentKey = "code" as const;
@@ -4458,7 +4477,7 @@ export class AnalysisOrchestrator {
               projectId: input.projectId,
               provider: this.deps.provider,
               ...(input.model ? { model: input.model } : {}),
-              signal: input.signal,
+              signal: input.governingSignal ?? input.signal,
             })
           : null;
         const perRequirement = await retrievePerRequirement(knowledge, {

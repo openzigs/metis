@@ -26,7 +26,11 @@ import {
 } from "@metis/shared";
 import type { AIProvider } from "../ai/types.js";
 import type { DocumentSource } from "../documents/document-source.js";
-import type { ApplicabilitySet, GoverningApplicabilityHook } from "../governing/applicability.js";
+import {
+  type ApplicabilitySet,
+  type GoverningApplicabilityHook,
+  unavailableApplicabilitySet,
+} from "../governing/applicability.js";
 import { createChildLogger } from "../logger.js";
 import { reciprocalRankFusion } from "../rag/bm25-index.js";
 import type { KnowledgeService } from "../rag/knowledge-service.js";
@@ -321,6 +325,10 @@ export async function retrievePerRequirement(
   return results;
 }
 
+/** What a requirement's set says when deciding its applicability threw. */
+export const GOVERNING_APPLICABILITY_UNDECIDED =
+  "Governing-rule applicability could not be decided for this requirement.";
+
 /**
  * #1872 — decide governing-rule applicability for each requirement's evidence,
  * beside {@link retrievePerRequirement}. With no hook (`GOVERNING_DOCS_ENABLED`
@@ -350,16 +358,11 @@ export async function attachGoverningApplicability(
           requirementId: e.requirementId,
           error: (err as Error).message,
         });
-        e.governing = {
-          requirementId: e.requirementId,
-          decisions: [],
-          rulesScreened: 0,
-          screenBatches: 0,
-          candidates: 0,
-          reasked: 0,
-          screenReasked: 0,
-          error: "Governing-rule applicability could not be decided for this requirement.",
-        };
+        // #2008 — the shared helper, so a new set field cannot drift here.
+        e.governing = unavailableApplicabilitySet(
+          e.requirementId,
+          GOVERNING_APPLICABILITY_UNDECIDED,
+        );
       }
     }
   };
