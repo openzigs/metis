@@ -15,7 +15,7 @@ import {
   toJsonReport,
   toMarkdownReport,
 } from "./runner.js";
-import type { GoverningArmOutput } from "./scorer.js";
+import type { GoverningArmOutput, ItemScore } from "./scorer.js";
 
 let corpus: GoverningCorpus;
 beforeAll(async () => {
@@ -374,6 +374,24 @@ describe("compareWithA0", () => {
     expect(compareWithA0(new Map([["A2", [[]]]]))).toEqual([]);
   });
 
+  it("pools an item's counts over runs, not the mean of its per-run ratios (#1932)", () => {
+    const score = (counts: Partial<ItemScore>): ItemScore =>
+      ({ itemId: "GR-01", pairs: [], truth: 1, truePositives: 1, ...counts }) as ItemScore;
+    // A0 cites nothing it applies, in both runs: coverage 0.
+    const a0 = [[score({ applied: 1, cited: 0 })], [score({ applied: 1, cited: 0 })]];
+    // A2 cites its one rule in run 1 (1/1) and none of three in run 2 (0/3).
+    // Pooled that is 1/4 = 0.25; the run-mean of the ratios would be 0.50.
+    const a2 = [[score({ applied: 1, cited: 1 })], [score({ applied: 3, cited: 0 })]];
+    const coverage = compareWithA0(
+      new Map([
+        ["A0", a0],
+        ["A2", a2],
+      ]),
+    ).find((c) => c.metric === "citationCoverage")!;
+    expect(coverage.difference.n).toBe(1);
+    expect(coverage.difference.meanDifference).toBeCloseTo(0.25, 10);
+  });
+
   it("compares citation coverage with A0 too, over the items both arms applied a rule on (#1920)", async () => {
     // A0 applies the resembling pairs and cites none; A2 cites every rule it applies.
     const report = await runGoverningEval(corpus, {
@@ -481,11 +499,14 @@ describe("toMarkdownReport", () => {
     const hardErrors = report.arms[0]!.summary.hardErrors;
     expect(hardErrors).toBeGreaterThan(0);
     const md = toMarkdownReport(report);
+    // #1932 — the broken claim is marked ‡ in its cells, not only in the footnote.
     expect(md).toMatch(
-      /\| A0 \| maxNoEvidenceCompliantErrors \| ≤ 0 per run \| \d+ \(worst run\) \| \*\*no\*\* \|/,
+      /\| A0 \| maxNoEvidenceCompliantErrors \| ≤ 0 per run \| \d+ \(worst run\) \| \*\*no\*\*‡ \|/,
     );
-    // The results row shows the real hard-error count; ask rate and citation accuracy still hold.
-    expect(md).toContain(`| ${hardErrors} | n/a† |`);
+    // The results row shows the real hard-error count, marked; ask rate and citation accuracy still hold.
+    expect(md).toContain(`| ${hardErrors}‡ | n/a† |`);
+    // A bar no claim covers is not marked.
+    expect(md).toMatch(/\| A0 \| precision \| ≥ 0\.60 \| [\d.]+ \| (?:yes|\*\*no\*\*) \|/);
     expect(md).toContain(
       "‡ Claimed fixed by construction, but measured otherwise, so it is judged: A0 hardErrors.",
     );
@@ -548,6 +569,7 @@ describe("toMarkdownReport", () => {
     const plainMd = toMarkdownReport(plain);
     expect(md).not.toContain("‡");
     expect(plainMd).not.toContain("†");
+    expect(plainMd).not.toContain("‡");
     expect(plainMd).toContain(
       "| A0 | maxNoEvidenceCompliantErrors | ≤ 0 per run | 0 (worst run) | yes |",
     );
