@@ -1009,7 +1009,9 @@ since React Query joins an in-flight fetch of a query with no data rather than r
 the panel cancels that fetch (`cancelQueries`) before invalidating. Only those (#1945): the set
 is taken when the borrow's response arrives, so a first fetch a card starts afterwards (it read
 the committed links) is left alone, and a list whose fetch failed is not retried by a borrow,
-since it shows no links the borrow could change. The client preview
+since it shows no links the borrow could change. A raced list whose first fetch settles while
+the code links are refreshing is refetched only if it lists the borrowing requirement, and
+never when that fetch failed (#1990). The client preview
 (`borrowPlan`) and the server's borrow read the one `BORROWABLE_FRESHNESS` set from
 `@metis/shared`, so the preview cannot list a link the borrow would skip; and the one
 duplicate rule, `borrowDuplicateCheck` (same file and symbol under any source, or a file the

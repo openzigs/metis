@@ -3,6 +3,6 @@ issue: 1990
 section: Changed
 ---
 
-- After "Start from these citations", a similar-requirements list that was still loading when
-  the copy finished, and then loaded or failed, is no longer loaded again: it is reloaded only
-  if it lists this requirement, and a list that failed is retried the usual way.
+- After "Start from these citations", a similar-requirements list that finished loading while the
+  code links were refreshing is reloaded only if it lists this requirement. If it failed to load,
+  the copy does not reload it; it is retried the usual way.
