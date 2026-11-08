@@ -1638,7 +1638,11 @@ export class AnalysisOrchestrator {
       });
       // #1989 — the single-shot pass replaced every `code` row with one over the
       // whole project, so no repository is left without a code pass: none is
-      // skipped. (It throws on failure, so a failed pass keeps the list.)
+      // skipped. #1998 — a failed pass throws before this, so the list is left
+      // as it was. That is not proof the list is still right: the failed pass
+      // already persisted a connector-less failed row in replace mode, which
+      // deleted every `code` row, so no repository has code findings while the
+      // list names only those an earlier run skipped.
       await this.refreshSkippedRepos(input.analysisId, [], [], []);
       return result;
     }
@@ -1970,6 +1974,7 @@ export class AnalysisOrchestrator {
         );
         for (const connector of effectiveConnectors) {
           if (active.cancelled) break;
+          const passStartedAt = new Date();
           const result = await this.runAgenticCodeAgent({
             analysisId: opts.analysisId,
             projectId: analysis.projectId,
@@ -1985,7 +1990,20 @@ export class AnalysisOrchestrator {
             affectedCode,
             escalation,
             // Merge — never clobber the original run's persisted code findings.
+            // A failed or cancelled pass throws, and its append deletes nothing.
             persistMode: "append",
+          });
+          // #1998 — a connector-scoped replace, once the pass has completed: a
+          // repository a regenerate's cap left out keeps the `code` rows of the
+          // pass before it, and this pass's rows beside them would read its
+          // findings twice. Only this connector's earlier rows go.
+          await prisma.agentResult.deleteMany({
+            where: {
+              analysisId: opts.analysisId,
+              agentKey: "code",
+              connectorId: connector.id,
+              createdAt: { lt: passStartedAt },
+            },
           });
           delta.promptTokens += result.usage.promptTokens;
           delta.completionTokens += result.usage.completionTokens;
@@ -2094,7 +2112,8 @@ export class AnalysisOrchestrator {
    *
    * #1989 — "not run by this pass" is not "no code pass": a repository an
    * earlier pass ran and this pass's cap left out keeps that pass's `code`
-   * rows, and a resume appends beside them, so its findings are read twice.
+   * rows. #1998 — a resume of it deletes them once its own pass completes, so
+   * its findings are not read twice.
    */
   private async refreshSkippedRepos(
     analysisId: string,
@@ -3468,7 +3487,8 @@ export class AnalysisOrchestrator {
      * #741 (Epic #727) — how to persist this pass's `code` AgentResult. Defaults
      * to `"replace"` (today's behaviour). The resume endpoint passes `"append"`
      * so a resumed connector's findings MERGE alongside the original run's code
-     * findings instead of clobbering them.
+     * findings instead of clobbering them (#1998: it then deletes that
+     * connector's own earlier rows, once the pass has completed).
      */
     persistMode?: "replace" | "append";
   }): Promise<AgentRunResult> {

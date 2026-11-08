@@ -423,7 +423,9 @@ export async function seedRequirementCodeLinksFromFindings(
   const prisma = pickPrisma(deps);
   let linksCreated = 0;
   let linksSkipped = 0;
-  let linksUnbound = 0;
+  // #1998 — a guess rewritten as its file-level link, and one deleted beside it, are logged apart.
+  let linksRewritten = 0;
+  let linksDeleted = 0;
   let requirementsSeeded = 0;
   const changedIds: string[] = [];
 
@@ -549,7 +551,7 @@ export async function seedRequirementCodeLinksFromFindings(
     // as that file-level link (keeping its id and its stored order, #1818).
     // #1989 — a heuristic, not proof: a row an earlier run bound to its own
     // symbol, whose citation has since left the evidence, matches every
-    // criterion too, so a rewrite does not show the row was a guess.
+    // criterion too, so a rewrite or delete does not show the row was a guess.
     const unclaimedBound = existing.filter((e) => e.codeSymbolId && !candidates.has(seedKey(e)));
     /** Take the unclaimed bound row a candidate's ambiguous span could have been guessed as. */
     const takeGuess = (key: string, filePath: string) => {
@@ -577,11 +579,12 @@ export async function seedRequirementCodeLinksFromFindings(
         // goes, and the next re-ingest cannot stamp it `fresh`.
         const guessed = takeGuess(key, candidate.filePath);
         if (guessed) {
-          await prisma.requirementCodeMapping.deleteMany({
+          // #1998 — count only a row the delete actually removed.
+          const { count } = await prisma.requirementCodeMapping.deleteMany({
             where: { id: guessed.id, ...rowScope },
           });
-          linksUnbound += 1;
-          unboundAny = true;
+          linksDeleted += count;
+          if (count > 0) unboundAny = true;
         }
         continue;
       }
@@ -615,7 +618,7 @@ export async function seedRequirementCodeLinksFromFindings(
             previousEndLine: null,
           },
         });
-        linksUnbound += 1;
+        linksRewritten += 1;
         unboundAny = true;
       } else {
         await prisma.requirementCodeMapping.create({
@@ -644,7 +647,8 @@ export async function seedRequirementCodeLinksFromFindings(
     analysisId: input.analysisId,
     projectId: input.projectId,
     ...summary,
-    linksUnbound,
+    linksRewritten,
+    linksDeleted,
   });
   return summary;
 }
