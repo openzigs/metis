@@ -127,7 +127,7 @@ describe("ChangedRequirementGroup — files in several repositories (#1965)", ()
       "2 files to edit · 1 more to review",
     );
     expect(screen.getByTestId("blast-radius-toggle").textContent).toMatch(
-      /3 symbols across 3 files to review, 2 of them also files to edit/,
+      /3 symbols in 3 files, 2 of them also files to edit \(/,
     );
   });
 
@@ -153,9 +153,7 @@ describe("ChangedRequirementGroup — files in several repositories (#1965)", ()
 
   it("says nothing about overlap when no reviewed file is also a file to edit", () => {
     render(<ChangedRequirementGroup item={item([sym("a.ts", null, 0), sym("b.ts", null, 1)])} />);
-    expect(screen.getByTestId("blast-radius-toggle").textContent).toMatch(
-      /1 symbols across 1 files to review \(/,
-    );
+    expect(screen.getByTestId("blast-radius-toggle").textContent).toMatch(/1 symbol in 1 file \(/);
   });
 
   it("groups the impacted tests by repository as well", () => {

@@ -171,9 +171,9 @@ describe("ChangedRequirementGroup", () => {
     const details = screen.getByTestId("blast-radius-impacts");
     expect(details.tagName.toLowerCase()).toBe("details");
     expect(details).not.toHaveAttribute("open");
-    // Summary describes the K symbols across M files.
+    // Summary describes the K symbols in M files (#1892: no "to review" count).
     expect(screen.getByTestId("blast-radius-toggle")).toHaveTextContent(
-      "Blast radius — 3 symbols across 2 files",
+      "Blast radius — 3 symbols in 2 files (callers,",
     );
   });
 

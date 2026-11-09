@@ -2552,7 +2552,11 @@ dependencies).
      scaled down by it.
 
    The card's headline counts both (*"3 files to edit · 41 more to review"*), and
-   the markdown export has the same two sections.
+   the markdown export has the same two sections. *More to review* counts each
+   file once: the blast-radius files that are not files to edit, plus any
+   **Doubtful** files (below). The blast radius's own heading gives its size
+   alone (*"Blast radius — 52 symbols in 40 files"*), so the two numbers can
+   differ.
 
    **Why each file is listed.** When your administrator has turned on one of the
    extra ways of choosing the files to edit (stored requirement links, the AI

@@ -235,6 +235,11 @@ describe("EditCandidateFiles (#1762)", () => {
     expect(screen.getByTestId("impact-headline").textContent).toBe(
       "0 files to edit · 2 more to review",
     );
+    // #1892 — the blast-radius toggle names its own scope (one file) and carries
+    // no second "to review" count that would disagree with the headline's two.
+    expect(screen.getByTestId("blast-radius-toggle").textContent).toBe(
+      "Blast radius — 1 symbol in 1 file (callers, data writers, related code)",
+    );
   });
 
   it('says "not found" when the result has no edit candidates, without listing the blast radius as one', () => {

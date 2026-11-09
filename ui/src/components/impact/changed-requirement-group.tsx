@@ -292,7 +292,11 @@ export function ChangedRequirementGroup({
             className="cursor-pointer text-xs font-medium text-muted-foreground"
             data-testid="blast-radius-toggle"
           >
-            Blast radius — {radius.length} symbols across {radiusFileGroups.length} files to review
+            {/* #1892 — the toggle names the blast radius's own size and no "to
+                review" count: the headline's "more to review" also counts doubtful
+                files to edit, so a second "to review" number here disagreed. */}
+            Blast radius — {radius.length} {radius.length === 1 ? "symbol" : "symbols"} in{" "}
+            {radiusFileGroups.length} {radiusFileGroups.length === 1 ? "file" : "files"}
             {radiusAlsoEditCount > 0
               ? `, ${radiusAlsoEditCount} of them also ${radiusAlsoEditCount === 1 ? "a file" : "files"} to edit`
               : ""}{" "}
