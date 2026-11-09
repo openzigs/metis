@@ -3004,14 +3004,31 @@ exists). The underlying endpoints both require `analysis.read`:
 
 **Through a product's API edges (#2115).** Cross-project impact also follows the
 product edges of kind **api** (declared on the product page, or detected). When a
-run's change matches a file of the provider's API (a file the edge records, a
-spec file, or a file under a directory whose name is, or contains the word,
-`api`, `rest`, `graphql`, `grpc`, `rpc`, `openapi`, `swagger`, `endpoints`,
-`routes`, `router`, `controllers`, `handlers`, `resolvers` or `webhooks`, so
-`RestControllers` and `public_api` count), the provider's **Cross-project
+run's change matches a file of the provider's API, the provider's **Cross-project
 impact** block names each consumer, the API files the change touches, and the
 consumer's methods that call that API. Those methods are the consumer's own best
 matches when it is in the same run. Otherwise they come from the edge's evidence.
+
+A file counts as the provider's API when it is one of these (#2127, #2134):
+
+- a file the edge records on the provider's side;
+- a spec file (`openapi*.yaml`, `swagger*.json`, `asyncapi*.yml`, `.proto`,
+  `.graphql`, `.graphqls`, `.gql`), wherever it sits;
+- a file under a folder whose name is, or contains the word, `api`, `rest`,
+  `graphql`, `grpc`, `rpc`, `openapi`, `swagger`, `endpoint(s)`, `routes`,
+  `controller(s)`, `resolver(s)` or `webhook(s)`, so `RestControllers`,
+  `public_api` and `GraphQLSchema` count;
+- a file under a `handler(s)`, `router(s)` or `routing` folder that sits
+  **directly** inside an `http`, `https`, `server` or `servers` folder
+  (`internal/http/handler/`, `server/handlers/`). Elsewhere these names are an
+  app's event, job or feed-refresh handlers, so `internal/reader/handler/` and
+  `server/src/jobs/handlers/` do not count.
+
+A singular `route` folder never counts (it is a route helper, such as
+Miniflux's `internal/http/route/`), and neither does a client folder, which
+calls an API rather than serving one: any folder with the word `client` in its
+name (`rest-client`, `api_client`, `GraphQLClient`), or with `client` joined
+onto `graphql`, `grpc`, `openapi` or `swagger` (`grpcclient`, `swaggerclient`).
 
 When a change matches the provider but none of its API (a web-UI fix, say), no
 consumer is listed. A consumer that is in the run anyway gets a **Low-confidence
@@ -3022,8 +3039,9 @@ the change, or the edge does not say which side calls which, no banner is shown.
 The changes METIS extracts from one pasted text or document count as one
 request here, and each stored requirement as its own, so in a document with
 several unrelated changes, one that touches the API keeps the banner off all of
-them. If this part cannot be read, the block says so rather than reporting that
-no other project is affected. Consumers you cannot open are left out. These come from
+them. While this part is still loading, the block says **Checking projects that
+call this project's API…**, and if it cannot be read, the block says so; in
+neither case does it report that no other project is affected. Consumers you cannot open are left out. These come from
 `GET /api/impact-analyses/:id/api-edge-impact` (`analysis.read`, authorized like
 the run itself).
 
