@@ -2601,7 +2601,14 @@ An `uncertain` decision always carries a business question: a reply that leaves 
 undecided or marks it `uncertain` without the question is re-asked once, and then recorded
 `uncertain` with `fallbackBusinessQuestion`, which names the rule. A judging reply that cannot
 be read at all, twice running, fails the requirement instead (#1997): recording every candidate
-`uncertain` asked the analyst a fallback question per rule. The model names rules by
+`uncertain` asked the analyst a fallback question per rule. #2053 — a judging reply cut off at
+the output cap (`finishReason` `max_tokens`, or `length` on an OpenAI-compatible endpoint) is
+not counted unreadable: its batch is judged again at once in halves, and a half still cut off
+is halved again, down to one rule. DeepSeek spends most of its 16,384-token reply on reasoning,
+and on 21 to 31 candidates it hit the cap mid-JSON; re-asking the same batch hit it again and
+failed the requirement. Nothing changes for a reply that ends normally, so no other prompt or
+batch moves. Every unreadable judging reply is logged with its `finishReason`, and a requirement
+that still fails because one rule's reply was cut off twice says so in its error. The model names rules by
 handles (`R1`, `R2`, …) assigned per decision, so a reply can only name a rule it was shown,
 and the requirement, summaries, clauses, control ids and titles travel fenced
 (`fenceToolResult`, as #1870).
