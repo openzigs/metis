@@ -1168,15 +1168,15 @@ export function governingQuestionSourceFor(input: {
           },
         ]),
       );
-      const settlements = [
+      const own = [
         ...(await rejudgeAnswered(answered, stored, rules, deps(signal))),
         // #2059 — an answer to a rule that applies needs no judging call.
         ...answersForApplyingPairs(answered, stored),
-        // #2122 — last, so a pair's own question's settlement always wins.
-        ...(carried.length > 0
-          ? await carryAnswersOver(answered, stored, rules, deps(signal))
-          : []),
       ];
+      const carriedIn =
+        carried.length > 0 ? await carryAnswersOver(answered, stored, rules, deps(signal)) : [];
+      // #2122 — last, so a pair's own question's settlement always wins.
+      const settlements = [...own, ...carriedIn];
       const applied = await settleGoverningPairs(input.analysisId, settlements);
       log.info("governing answers settled", {
         analysisId: input.analysisId,
@@ -1204,7 +1204,14 @@ export function governingQuestionSourceFor(input: {
           });
         });
       }
-      const settledBy = new Set(applied.map((s) => s.questionId));
+      // Only the question's own settlements count: a carried one lands under
+      // the answering question's id but says nothing of whether that
+      // question's own rejudge worked (#2016/#2022 backoff contract).
+      const pairKey = (s: GoverningSettlementInput) => `${s.requirementId}\u0000${s.ruleId}`;
+      const ownPairs = new Set(own.map(pairKey));
+      const settledBy = new Set(
+        applied.filter((s) => ownPairs.has(pairKey(s))).map((s) => s.questionId),
+      );
       return answered.filter((q) => !settledBy.has(q.id)).length;
     },
   };

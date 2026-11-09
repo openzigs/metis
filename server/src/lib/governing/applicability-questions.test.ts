@@ -1202,6 +1202,12 @@ describe("#2122 — carryAnswersOver: an answer is judged onto the other require
       }),
     });
     expect(await carryAnswersOver(answered, stored, rules, uncertain)).toEqual([]);
+    const uncertainNamed = stubModel({
+      judge: () => ({
+        decisions: [{ rule: "R1", verdict: "uncertain", reason: "?", answer: "A1" }],
+      }),
+    });
+    expect(await carryAnswersOver(answered, stored, rules, uncertainNamed)).toEqual([]);
     const unnamed = stubModel({
       judge: () => ({ decisions: [{ rule: "R1", verdict: "applies", reason: "y" }] }),
     });

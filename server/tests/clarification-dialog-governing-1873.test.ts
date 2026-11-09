@@ -1044,8 +1044,50 @@ describe("#2122 — one answer settles the same fact on the analysis's other req
     expect(next.rounds.slice(1).flatMap((r) => r.questions)).toEqual([]);
   });
 
+  it("a carried settlement does not count its answering question as settled: the retry backoff is kept", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2040-07-01T00:00:00.000Z"));
+    try {
+      const { provider, sent } = carryModel({ verdict: "applies", answer: "A1" });
+      const chat = vi.mocked(provider.chat);
+      const real = chat.getMockImplementation()!;
+      const judgingCalls = () => sent.filter((s) => s.system.includes("You decide which")).length;
+      const failOwn = (carryToo: boolean) =>
+        chat.mockImplementation(async (messages, o) => {
+          const system = String(o?.systemMessage ?? "");
+          const isCarry = system.includes("each named A1");
+          if (isCarry ? carryToo : system.includes("You decide which")) {
+            if (!isCarry) sent.push({ system, user: "" });
+            throw new Error("provider unavailable");
+          }
+          return real(messages, o);
+        });
+      // The submit: the question's own rejudge and the carry both fail.
+      failOwn(true);
+      const { dialog } = await answerTheFirst(provider);
+      const afterSubmit = judgingCalls();
+      expect(afterSubmit).toBeGreaterThan(0);
+      // The retry: its own rejudge fails again, but the carry lands on the other requirement.
+      failOwn(false);
+      await dialog.startOrContinue(ANALYSIS, REQS);
+      const afterRetry = judgingCalls();
+      expect(afterRetry).toBeGreaterThan(afterSubmit);
+      const read = await readGoverningApplicability(ANALYSIS);
+      expect(read!.requirements[1]!.decisions[0]!.settled).toBeDefined();
+      // The question itself is still unsettled, so the backoff holds: no retry right away.
+      await dialog.startOrContinue(ANALYSIS, REQS);
+      expect(judgingCalls()).toBe(afterRetry);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     ["the carried judge is still uncertain", { verdict: "uncertain", businessFact: "Is it?" }],
+    [
+      "the carried judge is uncertain even though it names an answer",
+      { verdict: "uncertain", answer: "A1", businessFact: "Is it?" },
+    ],
     ["the carried judge names no answer", { verdict: "applies" }],
     ["the carried judge names an answer that was not given", { verdict: "applies", answer: "A9" }],
   ])("%s: the pair stays open and is asked again", async (_label, carried) => {

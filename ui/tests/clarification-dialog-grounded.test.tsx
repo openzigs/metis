@@ -120,6 +120,9 @@ describe("ClarificationDialogPanel self-resolution", () => {
 
   it("#2122 — 'Use suggested answer' fills the box, counts it, and sends it", () => {
     renderPanel();
+    // The button is described by its question, so a screen reader can tell them apart.
+    const button = screen.getByRole("button", { name: "Use suggested answer" });
+    expect(button).toHaveAccessibleDescription(/\S/);
     fireEvent.click(screen.getByRole("button", { name: "Use suggested answer" }));
     expect(input("grounded-question").value).toBe("OAuth2 bearer tokens");
     expect(screen.getByTestId("clarification-progress")).toHaveTextContent("1 of 2 answered");

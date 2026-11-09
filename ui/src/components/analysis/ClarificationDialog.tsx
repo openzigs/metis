@@ -464,7 +464,11 @@ export function ClarificationDialogPanel({
               className="scroll-mt-4 rounded border border-border p-3"
               data-testid={isSelfResolved ? "grounded-question" : "open-question"}
             >
-              <Label htmlFor={`clarify-answer-${q.id}`} className="mb-1 block text-sm font-medium">
+              <Label
+                htmlFor={`clarify-answer-${q.id}`}
+                id={`clarify-label-${q.id}`}
+                className="mb-1 block text-sm font-medium"
+              >
                 {q.question}
               </Label>
               {q.context && <p className="mb-2 text-xs text-muted-foreground">{q.context}</p>}
@@ -511,6 +515,7 @@ export function ClarificationDialogPanel({
                         type="button"
                         variant="outline"
                         size="sm"
+                        aria-describedby={`clarify-label-${q.id}`}
                         onClick={() =>
                           setAnswers((prev) => ({ ...prev, [q.id]: q.groundedAnswer ?? "" }))
                         }
