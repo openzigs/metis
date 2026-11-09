@@ -976,7 +976,46 @@ describe("A5 — the shipped path (#1878)", () => {
     expect(out.diagnostics).toMatchObject({ answeredNoEvidenceDemoted: 1 });
   });
 
-  it("never asks about a rule that already applied: its finding after the answer is the first reading's", async () => {
+  it("#2059 — asks a Needs BA input finding's question on a rule that applies; the answer reaches the refresh with no judging call", async () => {
+    const { provider, calls } = stubProvider([
+      ...applicability("applies"),
+      JSON.stringify({
+        findings: [
+          {
+            rule: "R1",
+            status: "needs-ba-input",
+            reasoning: "Turns on a hold.",
+            excerpt: excerpt(),
+            businessQuestion: JUDGE_QUESTION,
+          },
+        ],
+      }),
+      compliantReply("any of it under a legal hold? No."),
+    ]);
+    const out = await build().assess(item(), corpus, { provider });
+    // Screen, judge, findings, refresh: the answer needs no settle call.
+    expect(calls).toHaveLength(4);
+    expect(String(calls[3]!.messages[0]!.content)).toContain(
+      `A business analyst was asked: ${JUDGE_QUESTION}\nTheir answer: No.`,
+    );
+    expect(out.judgements).toEqual([
+      expect.objectContaining({ ruleId: "DR-06", verdict: "needs-ba-input" }),
+    ]);
+    expect(out.answered).toEqual({
+      judgements: [expect.objectContaining({ ruleId: "DR-06", verdict: "compliant" })],
+      questions: [{ ruleIds: ["DR-06"], question: JUDGE_QUESTION, answer: "No." }],
+    });
+    expect(out.diagnostics).toMatchObject({
+      questionsAsked: 1,
+      questionsAnswered: 1,
+      answersSettled: 0,
+      answersRecorded: 1,
+      answersSettleFailed: 0,
+      findingsRefreshed: 1,
+    });
+  });
+
+  it("never asks about a rule that already applied and found a gap: its finding after the answer is the first reading's", async () => {
     const { provider, calls } = stubProvider([
       ...applicability("applies"),
       JSON.stringify({

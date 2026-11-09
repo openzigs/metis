@@ -101,6 +101,13 @@ export interface GoverningSettlementInput {
  * and has no settlement yet; any other is ignored, so an answer can never
  * overturn a verdict the model reached without asking, nor be applied twice.
  * Returns the pairs it changed.
+ *
+ * #2059 — or a pair that `applies`, has no settlement yet, and is settled
+ * `applies`: a BA answer to a Needs BA input finding on a rule that applies.
+ * Its verdict and reason are kept; only the answer is recorded
+ * (`previousVerdict: "applies"`), so the findings refresh reads it
+ * (`findingPairsOf`). A settlement that would move such a pair elsewhere is
+ * ignored, as on any verdict reached without asking.
  */
 export function applySettlements(
   stored: GoverningAnalysisApplicability,
@@ -116,7 +123,21 @@ export function applySettlements(
         const s = settlements.find(
           (x) => x.requirementId === r.requirementId && x.ruleId === d.ruleId,
         );
-        if (!s || d.verdict !== "uncertain" || d.settled) return d;
+        if (!s || d.settled) return d;
+        if (d.verdict === "applies" && s.verdict === "applies") {
+          applied.push(s);
+          return {
+            ...d,
+            settled: {
+              questionId: s.questionId,
+              ...(s.question ? { question: s.question } : {}),
+              answer: s.answer,
+              previousVerdict: "applies",
+              at: at.toISOString(),
+            },
+          };
+        }
+        if (d.verdict !== "uncertain") return d;
         applied.push(s);
         const { businessFact: _fact, ...rest } = d;
         return {

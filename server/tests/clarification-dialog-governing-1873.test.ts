@@ -36,6 +36,8 @@ const mem = vi.hoisted(() => ({
   metadata: "{}" as string,
   rules: [] as Array<Record<string, unknown>>,
   workspaceId: "ws_1873" as string | null,
+  // #2059 — the analysis's stored Needs BA input findings.
+  findings: [] as Array<Record<string, unknown>>,
 }));
 vi.mock("../src/lib/prisma.js", () => {
   const analysis = {
@@ -49,6 +51,7 @@ vi.mock("../src/lib/prisma.js", () => {
     analysis,
     project: { findFirst: vi.fn(async () => ({ workspaceId: mem.workspaceId })) },
     governingRule: { findMany: vi.fn(async () => mem.rules) },
+    governingFinding: { findMany: vi.fn(async () => mem.findings) },
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ analysis })),
   };
   return { prisma, resolveDatabaseProvider: () => "sqlite" };
@@ -225,6 +228,7 @@ beforeEach(() => {
   mem.metadata = JSON.stringify({ governingApplicability: ONE_UNCERTAIN });
   mem.rules = [RULE_ROW];
   mem.workspaceId = "ws_1873";
+  mem.findings = [];
   process.env.GOVERNING_DOCS_ENABLED = "1";
   vi.clearAllMocks();
 });
@@ -687,5 +691,90 @@ describe("#2010 — the findings refresh after an answer is off the request path
     const read = await readGoverningApplicability(ANALYSIS);
     expect(read!.requirements[0]!.decisions[0]).toMatchObject({ verdict: "applies" });
     refresh.release();
+  });
+});
+
+describe("#2059 — a Needs BA input finding on a rule that applies is asked, and its answer reaches the findings", () => {
+  const FINDING_QUESTION = "Will the saved card keep the customer's whole card number?";
+  beforeEach(() => {
+    mem.metadata = JSON.stringify({
+      governingApplicability: stored([
+        {
+          ruleId: "rule_card",
+          controlId: "EN-03",
+          verdict: "applies",
+          reason: "A saved card is card data.",
+          foundBy: ["screen"],
+        },
+      ]),
+    });
+    mem.findings = [
+      { requirementId: "REQ-001", ruleId: "rule_card", businessQuestion: FINDING_QUESTION },
+    ];
+  });
+
+  it("the finding's question is asked, linked to its rule; the answer is recorded with no judging call; the refresh is asked for", async () => {
+    const { provider, sent } = model();
+    const dialog = dialogWith(provider);
+    const state = await dialog.startOrContinue(ANALYSIS, REQS);
+    expect(vi.mocked(prisma.governingFinding.findMany)).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { analysisId: ANALYSIS, status: "needs-ba-input" } }),
+    );
+    const questions = state.rounds[0]!.questions;
+    expect(questions).toHaveLength(1);
+    const q = questions[0]!;
+    expect(q.question).toBe(FINDING_QUESTION);
+    // The link the analysis view's "Answer the clarifying question" reads:
+    // the finding's own requirement id and rule (clarifyingQuestionHref).
+    expect(q.governing).toEqual({
+      kind: "governing",
+      ruleIds: ["rule_card"],
+      requirementId: "REQ-001",
+    });
+    expect(state.completed).toBe(false);
+
+    const { state: after } = await dialog.submitAnswers(
+      ANALYSIS,
+      [{ questionId: q.id, answer: "No." }],
+      REQS,
+    );
+    expect(sent.filter((s) => s.system.includes("You decide which"))).toHaveLength(0);
+    expect(after.completed).toBe(true);
+    const read = await readGoverningApplicability(ANALYSIS);
+    expect(read!.requirements[0]!.decisions[0]).toMatchObject({
+      verdict: "applies",
+      reason: "A saved card is card data.",
+      settled: {
+        questionId: q.id,
+        question: FINDING_QUESTION,
+        answer: "No.",
+        previousVerdict: "applies",
+      },
+    });
+    const produce = vi.mocked(findingsStore.produceGoverningFindingsForAnalysis);
+    expect(produce).toHaveBeenCalledTimes(1);
+    expect(produce.mock.calls[0]![0]).toMatchObject({ requirementIds: ["REQ-001"] });
+    refresh.release();
+
+    // Recorded: the finding's question is not asked again, even while it still
+    // reads Needs BA input until the refresh lands.
+    const next = await dialog.startOrContinue(ANALYSIS, REQS);
+    expect(next.completed).toBe(true);
+  });
+
+  it("a finding's question that names the control is re-asked in plain words before it is shown", async () => {
+    mem.findings = [
+      {
+        requirementId: "REQ-001",
+        ruleId: "rule_card",
+        businessQuestion: "Does the saved card meet EN-03?",
+      },
+    ];
+    const { provider, sent } = model();
+    const state = await dialogWith(provider).startOrContinue(ANALYSIS, REQS);
+    const q = state.rounds[0]!.questions[0]!;
+    expect(q.question).not.toMatch(/EN-03/i);
+    expect(sent.some((x) => x.system.startsWith("Rewrite the question"))).toBe(true);
+    expect(q.governing?.ruleIds).toEqual(["rule_card"]);
   });
 });

@@ -165,6 +165,34 @@ describe("applySettlements — an answer moves only an unsettled uncertain pair"
     expect(next).toEqual(once);
   });
 
+  it("#2059 — an answer to a rule that applies is recorded on it; its verdict and reason stand", () => {
+    const answer = {
+      ...settle("r_log", "applies"),
+      question: "Will every export be logged?",
+      answer: "Yes, we do.",
+    };
+    const { next, applied } = applySettlements(STORED, [answer], AT);
+    expect(applied).toEqual([answer]);
+    expect(next.requirements[0]!.decisions[1]).toEqual({
+      ruleId: "r_log",
+      controlId: "AL-02",
+      verdict: "applies",
+      reason: "Reads.",
+      foundBy: ["top-k"],
+      settled: {
+        questionId: "q1",
+        question: "Will every export be logged?",
+        answer: "Yes, we do.",
+        previousVerdict: "applies",
+        at: AT.toISOString(),
+      },
+    });
+    // Recorded once: a second answer to the same pair is ignored.
+    const again = applySettlements(next, [{ ...answer, questionId: "q2", answer: "No." }], AT);
+    expect(again.applied).toEqual([]);
+    expect(again.next).toEqual(next);
+  });
+
   it("an answer that still leaves it uncertain keeps the question and marks it settled", () => {
     const { next } = applySettlements(STORED, [settle("r_card", "uncertain")], AT);
     expect(next.requirements[0]!.decisions[0]).toMatchObject({
