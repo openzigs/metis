@@ -2664,11 +2664,17 @@ the pre-#1873 code).
   settle rule applicability and never refine a requirement.
 - **The guard.** `questionLeaksRule` refuses a question that names a control id (whole words,
   with case, spacing and punctuation set aside, so `PCI DSS 3.4` names `PCI-DSS 3.4` and `CC 6.1`
-  names `CC6.1`: #2009), refers to a rule or clause as such (`rule`, `rules`, `clause`,
-  `clauses` as whole words, #2077: "the seven-year retention rule" names no id), or repeats 8 or
-  more consecutive words of a clause. `policy` is not refused: the template asks to check a
-  requirement "against company policy", and a returns policy is a business fact. It is re-asked once in
-  plain words, then replaced by `templateGoverningQuestion`.
+  names `CC6.1`: #2009), refers to a rule, clause or policy by phrase shape (#2077, #2086: "the
+  seven-year retention rule" names no id), or repeats 8 or more consecutive words of a clause.
+  The phrase shapes (`rulebookReference`) are a rule or clause followed by a numbered id (`rule
+  12`, `clause 4b`); a rule or clause heading a noun phrase that `the`/`this`/`our`/`which`/…
+  opens within three words; and the same for a policy after `under`/`per`/`against`/`within`/`by`
+  ("under the data retention policy"). A bare word is not refused (#2086): "the pricing rules
+  engine", "business rules", `rule-based` and "agree to the returns policy" are business facts,
+  and refusing them sent a rules-engine requirement's questions through a second model call. It is
+  re-asked once in plain words, then replaced by `templateGoverningQuestion`, which checks only
+  control ids and clause quotes in the requirement it quotes: the analyst's own words never drop
+  the quote.
 - **Self-resolve.** Governing questions go through the dialog's grounding pass, which searches
   only the project's knowledge index. #1869 keeps governing chunks out of it, so the rulebook can
   never answer its own question (tested with the policy held only by the governing index).
