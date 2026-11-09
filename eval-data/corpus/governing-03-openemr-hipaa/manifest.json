@@ -1,0 +1,591 @@
+{
+  "id": "governing-03-openemr-hipaa",
+  "description": "Held-out governing-rules set (#2105) on real, published text: obligations quoted from the HIPAA Security Rule (45 CFR 164.312 and 164.308(a)(5)) and NIST SP 800-63B-4, against requirements quoted from real openemr/openemr GitHub issues. Labelled blind to every prompt of the product by two AI labellers other than the agent that chose the requirements, with a third pass on each disagreement and a per-rule consistency pass. Read it only for a decision, never to tune a prompt.",
+  "purpose": "held-out",
+  "contentHash": {
+    "algorithm": "sha256",
+    "covers": "sha256 of the JSON of [policy, rules, items, each revision's text with LF line endings]; ANNOTATION.md, the labelling files and the thresholds are outside it",
+    "value": "71c07441178945b2367af50c2848208b056b6a7a1b8f295011899dbba45c4135"
+  },
+  "license": "Policy text: public domain (45 CFR, a US federal regulation; NIST SP 800-63B-4, a US government work). Requirement text: short excerpts quoted from public openemr/openemr GitHub issues, each with its URL (items[].source). Labels, summaries and annotation: CC0-1.0.",
+  "synthetic": false,
+  "sources": [
+    {
+      "title": "45 CFR 164.312, Technical safeguards (HIPAA Security Rule)",
+      "url": "https://www.ecfr.gov/current/title-45/subtitle-A/subchapter-C/part-164/subpart-C/section-164.312",
+      "license": "Public domain (US federal regulation)",
+      "retrievedAt": "2026-11-09",
+      "usedFor": "policy-v1.md, Part A (TS-01 to TS-12)"
+    },
+    {
+      "title": "45 CFR 164.308, Administrative safeguards: (a)(5)(ii)(C) Log-in monitoring and (D) Password management",
+      "url": "https://www.ecfr.gov/current/title-45/subtitle-A/subchapter-C/part-164/subpart-C/section-164.308",
+      "license": "Public domain (US federal regulation)",
+      "retrievedAt": "2026-11-09",
+      "usedFor": "policy-v1.md, Part A (AS-01, AS-02)"
+    },
+    {
+      "title": "NIST SP 800-63B-4, Digital Identity Guidelines: Authentication and Authenticator Management",
+      "url": "https://pages.nist.gov/800-63-4/sp800-63b.html",
+      "license": "Public domain in the United States (a work of the US federal government)",
+      "retrievedAt": "2026-11-09",
+      "usedFor": "policy-v1.md, Part B (PW-01 to SM-04)"
+    },
+    {
+      "title": "openemr/openemr GitHub issues",
+      "url": "https://github.com/openemr/openemr/issues",
+      "license": "Quoted in short excerpts with each issue's URL; OpenEMR is GPL-3.0",
+      "retrievedAt": "2026-11-09",
+      "usedFor": "items (each item's source is its issue)"
+    }
+  ],
+  "files": [
+    "ANNOTATION.md",
+    "labelling/adjudication-prompt.txt",
+    "labelling/adjudication.json",
+    "labelling/consistency-prompt-pass2.txt",
+    "labelling/consistency-prompt.txt",
+    "labelling/labeller-1-prompt.txt",
+    "labelling/labeller-1.json",
+    "labelling/labeller-2-prompt.txt",
+    "labelling/labeller-2.json",
+    "policy-v1.md"
+  ],
+  "policy": {
+    "title": "Electronic Health Record Security Requirements: HIPAA Security Rule and NIST SP 800-63B",
+    "scored": "v1",
+    "revisions": [
+      {
+        "revision": "v1",
+        "file": "policy-v1.md",
+        "effective": "2026-11-09",
+        "changedRules": []
+      }
+    ]
+  },
+  "annotation": {
+    "labelledBy": "two independent AI labellers (claude-opus-5-5), blind to every prompt of the product and neither of them the agent that chose the requirements, adjudicated by a third pass and checked by a per-rule consistency pass; not a person",
+    "labelledAt": "2026-11-09",
+    "groundTruthFixedBeforeAnyArmRan": true,
+    "procedure": "Policy quoted from public HIPAA and NIST text; requirements quoted from real OpenEMR issues by the agent dispatched on #2105, which wrote no label. Labelled against policy-v1 by two tool-less sessions given only the policy and the requirements; each disagreement settled by a third tool-less pass with a written reason; five cross-cutting rules re-checked by two blind passes each. No arm had run on it when the labels were fixed. See ANNOTATION.md and labelling/.",
+    "reviewedBy": null
+  },
+  "thresholds": {
+    "status": "proposed",
+    "proposedIn": "#1867",
+    "proposedAt": "2026-11-06",
+    "recordedBeforeAnyArmRan": true,
+    "overallRecall": 0.9,
+    "nonResemblingRecall": 0.85,
+    "precision": 0.6,
+    "citationAccuracy": 0.95,
+    "maxNoEvidenceCompliantErrors": 0,
+    "changes": []
+  },
+  "rules": [
+    {
+      "id": "TS-01",
+      "area": "access-control",
+      "summary": "Allow access to electronic health information only to people and programs granted access rights."
+    },
+    {
+      "id": "TS-02",
+      "area": "access-control",
+      "summary": "Give every user a unique name or number to identify and track them."
+    },
+    {
+      "id": "TS-03",
+      "area": "access-control",
+      "summary": "Have a procedure for getting needed health information during an emergency."
+    },
+    {
+      "id": "TS-04",
+      "area": "access-control",
+      "summary": "End an electronic session automatically after a set period of inactivity."
+    },
+    {
+      "id": "TS-05",
+      "area": "access-control",
+      "summary": "Have a mechanism to encrypt and decrypt stored health information."
+    },
+    {
+      "id": "TS-06",
+      "area": "audit",
+      "summary": "Record and examine activity in systems that hold health information."
+    },
+    {
+      "id": "TS-07",
+      "area": "integrity",
+      "summary": "Protect health information from improper alteration or destruction."
+    },
+    {
+      "id": "TS-08",
+      "area": "integrity",
+      "summary": "Corroborate electronically that health information has not been altered or destroyed without authorization."
+    },
+    {
+      "id": "TS-09",
+      "area": "authentication",
+      "summary": "Verify that anyone seeking access to health information is who they claim to be."
+    },
+    {
+      "id": "TS-10",
+      "area": "transmission",
+      "summary": "Guard health information against unauthorized access while it is sent over a network."
+    },
+    {
+      "id": "TS-11",
+      "area": "transmission",
+      "summary": "Ensure transmitted health information is not modified without detection."
+    },
+    {
+      "id": "TS-12",
+      "area": "transmission",
+      "summary": "Encrypt health information in transit whenever appropriate."
+    },
+    {
+      "id": "AS-01",
+      "area": "sign-in-monitoring",
+      "summary": "Monitor log-in attempts and report discrepancies."
+    },
+    {
+      "id": "AS-02",
+      "area": "passwords",
+      "summary": "Have procedures for creating, changing and safeguarding passwords."
+    },
+    {
+      "id": "PW-01",
+      "area": "passwords",
+      "summary": "A password is chosen by the user or assigned at random by the system."
+    },
+    {
+      "id": "PW-02",
+      "area": "passwords",
+      "summary": "Passwords are at least 15 characters, or at least 8 when used with a second factor."
+    },
+    {
+      "id": "PW-03",
+      "area": "passwords",
+      "summary": "No password composition rules beyond the blocklist."
+    },
+    {
+      "id": "PW-04",
+      "area": "passwords",
+      "summary": "No periodic password changes; force a change when a password is known to be compromised."
+    },
+    {
+      "id": "PW-05",
+      "area": "passwords",
+      "summary": "No password hints that someone not signed in can read."
+    },
+    {
+      "id": "PW-06",
+      "area": "passwords",
+      "summary": "No security questions when choosing a password."
+    },
+    {
+      "id": "PW-07",
+      "area": "passwords",
+      "summary": "Check every new or changed password against a blocklist of common or compromised passwords."
+    },
+    {
+      "id": "PW-08",
+      "area": "passwords",
+      "summary": "Allow password managers, autofill and pasting a password."
+    },
+    {
+      "id": "PW-09",
+      "area": "passwords",
+      "summary": "Ask for passwords only over an encrypted, authenticated channel."
+    },
+    {
+      "id": "PW-10",
+      "area": "passwords",
+      "summary": "Store passwords salted and hashed so they resist offline attacks."
+    },
+    {
+      "id": "AU-01",
+      "area": "authenticators",
+      "summary": "Sign-in uses two factors (multi-factor authentication)."
+    },
+    {
+      "id": "AU-02",
+      "area": "authenticators",
+      "summary": "Disable an authenticator after at most 100 consecutive failed attempts; it must be bound again before reuse."
+    },
+    {
+      "id": "AU-03",
+      "area": "authenticators",
+      "summary": "Tell the user, by a separate channel, when a new authenticator is added to their account."
+    },
+    {
+      "id": "AU-04",
+      "area": "authenticators",
+      "summary": "Let a user invalidate an authenticator at once when it is lost, stolen or compromised."
+    },
+    {
+      "id": "SM-01",
+      "area": "sessions",
+      "summary": "Re-authenticate at least every 24 hours, and after at most an hour of inactivity."
+    },
+    {
+      "id": "SM-02",
+      "area": "sessions",
+      "summary": "End the session when either timeout expires; activity resets the inactivity timer."
+    },
+    {
+      "id": "SM-03",
+      "area": "sessions",
+      "summary": "A signed-in session never falls back from HTTPS to HTTP."
+    },
+    {
+      "id": "SM-04",
+      "area": "sessions",
+      "summary": "Verify a session identifier in form submissions to prevent cross-site request forgery."
+    }
+  ],
+  "items": [
+    {
+      "id": "OE-01",
+      "title": "Getting abruptly logged out or cross patient data.",
+      "text": "… Appears to happen when same UA is used for multiple windows/browser tabs. I suspect session not being restored or a cookie path issue. Hopefully some will help with any patterns this issue seems to show when issue is encountered.",
+      "source": "https://github.com/openemr/openemr/issues/1644",
+      "applies": [
+        {
+          "ruleId": "TS-07",
+          "verdict": "needs-ba-input",
+          "businessFact": "When the cross-patient condition occurs, can a user save or edit data that lands in a different patient's record than the one they think they are editing?",
+          "nonResembling": true
+        }
+      ]
+    },
+    {
+      "id": "OE-02",
+      "title": "Fee sheet link ambiguous behavior",
+      "text": "When being on a different tab other then the patient encounter tab Pressing on the Fees-> Fee Sheet \"secretly\" open a new fee sheet in the encounter without opening the encounter tab and the new fee sheet The user might easily think that the link is not working",
+      "source": "https://github.com/openemr/openemr/issues/1804",
+      "applies": []
+    },
+    {
+      "id": "OE-03",
+      "title": "encrypt backups",
+      "text": "Raif requested this feature. Should be easy to do. PHP now has LibSodium as part of it, which is amazing encryption library.",
+      "source": "https://github.com/openemr/openemr/issues/2024",
+      "applies": [
+        {
+          "ruleId": "TS-05",
+          "verdict": "compliant"
+        }
+      ]
+    },
+    {
+      "id": "OE-04",
+      "title": "Session timeout should force immediate logout",
+      "text": "Wasn't sure whether to call this a feature request, bug or security vulnerability. When someone walks away from the computer their session will eventually time out, however whatever was on the screen remains visible until some action is taken. If that was sensitive information there's a problem. … My suggestion is that library/ajax/execute_background_services.php should notice when the user's session expires, and pass back a status code indicating such. The caller than can force a logout. Even better, would be good to see a prominent notice (bright red?) somewhere at the top of the page when the session is close to expiring.",
+      "source": "https://github.com/openemr/openemr/issues/4438",
+      "applies": [
+        {
+          "ruleId": "SM-01",
+          "verdict": "needs-ba-input",
+          "businessFact": "What are the configured inactivity timeout and overall reauthentication timeout?"
+        },
+        {
+          "ruleId": "SM-02",
+          "verdict": "compliant"
+        },
+        {
+          "ruleId": "TS-04",
+          "verdict": "compliant"
+        }
+      ]
+    },
+    {
+      "id": "OE-05",
+      "title": "Audit Logging of Merge Tool",
+      "text": "The merge tool doesn't get used often, but when it does, we want to know who used it and what patients were involved with the merge. … I would like to implement audit logging of the merge tool actions. I'm looking for feedback on: Where should log screen live? (should it be a type in the audit log, a new screen on the system log panel, or something that can be accessed from the merge tool?) What data should be logged? Any other ideas? (store JSON representation of merge so it can be undone, ...)",
+      "source": "https://github.com/openemr/openemr/issues/4469",
+      "applies": [
+        {
+          "ruleId": "TS-06",
+          "verdict": "compliant"
+        }
+      ]
+    },
+    {
+      "id": "OE-06",
+      "title": "CCDA Zip Export Patient Documents Option",
+      "text": "For patient care coordination and patient migration either outside of OpenEMR or from one OpenEMR instance to another OpenEMR instance we should bundle the patient documents into the zip file that we export from the Carecoordination module. This should be an option that we can select as part of the Carecoordination module's Send To -> Download feature. In the same folder as the patient that contains their CCDA document we should have a patient_documents folder that contains all of the documents that have been uploaded to a patient. We need to make sure we follow security privileges on the documents and respect the ACOs that have been setup for document categories / documents as we do the export so that we don't inadvertently leak data to users who shouldn't have access to it.",
+      "source": "https://github.com/openemr/openemr/issues/5429",
+      "applies": [
+        {
+          "ruleId": "TS-01",
+          "verdict": "compliant"
+        }
+      ]
+    },
+    {
+      "id": "OE-07",
+      "title": "Improve user experience of the \"Maximum Failed Login Attempts (0 for no maximum).\" setting",
+      "text": "Considering expanding upon the maximum failed login attempts to also offer an option where it automatically resets (ie. will work again automatically rather than require manual intervention by admin) after a certain time. Thus if for example, there a 3 failed requests and it shuts down account, it won't be shut out indefinitely if the user sets this new setting to a time interval (ie. after that time interval, the user can then login).",
+      "source": "https://github.com/openemr/openemr/issues/5627",
+      "applies": [
+        {
+          "ruleId": "AU-02",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "OE-08",
+      "title": "Dark theme does not change Select2 box",
+      "text": "Select2 box does not entirely get inverted when using the Dark theme. Backgrounds remain light while text does invert, leading to white text color on white background.",
+      "source": "https://github.com/openemr/openemr/issues/6056",
+      "applies": []
+    },
+    {
+      "id": "OE-09",
+      "title": "Handle non-ssl connections to OAuth2 login page",
+      "text": "On the OAuth2 login / authorization page for the apis, it will only let you login over HTTPS. If you attempt to login over HTTP it just refreshes the page because the session cookies are not saved. For production installations we need to just fail to serve up any requests for the login screen if it is accessed over a non-ssl connection. For development installations we either need to fail the HTTP request, or make it so the login screen will issue the session cookies when logging in via HTTP. I'm not sure I like this option though as people could likely just turn it on for production and operate in an insecure fashion.",
+      "source": "https://github.com/openemr/openemr/issues/6185",
+      "applies": [
+        {
+          "ruleId": "PW-09",
+          "verdict": "needs-ba-input",
+          "businessFact": "Will the HTTP login option for development be built, and can it be blocked from being enabled in production?"
+        },
+        {
+          "ruleId": "TS-10",
+          "verdict": "needs-ba-input",
+          "businessFact": "Will development installations that allow HTTP login ever hold or serve real ePHI, or will the HTTP option be rejected outright?"
+        }
+      ]
+    },
+    {
+      "id": "OE-10",
+      "title": "Growth chart indicators are not in the right position",
+      "text": "On the growth chart, the values use to be indicated on the chart. But now they are all at the bottom of the chart. … Expected behavior: growth indicators to be show on line graph",
+      "source": "https://github.com/openemr/openemr/issues/6481",
+      "applies": []
+    },
+    {
+      "id": "OE-11",
+      "title": "feat: Initial random password for new user",
+      "text": "Allow the system to generate a random password for a new user which is sent to to the user via email",
+      "source": "https://github.com/openemr/openemr/issues/6690",
+      "applies": [
+        {
+          "ruleId": "AS-02",
+          "verdict": "needs-ba-input",
+          "businessFact": "Is the email carrying the initial password encrypted, and must the user change the password at first login?"
+        },
+        {
+          "ruleId": "PW-01",
+          "verdict": "compliant"
+        },
+        {
+          "ruleId": "PW-02",
+          "verdict": "needs-ba-input",
+          "businessFact": "How many characters long will the generated password be, and is it used alone or with a second factor?"
+        },
+        {
+          "ruleId": "PW-07",
+          "verdict": "needs-ba-input",
+          "businessFact": "Is the generated password checked against a blocklist of commonly used, expected or compromised passwords?"
+        }
+      ]
+    },
+    {
+      "id": "OE-12",
+      "title": "feat: Allow admins to force a password reset upon next login of user",
+      "text": "(The request has no description beyond its title.)",
+      "source": "https://github.com/openemr/openemr/issues/6774",
+      "applies": [
+        {
+          "ruleId": "AS-02",
+          "verdict": "compliant"
+        },
+        {
+          "ruleId": "PW-04",
+          "verdict": "compliant"
+        },
+        {
+          "ruleId": "PW-07",
+          "verdict": "needs-ba-input",
+          "businessFact": "Is the new password the user sets after a forced reset checked against a blocklist of commonly used, expected or compromised passwords?"
+        }
+      ]
+    },
+    {
+      "id": "OE-13",
+      "title": "feat: MFA TOTP should display a seed code to enter into an application that does not use QR Codes",
+      "text": "If an application that generates TOTP does not have a QR scanner a seed code should be displayed on the TOTP user screen in the MFA Management screen. Most TOTP systems will display both the QR code and the seed value. I ran into this problem when trying to test the login screen with MFA.",
+      "source": "https://github.com/openemr/openemr/issues/6839",
+      "applies": []
+    },
+    {
+      "id": "OE-14",
+      "title": "Enable Default Login via Auth Provider (Keycloak, Authentik, etc.)",
+      "text": "Trying to figure out if it's possible to have OpenEMR set in a way that it can be connected to an Auth provider (e.g., Keycloak, Authentik, Zitadel) so that users (Admins, Clinicians, Providers, etc.) are all managed from the Auth provider and then able to login to the openmr.example.com site … We use an auth provider to manage a SSO-type environment and would like to have OpenEMR integrate with that so that we don't have extra layers & layers of user databases to manage",
+      "source": "https://github.com/openemr/openemr/issues/7169",
+      "applies": [
+        {
+          "ruleId": "AS-02",
+          "verdict": "needs-ba-input",
+          "businessFact": "Does the external identity provider supply the procedures for creating, changing and safeguarding passwords for the users it signs in?"
+        },
+        {
+          "ruleId": "AU-01",
+          "verdict": "needs-ba-input",
+          "businessFact": "Will the external auth provider require multi-factor authentication for all OpenEMR users?"
+        },
+        {
+          "ruleId": "TS-09",
+          "verdict": "needs-ba-input",
+          "businessFact": "How does the external identity provider verify each user, and how does the system confirm that a sign-in it receives came from that provider?"
+        }
+      ]
+    },
+    {
+      "id": "OE-15",
+      "title": "Change/Reset Password for users with emergency access",
+      "text": "Currently OpenEMR is not having feature for users to change their password in the login page. We know OpenEMR being a healthcare application users tend to access this application mainly during medical emergency. If they forget their password then they have to wait until an admin gives them the access. In order to resolve this primary issue. We need to supply a simple change password functionality in the main page of OpenEMR. Implement Change password in main login screen. Update password in the backend database.",
+      "source": "https://github.com/openemr/openemr/issues/7349",
+      "applies": [
+        {
+          "ruleId": "AS-02",
+          "verdict": "gap"
+        },
+        {
+          "ruleId": "PW-07",
+          "verdict": "needs-ba-input",
+          "businessFact": "Will the new login-screen change-password flow check the new password against a blocklist of common, expected and compromised passwords?"
+        },
+        {
+          "ruleId": "TS-09",
+          "verdict": "gap"
+        }
+      ]
+    },
+    {
+      "id": "OE-16",
+      "title": "Bug: Minimum password requirement is less than 12 characters",
+      "text": "ASVS 2.1.1 (Verify that user set passwords are at least 12 characters in length (after multiple spaces are combined). CWE-521 (Weak Password Requirements) OpenEMR accepts passwords 9 characters or greater, creating a conflict with the ASVS requirement above.",
+      "source": "https://github.com/openemr/openemr/issues/7357",
+      "applies": [
+        {
+          "ruleId": "AS-02",
+          "verdict": "compliant"
+        },
+        {
+          "ruleId": "PW-02",
+          "verdict": "needs-ba-input",
+          "businessFact": "Are passwords used as a single factor, or always together with MFA?"
+        },
+        {
+          "ruleId": "PW-07",
+          "verdict": "needs-ba-input",
+          "businessFact": "Besides the minimum length, is a new or changed password checked against a blocklist of commonly used, expected or compromised passwords?"
+        }
+      ]
+    },
+    {
+      "id": "OE-17",
+      "title": "Daily report column alignment",
+      "text": "The title says it all.",
+      "source": "https://github.com/openemr/openemr/issues/7601",
+      "applies": []
+    },
+    {
+      "id": "OE-18",
+      "title": "bug: Add Type and Status columns to Appointments Report csv export",
+      "text": "In the Appointments Report csv export it does not include the Type and Status columns that are in the visually displayed report. We should display those values.",
+      "source": "https://github.com/openemr/openemr/issues/8740",
+      "applies": []
+    },
+    {
+      "id": "OE-19",
+      "title": "Add Sent Fax Tracking to etherFAX Module",
+      "text": "Currently, the etherFAX module only stores received faxes in the queue table for history and management. Sent faxes are processed but not persisted, making it impossible to track delivery status or review sent fax history. Changes: Store sent fax details in oe_faxsms_queue with TransactionType = 1 when a fax is submitted. Poll etherFAX API on-demand to update sent fax delivery status. Display sent fax history in the UI alongside received faxes. Provide the same action options (view, delete, forward) for sent faxes as received faxes. This gives users visibility into their outbound fax activity and delivery confirmations without requiring them to log into the etherFAX portal.",
+      "source": "https://github.com/openemr/openemr/issues/9850",
+      "applies": [
+        {
+          "ruleId": "TS-01",
+          "verdict": "needs-ba-input",
+          "businessFact": "Which users or roles are allowed to view, delete or forward sent fax records: everyone with fax module access, or only the sender and specifically authorized roles?"
+        }
+      ]
+    },
+    {
+      "id": "OE-20",
+      "title": "bug(ui): Login screen renders several headers twice",
+      "text": "Repro: go to the login screen (/interface/login/login.php) and look at the network source. … Note the repeated meta tag, stylesheets, and script tags.",
+      "source": "https://github.com/openemr/openemr/issues/11486",
+      "applies": []
+    },
+    {
+      "id": "OE-21",
+      "title": "feat(menu): audit log on menu role changes",
+      "text": "Admin modifications to main_menu_role and patient_menu_role in the users table should emit an audit log entry. Currently a compromised admin can set a traversal value and later clear it with no audit trail. This is a gap under HIPAA §164.312(b) (audit controls) — changes to access-control configuration should be auditable. Testable conditions: Changing a user's menu role via the admin form produces an audit log entry with the old and new values.",
+      "source": "https://github.com/openemr/openemr/issues/11565",
+      "applies": [
+        {
+          "ruleId": "TS-06",
+          "verdict": "compliant"
+        }
+      ]
+    },
+    {
+      "id": "OE-22",
+      "title": "feat(auth): add force_mfa global to require enrollment for all users",
+      "text": "OpenEMR has no way for an administrator to require MFA for practitioner-side users. MFA enrollment is entirely self-service (interface/usergroup/mfa_registrations.php), and the login flow only challenges users who have already enrolled. A user who never opens the MFA registration page logs in with just a password, and an admin has no toggle, per-user flag, or \"require MFA on next login\" mechanism to change that. This proposes a global setting, force_mfa, that — when enabled — blocks completion of any practitioner login until the user has at least one row in login_mfa_registrations, redirecting unenrolled users into the existing TOTP enrollment flow. A separate issue covers the patient portal, which has no MFA at all.",
+      "source": "https://github.com/openemr/openemr/issues/12033",
+      "applies": [
+        {
+          "ruleId": "AU-01",
+          "verdict": "needs-ba-input",
+          "businessFact": "Will force_mfa be enabled (by default or by policy) on every production deployment that must meet AAL2?"
+        },
+        {
+          "ruleId": "TS-09",
+          "verdict": "compliant",
+          "nonResembling": true
+        }
+      ]
+    },
+    {
+      "id": "OE-23",
+      "title": "Patient portal no longer redirects to login when the session has ended",
+      "text": "When a patient's portal session has ended, AJAX requests from portal/patient pages fail silently. The patient sees no message and isn't sent to the login screen. Their actions just do nothing.",
+      "source": "https://github.com/openemr/openemr/issues/14426",
+      "applies": []
+    },
+    {
+      "id": "OE-24",
+      "title": "Audit log attributes record events to the session's open chart instead of the affected patient",
+      "text": "The audit log uses the session's open chart to set the patient_id for patient record and HTTP request events. This causes statements about one patient to be logged against another patient if a different chart is open. … A statement about patient B run while patient A's chart is open is logged against patient A. The statement text in the comments column still has patient B's id, so anything that filters the log by patient_id misses patient B's access and shows a phantom access on patient A.",
+      "source": "https://github.com/openemr/openemr/issues/14788",
+      "applies": [
+        {
+          "ruleId": "TS-06",
+          "verdict": "compliant"
+        }
+      ]
+    },
+    {
+      "id": "OE-25",
+      "title": "Patient portal first-login page: no show/hide on password fields, confusing \"Account Name\"/\"Use Username\" labels",
+      "text": "On the portal \"Please Enter New Credentials\" page (first login / forced password reset): The Current Password, New Password and Confirm New Password fields have no show/hide toggle, although the login page has one. New passwords must mix upper/lower case and digits, so blind typing often fails. … The read-only field labelled \"Account Name\" (the account ID) and the editable \"Use Username\" are easy to confuse, and users then enter the account ID on the login page, which only matches the chosen login username.",
+      "source": "https://github.com/openemr/openemr/issues/15013",
+      "applies": [
+        {
+          "ruleId": "AS-02",
+          "verdict": "compliant"
+        },
+        {
+          "ruleId": "PW-03",
+          "verdict": "gap"
+        }
+      ]
+    }
+  ]
+}

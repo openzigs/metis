@@ -15,6 +15,8 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   GOVERNING_EXTRACTION_STALE_MS,
+  GOVERNING_PREVIEW_NOTE,
+  findForbiddenComplianceClaims,
   MAX_DOCUMENT_BYTES,
   UPLOAD_EXTENSION_ALLOWLIST,
 } from "@metis/shared";
@@ -23,6 +25,18 @@ const auth: { user: { id: string; role: string } | null } = {
   user: { id: "u-admin", role: "viewer" },
 };
 vi.mock("@/lib/auth-context", () => ({ useAuth: () => auth }));
+
+// #2109 — the Preview setting, switchable per test; on unless a test turns it off.
+const preview = vi.hoisted(() => ({ on: true }));
+vi.mock("@metis/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@metis/shared")>();
+  return {
+    ...actual,
+    get GOVERNING_PREVIEW() {
+      return preview.on;
+    },
+  };
+});
 
 import {
   EXTRACTION_POLL_MS,
@@ -359,6 +373,41 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  preview.on = true;
+});
+
+describe("GoverningDocumentsPanel — the Preview mark (#2109)", () => {
+  it("shows the Preview badge and its note on the tab, with documents or without", async () => {
+    server.seedDocument({ title: "Policy", rules: POLICY_RULES });
+    mount();
+    await screen.findByRole("table", { name: "Governing documents" });
+    const note = screen.getByTestId("governing-preview");
+    expect(note).toHaveAttribute("role", "note");
+    expect(within(note).getByText("Preview")).toBeInTheDocument();
+    expect(note).toHaveTextContent(GOVERNING_PREVIEW_NOTE);
+    expect(findForbiddenComplianceClaims(note.textContent ?? "")).toEqual([]);
+
+    server.docs = [];
+    reload();
+    await screen.findByText("No governing documents yet");
+    expect(screen.getByTestId("governing-preview")).toHaveTextContent(GOVERNING_PREVIEW_NOTE);
+  });
+
+  it("shows no Preview mark when the setting is off", async () => {
+    preview.on = false;
+    server.seedDocument({ title: "Policy", rules: POLICY_RULES });
+    mount();
+    await screen.findByRole("table", { name: "Governing documents" });
+    expect(screen.queryByTestId("governing-preview")).toBeNull();
+    expect(screen.queryByText(GOVERNING_PREVIEW_NOTE)).toBeNull();
+  });
+
+  it("shows no Preview mark when the workspace has governing documents turned off", async () => {
+    server.flagOn = false;
+    mount();
+    await screen.findByText("Governing documents are not available");
+    expect(screen.queryByTestId("governing-preview")).toBeNull();
+  });
 });
 
 /** Run the list's next poll: the panel re-reads every {@link EXTRACTION_POLL_MS}. */

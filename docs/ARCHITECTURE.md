@@ -4710,6 +4710,23 @@ the Markdown, and the CLI's first line). **Never iterate a prompt against `gover
 Read it only for a decision, and record each reading in its `ANNOTATION.md`
 (`CONTRIBUTING.md` > "What a pull request needs").
 
+**A held-out set of real text (#2105).** `governing-01` and `governing-02` are synthetic: one
+agent wrote each policy and its requirements. **`governing-03-openemr-hipaa`** quotes real,
+published obligations word for word (the HIPAA Security Rule, 45 CFR 164.312 and
+164.308(a)(5), and NIST SP 800-63B-4, both public domain, each with its URL and retrieval
+date in the policy's own header), against 25 requirements quoted from real
+`openemr/openemr` issues, each with its issue URL (`items[].source`). Its manifest says
+`synthetic: false` and lists its `sources`; the loader accepts that only with every source's
+title, https URL, licence and retrieval date and every item's source, and holds such a set
+to the negative minimum but not to the synthetic sets' eight non-resembling items (real
+requirements are quoted as filed; this one has two). It was labelled blind by two tool-less
+labellers that were not the agent that chose the requirements, adjudicated and given a
+per-rule consistency pass, as `governing-02` was. The first A5 reading on it (Sonnet) failed
+three bars: recall 0.80, non-resembling recall 0.50 (two pairs) and precision 0.52, with
+citation accuracy 1.00 and no unsupported `compliant`
+(`eval-data/readings/governing-03-openemr-hipaa/baseline-A5-sonnet.md`). The same rule holds:
+never iterate a prompt against it.
+
 **Readings and their code (#1878).** Every report records `provenance`: the commit it ran at
 (`git rev-parse HEAD`), whether the tree was clean, and each arm's `codePath`. Three runs do not
 finish inside one ten-minute command (#2038). So a decision reading is three `--runs 1`
