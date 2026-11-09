@@ -2984,6 +2984,25 @@ exists). The underlying endpoints both require `analysis.read`:
 - `GET /api/impact-analyses/workspaces/:workspaceId/objects/usage?objectName=…&schemaName=…&objectType=…` — which projects use an object
 - `GET /api/impact-analyses/projects/:projectId/cross-project-impact` — aggregated cross-project impact for a source project
 
+**Through a product's API edges (#2115).** Cross-project impact also follows the
+product edges of kind **api** (declared on the product page, or detected). When a
+run's change matches a file of the provider's API (a file the edge records, a
+spec file, or a file under a directory named `api`, `rest`, `graphql`, `grpc`,
+`rpc`, `openapi`, `swagger` or `endpoints`), the provider's **Cross-project
+impact** block names each consumer, the API files the change touches, and the
+consumer's methods that call that API. Those methods are the consumer's own best
+matches when it is in the same run. Otherwise they come from the edge's evidence.
+
+When a change matches the provider but none of its API (a web-UI fix, say), no
+consumer is listed. A consumer that is in the run anyway gets a **Low-confidence
+match** banner on its matches for that change: it reaches the provider only
+through the API, so its matches share words with the change rather than its
+effect. The changes METIS extracts from one pasted text or document count as one
+request here, and each stored requirement as its own. Consumers you cannot open
+are left out. These come from
+`GET /api/impact-analyses/:id/api-edge-impact` (`analysis.read`, authorized like
+the run itself).
+
 #### 13.9.5 AI enrichment: what it costs and how to turn it off
 
 Impact analysis has a **deterministic core** — the code graph and schema crossing
