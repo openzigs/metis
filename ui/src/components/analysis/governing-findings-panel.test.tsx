@@ -204,13 +204,18 @@ class FakeServer {
 
 let server: FakeServer;
 
-function mount(canDecide = true): QueryClient {
+function mount(canDecide = true, analysisStatus?: string): QueryClient {
   const qc = createQueryClient();
   const defaults = qc.getDefaultOptions();
   qc.setDefaultOptions({ ...defaults, queries: { ...defaults.queries, retry: false } });
   render(
     <QueryClientProvider client={qc}>
-      <GoverningFindingsPanel projectId={PROJECT} analysisId={ANALYSIS} canDecide={canDecide} />
+      <GoverningFindingsPanel
+        projectId={PROJECT}
+        analysisId={ANALYSIS}
+        canDecide={canDecide}
+        analysisStatus={analysisStatus}
+      />
     </QueryClientProvider>,
   );
   return qc;
@@ -587,6 +592,47 @@ describe("GoverningFindingsPanel (#1876)", () => {
     });
     expect(screen.queryByTestId("governing-findings-empty")).toBeNull();
     expect(screen.queryByTestId("governing-findings")).toBeNull();
+  });
+
+  it("#2113 — empty state carries the Preview notice", async () => {
+    server.findings = [];
+    mount();
+    const empty = await screen.findByTestId("governing-findings-empty");
+    expect(empty).toHaveTextContent(/preview/i);
+  });
+
+  it("#2113 — a running analysis says nothing about the check, then reads again once it completes", async () => {
+    server.findings = [];
+    server.checked = false;
+    const view = render(<div />);
+    view.unmount();
+    const qc = createQueryClient();
+    const defaults = qc.getDefaultOptions();
+    qc.setDefaultOptions({ ...defaults, queries: { ...defaults.queries, retry: false } });
+    const tree = (status: string) => (
+      <QueryClientProvider client={qc}>
+        <GoverningFindingsPanel
+          projectId={PROJECT}
+          analysisId={ANALYSIS}
+          canDecide
+          analysisStatus={status}
+        />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(tree("running"));
+    await waitFor(() => expect(server.requests.length).toBeGreaterThan(0));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.queryByTestId("governing-findings-empty")).toBeNull();
+    // The run finishes and stores its applicability: the panel asks again.
+    server.checked = true;
+    rerender(tree("completed"));
+    await waitFor(() =>
+      expect(screen.getByTestId("governing-findings-empty")).toHaveTextContent(
+        "None produced a finding",
+      ),
+    );
   });
 
   it("a failure other than the flag being off is said", async () => {

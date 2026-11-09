@@ -193,9 +193,12 @@ export function GoverningFindingsPanel({
   projectId,
   analysisId,
   canDecide,
+  analysisStatus,
 }: {
   projectId: string;
   analysisId: string;
+  /** The analysis's status; while it runs nothing is stored, so no empty state is said (#2113). */
+  analysisStatus?: string;
   /** The user holds `analysis.run`, which the decision route requires. */
   canDecide: boolean;
 }): React.ReactElement | null {
@@ -229,6 +232,16 @@ export function GoverningFindingsPanel({
     }
     wasRefreshing.current = refreshing;
   }, [refreshing, queryClient, analysisId]);
+  // #2113 — the governing keys sit outside the analysis detail's, so the job
+  // lifecycle never refreshes them: read again once the run leaves running.
+  const inFlight = analysisStatus === "pending" || analysisStatus === "running";
+  const wasInFlight = useRef(inFlight);
+  useEffect(() => {
+    if (wasInFlight.current && !inFlight) {
+      void queryClient.invalidateQueries({ queryKey: governingFindingsKeys.all(analysisId) });
+    }
+    wasInFlight.current = inFlight;
+  }, [inFlight, queryClient, analysisId]);
   // The Questions tab's own query (`EnhancementResults`): one cache entry.
   const clarification = useQuery({
     queryKey: ["analyses", analysisId, "clarify"],
@@ -249,7 +262,7 @@ export function GoverningFindingsPanel({
   if (!hasFindings) {
     // #2113 — "not checked" and "checked, nothing applied" read differently.
     // While a findings run is in flight, the list is about to change: nothing yet.
-    if (findingsQuery.data.refreshing) return null;
+    if (findingsQuery.data.refreshing || inFlight) return null;
     return (
       <section
         aria-labelledby="governing-findings-heading"
@@ -262,6 +275,7 @@ export function GoverningFindingsPanel({
         >
           Governing rules
         </h4>
+        <GoverningPreviewNotice className="mt-1" />
         <p className="text-sm text-muted-foreground">
           {findingsQuery.data.checked
             ? "Governing rules were checked against this analysis's requirements. None produced a finding."

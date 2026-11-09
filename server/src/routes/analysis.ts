@@ -993,8 +993,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           // #2113 — whether the governing check ran on this analysis at all
           // (its applicability is stored), so "not checked" (no rules in the
           // workspace, or a run that skipped the check) reads differently
-          // from "checked, no rule applied".
-          checked: (await readGoverningApplicability(analysisId)) !== null,
+          // from "checked, no rule applied". A stored set that is all errors
+          // (rules unavailable, every requirement undecided) checked nothing.
+          checked:
+            (await readGoverningApplicability(analysisId))?.requirements.some((r) => !r.error) ??
+            false,
         }),
       );
     },

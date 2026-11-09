@@ -11,7 +11,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatMessage, ChatOptions } from "../ai/types.js";
-import { REQUIREMENT_RETRIEVAL_CONCURRENCY } from "@metis/shared";
+import { MAX_REQUIREMENTS_FOR_RETRIEVAL, REQUIREMENT_RETRIEVAL_CONCURRENCY } from "@metis/shared";
 import { __resetConfigSingleton } from "../config/config-service.js";
 
 const ANALYSIS_ID = "an_1872";
@@ -704,6 +704,44 @@ describe("#2113 — the agentic path (a project with ingested code)", () => {
       applicability: stored,
     });
     expect(vi.mocked(analysisService.markAnalysisCompleted)).toHaveBeenCalledTimes(1);
+  });
+
+  it("two repositories: the governing check still runs once per run, not once per repository", async () => {
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    state.workspaceId = "ws_1872";
+    state.rules = [AUDIT_RULE];
+    vi.mocked(prisma.repoConnection.findMany).mockImplementation((async () => [
+      { id: "rc_a", label: "a", isPrimary: true, createdAt: new Date(1) },
+      { id: "rc_b", label: "b", isPrimary: false, createdAt: new Date(2) },
+    ]) as never);
+    try {
+      const run = await runAgentic();
+      // The code agent ran once per repository, governing did not.
+      expect(run.seen).toHaveLength(2);
+      expect(run.calls.filter(isGoverning)).toHaveLength(4);
+      expect([...decided.ids].sort()).toEqual(["REQ-001", "REQ-002"]);
+      expect(vi.mocked(analysisService.updateGoverningApplicabilityMetadata)).toHaveBeenCalledTimes(
+        1,
+      );
+    } finally {
+      vi.mocked(prisma.repoConnection.findMany).mockImplementation((async () => []) as never);
+    }
+  });
+
+  it("blank requirement text is not decided, and no more than the retrieval cap is", async () => {
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    state.workspaceId = "ws_1872";
+    state.rules = [AUDIT_RULE];
+    state.requirements = [
+      { id: "REQ-BLANK", text: "   " },
+      ...Array.from({ length: MAX_REQUIREMENTS_FOR_RETRIEVAL + 3 }, (_, i) => ({
+        id: `REQ-${String(i + 1).padStart(3, "0")}`,
+        text: `Export dataset ${i + 1} as a CSV.`,
+      })),
+    ];
+    await runAgentic();
+    expect(decided.ids).not.toContain("REQ-BLANK");
+    expect(decided.ids).toHaveLength(MAX_REQUIREMENTS_FOR_RETRIEVAL);
   });
 
   it("flag off: the agentic path reads no workspace or rule, and stores nothing", async () => {

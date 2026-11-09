@@ -2856,7 +2856,7 @@ decision on that row is audited the same way before the delete (#2017).
   run's own production at its join as well as a refresh a BA answer started), so a client fetches
   again once it reads false (#2017). `revisions` lists each policy revision the findings cite with
   its rule count (live rules, plus any cited rule deleted since), for the summary sentence (#1876). `checked`
-  is false when the analysis has no stored applicability, so the check never ran (#2113).
+  is false when the analysis has no stored applicability, or only error sets (rules unavailable, every requirement undecided), so no rule was checked (#2113).
 - `POST …/governing-findings/:findingId/decision` takes `{ decision: accepted|rejected, note }`
   (`governingFindingDecisionInputSchema`, strict) and needs `analysis.run`.
 - The decider is the session user. A body that names one is a 400. Each finding carries
