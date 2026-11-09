@@ -490,6 +490,25 @@ export class ClarificationDialog {
     if (!currentRound) {
       throw new Error("No active round to submit answers to");
     }
+    // #2085 — only the latest generated round, while it is still open, takes
+    // answers. A client still showing an answered round (the next one is
+    // generating, or the dialog completed) or an earlier round (a later one
+    // was generated meanwhile) would otherwise write onto the wrong round and
+    // bump `currentRound`, which the in-flight start then overwrites: a lost
+    // update and a skipped round. Refused before anything is written.
+    const roundIds = new Set(currentRound.questions.map((q) => q.id));
+    if (
+      state.completed ||
+      currentRound.round !== state.currentRound ||
+      answers.some((a) => !roundIds.has(a.questionId))
+    ) {
+      throw new AppError(
+        409,
+        "CLARIFY_ROUND_NOT_OPEN",
+        "These answers are for a clarification round that is no longer open. Reload the " +
+          "questions and answer the current round.",
+      );
+    }
 
     currentRound.answers = answers;
     // Issue #1104 (finding C) — stamp each answer onto its question so the

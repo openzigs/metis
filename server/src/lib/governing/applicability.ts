@@ -272,7 +272,6 @@ const JUDGE_LINES = [
   FENCE_NOTE,
   'Respond ONLY with one JSON object: {"decisions":[{"rule":"R1","verdict":"applies|does-not-apply|uncertain","reason":"<one sentence>","businessFact":"<the question, for uncertain only>"}]}, naming each rule by the handle at the start of its entry.',
 ];
-const JUDGE_SYSTEM = JUDGE_LINES.join("\n");
 
 const REASK_NOTE =
   "Your previous answer left these rules without a decision, or marked them uncertain without the business question. Decide each one again; an uncertain decision must carry its question.";
@@ -295,8 +294,15 @@ export const ANSWER_NOTE = [
   "A safeguard being in place is never a reason to decide does-not-apply.",
 ].join("\n");
 
-/** #2078 — the settle judge's system prompt: {@link ANSWER_NOTE} before the reply format, which stays last. */
-const SETTLE_SYSTEM = [...JUDGE_LINES.slice(0, -1), ANSWER_NOTE, JUDGE_LINES.at(-1)!].join("\n");
+/**
+ * A judging system prompt: `JUDGE_LINES` with `notes` inserted before the
+ * reply format, which stays the last line. #2078 — {@link ANSWER_NOTE} for the
+ * settle judge; #2087 — and {@link REASK_NOTE} on a re-ask, which used to be
+ * appended after the format line.
+ */
+function judgeSystem(...notes: string[]): string {
+  return [...JUDGE_LINES.slice(0, -1), ...notes, JUDGE_LINES.at(-1)!].join("\n");
+}
 
 /**
  * The judging prompt: one requirement against the summaries and clauses of
@@ -308,9 +314,9 @@ export function buildApplicabilityJudgePrompt(
   entries: readonly Pick<ApplicabilityEntry, "handle" | "rule">[],
   opts: { reask?: boolean; answered?: boolean } = {},
 ): Prompt {
-  const system = opts.answered ? SETTLE_SYSTEM : JUDGE_SYSTEM;
+  const notes = [...(opts.answered ? [ANSWER_NOTE] : []), ...(opts.reask ? [REASK_NOTE] : [])];
   return {
-    systemMessage: opts.reask ? `${system}\n${REASK_NOTE}` : system,
+    systemMessage: judgeSystem(...notes),
     userMessage: [
       requirementBlock(requirementText),
       fenceToolResult(
@@ -539,7 +545,9 @@ export function screenRoom(
  * would be cheaper with several batches, but a dropped candidate reads
  * downstream exactly as a rule that does not apply — the silent miss the
  * screen exists to prevent — while a failed requirement says it was not
- * decided.
+ * decided. #2053 — a judging reply cut off at the output cap is not counted
+ * unread: its batch is judged again in halves, down to one rule, so only a
+ * single rule's reply cut off twice running fails the requirement that way.
  */
 export async function decideApplicability(
   input: DecideApplicabilityInput,
@@ -556,7 +564,7 @@ export async function decideApplicability(
     foundBy.set(index, set);
   };
 
-  const ask = async (prompt: Prompt): Promise<string> => {
+  const ask = async (prompt: Prompt): Promise<ChatResponse> => {
     const reply = await provider.chat([{ role: "user", content: prompt.userMessage }], {
       systemMessage: prompt.systemMessage,
       disableTools: true,
@@ -569,7 +577,7 @@ export async function decideApplicability(
         : {}),
     });
     input.onReply?.(reply);
-    return reply.content;
+    return reply;
   };
 
   // Top-k. An id outside `rules` (another scope's, or a rule since deleted) is
@@ -599,7 +607,7 @@ export async function decideApplicability(
   const screenBatch = async (batch: readonly ApplicabilityEntry[]) => {
     try {
       return parseApplicabilityScreenReply(
-        await ask(buildApplicabilityScreenPrompt(requirement.text, batch)),
+        (await ask(buildApplicabilityScreenPrompt(requirement.text, batch))).content,
         batch,
       );
     } catch (err) {
@@ -610,7 +618,8 @@ export async function decideApplicability(
         error: err.message,
       });
       return parseApplicabilityScreenReply(
-        await ask(buildApplicabilityScreenPrompt(requirement.text, batch, { reask: true })),
+        (await ask(buildApplicabilityScreenPrompt(requirement.text, batch, { reask: true })))
+          .content,
         batch,
       );
     }
@@ -633,8 +642,48 @@ export async function decideApplicability(
   // Judge every candidate, re-asking once for any left undecided or without its question.
   const candidates = [...foundBy.keys()].sort((a, b) => a - b).map((i) => entries[i]!);
   const decisions = new Map<number, ApplicabilityDecision>();
-  // #1997 — candidates whose judging reply could not be read at all, by pass.
+  // #1997 — candidates whose judging reply could not be read at all, by pass;
+  // #2053 — and those of them whose reply was cut off at the output cap.
   const unread: [Set<number>, Set<number>] = [new Set(), new Set()];
+  const cutOff: [Set<number>, Set<number>] = [new Set(), new Set()];
+  let judgeSplits = 0;
+  const judgeBatch = async (batch: readonly ApplicabilityEntry[], reask: boolean) => {
+    const reply = await ask(buildApplicabilityJudgePrompt(requirement.text, batch, { reask }));
+    const got = parseApplicabilityJudgeReply(reply.content, batch);
+    const stoppedAtCap = stoppedAtOutputCap(reply);
+    // #2053 — a reply cut off at the output cap is not a garbled one: the
+    // judge needed more room than the cap leaves for this many rules. Judge
+    // the batch again in halves, each needing about half the reply, rather
+    // than re-asking the same batch into the same cap.
+    if (!got.readable && stoppedAtCap && batch.length > 1) {
+      judgeSplits++;
+      log.warn("governing judging reply cut off at the output cap; judging the batch in halves", {
+        requirementId: requirement.id,
+        candidates: batch.length,
+        finishReason: reply.finishReason,
+        reask,
+      });
+      const half = Math.ceil(batch.length / 2);
+      await judgeBatch(batch.slice(0, half), reask);
+      await judgeBatch(batch.slice(half), reask);
+      return;
+    }
+    if (!got.readable) {
+      log.warn("governing judging reply unreadable", {
+        requirementId: requirement.id,
+        candidates: batch.length,
+        finishReason: reply.finishReason ?? "unknown",
+        reask,
+      });
+      for (const e of batch) {
+        unread[reask ? 1 : 0].add(e.index);
+        if (stoppedAtCap) cutOff[reask ? 1 : 0].add(e.index);
+      }
+    }
+    for (const [index, d] of got.decisions) {
+      if (!decisions.has(index) || complete(d)) decisions.set(index, d);
+    }
+  };
   const judge = async (batchOf: readonly ApplicabilityEntry[], reask: boolean) => {
     const fixed = estimateTokens(
       promptText(buildApplicabilityJudgePrompt(requirement.text, [], { reask })),
@@ -645,12 +694,7 @@ export async function decideApplicability(
       fixed,
       budget,
     )) {
-      const raw = await ask(buildApplicabilityJudgePrompt(requirement.text, batch, { reask }));
-      const got = parseApplicabilityJudgeReply(raw, batch);
-      if (!got.readable) for (const e of batch) unread[reask ? 1 : 0].add(e.index);
-      for (const [index, d] of got.decisions) {
-        if (!decisions.has(index) || complete(d)) decisions.set(index, d);
-      }
+      await judgeBatch(batch, reask);
     }
   };
   if (candidates.length > 0) await judge(candidates, false);
@@ -661,8 +705,11 @@ export async function decideApplicability(
     // Recording these as `uncertain` would ask the analyst a fallback question
     // about every one of them (35 for one requirement in a #1997 reading).
     // #2008 — requirement-wide on purpose: see this function's comment.
+    // #2053 — a reading says whether the output cap was the cause.
+    const allCutOff = neverRead.every((i) => cutOff[0].has(i) && cutOff[1].has(i));
     throw new ApplicabilityReplyError(
-      `the judging reply could not be read twice running for ${neverRead.length} candidate rule(s)`,
+      `the judging reply could not be read twice running for ${neverRead.length} candidate rule(s)` +
+        (allCutOff ? "; each reply was cut off at the output cap" : ""),
     );
   }
 
@@ -698,10 +745,20 @@ export async function decideApplicability(
     screenReasked,
     candidates: result.candidates,
     reasked: result.reasked,
+    judgeSplits,
     applies: out.filter((d) => d.verdict === "applies").length,
     uncertain: out.filter((d) => d.verdict === "uncertain").length,
   });
   return result;
+}
+
+/**
+ * #2053 — the model stopped because the reply reached its output cap:
+ * `max_tokens` on the Anthropic API (and DeepSeek's Anthropic-compatible
+ * endpoint), `length` on an OpenAI-compatible one.
+ */
+function stoppedAtOutputCap(reply: Pick<ChatResponse, "finishReason">): boolean {
+  return reply.finishReason === "max_tokens" || reply.finishReason === "length";
 }
 
 function promptText(p: Prompt): string {

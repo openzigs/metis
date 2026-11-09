@@ -545,6 +545,104 @@ describe("decideApplicability — uncertain always carries a business question",
   });
 });
 
+describe("#2053 — a judging reply cut off at the output cap", () => {
+  /**
+   * A judge that cuts its reply off mid-JSON, with `finishReason`, whenever it
+   * is shown more than `fits` rules (as DeepSeek did at 16,384 tokens on 21 to
+   * 31 candidates), and otherwise decides every rule shown `applies`.
+   */
+  function cappedJudge(fits: number, finishReason = "max_tokens") {
+    const shown: { handles: string[]; reask: boolean }[] = [];
+    const chat = vi.fn(async (messages: ChatMessage[], o: ChatOptions = {}) => {
+      const user = messages.map((m) => String(m.content)).join("\n");
+      const handles = handlesIn(user);
+      const reask = String(o.systemMessage ?? "").includes("Your previous answer");
+      shown.push({ handles, reask });
+      const reply = (content: string, stop: string) => ({
+        content,
+        model: "m",
+        provider: "anthropic" as const,
+        finishReason: stop,
+      });
+      if (handles.length > fits) {
+        return reply(
+          '{"decisions":[{"rule":"R1","verdict":"applies","reason":"The requ',
+          finishReason,
+        );
+      }
+      const decisions = handles.map((rule) => ({ rule, verdict: "applies", reason: "Fits." }));
+      return reply(JSON.stringify({ decisions }), "end_turn");
+    });
+    const provider = {
+      key: "anthropic",
+      model: "claude-sonnet-4-5",
+      offline: false,
+      chat,
+    } as unknown as AIProvider;
+    return { provider, shown };
+  }
+  const RULES = Array.from({ length: 8 }, (_, i) => rule(i + 1));
+  const decide = (provider: AIProvider, rules = RULES) =>
+    decideApplicability({
+      requirement: REQUIREMENT,
+      rules,
+      provider,
+      retrieve: async () => rules.map((r) => r.id),
+      screen: false,
+    });
+
+  beforeEach(() => logWarn.mockClear());
+
+  it("is judged again in halves, each a first ask, so the requirement is decided rather than failed", async () => {
+    const { provider, shown } = cappedJudge(4);
+    const set = await decide(provider);
+    expect(set.decisions).toHaveLength(8);
+    expect(set.decisions.every((d) => d.verdict === "applies")).toBe(true);
+    expect(shown.map((s) => s.handles.length)).toEqual([8, 4, 4]);
+    // The halves are the same rules, in order, and nothing is re-asked.
+    expect(shown.slice(1).flatMap((s) => s.handles)).toEqual(shown[0]!.handles);
+    expect(shown.some((s) => s.reask)).toBe(false);
+    expect(set.reasked).toBe(0);
+    expect(logWarn).toHaveBeenCalledWith(
+      "governing judging reply cut off at the output cap; judging the batch in halves",
+      expect.objectContaining({ candidates: 8, finishReason: "max_tokens" }),
+    );
+  });
+
+  it("halves again while a half is still cut off, and reads OpenAI-compatible `length` the same way", async () => {
+    const { provider, shown } = cappedJudge(2, "length");
+    const set = await decide(provider);
+    expect(set.decisions).toHaveLength(8);
+    expect(shown.map((s) => s.handles.length)).toEqual([8, 4, 2, 2, 4, 2, 2]);
+  });
+
+  it("one rule cut off twice running cannot be split: the requirement fails, and the error says the replies were cut off", async () => {
+    const { provider, shown } = cappedJudge(0);
+    await expect(decide(provider, [AUDIT])).rejects.toThrow(
+      "the judging reply could not be read twice running for 1 candidate rule(s); each reply was cut off at the output cap",
+    );
+    expect(shown.map((s) => [s.handles.length, s.reask])).toEqual([
+      [1, false],
+      [1, true],
+    ]);
+  });
+
+  it("an unreadable reply that was not cut off is re-asked once, unsplit, as before (#1997), with its finishReason logged", async () => {
+    const { provider, shown } = cappedJudge(4, "end_turn");
+    await expect(decide(provider)).rejects.toThrow(
+      /^the judging reply could not be read twice running for 8 candidate rule\(s\)$/,
+    );
+    expect(shown.map((s) => [s.handles.length, s.reask])).toEqual([
+      [8, false],
+      [8, true],
+    ]);
+    expect(logWarn).toHaveBeenCalledWith(
+      "governing judging reply unreadable",
+      expect.objectContaining({ candidates: 8, finishReason: "end_turn", reask: true }),
+    );
+  });
+});
+
 describe("prompts: governing text is fenced", () => {
   it("fences the requirement and the summaries, and a fence marker inside a summary cannot close the fence", async () => {
     const hostile = rule(1, {
@@ -728,12 +826,24 @@ describe("#2067 — the settle judge tells applying from being met", () => {
     expect(ANSWER_NOTE).toContain(
       "A safeguard being in place is never a reason to decide does-not-apply.",
     );
-    const reask = buildApplicabilityJudgePrompt(REQUIREMENT.text, [], {
-      answered: true,
-      reask: true,
-    }).systemMessage;
-    expect(reask.startsWith(`${settle}\n`)).toBe(true);
-    expect(reask).toContain("Your previous answer");
+  });
+
+  it("#2087 — on a re-ask too, the reply format stays the last line, after the re-ask note", () => {
+    for (const answered of [false, true]) {
+      const plain = buildApplicabilityJudgePrompt(REQUIREMENT.text, [], { answered }).systemMessage;
+      const reask = buildApplicabilityJudgePrompt(REQUIREMENT.text, [], {
+        answered,
+        reask: true,
+      }).systemMessage;
+      const lines = plain.split("\n");
+      const format = lines.at(-1)!;
+      expect(format).toMatch(/^Respond ONLY with one JSON object/);
+      const reaskLines = reask.split("\n");
+      expect(reaskLines.at(-1)).toBe(format);
+      expect(reaskLines.at(-2)).toMatch(/^Your previous answer/);
+      // Everything else is the plain prompt, unchanged and in order.
+      expect([...reaskLines.slice(0, -2), format]).toEqual(lines);
+    }
   });
 });
 

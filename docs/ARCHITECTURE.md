@@ -2601,7 +2601,14 @@ An `uncertain` decision always carries a business question: a reply that leaves 
 undecided or marks it `uncertain` without the question is re-asked once, and then recorded
 `uncertain` with `fallbackBusinessQuestion`, which names the rule. A judging reply that cannot
 be read at all, twice running, fails the requirement instead (#1997): recording every candidate
-`uncertain` asked the analyst a fallback question per rule. The model names rules by
+`uncertain` asked the analyst a fallback question per rule. #2053 — a judging reply cut off at
+the output cap (`finishReason` `max_tokens`, or `length` on an OpenAI-compatible endpoint) is
+not counted unreadable: its batch is judged again at once in halves, and a half still cut off
+is halved again, down to one rule. DeepSeek spends most of its 16,384-token reply on reasoning,
+and on 21 to 31 candidates it hit the cap mid-JSON; re-asking the same batch hit it again and
+failed the requirement. Nothing changes for a reply that ends normally, so no other prompt or
+batch moves. Every unreadable judging reply is logged with its `finishReason`, and a requirement
+that still fails because one rule's reply was cut off twice says so in its error. The model names rules by
 handles (`R1`, `R2`, …) assigned per decision, so a reply can only name a rule it was shown,
 and the requirement, summaries, clauses, control ids and titles travel fenced
 (`fenceToolResult`, as #1870).
@@ -2695,11 +2702,16 @@ the pre-#1873 code).
   reads the BA's answer with it, and the BA can reject it with a note. A wrong
   `does-not-apply` removes the finding without a trace, the vanishing finding #2067 set out to
   prevent. The contradiction is recorded in the settled decision's `reason`, which the
-  applicability API returns. The note sits before the reply-format line, which stays last
-  (`SETTLE_SYSTEM`). Probe on governing-01's VM-01 (recorded in its `ANNOTATION.md`): the
+  applicability API returns and the Governing rules panel shows on the finding (#2087,
+  `answerSettlementOf`). The note sits before the reply-format line, which stays last
+  (`judgeSystem`). #2087: so does the re-ask note, which used to be appended after it.
+  Probe on governing-01's VM-01 (recorded in its `ANNOTATION.md`): the
   contradiction went from `does-not-apply` in 3 of 3 (Sonnet) and 4 of 4 (DeepSeek) to
   `applies` in all 7. An answer that the subject is absent stayed `does-not-apply` (7 of 7), and
-  a safeguard in place stayed `applies` (7 of 7).
+  a safeguard in place stayed `applies` (7 of 7). #2087 probe (Sonnet, 4 runs each): three
+  answers that legitimately narrow an ambiguous requirement were never read as a contradiction
+  (0 of 36 settled pairs), and after GR-06's contradicting answer the findings call gave Needs
+  BA input 12 of 12 and Compliant 0 of 12.
 - **Findings that ask (#2059).** A pair that `applies` is never `uncertain`, but its finding can
   be `needs-ba-input` with a `businessQuestion`. While the stored applicability has an `applies`
   pair, `open` also reads the analysis's `needs-ba-input` rows of
@@ -2732,6 +2744,16 @@ the pre-#1873 code).
   posted it, so rounds 2 and 3 were never generated. No start is posted for a viewer without
   `analysis.run` (the route's permission) or when the run has no structured requirements (the
   route's 400), so neither fails silently once per mount.
+  While that round is due, `ClarificationDialogPanel` takes a `nextRound` status and renders no
+  questions, Submit or CSV import in place of the answered round: preparing while the start is
+  in flight, an error with **Try again** when it failed (#2085). Before, a second submit in that
+  window wrote onto the answered round and bumped `currentRound`, and the in-flight start then
+  overwrote it: a lost update and a skipped round. The panel takes the submit's own returned
+  state into the query cache, so no refetch window shows the answered round as open.
+  `submitAnswers` refuses `409 CLARIFY_ROUND_NOT_OPEN`, before anything is written, a submit to
+  a completed dialog, to a round already answered (`rounds.at(-1).round !== currentRound`), or
+  naming a question id that is not in the latest generated round. The JSON submit and the CSV
+  import both pass through it.
   A judging reply that cannot be read is re-asked once, and then settles nothing (#2009).
   An answered pair is never asked again, so a pair whose settle failed (an unreadable reply, a
   provider error or outage, an aborted request) would otherwise be orphaned. Instead, every
@@ -2836,7 +2858,11 @@ groups the findings by requirement and heads them with one `governingSummarySent
 cited revision. A 404 or an empty list renders nothing. Accept / Reject re-reads the findings
 rather than updating them optimistically. A `needs-ba-input` finding links to
 `#clarify-question-<id>`, the clarifying question whose `governing` link (#1873) names its
-requirement and rule, or to the Questions tab when there is none.
+requirement and rule, or to the Questions tab when there is none. #2087 — a finding whose rule
+was `uncertain` and still applies after a BA's answer was judged onto it shows that answer and
+the settle's `reason` (`answerSettlementOf`), so the BA reads why the answer did not rule it
+out. When the findings stop reporting `refreshing`, the panel reads the applicability again,
+because the settle is stored before that re-check starts.
 
 Eval arm **A4** (`pnpm eval:governing --arm A4`) runs A3's applicability and then these findings
 over the #1867 corpus. #2033 — on a requirement with short-answer pairs, A4 then replays the

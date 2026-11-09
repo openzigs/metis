@@ -1648,8 +1648,9 @@ An answer rules a rule out only when it says the requirement does not involve wh
 covers, and the requirement's own text does not say otherwise. If your answer contradicts the
 requirement (it sends the buyer list to an outside company, and you answer that nothing leaves
 your systems), the requirement's text wins: the rule still applies and its finding stays
-(#2078). Correct the requirement and run the analysis again, or **Reject** the finding with a
-note.
+(#2078). The finding then shows a line that begins "After the answer …, this rule applies.",
+followed by the reason, which says the answer contradicts the requirement (#2087). Correct the
+requirement and run the analysis again, or **Reject** the finding with a note.
 
 Some **Needs BA input** findings are not asked as clarifying questions (#2068):
 
@@ -5742,6 +5743,12 @@ When clarification is enabled, METIS:
 4. Incorporates your answers to refine the requirements
 
 If more than 60% of ambiguities remain unresolved after a round, the system automatically escalates to a more powerful model (Claude Sonnet) for better question generation.
+
+When you submit a round and questions are still open, the panel says it is preparing the next
+round until its questions are ready; the answered round cannot be submitted again meanwhile. If
+the next round cannot be prepared, the panel says so and offers **Try again**. Answers sent for a
+round that is no longer open (for example from a second browser tab still showing it) are
+refused, and nothing is changed: reload the questions and answer the current round.
 
 **The next round follows your answers (#2077).** When you submit a round and questions are still open (an ambiguity you left unanswered, or a company-policy question), the next round's questions are prepared and shown in place of the round you answered, up to the third round. Before #2077 the panel stayed on the answered round and rounds 2 and 3 were never asked. Only people who can run analyses (a developer, coordinator or admin) start or continue the questions; anyone else sees them as they stand.
 

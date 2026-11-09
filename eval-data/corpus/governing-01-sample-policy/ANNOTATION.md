@@ -210,6 +210,31 @@ the right way round, 20 of 20. That includes GR-20's "No." → `gap`, newly reac
 GR-11's "No." → `compliant`. No short answer was misread, so #2038's polarity line was
 not re-tried.
 
+### #2053: a judging reply cut off at the output cap
+
+The GR-06 and GR-30 failures above are taken to be judging replies stopped at `max_tokens`.
+That is not confirmed: `finishReason` was not logged for a judging reply before this change,
+and the only evidence is the one probe reply above, not the failed pairs themselves. The
+DeepSeek reading owed below (#2100) settles it, now that every unreadable reply logs its
+`finishReason`. A judging
+batch whose reply is cut off at the output cap is now judged again in halves, down to one rule,
+instead of being re-asked whole into the same cap. A reply that ends normally is handled as
+before, so nothing else in this set's readings can move.
+
+No DeepSeek key was available, so the failure was reproduced on `claude-sonnet-5-5` with the
+judging call's output cap forced down to 700 tokens. Uncapped, Sonnet judges GR-06's and
+GR-30's 13 candidates in 938 and 1,239 tokens. The probe ran `decideApplicability` with the
+whole rule set, the screen on and top-k off, twice per requirement, on 2026-11-09:
+
+| | GR-06 | GR-30 |
+|---|---|---|
+| Before | failed 2 of 2: both asks `max_tokens` at 700 | failed 2 of 2, the same way |
+| After | decided 2 of 2: 12 rules cut off, then 6 + (6 cut off → 3 + 3) | decided 2 of 2: 14 rules cut off, then 7 + (7 cut off → 4 + 3) |
+
+GR-06's `applies` set after the split was the uncapped one: AL-02, EN-01, EN-05, VM-01, VM-03
+and VM-05. A DeepSeek A4 reading on this set is still owed. It would confirm that DeepSeek's
+cut-off replies are now decided, and that the main row's hard errors stay at 0.
+
 ### #2059: the shipped path asks a Needs BA input finding on a rule that applies
 
 Read on 2026-11-09 with arm **A5** (the shipped path) on `anthropic/deepseek-flash`. There
@@ -324,6 +349,25 @@ the prompt before and after the change:
 The note's example is this set's GR-06 case, so the first row is a reading on the case the
 wording was written for and is optimistic. The question in it is not one of the manifest's
 `businessFact`s. No A5 reading has been taken since the change.
+
+### #2087: narrowing answers, and the finding after a contradiction
+
+**A probe of the settle call and the findings call** (`rejudgeAnswered`, then `applySettlements`,
+`findingPairsOf` and `evaluateRequirementFindings`: the production path), run 2026-11-09 on
+`claude-sonnet-5-5` with this set's rules, 4 runs per case. No DeepSeek key was available for this
+probe. The three narrowing cases are not written from the settle note's example: each requirement
+is ambiguous, and the answer legitimately narrows it.
+
+| Case | Rules asked | Settled |
+|---|---|---|
+| "Send last quarter's buyer counts to SurveyCo." / "No, only totals per region go; no buyer details." | VM-01, VM-03, VM-05, EN-01, EN-05 | VM-03 `applies` 4 of 4 (an outside company still gets data; no reason says "contradicts"); the other four `does-not-apply` 16 of 16 |
+| "Give Northwind Logistics a weekly file of the orders it will deliver." / "No, only order numbers and parcel counts per depot." | VM-01, VM-05, EN-05 | `does-not-apply` 12 of 12 |
+| "Copy last month's orders into the training environment so new support staff can practise." / "No, the names and contact details are replaced with made-up ones before the copy." | DR-03 | `does-not-apply` 4 of 4 |
+| GR-06 / "No, we send the questionnaire ourselves; nothing leaves our systems." | VM-01, VM-03, VM-05 | `applies` 12 of 12, each reason naming the contradiction; **the findings call then gave Needs BA input 12 of 12, Compliant 0** |
+
+No narrowing answer was read as a contradiction (0 of 36 settled pairs), so governing questions do
+not become no-ops on this evidence. The last row confirms end to end that the finding stays after a
+contradicting answer, as the user guide says.
 
 ## The non-resembling subset
 

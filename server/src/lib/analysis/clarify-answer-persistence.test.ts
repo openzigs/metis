@@ -312,3 +312,98 @@ describe("#1104 C — submitted clarify answers stay readable in the persisted r
     expect(persisted.rounds[0]!.questions[1]!.answer).toBeUndefined();
   });
 });
+
+describe("#2085 — only the open, latest generated round takes answers", () => {
+  /** What the store holds before a refused submit, to show it is left as it was. */
+  const snapshot = () => JSON.stringify(store.get(ANALYSIS_ID));
+
+  async function refused(answers: Array<{ questionId: string; answer: string }>) {
+    const dialog = new ClarificationDialog({ provider: makeProvider() });
+    const before = snapshot();
+    const err = await dialog.submitAnswers(ANALYSIS_ID, answers, REQUIREMENTS).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toMatchObject({ statusCode: 409, code: "CLARIFY_ROUND_NOT_OPEN" });
+    // Refused before anything is written: no lost update, no skipped round.
+    expect(snapshot()).toBe(before);
+  }
+
+  it("refuses a second submit of the answered round while the next one is still due", async () => {
+    // One of two answered: the dialog moves to round 2, which no start has generated yet.
+    const dialog = new ClarificationDialog({ provider: makeProvider() });
+    const started = await dialog.startOrContinue(ANALYSIS_ID, REQUIREMENTS);
+    const [q1, q2] = started.rounds[0]!.questions;
+    await dialog.submitAnswers(
+      ANALYSIS_ID,
+      [{ questionId: q1!.id, answer: "READ COMMITTED." }],
+      REQUIREMENTS,
+    );
+    const due = store.get(ANALYSIS_ID) as ClarificationState;
+    expect(due).toMatchObject({ currentRound: 2, completed: false });
+    expect(due.rounds.at(-1)!.round).toBe(1);
+
+    // The panel still shows round 1, prefilled, while round 2 generates.
+    await refused([
+      { questionId: q1!.id, answer: "READ COMMITTED." },
+      { questionId: q2!.id, answer: "Cancel the order." },
+    ]);
+  });
+
+  it("refuses answers to an earlier round once a later round was generated", async () => {
+    await _setDialogState(ANALYSIS_ID, {
+      analysisId: ANALYSIS_ID,
+      currentRound: 2,
+      maxRounds: 3,
+      rounds: [
+        {
+          round: 1,
+          questions: [
+            {
+              id: "q_r1",
+              requirementId: "r1",
+              ambiguityField: "isolationLevel",
+              question: "Which isolation level?",
+              context: "",
+              answer: "READ COMMITTED.",
+            },
+          ],
+          answers: [{ questionId: "q_r1", answer: "READ COMMITTED." }],
+        },
+        {
+          round: 2,
+          questions: [
+            {
+              id: "q_r2",
+              requirementId: "r1",
+              ambiguityField: "oversellPolicy",
+              question: "What happens on oversell?",
+              context: "",
+            },
+          ],
+          answers: [],
+        },
+      ],
+      resolvedAmbiguities: [],
+      escalatedToSonnet: false,
+      completed: false,
+    });
+
+    await refused([{ questionId: "q_r1", answer: "SERIALIZABLE." }]);
+    // One answer for round 2 and one stale one is still a stale submit.
+    await refused([
+      { questionId: "q_r2", answer: "Cancel the order." },
+      { questionId: "q_r1", answer: "SERIALIZABLE." },
+    ]);
+  });
+
+  it("refuses a submit to a completed dialog", async () => {
+    const { persisted } = await startAndAnswer();
+    expect(persisted.completed).toBe(true);
+    const q = persisted.rounds[0]!.questions[0]!;
+    // The round is marked current, so only `completed` stands in the way.
+    await _setDialogState(ANALYSIS_ID, { ...persisted, currentRound: 1 });
+
+    await refused([{ questionId: q.id, answer: "SERIALIZABLE." }]);
+  });
+});
