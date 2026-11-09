@@ -77,6 +77,8 @@ beforeEach(() => {
 describe("#1104 C — an answered dialog survives a reload", () => {
   it("still renders the clarification block when no ambiguities remain", async () => {
     analysisApi.getClarification.mockResolvedValue({ state: ANSWERED_STATE });
+    // #2068 — the server has no governing question to re-open it for.
+    analysisApi.clarify.mockResolvedValue(ANSWERED_STATE);
 
     // The post-answer metadata: every ambiguity resolved, so totalAmbiguities 0.
     renderResults({
@@ -88,8 +90,10 @@ describe("#1104 C — an answered dialog survives a reload", () => {
       expect(analysisApi.getClarification).toHaveBeenCalledWith("proj-1", "ana-1"),
     );
     expect(await screen.findByText("Clarification Complete")).toBeInTheDocument();
-    // No new round is started for an already-complete dialog.
-    expect(analysisApi.clarify).not.toHaveBeenCalled();
+    // #2068 — one start per mount of a complete dialog, which the server
+    // re-opens only for a governing question; with none it stays complete.
+    await waitFor(() => expect(analysisApi.clarify).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("Clarification Complete")).toBeInTheDocument();
   });
 
   it("shows the answers the user submitted, not an empty summary", async () => {

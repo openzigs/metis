@@ -1040,6 +1040,8 @@ export function createA5Arm(deps: GoverningArmDeps): GoverningArm {
           ruleId: f.rule.id,
           status: f.status,
           businessQuestion: f.businessQuestion,
+          // #2068 — production does not ask a finding whose citation was dropped.
+          citationDropped: f.citationDropped,
         })),
         short,
         rules,

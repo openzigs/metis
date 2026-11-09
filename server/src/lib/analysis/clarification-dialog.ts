@@ -368,9 +368,34 @@ export class ClarificationDialog {
     // backed off per analysis, so a provider outage is not paid per start.
     await this.retryOrphanedGoverning(analysisId, state, signal);
 
-    if (state.completed || state.currentRound > MAX_ROUNDS) {
+    if (state.currentRound > MAX_ROUNDS) {
       state.completed = true;
       await writeDialogState(analysisId, state);
+      return state;
+    }
+
+    // #2068 — a completed dialog with rounds left re-opens for governing
+    // questions only: a finding the refresh after an answer left Needs BA
+    // input with a new question (which can land after the submit completed
+    // the dialog), or one of a dialog completed before #2059 asked them.
+    if (state.completed) {
+      const reopen = await this.governingQuestionsFor(state, signal);
+      if (reopen.length === 0) {
+        await writeDialogState(analysisId, state);
+        return state;
+      }
+      state.completed = false;
+      state.rounds.push({
+        round: state.currentRound,
+        questions: await this.groundQuestions(reopen, signal),
+        answers: [],
+      });
+      await writeDialogState(analysisId, state);
+      log.info("Clarification re-opened for governing questions", {
+        analysisId,
+        round: state.currentRound,
+        questions: reopen.length,
+      });
       return state;
     }
 

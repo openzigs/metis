@@ -187,10 +187,55 @@ describe("applySettlements — an answer moves only an unsettled uncertain pair"
         at: AT.toISOString(),
       },
     });
-    // Recorded once: a second answer to the same pair is ignored.
-    const again = applySettlements(next, [{ ...answer, questionId: "q2", answer: "No." }], AT);
-    expect(again.applied).toEqual([]);
-    expect(again.next).toEqual(next);
+    // Recorded once: the same question's answer again is ignored.
+    const same = applySettlements(next, [{ ...answer, answer: "No." }], AT);
+    expect(same.applied).toEqual([]);
+    expect(same.next).toEqual(next);
+  });
+
+  it("#2068 — a later question's answer on a rule that applies is recorded too; the earlier answers are kept, oldest first", () => {
+    const first = {
+      ...settle("r_log", "applies"),
+      question: "Will every export be logged?",
+      answer: "Yes, we do.",
+    };
+    const once = applySettlements(STORED, [first], AT).next;
+    const LATER = new Date("2026-11-09T12:00:00.000Z");
+    const second = {
+      ...settle("r_log", "applies"),
+      questionId: "q2",
+      question: "Who reviews the export log?",
+      answer: "The security team, weekly.",
+    };
+    const { next, applied } = applySettlements(once, [second], LATER);
+    expect(applied).toEqual([second]);
+    expect(next.requirements[0]!.decisions[1]!.settled).toEqual({
+      questionId: "q2",
+      question: "Who reviews the export log?",
+      answer: "The security team, weekly.",
+      previousVerdict: "applies",
+      at: LATER.toISOString(),
+      earlier: [
+        {
+          questionId: "q1",
+          question: "Will every export be logged?",
+          answer: "Yes, we do.",
+          at: AT.toISOString(),
+        },
+      ],
+    });
+    // Either question answered again is ignored; a third one keeps both before it.
+    const repeat = applySettlements(next, [{ ...first, answer: "No." }], LATER);
+    expect(repeat.applied).toEqual([]);
+    const third = applySettlements(
+      next,
+      [{ ...second, questionId: "q3", question: "Q3?", answer: "A3." }],
+      LATER,
+    ).next.requirements[0]!.decisions[1]!.settled;
+    expect(third?.earlier?.map((e) => e.questionId)).toEqual(["q1", "q2"]);
+    // An answer never moves a rule that applies, however many there are.
+    const moved = applySettlements(next, [{ ...second, questionId: "q4", verdict: "uncertain" }]);
+    expect(moved.applied).toEqual([]);
   });
 
   it("an answer that still leaves it uncertain keeps the question and marks it settled", () => {

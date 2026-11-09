@@ -96,6 +96,12 @@ export interface GoverningSettlementInput {
   answer: string;
 }
 
+/** #2068 — the ids of every question whose answer is recorded on `d`. */
+export function recordedQuestionIds(d: GoverningApplicabilityDecision): Set<string> {
+  const s = d.settled;
+  return new Set(s ? [s.questionId, ...(s.earlier ?? []).map((e) => e.questionId)] : []);
+}
+
 /**
  * Apply `settlements` to `stored`: each names a pair that is still `uncertain`
  * and has no settlement yet; any other is ignored, so an answer can never
@@ -108,6 +114,11 @@ export interface GoverningSettlementInput {
  * (`previousVerdict: "applies"`), so the findings refresh reads it
  * (`findingPairsOf`). A settlement that would move such a pair elsewhere is
  * ignored, as on any verdict reached without asking.
+ *
+ * #2068 — a pair that `applies` can be asked again: its finding was still
+ * Needs BA input after the answer, with a new question. A later question's
+ * answer is then recorded too, the earlier ones kept in `earlier`, oldest
+ * first; an answer to a question already recorded on the pair is ignored.
  */
 export function applySettlements(
   stored: GoverningAnalysisApplicability,
@@ -123,21 +134,35 @@ export function applySettlements(
         const s = settlements.find(
           (x) => x.requirementId === r.requirementId && x.ruleId === d.ruleId,
         );
-        if (!s || d.settled) return d;
+        if (!s) return d;
         if (d.verdict === "applies" && s.verdict === "applies") {
+          if (recordedQuestionIds(d).has(s.questionId)) return d;
           applied.push(s);
+          const earlier = d.settled
+            ? [
+                ...(d.settled.earlier ?? []),
+                {
+                  questionId: d.settled.questionId,
+                  ...(d.settled.question ? { question: d.settled.question } : {}),
+                  answer: d.settled.answer,
+                  at: d.settled.at,
+                },
+              ]
+            : [];
           return {
             ...d,
             settled: {
               questionId: s.questionId,
               ...(s.question ? { question: s.question } : {}),
               answer: s.answer,
-              previousVerdict: "applies",
+              // The verdict before the pair's first answer.
+              previousVerdict: d.settled?.previousVerdict ?? "applies",
               at: at.toISOString(),
+              ...(earlier.length > 0 ? { earlier } : {}),
             },
           };
         }
-        if (d.verdict !== "uncertain") return d;
+        if (d.settled || d.verdict !== "uncertain") return d;
         applied.push(s);
         const { businessFact: _fact, ...rest } = d;
         return {

@@ -239,6 +239,28 @@ So whether #2059 moves the short-answer row could only be read where the finding
 gives `needs-ba-input` on these pairs. That is `claude-sonnet-5-5` on `governing-02`, where
 the gap was measured. That reading is recorded in that set's `ANNOTATION.md`.
 
+### #2066: a question the merge leaves alone keeps its own words
+
+Read on 2026-11-09 with arm **A5** on `anthropic/deepseek-flash`: one `--runs 1`
+invocation at `--concurrency 14` at `17d31716d`, clean tree, $0.45. `mergeFacts` now
+keeps a single-member group's own question text; only a group of two or more takes the
+model's wording.
+
+| Reading | Short-answer accuracy | Answer reached the findings call | Questions asked | Main verdict accuracy | Hard errors | Precision | Recall | Non-resembling recall | Failures |
+|---|---|---|---|---|---|---|---|---|---|
+| #2066 | 3/7 | 0 of 7 | 6 | 0.51 | 0 | 0.59 | 0.97 | 0.93 | 0 |
+
+One requirement had two distinct facts and so went through the merge: GR-20's CM-04
+and CM-06 questions stayed apart and each was asked in its own fact's words. As under #2059, DeepSeek's
+findings call read all seven short-answer pairs `gap` before any answer, so no question
+linked a pair with a recorded answer and the row could not move. The main row is the
+first reading, before any answer, which this change does not reach; it is within
+run-to-run noise of #2059's.
+
+No Sonnet reading of `governing-02` was taken. The pass bars are read on the findings
+before any answer, which question wording cannot change, so the change cannot move
+#1878's decision.
+
 ## The non-resembling subset
 
 A pair labelled `nonResembling` is one where the rule applies although the requirement
