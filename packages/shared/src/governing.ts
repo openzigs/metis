@@ -145,9 +145,25 @@ export const governingSettlementSchema = z.object({
   /**
    * The verdict before the answer: `uncertain`, or (#2059) `applies` when the
    * answer was to a Needs BA input finding and the verdict is unchanged.
+   * #2068 — with `earlier` answers, the verdict before the first of them.
    */
   previousVerdict: z.enum(GOVERNING_APPLICABILITY_VERDICTS),
   at: timestamp,
+  /**
+   * #2068 — on a pair that `applies`, the answers recorded before this one,
+   * oldest first: a finding still Needs BA input after an answer asks its new
+   * question, and the findings call reads every answer the pair was given.
+   */
+  earlier: z
+    .array(
+      z.object({
+        questionId: z.string().min(1),
+        question: z.string().optional(),
+        answer: z.string(),
+        at: timestamp,
+      }),
+    )
+    .optional(),
 });
 export type GoverningSettlement = z.infer<typeof governingSettlementSchema>;
 

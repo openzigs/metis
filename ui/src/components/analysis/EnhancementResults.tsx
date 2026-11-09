@@ -527,6 +527,21 @@ function ClarificationSection({
     startMutate();
   }, [hasAmbiguities, dialog.isSuccess, dialog.data, analysisId, startInFlight, startMutate]);
 
+  // #2068 — a COMPLETED dialog with rounds left is started once per mount
+  // too. The server re-opens it only for a governing question: a Needs BA
+  // input finding still waiting after the findings were checked again with
+  // an answer, which can land after the submit completed the dialog. With
+  // nothing to ask it returns the dialog unchanged, without a model call.
+  const reopenCheckedFor = useRef<string | null>(null);
+  const reopenable =
+    dialog.data?.completed === true && dialog.data.currentRound <= dialog.data.maxRounds;
+  useEffect(() => {
+    if (!reopenable || startInFlight) return;
+    if (reopenCheckedFor.current === analysisId) return;
+    reopenCheckedFor.current = analysisId;
+    startMutate();
+  }, [reopenable, analysisId, startInFlight, startMutate]);
+
   if (!hasAmbiguities && !dialog.data) return null;
 
   // Prefer the live interactive dialog whenever one is available. This is the

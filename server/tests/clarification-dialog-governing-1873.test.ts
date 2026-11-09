@@ -778,3 +778,107 @@ describe("#2059 — a Needs BA input finding on a rule that applies is asked, an
     expect(q.governing?.ruleIds).toEqual(["rule_card"]);
   });
 });
+
+describe("#2068 — a finding still Needs BA input after its answer reaches the dialog again", () => {
+  const FIRST = "Will the saved card keep the customer's whole card number?";
+  const SECOND = "Who can see the stored card details once they are saved?";
+  const APPLIES = stored([
+    {
+      ruleId: "rule_card",
+      controlId: "EN-03",
+      verdict: "applies",
+      reason: "A saved card is card data.",
+      foundBy: ["screen"],
+    },
+  ]);
+  const finding = (businessQuestion: string, updatedAt?: Date) => ({
+    requirementId: "REQ-001",
+    ruleId: "rule_card",
+    businessQuestion,
+    citationDropped: false,
+    decision: null,
+    ...(updatedAt ? { updatedAt } : {}),
+  });
+  beforeEach(() => {
+    mem.metadata = JSON.stringify({ governingApplicability: APPLIES });
+    mem.findings = [finding(FIRST)];
+  });
+
+  it("a completed dialog re-opens with the refresh's new question; the answer is recorded with the first; the same question again asks nothing", async () => {
+    const { provider } = model();
+    const dialog = dialogWith(provider);
+    const first = (await dialog.startOrContinue(ANALYSIS, REQS)).rounds[0]!.questions[0]!;
+    const { state: done } = await dialog.submitAnswers(
+      ANALYSIS,
+      [{ questionId: first.id, answer: "Yes, the whole number." }],
+      REQS,
+    );
+    expect(done.completed).toBe(true);
+    refresh.release();
+
+    // The refresh landed after the answer and still needs input, with a new question.
+    mem.findings = [finding(SECOND, new Date(Date.now() + 60_000))];
+    const reopened = await dialog.startOrContinue(ANALYSIS, REQS);
+    expect(reopened.completed).toBe(false);
+    expect(reopened.rounds).toHaveLength(2);
+    const second = reopened.rounds[1]!.questions;
+    expect(second.map((q) => [q.question, q.governing?.ruleIds])).toEqual([
+      [SECOND, ["rule_card"]],
+    ]);
+    // Asked once: a second start returns the open round as it is.
+    expect((await dialog.startOrContinue(ANALYSIS, REQS)).rounds).toHaveLength(2);
+
+    const { state: again } = await dialog.submitAnswers(
+      ANALYSIS,
+      [{ questionId: second[0]!.id, answer: "Only the payments team." }],
+      REQS,
+    );
+    expect(again.completed).toBe(true);
+    const read = await readGoverningApplicability(ANALYSIS);
+    expect(read!.requirements[0]!.decisions[0]!.settled).toMatchObject({
+      questionId: second[0]!.id,
+      answer: "Only the payments team.",
+      earlier: [{ questionId: first.id, answer: "Yes, the whole number." }],
+    });
+    refresh.release();
+
+    // A refresh that asks the question just answered asks nothing more.
+    mem.findings = [finding(SECOND, new Date(Date.now() + 120_000))];
+    const settled = await dialog.startOrContinue(ANALYSIS, REQS);
+    expect(settled.completed).toBe(true);
+    expect(settled.rounds).toHaveLength(2);
+  });
+
+  it("a dialog completed before #2059 asks the finding's question on its next start", async () => {
+    fakeStore.set(ANALYSIS, {
+      analysisId: ANALYSIS,
+      currentRound: 2,
+      maxRounds: 3,
+      rounds: [{ round: 1, questions: [], answers: [] }],
+      resolvedAmbiguities: [],
+      escalatedToSonnet: false,
+      completed: true,
+    });
+    const { provider } = model();
+    const state = await dialogWith(provider).startOrContinue(ANALYSIS, REQS);
+    expect(state.completed).toBe(false);
+    expect(state.rounds.at(-1)).toMatchObject({ round: 2, questions: [{ question: FIRST }] });
+  });
+
+  it("a dialog that used every round stays complete, and reads no finding", async () => {
+    fakeStore.set(ANALYSIS, {
+      analysisId: ANALYSIS,
+      currentRound: 4,
+      maxRounds: 3,
+      rounds: [],
+      resolvedAmbiguities: [],
+      escalatedToSonnet: false,
+      completed: true,
+    });
+    const { provider } = model();
+    const state = await dialogWith(provider).startOrContinue(ANALYSIS, REQS);
+    expect(state.completed).toBe(true);
+    expect(state.rounds).toHaveLength(0);
+    expect(vi.mocked(prisma.governingFinding.findMany)).not.toHaveBeenCalled();
+  });
+});

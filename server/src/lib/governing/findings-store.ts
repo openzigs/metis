@@ -105,11 +105,10 @@ export function findingPairsOf(
       applicability: d.verdict,
       ...(d.businessFact ? { businessFact: d.businessFact } : {}),
     });
-    if (d.settled?.answer.trim()) {
-      const a = {
-        answer: d.settled.answer,
-        ...(d.settled.question ? { question: d.settled.question } : {}),
-      };
+    // #2068 — every answer recorded on the pair, the earlier ones first.
+    for (const s of d.settled ? [...(d.settled.earlier ?? []), d.settled] : []) {
+      if (!s.answer.trim()) continue;
+      const a = { answer: s.answer, ...(s.question ? { question: s.question } : {}) };
       if (!answers.some((x) => x.answer === a.answer && x.question === a.question)) answers.push(a);
     }
   }

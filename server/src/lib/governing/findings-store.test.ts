@@ -31,6 +31,7 @@ vi.mock("./findings.js", () => ({
 
 const {
   GOVERNING_FINDINGS_WRITE_TIMEOUT_MS,
+  findingPairsOf,
   governingFindingRevisions,
   governingFindingsRefreshing,
   produceGoverningFindingsForAnalysis,
@@ -100,6 +101,40 @@ beforeEach(() => {
   });
   db.$transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn(db));
   db.governingFinding.findMany.mockResolvedValue([]);
+});
+
+describe("findingPairsOf", () => {
+  it("#2068 — every answer recorded on a pair reaches the findings call, the earlier ones first, each once", () => {
+    const requirement = {
+      requirementId: "REQ-001",
+      text: "A",
+      decisions: [
+        {
+          ruleId: "r1",
+          controlId: "C-1",
+          verdict: "applies" as const,
+          reason: "",
+          foundBy: ["screen" as const],
+          settled: {
+            questionId: "q2",
+            question: "Who reviews it?",
+            answer: "Security, weekly.",
+            previousVerdict: "applies" as const,
+            at: "2026-11-09T00:00:00.000Z",
+            earlier: [
+              { questionId: "q0", question: "Q?", answer: "Yes.", at: "2026-11-07T00:00:00.000Z" },
+              { questionId: "q1", question: "Q?", answer: "Yes.", at: "2026-11-08T00:00:00.000Z" },
+            ],
+          },
+        },
+      ],
+    };
+    const { answers } = findingPairsOf(requirement, new Map([["r1", RULE]]));
+    expect(answers).toEqual([
+      { question: "Q?", answer: "Yes." },
+      { question: "Who reviews it?", answer: "Security, weekly." },
+    ]);
+  });
 });
 
 describe("produceGoverningFindingsForAnalysis — edges", () => {
