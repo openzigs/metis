@@ -713,7 +713,12 @@ describe("#2067 — the settle judge tells applying from being met", () => {
     }).systemMessage;
     // The first judging is byte-for-byte what it was.
     expect(first).not.toContain("safeguard");
-    expect(settle).toBe(`${first}\n${ANSWER_NOTE}`);
+    // #2078 — the note goes before the reply format, which stays the last line.
+    const lines = first.split("\n");
+    const format = lines.at(-1)!;
+    expect(format).toMatch(/^Respond ONLY with one JSON object/);
+    expect(settle).toBe([...lines.slice(0, -1), ANSWER_NOTE, format].join("\n"));
+    expect(settle.endsWith(`\n${format}`)).toBe(true);
     expect(ANSWER_NOTE).toContain(
       "also when the answer says the rule's safeguard is already in place",
     );
@@ -729,6 +734,21 @@ describe("#2067 — the settle judge tells applying from being met", () => {
     }).systemMessage;
     expect(reask.startsWith(`${settle}\n`)).toBe(true);
     expect(reask).toContain("Your previous answer");
+  });
+});
+
+describe("#2078 — an answer that contradicts the requirement's own text", () => {
+  it("the settle judge is told the requirement's text wins: the rule applies and the reason names the contradiction", () => {
+    expect(ANSWER_NOTE).toContain("and the requirement's own text does not say it is there;");
+    expect(ANSWER_NOTE).toContain(
+      "when the answer denies what the requirement's own text plainly says",
+    );
+    expect(ANSWER_NOTE).toContain(
+      "the requirement's text wins: decide applies, and say in the reason that the answer contradicts the requirement.",
+    );
+    // The first judging carries none of it.
+    const first = buildApplicabilityJudgePrompt(REQUIREMENT.text, []).systemMessage;
+    expect(first).not.toContain("contradicts");
   });
 });
 

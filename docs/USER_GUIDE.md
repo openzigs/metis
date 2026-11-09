@@ -1644,6 +1644,13 @@ question is not asked again. A finding asked about in an earlier round, while a 
 open, links to the Questions tab instead. You can also add the missing fact to the requirement
 and run the analysis again, or **Reject** the finding with a note that says what you found out.
 
+An answer rules a rule out only when it says the requirement does not involve what the rule
+covers, and the requirement's own text does not say otherwise. If your answer contradicts the
+requirement (it sends the buyer list to an outside company, and you answer that nothing leaves
+your systems), the requirement's text wins: the rule still applies and its finding stays
+(#2078). Correct the requirement and run the analysis again, or **Reject** the finding with a
+note.
+
 Some **Needs BA input** findings are not asked as clarifying questions (#2068):
 
 - **METIS could not evaluate the rule**, or the model gave no question. The finding then shows a

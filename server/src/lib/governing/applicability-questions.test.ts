@@ -782,7 +782,7 @@ describe("rejudgeAnswered — the answer is judged back onto the rules it settle
     expect(unreadable.sent[1]!.system).toContain(ANSWER_NOTE);
   });
 
-  it("#2067 — a recorded settle of 'the safeguard is in place' settles the pair applies", async () => {
+  it("#2067 — the settle sends ANSWER_NOTE, and the recorded reply is stored as applies with its answer", async () => {
     const SUPPLIER = {
       id: "rule_supplier",
       revisionId: "rev_1",
@@ -835,6 +835,93 @@ describe("rejudgeAnswered — the answer is judged back onto the rules it settle
     expect(next.requirements[0]!.decisions[0]).toMatchObject({
       verdict: "applies",
       settled: { questionId: "q-supplier", answer: "Yes, it has.", previousVerdict: "uncertain" },
+    });
+  });
+
+  it("#2078 — an answer that contradicts the requirement's text leaves the rule applying, with the contradiction in the reason", async () => {
+    const SUPPLIER = {
+      id: "rule_vm01",
+      revisionId: "rev_1",
+      controlId: "VM-01",
+      summary:
+        "An outside company completes a security review and data protection agreement before it receives personal or payment information.",
+      clauseExcerpt:
+        "Before an outside company receives personal or payment information, it completes a security review and signs a data protection agreement.",
+      source: "Sample policy v1 VM-01",
+    };
+    const QUESTION = "Will SurveyCo receive any of the buyers' personal details?";
+    const ANSWER = "No, we send the questionnaire ourselves; nothing leaves our systems.";
+    const stored = {
+      decidedAt: "2026-11-09T00:00:00.000Z",
+      requirements: [
+        {
+          requirementId: "GR-06",
+          text: "Send the list of last quarter's buyers to SurveyCo so they can email each buyer a short satisfaction questionnaire.",
+          decisions: [
+            {
+              ruleId: SUPPLIER.id,
+              controlId: SUPPLIER.controlId,
+              verdict: "uncertain" as const,
+              reason: "Depends on what reaches the outside company.",
+              businessFact: QUESTION,
+              foundBy: ["screen" as const],
+            },
+          ],
+        },
+      ],
+    };
+    // claude-sonnet-5-5's verdict and reason for this settle on governing-01's
+    // VM-01, probed 2026-11-09: 3 of 3 `does-not-apply` with the prompt before
+    // #2078, 3 of 3 `applies` with it (deepseek-flash: 0 of 4, then 4 of 4).
+    const BEFORE = {
+      decisions: [
+        {
+          rule: "R1",
+          verdict: "does-not-apply",
+          reason:
+            "The analyst confirmed SurveyCo receives no personal details and nothing leaves our systems, so no outside company receives personal or payment information and the review and agreement requirement is not engaged.",
+        },
+      ],
+    };
+    const AFTER = {
+      decisions: [
+        {
+          rule: "R1",
+          verdict: "applies",
+          reason:
+            "The requirement itself says the list of buyers is sent to SurveyCo so it can email them, which means an outside company receives personal information; the analyst's answer that nothing leaves our systems contradicts the requirement's text, so the text wins.",
+        },
+      ],
+    };
+    // Each prompt gets the reply the model gave to it.
+    const { provider, sent } = stubModel({
+      judge: () => (sent.at(-1)!.system.includes("the requirement's text wins") ? AFTER : BEFORE),
+    });
+    const question = {
+      id: "q-surveyco",
+      requirementId: governingQuestionRequirementId("GR-06"),
+      ambiguityField: GOVERNING_QUESTION_FIELD,
+      question: QUESTION,
+      context: "",
+      answer: ANSWER,
+      governing: { kind: "governing" as const, ruleIds: [SUPPLIER.id], requirementId: "GR-06" },
+    };
+    const settlements = await rejudgeAnswered(
+      [question],
+      stored,
+      new Map([[SUPPLIER.id, SUPPLIER]]),
+      { provider },
+    );
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.user).toContain(`Their answer: ${ANSWER}`);
+    expect(settlements).toEqual([
+      expect.objectContaining({ ruleId: SUPPLIER.id, verdict: "applies", answer: ANSWER }),
+    ]);
+    const { next } = applySettlements(stored, settlements);
+    expect(next.requirements[0]!.decisions[0]).toMatchObject({
+      verdict: "applies",
+      reason: expect.stringContaining("contradicts the requirement"),
+      settled: { questionId: "q-surveyco", answer: ANSWER, previousVerdict: "uncertain" },
     });
   });
 
