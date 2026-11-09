@@ -19,6 +19,18 @@ vi.mock("../src/lib/analysis/clarification-dialog-store.js", () => ({
   deleteDialogState: vi.fn(async (id: string) => {
     fakeStore.delete(id);
   }),
+  // #2101 — compare-and-set over the same map: the revision is the stored JSON.
+  readDialogStateRevision: vi.fn(async (id: string) => {
+    const v = fakeStore.get(id);
+    return v
+      ? { state: JSON.parse(JSON.stringify(v)) as unknown, revision: JSON.stringify(v) }
+      : undefined;
+  }),
+  replaceDialogState: vi.fn(async (id: string, revision: string, state: unknown) => {
+    if (JSON.stringify(fakeStore.get(id)) !== revision) return null;
+    fakeStore.set(id, JSON.parse(JSON.stringify(state)));
+    return JSON.stringify(state);
+  }),
 }));
 
 import {

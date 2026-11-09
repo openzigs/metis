@@ -8,7 +8,8 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { useAppMutation } from "@/lib/use-app-mutation";
+import { resolveErrorMessage, useAppMutation } from "@/lib/use-app-mutation";
+import { ApiError } from "@/lib/api-client";
 import {
   analysisApi,
   type ClarificationStatePayload,
@@ -137,7 +138,11 @@ interface ClarificationDialogProps {
   state: ClarificationStatePayload;
   /** #2085 — set while the current round is due and not yet generated. */
   nextRound?: NextRoundStatus;
-  /** `state` is the dialog as the submit left it; absent after an import. */
+  /**
+   * `state` is the dialog as the submit or import left it. Absent when the
+   * server sent none, and (#2101) when the round was no longer open: the
+   * caller then reads the dialog again.
+   */
   onComplete: (state?: ClarificationStatePayload) => void;
 }
 
@@ -176,6 +181,11 @@ function NextRoundNotice({
         : `Round ${round} of the clarifying questions has not been prepared yet.`}
     </p>
   );
+}
+
+/** #2085 / #2101 — the server refused answers because their round is no longer open. */
+function roundNotOpen(error: unknown): boolean {
+  return error instanceof ApiError && error.code === "CLARIFY_ROUND_NOT_OPEN";
 }
 
 export function ClarificationDialogPanel({
@@ -271,21 +281,31 @@ export function ClarificationDialogPanel({
       ),
     successMessage: (result) =>
       result.state?.completed ? "Clarification complete" : "Answers submitted",
-    errorMessage: "Failed to submit answers",
-    // Issue #1117 (finding D) — do NOT clear the answers here. `onComplete()`
-    // only *starts* a refetch; blanking local state in the same tick guaranteed
-    // a window where the panel showed nothing while the server held everything.
-    // The re-seed effect above now takes the refetched state, so a new round
-    // arrives with fresh (empty) inputs and a re-rendered current round keeps
-    // the user's text on screen throughout.
+    errorMessage: (error) =>
+      roundNotOpen(error)
+        ? "This round was already answered. Showing the current questions."
+        : resolveErrorMessage(error, "Failed to submit answers"),
+    // Issue #1117 (finding D) — do NOT clear the answers here. Blanking local
+    // state in the same tick left a window where the panel showed nothing
+    // while the server held everything. `onComplete` puts the submit's own
+    // state straight into the query cache (#2085), and the re-seed effect
+    // above takes it, so a new round arrives with fresh (empty) inputs and a
+    // re-rendered current round keeps the user's text on screen throughout.
     onSuccess: (result) => {
       onComplete(result.state);
+    },
+    // #2101 — the round closed under this tab (answered elsewhere, or a later
+    // one was generated): read the dialog again, so the panel moves to the
+    // current round in place instead of offering Submit on the closed one.
+    onError: (error) => {
+      if (roundNotOpen(error)) onComplete();
     },
   });
 
   // Business Analyst CSV round-trip: export the current round's questions,
   // answer offline, re-import. Import applies answers via the existing submit
-  // path server-side, so a successful import refreshes the dialog (onComplete).
+  // path server-side; #2101 — and answers with the state it wrote, which
+  // `onComplete` takes at once (it reads the dialog again when there is none).
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importSummary, setImportSummary] = useState<ClarifyImportResult | null>(null);
 
@@ -306,11 +326,13 @@ export function ClarificationDialogPanel({
     errorMessage: false, // surface the raw thrown message verbatim (below).
     onSuccess: (result) => {
       setImportSummary(result);
-      onComplete();
+      onComplete(result.state);
     },
     onError: (error) => {
       const message = error instanceof Error ? error.message : "Failed to import answers";
       toast.error(message);
+      // #2101 — as a submit: the round closed, so move to the current one.
+      if (roundNotOpen(error)) onComplete();
     },
   });
 

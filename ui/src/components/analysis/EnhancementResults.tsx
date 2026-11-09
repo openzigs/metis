@@ -618,6 +618,8 @@ function ClarificationSection({
           onComplete={(state) => {
             // #2085 — the submit's own state, at once: until it lands, the
             // panel still held the answered round with Submit enabled.
+            // #2101 — a CSV import's too. With none (a round that closed
+            // under this tab), the dialog is read again.
             if (state) {
               queryClient.setQueryData(["analyses", analysisId, "clarify"], state);
             } else {

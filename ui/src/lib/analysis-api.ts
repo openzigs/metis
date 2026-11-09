@@ -1,7 +1,7 @@
 /**
  * Typed wrappers around the Phase 7 analysis endpoints.
  */
-import { apiFetch, streamFetch } from "@/lib/api-client";
+import { ApiError, apiFetch, streamFetch } from "@/lib/api-client";
 import { filenameFromDisposition, parseStreamError } from "@/lib/plugins-api";
 import type {
   AnalysisAgentSource,
@@ -757,11 +757,11 @@ export const analysisApi = {
     });
     const json = (await res.json()) as
       | { success: true; data: ClarifyImportResult }
-      | { success: false; error?: { message?: string } };
+      | { success: false; error?: { message?: string; code?: string } };
     if (!res.ok || json.success === false) {
-      throw new Error(
-        (json.success === false ? json.error?.message : undefined) ?? "Import failed",
-      );
+      const error = json.success === false ? json.error : undefined;
+      // #2101 — typed, so the panel can tell a closed round from a bad file.
+      throw new ApiError(res.status, error?.message ?? "Import failed", error?.code);
     }
     return json.data;
   },
@@ -944,6 +944,8 @@ export interface ClarifyImportResult {
   skipped: number;
   /** questionIds in the CSV that don't match the current round. */
   unmatched: string[];
+  /** #2101 — the dialog as the import left it; absent when nothing was applied. */
+  state?: ClarificationStatePayload;
 }
 
 export interface GroundingCitation {

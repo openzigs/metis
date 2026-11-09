@@ -50,6 +50,7 @@ import {
   type PairOutcome,
   type ThresholdCheck,
 } from "./scorer.js";
+import { stageSection, type RuleStage } from "./stages.js";
 
 export const DEFAULT_GOVERNING_RUNS = 3;
 /** DeepSeek runs the whole A0 baseline for well under a dollar; the cap is a backstop. */
@@ -164,6 +165,8 @@ export interface ItemRunRecord {
   run: number;
   judgements: GoverningJudgement[];
   diagnostics?: Record<string, number>;
+  /** #2108 — the shipped path's stage of each candidate rule, when the arm records it. */
+  stages?: RuleStage[];
   /** Set when the arm threw; the requirement is then scored as applying no rule. */
   error?: string;
   /** What this call spent; null when any of its model calls was unpriced. */
@@ -375,6 +378,7 @@ export async function runGoverningEval(
     const t0 = now();
     let judgements: GoverningJudgement[] = [];
     let diagnostics: Record<string, number> | undefined;
+    let stages: RuleStage[] | undefined;
     let answered: AnsweredOutput | undefined;
     let error: string | undefined;
     ledger.begin();
@@ -384,6 +388,7 @@ export async function runGoverningEval(
       });
       judgements = out.judgements;
       diagnostics = out.diagnostics;
+      stages = out.stages;
       answered = out.answered;
     } catch (err) {
       // One line, bounded: a schema error message is a multi-line JSON dump.
@@ -402,6 +407,7 @@ export async function runGoverningEval(
       run,
       judgements,
       ...(diagnostics ? { diagnostics } : {}),
+      ...(stages ? { stages } : {}),
       ...(error !== undefined ? { error } : {}),
       costUsd,
       inputTokens: callMeter.inputTokens(),
@@ -952,6 +958,7 @@ export function toMarkdownReport(report: GoverningReport): string {
   }
   lines.push("");
   lines.push(...shortAnswerSection(report));
+  lines.push(...stageSection(report));
   lines.push("## Paired comparison with A0", "", `> ${report.detectableGap}`, "");
   if (report.comparisons.length === 0) {
     lines.push("No other arm was run: this report is A0's baseline.", "");

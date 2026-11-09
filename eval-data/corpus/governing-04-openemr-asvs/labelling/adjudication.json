@@ -1,0 +1,170 @@
+{
+  "adjudicator": "third pass: claude-opus-5-5 through `claude -p`, no tools, no MCP server, no settings sources, run from an empty directory; given policy-v1 and each disagreement with the two labels in a seeded random A/B order (seed 21083, adjudication-prompt.txt). It was not told which labeller wrote which label, was told to favour neither, and was allowed to answer \"unsettled\"; it settled every pair.",
+  "costUsd": 0.1242,
+  "agreement": {
+    "cells": 750,
+    "labeller1Pairs": 25,
+    "labeller2Pairs": 25,
+    "unionPairs": 28,
+    "bothListed": 22,
+    "sameVerdict": 17,
+    "applicability": {
+      "observed": 0.992,
+      "chance": 0.9356,
+      "kappa": 0.876
+    },
+    "fourWay": {
+      "observed": 0.9853,
+      "chance": 0.9349,
+      "kappa": 0.775
+    },
+    "pairAgreementOnUnion": 0.61,
+    "negativeItemsAgreed": 5
+  },
+  "disagreements": [
+    {
+      "item": "OS-01",
+      "rule": "SE-03",
+      "labeller1": "needs-ba-input",
+      "labeller2": "does not apply",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "decision": "does not apply",
+      "reason": "The issue is about where the user lands after a timeout ('doesn't return to login screen', needing 'a bookmark of login screen'). It is a navigation/redirect bug, and nothing in it bears on whether an expired session can be reused."
+    },
+    {
+      "item": "OS-03",
+      "rule": "SE-03",
+      "labeller1": "needs-ba-input",
+      "labeller2": "does not apply",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "decision": "does not apply",
+      "reason": "The defect is that 'user gets no response' because 'login.php never getting called' after logout from an already-expired session. This is a redirect/UX issue, not a question of whether the terminated session stays usable."
+    },
+    {
+      "item": "OS-04",
+      "rule": "PA-10",
+      "labeller1": "does not apply",
+      "labeller2": "needs-ba-input",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "decision": "needs-ba-input",
+      "reason": "The request changes how users authenticate to access the application, via SSO from 'the account or laptop the user used'. Workstation login may be single-factor, and the request does not say whether a second factor is enforced.",
+      "businessFact": "Will the SSO identity provider enforce multi-factor authentication for every user before granting OpenEMR access?"
+    },
+    {
+      "item": "OS-06",
+      "rule": "PA-09",
+      "labeller1": "does not apply",
+      "labeller2": "needs-ba-input",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "decision": "needs-ba-input",
+      "reason": "The request changes the behaviour of the brute-force lockout counter ('login_fail_counter', 'max reties enabled'). PA-09 defers to the security documentation, and the request does not say what that documentation requires on an admin reset.",
+      "businessFact": "Does the security documentation require the failed-login counter to be cleared when an administrator resets a user's password?"
+    },
+    {
+      "item": "OS-08",
+      "rule": "PA-01",
+      "labeller1": "does not apply",
+      "labeller2": "needs-ba-input",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "decision": "does not apply",
+      "reason": "The request only removes composition rules ('Do not require passwords to contain numbers, special characters'). It does not touch minimum length, so PA-01 is not engaged. PA-05 is the relevant rule."
+    },
+    {
+      "item": "OS-11",
+      "rule": "PA-08",
+      "labeller1": "needs-ba-input",
+      "labeller2": "gap",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "decision": "needs-ba-input",
+      "reason": "'Users may not know that their password have expired' implies expiry exists, but not whether it is periodic rotation or expiry on compromise. Notifications alone do not impose rotation.",
+      "businessFact": "Are passwords configured to expire on a fixed schedule, or only when a password is found to be compromised?"
+    },
+    {
+      "item": "OS-16",
+      "rule": "DP-01",
+      "labeller1": "compliant",
+      "labeller2": "gap",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "decision": "compliant",
+      "reason": "The issue is a defect report whose subject is that the CSRF token is 'embedded directly in the URL query string' and leaks via Referer headers, history and logs. Resolving it means removing the token from the URL, which is exactly what DP-01 asks."
+    },
+    {
+      "item": "OS-17",
+      "rule": "AZ-01",
+      "labeller1": "needs-ba-input",
+      "labeller2": "gap",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "decision": "needs-ba-input",
+      "reason": "The issue flags that the scripts run with '$ignoreAuth = true' but notes they 'historically had to run before any user account exists'. It does not state what access restriction should replace this.",
+      "businessFact": "Must acl_upgrade.php and sql_upgrade.php still run before any user account exists, or can they be restricted to authenticated administrators (or a one-time setup token)?"
+    },
+    {
+      "item": "OS-19",
+      "rule": "PA-10",
+      "labeller1": "compliant",
+      "labeller2": "needs-ba-input",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "decision": "needs-ba-input",
+      "reason": "TOTP is added, but requiring it for portal access depends on a 'portal_force_mfa global' toggle. Without the toggle, patients can still log in with username/password alone.",
+      "businessFact": "Will portal_force_mfa be enabled so that every patient must use a second factor to access the portal?"
+    },
+    {
+      "item": "OS-20",
+      "rule": "AZ-02",
+      "labeller1": "needs-ba-input",
+      "labeller2": "does not apply",
+      "shownAs": {
+        "A": "labeller1",
+        "B": "labeller2"
+      },
+      "decision": "does not apply",
+      "reason": "The request adds a 'Prescription History' option to the existing Patient Report for a patient chart. It introduces no new object-access path, so object-level authorization is not engaged without a stretch reading."
+    },
+    {
+      "item": "OS-21",
+      "rule": "LG-05",
+      "labeller1": "compliant",
+      "labeller2": "needs-ba-input",
+      "shownAs": {
+        "A": "labeller2",
+        "B": "labeller1"
+      },
+      "decision": "needs-ba-input",
+      "reason": "INSERT/SELECT-only grants and checksum chaining address modification. But protection from unauthorized access is only 'Ideally' achieved by removing the default user's access, and encryption is being removed.",
+      "businessFact": "Will the default openemr database user be denied all access to the log tables, leaving only a dedicated least-privilege account?"
+    }
+  ],
+  "consistencyPass": {
+    "why": "Not run on this tuning set: governing-03's per-rule consistency pass is a held-out set's extra check. A cell both labellers skipped was not re-checked here.",
+    "rules": [],
+    "changes": [],
+    "keptAsStanding": []
+  }
+}

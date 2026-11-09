@@ -10,7 +10,8 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 const mockApiFetch = vi.fn();
 const mockStreamFetch = vi.fn();
 
-vi.mock("@/lib/api-client", () => ({
+vi.mock("@/lib/api-client", async (importOriginal) => ({
+  ApiError: (await importOriginal<typeof import("@/lib/api-client")>()).ApiError,
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
   streamFetch: (...args: unknown[]) => mockStreamFetch(...args),
 }));
@@ -98,6 +99,29 @@ describe("analysisApi.importClarifyAnswers", () => {
     await expect(analysisApi.importClarifyAnswers("proj-1", "ana-1", file)).rejects.toThrow(
       "bad headers",
     );
+  });
+
+  // #2101 — typed, so the panel can tell a round that closed from a bad file.
+  it("throws an ApiError carrying the status and code of the refusal", async () => {
+    const { ApiError } = await import("@/lib/api-client");
+    mockStreamFetch.mockResolvedValue({
+      ...makeResponse({
+        ok: false,
+        body: {
+          success: false,
+          error: { code: "CLARIFY_ROUND_NOT_OPEN", message: "round no longer open" },
+        },
+      }),
+      status: 409,
+    });
+    const file = new File(["x"], "answers.csv", { type: "text/csv" });
+    const err = await analysisApi.importClarifyAnswers("proj-1", "ana-1", file).catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({
+      status: 409,
+      code: "CLARIFY_ROUND_NOT_OPEN",
+      message: "round no longer open",
+    });
   });
 
   it("throws a generic message when the error envelope lacks a message", async () => {
