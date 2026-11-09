@@ -187,15 +187,24 @@ export default function TriggersSettingsPage() {
     },
   });
 
+  // #1745 — the last enable/disable/delete refusal (these are MFA-gated), cleared
+  // when the next one starts.
+  const [actionError, setActionError] = useState<string | null>(null);
+  const actionHandlers = {
+    onMutate: () => setActionError(null),
+    onError: (err: Error) => setActionError(err.message),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk }),
+  };
+
   const toggle = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       asyncApi.updateTrigger(projectId, id, { enabled }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk }),
+    ...actionHandlers,
   });
 
   const remove = useMutation({
     mutationFn: (id: string) => asyncApi.deleteTrigger(projectId, id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk }),
+    ...actionHandlers,
   });
 
   return (
@@ -255,6 +264,12 @@ export default function TriggersSettingsPage() {
       {projectId && (
         <Card className="p-4" data-testid="triggers-list">
           <h2 className="mb-3 text-lg font-medium">Triggers</h2>
+          {/* #1745 — enabling, disabling and deleting are MFA-gated; say why one was refused. */}
+          {actionError && (
+            <p role="alert" className="mb-3 text-sm text-destructive" data-testid="tg-action-error">
+              {actionError}
+            </p>
+          )}
           {list.isLoading ? (
             <SkeletonText lines={3} />
           ) : list.isError ? (

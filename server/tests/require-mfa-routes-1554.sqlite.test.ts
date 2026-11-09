@@ -86,6 +86,8 @@ const GATED: ReadonlyArray<{ group: 1 | 2 | 3; method: Method; path: string; bod
   { group: 3, method: "delete", path: "/api/workspaces/no-such-ws/members/no-such-member" },
   { group: 3, method: "post", path: "/api/workspaces/no-such-ws/transfer" },
   { group: 3, method: "post", path: "/api/workspaces/no-such-ws/invites" },
+  // #1745 — deleting a workspace revokes every member's workspace role.
+  { group: 3, method: "delete", path: "/api/workspaces/no-such-ws" },
 ];
 
 /**
@@ -138,6 +140,13 @@ function recordMountPaths(): () => void {
 const joinPath = (prefix: string, path: string) =>
   `${prefix}/${path}`.replace(/\/+/g, "/").replace(/(.)\/$/, "$1");
 
+/**
+ * #1745 — whether middleware mounted at `prefix` runs for `path`. Express matches
+ * a mount on whole segments: `/api/admin` covers `/api/admin/x`, not `/api/administrators`.
+ */
+const runsUnder = (path: string, prefix: string) =>
+  prefix === "/" || path === prefix || path.startsWith(`${prefix}/`);
+
 interface WalkedRoute {
   /** `method /full/mount/path`. */
   key: string;
@@ -157,7 +166,7 @@ function walk(
   for (const layer of stack) {
     if (layer.route) {
       const path = joinPath(prefix, layer.route.path);
-      const before = middleware.filter((m) => path.startsWith(m.prefix)).map((m) => m.fn);
+      const before = middleware.filter((m) => runsUnder(path, m.prefix)).map((m) => m.fn);
       for (const method of Object.keys(layer.route.methods).filter((m) => m !== "_all")) {
         out.push({
           key: `${method} ${path}`,
@@ -173,6 +182,18 @@ function walk(
   }
   return out;
 }
+
+describe("#1745 — the route walk matches a mount on whole segments", () => {
+  it.each([
+    ["/api/admin/config", "/api/admin", true],
+    ["/api/admin", "/api/admin", true],
+    ["/api/anything", "/", true],
+    ["/api/administrators", "/api/admin", false],
+    ["/api/admin-tools/x", "/api/admin", false],
+  ] as const)("%s under %s: %s", (path, prefix, expected) => {
+    expect(runsUnder(path, prefix)).toBe(expected);
+  });
+});
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   "#1554 — MFA-gated actions (real app, real SQLite)",
@@ -305,6 +326,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect({ path, code: res.body.error?.code }).not.toEqual({ path, code: "MFA_REQUIRED" });
         expect(res.status).not.toBe(403);
       }
+    });
+
+    // #1745 — past the gate, deleting a workspace that does not exist changes
+    // nothing and says so, rather than failing on the missing row.
+    it("an MFA session deleting a workspace that does not exist gets 404", async () => {
+      const res = await call("delete", "/api/workspaces/no-such-ws", session(true));
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe("NOT_FOUND");
+    });
+
+    // #1745 — workspace settings are not one of the three gated kinds of action.
+    it("a password-only SSO session may still change a workspace's settings", async () => {
+      const res = await call("patch", "/api/workspaces/no-such-ws", session(false), { name: "" });
+      expect(res.body.error?.code).toBe("VALIDATION_ERROR");
     });
 
     // #1558 item 6 — a refresh token minted before #1552 carries no mfaPassed.

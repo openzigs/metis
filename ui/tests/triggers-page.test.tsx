@@ -25,7 +25,7 @@ vi.mock("@/lib/async-platform-api", () => ({
   },
 }));
 
-import { apiFetch } from "@/lib/api-client";
+import { apiFetch, ApiError, MFA_REQUIRED_CODE, MFA_REQUIRED_MESSAGE } from "@/lib/api-client";
 import { asyncApi } from "@/lib/async-platform-api";
 import TriggersSettingsPage from "@/app/(authed)/settings/triggers/page";
 
@@ -201,6 +201,29 @@ describe("TriggersSettingsPage — trigger CRUD", () => {
 
     fireEvent.click(screen.getByTestId("tg-delete-t1"));
     await waitFor(() => expect(deleteTriggerMock).toHaveBeenCalledWith("proj_alpha", "t1"));
+  });
+
+  // #1745 — enabling, disabling and deleting a trigger are MFA-gated; a refusal
+  // is shown, not swallowed.
+  it.each([
+    ["toggle", "tg-toggle-t1"],
+    ["delete", "tg-delete-t1"],
+  ] as const)("shows an MFA refusal of a %s", async (_action, button) => {
+    const refusal = new ApiError(403, MFA_REQUIRED_MESSAGE, MFA_REQUIRED_CODE);
+    listTriggersMock.mockResolvedValue({ items: [makeTriggerRow()] });
+    updateTriggerMock.mockRejectedValueOnce(refusal);
+    deleteTriggerMock.mockRejectedValueOnce(refusal);
+    const Wrapper = makeWrapper({});
+    render(
+      <Wrapper>
+        <TriggersSettingsPage />
+      </Wrapper>,
+    );
+    await pickProject("proj_alpha");
+    fireEvent.click(await screen.findByTestId(button));
+    const alert = await screen.findByTestId("tg-action-error");
+    expect(alert).toHaveAttribute("role", "alert");
+    expect(alert).toHaveTextContent(MFA_REQUIRED_MESSAGE);
   });
 
   it("renders the empty-state when a project has no triggers", async () => {
