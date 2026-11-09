@@ -888,12 +888,20 @@ const ID_LABEL = /\[?(?:\bid\s*[:=]\s*)?$/i;
 /** How far before an id its `(id: ` or `[id: ` label is looked for. */
 const ID_LABEL_WINDOW = 32;
 
+/**
+ * ASCII-only lower case. `String.prototype.toLowerCase` can change a string's
+ * length ("İ" becomes two code units), so an index found in its result would
+ * slice the original text in the wrong place. The ids are ASCII, so folding
+ * only A-Z finds them just as well and keeps every index valid.
+ */
+const foldAscii = (s: string): string => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+
 /** `text` with each occurrence of `id` (any case) dropped as an aside, or replaced by `"title"`. */
 function replaceId(text: string, id: string, title: string): string {
-  const needle = id.toLowerCase();
+  const needle = foldAscii(id);
   let out = "";
   let rest = text;
-  for (let at = rest.toLowerCase().indexOf(needle); at !== -1;) {
+  for (let at = foldAscii(rest).indexOf(needle); at !== -1;) {
     const before = rest.slice(0, at);
     const after = rest.slice(at + id.length);
     const near = before.slice(-ID_LABEL_WINDOW);
@@ -908,7 +916,7 @@ function replaceId(text: string, id: string, title: string): string {
       out += `${before.slice(0, lead + ID_LABEL.exec(near)!.index)}"${title}"`;
       rest = after.startsWith("]") ? after.slice(1) : after;
     }
-    at = rest.toLowerCase().indexOf(needle);
+    at = foldAscii(rest).indexOf(needle);
   }
   return out + rest;
 }

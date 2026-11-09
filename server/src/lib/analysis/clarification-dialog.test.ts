@@ -386,4 +386,13 @@ describe("#2128 — a clarifying question never shows a requirement's internal i
     expect(nameRequirementIds(`Is ${other} related?`, reqs)).toBe(`Is ${other} related?`);
     expect(nameRequirementIds("", reqs)).toBe("");
   });
+
+  it("text whose lower case is longer than itself is not corrupted", async () => {
+    const { nameRequirementIds } = await import("./clarification-dialog.js");
+    const reqs = [req(LENGTH_ID, "Minimum password length")];
+    // "İ".toLowerCase() is two code units, which once shifted every index after it.
+    expect(nameRequirementIds(`İİ office: see ${LENGTH_ID} now.`, reqs)).toBe(
+      'İİ office: see "Minimum password length" now.',
+    );
+  });
 });
