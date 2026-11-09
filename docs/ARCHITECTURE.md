@@ -2676,11 +2676,17 @@ the pre-#1873 code).
   The phrase shapes (`rulebookReference`) are a rule or clause followed by a numbered id (`rule
   12`, `clause 4b`); a rule or clause heading a noun phrase that `the`/`this`/`our`/`which`/…
   opens within three words; and the same for a policy after `under`/`per`/`against`/`within`/`by`
-  ("under the data retention policy"). A bare word is not refused (#2086): "the pricing rules
+  ("under the data retention policy"). A possessive heads its phrase ("the retention rule's
+  limit", #2098). A bare word is not refused (#2086): "the pricing rules
   engine", "business rules", `rule-based` and "agree to the returns policy" are business facts,
-  and refusing them sent a rules-engine requirement's questions through a second model call. It is
-  re-asked once in plain words, then replaced by `templateGoverningQuestion`, which checks only
-  control ids and clause quotes in the requirement it quotes: the analyst's own words never drop
+  and refusing them sent a rules-engine requirement's questions through a second model call.
+  The look-back for a determiner stops at a preposition, conjunction or auxiliary, and for a
+  rule or clause at a verb that takes rules as its object (`LOOK_BACK_STOP_VERBS`, #2098), so the
+  subject's determiner in "Does the app use pricing rules?" is not read as pointing at them. With
+  no part-of-speech tagging some shapes are knowingly let through: more than three modifiers,
+  "rule-12" / "rule no. 12" / "rule twelve", and a verb-shaped modifier ("the data use rules").
+  A refused question is re-asked once in plain words, then replaced by `templateGoverningQuestion`,
+  which checks only control ids and clause quotes in the requirement it quotes: the analyst's own words never drop
   the quote.
 - **Self-resolve.** Governing questions go through the dialog's grounding pass, which searches
   only the project's knowledge index. #1869 keeps governing chunks out of it, so the rulebook can
