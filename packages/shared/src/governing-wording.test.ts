@@ -44,7 +44,7 @@ const NEUTRAL: readonly string[] = [
   "Our certified engineers reviewed the SOC 2 criteria.",
   "The GDPR compliance team owns this rule.",
   "The system must comply with GDPR Article 17.",
-  "No gaps found against 12 of 40 applicable rules in Information Security Policy v3. Not an audit opinion.",
+  "12 of 40 rules in Information Security Policy v3 apply. No gaps found. Not an audit opinion.",
   // #1901 — "passes" as "goes beyond", and a perfect-tense negation.
   "The value passes the policy limit.",
   "The order total passed the retention policy threshold.",
@@ -439,7 +439,7 @@ describe("governingSummarySentence (#1875)", () => {
         documentTitle: " ",
         revisionLabel: "",
       }),
-    ).toBe("No gaps found against 1 of 2 applicable rules. Not an audit opinion.");
+    ).toBe("1 of 2 rules applies. No gaps found. Not an audit opinion.");
   });
 
   it("reads as the agreed sentence when nothing is open", () => {
@@ -453,7 +453,7 @@ describe("governingSummarySentence (#1875)", () => {
         revisionLabel: "v3",
       }),
     ).toBe(
-      "No gaps found against 12 of 40 applicable rules in Information Security Policy v3. Not an audit opinion.",
+      "12 of 40 rules in Information Security Policy v3 apply. No gaps found. Not an audit opinion.",
     );
   });
 
@@ -467,8 +467,23 @@ describe("governingSummarySentence (#1875)", () => {
       revisionLabel: "v3",
     });
     expect(sentence).toBe(
-      "3 gaps found against 12 of 40 applicable rules in Information Security Policy v3; 2 rules need BA input. Not an audit opinion.",
+      "12 of 40 rules in Information Security Policy v3 apply. 3 gaps found; 2 rules need BA input. Not an audit opinion.",
     );
+  });
+
+  it("#2122 — the gap count is not set beside the count of rules that apply", () => {
+    const sentence = governingSummarySentence({
+      applicable: 5,
+      total: 26,
+      gaps: 4,
+      needsInput: 3,
+      documentTitle: "NIST SP 800-63B-4",
+      revisionLabel: "",
+    });
+    expect(sentence).toBe(
+      "5 of 26 rules in NIST SP 800-63B-4 apply. 4 gaps found; 3 rules need BA input. Not an audit opinion.",
+    );
+    expect(sentence).not.toContain("against 5");
   });
 
   it("uses the singular for one gap, one rule needing input and one rule in total", () => {
@@ -482,7 +497,7 @@ describe("governingSummarySentence (#1875)", () => {
         revisionLabel: "",
       }),
     ).toBe(
-      "1 gap found against 1 of 1 applicable rule in Retention Standard; 1 rule needs BA input. Not an audit opinion.",
+      "1 of 1 rule in Retention Standard applies. 1 gap found; 1 rule needs BA input. Not an audit opinion.",
     );
   });
 
@@ -496,7 +511,7 @@ describe("governingSummarySentence (#1875)", () => {
       revisionLabel: "v1",
     });
     expect(sentence).toBe(
-      "0 gaps found against 5 of 9 applicable rules in Access Policy v1; 2 rules need BA input. Not an audit opinion.",
+      "5 of 9 rules in Access Policy v1 apply. 0 gaps found; 2 rules need BA input. Not an audit opinion.",
     );
   });
 
@@ -510,7 +525,7 @@ describe("governingSummarySentence (#1875)", () => {
       revisionLabel: "rev 4 (SOC 2 certified)",
     });
     expect(sentence).toBe(
-      "No gaps found against 2 of 3 applicable rules in SOC 2-reviewed Controls rev 4 (SOC 2-reviewed). Not an audit opinion.",
+      "2 of 3 rules in SOC 2-reviewed Controls rev 4 (SOC 2-reviewed) apply. No gaps found. Not an audit opinion.",
     );
   });
 
@@ -533,7 +548,7 @@ describe("governingSummarySentence (#1875)", () => {
         revisionLabel: "",
       });
       expect(sentence).toBe(
-        `No gaps found against 1 of 2 applicable rules in ${shown}. Not an audit opinion.`,
+        `1 of 2 rules in ${shown} applies. No gaps found. Not an audit opinion.`,
       );
       expect(sentence).not.toMatch(/compliant/i);
     },
@@ -560,13 +575,15 @@ describe("governingSummarySentence (#1875)", () => {
       expect(sentence).not.toMatch(/compliant/i);
       expect(findForbiddenComplianceClaims(sentence)).toEqual([]);
       if (gaps > 0) {
-        expect(sentence.startsWith(`${gaps} gap`)).toBe(true);
+        expect(sentence).toContain(`. ${gaps} gap`);
         expect(sentence).not.toContain("No gaps found");
       }
       if (gaps === 0 && needsInput === 0) {
-        expect(sentence.startsWith("No gaps found against ")).toBe(true);
+        expect(sentence).toContain(". No gaps found. ");
       }
-      expect(sentence).toContain(` ${applicable} of ${total} applicable rule`);
+      // #2122 — the rule count leads, a sentence of its own: never beside the gap count.
+      expect(sentence.startsWith(`${applicable} of ${total} rule`)).toBe(true);
+      expect(sentence).not.toMatch(/gaps? found against/);
     }
   });
 });

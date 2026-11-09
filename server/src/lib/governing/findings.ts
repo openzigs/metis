@@ -36,7 +36,7 @@ import type { AIProvider } from "../ai/types.js";
 import { extractJsonObject, resolveFinalAnswerMaxOutputTokens } from "../analysis/agent-runner.js";
 import { estimateTokens } from "../analysis/context-window-manager.js";
 import { createChildLogger } from "../logger.js";
-import { planBatches, screenBatchTokenBudget } from "./applicability.js";
+import { nameHandles, planBatches, screenBatchTokenBudget } from "./applicability.js";
 import { locateClause, type VerifiedClause } from "./clause-verify.js";
 
 const log = createChildLogger("governing-findings");
@@ -246,10 +246,15 @@ export function parseFindingsReply(raw: string, batch: readonly Entry[]): Map<nu
     if (!(GOVERNING_FINDING_STATUSES as readonly string[]).includes(status)) continue;
     out.set(e.index, {
       status: status as GoverningFindingStatus,
-      reasoning: str(item.reasoning).slice(0, MAX_REASONING_CHARS),
+      // #2122 — a reason or question that names a rule by its prompt handle
+      // ("Whether R1 is met…") reads back in the BA's words.
+      reasoning: nameHandles(str(item.reasoning), e, batch).slice(0, MAX_REASONING_CHARS),
       excerpt: str(item.excerpt),
       satisfiedBy: str(item.satisfiedBy),
-      businessQuestion: str(item.businessQuestion).slice(0, MAX_QUESTION_CHARS),
+      businessQuestion: nameHandles(str(item.businessQuestion), e, batch).slice(
+        0,
+        MAX_QUESTION_CHARS,
+      ),
     });
   }
   return out;

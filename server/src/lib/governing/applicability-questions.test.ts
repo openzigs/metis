@@ -20,6 +20,8 @@ const {
   GOVERNING_QUESTION_FIELD,
   answersForApplyingPairs,
   buildGoverningQuestions,
+  carryAnswersOver,
+  carryCandidates,
   governingQuestionRequirementId,
   governingQuestionSourceFor,
   hasApplyingPair,
@@ -30,7 +32,7 @@ const {
   templateGoverningQuestion,
 } = await import("./applicability-questions.js");
 const { FALLBACK_FINDING_QUESTION } = await import("./findings.js");
-const { ANSWER_NOTE } = await import("./applicability.js");
+const { ANSWER_NOTE, CARRIED_ANSWER_NOTE } = await import("./applicability.js");
 const { applySettlements } = await import("./applicability-store.js");
 type QuestionRule = import("./applicability-questions.js").QuestionRule;
 type OpenGoverningPair = import("./applicability-questions.js").OpenGoverningPair;
@@ -1092,6 +1094,154 @@ describe("rejudgeAnswered — the answer is judged back onto the rules it settle
       [ENCRYPT.id, "uncertain"],
     ]);
     expect(second.sent).toHaveLength(2);
+  });
+});
+
+describe("#2122 — carryAnswersOver: an answer is judged onto the other requirements' open pairs", () => {
+  const rules = new Map(
+    [CARD, ENCRYPT, AUDIT].map((r) => [r.id, { ...r, revisionId: "rev_1", source: "Policy v1" }]),
+  );
+  const OTHER = { id: "REQ-002", text: "Customers can export their saved cards to a CSV file." };
+  // REQ-001: CARD and ENCRYPT uncertain, AUDIT applies; REQ-002: CARD uncertain, ENCRYPT settled.
+  const stored: GoverningAnalysisApplicability = {
+    ...STORED,
+    requirements: [
+      STORED.requirements[0]!,
+      {
+        requirementId: OTHER.id,
+        text: OTHER.text,
+        decisions: [
+          {
+            ruleId: CARD.id,
+            controlId: CARD.controlId,
+            verdict: "uncertain",
+            reason: "Depends on what is exported.",
+            businessFact: "Will the export hold whole card numbers?",
+            foundBy: ["screen"],
+          },
+          {
+            ruleId: ENCRYPT.id,
+            controlId: ENCRYPT.controlId,
+            verdict: "uncertain",
+            reason: "x",
+            foundBy: ["screen"],
+            settled: {
+              questionId: "q0",
+              answer: "Yes.",
+              previousVerdict: "uncertain",
+              at: "2026-11-08T00:00:00.000Z",
+            },
+          },
+        ],
+      },
+    ],
+  };
+  const q = (id: string, ruleIds: string[], answer: string) => ({
+    id,
+    requirementId: REQ.id,
+    ambiguityField: GOVERNING_QUESTION_FIELD,
+    question: `Question ${id}?`,
+    context: "",
+    answer,
+    governing: { kind: "governing" as const, ruleIds, requirementId: REQ.id },
+  });
+
+  it("candidates are every unsettled uncertain pair no answered question links", () => {
+    expect(carryCandidates([q("q1", [CARD.id], "Yes.")], stored)).toEqual([
+      { requirementId: REQ.id, text: REQ.text, ruleIds: [ENCRYPT.id] },
+      { requirementId: OTHER.id, text: OTHER.text, ruleIds: [CARD.id] },
+    ]);
+    // An unanswered question links nothing.
+    expect(carryCandidates([q("q1", [CARD.id, ENCRYPT.id], " ")], stored)[0]!.ruleIds).toEqual([
+      CARD.id,
+      ENCRYPT.id,
+    ]);
+  });
+
+  it("one call per requirement, every answer numbered; a decision is recorded as the answer it names", async () => {
+    const { provider, sent } = stubModel({
+      judge: (user) =>
+        user.includes(OTHER.text)
+          ? { decisions: [{ rule: "R1", verdict: "does-not-apply", reason: "No.", answer: "A2" }] }
+          : { decisions: [{ rule: "R1", verdict: "applies", reason: "Kept.", answer: "a1" }] },
+    });
+    const answered = [q("q1", [CARD.id], "Whole numbers are kept."), q("q2", [CARD.id], "No.")];
+    const got = await carryAnswersOver(answered, stored, rules, { provider });
+    expect(sent).toHaveLength(2);
+    expect(sent[0]!.system).toContain(CARRIED_ANSWER_NOTE);
+    expect(sent[0]!.system).not.toContain(ANSWER_NOTE);
+    expect(sent[0]!.user).toContain("A1 (asked about this requirement)");
+    expect(sent[0]!.user).toContain("R1 [EN-02]");
+    expect(sent[1]!.user).toContain(`A2 (asked about another requirement: "${REQ.text}")`);
+    expect(sent[1]!.user).toContain("Question: Question q2?\nAnswer: No.");
+    expect(got).toEqual([
+      {
+        requirementId: REQ.id,
+        ruleId: ENCRYPT.id,
+        verdict: "applies",
+        reason: "Kept.",
+        questionId: "q1",
+        question: "Question q1?",
+        answer: "Whole numbers are kept.",
+      },
+      expect.objectContaining({
+        requirementId: OTHER.id,
+        ruleId: CARD.id,
+        verdict: "does-not-apply",
+        questionId: "q2",
+        answer: "No.",
+      }),
+    ]);
+  });
+
+  it("uncertain, no answer named, a failed call or an unreadable reply settle nothing", async () => {
+    const answered = [q("q1", [CARD.id, ENCRYPT.id], "Yes.")];
+    const uncertain = stubModel({
+      judge: () => ({
+        decisions: [{ rule: "R1", verdict: "uncertain", reason: "?", businessFact: "Is it?" }],
+      }),
+    });
+    expect(await carryAnswersOver(answered, stored, rules, uncertain)).toEqual([]);
+    const uncertainNamed = stubModel({
+      judge: () => ({
+        decisions: [{ rule: "R1", verdict: "uncertain", reason: "?", answer: "A1" }],
+      }),
+    });
+    expect(await carryAnswersOver(answered, stored, rules, uncertainNamed)).toEqual([]);
+    const unnamed = stubModel({
+      judge: () => ({ decisions: [{ rule: "R1", verdict: "applies", reason: "y" }] }),
+    });
+    expect(await carryAnswersOver(answered, stored, rules, unnamed)).toEqual([]);
+    const failing = stubModel({});
+    vi.mocked(failing.chat).mockRejectedValueOnce(new Error("rate limited"));
+    expect(await carryAnswersOver(answered, stored, rules, failing)).toEqual([]);
+    const unreadable = stubModel({ judge: () => "no" });
+    expect(await carryAnswersOver(answered, stored, rules, unreadable)).toEqual([]);
+    expect(unreadable.sent.map((s) => s.kind)).toEqual(["judge", "judge"]);
+  });
+
+  it("no answer, or no rule left to read, asks nothing", async () => {
+    const { provider, chat } = stubModel({});
+    expect(await carryAnswersOver([q("q1", [CARD.id], " ")], stored, rules, { provider })).toEqual(
+      [],
+    );
+    expect(
+      await carryAnswersOver([q("q1", [CARD.id], "Yes.")], stored, new Map(), { provider }),
+    ).toEqual([]);
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  it("an abort is not swallowed", async () => {
+    const { provider, chat } = stubModel({});
+    const controller = new AbortController();
+    controller.abort();
+    vi.mocked(chat).mockRejectedValueOnce(new Error("aborted"));
+    await expect(
+      carryAnswersOver([q("q1", [CARD.id], "Yes.")], stored, rules, {
+        provider,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("aborted");
   });
 });
 

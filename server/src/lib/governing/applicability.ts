@@ -286,12 +286,28 @@ const REASK_NOTE =
 // does not rule the rule out: the text wins, the rule applies, and the reason
 // names the contradiction. A wrong `applies` leaves a finding the BA can see and
 // reject with a note; a wrong `does-not-apply` removes it without a trace.
-export const ANSWER_NOTE = [
-  "The requirement ends with a business analyst's answer to a question about it. Read the answer as a fact about what the requirement involves, and still decide only whether each rule applies:",
+const ANSWER_RULES = [
   "- if the answer says the requirement involves what the rule governs, the rule applies, also when the answer says the rule's safeguard is already in place (the supplier passed its review, the change can be rolled back, the connection is encrypted). Whether the safeguard is enough is checked in a later step, not here;",
   "- decide does-not-apply only when the answer says what the rule governs is absent from the requirement (no card numbers are kept, no outside company receives the data) and the requirement's own text does not say it is there;",
   "- when the answer denies what the requirement's own text plainly says (the requirement sends the data to a named outside company, and the answer says nothing leaves our systems), the requirement's text wins: decide applies, and say in the reason that the answer contradicts the requirement.",
   "A safeguard being in place is never a reason to decide does-not-apply.",
+];
+
+export const ANSWER_NOTE = [
+  "The requirement ends with a business analyst's answer to a question about it. Read the answer as a fact about what the requirement involves, and still decide only whether each rule applies:",
+  ...ANSWER_RULES,
+].join("\n");
+
+// #2122 — "the password is the only factor", answered on one requirement,
+// left two others asking the same fact in their own words, and the next round
+// asked it twice more. A BA's answer is carried to the analysis's other
+// `uncertain` pairs through this judge. The answer was asked about another
+// requirement, so the judge uses it only for a fact that holds for this one
+// too, and names the answer it used: a decision that names none is not taken.
+export const CARRIED_ANSWER_NOTE = [
+  "The requirement ends with answers a business analyst gave, each named A1, A2, …, to questions asked about requirements of the same system; the requirement each was asked about is quoted with it, and may be a different one. Use an answer only where it states a fact that holds for this requirement too, such as how the whole system lets people sign in. Never carry a fact about one requirement's own data, screen or feature to another. Where no answer settles the fact a rule turns on for this requirement, decide uncertain with the question that would settle it. Read a fact that holds as what the requirement involves, and still decide only whether each rule applies:",
+  ...ANSWER_RULES,
+  'For each rule you decide applies or does-not-apply on the strength of an answer, add "answer":"A1" to its decision, naming that answer.',
 ].join("\n");
 
 /**
@@ -307,14 +323,19 @@ function judgeSystem(...notes: string[]): string {
 /**
  * The judging prompt: one requirement against the summaries and clauses of
  * `entries`. `answered` (#2067) when the requirement carries a BA's answer:
- * the settle judge's re-judging, which gets {@link ANSWER_NOTE}.
+ * the settle judge's re-judging, which gets {@link ANSWER_NOTE}. `carried`
+ * (#2122) when it carries answers given on other requirements, which gets
+ * {@link CARRIED_ANSWER_NOTE} instead.
  */
 export function buildApplicabilityJudgePrompt(
   requirementText: string,
   entries: readonly Pick<ApplicabilityEntry, "handle" | "rule">[],
-  opts: { reask?: boolean; answered?: boolean } = {},
+  opts: { reask?: boolean; answered?: boolean; carried?: boolean } = {},
 ): Prompt {
-  const notes = [...(opts.answered ? [ANSWER_NOTE] : []), ...(opts.reask ? [REASK_NOTE] : [])];
+  const notes = [
+    ...(opts.carried ? [CARRIED_ANSWER_NOTE] : opts.answered ? [ANSWER_NOTE] : []),
+    ...(opts.reask ? [REASK_NOTE] : []),
+  ];
   return {
     systemMessage: judgeSystem(...notes),
     userMessage: [
@@ -376,6 +397,28 @@ function str(v: unknown): string {
 }
 
 /**
+ * #2122 — `text` with the rule handles (`R1`, …) a model wrote into it put back
+ * into words a reader knows: the handle of the rule `own` is about becomes
+ * "this rule" ("This rule" where a sentence starts), another rule's handle its
+ * control id. A handle the prompt did not show is left as written. The handles
+ * are the prompt's own labels; a reason that said "Whether R1 is met" was
+ * stored and shown to the BA as written.
+ */
+export function nameHandles(
+  text: string,
+  own: { handle: string },
+  batch: readonly { handle: string; rule: { controlId: string } }[],
+): string {
+  const byHandle = new Map(batch.map((e) => [e.handle.toUpperCase(), e]));
+  return text.replace(/\[?\b(R\d+)\b\]?/g, (match, handle: string, offset: number) => {
+    const e = byHandle.get(handle.toUpperCase());
+    if (!e) return match;
+    if (e.handle !== own.handle) return e.rule.controlId;
+    return /^$|[.!?:]\s*$/.test(text.slice(0, offset)) ? "This rule" : "this rule";
+  });
+}
+
+/**
  * Resolve a rule a reply names to the entry it was shown as: its handle, or a
  * control id that only one entry of the batch carries. A name the batch does
  * not hold resolves to nothing.
@@ -425,6 +468,8 @@ export interface ApplicabilityDecision {
   verdict: ApplicabilityVerdict;
   reason: string;
   businessFact?: string;
+  /** #2122 — the answer handle (`A1`, …) a carried-answer judging named, as written. */
+  answer?: string;
 }
 
 /** What a judging reply says: whether it could be read, and its decisions. */
@@ -470,10 +515,12 @@ export function parseApplicabilityJudgeReply(
     if (!e || out.has(e.index)) continue;
     if (!(APPLICABILITY_VERDICTS as readonly string[]).includes(verdict)) continue;
     const fact = str(entry.businessFact).slice(0, MAX_BUSINESS_FACT_CHARS);
+    const answer = str(entry.answer);
     out.set(e.index, {
       verdict: verdict as ApplicabilityVerdict,
-      reason: str(entry.reason).slice(0, MAX_REASON_CHARS),
+      reason: nameHandles(str(entry.reason), e, batch).slice(0, MAX_REASON_CHARS),
       ...(verdict === "uncertain" && fact ? { businessFact: fact } : {}),
+      ...(answer ? { answer } : {}),
     });
   }
   return { readable: true, decisions: out };

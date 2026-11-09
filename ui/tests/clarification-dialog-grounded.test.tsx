@@ -1,23 +1,30 @@
 /**
  * Self-resolution UI (clarify-self-resolve): a grounded clarifying question
- * renders a "Suggested answer (from <source>)" affordance with a PRE-FILLED
- * input and a grounding badge, while an open question renders a blank input
- * with no affordance.
+ * renders a "Suggested answer (from <source>)" affordance and a grounding
+ * badge, while an open question renders a blank input with no affordance.
+ * #2122 — the suggestion is offered beside a BLANK input, never filled in: it
+ * is not counted as answered and is sent only once the user uses it.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 
 // The component imports the analysis API + the app mutation hook; stub both so
-// nothing touches the network on render.
+// nothing touches the network. `mutate` runs the mutation's own `mutationFn`,
+// so a submit reaches the stubbed API with the payload the panel built.
+const submitClarifyAnswers = vi.hoisted(() => vi.fn(async () => ({ state: undefined })));
 vi.mock("@/lib/analysis-api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/analysis-api")>("@/lib/analysis-api");
   return {
     ...actual,
-    analysisApi: { clarify: vi.fn() },
+    analysisApi: { clarify: vi.fn(), submitClarifyAnswers },
   };
 });
 vi.mock("@/lib/use-app-mutation", () => ({
-  useAppMutation: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+  useAppMutation: (opts: { mutationFn: (v?: unknown) => unknown }) => ({
+    mutate: (v?: unknown) => void opts.mutationFn(v),
+    isPending: false,
+    isError: false,
+  }),
 }));
 
 import { ClarificationDialogPanel } from "@/components/analysis/ClarificationDialog";
@@ -61,31 +68,86 @@ function buildState(): ClarificationStatePayload {
 
 beforeEach(() => {
   cleanup();
+  submitClarifyAnswers.mockClear();
 });
 
+function renderPanel(state = buildState()) {
+  return render(
+    <ClarificationDialogPanel
+      projectId="proj-1"
+      analysisId="ana-1"
+      state={state}
+      onComplete={() => {}}
+    />,
+  );
+}
+
+function input(testId: string): HTMLInputElement {
+  return screen.getByTestId(testId).querySelector("input") as HTMLInputElement;
+}
+
 describe("ClarificationDialogPanel self-resolution", () => {
-  it("renders a grounded question with a pre-filled input, badge, and source", () => {
-    render(
-      <ClarificationDialogPanel
-        projectId="proj-1"
-        analysisId="ana-1"
-        state={buildState()}
-        onComplete={() => {}}
-      />,
-    );
+  it("#2122 — offers a grounded question's suggestion beside a blank input, with badge and source", () => {
+    renderPanel();
 
-    const grounded = screen.getByTestId("grounded-question");
-    expect(grounded).toBeInTheDocument();
+    expect(screen.getByTestId("grounded-question")).toBeInTheDocument();
+    // The input is blank: the suggestion is shown, not filled in.
+    expect(input("grounded-question").value).toBe("");
+    expect(screen.getByTestId("suggested-answer")).toHaveTextContent("OAuth2 bearer tokens");
 
-    // Pre-filled input value = the suggested answer.
-    const input = grounded.querySelector("input") as HTMLInputElement;
-    expect(input.value).toBe("OAuth2 bearer tokens");
-
-    // Badge + citation source shown.
-    expect(screen.getByTestId("grounding-badge")).toHaveTextContent(
-      "Answered from project knowledge",
-    );
+    // Badge + citation source shown; the badge does not call it answered.
+    const badge = screen.getByTestId("grounding-badge");
+    expect(badge).toHaveTextContent("Suggested from project knowledge");
+    expect(badge.textContent).not.toMatch(/^Answered/);
     expect(screen.getByTestId("suggested-answer-source")).toHaveTextContent("auth.ts");
+  });
+
+  it("#2122 — a suggestion is not counted as answered, and Submit stays off until something is", () => {
+    renderPanel();
+    expect(screen.getByTestId("clarification-progress")).toHaveTextContent("0 of 2 answered");
+    expect(screen.getByRole("button", { name: "Submit Answers" })).toBeDisabled();
+  });
+
+  it("#2122 — Submit sends only what the user typed; an unused suggestion is never sent", () => {
+    renderPanel();
+    fireEvent.change(input("open-question"), { target: { value: "99.9%" } });
+    expect(screen.getByTestId("clarification-progress")).toHaveTextContent("1 of 2 answered");
+    fireEvent.click(screen.getByRole("button", { name: "Submit Answers" }));
+    expect(submitClarifyAnswers).toHaveBeenCalledWith("proj-1", "ana-1", [
+      { questionId: "q-open", answer: "99.9%" },
+    ]);
+  });
+
+  it("#2122 — 'Use suggested answer' fills the box, counts it, and sends it", () => {
+    renderPanel();
+    // The button is described by its question, so a screen reader can tell them apart.
+    const button = screen.getByRole("button", { name: "Use suggested answer" });
+    expect(button).toHaveAccessibleDescription(/\S/);
+    fireEvent.click(screen.getByRole("button", { name: "Use suggested answer" }));
+    expect(input("grounded-question").value).toBe("OAuth2 bearer tokens");
+    expect(screen.getByTestId("clarification-progress")).toHaveTextContent("1 of 2 answered");
+    fireEvent.click(screen.getByRole("button", { name: "Submit Answers" }));
+    expect(submitClarifyAnswers).toHaveBeenCalledWith("proj-1", "ana-1", [
+      { questionId: "q-grounded", answer: "OAuth2 bearer tokens" },
+    ]);
+  });
+
+  it("#2122 — a box cleared back to blank is not sent", () => {
+    renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: "Use suggested answer" }));
+    fireEvent.change(input("open-question"), { target: { value: "x" } });
+    fireEvent.change(input("open-question"), { target: { value: "  " } });
+    fireEvent.click(screen.getByRole("button", { name: "Submit Answers" }));
+    expect(submitClarifyAnswers).toHaveBeenCalledWith("proj-1", "ana-1", [
+      { questionId: "q-grounded", answer: "OAuth2 bearer tokens" },
+    ]);
+  });
+
+  it("an answer submitted earlier is shown in its box, in place of the suggestion", () => {
+    const state = buildState();
+    state.rounds[0]!.questions[0]!.answer = "mTLS";
+    renderPanel(state);
+    expect(input("grounded-question").value).toBe("mTLS");
   });
 
   it("renders connector source ids as human-readable labels with the raw id in the tooltip (#427)", () => {

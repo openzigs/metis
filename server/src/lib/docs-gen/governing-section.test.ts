@@ -273,10 +273,10 @@ describe("the governing-rules section in a requirements BRD — #1877", () => {
     );
     const { markdown } = await synthesizeRequirementsDocument("p1", { analysisId: "run-1" }, "BRD");
     expect(markdown).toContain(
-      "- 1 gap found against 2 of 40 applicable rules in Information Handling Policy v1. Not an audit opinion.",
+      "- 2 of 40 rules in Information Handling Policy v1 apply. 1 gap found. Not an audit opinion.",
     );
     expect(markdown).toContain(
-      "- 0 gaps found against 1 of 5 applicable rules in Records Retention Standard 2026.1; 1 rule needs BA input. Not an audit opinion.",
+      "- 1 of 5 rules in Records Retention Standard 2026.1 applies. 0 gaps found; 1 rule needs BA input. Not an audit opinion.",
     );
   });
 
@@ -312,7 +312,7 @@ describe("the governing-rules section in a requirements BRD — #1877", () => {
       ],
     }).join("\n");
     expect(md).toContain(
-      "- 2 gaps found against 2 of 9 applicable rules in Information Handling Policy v1; 1 rule needs BA input. Not an audit opinion.",
+      "- 2 of 9 rules in Information Handling Policy v1 apply. 2 gaps found; 1 rule needs BA input. Not an audit opinion.",
     );
   });
 
@@ -452,7 +452,7 @@ describe("the governing-rules section in a requirements BRD — #1877", () => {
     expect(md).toContain("### Analysis run (start time not recorded)");
     expect(md).toContain("#### REQ-001");
     // No rule count was read: the sentence still never reads "1 of 0".
-    expect(md).toContain("against 1 of 1 applicable rule in");
+    expect(md).toContain("1 of 1 rule in");
   });
 
   it("reads the runs within the project, then the findings and rule counts as the route does", async () => {
@@ -522,7 +522,7 @@ describe("a BRD covering some of a run's requirements lists only their findings 
     expect(markdown).not.toContain("_As analysed:_ Saved cards");
     // The summary counts the listed findings only: no sentence for a revision none of them cites.
     expect(markdown).toContain(
-      "- 0 gaps found against 1 of 12 applicable rules in Records Retention Standard 2026.1; 1 rule needs BA input. Not an audit opinion.",
+      "- 1 of 12 rules in Records Retention Standard 2026.1 applies. 0 gaps found; 1 rule needs BA input. Not an audit opinion.",
     );
     expect(markdown).not.toContain("in Information Handling Policy v1.");
     expect(markdown).toContain(
@@ -632,7 +632,7 @@ describe("a BRD covering some of a run's requirements lists only their findings 
     });
     const summary = md.find((l) => l.startsWith("- "))!;
     expect(summary).toContain(
-      'in Policy &lt;img src=x onerror="alert(1)"> ## Injected heading v1\\|x.',
+      'in Policy &lt;img src=x onerror="alert(1)"> ## Injected heading v1\\|x applies.',
     );
     expect(md.join("\n")).not.toContain("<img");
     expect(md.some((l) => l.startsWith("## Injected"))).toBe(false);
