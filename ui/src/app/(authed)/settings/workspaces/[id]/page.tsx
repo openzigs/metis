@@ -73,6 +73,15 @@ export default function WorkspaceSettingsPage() {
     onSuccess: () => router.push("/settings/workspaces"),
   });
 
+  // #1745 — the last member-action refusal (role changes and removals are
+  // MFA-gated), cleared when the next one starts.
+  const [memberError, setMemberError] = useState<string | null>(null);
+  const memberHandlers = {
+    onMutate: () => setMemberError(null),
+    onError: (err: Error) => setMemberError(err.message),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["workspace", params.id] }),
+  };
+
   const updateRoleMutation = useMutation({
     mutationFn: async ({ memberId, role }: { memberId: string; role: string }) => {
       await apiFetch(`/workspaces/${params.id}/members/${memberId}`, {
@@ -80,7 +89,7 @@ export default function WorkspaceSettingsPage() {
         body: { role },
       });
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["workspace", params.id] }),
+    ...memberHandlers,
   });
 
   const removeMemberMutation = useMutation({
@@ -89,7 +98,7 @@ export default function WorkspaceSettingsPage() {
         method: "DELETE",
       });
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["workspace", params.id] }),
+    ...memberHandlers,
   });
 
   if (isLoading) {
@@ -150,6 +159,11 @@ export default function WorkspaceSettingsPage() {
           <CardDescription>Manage workspace members and their roles</CardDescription>
         </CardHeader>
         <CardContent>
+          {memberError && (
+            <p role="alert" className="mb-3 text-sm text-destructive" data-testid="ws-member-error">
+              {memberError}
+            </p>
+          )}
           <div className="divide-y">
             {workspace.members.map((m) => (
               <div key={m.id} className="flex items-center gap-3 py-3">
@@ -228,6 +242,16 @@ export default function WorkspaceSettingsPage() {
                     orphaned and team members will lose access.
                   </DialogDescription>
                 </DialogHeader>
+                {/* #1745 — deleting a workspace is MFA-gated; say why it was refused. */}
+                {deleteMutation.isError && (
+                  <p
+                    role="alert"
+                    className="text-sm text-destructive"
+                    data-testid="ws-delete-error"
+                  >
+                    {deleteMutation.error.message}
+                  </p>
+                )}
                 <DialogFooter>
                   {/* Without DialogClose this button was inert — the only way
                       out of the confirmation was Esc or the ✕. */}

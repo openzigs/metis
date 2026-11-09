@@ -401,6 +401,48 @@ describe("jwt", () => {
       },
     );
 
+    // #1745 — `authMode` decides the MFA claim, so it is a closed set: a typo is a
+    // compile error, and a value outside the set is not trusted to say "no MFA claim".
+    it("a token whose authMode is not a known sign-in falls back to the account's provider kind", async () => {
+      const token = issueTokens({
+        userId: "u1",
+        username: "alice",
+        role: "admin",
+        permissions: [],
+        // @ts-expect-error — not a sign-in METIS has; the type refuses it.
+        authMode: "odic",
+      }).refreshToken;
+      const pair = await refreshWithResolvers(token, noMemberships, source("oidc"));
+      expect(verifyAccessToken(pair.accessToken).mfaPassed).toBe(false);
+      const refreshed = await verifyRefreshToken(pair.refreshToken);
+      expect(refreshed.mfaPassed).toBe(false);
+      expect(refreshed.authMode).toBeUndefined();
+    });
+
+    it.each([
+      ["saml", false],
+      ["oidc", false],
+      ["ldap", undefined],
+      ["mock", undefined],
+    ] as const)(
+      "a %s session without mfaPassed is classified by its sign-in, carrying %s",
+      async (authMode, expected) => {
+        const token = issueTokens({
+          userId: "u1",
+          username: "alice",
+          role: "admin",
+          permissions: [],
+          authMode,
+        }).refreshToken;
+        // The account's provider kind is the opposite, and is not read.
+        const pair = await refreshWithResolvers(token, noMemberships, async () => {
+          throw new Error("not read");
+        });
+        expect(verifyAccessToken(pair.accessToken).mfaPassed).toBe(expected);
+        expect((await verifyRefreshToken(pair.refreshToken)).authMode).toBe(authMode);
+      },
+    );
+
     it("a failed provider-kind read fails the refresh and leaves the token usable", async () => {
       const token = tokenFor();
       await expect(
