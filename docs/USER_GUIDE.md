@@ -1657,8 +1657,9 @@ Some **Needs BA input** findings are not asked as clarifying questions (#2068):
 
 If a finding is still **Needs BA input** after it is checked again with your answer, and it now
 asks a different question, that new question is asked too. When the clarifying questions were
-already complete, they reopen with just that question the next time you open the Questions tab,
-as long as rounds are left (there are three). Your earlier answers are kept, and the finding is
+already complete, they reopen the next time you open the Questions tab, as long as rounds are
+left (there are three), and ask every company-policy question still waiting for an answer, that
+new question among them. Your earlier answers are kept, and the finding is
 checked against all of them. If it asks the question you just answered again, it is not asked a
 second time. This also applies to analyses whose clarifying questions were completed before
 #2059: the next time you open their Questions tab, they reopen with the questions of their
@@ -5730,6 +5731,8 @@ When clarification is enabled, METIS:
 4. Incorporates your answers to refine the requirements
 
 If more than 60% of ambiguities remain unresolved after a round, the system automatically escalates to a more powerful model (Claude Sonnet) for better question generation.
+
+**The next round follows your answers (#2077).** When you submit a round and questions are still open (an ambiguity you left unanswered, or a company-policy question), the next round's questions are prepared and shown in place of the round you answered, up to the third round. Before #2077 the panel stayed on the answered round and rounds 2 and 3 were never asked. Only people who can run analyses (a developer, coordinator or admin) start or continue the questions; anyone else sees them as they stand.
 
 **Your progress is saved.** As of Epic #201, an in-flight clarification dialog is stored durably on the server: if you reload the page (or the server restarts) the dialog resumes exactly where you left off, showing how many ambiguities are already resolved versus still remaining. Your submitted answers are persisted with the analysis and feed directly into the generated requirements/specs — changing an answer changes the regenerated output.
 
