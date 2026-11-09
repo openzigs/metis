@@ -2639,6 +2639,20 @@ export class AnalysisOrchestrator {
         if (hasCodeAgent && codeAgentMode === "agentic" && !run.cancelled) {
           const codeController = new AbortController();
           run.controllers.set("code", codeController);
+          // #2113 — governing applicability runs here too, beside the code
+          // agent, on its own controller (#2008) and joined after synthesis
+          // exactly as on the requirement-grounded path. Once per run, not
+          // per repository: the requirements are the same for every pass.
+          const applicabilityController = new AbortController();
+          run.controllers.set(GOVERNING_APPLICABILITY_CONTROLLER, applicabilityController);
+          governingWork = (
+            await this.startGoverningApplicability({
+              projectId: opts.projectId,
+              requirements: codeRequirements,
+              ...(opts.model ? { model: opts.model } : {}),
+              signal: applicabilityController.signal,
+            })
+          )?.work;
           // Find ALL connectors for the project (multi-repo support, epic #663/#668)
           // #1974 — primary first, so the budget cap never drops it.
           const connectors = orderConnectorsForBudgetCap(
@@ -4358,7 +4372,8 @@ export class AnalysisOrchestrator {
   /**
    * #1997 — wait for the governing-applicability work started beside the code
    * agent. `undefined` when none was started (flag off, no workspace or no
-   * current rule, or the code agent did not run in requirement-grounded mode).
+   * current rule, or the code agent ran single-shot or not at all; #2113 — the
+   * agentic and requirement-grounded modes both start it).
    * Never throws: a requirement that could not be decided already carries an
    * `error` set, and a failure of the work as a whole is logged and read as
    * nothing decided, so it can never fail the analysis.
@@ -4429,6 +4444,43 @@ export class AnalysisOrchestrator {
       });
       return undefined;
     }
+  }
+
+  /**
+   * #2113 — start governing applicability for the agentic code path, which
+   * retrieves no per-requirement evidence: applicability reads only each
+   * requirement's id and text, so the requirements are taken as
+   * `retrievePerRequirement` would take them (blank text dropped, capped at
+   * `MAX_REQUIREMENTS_FOR_RETRIEVAL`), with no chunks. `undefined` when the
+   * hook is null (flag off, no workspace, no current rule). The work is not
+   * awaited; its rejection is handled here so a run that ends before the join
+   * leaves none unhandled. It comes back wrapped (`{ work }`): an async
+   * function returning the bare promise would resolve to its result, and the
+   * caller's `await` would then wait for the whole work, ahead of the code agent.
+   */
+  private async startGoverningApplicability(input: {
+    projectId: string;
+    requirements: ReadonlyArray<{ id: string; text: string }>;
+    model?: string;
+    signal: AbortSignal;
+  }): Promise<{ work: Promise<RequirementEvidence[]> } | undefined> {
+    const governing = await governingApplicabilityHookFor({
+      projectId: input.projectId,
+      provider: this.deps.provider,
+      ...(input.model ? { model: input.model } : {}),
+      signal: input.signal,
+    });
+    if (!governing) return undefined;
+    const evidence: RequirementEvidence[] = input.requirements
+      .filter((r) => r.text.trim().length > 0)
+      .slice(0, MAX_REQUIREMENTS_FOR_RETRIEVAL)
+      .map((r) => ({ requirementId: r.id, text: r.text, chunks: [] }));
+    const work = attachGoverningApplicability(evidence, governing, {
+      concurrency: REQUIREMENT_RETRIEVAL_CONCURRENCY,
+      signal: input.signal,
+    });
+    work.catch(() => undefined);
+    return { work };
   }
 
   /**

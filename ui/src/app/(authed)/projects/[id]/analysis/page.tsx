@@ -1673,6 +1673,7 @@ export default function AnalysisPage(): React.ReactElement {
                     projectId={projectId}
                     analysisId={detail.data.id}
                     canDecide={canRunAnalysis}
+                    analysisStatus={detail.data.status}
                   />
                 </TabsContent>
 
