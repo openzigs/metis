@@ -1057,6 +1057,37 @@ regenerated once at its next check; its unchanged sections are reused.
 - **No migration and no backfill.** Requirements-scoped documents and other document types
   are not affected.
 
+### 6.9 `GOVERNING_DOCS_ENABLED` (#1878): governing documents are on by default
+
+Governing documents (Epic #1866) let a workspace's admins upload company policies, and check
+every requirement of each analysis in that workspace against the rules METIS lists from
+them. The feature is **on by default** since #1878. The user-facing description is in
+`docs/USER_GUIDE.md` > "Checking Requirements Against Your Company's Policies"; the design is
+in `docs/ARCHITECTURE.md` §10.3.
+
+- **What it calls a model for.** Rule extraction, when a document or a new revision is
+  uploaded: one call per section of the document, on the deployment's configured provider,
+  each a `token_usages` row under agent step `governing.rule-extraction` with the workspace
+  set. Then, on each analysis, applicability and findings per requirement, and again when the
+  analyst answers a governing question, on the analysis's own provider and counted with the
+  analysis. A workspace with no governing documents makes none of these calls.
+- **Turning it off.** Set `GOVERNING_DOCS_ENABLED=0` (or `false`, `no` or `off`) and restart
+  the server. Every governing route then answers 404, and the workspace's Governing documents
+  tab, the analysis view's Governing rules panel and the BRD's Governing rules section
+  disappear. Analyses check no rules. Unset or empty is on; `1`, `true`, `yes` or `on`
+  (case-insensitive) is on; any other value is off, so a mistyped value turns it off.
+- **Turning it off deletes nothing.** Uploaded documents, their rules and stored findings stay
+  in the database. Every governing job touches nothing while the feature is off, the
+  embedding reindex sweep included (`pnpm embeddings:migrate` prints "Governing documents:
+  skipped"). So if the embedding model changed while it was off, run
+  `pnpm embeddings:migrate status` after turning it back on, and reindex as §6.1 says.
+- **Accuracy was measured on one model.** The decision reading ran on `claude-sonnet-5-5` on
+  Anthropic (`eval-data/readings/governing-02-clinic-records/baseline-A5-sonnet.md`).
+  Precision cleared its 0.60 bar by 0.003 on the mean, one run read 0.58, and the labels it
+  was scored against are AI-written and unreviewed. On the OpenAI, Azure OpenAI, Bedrock or
+  local providers accuracy has not been measured. Consider turning it off where the
+  deployment's model is not one you have measured.
+
 ## 7. Container Image Sizes
 
 The release pipeline ships four images:

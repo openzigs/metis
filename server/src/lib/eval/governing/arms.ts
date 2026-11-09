@@ -55,6 +55,7 @@ import {
 import type { ClarifyingQuestion } from "../../analysis/types/requirements.js";
 import {
   decideApplicability,
+  governingRuleSource,
   type ApplicabilityRule,
   type ApplicabilitySet,
   type RuleApplicability,
@@ -912,14 +913,18 @@ export function createA4Arm(deps: GoverningArmDeps): GoverningArm {
 /**
  * #1878 — the corpus's rules as an analysis reads stored ones
  * (`governingApplicabilityForProject`): each with the `source` the judge is
- * shown, built as production builds it (document title, revision label,
- * clause reference — the rule id stands in for the clause reference).
+ * shown, built by production's own `governingRuleSource` (document title,
+ * revision label, clause reference — the rule id stands in for the clause
+ * reference).
  */
 export function shippedApplicabilityRules(
   corpus: Pick<GoverningCorpus, "name" | "rules" | "manifest">,
 ): ApplicabilityRule[] {
-  const where = `${corpus.manifest.policy.title} ${corpus.manifest.policy.scored}`;
-  return corpusApplicabilityRules(corpus).map((r) => ({ ...r, source: `${where} ${r.id}` }));
+  const { title, scored } = corpus.manifest.policy;
+  return corpusApplicabilityRules(corpus).map((r) => ({
+    ...r,
+    source: governingRuleSource({ documentTitle: title, revisionLabel: scored, clauseRef: r.id }),
+  }));
 }
 
 /** The production functions A5 calls, in the order an analysis and its dialog call them. */
